@@ -190,6 +190,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "fallbackkeyid_fallbackkey",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "openidtoken_expiresatuserid",
 		..descriptor::RANDOM_SMALL
 	},

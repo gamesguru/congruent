@@ -617,6 +617,9 @@ pub(crate) async fn build_sync_events(
 	let device_one_time_keys_count = services
 		.users
 		.count_one_time_keys(syncing_user, syncing_device);
+	let unused_fallback_key_types = services
+		.users
+		.list_unused_fallback_key_types(syncing_user, syncing_device);
 
 	// Remove all to-device events the device received *last time*
 	let remove_to_device_events =
@@ -631,6 +634,7 @@ pub(crate) async fn build_sync_events(
 
 	let (ephemeral, device_one_time_keys_count, keys_changed) = top;
 	let ((), to_device_events, presence_updates) = ephemeral;
+	let unused_fallback_key_types = unused_fallback_key_types.await;
 	device_list_updates.changed.extend(keys_changed);
 
 	if last_sync_end_count.is_some() {
@@ -693,7 +697,7 @@ pub(crate) async fn build_sync_events(
 		to_device: ToDevice { events: to_device_events },
 		device_lists: device_list_updates.into(),
 		device_one_time_keys_count,
-		device_unused_fallback_key_types: None,
+		device_unused_fallback_key_types: Some(unused_fallback_key_types),
 	};
 
 	let mut val: serde_json::Value = serde_json::from_slice(

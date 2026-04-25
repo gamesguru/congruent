@@ -5,7 +5,7 @@ use std::{
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Error, Result, debug, err, info,
+	Err, Error, Result, debug, debug_warn, err, info,
 	result::NotFound,
 	utils::{IterStream, stream::WidebandExt},
 	warn,
@@ -66,6 +66,27 @@ pub(crate) async fn upload_keys_route(
 		services
 			.users
 			.add_one_time_key(sender_user, sender_device, key_id, one_time_key)
+			.await?;
+	}
+
+	for (key_id, fallback_key) in &body.fallback_keys {
+		if fallback_key
+			.deserialize()
+			.inspect_err(|e| {
+				debug_warn!(
+					%key_id,
+					?fallback_key,
+					"Invalid one time key JSON submitted by client, skipping: {e}"
+				);
+			})
+			.is_err()
+		{
+			continue;
+		}
+
+		services
+			.users
+			.add_fallback_key(sender_user, sender_device, key_id, fallback_key, false)
 			.await?;
 	}
 

@@ -18,8 +18,8 @@ use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use ruma::{
-	DeviceId, KeyId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId,
-	OneTimeKeyName, OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedUserId, RoomId, UInt, UserId,
+	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
+	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
 	encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
 	events::{
@@ -66,6 +66,7 @@ struct Data {
 	keychangeid_userid: Arc<Map>,
 	keyid_key: Arc<Map>,
 	onetimekeyid_onetimekeys: Arc<Map>,
+	fallbackkeyid_fallbackkey: Arc<Map>,
 	openidtoken_expiresatuserid: Arc<Map>,
 	logintoken_expiresatuserid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
@@ -113,6 +114,7 @@ impl crate::Service for Service {
 				keychangeid_userid: args.db["keychangeid_userid"].clone(),
 				keyid_key: args.db["keyid_key"].clone(),
 				onetimekeyid_onetimekeys: args.db["onetimekeyid_onetimekeys"].clone(),
+				fallbackkeyid_fallbackkey: args.db["fallbackkeyid_fallbackkey"].clone(),
 				openidtoken_expiresatuserid: args.db["openidtoken_expiresatuserid"].clone(),
 				logintoken_expiresatuserid: args.db["logintoken_expiresatuserid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
@@ -719,7 +721,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		device_id: &DeviceId,
-		one_time_key_key: &KeyId<OneTimeKeyAlgorithm, OneTimeKeyName>,
+		one_time_key_key: &OneTimeKeyId,
 		one_time_key_value: &Raw<OneTimeKey>,
 	) -> Result {
 		// All devices have metadata
@@ -761,6 +763,39 @@ impl Service {
 		Ok(())
 	}
 
+	/// Save a fallback key for the given user, device, and algorithm
+	/// This key will replace an existing fallback key
+	pub async fn add_fallback_key(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		fallback_key_id: &OneTimeKeyId,
+		fallback_key: &Raw<OneTimeKey>,
+		used: bool,
+	) -> Result {
+		// All devices have metadata
+		// Only existing devices should be able to call this, but we shouldn't assert
+		// either...
+		let key = (user_id, device_id);
+		if self.db.userdeviceid_metadata.qry(&key).await.is_err() {
+			return Err!(Database(error!(
+				%user_id,
+				%device_id,
+				"User does not exist or device has no metadata."
+			)));
+		}
+
+		// There is one fallback key slot per user, per device, per algorithm
+		// Therefore we use this as the DB key for this column
+		let db_key = (user_id, device_id, fallback_key_id.algorithm());
+
+		self.db
+			.fallbackkeyid_fallbackkey
+			.put(db_key, (used, fallback_key_id.as_str(), Json(fallback_key)));
+
+		Ok(())
+	}
+
 	pub async fn last_one_time_keys_update(&self, user_id: &UserId) -> u64 {
 		self.db
 			.userid_lastonetimekeyupdate
@@ -776,27 +811,6 @@ impl Service {
 		device_id: &DeviceId,
 		key_algorithm: &OneTimeKeyAlgorithm,
 	) -> Result<(OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>)> {
-		fn parse_map_row(
-			(key, val): (&[u8], &[u8]),
-		) -> (Vec<u8>, OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>) {
-			let key_json = key
-				.rsplit(|&b| b == 0xFF)
-				.next()
-				.ok_or_else(|| err!(Database("OneTimeKeyId in db is invalid.")))
-				.unwrap();
-
-			let parsed_key: OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName> =
-				serde_json::from_slice(key_json)
-					.map_err(|e| err!(Database("OneTimeKeyId in db is invalid. {e}")))
-					.unwrap();
-
-			let val: Raw<OneTimeKey> = serde_json::from_slice(val)
-				.map_err(|e| err!(Database("OneTimeKeys in db are invalid. {e}")))
-				.unwrap();
-
-			(key.to_vec(), parsed_key, val)
-		}
-
 		let count = self.services.globals.next_count()?.to_be_bytes();
 		self.db.userid_lastonetimekeyupdate.insert(user_id, count);
 
@@ -804,32 +818,73 @@ impl Service {
 		prefix.push(0xFF);
 		prefix.extend_from_slice(device_id.as_bytes());
 		prefix.push(0xFF);
+		prefix.push(b'"'); // Annoying quotation mark
+		prefix.extend_from_slice(key_algorithm.as_ref().as_bytes());
+		prefix.push(b':');
 
-		let expected_algo_prefix = format!("{}:", key_algorithm.as_ref());
-
-		let one_time_key: Option<(
-			_,
-			OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>,
-			Raw<OneTimeKey>,
-		)> = self
+		let one_time_key = self
 			.db
 			.onetimekeyid_onetimekeys
 			.raw_stream_prefix(&prefix)
 			.ignore_err()
-			.map(parse_map_row)
-			.filter(|(_, parsed_key, _)| {
-				let starts = parsed_key.to_string().starts_with(&expected_algo_prefix);
-				std::future::ready(starts)
-			})
 			.next()
-			.await;
+			.await
+			.map(|(key, val)| {
+				self.db.onetimekeyid_onetimekeys.remove(key);
 
-		let (key, parsed_key, val) =
-			one_time_key.ok_or_else(|| err!(Request(NotFound("One time key not found."))))?;
+				let key = key
+					.rsplit(|&b| b == 0xFF)
+					.next()
+					.ok_or_else(|| err!(Database("OneTimeKeyId in db is invalid.")))
+					.unwrap();
 
-		self.db.onetimekeyid_onetimekeys.del(&key);
+				let key = serde_json::from_slice(key)
+					.map_err(|e| err!(Database("OneTimeKeyId in db is invalid. {e}")))
+					.unwrap();
 
-		Ok((parsed_key, val))
+				let val = serde_json::from_slice(val)
+					.map_err(|e| err!(Database("OneTimeKeys in db are invalid. {e}")))
+					.unwrap();
+
+				(key, val)
+			});
+
+		if let Some(result) = one_time_key {
+			return Ok(result);
+		}
+
+		// No one-time key has been found. Look for a fallback key.
+
+		let db_key = (user_id, device_id, key_algorithm);
+
+		let fallback_key = self
+			.db
+			.fallbackkeyid_fallbackkey
+			.qry(&db_key)
+			.await
+			.ok()
+			.and_then(|handle| {
+				handle
+					.deserialized::<(bool, OwnedOneTimeKeyId, Raw<OneTimeKey>)>()
+					.ok()
+			});
+
+		if let Some((used, fallback_key_id, fallback_key_value)) = fallback_key {
+			if !used {
+				// write the key to the database again to mark it as used
+				self.add_fallback_key(
+					user_id,
+					device_id,
+					&fallback_key_id,
+					&fallback_key_value,
+					true,
+				)
+				.await?;
+			}
+			return Ok((fallback_key_id, fallback_key_value));
+		}
+
+		Err(err!(Request(NotFound("No one-time key or fallback key found"))))
 	}
 
 	pub async fn count_one_time_keys(
@@ -860,6 +915,34 @@ impl Service {
 			.await;
 
 		algorithm_counts
+	}
+
+	pub async fn list_unused_fallback_key_types(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+	) -> Vec<OneTimeKeyAlgorithm> {
+		type KeyVal = ((String, String, OneTimeKeyAlgorithm), (bool, String, Ignore));
+
+		let mut query = user_id.as_bytes().to_vec();
+		query.push(0xFF);
+		query.extend_from_slice(device_id.as_bytes());
+		query.push(0xFF);
+
+		let mut unused_algorithms = Vec::new();
+
+		self.db
+			.fallbackkeyid_fallbackkey
+			.stream_prefix(&query)
+			.ignore_err()
+			.ready_for_each(|((_, _, fallback_key_algorithm), (used, ..)): KeyVal| {
+				if !used {
+					unused_algorithms.push(fallback_key_algorithm);
+				}
+			})
+			.await;
+
+		unused_algorithms
 	}
 
 	pub async fn add_device_keys(
