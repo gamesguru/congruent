@@ -366,6 +366,7 @@ async fn build_left_state_and_timeline(
 		Some(timeline_start_count),
 		Some(timeline_end_count),
 		timeline_limit,
+		false,
 	)
 	.await?;
 

@@ -8,6 +8,7 @@ pub mod future;
 pub mod hash;
 pub mod html;
 pub mod json;
+pub mod kahns_sort;
 pub mod math;
 pub mod mutex_map;
 pub mod rand;

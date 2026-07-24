@@ -117,6 +117,7 @@ sha2.workspace = true
 termimad.workspace = true
 termimad.optional = true
 tokio.workspace = true
+moka.workspace = true
 tracing.workspace = true
 url.workspace = true
 webpage.workspace = true
@@ -132,6 +133,9 @@ lettre.workspace = true
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true
 sd-notify.optional = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["toml"] }
 
 [lints]
 workspace = true

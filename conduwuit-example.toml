@@ -246,6 +246,11 @@
 #
 #dns_min_ttl_nxdomain = 259200
 
+# The minimum amount of time to cache DNS lookups for server names in
+# federation. This is separate from hickory_resolver's internal caching.
+#
+#dns_cache_override_expire = 21600 (6 hours)
+
 # Number of DNS nameserver retries after a timeout or error.
 #
 #dns_attempts = 10
@@ -415,6 +420,12 @@
 # Federation sender idle connection pool timeout (seconds).
 #
 #sender_idle_timeout = 180
+
+# Federation sender transaction retry backoff base (seconds). This is
+# the minimum delay before the first retry after a failed transaction.
+# Subsequent retries use exponential backoff: base × 2^(tries-1).
+#
+#sender_retry_backoff_base = 5
 
 # Federation sender transaction retry backoff limit (seconds).
 #

@@ -77,8 +77,16 @@ where
 			.remove(room_id);
 	}};
 
-	self.upgrade_outlier_to_timeline_pdu(pdu, json, create_event, origin, room_id, false)
-		.await?;
+	// Keep the large upgrade future out of handle_prev_pdu's own future.
+	Box::pin(self.upgrade_outlier_to_timeline_pdu(
+		pdu,
+		json,
+		create_event,
+		origin,
+		room_id,
+		false,
+	))
+	.await?;
 
 	debug!(
 		elapsed = ?start_time.elapsed(),

@@ -16,7 +16,10 @@ pub(super) use conduwuit_service::state::State;
 use http::{Uri, uri};
 
 use self::handler::RouterExt;
-pub(super) use self::{args::Args as Ruma, response::RumaResponse};
+pub(super) use self::{
+	args::{Args as Ruma, authenticate_user},
+	response::RumaResponse,
+};
 use crate::{admin, client, server};
 
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
@@ -119,8 +122,10 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
 		.ruma_route(&client::get_protocols_route)
-		.route("/_matrix/client/unstable/thirdparty/protocols",
-			get(client::get_protocols_route_unstable))
+		.route(
+			"/_matrix/client/unstable/thirdparty/protocols",
+			get(client::get_protocols_route_unstable),
+		)
 		.route(
 			"/_matrix/client/v3/rooms/{room_id}/send/{event_type}/{txn_id}",
 			put(client::send_message_event_route),
@@ -164,7 +169,12 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		)
 		.route("/_matrix/client/r0/sync", get(client::sync_events_route))
 		.route("/_matrix/client/v3/sync", get(client::sync_events_route))
-		.ruma_route(&client::sync_events_v5_route)
+		.route("/_matrix/client/v4/sync", post(client::sync_events_v5_route))
+		.route("/_matrix/client/v5/sync", post(client::sync_events_v5_route))
+		.route(
+			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+			post(client::sync_events_unstable_msc3575_route),
+		)
 		.ruma_route(&client::get_context_route)
 		.ruma_route(&client::get_message_events_route)
 		.ruma_route(&client::search_events_route)
@@ -210,16 +220,12 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			get(client::get_delayed_event_route),
 		)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/restart",
-			post(client::update_delayed_event_event_route),
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}",
+			post(client::update_delayed_event_without_action_route),
 		)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/send",
-			post(client::update_delayed_event_event_route),
-		)
-		.route(
-			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/cancel",
-			post(client::update_delayed_event_event_route),
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/{action}",
+			post(client::update_delayed_event_route),
 		)
 		.ruma_route(&client::get_tags_route)
 		.ruma_route(&client::update_tag_route)

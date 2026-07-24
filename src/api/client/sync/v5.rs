@@ -1,14 +1,13 @@
 use std::{
-	cmp::{self, Ordering},
 	collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
-	ops::Deref,
 	time::Duration,
 };
 
-use axum::extract::State;
+use axum::{Json, extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
+use bytes::BytesMut;
 use conduwuit::{
-	Err, Error, Result, at, error, extract_variant, is_equal_to,
+	Err, Error, Result, at, err, error, extract_variant, is_equal_to,
 	matrix::{Event, TypeStateKey, pdu::PduCount},
 	trace,
 	utils::{
@@ -19,25 +18,39 @@ use conduwuit::{
 	},
 	warn,
 };
-use conduwuit_service::{Services, rooms::read_receipt::pack_receipts, sync::into_snake_key};
+use conduwuit_service::{
+	Services,
+	rooms::read_receipt::pack_receipts,
+	sync::{CompatListFilters, CompatRequiredStateExcludes, into_snake_key},
+};
 use futures::{
-	FutureExt, Stream, StreamExt, TryFutureExt,
+	FutureExt, StreamExt, TryFutureExt,
 	future::{OptionFuture, join3, try_join4},
 	pin_mut,
 };
 use ruma::{
 	DeviceId, OwnedEventId, OwnedRoomId, RoomId, UInt, UserId,
-	api::client::sync::sync_events::{self, DeviceLists, UnreadNotificationsCount},
+	api::{
+		IncomingRequest, Metadata, OutgoingResponse,
+		client::sync::sync_events::{self, DeviceLists, UnreadNotificationsCount},
+		error::FromHttpRequestError,
+	},
 	directory::RoomTypeFilter,
 	events::{
-		AnyRawAccountDataEvent, AnySyncEphemeralRoomEvent, AnySyncStateEvent, StateEventType,
-		TimelineEventType,
+		AnyRawAccountDataEvent, AnySyncEphemeralRoomEvent, AnySyncStateEvent,
+		GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType, TimelineEventType,
+		direct::DirectEvent,
 		room::member::{MembershipState, RoomMemberEventContent},
+		space::child::SpaceChildEventContent,
+		tag::TagEvent,
 		typing::TypingEventContent,
 	},
+	presence::PresenceState,
 	serde::Raw,
 	uint,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::share_encrypted_room;
 use crate::{
@@ -48,9 +61,488 @@ use crate::{
 };
 
 type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, &'a sync_events::v5::Request);
-type TodoRooms = BTreeMap<OwnedRoomId, (BTreeSet<TypeStateKey>, usize, u64)>;
+type TodoRooms = BTreeMap<OwnedRoomId, (RequiredStateSelection, usize, u64)>;
 type KnownRooms = BTreeMap<String, BTreeMap<OwnedRoomId, u64>>;
+type RoomExtras = BTreeMap<OwnedRoomId, RoomExtra>;
+type CompatRanges = Vec<(UInt, UInt)>;
 
+#[derive(Clone, Debug, Default, Serialize)]
+struct CompatRequiredState {
+	include: Vec<(StateEventType, String)>,
+	// `None` means the request didn't specify `exclude` for this selector (sticky:
+	// keep whatever was cached from a previous request). `Some(vec![])` means the
+	// client explicitly sent an empty exclude list, which must override -- and can
+	// clear -- a previously cached sticky exclusion.
+	exclude: Option<Vec<(StateEventType, String)>>,
+}
+
+impl CompatRequiredState {
+	fn is_empty(&self) -> bool {
+		self.include.is_empty() && self.exclude.as_ref().is_none_or(Vec::is_empty)
+	}
+}
+
+/// One list's or room subscription's required_state request for a room.
+/// Kept separate per selector (rather than merged into one include/exclude
+/// pair) so an exclude from one list/subscription can't suppress state that
+/// another list/subscription for the same room explicitly asked to include.
+#[derive(Debug, Default)]
+struct RequiredStateSelector {
+	include: BTreeSet<TypeStateKey>,
+	exclude: BTreeSet<TypeStateKey>,
+}
+
+#[derive(Debug, Default)]
+struct RequiredStateSelection {
+	selectors: Vec<RequiredStateSelector>,
+}
+
+impl RequiredStateSelection {
+	fn is_empty(&self) -> bool { self.selectors.iter().all(|s| s.include.is_empty()) }
+
+	fn push<I, E>(&mut self, include: I, exclude: E)
+	where
+		I: IntoIterator<Item = TypeStateKey>,
+		E: IntoIterator<Item = TypeStateKey>,
+	{
+		let include: BTreeSet<_> = include.into_iter().collect();
+		if include.is_empty() {
+			return;
+		}
+
+		self.selectors.push(RequiredStateSelector {
+			include,
+			exclude: exclude.into_iter().collect(),
+		});
+	}
+}
+
+#[derive(Clone, Copy)]
+enum SyncEndpoint {
+	StableV5,
+	UnstableMsc3575,
+}
+
+impl SyncEndpoint {
+	fn stores_connection_without_id(self) -> bool { matches!(self, Self::StableV5) }
+
+	fn validates_exact_pos(self) -> bool { matches!(self, Self::StableV5) }
+
+	fn enforces_stable_limits(self) -> bool { matches!(self, Self::StableV5) }
+}
+
+#[derive(Clone, Copy)]
+struct CachePolicy {
+	endpoint: SyncEndpoint,
+	persist: bool,
+}
+
+impl CachePolicy {
+	fn should_store(self, conn_id: Option<&String>) -> bool {
+		self.persist && (self.endpoint.stores_connection_without_id() || conn_id.is_some())
+	}
+}
+
+struct BuildContext<'a> {
+	sender_user: &'a UserId,
+	sender_device: &'a DeviceId,
+	globalsince: u64,
+	body: &'a sync_events::v5::Request,
+	list_filters: Option<&'a BTreeMap<String, CompatListFilters>>,
+	required_state_excludes: Option<&'a CompatRequiredStateExcludes>,
+	known_rooms: &'a KnownRooms,
+	timeline_limits: &'a BTreeMap<OwnedRoomId, usize>,
+	endpoint: SyncEndpoint,
+	persist_cache: bool,
+}
+
+#[derive(Default, Deserialize)]
+struct CompatRequest {
+	pos: Option<String>,
+
+	conn_id: Option<String>,
+
+	txn_id: Option<String>,
+
+	#[serde(with = "ruma::serde::duration::opt_ms", default)]
+	timeout: Option<Duration>,
+
+	#[serde(default)]
+	set_presence: PresenceState,
+
+	#[serde(default)]
+	lists: BTreeMap<String, CompatList>,
+
+	#[serde(default)]
+	room_subscriptions: BTreeMap<OwnedRoomId, CompatRoomSubscription>,
+
+	#[serde(default)]
+	extensions: sync_events::v5::request::Extensions,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CompatList {
+	#[serde(default, alias = "range", deserialize_with = "deserialize_ranges")]
+	ranges: CompatRanges,
+
+	#[serde(flatten)]
+	room_details: CompatRoomDetails,
+
+	#[serde(skip_serializing_if = "Option::is_none")]
+	include_heroes: Option<bool>,
+
+	#[serde(skip_serializing_if = "Option::is_none")]
+	filters: Option<CompatListFilters>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CompatRoomSubscription {
+	#[serde(
+		default,
+		skip_serializing_if = "CompatRequiredState::is_empty",
+		deserialize_with = "deserialize_required_state"
+	)]
+	required_state: CompatRequiredState,
+
+	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
+	timeline_limit: UInt,
+
+	#[serde(skip_serializing_if = "Option::is_none")]
+	include_heroes: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CompatRoomDetails {
+	#[serde(
+		default,
+		skip_serializing_if = "CompatRequiredState::is_empty",
+		deserialize_with = "deserialize_required_state"
+	)]
+	required_state: CompatRequiredState,
+
+	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
+	timeline_limit: UInt,
+}
+
+impl From<CompatRequest> for sync_events::v5::Request {
+	fn from(value: CompatRequest) -> Self {
+		Self {
+			pos: value.pos,
+			conn_id: value.conn_id,
+			txn_id: value.txn_id,
+			timeout: value.timeout,
+			lists: value
+				.lists
+				.into_iter()
+				.map(|(list_id, list)| {
+					(list_id, sync_events::v5::request::List {
+						ranges: list.ranges,
+						room_details: sync_events::v5::request::RoomDetails {
+							required_state: list.room_details.required_state.include,
+							timeline_limit: list.room_details.timeline_limit,
+						},
+						include_heroes: list.include_heroes,
+						filters: list.filters.map(|filters| {
+							sync_events::v5::request::ListFilters {
+								is_invite: filters.is_invite,
+								not_room_types: filters.not_room_types,
+							}
+						}),
+					})
+				})
+				.collect(),
+			room_subscriptions: value
+				.room_subscriptions
+				.into_iter()
+				.map(|(room_id, room)| {
+					(room_id, sync_events::v5::request::RoomSubscription {
+						required_state: room.required_state.include,
+						timeline_limit: room.timeline_limit,
+						include_heroes: room.include_heroes,
+					})
+				})
+				.collect(),
+			extensions: value.extensions,
+		}
+	}
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CompatRangeEntry {
+	Tuple((UInt, UInt)),
+	Map {
+		start: UInt,
+		end: UInt,
+	},
+}
+
+fn deserialize_ranges<'de, D>(deserializer: D) -> Result<CompatRanges, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	#[derive(Deserialize)]
+	#[serde(untagged)]
+	enum CompatRangesRepr {
+		List(Vec<CompatRangeEntry>),
+		Single(CompatRangeEntry),
+		Keyed(BTreeMap<String, CompatRangeEntry>),
+	}
+
+	let entries = match CompatRangesRepr::deserialize(deserializer)? {
+		| CompatRangesRepr::List(entries) => entries,
+		| CompatRangesRepr::Single(entry) => vec![entry],
+		| CompatRangesRepr::Keyed(entries) => entries.into_values().collect(),
+	};
+
+	Ok(entries
+		.into_iter()
+		.map(|entry| match entry {
+			| CompatRangeEntry::Tuple(range) => range,
+			| CompatRangeEntry::Map { start, end } => (start, end),
+		})
+		.collect())
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CompatRequiredStateEntry {
+	Tuple((StateEventType, String)),
+	Map {
+		#[serde(rename = "type", alias = "event_type")]
+		event_type: StateEventType,
+		state_key: String,
+	},
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompatRequiredStateObject {
+	#[serde(default)]
+	include: Vec<CompatRequiredStateEntry>,
+
+	// No `#[serde(default)]`: `Option` already defaults to `None` when the key is
+	// absent, which is what lets us distinguish "exclude omitted" from "exclude
+	// explicitly `[]`" for sticky-exclude semantics (see `CompatRequiredState`).
+	exclude: Option<Vec<CompatRequiredStateEntry>>,
+
+	#[serde(default)]
+	lazy_members: bool,
+}
+
+fn deserialize_required_state<'de, D>(deserializer: D) -> Result<CompatRequiredState, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	use serde::de::Error as _;
+
+	#[derive(Deserialize)]
+	#[serde(untagged)]
+	enum CompatRequiredStateScalarRepr {
+		List(Vec<CompatRequiredStateEntry>),
+		Single(CompatRequiredStateEntry),
+	}
+
+	let value = Value::deserialize(deserializer)?;
+
+	let include = match value {
+		| Value::Object(entries) => {
+			let reserved = ["include", "exclude", "lazy_members"];
+			let has_reserved = entries.keys().any(|key| reserved.contains(&key.as_str()));
+
+			if has_reserved {
+				let object =
+					serde_json::from_value::<CompatRequiredStateObject>(Value::Object(entries))
+						.map_err(D::Error::custom)?;
+				return Ok(compat_required_state_object_into_tuples(object));
+			}
+
+			if let Ok(entries) = serde_json::from_value::<
+				BTreeMap<String, CompatRequiredStateEntry>,
+			>(Value::Object(entries.clone()))
+			{
+				entries
+					.into_values()
+					.map(compat_required_state_entry_into_tuple)
+					.collect()
+			} else {
+				serde_json::from_value::<BTreeMap<StateEventType, Vec<String>>>(Value::Object(
+					entries,
+				))
+				.map_err(D::Error::custom)?
+				.into_iter()
+				.flat_map(|(event_type, state_keys)| {
+					state_keys
+						.into_iter()
+						.map(move |state_key| (event_type.clone(), state_key))
+				})
+				.collect()
+			}
+		},
+		| value => match serde_json::from_value::<CompatRequiredStateScalarRepr>(value)
+			.map_err(D::Error::custom)?
+		{
+			| CompatRequiredStateScalarRepr::List(entries) => entries
+				.into_iter()
+				.map(compat_required_state_entry_into_tuple)
+				.collect(),
+			| CompatRequiredStateScalarRepr::Single(entry) => {
+				vec![compat_required_state_entry_into_tuple(entry)]
+			},
+		},
+	};
+
+	Ok(CompatRequiredState { include, exclude: None })
+}
+
+fn compat_required_state_object_into_tuples(
+	object: CompatRequiredStateObject,
+) -> CompatRequiredState {
+	let mut include = object
+		.include
+		.into_iter()
+		.map(compat_required_state_entry_into_tuple)
+		.collect::<Vec<_>>();
+
+	if object.lazy_members {
+		include.push((StateEventType::RoomMember, "$LAZY".to_owned()));
+	}
+
+	let exclude = object.exclude.map(|entries| {
+		entries
+			.into_iter()
+			.map(compat_required_state_entry_into_tuple)
+			.collect::<Vec<_>>()
+	});
+
+	CompatRequiredState { include, exclude }
+}
+
+fn compat_required_state_entry_into_tuple(
+	entry: CompatRequiredStateEntry,
+) -> (StateEventType, String) {
+	match entry {
+		| CompatRequiredStateEntry::Tuple(state) => state,
+		| CompatRequiredStateEntry::Map { event_type, state_key } => (event_type, state_key),
+	}
+}
+
+fn required_state_excludes(
+	entry: &(StateEventType, String),
+	excludes: &BTreeSet<TypeStateKey>,
+) -> bool {
+	excludes.iter().any(|(event_type, state_key)| {
+		(event_type.to_string() == "*" || *event_type == entry.0)
+			&& (state_key.as_str() == "*" || state_key.as_str() == entry.1)
+	})
+}
+
+pub(crate) struct CompatSyncRequest {
+	request: sync_events::v5::Request,
+	list_filters: BTreeMap<String, CompatListFilters>,
+	required_state_excludes: CompatRequiredStateExcludes,
+	set_presence: PresenceState,
+}
+
+impl IncomingRequest for CompatSyncRequest {
+	type EndpointError = <sync_events::v5::Request as IncomingRequest>::EndpointError;
+	type OutgoingResponse = <sync_events::v5::Request as IncomingRequest>::OutgoingResponse;
+
+	const METADATA: Metadata = <sync_events::v5::Request as IncomingRequest>::METADATA;
+
+	fn try_from_http_request<B, S>(
+		req: http::Request<B>,
+		path_args: &[S],
+	) -> std::result::Result<Self, FromHttpRequestError>
+	where
+		B: AsRef<[u8]>,
+		S: AsRef<str>,
+	{
+		let (parts, body) = req.into_parts();
+		let body = body.as_ref();
+		let (request, list_filters, required_state_excludes, set_presence) = if body.is_empty() {
+			(
+				sync_events::v5::Request::default(),
+				BTreeMap::new(),
+				CompatRequiredStateExcludes::default(),
+				PresenceState::Online,
+			)
+		} else {
+			let compat = serde_json::from_slice::<CompatRequest>(body)?;
+			let set_presence = compat.set_presence.clone();
+			let list_filters = compat
+				.lists
+				.iter()
+				.filter_map(|(list_id, list)| {
+					list.filters
+						.clone()
+						.map(|filters| (list_id.clone(), filters))
+				})
+				.collect();
+			// Only carry a list/subscription's exclude into the sticky-override map if
+			// the request actually specified `exclude` (`Some`, even if empty) --
+			// that's what lets an explicit `"exclude": []` clear a previously cached
+			// sticky exclusion instead of being indistinguishable from omission.
+			let required_state_excludes = CompatRequiredStateExcludes {
+				lists: compat
+					.lists
+					.iter()
+					.filter_map(|(list_id, list)| {
+						list.room_details
+							.required_state
+							.exclude
+							.clone()
+							.map(|exclude| (list_id.clone(), exclude))
+					})
+					.collect(),
+				room_subscriptions: compat
+					.room_subscriptions
+					.iter()
+					.filter_map(|(room_id, room)| {
+						room.required_state
+							.exclude
+							.clone()
+							.map(|exclude| (room_id.clone(), exclude))
+					})
+					.collect(),
+			};
+			(
+				sync_events::v5::Request::from(compat),
+				list_filters,
+				required_state_excludes,
+				set_presence,
+			)
+		};
+
+		let req = http::Request::from_parts(parts, bytes::Bytes::from_static(b"{}"));
+		let mut parsed = sync_events::v5::Request::try_from_http_request(req, path_args)?;
+
+		parsed.pos = request.pos;
+		parsed.conn_id = request.conn_id;
+		parsed.txn_id = request.txn_id;
+		parsed.timeout = request.timeout;
+		parsed.lists = request.lists;
+		parsed.room_subscriptions = request.room_subscriptions;
+		parsed.extensions = request.extensions;
+
+		Ok(Self {
+			request: parsed,
+			list_filters,
+			required_state_excludes,
+			set_presence,
+		})
+	}
+}
+
+#[derive(Default)]
+struct RoomExtra {
+	lists: BTreeSet<String>,
+	membership: Option<MembershipState>,
+	expanded_timeline: bool,
+	force_update: bool,
+}
+
+/// `POST /_matrix/client/v5/sync`
 /// `POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`
 /// ([MSC4186])
 ///
@@ -64,8 +556,31 @@ type KnownRooms = BTreeMap<String, BTreeMap<OwnedRoomId, u64>>;
 pub(crate) async fn sync_events_v5_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
-	body: Ruma<sync_events::v5::Request>,
-) -> Result<sync_events::v5::Response> {
+	body: Ruma<CompatSyncRequest>,
+) -> Result<axum::response::Response> {
+	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5)).await
+}
+
+pub(crate) async fn sync_events_unstable_msc3575_route(
+	State(ref services): State<crate::State>,
+	ClientIp(client_ip): ClientIp,
+	body: Ruma<CompatSyncRequest>,
+) -> Result<axum::response::Response> {
+	Box::pin(sync_events_v5_route_inner(
+		services,
+		client_ip,
+		body,
+		SyncEndpoint::UnstableMsc3575,
+	))
+	.await
+}
+
+async fn sync_events_v5_route_inner(
+	services: &Services,
+	client_ip: std::net::IpAddr,
+	body: Ruma<CompatSyncRequest>,
+	endpoint: SyncEndpoint,
+) -> Result<axum::response::Response> {
 	debug_assert!(DEFAULT_BUMP_TYPES.is_sorted(), "DEFAULT_BUMP_TYPES is not sorted");
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	let sender_device = body.sender_device.as_ref().expect("user is authenticated");
@@ -75,24 +590,55 @@ pub(crate) async fn sync_events_v5_route(
 		.update_device_last_seen(sender_user, Some(sender_device), client_ip)
 		.await;
 
-	let mut body = body.body;
+	let CompatSyncRequest {
+		mut request,
+		mut list_filters,
+		mut required_state_excludes,
+		set_presence,
+	} = body.body;
+
+	if endpoint.enforces_stable_limits() && request.lists.len() > 100 {
+		return Err!(Request(InvalidParam("More than 100 lists are not supported.")));
+	}
+
+	if endpoint.enforces_stable_limits() && request.room_subscriptions.len() > 100 {
+		return Err!(Request(InvalidParam(
+			"More than 100 room subscriptions are not supported."
+		)));
+	}
+
+	if services.config.allow_local_presence {
+		services
+			.presence
+			.ping_presence(sender_user, &set_presence)
+			.await?;
+	}
 
 	// Setup watchers, so if there's no response, we can wait for them
-	let watcher = services.sync.watch(sender_user, sender_device);
+	let watcher = services.sync.setup_watch(sender_user, sender_device).await;
 
-	let next_batch = services.globals.next_count()?;
+	let conn_id = request.conn_id.clone();
 
-	let conn_id = body.conn_id.clone();
-
-	let globalsince = body
-		.pos
-		.as_ref()
-		.and_then(|string| string.parse().ok())
-		.unwrap_or(0);
+	let globalsince = match request.pos.as_ref() {
+		| Some(pos) => pos.parse().map_err(|_| {
+			err!(Request(UnknownPos(
+				"Connection data unknown to server; restarting sync stream."
+			)))
+		})?,
+		| None => 0,
+	};
 
 	let snake_key = into_snake_key(sender_user, sender_device, conn_id);
 
-	if globalsince != 0 && !services.sync.snake_connection_cached(&snake_key) {
+	let known_connection = if endpoint.validates_exact_pos() {
+		services
+			.sync
+			.snake_connection_token_valid(&snake_key, globalsince)
+	} else {
+		services.sync.snake_connection_cached(&snake_key)
+	};
+
+	if globalsince != 0 && !known_connection {
 		return Err!(Request(UnknownPos(
 			"Connection data unknown to server; restarting sync stream."
 		)));
@@ -104,9 +650,95 @@ pub(crate) async fn sync_events_v5_route(
 	}
 
 	// Get sticky parameters from cache
-	let known_rooms = services
+	let (known_rooms, timeline_limits) = services
 		.sync
-		.update_snake_sync_request_with_cache(&snake_key, &mut body);
+		.update_snake_sync_request_with_cache(&snake_key, &mut request);
+	if endpoint.stores_connection_without_id() {
+		services.sync.update_snake_compat_sticky(
+			&snake_key,
+			&mut list_filters,
+			&mut required_state_excludes,
+		);
+	}
+	let list_filters = endpoint
+		.stores_connection_without_id()
+		.then_some(&list_filters);
+	let required_state_excludes = endpoint
+		.stores_connection_without_id()
+		.then_some(&required_state_excludes);
+	let waits_for_updates = request
+		.timeout
+		.is_some_and(|timeout| timeout > Duration::from_secs(0));
+	let mut context = BuildContext {
+		sender_user,
+		sender_device,
+		globalsince,
+		body: &request,
+		list_filters,
+		required_state_excludes,
+		known_rooms: &known_rooms,
+		timeline_limits: &timeline_limits,
+		endpoint,
+		persist_cache: !waits_for_updates,
+	};
+
+	let (mut response, mut room_extras) = build_sync_events_v5(services, &context).await?;
+
+	if waits_for_updates {
+		if response.rooms.is_empty() && response.extensions.is_empty() {
+			if let Some(timeout) = request.timeout {
+				// Hang until new info arrives, or the client's timeout expires.
+				_ = tokio::time::timeout(timeout, watcher).await;
+			}
+		}
+
+		// Rebuild the response after waking up to avoid returning advanced tokens
+		// without their associated events. The probe above intentionally did not
+		// update sticky room state because no response had been delivered yet.
+		for _ in 0..5 {
+			let (retry_response, _) = build_sync_events_v5(services, &context).await?;
+			if retry_response.rooms.is_empty() || response_has_timeline_events(&retry_response) {
+				break;
+			}
+
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+
+		context.persist_cache = true;
+		(response, room_extras) = build_sync_events_v5(services, &context).await?;
+	}
+
+	trace!(
+		rooms = ?response.rooms.len(),
+		account_data = ?response.extensions.account_data.rooms.len(),
+		receipts = ?response.extensions.receipts.rooms.len(),
+		"responding to request with"
+	);
+	if endpoint.validates_exact_pos() {
+		services
+			.sync
+			.update_snake_sync_pos(&snake_key, response.pos.parse().unwrap_or(globalsince));
+	}
+	sync_events_v5_json_response(response, room_extras)
+}
+
+async fn build_sync_events_v5(
+	services: &Services,
+	context: &BuildContext<'_>,
+) -> Result<(sync_events::v5::Response, RoomExtras)> {
+	let BuildContext {
+		sender_user,
+		sender_device,
+		globalsince,
+		body,
+		list_filters,
+		required_state_excludes,
+		known_rooms,
+		timeline_limits,
+		endpoint,
+		persist_cache,
+	} = *context;
+	let next_batch = services.globals.current_count()?;
 
 	let all_joined_rooms = services
 		.rooms
@@ -135,23 +767,39 @@ pub(crate) async fn sync_events_v5_route(
 		.rooms_knocked(sender_user)
 		.map(|r| r.0)
 		.collect::<Vec<OwnedRoomId>>();
+	let all_left_rooms = services
+		.rooms
+		.state_cache
+		.rooms_left(sender_user)
+		.ready_filter(|(room_id, pdu)| {
+			pdu.as_ref().is_some_and(|pdu| pdu.sender != sender_user)
+				|| known_rooms
+					.values()
+					.any(|rooms| rooms.contains_key(room_id))
+		})
+		.map(at!(0))
+		.collect::<Vec<OwnedRoomId>>();
 
-	let (all_joined_rooms, all_invited_rooms, all_knocked_rooms) =
-		join3(all_joined_rooms, all_invited_rooms, all_knocked_rooms).await;
+	let ((all_joined_rooms, all_invited_rooms, all_knocked_rooms), all_left_rooms) = tokio::join!(
+		join3(all_joined_rooms, all_invited_rooms, all_knocked_rooms),
+		all_left_rooms
+	);
 
 	let all_joined_rooms = all_joined_rooms.iter().map(AsRef::as_ref);
 	let all_invited_rooms = all_invited_rooms.iter().map(AsRef::as_ref);
 	let all_knocked_rooms = all_knocked_rooms.iter().map(AsRef::as_ref);
+	let all_left_rooms = all_left_rooms.iter().map(AsRef::as_ref);
 	let all_rooms = all_joined_rooms
 		.clone()
 		.chain(all_invited_rooms.clone())
-		.chain(all_knocked_rooms.clone());
+		.chain(all_knocked_rooms.clone())
+		.chain(all_left_rooms.clone());
 
 	let pos = next_batch.clone().to_string();
 
 	let mut todo_rooms: TodoRooms = BTreeMap::new();
 
-	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, &body);
+	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, body);
 
 	let account_data = collect_account_data(services, sync_info).map(Ok);
 
@@ -179,20 +827,36 @@ pub(crate) async fn sync_events_v5_route(
 		rooms: BTreeMap::new(),
 		extensions,
 	};
+	let mut room_extras = RoomExtras::new();
 
 	handle_lists(
 		services,
 		sync_info,
+		next_batch,
 		all_invited_rooms.clone(),
 		all_joined_rooms.clone(),
 		all_rooms,
+		list_filters,
+		required_state_excludes,
+		endpoint,
+		persist_cache,
 		&mut todo_rooms,
-		&known_rooms,
+		known_rooms,
 		&mut response,
+		&mut room_extras,
 	)
 	.await;
 
-	fetch_subscriptions(services, sync_info, &known_rooms, &mut todo_rooms).await;
+	fetch_subscriptions(
+		services,
+		sync_info,
+		next_batch,
+		known_rooms,
+		required_state_excludes,
+		CachePolicy { endpoint, persist: persist_cache },
+		&mut todo_rooms,
+	)
+	.await;
 
 	response.rooms = process_rooms(
 		services,
@@ -201,43 +865,49 @@ pub(crate) async fn sync_events_v5_route(
 		all_invited_rooms.clone(),
 		&todo_rooms,
 		&mut response,
-		&body,
+		body,
+		timeline_limits,
+		&mut room_extras,
 	)
 	.await?;
 
-	if response.rooms.iter().all(|(id, r)| {
-		r.timeline.is_empty()
-			&& r.required_state.is_empty()
-			&& !response.extensions.receipts.rooms.contains_key(id)
-	}) && response
-		.extensions
-		.to_device
-		.clone()
-		.is_none_or(|to| to.events.is_empty())
-	{
-		// Hang a few seconds so requests are not spammed
-		// Stop hanging if new info arrives
-		let default = Duration::from_secs(30);
-		let duration = cmp::min(body.timeout.unwrap_or(default), default);
-		_ = tokio::time::timeout(duration, watcher).await;
-	}
-
-	let typing = collect_typing_events(services, sender_user, &body, &todo_rooms).await?;
+	let typing = collect_typing_events(services, sender_user, body, &todo_rooms).await?;
 	response.extensions.typing = typing;
 
-	trace!(
-		rooms = ?response.rooms.len(),
-		account_data = ?response.extensions.account_data.rooms.len(),
-		receipts = ?response.extensions.receipts.rooms.len(),
-		"responding to request with"
-	);
-	Ok(response)
+	if persist_cache && (endpoint.stores_connection_without_id() || body.conn_id.is_some()) {
+		// Save the current timeline limits back into our snake connections cache.
+		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
+		let next_limits: BTreeMap<OwnedRoomId, usize> = todo_rooms
+			.iter()
+			.map(|(room_id, (_, limit, roomsince))| {
+				(
+					room_id.clone(),
+					effective_timeline_limit(room_id, *limit, *roomsince, timeline_limits),
+				)
+			})
+			.collect();
+		services
+			.sync
+			.update_snake_sync_timeline_limits(&snake_key, next_limits);
+	}
+
+	Ok((response, room_extras))
+}
+
+fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
+	response
+		.rooms
+		.values()
+		.any(|room| !room.timeline.is_empty())
 }
 
 async fn fetch_subscriptions(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	next_batch: u64,
 	known_rooms: &KnownRooms,
+	required_state_excludes: Option<&CompatRequiredStateExcludes>,
+	cache_policy: CachePolicy,
 	todo_rooms: &mut TodoRooms,
 ) {
 	let mut known_subscription_rooms = BTreeSet::new();
@@ -253,19 +923,24 @@ async fn fetch_subscriptions(
 			continue;
 		}
 
-		let todo_room =
-			todo_rooms
-				.entry(room_id.clone())
-				.or_insert((BTreeSet::new(), 0_usize, u64::MAX));
+		let todo_room = todo_rooms
+			.entry(room_id.clone())
+			.or_insert_with(|| (RequiredStateSelection::default(), 0_usize, u64::MAX));
 
-		let limit: UInt = room.timeline_limit;
+		let limit: usize = usize_from_ruma(room.timeline_limit).min(100);
 
-		todo_room.0.extend(
+		let excludes = required_state_excludes
+			.and_then(|excludes| excludes.room_subscriptions.get(room_id))
+			.into_iter()
+			.flatten()
+			.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+		todo_room.0.push(
 			room.required_state
 				.iter()
 				.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+			excludes,
 		);
-		todo_room.1 = todo_room.1.max(usize_from_ruma(limit));
+		todo_room.1 = todo_room.1.max(limit);
 		// 0 means unknown because it got out of date
 		todo_room.2 = todo_room.2.min(
 			known_rooms
@@ -282,13 +957,13 @@ async fn fetch_subscriptions(
 	//	body.room_subscriptions.remove(&r);
 	//}
 
-	if let Some(conn_id) = body.conn_id.clone() {
-		let snake_key = into_snake_key(sender_user, sender_device, conn_id);
+	if cache_policy.should_store(body.conn_id.as_ref()) {
+		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
 		services.sync.update_snake_sync_known_rooms(
 			&snake_key,
 			"subscriptions".to_owned(),
 			known_subscription_rooms,
-			globalsince,
+			next_batch,
 		);
 	}
 }
@@ -296,63 +971,80 @@ async fn fetch_subscriptions(
 #[allow(clippy::too_many_arguments)]
 async fn handle_lists<'a, Rooms, AllRooms>(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	next_batch: u64,
 	all_invited_rooms: Rooms,
 	all_joined_rooms: Rooms,
 	all_rooms: AllRooms,
+	list_filters: Option<&BTreeMap<String, CompatListFilters>>,
+	required_state_excludes: Option<&CompatRequiredStateExcludes>,
+	endpoint: SyncEndpoint,
+	persist_cache: bool,
 	todo_rooms: &'a mut TodoRooms,
 	known_rooms: &'a KnownRooms,
 	response: &'_ mut sync_events::v5::Response,
+	room_extras: &mut RoomExtras,
 ) -> KnownRooms
 where
 	Rooms: Iterator<Item = &'a RoomId> + Clone + Send + 'a,
 	AllRooms: Iterator<Item = &'a RoomId> + Clone + Send + 'a,
 {
-	// TODO MSC4186: Implement remaining list filters: is_dm, is_encrypted,
-	// room_types.
+	let direct_rooms = direct_rooms_for_user(services, sender_user).await;
+	let mut bump_timestamps = HashMap::new();
 	for (list_id, list) in &body.lists {
 		let active_rooms: Vec<_> = match list.filters.as_ref().and_then(|f| f.is_invite) {
 			| None => all_rooms.clone().collect(),
 			| Some(true) => all_invited_rooms.clone().collect(),
 			| Some(false) => all_joined_rooms.clone().collect(),
 		};
+		let merged_filters =
+			merge_list_filters(list.filters.as_ref(), list_filters.and_then(|f| f.get(list_id)));
 
-		// Filter by room type FIRST to minimize DB lookups
-		let active_rooms = match list.filters.as_ref().map(|f| &f.not_room_types) {
-			| None => active_rooms,
-			| Some(filter) if filter.is_empty() => active_rooms,
-			| Some(value) =>
-				filter_rooms(
-					services,
-					value,
-					&true,
-					active_rooms.iter().stream().map(Deref::deref),
-				)
-				.collect()
-				.await,
-		};
+		let active_rooms = filter_active_rooms(
+			services,
+			sender_user,
+			merged_filters.as_ref(),
+			&direct_rooms,
+			active_rooms,
+		)
+		.await;
 
-		// Fetch timeline counts concurrently (bounded to 10)
-		let mut active_rooms_counts: Vec<_> = active_rooms
+		let missing_rooms: Vec<_> = active_rooms
+			.iter()
+			.filter(|room| !bump_timestamps.contains_key::<RoomId>(*room))
+			.map(|room| (*room).to_owned())
+			.collect::<BTreeSet<_>>()
+			.into_iter()
+			.collect();
+
+		let fetched_timestamps = missing_rooms
 			.into_iter()
 			.stream()
-			.widen_then(10, async |room_id| {
-				let count = match services.rooms.timeline.last_timeline_count(room_id).await {
-					| Ok(PduCount::Normal(c)) => c,
-					| Ok(_) => 0,
-					| Err(err) => {
-						warn!("Failed to fetch timeline count for {room_id}: {err}");
-						0
-					},
+			.widen_then(10, |room_id| async move {
+				let ts = match services.rooms.timeline.latest_pdu_in_room(&room_id).await {
+					| Ok(pdu) => pdu.origin_server_ts().get().into(),
+					| Err(_) => 0_u64,
 				};
-				(room_id, count)
+				(room_id, ts)
 			})
-			.collect()
+			.collect::<Vec<_>>()
 			.await;
 
-		// Stable sort with room_id tiebreaker to prevent jitter
-		active_rooms_counts.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-		let active_rooms: Vec<_> = active_rooms_counts.into_iter().map(|(r, _)| r).collect();
+		bump_timestamps.extend(fetched_timestamps);
+
+		let mut active_rooms_with_ts = Vec::with_capacity(active_rooms.len());
+		for room in active_rooms {
+			active_rooms_with_ts.push((room, bump_timestamps.get(room).copied().unwrap_or(0)));
+		}
+
+		// Sort descending by timestamp (most recent first), then by room ID for a
+		// deterministic order when multiple rooms have the same bump timestamp.
+		active_rooms_with_ts.sort_by(|(room_a, ts_a), (room_b, ts_b)| {
+			ts_b.cmp(ts_a)
+				.then_with(|| room_a.as_str().cmp(room_b.as_str()))
+		});
+		let active_rooms: Vec<&RoomId> =
+			active_rooms_with_ts.into_iter().map(|(r, _)| r).collect();
 
 		let mut new_known_rooms: BTreeSet<OwnedRoomId> = BTreeSet::new();
 
@@ -374,21 +1066,30 @@ where
 				room_ids.clone().into_iter().map(From::from).collect();
 
 			new_known_rooms.extend(new_rooms);
-			//new_known_rooms.extend(room_ids..cloned());
 			for room_id in room_ids {
-				let todo_room = todo_rooms.entry(room_id.to_owned()).or_insert((
-					BTreeSet::new(),
-					0_usize,
-					u64::MAX,
-				));
+				room_extras
+					.entry(room_id.to_owned())
+					.or_default()
+					.lists
+					.insert(list_id.clone());
+
+				let todo_room = todo_rooms
+					.entry(room_id.to_owned())
+					.or_insert_with(|| (RequiredStateSelection::default(), 0_usize, u64::MAX));
 
 				let limit: usize = usize_from_ruma(list.room_details.timeline_limit).min(100);
 
-				todo_room.0.extend(
+				let excludes = required_state_excludes
+					.and_then(|excludes| excludes.lists.get(list_id))
+					.into_iter()
+					.flatten()
+					.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+				todo_room.0.push(
 					list.room_details
 						.required_state
 						.iter()
 						.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+					excludes,
 				);
 
 				todo_room.1 = todo_room.1.max(limit);
@@ -402,19 +1103,35 @@ where
 				);
 			}
 		}
+
+		if let Some(previous_rooms) = known_rooms.get(list_id.as_str()) {
+			for (room_id, roomsince) in previous_rooms {
+				if *roomsince == 0 || new_known_rooms.contains(room_id) {
+					continue;
+				}
+
+				room_extras.entry(room_id.clone()).or_default().force_update = true;
+
+				let todo_room = todo_rooms
+					.entry(room_id.clone())
+					.or_insert_with(|| (RequiredStateSelection::default(), 0_usize, u64::MAX));
+				todo_room.2 = todo_room.2.min(*roomsince);
+			}
+		}
+
 		response
 			.lists
 			.insert(list_id.clone(), sync_events::v5::response::List {
 				count: ruma_from_usize(active_rooms.len()),
 			});
 
-		if let Some(conn_id) = body.conn_id.clone() {
-			let snake_key = into_snake_key(sender_user, sender_device, conn_id);
+		if persist_cache && (endpoint.stores_connection_without_id() || body.conn_id.is_some()) {
+			let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
 			services.sync.update_snake_sync_known_rooms(
 				&snake_key,
 				list_id.clone(),
 				new_known_rooms,
-				globalsince,
+				next_batch,
 			);
 		}
 	}
@@ -422,6 +1139,7 @@ where
 	BTreeMap::default()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_rooms<'a, Rooms>(
 	services: &Services,
 	sender_user: &UserId,
@@ -430,6 +1148,8 @@ async fn process_rooms<'a, Rooms>(
 	todo_rooms: &TodoRooms,
 	response: &mut sync_events::v5::Response,
 	body: &sync_events::v5::Request,
+	timeline_limits: &BTreeMap<OwnedRoomId, usize>,
+	room_extras: &mut RoomExtras,
 ) -> Result<BTreeMap<OwnedRoomId, sync_events::v5::response::Room>>
 where
 	Rooms: Iterator<Item = &'a RoomId> + Clone + Send + 'a,
@@ -437,6 +1157,11 @@ where
 	let mut rooms = BTreeMap::new();
 	for (room_id, (required_state_request, timeline_limit, roomsince)) in todo_rooms {
 		let roomsincecount = PduCount::Normal(*roomsince);
+		let timeline_limit =
+			effective_timeline_limit(room_id, *timeline_limit, *roomsince, timeline_limits);
+
+		let is_expanded_timeline =
+			is_expanded_timeline(timeline_limits.get(room_id).copied(), timeline_limit);
 
 		let mut timestamp: Option<_> = None;
 		let mut invite_state = None;
@@ -459,7 +1184,8 @@ where
 				room_id,
 				Some(roomsincecount),
 				Some(PduCount::from(next_batch)),
-				*timeline_limit,
+				timeline_limit,
+				is_expanded_timeline,
 			)
 			.await
 			{
@@ -527,6 +1253,12 @@ where
 				.insert(room_id.clone(), pack_receipts(Box::new(receipts.into_iter())));
 		}
 
+		let last_notification_read = services
+			.rooms
+			.user
+			.last_notification_read(sender_user, room_id)
+			.await;
+
 		if roomsince != &0
 			&& timeline_pdus.is_empty()
 			&& response
@@ -535,10 +1267,20 @@ where
 				.rooms
 				.get(room_id)
 				.is_none_or(Vec::is_empty)
-			&& receipt_size == 0
+			&& last_notification_read <= *roomsince
+			&& required_state_request.is_empty()
+			&& !room_extras
+				.get(room_id)
+				.is_some_and(|extra| extra.force_update)
 		{
 			continue;
 		}
+
+		let live_count = timeline_pdus
+			.iter()
+			.filter(|(count, _)| matches!(count, PduCount::Normal(count) if count > roomsince))
+			.count();
+		let num_live = (live_count > 0).then(|| ruma_from_usize(live_count));
 
 		let prev_batch = prev_batch
 			.map_or(Ok::<_, Error>(None), |pdu_count| {
@@ -567,6 +1309,17 @@ where
 		)
 		.await;
 
+		let room_name_requested = required_state_request.selectors.iter().any(|selector| {
+			selector.include.iter().any(|(event_type, state_key)| {
+				*event_type == StateEventType::RoomName && matches!(state_key.as_str(), "" | "*")
+			})
+		});
+		let include_stable_room_fields = body.pos.is_none()
+			|| room_name_requested
+			|| timeline_pdus
+				.iter()
+				.any(|(_, pdu)| pdu.event_type().to_string() == "m.room.name");
+
 		let room_events: Vec<_> = timeline_pdus
 			.iter()
 			.stream()
@@ -576,14 +1329,25 @@ where
 			.collect()
 			.await;
 
+		let membership = user_membership_for_sync(services, sender_user, room_id).await;
+
+		let extra = room_extras.entry(room_id.clone()).or_default();
+		extra.membership = membership;
+		extra.expanded_timeline = is_expanded_timeline && !timeline_pdus.is_empty();
+
+		let mut fallback_timestamp = None;
 		for (_, pdu) in timeline_pdus {
 			let ts = pdu.origin_server_ts;
+			if fallback_timestamp.is_none_or(|time| time <= ts) {
+				fallback_timestamp = Some(ts);
+			}
 			if DEFAULT_BUMP_TYPES.binary_search(&pdu.kind).is_ok()
 				&& timestamp.is_none_or(|time| time <= ts)
 			{
 				timestamp = Some(ts);
 			}
 		}
+		timestamp = timestamp.or(fallback_timestamp);
 
 		// Heroes
 		let heroes: Vec<_> = services
@@ -607,30 +1371,6 @@ where
 			.collect()
 			.await;
 
-		let name = match heroes.len().cmp(&(1_usize)) {
-			| Ordering::Greater => {
-				let firsts = heroes[1..]
-					.iter()
-					.map(|h| h.name.clone().unwrap_or_else(|| h.user_id.to_string()))
-					.collect::<Vec<_>>()
-					.join(", ");
-
-				let last = heroes[0]
-					.name
-					.clone()
-					.unwrap_or_else(|| heroes[0].user_id.to_string());
-
-				Some(format!("{firsts} and {last}"))
-			},
-			| Ordering::Equal => Some(
-				heroes[0]
-					.name
-					.clone()
-					.unwrap_or_else(|| heroes[0].user_id.to_string()),
-			),
-			| Ordering::Less => None,
-		};
-
 		let heroes_avatar = if heroes.len() == 1 {
 			heroes[0].avatar.clone()
 		} else {
@@ -638,13 +1378,11 @@ where
 		};
 
 		rooms.insert(room_id.clone(), sync_events::v5::response::Room {
-			name: services
-				.rooms
-				.state_accessor
-				.get_name(room_id)
-				.await
-				.ok()
-				.or(name),
+			name: if include_stable_room_fields {
+				services.rooms.state_accessor.get_name(room_id).await.ok()
+			} else {
+				None
+			},
 			avatar: match heroes_avatar {
 				| Some(heroes_avatar) => ruma::JsOption::Some(heroes_avatar),
 				| _ => match services.rooms.state_accessor.get_avatar(room_id).await {
@@ -653,7 +1391,7 @@ where
 					| ruma::JsOption::Undefined => ruma::JsOption::Undefined,
 				},
 			},
-			initial: Some(roomsince == &0),
+			initial: (roomsince == &0).then_some(true),
 			is_dm: None,
 			invite_state,
 			unread_notifications: UnreadNotificationsCount {
@@ -700,12 +1438,118 @@ where
 					.try_into()
 					.unwrap_or_else(|_| uint!(0)),
 			),
-			num_live: None, // Count events in timeline greater than global sync counter
+			num_live,
 			bump_stamp: timestamp,
 			heroes: Some(heroes),
 		});
 	}
 	Ok(rooms)
+}
+
+fn is_expanded_timeline(old_limit: Option<usize>, timeline_limit: usize) -> bool {
+	old_limit.is_some_and(|old| timeline_limit > old)
+}
+
+fn effective_timeline_limit(
+	room_id: &RoomId,
+	timeline_limit: usize,
+	roomsince: u64,
+	timeline_limits: &BTreeMap<OwnedRoomId, usize>,
+) -> usize {
+	if roomsince == 0 || timeline_limit > 0 {
+		return timeline_limit;
+	}
+
+	timeline_limits
+		.get(room_id)
+		.copied()
+		.unwrap_or(timeline_limit)
+}
+
+fn sync_events_v5_json_response(
+	response: sync_events::v5::Response,
+	room_extras: RoomExtras,
+) -> Result<axum::response::Response> {
+	let response = response
+		.try_into_http_response::<BytesMut>()
+		.map_err(|e| err!(Database("failed to serialize sync v5 response: {e}")))?;
+	let mut value = serde_json::from_slice::<Value>(response.body())?;
+	let Some(rooms) = value.get_mut("rooms").and_then(Value::as_object_mut) else {
+		return Ok(Json(value).into_response());
+	};
+
+	for (room_id, extra) in room_extras {
+		let Some(room) = rooms
+			.get_mut(room_id.as_str())
+			.and_then(Value::as_object_mut)
+		else {
+			continue;
+		};
+
+		if let Some(membership) = extra.membership {
+			room.insert(
+				"membership".to_owned(),
+				Value::String(membership_state_to_str(&membership).to_owned()),
+			);
+		}
+
+		if let Some(invite_state) = room.get("invite_state").cloned() {
+			room.insert("stripped_state".to_owned(), invite_state);
+		}
+
+		if let Some(timeline) = room.get("timeline").cloned() {
+			room.insert("timeline_events".to_owned(), timeline);
+		}
+
+		room.insert("lists".to_owned(), serde_json::to_value(extra.lists)?);
+
+		if extra.expanded_timeline {
+			room.insert("expanded_timeline".to_owned(), Value::Bool(true));
+		}
+	}
+
+	Ok(Json(value).into_response())
+}
+
+fn membership_state_to_str(membership: &MembershipState) -> &str {
+	match membership {
+		| MembershipState::Ban => "ban",
+		| MembershipState::Invite => "invite",
+		| MembershipState::Join => "join",
+		| MembershipState::Knock => "knock",
+		| MembershipState::Leave => "leave",
+		| _ => membership.as_ref(),
+	}
+}
+
+async fn user_membership_for_sync(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+) -> Option<MembershipState> {
+	let membership = services
+		.rooms
+		.state_cache
+		.user_membership(sender_user, room_id)
+		.await;
+
+	if membership != Some(MembershipState::Leave) {
+		return membership;
+	}
+
+	services
+		.rooms
+		.state_cache
+		.left_state(sender_user, room_id)
+		.await
+		.ok()
+		.flatten()
+		.and_then(|pdu| {
+			(pdu.state_key.as_deref() == Some(sender_user.as_str()))
+				.then(|| pdu.get_content::<RoomMemberEventContent>().ok())
+				.flatten()
+		})
+		.map_or(membership, |content| Some(content.membership))
 }
 
 /// Collect the required state events for a room
@@ -722,79 +1566,135 @@ async fn collect_required_state(
 	services: &Services,
 	sender_user: &UserId,
 	room_id: &RoomId,
-	required_state_request: &BTreeSet<TypeStateKey>,
+	required_state_request: &RequiredStateSelection,
 	timeline_pdus: &VecDeque<(PduCount, impl Event + Sync)>,
 ) -> Vec<Raw<AnySyncStateEvent>> {
 	let mut required_state = Vec::new();
-	let mut wildcard_types: HashSet<&StateEventType> = HashSet::new();
+	// Shared across selectors purely to avoid emitting duplicate state events;
+	// never used to decide whether an entry is fetched at all, so one
+	// selector's exclusions can't suppress another's includes.
 	let mut fetched: HashSet<(StateEventType, String)> = HashSet::new();
+	let mut lazy = false;
+	let mut member_wildcarded = false;
 
-	let lazy = required_state_request
-		.iter()
-		.any(|(ty, sk)| *ty == StateEventType::RoomMember && sk.as_str() == "$LAZY");
+	for selector in &required_state_request.selectors {
+		let mut wildcard_types: HashSet<&StateEventType> = HashSet::new();
 
-	for (event_type, state_key) in required_state_request {
-		if wildcard_types.contains(event_type) {
-			continue;
-		}
+		lazy |= selector
+			.include
+			.iter()
+			.any(|(ty, sk)| *ty == StateEventType::RoomMember && sk.as_str() == "$LAZY");
 
-		match state_key.as_str() {
-			| "*" => {
-				wildcard_types.insert(event_type);
-				if let Ok(keys) = services
-					.rooms
-					.state_accessor
-					.room_state_keys(room_id, event_type)
-					.await
+		for (event_type, state_key) in &selector.include {
+			if wildcard_types.contains(event_type) {
+				continue;
+			}
+
+			if event_type.to_string() == "*" {
+				let state_key_filter = state_key.as_str();
+				let full_state = services.rooms.state_accessor.room_state_full(room_id);
+				pin_mut!(full_state);
+				while let Some(Ok(((state_event_type, full_state_key), event))) =
+					full_state.next().await
 				{
-					for key in keys {
-						if !fetched.insert((event_type.clone(), key.clone())) {
-							continue;
-						}
-						if let Ok(event) = services
-							.rooms
-							.state_accessor
-							.room_state_get(room_id, event_type, &key)
-							.await
-						{
-							required_state.push(Event::into_format(event));
+					let full_state_key = full_state_key.to_string();
+					if state_key_filter != "*" && state_key_filter != full_state_key {
+						continue;
+					}
+					if required_state_excludes(
+						&(state_event_type.clone(), full_state_key.clone()),
+						&selector.exclude,
+					) {
+						continue;
+					}
+					if !fetched.insert((state_event_type, full_state_key)) {
+						continue;
+					}
+					required_state.push(Event::into_format(event));
+				}
+				continue;
+			}
+
+			match state_key.as_str() {
+				| "*" => {
+					wildcard_types.insert(event_type);
+					if *event_type == StateEventType::RoomMember {
+						member_wildcarded = true;
+					}
+					if let Ok(keys) = services
+						.rooms
+						.state_accessor
+						.room_state_keys(room_id, event_type)
+						.await
+					{
+						for key in keys {
+							if required_state_excludes(
+								&(event_type.clone(), key.clone()),
+								&selector.exclude,
+							) {
+								continue;
+							}
+							if !fetched.insert((event_type.clone(), key.clone())) {
+								continue;
+							}
+							if let Ok(event) = services
+								.rooms
+								.state_accessor
+								.room_state_get(room_id, event_type, &key)
+								.await
+							{
+								required_state.push(Event::into_format(event));
+							}
 						}
 					}
-				}
-			},
-			// Handled below via `lazy`; skip the literal "$LAZY" lookup only for member state.
-			| "$LAZY" if *event_type == StateEventType::RoomMember => {},
-			| "$ME" => {
-				let resolved_key = sender_user.as_str();
-				if !fetched.insert((event_type.clone(), resolved_key.to_owned())) {
-					continue;
-				}
-				if let Ok(event) = services
-					.rooms
-					.state_accessor
-					.room_state_get(room_id, event_type, resolved_key)
-					.await
-				{
-					required_state.push(Event::into_format(event));
-				}
-			},
-			| _ => {
-				if !fetched.insert((event_type.clone(), state_key.to_string())) {
-					continue;
-				}
-				if let Ok(event) = services
-					.rooms
-					.state_accessor
-					.room_state_get(room_id, event_type, state_key)
-					.await
-				{
-					required_state.push(Event::into_format(event));
-				}
-			},
+				},
+				// Handled below via `lazy`; skip the literal "$LAZY" lookup only for member
+				// state.
+				| "$LAZY" if *event_type == StateEventType::RoomMember => {},
+				| "$ME" => {
+					let resolved_key = sender_user.as_str();
+					if required_state_excludes(
+						&(event_type.clone(), resolved_key.to_owned()),
+						&selector.exclude,
+					) {
+						continue;
+					}
+					if !fetched.insert((event_type.clone(), resolved_key.to_owned())) {
+						continue;
+					}
+					if let Ok(event) = services
+						.rooms
+						.state_accessor
+						.room_state_get(room_id, event_type, resolved_key)
+						.await
+					{
+						required_state.push(Event::into_format(event));
+					}
+				},
+				| _ => {
+					if required_state_excludes(
+						&(event_type.clone(), state_key.to_string()),
+						&selector.exclude,
+					) {
+						continue;
+					}
+					if !fetched.insert((event_type.clone(), state_key.to_string())) {
+						continue;
+					}
+					if let Ok(event) = services
+						.rooms
+						.state_accessor
+						.room_state_get(room_id, event_type, state_key)
+						.await
+					{
+						required_state.push(Event::into_format(event));
+					}
+				},
+			}
 		}
 	}
 
-	if lazy && !wildcard_types.contains(&StateEventType::RoomMember) {
+	if lazy && !member_wildcarded {
 		let mut lazy_members: HashSet<String> = HashSet::new();
 		for (_, pdu) in timeline_pdus {
 			lazy_members.insert(pdu.sender().as_str().to_owned());
@@ -805,6 +1705,8 @@ async fn collect_required_state(
 			}
 		}
 		for member in lazy_members {
+			// Lazy-loaded members aren't tied to any single selector's include/exclude
+			// pair, so no per-selector exclude applies here.
 			if !fetched.insert((StateEventType::RoomMember, member.clone())) {
 				continue;
 			}
@@ -998,53 +1900,56 @@ where
 				let current_state_ids: HashMap<_, OwnedEventId> = services
 					.rooms
 					.state_accessor
-					.state_full_ids(current_shortstatehash)
+					.state_keys_with_ids(current_shortstatehash, &StateEventType::RoomMember)
 					.collect()
 					.await;
 
 				let since_state_ids: HashMap<_, _> = services
 					.rooms
 					.state_accessor
-					.state_full_ids(since_shortstatehash)
+					.state_keys_with_ids(since_shortstatehash, &StateEventType::RoomMember)
 					.collect()
 					.await;
 
-				for (key, id) in current_state_ids {
-					if since_state_ids.get(&key) != Some(&id) {
+				for (state_key, id) in current_state_ids {
+					if since_state_ids.get(&state_key) != Some(&id) {
+						let Ok(user_id) = UserId::parse(&state_key) else {
+							continue;
+						};
+
+						if user_id == sender_user {
+							continue;
+						}
+
 						let Ok(pdu) = services.rooms.timeline.get_pdu(&id).await else {
 							error!("Pdu in state not found: {id}");
 							continue;
 						};
-						if pdu.kind == TimelineEventType::RoomMember {
-							if let Some(Ok(user_id)) = pdu.state_key.as_deref().map(UserId::parse)
-							{
-								if user_id == sender_user {
-									continue;
-								}
 
-								let content: RoomMemberEventContent = pdu.get_content()?;
-								match content.membership {
-									| MembershipState::Join => {
-										// A new user joined an encrypted room
-										if !share_encrypted_room(
-											services,
-											sender_user,
-											user_id,
-											Some(room_id),
-										)
-										.await
-										{
-											device_list_changes.insert(user_id.to_owned());
-										}
-									},
-									| MembershipState::Leave => {
-										// Write down users that have left encrypted rooms we
-										// are in
-										left_encrypted_users.insert(user_id.to_owned());
-									},
-									| _ => {},
+						let Ok(content) = pdu.get_content::<RoomMemberEventContent>() else {
+							continue;
+						};
+
+						match content.membership {
+							| MembershipState::Join => {
+								// A new user joined an encrypted room
+								if !share_encrypted_room(
+									services,
+									sender_user,
+									user_id,
+									Some(room_id),
+								)
+								.await
+								{
+									device_list_changes.insert(user_id.to_owned());
 								}
-							}
+							},
+							| MembershipState::Leave | MembershipState::Ban => {
+								// Write down users that have left encrypted rooms we
+								// are in
+								left_encrypted_users.insert(user_id.to_owned());
+							},
+							| _ => {},
 						}
 					}
 				}
@@ -1137,30 +2042,316 @@ async fn collect_receipts(_services: &Services) -> sync_events::v5::response::Re
 	// TODO: get explicitly requested read receipts
 }
 
-fn filter_rooms<'a, Rooms>(
+async fn filter_active_rooms<'a>(
 	services: &'a Services,
-	filter: &'a [RoomTypeFilter],
-	negate: &'a bool,
-	rooms: Rooms,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a
-where
-	Rooms: Stream<Item = &'a RoomId> + Send + 'a,
-{
-	rooms.filter_map(async |room_id| {
-		let room_type = services.rooms.state_accessor.get_room_type(room_id).await;
+	sender_user: &'a UserId,
+	filters: Option<&'a CompatListFilters>,
+	direct_rooms: &'a HashSet<OwnedRoomId>,
+	mut active_rooms: Vec<&'a RoomId>,
+) -> Vec<&'a RoomId> {
+	let Some(filters) = filters else {
+		return active_rooms;
+	};
 
-		if room_type.as_ref().is_err_and(|e| !e.is_not_found()) {
-			return None;
+	if let Some(is_dm) = filters.is_dm {
+		active_rooms.retain(|room_id| direct_rooms.contains(*room_id) == is_dm);
+	}
+
+	if let Some(is_encrypted) = filters.is_encrypted {
+		active_rooms = active_rooms
+			.into_iter()
+			.stream()
+			.filter_map(|room_id| async move {
+				(services
+					.rooms
+					.state_accessor
+					.is_encrypted_room(room_id)
+					.await == is_encrypted)
+					.then_some(room_id)
+			})
+			.collect()
+			.await;
+	}
+
+	if !filters.room_types.is_empty() {
+		let mut filtered = Vec::with_capacity(active_rooms.len());
+		for room_id in active_rooms {
+			if room_matches_type_filter(services, room_id, &filters.room_types, false).await {
+				filtered.push(room_id);
+			}
 		}
+		active_rooms = filtered;
+	}
 
-		let room_type_filter = RoomTypeFilter::from(room_type.ok());
+	if !filters.not_room_types.is_empty() {
+		let mut filtered = Vec::with_capacity(active_rooms.len());
+		for room_id in active_rooms {
+			if room_matches_type_filter(services, room_id, &filters.not_room_types, true).await {
+				filtered.push(room_id);
+			}
+		}
+		active_rooms = filtered;
+	}
 
-		let include = if *negate {
-			!filter.contains(&room_type_filter)
-		} else {
-			filter.is_empty() || filter.contains(&room_type_filter)
-		};
+	if !filters.tags.is_empty() {
+		let mut filtered = Vec::with_capacity(active_rooms.len());
+		for room_id in active_rooms {
+			if room_matches_tag_filter(services, sender_user, room_id, &filters.tags, false).await
+			{
+				filtered.push(room_id);
+			}
+		}
+		active_rooms = filtered;
+	}
 
-		include.then_some(room_id)
-	})
+	if !filters.not_tags.is_empty() {
+		let mut filtered = Vec::with_capacity(active_rooms.len());
+		for room_id in active_rooms {
+			if room_matches_tag_filter(services, sender_user, room_id, &filters.not_tags, true)
+				.await
+			{
+				filtered.push(room_id);
+			}
+		}
+		active_rooms = filtered;
+	}
+
+	if !filters.spaces.is_empty() {
+		let mut filtered = Vec::with_capacity(active_rooms.len());
+		for room_id in active_rooms {
+			if room_is_child_of_any_space(services, room_id, &filters.spaces).await {
+				filtered.push(room_id);
+			}
+		}
+		active_rooms = filtered;
+	}
+
+	active_rooms
+}
+
+async fn room_matches_type_filter(
+	services: &Services,
+	room_id: &RoomId,
+	filter: &[RoomTypeFilter],
+	negate: bool,
+) -> bool {
+	let room_type = services.rooms.state_accessor.get_room_type(room_id).await;
+
+	if room_type.as_ref().is_err_and(|e| !e.is_not_found()) {
+		return false;
+	}
+
+	let room_type_filter = RoomTypeFilter::from(room_type.ok());
+
+	if negate {
+		!filter.contains(&room_type_filter)
+	} else {
+		filter.is_empty() || filter.contains(&room_type_filter)
+	}
+}
+
+async fn room_matches_tag_filter(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+	filter: &[String],
+	negate: bool,
+) -> bool {
+	let tags = services
+		.account_data
+		.get_room::<TagEvent>(room_id, sender_user, RoomAccountDataEventType::Tag)
+		.await
+		.map(|event| event.content.tags)
+		.unwrap_or_default();
+
+	let matches = filter
+		.iter()
+		.any(|tag| tags.keys().any(|room_tag| room_tag.to_string() == *tag));
+
+	if negate { !matches } else { matches }
+}
+
+async fn room_is_child_of_any_space(
+	services: &Services,
+	room_id: &RoomId,
+	spaces: &[OwnedRoomId],
+) -> bool {
+	for space_id in spaces {
+		if services
+			.rooms
+			.state_accessor
+			.room_state_get_content::<SpaceChildEventContent>(
+				space_id,
+				&StateEventType::SpaceChild,
+				room_id.as_str(),
+			)
+			.await
+			.is_ok_and(|content| !content.via.is_empty())
+		{
+			return true;
+		}
+	}
+
+	false
+}
+
+fn merge_list_filters(
+	base: Option<&sync_events::v5::request::ListFilters>,
+	extra: Option<&CompatListFilters>,
+) -> Option<CompatListFilters> {
+	match (base, extra) {
+		| (None, None) => None,
+		| (Some(base), None) => Some(CompatListFilters::from(base)),
+		| (None, Some(extra)) => Some(extra.clone()),
+		| (Some(base), Some(extra)) => Some(CompatListFilters {
+			is_dm: extra.is_dm,
+			is_encrypted: extra.is_encrypted,
+			is_invite: extra.is_invite.or(base.is_invite),
+			room_types: extra.room_types.clone(),
+			not_room_types: if extra.not_room_types.is_empty() {
+				base.not_room_types.clone()
+			} else {
+				extra.not_room_types.clone()
+			},
+			tags: extra.tags.clone(),
+			not_tags: extra.not_tags.clone(),
+			spaces: extra.spaces.clone(),
+		}),
+	}
+}
+
+async fn direct_rooms_for_user(
+	services: &Services,
+	sender_user: &UserId,
+) -> HashSet<OwnedRoomId> {
+	services
+		.account_data
+		.get_global::<DirectEvent>(sender_user, GlobalAccountDataEventType::Direct)
+		.await
+		.map(|direct_event| {
+			direct_event
+				.content
+				.0
+				.into_values()
+				.flatten()
+				.collect::<HashSet<_>>()
+		})
+		.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[derive(Debug, Deserialize)]
+	struct RequiredStateFixture {
+		#[serde(deserialize_with = "deserialize_required_state")]
+		required_state: CompatRequiredState,
+	}
+
+	#[test]
+	fn required_state_accepts_event_type_map() {
+		let fixture: RequiredStateFixture = serde_json::from_str(
+			r#"{"required_state":{"m.room.name":[""],"m.room.member":["$LAZY"]}}"#,
+		)
+		.expect("event-type keyed required_state should deserialize");
+
+		assert_eq!(fixture.required_state.include, vec![
+			(StateEventType::RoomMember, "$LAZY".to_owned()),
+			(StateEventType::RoomName, String::new()),
+		]);
+		assert_eq!(fixture.required_state.exclude, None);
+	}
+
+	#[test]
+	fn required_state_accepts_stable_include_object() {
+		let fixture: RequiredStateFixture = serde_json::from_str(
+			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}],"lazy_members":true}}"#,
+		)
+		.expect("stable include/lazy_members required_state should deserialize");
+
+		assert_eq!(fixture.required_state.include, vec![
+			(StateEventType::RoomName, String::new()),
+			(StateEventType::RoomMember, "$LAZY".to_owned()),
+		]);
+		assert_eq!(fixture.required_state.exclude, None);
+	}
+
+	#[test]
+	fn required_state_accepts_stable_exclude_object() {
+		let fixture: RequiredStateFixture = serde_json::from_str(
+			r#"{"required_state":{"include":[{"type":"*","state_key":"*"}],"exclude":[{"type":"m.room.member","state_key":"*"}]}}"#,
+		)
+		.expect("stable exclude required_state should deserialize");
+
+		assert_eq!(fixture.required_state.include, vec![("*".into(), "*".to_owned())]);
+		assert_eq!(
+			fixture.required_state.exclude,
+			Some(vec![(StateEventType::RoomMember, "*".to_owned())])
+		);
+	}
+
+	#[test]
+	fn required_state_distinguishes_omitted_from_explicit_empty_exclude() {
+		let fixture: RequiredStateFixture = serde_json::from_str(
+			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}]}}"#,
+		)
+		.expect("required_state without exclude should deserialize");
+		assert_eq!(fixture.required_state.exclude, None, "omitted exclude must be None");
+
+		let fixture: RequiredStateFixture = serde_json::from_str(
+			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}],"exclude":[]}}"#,
+		)
+		.expect("required_state with explicit empty exclude should deserialize");
+		assert_eq!(
+			fixture.required_state.exclude,
+			Some(Vec::new()),
+			"explicit empty exclude must be Some(vec![]) so it can clear a sticky exclusion"
+		);
+	}
+
+	#[test]
+	fn required_state_accepts_exclude_only_object() {
+		let fixture: RequiredStateFixture =
+			serde_json::from_str(r#"{"required_state":{"exclude":[]}}"#)
+				.expect("exclude-only required_state object should deserialize");
+
+		assert_eq!(fixture.required_state.include, Vec::new());
+		assert_eq!(fixture.required_state.exclude, Some(Vec::new()));
+	}
+
+	#[test]
+	fn required_state_rejects_unknown_object_keys() {
+		serde_json::from_str::<RequiredStateFixture>(
+			r#"{"required_state":{"include":[],"bogus":[]}}"#,
+		)
+		.expect_err("unknown required_state object keys should be rejected");
+	}
+
+	#[test]
+	fn stable_list_accepts_singular_range() {
+		let request: CompatRequest = serde_json::from_str(
+			r#"{"lists":{"all":{"timeline_limit":1,"required_state":{"include":[]},"range":[0,0]}}}"#,
+		)
+		.expect("stable singular range should deserialize");
+
+		assert_eq!(request.lists["all"].ranges, vec![(uint!(0), uint!(0))]);
+	}
+
+	#[test]
+	fn expanded_timeline_requires_a_previous_limit() {
+		assert!(!is_expanded_timeline(None, 10));
+	}
+
+	#[test]
+	fn expanded_timeline_counts_zero_as_previous_limit() {
+		assert!(is_expanded_timeline(Some(0), 10));
+	}
+
+	#[test]
+	fn expanded_timeline_requires_a_larger_limit() {
+		assert!(!is_expanded_timeline(Some(10), 10));
+		assert!(!is_expanded_timeline(Some(10), 5));
+		assert!(is_expanded_timeline(Some(10), 11));
+	}
 }

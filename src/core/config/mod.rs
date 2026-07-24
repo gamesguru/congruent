@@ -317,6 +317,13 @@ pub struct Config {
 	#[serde(default = "default_dns_min_ttl_nxdomain")]
 	pub dns_min_ttl_nxdomain: u64,
 
+	/// The minimum amount of time to cache DNS lookups for server names in
+	/// federation. This is separate from hickory_resolver's internal caching.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_dns_cache_override_expire")]
+	pub dns_cache_override_expire: u64,
+
 	/// Number of DNS nameserver retries after a timeout or error.
 	///
 	/// default: 10
@@ -2759,6 +2766,8 @@ fn default_dns_cache_entries() -> u32 { 32768 }
 fn default_dns_min_ttl() -> u64 { 60 * 180 }
 
 fn default_dns_min_ttl_nxdomain() -> u64 { 60 * 60 * 24 * 3 }
+
+fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }
 
 fn default_dns_attempts() -> u16 { 10 }
 
