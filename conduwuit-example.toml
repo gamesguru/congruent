@@ -423,6 +423,12 @@
 #
 #sender_idle_timeout = 180
 
+# Federation sender transaction retry backoff base (seconds). This is
+# the minimum delay before the first retry after a failed transaction.
+# Subsequent retries use exponential backoff: base × 2^(tries-1).
+#
+#sender_retry_backoff_base = 5
+
 # Federation sender transaction retry backoff limit (seconds).
 #
 #sender_retry_backoff_limit = 86400
@@ -2137,7 +2143,7 @@
 
 # MSC3030: timestamp to event
 #
-#msc3030_enabled = false
+#msc3030_enabled = true
 
 #[global.smtp]
 

@@ -105,7 +105,8 @@ pub async fn is_in_backoff(&self, server: &ServerName) -> bool {
 /// Records a fetch failure, starting a backoff period for the server.
 #[implement(Service)]
 pub async fn record_backoff(&self, server: &ServerName) {
-	let base_secs = self.services.server.config.msc4499_backoff_secs.min(3600);
+	let base_secs =
+		bounded_msc4499_backoff_secs(self.services.server.config.msc4499_backoff_secs);
 	let now = std::time::Instant::now();
 	let mut backoff = self.fetch_backoff.write().await;
 	backoff.retain(|_, state| {
@@ -765,4 +766,20 @@ fn extract_key(mut keys: ServerSigningKeys, key_id: &ServerSigningKeyId) -> Opti
 
 fn key_exists(keys: &ServerSigningKeys, key_id: &ServerSigningKeyId) -> bool {
 	keys.verify_keys.contains_key(key_id) || keys.old_verify_keys.contains_key(key_id)
+}
+
+fn bounded_msc4499_backoff_secs(secs: u64) -> u64 {
+	secs.clamp(1, 3600)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::bounded_msc4499_backoff_secs;
+
+	#[test]
+	fn msc4499_backoff_keeps_positive_lower_bound() {
+		assert_eq!(bounded_msc4499_backoff_secs(0), 1);
+		assert_eq!(bounded_msc4499_backoff_secs(2), 2);
+		assert_eq!(bounded_msc4499_backoff_secs(3601), 3600);
+	}
 }
