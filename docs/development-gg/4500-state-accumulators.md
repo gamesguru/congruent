@@ -190,9 +190,8 @@ Each server independently maintains its own `LtHash16` lattice in local storage.
 
 When a server catches a `/send` transaction containing the `state_hashes`
 payload, it collapses its own local lattice at that exact DAG point using fast
-bitmap operations, hashing it down to a canonical 32-byte `BLAKE2b-256` digest.
-If the local digest matches the incoming one, all systems are nominal.
-
+lane-wise wrapping arithmetic, hashing it down to a canonical 32-byte digest.
+If the local digest matches the incoming one, no mismatch is detected.
 If digests mismatch, servers SHOULD log an error or warning message of the state
 split. The receiver can automatically trigger a background `/get_missing_events`
 or perform a state bisection (see

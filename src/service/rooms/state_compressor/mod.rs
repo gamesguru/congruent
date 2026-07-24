@@ -1018,16 +1018,19 @@ pub async fn compute_lthash_from_full_state(
 	let mut lthash = LtHash::ZERO;
 	for compressed_event in full_state.iter() {
 		let (ssk, sei) = parse_compressed_state_event(*compressed_event);
-		if let Ok((ty, sk)) = self.services.short.get_statekey_from_short(ssk).await {
-			if let Ok(event_id) = self
-				.services
-				.short
-				.get_eventid_from_short::<OwnedEventId>(sei)
-				.await
-			{
-				lthash.insert(&ty.to_string(), &sk, &event_id);
-			}
-		}
+		let (ty, sk) = self
+			.services
+			.short
+			.get_statekey_from_short(ssk)
+			.await
+			.map_err(|e| err!(Database("Cannot compute LtHash: unresolvable statekey {ssk}: {e}")))?;
+		let event_id = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(sei)
+			.await
+			.map_err(|e| err!(Database("Cannot compute LtHash: unresolvable eventid {sei}: {e}")))?;
+		lthash.insert(&ty.to_string(), &sk, &event_id);
 	}
 
 	Ok(lthash)
