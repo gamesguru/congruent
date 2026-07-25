@@ -7,3 +7,6 @@
 [submodule "ruwuma"]
 	path = ruwuma
 	url = https://github.com/Wombat-Foundation/ruwuma.git
+[submodule "spec"]
+	path = spec
+	url = https://github.com/wombat-foundation/matrix-spec.git

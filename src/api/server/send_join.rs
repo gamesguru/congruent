@@ -11,7 +11,7 @@ use conduwuit::{
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use ruma::{
-	CanonicalJsonValue, OwnedEventId, RoomId, ServerName, UserId,
+	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
 };
@@ -46,6 +46,18 @@ async fn create_join_event(
 		.get_room_shortstatehash(room_id)
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
+
+	// `servers_in_room` must reflect the servers active in the room BEFORE this
+	// join, so snapshot it now — `handle_and_send_incoming_pdu` below persists
+	// the join and would otherwise make the joining server show up in its own
+	// "before" list.
+	let servers_in_room_before_join: Vec<String> = services
+		.rooms
+		.state_cache
+		.room_servers(room_id)
+		.map(|sn| sn.as_str().to_owned())
+		.collect()
+		.await;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {
 		use ruma::RoomVersionId::*;
@@ -123,27 +135,66 @@ async fn create_join_event(
 		.collect()
 		.await;
 
+	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
+	// membership events must still be included in a partial-state response so
+	// the joining server can compute a display name before it finishes
+	// lazily-loading full state. Only applies when the room has neither
+	// `m.room.name` nor `m.room.canonical_alias` — otherwise the client uses
+	// those instead and doesn't need heroes at all.
+	let heroes = if omit_members {
+		let (has_name, has_canonical_alias) = tokio::join!(
+			services
+				.rooms
+				.state_accessor
+				.state_contains_type(shortstatehash, &ruma::events::StateEventType::RoomName),
+			services.rooms.state_accessor.state_contains_type(
+				shortstatehash,
+				&ruma::events::StateEventType::RoomCanonicalAlias
+			),
+		);
+		if has_name || has_canonical_alias {
+			std::collections::HashSet::new()
+		} else {
+			build_partial_state_heroes(services, room_id).await
+		}
+	} else {
+		std::collections::HashSet::new()
+	};
+
 	trace!(%omit_members, "Constructing current state");
-	let state = state_ids
+	let retained_state_ids: Vec<OwnedEventId> = state_ids
 		.iter()
-		.try_stream()
-		.broad_filter_map(|event_id| async move {
-			if omit_members {
-				if let Ok(e) = event_id.as_ref() {
-					let pdu = services
-						.rooms
-						.timeline
-						.get_pdu_in_room(Some(room_id), e)
-						.await;
-					if pdu.is_ok_and(|p| p.kind().to_cow_str() == "m.room.member") {
-						trace!("omitting member event {e:?} from returned state");
-						// skip members
-						return None;
+		.try_stream::<conduwuit::Error>()
+		.broad_filter_map(|event_id| {
+			let heroes = &heroes;
+			async move {
+				if omit_members {
+					if let Ok(e) = event_id.as_ref() {
+						let pdu = services
+							.rooms
+							.timeline
+							.get_pdu_in_room(Some(room_id), e)
+							.await;
+						if let Ok(p) = pdu {
+							if p.kind().to_cow_str() == "m.room.member"
+								&& !p.state_key().is_some_and(|sk| heroes.contains(sk))
+							{
+								trace!("omitting member event {e:?} from returned state");
+								// skip members, except heroes
+								return None;
+							}
+						}
 					}
 				}
+				event_id.ok().cloned()
 			}
-			Some(event_id)
 		})
+		.collect()
+		.await;
+
+	let state = retained_state_ids
+		.iter()
+		.try_stream()
 		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
 		.broad_and_then(|pdu| {
 			services
@@ -155,12 +206,27 @@ async fn create_join_event(
 		.boxed()
 		.await?;
 
+	// Per MSC3706: "Any events returned within `state` can be omitted from
+	// `auth_chain`." Without this, events we already kept in `state` above
+	// (all state when not omitting members, or heroes' membership events
+	// when we are) would be sent twice.
+	let retained_state_id_set: std::collections::HashSet<&EventId> =
+		retained_state_ids.iter().map(Borrow::borrow).collect();
 	let starting_events = state_ids.iter().map(Borrow::borrow);
 	trace!("Constructing auth chain");
 	let auth_chain = services
 		.rooms
 		.auth_chain
 		.event_ids_iter(room_id, starting_events)
+		.broad_filter_map(|event_id| {
+			let retained_state_id_set = &retained_state_id_set;
+			async move {
+				match event_id {
+					| Ok(event_id) if retained_state_id_set.contains(&*event_id) => None,
+					| other => Some(other),
+				}
+			}
+		})
 		.broad_and_then(|event_id| async move {
 			services.rooms.timeline.get_pdu_json(&event_id).await
 		})
@@ -178,14 +244,7 @@ async fn create_join_event(
 	let servers_in_room: Option<Vec<_>> = if !omit_members {
 		None
 	} else {
-		trace!("Fetching list of servers in room");
-		let servers: Vec<String> = services
-			.rooms
-			.state_cache
-			.room_servers(room_id)
-			.map(|sn| sn.as_str().to_owned())
-			.collect()
-			.await;
+		let servers = servers_in_room_before_join;
 		// If there's no servers, just add us
 		let servers = if servers.is_empty() {
 			warn!("Failed to find any servers, adding our own server name as a last resort");
@@ -204,6 +263,33 @@ async fn create_join_event(
 		members_omitted: omit_members,
 		servers_in_room,
 	})
+}
+
+/// Determine the room's "heroes" (mirrors the sync `/sync` summary
+/// calculation, minus the syncing-user exclusion which doesn't apply here)
+/// so their membership events can be kept in a partial-state `send_join`
+/// response even though other membership events are omitted.
+async fn build_partial_state_heroes(
+	services: &Services,
+	room_id: &RoomId,
+) -> std::collections::HashSet<String> {
+	const MAX_HERO_COUNT: usize = 5;
+
+	services
+		.rooms
+		.state_cache
+		.room_members(room_id)
+		.map(|user_id| user_id.as_str().to_owned())
+		.chain(
+			services
+				.rooms
+				.state_cache
+				.room_members_invited(room_id)
+				.map(|user_id| user_id.as_str().to_owned()),
+		)
+		.take(MAX_HERO_COUNT)
+		.collect()
+		.await
 }
 
 /// # `PUT /_matrix/federation/v1/send_join/{roomId}/{eventId}`
