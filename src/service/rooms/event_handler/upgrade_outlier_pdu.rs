@@ -563,19 +563,17 @@ where
 	)
 	.await;
 
-	let pdu_id = self
-		.services
-		.timeline
-		.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities.into_iter(),
-			state_ids_compressed,
-			soft_fail,
-			&state_lock,
-			room_id,
-		)
-		.await?;
+	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
+		&incoming_pdu,
+		val,
+		extremities.into_iter(),
+		state_ids_compressed,
+		None,
+		soft_fail,
+		&state_lock,
+		room_id,
+	))
+	.await?;
 
 	if soft_fail {
 		self.services.pdu_metadata.mark_event_soft_failed(

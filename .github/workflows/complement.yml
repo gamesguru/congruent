@@ -238,7 +238,7 @@ jobs:
           echo "$FAILED_TESTS" | tee -a "$GITHUB_OUTPUT"
           echo "EOF" | tee -a "$GITHUB_OUTPUT"
 
-          echo "### Complement Test Results (${{ matrix.arch }} ${{ matrix.os }} v${{ matrix.room_version }})" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### Complement Test Results (${{ matrix.arch }} ${{ matrix.os }})" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| Status | Count |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "|--------|-------|" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ✓ Pass | $PASS |" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -270,7 +270,6 @@ jobs:
           os: ${{ matrix.os }}
           profile: ${{ matrix.profile }}
           room_version: ${{ matrix.room_version }}
-          github_run_id: ${{ github.run_id }}
 
       - name: Ingest results into PostgreSQL
         if: always()
@@ -339,7 +338,6 @@ jobs:
               "room_version": "${{ matrix.room_version }}",
               "version_string": "${{ steps.version.outputs.version }}",
               "features": "${{ env.FEATURES }}",
-              "github_run_id": ${{ github.run_id }},
               "pass": ${{ steps.results.outputs.pass || 0 }},
               "fail": ${{ steps.results.outputs.fail || 0 }},
               "skip": ${{ steps.results.outputs.skip || 0 }}
@@ -374,48 +372,67 @@ jobs:
           OS="${{ matrix.os }}"
           PROFILE="${{ matrix.profile }}"
           ROOM_VERSION="${{ matrix.room_version }}"
+          FEATURES="${{ env.FEATURES }}"
 
+          # Fetch the newly failing and passing tests for this specific run.
+          # Keep this query branch-local instead of depending on v_run_regressions,
+          # because that shared view may be managed by another branch.
           COMMON_CTES="
             WITH current_run AS (
-              SELECT id, arch, os, profile, room_version
-              FROM runs
-              WHERE commit_hash LIKE '${SHA}%'
-                AND arch IS NOT DISTINCT FROM '${ARCH}'
-                AND os IS NOT DISTINCT FROM '${OS}'
-                AND profile IS NOT DISTINCT FROM '${PROFILE}'
-                AND room_version IS NOT DISTINCT FROM '${ROOM_VERSION}'
-              ORDER BY run_date DESC, id DESC
+              SELECT r.id, r.os
+              FROM runs r
+              WHERE r.commit_hash LIKE '${SHA}%'
+                AND r.arch IS NOT DISTINCT FROM '${ARCH}'
+                AND r.os IS NOT DISTINCT FROM '${OS}'
+                AND r.profile IS NOT DISTINCT FROM '${PROFILE}'
+                AND r.room_version IS NOT DISTINCT FROM '${ROOM_VERSION}'
+                AND COALESCE(regexp_replace(btrim(r.features, ' ,'), '[,\s]+', ' ', 'g'), '') IS NOT DISTINCT FROM COALESCE(regexp_replace(btrim('${FEATURES}', ' ,'), '[,\s]+', ' ', 'g'), '')
+                AND EXISTS (SELECT 1 FROM run_details rd WHERE rd.run_id = r.id)
+              ORDER BY r.run_date DESC, r.id DESC
               LIMIT 1
             ),
-            baseline_run AS (
-              SELECT b.id
-              FROM runs b
-              CROSS JOIN current_run r
-              WHERE b.branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
-                AND b.arch IS NOT DISTINCT FROM r.arch
-                AND b.os IS NOT DISTINCT FROM r.os
-                AND b.profile IS NOT DISTINCT FROM r.profile
-                AND COALESCE(b.room_version, '11') IS NOT DISTINCT FROM COALESCE(r.room_version, '11')
-                AND EXISTS (SELECT 1 FROM run_details bd WHERE bd.run_id = b.id)
-              ORDER BY b.run_date DESC, b.id DESC
-              LIMIT 1
+            baseline_selection AS (
+              SELECT DISTINCT ON (arch, os)
+                id,
+                os
+              FROM runs
+              WHERE (branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
+                OR version_string LIKE '%main%')
+              ORDER BY
+                arch,
+                os,
+                run_date DESC,
+                id DESC
+            ),
+            baseline_status AS (
+              SELECT
+                bsel.os,
+                rd.test_name,
+                bool_or(rd.status = 'pass') AS any_pass,
+                bool_or(rd.status = 'skip') AS any_skip
+              FROM baseline_selection bsel
+              JOIN run_details rd ON rd.run_id = bsel.id
+              GROUP BY
+                bsel.os,
+                rd.test_name
             )"
-
-          # Fetch tests whose status changed relative to the latest matching main baseline.
           NEW_FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
             SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
             FROM current_run r
             JOIN run_details rd ON rd.run_id = r.id
-            JOIN baseline_run br ON TRUE
-            LEFT JOIN run_details mb ON mb.test_name = rd.test_name AND mb.run_id = br.id
-            WHERE rd.status = 'fail' AND (mb.status IS NULL OR mb.status != 'fail');" | sed 's/\\n/\n/g')
+            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
+            WHERE rd.status = 'fail'
+              AND bs.test_name IS NOT NULL
+              AND (bs.any_pass OR bs.any_skip);" | sed 's/\\n/\n/g')
           NEW_PASSES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
             SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
             FROM current_run r
             JOIN run_details rd ON rd.run_id = r.id
-            JOIN baseline_run br ON TRUE
-            LEFT JOIN run_details mb ON mb.test_name = rd.test_name AND mb.run_id = br.id
-            WHERE rd.status = 'pass' AND (mb.status IS NULL OR mb.status != 'pass');" | sed 's/\\n/\n/g')
+            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
+            WHERE rd.status = 'pass'
+              AND bs.test_name IS NOT NULL
+              AND NOT bs.any_pass;" | sed 's/\\n/\n/g')
+
 
           echo "new_failures<<EOF" | tee -a "$GITHUB_OUTPUT"
           echo "$NEW_FAILURES" | tee -a "$GITHUB_OUTPUT"
@@ -478,7 +495,6 @@ jobs:
 
             const currentRunLines = [
               `## Complement Test Results (${arch} ${os} v${roomVersion})`,
-              `## Complement Test Results (${arch} ${os})`,
               `**Commit:** \`${context.payload.pull_request.head.ref}\` (\`${context.payload.pull_request.head.sha.substring(0, 7)}\`)`,
               `**Logs:** [View / Download Logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
               '',
@@ -521,42 +537,36 @@ jobs:
               c.body && c.body.includes(marker)
             );
 
+            const heading = `## Complement Test Results (${arch} ${os} v${roomVersion})`;
+            const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const previousRunsSummary = '<details><summary>Previous Runs</summary>';
-            const closingDetails = '</details>';
-            const maxPreviousRuns = 6;
             const extractRuns = (body) => {
-              let oldBody = body
-                .replace(marker, '')
-                .replace(`## Complement Test Results (${arch} ${os} v${roomVersion})`, '')
-                .replace(`## Complement Test Results (${arch} ${os})`, '')
-                .trim();
-              if (oldBody.length === 0) {
-                return [];
-              }
+              const withoutMarker = body.replace(marker, '').trim();
+              const previousIndex = withoutMarker.indexOf(previousRunsSummary);
+              const currentSection = previousIndex === -1
+                ? withoutMarker
+                : withoutMarker.slice(0, previousIndex).trim();
+              const previousBlock = previousIndex === -1
+                ? ''
+                : withoutMarker
+                    .slice(previousIndex + previousRunsSummary.length)
+                    .replace(/\s*<\/details>\s*$/, '')
+                    .trim();
 
-              const previousRunsIndex = oldBody.indexOf(previousRunsSummary);
-              if (previousRunsIndex === -1) {
-                return [oldBody];
-              }
-
-              const latestRun = oldBody.slice(0, previousRunsIndex).trim();
-              let previousRuns = oldBody.slice(previousRunsIndex + previousRunsSummary.length).trim();
-              if (previousRuns.endsWith(closingDetails)) {
-                previousRuns = previousRuns.slice(0, -closingDetails.length).trim();
-              }
-
-              return [latestRun, ...previousRuns.split('\n\n## Complement Test Results ')]
-                .map((run, index) => index === 0 || run.length === 0 ? run : `## Complement Test Results ${run}`)
-                .map(run => run.trim())
-                .filter(run => run.length > 0);
+              return [currentSection, ...previousBlock
+                .split(new RegExp(`(?=^${escapeRegExp(heading)}$)`, 'm'))
+              ]
+                .map(section => section.trim())
+                .filter(section => section.startsWith(heading));
             };
 
             let body = currentRun + '\n\n' + marker;
 
             if (existing) {
+              const maxPreviousRuns = 6;
               const previousRuns = extractRuns(existing.body).slice(0, maxPreviousRuns);
               if (previousRuns.length > 0) {
-                body = currentRun + '\n\n' + previousRunsSummary + '\n\n' + previousRuns.join('\n\n') + '\n\n' + closingDetails + '\n\n' + marker;
+                body = currentRun + '\n\n<details><summary>Previous Runs</summary>\n\n' + previousRuns.join('\n\n') + '\n\n</details>\n\n' + marker;
               }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -584,8 +594,7 @@ jobs:
         run: |
           ARCH="${{ matrix.arch }}"
           OS="${{ matrix.os }}"
-          RV="${{ matrix.room_version }}"
-          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          SHA="${{ github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "${RESULTS_OUTCOME}" = "success" ]; then
@@ -594,9 +603,9 @@ jobs:
             SKIP="${{ steps.results.outputs.skip || 0 }}"
             TOTAL="${{ steps.results.outputs.total || 0 }}"
             MARK=$([[ "$FAIL" == "0" ]] && echo "✓" || echo "✗")
-            MSG="${MARK} Complement (${ARCH} ${OS} v${RV}): ${PASS} pass, ${FAIL} fail, ${SKIP} skip / ${TOTAL} total -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
+            MSG="${MARK} Complement (${ARCH} ${OS}): ${PASS} pass, ${FAIL} fail, ${SKIP} skip / ${TOTAL} total -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
           else
-            MSG="✗ Complement (${ARCH} ${OS} v${RV}): job failed before producing test counts -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
+            MSG="✗ Complement (${ARCH} ${OS}): job failed before producing test counts -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
           fi
 
           if [ -n "${MATRIX_TOKEN}" ]; then

@@ -152,6 +152,8 @@ impl Service {
 		}
 	}
 
+	/// Returns `Some(dest)` if the destination definitively rejected the
+	/// transaction and its active requests must be cleaned up by the caller.
 	fn handle_response_err(
 		&self,
 		dest: Destination,

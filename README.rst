@@ -6,7 +6,7 @@ A community-driven `Matrix <https://matrix.org/>`__ homeserver in Rust
 ######################################################################
 
 continuwuity is a Matrix homeserver written in Rust.
-It's the official community continuation of the `conduwuit <https://github.com/girlbossceo/conduwuit>`_ homeserver.
+This is my personal experimental fork.
 
 .. ANCHOR: body
 
@@ -18,24 +18,19 @@ It's the official community continuation of the `conduwuit <https://github.com/g
 
 |comp_fg|
 
-Why the fork?
-~~~~~~~~~~~~~
+My Project
+~~~~~~~~~~
 
-I make too many changes and PRs. Up til now it's backwards compatible, but with
-dropping the Sync Tokens I am slightly ahead.
+Up til now it's backwards compatible, but who dropped Sync Tokens first, tho.
 
 Optimizations in PDU event storage and read receipt logic will leave it largely
-non-backwards compatible, until the C10Y team accept these database
-improvements upstream.
-
-I cannot realistically PR all of the things I change into the main repo, so
-I've set up this fork.
+non-backwards compatible, for now.
 
 The main branch is generally the most stable. Some minor regressions with the
 `unsigned` field, media linger there (fixed on `dev` branches, but those are
 more experimental and not advised to run on your own).
 
-Feature branches are best avoided unless talking to me first.
+Feature branches are best avoided unless checking with me first.
 
 Complement tests have been added, as well functionality for these:
 
@@ -55,12 +50,26 @@ Complement tests have been added, as well functionality for these:
    - MSC4108 [QR Code login]
    - other complement failures relevant to continuwuity
 
-Chats to join (my fork)
-~~~~~~~~~~~~~~~~~~~~~~~
 
-* `#general:nutra.tk <https://matrix.to/#/!tgmfqAWaBc978M80V9:nutra.tk>`_ (General chat)
-* `#matrix-meta:nutra.tk <https://matrix.to/#/!DEQ3Gb1XlHZHTgNHNw:nutra.tk>`_ (Matrix/Meta talk)
-* `#matrix-testing:nutra.tk <https://matrix.to/#/!D1J4GsCJBfrgJ0aXT0:nutra.tk>`_ (Testing room)
+Ignore the complement results branch
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This branch is large, slow to pull, and pollutes ``git lgb --all``.
+
+Add this in ``.git/config`` to suppress fetches:
+
+.. code-block:: ini
+
+  [remote "origin"]
+    url = git@github.com:gamesguru/continuwuity.git
+    fetch = +refs/heads/*:refs/remotes/origin/*
+    fetch = ^refs/heads/_metadata/badges
+
+Run this to purge it from local logs/history:
+
+.. code-block:: shell
+
+  git update-ref -d refs/remotes/origin/_metadata/badges
 
 .. Substitutions for Badges
 

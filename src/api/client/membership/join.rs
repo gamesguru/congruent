@@ -38,7 +38,7 @@ use service::{
 	rooms::{
 		state::RoomMutexGuard,
 		state_compressor::{CompressedState, HashSetCompressStateEvent},
-		timeline::pdu_fits,
+		timeline::{AppendOptions, pdu_fits},
 	},
 };
 use tokio::join;
@@ -925,9 +925,9 @@ async fn join_room_by_id_helper_remote_process(
 			&parsed_join_pdu,
 			join_event,
 			once(parsed_join_pdu.event_id.clone()),
+			AppendOptions { resolved_state: None, soft_fail: false },
 			&state_lock,
 			room_id,
-			false,
 		)
 		.boxed()
 		.await?;

@@ -96,7 +96,9 @@ impl Service {
 		self.db.readreceipts_since(room_id, since.unwrap_or(0))
 	}
 
-	/// Sets a private read marker at PDU `count`.
+	/// Sets a private read marker at PDU `count`, unless a marker for the
+	/// same thread already exists at an equal or greater count. Returns
+	/// whether the marker was applied.
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn private_read_set(
@@ -105,7 +107,7 @@ impl Service {
 		user_id: &UserId,
 		count: u64,
 		receipt: &ReceiptEvent,
-	) -> Result<()> {
+	) -> Result<bool> {
 		self.db.private_read_set(room_id, user_id, count, receipt)
 	}
 
@@ -116,8 +118,11 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
+		thread: Option<&ruma::events::receipt::ReceiptThread>,
 	) -> Result<u64> {
-		self.db.private_read_get_count(room_id, user_id).await
+		self.db
+			.private_read_get_count(room_id, user_id, thread)
+			.await
 	}
 
 	/// Returns the PDU count of the last typing update in this room.
@@ -195,8 +200,6 @@ where
 								}
 							}
 
-							user_locations.insert(location_key, event_id.clone());
-
 							let event_receipts =
 								json.entry(event_id.clone()).or_insert_with(BTreeMap::new);
 							let users = event_receipts
@@ -211,8 +214,10 @@ where
 								users.entry(user_id.clone())
 							{
 								e.insert(new_receipt);
+								user_locations.insert(location_key, event_id.clone());
 							} else if is_unthreaded {
 								users.insert(user_id, new_receipt);
+								user_locations.insert(location_key, event_id.clone());
 							}
 						}
 					}
@@ -241,7 +246,7 @@ where
 	let json = aggregate_receipts(receipts);
 	let content = ReceiptEventContent::from_iter(json);
 
-	conduwuit::debug!(
+	conduwuit::trace!(
 		target: "read_receipt_debug",
 		"Packed {} read receipts into EDU", content.len()
 	);
@@ -251,10 +256,10 @@ where
 		"content": content,
 	});
 
-	conduwuit::debug!(
+	conduwuit::trace!(
 		target: "read_receipt_debug",
-		"pack_receipts output JSON: {}",
-		serde_json::to_string(&json_val).unwrap()
+		?json_val,
+		"pack_receipts output JSON"
 	);
 
 	Raw::from_json(serde_json::value::to_raw_value(&json_val).expect("received valid json"))

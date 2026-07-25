@@ -35,6 +35,7 @@ use serde::Deserialize;
 
 use self::data::Data;
 pub use self::{
+	append::AppendOptions,
 	create::pdu_fits,
 	data::{PdusIterItem, TopoIterItem},
 	heal::{HealOptions, HealResult},

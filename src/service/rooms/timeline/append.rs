@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+	collections::{BTreeMap, HashSet},
+	sync::Arc,
+};
 
 use conduwuit::trace;
 use conduwuit_core::{
@@ -25,7 +28,17 @@ use ruma::{
 };
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
-use crate::{appservice::NamespaceRegex, rooms::state_compressor::CompressedState};
+use crate::{
+	appservice::NamespaceRegex,
+	rooms::state_compressor::{CompressedState, HashSetCompressStateEvent},
+};
+
+/// State/soft-fail options for [`append_pdu`], grouped to keep the argument
+/// count within clippy's threshold.
+pub struct AppendOptions {
+	pub resolved_state: Option<HashSetCompressStateEvent>,
+	pub soft_fail: bool,
+}
 
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
@@ -38,6 +51,7 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
 	state_ids_compressed: Arc<CompressedState>,
+	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
@@ -71,7 +85,14 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, state_lock, room_id, soft_fail)
+		.append_pdu(
+			pdu,
+			pdu_json,
+			new_room_leaves,
+			AppendOptions { resolved_state, soft_fail },
+			state_lock,
+			room_id,
+		)
 		.await?;
 
 	// Clean up the outlier table entry now that this event is in the timeline.
@@ -124,15 +145,16 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
+	options: AppendOptions,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
-	soft_fail: bool,
 ) -> Result<RawPduId>
 where
 	Leaves: Iterator<Item = OwnedEventId> + Send + 'a,
 {
-	// Coalesce database writes for the remainder of this scope.
-	let _cork = self.db.db.cork();
+	let AppendOptions { resolved_state, soft_fail } = options;
+	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
+	let cork = self.db.db.cork_and_flush();
 
 	let shortroomid = self
 		.services
@@ -213,7 +235,11 @@ where
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 
-	let count = self.services.globals.next_count().unwrap();
+	self.services
+		.user
+		.reset_notification_counts(pdu.sender(), room_id);
+
+	let count = self.services.globals.next_count()?;
 	let pdu_count = PduCount::Normal(count);
 	let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
 
@@ -223,34 +249,15 @@ where
 	self.last_timeline_count_cache
 		.insert(room_id.to_owned(), pdu_count);
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
+	drop(cork);
 
-	// Mark as read first so the sync watcher uses the correct receipt
-	let receipt_content = std::collections::BTreeMap::from_iter([(
-		pdu.event_id().to_owned(),
-		std::collections::BTreeMap::from_iter([(
-			ruma::events::receipt::ReceiptType::ReadPrivate,
-			std::collections::BTreeMap::from_iter([(
-				pdu.sender().to_owned(),
-				ruma::events::receipt::Receipt {
-					ts: Some(ruma::MilliSecondsSinceUnixEpoch::now()),
-					thread: ruma::events::receipt::ReceiptThread::Unthreaded,
-				},
-			)]),
-		)]),
-	)]);
-	let receipt_event = ruma::events::receipt::ReceiptEvent {
-		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
-		room_id: room_id.to_owned(),
-	};
-
-	self.services
-		.read_receipt
-		.private_read_set(room_id, pdu.sender(), count, &receipt_event)
-		.expect("failed to set private read receipt");
-
-	self.services
-		.user
-		.reset_notification_counts(pdu.sender(), room_id);
+	let resolved_state_applied = resolved_state.is_some();
+	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
+		self.services
+			.state
+			.force_state(room_id, shortstatehash, added, removed, state_lock)
+			.await?;
+	}
 
 	// Flattened Auth Chain Cache:
 	// Pre-calculate the auth chain closure for this PDU by doing a single
@@ -289,6 +296,26 @@ where
 			.auth_chain
 			.cache_auth_chain_bitmap(vec![short_event_id], &bm);
 	}
+
+	let receipt_content = BTreeMap::from_iter([(
+		pdu.event_id().to_owned(),
+		BTreeMap::from_iter([(
+			ruma::events::receipt::ReceiptType::ReadPrivate,
+			BTreeMap::from_iter([(pdu.sender().to_owned(), ruma::events::receipt::Receipt {
+				ts: Some(ruma::MilliSecondsSinceUnixEpoch::now()),
+				thread: ruma::events::receipt::ReceiptThread::Unthreaded,
+			})]),
+		)]),
+	)]);
+	let receipt_event = ruma::events::receipt::ReceiptEvent {
+		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+		room_id: room_id.to_owned(),
+	};
+
+	// Wake sync only after the event is visible in the room timeline.
+	self.services
+		.read_receipt
+		.private_read_set(room_id, pdu.sender(), count, &receipt_event)?;
 
 	drop(insert_lock);
 
@@ -438,7 +465,7 @@ where
 					.await
 					.remove(room_id);
 			},
-		| TimelineEventType::RoomMember => {
+		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
 				let target_user_id =

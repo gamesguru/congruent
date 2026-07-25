@@ -19,7 +19,10 @@ use ruma::{
 	},
 };
 
-pub(crate) use self::{v3::sync_events_route, v5::sync_events_v5_route};
+pub(crate) use self::{
+	v3::sync_events_route,
+	v5::{sync_events_unstable_msc3575_route, sync_events_v5_route},
+};
 
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
 	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
@@ -55,6 +58,7 @@ async fn load_timeline(
 	starting_count: Option<PduCount>,
 	ending_count: Option<PduCount>,
 	limit: usize,
+	is_expanded_timeline: bool,
 ) -> Result<TimelinePdus> {
 	info!(
 		target: "timeline_debug",
@@ -73,7 +77,7 @@ async fn load_timeline(
 					err!(Database(warn!("Failed to fetch end of room timeline: {}", err)))
 				})?;
 
-			if last_timeline_count <= starting_count {
+			if !is_expanded_timeline && last_timeline_count <= starting_count {
 				// no messages have been sent in this room since `starting_count`
 				info!(
 					target: "timeline_debug",
@@ -102,10 +106,12 @@ async fn load_timeline(
 						room_id,
 						pducount,
 						starting_count,
-						*pducount > starting_count
+						is_expanded_timeline || *pducount > starting_count
 					);
 				})
-				.ready_take_while(move |&(pducount, _)| pducount > starting_count)
+				.ready_take_while(move |&(pducount, _)| {
+					is_expanded_timeline || pducount > starting_count
+				})
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -168,6 +174,26 @@ async fn load_timeline(
 
 	// 3. Establish initial constraint boundaries using lookahead markers
 	let mut limited = pdus.len() > limit || pdu_stream.next().await.is_some();
+
+	// If we didn't hit the limit, check if there is a topological gap.
+	// A topological gap exists if the oldest returned event references a
+	// prev_event that is not stored in the local timeline.
+	if !limited && starting_count.is_some() {
+		if let Some((_, oldest_pdu)) = pdus.front() {
+			for prev_id in oldest_pdu.prev_events() {
+				if services
+					.rooms
+					.timeline
+					.get_pdu_count(prev_id)
+					.await
+					.is_err()
+				{
+					limited = true;
+					break;
+				}
+			}
+		}
+	}
 
 	// 4. Capture chronological batch boundaries BEFORE topo sort shuffles order
 	//

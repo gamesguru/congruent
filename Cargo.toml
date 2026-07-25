@@ -143,6 +143,9 @@ features = [
 version = "0.23.25"
 default-features = false
 
+[workspace.dependencies.rustc-hash]
+version = "2.1.2"
+
 [workspace.dependencies.reqwest]
 version = "0.13.2"
 default-features = false
@@ -345,7 +348,7 @@ version = "0.1.2"
 [workspace.dependencies.moka]
 version = "0.12"
 default-features = false
-features = ["future"]
+features = ["sync", "future"]
 
 [workspace.dependencies.dashmap]
 version = "6.1.0"

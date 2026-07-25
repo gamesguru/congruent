@@ -18,7 +18,7 @@ use ruma::{
 	},
 };
 
-use super::{ExtractBody, RoomMutexGuard};
+use super::{AppendOptions, ExtractBody, RoomMutexGuard};
 
 /// Creates a new persisted data unit and adds it to a room. This function
 /// takes a roomid_mutex_state, meaning that only this function is able to
@@ -123,9 +123,9 @@ pub async fn build_and_append_pdu(
 			// Since this PDU references all pdu_leaves we can update the leaves
 			// of the room
 			once(pdu.event_id().to_owned()),
+			AppendOptions { resolved_state: None, soft_fail: false },
 			state_lock,
 			&room_id,
-			false,
 		)
 		.boxed()
 		.await?;

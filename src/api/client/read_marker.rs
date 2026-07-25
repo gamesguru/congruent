@@ -162,12 +162,18 @@ async fn update_read_receipt(
 	thread: ReceiptThread,
 ) -> Result<()> {
 	// Spec: server SHOULD NOT allow read receipts to move backwards
+	services
+		.rooms
+		.timeline
+		.get_pdu_in_room(Some(room_id), event_id)
+		.await
+		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let new_count = services
 		.rooms
 		.timeline
 		.get_pdu_count(event_id)
 		.await
-		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found."))))?;
+		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 
 	let mut ignore_receipt = false;
 	if let PduCount::Normal(new_count) = new_count {
@@ -195,6 +201,7 @@ async fn update_read_receipt(
 			target: "read_receipt_debug",
 			"Event {} not found in timeline, ignoring read receipt", event_id
 		);
+		ignore_receipt = true;
 	}
 
 	if !ignore_receipt {
@@ -239,65 +246,67 @@ async fn update_private_read_receipt(
 	event_id: &ruma::EventId,
 	thread: ReceiptThread,
 ) -> Result<()> {
+	services
+		.rooms
+		.timeline
+		.get_pdu_in_room(Some(room_id), event_id)
+		.await
+		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 	let count = services
 		.rooms
 		.timeline
 		.get_pdu_count(event_id)
 		.await
-		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found."))))?;
+		.map_err(|_| conduwuit::err!(Request(NotFound("Event not found in room."))))?;
 
 	let PduCount::Normal(new_count) = count else {
 		return Err!(Request(InvalidParam(
 			"Event is a backfilled PDU and cannot be marked as read."
 		)));
 	};
-	// Don't allow private receipt to move backwards
-	let old_count = services
-		.rooms
-		.read_receipt
-		.private_read_get_count(room_id, sender_user)
-		.await
-		.unwrap_or(0);
 
-	if new_count > old_count {
-		let receipt_content = BTreeMap::from_iter([(
-			event_id.to_owned(),
-			BTreeMap::from_iter([(
-				ReceiptType::ReadPrivate,
-				BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
-					ts: Some(MilliSecondsSinceUnixEpoch::now()),
-					thread,
-				})]),
-			)]),
-		)]);
+	let is_unthreaded = thread == ReceiptThread::Unthreaded;
+	let receipt_content = BTreeMap::from_iter([(
+		event_id.to_owned(),
+		BTreeMap::from_iter([(
+			ReceiptType::ReadPrivate,
+			BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
+				ts: Some(MilliSecondsSinceUnixEpoch::now()),
+				thread,
+			})]),
+		)]),
+	)]);
 
-		let receipt_event = ruma::events::receipt::ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(receipt_content),
-			room_id: room_id.to_owned(),
-		};
+	let receipt_event = ruma::events::receipt::ReceiptEvent {
+		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+		room_id: room_id.to_owned(),
+	};
 
-		services.rooms.read_receipt.private_read_set(
-			room_id,
-			sender_user,
-			new_count,
-			&receipt_event,
-		)?;
+	// The backwards-move check happens inside `private_read_set`, atomically with
+	// the write, so a racing older receipt can't be applied after a newer one.
+	let applied = services.rooms.read_receipt.private_read_set(
+		room_id,
+		sender_user,
+		new_count,
+		&receipt_event,
+	)?;
 
-		services
-			.rooms
-			.user
-			.reset_notification_counts(sender_user, room_id);
+	if applied {
+		if is_unthreaded {
+			services
+				.rooms
+				.user
+				.reset_notification_counts(sender_user, room_id);
+		}
 
 		conduwuit::debug!("Accepted private read receipt for {} from {}", event_id, sender_user);
 	} else {
 		conduwuit::info!(
 			target: "read_receipt_debug",
-			"Ignoring private read receipt for {} from {} because it moves backwards \
-			 from {} to {}",
+			"Ignoring private read receipt for {} from {} because it moves backwards or is \
+			 stale",
 			room_id,
 			sender_user,
-			old_count,
-			new_count
 		);
 	}
 

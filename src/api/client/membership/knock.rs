@@ -34,6 +34,7 @@ use service::{
 	rooms::{
 		state::RoomMutexGuard,
 		state_compressor::{CompressedState, HashSetCompressStateEvent},
+		timeline::AppendOptions,
 	},
 };
 
@@ -438,18 +439,15 @@ async fn knock_room_helper_local(
 	// update_membership is handled automatically by append_pdu
 
 	info!("Appending room knock event locally");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_knock_pdu,
-			knock_event,
-			once(parsed_knock_pdu.event_id.clone()),
-			&state_lock,
-			room_id,
-			false,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.clone()),
+		AppendOptions { resolved_state: None, soft_fail: false },
+		&state_lock,
+		room_id,
+	))
+	.await?;
 
 	Ok(())
 }
@@ -628,18 +626,15 @@ async fn knock_room_helper_remote(
 	// update_membership is handled automatically by append_pdu
 
 	info!("Appending room knock event locally");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_knock_pdu,
-			knock_event,
-			once(parsed_knock_pdu.event_id.clone()),
-			&state_lock,
-			room_id,
-			false,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.clone()),
+		AppendOptions { resolved_state: None, soft_fail: false },
+		&state_lock,
+		room_id,
+	))
+	.await?;
 
 	info!("Setting final room state for new room");
 	// We set the room state after inserting the pdu, so that we never have a moment

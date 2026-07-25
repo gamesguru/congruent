@@ -339,6 +339,13 @@ pub struct Config {
 	#[serde(default = "default_dns_min_ttl_nxdomain")]
 	pub dns_min_ttl_nxdomain: u64,
 
+	/// The minimum amount of time to cache DNS lookups for server names in
+	/// federation. This is separate from hickory_resolver's internal caching.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_dns_cache_override_expire")]
+	pub dns_cache_override_expire: u64,
+
 	/// Number of DNS nameserver retries after a timeout or error.
 	///
 	/// default: 10
@@ -353,8 +360,6 @@ pub struct Config {
 	/// default: 10
 	#[serde(default = "default_dns_timeout")]
 	pub dns_timeout: u64,
-	#[serde(default = "default_dns_cache_override_expire")]
-	pub dns_cache_override_expire: u64,
 
 	/// Fallback to TCP on DNS errors. Set this to false if unsupported by
 	/// nameserver.
@@ -2971,6 +2976,8 @@ fn default_dns_min_ttl() -> u64 { 60 * 180 }
 
 fn default_dns_min_ttl_nxdomain() -> u64 { 60 * 60 * 24 * 3 }
 
+fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }
+
 fn default_dns_attempts() -> u16 { 10 }
 
 fn default_dns_timeout() -> u64 { 10 }
@@ -3250,4 +3257,3 @@ fn default_ldap_uid_attribute() -> String { String::from("uid") }
 fn default_ldap_name_attribute() -> String { String::from("givenName") }
 
 fn default_presence_idle_debounce_ms() -> u64 { 60000 }
-fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }

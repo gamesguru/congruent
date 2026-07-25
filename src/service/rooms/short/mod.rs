@@ -1,8 +1,12 @@
-use std::{borrow::Borrow, mem::size_of, sync::Arc};
+use std::{
+	borrow::Borrow,
+	mem::{size_of, size_of_val},
+	sync::Arc,
+};
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
-	Result, err, implement,
+	Result, SyncMutex, err, implement,
 	matrix::StateKey,
 	pair_of,
 	utils::{self, IterStream, ReadyExt},
@@ -28,6 +32,7 @@ pub struct Service {
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
 	pub shorteventid_shortstatehash_cache: moka::sync::Cache<ShortEventId, ShortStateHash>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
+	shorteventid_create_mutex: SyncMutex<()>,
 }
 
 struct Data {
@@ -111,6 +116,7 @@ impl crate::Service for Service {
 			leanevent_cache: moka::sync::Cache::builder()
 				.max_capacity(args.server.config.leanevent_cache_capacity.into())
 				.build(),
+			shorteventid_create_mutex: SyncMutex::new(()),
 		}))
 	}
 
@@ -199,20 +205,7 @@ where
 					.collect()
 					.await;
 
-				let missing_count =
-					u64::try_from(db_results.iter().filter(|res| res.is_err()).count())
-						.unwrap_or(0);
-
-				let mut next_id = if missing_count > 0 {
-					self.services
-						.globals
-						.next_count_batch(missing_count)
-						.unwrap()
-				} else {
-					0
-				};
-
-				let mut new_allocations = std::collections::HashMap::new();
+				let mut unresolved = Vec::new();
 
 				for (idx, (result, event_id)) in miss_indices
 					.into_iter()
@@ -227,29 +220,71 @@ where
 								.insert(short, event_id.to_owned());
 							short
 						},
-						| Err(_) =>
-							if let Some(&short) = new_allocations.get(event_id) {
-								short
-							} else {
-								let short = next_id.saturating_add(1);
-								next_id = short;
-
-								self.db
-									.eventid_shorteventid
-									.raw_aput::<BUFSIZE, _, _>(event_id, short);
-								self.db
-									.shorteventid_eventid
-									.aput_raw::<BUFSIZE, _, _>(short, event_id);
-
-								new_allocations.insert(event_id, short);
-								self.eventid_shorteventid_cache
-									.insert(event_id.to_owned(), short);
-								self.shorteventid_eventid_cache
-									.insert(short, event_id.to_owned());
-								short
-							},
+						| Err(_) => {
+							unresolved.push((idx, event_id));
+							continue;
+						},
 					};
 					results[idx] = Some(short);
+				}
+
+				if !unresolved.is_empty() {
+					let _guard = self.shorteventid_create_mutex.lock();
+					let mut new_event_ids = Vec::new();
+					let mut new_allocations = std::collections::HashMap::new();
+
+					for &(_, event_id) in &unresolved {
+						if new_allocations.contains_key(event_id)
+							|| new_event_ids.contains(&event_id)
+						{
+							continue;
+						}
+
+						if let Ok(handle) = self
+							.db
+							.eventid_shorteventid
+							.get_blocking(event_id.as_bytes())
+						{
+							let short = utils::u64_from_u8(&handle);
+							new_allocations.insert(event_id, short);
+							self.eventid_shorteventid_cache
+								.insert(event_id.to_owned(), short);
+							self.shorteventid_eventid_cache
+								.insert(short, event_id.to_owned());
+						} else {
+							new_event_ids.push(event_id);
+						}
+					}
+
+					if !new_event_ids.is_empty() {
+						let mut next_id = self
+							.services
+							.globals
+							.next_count_batch(u64::try_from(new_event_ids.len()).unwrap())
+							.unwrap();
+
+						for event_id in new_event_ids {
+							let short = next_id.saturating_add(1);
+							next_id = short;
+
+							self.db
+								.eventid_shorteventid
+								.raw_aput::<BUFSIZE, _, _>(event_id, short);
+							self.db
+								.shorteventid_eventid
+								.aput_raw::<BUFSIZE, _, _>(short, event_id);
+
+							new_allocations.insert(event_id, short);
+							self.eventid_shorteventid_cache
+								.insert(event_id.to_owned(), short);
+							self.shorteventid_eventid_cache
+								.insert(short, event_id.to_owned());
+						}
+					}
+
+					for (idx, event_id) in unresolved {
+						results[idx] = Some(new_allocations[event_id]);
+					}
 				}
 			}
 
@@ -261,6 +296,21 @@ where
 #[implement(Service)]
 fn create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
 	const BUFSIZE: usize = size_of::<ShortEventId>();
+
+	let _guard = self.shorteventid_create_mutex.lock();
+
+	if let Ok(handle) = self
+		.db
+		.eventid_shorteventid
+		.get_blocking(event_id.as_bytes())
+	{
+		let short = utils::u64_from_u8(&handle);
+		self.eventid_shorteventid_cache
+			.insert(event_id.to_owned(), short);
+		self.shorteventid_eventid_cache
+			.insert(short, event_id.to_owned());
+		return short;
+	}
 
 	let short = self.services.globals.next_count().unwrap();
 	debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
@@ -368,7 +418,8 @@ where
 	const BUFSIZE: usize = size_of::<ShortEventId>();
 
 	if let Some(cached) = self.shorteventid_eventid_cache.get(&shorteventid) {
-		let s = serde_json::to_vec(&cached).unwrap();
+		let s = serde_json::to_vec(&cached)
+			.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))?;
 		return serde_json::from_slice::<Id>(&s)
 			.map_err(|e| err!(Database("Failed to deserialize EventId from cache: {e:?}")));
 	}
@@ -412,9 +463,13 @@ where
 
 			for (i, key) in chunk.iter().copied().enumerate() {
 				if let Some(cached) = self.shorteventid_eventid_cache.get(&key) {
-					let s = serde_json::to_vec(&cached).unwrap();
-					let res = serde_json::from_slice::<Id>(&s)
-						.map_err(|e| err!(Database("Failed to deserialize EventId: {e:?}")));
+					let res = serde_json::to_vec(&cached)
+						.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))
+						.and_then(|s| {
+							serde_json::from_slice::<Id>(&s).map_err(|e| {
+								err!(Database("Failed to deserialize EventId from cache: {e:?}"))
+							})
+						});
 					results.push(Some(res));
 				} else {
 					results.push(None);

@@ -255,7 +255,8 @@ async fn build_ephemeral(
 	let (receipt_events, typing_event, private_read_event) =
 		join3(receipt_events, typing_event, private_read_event).await;
 
-	let mut edus = receipt_events;
+	let mut edus =
+		conduwuit_service::rooms::read_receipt::pack_receipts_v3(receipt_events.into_iter());
 	edus.extend(typing_event);
 	edus.extend(private_read_event);
 
@@ -285,6 +286,14 @@ async fn build_state_and_timeline(
 	let joined_since_last_sync =
 		check_joined_since_last_sync(services, room_id, shortstatehashes, sync_context).await?;
 
+	// If the syncing user joined since the last sync but their join event landed
+	// after `current_count` was captured (a race between federation join and
+	// sync), the timeline may come back empty here. Don't widen the fetch beyond
+	// `current_count` to compensate: that would pull in events the sync token
+	// doesn't yet cover, which could duplicate or skew ordering on the next
+	// incremental sync. The room's state (e.g. the join itself) still syncs via
+	// `build_state_events` below; the timeline catches up on the next poll once
+	// `current_count` has advanced past the join event.
 	let timeline =
 		build_timeline(services, sync_context, room_id, joined_since_last_sync).await?;
 
@@ -534,6 +543,7 @@ async fn build_timeline(
 		starting_count,
 		Some(PduCount::Normal(current_count)),
 		timeline_limit,
+		false,
 	)
 	.await
 }
