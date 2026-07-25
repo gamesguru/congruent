@@ -781,15 +781,18 @@ where
 				"Skipping /state_ids fetch: not a state event or prev_events are rejected; using current room state"
 			);
 		} else {
-			let fallback_event_id = if is_dag_fork {
-				incoming_pdu.event_id()
-			} else {
-				let mut prev_events = incoming_pdu.prev_events();
-				let first_prev = prev_events.next();
-				match (first_prev, prev_events.next()) {
-					| (Some(first_prev), None) => first_prev,
-					| _ => incoming_pdu.event_id(),
-				}
+			// Prefer the sole prev_event as the /state_ids reference point
+			// whenever there is exactly one, regardless of whether it matches
+			// our local forward extremities: `is_dag_fork` only tells us our
+			// local view differs, which is expected for any catch-up gap, not
+			// just genuine concurrent DAG forks. Falling back to the incoming
+			// event's own ID here would ask the remote for state *after* an
+			// event it may not consider fully resolved yet.
+			let mut prev_events = incoming_pdu.prev_events();
+			let first_prev = prev_events.next();
+			let fallback_event_id = match (first_prev, prev_events.next()) {
+				| (Some(first_prev), None) => first_prev,
+				| _ => incoming_pdu.event_id(),
 			};
 
 			// Attempt a synchronous /state_ids fetch from the sending server

@@ -282,10 +282,6 @@
 #
 #dns_timeout = 10
 
-# This item is undocumented. Please contribute documentation for it.
-#
-#dns_cache_override_expire =
-
 # Fallback to TCP on DNS errors. Set this to false if unsupported by
 # nameserver.
 #
