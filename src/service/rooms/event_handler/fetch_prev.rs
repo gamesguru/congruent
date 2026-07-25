@@ -44,12 +44,15 @@ where
 	let still_needed: Vec<OwnedEventId> = initial_set.map(ToOwned::to_owned).collect();
 	let mut remaining = Vec::with_capacity(still_needed.len());
 	for id in &still_needed {
-		// A prior rejection only means we couldn't determine state for this event
-		// last time (e.g. its own prev_events were unresolvable) — that's not a
-		// structural verdict about the event's content, so it's still worth
-		// asking federation for again. If the event were already in our timeline
-		// the `pdu_exists` check below would exclude it regardless.
-		if !self.services.timeline.pdu_exists(id).await {
+		// `pdu_exists` also matches events persisted only as outliers, which
+		// includes ones we ultimately rejected (e.g. because their own
+		// prev_events were unresolvable). A rejected event never made it into
+		// the timeline, so it still can't serve as usable prev-event state —
+		// treat it as still needed rather than letting the outlier record
+		// mask the rejection and silently skip re-fetching it.
+		let exists = self.services.timeline.pdu_exists(id).await;
+		let rejected = self.services.pdu_metadata.is_event_rejected(id).await;
+		if !exists || rejected {
 			remaining.push(id.clone());
 		}
 	}

@@ -1,6 +1,6 @@
 [files]
 extend-exclude = ["*.csr", "*.lock", "pnpm-lock.yaml", "docs/development-gg/*.csv", "case-study-state-res/*",
-"conduwuit-*.toml", "*.diff"]
+"conduwuit-*.toml", "*.diff", "tests/test_results/**"]
 
 [default]
 
