@@ -40,6 +40,11 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	// Non-spec-compliant admin override to force-accept events.
 	skip_soft_fail: bool,
 	is_forward_extremity: bool,
+	// True if this event's own /get_missing_events call (in fetch_prev) came
+	// back with a structurally-invalid event for one of its prev_events. Lets
+	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
+	// hitting federation for state at an event we already know is unusable.
+	prev_fetch_had_invalid_data: bool,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -109,6 +114,7 @@ where
 		room_id,
 		&room_version_id,
 		skip_soft_fail,
+		prev_fetch_had_invalid_data,
 	))
 	.await?;
 
@@ -415,6 +421,7 @@ where
 						room_id,
 						&room_version_id,
 						skip_soft_fail,
+						false,
 					))
 					.await?;
 				}
@@ -652,6 +659,7 @@ async fn check_current_state_auth(
 /// (e.g. auth chain fetch fails or soft-fail is active) then the room's current
 /// room state is used as a best-effort fallback to avoid wiping state.
 #[implement(super::Service)]
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(level = "debug", skip_all)]
 async fn resolve_state_at_incoming_event<Pdu>(
 	&self,
@@ -661,6 +669,7 @@ async fn resolve_state_at_incoming_event<Pdu>(
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
 	skip_soft_fail: bool,
+	prev_fetch_had_invalid_data: bool,
 ) -> Result<StateAtEvent>
 where
 	Pdu: Event + Send + Sync,
@@ -773,7 +782,39 @@ where
 			)
 			.await;
 
-		if any_prev_rejected && all_prevs_rejected {
+		let all_prevs_unknown = futures::stream::iter(incoming_pdu.prev_events())
+			.all(|prev_id| async move {
+				self.services.timeline.get_pdu_id(prev_id).await.is_err()
+					&& self
+						.services
+						.outlier
+						.get_pdu_outlier(prev_id)
+						.await
+						.is_err()
+			})
+			.await;
+
+		if prev_fetch_had_invalid_data && all_prevs_unknown {
+			// This event's own fetch_prev call just tried /get_missing_events
+			// and got back a structurally-invalid event for (one of) its
+			// prev_events. That data can't be made valid by asking again via a
+			// different federation endpoint, so skip the /state_ids attempt
+			// below entirely and reject now.
+			info!(
+				event_id = %incoming_pdu.event_id,
+				"Rejecting event: prev_event was structurally invalid in get_missing_events response"
+			);
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					"prev_event was structurally invalid in get_missing_events response",
+				)
+				.await;
+			return Err!(Request(Forbidden(
+				"Cannot determine state: prev_event was structurally invalid"
+			)));
+		} else if any_prev_rejected && all_prevs_rejected {
 			// All non-timeline prev_events are rejected — no point fetching
 			// state from federation. Fall through to current room state.
 			debug!(

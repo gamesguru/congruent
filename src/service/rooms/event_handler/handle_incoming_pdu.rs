@@ -530,15 +530,16 @@ pub async fn process_timeline_upgrade(
 
 	// Fetch any missing prev events doing all checks listed here starting at 1.
 	// These are timeline events
-	let (sorted_prev_events, mut eventid_info) = Box::pin(self.fetch_prev(
-		origin,
-		create_event,
-		room_id,
-		event_id,
-		incoming_pdu.prev_events(),
-		Some(incoming_pdu.sender().server_name()),
-	))
-	.await?;
+	let (sorted_prev_events, mut eventid_info, prev_fetch_had_invalid_data) =
+		Box::pin(self.fetch_prev(
+			origin,
+			create_event,
+			room_id,
+			event_id,
+			incoming_pdu.prev_events(),
+			Some(incoming_pdu.sender().server_name()),
+		))
+		.await?;
 
 	debug!(
 		events = ?sorted_prev_events,
@@ -604,6 +605,7 @@ pub async fn process_timeline_upgrade(
 		room_id,
 		false,
 		true,
+		prev_fetch_had_invalid_data,
 	))
 	.await
 }

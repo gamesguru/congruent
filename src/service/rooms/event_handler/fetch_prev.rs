@@ -30,6 +30,12 @@ pub(super) async fn fetch_prev<'a, Pdu, Events>(
 ) -> Result<(
 	Vec<OwnedEventId>,
 	HashMap<OwnedEventId, (PduEvent, BTreeMap<String, CanonicalJsonValue>)>,
+	// True if the /get_missing_events response contained at least one event
+	// that failed canonical-JSON validation. Such an event can never be
+	// resolved by any other federation call either (the data itself is
+	// malformed), so callers can skip a doomed /state_ids fetch for a
+	// prev_event we just tried and structurally rejected this round.
+	bool,
 )>
 where
 	Pdu: Event + Send + Sync,
@@ -38,16 +44,18 @@ where
 	let still_needed: Vec<OwnedEventId> = initial_set.map(ToOwned::to_owned).collect();
 	let mut remaining = Vec::with_capacity(still_needed.len());
 	for id in &still_needed {
-		if self.services.pdu_metadata.is_event_rejected(id).await {
-			continue; // TODO: don't fetch rejected events from federation?
-		}
+		// A prior rejection only means we couldn't determine state for this event
+		// last time (e.g. its own prev_events were unresolvable) — that's not a
+		// structural verdict about the event's content, so it's still worth
+		// asking federation for again. If the event were already in our timeline
+		// the `pdu_exists` check below would exclude it regardless.
 		if !self.services.timeline.pdu_exists(id).await {
 			remaining.push(id.clone());
 		}
 	}
 
 	if remaining.is_empty() {
-		return Ok((Vec::new(), HashMap::new()));
+		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
 	let servers = self
@@ -130,17 +138,26 @@ where
 
 	if missing_events.is_empty() {
 		warn!("All servers failed to return /get_missing_events");
-		return Ok((Vec::new(), HashMap::new()));
+		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
 	let mut unknown_events = Vec::new();
+	let mut had_invalid_response = false;
 	for raw_json in missing_events {
-		if let Ok((eid, val)) =
-			conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id)
-		{
-			if !self.services.timeline.pdu_exists(&eid).await {
-				unknown_events.push((eid, val));
-			}
+		match conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id) {
+			| Ok((eid, val)) =>
+				if !self.services.timeline.pdu_exists(&eid).await {
+					unknown_events.push((eid, val));
+				},
+			| Err(_) => {
+				// The remote server actually answered, but the returned event is
+				// structurally invalid (e.g. contains a float, per the Matrix
+				// canonical JSON rules). No amount of retrying or asking a
+				// different endpoint will make this data valid, so record it
+				// for callers that would otherwise waste a /state_ids fetch on
+				// the same event this round.
+				had_invalid_response = true;
+			},
 		}
 	}
 
@@ -257,5 +274,5 @@ where
 		}
 	}
 
-	Ok((sorted_eids, eventid_info))
+	Ok((sorted_eids, eventid_info, had_invalid_response))
 }

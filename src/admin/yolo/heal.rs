@@ -250,8 +250,9 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				&create_event,
 				&origin,
 				&room_id,
-				true, // skip_soft_fail: always lenient for admin rescue
-				true, // is_forward_extremity
+				true,  // skip_soft_fail: always lenient for admin rescue
+				true,  // is_forward_extremity
+				false, // prev_fetch_had_invalid_data: no fresh fetch_prev here
 			),
 	)
 	.await?;

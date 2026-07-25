@@ -256,6 +256,7 @@ pub(super) async fn fetch_pdu(
 				&room_id,
 				false,
 				true,
+				false,
 			),
 	)
 	.await?;

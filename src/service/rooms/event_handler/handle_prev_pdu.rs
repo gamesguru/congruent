@@ -88,6 +88,7 @@ where
 		room_id,
 		false,
 		false,
+		false,
 	))
 	.await?;
 
