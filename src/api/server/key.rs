@@ -244,11 +244,31 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 
 #[cfg(test)]
 mod tests {
+	use std::{
+		fs,
+		path::PathBuf,
+		sync::Arc,
+		time::{SystemTime, UNIX_EPOCH},
+	};
+
+	use axum::{
+		Router,
+		body::{Body, to_bytes},
+	};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use conduwuit_core::{
+		Server,
+		config::Config,
+		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
+	};
+	use http::{Request, StatusCode};
 	use ruma::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		serde::{Base64, Raw},
 	};
+	use serde_json::Value;
+	use tower::ServiceExt;
 
 	use super::select_server_key_response;
 
@@ -288,6 +308,33 @@ mod tests {
 		}
 	}
 
+	fn write_test_config(config_path: &PathBuf, db_path: &PathBuf) {
+		fs::create_dir_all(
+			config_path
+				.parent()
+				.expect("test config path should have a parent"),
+		)
+		.expect("test config dir should be creatable");
+		fs::write(
+			config_path,
+			format!(
+				r#"
+server_name = "example.com"
+database_path = "{}"
+"#,
+				db_path.display()
+			),
+		)
+		.expect("test config should be writable");
+	}
+
+	fn test_log() -> Log {
+		Log {
+			reload: LogLevelReloadHandles::default(),
+			capture: Arc::new(CaptureState::new()),
+		}
+	}
+
 	#[test]
 	fn cache_hit_prefers_merged_historical_keys() {
 		let raw = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
@@ -315,5 +362,73 @@ mod tests {
 
 		assert!(selected.verify_keys.contains_key(&active_key_id));
 		assert!(selected.old_verify_keys.contains_key(&historical_key_id));
+	}
+
+	#[tokio::test]
+	async fn route_includes_historical_keys_in_json_response() {
+		let mut temp_root = std::env::temp_dir();
+		temp_root.push(format!(
+			"continuwuity-server-keys-route-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("clock should be monotonic for test")
+				.as_nanos()
+		));
+
+		let config_path = temp_root.join("config.toml");
+		let db_path = temp_root.join("db");
+		write_test_config(&config_path, &db_path);
+
+		let figment = Config::load(&[config_path]).expect("test config should load");
+		let config = Config::new(&figment).expect("test config should be valid");
+		let server = Arc::new(Server::new(config, None, test_log()));
+		let services = conduwuit_service::Services::build(server.clone())
+			.await
+			.expect("services should build");
+
+		let origin = services.globals.server_name().to_owned();
+		let raw = key_payload("ed25519:active", "AAA", None, None);
+		let merged =
+			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
+
+		services.db["server_signingkeys"].raw_put(
+			origin.as_bytes(),
+			serde_json::to_vec(&raw).expect("raw JSON should serialize"),
+		);
+		let historical_key = {
+			let mut key = origin.as_bytes().to_vec();
+			key.extend_from_slice(b"\0historical");
+			key
+		};
+		services.db["server_signingkeys"].raw_put(
+			&historical_key,
+			serde_json::to_vec(&merged).expect("merged JSON should serialize"),
+		);
+
+		let (state, guard) = conduwuit_service::state::create(services.clone());
+		let router = crate::router::build(Router::new(), &services.server).with_state(state);
+		let request = Request::builder()
+			.method("GET")
+			.uri(format!(
+				"/_matrix/key/v2/query/{}?minimum_valid_until_ts={}",
+				origin,
+				MilliSecondsSinceUnixEpoch::now().get()
+			))
+			.body(Body::empty())
+			.expect("request should build");
+
+		let response = router.oneshot(request).await.expect("route should respond");
+		assert_eq!(response.status(), StatusCode::OK);
+
+		let body = to_bytes(response.into_body(), usize::MAX)
+			.await
+			.expect("response body should read");
+		let json: Value = serde_json::from_slice(&body).expect("response should be valid JSON");
+		let old_key = &json["server_keys"][0]["old_verify_keys"]["ed25519:historical"];
+		assert_eq!(old_key["key"], STANDARD.encode(b"BBB"));
+
+		drop(guard);
+		_ = fs::remove_dir_all(&temp_root);
 	}
 }
