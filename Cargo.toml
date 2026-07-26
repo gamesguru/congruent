@@ -2,6 +2,7 @@
 resolver = "2"
 members = ["case-study-state-res/compare", "src/*", "xtask/"]
 default-members = ["src/*"]
+exclude = ["ruwuma", "ruma-upstream"]
 
 [workspace.package]
 authors = ["Continuwuity Team and contributors <team@continuwuity.org>"]
@@ -629,6 +630,10 @@ rev = "7c7a9dea35382743a63837cdd1d977efdb8f1b8a"
 [patch.crates-io.hyper-util]
 git = "https://forgejo.ellis.link/continuwuation/hyper-util"
 rev = "09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
+
+# adds org.matrix.msc3874.rel_types/not_rel_types to RoomEventFilter (MSC3874); until upstreamed.
+[patch."https://forgejo.ellis.link/continuwuation/ruwuma"]
+ruma = { path = "ruwuma/crates/ruma" }
 
 #
 # Our crates
