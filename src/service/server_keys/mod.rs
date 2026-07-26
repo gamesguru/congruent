@@ -768,9 +768,7 @@ fn key_exists(keys: &ServerSigningKeys, key_id: &ServerSigningKeyId) -> bool {
 	keys.verify_keys.contains_key(key_id) || keys.old_verify_keys.contains_key(key_id)
 }
 
-fn bounded_msc4499_backoff_secs(secs: u64) -> u64 {
-	secs.clamp(1, 3600)
-}
+fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 
 #[cfg(test)]
 mod tests {

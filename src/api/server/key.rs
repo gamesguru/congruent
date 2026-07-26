@@ -98,6 +98,19 @@ async fn sign_signing_keys(
 	Ok(Raw::from_json(raw_value))
 }
 
+fn select_server_key_response(
+	raw_server_key: Option<Raw<ServerSigningKeys>>,
+	merged_server_key: Option<ServerSigningKeys>,
+) -> Result<Raw<ServerSigningKeys>> {
+	if let Some(keys) = merged_server_key {
+		Raw::new(&keys).map_err(Into::into)
+	} else if let Some(keys) = raw_server_key {
+		Ok(keys)
+	} else {
+		Err(err!(Request(NotFound("Signing keys not found for server"))))
+	}
+}
+
 async fn get_signing_keys_for(
 	services: &crate::State,
 	server_name: &ruma::ServerName,
@@ -108,12 +121,12 @@ async fn get_signing_keys_for(
 		return Raw::new(&get_our_signing_keys(services).await).map_err(Into::into);
 	}
 
-	let mut server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
+	let mut raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
 		| Ok(keys) => Some(keys),
 		| Err(ref e) if e.is_not_found() => None,
 		| Err(e) => return Err(e),
 	};
-	let merged_server_key = match services
+	let mut merged_server_key = match services
 		.server_keys
 		.merged_signing_keys_for(server_name)
 		.await
@@ -152,19 +165,32 @@ async fn get_signing_keys_for(
 				.add_signing_keys(&new_keys, conduwuit_service::server_keys::FetchSource::Direct)
 				.await
 			{
-				| Ok(_) => server_key = Some(new_keys),
+				| Ok(_) => {
+					merged_server_key = match services
+						.server_keys
+						.merged_signing_keys_for(server_name)
+						.await
+					{
+						| Ok(keys) => Some(keys),
+						| Err(e) => {
+							conduwuit::warn!(
+								"merged_signing_keys_for failed for {server_name} after fetch: \
+								 {e}"
+							);
+							raw_server_key = Some(new_keys);
+							None
+						},
+					};
+				},
 				| Err(e) => conduwuit::warn!("add_signing_keys failed for {server_name}: {e}"),
 			},
-			| Err(e) =>
-				conduwuit::warn!("server_request_coalesced failed for {server_name}: {e}"),
+			| Err(e) => {
+				conduwuit::warn!("server_request_coalesced failed for {server_name}: {e}");
+			},
 		}
 	}
 
-	if let Some(keys) = server_key {
-		Ok(keys)
-	} else {
-		Err(err!(Request(NotFound("Signing keys not found for server"))))
-	}
+	select_server_key_response(raw_server_key, merged_server_key)
 }
 
 /// # `GET /_matrix/key/v2/query/{serverName}`
@@ -214,4 +240,88 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 	}
 
 	Ok(get_remote_server_keys_batch::v2::Response { server_keys: response_keys })
+}
+
+#[cfg(test)]
+mod tests {
+	use super::select_server_key_response;
+	use ruma::{
+		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
+		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
+		serde::{Base64, Raw},
+	};
+
+	fn key_payload(
+		verify_key_id: &str,
+		verify_key: &str,
+		old_key_id: Option<&str>,
+		old_key: Option<&str>,
+	) -> ServerSigningKeys {
+		let mut verify_keys = std::collections::BTreeMap::new();
+		verify_keys.insert(
+			verify_key_id.try_into().unwrap(),
+			VerifyKey::new(Base64::new(verify_key.as_bytes().to_vec())),
+		);
+
+		let old_verify_keys = match (old_key_id, old_key) {
+			| (Some(id), Some(key)) => {
+				let mut keys = std::collections::BTreeMap::new();
+				keys.insert(
+					id.try_into().unwrap(),
+					OldVerifyKey::new(
+						MilliSecondsSinceUnixEpoch::now(),
+						Base64::new(key.as_bytes().to_vec()),
+					),
+				);
+				keys
+			},
+			| _ => std::collections::BTreeMap::new(),
+		};
+
+		ServerSigningKeys {
+			server_name: "example.com".try_into().unwrap(),
+			valid_until_ts: MilliSecondsSinceUnixEpoch::now(),
+			verify_keys,
+			old_verify_keys,
+			signatures: Signatures::new(),
+		}
+	}
+
+	#[test]
+	fn cache_hit_prefers_merged_historical_keys() {
+		let raw = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
+		let merged = key_payload(
+			"ed25519:active",
+			"AAA",
+			Some("ed25519:old"),
+			Some("BBB"),
+		);
+
+		let selected = select_server_key_response(Some(raw), Some(merged)).unwrap();
+		let selected: ServerSigningKeys = selected.deserialize().unwrap();
+		let active_key_id: OwnedServerSigningKeyId = "ed25519:active".try_into().unwrap();
+		let old_key_id: OwnedServerSigningKeyId = "ed25519:old".try_into().unwrap();
+
+		assert!(selected.verify_keys.contains_key(&active_key_id));
+		assert!(selected.old_verify_keys.contains_key(&old_key_id));
+	}
+
+	#[test]
+	fn post_fetch_uses_merged_historical_keys() {
+		let fetched = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
+		let merged = key_payload(
+			"ed25519:active",
+			"AAA",
+			Some("ed25519:historical"),
+			Some("BBB"),
+		);
+
+		let selected = select_server_key_response(Some(fetched), Some(merged)).unwrap();
+		let selected: ServerSigningKeys = selected.deserialize().unwrap();
+		let active_key_id: OwnedServerSigningKeyId = "ed25519:active".try_into().unwrap();
+		let historical_key_id: OwnedServerSigningKeyId = "ed25519:historical".try_into().unwrap();
+
+		assert!(selected.verify_keys.contains_key(&active_key_id));
+		assert!(selected.old_verify_keys.contains_key(&historical_key_id));
+	}
 }

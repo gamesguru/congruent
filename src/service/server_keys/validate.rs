@@ -2,6 +2,8 @@ use std::collections::HashSet;
 
 use conduwuit::{Err, Result};
 
+const MAX_JSON_SCAN_DEPTH: usize = 128;
+
 /// MSC4499: Scan raw JSON bytes for duplicate keys within `verify_keys` and
 /// `old_verify_keys` objects. Returns Err if any duplicate keys are found.
 ///
@@ -91,6 +93,13 @@ fn scan_root_sections(bytes: &[u8]) -> Result<SectionCounts> {
 		}
 
 		i = skip_ws(bytes, i.saturating_add(1));
+		if contains_escapes(key) {
+			let key_str = std::str::from_utf8(key).unwrap_or("<invalid utf-8>");
+			return Err!(BadServerResponse(
+				"JSON key '{key_str}' contains illegal escape sequences"
+			));
+		}
+
 		match key {
 			| b"verify_keys" => {
 				if seen_verify_keys {
@@ -123,7 +132,7 @@ fn scan_root_sections(bytes: &[u8]) -> Result<SectionCounts> {
 				i = end;
 			},
 			| _ => {
-				i = skip_json_value(bytes, i)?;
+				i = skip_json_value(bytes, i, 0)?;
 			},
 		}
 
@@ -171,7 +180,7 @@ fn scan_object_for_duplicate_keys(
 			return Ok((seen_keys.len(), i));
 		}
 
-		i = skip_json_value(bytes, i.saturating_add(1))?;
+		i = skip_json_value(bytes, i.saturating_add(1), 0)?;
 		i = skip_ws(bytes, i);
 		match bytes.get(i) {
 			| Some(b',') => i = i.saturating_add(1),
@@ -181,12 +190,16 @@ fn scan_object_for_duplicate_keys(
 	}
 }
 
-fn skip_json_value(bytes: &[u8], start: usize) -> Result<usize> {
+fn skip_json_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize> {
+	if depth >= MAX_JSON_SCAN_DEPTH {
+		return Err!(BadServerResponse("JSON nesting depth exceeds scan limit"));
+	}
+
 	let i = skip_ws(bytes, start);
 	match bytes.get(i) {
 		| Some(b'"') => parse_string(bytes, i).map(|(_, next)| next),
-		| Some(b'{') => skip_object(bytes, i),
-		| Some(b'[') => skip_array(bytes, i),
+		| Some(b'{') => skip_object(bytes, i, depth.saturating_add(1)),
+		| Some(b'[') => skip_array(bytes, i, depth.saturating_add(1)),
 		| Some(b'-' | b'0'..=b'9') => Ok(skip_scalar(bytes, i)),
 		| Some(b't') if bytes.get(i..i.saturating_add(4)) == Some(b"true") =>
 			Ok(i.saturating_add(4)),
@@ -198,7 +211,7 @@ fn skip_json_value(bytes: &[u8], start: usize) -> Result<usize> {
 	}
 }
 
-fn skip_object(bytes: &[u8], start: usize) -> Result<usize> {
+fn skip_object(bytes: &[u8], start: usize, depth: usize) -> Result<usize> {
 	let mut i = start.saturating_add(1);
 	loop {
 		i = skip_ws(bytes, i);
@@ -214,7 +227,7 @@ fn skip_object(bytes: &[u8], start: usize) -> Result<usize> {
 			return Ok(i);
 		}
 
-		i = skip_json_value(bytes, i.saturating_add(1))?;
+		i = skip_json_value(bytes, i.saturating_add(1), depth)?;
 		i = skip_ws(bytes, i);
 		match bytes.get(i) {
 			| Some(b',') => i = i.saturating_add(1),
@@ -224,14 +237,14 @@ fn skip_object(bytes: &[u8], start: usize) -> Result<usize> {
 	}
 }
 
-fn skip_array(bytes: &[u8], start: usize) -> Result<usize> {
+fn skip_array(bytes: &[u8], start: usize, depth: usize) -> Result<usize> {
 	let mut i = start.saturating_add(1);
 	loop {
 		i = skip_ws(bytes, i);
 		match bytes.get(i) {
 			| Some(b']') => return Ok(i.saturating_add(1)),
 			| Some(_) => {
-				i = skip_json_value(bytes, i)?;
+				i = skip_json_value(bytes, i, depth)?;
 				i = skip_ws(bytes, i);
 				match bytes.get(i) {
 					| Some(b',') => i = i.saturating_add(1),
@@ -290,7 +303,7 @@ fn contains_escapes(bytes: &[u8]) -> bool { bytes.contains(&b'\\') }
 
 #[cfg(test)]
 mod tests {
-	use super::check_no_duplicate_json_keys;
+	use super::{MAX_JSON_SCAN_DEPTH, check_no_duplicate_json_keys};
 
 	#[test]
 	fn no_duplicates() {
@@ -340,5 +353,26 @@ mod tests {
 	fn rejects_escaped_key() {
 		let json = r#"{"verify_keys": {"ed25519:\u0061": {"key": "BBB"}}}"#;
 		assert!(check_no_duplicate_json_keys(json).is_err());
+	}
+
+	#[test]
+	fn rejects_escaped_top_level_section_name() {
+		let json = r#"{"verify\u005fkeys": {"ed25519:a": {"key": "BBB"}}}"#;
+		assert!(check_no_duplicate_json_keys(json).is_err());
+	}
+
+	#[test]
+	fn rejects_excessive_nesting_depth() {
+		let mut nested = String::new();
+		for _ in 0..=MAX_JSON_SCAN_DEPTH {
+			nested.push('[');
+		}
+		nested.push('0');
+		for _ in 0..=MAX_JSON_SCAN_DEPTH {
+			nested.push(']');
+		}
+
+		let json = format!(r#"{{"unsigned":{},"verify_keys":{{}}}}"#, nested);
+		assert!(check_no_duplicate_json_keys(&json).is_err());
 	}
 }
