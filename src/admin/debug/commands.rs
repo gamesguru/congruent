@@ -633,12 +633,13 @@ pub(super) async fn force_set_room_state_from_server(
 		shortstatehash: short_state_hash,
 		added,
 		removed,
-	} = self
-		.services
-		.rooms
-		.state_compressor
-		.save_state(room_id.clone().as_ref(), new_room_state)
-		.await?;
+	} = Box::pin(
+		self.services
+			.rooms
+			.state_compressor
+			.save_state(room_id.clone().as_ref(), new_room_state),
+	)
+	.await?;
 
 	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
 

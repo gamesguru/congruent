@@ -59,6 +59,7 @@ zstd_compression = [
 argon2.workspace = true
 arrayvec.workspace = true
 axum.workspace = true
+base64.workspace = true
 axum-extra.workspace = true
 bytes.workspace = true
 bytesize.workspace = true
@@ -92,6 +93,7 @@ regex.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 ruma.workspace = true
+rezzy.workspace = true
 sanitize-filename.workspace = true
 serde_json.workspace = true
 serde_regex.workspace = true
@@ -128,6 +130,7 @@ hardened_malloc-rs.workspace = true
 hardened_malloc-rs.optional = true
 
 [dev-dependencies]
+blake2 = "0.10.6"
 maplit.workspace = true
 
 [lints]

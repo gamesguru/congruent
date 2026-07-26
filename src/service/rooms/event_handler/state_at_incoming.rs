@@ -115,6 +115,49 @@ where
 		return Ok(None);
 	};
 
+	let mut unique_forks = Vec::new();
+	let mut all_succeeded = true;
+	for (sstatehash, prev_event) in &extremity_sstatehashes {
+		match self.get_extremity_lthash(*sstatehash, prev_event).await {
+			| Ok(lthash) =>
+				if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
+					unique_forks.push((lthash, (*sstatehash, prev_event)));
+				},
+			| Err(_) => {
+				all_succeeded = false;
+				break;
+			},
+		}
+	}
+
+	if all_succeeded && unique_forks.len() == 1 && extremity_sstatehashes.len() > 1 {
+		trace!(
+			"LtHash digests match across all {} forks! Bypassing state resolution.",
+			extremity_sstatehashes.len()
+		);
+		let (sstatehash, prev_event) = unique_forks[0].1;
+		let Ok((fork_state, _)) = self
+			.state_at_incoming_fork(room_id, sstatehash, prev_event)
+			.await
+		else {
+			return Ok(None);
+		};
+		return fork_state
+			.into_iter()
+			.stream()
+			.broad_then(|((event_type, state_key), event_id)| async move {
+				self.services
+					.short
+					.get_or_create_shortstatekey(&event_type, &state_key)
+					.map(move |shortstatekey| (shortstatekey, event_id))
+					.await
+			})
+			.collect()
+			.map(Some)
+			.map(Ok)
+			.await;
+	}
+
 	trace!("Calculating fork states...");
 	let (fork_states, auth_chain_sets): (Vec<StateMap<_>>, Vec<HashSet<_>>) =
 		extremity_sstatehashes
@@ -201,4 +244,40 @@ where
 		.map(Ok);
 
 	try_join(fork_state, auth_chain).await
+}
+
+#[implement(super::Service)]
+async fn get_extremity_lthash<Pdu>(
+	&self,
+	sstatehash: u64,
+	prev_event: &Pdu,
+) -> Result<rezzy::LtHash>
+where
+	Pdu: Event + Send + Sync,
+{
+	let mut lthash = self
+		.services
+		.state_compressor
+		.get_lthash(sstatehash)
+		.await?;
+
+	if let Some(state_key) = prev_event.state_key() {
+		let event_type = prev_event.kind().to_string();
+
+		// If the previous state had a different event for this state key, remove its
+		// hash.
+		if let Ok(old_event_id) = self
+			.services
+			.state_accessor
+			.state_get_id::<OwnedEventId>(sstatehash, &event_type.as_str().into(), state_key)
+			.await
+		{
+			lthash.remove(&event_type, state_key, &old_event_id);
+		}
+
+		// Add the hash of the new state event.
+		lthash.insert(&event_type, state_key, prev_event.event_id());
+	}
+
+	Ok(lthash)
 }

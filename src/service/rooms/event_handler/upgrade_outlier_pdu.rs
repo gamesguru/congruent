@@ -249,11 +249,12 @@ where
 
 		// Set the new room state to the resolved state
 		debug!("Forcing new room state");
-		let resolved_state = self
-			.services
-			.state_compressor
-			.save_state(room_id, new_room_state)
-			.await?;
+		let resolved_state = Box::pin(
+			self.services
+				.state_compressor
+				.save_state(room_id, new_room_state),
+		)
+		.await?;
 
 		Some(resolved_state)
 	} else {

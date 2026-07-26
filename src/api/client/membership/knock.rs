@@ -653,11 +653,13 @@ async fn knock_room_helper_remote(
 		shortstatehash: statehash_before_knock,
 		added,
 		removed,
-	} = services
-		.rooms
-		.state_compressor
-		.save_state(room_id, Arc::new(compressed))
-		.await?;
+	} = Box::pin(
+		services
+			.rooms
+			.state_compressor
+			.save_state(room_id, Arc::new(compressed)),
+	)
+	.await?;
 
 	debug!("Forcing state for new room");
 	services

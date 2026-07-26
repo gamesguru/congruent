@@ -269,7 +269,10 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			)
 			.ruma_route(&server::get_public_rooms_route)
 			.ruma_route(&server::get_public_rooms_filtered_route)
-			.ruma_route(&server::send_transaction_message_route)
+			.route(
+				"/_matrix/federation/v1/send/{txnId}",
+				put(server::send_transaction_message_route),
+			)
 			.ruma_route(&server::get_event_route)
 			.ruma_route(&server::get_backfill_route)
 			.ruma_route(&server::get_missing_events_route)
@@ -296,7 +299,16 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::well_known_server)
 			.ruma_route(&server::get_content_route)
 			.ruma_route(&server::get_content_thumbnail_route)
-			.ruma_route(&server::get_edutypes_route)
+			.ruma_route(&server::get_edutypes_route);
+
+		if config.experimental_features.msc4500_enabled {
+			router = router.route(
+				"/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/{room_id}",
+				get(server::get_state_accumulator_route),
+			);
+		}
+
+		router = router
 			.route("/_conduwuit/local_user_count", get(client::conduwuit_local_user_count))
 			.route("/_continuwuity/local_user_count", get(client::conduwuit_local_user_count));
 	} else {

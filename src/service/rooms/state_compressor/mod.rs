@@ -9,13 +9,15 @@ use async_trait::async_trait;
 use conduwuit::{
 	Result, SyncMutex,
 	arrayvec::ArrayVec,
-	at, checked, err, expected, implement, utils,
+	at, checked, debug_warn, err, expected, implement, utils,
 	utils::{bytes, math::usize_from_f64, stream::IterStream},
+	warn,
 };
 use database::Map;
 use futures::{Stream, StreamExt};
 use lru_cache::LruCache;
-use ruma::{EventId, RoomId};
+use rezzy::LtHash;
+use ruma::{EventId, OwnedEventId, RoomId};
 
 use crate::{
 	Dep, rooms,
@@ -24,6 +26,7 @@ use crate::{
 
 pub struct Service {
 	pub stateinfo_cache: SyncMutex<StateInfoLruCache>,
+	pub lthash_cache: SyncMutex<LtHashLruCache>,
 	db: Data,
 	services: Services,
 }
@@ -35,13 +38,14 @@ struct Services {
 
 struct Data {
 	shortstatehash_statediff: Arc<Map>,
+	shortstatehash_lthash: Arc<Map>,
 }
 
 #[derive(Clone)]
-struct StateDiff {
-	parent: Option<ShortStateHash>,
-	added: Arc<CompressedState>,
-	removed: Arc<CompressedState>,
+pub struct StateDiff {
+	pub parent: Option<ShortStateHash>,
+	pub added: Arc<CompressedState>,
+	pub removed: Arc<CompressedState>,
 }
 
 #[derive(Clone, Default)]
@@ -60,6 +64,7 @@ pub struct HashSetCompressStateEvent {
 }
 
 type StateInfoLruCache = LruCache<ShortStateHash, ShortStateInfoVec>;
+type LtHashLruCache = LruCache<ShortStateHash, LtHash>;
 type ShortStateInfoVec = Vec<ShortStateInfo>;
 type ParentStatesVec = Vec<ShortStateInfo>;
 
@@ -72,10 +77,14 @@ impl crate::Service for Service {
 		let config = &args.server.config;
 		let cache_capacity =
 			f64::from(config.stateinfo_cache_capacity) * config.cache_capacity_modifier;
+		let lthash_capacity =
+			f64::from(config.lthash_cache_capacity) * config.cache_capacity_modifier;
 		Ok(Arc::new(Self {
 			stateinfo_cache: LruCache::new(usize_from_f64(cache_capacity)?).into(),
+			lthash_cache: LruCache::new(usize_from_f64(lthash_capacity)?).into(),
 			db: Data {
 				shortstatehash_statediff: args.db["shortstatehash_statediff"].clone(),
+				shortstatehash_lthash: args.db["shortstatehash_lthash"].clone(),
 			},
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -102,15 +111,22 @@ impl crate::Service for Service {
 		};
 
 		let ents_len = ents.len();
-		let bytes = ents.values().copied().fold(0_usize, usize::saturating_add);
+		let bytes_val = ents.values().copied().fold(0_usize, usize::saturating_add);
 
-		let bytes = bytes::pretty(bytes);
-		writeln!(out, "stateinfo_cache: {cache_len} {ents_len} ({bytes})")?;
+		let bytes_pretty = bytes::pretty(bytes_val);
+		writeln!(out, "stateinfo_cache: {cache_len} {ents_len} ({bytes_pretty})")?;
+
+		let lthash_len = self.lthash_cache.lock().len();
+		let lthash_bytes = bytes::pretty(lthash_len.saturating_mul(2048));
+		writeln!(out, "lthash_cache: {lthash_len} ({lthash_bytes})")?;
 
 		Ok(())
 	}
 
-	async fn clear_cache(&self) { self.stateinfo_cache.lock().clear(); }
+	async fn clear_cache(&self) {
+		self.stateinfo_cache.lock().clear();
+		self.lthash_cache.lock().clear();
+	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
@@ -417,6 +433,12 @@ pub async fn save_state(
 	};
 
 	if !already_existed {
+		let parent_shortstatehash = if states_parents.is_empty() {
+			None
+		} else {
+			previous_shortstatehash
+		};
+
 		self.save_state_from_diff(
 			new_shortstatehash,
 			statediffnew.clone(),
@@ -424,6 +446,18 @@ pub async fn save_state(
 			2, // every state change is 2 event changes on average
 			states_parents,
 		)?;
+
+		if let Err(e) = self
+			.update_lthash(
+				new_shortstatehash,
+				parent_shortstatehash,
+				&statediffnew,
+				&statediffremoved,
+			)
+			.await
+		{
+			warn!("Failed to update LtHash for state group {new_shortstatehash}: {e}");
+		}
 	}
 
 	Ok(HashSetCompressStateEvent {
@@ -435,7 +469,7 @@ pub async fn save_state(
 
 #[implement(Service)]
 #[tracing::instrument(skip(self), level = "debug", name = "get")]
-async fn get_statediff(&self, shortstatehash: ShortStateHash) -> Result<StateDiff> {
+pub async fn get_statediff(&self, shortstatehash: ShortStateHash) -> Result<StateDiff> {
 	const BUFSIZE: usize = size_of::<ShortStateHash>();
 	const STRIDE: usize = size_of::<ShortStateHash>();
 
@@ -543,4 +577,157 @@ fn compressed_state_size(compressed_state: &CompressedState) -> usize {
 		.len()
 		.checked_mul(size_of::<CompressedStateEvent>())
 		.expect("CompressedState size overflow")
+}
+
+/// Persist an LtHash to the database and LRU cache.
+#[implement(Service)]
+pub fn save_lthash(&self, shortstatehash: ShortStateHash, lthash: LtHash) {
+	let buf = utils::hash::lthash::lthash_to_bytes(&lthash);
+	self.db
+		.shortstatehash_lthash
+		.insert(&shortstatehash.to_be_bytes(), buf);
+	self.lthash_cache.lock().insert(shortstatehash, lthash);
+}
+
+/// Get an LtHash from cache, database, or fallback to computing from full
+/// state.
+#[implement(Service)]
+pub async fn get_lthash(&self, shortstatehash: ShortStateHash) -> Result<LtHash> {
+	if shortstatehash == 0 {
+		return Ok(LtHash::ZERO);
+	}
+
+	if let Some(lthash) = self.lthash_cache.lock().get_mut(&shortstatehash) {
+		return Ok(*lthash);
+	}
+
+	if let Ok(bytes) = self
+		.db
+		.shortstatehash_lthash
+		.get(&shortstatehash.to_be_bytes())
+		.await
+	{
+		if let Some(lthash) = utils::hash::lthash::lthash_from_bytes(&bytes) {
+			self.lthash_cache.lock().insert(shortstatehash, lthash);
+			return Ok(lthash);
+		}
+		debug_warn!(
+			"Stored LtHash data for {shortstatehash} failed validation (len={}), recomputing",
+			bytes.len()
+		);
+	}
+
+	// Fallback for migrations / backfill
+	let lthash = self.compute_lthash_from_full_state(shortstatehash).await?;
+	self.save_lthash(shortstatehash, lthash);
+	Ok(lthash)
+}
+
+/// Compute a new LtHash incrementally from a parent hash and save it.
+#[implement(Service)]
+pub async fn update_lthash(
+	&self,
+	shortstatehash: ShortStateHash,
+	parent_shortstatehash: Option<ShortStateHash>,
+	added: &CompressedState,
+	removed: &CompressedState,
+) -> Result<()> {
+	if shortstatehash == 0 {
+		return Ok(());
+	}
+
+	if let Some(parent) = parent_shortstatehash {
+		if let Ok(mut lthash) = self.get_lthash(parent).await {
+			let mut complete = true;
+
+			for compressed_event in removed {
+				let (ssk, sei) = parse_compressed_state_event(*compressed_event);
+				let Ok((ty, sk)) = self.services.short.get_statekey_from_short(ssk).await else {
+					complete = false;
+					break;
+				};
+				let Ok(event_id) = self
+					.services
+					.short
+					.get_eventid_from_short::<OwnedEventId>(sei)
+					.await
+				else {
+					complete = false;
+					break;
+				};
+				lthash.remove(&ty.to_string(), &sk, &event_id);
+			}
+
+			if complete {
+				for compressed_event in added {
+					let (ssk, sei) = parse_compressed_state_event(*compressed_event);
+					let Ok((ty, sk)) = self.services.short.get_statekey_from_short(ssk).await
+					else {
+						complete = false;
+						break;
+					};
+					let Ok(event_id) = self
+						.services
+						.short
+						.get_eventid_from_short::<OwnedEventId>(sei)
+						.await
+					else {
+						complete = false;
+						break;
+					};
+					lthash.insert(&ty.to_string(), &sk, &event_id);
+				}
+			}
+
+			if complete {
+				self.save_lthash(shortstatehash, lthash);
+				return Ok(());
+			}
+		}
+	}
+
+	// Final fallback: compute from full state
+	let lthash = self.compute_lthash_from_full_state(shortstatehash).await?;
+	self.save_lthash(shortstatehash, lthash);
+	Ok(())
+}
+
+/// Materialize the full state and compute the LtHash from scratch.
+#[implement(Service)]
+pub async fn compute_lthash_from_full_state(
+	&self,
+	shortstatehash: ShortStateHash,
+) -> Result<LtHash> {
+	if shortstatehash == 0 {
+		return Ok(LtHash::ZERO);
+	}
+
+	let info = self.load_shortstatehash_info(shortstatehash).await?;
+	let Some(full_state) = info.last().map(|i| &i.full_state) else {
+		return Err(err!(Database("Cannot compute LtHash: missing full state")));
+	};
+
+	let mut lthash = LtHash::ZERO;
+	for compressed_event in full_state.iter() {
+		let (ssk, sei) = parse_compressed_state_event(*compressed_event);
+		let (ty, sk) = self
+			.services
+			.short
+			.get_statekey_from_short(ssk)
+			.await
+			.map_err(|e| {
+				err!(Database("Cannot compute LtHash: unresolvable statekey {ssk}: {e}"))
+			})?;
+		let event_id = self
+			.services
+			.short
+			.get_eventid_from_short::<OwnedEventId>(sei)
+			.await
+			.map_err(|e| {
+				err!(Database("Cannot compute LtHash: unresolvable eventid {sei}: {e}"))
+			})?;
+		lthash.insert(&ty.to_string(), &sk, &event_id);
+	}
+
+	Ok(lthash)
 }
