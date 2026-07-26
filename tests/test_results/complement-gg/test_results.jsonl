@@ -823,7 +823,7 @@
 {"Action":"pass","Test":"TestUploadKey/Parallel/query_for_user_with_no_keys_returns_empty_key_dict"}
 {"Action":"pass","Test":"TestUploadKeyIdempotency"}
 {"Action":"pass","Test":"TestUploadKeyIdempotencyOverlap"}
-{"Action":"fail","Test":"TestUrlPreview"}
+{"Action":"pass","Test":"TestUrlPreview"}
 {"Action":"pass","Test":"TestUserAppearsInChangedDeviceListOnJoinOverFederation"}
 {"Action":"pass","Test":"TestVersionStructure"}
 {"Action":"pass","Test":"TestVersionStructure/Version_responds_200_OK_with_valid_structure"}

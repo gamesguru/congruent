@@ -215,7 +215,12 @@ pub async fn download_image(
 		)
 		.await?;
 
-	let (mut width, mut height);
+	let (width, height);
+
+	// Metadata (size/dimensions) reported to clients always describes the
+	// original fetched image, even though a downscaled copy may be what's
+	// actually stored below.
+	preview_data.image_size = Some(image.len());
 
 	let cursor = std::io::Cursor::new(&image);
 	if let Ok(reader) = ImageReader::new(cursor).with_guessed_format() {
@@ -232,8 +237,6 @@ pub async fn download_image(
 
 					if resized.write_to(&mut cursor, ImageFormat::Jpeg).is_ok() {
 						image = cursor.into_inner();
-						width = Some(resized.width());
-						height = Some(resized.height());
 					}
 				}
 			}
@@ -252,8 +255,6 @@ pub async fn download_image(
 		server_name: self.services.globals.server_name(),
 		media_id: &random_string(super::MXC_LENGTH),
 	};
-
-	preview_data.image_size = Some(image.len());
 
 	self.create(&mxc, None, None, None, &image).await?;
 
