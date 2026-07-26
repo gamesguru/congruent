@@ -85,7 +85,6 @@ pub(crate) async fn join_room_by_id_route(
 		.map(ToOwned::to_owned)
 		.collect()
 		.await;
-
 	servers.extend(
 		services
 			.rooms
@@ -257,7 +256,6 @@ pub async fn join_room_by_id_helper(
 		.state_cache
 		.server_in_room(services.globals.server_name(), room_id)
 		.await;
-
 	// If we think we're in the room but it has no state, the room is in a
 	// zombie state from a previous failed join. Force the remote path so
 	// state gets bootstrapped properly.
@@ -752,6 +750,7 @@ async fn join_room_by_id_helper_remote_process(
 		.collect()
 		.boxed()
 		.await;
+	let snapshot_state = Arc::new(compressed.clone());
 
 	drop(state);
 
@@ -868,6 +867,7 @@ async fn join_room_by_id_helper_remote_process(
 			remote_server,
 			room_id
 		);
+		let mut fetched_extremities = Vec::new();
 		for event_id in &missing_latest {
 			match fetch_missing_extremity(
 				services,
@@ -875,17 +875,30 @@ async fn join_room_by_id_helper_remote_process(
 				room_id,
 				event_id,
 				&room_version_id,
-				statehash_before_join,
 				ExtremityIngestion::SnapshotBacked,
 			)
 			.await
 			{
-				| Ok(Some(_) | None) => {},
+				| Ok(Some(extremity)) => fetched_extremities.push(extremity),
+				| Ok(None) => {},
 				| Err(e) => warn!("Failed to fetch missing extremity {event_id}: {e}"),
 			}
 		}
 		// Re-acquire the state lock before appending our join event
 		state_lock = services.rooms.state.mutex.lock(room_id).await;
+		for (pdu, value) in fetched_extremities {
+			Box::pin(services.rooms.timeline.append_incoming_pdu(
+				&pdu,
+				value,
+				once(pdu.event_id.clone()),
+				snapshot_state.clone(),
+				None,
+				false,
+				&state_lock,
+				room_id,
+			))
+			.await?;
+		}
 	}
 
 	// We append to state before appending the pdu, so we don't have a moment in
@@ -959,7 +972,6 @@ async fn join_room_by_id_helper_remote_process(
 				room_id,
 				&event_id,
 				&room_version_id,
-				statehash_before_join,
 				ExtremityIngestion::LiveGap,
 			)
 			.await
@@ -1384,9 +1396,8 @@ async fn fetch_missing_extremity(
 	room_id: &RoomId,
 	event_id: &ruma::OwnedEventId,
 	room_version: &RoomVersionId,
-	statehash_before_join: u64,
 	mode: ExtremityIngestion,
-) -> Result<Option<ruma::OwnedEventId>> {
+) -> Result<Option<(PduEvent, CanonicalJsonObject)>> {
 	info!(
 		%room_id,
 		%event_id,
@@ -1437,28 +1448,7 @@ async fn fetch_missing_extremity(
 					Some(room_version),
 				)
 				.await?;
-			services
-				.rooms
-				.timeline
-				.force_insert_pdu(room_id, &parsed_event_id, &pdu, &value, false)
-				.await?;
-			services.rooms.outlier.clear_outlier_flag(&parsed_event_id);
-			services
-				.rooms
-				.pdu_metadata
-				.clear_pdu_markers(&parsed_event_id);
-			if let Some(state) = services
-				.rooms
-				.state_compressor
-				.get_full_state(statehash_before_join)
-				.await
-			{
-				services
-					.rooms
-					.state
-					.set_event_state(&parsed_event_id, room_id, state)
-					.await?;
-			}
+			return Ok(Some((pdu, value)));
 		},
 		| ExtremityIngestion::LiveGap => {
 			services
@@ -1469,5 +1459,5 @@ async fn fetch_missing_extremity(
 		},
 	}
 
-	Ok(Some(parsed_event_id))
+	Ok(None)
 }
