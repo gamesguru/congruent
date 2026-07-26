@@ -852,7 +852,7 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 async fn db_lt_19(services: &Services) -> Result<()> {
 	info!("Running v19 migration (populating LtHash state accumulators)...");
 	let db = &services.db;
-	let _cork = db.cork_and_sync();
+	let mut cork = db.cork_and_sync();
 
 	let shortstatehash_statediff = db["shortstatehash_statediff"].clone();
 	let shortstatehash_lthash = db["shortstatehash_lthash"].clone();
@@ -868,7 +868,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 			result.map_err(|e| err!(Database("v19 migration stream error: {e}")))?;
 		count = count.saturating_add(1);
 
-		let needs_compute = match shortstatehash_lthash.get_blocking(&ssh_bytes) {
+		let needs_compute = match shortstatehash_lthash.get(&ssh_bytes).await {
 			| Ok(_) => false,
 			| Err(e) if e.is_not_found() => true,
 			| Err(e) =>
@@ -888,6 +888,8 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 			migrated = migrated.saturating_add(1);
 			if migrated.is_multiple_of(1000) {
 				info!("LtHash population: processed {}/{} state groups...", migrated, count);
+				drop(cork);
+				cork = db.cork_and_sync();
 			}
 		}
 	}

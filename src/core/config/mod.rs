@@ -2561,6 +2561,10 @@ pub struct ExperimentalConfig {
 	/// MSC3030: timestamp to event
 	#[serde(default = "true_fn")]
 	pub msc3030_enabled: bool,
+
+	/// MSC4500: State Accumulators
+	#[serde(default = "true_fn")]
+	pub msc4500_enabled: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2569,6 +2573,7 @@ impl Default for ExperimentalConfig {
 			msc3266_enabled: false,
 			msc4222_enabled: false,
 			msc3030_enabled: true,
+			msc4500_enabled: true,
 		}
 	}
 }

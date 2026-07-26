@@ -1088,6 +1088,7 @@ dependencies = [
  "arrayvec",
  "axum",
  "axum-extra",
+ "base64 0.22.1",
  "bytes",
  "bytesize",
  "cargo_toml",

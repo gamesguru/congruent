@@ -116,15 +116,21 @@ where
 	};
 
 	let mut unique_forks = Vec::new();
+	let mut all_succeeded = true;
 	for (sstatehash, prev_event) in &extremity_sstatehashes {
-		if let Ok(lthash) = self.get_extremity_lthash(*sstatehash, prev_event).await {
-			if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
-				unique_forks.push((lthash, (*sstatehash, prev_event)));
-			}
+		match self.get_extremity_lthash(*sstatehash, prev_event).await {
+			| Ok(lthash) =>
+				if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
+					unique_forks.push((lthash, (*sstatehash, prev_event)));
+				},
+			| Err(_) => {
+				all_succeeded = false;
+				break;
+			},
 		}
 	}
 
-	if unique_forks.len() == 1 && extremity_sstatehashes.len() > 1 {
+	if all_succeeded && unique_forks.len() == 1 && extremity_sstatehashes.len() > 1 {
 		trace!(
 			"LtHash digests match across all {} forks! Bypassing state resolution.",
 			extremity_sstatehashes.len()

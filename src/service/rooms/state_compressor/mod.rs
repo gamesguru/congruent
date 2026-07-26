@@ -9,8 +9,9 @@ use async_trait::async_trait;
 use conduwuit::{
 	Result, SyncMutex,
 	arrayvec::ArrayVec,
-	at, checked, err, expected, implement, utils,
+	at, checked, debug_warn, err, expected, implement, utils,
 	utils::{bytes, math::usize_from_f64, stream::IterStream},
+	warn,
 };
 use database::Map;
 use futures::{Stream, StreamExt};
@@ -446,13 +447,17 @@ pub async fn save_state(
 			states_parents,
 		)?;
 
-		self.update_lthash(
-			new_shortstatehash,
-			parent_shortstatehash,
-			&statediffnew,
-			&statediffremoved,
-		)
-		.await?;
+		if let Err(e) = self
+			.update_lthash(
+				new_shortstatehash,
+				parent_shortstatehash,
+				&statediffnew,
+				&statediffremoved,
+			)
+			.await
+		{
+			warn!("Failed to update LtHash for state group {new_shortstatehash}: {e}");
+		}
 	}
 
 	Ok(HashSetCompressStateEvent {
@@ -577,12 +582,7 @@ fn compressed_state_size(compressed_state: &CompressedState) -> usize {
 /// Persist an LtHash to the database and LRU cache.
 #[implement(Service)]
 pub fn save_lthash(&self, shortstatehash: ShortStateHash, lthash: LtHash) {
-	let mut buf = [0_u8; 2048];
-	for (i, val) in lthash.0.iter().enumerate() {
-		let bytes = val.to_le_bytes();
-		buf[i.saturating_mul(2)] = bytes[0];
-		buf[i.saturating_mul(2).saturating_add(1)] = bytes[1];
-	}
+	let buf = utils::hash::lthash::lthash_to_bytes(&lthash);
 	self.db
 		.shortstatehash_lthash
 		.insert(&shortstatehash.to_be_bytes(), buf);
@@ -607,15 +607,14 @@ pub async fn get_lthash(&self, shortstatehash: ShortStateHash) -> Result<LtHash>
 		.get(&shortstatehash.to_be_bytes())
 		.await
 	{
-		if bytes.len() == 2048 {
-			let mut arr = [0_u16; 1024];
-			for (i, chunk) in bytes.chunks_exact(2).enumerate() {
-				arr[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
-			}
-			let lthash = LtHash(arr);
+		if let Some(lthash) = utils::hash::lthash::lthash_from_bytes(&bytes) {
 			self.lthash_cache.lock().insert(shortstatehash, lthash);
 			return Ok(lthash);
 		}
+		debug_warn!(
+			"Stored LtHash data for {shortstatehash} failed validation (len={}), recomputing",
+			bytes.len()
+		);
 	}
 
 	// Fallback for migrations / backfill

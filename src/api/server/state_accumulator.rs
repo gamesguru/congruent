@@ -1,7 +1,6 @@
 use axum::extract::State;
 use axum_extra::{TypedHeader, headers::Authorization};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use conduwuit::{Err, Result, err, info};
+use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
@@ -65,7 +64,7 @@ pub(crate) async fn get_state_accumulator_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
-	if pdu.room_id != Some(room_id.clone()) {
+	if pdu.room_id_or_hash().as_ref() != Some(&room_id) {
 		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
@@ -162,23 +161,7 @@ async fn verify_federation_request(
 	Ok(())
 }
 
-pub(crate) fn serialize_lthash(lthash: &rezzy::LtHash) -> (String, String) {
-	let mut bytes = vec![0_u8; 2048];
-	for (i, val) in lthash.0.iter().enumerate() {
-		let le = val.to_le_bytes();
-		bytes[i.saturating_mul(2)] = le[0];
-		bytes[i.saturating_mul(2).saturating_add(1)] = le[1];
-	}
-	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
-
-	let mut digest = String::with_capacity(64);
-	for b in lthash.checksum() {
-		use std::fmt::Write;
-		write!(&mut digest, "{b:02x}").unwrap();
-	}
-
-	(lattice, digest)
-}
+pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
 
 #[cfg(test)]
 mod tests {

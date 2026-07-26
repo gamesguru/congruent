@@ -242,16 +242,23 @@ async fn inject_state_hash_mismatches(
 	};
 
 	for (event_id, hash_info) in state_hashes {
-		// Skip validation for unrecognized algorithms to support future agility
-		if let Some(ref algo) = hash_info.algorithm {
-			if algo != "lthash16" {
-				info!(
-					target: "state_hashes",
-					event_id = ?event_id,
-					"skipping state hash validation for unrecognized algorithm"
-				);
-				continue;
-			}
+		// Skip validation for unrecognized or missing algorithms to support future
+		// agility
+		let Some(ref algo) = hash_info.algorithm else {
+			info!(
+				target: "state_hashes",
+				event_id = ?event_id,
+				"skipping state hash validation for missing algorithm"
+			);
+			continue;
+		};
+		if algo != "lthash16" {
+			info!(
+				target: "state_hashes",
+				event_id = ?event_id,
+				"skipping state hash validation for unrecognized algorithm"
+			);
+			continue;
 		}
 		let Some(pdu_res) = pdus_obj
 			.get_mut(event_id.as_str())
@@ -319,10 +326,10 @@ async fn compute_receiver_after_digest(
 
 		// Insert the new event
 		lthash_after.insert(&ev_type_str, state_key, event_id);
-		Some(super::state_accumulator::serialize_lthash(&lthash_after).1)
+		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_after).1)
 	} else {
 		// Non-state event: after == before
-		Some(super::state_accumulator::serialize_lthash(&lthash_before).1)
+		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_before).1)
 	}
 }
 

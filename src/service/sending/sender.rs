@@ -95,19 +95,26 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 			access_token,
 			considering_versions,
 		)?;
-		let (parts, body) = req.into_parts();
+		let (mut parts, body) = req.into_parts();
 
 		let mut json: serde_json::Value =
-			serde_json::from_slice(&body).expect("Ruma request body should be valid JSON");
+			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
 
 		if let Some(obj) = json.as_object_mut() {
 			if !self.state_hashes.is_empty() {
-				let state_hashes_val = serde_json::to_value(self.state_hashes).unwrap();
+				let state_hashes_val = serde_json::to_value(self.state_hashes)
+					.map_err(ruma::api::error::IntoHttpError::from)?;
 				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
 			}
 		}
 
-		let new_body_bytes = serde_json::to_vec(&json).unwrap();
+		let new_body_bytes =
+			serde_json::to_vec(&json).map_err(ruma::api::error::IntoHttpError::from)?;
+
+		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
+			*cl = http::HeaderValue::from(new_body_bytes.len());
+		}
+
 		let mut new_body_t = T::default();
 		new_body_t.put_slice(&new_body_bytes);
 
@@ -115,35 +122,23 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 	}
 }
 
-pub(crate) fn serialize_lthash(lthash: &rezzy::LtHash) -> (String, String) {
-	let mut bytes = vec![0_u8; 2048];
-	for (i, val) in lthash.0.iter().enumerate() {
-		let le = val.to_le_bytes();
-		bytes[i.saturating_mul(2)] = le[0];
-		bytes[i.saturating_mul(2).saturating_add(1)] = le[1];
-	}
-	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
-
-	let mut digest = String::with_capacity(64);
-	for b in lthash.checksum() {
-		use std::fmt::Write;
-		write!(&mut digest, "{b:02x}").unwrap();
-	}
-
-	(lattice, digest)
-}
+pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
 
 async fn compute_outbound_state_hashes(
 	services: &super::Services,
 	pdus: &[(OwnedEventId, CanonicalJsonObject)],
 ) -> BTreeMap<OwnedEventId, StateHashInfo> {
-	let mut state_hashes = BTreeMap::new();
-	for (event_id, value) in pdus {
-		if let Some(hash_info) = compute_state_hash_for_pdu(services, event_id, value).await {
-			state_hashes.insert(event_id.clone(), hash_info);
-		}
-	}
-	state_hashes
+	use conduwuit::utils::stream::BroadbandExt;
+	use futures::StreamExt;
+
+	futures::stream::iter(pdus)
+		.broad_filter_map(|(event_id, value)| async move {
+			compute_state_hash_for_pdu(services, event_id, value)
+				.await
+				.map(|info| (event_id.clone(), info))
+		})
+		.collect()
+		.await
 }
 
 async fn compute_state_hash_for_pdu(
