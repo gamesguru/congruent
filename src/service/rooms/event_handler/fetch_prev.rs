@@ -11,9 +11,7 @@ use conduwuit::{
 use futures::StreamExt;
 use ruma::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
-	api::federation::event::{
-		event_relationships as federation_event_relationships, get_missing_events,
-	},
+	api::federation::event::event_relationships as federation_event_relationships,
 };
 
 use super::check_room_id;
@@ -154,44 +152,10 @@ where
 				self.update_peer_stats(&server, false, t.elapsed());
 			},
 		}
-
-		let t = Instant::now();
-		let latest_events = vec![latest_event_owned.clone()];
-		info!(
-			"Asking {server} for missing events in {room_id_owned} (latest: {latest_events:?}, \
-			 earliest_count: {}, missing: {remaining:?})",
-			earliest.len()
-		);
-		match tokio::time::timeout(
-			Duration::from_secs(10), // Time budget
-			self.services.sending.send_federation_request(
-				&server,
-				get_missing_events::v1::Request {
-					room_id: room_id_owned,
-					earliest_events: earliest.clone(),
-					latest_events,
-					limit: 50_u32.into(),
-					min_depth: 0_u32.into(),
-				},
-			),
-		)
-		.await
-		{
-			| Ok(Ok(response)) => {
-				self.update_peer_stats(&server, true, t.elapsed());
-				missing_events = response.events;
-				if !missing_events.is_empty() {
-					break;
-				}
-			},
-			| _ => {
-				self.update_peer_stats(&server, false, t.elapsed());
-			},
-		}
 	}
 
 	if missing_events.is_empty() {
-		warn!("All servers failed to return /get_missing_events");
+		warn!("All servers failed to return /event_relationships");
 		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
