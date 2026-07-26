@@ -254,6 +254,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_relating_events_route)
 		.ruma_route(&client::get_hierarchy_route)
 		.ruma_route(&client::get_mutual_rooms_route)
+		.ruma_route(&client::get_event_relationships_route)
 		.ruma_route(&client::get_room_summary)
 		.route(
 			"/_matrix/client/unstable/im.nheko.summary/rooms/{room_id_or_alias}/summary",
@@ -290,6 +291,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::get_event_route)
 			.ruma_route(&server::get_backfill_route)
 			.ruma_route(&server::get_missing_events_route)
+			.ruma_route(&server::get_event_relationships_route)
 			.ruma_route(&server::get_event_authorization_route)
 			.ruma_route(&server::get_room_state_route)
 			.ruma_route(&server::get_room_state_ids_route)

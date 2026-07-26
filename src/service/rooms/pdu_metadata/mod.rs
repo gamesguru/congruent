@@ -206,11 +206,10 @@ impl Service {
 		self.db.msc2836_get_children(parent).await
 	}
 
-	/// MSC2836: the `unsigned.children` / `unsigned.children_hash` values to
-	/// report for `event_id`, combining our own directly-known child edges
-	/// with whatever a remote server has reported for this event (using
-	/// whichever total is higher, per the MSC).
-	pub async fn msc2836_children_unsigned(
+	/// MSC2836: purely local children counts + hash for `event_id`, from our
+	/// own directly-known child edges only (no remote-reported data mixed
+	/// in). See [`Self::msc2836_children_unsigned`] for the combined view.
+	async fn msc2836_local_children(
 		&self,
 		event_id: &EventId,
 	) -> (std::collections::BTreeMap<String, u64>, String) {
@@ -228,6 +227,18 @@ impl Service {
 
 		let hash = STANDARD_NO_PAD.encode(Sha256::digest(ids.concat().as_bytes()));
 
+		(counts, hash)
+	}
+
+	/// MSC2836: the `unsigned.children` / `unsigned.children_hash` values to
+	/// report for `event_id`, combining our own directly-known child edges
+	/// with whatever a remote server has reported for this event (using
+	/// whichever total is higher, per the MSC).
+	pub async fn msc2836_children_unsigned(
+		&self,
+		event_id: &EventId,
+	) -> (std::collections::BTreeMap<String, u64>, String) {
+		let (counts, hash) = self.msc2836_local_children(event_id).await;
 		let local_total: u64 = counts.values().sum();
 
 		if let Some((reported_counts, reported_hash)) =
@@ -240,6 +251,24 @@ impl Service {
 		}
 
 		(counts, hash)
+	}
+
+	/// MSC2836: whether `event_id` has children we know about (via a remote
+	/// report) but haven't fetched/indexed ourselves yet -- i.e. it's worth
+	/// asking federation for an update. Per the MSC: unexplored if the
+	/// reported count exceeds the locally-known count, or the counts match
+	/// but the hashes differ.
+	pub async fn msc2836_needs_explore(&self, event_id: &EventId) -> bool {
+		let Some((reported_counts, reported_hash)) =
+			self.db.msc2836_get_reported_children(event_id).await
+		else {
+			return false;
+		};
+		let (known_counts, known_hash) = self.msc2836_local_children(event_id).await;
+		let reported_total: u64 = reported_counts.values().sum();
+		let known_total: u64 = known_counts.values().sum();
+		reported_total > known_total
+			|| (reported_total == known_total && reported_hash != known_hash)
 	}
 
 	/// MSC2836: remember children counts/hash reported by a remote server

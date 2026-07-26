@@ -10,6 +10,7 @@ use ruma::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
+			relations::event_relationships,
 		},
 		federation,
 	},
@@ -17,7 +18,10 @@ use ruma::{
 };
 
 use super::{update_avatar_url, update_displayname};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	msc2836::{self, Params, Requester},
+};
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
 ///
@@ -411,4 +415,44 @@ pub(crate) async fn get_room_dag_route(
 		.insert(room_id.clone(), (Instant::now(), events.clone()));
 
 	Ok(axum::Json(events))
+}
+
+/// # `POST /_matrix/client/unstable/event_relationships`
+///
+/// Walks the `m.relationship` DAG from an anchor event, fetching missing
+/// events over federation as needed.
+///
+/// An implementation of [MSC2836](https://github.com/matrix-org/matrix-spec-proposals/pull/2836)
+pub(crate) async fn get_event_relationships_route(
+	State(services): State<crate::State>,
+	body: Ruma<event_relationships::unstable::Request>,
+) -> Result<event_relationships::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	let params = Params::defaulted(
+		body.event_id.clone(),
+		body.room_id.clone(),
+		body.max_depth,
+		body.max_breadth,
+		body.limit,
+		body.depth_first,
+		body.recent_first,
+		body.include_parent,
+		body.include_children,
+		body.direction.clone(),
+	);
+
+	let (events, limited) =
+		msc2836::resolve(&services, Requester::Client(sender_user), params).await?;
+
+	let mut raw_events = Vec::with_capacity(events.len());
+	for pdu in &events {
+		raw_events.push(msc2836::to_raw_json_with_children(&services, pdu).await);
+	}
+
+	Ok(event_relationships::unstable::Response {
+		events: raw_events,
+		next_batch: None,
+		limited,
+	})
 }
