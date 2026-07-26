@@ -3,7 +3,7 @@ use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc, time::Dur
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug, debug_info, debug_warn, err, error, info,
+	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
 		event::{gen_event_id, gen_event_id_canonical_json},
 		pdu::{PduBuilder, PduEvent},
@@ -667,7 +667,13 @@ async fn join_room_by_id_helper_remote_process(
 		.timeline
 		.last_timeline_count(room_id)
 		.await
-		.is_ok();
+		.is_ok_and(|count| count != PduCount::min());
+	info!(
+		room_id = %room_id,
+		had_timeline_before_join,
+		remote_latest_count = remote_latest_events.len(),
+		"join bootstrap classification before send_join outlier promotion"
+	);
 
 	drop(cork);
 
@@ -849,6 +855,11 @@ async fn join_room_by_id_helper_remote_process(
 	// order in backward pagination.
 	// We drop the state lock temporarily for the network requests.
 	if !missing_latest.is_empty() && !is_rejoin {
+		info!(
+			room_id = %room_id,
+			count = missing_latest.len(),
+			"join bootstrap using outlier-only extremity ingestion"
+		);
 		drop(state_lock);
 
 		info!(
@@ -920,6 +931,11 @@ async fn join_room_by_id_helper_remote_process(
 	// handle_incoming_pdu's server_in_room check succeeds (our join PDU proves
 	// participation) and prevents the "not participating" race condition.
 	if !missing_latest.is_empty() && is_rejoin {
+		info!(
+			room_id = %room_id,
+			count = missing_latest.len(),
+			"join bootstrap using timeline extremity ingestion for rejoin"
+		);
 		drop(state_lock);
 
 		info!(
@@ -1357,6 +1373,12 @@ async fn fetch_missing_extremity(
 		direction: None,
 		batch: None,
 	};
+	info!(
+		%room_id,
+		%event_id,
+		is_timeline_event,
+		"fetching join extremity with explicit ingestion mode"
+	);
 
 	if let Ok(response) = services
 		.sending

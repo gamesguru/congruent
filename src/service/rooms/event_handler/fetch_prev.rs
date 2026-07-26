@@ -8,10 +8,12 @@ use conduwuit::{
 	utils::stream::{BroadbandExt, IterStream},
 	warn,
 };
-use futures::StreamExt;
+use futures::{StreamExt, stream::FuturesUnordered};
 use ruma::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
-	api::federation::event::event_relationships as federation_event_relationships,
+	api::federation::event::{
+		event_relationships as federation_event_relationships, get_missing_events,
+	},
 };
 
 use super::check_room_id;
@@ -91,10 +93,13 @@ where
 		.collect()
 		.await;
 
-	let room_version_id = self.services.state.get_room_version(room_id).await?;
-	let mut missing_events = Vec::new();
-
+	let server_fanout = self
+		.services
+		.server
+		.concurrency_scaled(2)
+		.min(servers.len());
 	let latest_event_owned = latest_event.to_owned();
+	let mut active = FuturesUnordered::new();
 	for server in servers {
 		if self.services.sending.server_is_dead(&server) {
 			continue;
@@ -104,58 +109,104 @@ where
 		let earliest = earliest.clone();
 		let remaining = remaining.clone();
 		let latest_event_owned = latest_event_owned.clone();
+		active.push(async move {
+			let t = Instant::now();
+			let latest_events = vec![latest_event_owned];
+			info!(
+				"Asking {server} for missing events in {room_id_owned} (latest: \
+				 {latest_events:?}, earliest_count: {}, missing: {remaining:?})",
+				earliest.len()
+			);
+			let res = tokio::time::timeout(
+				Duration::from_secs(10), // Time budget
+				self.services.sending.send_federation_request(
+					&server,
+					get_missing_events::v1::Request {
+						room_id: room_id_owned,
+						earliest_events: earliest,
+						latest_events,
+						limit: 50_u32.into(),
+						min_depth: 0_u32.into(),
+					},
+				),
+			)
+			.await;
+			(server, res, t.elapsed())
+		});
 
-		let t = Instant::now();
-		info!(
-			"Asking {server} for missing events via /event_relationships in {room_id_owned} \
-			 (anchor: {latest_event_owned}, earliest_count: {}, missing: {remaining:?})",
-			earliest.len()
-		);
-		match tokio::time::timeout(
-			Duration::from_secs(10),
-			self.services.sending.send_federation_request(
-				&server,
-				federation_event_relationships::unstable::Request {
-					event_id: latest_event_owned.clone(),
-					room_id: Some(room_id_owned.clone()),
-					max_depth: None,
-					max_breadth: None,
-					limit: None,
-					depth_first: None,
-					recent_first: None,
-					include_parent: None,
-					include_children: None,
-					direction: Some("up".to_owned()),
-					batch: None,
-				},
-			),
-		)
-		.await
-		{
+		if active.len() >= server_fanout {
+			break;
+		}
+	}
+
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
+	let mut missing_events = Vec::new();
+
+	while let Some((server, res, latency)) = active.next().await {
+		match res {
 			| Ok(Ok(response)) => {
-				self.update_peer_stats(&server, true, t.elapsed());
-				missing_events = response
-					.auth_chain
-					.into_iter()
-					.chain(response.events)
-					.collect();
-				if !missing_events.is_empty() {
-					break;
+				self.update_peer_stats(&server, true, latency);
+				missing_events = response.events;
+				if missing_events.is_empty() {
+					let Some(fallback_anchor) = remaining.first().cloned() else {
+						break;
+					};
+					let room_id_owned = room_id.to_owned();
+					let request = federation_event_relationships::unstable::Request {
+						event_id: fallback_anchor,
+						room_id: Some(room_id_owned),
+						max_depth: None,
+						max_breadth: None,
+						limit: None,
+						depth_first: None,
+						recent_first: None,
+						include_parent: None,
+						include_children: None,
+						direction: Some("up".to_owned()),
+						batch: None,
+					};
+					match tokio::time::timeout(
+						Duration::from_secs(10),
+						self.services
+							.sending
+							.send_federation_request(&server, request),
+					)
+					.await
+					{
+						| Ok(Ok(fallback_response)) => {
+							missing_events = fallback_response
+								.auth_chain
+								.into_iter()
+								.chain(fallback_response.events)
+								.collect();
+							if !missing_events.is_empty() {
+								break;
+							}
+						},
+						| Ok(Err(e)) => {
+							info!(%server, "fetch_prev /event_relationships fallback failed: {e}");
+							self.update_peer_stats(&server, false, latency);
+						},
+						| Err(_) => {
+							info!(
+								%server,
+								"fetch_prev /event_relationships fallback failed: timed out"
+							);
+							self.update_peer_stats(&server, false, latency);
+						},
+					}
+				} else {
+					break; // First successful server wins
 				}
 			},
-			| Ok(Err(e)) => {
-				info!(%server, "fetch_prev /event_relationships failed: {e}");
-				self.update_peer_stats(&server, false, t.elapsed());
-			},
-			| Err(_) => {
-				info!(%server, "fetch_prev /event_relationships failed: timed out");
-				self.update_peer_stats(&server, false, t.elapsed());
+			| _ => {
+				self.update_peer_stats(&server, false, latency);
 			},
 		}
 	}
 
 	if missing_events.is_empty() {
-		warn!("All servers failed to return /event_relationships");
+		warn!("All servers failed to return /get_missing_events");
 		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
