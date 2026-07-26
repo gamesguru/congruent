@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{
-	Err, Event, PduEvent, Result, at, debug_warn, err, ref_at,
+	Err, Event, PduEvent, Result, at, debug_warn, err, info, ref_at,
 	utils::{
 		IterStream,
 		future::TryExtExt,
@@ -225,36 +225,46 @@ pub(crate) async fn get_context_route(
 		.collect()
 		.await;
 
+	let start = events_before
+		.last()
+		.map(at!(0))
+		// `messages` treats its backward `from` token as an exclusive upper
+		// bound. If no visible event precedes the context event, retain the
+		// context token so the immediately preceding timeline event remains
+		// eligible for the next backward page.
+		.or(Some(base_token))
+		.as_ref()
+		.map(TopoToken::to_string);
+	let end = events_after
+		.last()
+		.map(at!(0))
+		.or_else(|| {
+			Some(TopoToken {
+				depth: base_token.depth,
+				pdu_count: base_token
+					.pdu_count
+					.saturating_inc(ruma::api::Direction::Forward),
+			})
+		})
+		.as_ref()
+		.map(TopoToken::to_string);
+	info!(
+		%room_id,
+		%event_id,
+		?base_count,
+		base_depth = base_token.depth,
+		?start,
+		?end,
+		before_count = events_before.len(),
+		after_count = events_after.len(),
+		"context token derivation"
+	);
+
 	Ok(get_context::v3::Response {
 		event: base_event.map(at!(1)).map(Event::into_format),
 
-		start: events_before
-			.last()
-			.map(at!(0))
-			.or_else(|| {
-				Some(TopoToken {
-					depth: base_token.depth,
-					pdu_count: base_token
-						.pdu_count
-						.saturating_inc(ruma::api::Direction::Backward),
-				})
-			})
-			.as_ref()
-			.map(TopoToken::to_string),
-
-		end: events_after
-			.last()
-			.map(at!(0))
-			.or_else(|| {
-				Some(TopoToken {
-					depth: base_token.depth,
-					pdu_count: base_token
-						.pdu_count
-						.saturating_inc(ruma::api::Direction::Forward),
-				})
-			})
-			.as_ref()
-			.map(TopoToken::to_string),
+		start,
+		end,
 
 		events_before: events_before
 			.into_iter()
