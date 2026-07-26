@@ -1482,7 +1482,9 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 	let mut migrated = 0_usize;
 
 	// Open softfailedeventids map if it exists
-	if let Ok(softfailedeventids) = database::Map::open(&db.db, "softfailedeventids") {
+	if db.db.cf_exists("softfailedeventids") {
+		let softfailedeventids = database::Map::open(&db.db, "softfailedeventids")
+			.map_err(|e| err!("Failed to open softfailedeventids: {e}"))?;
 		let softfailed_stream = softfailedeventids.raw_stream();
 		pin_mut!(softfailed_stream);
 
@@ -1525,7 +1527,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 	}
 
 	// Drop eventid_receivecount if it exists
-	if database::Map::open(&db.db, "eventid_receivecount").is_ok() {
+	if db.db.cf_exists("eventid_receivecount") {
 		db.db
 			.drop_cf("eventid_receivecount")
 			.unwrap_or_else(|e| warn!("Failed to drop eventid_receivecount: {e}"));
@@ -1533,7 +1535,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 
 	// Drop roomid_outliereventid — outlier tracking now uses
 	// eventid_metadata.is_outlier
-	if database::Map::open(&db.db, "roomid_outliereventid").is_ok() {
+	if db.db.cf_exists("roomid_outliereventid") {
 		db.db
 			.drop_cf("roomid_outliereventid")
 			.unwrap_or_else(|e| warn!("Failed to drop roomid_outliereventid: {e}"));

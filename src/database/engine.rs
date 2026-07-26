@@ -125,6 +125,8 @@ impl Engine {
 			.expect("column must be described prior to database open")
 	}
 
+	pub fn cf_exists(&self, name: &str) -> bool { self.db.cf_handle(name).is_some() }
+
 	#[inline]
 	#[must_use]
 	#[tracing::instrument(name = "sequence", level = "debug", skip_all, fields(sequence))]
