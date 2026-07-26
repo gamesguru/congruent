@@ -875,6 +875,7 @@ async fn join_room_by_id_helper_remote_process(
 				room_id,
 				event_id,
 				&room_version_id,
+				statehash_before_join,
 				ExtremityIngestion::SnapshotBacked,
 			)
 			.await
@@ -958,6 +959,7 @@ async fn join_room_by_id_helper_remote_process(
 				room_id,
 				&event_id,
 				&room_version_id,
+				statehash_before_join,
 				ExtremityIngestion::LiveGap,
 			)
 			.await
@@ -1382,6 +1384,7 @@ async fn fetch_missing_extremity(
 	room_id: &RoomId,
 	event_id: &ruma::OwnedEventId,
 	room_version: &RoomVersionId,
+	statehash_before_join: u64,
 	mode: ExtremityIngestion,
 ) -> Result<Option<ruma::OwnedEventId>> {
 	info!(
@@ -1444,6 +1447,18 @@ async fn fetch_missing_extremity(
 				.rooms
 				.pdu_metadata
 				.clear_pdu_markers(&parsed_event_id);
+			if let Some(state) = services
+				.rooms
+				.state_compressor
+				.get_full_state(statehash_before_join)
+				.await
+			{
+				services
+					.rooms
+					.state
+					.set_event_state(&parsed_event_id, room_id, state)
+					.await?;
+			}
 		},
 		| ExtremityIngestion::LiveGap => {
 			services
