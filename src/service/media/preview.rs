@@ -253,6 +253,8 @@ pub async fn download_image(
 		media_id: &random_string(super::MXC_LENGTH),
 	};
 
+	preview_data.image_size = Some(image.len());
+
 	self.create(&mxc, None, None, None, &image).await?;
 
 	preview_data.image = Some(mxc.to_string());
