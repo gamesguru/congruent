@@ -458,7 +458,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	/* use OpenGraph title/description, but fall back to HTML if not available */
 	preview_data.title = props.get("title").cloned().or(html.title);
 	preview_data.description = props.get("description").cloned().or(html.description);
-	preview_data.og_type = props.get("type").cloned();
+	preview_data.og_type = Some(html.opengraph.og_type);
 	preview_data.og_url = props.get("url").cloned();
 
 	Ok(preview_data)
