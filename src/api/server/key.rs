@@ -244,12 +244,13 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 
 #[cfg(test)]
 mod tests {
-	use super::select_server_key_response;
 	use ruma::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		serde::{Base64, Raw},
 	};
+
+	use super::select_server_key_response;
 
 	fn key_payload(
 		verify_key_id: &str,
@@ -290,12 +291,7 @@ mod tests {
 	#[test]
 	fn cache_hit_prefers_merged_historical_keys() {
 		let raw = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
-		let merged = key_payload(
-			"ed25519:active",
-			"AAA",
-			Some("ed25519:old"),
-			Some("BBB"),
-		);
+		let merged = key_payload("ed25519:active", "AAA", Some("ed25519:old"), Some("BBB"));
 
 		let selected = select_server_key_response(Some(raw), Some(merged)).unwrap();
 		let selected: ServerSigningKeys = selected.deserialize().unwrap();
@@ -309,12 +305,8 @@ mod tests {
 	#[test]
 	fn post_fetch_uses_merged_historical_keys() {
 		let fetched = Raw::new(&key_payload("ed25519:active", "AAA", None, None)).unwrap();
-		let merged = key_payload(
-			"ed25519:active",
-			"AAA",
-			Some("ed25519:historical"),
-			Some("BBB"),
-		);
+		let merged =
+			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
 
 		let selected = select_server_key_response(Some(fetched), Some(merged)).unwrap();
 		let selected: ServerSigningKeys = selected.deserialize().unwrap();
