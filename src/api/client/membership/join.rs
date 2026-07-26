@@ -581,7 +581,7 @@ async fn join_room_by_id_helper_remote_process(
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
 	event_id: ruma::OwnedEventId,
-	mut state_lock: RoomMutexGuard,
+	state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
 	remote_latest_events: Vec<ruma::OwnedEventId>,
 ) -> Result {
@@ -750,8 +750,6 @@ async fn join_room_by_id_helper_remote_process(
 		.collect()
 		.boxed()
 		.await;
-	let snapshot_state = Arc::new(compressed.clone());
-
 	drop(state);
 
 	info!("Saving compressed state ({} compressed events)", compressed.len());
@@ -917,15 +915,8 @@ async fn join_room_by_id_helper_remote_process(
 			room_id
 		);
 		for event_id in missing_latest {
-			if let Err(e) = fetch_missing_extremity(
-				services,
-				&remote_server,
-				room_id,
-				&event_id,
-				&room_version_id,
-				ExtremityIngestion::LiveGap,
-			)
-			.await
+			if let Err(e) =
+				fetch_missing_extremity(services, &remote_server, room_id, &event_id).await
 			{
 				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
@@ -1332,27 +1323,15 @@ mod tests {
 	}
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ExtremityIngestion {
-	/// The send_join snapshot is authoritative; do not run live timeline
-	/// ingestion.
-	SnapshotBacked,
-	/// A rejoin gap is real and may use normal timeline ingestion.
-	LiveGap,
-}
-
 async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
 	event_id: &ruma::OwnedEventId,
-	room_version: &RoomVersionId,
-	mode: ExtremityIngestion,
-) -> Result<Option<(PduEvent, CanonicalJsonObject)>> {
+) -> Result<()> {
 	info!(
 		%room_id,
 		%event_id,
-		?mode,
 		"fetching join extremity"
 	);
 
@@ -1386,40 +1365,12 @@ async fn fetch_missing_extremity(
 			if parsed_room_id != room_id || parsed_event_id != *event_id {
 				continue;
 			}
-			return match mode {
-				| ExtremityIngestion::SnapshotBacked => {
-					let (pdu, value) = services
-						.rooms
-						.event_handler
-						.handle_outlier_pdu(
-							remote_server,
-							None::<&PduEvent>,
-							&parsed_event_id,
-							room_id,
-							value,
-							false,
-							false,
-							Some(room_version),
-						)
-						.await?;
-					Ok(Some((pdu, value)))
-				},
-				| ExtremityIngestion::LiveGap => {
-					services
-						.rooms
-						.event_handler
-						.handle_incoming_pdu(
-							remote_server,
-							room_id,
-							&parsed_event_id,
-							value,
-							true,
-							None,
-						)
-						.await?;
-					Ok(None)
-				},
-			};
+			services
+				.rooms
+				.event_handler
+				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+				.await?;
+			return Ok(());
 		}
 	}
 
@@ -1450,32 +1401,11 @@ async fn fetch_missing_extremity(
 		return Err!(Request(NotFound("Fetched a different event than requested")));
 	}
 
-	match mode {
-		| ExtremityIngestion::SnapshotBacked => {
-			let (pdu, value) = services
-				.rooms
-				.event_handler
-				.handle_outlier_pdu(
-					remote_server,
-					None::<&PduEvent>,
-					&parsed_event_id,
-					room_id,
-					value,
-					false,
-					false,
-					Some(room_version),
-				)
-				.await?;
-			return Ok(Some((pdu, value)));
-		},
-		| ExtremityIngestion::LiveGap => {
-			services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
-				.await?;
-		},
-	}
+	services
+		.rooms
+		.event_handler
+		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.await?;
 
-	Ok(None)
+	Ok(())
 }
