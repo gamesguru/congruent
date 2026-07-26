@@ -37,35 +37,38 @@ pub(crate) struct Params {
 	pub direction_up: bool,
 }
 
+pub(crate) struct DefaultedParams {
+	pub event_id: OwnedEventId,
+	pub room_id: Option<OwnedRoomId>,
+	pub max_depth: Option<i64>,
+	pub max_breadth: Option<i64>,
+	pub limit: Option<i64>,
+	pub depth_first: Option<bool>,
+	pub recent_first: Option<bool>,
+	pub include_parent: Option<bool>,
+	pub include_children: Option<bool>,
+	pub direction: Option<String>,
+}
+
 impl Params {
-	pub(crate) fn defaulted(
-		event_id: OwnedEventId,
-		room_id: Option<OwnedRoomId>,
-		max_depth: Option<i64>,
-		max_breadth: Option<i64>,
-		limit: Option<i64>,
-		depth_first: Option<bool>,
-		recent_first: Option<bool>,
-		include_parent: Option<bool>,
-		include_children: Option<bool>,
-		direction: Option<String>,
-	) -> Self {
+	pub(crate) fn defaulted(params: DefaultedParams) -> Self {
 		Self {
-			event_id,
-			room_id,
-			max_depth: max_depth.unwrap_or(3),
-			max_breadth: max_breadth.unwrap_or(10),
-			limit: limit
+			event_id: params.event_id,
+			room_id: params.room_id,
+			max_depth: params.max_depth.unwrap_or(3),
+			max_breadth: params.max_breadth.unwrap_or(10),
+			limit: params
+				.limit
 				.unwrap_or(100)
 				.max(0)
 				.try_into()
 				.unwrap_or(100)
 				.min(100),
-			depth_first: depth_first.unwrap_or(false),
-			recent_first: recent_first.unwrap_or(true),
-			include_parent: include_parent.unwrap_or(false),
-			include_children: include_children.unwrap_or(false),
-			direction_up: direction.as_deref() == Some("up"),
+			depth_first: params.depth_first.unwrap_or(false),
+			recent_first: params.recent_first.unwrap_or(true),
+			include_parent: params.include_parent.unwrap_or(false),
+			include_children: params.include_children.unwrap_or(false),
+			direction_up: params.direction.as_deref() == Some("up"),
 		}
 	}
 }
@@ -479,7 +482,7 @@ pub(crate) async fn resolve(
 	}
 
 	if params.direction_up {
-		walk_up(
+		Box::pin(walk_up(
 			services,
 			&requester,
 			can_fetch,
@@ -489,7 +492,7 @@ pub(crate) async fn resolve(
 			params.limit,
 			&mut results,
 			&mut seen,
-		)
+		))
 		.await;
 	} else {
 		walk_down(

@@ -33,21 +33,21 @@ pub(crate) async fn get_event_relationships_route(
 		.await?;
 	}
 
-	let params = Params::defaulted(
-		body.event_id.clone(),
-		body.room_id.clone(),
-		body.max_depth,
-		body.max_breadth,
-		body.limit,
-		body.depth_first,
-		body.recent_first,
-		body.include_parent,
-		body.include_children,
-		body.direction.clone(),
-	);
+	let params = Params::defaulted(msc2836::DefaultedParams {
+		event_id: body.event_id.clone(),
+		room_id: body.room_id.clone(),
+		max_depth: body.max_depth,
+		max_breadth: body.max_breadth,
+		limit: body.limit,
+		depth_first: body.depth_first,
+		recent_first: body.recent_first,
+		include_parent: body.include_parent,
+		include_children: body.include_children,
+		direction: body.direction.clone(),
+	});
 
 	let (events, limited) =
-		msc2836::resolve(&services, Requester::Federation(origin), params).await?;
+		Box::pin(msc2836::resolve(&services, Requester::Federation(origin), params)).await?;
 
 	let mut raw_events = Vec::with_capacity(events.len());
 	let mut auth_chain_ids = std::collections::HashSet::<OwnedEventId>::new();
