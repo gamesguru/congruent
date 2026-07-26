@@ -4,6 +4,7 @@ mod build;
 mod create;
 mod data;
 mod helpers;
+mod reconciliation;
 mod redact;
 
 use std::{fmt::Write, mem::size_of, sync::Arc};
@@ -66,6 +67,8 @@ pub struct Service {
 	pub mutex_insert: RoomMutexMap,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
+	pub reconciliation_cache:
+		SyncMutex<LruCache<OwnedRoomId, reconciliation::RoomReconciliationState>>,
 }
 
 struct Services {
@@ -105,10 +108,14 @@ impl crate::Service for Service {
 			f64::from(config.shortstatehash_cache_capacity) * config.cache_capacity_modifier;
 		let cache_capacity = usize_from_f64(cache_capacity)?;
 		let per_cache = usize::max(1, cache_capacity / 2);
+		let reconciliation_capacity =
+			f64::from(config.lthash_cache_capacity) * config.cache_capacity_modifier;
+		let reconciliation_capacity = usize_from_f64(reconciliation_capacity)?;
 
 		Ok(Arc::new(Self {
 			next_shortstatehash_cache: SyncMutex::new(LruCache::new(per_cache)),
 			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(per_cache)),
+			reconciliation_cache: SyncMutex::new(LruCache::new(reconciliation_capacity)),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
@@ -156,6 +163,9 @@ impl crate::Service for Service {
 		let prev_bytes = bytes::pretty(prev_cache_bytes);
 		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
 
+		let reconciliation_cache_len = self.reconciliation_cache.lock().len();
+		writeln!(out, "reconciliation_cache: {reconciliation_cache_len}")?;
+
 		let mutex_insert = self.mutex_insert.len();
 		writeln!(out, "insert_mutex: {mutex_insert}")?;
 
@@ -165,6 +175,7 @@ impl crate::Service for Service {
 	async fn clear_cache(&self) {
 		self.next_shortstatehash_cache.lock().clear();
 		self.prev_shortstatehash_cache.lock().clear();
+		self.reconciliation_cache.lock().clear();
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }

@@ -1,5 +1,35 @@
 7/26/2026
 
+• Implemented both layers.
+
+  What changed:
+
+  - Added a cached reconciliation snapshot in src/service/rooms/timeline/reconciliation.rs.
+  - Wired the timeline service to own that cache in src/service/rooms/timeline/mod.rs.
+  - Updated the timeline append path to incrementally refresh the cache on accepted PDUs and soft-failed PDUs in src/service/rooms/timeline/append.rs.
+  - Switched room_digest and room_diff to use the cached reconciliation state instead of rebuilding their own scan-local copy in src/api/server/room_reconciliation.rs.
+  - Tightened request handling in room_diff:
+      - rejects scope: "resolved_state" for now
+      - requires frame_event_ids when frame_negotiation is set
+      - requires frame_id in sketch mode
+      - rejects mismatched frame_id before sketch processing
+
+  Verification:
+
+  - cargo check -q passes cleanly.
+
+  What still isn’t fully done versus the MSC text:
+
+  - Full descendant-frame negotiation is still simplified.
+  - resolved_state/state_at is validated but not implemented.
+  - Tombstone iteration is still not integrated into the reconciliation snapshot.
+  - inline_pdus is still not supported.
+
+  If you want, I can do the next pass on tombstones and proper frame negotiation.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 › what's left here
 
 

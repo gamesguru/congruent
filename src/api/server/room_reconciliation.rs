@@ -1,10 +1,9 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use axum::extract::{Path, State};
 use axum_extra::{TypedHeader, headers::Authorization};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, matrix::dag::sort_topologically};
-use conduwuit_core::utils::hash::algebraic::element_hash_for_pdu;
 use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
@@ -25,6 +24,13 @@ pub(crate) struct RoomDigestResponse {
 	pub depth_range: Option<[u64; 2]>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub origin_server_ts_range: Option<[u64; 2]>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RoomDiffValidation {
+	normalized_frame_event_ids: Vec<OwnedEventId>,
+	frame_matches: bool,
+	frame_status: String,
 }
 
 #[allow(dead_code)]
@@ -125,117 +131,64 @@ fn encode_accumulator_digest(digest: u128) -> String {
 	URL_SAFE_NO_PAD.encode(digest.to_be_bytes())
 }
 
-struct RoomAlgebraicState {
-	resident: rezzy::reconcile::ResidentKernel,
-	sorted_h64: Vec<u64>,
-	h64_to_event_hashes: BTreeMap<u64, Vec<(OwnedEventId, rezzy::reconcile::ElementHash)>>,
-	known_event_count: u64,
-	depth_range: [u64; 2],
-	origin_server_ts_range: [u64; 2],
-}
-
-async fn collect_room_algebraic_state(
-	services: &crate::State,
-	room_id: &OwnedRoomId,
-) -> Result<RoomAlgebraicState> {
-	let room_version = services
-		.rooms
-		.state
-		.get_room_version(room_id)
-		.await
-		.map_err(|e| err!(Database("failed to resolve room version for {room_id}: {e}")))?;
-
-	let mut resident = rezzy::reconcile::ResidentKernel::new();
-	let mut sorted_h64 = Vec::new();
-	let mut h64_to_event_hashes: BTreeMap<
-		u64,
-		Vec<(OwnedEventId, rezzy::reconcile::ElementHash)>,
-	> = BTreeMap::new();
-	let mut known_event_count = 0_u64;
-	let mut depth_min = u64::MAX;
-	let mut depth_max = 0_u64;
-	let mut ts_min = u64::MAX;
-	let mut ts_max = 0_u64;
-
-	let pdus = services.rooms.timeline.all_pdus(room_id);
-	futures::pin_mut!(pdus);
-	while let Some((_, pdu)) = pdus.next().await {
-		known_event_count = known_event_count.saturating_add(1);
-		let depth = u64::from(pdu.depth);
-		let ts = u64::from(pdu.origin_server_ts);
-		depth_min = depth_min.min(depth);
-		depth_max = depth_max.max(depth);
-		ts_min = ts_min.min(ts);
-		ts_max = ts_max.max(ts);
-		let hash = element_hash_for_pdu(&pdu, &room_version)?;
-		resident.insert(hash).map_err(|e| {
-			err!(Database("failed to accumulate algebraic state for {room_id}: {e:?}"))
-		})?;
-		sorted_h64.push(hash.h64);
-		h64_to_event_hashes
-			.entry(hash.h64)
-			.or_default()
-			.push((pdu.event_id.clone(), hash));
-	}
-
-	sorted_h64.sort_unstable();
-
-	if known_event_count == 0 {
-		depth_min = 0;
-		ts_min = 0;
-	}
-
-	Ok(RoomAlgebraicState {
-		resident,
-		sorted_h64,
-		h64_to_event_hashes,
-		known_event_count,
-		depth_range: [depth_min, depth_max],
-		origin_server_ts_range: [ts_min, ts_max],
-	})
-}
-
-async fn room_digest_from_state(
-	services: &crate::State,
-	room_id: &OwnedRoomId,
-	state: &RoomAlgebraicState,
-) -> Result<RoomDigestResponse> {
-	let mut frame_event_ids: Vec<_> = services
-		.rooms
-		.state
-		.get_forward_extremities(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-	frame_event_ids.sort();
-
-	let extremity_event_ids = frame_event_ids.clone();
-	let frame_id = frame_id_for(&frame_event_ids);
-
-	Ok(RoomDigestResponse {
-		digest: state.resident.accumulator().encode_digest(),
-		digest_type: "algebraic_v1".to_owned(),
-		known_event_count: state.known_event_count,
-		frame_id,
-		strata: state
-			.resident
-			.strata()
-			.iter()
-			.map(encode_stratum_entry)
-			.collect(),
-		frame_event_ids,
-		extremity_event_ids,
-		depth_range: Some(state.depth_range),
-		origin_server_ts_range: Some(state.origin_server_ts_range),
+fn rejected_tombstone(event_id: &OwnedEventId, reason: &str) -> serde_json::Value {
+	serde_json::json!({
+		"event_id": event_id,
+		"reason": reason,
 	})
 }
 
 fn frame_id_for(event_ids: &[OwnedEventId]) -> String {
 	let mut ids = event_ids.to_vec();
 	ids.sort();
+	ids.dedup();
 	let json = serde_json::to_vec(&ids).expect("frame ids serialize");
 	let digest = conduwuit::utils::hash::sha256::hash(json);
 	URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn validate_room_diff_request(
+	body: &RoomDiffRequest,
+	digest: &RoomDigestResponse,
+) -> Result<RoomDiffValidation> {
+	if matches!(body.scope.as_deref(), Some("resolved_state")) {
+		return Err!(Request(InvalidParam("resolved_state scope is not yet implemented.")));
+	}
+	if body.frame_negotiation && body.frame_event_ids.is_empty() {
+		return Err!(Request(InvalidParam(
+			"frame_event_ids is required when frame_negotiation is true."
+		)));
+	}
+	if let Some(frame_id) = body.frame_id.as_deref() {
+		if frame_id != digest.frame_id {
+			return Err!(Request(InvalidParam(
+				"Requested frame_id does not match the responder's current frame."
+			)));
+		}
+	} else if body.mode == "sketch" {
+		return Err!(Request(InvalidParam("frame_id is required in sketch mode.")));
+	}
+
+	let mut normalized_frame_event_ids = body.frame_event_ids.clone();
+	normalized_frame_event_ids.sort();
+	normalized_frame_event_ids.dedup();
+	let frame_matches =
+		normalized_frame_event_ids.is_empty() || normalized_frame_event_ids == digest.frame_event_ids;
+	let frame_status = if body.frame_negotiation {
+		if frame_matches {
+			"common"
+		} else {
+			"none"
+		}
+	} else {
+		"not_requested"
+	};
+
+	Ok(RoomDiffValidation {
+		normalized_frame_event_ids,
+		frame_matches,
+		frame_status: frame_status.to_owned(),
+	})
 }
 
 async fn verify_federation_request(
@@ -305,8 +258,40 @@ async fn room_digest_inner(
 	services: &crate::State,
 	room_id: &OwnedRoomId,
 ) -> Result<RoomDigestResponse> {
-	let state = collect_room_algebraic_state(services, room_id).await?;
-	room_digest_from_state(services, room_id, &state).await
+	let state = services
+		.rooms
+		.timeline
+		.reconciliation_state(room_id)
+		.await?;
+	let mut frame_event_ids: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
+	frame_event_ids.sort();
+	frame_event_ids.dedup();
+
+	let extremity_event_ids = frame_event_ids.clone();
+	let frame_id = frame_id_for(&frame_event_ids);
+
+	Ok(RoomDigestResponse {
+		digest: state.resident.accumulator().encode_digest(),
+		digest_type: "algebraic_v1".to_owned(),
+		known_event_count: state.known_event_count,
+		frame_id,
+		strata: state
+			.resident
+			.strata()
+			.iter()
+			.map(encode_stratum_entry)
+			.collect(),
+		frame_event_ids,
+		extremity_event_ids,
+		depth_range: Some(state.depth_range),
+		origin_server_ts_range: Some(state.origin_server_ts_range),
+	})
 }
 
 /// `GET /_matrix/federation/v1/room_digest/{roomId}`
@@ -425,22 +410,17 @@ pub(crate) async fn post_room_diff_route(
 	.check()
 	.await?;
 
-	let state = collect_room_algebraic_state(&services, &room_id).await?;
-	let digest = room_digest_from_state(&services, &room_id, &state).await?;
+	let digest = room_digest_inner(&services, &room_id).await?;
+	let state = services
+		.rooms
+		.timeline
+		.reconciliation_state(&room_id)
+		.await?;
+	let validation = validate_room_diff_request(&body, &digest)?;
+	let frame_matches = validation.frame_matches;
+	let frame_status = validation.frame_status;
 	let mut have: HashSet<OwnedEventId> = body.local_extremity_event_ids.into_iter().collect();
 	have.extend(body.have_event_ids);
-
-	let frame_matches =
-		body.frame_event_ids.is_empty() || body.frame_event_ids == digest.frame_event_ids;
-	let frame_status = if body.frame_negotiation {
-		if frame_matches {
-			"common".to_owned()
-		} else {
-			"none".to_owned()
-		}
-	} else {
-		"not_requested".to_owned()
-	};
 
 	if body.mode == "sketch" {
 		if !frame_matches {
@@ -553,7 +533,9 @@ pub(crate) async fn post_room_diff_route(
 			};
 
 			for root in roots {
-				if let Some(entries) = state.h64_to_event_hashes.get(&root) {
+				let entries: Option<&Vec<(OwnedEventId, rezzy::reconcile::ElementHash)>> =
+					state.h64_to_event_hashes.get(&root);
+				if let Some(entries) = entries {
 					let (event_id, hash) = entries
 						.first()
 						.ok_or_else(|| err!(Database("missing event mapping for short id.")))?;
@@ -651,9 +633,23 @@ pub(crate) async fn post_room_events_route(
 	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
 
 	let mut missing_event_ids = Vec::new();
+	let mut rejected_tombstones = Vec::new();
+	let mut rejected_tombstone_ids = HashSet::new();
 	let mut combined = Vec::new();
 
 	for event_id in &body.event_ids {
+		if services
+			.rooms
+			.pdu_metadata
+			.is_event_soft_failed(event_id)
+			.await
+		{
+			if rejected_tombstone_ids.insert(event_id.clone()) {
+				rejected_tombstones.push(rejected_tombstone(event_id, "soft_failed"));
+			}
+			continue;
+		}
+
 		match services
 			.rooms
 			.timeline
@@ -685,6 +681,17 @@ pub(crate) async fn post_room_events_route(
 					continue;
 				};
 				if requested.contains(&auth_event_id) || known.contains(&auth_event_id) {
+					continue;
+				}
+				if services
+					.rooms
+					.pdu_metadata
+					.is_event_soft_failed(&auth_event_id)
+					.await
+				{
+					if rejected_tombstone_ids.insert(auth_event_id.clone()) {
+						rejected_tombstones.push(rejected_tombstone(&auth_event_id, "soft_failed"));
+					}
 					continue;
 				}
 				if let Ok(pdu) = services
@@ -721,6 +728,128 @@ pub(crate) async fn post_room_events_route(
 		events,
 		auth_chain_events,
 		missing_event_ids,
-		rejected_tombstones: Vec::new(),
+		rejected_tombstones,
 	}))
+}
+
+#[cfg(test)]
+mod tests {
+	use ruma::OwnedEventId;
+
+	use super::{
+		RoomDigestResponse, RoomDiffRequest, frame_id_for, validate_room_diff_request,
+	};
+
+	fn eid(s: &str) -> OwnedEventId { format!("${s}:example.com").try_into().unwrap() }
+
+	fn digest(frame_event_ids: Vec<OwnedEventId>) -> RoomDigestResponse {
+		RoomDigestResponse {
+			digest: "digest".to_owned(),
+			digest_type: "algebraic_v1".to_owned(),
+			known_event_count: 1,
+			frame_id: frame_id_for(&frame_event_ids),
+			strata: vec![],
+			frame_event_ids,
+			extremity_event_ids: vec![],
+			depth_range: None,
+			origin_server_ts_range: None,
+		}
+	}
+
+	#[test]
+	fn frame_id_is_order_insensitive() {
+		let ordered = vec![eid("a"), eid("b"), eid("c")];
+		let shuffled = vec![eid("c"), eid("a"), eid("b")];
+
+		assert_eq!(frame_id_for(&ordered), frame_id_for(&shuffled));
+	}
+
+	#[test]
+	fn frame_id_deduplicates_anchor_ids() {
+		let unique = vec![eid("a"), eid("b"), eid("c")];
+		let duplicated = vec![eid("b"), eid("a"), eid("c"), eid("b"), eid("a")];
+
+		assert_eq!(frame_id_for(&unique), frame_id_for(&duplicated));
+	}
+
+	#[test]
+	fn resolved_state_scope_is_rejected() {
+		let body = RoomDiffRequest {
+			mode: "extremity".to_owned(),
+			frame_negotiation: false,
+			frame_event_ids: vec![],
+			local_extremity_event_ids: vec![],
+			have_event_ids: vec![],
+			digest_type: None,
+			local_digest: None,
+			local_known_event_count: None,
+			requests: vec![],
+			local_sketches: vec![],
+			limit: None,
+			max_depth_delta: None,
+			max_events: None,
+			scope: Some("resolved_state".to_owned()),
+			state_at: None,
+			frame_id: None,
+		};
+
+		let err = validate_room_diff_request(&body, &digest(vec![eid("a")])).unwrap_err();
+		assert!(err.to_string().contains("resolved_state scope is not yet implemented"));
+	}
+
+	#[test]
+	fn sketch_mode_accepts_canonicalized_frame() {
+		let frame_event_ids = vec![eid("a"), eid("b")];
+		let digest = digest(frame_event_ids.clone());
+		let body = RoomDiffRequest {
+			mode: "sketch".to_owned(),
+			frame_negotiation: true,
+			frame_event_ids: vec![eid("b"), eid("a"), eid("a")],
+			local_extremity_event_ids: vec![],
+			have_event_ids: vec![],
+			digest_type: Some("algebraic_v1".to_owned()),
+			local_digest: Some("AQ".to_owned()),
+			local_known_event_count: Some(1),
+			requests: vec![],
+			local_sketches: vec![],
+			limit: None,
+			max_depth_delta: None,
+			max_events: None,
+			scope: None,
+			state_at: None,
+			frame_id: Some(digest.frame_id.clone()),
+		};
+
+		let validation = validate_room_diff_request(&body, &digest).expect("validation");
+		assert!(validation.frame_matches);
+		assert_eq!(validation.frame_status, "common");
+		assert_eq!(validation.normalized_frame_event_ids, frame_event_ids);
+	}
+
+	#[test]
+	fn sketch_mode_rejects_frame_mismatch() {
+		let digest = digest(vec![eid("a"), eid("b")]);
+		let body = RoomDiffRequest {
+			mode: "sketch".to_owned(),
+			frame_negotiation: true,
+			frame_event_ids: vec![eid("c")],
+			local_extremity_event_ids: vec![],
+			have_event_ids: vec![],
+			digest_type: Some("algebraic_v1".to_owned()),
+			local_digest: Some("AQ".to_owned()),
+			local_known_event_count: Some(1),
+			requests: vec![],
+			local_sketches: vec![],
+			limit: None,
+			max_depth_delta: None,
+			max_events: None,
+			scope: None,
+			state_at: None,
+			frame_id: Some(digest.frame_id.clone()),
+		};
+
+		let validation = validate_room_diff_request(&body, &digest).expect("validation");
+		assert!(!validation.frame_matches);
+		assert_eq!(validation.frame_status, "none");
+	}
 }
