@@ -45,14 +45,28 @@ where
 	let mut remaining = Vec::with_capacity(still_needed.len());
 	for id in &still_needed {
 		// `pdu_exists` also matches events persisted only as outliers, which
-		// includes ones we ultimately rejected (e.g. because their own
-		// prev_events were unresolvable). A rejected event never made it into
-		// the timeline, so it still can't serve as usable prev-event state —
-		// treat it as still needed rather than letting the outlier record
-		// mask the rejection and silently skip re-fetching it.
+		// includes ones we ultimately rejected. Most rejections (failed auth
+		// checks, depending on another rejected event, etc.) are permanent:
+		// re-fetching the same event over federation can't change why it was
+		// rejected, so treat those as satisfied like any other outlier.
+		// But rejections caused by us failing to *resolve* the event's own
+		// dependencies (a structurally-invalid prev_event, or /state_ids
+		// simply failing) are worth retrying, since a retry can supply the
+		// missing data this time.
 		let exists = self.services.timeline.pdu_exists(id).await;
-		let rejected = self.services.pdu_metadata.is_event_rejected(id).await;
-		if !exists || rejected {
+		let retry_worthy = if self.services.pdu_metadata.is_event_rejected(id).await {
+			self.services
+				.pdu_metadata
+				.get_rejection_reason(id)
+				.await
+				.is_some_and(|reason| {
+					reason.contains("structurally invalid in get_missing_events response")
+						|| reason.contains("all prev_events unknown and /state_ids fetch failed")
+				})
+		} else {
+			false
+		};
+		if !exists || retry_worthy {
 			remaining.push(id.clone());
 		}
 	}
