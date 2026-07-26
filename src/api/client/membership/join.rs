@@ -659,6 +659,15 @@ async fn join_room_by_id_helper_remote_process(
 
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
+	// Capture this before promoting send_join state/auth outliers. Promotion makes
+	// a fresh room look non-empty and otherwise misclassifies first joins as
+	// rejoins.
+	let had_timeline_before_join = services
+		.rooms
+		.timeline
+		.last_timeline_count(room_id)
+		.await
+		.is_ok();
 
 	drop(cork);
 
@@ -830,12 +839,7 @@ async fn join_room_by_id_helper_remote_process(
 			// extremities should be inserted as Backfilled (historical). For re-joins
 			// the room already has events from prior membership, so extremities that
 			// occurred while away should be Normal (live).
-			is_rejoin = services
-				.rooms
-				.timeline
-				.last_timeline_count(room_id)
-				.await
-				.is_ok();
+			is_rejoin = had_timeline_before_join;
 		}
 	}
 
@@ -855,7 +859,7 @@ async fn join_room_by_id_helper_remote_process(
 		);
 		for event_id in &missing_latest {
 			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, event_id).await
+				fetch_missing_extremity(services, &remote_server, room_id, event_id, false).await
 			{
 				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
@@ -926,7 +930,7 @@ async fn join_room_by_id_helper_remote_process(
 		);
 		for event_id in missing_latest {
 			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, &event_id).await
+				fetch_missing_extremity(services, &remote_server, room_id, &event_id, true).await
 			{
 				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
@@ -1338,6 +1342,7 @@ async fn fetch_missing_extremity(
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
 	event_id: &ruma::OwnedEventId,
+	is_timeline_event: bool,
 ) -> Result<()> {
 	let request = federation_event_relationships::unstable::Request {
 		event_id: event_id.clone(),
@@ -1381,7 +1386,7 @@ async fn fetch_missing_extremity(
 						room_id,
 						&parsed_event_id,
 						value,
-						true,
+						is_timeline_event,
 						None,
 					)
 					.await
@@ -1441,7 +1446,14 @@ async fn fetch_missing_extremity(
 	if let Err(e) = services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.handle_incoming_pdu(
+			remote_server,
+			room_id,
+			&parsed_event_id,
+			value,
+			is_timeline_event,
+			None,
+		)
 		.await
 	{
 		warn!("Failed to handle extremity {event_id}: {e}");
