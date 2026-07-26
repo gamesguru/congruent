@@ -124,10 +124,10 @@ pub async fn backfill_if_required(
 		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
 			std::collections::HashMap::new();
 		let mut scanned = 0_usize;
-		let mut pdus = self
-			.pdus_rev(room_id, Some(from.saturating_inc(ruma::api::Direction::Forward)))
-			.take(limit)
-			.boxed();
+		// Include the boundary event itself. A join can place a remote extremity
+		// exactly at `from`; advancing first hides that child and makes a missing
+		// predecessor look like a gap-free timeline.
+		let mut pdus = self.pdus_rev(room_id, Some(from)).take(limit).boxed();
 		while let Some(Ok((_, pdu))) = pdus.next().await {
 			scanned = scanned.saturating_add(1);
 			event_map.insert(pdu.event_id.clone(), pdu);

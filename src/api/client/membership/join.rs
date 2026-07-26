@@ -868,7 +868,6 @@ async fn join_room_by_id_helper_remote_process(
 			remote_server,
 			room_id
 		);
-		let mut fetched_extremities = Vec::new();
 		for event_id in &missing_latest {
 			match fetch_missing_extremity(
 				services,
@@ -880,17 +879,10 @@ async fn join_room_by_id_helper_remote_process(
 			)
 			.await
 			{
-				| Ok(Some(event_id)) => fetched_extremities.push(event_id),
-				| Ok(None) => {},
+				| Ok(Some(_) | None) => {},
 				| Err(e) => warn!("Failed to fetch missing extremity {event_id}: {e}"),
 			}
 		}
-		services
-			.rooms
-			.timeline
-			.promote_outliers_sorted(room_id, &fetched_extremities, &room_version_id)
-			.await?;
-
 		// Re-acquire the state lock before appending our join event
 		state_lock = services.rooms.state.mutex.lock(room_id).await;
 	}
@@ -1428,7 +1420,7 @@ async fn fetch_missing_extremity(
 
 	match mode {
 		| ExtremityIngestion::SnapshotBacked => {
-			services
+			let (pdu, value) = services
 				.rooms
 				.event_handler
 				.handle_outlier_pdu(
@@ -1442,6 +1434,16 @@ async fn fetch_missing_extremity(
 					Some(room_version),
 				)
 				.await?;
+			services
+				.rooms
+				.timeline
+				.force_insert_pdu(room_id, &parsed_event_id, &pdu, &value, false)
+				.await?;
+			services.rooms.outlier.clear_outlier_flag(&parsed_event_id);
+			services
+				.rooms
+				.pdu_metadata
+				.clear_pdu_markers(&parsed_event_id);
 		},
 		| ExtremityIngestion::LiveGap => {
 			services
