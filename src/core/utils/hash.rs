@@ -1,3 +1,4 @@
+pub mod algebraic;
 mod argon;
 pub mod lthash;
 pub mod sha256;

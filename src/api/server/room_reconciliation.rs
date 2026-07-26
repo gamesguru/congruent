@@ -1,9 +1,10 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use axum::extract::{Path, State};
 use axum_extra::{TypedHeader, headers::Authorization};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, matrix::dag::sort_topologically};
+use conduwuit_core::utils::hash::algebraic::element_hash_for_pdu;
 use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
@@ -73,10 +74,16 @@ pub(crate) struct SketchRequest {
 #[derive(Serialize)]
 struct RoomDiffResponse {
 	missing_event_ids: Vec<OwnedEventId>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	requester_only_short_ids: Option<Vec<String>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	expected_requester_side_accumulator: Option<String>,
 	remote_known_event_count: u64,
 	remote_extremity_event_ids: Vec<OwnedEventId>,
 	frame_id: String,
 	frame_status: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	negotiated_frame_event_ids: Option<Vec<OwnedEventId>>,
 	scope: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	state_at: Option<OwnedEventId>,
@@ -104,7 +111,124 @@ struct RoomEventsResponse {
 
 fn default_true() -> bool { true }
 
-fn empty_strata_entry() -> String { URL_SAFE_NO_PAD.encode([0_u8; 64]) }
+fn encode_stratum_entry(stratum: &[u64; rezzy::reconcile::STRATUM_CAPACITY]) -> String {
+	let mut bytes = Vec::with_capacity(rezzy::reconcile::STRATUM_CAPACITY * 8);
+	for coordinate in stratum {
+		bytes.extend_from_slice(&coordinate.to_le_bytes());
+	}
+	URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn encode_short_identifier(h64: u64) -> String { URL_SAFE_NO_PAD.encode(h64.to_be_bytes()) }
+
+fn encode_accumulator_digest(digest: u128) -> String {
+	URL_SAFE_NO_PAD.encode(digest.to_be_bytes())
+}
+
+struct RoomAlgebraicState {
+	resident: rezzy::reconcile::ResidentKernel,
+	sorted_h64: Vec<u64>,
+	h64_to_event_hashes: BTreeMap<u64, Vec<(OwnedEventId, rezzy::reconcile::ElementHash)>>,
+	known_event_count: u64,
+	depth_range: [u64; 2],
+	origin_server_ts_range: [u64; 2],
+}
+
+async fn collect_room_algebraic_state(
+	services: &crate::State,
+	room_id: &OwnedRoomId,
+) -> Result<RoomAlgebraicState> {
+	let room_version = services
+		.rooms
+		.state
+		.get_room_version(room_id)
+		.await
+		.map_err(|e| err!(Database("failed to resolve room version for {room_id}: {e}")))?;
+
+	let mut resident = rezzy::reconcile::ResidentKernel::new();
+	let mut sorted_h64 = Vec::new();
+	let mut h64_to_event_hashes: BTreeMap<
+		u64,
+		Vec<(OwnedEventId, rezzy::reconcile::ElementHash)>,
+	> = BTreeMap::new();
+	let mut known_event_count = 0_u64;
+	let mut depth_min = u64::MAX;
+	let mut depth_max = 0_u64;
+	let mut ts_min = u64::MAX;
+	let mut ts_max = 0_u64;
+
+	let pdus = services.rooms.timeline.all_pdus(room_id);
+	futures::pin_mut!(pdus);
+	while let Some((_, pdu)) = pdus.next().await {
+		known_event_count = known_event_count.saturating_add(1);
+		let depth = u64::from(pdu.depth);
+		let ts = u64::from(pdu.origin_server_ts);
+		depth_min = depth_min.min(depth);
+		depth_max = depth_max.max(depth);
+		ts_min = ts_min.min(ts);
+		ts_max = ts_max.max(ts);
+		let hash = element_hash_for_pdu(&pdu, &room_version)?;
+		resident.insert(hash).map_err(|e| {
+			err!(Database("failed to accumulate algebraic state for {room_id}: {e:?}"))
+		})?;
+		sorted_h64.push(hash.h64);
+		h64_to_event_hashes
+			.entry(hash.h64)
+			.or_default()
+			.push((pdu.event_id.clone(), hash));
+	}
+
+	sorted_h64.sort_unstable();
+
+	if known_event_count == 0 {
+		depth_min = 0;
+		ts_min = 0;
+	}
+
+	Ok(RoomAlgebraicState {
+		resident,
+		sorted_h64,
+		h64_to_event_hashes,
+		known_event_count,
+		depth_range: [depth_min, depth_max],
+		origin_server_ts_range: [ts_min, ts_max],
+	})
+}
+
+async fn room_digest_from_state(
+	services: &crate::State,
+	room_id: &OwnedRoomId,
+	state: &RoomAlgebraicState,
+) -> Result<RoomDigestResponse> {
+	let mut frame_event_ids: Vec<_> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
+	frame_event_ids.sort();
+
+	let extremity_event_ids = frame_event_ids.clone();
+	let frame_id = frame_id_for(&frame_event_ids);
+
+	Ok(RoomDigestResponse {
+		digest: state.resident.accumulator().encode_digest(),
+		digest_type: "algebraic_v1".to_owned(),
+		known_event_count: state.known_event_count,
+		frame_id,
+		strata: state
+			.resident
+			.strata()
+			.iter()
+			.map(encode_stratum_entry)
+			.collect(),
+		frame_event_ids,
+		extremity_event_ids,
+		depth_range: Some(state.depth_range),
+		origin_server_ts_range: Some(state.origin_server_ts_range),
+	})
+}
 
 fn frame_id_for(event_ids: &[OwnedEventId]) -> String {
 	let mut ids = event_ids.to_vec();
@@ -181,58 +305,8 @@ async fn room_digest_inner(
 	services: &crate::State,
 	room_id: &OwnedRoomId,
 ) -> Result<RoomDigestResponse> {
-	let mut frame_event_ids: Vec<_> = services
-		.rooms
-		.state
-		.get_forward_extremities(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-	frame_event_ids.sort();
-
-	let extremity_event_ids = frame_event_ids.clone();
-	let frame_id = frame_id_for(&frame_event_ids);
-
-	let mut known_event_count = 0_u64;
-	let mut depth_min = u64::MAX;
-	let mut depth_max = 0_u64;
-	let mut ts_min = u64::MAX;
-	let mut ts_max = 0_u64;
-	let mut digest = rezzy::LtHash::ZERO;
-
-	let pdus = services.rooms.timeline.all_pdus(room_id);
-	futures::pin_mut!(pdus);
-	while let Some((_, pdu)) = pdus.next().await {
-		known_event_count = known_event_count.saturating_add(1);
-		let depth = u64::from(pdu.depth);
-		let ts = u64::from(pdu.origin_server_ts);
-		depth_min = depth_min.min(depth);
-		depth_max = depth_max.max(depth);
-		ts_min = ts_min.min(ts);
-		ts_max = ts_max.max(ts);
-		digest.insert("room_event", "", &pdu.event_id);
-	}
-
-	if known_event_count == 0 {
-		depth_min = 0;
-		ts_min = 0;
-	}
-
-	let digest = URL_SAFE_NO_PAD.encode(digest.checksum());
-
-	Ok(RoomDigestResponse {
-		digest,
-		digest_type: "algebraic_v1".to_owned(),
-		known_event_count,
-		frame_id,
-		strata: std::iter::repeat_with(empty_strata_entry)
-			.take(32)
-			.collect(),
-		frame_event_ids,
-		extremity_event_ids,
-		depth_range: Some([depth_min, depth_max]),
-		origin_server_ts_range: Some([ts_min, ts_max]),
-	})
+	let state = collect_room_algebraic_state(services, room_id).await?;
+	room_digest_from_state(services, room_id, &state).await
 }
 
 /// `GET /_matrix/federation/v1/room_digest/{roomId}`
@@ -351,12 +425,15 @@ pub(crate) async fn post_room_diff_route(
 	.check()
 	.await?;
 
-	let digest = room_digest_inner(&services, &room_id).await?;
+	let state = collect_room_algebraic_state(&services, &room_id).await?;
+	let digest = room_digest_from_state(&services, &room_id, &state).await?;
 	let mut have: HashSet<OwnedEventId> = body.local_extremity_event_ids.into_iter().collect();
 	have.extend(body.have_event_ids);
 
+	let frame_matches =
+		body.frame_event_ids.is_empty() || body.frame_event_ids == digest.frame_event_ids;
 	let frame_status = if body.frame_negotiation {
-		if body.frame_event_ids.is_empty() || body.frame_event_ids == digest.frame_event_ids {
+		if frame_matches {
 			"common".to_owned()
 		} else {
 			"none".to_owned()
@@ -366,27 +443,150 @@ pub(crate) async fn post_room_diff_route(
 	};
 
 	if body.mode == "sketch" {
-		let sketch_status = if body.digest_type.as_deref() == Some("algebraic_v1")
-			&& body.local_digest.as_deref().is_some()
-			&& body
-				.local_known_event_count
-				.is_some_and(|count| count == digest.known_event_count)
+		if !frame_matches {
+			let response = RoomDiffResponse {
+				missing_event_ids: Vec::new(),
+				requester_only_short_ids: None,
+				expected_requester_side_accumulator: None,
+				remote_known_event_count: digest.known_event_count,
+				remote_extremity_event_ids: digest.extremity_event_ids,
+				frame_id: digest.frame_id,
+				frame_status,
+				negotiated_frame_event_ids: None,
+				scope: body.scope.unwrap_or_else(|| "event_set".to_owned()),
+				state_at: body.state_at,
+				sketch_status: Some("not_applicable".to_owned()),
+				truncated: true,
+			};
+			return Ok(axum::Json(response));
+		}
+
+		let local_digest = body.local_digest.as_deref().ok_or_else(|| {
+			err!(Request(InvalidParam("Missing local_digest for sketch mode.")))
+		})?;
+		let _local_known_event_count = body.local_known_event_count.ok_or_else(|| {
+			err!(Request(InvalidParam("Missing local_known_event_count for sketch mode.")))
+		})?;
+		if body.digest_type.as_deref() != Some("algebraic_v1") {
+			return Err!(Request(InvalidParam("Unsupported digest_type.")));
+		}
+		if body.local_sketches.len() != body.requests.len() {
+			return Err!(Request(InvalidParam(
+				"local_sketches length must match requests length."
+			)));
+		}
+
+		let bucket_requests: Vec<rezzy::reconcile::BucketRequest> = body
+			.requests
+			.iter()
+			.map(|request| {
+				Ok(rezzy::reconcile::BucketRequest {
+					depth: u8::try_from(request.depth)
+						.map_err(|_| err!(Request(InvalidParam("Invalid bucket depth."))))?,
+					prefix: u32::try_from(request.prefix)
+						.map_err(|_| err!(Request(InvalidParam("Invalid bucket prefix."))))?,
+					capacity: usize::try_from(request.capacity)
+						.map_err(|_| err!(Request(InvalidParam("Invalid sketch capacity."))))?,
+				})
+			})
+			.collect::<Result<_>>()?;
+
+		let requester_digest = rezzy::reconcile::RoomAccumulator::decode_digest(local_digest)
+			.map_err(|_| err!(Request(InvalidParam("Invalid local_digest for sketch mode."))))?;
+		let residual_digest = state.resident.accumulator().digest() ^ requester_digest;
+
+		let local_sketches: Vec<_> = body
+			.local_sketches
+			.iter()
+			.zip(&body.requests)
+			.map(|(encoded, request)| {
+				let capacity = usize::try_from(request.capacity)
+					.map_err(|_| err!(Request(InvalidParam("Invalid sketch capacity."))))?;
+				rezzy::reconcile::SyndromeSketch::decode(capacity, encoded)
+					.map_err(|_| err!(Request(InvalidParam("Invalid local sketch."))))
+			})
+			.collect::<Result<_>>()?;
+
+		let responder_sketches =
+			rezzy::reconcile::build_bucket_sketches(&state.sorted_h64, &bucket_requests)
+				.map_err(|_| err!(Request(InvalidParam("Invalid bucket requests."))))?;
+
+		let mut missing_event_ids = Vec::new();
+		let mut requester_only_short_ids = Vec::new();
+		let mut responder_side_accumulator = rezzy::reconcile::RoomAccumulator::new();
+
+		for ((_, bucket_request), (requester_sketch, responder_sketch)) in body
+			.requests
+			.iter()
+			.zip(bucket_requests.iter())
+			.zip(local_sketches.iter().zip(responder_sketches.iter()))
 		{
-			Some("not_applicable".to_owned())
-		} else {
-			Some("capacity_exceeded".to_owned())
-		};
+			let residual = responder_sketch
+				.subtract(requester_sketch)
+				.map_err(|_| err!(Request(InvalidParam("Invalid sketch length."))))?;
+			let roots = match residual.decode_elements(bucket_request.capacity) {
+				| Ok(roots) => roots,
+				| Err(rezzy::reconcile::AlgebraicError::DecodeFailure) => {
+					let response = RoomDiffResponse {
+						missing_event_ids: Vec::new(),
+						requester_only_short_ids: None,
+						expected_requester_side_accumulator: None,
+						remote_known_event_count: digest.known_event_count,
+						remote_extremity_event_ids: digest.extremity_event_ids,
+						frame_id: digest.frame_id,
+						frame_status,
+						negotiated_frame_event_ids: if body.frame_negotiation {
+							Some(digest.frame_event_ids)
+						} else {
+							None
+						},
+						scope: body.scope.unwrap_or_else(|| "event_set".to_owned()),
+						state_at: body.state_at,
+						sketch_status: Some("capacity_exceeded".to_owned()),
+						truncated: true,
+					};
+					return Ok(axum::Json(response));
+				},
+				| Err(_) => {
+					return Err!(Request(InvalidParam("Sketch decode failed.")));
+				},
+			};
+
+			for root in roots {
+				if let Some(entries) = state.h64_to_event_hashes.get(&root) {
+					let (event_id, hash) = entries
+						.first()
+						.ok_or_else(|| err!(Database("missing event mapping for short id.")))?;
+					missing_event_ids.push(event_id.clone());
+					responder_side_accumulator.insert(*hash).map_err(|e| {
+						err!(Database("failed to accumulate responder-side repair set: {e:?}"))
+					})?;
+				} else {
+					requester_only_short_ids.push(encode_short_identifier(root));
+				}
+			}
+		}
+
+		let expected_requester_side_accumulator =
+			encode_accumulator_digest(residual_digest ^ responder_side_accumulator.digest());
 
 		let response = RoomDiffResponse {
-			missing_event_ids: Vec::new(),
+			missing_event_ids,
+			requester_only_short_ids: Some(requester_only_short_ids),
+			expected_requester_side_accumulator: Some(expected_requester_side_accumulator),
 			remote_known_event_count: digest.known_event_count,
 			remote_extremity_event_ids: digest.extremity_event_ids,
 			frame_id: digest.frame_id,
 			frame_status,
+			negotiated_frame_event_ids: if body.frame_negotiation {
+				Some(digest.frame_event_ids.clone())
+			} else {
+				None
+			},
 			scope: body.scope.unwrap_or_else(|| "event_set".to_owned()),
 			state_at: body.state_at,
-			sketch_status,
-			truncated: true,
+			sketch_status: Some("decoded".to_owned()),
+			truncated: false,
 		};
 		return Ok(axum::Json(response));
 	}
@@ -402,10 +602,17 @@ pub(crate) async fn post_room_diff_route(
 
 	Ok(axum::Json(RoomDiffResponse {
 		missing_event_ids,
+		requester_only_short_ids: None,
+		expected_requester_side_accumulator: None,
 		remote_known_event_count: digest.known_event_count,
 		remote_extremity_event_ids: digest.extremity_event_ids,
 		frame_id: digest.frame_id,
 		frame_status,
+		negotiated_frame_event_ids: if body.frame_negotiation {
+			Some(digest.frame_event_ids.clone())
+		} else {
+			None
+		},
 		scope: body.scope.unwrap_or_else(|| "event_set".to_owned()),
 		state_at: body.state_at,
 		sketch_status: None,
