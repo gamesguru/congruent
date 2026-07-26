@@ -225,27 +225,49 @@ pub(crate) async fn get_context_route(
 		.collect()
 		.await;
 
+	let previous_token = if events_before.is_empty() {
+		// PduCounts are global, so arithmetic cannot identify the previous
+		// event in this room. Use the room-local exclusive iterator instead.
+		services
+			.rooms
+			.timeline
+			.pdus_rev(room_id, Some(base_count))
+			.boxed()
+			.next()
+			.await
+			.and_then(Result::ok)
+			.map(|(pdu_count, pdu)| TopoToken { depth: u64::from(pdu.depth()), pdu_count })
+	} else {
+		None
+	};
+	let next_token = if events_after.is_empty() {
+		// As above, find the successor through this room's index rather than
+		// incrementing a homeserver-global PduCount.
+		services
+			.rooms
+			.timeline
+			.pdus(room_id, Some(base_count))
+			.boxed()
+			.next()
+			.await
+			.and_then(Result::ok)
+			.map(|(pdu_count, pdu)| TopoToken { depth: u64::from(pdu.depth()), pdu_count })
+	} else {
+		None
+	};
+
 	let start = events_before
 		.last()
 		.map(at!(0))
-		// `messages` treats its backward `from` token as an exclusive upper
-		// bound. If no visible event precedes the context event, retain the
-		// context token so the immediately preceding timeline event remains
-		// eligible for the next backward page.
+		.or(previous_token)
 		.or(Some(base_token))
 		.as_ref()
 		.map(TopoToken::to_string);
 	let end = events_after
 		.last()
 		.map(at!(0))
-		.or_else(|| {
-			Some(TopoToken {
-				depth: base_token.depth,
-				pdu_count: base_token
-					.pdu_count
-					.saturating_inc(ruma::api::Direction::Forward),
-			})
-		})
+		.or(next_token)
+		.or(Some(base_token))
 		.as_ref()
 		.map(TopoToken::to_string);
 	info!(
