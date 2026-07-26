@@ -25,6 +25,10 @@ pub struct UrlPreviewData {
 	pub title: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:description"))]
 	pub description: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:type"))]
+	pub og_type: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:url"))]
+	pub og_url: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:image"))]
 	pub image: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "matrix:image:size"))]
@@ -454,6 +458,8 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	/* use OpenGraph title/description, but fall back to HTML if not available */
 	preview_data.title = props.get("title").cloned().or(html.title);
 	preview_data.description = props.get("description").cloned().or(html.description);
+	preview_data.og_type = props.get("type").cloned();
+	preview_data.og_url = props.get("url").cloned();
 
 	Ok(preview_data)
 }
