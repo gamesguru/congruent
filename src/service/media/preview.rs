@@ -433,9 +433,18 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 
 	let mut preview_data = UrlPreviewData::default();
 
+	let base_url = Url::parse(url).ok();
+	let resolve = |raw: &str| -> String {
+		base_url
+			.as_ref()
+			.and_then(|base| base.join(raw).ok())
+			.map_or_else(|| raw.to_owned(), |joined| joined.to_string())
+	};
+
 	if let Some(obj) = html.opengraph.images.first() {
+		let image_url = resolve(&obj.url);
 		if let Ok(data_with_img) = self
-			.download_image(&obj.url, Some(preview_data.clone()))
+			.download_image(&image_url, Some(preview_data.clone()))
 			.await
 		{
 			preview_data = data_with_img;
@@ -444,13 +453,15 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	}
 
 	if let Some(obj) = html.opengraph.videos.first() {
-		preview_data = self.download_video(&obj.url, Some(preview_data)).await?;
+		let video_url = resolve(&obj.url);
+		preview_data = self.download_video(&video_url, Some(preview_data)).await?;
 		preview_data.video_width = obj.properties.get("width").and_then(|v| v.parse().ok());
 		preview_data.video_height = obj.properties.get("height").and_then(|v| v.parse().ok());
 	}
 
 	if let Some(obj) = html.opengraph.audios.first() {
-		preview_data = self.download_audio(&obj.url, Some(preview_data)).await?;
+		let audio_url = resolve(&obj.url);
+		preview_data = self.download_audio(&audio_url, Some(preview_data)).await?;
 	}
 
 	let props = html.opengraph.properties;
