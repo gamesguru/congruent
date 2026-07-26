@@ -178,7 +178,7 @@
 {"Action":"pass","Test":"TestFetchHistoricalSharedEvent"}
 {"Action":"pass","Test":"TestFetchMessagesFromNonExistentRoom"}
 {"Action":"pass","Test":"TestFilter"}
-{"Action":"fail","Test":"TestFilterMessagesByRelType"}
+{"Action":"pass","Test":"TestFilterMessagesByRelType"}
 {"Action":"pass","Test":"TestGappedSyncLeaveSection"}
 {"Action":"pass","Test":"TestGetFilteredRoomMembers"}
 {"Action":"pass","Test":"TestGetFilteredRoomMembers/membership/join"}
