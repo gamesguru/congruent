@@ -815,7 +815,12 @@ async fn join_room_by_id_helper_remote_process(
 	let mut is_rejoin = false;
 	if !remote_latest_events.is_empty() {
 		for event_id in &remote_latest_events {
-			if !services.rooms.timeline.pdu_exists(event_id).await {
+			if !services
+				.rooms
+				.timeline
+				.non_outlier_pdu_exists(event_id)
+				.await
+			{
 				missing_latest.push(event_id.clone());
 			}
 		}

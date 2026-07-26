@@ -237,7 +237,7 @@ async fn fetch_missing(services: &Services, room_id: &RoomId, event_id: &ruma::E
 		recent_first: None,
 		include_parent: None,
 		include_children: None,
-		direction: None,
+		direction: Some("up".to_owned()),
 		batch: None,
 	};
 	if let Ok(response) = services
