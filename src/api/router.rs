@@ -296,6 +296,18 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::get_openid_userinfo_route)
 			.ruma_route(&server::get_hierarchy_route)
 			.ruma_route(&server::get_event_by_timestamp_route)
+			.route(
+				"/_matrix/federation/v1/room_digest/{room_id}",
+				get(server::get_room_digest_route),
+			)
+			.route(
+				"/_matrix/federation/v1/room_diff/{room_id}",
+				post(server::post_room_diff_route),
+			)
+			.route(
+				"/_matrix/federation/v1/room_events/{room_id}",
+				post(server::post_room_events_route),
+			)
 			.ruma_route(&server::well_known_server)
 			.ruma_route(&server::get_content_route)
 			.ruma_route(&server::get_content_thumbnail_route)
