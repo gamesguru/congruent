@@ -2132,6 +2132,10 @@
 #
 #msc3030_enabled = true
 
+# MSC4500: State Accumulators
+#
+#msc4500_enabled = true
+
 #[global.smtp]
 
 # A `smtp://`` URI which will be used to connect to a mail server.
