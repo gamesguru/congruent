@@ -121,3 +121,14 @@ __pycache__/
 matrix-spec-txt/
 ruma-upstream/
 ruwuma/
+
+# nested DBs
+*.log
+*.sst
+media/
+CURRENT
+IDENTITY
+LOCK
+MANIFEST-*
+OPTIONS-*
+dbs/*.toml

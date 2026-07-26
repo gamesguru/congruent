@@ -340,22 +340,6 @@ complement/docker: ##H Build docker image from existing binary
 		-f ./docker/complement.Dockerfile \
 		--load .
 
-HOST_LIBS_MOUNTS = $(shell LD_LIBRARY_PATH="$(ROCKSDB_LIB_DIR):$(LD_LIBRARY_PATH)" ldd target/latest/conduwuit | grep -E '=> /' | awk '{print $$3}' | grep -vE '^/usr/local/|libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so|ld-linux' | awk '{print $$1":"$$1":ro"}' | paste -sd ';' - || true)
-
-.PHONY: complement/run
-complement/run: ##H Run Complement docker tests locally (requires COMPLEMENT_DIR)
-	@test -d "$(COMPLEMENT_DIR)" || (echo "ERROR: COMPLEMENT_DIR ($(COMPLEMENT_DIR)) does not exist" && exit 1)
-	@echo "Running Complement tests from $(COMPLEMENT_DIR)..."
-	COMPLEMENT_BASE_IMAGE="$(COMPLEMENT_IMAGE)" COMPLEMENT_HOST_MOUNTS="$(PREFIX)/lib:$(PREFIX)/lib:ro$(if $(HOST_LIBS_MOUNTS),;$(HOST_LIBS_MOUNTS))" ./bin/complement $(COMPLEMENT_DIR)
-
-
-.PHONY: complement/clean
-complement/clean: ##H Force-remove all Complement Docker containers and networks
-	@echo "Cleaning up Complement docker resources..."
-	@docker ps -aq --filter "name=complement_" | xargs -r docker rm -f
-	@docker network ls -q --filter "name=complement_" | xargs -r docker network rm
-	@echo "Done."
-
 .PHONY: complement/stats
 complement/stats: ##H Check local test stats
 	@test -f "tests/test_results/complement/test_results.jsonl" || (echo "ERROR: tests/test_results/complement/test_results.jsonl does not exist" && exit 1)
