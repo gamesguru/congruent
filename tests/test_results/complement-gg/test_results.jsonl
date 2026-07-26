@@ -151,7 +151,7 @@
 {"Action":"pass","Test":"TestEventAuth/returns_the_auth_chain_for_the_requested_event"}
 {"Action":"fail","Test":"TestEventRelationships"}
 {"Action":"pass","Test":"TestFederatedClientSpaces"}
-{"Action":"fail","Test":"TestFederatedEventRelationships"}
+{"Action":"pass","Test":"TestFederatedEventRelationships"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}
@@ -228,11 +228,11 @@
 {"Action":"pass","Test":"TestJson/Parallel"}
 {"Action":"pass","Test":"TestJson/Parallel/Invalid_JSON_special_values"}
 {"Action":"pass","Test":"TestJson/Parallel/Invalid_numerical_values"}
-{"Action":"pass","Test":"TestJumpToDateEndpoint"}
-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel"}
-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation"}
-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(end)"}
-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(start)"}
+{"Action":"fail","Test":"TestJumpToDateEndpoint"}
+{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel"}
+{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/federation"}
+{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(end)"}
+{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/federation/can_paginate_backwards_after_getting_remote_event_from_timestamp_to_event_endpoint_(start)"}
 {"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation/looking_backwards,_should_be_able_to_find_event_that_was_sent_before_we_joined"}
 {"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation/looking_forwards,_should_be_able_to_find_event_that_was_sent_before_we_joined"}
 {"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/federation/when_looking_backwards_before_the_room_was_created,_should_be_able_to_find_event_that_was_imported"}
