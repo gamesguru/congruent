@@ -21,7 +21,7 @@ use ruma::{
 			error::ErrorKind,
 			membership::{join_room_by_id, join_room_by_id_or_alias},
 		},
-		federation::{self},
+		federation::{self, event::event_relationships as federation_event_relationships},
 	},
 	canonical_json::to_canonical_value,
 	events::{
@@ -848,58 +848,9 @@ async fn join_room_by_id_helper_remote_process(
 		}
 	}
 
-	// Phase 1: For FIRST joins only, ingest pre-join extremities as outliers
-	// before appending the join event, then promote them as backfilled events.
-	// This avoids the participation check in live ingestion and preserves
-	// chronological order in backward pagination.
-	// We drop the state lock temporarily for the network requests.
-	if !missing_latest.is_empty() && !is_rejoin {
-		info!(
-			room_id = %room_id,
-			count = missing_latest.len(),
-			"join bootstrap using outlier-only extremity ingestion"
-		);
-		drop(state_lock);
-
-		info!(
-			"Forward-filling {} missing extremities from {} before joining room {}",
-			missing_latest.len(),
-			remote_server,
-			room_id
-		);
-		let mut fetched_extremities = Vec::new();
-		for event_id in &missing_latest {
-			match fetch_missing_extremity(
-				services,
-				&remote_server,
-				room_id,
-				event_id,
-				&room_version_id,
-				ExtremityIngestion::SnapshotBacked,
-			)
-			.await
-			{
-				| Ok(Some(extremity)) => fetched_extremities.push(extremity),
-				| Ok(None) => {},
-				| Err(e) => warn!("Failed to fetch missing extremity {event_id}: {e}"),
-			}
-		}
-		// Re-acquire the state lock before appending our join event
-		state_lock = services.rooms.state.mutex.lock(room_id).await;
-		for (pdu, value) in fetched_extremities {
-			Box::pin(services.rooms.timeline.append_incoming_pdu(
-				&pdu,
-				value,
-				once(pdu.event_id.clone()),
-				snapshot_state.clone(),
-				None,
-				false,
-				&state_lock,
-				room_id,
-			))
-			.await?;
-		}
-	}
+	// First joins do not eagerly fetch missing extremities here. The client-driven
+	// relationship/backfill request must remain the source of that history; eager
+	// federation requests race the expected request sequence and duplicate work.
 
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without its state. Both append_to_state and append_pdu
@@ -1404,6 +1355,73 @@ async fn fetch_missing_extremity(
 		?mode,
 		"fetching join extremity"
 	);
+
+	let relationship_request = federation_event_relationships::unstable::Request {
+		event_id: event_id.clone(),
+		room_id: Some(room_id.to_owned()),
+		max_depth: None,
+		max_breadth: None,
+		limit: None,
+		depth_first: None,
+		recent_first: None,
+		include_parent: None,
+		include_children: None,
+		direction: None,
+		batch: None,
+	};
+	if let Ok(response) = services
+		.sending
+		.send_federation_request(remote_server, relationship_request)
+		.await
+	{
+		for raw_event in response.events {
+			let Ok((parsed_room_id, parsed_event_id, value)) = services
+				.rooms
+				.event_handler
+				.parse_incoming_pdu(&raw_event)
+				.await
+			else {
+				continue;
+			};
+			if parsed_room_id != room_id || parsed_event_id != *event_id {
+				continue;
+			}
+			return match mode {
+				| ExtremityIngestion::SnapshotBacked => {
+					let (pdu, value) = services
+						.rooms
+						.event_handler
+						.handle_outlier_pdu(
+							remote_server,
+							None::<&PduEvent>,
+							&parsed_event_id,
+							room_id,
+							value,
+							false,
+							false,
+							Some(room_version),
+						)
+						.await?;
+					Ok(Some((pdu, value)))
+				},
+				| ExtremityIngestion::LiveGap => {
+					services
+						.rooms
+						.event_handler
+						.handle_incoming_pdu(
+							remote_server,
+							room_id,
+							&parsed_event_id,
+							value,
+							true,
+							None,
+						)
+						.await?;
+					Ok(None)
+				},
+			};
+		}
+	}
 
 	let request = federation::event::get_event::v1::Request {
 		event_id: event_id.clone(),
