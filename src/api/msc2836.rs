@@ -395,7 +395,7 @@ async fn walk_up(
 
 		let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		if parent.is_none() && can_fetch {
-			fetch_missing(services, room_id, current.event_id()).await;
+			fetch_missing(services, room_id, &parent_id).await;
 			parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		}
 		let Some(parent) = parent else {
