@@ -6,12 +6,12 @@ use conduwuit::{
 	utils::{
 		ReadyExt,
 		stream::{TryIgnore, WidebandExt},
-		u64_from_u8,
+		string_from_bytes, u64_from_u8,
 	},
 };
-use database::Map;
+use database::{Interfix, Map};
 use futures::{Stream, StreamExt};
-use ruma::{EventId, RoomId, UserId, api::Direction};
+use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 
 use crate::{
 	Dep,
@@ -26,7 +26,18 @@ pub(super) struct Data {
 	tofrom_relation: Arc<Map>,
 	referencedevents: Arc<Map>,
 	eventid_metadata: Arc<Map>,
+	msc2836_children: Arc<Map>,
+	msc2836_reported_children: Arc<Map>,
 	services: Services,
+}
+
+/// MSC2836: children counts + hash as reported by a remote server's
+/// `/event_relationships` response, kept when it exceeds what we know
+/// ourselves. See [`Data::msc2836_get_reported_children`].
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct Msc2836ReportedChildren {
+	pub(super) counts: std::collections::BTreeMap<String, u64>,
+	pub(super) hash: String,
 }
 
 struct Services {
@@ -40,6 +51,8 @@ impl Data {
 			tofrom_relation: db["tofrom_relation"].clone(),
 			referencedevents: db["referencedevents"].clone(),
 			eventid_metadata: db["eventid_metadata"].clone(),
+			msc2836_children: db["msc2836_children"].clone(),
+			msc2836_reported_children: db["msc2836_reported_children"].clone(),
 			services: Services {
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
@@ -227,5 +240,72 @@ impl Data {
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
 		self.unmark_event_rejected(event_id);
 		self.unmark_event_soft_failed(event_id);
+	}
+
+	/// MSC2836: index `child` as a relationship-child of `parent` with the
+	/// given `rel_type` (from `content.m.relationship`).
+	pub(super) fn msc2836_add_child(&self, parent: &EventId, child: &EventId, rel_type: &str) {
+		let key = (parent, child);
+		self.msc2836_children.put_raw(key, rel_type.as_bytes());
+	}
+
+	/// MSC2836: all known children of `parent`, as (child event ID, rel_type)
+	/// pairs.
+	pub(super) async fn msc2836_get_children(
+		&self,
+		parent: &EventId,
+	) -> Vec<(OwnedEventId, String)> {
+		let prefix = (parent, Interfix);
+		self.msc2836_children
+			.stream_prefix_raw(&prefix)
+			.ignore_err()
+			.filter_map(|(key, rel_type)| async move {
+				let child_bytes = key.rsplit(|&b| b == database::SEP).next()?;
+				let child = string_from_bytes(child_bytes).ok()?;
+				let child = EventId::parse(&child).ok()?.to_owned();
+				let rel_type = string_from_bytes(rel_type).ok()?;
+				Some((child, rel_type))
+			})
+			.collect()
+			.await
+	}
+
+	/// MSC2836: remember `counts`/`hash` as reported by a remote server for
+	/// `event_id`, but only if their total exceeds what's already stored
+	/// (spec: "the event with the higher children count should be
+	/// persisted").
+	pub(super) fn msc2836_set_reported_children(
+		&self,
+		event_id: &EventId,
+		counts: &std::collections::BTreeMap<String, u64>,
+		hash: &str,
+	) {
+		let new_total: u64 = counts.values().sum();
+		let existing_total: u64 = self
+			.msc2836_reported_children
+			.get_blocking(event_id)
+			.ok()
+			.and_then(|bytes| bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok())
+			.map_or(0, |r| r.counts.values().sum());
+
+		if new_total > existing_total {
+			let record = Msc2836ReportedChildren {
+				counts: counts.clone(),
+				hash: hash.to_owned(),
+			};
+			if let Ok(bytes) = bincode::serialize(&record) {
+				self.msc2836_reported_children.insert(event_id, bytes);
+			}
+		}
+	}
+
+	/// MSC2836: the remembered reported children (if any) for `event_id`.
+	pub(super) async fn msc2836_get_reported_children(
+		&self,
+		event_id: &EventId,
+	) -> Option<(std::collections::BTreeMap<String, u64>, String)> {
+		let bytes = self.msc2836_reported_children.get(event_id).await.ok()?;
+		let record = bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok()?;
+		Some((record.counts, record.hash))
 	}
 }

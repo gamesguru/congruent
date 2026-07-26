@@ -2,9 +2,11 @@ mod bundled_aggregations;
 mod data;
 use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use conduwuit::{Result, matrix::PduCount};
 use futures::{StreamExt, future::try_join};
-use ruma::{EventId, RoomId, UserId, api::Direction};
+use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
+use sha2::{Digest, Sha256};
 
 use self::data::Data;
 use crate::{
@@ -191,4 +193,64 @@ impl Service {
 	}
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
+
+	/// MSC2836: record that `child` relates to `parent` via `rel_type`
+	/// (`content.m.relationship`).
+	pub fn msc2836_add_child(&self, parent: &EventId, child: &EventId, rel_type: &str) {
+		self.db.msc2836_add_child(parent, child, rel_type);
+	}
+
+	/// MSC2836: all known children of `parent`, as (child event ID, rel_type)
+	/// pairs.
+	pub async fn msc2836_get_children(&self, parent: &EventId) -> Vec<(OwnedEventId, String)> {
+		self.db.msc2836_get_children(parent).await
+	}
+
+	/// MSC2836: the `unsigned.children` / `unsigned.children_hash` values to
+	/// report for `event_id`, combining our own directly-known child edges
+	/// with whatever a remote server has reported for this event (using
+	/// whichever total is higher, per the MSC).
+	pub async fn msc2836_children_unsigned(
+		&self,
+		event_id: &EventId,
+	) -> (std::collections::BTreeMap<String, u64>, String) {
+		let known = self.db.msc2836_get_children(event_id).await;
+
+		let mut counts = std::collections::BTreeMap::<String, u64>::new();
+		let mut ids = Vec::with_capacity(known.len());
+		for (child, rel_type) in &known {
+			let count = counts.entry(rel_type.clone()).or_insert(0);
+			*count = count.saturating_add(1);
+			ids.push(child.to_string());
+		}
+		ids.sort_unstable();
+		ids.dedup();
+
+		let hash = STANDARD_NO_PAD.encode(Sha256::digest(ids.concat().as_bytes()));
+
+		let local_total: u64 = counts.values().sum();
+
+		if let Some((reported_counts, reported_hash)) =
+			self.db.msc2836_get_reported_children(event_id).await
+		{
+			let reported_total: u64 = reported_counts.values().sum();
+			if reported_total > local_total {
+				return (reported_counts, reported_hash);
+			}
+		}
+
+		(counts, hash)
+	}
+
+	/// MSC2836: remember children counts/hash reported by a remote server
+	/// for `event_id`, if higher than what's currently known/stored.
+	pub fn msc2836_set_reported_children(
+		&self,
+		event_id: &EventId,
+		counts: &std::collections::BTreeMap<String, u64>,
+		hash: &str,
+	) {
+		self.db
+			.msc2836_set_reported_children(event_id, counts, hash);
+	}
 }

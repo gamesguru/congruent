@@ -414,7 +414,7 @@ impl super::Service {
 		tokio::task::spawn_blocking(move || {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
 			let mut abort = false;
-			rezzy::compute_state_at_streaming_optimized(
+			let completed = rezzy::compute_state_at_streaming_optimized(
 				&target_refs,
 				&lean_events_moved,
 				version,
@@ -435,6 +435,9 @@ impl super::Service {
 					}
 				},
 			);
+			if !completed {
+				warn!("compute_state_at_streaming_optimized detected cycle; results incomplete");
+			}
 		});
 
 		// ── Consume stream and write SSH for each event ──

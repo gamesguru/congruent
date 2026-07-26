@@ -70,6 +70,20 @@ struct ExtractBody {
 	body: Option<String>,
 }
 
+/// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
+/// pointing at this event's parent. Distinct from `m.relates_to` above.
+#[derive(Deserialize)]
+pub(crate) struct Msc2836Relationship {
+	pub(crate) rel_type: String,
+	pub(crate) event_id: OwnedEventId,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ExtractMsc2836Relationship {
+	#[serde(rename = "m.relationship")]
+	pub(crate) relationship: Option<Msc2836Relationship>,
+}
+
 pub struct Service {
 	services: Services,
 	db: Data,

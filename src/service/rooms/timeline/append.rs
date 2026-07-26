@@ -554,6 +554,16 @@ where
 		}
 	}
 
+	if let Ok(content) = pdu.get_content::<super::ExtractMsc2836Relationship>() {
+		if let Some(relationship) = content.relationship {
+			self.services.pdu_metadata.msc2836_add_child(
+				&relationship.event_id,
+				pdu.event_id(),
+				&relationship.rel_type,
+			);
+		}
+	}
+
 	for appservice in self.services.appservice.read().await.values() {
 		if self
 			.services

@@ -132,6 +132,25 @@ pub(super) static MAPS: &[Descriptor] = &[
 		name: "mediaid_user",
 		..descriptor::RANDOM_SMALL
 	},
+	// MSC2836 threading: key = (parent_event_id, child_event_id), value =
+	// rel_type. Populated whenever an event's content carries an
+	// `m.relationship` pointing at a parent; queried by prefix on
+	// parent_event_id to answer "what are this event's children" for
+	// /event_relationships and unsigned.children/children_hash.
+	Descriptor {
+		name: "msc2836_children",
+		..descriptor::RANDOM
+	},
+	// MSC2836 threading: key = event_id, value = bincode
+	// Msc2836ReportedChildren (counts + children_hash) received from a
+	// remote server's /event_relationships response for this event. Kept
+	// separate from msc2836_children (our own directly-known child edges)
+	// since a remote server may know about children we haven't fetched
+	// ourselves yet; see pdu_metadata::msc2836_children_unsigned.
+	Descriptor {
+		name: "msc2836_reported_children",
+		..descriptor::RANDOM_SMALL
+	},
 	Descriptor {
 		name: "onetimekeyid_onetimekeys",
 		..descriptor::RANDOM_SMALL
