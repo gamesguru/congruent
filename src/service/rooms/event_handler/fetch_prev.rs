@@ -11,7 +11,9 @@ use conduwuit::{
 use futures::{StreamExt, stream::FuturesUnordered};
 use ruma::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
-	api::federation::event::get_missing_events,
+	api::federation::event::{
+		event_relationships as federation_event_relationships, get_missing_events,
+	},
 };
 
 use super::check_room_id;
@@ -145,7 +147,57 @@ where
 			| Ok(Ok(response)) => {
 				self.update_peer_stats(&server, true, latency);
 				missing_events = response.events;
-				break; // First successful server wins
+				if missing_events.is_empty() {
+					let Some(fallback_anchor) = remaining.first().cloned() else {
+						break;
+					};
+					let room_id_owned = room_id.to_owned();
+					let request = federation_event_relationships::unstable::Request {
+						event_id: fallback_anchor,
+						room_id: Some(room_id_owned),
+						max_depth: None,
+						max_breadth: None,
+						limit: None,
+						depth_first: None,
+						recent_first: None,
+						include_parent: None,
+						include_children: None,
+						direction: Some("up".to_owned()),
+						batch: None,
+					};
+					match tokio::time::timeout(
+						Duration::from_secs(10),
+						self.services
+							.sending
+							.send_federation_request(&server, request),
+					)
+					.await
+					{
+						| Ok(Ok(fallback_response)) => {
+							missing_events = fallback_response
+								.auth_chain
+								.into_iter()
+								.chain(fallback_response.events)
+								.collect();
+							if !missing_events.is_empty() {
+								break;
+							}
+						},
+						| Ok(Err(e)) => {
+							info!(%server, "fetch_prev /event_relationships fallback failed: {e}");
+							self.update_peer_stats(&server, false, latency);
+						},
+						| Err(_) => {
+							info!(
+								%server,
+								"fetch_prev /event_relationships fallback failed: timed out"
+							);
+							self.update_peer_stats(&server, false, latency);
+						},
+					}
+				} else {
+					break; // First successful server wins
+				}
 			},
 			| _ => {
 				self.update_peer_stats(&server, false, latency);

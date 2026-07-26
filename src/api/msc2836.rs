@@ -395,10 +395,7 @@ async fn walk_up(
 
 		let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		if parent.is_none() && can_fetch {
-			// Fetch from the current anchor instead of the missing parent.
-			// The federated MSC2836 handler is keyed by the event whose
-			// relationship chain we want to expand.
-			fetch_missing(services, room_id, current.event_id()).await;
+			fetch_missing(services, room_id, &parent_id).await;
 			parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		}
 		let Some(parent) = parent else {
@@ -471,7 +468,7 @@ pub(crate) async fn resolve(
 		if let Some((parent_id, _rel_type)) = parent_of(&anchor) {
 			let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 			if parent.is_none() && can_fetch {
-				fetch_missing(services, &room_id, anchor.event_id()).await;
+				fetch_missing(services, &room_id, &parent_id).await;
 				parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 			}
 			if let Some(parent) = parent {

@@ -809,57 +809,6 @@ async fn join_room_by_id_helper_remote_process(
 		 joined_count={post_force_count}"
 	);
 
-	// Collect missing extremities from the remote server's DAG tips. We need to
-	// handle these differently for first-join vs re-join to avoid race conditions.
-	let mut missing_latest = Vec::new();
-	let mut is_rejoin = false;
-	if !remote_latest_events.is_empty() {
-		for event_id in &remote_latest_events {
-			if !services.rooms.timeline.pdu_exists(event_id).await {
-				missing_latest.push(event_id.clone());
-			}
-		}
-		if !missing_latest.is_empty() {
-			// Determine whether this is a first join or a re-join. For first
-			// joins the room has no timeline events yet, so pre-join
-			// extremities should be inserted as Backfilled (historical). For
-			// re-joins the room already has events from prior membership, so
-			// extremities that occurred while away should be Normal (live).
-			is_rejoin = services
-				.rooms
-				.timeline
-				.last_timeline_count(room_id)
-				.await
-				.is_ok();
-		}
-	}
-
-	// Phase 1: For FIRST joins only, handle pre-join extremities BEFORE
-	// appending the join event. This ensures extremities get lower Normal
-	// PduCounts that sort before the join event, maintaining chronological
-	// order in backward pagination.
-	// We drop the state lock temporarily for the network requests.
-	if !missing_latest.is_empty() && !is_rejoin {
-		drop(state_lock);
-
-		info!(
-			"Forward-filling {} missing extremities from {} before joining room {}",
-			missing_latest.len(),
-			remote_server,
-			room_id
-		);
-		for event_id in &missing_latest {
-			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, event_id).await
-			{
-				warn!("Failed to fetch missing extremity {event_id}: {e}");
-			}
-		}
-
-		// Re-acquire the state lock before appending our join event
-		state_lock = services.rooms.state.mutex.lock(room_id).await;
-	}
-
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without its state. Both append_to_state and append_pdu
 	// can indeed fail, in which case the local membership cache may be left in an
@@ -905,28 +854,6 @@ async fn join_room_by_id_helper_remote_process(
 		.rooms
 		.state
 		.set_room_state(room_id, statehash_after_join, &state_lock);
-
-	// Phase 2: For RE-JOINS only, forward-fill extremities AFTER the join event
-	// is committed to the timeline and room state is set. This ensures that
-	// handle_incoming_pdu's server_in_room check succeeds (our join PDU proves
-	// participation) and prevents the "not participating" race condition.
-	if !missing_latest.is_empty() && is_rejoin {
-		drop(state_lock);
-
-		info!(
-			"Forward-filling {} missing extremities from {} after joining room {}",
-			missing_latest.len(),
-			remote_server,
-			room_id
-		);
-		for event_id in missing_latest {
-			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, &event_id).await
-			{
-				warn!("Failed to fetch missing extremity {event_id}: {e}");
-			}
-		}
-	}
 
 	Ok(())
 }
