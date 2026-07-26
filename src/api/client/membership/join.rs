@@ -21,7 +21,7 @@ use ruma::{
 			error::ErrorKind,
 			membership::{join_room_by_id, join_room_by_id_or_alias},
 		},
-		federation::{self},
+		federation::{self, event::event_relationships as federation_event_relationships},
 	},
 	canonical_json::to_canonical_value,
 	events::{
@@ -849,52 +849,10 @@ async fn join_room_by_id_helper_remote_process(
 			room_id
 		);
 		for event_id in &missing_latest {
-			let request = federation::event::get_event::v1::Request {
-				event_id: event_id.clone(),
-				include_unredacted_content: Some(false),
-			};
-			let response = match services
-				.sending
-				.send_federation_request(&remote_server, request)
-				.await
+			if let Err(e) =
+				fetch_missing_extremity(services, &remote_server, room_id, event_id).await
 			{
-				| Ok(r) => r,
-				| Err(e) => {
-					warn!("Failed to fetch missing extremity {event_id}: {e}");
-					continue;
-				},
-			};
-			let (parsed_room_id, parsed_event_id, value) = match services
-				.rooms
-				.event_handler
-				.parse_incoming_pdu(&response.pdu)
-				.await
-			{
-				| Ok(v) => v,
-				| Err(e) => {
-					warn!("Failed to parse extremity {event_id}: {e}");
-					continue;
-				},
-			};
-			if parsed_room_id != room_id {
-				warn!(
-					%parsed_event_id,
-					%parsed_room_id,
-					%room_id,
-					%remote_server,
-					"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
-				);
-				continue;
-			}
-			// First join: insert as Normal so the extremity gets a lower
-			// PduCount than the join event that follows.
-			if let Err(e) = services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(&remote_server, room_id, &parsed_event_id, value, true, None)
-				.await
-			{
-				warn!("Failed to handle extremity {event_id} -- {e}");
+				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
 		}
 
@@ -962,52 +920,10 @@ async fn join_room_by_id_helper_remote_process(
 			room_id
 		);
 		for event_id in missing_latest {
-			let request = federation::event::get_event::v1::Request {
-				event_id: event_id.clone(),
-				include_unredacted_content: Some(false),
-			};
-			let response = match services
-				.sending
-				.send_federation_request(&remote_server, request)
-				.await
+			if let Err(e) =
+				fetch_missing_extremity(services, &remote_server, room_id, &event_id).await
 			{
-				| Ok(r) => r,
-				| Err(e) => {
-					warn!("Failed to fetch missing extremity {event_id}: {e}");
-					continue;
-				},
-			};
-			let (parsed_room_id, parsed_event_id, value) = match services
-				.rooms
-				.event_handler
-				.parse_incoming_pdu(&response.pdu)
-				.await
-			{
-				| Ok(v) => v,
-				| Err(e) => {
-					warn!("Failed to parse extremity {event_id}: {e}");
-					continue;
-				},
-			};
-			if parsed_room_id != room_id {
-				warn!(
-					%parsed_event_id,
-					%parsed_room_id,
-					%room_id,
-					%remote_server,
-					"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
-				);
-				continue;
-			}
-			// Re-join: events happened while we were away, insert as
-			// Normal timeline events.
-			if let Err(e) = services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(&remote_server, room_id, &parsed_event_id, value, true, None)
-				.await
-			{
-				warn!("Failed to handle extremity {event_id}: {e}");
+				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
 		}
 	}
@@ -1410,4 +1326,121 @@ mod tests {
 		assert_eq!(depr_servers, servers);
 		Ok(())
 	}
+}
+
+async fn fetch_missing_extremity(
+	services: &Services,
+	remote_server: &OwnedServerName,
+	room_id: &RoomId,
+	event_id: &ruma::OwnedEventId,
+) -> Result<()> {
+	let request = federation_event_relationships::unstable::Request {
+		event_id: event_id.clone(),
+		room_id: Some(room_id.to_owned()),
+		max_depth: None,
+		max_breadth: None,
+		limit: None,
+		depth_first: None,
+		recent_first: None,
+		include_parent: None,
+		include_children: None,
+		direction: None,
+		batch: None,
+	};
+
+	if let Ok(response) = services
+		.sending
+		.send_federation_request(remote_server, request)
+		.await
+	{
+		if let Some(raw_event) = response.events.into_iter().next() {
+			let (parsed_room_id, parsed_event_id, value) = services
+				.rooms
+				.event_handler
+				.parse_incoming_pdu(&raw_event)
+				.await
+				.map_err(|e| {
+					warn!(
+						"Failed to parse missing extremity {event_id} from \
+						 /event_relationships: {e}"
+					);
+					e
+				})?;
+
+			if parsed_room_id == room_id {
+				if let Err(e) = services
+					.rooms
+					.event_handler
+					.handle_incoming_pdu(
+						remote_server,
+						room_id,
+						&parsed_event_id,
+						value,
+						true,
+						None,
+					)
+					.await
+				{
+					warn!("Failed to handle missing extremity {event_id}: {e}");
+				}
+				return Ok(());
+			}
+
+			warn!(
+				%parsed_event_id,
+				%parsed_room_id,
+				%room_id,
+				%remote_server,
+				"Room ID mismatch in missing extremity fetch via /event_relationships"
+			);
+		}
+	}
+
+	let request = federation::event::get_event::v1::Request {
+		event_id: event_id.clone(),
+		include_unredacted_content: Some(false),
+	};
+	let response = match services
+		.sending
+		.send_federation_request(remote_server, request)
+		.await
+	{
+		| Ok(r) => r,
+		| Err(e) => {
+			warn!("Failed to fetch missing extremity {event_id}: {e}");
+			return Ok(());
+		},
+	};
+	let (parsed_room_id, parsed_event_id, value) = match services
+		.rooms
+		.event_handler
+		.parse_incoming_pdu(&response.pdu)
+		.await
+	{
+		| Ok(v) => v,
+		| Err(e) => {
+			warn!("Failed to parse extremity {event_id}: {e}");
+			return Ok(());
+		},
+	};
+	if parsed_room_id != room_id {
+		warn!(
+			%parsed_event_id,
+			%parsed_room_id,
+			%room_id,
+			%remote_server,
+			"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
+		);
+		return Ok(());
+	}
+	if let Err(e) = services
+		.rooms
+		.event_handler
+		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.await
+	{
+		warn!("Failed to handle extremity {event_id}: {e}");
+	}
+
+	Ok(())
 }
