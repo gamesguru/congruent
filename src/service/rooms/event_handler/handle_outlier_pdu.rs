@@ -396,13 +396,16 @@ where
 						auth_pdu,
 						&room_version_id,
 					) {
-						| Ok((ref auth_eid, mut auth_val)) => {
-							// V4+ events omit event_id on the wire; inject the
-							// computed ID so PduEvent deserialization succeeds.
-							auth_val.insert(
-								"event_id".to_owned(),
-								CanonicalJsonValue::String(auth_eid.as_str().to_owned()),
-							);
+						| Ok((ref auth_eid, auth_val)) => {
+							// Note: `auth_val` must NOT have `event_id` inserted here.
+							// `from_id_val` inserts it into its own copy for
+							// deserialization, but `redact()` (used during signature
+							// verification in the recursive `handle_outlier_pdu` call
+							// below) treats `event_id` as an allowed top-level key and
+							// would include it in the canonical JSON that's checked
+							// against the signature — even though V3+ events are never
+							// signed with an `event_id` field on the wire, which broke
+							// verification for every event pulled in via /event_auth.
 							match PduEvent::from_id_val(auth_eid, auth_val.clone(), Some(room_id))
 							{
 								| Ok(parsed) =>
