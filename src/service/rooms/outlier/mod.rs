@@ -168,6 +168,7 @@ pub fn add_pdu_outlier_batch(
 	// and outlier paths. Re-adding a timeline event as an outlier would set
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
+	let mut existing_outlier_meta = None;
 	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
 		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
 			if !meta.is_outlier {
@@ -177,6 +178,7 @@ pub fn add_pdu_outlier_batch(
 				);
 				return;
 			}
+			existing_outlier_meta = Some(meta);
 		}
 	}
 
@@ -209,19 +211,34 @@ pub fn add_pdu_outlier_batch(
 			.as_deref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
 
+		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
+		// the wire), so a freshly-parsed `parsed_pdu` always reports
+		// `rejected() == false` here. Carry over any rejected/soft-failed
+		// state from an existing outlier entry so this call doesn't clobber
+		// a rejection that mark_event_rejected() just recorded moments ago
+		// (every reject call site adds the outlier immediately afterwards).
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id,
 			is_outlier: true,
 			origin_server_ts: parsed_pdu.origin_server_ts().0,
 			depth: parsed_pdu.depth(),
-			soft_failed: false,
-			rejected: parsed_pdu.rejected(),
+			soft_failed: existing_outlier_meta
+				.as_ref()
+				.is_some_and(|m| m.soft_failed),
+			rejected: parsed_pdu.rejected()
+				|| existing_outlier_meta.as_ref().is_some_and(|m| m.rejected),
 			redacted_by: parsed_pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: None,
 			deprecated_local_topo_depth: 0,
 			pdu_count: None,
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
+			soft_fail_reason: existing_outlier_meta
+				.as_ref()
+				.map(|m| m.soft_fail_reason.clone())
+				.unwrap_or_default(),
+			rejection_reason: existing_outlier_meta
+				.as_ref()
+				.map(|m| m.rejection_reason.clone())
+				.unwrap_or_default(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.db.eventid_metadata.insert_into_batch(
