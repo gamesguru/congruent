@@ -1399,7 +1399,7 @@ async fn fetch_missing_extremity(
 					e
 				})?;
 
-			if parsed_room_id == room_id {
+			if parsed_room_id == room_id && parsed_event_id == *event_id {
 				if let Err(e) = services
 					.rooms
 					.event_handler
@@ -1416,6 +1416,15 @@ async fn fetch_missing_extremity(
 					warn!("Failed to handle missing extremity {event_id}: {e}");
 				}
 				return Ok(());
+			}
+
+			if parsed_room_id == room_id && parsed_event_id != *event_id {
+				warn!(
+					%parsed_event_id,
+					%event_id,
+					%remote_server,
+					"Ignoring /event_relationships response for a different event"
+				);
 			}
 
 			warn!(
