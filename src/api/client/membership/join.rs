@@ -21,7 +21,7 @@ use ruma::{
 			error::ErrorKind,
 			membership::{join_room_by_id, join_room_by_id_or_alias},
 		},
-		federation::{self, event::event_relationships as federation_event_relationships},
+		federation::{self},
 	},
 	canonical_json::to_canonical_value,
 	events::{
@@ -849,10 +849,10 @@ async fn join_room_by_id_helper_remote_process(
 		}
 	}
 
-	// Phase 1: For FIRST joins only, handle pre-join extremities BEFORE
-	// appending the join event. This ensures extremities get lower Normal
-	// PduCounts that sort before the join event, maintaining chronological
-	// order in backward pagination.
+	// Phase 1: For FIRST joins only, ingest pre-join extremities as outliers
+	// before appending the join event, then promote them as backfilled events.
+	// This avoids the participation check in live ingestion and preserves
+	// chronological order in backward pagination.
 	// We drop the state lock temporarily for the network requests.
 	if !missing_latest.is_empty() && !is_rejoin {
 		info!(
@@ -868,13 +868,28 @@ async fn join_room_by_id_helper_remote_process(
 			remote_server,
 			room_id
 		);
+		let mut fetched_extremities = Vec::new();
 		for event_id in &missing_latest {
-			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, event_id, false).await
+			match fetch_missing_extremity(
+				services,
+				&remote_server,
+				room_id,
+				event_id,
+				&room_version_id,
+				ExtremityIngestion::SnapshotBacked,
+			)
+			.await
 			{
-				warn!("Failed to fetch missing extremity {event_id}: {e}");
+				| Ok(Some(event_id)) => fetched_extremities.push(event_id),
+				| Ok(None) => {},
+				| Err(e) => warn!("Failed to fetch missing extremity {event_id}: {e}"),
 			}
 		}
+		services
+			.rooms
+			.timeline
+			.promote_outliers_sorted(room_id, &fetched_extremities, &room_version_id)
+			.await?;
 
 		// Re-acquire the state lock before appending our join event
 		state_lock = services.rooms.state.mutex.lock(room_id).await;
@@ -945,8 +960,15 @@ async fn join_room_by_id_helper_remote_process(
 			room_id
 		);
 		for event_id in missing_latest {
-			if let Err(e) =
-				fetch_missing_extremity(services, &remote_server, room_id, &event_id, true).await
+			if let Err(e) = fetch_missing_extremity(
+				services,
+				&remote_server,
+				room_id,
+				&event_id,
+				&room_version_id,
+				ExtremityIngestion::LiveGap,
+			)
+			.await
 			{
 				warn!("Failed to fetch missing extremity {event_id}: {e}");
 			}
@@ -1353,89 +1375,28 @@ mod tests {
 	}
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ExtremityIngestion {
+	/// The send_join snapshot is authoritative; do not run live timeline ingestion.
+	SnapshotBacked,
+	/// A rejoin gap is real and may use normal timeline ingestion.
+	LiveGap,
+}
+
 async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
 	event_id: &ruma::OwnedEventId,
-	is_timeline_event: bool,
-) -> Result<()> {
-	let request = federation_event_relationships::unstable::Request {
-		event_id: event_id.clone(),
-		room_id: Some(room_id.to_owned()),
-		max_depth: None,
-		max_breadth: None,
-		limit: None,
-		depth_first: None,
-		recent_first: None,
-		include_parent: None,
-		include_children: None,
-		direction: None,
-		batch: None,
-	};
+	room_version: &RoomVersionId,
+	mode: ExtremityIngestion,
+) -> Result<Option<ruma::OwnedEventId>> {
 	info!(
 		%room_id,
 		%event_id,
-		is_timeline_event,
-		"fetching join extremity with explicit ingestion mode"
+		?mode,
+		"fetching join extremity"
 	);
-
-	if let Ok(response) = services
-		.sending
-		.send_federation_request(remote_server, request)
-		.await
-	{
-		if let Some(raw_event) = response.events.into_iter().next() {
-			let (parsed_room_id, parsed_event_id, value) = services
-				.rooms
-				.event_handler
-				.parse_incoming_pdu(&raw_event)
-				.await
-				.map_err(|e| {
-					warn!(
-						"Failed to parse missing extremity {event_id} from \
-						 /event_relationships: {e}"
-					);
-					e
-				})?;
-
-			if parsed_room_id == room_id && parsed_event_id == *event_id {
-				if let Err(e) = services
-					.rooms
-					.event_handler
-					.handle_incoming_pdu(
-						remote_server,
-						room_id,
-						&parsed_event_id,
-						value,
-						is_timeline_event,
-						None,
-					)
-					.await
-				{
-					warn!("Failed to handle missing extremity {event_id}: {e}");
-				}
-				return Ok(());
-			}
-
-			if parsed_room_id == room_id && parsed_event_id != *event_id {
-				warn!(
-					%parsed_event_id,
-					%event_id,
-					%remote_server,
-					"Ignoring /event_relationships response for a different event"
-				);
-			}
-
-			warn!(
-				%parsed_event_id,
-				%parsed_room_id,
-				%room_id,
-				%remote_server,
-				"Room ID mismatch in missing extremity fetch via /event_relationships"
-			);
-		}
-	}
 
 	let request = federation::event::get_event::v1::Request {
 		event_id: event_id.clone(),
@@ -1448,47 +1409,47 @@ async fn fetch_missing_extremity(
 	{
 		| Ok(r) => r,
 		| Err(e) => {
-			warn!("Failed to fetch missing extremity {event_id}: {e}");
-			return Ok(());
+			return Err(e.into());
 		},
 	};
-	let (parsed_room_id, parsed_event_id, value) = match services
+	let (parsed_room_id, parsed_event_id, value) = services
 		.rooms
 		.event_handler
 		.parse_incoming_pdu(&response.pdu)
 		.await
-	{
-		| Ok(v) => v,
-		| Err(e) => {
-			warn!("Failed to parse extremity {event_id}: {e}");
-			return Ok(());
-		},
-	};
+		.map_err(|e| err!("Failed to parse extremity {event_id}: {e}"))?;
 	if parsed_room_id != room_id {
-		warn!(
-			%parsed_event_id,
-			%parsed_room_id,
-			%room_id,
-			%remote_server,
-			"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
-		);
-		return Ok(());
+		return Err!(Request(NotFound("Fetched extremity belongs to another room")));
 	}
-	if let Err(e) = services
-		.rooms
-		.event_handler
-		.handle_incoming_pdu(
-			remote_server,
-			room_id,
-			&parsed_event_id,
-			value,
-			is_timeline_event,
-			None,
-		)
-		.await
-	{
-		warn!("Failed to handle extremity {event_id}: {e}");
+	if parsed_event_id != *event_id {
+		return Err!(Request(NotFound("Fetched a different event than requested")));
 	}
 
-	Ok(())
+	match mode {
+		| ExtremityIngestion::SnapshotBacked => {
+			services
+				.rooms
+				.event_handler
+				.handle_outlier_pdu(
+					remote_server,
+					None::<&PduEvent>,
+					&parsed_event_id,
+					room_id,
+					value,
+					false,
+					false,
+					Some(room_version),
+				)
+				.await?;
+		},
+		| ExtremityIngestion::LiveGap => {
+			services
+				.rooms
+				.event_handler
+				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+				.await?;
+		},
+	}
+
+	Ok(Some(parsed_event_id))
 }
