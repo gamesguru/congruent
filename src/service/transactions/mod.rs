@@ -17,18 +17,14 @@ use conduwuit::{
 use database::{Handle, Map};
 use ruma::{
 	DeviceId, OwnedServerName, OwnedTransactionId, TransactionId, UserId,
-	api::{
-		client::error::ErrorKind::LimitExceeded,
-		federation::transactions::send_transaction_message,
-	},
+	api::client::error::ErrorKind::LimitExceeded,
 };
 use tokio::sync::watch::{Receiver, Sender};
 
 use crate::{Dep, config};
 
 pub type TxnKey = (OwnedServerName, OwnedTransactionId);
-pub type WrappedTransactionResponse =
-	Option<Result<send_transaction_message::v1::Response, TransactionError>>;
+pub type WrappedTransactionResponse = Option<Result<serde_json::Value, TransactionError>>;
 
 /// Errors that can occur during federation transaction processing.
 #[derive(Debug, Clone)]
@@ -55,7 +51,7 @@ const CLEANUP_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub struct CachedTxnResponse {
-	pub response: send_transaction_message::v1::Response,
+	pub response: serde_json::Value,
 	pub created: SystemTime,
 }
 
@@ -73,7 +69,7 @@ enum TxnState {
 /// Result of atomically checking or starting a federation transaction.
 pub enum FederationTxnState {
 	/// Transaction already completed and cached
-	Cached(send_transaction_message::v1::Response),
+	Cached(serde_json::Value),
 
 	/// Transaction is currently being processed by another request.
 	/// Wait on this receiver for the result.
@@ -247,7 +243,7 @@ impl Service {
 		&self,
 		key: TxnKey,
 		sender: Sender<WrappedTransactionResponse>,
-		response: send_transaction_message::v1::Response,
+		response: serde_json::Value,
 	) {
 		// Check if cleanup might be needed before acquiring the lock
 		let should_try_cleanup = self.should_try_cleanup();

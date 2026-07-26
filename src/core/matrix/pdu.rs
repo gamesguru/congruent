@@ -100,6 +100,85 @@ impl Pdu {
 	}
 }
 
+/// Maps Pdu fields to rezzy's [`RawEvent`](rezzy::RawEvent) trait,
+/// enabling `rezzy::ParsedEvent::new(&pdu)` for zero-copy auth checks
+/// and state resolution without intermediate `LeanEvent` conversion.
+impl rezzy::RawEvent for Pdu {
+	type Id = OwnedEventId;
+
+	/// `Pdu::event_id` → `$event_id:server.name`
+	#[inline]
+	fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+
+	/// `Pdu::kind` (`TimelineEventType` enum) → `"m.room.member"` etc.
+	#[inline]
+	fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
+		std::borrow::Cow::Owned(self.kind.to_string())
+	}
+
+	/// `Pdu::sender` (`OwnedUserId`) → `"@user:server"`
+	#[inline]
+	fn raw_sender(&self) -> &str { self.sender.as_str() }
+
+	/// `Pdu::state_key` (`Option<StateKey>`) → `Option<&str>`
+	#[inline]
+	fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+
+	/// `Pdu::content` (`Box<RawJsonValue>`) → raw JSON string
+	#[inline]
+	fn raw_content_json(&self) -> &str { self.content.get() }
+
+	/// `Pdu::prev_events` → DAG parent references
+	#[inline]
+	fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
+
+	/// `Pdu::auth_events` → auth chain references
+	#[inline]
+	fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+
+	/// `Pdu::depth` (`UInt`) → `u64`
+	#[inline]
+	fn raw_depth(&self) -> u64 { self.depth.into() }
+
+	/// `Pdu::origin_server_ts` (`UInt`) → milliseconds since epoch
+	#[inline]
+	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+
+	/// `Pdu::rejected` is populated from metadata at fetch time.
+	#[inline]
+	fn raw_rejected(&self) -> bool { false }
+
+	/// TODO: Revisit whether rezzy should require host-provided soft-fail state
+	/// at all, or compute it internally. Until that is resolved, `Pdu` does not
+	/// carry a soft-fail flag and this adapter conservatively reports `false`.
+	#[inline]
+	fn raw_soft_fail(&self) -> bool { false }
+}
+
+/// Direct [`DagNode`](rezzy::DagNode) implementation on `Pdu`, enabling
+/// rezzy's traversal and topological functions (`find_backward_extremities`,
+/// `compute_topo_positions`, `reverse_topological_order`, etc.) to operate
+/// on `HashMap<OwnedEventId, Pdu>` with zero conversion overhead.
+///
+/// For auth checking and content-aware operations, use
+/// `rezzy::ParsedEvent::new(&pdu)` which provides the full `EventLike` trait
+/// via the [`RawEvent`](rezzy::RawEvent) impl above.
+impl rezzy::DagNode for Pdu {
+	type Id = OwnedEventId;
+
+	#[inline]
+	fn event_id(&self) -> &OwnedEventId { &self.event_id }
+
+	#[inline]
+	fn depth(&self) -> u64 { self.depth.into() }
+
+	#[inline]
+	fn prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
+
+	#[inline]
+	fn auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+}
+
 impl Event for Pdu {
 	#[inline]
 	fn auth_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {

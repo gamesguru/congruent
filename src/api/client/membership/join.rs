@@ -656,49 +656,55 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response room_state");
 	let cork = services.db.cork_and_flush();
-	let state = send_join_response
-		.room_state
-		.state
-		.iter()
-		.stream()
-		.then(|pdu| {
-			services
-				.server_keys
-				.validate_and_add_event_id(pdu, &room_version_id)
-				.inspect_err(|e| {
-					debug_warn!("Could not validate send_join response room_state event: {e:?}");
-				})
-				.inspect(|_| debug!("Completed validating send_join response room_state event"))
-		})
-		.ready_filter_map(Result::ok)
-		.fold(HashMap::new(), |mut state, (event_id, value)| async move {
-			let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
-				| Ok(pdu) => pdu,
-				| Err(e) => {
-					debug_warn!("Invalid PDU in send_join response: {e:?}: {value:#?}");
+	let state = Box::pin(
+		send_join_response
+			.room_state
+			.state
+			.iter()
+			.stream()
+			.then(|pdu| {
+				services
+					.server_keys
+					.validate_and_add_event_id(pdu, &room_version_id)
+					.inspect_err(|e| {
+						debug_warn!(
+							"Could not validate send_join response room_state event: {e:?}"
+						);
+					})
+					.inspect(|_| {
+						debug!("Completed validating send_join response room_state event");
+					})
+			})
+			.ready_filter_map(Result::ok)
+			.fold(HashMap::new(), |mut state, (event_id, value)| async move {
+				let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
+					| Ok(pdu) => pdu,
+					| Err(e) => {
+						debug_warn!("Invalid PDU in send_join response: {e:?}: {value:#?}");
+						return state;
+					},
+				};
+				if !pdu_fits(&mut value.clone()) {
+					warn!(
+						"dropping incoming PDU {event_id} in room {room_id} from room join \
+						 because it exceeds 65535 bytes or is otherwise too large."
+					);
 					return state;
-				},
-			};
-			if !pdu_fits(&mut value.clone()) {
-				warn!(
-					"dropping incoming PDU {event_id} in room {room_id} from room join because \
-					 it exceeds 65535 bytes or is otherwise too large."
-				);
-				return state;
-			}
-			services.rooms.outlier.add_pdu_outlier(&event_id, &value);
-			if let Some(state_key) = &pdu.state_key {
-				let shortstatekey = services
-					.rooms
-					.short
-					.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-					.await;
+				}
+				services.rooms.outlier.add_pdu_outlier(&event_id, &value);
+				if let Some(state_key) = &pdu.state_key {
+					let shortstatekey = services
+						.rooms
+						.short
+						.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
+						.await;
 
-				state.insert(shortstatekey, pdu.event_id.clone());
-			}
-			state
-		})
-		.await;
+					state.insert(shortstatekey, pdu.event_id.clone());
+				}
+				state
+			}),
+	)
+	.await;
 
 	drop(cork);
 
@@ -741,7 +747,7 @@ async fn join_room_by_id_helper_remote_process(
 		}
 	};
 
-	let auth_check = state_res::event_auth::auth_check(
+	let auth_check = Box::pin(state_res::event_auth::auth_check(
 		&state_res::RoomVersion::new(&room_version_id)?,
 		&parsed_join_pdu,
 		None, // TODO: third party invite
@@ -753,7 +759,7 @@ async fn join_room_by_id_helper_remote_process(
 					"send_join auth check failed: missing create event"
 				))))
 			})?,
-	)
+	))
 	.await
 	.map_err(|e| err!(Request(Forbidden(warn!("Auth check failed: {e:?}")))))?;
 
@@ -774,11 +780,13 @@ async fn join_room_by_id_helper_remote_process(
 		shortstatehash: statehash_before_join,
 		added,
 		removed,
-	} = services
-		.rooms
-		.state_compressor
-		.save_state(room_id, Arc::new(compressed))
-		.await?;
+	} = Box::pin(
+		services
+			.rooms
+			.state_compressor
+			.save_state(room_id, Arc::new(compressed)),
+	)
+	.await?;
 
 	debug!("Forcing state for new room");
 	services

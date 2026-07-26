@@ -92,6 +92,7 @@ features = [
     "http2",
     "json",
     "matched-path",
+    "query",
     "tokio",
     "tracing",
 ]
@@ -396,6 +397,10 @@ features = [
     "unstable-msc4284",
     "unstable-msc4439", # pgp_key in .well_known/matrix/support
 ]
+
+[workspace.dependencies.rezzy]
+git = "https://github.com/gamesguru/rezzy.git"
+rev = "92e31a3a041980ee14f35046ee517308b024f5cd"
 
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
