@@ -128,8 +128,14 @@ pub async fn backfill_if_required(
 		// exactly at `from`; advancing first hides that child and makes a missing
 		// predecessor look like a gap-free timeline.
 		let mut pdus = self.pdus_rev(room_id, Some(from)).take(limit).boxed();
-		while let Some(Ok((_, pdu))) = pdus.next().await {
+		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
 			scanned = scanned.saturating_add(1);
+			debug!(
+				?pdu_id,
+				event_id = %pdu.event_id,
+				prev_events = ?pdu.prev_events,
+				"backfill: scanned timeline PDU"
+			);
 			event_map.insert(pdu.event_id.clone(), pdu);
 		}
 
