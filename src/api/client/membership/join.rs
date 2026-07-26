@@ -1377,7 +1377,8 @@ mod tests {
 
 #[derive(Clone, Copy, Debug)]
 enum ExtremityIngestion {
-	/// The send_join snapshot is authoritative; do not run live timeline ingestion.
+	/// The send_join snapshot is authoritative; do not run live timeline
+	/// ingestion.
 	SnapshotBacked,
 	/// A rejoin gap is real and may use normal timeline ingestion.
 	LiveGap,
@@ -1409,7 +1410,7 @@ async fn fetch_missing_extremity(
 	{
 		| Ok(r) => r,
 		| Err(e) => {
-			return Err(e.into());
+			return Err(e);
 		},
 	};
 	let (parsed_room_id, parsed_event_id, value) = services
