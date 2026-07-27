@@ -175,6 +175,9 @@ jobs:
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@latest
 
+      - name: Install just
+        run: sudo apt-get install -y just
+
       - name: Configure Docker Network Firewall
         run: |
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
@@ -185,8 +188,8 @@ jobs:
           CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
           COMPLEMENT_SHARE_ENV_PREFIX: PASS_
           PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
-        run: |
-          make complement/run COMPLEMENT_DIR=./complement-src
+          COMPLEMENT_RESULTS_DIR: tests/test_results/complement
+        run: just complement
 
       - name: Compare results with baseline
         continue-on-error: true
