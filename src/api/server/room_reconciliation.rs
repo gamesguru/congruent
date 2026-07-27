@@ -658,9 +658,32 @@ pub(crate) async fn post_room_events_route(
 			.rooms
 			.timeline
 			.get_pdu_in_room(Some(&room_id), event_id)
+	let known: HashSet<_> = body.known_event_ids.into_iter().collect();
+	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
+	let mut added: HashSet<OwnedEventId> = requested.iter().cloned().collect();
+
+	let mut missing_event_ids = Vec::new();
+	let mut combined = Vec::new();
+
+	for event_id in &body.event_ids {
+		match services
+			.rooms
+			.timeline
+			.get_pdu_in_room(Some(&room_id), event_id)
 			.await
 		{
-			| Ok(pdu) => combined.push(pdu),
+			| Ok(pdu) => {
+				if services
+					.rooms
+					.state_accessor
+					.server_can_see_event(&x_matrix.origin, &room_id, event_id.as_ref())
+					.await
+				{
+					combined.push(pdu);
+				} else {
+					missing_event_ids.push(event_id.clone());
+				}
+			},
 			| Err(_) => missing_event_ids.push(event_id.clone()),
 		}
 	}
@@ -684,9 +707,6 @@ pub(crate) async fn post_room_events_route(
 				else {
 					continue;
 				};
-				if requested.contains(&auth_event_id) || known.contains(&auth_event_id) {
-					continue;
-				}
 				if let Some(reason) = services
 					.rooms
 					.pdu_metadata
@@ -696,6 +716,9 @@ pub(crate) async fn post_room_events_route(
 					if rejected_tombstone_ids.insert(auth_event_id.clone()) {
 						rejected_tombstones.push(rejected_tombstone(&auth_event_id, &reason));
 					}
+					continue;
+				}
+				if !added.insert(auth_event_id.clone()) || known.contains(&auth_event_id) {
 					continue;
 				}
 				if let Ok(pdu) = services
