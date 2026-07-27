@@ -295,8 +295,21 @@ pub async fn add_signing_keys(
 
 	let mut historical_keys = match historical_keys_res {
 		| Ok(keys) => keys,
-		| Err(ref e) if e.is_not_found() =>
-			ServerSigningKeys::new(origin.to_owned(), MilliSecondsSinceUnixEpoch::now()),
+		| Err(ref e) if e.is_not_found() => {
+			// Backward-compat: older versions stored merged keys directly under `origin`.
+			match self
+				.db
+				.server_signingkeys
+				.get(origin)
+				.await
+				.deserialized::<ServerSigningKeys>()
+			{
+				| Ok(keys) => keys,
+				| Err(ref e) if e.is_not_found() =>
+					ServerSigningKeys::new(origin.to_owned(), MilliSecondsSinceUnixEpoch::now()),
+				| Err(e) => return Err(e),
+			}
+		},
 		| Err(e) => return Err(e),
 	};
 
@@ -396,26 +409,16 @@ pub async fn add_signing_keys(
 	for (key_id, new_old_key) in &new_keys.old_verify_keys {
 		if let Some(existing_key) = historical_keys.verify_keys.get(key_id) {
 			if existing_key.key != new_old_key.key {
-				if source == FetchSource::Direct && provisional.contains(key_id) {
-					conduwuit::warn!(
-						"MSC4499: direct fetch overrides provisional notary-learned key \
-						 {key_id} for {origin} (two-tier binding promotion); this becomes the \
-						 permanent binding"
-					);
-					provisional.remove(key_id);
-					provisional_changed = true;
-				} else {
-					let existing_fp = get_fingerprint(&existing_key.key);
-					let new_fp = get_fingerprint(&new_old_key.key);
-					conduwuit::warn!(
-						"Key ID collision detected for server {origin} on old/active key \
-						 {key_id}! Cached fingerprint: {existing_fp}, conflicting fingerprint: \
-						 {new_fp}. {collision_action}"
-					);
-					if enforce_fsw {
-						rejected_collision = true;
-						filtered_old_verify_keys.remove(key_id);
-					}
+				let existing_fp = get_fingerprint(&existing_key.key);
+				let new_fp = get_fingerprint(&new_old_key.key);
+				conduwuit::warn!(
+					"Key ID collision detected for server {origin} on old/active key {key_id}! \
+					 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
+					 {collision_action}"
+				);
+				if enforce_fsw {
+					rejected_collision = true;
+					filtered_old_verify_keys.remove(key_id);
 				}
 			}
 		} else if let Some(existing_old_key) = historical_keys.old_verify_keys.get(key_id) {
@@ -477,18 +480,13 @@ pub async fn add_signing_keys(
 		}
 	}
 
-	// MSC4499: "The server SHOULD cap total stored keys (active + old) at 1,000.
-	// When it hits 1,000, it evicts the oldest from old_verify_keys."
-	// Note: Keys in verify_keys MUST always be prioritized and exempt from
-	// eviction.
-	let total_keys = historical_keys
-		.verify_keys
-		.len()
-		.saturating_add(historical_keys.old_verify_keys.len());
-	if total_keys > 3000 {
-		let to_evict = total_keys.saturating_sub(3000);
+	// MSC4499: retain at most 3,000 retired keys in old_verify_keys.
+	// Keys in verify_keys are exempt from this quota (verify_keys itself is capped).
+	let old_keys = historical_keys.old_verify_keys.len();
+	if old_keys > 3000 {
+		let to_evict = old_keys.saturating_sub(3000);
 		conduwuit::debug!(
-			"MSC4499: Evicting {to_evict} oldest keys for {origin} to respect 3,000-key quota"
+			"MSC4499: Evicting {to_evict} oldest old_verify_keys for {origin} to respect the 3,000-key retired-key quota"
 		);
 
 		// Collect keys to evict: oldest first (lowest expired_ts).
