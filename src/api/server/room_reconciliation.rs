@@ -668,7 +668,18 @@ pub(crate) async fn post_room_events_route(
 			.get_pdu_in_room(Some(&room_id), event_id)
 			.await
 		{
-			| Ok(pdu) => combined.push(pdu),
+			| Ok(pdu) => {
+				if services
+					.rooms
+					.state_accessor
+					.server_can_see_event(&x_matrix.origin, &room_id, event_id.as_ref())
+					.await
+				{
+					combined.push(pdu);
+				} else {
+					missing_event_ids.push(event_id.clone());
+				}
+			},
 			| Err(_) => missing_event_ids.push(event_id.clone()),
 		}
 	}
