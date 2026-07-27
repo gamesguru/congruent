@@ -64,6 +64,9 @@ where
 		self.services
 			.pdu_metadata
 			.mark_as_referenced(room_id, pdu.prev_events.iter().map(AsRef::as_ref));
+		self.services
+			.pdu_metadata
+			.mark_event_tombstone(room_id, pdu.event_id(), "soft_failed");
 		self.db.append_outlier_pdu(pdu.event_id(), &pdu_json);
 
 		if let Err(e) = self.try_update_reconciliation_state(room_id, pdu).await {

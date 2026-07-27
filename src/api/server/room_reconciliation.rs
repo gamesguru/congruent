@@ -29,7 +29,7 @@ pub(crate) struct RoomDigestResponse {
 #[derive(Debug, PartialEq, Eq)]
 struct RoomDiffValidation {
 	normalized_frame_event_ids: Vec<OwnedEventId>,
-	frame_matches: bool,
+	common_frame_event_ids: Vec<OwnedEventId>,
 	frame_status: String,
 }
 
@@ -172,21 +172,25 @@ fn validate_room_diff_request(
 	let mut normalized_frame_event_ids = body.frame_event_ids.clone();
 	normalized_frame_event_ids.sort();
 	normalized_frame_event_ids.dedup();
-	let frame_matches =
-		normalized_frame_event_ids.is_empty() || normalized_frame_event_ids == digest.frame_event_ids;
+	let common_frame_event_ids = if normalized_frame_event_ids.is_empty() {
+		digest.frame_event_ids.clone()
+	} else {
+		normalized_frame_event_ids
+			.iter()
+			.filter(|event_id| digest.frame_event_ids.binary_search(event_id).is_ok())
+			.cloned()
+			.collect()
+	};
+	let frame_matches = !common_frame_event_ids.is_empty();
 	let frame_status = if body.frame_negotiation {
-		if frame_matches {
-			"common"
-		} else {
-			"none"
-		}
+		if frame_matches { "common" } else { "none" }
 	} else {
 		"not_requested"
 	};
 
 	Ok(RoomDiffValidation {
 		normalized_frame_event_ids,
-		frame_matches,
+		common_frame_event_ids,
 		frame_status: frame_status.to_owned(),
 	})
 }
@@ -417,8 +421,8 @@ pub(crate) async fn post_room_diff_route(
 		.reconciliation_state(&room_id)
 		.await?;
 	let validation = validate_room_diff_request(&body, &digest)?;
-	let frame_matches = validation.frame_matches;
 	let frame_status = validation.frame_status;
+	let frame_matches = !validation.common_frame_event_ids.is_empty();
 	let mut have: HashSet<OwnedEventId> = body.local_extremity_event_ids.into_iter().collect();
 	have.extend(body.have_event_ids);
 
@@ -516,7 +520,7 @@ pub(crate) async fn post_room_diff_route(
 						frame_id: digest.frame_id,
 						frame_status,
 						negotiated_frame_event_ids: if body.frame_negotiation {
-							Some(digest.frame_event_ids)
+							Some(validation.common_frame_event_ids.clone())
 						} else {
 							None
 						},
@@ -561,7 +565,7 @@ pub(crate) async fn post_room_diff_route(
 			frame_id: digest.frame_id,
 			frame_status,
 			negotiated_frame_event_ids: if body.frame_negotiation {
-				Some(digest.frame_event_ids.clone())
+				Some(validation.common_frame_event_ids.clone())
 			} else {
 				None
 			},
@@ -591,7 +595,7 @@ pub(crate) async fn post_room_diff_route(
 		frame_id: digest.frame_id,
 		frame_status,
 		negotiated_frame_event_ids: if body.frame_negotiation {
-			Some(digest.frame_event_ids.clone())
+			Some(validation.common_frame_event_ids.clone())
 		} else {
 			None
 		},
@@ -638,14 +642,14 @@ pub(crate) async fn post_room_events_route(
 	let mut combined = Vec::new();
 
 	for event_id in &body.event_ids {
-		if services
+		if let Some(reason) = services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(event_id)
+			.tombstone_reason(&room_id, event_id)
 			.await
 		{
 			if rejected_tombstone_ids.insert(event_id.clone()) {
-				rejected_tombstones.push(rejected_tombstone(event_id, "soft_failed"));
+				rejected_tombstones.push(rejected_tombstone(event_id, &reason));
 			}
 			continue;
 		}
@@ -683,14 +687,14 @@ pub(crate) async fn post_room_events_route(
 				if requested.contains(&auth_event_id) || known.contains(&auth_event_id) {
 					continue;
 				}
-				if services
+				if let Some(reason) = services
 					.rooms
 					.pdu_metadata
-					.is_event_soft_failed(&auth_event_id)
+					.tombstone_reason(&room_id, &auth_event_id)
 					.await
 				{
 					if rejected_tombstone_ids.insert(auth_event_id.clone()) {
-						rejected_tombstones.push(rejected_tombstone(&auth_event_id, "soft_failed"));
+						rejected_tombstones.push(rejected_tombstone(&auth_event_id, &reason));
 					}
 					continue;
 				}
@@ -736,9 +740,7 @@ pub(crate) async fn post_room_events_route(
 mod tests {
 	use ruma::OwnedEventId;
 
-	use super::{
-		RoomDigestResponse, RoomDiffRequest, frame_id_for, validate_room_diff_request,
-	};
+	use super::{RoomDiffRequest, RoomDigestResponse, frame_id_for, validate_room_diff_request};
 
 	fn eid(s: &str) -> OwnedEventId { format!("${s}:example.com").try_into().unwrap() }
 
@@ -794,7 +796,10 @@ mod tests {
 		};
 
 		let err = validate_room_diff_request(&body, &digest(vec![eid("a")])).unwrap_err();
-		assert!(err.to_string().contains("resolved_state scope is not yet implemented"));
+		assert!(
+			err.to_string()
+				.contains("resolved_state scope is not yet implemented")
+		);
 	}
 
 	#[test]
@@ -821,7 +826,7 @@ mod tests {
 		};
 
 		let validation = validate_room_diff_request(&body, &digest).expect("validation");
-		assert!(validation.frame_matches);
+		assert!(!validation.common_frame_event_ids.is_empty());
 		assert_eq!(validation.frame_status, "common");
 		assert_eq!(validation.normalized_frame_event_ids, frame_event_ids);
 	}
@@ -849,7 +854,34 @@ mod tests {
 		};
 
 		let validation = validate_room_diff_request(&body, &digest).expect("validation");
-		assert!(!validation.frame_matches);
+		assert!(validation.common_frame_event_ids.is_empty());
 		assert_eq!(validation.frame_status, "none");
+	}
+
+	#[test]
+	fn sketch_mode_negotiates_common_subset() {
+		let digest = digest(vec![eid("a"), eid("b"), eid("c")]);
+		let body = RoomDiffRequest {
+			mode: "sketch".to_owned(),
+			frame_negotiation: true,
+			frame_event_ids: vec![eid("b"), eid("c"), eid("d")],
+			local_extremity_event_ids: vec![],
+			have_event_ids: vec![],
+			digest_type: Some("algebraic_v1".to_owned()),
+			local_digest: Some("AQ".to_owned()),
+			local_known_event_count: Some(1),
+			requests: vec![],
+			local_sketches: vec![],
+			limit: None,
+			max_depth_delta: None,
+			max_events: None,
+			scope: None,
+			state_at: None,
+			frame_id: Some(digest.frame_id.clone()),
+		};
+
+		let validation = validate_room_diff_request(&body, &digest).expect("validation");
+		assert_eq!(validation.common_frame_event_ids, vec![eid("b"), eid("c")]);
+		assert_eq!(validation.frame_status, "common");
 	}
 }

@@ -140,4 +140,16 @@ impl Service {
 	pub async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
 		self.db.is_event_soft_failed(event_id).await
 	}
+
+	#[inline]
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub fn mark_event_tombstone(&self, room_id: &RoomId, event_id: &EventId, reason: &str) {
+		self.db.mark_event_tombstone(room_id, event_id, reason);
+	}
+
+	#[inline]
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn tombstone_reason(&self, room_id: &RoomId, event_id: &EventId) -> Option<String> {
+		self.db.tombstone_reason(room_id, event_id).await
+	}
 }
