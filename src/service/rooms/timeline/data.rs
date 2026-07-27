@@ -11,7 +11,7 @@ use conduwuit::{
 		stream::{ReadyExt, TryReadyExt},
 	},
 };
-use database::{Database, Deserialized, Json, KeyVal, Map};
+use database::{Database, Deserialized, Json, KeyVal, Map, keyval::deserialize_val};
 use futures::{
 	FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::select_ok, pin_mut,
 };
@@ -254,6 +254,31 @@ impl Data {
 		self.eventid_pduid.insert(pdu.event_id.as_bytes(), pdu_id);
 		self.eventid_outlierpdu.remove(pdu.event_id.as_bytes());
 		self.append_timestamp_index(pdu_id, MilliSecondsSinceUnixEpoch(pdu.origin_server_ts));
+	}
+
+	pub(super) fn append_outlier_pdu(&self, event_id: &EventId, json: &CanonicalJsonObject) {
+		self.eventid_outlierpdu.raw_put(event_id, Json(json));
+	}
+
+	pub(super) fn outlier_pdus<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
+		self.eventid_outlierpdu
+			.raw_stream()
+			.filter_map(move |result| async move {
+				match result {
+					| Ok((_, json)) => {
+						let pdu: PduEvent = match deserialize_val(json) {
+							| Ok(pdu) => pdu,
+							| Err(e) => return Some(Err(e)),
+						};
+
+						(pdu.room_id_or_hash().as_deref() == Some(room_id)).then_some(Ok(pdu))
+					},
+					| Err(e) => Some(Err(e)),
+				}
+			})
 	}
 
 	pub(super) fn prepend_backfill_pdu(

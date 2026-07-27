@@ -64,6 +64,14 @@ where
 		self.services
 			.pdu_metadata
 			.mark_as_referenced(room_id, pdu.prev_events.iter().map(AsRef::as_ref));
+		self.services
+			.pdu_metadata
+			.mark_event_tombstone(room_id, pdu.event_id(), "soft_failed");
+		self.db.append_outlier_pdu(pdu.event_id(), &pdu_json);
+
+		if let Err(e) = self.try_update_reconciliation_state(room_id, pdu).await {
+			warn!("Failed to update reconciliation cache for soft-failed PDU: {e:?}");
+		}
 
 		// self.services
 		// 	.state
@@ -199,6 +207,9 @@ where
 
 	// Insert pdu
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
+	if let Err(e) = self.try_update_reconciliation_state(room_id, pdu).await {
+		warn!("Failed to update reconciliation cache for PDU {}: {e:?}", pdu.event_id());
+	}
 	drop(cork);
 
 	let resolved_state_applied = resolved_state.is_some();

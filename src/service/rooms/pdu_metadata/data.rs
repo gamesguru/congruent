@@ -9,7 +9,7 @@ use conduwuit::{
 		u64_from_u8,
 	},
 };
-use database::Map;
+use database::{Deserialized, Map};
 use futures::{Stream, StreamExt};
 use ruma::{EventId, RoomId, UserId, api::Direction};
 
@@ -26,6 +26,7 @@ pub(super) struct Data {
 	tofrom_relation: Arc<Map>,
 	referencedevents: Arc<Map>,
 	softfailedeventids: Arc<Map>,
+	roomid_eventid_tombstone: Arc<Map>,
 	services: Services,
 }
 
@@ -40,6 +41,7 @@ impl Data {
 			tofrom_relation: db["tofrom_relation"].clone(),
 			referencedevents: db["referencedevents"].clone(),
 			softfailedeventids: db["softfailedeventids"].clone(),
+			roomid_eventid_tombstone: db["roomid_eventid_tombstone"].clone(),
 			services: Services {
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
@@ -120,5 +122,27 @@ impl Data {
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
 		self.softfailedeventids.get(event_id).await.is_ok()
+	}
+
+	pub(super) fn mark_event_tombstone(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+		reason: &str,
+	) {
+		self.roomid_eventid_tombstone
+			.put((room_id, event_id), reason);
+	}
+
+	pub(super) async fn tombstone_reason(
+		&self,
+		room_id: &RoomId,
+		event_id: &EventId,
+	) -> Option<String> {
+		self.roomid_eventid_tombstone
+			.qry(&(room_id, event_id))
+			.await
+			.deserialized()
+			.ok()
 	}
 }

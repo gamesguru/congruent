@@ -1,0 +1,110 @@
+7/26/2026
+
+• Implemented both layers.
+
+  What changed:
+
+  - Added a cached reconciliation snapshot in src/service/rooms/timeline/reconciliation.rs.
+  - Wired the timeline service to own that cache in src/service/rooms/timeline/mod.rs.
+  - Updated the timeline append path to incrementally refresh the cache on accepted PDUs and soft-failed PDUs in src/service/rooms/timeline/append.rs.
+  - Switched room_digest and room_diff to use the cached reconciliation state instead of rebuilding their own scan-local copy in src/api/server/room_reconciliation.rs.
+  - Tightened request handling in room_diff:
+      - rejects scope: "resolved_state" for now
+      - requires frame_event_ids when frame_negotiation is set
+      - requires frame_id in sketch mode
+      - rejects mismatched frame_id before sketch processing
+
+  Verification:
+
+  - cargo check -q passes cleanly.
+
+  What still isn’t fully done versus the MSC text:
+
+  - Full descendant-frame negotiation is still simplified.
+  - resolved_state/state_at is validated but not implemented.
+  - Tombstone iteration is still not integrated into the reconciliation snapshot.
+  - inline_pdus is still not supported.
+
+  If you want, I can do the next pass on tombstones and proper frame negotiation.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+› what's left here
+
+
+• I’m checking the current reconciliation surface against the proposal text and the code that’s already landed, so I can give you a precise “remaining work” list instead of a vague status.
+
+• Ran git status --short
+  └ (no output)
+
+• Explored
+  └ Search TODO|FIXME|not_applicable|capacity_exceeded|inline_pdus|negotiated_frame_event_ids|requester_only_short_ids|Expected|validated request bundle|pub\(crate\)|bucket_slice|bucket_range in room_reconciliation.rs
+    Read room_reconciliation.rs
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Mostly spec-completeness and performance work.
+
+  What’s still left in this repo:
+
+  - Persist or cache the room h64 index instead of rebuilding it from the timeline on every room_digest / room_diff call. Right now the code is correct but still scans the room in memory each time in src/api/server/room_reconciliation.rs.
+  - Finish frame negotiation. Today the handler does an exact-frame check and otherwise falls back to "none" / "not_applicable", but it does not yet implement the full negotiated descendant-frame selection from MSC0501.
+  - Add resolved_state / state_at handling. The request fields are present, but the response logic is still effectively event_set only.
+  - Add inline_pdus and the associated size/validation rules for room_diff.
+  - Tighten the response contract around sketch mode, including the remaining edge cases for invalid frame IDs, expired frames, and partial truncation behavior.
+  - Add tests for:
+      - digest stability
+      - sketch decode / partition behavior
+      - frame mismatch handling
+      - truncation and capacity-exceeded cases
+      - rejected-tombstone inclusion in the known-event set
+
+  What is already in place:
+
+  - MSC0500 algebraic hashing and resident state bridging in src/core/utils/hash/algebraic.rs
+  - room_digest producing rezzy-backed algebraic digests and strata
+  - room_diff sketch mode using rezzy bucket sketches and decode
+  - a clean cargo check
+
+  So the remaining work is mostly “finish the MSC0501 wire semantics and optimize the storage path,” not “make the algebraic core work.”
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› wire semantics? optimal storage path?
+
+
+• Yes.
+
+  Wire semantics
+  This means the exact protocol behavior on the HTTP boundary, not just “it compiles and returns something.”
+
+  In this case, the remaining wire semantics are things like:
+
+  - frame_negotiation: true must return a real negotiated frame when possible, not just exact-match-or-fail.
+  - scope: "resolved_state" and state_at need actual state-resolution behavior, not just pass-through fields.
+  - sketch_status needs to follow the MSC rules precisely for decoded vs capacity-exceeded vs not-applicable.
+  - inline_pdus, if supported, must be included and validated exactly as the proposal says.
+  - Error behavior for invalid frames, invalid request ordering, length mismatches, and expired frames needs to match the contract, not just “some error.”
+
+  So “wire semantics” = the public protocol contract in src/api/server/room_reconciliation.rs, especially the edge cases the peer can observe.
+
+  Optimal storage path
+  This means how the server keeps the reconciliation data internally so it does not rebuild it on every request.
+
+  Right now the code builds room algebraic state by scanning the timeline each time. That is correct but not optimal. The better storage path would be something like:
+
+  - maintain a per-room resident reconciliation kernel
+  - maintain a sorted h64 index for bucket extraction
+  - update both incrementally when PDUs are inserted or removed
+  - cache them by room ID or frame ID, with invalidation on timeline changes
+
+  So “optimal storage path” = the internal data structure and update flow that makes room_digest and room_diff cheap instead of recomputing from the full timeline every time.
+
+  In short:
+
+  - wire semantics = what the peer sees and what the endpoint guarantees
+  - optimal storage path = how continuwuity stores and updates the reconciliation state internally
+
+  If you want, I can turn that into a concrete “remaining tasks” list ordered by impact.
