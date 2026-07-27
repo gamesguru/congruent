@@ -633,37 +633,14 @@ pub(crate) async fn post_room_events_route(
 	.check()
 	.await?;
 
-	let known: HashSet<_> = body.known_event_ids.into_iter().collect();
-	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
-
-	let mut missing_event_ids = Vec::new();
-	let mut rejected_tombstones = Vec::new();
-	let mut rejected_tombstone_ids = HashSet::new();
-	let mut combined = Vec::new();
-
-	for event_id in &body.event_ids {
-		if let Some(reason) = services
-			.rooms
-			.pdu_metadata
-			.tombstone_reason(&room_id, event_id)
-			.await
-		{
-			if rejected_tombstone_ids.insert(event_id.clone()) {
-				rejected_tombstones.push(rejected_tombstone(event_id, &reason));
-			}
-			continue;
-		}
-
-		match services
-			.rooms
-			.timeline
-			.get_pdu_in_room(Some(&room_id), event_id)
-	let known: HashSet<_> = body.known_event_ids.into_iter().collect();
+	let known: HashSet<_> = body.known_event_ids.iter().cloned().collect();
 	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
 	let mut added: HashSet<OwnedEventId> = requested.iter().cloned().collect();
 
-	let mut missing_event_ids = Vec::new();
-	let mut combined = Vec::new();
+	let mut missing_event_ids: Vec<OwnedEventId> = Vec::new();
+	let mut rejected_tombstones = Vec::new();
+	let mut rejected_tombstone_ids = HashSet::new();
+	let mut combined: Vec<conduwuit_core::PduEvent> = Vec::new();
 
 	for event_id in &body.event_ids {
 		match services
