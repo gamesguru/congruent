@@ -256,7 +256,7 @@ async fn update_read_receipt(
 				ReceiptType::Read,
 				BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
 					ts: Some(MilliSecondsSinceUnixEpoch::now()),
-					thread,
+					thread: thread.clone(),
 				})]),
 			)]),
 		)]);
@@ -317,7 +317,7 @@ async fn update_private_read_receipt(
 			ReceiptType::ReadPrivate,
 			BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
 				ts: Some(MilliSecondsSinceUnixEpoch::now()),
-				thread,
+				thread: thread.clone(),
 			})]),
 		)]),
 	)]);

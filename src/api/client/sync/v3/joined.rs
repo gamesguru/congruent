@@ -79,6 +79,7 @@ pub(super) async fn load_joined_room(
 			timeline,
 			summary,
 			notification_counts,
+			unread_thread_notifications,
 			device_list_updates,
 		},
 	) = try_join3(
@@ -298,19 +299,20 @@ async fn build_state_and_timeline(
 	let timeline =
 		build_timeline(services, sync_context, room_id, joined_since_last_sync).await?;
 
-	let (state_events, state_after, notification_counts) = try_join3(
-		build_state_events(
-			services,
-			sync_context,
-			room_id,
-			shortstatehashes,
-			&timeline,
-			joined_since_last_sync,
-		),
-		build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
-		build_notification_counts(services, sync_context, room_id, &timeline),
-	)
-	.await?;
+	let (state_events, state_after, (notification_counts, unread_thread_notifications)) =
+		try_join3(
+			build_state_events(
+				services,
+				sync_context,
+				room_id,
+				shortstatehashes,
+				&timeline,
+				joined_since_last_sync,
+			),
+			build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
+			build_notification_counts(services, sync_context, room_id, &timeline),
+		)
+		.await?;
 
 	debug!(
 		%room_id,
@@ -431,6 +433,7 @@ async fn build_state_and_timeline(
 		},
 		summary,
 		notification_counts,
+		unread_thread_notifications,
 		device_list_updates,
 	})
 }
@@ -682,22 +685,30 @@ async fn build_state_after(
 #[tracing::instrument(level = "debug", skip_all)]
 async fn build_notification_counts(
 	services: &Services,
-	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
+	SyncContext {
+		syncing_user,
+		last_sync_end_count,
+		current_count,
+		filter,
+		..
+	}: SyncContext<'_>,
 	room_id: &RoomId,
 	timeline: &TimelinePdus,
-) -> Result<Option<UnreadNotificationsCount>> {
+) -> Result<(
+	Option<UnreadNotificationsCount>,
+	BTreeMap<OwnedEventId, UnreadNotificationsCount>,
+)> {
 	// determine whether to actually update the notification counts
-	let should_send_notification_counts = async {
+	let (should_send_notification_counts, send_notification_resets) = if !timeline.pdus.is_empty()
+	{
+		(true, false)
+	} else {
 		// if we're going to sync some timeline events, the notification count has
 		// definitely changed to include them
-		if !timeline.pdus.is_empty() {
-			return true;
-		}
-
 		// if this is an initial sync, we need to send notification counts because the
 		// client doesn't know what they are yet
 		let Some(last_sync_end_count) = last_sync_end_count else {
-			return true;
+			return Ok((true, false));
 		};
 
 		let last_notification_read = services
@@ -705,19 +716,24 @@ async fn build_notification_counts(
 			.user
 			.last_notification_read(syncing_user, room_id)
 			.await;
+		let thread_last_notification_reads = services
+			.rooms
+			.user
+			.thread_last_notification_reads(syncing_user, room_id)
+			.await;
 
-		// if the syncing user has read the events we sent during the last sync, we need
-		// to send a new notification count on this sync.
-		if last_notification_read > last_sync_end_count {
-			return true;
-		}
+		let send_notification_resets = last_notification_read > last_sync_end_count
+			&& last_notification_read <= current_count
+			|| thread_last_notification_reads
+				.values()
+				.any(|count| *count > last_sync_end_count && *count <= current_count);
 
-		// otherwise, nothing's changed.
-		false
+		(send_notification_resets, send_notification_resets)
 	};
 
-	if should_send_notification_counts.await {
-		let (notification_count, highlight_count) = join(
+	if should_send_notification_counts {
+		let want_thread_unread = filter.room.timeline.unread_thread_notifications;
+		let (notification_count, highlight_count, thread_counts) = join3(
 			services
 				.rooms
 				.user
@@ -730,17 +746,68 @@ async fn build_notification_counts(
 				.highlight_count(syncing_user, room_id)
 				.map(TryInto::try_into)
 				.unwrap_or(uint!(0)),
+			services
+				.rooms
+				.user
+				.thread_notification_counts(syncing_user, room_id),
 		)
 		.await;
 
-		trace!(%notification_count, %highlight_count, "syncing new notification counts");
+		let thread_total_notifications = thread_counts
+			.values()
+			.map(|(notifications, _)| *notifications)
+			.fold(0_u64, u64::saturating_add);
+		let thread_total_highlights = thread_counts
+			.values()
+			.map(|(_, highlights)| *highlights)
+			.fold(0_u64, u64::saturating_add);
 
-		Ok(Some(UnreadNotificationsCount {
-			notification_count: Some(notification_count),
-			highlight_count: Some(highlight_count),
-		}))
+		let merge_total = |total: u64| {
+			move |count: UInt| {
+				if want_thread_unread {
+					count
+				} else {
+					count.saturating_add(UInt::try_from(total).unwrap_or_default())
+				}
+			}
+		};
+
+		let send_notification_count_filter =
+			|count: &UInt| *count != uint!(0) || send_notification_resets;
+
+		let unread_notifications = UnreadNotificationsCount {
+			notification_count: notification_count
+				.map(merge_total(thread_total_notifications))
+				.filter(send_notification_count_filter),
+			highlight_count: highlight_count
+				.map(merge_total(thread_total_highlights))
+				.filter(send_notification_count_filter),
+		};
+
+		let unread_thread_notifications = if want_thread_unread {
+			thread_counts
+				.into_iter()
+				.map(|(root, (notifications, highlights))| {
+					(root, UnreadNotificationsCount {
+						notification_count: UInt::try_from(notifications).ok(),
+						highlight_count: UInt::try_from(highlights).ok(),
+					})
+				})
+				.collect()
+		} else {
+			BTreeMap::new()
+		};
+
+		trace!(
+			%notification_count,
+			%highlight_count,
+			threads = unread_thread_notifications.len(),
+			"syncing new notification counts"
+		);
+
+		Ok((Some(unread_notifications), unread_thread_notifications))
 	} else {
-		Ok(None)
+		Ok((None, BTreeMap::new()))
 	}
 }
 
@@ -814,7 +881,7 @@ async fn check_joined_since_last_sync(
 			if let Ok(event_id) = services
 				.rooms
 				.state_accessor
-				.state_get_id::<ruma::OwnedEventId>(
+				.state_get_id::<OwnedEventId>(
 					current_shortstatehash,
 					&StateEventType::RoomMember,
 					syncing_user.as_str(),

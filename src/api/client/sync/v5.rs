@@ -1376,6 +1376,31 @@ where
 		} else {
 			None
 		};
+		let thread_counts = services
+			.rooms
+			.user
+			.thread_notification_counts(sender_user, room_id)
+			.await;
+		let thread_total_notifications = thread_counts
+			.values()
+			.map(|(notifications, _)| *notifications)
+			.fold(0_u64, u64::saturating_add);
+		let thread_total_highlights = thread_counts
+			.values()
+			.map(|(_, highlights)| *highlights)
+			.fold(0_u64, u64::saturating_add);
+		let notification_count = services
+			.rooms
+			.user
+			.notification_count(sender_user, room_id)
+			.await
+			.saturating_add(thread_total_notifications);
+		let highlight_count = services
+			.rooms
+			.user
+			.highlight_count(sender_user, room_id)
+			.await
+			.saturating_add(thread_total_highlights);
 
 		rooms.insert(room_id.clone(), sync_events::v5::response::Room {
 			name: if include_stable_room_fields {
@@ -1396,20 +1421,12 @@ where
 			invite_state,
 			unread_notifications: UnreadNotificationsCount {
 				highlight_count: Some(
-					services
-						.rooms
-						.user
-						.highlight_count(sender_user, room_id)
-						.await
+					highlight_count
 						.try_into()
 						.expect("notification count can't go that high"),
 				),
 				notification_count: Some(
-					services
-						.rooms
-						.user
-						.notification_count(sender_user, room_id)
-						.await
+					notification_count
 						.try_into()
 						.expect("notification count can't go that high"),
 				),

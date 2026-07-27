@@ -1083,10 +1083,20 @@ impl Service {
 				);
 
 			let unread: UInt = if let Some(room_id) = pdu.room_id_or_hash() {
+				let thread_counts = self
+					.services
+					.user
+					.thread_notification_counts(&user_id, &room_id)
+					.await;
+				let thread_total_notifications = thread_counts
+					.values()
+					.map(|(notifications, _)| *notifications)
+					.fold(0_u64, u64::saturating_add);
 				self.services
 					.user
 					.notification_count(&user_id, &room_id)
 					.await
+					.saturating_add(thread_total_notifications)
 					.try_into()
 					.expect("notification count can't go that high")
 			} else {
