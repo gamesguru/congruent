@@ -168,7 +168,31 @@ impl Service {
 				Some((pdu_id.shorteventid, pdu))
 			});
 
-		Ok(stream)
+		let threads = stream.collect::<Vec<_>>().await;
+		let mut ordered = Vec::with_capacity(threads.len());
+		for (root_count, pdu) in threads {
+			let unsigned = pdu.get_unsigned_as_value();
+			let latest_event_id = unsigned
+				.get("m.relations")
+				.and_then(|relations| relations.get("m.thread"))
+				.and_then(|thread| thread.get("latest_event"))
+				.and_then(|event| event.get("event_id"))
+				.and_then(|event_id| event_id.as_str())
+				.and_then(|event_id| EventId::parse(event_id).ok());
+			let latest_count = match latest_event_id {
+				| Some(event_id) => self
+					.services
+					.timeline
+					.get_pdu_count(event_id)
+					.await
+					.unwrap_or(root_count),
+				| None => root_count,
+			};
+			ordered.push((latest_count, pdu));
+		}
+		ordered.sort_by_key(|(count, _)| std::cmp::Reverse(*count));
+
+		Ok(futures::stream::iter(ordered))
 	}
 
 	pub(super) fn update_participants(
