@@ -1,0 +1,2 @@
+{"Action":"fail","Test":"TestPollsLocalPushRules"}
+{"Action":"fail","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}

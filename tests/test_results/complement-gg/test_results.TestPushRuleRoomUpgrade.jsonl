@@ -1,0 +1,6 @@
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade"}
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel"}
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_manually_upgraded_room_carries_over_existing_push_rules"}
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_upgraded_room_carries_over_existing_push_rules"}
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/manually_upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
+{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
