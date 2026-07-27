@@ -654,6 +654,18 @@ pub(crate) async fn post_room_events_route(
 			.rooms
 			.timeline
 			.get_pdu_in_room(Some(&room_id), event_id)
+	let known: HashSet<_> = body.known_event_ids.into_iter().collect();
+	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
+	let mut added: HashSet<OwnedEventId> = requested.iter().cloned().collect();
+
+	let mut missing_event_ids = Vec::new();
+	let mut combined = Vec::new();
+
+	for event_id in &body.event_ids {
+		match services
+			.rooms
+			.timeline
+			.get_pdu_in_room(Some(&room_id), event_id)
 			.await
 		{
 			| Ok(pdu) => combined.push(pdu),
@@ -680,18 +692,7 @@ pub(crate) async fn post_room_events_route(
 				else {
 					continue;
 				};
-				if requested.contains(&auth_event_id) || known.contains(&auth_event_id) {
-					continue;
-				}
-				if services
-					.rooms
-					.pdu_metadata
-					.is_event_soft_failed(&auth_event_id)
-					.await
-				{
-					if rejected_tombstone_ids.insert(auth_event_id.clone()) {
-						rejected_tombstones.push(rejected_tombstone(&auth_event_id, "soft_failed"));
-					}
+				if !added.insert(auth_event_id.clone()) || known.contains(&auth_event_id) {
 					continue;
 				}
 				if let Ok(pdu) = services
