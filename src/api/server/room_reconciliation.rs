@@ -200,6 +200,7 @@ async fn verify_federation_request(
 	x_matrix: &XMatrix,
 	signature_uri: &str,
 	method: http::Method,
+	content: Option<&serde_json::Value>,
 ) -> Result {
 	type Member = (String, ruma::CanonicalJsonValue);
 	type Object = ruma::CanonicalJsonObject;
@@ -229,14 +230,29 @@ async fn verify_federation_request(
 		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
 	let signatures: [Member; 1] =
 		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
-	let authorization: Object = [
-		("destination".into(), Value::String(destination.into())),
-		("method".into(), Value::String(method.as_str().into())),
-		("origin".into(), Value::String(x_matrix.origin.as_str().into())),
-		("signatures".into(), Value::Object(signatures.into())),
-		("uri".into(), Value::String(signature_uri.to_owned())),
-	]
-	.into();
+	let authorization: Object = if let Some(content) = content {
+		let content = conduwuit::utils::to_canonical_object(content).map_err(|e| {
+			err!(Request(Forbidden(warn!("Failed to canonicalize federation request body: {e}"))))
+		})?;
+		[
+			("content".into(), Value::Object(content)),
+			("destination".into(), Value::String(destination.into())),
+			("method".into(), Value::String(method.as_str().into())),
+			("origin".into(), Value::String(x_matrix.origin.as_str().into())),
+			("signatures".into(), Value::Object(signatures.into())),
+			("uri".into(), Value::String(signature_uri.to_owned())),
+		]
+		.into()
+	} else {
+		[
+			("destination".into(), Value::String(destination.into())),
+			("method".into(), Value::String(method.as_str().into())),
+			("origin".into(), Value::String(x_matrix.origin.as_str().into())),
+			("signatures".into(), Value::Object(signatures.into())),
+			("uri".into(), Value::String(signature_uri.to_owned())),
+		]
+		.into()
+	};
 
 	let key = services
 		.server_keys
@@ -310,7 +326,8 @@ pub(crate) async fn get_room_digest_route(
 		.map_or("/", http::uri::PathAndQuery::as_str)
 		.to_owned();
 
-	verify_federation_request(&services, &x_matrix, &signature_uri, http::Method::GET).await?;
+	verify_federation_request(&services, &x_matrix, &signature_uri, http::Method::GET, None)
+		.await?;
 
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
@@ -393,14 +410,21 @@ pub(crate) async fn post_room_diff_route(
 	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
 	Path(room_id_str): Path<String>,
 	uri: http::Uri,
-	axum::Json(body): axum::Json<RoomDiffRequest>,
+	axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<impl axum::response::IntoResponse> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
 		.to_owned();
 
-	verify_federation_request(&services, &x_matrix, &signature_uri, http::Method::POST).await?;
+	verify_federation_request(
+		&services,
+		&x_matrix,
+		&signature_uri,
+		http::Method::POST,
+		Some(&body),
+	)
+	.await?;
 
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
@@ -413,6 +437,9 @@ pub(crate) async fn post_room_diff_route(
 	}
 	.check()
 	.await?;
+
+	let body: RoomDiffRequest = serde_json::from_value(body)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room diff body."))))?;
 
 	let digest = room_digest_inner(&services, &room_id).await?;
 	let state = services
@@ -612,14 +639,21 @@ pub(crate) async fn post_room_events_route(
 	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
 	Path(room_id_str): Path<String>,
 	uri: http::Uri,
-	axum::Json(body): axum::Json<RoomEventsRequest>,
+	axum::Json(body): axum::Json<serde_json::Value>,
 ) -> Result<impl axum::response::IntoResponse> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
 		.to_owned();
 
-	verify_federation_request(&services, &x_matrix, &signature_uri, http::Method::POST).await?;
+	verify_federation_request(
+		&services,
+		&x_matrix,
+		&signature_uri,
+		http::Method::POST,
+		Some(&body),
+	)
+	.await?;
 
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
@@ -633,14 +667,17 @@ pub(crate) async fn post_room_events_route(
 	.check()
 	.await?;
 
-	let known: HashSet<_> = body.known_event_ids.iter().cloned().collect();
+	let body: RoomEventsRequest = serde_json::from_value(body)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room events body."))))?;
+
+	let known: HashSet<_> = body.known_event_ids.into_iter().collect();
 	let requested: HashSet<_> = body.event_ids.iter().cloned().collect();
 	let mut added: HashSet<OwnedEventId> = requested.iter().cloned().collect();
 
-	let mut missing_event_ids: Vec<OwnedEventId> = Vec::new();
+	let mut missing_event_ids = Vec::new();
 	let mut rejected_tombstones = Vec::new();
 	let mut rejected_tombstone_ids = HashSet::new();
-	let mut combined: Vec<conduwuit_core::PduEvent> = Vec::new();
+	let mut combined = Vec::new();
 
 	for event_id in &body.event_ids {
 		match services

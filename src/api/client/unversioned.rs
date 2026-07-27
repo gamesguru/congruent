@@ -57,8 +57,10 @@ pub(crate) async fn get_supported_versions_route(
 		unstable_features.insert("org.matrix.msc4222".to_owned(), true); /* state_after in sync v2 (https://github.com/matrix-org/matrix-spec-proposals/pull/4222) */
 	}
 
-	unstable_features.insert("tk.nutra.msc0501.reconciliation".to_owned(), true);
-	unstable_features.insert("algebraic_v1".to_owned(), true);
+	if services.config.allow_federation {
+		unstable_features.insert("tk.nutra.msc0501.reconciliation".to_owned(), true);
+		unstable_features.insert("algebraic_v1".to_owned(), true);
+	}
 
 	let resp = get_supported_versions::Response {
 		versions: vec![
