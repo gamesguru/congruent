@@ -702,15 +702,9 @@ async fn build_notification_counts(
 	let (should_send_notification_counts, send_notification_resets) = if !timeline.pdus.is_empty()
 	{
 		(true, false)
-	} else {
-		// if we're going to sync some timeline events, the notification count has
-		// definitely changed to include them
-		// if this is an initial sync, we need to send notification counts because the
-		// client doesn't know what they are yet
-		let Some(last_sync_end_count) = last_sync_end_count else {
-			return Ok((true, false));
-		};
-
+	} else if let Some(last_sync_end_count) = last_sync_end_count {
+		// If the user's read cursor advanced since the previous sync, or a thread
+		// cursor advanced, we need to send counts so the client can observe the reset.
 		let last_notification_read = services
 			.rooms
 			.user
@@ -729,6 +723,8 @@ async fn build_notification_counts(
 				.any(|count| *count > last_sync_end_count && *count <= current_count);
 
 		(send_notification_resets, send_notification_resets)
+	} else {
+		(true, false)
 	};
 
 	if should_send_notification_counts {
@@ -762,26 +758,30 @@ async fn build_notification_counts(
 			.map(|(_, highlights)| *highlights)
 			.fold(0_u64, u64::saturating_add);
 
-		let merge_total = |total: u64| {
-			move |count: UInt| {
-				if want_thread_unread {
-					count
-				} else {
-					count.saturating_add(UInt::try_from(total).unwrap_or_default())
-				}
+		let merge_total = |count: UInt, total: u64| {
+			if want_thread_unread {
+				count
+			} else {
+				count.saturating_add(UInt::try_from(total).unwrap_or_default())
 			}
 		};
 
 		let send_notification_count_filter =
 			|count: &UInt| *count != uint!(0) || send_notification_resets;
+		let notification_count = merge_total(notification_count, thread_total_notifications);
+		let highlight_count = merge_total(highlight_count, thread_total_highlights);
 
 		let unread_notifications = UnreadNotificationsCount {
-			notification_count: notification_count
-				.map(merge_total(thread_total_notifications))
-				.filter(send_notification_count_filter),
-			highlight_count: highlight_count
-				.map(merge_total(thread_total_highlights))
-				.filter(send_notification_count_filter),
+			notification_count: if send_notification_count_filter(&notification_count) {
+				Some(notification_count)
+			} else {
+				None
+			},
+			highlight_count: if send_notification_count_filter(&highlight_count) {
+				Some(highlight_count)
+			} else {
+				None
+			},
 		};
 
 		let unread_thread_notifications = if want_thread_unread {

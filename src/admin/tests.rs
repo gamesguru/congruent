@@ -1869,6 +1869,143 @@ async fn test_yolo_heal_receipts() {
 }
 
 #[tokio::test]
+async fn test_threaded_receipts_notification_counters() {
+	use ruma::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+
+	let (services, _guard) = setup_test_services("threaded_receipts").await;
+
+	let room_id = RoomId::new(services.globals.server_name());
+	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
+	let thread_a: OwnedEventId = "$thread-a:test.conduwuit.local".try_into().unwrap();
+	let thread_b: OwnedEventId = "$thread-b:test.conduwuit.local".try_into().unwrap();
+
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id), 8_u64);
+	services.db["userroomid_highlightcount"].put((&user_id, &room_id), 2_u64);
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id, &thread_a), 4_u64);
+	services.db["userroomid_highlightcount"].put((&user_id, &room_id, &thread_a), 1_u64);
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id, &thread_b), 6_u64);
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((4, 1)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		8
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		2
+	);
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(
+			&user_id,
+			&room_id,
+			&ReceiptThread::Thread(thread_a.clone()),
+		)
+		.await;
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		8
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		2
+	);
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((0, 0)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(&user_id, &room_id, &ReceiptThread::Main)
+		.await;
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((0, 0)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(&user_id, &room_id, &ReceiptThread::Unthreaded)
+		.await;
+
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert!(
+		services
+			.rooms
+			.user
+			.thread_notification_counts(&user_id, &room_id)
+			.await
+			.is_empty()
+	);
+}
+
+#[tokio::test]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
