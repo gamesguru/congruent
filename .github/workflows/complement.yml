@@ -176,7 +176,7 @@ jobs:
         run: go install gotest.tools/gotestsum@latest
 
       - name: Install just
-        run: sudo apt-get install -y just
+        uses: extractions/setup-just@v2
 
       - name: Configure Docker Network Firewall
         run: |
