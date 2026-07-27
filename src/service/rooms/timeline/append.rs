@@ -340,6 +340,7 @@ where
 
 	let mut notifies = Vec::with_capacity(push_target.len().saturating_add(1));
 	let mut highlights = Vec::with_capacity(push_target.len().saturating_add(1));
+	let thread_root = self.services.threads.get_thread_id(pdu).await;
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {
@@ -419,8 +420,12 @@ where
 				.await;
 		}
 
-		self.db
-			.increment_notification_counts(room_id, notifies, highlights);
+		self.db.increment_notification_counts(
+			room_id,
+			notifies,
+			highlights,
+			thread_root.as_deref(),
+		);
 	}
 
 	match *pdu.kind() {

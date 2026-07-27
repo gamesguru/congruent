@@ -102,6 +102,51 @@ pub(crate) async fn create_receipt_route(
 			.await?;
 	}
 
+	// MSC3771: thread_id MUST NOT be provided with `m.fully_read`.
+	if matches!(&body.receipt_type, create_receipt::v3::ReceiptType::FullyRead)
+		&& !matches!(body.thread, ReceiptThread::Unthreaded)
+	{
+		return Err!(Request(InvalidParam(
+			"thread_id must not be set for m.fully_read receipts"
+		)));
+	}
+
+	// MSC3771: a present thread_id must be a non-empty string.
+	if body.thread.as_str() == Some("") {
+		return Err!(Request(InvalidParam("thread_id must be a non-empty string")));
+	}
+
+	// MSC3771: event_id must belong to the thread the receipt targets.
+	if matches!(&body.thread, ReceiptThread::Main | ReceiptThread::Thread(_)) {
+		let resolved = services
+			.rooms
+			.threads
+			.get_thread_id_for_event(&body.event_id)
+			.await;
+
+		let in_thread = match (&body.thread, resolved.as_deref()) {
+			| (ReceiptThread::Main, None) => true,
+			| (ReceiptThread::Thread(root), Some(parent)) => &**root == parent,
+			| (ReceiptThread::Thread(root), None) => **root == *body.event_id,
+			| _ => false,
+		};
+
+		if !in_thread {
+			return Err!(Request(InvalidParam("event_id is not related to the given thread_id")));
+		}
+	}
+
+	if matches!(
+		&body.receipt_type,
+		create_receipt::v3::ReceiptType::Read | create_receipt::v3::ReceiptType::ReadPrivate
+	) {
+		services
+			.rooms
+			.user
+			.reset_notification_counts_for_thread(sender_user, &body.room_id, &body.thread)
+			.await;
+	}
+
 	match body.receipt_type {
 		| create_receipt::v3::ReceiptType::FullyRead => {
 			let fully_read_event = ruma::events::fully_read::FullyReadEvent {
@@ -228,7 +273,8 @@ async fn update_read_receipt(
 		services
 			.rooms
 			.user
-			.reset_notification_counts(sender_user, room_id);
+			.reset_notification_counts_for_thread(sender_user, room_id, &thread)
+			.await;
 
 		conduwuit::info!(
 			target: "read_receipt_debug",
@@ -265,7 +311,6 @@ async fn update_private_read_receipt(
 		)));
 	};
 
-	let is_unthreaded = thread == ReceiptThread::Unthreaded;
 	let receipt_content = BTreeMap::from_iter([(
 		event_id.to_owned(),
 		BTreeMap::from_iter([(
@@ -292,12 +337,11 @@ async fn update_private_read_receipt(
 	)?;
 
 	if applied {
-		if is_unthreaded {
-			services
-				.rooms
-				.user
-				.reset_notification_counts(sender_user, room_id);
-		}
+		services
+			.rooms
+			.user
+			.reset_notification_counts_for_thread(sender_user, room_id, &thread)
+			.await;
 
 		conduwuit::debug!("Accepted private read receipt for {} from {}", event_id, sender_user);
 	} else {

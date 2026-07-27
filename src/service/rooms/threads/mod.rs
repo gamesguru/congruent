@@ -11,9 +11,12 @@ use conduwuit_core::{
 use conduwuit_database::{Deserialized, Map};
 use futures::{Stream, StreamExt};
 use ruma::{
-	CanonicalJsonValue, EventId, OwnedUserId, RoomId, UserId,
-	api::client::threads::get_threads::v1::IncludeThreads, events::relation::BundledThread, uint,
+	CanonicalJsonValue, EventId, OwnedEventId, OwnedUserId, RoomId, UserId,
+	api::client::threads::get_threads::v1::IncludeThreads,
+	events::relation::{BundledThread, RelationType},
+	uint,
 };
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
@@ -30,6 +33,21 @@ struct Services {
 
 pub(super) struct Data {
 	threadid_userids: Arc<Map>,
+}
+
+/// Maximum relation hops walked when resolving thread membership.
+const MAX_THREAD_HOPS: usize = 3;
+
+#[derive(Deserialize)]
+struct ExtractThreadRelation {
+	#[serde(rename = "m.relates_to")]
+	relates_to: ThreadRelation,
+}
+
+#[derive(Deserialize)]
+struct ThreadRelation {
+	rel_type: RelationType,
+	event_id: OwnedEventId,
 }
 
 impl crate::Service for Service {
@@ -49,6 +67,39 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	pub async fn get_thread_id<E>(&self, event: &E) -> Option<OwnedEventId>
+	where
+		E: Event + Sync,
+	{
+		let mut relates_to = event
+			.get_content::<ExtractThreadRelation>()
+			.ok()?
+			.relates_to;
+
+		for _ in 0..MAX_THREAD_HOPS {
+			if relates_to.rel_type == RelationType::Thread {
+				return Some(relates_to.event_id);
+			}
+
+			relates_to = self
+				.services
+				.timeline
+				.get_pdu(&relates_to.event_id)
+				.await
+				.ok()?
+				.get_content::<ExtractThreadRelation>()
+				.ok()?
+				.relates_to;
+		}
+
+		None
+	}
+
+	pub async fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
+		let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
+		self.get_thread_id(&pdu).await
+	}
+
 	pub async fn add_to_thread<E>(&self, root_event_id: &EventId, event: &E) -> Result
 	where
 		E: Event + Send + Sync,

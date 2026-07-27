@@ -21,7 +21,7 @@ use futures::{
 	future::{join, join3, join4, try_join, try_join3},
 };
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
@@ -107,7 +107,7 @@ pub(super) async fn load_joined_room(
 			events: state_events.into_iter().map(Event::into_format).collect(),
 		},
 		ephemeral,
-		unread_thread_notifications: BTreeMap::new(),
+		unread_thread_notifications,
 	};
 
 	let state_after = state_after
@@ -271,6 +271,7 @@ struct StateAndTimeline {
 	timeline: Timeline,
 	summary: Option<RoomSummary>,
 	notification_counts: Option<UnreadNotificationsCount>,
+	unread_thread_notifications: BTreeMap<OwnedEventId, UnreadNotificationsCount>,
 	device_list_updates: DeviceListUpdates,
 }
 

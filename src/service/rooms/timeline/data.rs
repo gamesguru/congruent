@@ -12,9 +12,11 @@ use conduwuit::{
 		stream::{ReadyExt, TryReadyExt, WidebandExt},
 	},
 };
-use database::{Database, Deserialized, Json, KeyVal, Map};
+use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, api::Direction};
+use ruma::{
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
+};
 
 use super::{PduId, RawPduId};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
@@ -1669,22 +1671,48 @@ impl Data {
 		room_id: &RoomId,
 		notifies: Vec<OwnedUserId>,
 		highlights: Vec<OwnedUserId>,
+		thread_root: Option<&EventId>,
 	) {
 		let _cork = self.db.cork();
 
 		for user in notifies {
-			let mut userroom_id = user.as_bytes().to_vec();
-			userroom_id.push(0xFF);
-			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_notificationcount, &userroom_id);
+			match thread_root {
+				| Some(thread_root) => {
+					Self::increment_thread(
+						&self.userroomid_notificationcount,
+						(user.as_ref(), room_id, thread_root),
+					);
+				},
+				| None => {
+					let mut userroom_id = user.as_bytes().to_vec();
+					userroom_id.push(0xFF);
+					userroom_id.extend_from_slice(room_id.as_bytes());
+					increment(&self.userroomid_notificationcount, &userroom_id);
+				},
+			}
 		}
 
 		for user in highlights {
-			let mut userroom_id = user.as_bytes().to_vec();
-			userroom_id.push(0xFF);
-			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_highlightcount, &userroom_id);
+			match thread_root {
+				| Some(thread_root) => {
+					Self::increment_thread(
+						&self.userroomid_highlightcount,
+						(user.as_ref(), room_id, thread_root),
+					);
+				},
+				| None => {
+					let mut userroom_id = user.as_bytes().to_vec();
+					userroom_id.push(0xFF);
+					userroom_id.extend_from_slice(room_id.as_bytes());
+					increment(&self.userroomid_highlightcount, &userroom_id);
+				},
+			}
 		}
+	}
+
+	fn increment_thread(db: &Arc<Map>, key: (&UserId, &RoomId, &EventId)) {
+		let key = serialize_key(key).expect("failed to serialize thread notification key");
+		increment(db, &key);
 	}
 
 	async fn count_to_id(
