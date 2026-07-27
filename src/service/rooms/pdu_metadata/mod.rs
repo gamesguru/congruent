@@ -3,7 +3,7 @@ mod data;
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use conduwuit::{Result, matrix::PduCount};
+use conduwuit::{Result, debug, matrix::PduCount};
 use futures::{StreamExt, future::try_join};
 use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 use sha2::{Digest, Sha256};
@@ -226,6 +226,7 @@ impl Service {
 		ids.dedup();
 
 		let hash = STANDARD_NO_PAD.encode(Sha256::digest(ids.concat().as_bytes()));
+		debug!(%event_id, ?ids, "MSC2836 local child IDs");
 
 		(counts, hash)
 	}
@@ -240,12 +241,16 @@ impl Service {
 	) -> (std::collections::BTreeMap<String, u64>, String) {
 		let (counts, hash) = self.msc2836_local_children(event_id).await;
 		let local_total: u64 = counts.values().sum();
+		debug!(%event_id, ?counts, %hash, "MSC2836 local child metadata");
 
 		if let Some((reported_counts, reported_hash)) =
 			self.db.msc2836_get_reported_children(event_id).await
 		{
 			let reported_total: u64 = reported_counts.values().sum();
-			if reported_total > local_total {
+			debug!(%event_id, ?reported_counts, %reported_hash, "MSC2836 reported child metadata");
+			if reported_total > local_total
+				|| (reported_total == local_total && reported_hash != hash)
+			{
 				return (reported_counts, reported_hash);
 			}
 		}

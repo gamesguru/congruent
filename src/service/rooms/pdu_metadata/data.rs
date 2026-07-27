@@ -281,14 +281,17 @@ impl Data {
 		hash: &str,
 	) {
 		let new_total: u64 = counts.values().sum();
-		let existing_total: u64 = self
+		let existing = self
 			.msc2836_reported_children
 			.get_blocking(event_id)
 			.ok()
-			.and_then(|bytes| bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok())
-			.map_or(0, |r| r.counts.values().sum());
+			.and_then(|bytes| bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok());
+		let should_replace = existing.as_ref().is_none_or(|existing| {
+			new_total > existing.counts.values().sum::<u64>()
+				|| (new_total == existing.counts.values().sum::<u64>() && existing.hash != hash)
+		});
 
-		if new_total > existing_total {
+		if should_replace {
 			let record = Msc2836ReportedChildren {
 				counts: counts.clone(),
 				hash: hash.to_owned(),

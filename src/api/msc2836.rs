@@ -13,7 +13,7 @@ use conduwuit::{Err, Event, PduEvent, Result, err};
 use conduwuit_service::Services;
 use futures::StreamExt;
 use ruma::{
-	OwnedEventId, OwnedRoomId, RoomId, ServerName, UserId,
+	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
 	api::federation::event::event_relationships as federation_event_relationships,
 };
 use serde::Deserialize;
@@ -100,6 +100,15 @@ fn parent_of(pdu: &PduEvent) -> Option<(OwnedEventId, String)> {
 		.map(|r| (r.event_id, r.rel_type))
 }
 
+fn reported_children(
+	value: &ruma::CanonicalJsonObject,
+) -> Option<(BTreeMap<String, u64>, String)> {
+	let unsigned = value.get("unsigned")?;
+	let unsigned = serde_json::to_value(unsigned).ok()?;
+	let unsigned = serde_json::from_value::<ExtractChildrenUnsigned>(unsigned).ok()?;
+	Some((unsigned.children, unsigned.children_hash?))
+}
+
 async fn can_see(
 	services: &Services,
 	requester: &Requester<'_>,
@@ -149,16 +158,28 @@ async fn persist_federation_events(
 	room_id: &RoomId,
 	raws: Vec<Box<RawJsonValue>>,
 ) -> Vec<PduEvent> {
+	type PendingEvent =
+		(OwnedEventId, ruma::CanonicalJsonObject, Option<(BTreeMap<String, u64>, String)>);
+
 	let Ok(room_version) = services.rooms.state.get_room_version(room_id).await else {
 		return Vec::new();
 	};
 
-	let mut pending: Vec<(OwnedEventId, ruma::CanonicalJsonObject)> = Vec::new();
+	let mut pending: Vec<PendingEvent> = Vec::new();
 	for raw in &raws {
-		if let Ok((event_id, value)) =
-			conduwuit::matrix::event::gen_event_id_canonical_json(raw, &room_version)
-		{
-			pending.push((event_id, value));
+		let Ok(mut value) = serde_json::from_str::<ruma::CanonicalJsonObject>(raw.get()) else {
+			continue;
+		};
+		// Room versions 3+ derive event IDs from the reference hash and do
+		// not include `event_id` in the signed event JSON. The MSC2836
+		// response serializer includes it for client-facing identification,
+		// so remove it before deriving the ID and verifying the event.
+		if !matches!(&room_version, RoomVersionId::V1 | RoomVersionId::V2) {
+			value.remove("event_id");
+		}
+		if let Ok(event_id) = conduwuit::matrix::event::gen_event_id(&value, &room_version) {
+			let report = reported_children(&value);
+			pending.push((event_id, value, report));
 		}
 	}
 
@@ -169,7 +190,7 @@ async fn persist_federation_events(
 		}
 		let mut still_pending = Vec::new();
 		let mut made_progress = false;
-		for (event_id, value) in pending {
+		for (event_id, value, report) in pending {
 			match services
 				.rooms
 				.event_handler
@@ -186,6 +207,13 @@ async fn persist_federation_events(
 				.await
 			{
 				| Ok((pdu, _)) => {
+					if let Some((counts, hash)) = report {
+						services.rooms.pdu_metadata.msc2836_set_reported_children(
+							pdu.event_id(),
+							&counts,
+							&hash,
+						);
+					}
 					if let Some((parent_id, rel_type)) = parent_of(&pdu) {
 						services.rooms.pdu_metadata.msc2836_add_child(
 							&parent_id,
@@ -193,22 +221,11 @@ async fn persist_federation_events(
 							&rel_type,
 						);
 					}
-					if let Ok(unsigned) = pdu.get_unsigned::<ExtractChildrenUnsigned>() {
-						if let Some(hash) = unsigned.children_hash {
-							if !unsigned.children.is_empty() {
-								services.rooms.pdu_metadata.msc2836_set_reported_children(
-									pdu.event_id(),
-									&unsigned.children,
-									&hash,
-								);
-							}
-						}
-					}
 					persisted.push(pdu);
 					made_progress = true;
 				},
 				| Err(_) => {
-					still_pending.push((event_id, value));
+					still_pending.push((event_id, value, report));
 				},
 			}
 		}
@@ -335,7 +352,22 @@ async fn walk_down(
 				child_pdus.push(pdu);
 			}
 		}
-		child_pdus.sort_by_key(|p| p.origin_server_ts);
+		// Depth is the stable DAG order for siblings that were sent in sequence;
+		// timestamps can be equal or arrive skewed across federation.
+		child_pdus.sort_by(|left, right| {
+			let left_precedes = right.prev_events.iter().any(|id| id == left.event_id());
+			let right_precedes = left.prev_events.iter().any(|id| id == right.event_id());
+			left_precedes
+				.cmp(&right_precedes)
+				.reverse()
+				.then_with(|| left.depth.cmp(&right.depth))
+				.then_with(|| left.origin_server_ts.cmp(&right.origin_server_ts))
+				.then_with(|| {
+					left.event_id()
+						.to_string()
+						.cmp(&right.event_id().to_string())
+				})
+		});
 		if recent_first {
 			child_pdus.reverse();
 		}
