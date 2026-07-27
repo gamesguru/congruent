@@ -354,13 +354,10 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 					// not merely the validated outlier left by handle_incoming_pdu.
 					// Promote it here so /context can resolve its PduId.
 					if self.get_pdu_id(event_id).await.is_err() {
-						let room_version = self.services.state.get_room_version(room_id).await?;
-						self.promote_outliers_sorted(
-							room_id,
-							&[event_id.to_owned()],
-							&room_version,
-						)
-						.await?;
+						// The event has already passed the outlier handler. Promote it
+						// directly; sorting a one-event map has no ancestor context and
+						// can legitimately produce no sortable IDs.
+						self.promote_outlier(room_id, event_id).await?;
 					}
 					debug!("Successfully backfilled {event_id} from {backfill_server}");
 					Some(self.get_pdu(event_id).await)
