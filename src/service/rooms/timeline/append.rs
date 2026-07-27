@@ -28,7 +28,10 @@ use ruma::{
 };
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
-use crate::{appservice::NamespaceRegex, rooms::state_compressor::CompressedState};
+use crate::{
+	appservice::NamespaceRegex,
+	rooms::state_compressor::{CompressedState, HashSetCompressStateEvent},
+};
 
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
@@ -41,6 +44,7 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
 	state_ids_compressed: Arc<CompressedState>,
+	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
@@ -70,7 +74,7 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, state_lock, room_id)
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state, state_lock, room_id)
 		.await?;
 
 	// Process admin commands for federation events
@@ -109,14 +113,15 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
+	resolved_state: Option<HashSetCompressStateEvent>,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<RawPduId>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
-	// Coalesce database writes for the remainder of this scope.
-	let _cork = self.db.db.cork();
+	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
+	let cork = self.db.db.cork_and_flush();
 
 	let shortroomid = self
 		.services
@@ -184,23 +189,48 @@ where
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 
-	let count1 = self.services.globals.next_count().unwrap();
-
-	// Mark as read first so the sending client doesn't get a notification even if
-	// appending fails
-	self.services
-		.read_receipt
-		.private_read_set(room_id, pdu.sender(), count1);
-
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	let count2 = PduCount::Normal(self.services.globals.next_count().unwrap());
+	let count2_raw = self.services.globals.next_count()?;
+	let count2 = PduCount::Normal(count2_raw);
 	let pdu_id: RawPduId = PduId { shortroomid, shorteventid: count2 }.into();
 
 	// Insert pdu
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
+	drop(cork);
+
+	let resolved_state_applied = resolved_state.is_some();
+	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
+		self.services
+			.state
+			.force_state(room_id, shortstatehash, added, removed, state_lock)
+			.await?;
+	}
+
+	let receipt_content = BTreeMap::from_iter([(
+		pdu.event_id().to_owned(),
+		BTreeMap::from_iter([(
+			ruma::events::receipt::ReceiptType::ReadPrivate,
+			BTreeMap::from_iter([(pdu.sender().to_owned(), ruma::events::receipt::Receipt {
+				ts: Some(ruma::MilliSecondsSinceUnixEpoch::now()),
+				thread: ruma::events::receipt::ReceiptThread::Unthreaded,
+			})]),
+		)]),
+	)]);
+	let receipt_event = ruma::events::receipt::ReceiptEvent {
+		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+		room_id: room_id.to_owned(),
+	};
+
+	// Wake sync only after the event is visible in the room timeline.
+	self.services.read_receipt.private_read_set(
+		room_id,
+		pdu.sender(),
+		count2_raw,
+		&receipt_event,
+	)?;
 
 	drop(insert_lock);
 
@@ -339,7 +369,7 @@ where
 					.await
 					.remove(room_id);
 			},
-		| TimelineEventType::RoomMember => {
+		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
 				let target_user_id =

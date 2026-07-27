@@ -11,10 +11,7 @@ use futures::{FutureExt, StreamExt, future::ready};
 use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::{
-	state_compressor::{CompressedState, HashSetCompressStateEvent},
-	timeline::RawPduId,
-};
+use crate::rooms::{state_compressor::CompressedState, timeline::RawPduId};
 
 #[implement(super::Service)]
 pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(
@@ -232,7 +229,7 @@ where
 		.map(Arc::new)
 		.await;
 
-	if let Some(state_key) = incoming_pdu.state_key() {
+	let resolved_state = if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
 		// We also add state after incoming event to the fork states
@@ -252,17 +249,16 @@ where
 
 		// Set the new room state to the resolved state
 		debug!("Forcing new room state");
-		let HashSetCompressStateEvent { shortstatehash, added, removed } = self
+		let resolved_state = self
 			.services
 			.state_compressor
 			.save_state(room_id, new_room_state)
 			.await?;
 
-		self.services
-			.state
-			.force_state(room_id, shortstatehash, added, removed, &state_lock)
-			.await?;
-	}
+		Some(resolved_state)
+	} else {
+		None
+	};
 
 	if !soft_fail {
 		// Don't call the below checks on events that have already soft-failed, there's
@@ -339,6 +335,7 @@ where
 				val,
 				extremities,
 				state_ids_compressed,
+				None,
 				soft_fail,
 				&state_lock,
 				room_id,
@@ -372,6 +369,7 @@ where
 			val,
 			extremities,
 			state_ids_compressed,
+			resolved_state,
 			soft_fail,
 			&state_lock,
 			room_id,

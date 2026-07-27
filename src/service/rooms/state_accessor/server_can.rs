@@ -21,10 +21,17 @@ pub async fn server_can_see_event(
 	let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await else {
 		warn!(
 			"Unable to visibility check event {} in room {} for server {}: shortstatehash not \
-			 found",
+			 found; falling back to current membership",
 			event_id, room_id, origin
 		);
-		return true;
+		// We can't evaluate history_visibility/membership at the event's state, so
+		// only allow servers that are currently participating in the room rather
+		// than failing open to any requester.
+		return self
+			.services
+			.state_cache
+			.server_in_room(origin, room_id)
+			.await;
 	};
 
 	let history_visibility = self

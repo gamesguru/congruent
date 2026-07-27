@@ -150,21 +150,36 @@ impl Service {
 	) {
 		match response {
 			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
-			| Err((dest, e)) => self.handle_response_err(dest, statuses, &e),
+			| Err((dest, e)) => {
+				if let Some(dest) = self.handle_response_err(dest, statuses, &e) {
+					// The destination definitively rejected this transaction; it will
+					// never accept it as constructed, so drop the PDUs it contained now
+					// rather than leaving them marked active. Since `statuses` no
+					// longer has an entry for `dest` after this, the next transaction
+					// for it won't be treated as a retry (see
+					// `select_events_current`), so a later unrelated flush/EDU send
+					// succeeding would otherwise wipe these out via
+					// `delete_all_active_requests_for` without ever having resent them.
+					self.db.delete_all_active_requests_for(&dest).await;
+				}
+			},
 		}
 	}
 
+	/// Returns `Some(dest)` if the destination definitively rejected the
+	/// transaction and its active requests must be cleaned up by the caller.
 	fn handle_response_err(
 		&self,
 		dest: Destination,
 		statuses: &mut CurTransactionStatus,
 		e: &Error,
-	) {
+	) -> Option<Destination> {
 		debug!(dest = ?dest, "{e:?}");
 		let status = e.status_code();
 		if status.is_client_error() && !matches!(status.as_u16(), 401 | 403 | 404 | 429) {
+			warn!(dest = ?dest, "Destination rejected transaction with {status}, dropping its active PDUs: {e:?}");
 			statuses.remove(&dest);
-			return;
+			return Some(dest);
 		}
 
 		let mut tries: u32 = 1;
@@ -201,6 +216,7 @@ impl Service {
 		}
 
 		self.reschedule_flush(dest, delay);
+		None
 	}
 
 	/// Schedule a Flush for `dest` after `delay`.

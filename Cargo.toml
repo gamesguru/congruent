@@ -138,6 +138,9 @@ features = [
 version = "0.23.25"
 default-features = false
 
+[workspace.dependencies.rustc-hash]
+version = "2.1.2"
+
 [workspace.dependencies.reqwest]
 version = "0.13.2"
 default-features = false
@@ -341,6 +344,11 @@ version = "0.1.88"
 
 [workspace.dependencies.lru-cache]
 version = "0.1.2"
+
+[workspace.dependencies.moka]
+version = "0.12"
+default-features = false
+features = ["sync", "future"]
 
 # Used for matrix spec type definitions and helpers
 [workspace.dependencies.ruma]

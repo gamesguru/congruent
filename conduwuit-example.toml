@@ -246,6 +246,11 @@
 #
 #dns_min_ttl_nxdomain = 259200
 
+# The minimum amount of time to cache DNS lookups for server names in
+# federation. This is separate from hickory_resolver's internal caching.
+#
+#dns_cache_override_expire = 21600 (6 hours)
+
 # Number of DNS nameserver retries after a timeout or error.
 #
 #dns_attempts = 10

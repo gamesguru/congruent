@@ -3,7 +3,6 @@ mod left;
 mod state;
 
 use std::{
-	cmp::{self},
 	collections::{BTreeMap, HashMap, HashSet},
 	time::Duration,
 };
@@ -190,6 +189,7 @@ pub(crate) async fn sync_events_route(
 	axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
 	body: Ruma<sync_events::v3::Request>,
 ) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
+	let timer = std::time::Instant::now();
 	let (sender_user, sender_device) = body.sender();
 
 	// Presence update
@@ -207,7 +207,7 @@ pub(crate) async fn sync_events_route(
 		.await;
 
 	// Setup watchers, so if there's no response, we can wait for them
-	let watcher = services.sync.watch(sender_user, sender_device);
+	let watcher = services.sync.setup_watch(sender_user, sender_device).await;
 
 	let mut use_state_after = false;
 	if let Some(q) = raw_query.as_deref() {
@@ -219,19 +219,37 @@ pub(crate) async fn sync_events_route(
 		}
 	}
 
+	let log_time = |response: &serde_json::Value| {
+		if !is_sync_response_empty(response) && timer.elapsed().as_millis() > 1000 {
+			// log syncs if they took > 1s
+			conduwuit::info!(
+				"Large sync for {} completed in {:.2} s",
+				sender_user,
+				timer.elapsed().as_secs_f64()
+			);
+		}
+	};
+
 	let response = build_sync_events(&services, &body, use_state_after).await?;
 	if body.body.since.is_none() || body.body.full_state || !is_sync_response_empty(&response) {
+		log_time(&response);
 		return Ok(axum::Json(response).into_response());
 	}
 
-	// Hang a few seconds so requests are not spammed
-	// Stop hanging if new info arrives
-	let default = Duration::from_secs(30);
-	let duration = cmp::min(body.body.timeout.unwrap_or(default), default);
-	_ = tokio::time::timeout(duration, watcher).await;
+	// Hang until new info arrives, or the client's timeout expires
+	if let Some(timeout) = body.body.timeout {
+		if timeout > Duration::from_secs(0) {
+			_ = tokio::time::timeout(timeout, watcher).await;
+			// Retry returning data
+			let response = build_sync_events(&services, &body, use_state_after).await?;
+			log_time(&response);
+			return Ok(axum::Json(response).into_response());
+		}
+	}
 
 	// Retry returning data
 	let response = build_sync_events(&services, &body, use_state_after).await?;
+	log_time(&response);
 	Ok(axum::Json(response).into_response())
 }
 
