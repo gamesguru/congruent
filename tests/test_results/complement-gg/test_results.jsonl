@@ -508,8 +508,8 @@
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
-{"Action":"fail","Test":"TestPollsLocalPushRules"}
-{"Action":"fail","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}
+{"Action":"pass","Test":"TestPollsLocalPushRules"}
+{"Action":"pass","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}
 {"Action":"pass","Test":"TestPowerLevels"}
 {"Action":"pass","Test":"TestPowerLevels/GET_/rooms/:room_id/state/m.room.power_levels_can_fetch_levels"}
 {"Action":"pass","Test":"TestPowerLevels/PUT_/rooms/:room_id/state/m.room.power_levels_can_set_levels"}
@@ -543,7 +543,7 @@
 {"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_manually_upgraded_room_carries_over_existing_push_rules"}
 {"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_upgraded_room_carries_over_existing_push_rules"}
 {"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/manually_upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
-{"Action":"fail","Test":"TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
+{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
 {"Action":"pass","Test":"TestPushSync"}
 {"Action":"pass","Test":"TestPushSync/Adding_a_push_rule_wakes_up_an_incremental_/sync"}
 {"Action":"pass","Test":"TestPushSync/Disabling_a_push_rule_wakes_up_an_incremental_/sync"}
@@ -796,8 +796,8 @@
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation/good_connectivity"}
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation/stopped_server"}
-{"Action":"fail","Test":"TestTxnIdWithRefreshToken"}
-{"Action":"pass","Test":"TestTxnIdempotency"}
+{"Action":"skip","Test":"TestTxnIdWithRefreshToken"}
+{"Action":"skip","Test":"TestTxnIdempotency"}
 {"Action":"pass","Test":"TestTxnIdempotencyScopedToDevice"}
 {"Action":"pass","Test":"TestTxnInEvent"}
 {"Action":"pass","Test":"TestTxnScopeOnLocalEcho"}

@@ -10,7 +10,8 @@ use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedUserId, RoomId, RoomVersionId,
 	api::client::{error::ErrorKind, room::upgrade_room},
 	events::{
-		StateEventType, TimelineEventType,
+		GlobalAccountDataEventType, StateEventType, TimelineEventType,
+		push_rules::PushRulesEvent,
 		room::{
 			member::{MembershipState, RoomMemberEventContent},
 			power_levels::RoomPowerLevelsEventContent,
@@ -524,6 +525,46 @@ pub(crate) async fn upgrade_room_route(
 			replacement_room.unwrap()
 		);
 		drop(state_lock);
+	}
+
+	// Room push rules are user account data. Copy each local user's rule for the
+	// old room to the replacement room so clients receive both rules after sync.
+	let local_users = services
+		.users
+		.list_local_users()
+		.map(ToOwned::to_owned)
+		.collect::<Vec<_>>()
+		.await;
+	for user_id in local_users {
+		let Ok(mut push_rules) = services
+			.account_data
+			.get_global::<PushRulesEvent>(&user_id, GlobalAccountDataEventType::PushRules)
+			.await
+		else {
+			continue;
+		};
+
+		let Some(mut rule) = push_rules
+			.content
+			.global
+			.room
+			.iter()
+			.find(|rule| rule.rule_id == body.room_id)
+			.cloned()
+		else {
+			continue;
+		};
+		rule.rule_id = replacement_room.unwrap().to_owned();
+		push_rules.content.global.room.insert(rule);
+		services
+			.account_data
+			.update(
+				None,
+				&user_id,
+				GlobalAccountDataEventType::PushRules.to_string().into(),
+				&serde_json::to_value(push_rules)?,
+			)
+			.await?;
 	}
 
 	// Return the replacement room id
