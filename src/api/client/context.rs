@@ -226,32 +226,31 @@ pub(crate) async fn get_context_route(
 		.await;
 
 	let previous_token = if events_before.is_empty() {
-		// PduCounts are global, so arithmetic cannot identify the previous
-		// event in this room. Use the room-local exclusive iterator instead.
+		// /messages uses topological ordering, so derive this boundary from the
+		// topological index rather than the raw PduCount index.
 		services
 			.rooms
 			.timeline
-			.pdus_rev(room_id, Some(base_count))
+			.topo_pdus_rev(room_id, Some(base_token))
 			.boxed()
 			.next()
 			.await
 			.and_then(Result::ok)
-			.map(|(pdu_count, pdu)| TopoToken { depth: u64::from(pdu.depth()), pdu_count })
+			.map(|(token, _)| token)
 	} else {
 		None
 	};
 	let next_token = if events_after.is_empty() {
-		// As above, find the successor through this room's index rather than
-		// incrementing a homeserver-global PduCount.
+		// Match the topological order used by /messages for the forward bound.
 		services
 			.rooms
 			.timeline
-			.pdus(room_id, Some(base_count))
+			.topo_pdus(room_id, Some(base_token))
 			.boxed()
 			.next()
 			.await
 			.and_then(Result::ok)
-			.map(|(pdu_count, pdu)| TopoToken { depth: u64::from(pdu.depth()), pdu_count })
+			.map(|(token, _)| token)
 	} else {
 		None
 	};

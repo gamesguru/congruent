@@ -1,4 +1,4 @@
-use std::iter::once;
+use std::{iter::once, sync::Arc};
 
 use conduwuit::{Err, Error, PduEvent, RoomVersion};
 use conduwuit_core::{
@@ -10,6 +10,7 @@ use conduwuit_core::{
 	utils::{IterStream, ReadyExt, stream::WidebandExt},
 	validated, warn,
 };
+use crate::rooms::short::ShortStateKey;
 use futures::{FutureExt, StreamExt};
 use ruma::{
 	CanonicalJsonObject, EventId, Int, OwnedEventId, RoomId, RoomVersionId, ServerName, UInt,
@@ -501,6 +502,7 @@ pub async fn backfill_pdu(
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
+	self.associate_current_state(&room_id, &event_id).await?;
 
 	drop(insert_lock);
 
@@ -545,6 +547,7 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.db
 		.prepend_backfill_pdu(&pdu_id, event_id, &value, &pdu)
 		.await;
+	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
 
@@ -554,6 +557,29 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.services.outlier.clear_outlier_flag(event_id);
 	self.services.pdu_metadata.clear_pdu_markers(event_id);
 
+	Ok(())
+}
+
+#[implement(super::Service)]
+async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
+	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
+		.services
+		.state_accessor
+		.state_full_ids::<OwnedEventId>(shortstatehash)
+		.collect::<Vec<_>>()
+		.await;
+	let compressed: crate::rooms::state_compressor::CompressedState = self
+		.services
+		.state_compressor
+		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
+		.collect()
+		.await;
+
+	self.services
+		.state
+		.set_event_state(event_id, room_id, Arc::new(compressed))
+		.await?;
 	Ok(())
 }
 
