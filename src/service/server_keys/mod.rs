@@ -295,7 +295,7 @@ pub async fn add_signing_keys(
 
 	let mut historical_keys = match historical_keys_res {
 		| Ok(keys) => keys,
-		| Err(ref e) if e.is_not_found() => {
+		| Err(e) if e.is_not_found() => {
 			// Backward-compat: older versions stored merged keys directly under `origin`.
 			match self
 				.db
@@ -305,7 +305,7 @@ pub async fn add_signing_keys(
 				.deserialized::<ServerSigningKeys>()
 			{
 				| Ok(keys) => keys,
-				| Err(ref e) if e.is_not_found() =>
+				| Err(e) if e.is_not_found() =>
 					ServerSigningKeys::new(origin.to_owned(), MilliSecondsSinceUnixEpoch::now()),
 				| Err(e) => return Err(e),
 			}
