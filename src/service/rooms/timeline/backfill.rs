@@ -10,7 +10,6 @@ use conduwuit_core::{
 	utils::{IterStream, ReadyExt, stream::WidebandExt},
 	validated, warn,
 };
-use crate::rooms::short::ShortStateKey;
 use futures::{FutureExt, StreamExt};
 use ruma::{
 	CanonicalJsonObject, EventId, Int, OwnedEventId, RoomId, RoomVersionId, ServerName, UInt,
@@ -21,6 +20,8 @@ use ruma::{
 	},
 };
 use serde_json::value::RawValue as RawJsonValue;
+
+use crate::rooms::short::ShortStateKey;
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "backfill", level = "trace", skip(self))]

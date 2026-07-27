@@ -225,21 +225,6 @@ pub(crate) async fn get_context_route(
 		.collect()
 		.await;
 
-	let previous_token = if events_before.is_empty() {
-		// /messages uses topological ordering, so derive this boundary from the
-		// topological index rather than the raw PduCount index.
-		services
-			.rooms
-			.timeline
-			.topo_pdus_rev(room_id, Some(base_token))
-			.boxed()
-			.next()
-			.await
-			.and_then(Result::ok)
-			.map(|(token, _)| token)
-	} else {
-		None
-	};
 	let next_token = if events_after.is_empty() {
 		// Match the topological order used by /messages for the forward bound.
 		services
@@ -258,7 +243,6 @@ pub(crate) async fn get_context_route(
 	let start = events_before
 		.last()
 		.map(at!(0))
-		.or(previous_token)
 		.or(Some(base_token))
 		.as_ref()
 		.map(TopoToken::to_string);
