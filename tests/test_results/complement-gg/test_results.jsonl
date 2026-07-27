@@ -149,7 +149,7 @@
 {"Action":"pass","Test":"TestEventAuth"}
 {"Action":"pass","Test":"TestEventAuth/returns_auth_events_for_the_requested_event"}
 {"Action":"pass","Test":"TestEventAuth/returns_the_auth_chain_for_the_requested_event"}
-{"Action":"fail","Test":"TestEventRelationships"}
+{"Action":"pass","Test":"TestEventRelationships"}
 {"Action":"pass","Test":"TestFederatedClientSpaces"}
 {"Action":"pass","Test":"TestFederatedEventRelationships"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
