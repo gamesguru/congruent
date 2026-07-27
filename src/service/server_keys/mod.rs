@@ -481,12 +481,14 @@ pub async fn add_signing_keys(
 	}
 
 	// MSC4499: retain at most 3,000 retired keys in old_verify_keys.
-	// Keys in verify_keys are exempt from this quota (verify_keys itself is capped).
+	// Keys in verify_keys are exempt from this quota (verify_keys itself is
+	// capped).
 	let old_keys = historical_keys.old_verify_keys.len();
 	if old_keys > 3000 {
 		let to_evict = old_keys.saturating_sub(3000);
 		conduwuit::debug!(
-			"MSC4499: Evicting {to_evict} oldest old_verify_keys for {origin} to respect the 3,000-key retired-key quota"
+			"MSC4499: Evicting {to_evict} oldest old_verify_keys for {origin} to respect the \
+			 3,000-key retired-key quota"
 		);
 
 		// Collect keys to evict: oldest first (lowest expired_ts).
