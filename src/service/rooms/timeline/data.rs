@@ -1207,10 +1207,7 @@ impl Data {
 		// This event may itself have been a recorded extremity (something
 		// else's missing parent). Resolve it now that it's arriving.
 		let event_key = backward_extremities::pack_event_key(shortroomid, &pdu.event_id);
-		if let Ok(depth_bytes) = self.db["roomid_missingeventid_depth"]
-			.get(&event_key)
-			.await
-		{
+		if let Ok(depth_bytes) = self.db["roomid_missingeventid_depth"].get(&event_key).await {
 			if let Some(depth) = backward_extremities::unpack_depth_value(&depth_bytes) {
 				let depth_key =
 					backward_extremities::pack_depth_key(shortroomid, depth, &pdu.event_id);
@@ -1232,9 +1229,9 @@ impl Data {
 		}
 
 		let depth = u64::from(pdu.depth());
-		for prev_id in
-			backward_extremities::missing_prev_events(&pdu.prev_events, |id| known_locally.contains(id))
-		{
+		for prev_id in backward_extremities::missing_prev_events(&pdu.prev_events, |id| {
+			known_locally.contains(id)
+		}) {
 			let depth_key = backward_extremities::pack_depth_key(shortroomid, depth, prev_id);
 			let event_key = backward_extremities::pack_event_key(shortroomid, prev_id);
 			self.db["roomid_depth_missingeventid"].insert_into_batch(batch, &depth_key, []);

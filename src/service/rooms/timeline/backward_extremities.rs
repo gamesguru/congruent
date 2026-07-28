@@ -18,14 +18,14 @@
 //! sort orders, because RocksDB has no joins to compute one from the other
 //! on demand):
 //!
-//! - `roomid_depth_missingeventid`: `[shortroomid: 8B][depth: 8B][event_id]`
-//!   -> `()`. Sorted by depth for the read-path range scan (not wired up
-//!   yet -- `backfill_if_required` still uses the old scan; see the design
-//!   doc for why the migration has to land first).
+//! - `roomid_depth_missingeventid`: `[shortroomid: 8B][depth: 8B][event_id]` ->
+//!   `()`. Sorted by depth for the read-path range scan (not wired up yet --
+//!   `backfill_if_required` still uses the old scan; see the design doc for why
+//!   the migration has to land first).
 //! - `roomid_missingeventid_depth`: `[shortroomid: 8B][event_id]` -> `depth:
-//!   8B`. Keyed by event_id for an O(1) lookup when a previously-missing
-//!   event finally arrives, so we know which `roomid_depth_missingeventid`
-//!   entry to delete without a scan.
+//!   8B`. Keyed by event_id for an O(1) lookup when a previously-missing event
+//!   finally arrives, so we know which `roomid_depth_missingeventid` entry to
+//!   delete without a scan.
 
 use ruma::{EventId, OwnedEventId};
 
