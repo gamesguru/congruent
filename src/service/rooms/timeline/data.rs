@@ -1234,7 +1234,18 @@ impl Data {
 		}) {
 			let depth_key = backward_extremities::pack_depth_key(shortroomid, depth, prev_id);
 			let event_key = backward_extremities::pack_event_key(shortroomid, prev_id);
-			self.db["roomid_depth_missingeventid"].insert_into_batch(batch, &depth_key, []);
+			// CF1's value is the *child* event_id (this event, `pdu.event_id`) --
+			// the one that actually has the missing parent -- not the missing
+			// parent itself (that's the key). The read path hands this value
+			// straight to /backfill's `v`, which per this file's existing
+			// (working, tested) `rezzy::find_backward_extremities` usage wants
+			// "child event IDs (events that have missing parents)", not the
+			// missing event's own ID.
+			self.db["roomid_depth_missingeventid"].insert_into_batch(
+				batch,
+				&depth_key,
+				pdu.event_id.as_bytes(),
+			);
 			self.db["roomid_missingeventid_depth"].insert_into_batch(
 				batch,
 				&event_key,
@@ -1836,6 +1847,66 @@ impl Data {
 				.ready_try_filter_map(move |item| match count_floor {
 					| Some(floor) if item.0.pdu_count <= floor => Ok(None),
 					| _ => Ok(Some(item)),
+				}))
+		};
+		stream.try_flatten_stream()
+	}
+
+	/// Tier 3 read path (see `backward_extremities.rs` and
+	/// `docs/development-gg/backfill-extremities-write-time-design.md`).
+	/// Returns `true` once `populate_backward_extremities` has finished
+	/// backfilling `roomid_depth_missingeventid` for pre-existing rooms --
+	/// before that, the index only reflects events inserted since tier 3's
+	/// write path landed, so `backfill_if_required` must keep using the old
+	/// scan.
+	pub(super) async fn backward_extremities_index_ready(&self) -> bool {
+		self.db["global"]
+			.get(backward_extremities::MIGRATION_MARKER)
+			.await
+			.is_ok()
+	}
+
+	/// Returns up to `limit` *child* event IDs (events with a recorded
+	/// missing `prev_event`) anywhere in the room, via
+	/// `roomid_depth_missingeventid` -- an index lookup instead of a
+	/// timeline scan. These are exactly the event IDs `/backfill`'s `v`
+	/// parameter wants (see `record_backward_extremities_into_batch`'s doc
+	/// comment on why it's the child, not the missing parent, despite the
+	/// key being the missing parent).
+	///
+	/// Deliberately *not* bounded to extremities "near" the caller's current
+	/// position the way Synapse's `nearby_depth` does (see the design doc):
+	/// that needs a depth-padding heuristic this change doesn't attempt yet.
+	/// An unbounded-by-position existence check can't miss a real gap (safe
+	/// by construction -- it only widens what counts as "found", never
+	/// narrows it) and still replaces the scan; it can occasionally surface
+	/// an extremity that isn't near the reader's current scroll position; on
+	/// a normal single-DAG-fork room this is very rare in practice, and is a
+	/// documented follow-up, not a correctness gap.
+	pub(super) fn nearby_backward_extremities<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		limit: usize,
+	) -> impl Stream<Item = Result<OwnedEventId>> + Send + 'a {
+		let stream = async move {
+			let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+			let prefix = shortroomid.to_be_bytes().to_vec();
+			Ok(self.db["roomid_depth_missingeventid"]
+				.raw_stream_from(&prefix)
+				.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
+				.take(limit)
+				.map_ok(|(_, child_event_id_bytes)| {
+					<&EventId>::try_from(std::str::from_utf8(child_event_id_bytes)?)
+						.map(ToOwned::to_owned)
+						.map_err(|e| {
+							conduwuit::err!(Database(
+								"invalid child event_id in backward extremity value: {e}"
+							))
+						})
+				})
+				.map(|item| match item {
+					| Ok(Ok(id)) => Ok(id),
+					| Ok(Err(e)) | Err(e) => Err(e),
 				}))
 		};
 		stream.try_flatten_stream()

@@ -143,90 +143,113 @@ pub async fn backfill_if_required(
 	let backfill_limit: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
 	let mut budget = 5_u32;
 
-	loop {
-		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
-		// for Pdu`, rezzy operates directly on PduEvent — no LeanEvent conversion.
-		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
-			std::collections::HashMap::new();
-		let mut scanned = 0_usize;
-		let mut pdus = self
-			.pdus_rev(room_id, std::ops::Bound::Included(from))
-			.take(limit)
-			.boxed();
-		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
-			scanned = scanned.saturating_add(1);
-			debug!(
-				?pdu_id,
-				event_id = %pdu.event_id,
-				prev_events = ?pdu.prev_events,
-				"backfill: scanned timeline PDU"
-			);
-			event_map.insert(pdu.event_id.clone(), pdu);
-		}
+	let index_ready = self.backward_extremities_index_ready().await;
 
-		// Phase 2: Pre-collect which prev_event IDs exist in the DB so the
-		// rezzy `exists` predicate is synchronous.
-		let mut all_prev_ids: Vec<OwnedEventId> = Vec::new();
-		for pdu in event_map.values() {
-			for prev_id in &pdu.prev_events {
-				if !event_map.contains_key(prev_id) {
-					all_prev_ids.push(prev_id.clone());
+	loop {
+		// Tier 3 (see docs/development-gg/backfill-extremities-write-time-design.md):
+		// once populate_backward_extremities has run, roomid_depth_missingeventid
+		// already has the answer -- an index lookup instead of a scan. Until
+		// then (mid-migration, or an older database that hasn't run it yet
+		// this boot), fall back to the original scan so behavior is
+		// unchanged for any room the index doesn't fully cover yet.
+		let backwards_extremities: Vec<OwnedEventId> = if index_ready {
+			let mut extremities: Vec<OwnedEventId> = self
+				.nearby_backward_extremities(room_id, limit)
+				.ready_filter_map(Result::ok)
+				.collect()
+				.await;
+			extremities.sort_unstable();
+			extremities.dedup();
+
+			if extremities.is_empty() {
+				info!("backfill: no gaps in {room_id} (index lookup, from {from})");
+				self.backfill_gap_free_cache
+					.insert(room_id.to_owned(), (from, limit));
+				return Ok(());
+			}
+
+			extremities
+		} else {
+			// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
+			// for Pdu`, rezzy operates directly on PduEvent — no LeanEvent conversion.
+			let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
+				std::collections::HashMap::new();
+			let mut scanned = 0_usize;
+			let mut pdus = self
+				.pdus_rev(room_id, std::ops::Bound::Included(from))
+				.take(limit)
+				.boxed();
+			while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
+				scanned = scanned.saturating_add(1);
+				debug!(
+					?pdu_id,
+					event_id = %pdu.event_id,
+					prev_events = ?pdu.prev_events,
+					"backfill: scanned timeline PDU"
+				);
+				event_map.insert(pdu.event_id.clone(), pdu);
+			}
+
+			// Phase 2: Pre-collect which prev_event IDs exist in the DB so the
+			// rezzy `exists` predicate is synchronous.
+			let mut all_prev_ids: Vec<OwnedEventId> = Vec::new();
+			for pdu in event_map.values() {
+				for prev_id in &pdu.prev_events {
+					if !event_map.contains_key(prev_id) {
+						all_prev_ids.push(prev_id.clone());
+					}
 				}
 			}
-		}
-		let mut known_ids: std::collections::HashSet<OwnedEventId> =
-			std::collections::HashSet::with_capacity(all_prev_ids.len());
-		for prev_id in &all_prev_ids {
-			if self.get_pdu_id(prev_id).await.is_ok() {
-				known_ids.insert(prev_id.clone());
+			let mut known_ids: std::collections::HashSet<OwnedEventId> =
+				std::collections::HashSet::with_capacity(all_prev_ids.len());
+			for prev_id in &all_prev_ids {
+				if self.get_pdu_id(prev_id).await.is_ok() {
+					known_ids.insert(prev_id.clone());
+				}
 			}
-		}
 
-		// Phase 3: Call rezzy for correct backward extremity detection.
-		let gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
+			// Phase 3: Call rezzy for correct backward extremity detection.
+			let gaps = rezzy::find_backward_extremities(&event_map, |id| known_ids.contains(id));
 
-		if gaps.is_empty() {
-			info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
-			self.backfill_gap_free_cache
-				.insert(room_id.to_owned(), (from, limit));
-			return Ok(());
-		}
+			if gaps.is_empty() {
+				info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
+				self.backfill_gap_free_cache
+					.insert(room_id.to_owned(), (from, limit));
+				return Ok(());
+			}
 
-		// Build the /backfill request: send child event IDs (events that have
-		// missing parents), which is what the /backfill API expects.
-		// `gaps` iterates a HashMap-backed event_map, so its order is not
-		// stable across runs; sort so the request (and any resulting
-		// insertion order) is reproducible for debugging and testing.
-		let mut backwards_extremities: Vec<OwnedEventId> =
-			gaps.iter().map(|gap| gap.event_id.clone()).collect();
-		backwards_extremities.sort_unstable();
-		let unique_missing: std::collections::HashSet<&EventId> = gaps
-			.iter()
-			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
-			.collect();
+			// Build the /backfill request: send child event IDs (events that have
+			// missing parents), which is what the /backfill API expects.
+			// `gaps` iterates a HashMap-backed event_map, so its order is not
+			// stable across runs; sort so the request (and any resulting
+			// insertion order) is reproducible for debugging and testing.
+			let mut backwards_extremities: Vec<OwnedEventId> =
+				gaps.iter().map(|gap| gap.event_id.clone()).collect();
+			backwards_extremities.sort_unstable();
+
+			for gap in &gaps {
+				info!(
+					"backfill: gap at {} (missing: {:?}) in {room_id}",
+					gap.event_id, gap.missing_prev_events
+				);
+			}
+
+			backwards_extremities
+		};
 
 		if budget == 0 {
 			info!(
-				"backfill: budget exhausted for {room_id} with {} gaps ({} unique missing \
-				 parents)",
-				gaps.len(),
-				unique_missing.len()
+				"backfill: budget exhausted for {room_id} with {} backward extremities",
+				backwards_extremities.len()
 			);
 			return Ok(());
 		}
 		budget = budget.saturating_sub(1);
 
-		for gap in &gaps {
-			info!(
-				"backfill: gap at {} (missing: {:?}) in {room_id}",
-				gap.event_id, gap.missing_prev_events
-			);
-		}
 		info!(
-			"backfill: {room_id} has {} gaps ({} unique missing parents, scanned {scanned}, \
-			 budget {budget})",
-			gaps.len(),
-			unique_missing.len()
+			"backfill: {room_id} has {} backward extremities (index_ready={index_ready}, budget \
+			 {budget})",
+			backwards_extremities.len()
 		);
 
 		let mut servers = self
