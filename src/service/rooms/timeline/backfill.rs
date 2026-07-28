@@ -126,12 +126,7 @@ pub async fn backfill_if_required(
 		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
 			std::collections::HashMap::new();
 		let mut scanned = 0_usize;
-		// `pdus_rev` is exclusive of its boundary; advance once so the event at
-		// `from` is included in the gap scan.
-		let mut pdus = self
-			.pdus_rev(room_id, Some(from.saturating_inc(ruma::api::Direction::Forward)))
-			.take(limit)
-			.boxed();
+		let mut pdus = self.pdus_rev_inclusive(room_id, from).take(limit).boxed();
 		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
 			scanned = scanned.saturating_add(1);
 			debug!(

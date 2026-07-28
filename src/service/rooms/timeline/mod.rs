@@ -594,6 +594,21 @@ impl Service {
 			.pdus_rev(room_id, until.unwrap_or_else(PduCount::max))
 	}
 
+	/// Reverse iteration starting at and including `from`.
+	///
+	/// `pdus_rev` is exclusive of its boundary, so this bumps `from` forward
+	/// by one count before delegating. Prefer this over hand-rolling the
+	/// `saturating_inc` adjustment at call sites -- getting the direction of
+	/// that adjustment wrong silently drops the boundary event instead of
+	/// failing loudly.
+	pub fn pdus_rev_inclusive<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		from: PduCount,
+	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
+		self.pdus_rev(room_id, Some(from.saturating_inc(ruma::api::Direction::Forward)))
+	}
+
 	pub fn topo_pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,

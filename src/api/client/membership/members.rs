@@ -56,13 +56,10 @@ pub(crate) async fn get_member_events_route(
 			.parse()
 			.map_err(|_| err!(Request(InvalidParam("Invalid 'at' token."))))?;
 
-		// pdus_rev is EXCLUSIVE of its `until` boundary; bump by one so the
-		// event at `pdu_count` itself (the requested point in time) is included
-		// as the first (most recent) result, rather than the event before it.
 		let mut pdus_rev = services
 			.rooms
 			.timeline
-			.pdus_rev(room_id, Some(pdu_count.saturating_inc(ruma::api::Direction::Forward)))
+			.pdus_rev_inclusive(room_id, pdu_count)
 			.boxed();
 
 		let Some(Ok((_, pdu))) = pdus_rev.next().await else {
