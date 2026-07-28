@@ -1,15 +1,35 @@
 # Design: persist backward extremities at write time (tier 3)
 
-Status: part 1 of 3 landed (`8d7951099`) -- schema (two new column families)
-+ write-time bookkeeping + pure-function unit tests, per the "Write-time
-bookkeeping" section below. **Not yet done:** the migration for existing
-rooms, and the `backfill_if_required` read-path swap (still the old scan) --
-see "Migration for existing rooms" and "Read-time replacement" below, both
-still accurate as written. The new index is being populated on every insert
-starting now but nothing reads it yet. Tracked in
-`docs/development-gg/room-issues.csv` (row: `backfill_if_required scans the
-full window...`). Tiers 1 (singleflight, `89b49fe07`) and 2 (exact-window
-cache, `b525c5d61`) are landed and independent of this tier's remaining work.
+Status: all three parts landed (`8d7951099` schema + write path, `969cb1528`
+migration + read-path swap). `backfill_if_required` now uses
+`nearby_backward_extremities` once `populate_backward_extremities` has run;
+the old scan remains as the fallback for any database that hasn't finished
+migrating yet in a given boot.
+
+**Deviated from this doc in one place, deliberately:** the "Read-time
+replacement" section below describes bounding the index scan near the
+caller's position via Synapse's `nearby_depth` padding heuristic. That was
+not implemented -- it needs real tuning this change didn't attempt.
+`nearby_backward_extremities` is instead an existence check across the whole
+room (bounded by result count, not position). This is safe by construction
+(cannot miss a real nearby gap; can only occasionally surface a gap that
+isn't near the reader's current position) but is a known scoped-down
+simplification, not the full design. Depth-windowing remains a documented
+follow-up if the unbounded check ever proves too eager in practice.
+
+**Also fixed along the way, before the read path went live:**
+`record_backward_extremities_into_batch`'s CF1 value was originally `()`,
+matching Synapse's schema literally. But this codebase's `/backfill` call
+wants *child* event IDs (events with a missing parent), not the missing
+parent's own ID -- see `969cb1528`'s commit message. Caught and fixed before
+anything read the index, which is exactly why part 1 shipped the write path
+separately from the read path in the first place.
+
+Tracked in `docs/development-gg/room-issues.csv` (row: `backfill_if_required
+scans the full window...`, now `DONE (scoped down)`). Tiers 1 (singleflight,
+`89b49fe07`) and 2 (exact-window cache, `b525c5d61`) remain in place
+alongside tier 3; there's no urgency to remove them (see "Read-time
+replacement" below).
 
 ## Problem recap
 
