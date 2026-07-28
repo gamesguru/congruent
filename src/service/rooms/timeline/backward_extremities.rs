@@ -29,13 +29,6 @@
 
 use ruma::{EventId, OwnedEventId};
 
-/// Marker key in the `global` CF set once `populate_backward_extremities`
-/// (`src/service/migrations.rs`) has finished backfilling this index for
-/// pre-existing rooms. Shared between the migration (which sets it) and the
-/// read path (which checks it) so there's one definition of "is the index
-/// ready to trust yet" instead of two copies that could drift.
-pub(crate) const MIGRATION_MARKER: &[u8] = b"populate_backward_extremities";
-
 /// Packs the read-path key: `[shortroomid][depth][event_id]`.
 pub(super) fn pack_depth_key(shortroomid: [u8; 8], depth: u64, event_id: &EventId) -> Vec<u8> {
 	let event_id_bytes = event_id.as_bytes();

@@ -1,6 +1,6 @@
 mod append;
 mod backfill;
-pub(crate) mod backward_extremities;
+mod backward_extremities;
 mod build;
 mod create;
 mod data;
@@ -671,20 +671,6 @@ impl Service {
 	) -> impl Stream<Item = Result<TopoIterItem>> + Send + 'a {
 		self.db
 			.topo_pdus(room_id, from.unwrap_or_else(TopoToken::min))
-	}
-
-	/// See `Data::backward_extremities_index_ready`.
-	pub async fn backward_extremities_index_ready(&self) -> bool {
-		self.db.backward_extremities_index_ready().await
-	}
-
-	/// See `Data::nearby_backward_extremities`.
-	pub fn nearby_backward_extremities<'a>(
-		&'a self,
-		room_id: &'a RoomId,
-		limit: usize,
-	) -> impl Stream<Item = Result<OwnedEventId>> + Send + 'a {
-		self.db.nearby_backward_extremities(room_id, limit)
 	}
 }
 

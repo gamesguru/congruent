@@ -265,17 +265,14 @@ pub(super) static MAPS: &[Descriptor] = &[
 	// docs/development-gg/backfill-extremities-write-time-design.md):
 	// backward extremities (missing prev_events), indexed by depth so
 	// `backfill_if_required` can range-scan near a position instead of
-	// walking the timeline. Key: (shortroomid: u64, depth: u64,
-	// missing_event_id) -> child_event_id (the known event that has the
-	// missing event as a prev_event -- that's what /backfill's `v` wants,
-	// not the missing event's own ID). Read-path gated on the
-	// populate_backward_extremities migration marker (see
-	// backward_extremities.rs::MIGRATION_MARKER) for pre-existing rooms.
+	// walking the timeline. Not yet wired into the read path -- currently
+	// written at insert time only, pending the migration for existing
+	// rooms. Key: (shortroomid: u64, depth: u64, event_id) -> ().
 	// See also: roomid_missingeventid_depth, the delete-path companion index.
 	Descriptor {
 		name: "roomid_depth_missingeventid",
 		key_size_hint: Some(32),
-		val_size_hint: Some(48),
+		val_size_hint: Some(0),
 		..descriptor::SEQUENTIAL_SMALL
 	},
 	// Companion to roomid_depth_missingeventid: keyed by event_id so

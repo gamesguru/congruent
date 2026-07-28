@@ -114,7 +114,6 @@ async fn fresh(services: &Services) -> Result<()> {
 	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
 	db["global"].insert(POPULATE_SHORTPREVEVENTS_MARKER, []);
 	db["global"].insert(UNIFY_RAW_PDU_ID_MARKER, []);
-	db["global"].insert(POPULATE_BACKWARD_EXTREMITIES_MARKER, []);
 
 	// Create the admin room and server user on first run
 	info!("Creating admin room and server user");
@@ -361,20 +360,6 @@ async fn migrate(services: &Services) -> Result<()> {
 		populate_pdu_count_in_metadata(services)
 			.await
 			.map_err(|e| err!("Failed to run 'populate_pdu_count_in_metadata': {e}"))?;
-	}
-
-	// Depends on populate_pdu_count_in_metadata above: "is this prev_event
-	// known locally" is decided by `meta.pdu_count.is_some()`, matching
-	// get_pdu_id's actual definition (see the migration's doc comment).
-	if db["global"]
-		.get(POPULATE_BACKWARD_EXTREMITIES_MARKER)
-		.await
-		.is_not_found()
-	{
-		info!("Running migration 'populate_backward_extremities'");
-		populate_backward_extremities(services)
-			.await
-			.map_err(|e| err!("Failed to run 'populate_backward_extremities': {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -853,140 +838,6 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 	info!("Successfully populated topological index for {total_migrated} events!");
 	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
 	db.db.sort()?;
-	Ok(())
-}
-
-use crate::rooms::timeline::backward_extremities::MIGRATION_MARKER as POPULATE_BACKWARD_EXTREMITIES_MARKER;
-
-/// Tier 3 of the backfill scan perf work (see
-/// `docs/development-gg/backfill-extremities-write-time-design.md`): the
-/// write path (`Data::record_backward_extremities_into_batch`) has been
-/// populating `roomid_depth_missingeventid` / `roomid_missingeventid_depth`
-/// for every *newly inserted* event since that landed, but existing rooms'
-/// events predate it and have no entries. Walk every timeline event once and
-/// apply the identical decision the write path makes, so this database ends
-/// up with the same index it would have had if tier 3 had existed since the
-/// room was created.
-///
-/// "Known locally" is decided by `meta.pdu_count.is_some()` -- deliberately
-/// the exact same check `get_pdu_id` uses (see its definition), not a
-/// separately-invented one, so this migration can't produce an index that
-/// disagrees with what the live write path considers a extremity.
-async fn populate_backward_extremities(services: &Services) -> Result<()> {
-	const BATCH_SIZE: usize = 1000;
-
-	info!("Starting migration to populate backward extremities index...");
-	let db = &services.db;
-	let room_pducount_eventid = db["room_pducount_eventid"].clone();
-	let eventid_metadata = db["eventid_metadata"].clone();
-	let eventid_shorteventid = db["eventid_shorteventid"].clone();
-	let shorteventid_shortprevevents = db["shorteventid_shortprevevents"].clone();
-	let shorteventid_eventid = db["shorteventid_eventid"].clone();
-	let roomid_depth_missingeventid = db["roomid_depth_missingeventid"].clone();
-	let roomid_missingeventid_depth = db["roomid_missingeventid_depth"].clone();
-
-	let stream = room_pducount_eventid.raw_stream();
-	pin_mut!(stream);
-	let mut total_events: usize = 0;
-	let mut total_extremities: usize = 0;
-	let mut batch_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
-
-	loop {
-		batch_entries.clear();
-		while batch_entries.len() < BATCH_SIZE {
-			match stream.next().await {
-				| Some(Ok((pdu_id_bytes, event_id_bytes))) => {
-					batch_entries.push((pdu_id_bytes.to_vec(), event_id_bytes.to_vec()));
-				},
-				| _ => break,
-			}
-		}
-
-		if batch_entries.is_empty() {
-			break;
-		}
-
-		for (pdu_id_bytes, event_id_bytes) in &batch_entries {
-			let mut shortroomid = [0_u8; 8];
-			shortroomid.copy_from_slice(&pdu_id_bytes[0..8]);
-
-			let Ok(meta_handle) = eventid_metadata.get(event_id_bytes.as_slice()).await else {
-				continue;
-			};
-			let Ok(meta) = crate::rooms::timeline::EventMetadata::from_bincode(&meta_handle)
-			else {
-				continue;
-			};
-			let depth: u64 = meta.depth.into();
-
-			let Ok(short_handle) = eventid_shorteventid.get(event_id_bytes.as_slice()).await
-			else {
-				continue;
-			};
-			let Ok(short_bytes) = <[u8; 8]>::try_from(&*short_handle) else {
-				continue;
-			};
-
-			let Ok(prevs_handle) = shorteventid_shortprevevents.get(&short_bytes).await else {
-				continue;
-			};
-			let prev_shorts: Vec<[u8; 8]> = prevs_handle.as_chunks::<8>().0.to_vec();
-
-			for prev_short in prev_shorts {
-				let Ok(prev_eventid_handle) = shorteventid_eventid.get(&prev_short).await else {
-					continue;
-				};
-				let prev_event_id_bytes = prev_eventid_handle.to_vec();
-
-				let known_locally = eventid_metadata
-					.get(prev_event_id_bytes.as_slice())
-					.await
-					.ok()
-					.and_then(|handle| {
-						crate::rooms::timeline::EventMetadata::from_bincode(&handle).ok()
-					})
-					.is_some_and(|m| m.pdu_count.is_some());
-
-				if known_locally {
-					continue;
-				}
-
-				let mut depth_key =
-					Vec::with_capacity(16_usize.saturating_add(prev_event_id_bytes.len()));
-				depth_key.extend_from_slice(&shortroomid);
-				depth_key.extend_from_slice(&depth.to_be_bytes());
-				depth_key.extend_from_slice(&prev_event_id_bytes);
-
-				let mut event_key =
-					Vec::with_capacity(8_usize.saturating_add(prev_event_id_bytes.len()));
-				event_key.extend_from_slice(&shortroomid);
-				event_key.extend_from_slice(&prev_event_id_bytes);
-
-				// CF1's value is the *child* event_id (`event_id_bytes`, the
-				// outer timeline event whose prev_event this is) -- see the
-				// matching comment on record_backward_extremities_into_batch
-				// in data.rs for why.
-				roomid_depth_missingeventid.put(&depth_key, event_id_bytes.as_slice());
-				roomid_missingeventid_depth.put(&event_key, depth.to_be_bytes());
-
-				total_extremities = total_extremities.saturating_add(1);
-			}
-
-			total_events = total_events.saturating_add(1);
-			if total_events.is_multiple_of(10000) {
-				info!(
-					"Backward extremities migration: scanned {total_events} events, recorded \
-					 {total_extremities} extremities so far..."
-				);
-			}
-		}
-	}
-
-	info!(
-		"Backward extremities migration complete: {total_events} events scanned, \
-		 {total_extremities} extremities recorded."
-	);
-	db["global"].insert(POPULATE_BACKWARD_EXTREMITIES_MARKER, []);
 	Ok(())
 }
 
