@@ -19,7 +19,7 @@ use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
 };
 
-use super::{PduId, RawPduId};
+use super::{PduId, RawPduId, backward_extremities};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
 pub(super) struct Data {
@@ -1179,6 +1179,71 @@ impl Data {
 			.collect()
 			.await;
 		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
+
+		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
+			.await;
+	}
+
+	/// Tier 3 write-time bookkeeping (see `backward_extremities.rs` and
+	/// `docs/development-gg/backfill-extremities-write-time-design.md`).
+	/// Called from both `append_pdu_batch` and `prepend_backfill_pdu_batch`
+	/// -- every insert path in the codebase funnels through one of those
+	/// two, so this is the single place this bookkeeping needs to happen.
+	///
+	/// Not yet read by anything (`backfill_if_required` still uses the old
+	/// scan) -- this only writes the index so it's ready once the read path
+	/// and the existing-room migration land. Landing the write path first
+	/// and separately is intentional: it's independently testable and
+	/// reviewable, and a bug here before anything reads the index is inert,
+	/// where a bug in the read-path swap would not be.
+	async fn record_backward_extremities_into_batch(
+		&self,
+		batch: &mut database::rocksdb::WriteBatch,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+	) {
+		let shortroomid = pdu_id.shortroomid();
+
+		// This event may itself have been a recorded extremity (something
+		// else's missing parent). Resolve it now that it's arriving.
+		let event_key = backward_extremities::pack_event_key(shortroomid, &pdu.event_id);
+		if let Ok(depth_bytes) = self.db["roomid_missingeventid_depth"]
+			.get(&event_key)
+			.await
+		{
+			if let Some(depth) = backward_extremities::unpack_depth_value(&depth_bytes) {
+				let depth_key =
+					backward_extremities::pack_depth_key(shortroomid, depth, &pdu.event_id);
+				self.db["roomid_depth_missingeventid"].remove_from_batch(batch, &depth_key);
+			}
+			self.db["roomid_missingeventid_depth"].remove_from_batch(batch, &event_key);
+		}
+
+		// `get_pdu_id` is async, but `missing_prev_events` takes a sync
+		// predicate on purpose (see its doc comment -- that's what keeps it
+		// unit-testable without a DB). Resolve existence for every
+		// prev_event first, then hand the pure function a synchronous
+		// lookup over that already-resolved set.
+		let mut known_locally: HashSet<OwnedEventId> = HashSet::new();
+		for prev_id in &pdu.prev_events {
+			if self.get_pdu_id(prev_id).await.is_ok() {
+				known_locally.insert(prev_id.clone());
+			}
+		}
+
+		let depth = u64::from(pdu.depth());
+		for prev_id in
+			backward_extremities::missing_prev_events(&pdu.prev_events, |id| known_locally.contains(id))
+		{
+			let depth_key = backward_extremities::pack_depth_key(shortroomid, depth, prev_id);
+			let event_key = backward_extremities::pack_event_key(shortroomid, prev_id);
+			self.db["roomid_depth_missingeventid"].insert_into_batch(batch, &depth_key, []);
+			self.db["roomid_missingeventid_depth"].insert_into_batch(
+				batch,
+				&event_key,
+				depth.to_be_bytes(),
+			);
+		}
 	}
 
 	pub(super) async fn prepend_backfill_pdu(
@@ -1291,6 +1356,9 @@ impl Data {
 			.collect()
 			.await;
 		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
+
+		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
+			.await;
 	}
 
 	/// Removes a pdu and creates a new one with the same id.

@@ -1,5 +1,6 @@
 mod append;
 mod backfill;
+mod backward_extremities;
 mod build;
 mod create;
 mod data;

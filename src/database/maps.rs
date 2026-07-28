@@ -261,6 +261,30 @@ pub(super) static MAPS: &[Descriptor] = &[
 		val_size_hint: Some(32),
 		..descriptor::SEQUENTIAL_SMALL
 	},
+	// Tier 3 backfill perf work (see
+	// docs/development-gg/backfill-extremities-write-time-design.md):
+	// backward extremities (missing prev_events), indexed by depth so
+	// `backfill_if_required` can range-scan near a position instead of
+	// walking the timeline. Not yet wired into the read path -- currently
+	// written at insert time only, pending the migration for existing
+	// rooms. Key: (shortroomid: u64, depth: u64, event_id) -> ().
+	// See also: roomid_missingeventid_depth, the delete-path companion index.
+	Descriptor {
+		name: "roomid_depth_missingeventid",
+		key_size_hint: Some(32),
+		val_size_hint: Some(0),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	// Companion to roomid_depth_missingeventid: keyed by event_id so
+	// arrival of a previously-missing event can find (and delete) its
+	// depth-indexed entry in O(1) instead of a scan.
+	// Key: (shortroomid: u64, event_id) -> depth: u64.
+	Descriptor {
+		name: "roomid_missingeventid_depth",
+		key_size_hint: Some(32),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
 	Descriptor {
 		name: "roomid_timestamp_pducount",
 		key_size_hint: Some(25),
