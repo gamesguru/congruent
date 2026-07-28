@@ -1,32 +1,63 @@
 # Design: persist backward extremities at write time (tier 3)
 
-Status: all three parts landed (`8d7951099` schema + write path, `969cb1528`
-migration + read-path swap). `backfill_if_required` now uses
-`nearby_backward_extremities` once `populate_backward_extremities` has run;
-the old scan remains as the fallback for any database that hasn't finished
-migrating yet in a given boot.
+Status: part 1 (`8d7951099`, schema + write-time bookkeeping) is landed and
+stable. Parts 2+3 (`969cb1528`, migration + read-path swap) were landed,
+then **reverted** (`2239f27ce`) after complement caught a real, 100%
+reproducible regression: `TestMessagesPaginationStress/NoDuplicates/Messy_room_activity`
+(limit=1 and limit=3) failed on every single room_version=12 run across all
+four OS/arch combinations once `969cb1528` was live, while room_version=11
+stayed clean. This was not a flake -- confirmed by the `complement-results.log`
+run history and caught before it merited more trust than that. My own
+"safe by construction" claim below (in the "Deviated from this doc" note)
+was wrong, or at least incomplete: whatever the actual defect is, it produced
+duplicate/incorrect pagination results, not merely an occasionally-too-eager
+backfill trigger. Root cause not yet identified -- see "Open question: what
+actually broke" below before attempting parts 2+3 again.
 
-**Deviated from this doc in one place, deliberately:** the "Read-time
+Currently on: part 1 only. `backfill_if_required` uses the old scan
+exclusively; the new column families are being populated at write time but
+nothing reads them. This is the same safe state part 1 was designed to
+leave things in.
+
+**Deviated from this doc in one place before the revert:** the "Read-time
 replacement" section below describes bounding the index scan near the
-caller's position via Synapse's `nearby_depth` padding heuristic. That was
-not implemented -- it needs real tuning this change didn't attempt.
-`nearby_backward_extremities` is instead an existence check across the whole
-room (bounded by result count, not position). This is safe by construction
-(cannot miss a real nearby gap; can only occasionally surface a gap that
-isn't near the reader's current position) but is a known scoped-down
-simplification, not the full design. Depth-windowing remains a documented
-follow-up if the unbounded check ever proves too eager in practice.
+caller's position via Synapse's `nearby_depth` padding heuristic. The
+reverted implementation skipped that (existence check across the whole
+room instead) to avoid tuning a heuristic under time pressure. Given the
+regression, it's worth reconsidering whether *that specific simplification*
+is implicated -- an unbounded-by-position scan returning a very large or
+oddly-ordered extremities set is a plausible source of exactly the kind of
+"pagination integrity" failure complement caught, though this is a
+hypothesis to verify, not a confirmed cause.
 
-**Also fixed along the way, before the read path went live:**
+**Open question: what actually broke.** Not yet root-caused. Candidates
+worth checking first, in rough order of suspicion:
+1. The child-vs-missing-parent event_id fix (see below) itself -- verify
+   the value written by `record_backward_extremities_into_batch` and read
+   by `nearby_backward_extremities` actually agree in all cases, including
+   whatever `promote_outlier`/`force_insert_pdu` write.
+2. Whether `nearby_backward_extremities`'s unbounded-by-position result set
+   can include extremities whose child event isn't actually near `from`,
+   causing the budget loop to fire `/backfill` requests whose returned
+   PDUs land somewhere that confuses `assertPaginationIntegrity`'s dedup
+   check -- possibly interacting with tier 1/2's caches in a way not
+   accounted for.
+3. Whether the migration path and the write-path can disagree for a room
+   populated partly before and partly after `8d7951099` within the same
+   complement test run (i.e. a race between migration-driven population
+   and live write-path population for the *same* room during the test).
+
+**Previously landed (and still landed) as part of the reverted commit's
+write-side correctness work, independent of the read-path bug:**
 `record_backward_extremities_into_batch`'s CF1 value was originally `()`,
 matching Synapse's schema literally. But this codebase's `/backfill` call
 wants *child* event IDs (events with a missing parent), not the missing
-parent's own ID -- see `969cb1528`'s commit message. Caught and fixed before
-anything read the index, which is exactly why part 1 shipped the write path
-separately from the read path in the first place.
+parent's own ID. This fix was reverted along with everything else in
+`969cb1528` and will need to be re-applied (and re-verified) when parts 2+3
+are attempted again.
 
 Tracked in `docs/development-gg/room-issues.csv` (row: `backfill_if_required
-scans the full window...`, now `DONE (scoped down)`). Tiers 1 (singleflight,
+scans the full window...`, back to `PARTIAL`). Tiers 1 (singleflight,
 `89b49fe07`) and 2 (exact-window cache, `b525c5d61`) remain in place
 alongside tier 3; there's no urgency to remove them (see "Read-time
 replacement" below).
