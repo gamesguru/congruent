@@ -1053,7 +1053,7 @@ pub(super) async fn audit_membership(
 		.services
 		.rooms
 		.timeline
-		.pdus(&room_id, Some(PduCount::min()));
+		.pdus(&room_id, std::ops::Bound::Excluded(PduCount::min()));
 
 	pin_mut!(pdus);
 	let mut timeline_count = 0_usize;
@@ -1129,7 +1129,7 @@ pub(super) async fn audit_membership(
 			.services
 			.rooms
 			.timeline
-			.pdus(&room_id, Some(PduCount::min()));
+			.pdus(&room_id, std::ops::Bound::Excluded(PduCount::min()));
 
 		pin_mut!(pdus_pass);
 		while let Some(Ok((_count, pdu))) = pdus_pass.next().await {

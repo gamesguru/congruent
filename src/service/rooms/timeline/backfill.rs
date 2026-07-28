@@ -126,7 +126,10 @@ pub async fn backfill_if_required(
 		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
 			std::collections::HashMap::new();
 		let mut scanned = 0_usize;
-		let mut pdus = self.pdus_rev_inclusive(room_id, from).take(limit).boxed();
+		let mut pdus = self
+			.pdus_rev(room_id, std::ops::Bound::Included(from))
+			.take(limit)
+			.boxed();
 		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
 			scanned = scanned.saturating_add(1);
 			debug!(
@@ -166,8 +169,12 @@ pub async fn backfill_if_required(
 
 		// Build the /backfill request: send child event IDs (events that have
 		// missing parents), which is what the /backfill API expects.
-		let backwards_extremities: Vec<OwnedEventId> =
+		// `gaps` iterates a HashMap-backed event_map, so its order is not
+		// stable across runs; sort so the request (and any resulting
+		// insertion order) is reproducible for debugging and testing.
+		let mut backwards_extremities: Vec<OwnedEventId> =
 			gaps.iter().map(|gap| gap.event_id.clone()).collect();
+		backwards_extremities.sort_unstable();
 		let unique_missing: std::collections::HashSet<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))

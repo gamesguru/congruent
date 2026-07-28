@@ -46,7 +46,7 @@ pub(crate) async fn room_initial_sync_route(
 	let events = services
 		.rooms
 		.timeline
-		.pdus_rev(room_id, None)
+		.pdus_rev(room_id, std::ops::Bound::Unbounded)
 		.try_take(limit)
 		.and_then(async |mut pdu| {
 			pdu.1.set_unsigned(body.sender_user.as_deref());

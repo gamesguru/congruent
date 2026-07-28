@@ -13,7 +13,7 @@ pub mod reindex;
 mod reorder;
 mod repair_unsigned;
 
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, ops::Bound, sync::Arc};
 
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
@@ -580,33 +580,24 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 	) -> impl Stream<Item = PdusIterItem> + Send + 'a {
-		self.pdus(room_id, None).ignore_err()
+		self.pdus(room_id, Bound::Unbounded).ignore_err()
 	}
 
-	/// Reverse iteration starting after `until`.
+	/// Reverse iteration over PDUs bounded by `until`.
+	///
+	/// `until` states its own inclusivity — `Bound::Excluded(count)` to stop
+	/// before `count`, `Bound::Included(count)` to yield `count` first, or
+	/// `Bound::Unbounded` to start from the newest event in the room. There
+	/// is deliberately no `Option<PduCount>` overload: that shape is what let
+	/// two different call sites independently forget which way to adjust the
+	/// boundary (see `docs/development-gg/fable/boundary-flake-advisory.md`).
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		until: Option<PduCount>,
+		until: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		self.db
-			.pdus_rev(room_id, until.unwrap_or_else(PduCount::max))
-	}
-
-	/// Reverse iteration starting at and including `from`.
-	///
-	/// `pdus_rev` is exclusive of its boundary, so this bumps `from` forward
-	/// by one count before delegating. Prefer this over hand-rolling the
-	/// `saturating_inc` adjustment at call sites -- getting the direction of
-	/// that adjustment wrong silently drops the boundary event instead of
-	/// failing loudly.
-	pub fn pdus_rev_inclusive<'a>(
-		&'a self,
-		room_id: &'a RoomId,
-		from: PduCount,
-	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		self.pdus_rev(room_id, Some(from.saturating_inc(ruma::api::Direction::Forward)))
+		self.db.pdus_rev(room_id, until)
 	}
 
 	pub fn topo_pdus_rev<'a>(
@@ -621,14 +612,20 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn fix_pdu_event_ids(&self) -> Result<usize> { self.db.fix_pdu_event_ids().await }
 
-	/// Forward iteration starting after `from`.
+	/// Forward iteration over PDUs bounded by `from`.
+	///
+	/// `from` states its own inclusivity — see `pdus_rev`'s doc comment.
+	/// Note the adjustment `pdus` applies internally for `Bound::Excluded` is
+	/// the opposite sign from `pdus_rev`'s; that asymmetry is exactly why
+	/// callers should never hand-roll it (see the doc comment on
+	/// `Data::pdus` in `data.rs`).
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		from: Option<PduCount>,
+		from: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		self.db.pdus(room_id, from.unwrap_or_else(PduCount::min))
+		self.db.pdus(room_id, from)
 	}
 
 	/// Forward iteration using topological ordering, starting after `from`.

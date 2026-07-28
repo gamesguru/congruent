@@ -95,7 +95,10 @@ async fn load_timeline(
 			services
 				.rooms
 				.timeline
-				.pdus_rev(room_id, ending_count.map(|count| count.saturating_add(1)))
+				.pdus_rev(
+					room_id,
+					ending_count.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+				)
 				.inspect_err(|e| warn!("sync timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
 				.inspect(move |(pducount, _)| {
@@ -136,7 +139,10 @@ async fn load_timeline(
 			services
 				.rooms
 				.timeline
-				.pdus_rev(room_id, ending_count.map(|count| count.saturating_add(1)))
+				.pdus_rev(
+					room_id,
+					ending_count.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+				)
 				.inspect_err(|e| warn!("sync initial timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
 				.map(move |mut pdu| {

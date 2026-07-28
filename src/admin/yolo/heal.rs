@@ -91,7 +91,7 @@ pub(super) async fn rescue_room(
 			.services
 			.rooms
 			.timeline
-			.pdus_rev(&room_id, None)
+			.pdus_rev(&room_id, std::ops::Bound::Unbounded)
 			.filter_map(|item| ready(item.ok()))
 			.take(limit)
 			.map(|(_, pdu)| (pdu.event_id().to_owned(), pdu))

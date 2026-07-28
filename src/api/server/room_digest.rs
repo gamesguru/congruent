@@ -118,7 +118,10 @@ pub(crate) async fn get_room_digest_route(
 		.await;
 
 	// Reverse-walk the timeline to collect the active window of event IDs
-	let pdus = services.rooms.timeline.pdus_rev(&room_id, None);
+	let pdus = services
+		.rooms
+		.timeline
+		.pdus_rev(&room_id, std::ops::Bound::Unbounded);
 	futures::pin_mut!(pdus);
 
 	let mut window_event_ids: Vec<OwnedEventId> = Vec::with_capacity(DEFAULT_WINDOW);

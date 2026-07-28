@@ -183,7 +183,7 @@ async fn category_room_events(
 							let stream = services
 								.rooms
 								.timeline
-								.pdus_rev(&room_id, Some(count))
+								.pdus_rev(&room_id, std::ops::Bound::Excluded(count))
 								.take(before_limit);
 							pin_mut!(stream);
 							while let Some(Ok((_, prev_pdu))) = stream.next().await {
@@ -196,7 +196,7 @@ async fn category_room_events(
 							let stream = services
 								.rooms
 								.timeline
-								.pdus(&room_id, Some(count))
+								.pdus(&room_id, std::ops::Bound::Excluded(count))
 								.take(after_limit);
 							pin_mut!(stream);
 							while let Some(Ok((_, next_pdu))) = stream.next().await {

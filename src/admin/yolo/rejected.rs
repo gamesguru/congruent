@@ -247,7 +247,7 @@ pub(super) async fn list_rejected(
 		self.services
 			.rooms
 			.timeline
-			.pdus_rev(&room_id, None)
+			.pdus_rev(&room_id, std::ops::Bound::Unbounded)
 			.filter_map(|r| futures::future::ready(r.ok()))
 			.boxed()
 	} else {

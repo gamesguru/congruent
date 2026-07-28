@@ -1,5 +1,6 @@
 use std::{
 	collections::{HashMap, HashSet},
+	ops::Bound,
 	sync::Arc,
 };
 
@@ -91,7 +92,7 @@ impl Data {
 
 	#[inline]
 	pub(super) async fn latest_pdu_in_room(&self, room_id: &RoomId) -> Result<PduEvent> {
-		let pdus_rev = self.pdus_rev(room_id, PduCount::max());
+		let pdus_rev = self.pdus_rev(room_id, Bound::Unbounded);
 
 		pin_mut!(pdus_rev);
 		pdus_rev
@@ -178,7 +179,7 @@ impl Data {
 
 	pub(super) async fn reindex_timeline(&self, room_id: &RoomId) -> Result<usize> {
 		let mut count = 0_usize;
-		let pdus = self.pdus(room_id, PduCount::min());
+		let pdus = self.pdus(room_id, Bound::Unbounded);
 		pin_mut!(pdus);
 
 		while let Some((_, pdu)) = pdus.try_next().await? {
@@ -1379,19 +1380,20 @@ impl Data {
 	}
 
 	/// Returns an iterator over all events and their tokens in a room that
-	/// happened before the event with id `until` in reverse-chronological
-	/// order.
+	/// happened before (and optionally including) `until`, in
+	/// reverse-chronological order.
 	///
-	/// EXCLUSIVE of `until`: the event at `until` itself is never yielded.
-	/// Callers that want that event included (e.g. "give me the state at
-	/// this point") must pass `until.saturating_inc(Direction::Forward)`
-	/// instead — see `members.rs`'s `/members?at=` handler for an example.
+	/// `until` states its own inclusivity, so there is no separate "which way
+	/// do I bump this" step for callers to get backwards:
+	/// - `Bound::Excluded(count)`: the event at `count` is never yielded.
+	/// - `Bound::Included(count)`: the event at `count` is yielded first.
+	/// - `Bound::Unbounded`: start from the newest event in the room.
 	pub(super) fn pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		until: PduCount,
+		until: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		let seek_count = until.saturating_inc(Direction::Backward);
+		let seek_count = pdus_rev_exclusive_until(until).saturating_inc(Direction::Backward);
 		self.count_to_id(room_id, seek_count, Direction::Backward)
 			.map_ok(move |current| {
 				let prefix = current.shortroomid();
@@ -1409,18 +1411,23 @@ impl Data {
 			.try_flatten_stream()
 	}
 
-	/// EXCLUSIVE of `from`: the event at `from` itself is never yielded.
+	/// Returns an iterator over all events and their tokens in a room that
+	/// happened after (and optionally including) `from`, in chronological
+	/// order.
 	///
-	/// Unlike `pdus_rev`, this method applies its exclusive-boundary offset
-	/// internally by seeking from `from.saturating_inc(Direction::Forward)`.
-	/// Callers that want the event at `from` included must therefore pass the
-	/// previous count (`from.saturating_inc(Direction::Backward)`), not `from`
-	/// itself.
+	/// `from` states its own inclusivity — see `pdus_rev`'s doc comment.
+	/// Forward and reverse iteration need *opposite-signed* adjustments to
+	/// achieve the same inclusivity (this one seeks `+1` for `Excluded`
+	/// where `pdus_rev` seeks `-1`), which is exactly the trap that made
+	/// this boundary handling worth centralizing here instead of leaving it
+	/// to call sites: see the `Bound` match below and its mirror in
+	/// `pdus_rev` above.
 	pub(super) fn pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		from: PduCount,
+		from: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
+		let from = pdus_exclusive_from(from);
 		self.count_to_id(room_id, from.saturating_inc(Direction::Forward), Direction::Forward)
 			.map_ok(move |current| {
 				let prefix = current.shortroomid();
@@ -1436,7 +1443,142 @@ impl Data {
 			})
 			.try_flatten_stream()
 	}
+}
 
+/// Resolves `pdus_rev`'s `until` bound to the exclusive count its seek needs.
+///
+/// Pulled out of `pdus_rev` as a free, DB-free function specifically so the
+/// boundary arithmetic can be unit tested without a database — this exact
+/// arithmetic has regressed twice (`cf208c1a5`, `f1415e22a`), both times only
+/// caught by slow integration tests whose failures looked environmental. See
+/// `docs/development-gg/fable/boundary-flake-advisory.md`.
+fn pdus_rev_exclusive_until(until: Bound<PduCount>) -> PduCount {
+	match until {
+		| Bound::Excluded(count) => count,
+		| Bound::Included(count) => count.saturating_inc(Direction::Forward),
+		| Bound::Unbounded => PduCount::max(),
+	}
+}
+
+/// Resolves `pdus`'s `from` bound to the exclusive count its seek needs.
+///
+/// Mirrors `pdus_rev_exclusive_until` but with the *opposite-signed*
+/// adjustment for `Bound::Included` — forward iteration needs to step
+/// backward to include its boundary where reverse iteration steps forward.
+/// This asymmetry is the actual trap in this API (see the advisory doc); the
+/// paired test `pdus_rev_and_pdus_bound_adjustments_are_mirror_opposite`
+/// pins it.
+fn pdus_exclusive_from(from: Bound<PduCount>) -> PduCount {
+	match from {
+		| Bound::Excluded(count) => count,
+		| Bound::Included(count) => count.saturating_inc(Direction::Backward),
+		| Bound::Unbounded => PduCount::min(),
+	}
+}
+
+#[cfg(test)]
+mod boundary_tests {
+	use std::ops::Bound;
+
+	use conduwuit::PduCount;
+
+	use super::{pdus_exclusive_from, pdus_rev_exclusive_until};
+
+	#[test]
+	fn pdus_rev_excluded_is_passthrough() {
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Excluded(mid)), mid);
+	}
+
+	#[test]
+	fn pdus_rev_included_steps_forward_past_the_boundary() {
+		// pdus_rev's underlying seek is exclusive, so to make `mid` the first
+		// (most recent) yielded event, the resolved count must be one past
+		// `mid` in the direction pdus_rev walks away from (i.e. +1).
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(mid)), PduCount::Normal(43));
+	}
+
+	#[test]
+	fn pdus_rev_unbounded_is_max() {
+		assert_eq!(pdus_rev_exclusive_until(Bound::Unbounded), PduCount::max());
+	}
+
+	#[test]
+	fn pdus_excluded_is_passthrough() {
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_exclusive_from(Bound::Excluded(mid)), mid);
+	}
+
+	#[test]
+	fn pdus_included_steps_backward_past_the_boundary() {
+		// Opposite of pdus_rev: pdus walks forward away from `from`, so
+		// including `from` itself means resolving to one *before* it (-1).
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_exclusive_from(Bound::Included(mid)), PduCount::Normal(41));
+	}
+
+	#[test]
+	fn pdus_unbounded_is_min() {
+		assert_eq!(pdus_exclusive_from(Bound::Unbounded), PduCount::min());
+	}
+
+	/// This is the test that would have caught both `cf208c1a5` (flipped
+	/// `pdus`/`pdus_rev` to inclusive-by-default, breaking every caller that
+	/// already compensated manually) and `f1415e22a` (dropped the
+	/// compensation entirely, breaking backfill's gap scan) in milliseconds,
+	/// instead of via three flaky-looking complement test families.
+	///
+	/// `pdus_rev`'s `Bound::Included` adjustment and `pdus`'s `Bound::Included`
+	/// adjustment must move in *opposite* directions for the same boundary
+	/// count, because the two functions walk away from that boundary in
+	/// opposite directions. A "fix" that makes both add (or both subtract) is
+	/// wrong for one of the two, silently, at whichever call site adopts it
+	/// next.
+	#[test]
+	fn pdus_rev_and_pdus_bound_adjustments_are_mirror_opposite() {
+		let boundary = PduCount::Normal(100);
+
+		let rev_resolved = pdus_rev_exclusive_until(Bound::Included(boundary));
+		let fwd_resolved = pdus_exclusive_from(Bound::Included(boundary));
+
+		assert_eq!(rev_resolved, PduCount::Normal(101), "pdus_rev must step +1 to include");
+		assert_eq!(fwd_resolved, PduCount::Normal(99), "pdus must step -1 to include");
+		assert_ne!(
+			rev_resolved, fwd_resolved,
+			"pdus_rev and pdus resolve an Included(boundary) to different counts by design -- a \
+			 shared helper that returns one value for both directions is the exact bug this \
+			 test guards against"
+		);
+	}
+
+	/// Sparse, non-adjacent counts (simulating the global event counter
+	/// interleaving multiple rooms' events, as it does in production and in
+	/// the `TestJumpToDateEndpoint` parallel subtests) — the resolved seek
+	/// count doesn't need to correspond to a real event for the arithmetic
+	/// to be correct; `count_to_id` handles rounding to the nearest actual
+	/// event. This just pins that the arithmetic itself doesn't assume
+	/// adjacency.
+	#[test]
+	fn bound_resolution_does_not_assume_adjacent_counts() {
+		let sparse = PduCount::Normal(17);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(sparse)), PduCount::Normal(18));
+		assert_eq!(pdus_exclusive_from(Bound::Included(sparse)), PduCount::Normal(16));
+	}
+
+	/// Class-boundary case: including the newest backfilled event should
+	/// stay in the `Backfilled` variant (see `Count::saturating_add`), not
+	/// jump to `Normal`. Backward pagination tokens routinely sit in the
+	/// backfilled range (this repo's regression tokens included `t7_-114`),
+	/// so this is not a hypothetical edge.
+	#[test]
+	fn pdus_rev_included_backfilled_boundary_stays_backfilled() {
+		let boundary = PduCount::Backfilled(-1);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(boundary)), PduCount::Backfilled(0));
+	}
+}
+
+impl Data {
 	/// Resolve a (pdu_id, event_id_bytes) pair from `room_pducount_eventid`
 	/// into a full `PdusIterItem` by looking up the PDU JSON in
 	/// `eventid_pdu`.

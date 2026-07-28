@@ -376,7 +376,10 @@ pub(crate) async fn get_room_dag_route(
 
 	let mut events = Vec::new();
 	// Use pdus_rev to fetch from latest to oldest, avoiding full timeline scan.
-	let pdus = services.rooms.timeline.pdus_rev(&room_id, None);
+	let pdus = services
+		.rooms
+		.timeline
+		.pdus_rev(&room_id, std::ops::Bound::Unbounded);
 	futures::pin_mut!(pdus);
 
 	// Limit to the latest 200 events for performance
