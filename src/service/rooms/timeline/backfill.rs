@@ -62,6 +62,21 @@ pub async fn backfill_if_required(
 		return Ok(());
 	}
 
+	// Tier 2: skip the scan entirely if this exact (from, limit) window was
+	// already verified gap-free. A larger previously-verified window covers
+	// this request too. See the doc comment on `backfill_gap_free_cache`.
+	if let Some((verified_from, verified_limit)) =
+		self.backfill_gap_free_cache.get(&room_id.to_owned())
+	{
+		if verified_from == from && verified_limit >= limit {
+			debug!(
+				%room_id, %from, %limit,
+				"backfill: skipping scan, already verified gap-free for this window"
+			);
+			return Ok(());
+		}
+	}
+
 	// Singleflight the scan-and-decide phase per room: concurrent backward
 	// /messages calls on the same room would otherwise each run a full scan,
 	// reach the same gap conclusion, and fire duplicate /backfill requests.
@@ -172,6 +187,8 @@ pub async fn backfill_if_required(
 
 		if gaps.is_empty() {
 			info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
+			self.backfill_gap_free_cache
+				.insert(room_id.to_owned(), (from, limit));
 			return Ok(());
 		}
 
@@ -514,6 +531,11 @@ pub async fn backfill_pdu(
 
 	drop(insert_lock);
 
+	// A backward-prepended event can retroactively be the missing parent a
+	// previously-cached "gap-free" window was still waiting on further back
+	// in history; drop the cached verification so the next request re-scans.
+	self.backfill_gap_free_cache.invalidate(&room_id);
+
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
 	drop(mutex_lock);
 
@@ -558,6 +580,9 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
+
+	// See the matching comment in `backfill_pdu`.
+	self.backfill_gap_free_cache.invalidate(room_id);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
@@ -727,6 +752,11 @@ pub async fn force_insert_pdu(
 
 	drop(insert_lock);
 
+	if backfill {
+		// See the matching comment in `backfill_pdu`.
+		self.backfill_gap_free_cache.invalidate(room_id);
+	}
+
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
@@ -756,6 +786,8 @@ pub async fn force_insert_pdu_batch(
 		self.db
 			.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, pdu)
 			.await;
+		// See the matching comment in `backfill_pdu`.
+		self.backfill_gap_free_cache.invalidate(room_id);
 	} else {
 		self.db
 			.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
