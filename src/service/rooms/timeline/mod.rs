@@ -89,6 +89,14 @@ pub struct Service {
 	db: Data,
 	pub mutex_insert: RoomMutexMap,
 	pub mutex_fetch: MutexMap<OwnedEventId, ()>,
+	/// Singleflights `backfill_if_required`'s gap scan per room. Without
+	/// this, N concurrent backward `/messages` calls on the same room each
+	/// run their own full scan-and-decide pass; the eventual inserts are
+	/// already safe (see `backfill_pdu`'s `mutex_federation` lock + TOCTOU
+	/// recheck), but the redundant scans and duplicate `/backfill` requests
+	/// are pure waste. See
+	/// `docs/development-gg/fable/boundary-flake-advisory.md` §3.
+	pub mutex_backfill: RoomMutexMap,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
@@ -173,6 +181,7 @@ impl crate::Service for Service {
 			db: Data::new(&args),
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
+			mutex_backfill: RoomMutexMap::new(),
 		}))
 	}
 

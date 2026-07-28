@@ -62,6 +62,14 @@ pub async fn backfill_if_required(
 		return Ok(());
 	}
 
+	// Singleflight the scan-and-decide phase per room: concurrent backward
+	// /messages calls on the same room would otherwise each run a full scan,
+	// reach the same gap conclusion, and fire duplicate /backfill requests.
+	// The eventual inserts are already race-safe (backfill_pdu takes its own
+	// per-room lock with a post-lock existence recheck), so this is purely
+	// about not doing the scan and the federation round-trip N times over.
+	let _backfill_lock = self.mutex_backfill.lock(room_id).await;
+
 	let power_levels: RoomPowerLevelsEventContent = self
 		.services
 		.state_accessor
