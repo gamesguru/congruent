@@ -1,9 +1,15 @@
 # Design: persist backward extremities at write time (tier 3)
 
-Status: design only, nothing implemented yet. Tracked in
+Status: part 1 of 3 landed (`8d7951099`) -- schema (two new column families)
++ write-time bookkeeping + pure-function unit tests, per the "Write-time
+bookkeeping" section below. **Not yet done:** the migration for existing
+rooms, and the `backfill_if_required` read-path swap (still the old scan) --
+see "Migration for existing rooms" and "Read-time replacement" below, both
+still accurate as written. The new index is being populated on every insert
+starting now but nothing reads it yet. Tracked in
 `docs/development-gg/room-issues.csv` (row: `backfill_if_required scans the
 full window...`). Tiers 1 (singleflight, `89b49fe07`) and 2 (exact-window
-cache, `b525c5d61`) are landed; this is the remaining tier.
+cache, `b525c5d61`) are landed and independent of this tier's remaining work.
 
 ## Problem recap
 
