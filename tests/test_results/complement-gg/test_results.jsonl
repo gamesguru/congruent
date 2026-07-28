@@ -399,9 +399,7 @@
 {"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
 {"Action":"skip","Test":"TestMSC4308ThreadSubscriptionsSlidingSync"}
 {"Action":"pass","Test":"TestMSC4311FullCreateEventOnStrippedState"}
-{"Action":"fail","Test":"TestMSC4500State"}
-{"Action":"fail","Test":"TestMSC4500State/Accumulator"}
-{"Action":"fail","Test":"TestMSC4500State/HashMismatch"}
+{"Action":"skip","Test":"TestMSC4500State"}
 {"Action":"pass","Test":"TestMediaConfig"}
 {"Action":"pass","Test":"TestMediaFilenames"}
 {"Action":"pass","Test":"TestMediaFilenames/Parallel"}
@@ -785,9 +783,9 @@
 {"Action":"pass","Test":"TestTyping/Typing_can_be_explicitly_stopped"}
 {"Action":"pass","Test":"TestTyping/Typing_events_DO_NOT_include_a_`room_id`_field"}
 {"Action":"pass","Test":"TestTyping/Typing_notification_sent_to_local_room_members"}
-{"Action":"fail","Test":"TestUnknownEndpoints"}
+{"Action":"pass","Test":"TestUnknownEndpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Client-server_endpoints"}
-{"Action":"fail","Test":"TestUnknownEndpoints/Key_endpoints"}
+{"Action":"skip","Test":"TestUnknownEndpoints/Key_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Media_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Server-server_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Unknown_prefix"}
