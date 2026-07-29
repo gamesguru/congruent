@@ -373,12 +373,16 @@ impl Service {
 			.await
 			.unwrap_or_else(|_| user.localpart().to_owned());
 
+		// Determines whether the legacy (pre-`m.mentions`) mention rules --
+		// `.m.rule.contains_user_name`, `.m.rule.contains_display_name`, and
 		let ctx = PushConditionRoomCtx {
 			room_id: room_id.to_owned(),
 			member_count: room_joined_count,
 			user_id: user.to_owned(),
 			user_display_name,
 			power_levels: Some(power_levels),
+			#[cfg(feature = "unstable-msc3931")]
+			supported_features: Vec::new(),
 		};
 
 		ruleset.get_actions(pdu, &ctx)

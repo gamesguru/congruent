@@ -693,18 +693,30 @@ async fn build_notification_counts(
 		..
 	}: SyncContext<'_>,
 	room_id: &RoomId,
-	timeline: &TimelinePdus,
+	_timeline: &TimelinePdus,
 ) -> Result<(
 	Option<UnreadNotificationsCount>,
 	BTreeMap<OwnedEventId, UnreadNotificationsCount>,
 )> {
-	// determine whether to actually update the notification counts
-	let (should_send_notification_counts, send_notification_resets) = if !timeline.pdus.is_empty()
-	{
-		(true, false)
-	} else if let Some(last_sync_end_count) = last_sync_end_count {
-		// If the user's read cursor advanced since the previous sync, or a thread
-		// cursor advanced, we need to send counts so the client can observe the reset.
+	// Counts must be computed on every poll, not just ones where the timeline
+	// advanced: ruma's `JoinedRoom::is_empty()` treats an absent/default
+	// `unread_notifications` as "no unread notifications," and the outer sync
+	// loop omits any room for which `is_empty()` is true on an incremental
+	// sync. Gating this on "did anything change this poll" made a room's
+	// unread counts -- and the room itself -- vanish from `rooms.join` on the
+	// very next poll after they first appeared, even though the counts were
+	// still nonzero (see TestThreadedReceipts, which polls repeatedly with no
+	// intervening activity and expects the counts to still be there each
+	// time). Synapse computes these unconditionally for the same reason
+	// (`unread_notifs_for_room_id` in `handlers/sync.py`); match that instead
+	// of trying to skip the read.
+	//
+	// `send_notification_resets` is a separate, narrower concern: whether the
+	// user's read cursor (or a thread's) just advanced into the window since
+	// the last sync, in which case an explicit `Some(0)` must be sent so the
+	// client observes the transition to zero rather than the field silently
+	// disappearing.
+	let send_notification_resets = if let Some(last_sync_end_count) = last_sync_end_count {
 		let last_notification_read = services
 			.rooms
 			.user
@@ -716,99 +728,92 @@ async fn build_notification_counts(
 			.thread_last_notification_reads(syncing_user, room_id)
 			.await;
 
-		let send_notification_resets = last_notification_read > last_sync_end_count
-			&& last_notification_read <= current_count
+		last_notification_read > last_sync_end_count && last_notification_read <= current_count
 			|| thread_last_notification_reads
 				.values()
-				.any(|count| *count > last_sync_end_count && *count <= current_count);
-
-		(send_notification_resets, send_notification_resets)
+				.any(|count| *count > last_sync_end_count && *count <= current_count)
 	} else {
-		(true, false)
+		false
 	};
 
-	if should_send_notification_counts {
-		let want_thread_unread = filter.room.timeline.unread_thread_notifications;
-		let (notification_count, highlight_count, thread_counts) = join3(
-			services
-				.rooms
-				.user
-				.notification_count(syncing_user, room_id)
-				.map(TryInto::try_into)
-				.unwrap_or(uint!(0)),
-			services
-				.rooms
-				.user
-				.highlight_count(syncing_user, room_id)
-				.map(TryInto::try_into)
-				.unwrap_or(uint!(0)),
-			services
-				.rooms
-				.user
-				.thread_notification_counts(syncing_user, room_id),
-		)
-		.await;
+	let want_thread_unread = filter.room.timeline.unread_thread_notifications;
+	let (notification_count, highlight_count, thread_counts) = join3(
+		services
+			.rooms
+			.user
+			.notification_count(syncing_user, room_id)
+			.map(TryInto::try_into)
+			.unwrap_or(uint!(0)),
+		services
+			.rooms
+			.user
+			.highlight_count(syncing_user, room_id)
+			.map(TryInto::try_into)
+			.unwrap_or(uint!(0)),
+		services
+			.rooms
+			.user
+			.thread_notification_counts(syncing_user, room_id),
+	)
+	.await;
 
-		let thread_total_notifications = thread_counts
-			.values()
-			.map(|(notifications, _)| *notifications)
-			.fold(0_u64, u64::saturating_add);
-		let thread_total_highlights = thread_counts
-			.values()
-			.map(|(_, highlights)| *highlights)
-			.fold(0_u64, u64::saturating_add);
+	let thread_total_notifications = thread_counts
+		.values()
+		.map(|(notifications, _)| *notifications)
+		.fold(0_u64, u64::saturating_add);
+	let thread_total_highlights = thread_counts
+		.values()
+		.map(|(_, highlights)| *highlights)
+		.fold(0_u64, u64::saturating_add);
 
-		let merge_total = |count: UInt, total: u64| {
-			if want_thread_unread {
-				count
-			} else {
-				count.saturating_add(UInt::try_from(total).unwrap_or_default())
-			}
-		};
-
-		let send_notification_count_filter =
-			|count: &UInt| *count != uint!(0) || send_notification_resets;
-		let notification_count = merge_total(notification_count, thread_total_notifications);
-		let highlight_count = merge_total(highlight_count, thread_total_highlights);
-
-		let unread_notifications = UnreadNotificationsCount {
-			notification_count: if send_notification_count_filter(&notification_count) {
-				Some(notification_count)
-			} else {
-				None
-			},
-			highlight_count: if send_notification_count_filter(&highlight_count) {
-				Some(highlight_count)
-			} else {
-				None
-			},
-		};
-
-		let unread_thread_notifications = if want_thread_unread {
-			thread_counts
-				.into_iter()
-				.map(|(root, (notifications, highlights))| {
-					(root, UnreadNotificationsCount {
-						notification_count: UInt::try_from(notifications).ok(),
-						highlight_count: UInt::try_from(highlights).ok(),
-					})
-				})
-				.collect()
+	let merge_total = |count: UInt, total: u64| {
+		if want_thread_unread {
+			count
 		} else {
-			BTreeMap::new()
-		};
+			count.saturating_add(UInt::try_from(total).unwrap_or_default())
+		}
+	};
 
-		trace!(
-			%notification_count,
-			%highlight_count,
-			threads = unread_thread_notifications.len(),
-			"syncing new notification counts"
-		);
+	let send_notification_count_filter =
+		|count: &UInt| *count != uint!(0) || send_notification_resets;
+	let notification_count = merge_total(notification_count, thread_total_notifications);
+	let highlight_count = merge_total(highlight_count, thread_total_highlights);
 
-		Ok((Some(unread_notifications), unread_thread_notifications))
+	let unread_notifications = UnreadNotificationsCount {
+		notification_count: if send_notification_count_filter(&notification_count) {
+			Some(notification_count)
+		} else {
+			None
+		},
+		highlight_count: if send_notification_count_filter(&highlight_count) {
+			Some(highlight_count)
+		} else {
+			None
+		},
+	};
+
+	let unread_thread_notifications = if want_thread_unread {
+		thread_counts
+			.into_iter()
+			.map(|(root, (notifications, highlights))| {
+				(root, UnreadNotificationsCount {
+					notification_count: UInt::try_from(notifications).ok(),
+					highlight_count: UInt::try_from(highlights).ok(),
+				})
+			})
+			.collect()
 	} else {
-		Ok((None, BTreeMap::new()))
-	}
+		BTreeMap::new()
+	};
+
+	trace!(
+		%notification_count,
+		%highlight_count,
+		threads = unread_thread_notifications.len(),
+		"syncing new notification counts"
+	);
+
+	Ok((Some(unread_notifications), unread_thread_notifications))
 }
 
 /// Check if the syncing user joined the room since their last incremental sync.

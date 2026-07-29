@@ -374,28 +374,9 @@ where
 					|ev: PushRulesEvent| ev.content.global,
 				);
 
-			let mut highlight = false;
-			let mut notify = false;
-
-			for action in self
-				.services
-				.pusher
-				.get_actions(user, &rules_for_user, &power_levels, &serialized, room_id)
-				.await
-			{
-				match action {
-					| Action::Notify => notify = true,
-					| Action::SetTweak(Tweak::Highlight(true)) => {
-						highlight = true;
-					},
-					| _ => {},
-				}
-
-				// Break early if both conditions are true
-				if notify && highlight {
-					break;
-				}
-			}
+			let (notify, highlight) = self
+				.evaluate_pdu_for_user(user, &serialized, room_id, &rules_for_user, &power_levels)
+				.await;
 
 			if notify {
 				notifies.push(user.clone());
@@ -626,4 +607,44 @@ where
 	}
 
 	Ok(pdu_id)
+}
+
+/// Evaluate whether `user` would be notified and/or highlighted by an
+/// already-serialized `pdu`, per their current push rules and the room's
+/// current power levels. Shared between live delivery (`append_pdu`) and
+/// notification-count recomputation on receipt (`notifications.rs`), so the
+/// two stay in lockstep instead of drifting apart.
+#[implement(super::Service)]
+pub(super) async fn evaluate_pdu_for_user(
+	&self,
+	user: &UserId,
+	serialized: &ruma::serde::Raw<ruma::events::AnySyncTimelineEvent>,
+	room_id: &ruma::RoomId,
+	rules_for_user: &Ruleset,
+	power_levels: &RoomPowerLevelsEventContent,
+) -> (bool, bool) {
+	let mut notify = false;
+	let mut highlight = false;
+
+	for action in self
+		.services
+		.pusher
+		.get_actions(user, rules_for_user, power_levels, serialized, room_id)
+		.await
+	{
+		match action {
+			| Action::Notify => notify = true,
+			| Action::SetTweak(Tweak::Highlight(true)) => {
+				highlight = true;
+			},
+			| _ => {},
+		}
+
+		// Break early if both conditions are true
+		if notify && highlight {
+			break;
+		}
+	}
+
+	(notify, highlight)
 }
