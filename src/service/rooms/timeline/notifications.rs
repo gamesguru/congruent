@@ -26,6 +26,8 @@ use ruma::{
 	push::Ruleset,
 };
 
+use super::append::PduPushEval;
+
 /// Recompute and persist notification/highlight counts for `user_id` in
 /// `room_id` after a read receipt lands at `after`, scoped by `thread`.
 ///
@@ -125,35 +127,12 @@ async fn recompute_scope(
 			|ev: PushRulesEvent| ev.content.global,
 		);
 
-	let now = conduwuit_core::utils::millis_since_unix_epoch();
-
 	let mut notifications = 0_u64;
 	let mut highlights = 0_u64;
 
 	let stream = self.pdus(room_id, Bound::Excluded(after));
 	pin_mut!(stream);
 	while let Some(Ok((_, pdu))) = stream.next().await {
-		if pdu.sender() == user_id {
-			continue;
-		}
-
-		if self
-			.services
-			.users
-			.user_is_ignored(pdu.sender(), user_id)
-			.await
-		{
-			continue;
-		}
-
-		// Historical/backfilled PDUs never generated a notification at append
-		// time (see `append::append_pdu`'s `is_historical` gate); keep that in
-		// sync so recompute can't manufacture notifications that never existed.
-		let is_historical = now.saturating_sub(pdu.origin_server_ts().0.into()) > 10 * 60 * 1000;
-		if is_historical {
-			continue;
-		}
-
 		let thread_root = self.services.threads.get_thread_id(&pdu).await;
 		let in_scope = match thread_filter {
 			| None => thread_root.is_none(),
@@ -164,9 +143,15 @@ async fn recompute_scope(
 		}
 
 		let serialized = pdu.to_format();
-		let (notify, highlight) = self
-			.evaluate_pdu_for_user(user_id, &serialized, room_id, &rules_for_user, &power_levels)
-			.await;
+		let eval = PduPushEval {
+			pdu: &pdu,
+			serialized: &serialized,
+			room_id,
+			rules_for_user: &rules_for_user,
+			power_levels: &power_levels,
+			soft_fail: false,
+		};
+		let (notify, highlight) = self.evaluate_pdu_for_user(user_id, &eval).await;
 
 		if notify {
 			notifications = notifications.saturating_add(1);

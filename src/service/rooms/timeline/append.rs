@@ -40,6 +40,17 @@ pub struct AppendOptions {
 	pub soft_fail: bool,
 }
 
+/// Inputs shared by push-rule evaluation in live append and receipt-based
+/// recomputation.
+pub(super) struct PduPushEval<'a> {
+	pub pdu: &'a PduEvent,
+	pub serialized: &'a ruma::serde::Raw<ruma::events::AnySyncTimelineEvent>,
+	pub room_id: &'a ruma::RoomId,
+	pub rules_for_user: &'a Ruleset,
+	pub power_levels: &'a RoomPowerLevelsEventContent,
+	pub soft_fail: bool,
+}
+
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
@@ -352,62 +363,57 @@ where
 		}
 	}
 
-	// Skip push notifications for historical events (backfilled, rescued,
-	// or heavily delayed federation events) to avoid notification storms.
-	let now = utils::millis_since_unix_epoch();
-	let is_historical = now.saturating_sub(pdu.origin_server_ts().0.into()) > 10 * 60 * 1000;
+	let serialized = pdu.to_format();
+	for user in &push_target {
+		let rules_for_user = self
+			.services
+			.account_data
+			.get_global(user, GlobalAccountDataEventType::PushRules)
+			.await
+			.map_or_else(
+				|_| Ruleset::server_default(user),
+				|ev: PushRulesEvent| ev.content.global,
+			);
 
-	if soft_fail {
-		trace!("Event {} is soft-failed, skipping push notifications", pdu.event_id());
-	} else if is_historical {
-		trace!("Event {} is historical, skipping push notifications", pdu.event_id());
-	} else {
-		let serialized = pdu.to_format();
-		for user in &push_target {
-			let rules_for_user = self
-				.services
-				.account_data
-				.get_global(user, GlobalAccountDataEventType::PushRules)
-				.await
-				.map_or_else(
-					|_| Ruleset::server_default(user),
-					|ev: PushRulesEvent| ev.content.global,
-				);
+		let eval = PduPushEval {
+			pdu,
+			serialized: &serialized,
+			room_id,
+			rules_for_user: &rules_for_user,
+			power_levels: &power_levels,
+			soft_fail,
+		};
+		let (notify, highlight) = self.evaluate_pdu_for_user(user, &eval).await;
 
-			let (notify, highlight) = self
-				.evaluate_pdu_for_user(user, &serialized, room_id, &rules_for_user, &power_levels)
-				.await;
-
-			if notify {
-				notifies.push(user.clone());
-			}
-
-			if highlight {
-				highlights.push(user.clone());
-			}
-
-			self.services
-				.pusher
-				.get_pushkeys(user)
-				.ready_for_each(|push_key| {
-					if let Err(e) =
-						self.services
-							.sending
-							.send_pdu_push(&pdu_id, user, push_key.to_owned())
-					{
-						warn!("Failed to queue push notification: {e}");
-					}
-				})
-				.await;
+		if !(notify || highlight) {
+			continue;
 		}
 
-		self.db.increment_notification_counts(
-			room_id,
-			notifies,
-			highlights,
-			thread_root.as_deref(),
-		);
+		if notify {
+			notifies.push(user.clone());
+		}
+
+		if highlight {
+			highlights.push(user.clone());
+		}
+
+		self.services
+			.pusher
+			.get_pushkeys(user)
+			.ready_for_each(|push_key| {
+				if let Err(e) =
+					self.services
+						.sending
+						.send_pdu_push(&pdu_id, user, push_key.to_owned())
+				{
+					warn!("Failed to queue push notification: {e}");
+				}
+			})
+			.await;
 	}
+
+	self.db
+		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_deref());
 
 	match *pdu.kind() {
 		| TimelineEventType::RoomRedaction => {
@@ -611,25 +617,58 @@ where
 
 /// Evaluate whether `user` would be notified and/or highlighted by an
 /// already-serialized `pdu`, per their current push rules and the room's
-/// current power levels. Shared between live delivery (`append_pdu`) and
-/// notification-count recomputation on receipt (`notifications.rs`), so the
-/// two stay in lockstep instead of drifting apart.
+/// current power levels.
+///
+/// This owns the skip gates that must match live append and historical
+/// recompute:
+/// - self notifications
+/// - ignored senders
+/// - soft-failed events
+/// - historical/backfilled events older than 10 minutes
+///
+/// Keeping those checks here avoids drifting behavior between
+/// `append_pdu` and receipt recomputation.
 #[implement(super::Service)]
 pub(super) async fn evaluate_pdu_for_user(
 	&self,
 	user: &UserId,
-	serialized: &ruma::serde::Raw<ruma::events::AnySyncTimelineEvent>,
-	room_id: &ruma::RoomId,
-	rules_for_user: &Ruleset,
-	power_levels: &RoomPowerLevelsEventContent,
+	eval: &PduPushEval<'_>,
 ) -> (bool, bool) {
+	let pdu = eval.pdu;
+	if eval.soft_fail {
+		trace!("Event {} is soft-failed, skipping push notifications", pdu.event_id());
+		return (false, false);
+	}
+
+	if pdu.sender() == user {
+		return (false, false);
+	}
+
+	if self
+		.services
+		.users
+		.user_is_ignored(pdu.sender(), user)
+		.await
+	{
+		return (false, false);
+	}
+
+	// Skip push notifications for historical events (backfilled, rescued,
+	// or heavily delayed federation events) to avoid notification storms.
+	let now = utils::millis_since_unix_epoch();
+	let is_historical = now.saturating_sub(pdu.origin_server_ts().0.into()) > 10 * 60 * 1000;
+	if is_historical {
+		trace!("Event {} is historical, skipping push notifications", pdu.event_id());
+		return (false, false);
+	}
+
 	let mut notify = false;
 	let mut highlight = false;
 
 	for action in self
 		.services
 		.pusher
-		.get_actions(user, rules_for_user, power_levels, serialized, room_id)
+		.get_actions(user, eval.rules_for_user, eval.power_levels, eval.serialized, eval.room_id)
 		.await
 	{
 		match action {
