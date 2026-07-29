@@ -42,6 +42,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	config: Dep<config::Service>,
 	client: Dep<client::Service>,
+	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	users: Dep<users::Service>,
@@ -64,6 +65,7 @@ impl crate::Service for Service {
 				globals: args.depend::<globals::Service>("globals"),
 				client: args.depend::<client::Service>("client"),
 				config: args.depend::<config::Service>("config"),
+				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
@@ -373,12 +375,21 @@ impl Service {
 			.await
 			.unwrap_or_else(|_| user.localpart().to_owned());
 
+		// Determines whether the legacy (pre-`m.mentions`) mention rules --
+		// `.m.rule.contains_user_name`, `.m.rule.contains_display_name`, and
+		// `.m.rule.room_notif` -- still apply for this event: they do for
+		// every room version through the last one ruma has a named variant
+		// for (currently v12), and stop applying for a newer one per MSC4210.
+		// See `condition::room_version_supports_legacy_mentions`.
+		let room_version = self.services.state.get_room_version(room_id).await.ok();
+
 		let ctx = PushConditionRoomCtx {
 			room_id: room_id.to_owned(),
 			member_count: room_joined_count,
 			user_id: user.to_owned(),
 			user_display_name,
 			power_levels: Some(power_levels),
+			room_version,
 		};
 
 		ruleset.get_actions(pdu, &ctx)
