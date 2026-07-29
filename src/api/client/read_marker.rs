@@ -117,7 +117,11 @@ pub(crate) async fn create_receipt_route(
 	}
 
 	// MSC3771: event_id must belong to the thread the receipt targets.
-	if matches!(&body.thread, ReceiptThread::Main | ReceiptThread::Thread(_)) {
+	//
+	// `thread_id=main` is the legacy-compatible fallback and should not be
+	// rejected just because the event participates in a thread chain; the
+	// explicit thread-root case below remains strict.
+	if matches!(&body.thread, ReceiptThread::Thread(_)) {
 		let resolved = services
 			.rooms
 			.threads
@@ -125,7 +129,6 @@ pub(crate) async fn create_receipt_route(
 			.await;
 
 		let in_thread = match (&body.thread, resolved.as_deref()) {
-			| (ReceiptThread::Main, None) => true,
 			| (ReceiptThread::Thread(root), Some(parent)) => &**root == parent,
 			| (ReceiptThread::Thread(root), None) => **root == *body.event_id,
 			| _ => false,
