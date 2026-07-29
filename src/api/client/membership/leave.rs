@@ -111,12 +111,11 @@ pub async fn leave_room(
 		// Take the room lock before deciding between local and remote leave handling so
 		// we don't route based on a stale participation snapshot.
 		let state_lock = services.rooms.state.mutex.lock(room_id).await;
-		let dont_have_room = services
+		let dont_have_room = !services
 			.rooms
 			.state_cache
-			.server_in_room(services.globals.server_name(), room_id)
-			.await
-			.eq(&false);
+			.server_is_participant(services.globals.server_name(), room_id)
+			.await;
 		let is_invited = services
 			.rooms
 			.state_cache
