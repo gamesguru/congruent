@@ -148,6 +148,7 @@ impl Service {
 
 #[cfg(test)]
 mod tests {
+	use rezzy::Reachability;
 	use ruma::owned_event_id;
 
 	use super::*;
