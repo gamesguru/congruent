@@ -20,7 +20,7 @@ jobs:
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
-      FEATURES: "direct_tls"
+      FEATURES: "direct_tls,url_preview"
 
     strategy:
       fail-fast: false
@@ -133,7 +133,7 @@ jobs:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
           JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.jemalloc_lg_page || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.target_cpu != '' && format('-C target-cpu={0}', matrix.target_cpu) || '' }}
-        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls"
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls,url_preview"
 
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
