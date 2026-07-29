@@ -757,7 +757,9 @@ mod tests {
 
 		let synthetics: Vec<_> = new_receipts
 			.iter()
-			.filter(|(_, _, r)| !matches!(r.thread, ReceiptThread::Unthreaded | ReceiptThread::Main))
+			.filter(|(_, _, r)| {
+				!matches!(r.thread, ReceiptThread::Unthreaded | ReceiptThread::Main)
+			})
 			.map(|(eid, rtype, r)| {
 				let mut copy = r.clone();
 				copy.thread = ReceiptThread::Unthreaded;

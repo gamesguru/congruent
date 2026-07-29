@@ -8,6 +8,7 @@ pub mod extremities;
 mod heal;
 mod helpers;
 mod metadata;
+mod notifications;
 mod rebuild_state;
 mod redact;
 pub mod reindex;

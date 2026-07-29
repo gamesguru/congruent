@@ -136,17 +136,6 @@ pub(crate) async fn create_receipt_route(
 		}
 	}
 
-	if matches!(
-		&body.receipt_type,
-		create_receipt::v3::ReceiptType::Read | create_receipt::v3::ReceiptType::ReadPrivate
-	) {
-		services
-			.rooms
-			.user
-			.reset_notification_counts_for_thread(sender_user, &body.room_id, &body.thread)
-			.await;
-	}
-
 	match body.receipt_type {
 		| create_receipt::v3::ReceiptType::FullyRead => {
 			let fully_read_event = ruma::events::fully_read::FullyReadEvent {
@@ -272,8 +261,8 @@ async fn update_read_receipt(
 
 		services
 			.rooms
-			.user
-			.reset_notification_counts_for_thread(sender_user, room_id, &thread)
+			.timeline
+			.recompute_notification_counts_for_thread(sender_user, room_id, &thread, new_count)
 			.await;
 
 		conduwuit::info!(
@@ -339,8 +328,8 @@ async fn update_private_read_receipt(
 	if applied {
 		services
 			.rooms
-			.user
-			.reset_notification_counts_for_thread(sender_user, room_id, &thread)
+			.timeline
+			.recompute_notification_counts_for_thread(sender_user, room_id, &thread, count)
 			.await;
 
 		conduwuit::debug!("Accepted private read receipt for {} from {}", event_id, sender_user);
