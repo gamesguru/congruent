@@ -40,7 +40,7 @@ fn snapshots_path() -> Option<&'static Path> {
 
 fn load_pdus_from_file(filename: &str) -> Vec<PduEvent> {
 	let path = fixtures_path()
-		.unwrap_or_else(|| panic!("Fixtures directory not found at {FIXTURES_DIR}. Ensure the ruma-upstream submodule is checked out."))
+		.expect("fixtures_path checked before load")
 		.join(filename);
 	let content = fs::read_to_string(&path)
 		.unwrap_or_else(|_| panic!("Failed to read fixture: {:?}", path));
@@ -87,7 +87,7 @@ fn load_pdus_from_file(filename: &str) -> Vec<PduEvent> {
 
 fn load_event_id_list(filename: &str) -> Vec<OwnedEventId> {
 	let path = fixtures_path()
-		.unwrap_or_else(|| panic!("Fixtures directory not found at {FIXTURES_DIR}. Ensure the ruma-upstream submodule is checked out."))
+		.expect("fixtures_path checked before load")
 		.join(filename);
 	let content = fs::read_to_string(&path)
 		.unwrap_or_else(|_| panic!("Failed to read state map: {:?}", path));
@@ -217,7 +217,7 @@ impl EventStore {
 
 fn extract_snapshot(snapshot_name: &str) -> String {
 	let path = snapshots_path()
-		.unwrap_or_else(|| panic!("Snapshots directory not found at {SNAPSHOTS_DIR}. Ensure the ruma-upstream submodule is checked out."))
+		.expect("snapshots_path checked before load")
 		.join(format!("{snapshot_name}@resolved_state.snap"));
 
 	let content = fs::read_to_string(&path)
@@ -517,13 +517,14 @@ async fn resolve_state_maps(
 
 macro_rules! batched_test {
 	($name:ident, [$($file:expr),+ $(,)?], $version:expr, $snapshot:expr) => {
+		#[cfg_attr(
+			not(compare_has_ruma_upstream),
+			ignore = "requires upstream ruma-state-res fixtures/snapshots"
+		)]
 		#[tokio::test]
 		async fn $name() {
 			if fixtures_path().is_none() || snapshots_path().is_none() {
-				eprintln!(
-					"skipping {}: upstream ruma-state-res fixtures/snapshots are unavailable",
-					stringify!($name)
-				);
+				eprintln!("skipping {}: upstream ruma-state-res data is unavailable", stringify!($name));
 				return;
 			}
 
@@ -548,13 +549,14 @@ macro_rules! batched_test {
 
 macro_rules! state_map_test {
 	($name:ident, states: [$($sfile:expr),+], pdus: [$($pfile:expr),+], $version:expr, $snapshot:expr) => {
+		#[cfg_attr(
+			not(compare_has_ruma_upstream),
+			ignore = "requires upstream ruma-state-res fixtures/snapshots"
+		)]
 		#[tokio::test]
 		async fn $name() {
 			if fixtures_path().is_none() || snapshots_path().is_none() {
-				eprintln!(
-					"skipping {}: upstream ruma-state-res fixtures/snapshots are unavailable",
-					stringify!($name)
-				);
+				eprintln!("skipping {}: upstream ruma-state-res data is unavailable", stringify!($name));
 				return;
 			}
 
