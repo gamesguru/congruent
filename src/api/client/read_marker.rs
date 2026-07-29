@@ -208,34 +208,28 @@ async fn thread_id_for_receipt_event(
 	for _ in 0..MAX_THREAD_HOPS {
 		let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
 		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
-			return event_has_thread_child(services, &current)
-				.await
-				.then_some(current);
+			return root_has_thread_bundle(&pdu).await.then_some(current);
 		};
 
 		if content.relates_to.rel_type == RelationType::Thread {
 			let root = content.relates_to.event_id;
-			return event_has_thread_child(services, &root)
-				.await
-				.then_some(root);
+			let root_pdu = services.rooms.timeline.get_pdu(&root).await.ok()?;
+			return root_has_thread_bundle(&root_pdu).await.then_some(root);
 		}
 
 		current = content.relates_to.event_id;
 	}
 
-	event_has_thread_child(services, &current)
-		.await
-		.then_some(current)
+	let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
+	root_has_thread_bundle(&pdu).await.then_some(current)
 }
 
-async fn event_has_thread_child(services: &crate::State, event_id: &EventId) -> bool {
-	services
-		.rooms
-		.pdu_metadata
-		.msc2836_get_children(event_id)
-		.await
-		.into_iter()
-		.any(|(_, rel_type)| rel_type == RelationType::Thread.as_str())
+async fn root_has_thread_bundle<E: Event>(event: &E) -> bool {
+	event
+		.get_unsigned_as_value()
+		.get("m.relations")
+		.and_then(|relations| relations.get("m.thread"))
+		.is_some()
 }
 
 async fn update_read_receipt(
