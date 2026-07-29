@@ -606,8 +606,14 @@ impl Data {
 				continue;
 			}
 
-			// Check if user already has an unthreaded receipt for this type
-			// on a more recent event -- if so, skip synthesis.
+			// Check if user already has an unthreaded *or* main-timeline receipt
+			// for this type at or after the target position -- if so, skip
+			// synthesis. A `Main` receipt already serves the same legacy-compat
+			// purpose as a synthetic unthreaded copy; failing to treat it as
+			// "already covered" here would synthesize a redundant unthreaded
+			// copy at the exact same event as an existing `Main` receipt,
+			// colliding with (and, per the aggregation tie-break, silently
+			// overwriting) its `thread_id`.
 			let existing_unthreaded_event_id =
 				existing_event
 					.content
@@ -617,7 +623,9 @@ impl Data {
 						receipts
 							.get(new_type)
 							.and_then(|users| users.get(user_id))
-							.filter(|r| r.thread == ReceiptThread::Unthreaded)
+							.filter(|r| {
+								matches!(r.thread, ReceiptThread::Unthreaded | ReceiptThread::Main)
+							})
 							.map(|_| ev_id.clone())
 					});
 
@@ -629,7 +637,7 @@ impl Data {
 					self.services.timeline.get_pdu_count(&target_event_id).await,
 					self.services.timeline.get_pdu_count(&existing_ev_id).await,
 				) {
-					if existing_count > target_count {
+					if existing_count >= target_count {
 						continue;
 					}
 				}
