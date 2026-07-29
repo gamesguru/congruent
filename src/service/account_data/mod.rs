@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::{
 	Err, Result, err, implement,
-	utils::{ReadyExt, result::LogErr, stream::TryIgnore},
+	utils::{MutexMap, ReadyExt, result::LogErr, stream::TryIgnore},
 };
 use database::{Deserialized, Handle, Ignore, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
@@ -21,6 +21,7 @@ use crate::{Dep, globals};
 pub struct Service {
 	services: Services,
 	db: Data,
+	push_rules_mutex: MutexMap<Vec<u8>, ()>,
 }
 
 struct Data {
@@ -42,10 +43,23 @@ impl crate::Service for Service {
 				roomuserdataid_accountdata: args.db["roomuserdataid_accountdata"].clone(),
 				roomusertype_roomuserdataid: args.db["roomusertype_roomuserdataid"].clone(),
 			},
+			push_rules_mutex: MutexMap::new(),
 		}))
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+impl Service {
+	fn push_rules_lock_key(user_id: &UserId) -> Vec<u8> { user_id.as_str().as_bytes().to_vec() }
+
+	pub async fn push_rules_lock(
+		&self,
+		user_id: &UserId,
+	) -> conduwuit::utils::mutex_map::Guard<Vec<u8>, ()> {
+		let key = Self::push_rules_lock_key(user_id);
+		self.push_rules_mutex.lock(key.as_slice()).await
+	}
 }
 
 /// Places one event in the account data of the user and removes the

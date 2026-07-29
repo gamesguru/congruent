@@ -488,6 +488,11 @@ pub async fn copy_room_push_rules_for_upgrade(
 		.await;
 
 	for user_id in local_users {
+		let _push_rules_lock = service
+			.services
+			.account_data
+			.push_rules_lock(&user_id)
+			.await;
 		let Ok(mut push_rules): Result<PushRulesEvent> = service
 			.services
 			.account_data

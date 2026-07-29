@@ -60,7 +60,7 @@ use crate::{
 	},
 };
 
-type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, &'a sync_events::v5::Request);
+type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, u64, &'a sync_events::v5::Request);
 type TodoRooms = BTreeMap<OwnedRoomId, (RequiredStateSelection, usize, u64)>;
 type KnownRooms = BTreeMap<String, BTreeMap<OwnedRoomId, u64>>;
 type RoomExtras = BTreeMap<OwnedRoomId, RoomExtra>;
@@ -799,7 +799,7 @@ async fn build_sync_events_v5(
 
 	let mut todo_rooms: TodoRooms = BTreeMap::new();
 
-	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, body);
+	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, next_batch, body);
 
 	let account_data = collect_account_data(services, sync_info).map(Ok);
 
@@ -903,7 +903,7 @@ fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
 
 async fn fetch_subscriptions(
 	services: &Services,
-	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	known_rooms: &KnownRooms,
 	required_state_excludes: Option<&CompatRequiredStateExcludes>,
@@ -924,7 +924,7 @@ async fn fetch_subscriptions(
 		}
 
 		let todo_room = todo_rooms
-			.entry(room_id.clone())
+			.entry(room_id.to_owned())
 			.or_insert_with(|| (RequiredStateSelection::default(), 0_usize, u64::MAX));
 
 		let limit: usize = usize_from_ruma(room.timeline_limit).min(100);
@@ -933,11 +933,13 @@ async fn fetch_subscriptions(
 			.and_then(|excludes| excludes.room_subscriptions.get(room_id))
 			.into_iter()
 			.flatten()
-			.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+			.cloned()
+			.map(|(ty, sk)| (ty, sk.as_str().into()));
 		todo_room.0.push(
 			room.required_state
 				.iter()
-				.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+				.cloned()
+				.map(|(ty, sk)| (ty, sk.as_str().into())),
 			excludes,
 		);
 		todo_room.1 = todo_room.1.max(limit);
@@ -949,7 +951,7 @@ async fn fetch_subscriptions(
 				.copied()
 				.unwrap_or(0),
 		);
-		known_subscription_rooms.insert(room_id.clone());
+		known_subscription_rooms.insert(room_id.to_owned());
 	}
 	// where this went (protomsc says it was removed)
 	//for r in body.unsubscribe_rooms {
@@ -971,7 +973,7 @@ async fn fetch_subscriptions(
 #[allow(clippy::too_many_arguments)]
 async fn handle_lists<'a, Rooms, AllRooms>(
 	services: &Services,
-	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	all_invited_rooms: Rooms,
 	all_joined_rooms: Rooms,
@@ -1083,12 +1085,14 @@ where
 					.and_then(|excludes| excludes.lists.get(list_id))
 					.into_iter()
 					.flatten()
-					.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+					.cloned()
+					.map(|(ty, sk)| (ty, sk.as_str().into()));
 				todo_room.0.push(
 					list.room_details
 						.required_state
 						.iter()
-						.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+						.cloned()
+						.map(|(ty, sk)| (ty, sk.as_str().into())),
 					excludes,
 				);
 
@@ -1798,7 +1802,13 @@ async fn collect_typing_events(
 
 async fn collect_account_data(
 	services: &Services,
-	(sender_user, _, globalsince, body): (&UserId, &DeviceId, u64, &sync_events::v5::Request),
+	(sender_user, _, globalsince, current_count, body): (
+		&UserId,
+		&DeviceId,
+		u64,
+		u64,
+		&sync_events::v5::Request,
+	),
 ) -> sync_events::v5::response::AccountData {
 	let mut account_data = sync_events::v5::response::AccountData {
 		global: Vec::new(),
@@ -1811,7 +1821,7 @@ async fn collect_account_data(
 
 	account_data.global = services
 		.account_data
-		.changes_since(None, sender_user, Some(globalsince), None)
+		.changes_since(None, sender_user, Some(globalsince), Some(current_count))
 		.ready_filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Global))
 		.collect()
 		.await;
@@ -1822,7 +1832,12 @@ async fn collect_account_data(
 				room.clone(),
 				services
 					.account_data
-					.changes_since(Some(room), sender_user, Some(globalsince), None)
+					.changes_since(
+						Some(room),
+						sender_user,
+						Some(globalsince),
+						Some(current_count),
+					)
 					.ready_filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
 					.collect()
 					.await,
@@ -1835,9 +1850,10 @@ async fn collect_account_data(
 
 async fn collect_e2ee<'a, Rooms>(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): (
+	(sender_user, sender_device, globalsince, _, body): (
 		&UserId,
 		&DeviceId,
+		u64,
 		u64,
 		&sync_events::v5::Request,
 	),
@@ -2031,7 +2047,7 @@ where
 
 async fn collect_to_device(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): SyncInfo<'_>,
+	(sender_user, sender_device, globalsince, _, body): SyncInfo<'_>,
 	next_batch: u64,
 ) -> Option<sync_events::v5::response::ToDevice> {
 	if !body.extensions.to_device.enabled.unwrap_or(false) {

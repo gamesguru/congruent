@@ -75,6 +75,7 @@ pub(crate) async fn get_pushrules_all_route(
 	body: Ruma<get_pushrules_all::v3::Request>,
 ) -> Result<get_pushrules_all::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let Some(content_value) = services
 		.account_data
@@ -149,6 +150,7 @@ pub(crate) async fn get_pushrules_global_route(
 	body: Ruma<get_pushrules_global_scope::v3::Request>,
 ) -> Result<get_pushrules_global_scope::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let Some(content_value) = services
 		.account_data
@@ -238,6 +240,7 @@ pub(crate) async fn get_pushrule_route(
 	body: Ruma<get_pushrule::v3::Request>,
 ) -> Result<get_pushrule::v3::Response> {
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -273,6 +276,7 @@ pub(crate) async fn set_pushrule_route(
 	body: Ruma<set_pushrule::v3::Request>,
 ) -> Result<set_pushrule::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 	let body = &body.body;
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -329,6 +333,7 @@ pub(crate) async fn get_pushrule_actions_route(
 	body: Ruma<get_pushrule_actions::v3::Request>,
 ) -> Result<get_pushrule_actions::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -363,6 +368,7 @@ pub(crate) async fn set_pushrule_actions_route(
 	body: Ruma<set_pushrule_actions::v3::Request>,
 ) -> Result<set_pushrule_actions::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -396,6 +402,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 	body: Ruma<get_pushrule_enabled::v3::Request>,
 ) -> Result<get_pushrule_enabled::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -430,6 +437,7 @@ pub(crate) async fn set_pushrule_enabled_route(
 	body: Ruma<set_pushrule_enabled::v3::Request>,
 ) -> Result<set_pushrule_enabled::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -463,6 +471,7 @@ pub(crate) async fn delete_pushrule_route(
 	body: Ruma<delete_pushrule::v3::Request>,
 ) -> Result<delete_pushrule::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data
