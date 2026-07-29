@@ -166,42 +166,49 @@ TEST_FLAGS=(
     "${TEST_PACKAGES[@]}"
 )
 
-# It's okay (likely, even) that `go test` exits nonzero
-# `COMPLEMENT_ENABLE_DIRTY_RUNS=1`  reuses the same complement container for faster complement, at the possible expense of test environment pollution
-set +o pipefail
+TEST_EXIT_CODE=0
+# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for faster complement,
+# at the possible expense of test environment pollution.
+set +e
 if [ "$HAS_GOTESTSUM" = true ]; then
     # gotestsum writes full JSON logs
-    # We ignore the exit code because we post-process the logs even on failure.
-    (env \
+    env \
         -C "$COMPLEMENT_SRC" \
         COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
         gotestsum --format pkgname --hide-summary=output \
             --jsonfile "$LOG_FILE" \
-            -- "${TEST_FLAGS[@]}" || true)
+            -- "${TEST_FLAGS[@]}"
+    TEST_EXIT_CODE=$?
 else
-    # We ignore the exit code because we post-process the logs even on failure.
-    (env \
+    set -o pipefail
+    env \
         -C "$COMPLEMENT_SRC" \
         COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-        go test -json "${TEST_FLAGS[@]}" | tee "$LOG_FILE" || true)
+        go test -json "${TEST_FLAGS[@]}" | tee "$LOG_FILE"
+    TEST_EXIT_CODE=$?
+    set +o pipefail
 fi
-set -o pipefail
+set -e
 # Post-process the results into an easy-to-compare format, sorted by Test name for reproducible results
 # This ensures we have a consistent results file for the CI parser.
+POSTPROCESS_EXIT_CODE=0
 if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
     # Aggregate by test name and pick the last action for each
-    jq -s -c '
+    if jq -s -c '
         [ .[] | select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) ]
         | sort_by(.Test)
         | unique_by(.Test)
         | .[]
         | {Action: .Action, Test: .Test}
-    ' < "$LOG_FILE" > "$RESULTS_FILE"
-    echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
+    ' < "$LOG_FILE" > "$RESULTS_FILE"; then
+        echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
+    else
+        POSTPROCESS_EXIT_CODE=$?
+    fi
 else
     echo "Warning: $LOG_FILE is missing or empty. No results processed."
+    POSTPROCESS_EXIT_CODE=1
 fi
-set -o pipefail
 
 echo ""
 echo ""
@@ -210,4 +217,8 @@ echo "complement results saved at $RESULTS_FILE"
 echo ""
 echo ""
 
-exit 0
+if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+    exit "$TEST_EXIT_CODE"
+fi
+
+exit "$POSTPROCESS_EXIT_CODE"
