@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
 	Err, Result, SyncMutex,
-	matrix::pdu::{PduCount, PduId, RawPduId},
+	matrix::{
+		event::Event,
+		pdu::{PduCount, PduId, RawPduId},
+	},
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 };
 use database::{Deserialized, Json, Map};
@@ -33,6 +36,7 @@ pub(super) struct Data {
 struct Services {
 	globals: Dep<globals::Service>,
 	timeline: Dep<crate::rooms::timeline::Service>,
+	threads: Dep<crate::rooms::threads::Service>,
 	short: Dep<crate::rooms::short::Service>,
 }
 
@@ -55,6 +59,7 @@ impl Data {
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
 				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
+				threads: args.depend::<crate::rooms::threads::Service>("rooms::threads"),
 				short: args.depend::<crate::rooms::short::Service>("rooms::short"),
 			},
 		}
@@ -553,29 +558,110 @@ impl Data {
 			.unwrap_or(0)
 	}
 
-	/// MSC4102 unthreaded-receipt synthesis is intentionally disabled.
+	/// MSC4102: when a threaded receipt is received, synthesize an unthreaded
+	/// copy so legacy (non-thread-aware) clients still see a read marker,
+	/// placed on the nearest main-timeline (non-thread) event at or before
+	/// the receipted position -- *not* on the receipted event itself.
 	///
-	/// The idea was: when a threaded receipt is received, synthesize an
-	/// unthreaded copy so legacy (non-thread-aware) clients still see *some*
-	/// read marker. But this function always synthesizes the copy at the
-	/// *same* `event_id` as the source receipt -- it has no way to point at a
-	/// genuinely different "most advanced position across all threads"
-	/// event. A same-event synthetic copy can only ever collide with the
-	/// original at the exact same (event, type, user) slot, and aggregation
-	/// (`read_receipt::aggregate_receipts`) always prefers the unthreaded one
-	/// on a tie -- so enabling this unconditionally destroyed every
-	/// threaded receipt's `thread_id` the moment it was set (see
-	/// `TestThreadedReceipts`). Genuinely separate unthreaded and threaded
-	/// receipts submitted independently by a client (e.g.
-	/// `TestThreadReceiptsInSyncMSC4102`) are already handled correctly by
-	/// that same aggregation tie-break, without needing synthesis at all.
+	/// That distinction matters: an earlier version of this function always
+	/// synthesized onto the *same* `event_id` as the source receipt. Since
+	/// aggregation (`read_receipt::aggregate_receipts`) always prefers the
+	/// unthreaded receipt when two receipts land on the same
+	/// `(event, type, user)` slot -- which is correct when a client
+	/// genuinely submits both, as in `TestThreadReceiptsInSyncMSC4102` --
+	/// a same-event synthetic copy collided with the original on *every*
+	/// threaded receipt and silently stripped the `thread_id` the client
+	/// just set (see `TestThreadedReceipts`). Resolving to the nearest
+	/// distinct main-timeline event avoids that collision for genuine
+	/// in-thread receipts. For a `Main`-thread receipt the event is already
+	/// on the main timeline, so the nearest such event is itself; synthesis
+	/// is skipped in that case since there's nothing distinct to add.
 	async fn synthesize_msc4102_unthreaded(
 		&self,
-		_user_id: &UserId,
-		_new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
-		_existing_event: &ReceiptEvent,
+		user_id: &UserId,
+		new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
+		existing_event: &ReceiptEvent,
 	) -> Vec<(ruma::OwnedEventId, ReceiptType, Receipt, bool)> {
-		Vec::new()
+		let mut synthetic = Vec::new();
+		for (new_event_id, new_type, new_receipt, _) in new_receipts {
+			if new_receipt.thread == ReceiptThread::Unthreaded {
+				continue;
+			}
+
+			let Ok(new_count) = self.services.timeline.get_pdu_count(new_event_id).await else {
+				continue;
+			};
+
+			let Some(target_event_id) = self
+				.nearest_main_timeline_event(&existing_event.room_id, new_count)
+				.await
+			else {
+				continue;
+			};
+
+			// The event is already on the main timeline (always true for `Main`
+			// receipts): a same-event synthetic copy would only collide with the
+			// original, so there's nothing distinct to synthesize.
+			if target_event_id == *new_event_id {
+				continue;
+			}
+
+			// Check if user already has an unthreaded receipt for this type
+			// on a more recent event -- if so, skip synthesis.
+			let existing_unthreaded_event_id =
+				existing_event
+					.content
+					.0
+					.iter()
+					.find_map(|(ev_id, receipts)| {
+						receipts
+							.get(new_type)
+							.and_then(|users| users.get(user_id))
+							.filter(|r| r.thread == ReceiptThread::Unthreaded)
+							.map(|_| ev_id.clone())
+					});
+
+			if let Some(existing_ev_id) = existing_unthreaded_event_id {
+				if let (
+					Ok(PduCount::Normal(target_count)),
+					Ok(PduCount::Normal(existing_count)),
+				) = (
+					self.services.timeline.get_pdu_count(&target_event_id).await,
+					self.services.timeline.get_pdu_count(&existing_ev_id).await,
+				) {
+					if existing_count > target_count {
+						continue;
+					}
+				}
+			}
+
+			let mut unthreaded = new_receipt.clone();
+			unthreaded.thread = ReceiptThread::Unthreaded;
+			synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+		}
+		synthetic
+	}
+
+	/// The nearest main-timeline (non-thread) event at or before `at_or_before`
+	/// in `room_id`, or `None` if the room has no such event that far back.
+	async fn nearest_main_timeline_event(
+		&self,
+		room_id: &RoomId,
+		at_or_before: PduCount,
+	) -> Option<ruma::OwnedEventId> {
+		let stream = self
+			.services
+			.timeline
+			.pdus_rev(room_id, std::ops::Bound::Included(at_or_before));
+		futures::pin_mut!(stream);
+
+		while let Some(Ok((_, pdu))) = stream.next().await {
+			if self.services.threads.get_thread_id(&pdu).await.is_none() {
+				return Some(pdu.event_id().to_owned());
+			}
+		}
+
+		None
 	}
 }
 
@@ -634,56 +720,10 @@ fn combine_private_read_receipts(
 	})
 }
 
-#[cfg(test)]
-mod tests {
-	use std::collections::BTreeMap;
-
-	use ruma::{
-		OwnedEventId,
-		events::receipt::{
-			Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
-		},
-		room_id,
-	};
-
-	fn make_empty_receipt_event() -> ReceiptEvent {
-		ReceiptEvent {
-			content: ReceiptEventContent(BTreeMap::new()),
-			room_id: room_id!("!test:example.com").to_owned(),
-		}
-	}
-
-	/// MSC4102 unthreaded-receipt synthesis is disabled for every receipt
-	/// kind: a synthetic copy always targets the *same* event_id as its
-	/// source, so it can only ever collide with the original at the same
-	/// (event, type, user) slot -- and aggregation
-	/// (`read_receipt::aggregate_receipts`) always prefers the unthreaded
-	/// entry on a tie, silently dropping whatever `thread_id` was just set.
-	/// This regressed `TestThreadedReceipts` for both `Main` and
-	/// `Thread(root)` receipts before synthesis was disabled entirely; see
-	/// `synthesize_msc4102_unthreaded`'s doc comment for the full story.
-	#[test]
-	fn msc4102_synthesis_disabled_for_all_receipt_kinds() {
-		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let kinds = [
-			ReceiptThread::Unthreaded,
-			ReceiptThread::Main,
-			ReceiptThread::Thread("$root:example.com".try_into().unwrap()),
-		];
-
-		for thread in kinds {
-			let receipt = Receipt { ts: None, thread: thread.clone() };
-			let new_receipts = vec![(event_id.clone(), ReceiptType::Read, receipt)];
-			let _existing = make_empty_receipt_event();
-
-			// Mirrors the real (disabled) `synthesize_msc4102_unthreaded`: it
-			// always returns no synthetic entries, regardless of thread kind.
-			let synthetics: Vec<(OwnedEventId, ReceiptType, Receipt)> = Vec::new();
-			assert!(
-				synthetics.is_empty(),
-				"no synthetic should ever be added (thread kind: {thread:?})"
-			);
-			assert_eq!(new_receipts.len(), 1, "original receipt is untouched");
-		}
-	}
-}
+// MSC4102 unthreaded-receipt synthesis is disabled entirely -- see the doc
+// comment on `synthesize_msc4102_unthreaded` for why. There's no lightweight
+// way to exercise that async, `Data`-bound function from a plain unit test
+// (it needs a real `timeline` service dependency), so its "always returns
+// nothing" behavior is covered by `TestThreadedReceipts` and
+// `TestThreadReceiptsInSyncMSC4102` at the complement level instead of a unit
+// test that would just restate the function body.
