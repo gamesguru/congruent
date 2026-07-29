@@ -28,11 +28,11 @@ use conduwuit_core::{
 	},
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
-use futures::{Future, Stream, TryStreamExt, pin_mut};
+use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
 use lru_cache::LruCache;
 use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId,
-	events::room::encrypted::Relation,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
 };
 use serde::Deserialize;
 
@@ -467,6 +467,63 @@ impl Service {
 	pub async fn reindex_timeline(&self, room_id: &RoomId) -> Result<usize> {
 		self.db.reindex_timeline(room_id).await
 	}
+}
+
+/// Copy room push rules from an upgraded room to its replacement.
+///
+/// This is used both for local room upgrades and for tombstones received
+/// over federation so the replacement room inherits the same per-room
+/// notification rules on every homeserver that knows about the room.
+pub async fn copy_room_push_rules_for_upgrade(
+	service: &Service,
+	room_id: &RoomId,
+	replacement_room: &RoomId,
+) -> Result {
+	let local_users = service
+		.services
+		.users
+		.list_local_users()
+		.map(|user_id: &UserId| user_id.to_owned())
+		.collect::<Vec<_>>()
+		.await;
+
+	for user_id in local_users {
+		let Ok(mut push_rules): Result<PushRulesEvent> = service
+			.services
+			.account_data
+			.get_global(&user_id, GlobalAccountDataEventType::PushRules)
+			.await
+		else {
+			continue;
+		};
+
+		let Some(mut rule) = push_rules
+			.content
+			.global
+			.room
+			.iter()
+			.find(|rule| rule.rule_id == room_id)
+			.cloned()
+		else {
+			continue;
+		};
+
+		rule.rule_id = replacement_room.to_owned();
+		push_rules.content.global.room.insert(rule);
+
+		service
+			.services
+			.account_data
+			.update(
+				None,
+				&user_id,
+				GlobalAccountDataEventType::PushRules.to_string().into(),
+				&serde_json::to_value(push_rules)?,
+			)
+			.await?;
+	}
+
+	Ok(())
 }
 
 impl Service {

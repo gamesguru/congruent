@@ -21,7 +21,7 @@ use ruma::{
 		push_rules::PushRulesEvent,
 		room::{
 			encrypted::Relation, power_levels::RoomPowerLevelsEventContent,
-			redaction::RoomRedactionEventContent,
+			redaction::RoomRedactionEventContent, tombstone::RoomTombstoneEventContent,
 		},
 	},
 	push::{Action, Ruleset, Tweak},
@@ -414,6 +414,13 @@ where
 
 	self.db
 		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_deref());
+
+	if *pdu.kind() == TimelineEventType::RoomTombstone {
+		if let Ok(tombstone) = pdu.get_content::<RoomTombstoneEventContent>() {
+			let replacement_room = tombstone.replacement_room.as_ref();
+			super::copy_room_push_rules_for_upgrade(self, room_id, replacement_room).await?;
+		}
+	}
 
 	match *pdu.kind() {
 		| TimelineEventType::RoomRedaction => {
