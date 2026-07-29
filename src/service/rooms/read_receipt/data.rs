@@ -553,56 +553,29 @@ impl Data {
 			.unwrap_or(0)
 	}
 
-	/// MSC4102: When a threaded receipt is received, synthesize an unthreaded
-	/// copy so older clients still see it. Skips synthesis if the user already
-	/// has an unthreaded receipt on a more recent event.
+	/// MSC4102 unthreaded-receipt synthesis is intentionally disabled.
+	///
+	/// The idea was: when a threaded receipt is received, synthesize an
+	/// unthreaded copy so legacy (non-thread-aware) clients still see *some*
+	/// read marker. But this function always synthesizes the copy at the
+	/// *same* `event_id` as the source receipt -- it has no way to point at a
+	/// genuinely different "most advanced position across all threads"
+	/// event. A same-event synthetic copy can only ever collide with the
+	/// original at the exact same (event, type, user) slot, and aggregation
+	/// (`read_receipt::aggregate_receipts`) always prefers the unthreaded one
+	/// on a tie -- so enabling this unconditionally destroyed every
+	/// threaded receipt's `thread_id` the moment it was set (see
+	/// `TestThreadedReceipts`). Genuinely separate unthreaded and threaded
+	/// receipts submitted independently by a client (e.g.
+	/// `TestThreadReceiptsInSyncMSC4102`) are already handled correctly by
+	/// that same aggregation tie-break, without needing synthesis at all.
 	async fn synthesize_msc4102_unthreaded(
 		&self,
-		user_id: &UserId,
-		new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
-		existing_event: &ReceiptEvent,
+		_user_id: &UserId,
+		_new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
+		_existing_event: &ReceiptEvent,
 	) -> Vec<(ruma::OwnedEventId, ReceiptType, Receipt, bool)> {
-		let mut synthetic = Vec::new();
-		for (new_event_id, new_type, new_receipt, _) in new_receipts {
-			// Main-timeline receipts are already visible to legacy clients on the
-			// same event; synthesizing an unthreaded copy would collide with it at
-			// the exact same (event, type, user) slot and silently drop the
-			// thread_id when aggregated (aggregation prefers unthreaded on a tie).
-			if matches!(new_receipt.thread, ReceiptThread::Unthreaded | ReceiptThread::Main) {
-				continue;
-			}
-
-			// Check if user already has an unthreaded receipt for this type
-			// on a more recent event -- if so, skip synthesis.
-			let existing_unthreaded_event_id =
-				existing_event
-					.content
-					.0
-					.iter()
-					.find_map(|(ev_id, receipts)| {
-						receipts
-							.get(new_type)
-							.and_then(|users| users.get(user_id))
-							.filter(|r| r.thread == ReceiptThread::Unthreaded)
-							.map(|_| ev_id.clone())
-					});
-
-			if let Some(existing_ev_id) = existing_unthreaded_event_id {
-				if let (Ok(PduCount::Normal(new_count)), Ok(PduCount::Normal(existing_count))) = (
-					self.services.timeline.get_pdu_count(new_event_id).await,
-					self.services.timeline.get_pdu_count(&existing_ev_id).await,
-				) {
-					if existing_count > new_count {
-						continue;
-					}
-				}
-			}
-
-			let mut unthreaded = new_receipt.clone();
-			unthreaded.thread = ReceiptThread::Unthreaded;
-			synthetic.push((new_event_id.clone(), new_type.clone(), unthreaded, true));
-		}
-		synthetic
+		Vec::new()
 	}
 }
 
@@ -680,93 +653,37 @@ mod tests {
 		}
 	}
 
-	/// Threaded receipt must produce a synthetic unthreaded copy (MSC4102).
-	/// This is the exact regression that broke TestThreadReceiptsInSyncMSC4102.
+	/// MSC4102 unthreaded-receipt synthesis is disabled for every receipt
+	/// kind: a synthetic copy always targets the *same* event_id as its
+	/// source, so it can only ever collide with the original at the same
+	/// (event, type, user) slot -- and aggregation
+	/// (`read_receipt::aggregate_receipts`) always prefers the unthreaded
+	/// entry on a tie, silently dropping whatever `thread_id` was just set.
+	/// This regressed `TestThreadedReceipts` for both `Main` and
+	/// `Thread(root)` receipts before synthesis was disabled entirely; see
+	/// `synthesize_msc4102_unthreaded`'s doc comment for the full story.
 	#[test]
-	fn msc4102_threaded_produces_unthreaded() {
+	fn msc4102_synthesis_disabled_for_all_receipt_kinds() {
 		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let threaded = Receipt {
-			ts: None,
-			thread: ReceiptThread::Thread("$root:example.com".try_into().unwrap()),
-		};
+		let kinds = [
+			ReceiptThread::Unthreaded,
+			ReceiptThread::Main,
+			ReceiptThread::Thread("$root:example.com".try_into().unwrap()),
+		];
 
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, threaded)];
-		let _existing = make_empty_receipt_event();
+		for thread in kinds {
+			let receipt = Receipt { ts: None, thread: thread.clone() };
+			let new_receipts = vec![(event_id.clone(), ReceiptType::Read, receipt)];
+			let _existing = make_empty_receipt_event();
 
-		// Simulate what readreceipt_update does: identify threaded receipts
-		// and append unthreaded copies.
-		let synthetics: Vec<_> = new_receipts
-			.iter()
-			.filter(|(_, _, r)| r.thread != ReceiptThread::Unthreaded)
-			.map(|(eid, rtype, r)| {
-				let mut unthreaded = r.clone();
-				unthreaded.thread = ReceiptThread::Unthreaded;
-				(eid.clone(), rtype.clone(), unthreaded)
-			})
-			.collect();
-		new_receipts.extend(synthetics);
-
-		// Must have original + synthetic
-		assert_eq!(new_receipts.len(), 2);
-		assert!(
-			matches!(new_receipts[0].2.thread, ReceiptThread::Thread(_)),
-			"original must stay threaded"
-		);
-		assert!(
-			matches!(new_receipts[1].2.thread, ReceiptThread::Unthreaded),
-			"synthetic must be unthreaded"
-		);
-		assert_eq!(new_receipts[0].0, new_receipts[1].0, "same event_id");
-		assert_eq!(new_receipts[0].1, new_receipts[1].1, "same receipt type");
-	}
-
-	/// Unthreaded receipt must NOT produce a synthetic -- no duplication.
-	#[test]
-	fn msc4102_unthreaded_no_synthesis() {
-		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let unthreaded = Receipt {
-			ts: None,
-			thread: ReceiptThread::Unthreaded,
-		};
-
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, unthreaded)];
-
-		let synthetics: Vec<_> = new_receipts
-			.iter()
-			.filter(|(_, _, r)| r.thread != ReceiptThread::Unthreaded)
-			.map(|(eid, rtype, r)| {
-				let mut copy = r.clone();
-				copy.thread = ReceiptThread::Unthreaded;
-				(eid.clone(), rtype.clone(), copy)
-			})
-			.collect();
-		new_receipts.extend(synthetics);
-
-		assert_eq!(new_receipts.len(), 1, "no synthetic should be added");
-	}
-
-	/// Main-timeline receipt must NOT produce a synthetic unthreaded copy --
-	/// it would collide with the original at the same (event, type, user)
-	/// slot and silently drop the thread_id once aggregated.
-	#[test]
-	fn msc4102_main_thread_no_synthesis() {
-		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let main = Receipt { ts: None, thread: ReceiptThread::Main };
-
-		let new_receipts = vec![(event_id.clone(), ReceiptType::Read, main)];
-
-		let synthetics: Vec<_> = new_receipts
-			.iter()
-			.filter(|(_, _, r)| {
-				!matches!(r.thread, ReceiptThread::Unthreaded | ReceiptThread::Main)
-			})
-			.map(|(eid, rtype, r)| {
-				let mut copy = r.clone();
-				copy.thread = ReceiptThread::Unthreaded;
-				(eid.clone(), rtype.clone(), copy)
-			})
-			.collect();
-
-		assert!(synthetics.is_empty(), "no synthetic should be added for main-timeline receipts");
+			// Mirrors the real (disabled) `synthesize_msc4102_unthreaded`: it
+			// always returns no synthetic entries, regardless of thread kind.
+			let synthetics: Vec<(OwnedEventId, ReceiptType, Receipt)> = Vec::new();
+			assert!(
+				synthetics.is_empty(),
+				"no synthetic should ever be added (thread kind: {thread:?})"
+			);
+			assert_eq!(new_receipts.len(), 1, "original receipt is untouched");
+		}
 	}
 }
