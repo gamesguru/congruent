@@ -8,6 +8,7 @@ pub mod extremities;
 mod heal;
 mod helpers;
 mod metadata;
+mod reachability;
 mod rebuild_state;
 mod redact;
 pub mod reindex;
@@ -41,6 +42,7 @@ pub use self::{
 	data::{PdusIterItem, TopoIterItem},
 	heal::{HealOptions, HealResult},
 	metadata::EventMetadata,
+	reachability::LiveReachability,
 	repair_unsigned::update_unsigned_prev_content,
 };
 use crate::{
