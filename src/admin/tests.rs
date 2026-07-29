@@ -309,6 +309,7 @@ fn strip_v12_create_removes() {
 
 struct TempDbGuard {
 	path: std::path::PathBuf,
+	_serial: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Drop for TempDbGuard {
@@ -319,12 +320,19 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 	use figment::providers::Format;
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
+	static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+		std::sync::OnceLock::new();
 	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let serial = TEST_SERIAL
+		.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+		.clone()
+		.lock_owned()
+		.await;
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{prefix}_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
 
-	let guard = TempDbGuard { path: db_path.clone() };
+	let guard = TempDbGuard { path: db_path.clone(), _serial: serial };
 
 	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
 		r#"
