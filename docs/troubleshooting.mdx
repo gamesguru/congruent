@@ -38,10 +38,20 @@ so you might want to delete the result afterwards!
 You can reinvite yourself to the admin room through the following methods:
 
 - Use the `--execute "users make_user_admin <username>"` Continuwuity binary
-argument once to invite yourslf to the admin room on startup
+argument once to invite yourself to the admin room on startup
 - Use the Continuwuity console/CLI to run the `users make_user_admin` command
 - Or specify the `emergency_password` config option to allow you to temporarily
 log into the server account (`@conduit`) from a web client
+
+### Running console commands without a TTY
+
+The admin console has two different entry modes:
+
+- `--attach` opens the interactive REPL and still needs a real TTY because it uses readline.
+- `--attach --execute "..."` runs one or more commands against a running server without opening the REPL.
+- `--execute "..."` on the main server binary runs commands during startup instead.
+
+If you only need a one-shot command in automation, prefer `--attach --execute` for a running server or `--execute` during startup.
 
 ## DNS issues
 
