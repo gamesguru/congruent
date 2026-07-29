@@ -624,7 +624,10 @@ impl Data {
 							.get(new_type)
 							.and_then(|users| users.get(user_id))
 							.filter(|r| {
-								matches!(r.thread, ReceiptThread::Unthreaded | ReceiptThread::Main)
+								matches!(
+									r.thread,
+									ReceiptThread::Unthreaded | ReceiptThread::Main
+								)
 							})
 							.map(|_| ev_id.clone())
 					});
