@@ -2,15 +2,17 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, PduCount, Result};
+use conduwuit::{Err, PduCount, Result, matrix::Event};
 use ruma::{
-	MilliSecondsSinceUnixEpoch,
+	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId,
 	api::client::{read_marker::set_read_marker, receipt::create_receipt},
 	events::{
 		RoomAccountDataEventType,
 		receipt::{ReceiptThread, ReceiptType},
+		relation::RelationType,
 	},
 };
+use serde::Deserialize;
 
 use crate::Ruma;
 
@@ -117,16 +119,8 @@ pub(crate) async fn create_receipt_route(
 	}
 
 	// MSC3771: event_id must belong to the thread the receipt targets.
-	//
-	// `thread_id=main` is the legacy-compatible fallback and should not be
-	// rejected just because the event participates in a thread chain; the
-	// explicit thread-root case below remains strict.
 	if matches!(&body.thread, ReceiptThread::Thread(_)) {
-		let resolved = services
-			.rooms
-			.threads
-			.get_thread_id_for_event(&body.event_id)
-			.await;
+		let resolved = thread_id_for_receipt_event(&services, &body.event_id).await;
 
 		let in_thread = match (&body.thread, resolved.as_deref()) {
 			| (ReceiptThread::Thread(root), Some(parent)) => &**root == parent,
@@ -191,11 +185,64 @@ pub(crate) async fn create_receipt_route(
 	Ok(create_receipt::v3::Response {})
 }
 
+#[derive(Deserialize)]
+struct ExtractThreadRelation {
+	#[serde(rename = "m.relates_to")]
+	relates_to: ThreadRelation,
+}
+
+#[derive(Deserialize)]
+struct ThreadRelation {
+	rel_type: RelationType,
+	event_id: OwnedEventId,
+}
+
+const MAX_THREAD_HOPS: usize = 3;
+
+async fn thread_id_for_receipt_event(
+	services: &crate::State,
+	event_id: &EventId,
+) -> Option<OwnedEventId> {
+	let mut current = event_id.to_owned();
+
+	for _ in 0..MAX_THREAD_HOPS {
+		let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
+		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
+			return event_has_thread_child(services, &current)
+				.await
+				.then_some(current);
+		};
+
+		if content.relates_to.rel_type == RelationType::Thread {
+			let root = content.relates_to.event_id;
+			return event_has_thread_child(services, &root)
+				.await
+				.then_some(root);
+		}
+
+		current = content.relates_to.event_id;
+	}
+
+	event_has_thread_child(services, &current)
+		.await
+		.then_some(current)
+}
+
+async fn event_has_thread_child(services: &crate::State, event_id: &EventId) -> bool {
+	services
+		.rooms
+		.pdu_metadata
+		.msc2836_get_children(event_id)
+		.await
+		.into_iter()
+		.any(|(_, rel_type)| rel_type == RelationType::Thread.as_str())
+}
+
 async fn update_read_receipt(
 	services: &crate::State,
 	sender_user: &ruma::UserId,
 	room_id: &ruma::RoomId,
-	event_id: &ruma::EventId,
+	event_id: &EventId,
 	thread: ReceiptThread,
 ) -> Result<()> {
 	// Spec: server SHOULD NOT allow read receipts to move backwards
@@ -281,7 +328,7 @@ async fn update_private_read_receipt(
 	services: &crate::State,
 	sender_user: &ruma::UserId,
 	room_id: &ruma::RoomId,
-	event_id: &ruma::EventId,
+	event_id: &EventId,
 	thread: ReceiptThread,
 ) -> Result<()> {
 	services
