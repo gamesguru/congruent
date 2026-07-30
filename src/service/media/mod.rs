@@ -18,6 +18,7 @@ use conduwuit::{
 	warn,
 };
 use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
+use sha2::Digest;
 use tokio::{
 	fs,
 	io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -99,6 +100,9 @@ impl Service {
 			.map_err(|e| {
 				err!(Database(error!("Failed to create media metadata for MXC {mxc}: {e}")))
 			})?;
+
+		let file_hash = <sha2::Sha256 as Digest>::digest(file);
+		self.db.mediaid_file.insert(&key, file_hash);
 
 		//TODO: Dangling metadata in database if creation fails
 		let mut f = self.create_media_file(&key).await.map_err(|e| {
@@ -348,20 +352,92 @@ impl Service {
 	}
 
 	async fn remove_media_file(&self, key: &[u8]) -> Result<()> {
-		let path = self.get_media_file(key);
-		let legacy = self.get_media_file_b64(key);
-		debug!(?key, ?path, ?legacy, "Removing media file");
+		let mut path_to_remove = None;
 
-		let file_rm = fs::remove_file(&path);
-		let legacy_rm = fs::remove_file(&legacy);
-		let (file_rm, legacy_rm) = tokio::join!(file_rm, legacy_rm);
-		if let Err(e) = legacy_rm {
-			if self.services.server.config.media_compat_file_link {
-				debug_error!(?key, ?legacy, "Failed to remove legacy media symlink: {e}");
+		if let Ok(hash) = self.db.mediaid_file.get_blocking(key) {
+			if !hash.as_ref().is_empty() {
+				let count = self.count_file_hash_references(hash.as_ref()).await;
+				// If we are the only reference (the metadata entry we are deleting is still in
+				// the db), then count will be 1 (ourselves). If count is <= 1, we can
+				// delete the file!
+				if count <= 1 {
+					let mut r = self.get_media_dir();
+					let encoded = encode_key(hash.as_ref());
+					r.push(encoded);
+					path_to_remove = Some(r);
+				}
 			}
 		}
 
-		Ok(file_rm?)
+		if path_to_remove.is_none() {
+			// If it has no content hash stored, it might be in the old key-hashed or legacy
+			// format. Since old formats were key-hashed, there is no deduplication for
+			// them, so they are always safe to delete!
+			let path_new = self.get_media_file_sha256(key);
+			let path_old = self.get_media_file_sha256_old(key);
+			let legacy = self.get_media_file_b64(key);
+			debug!(?key, ?path_new, ?path_old, ?legacy, "Removing media file");
+
+			let file_new_rm = fs::remove_file(&path_new);
+			let file_old_rm = fs::remove_file(&path_old);
+			let legacy_rm = fs::remove_file(&legacy);
+			let (file_new_rm, file_old_rm, legacy_rm) =
+				tokio::join!(file_new_rm, file_old_rm, legacy_rm);
+			if let Err(e) = legacy_rm {
+				if self.services.server.config.media_compat_file_link {
+					debug_error!(?key, ?legacy, "Failed to remove legacy media symlink: {e}");
+				}
+			}
+
+			let res = file_new_rm.or(file_old_rm).or_else(|e| {
+				if e.kind() == std::io::ErrorKind::NotFound {
+					Ok(())
+				} else {
+					Err(e)
+				}
+			});
+
+			return Ok(res?);
+		}
+
+		if let Some(path) = path_to_remove {
+			let legacy = self.get_media_file_b64(key);
+			debug!(?key, ?path, ?legacy, "Removing content-addressed media file");
+
+			let file_rm = fs::remove_file(&path);
+			let legacy_rm = fs::remove_file(&legacy);
+			let (file_rm, legacy_rm) = tokio::join!(file_rm, legacy_rm);
+			if let Err(e) = legacy_rm {
+				if self.services.server.config.media_compat_file_link {
+					debug_error!(?key, ?legacy, "Failed to remove legacy media symlink: {e}");
+				}
+			}
+
+			let res = file_rm.or_else(|e| {
+				if e.kind() == std::io::ErrorKind::NotFound {
+					Ok(())
+				} else {
+					Err(e)
+				}
+			});
+
+			return Ok(res?);
+		}
+
+		Ok(())
+	}
+
+	async fn count_file_hash_references(&self, hash: &[u8]) -> usize {
+		let mut count: usize = 0;
+		let keys = self.db.get_all_media_keys().await;
+		for key in keys {
+			if let Ok(h) = self.db.mediaid_file.get_blocking(&key) {
+				if &*h == hash {
+					count = count.saturating_add(1);
+				}
+			}
+		}
+		count
 	}
 
 	async fn create_media_file(&self, key: &[u8]) -> Result<fs::File> {
@@ -397,17 +473,55 @@ impl Service {
 
 	#[inline]
 	#[must_use]
-	pub fn get_media_file(&self, key: &[u8]) -> PathBuf { self.get_media_file_sha256(key) }
+	pub fn get_media_file(&self, key: &[u8]) -> PathBuf {
+		if let Ok(hash) = self.db.mediaid_file.get_blocking(key) {
+			if !hash.as_ref().is_empty() {
+				let mut r = self.get_media_dir();
+				let encoded = encode_key(hash.as_ref());
+				r.push(encoded);
+				return r;
+			}
+		}
+
+		let new_path = self.get_media_file_sha256(key);
+		if new_path.exists() {
+			new_path
+		} else {
+			let old_path = self.get_media_file_sha256_old(key);
+			if old_path.exists() { old_path } else { new_path }
+		}
+	}
 
 	/// new SHA256 file name media function. requires database migrated. uses
-	/// SHA256 hash of the base64 key as the file name
+	/// SHA256 hash of the (mxc, dim) key parts as the file name to prevent
+	/// duplicate files with different content disposition / content type.
 	#[must_use]
 	pub fn get_media_file_sha256(&self, key: &[u8]) -> PathBuf {
 		let mut r = self.get_media_dir();
-		// Using the hash of the base64 key as the filename
-		// This is to prevent the total length of the path from exceeding the maximum
-		// length in most filesystems
-		let digest = <sha2::Sha256 as sha2::Digest>::digest(key);
+
+		// Split the key by 0xFF to get the parts.
+		// A key is (mxc, dim, content_disposition, content_type).
+		// We only want to use (mxc, dim) for the filename to prevent duplicates.
+		let mut parts = key.split(|&b| b == 0xFF);
+		let mxc = parts.next().unwrap_or_default();
+		let dim = parts.next().unwrap_or_default();
+
+		let mut hasher = sha2::Sha256::new();
+		hasher.update(mxc);
+		hasher.update([0xFF]);
+		hasher.update(dim);
+		let digest = hasher.finalize();
+
+		let encoded = encode_key(&digest);
+		r.push(encoded);
+		r
+	}
+
+	/// old SHA256 file name media function using the full key.
+	#[must_use]
+	pub fn get_media_file_sha256_old(&self, key: &[u8]) -> PathBuf {
+		let mut r = self.get_media_dir();
+		let digest = <sha2::Sha256 as Digest>::digest(key);
 		let encoded = encode_key(&digest);
 		r.push(encoded);
 		r

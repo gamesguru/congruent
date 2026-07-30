@@ -11,7 +11,7 @@ use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
 use super::{preview::UrlPreviewData, thumbnail::Dim};
 
 pub(crate) struct Data {
-	mediaid_file: Arc<Map>,
+	pub(super) mediaid_file: Arc<Map>,
 	mediaid_user: Arc<Map>,
 	url_previews: Arc<Map>,
 }

@@ -237,3 +237,54 @@ mod url_and_opengraph_parsing_tests {
 		assert_eq!(result.image_height, Some(1080));
 	}
 }
+
+#[cfg(test)]
+mod cas_media_tests {
+	use sha2::Digest;
+
+	#[test]
+	fn test_get_media_file_sha256_ignores_disposition_and_type() {
+		// Construct simulated serialized keys with different dispositions and content
+		// types but identical MXC and dimensions.
+		let mut key1 = b"mxc://example.com/media1".to_vec();
+		key1.push(0xFF);
+		key1.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // dimensions [0, 0]
+		key1.push(0xFF);
+		key1.extend_from_slice(b"attachment; filename=\"first.jpg\"");
+		key1.push(0xFF);
+		key1.extend_from_slice(b"image/jpeg");
+
+		let mut key2 = b"mxc://example.com/media1".to_vec();
+		key2.push(0xFF);
+		key2.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // dimensions [0, 0]
+		key2.push(0xFF);
+		key2.extend_from_slice(b"inline; filename=\"second.png\"");
+		key2.push(0xFF);
+		key2.extend_from_slice(b"image/png");
+
+		// Extract the (mxc, dim) parts from key1
+		let mut parts1 = key1.split(|&b| b == 0xFF);
+		let mxc1 = parts1.next().unwrap_or_default();
+		let dim1 = parts1.next().unwrap_or_default();
+
+		let mut hasher1 = sha2::Sha256::new();
+		hasher1.update(mxc1);
+		hasher1.update(&[0xFF]);
+		hasher1.update(dim1);
+		let digest1 = hasher1.finalize();
+
+		// Extract the (mxc, dim) parts from key2
+		let mut parts2 = key2.split(|&b| b == 0xFF);
+		let mxc2 = parts2.next().unwrap_or_default();
+		let dim2 = parts2.next().unwrap_or_default();
+
+		let mut hasher2 = sha2::Sha256::new();
+		hasher2.update(mxc2);
+		hasher2.update(&[0xFF]);
+		hasher2.update(dim2);
+		let digest2 = hasher2.finalize();
+
+		// The digests must be identical!
+		assert_eq!(digest1, digest2);
+	}
+}
