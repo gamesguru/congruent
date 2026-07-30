@@ -76,8 +76,29 @@ impl Manager {
 	pub(super) async fn stop(&self) {
 		if let Some(manager) = self.manager.lock().await.take() {
 			debug!("Waiting for service manager...");
-			if let Err(e) = manager.await {
-				error!("Manager shutdown error: {e:?}");
+
+			// Workers already implement graceful shutdown via interrupt()
+			// (channel close) and their own internal drain timeouts (e.g.
+			// sender_shutdown_timeout). We must NOT hard-abort them or we
+			// lose in-flight transactions. A generous safety-net timeout
+			// guards against workers that never exit; on expiry we warn
+			// and let the caller proceed to drop Services and force-flush.
+			match tokio::time::timeout(Duration::from_secs(30), manager).await {
+				| Ok(Ok(Ok(()))) => {
+					info!("All workers shut down gracefully.");
+				},
+				| Ok(Ok(Err(e))) => {
+					error!("Manager shutdown error: {e:?}");
+				},
+				| Ok(Err(e)) => {
+					error!("Manager task error: {e:?}");
+				},
+				| Err(_) => {
+					warn!(
+						"Shutdown safety timeout reached; some workers may still be running. \
+						 Proceeding with database flush."
+					);
+				},
 			}
 		}
 	}

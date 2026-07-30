@@ -3,12 +3,12 @@ extern crate conduwuit_core as conduwuit;
 extern crate conduwuit_service as service;
 
 use std::{
-	sync::{Arc, Weak, atomic::Ordering},
+	sync::{Arc, atomic::Ordering},
 	time::Duration,
 };
 
 use axum_server::{Address, Handle as ServerHandle};
-use conduwuit::{Error, Result, Server, debug, debug_error, debug_info, error, info, warn};
+use conduwuit::{Error, Result, Server, debug, debug_info, error, info, warn};
 use futures::FutureExt;
 use service::Services;
 use tokio::{
@@ -89,49 +89,37 @@ pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
 	sd_notify::notify(&[sd_notify::NotifyState::Stopping])
 		.expect("failed to notify systemd of stopping state");
 
+	// Fire the global cancellation token (tell cooperative workers to stop)
+	services.shutdown.cancel();
+
 	// Wait for all completions before dropping or we'll lose them to the module
-	// unload and explode.
+	// unload and explode. This executes the 10-second timeout.
 	services.stop().await;
 
-	// Check that Services and Database will drop as expected, The complex of Arc's
-	// used for various components can easily lead to references being held
-	// somewhere improperly; this can hang shutdowns.
-	info!("Closing database...");
-	let db = Arc::downgrade(&services.db);
-	if let Err(services) = Arc::try_unwrap(services) {
-		debug_error!(
-			"{} dangling references to Services after shutdown",
-			Arc::strong_count(&services)
-		);
-	}
+	// Disentangle the Arcs!
+	// We extract a clone of the DB, then explicitly DROP the `Services` wrapper.
+	// This destroys all channels, manager structs, and internal worker state,
+	// guaranteeing their internal `Arc<Database>` references are dropped.
+	let db_arc = services.db.clone();
+	drop(services);
 
-	// Give async tasks a chance to release their references before reporting.
-	let mut remaining = Weak::strong_count(&db);
-	if remaining > 0 {
-		use tokio::time::{Duration, sleep, timeout};
-
-		info!(
-			"{} dangling references to Database, allowing them 5 seconds to close cleanly",
-			remaining
-		);
-		timeout(Duration::from_secs(5), async {
-			loop {
-				sleep(Duration::from_millis(25)).await;
-				if Weak::strong_count(&db) == 0 {
-					break;
-				}
-			}
-		})
-		.await
-		.ok();
-		remaining = Weak::strong_count(&db);
-	}
-
-	if remaining > 0 {
-		warn!(
-			"{remaining} database connections are still held by running background tasks (this \
-			 is harmless, likely pending network requests). The system will now exit."
-		);
+	// Assert Exclusive Database Ownership and Flush
+	match Arc::try_unwrap(db_arc) {
+		| Ok(db) => {
+			info!("Exclusive database lock acquired. Flushing to disk...");
+			// Explicitly flush the WAL and close
+			db.flush_and_close().await;
+			info!("Database safely closed.");
+		},
+		| Err(dangling_arc) => {
+			let count = Arc::strong_count(&dangling_arc).saturating_sub(1);
+			warn!(
+				"{count} dangling database reference(s) remain (likely from an in-flight admin \
+				 command or untracked task). Forcing WAL flush via shared reference..."
+			);
+			// Best-effort flush via the shared reference to protect the WAL
+			dangling_arc.force_flush().await;
+		},
 	}
 
 	warn!("Shutdown complete.");

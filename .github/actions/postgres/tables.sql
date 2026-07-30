@@ -157,6 +157,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ever_passed_unique_test_rv ON ever_passed 
 CREATE INDEX IF NOT EXISTS idx_run_details_run_id ON run_details (run_id);
 
 CREATE INDEX IF NOT EXISTS idx_runs_commit_hash ON runs (commit_hash);
+CREATE INDEX IF NOT EXISTS idx_run_details_test_run_status ON run_details (test_name, run_id, status);
+CREATE INDEX IF NOT EXISTS idx_runs_branch_date ON runs (branch, run_date DESC);
 
 -- Combine Regressions View: compares each individual run against the UNION of "best"
 -- statuses (pass > skip > fail) seen across every arch's most recent 'main' run for the
