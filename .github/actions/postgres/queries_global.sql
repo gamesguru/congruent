@@ -21,11 +21,9 @@ run_agg AS (
         COUNT(*) AS run_total,
         COUNT(*) FILTER (WHERE rd.status = 'pass'
             AND ep.test_name IS NULL) AS new_pass,
-        COUNT(*) FILTER (WHERE rd.status = 'fail'
-            AND ep.test_name IS NOT NULL) AS new_fail,
+        COUNT(*) FILTER (WHERE rd.status = 'fail') AS new_fail,
         COUNT(*) FILTER (WHERE rd.status = 'skip') AS new_skip,
-        STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail'
-            AND ep.test_name IS NOT NULL) AS new_failures_list,
+        STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail') AS failures_list,
         STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'pass'
             AND ep.test_name IS NULL) AS new_passes_list,
         STRING_AGG(COALESCE(ep.last_passed, 'never'), E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail'

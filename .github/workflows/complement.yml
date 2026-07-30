@@ -231,7 +231,8 @@ jobs:
           SKIP=$(jq -s '[.[] | select(.Action == "skip")] | length' "$RESULTS")
           TOTAL=$((PASS + FAIL + SKIP))
           FAILED_TESTS=$(jq -r 'select(.Action == "fail") | .Test' "$RESULTS" \
-            | sort -u)
+            | sort -u \
+            | head -n 5)
 
           echo "pass=$PASS" | tee -a "$GITHUB_OUTPUT"
           echo "fail=$FAIL" | tee -a "$GITHUB_OUTPUT"
@@ -247,7 +248,6 @@ jobs:
           echo "| ✓ Pass | $PASS |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ✗ Fail | $FAIL |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ⌒ Skip | $SKIP |" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "| **Total** | **$TOTAL** |" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Get conduwuit version
         id: version
@@ -359,8 +359,8 @@ jobs:
           fi
           python3 .github/actions/postgres/ci-query-failures.py
 
-      - name: Get newly failing tests
-        id: new_failures
+      - name: Get failing tests
+        id: failures
         if: always()
         continue-on-error: true
         env:
@@ -377,7 +377,7 @@ jobs:
           ROOM_VERSION="${{ matrix.room_version }}"
           FEATURES="${{ env.FEATURES }}"
 
-          # Fetch the newly failing and passing tests for this specific run.
+          # Fetch the failing tests for this specific run.
           # Keep this query branch-local instead of depending on v_run_regressions,
           # because that shared view may be managed by another branch.
           COMMON_CTES="
@@ -393,78 +393,25 @@ jobs:
                 AND EXISTS (SELECT 1 FROM run_details rd WHERE rd.run_id = r.id)
               ORDER BY r.run_date DESC, r.id DESC
               LIMIT 1
-            ),
-            baseline_selection AS (
-              SELECT DISTINCT ON (arch, os)
-                id,
-                os
-              FROM runs
-              WHERE (branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
-                OR version_string LIKE '%main%')
-              ORDER BY
-                arch,
-                os,
-                run_date DESC,
-                id DESC
-            ),
-            baseline_status AS (
-              SELECT
-                bsel.os,
-                rd.test_name,
-                bool_or(rd.status = 'pass') AS any_pass,
-                bool_or(rd.status = 'skip') AS any_skip
-              FROM baseline_selection bsel
-              JOIN run_details rd ON rd.run_id = bsel.id
-              GROUP BY
-                bsel.os,
-                rd.test_name
             )"
-          NEW_FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
+          FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
             SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
             FROM current_run r
             JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
             WHERE rd.status = 'fail'
-              AND bs.test_name IS NOT NULL
-              AND (bs.any_pass OR bs.any_skip);" | sed 's/\\n/\n/g')
-          NEW_PASSES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
-            SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
-            FROM current_run r
-            JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
-            WHERE rd.status = 'pass'
-              AND bs.test_name IS NOT NULL
-              AND NOT bs.any_pass;" | sed 's/\\n/\n/g')
-
-
-          echo "new_failures<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_FAILURES" | tee -a "$GITHUB_OUTPUT"
+          " | sed 's/\\n/\n/g')
+          echo "failures<<EOF" | tee -a "$GITHUB_OUTPUT"
+          echo "$FAILURES" | tee -a "$GITHUB_OUTPUT"
           echo "EOF" | tee -a "$GITHUB_OUTPUT"
 
-          echo "new_passes<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_PASSES" | tee -a "$GITHUB_OUTPUT"
-          echo "EOF" | tee -a "$GITHUB_OUTPUT"
-
-          # Count non-empty lines of new failures
-          NEW_FAILURES_COUNT=$(echo "$NEW_FAILURES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_FAILURES_COUNT" -gt 0 ]; then
+          # Count non-empty lines of failures
+          FAILURES_COUNT=$(echo "$FAILURES" | grep -c '[^[:space:]]' || true)
+          if [ "$FAILURES_COUNT" -gt 0 ]; then
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Failed Tests ($NEW_FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Failed Tests (top 5 of $FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Count non-empty lines of new passes
-          NEW_PASSES_COUNT=$(echo "$NEW_PASSES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_PASSES_COUNT" -gt 0 ]; then
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Passed Tests ($NEW_PASSES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_PASSES" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "$FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
@@ -473,8 +420,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         env:
-          FAILED_TESTS: ${{ steps.new_failures.outputs.new_failures }}
-          PASSED_TESTS: ${{ steps.new_failures.outputs.new_passes }}
+          FAILED_TESTS: ${{ steps.failures.outputs.failures }}
         with:
           script: |
             const pass = ${{ steps.results.outputs.pass || 0 }};
@@ -485,16 +431,11 @@ jobs:
             const os = '${{ matrix.os }}';
             const roomVersion = '${{ matrix.room_version }}';
             const failedTestsRaw = process.env.FAILED_TESTS || '';
-            const passedTestsRaw = process.env.PASSED_TESTS || '';
 
-            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0);
-            let failedContent = 'No newly failing tests recorded.';
-            if (lines.length > 0) {
-              const list = lines.join('\n');
-              failedContent = '```\n' + list + '\n```';
-            }
-
-            const passedLines = passedTestsRaw.trim().split('\n').filter(l => l.length > 0);
+            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0).slice(0, 5);
+            const failedContent = lines.length > 0
+              ? '```\n' + lines.join('\n') + '\n```'
+              : 'No failures recorded.';
 
             const currentRunLines = [
               `## Complement Test Results (${arch} ${os} v${roomVersion})`,
@@ -506,26 +447,13 @@ jobs:
               `| ✓ Pass | ${pass} |`,
               `| ✗ Fail | ${fail} |`,
               `| ⌒ Skip | ${skip} |`,
-              `| **Total** | **${total}** |`,
               '',
-              `<details><summary>Newly Failed Tests (${lines.length})</summary>`,
+              `<details><summary>Failed Tests (top ${lines.length} of ${fail})</summary>`,
               '',
               failedContent,
               '',
               '</details>',
             ];
-
-            if (passedLines.length > 0) {
-              const passedContent = '```\n' + passedLines.join('\n') + '\n```';
-              currentRunLines.push(
-                '',
-                `<details><summary>Newly Passed Tests (${passedLines.length})</summary>`,
-                '',
-                passedContent,
-                '',
-                '</details>'
-              );
-            }
 
             let currentRun = currentRunLines.join('\n');
 

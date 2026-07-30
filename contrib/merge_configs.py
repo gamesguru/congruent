@@ -91,11 +91,7 @@ def _merge_bypass_lists(content_a, content_b, file_a, file_b):
     merged = ordered_union(ids_a, ids_b)
 
     print("── bypassed_signature_events ──")
-    print(
-        f"  A: {len(ids_a)} unique"
-        f" | B: {len(ids_b)} unique"
-        f" | Union: {len(merged)}"
-    )
+    print(f"  A: {len(ids_a)} unique | B: {len(ids_b)} unique | Union: {len(merged)}")
     for label, items in (("A", only_a), ("B", only_b)):
         if items:
             print(f"  Only in {label} ({len(items)}):")

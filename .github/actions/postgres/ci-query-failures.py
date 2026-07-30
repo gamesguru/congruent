@@ -17,6 +17,7 @@ def sql_quote(value):
     """Escape a value for safe embedding inside a single-quoted SQL string literal."""
     return value.replace("'", "''")
 
+
 args_str = " ".join(sys.argv[1:])
 
 # Get the local machine's timezone offset (e.g. "-04:00") to send to Postgres over SSH
@@ -55,7 +56,12 @@ if baseline_match:
 
 # Extract --super flag (superscore: best-ever per test across all branches)
 # --verbose is kept as backward-compat alias
-super_mode = "--super" in args_str or "-s" in args_str.split() or "--verbose" in args_str or "-v" in args_str.split()
+super_mode = (
+    "--super" in args_str
+    or "-s" in args_str.split()
+    or "--verbose" in args_str
+    or "-v" in args_str.split()
+)
 for flag in ("--super", "--verbose"):
     args_str = args_str.replace(flag, "")
 args_str = re.sub(r"\s-[sv]\s", " ", f" {args_str} ").strip()
@@ -79,7 +85,7 @@ if order_match:
     order = order_match.group(1).strip()
 
 # Build columns_tail based on flags
-cols = ["new_failures_list"]
+cols = ["failures_list"]
 if super_mode:
     cols.extend(["date_last_passed", "branches_passed_on"])
 if new_passes:

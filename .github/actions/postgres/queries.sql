@@ -90,18 +90,12 @@ run_agg AS (
             AND (mb.baseline_run_id IS NOT NULL
             AND (bd.status IS NULL
             OR bd.status != 'pass'))) AS new_pass,
-COUNT(*) FILTER (WHERE rd.status = 'fail'
-    AND (mb.baseline_run_id IS NOT NULL
-    AND (bd.status IS NULL
-    OR bd.status != 'fail'))) AS new_fail,
+COUNT(*) FILTER (WHERE rd.status = 'fail') AS new_fail,
 COUNT(*) FILTER (WHERE rd.status = 'skip'
     AND (mb.baseline_run_id IS NOT NULL
     AND (bd.status IS NULL
     OR bd.status != 'skip'))) AS new_skip,
-STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail'
-    AND (mb.baseline_run_id IS NOT NULL
-    AND (bd.status IS NULL
-    OR bd.status != 'fail'))) AS new_failures_list,
+STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail') AS failures_list,
 STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'pass'
     AND (mb.baseline_run_id IS NOT NULL
     AND (bd.status IS NULL

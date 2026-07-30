@@ -68,8 +68,8 @@ SELECT
 FROM
     ever_passed;
 
--- Global regression view: a test is a "new failure" if it fails now
--- AND has ever passed in any prior run (regardless of room_version).
+-- Global run-detail view: new_pass counts tests passing for the first time
+-- ever (regardless of room_version); new_fail counts all current fails.
 CREATE OR REPLACE VIEW v_run_regressions AS
 SELECT
     r.id,
@@ -96,11 +96,9 @@ FROM
             COUNT(*) AS run_total,
             COUNT(*) FILTER (WHERE rd.status = 'pass'
                     AND ep.test_name IS NULL) AS new_pass,
-                COUNT(*) FILTER (WHERE rd.status = 'fail'
-                    AND ep.test_name IS NOT NULL) AS new_fail,
+                COUNT(*) FILTER (WHERE rd.status = 'fail') AS new_fail,
                 COUNT(*) FILTER (WHERE rd.status = 'skip') AS new_skip,
-                STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail'
-                    AND ep.test_name IS NOT NULL) AS new_failures_list,
+                STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'fail') AS failures_list,
                 STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name) FILTER (WHERE rd.status = 'pass'
                     AND ep.test_name IS NULL) AS new_passes_list
             FROM
