@@ -820,11 +820,40 @@ impl Service {
 				break;
 			}
 			if self.services.globals.user_is_local(&user_id) {
-				collected.push((user_id, count, read_receipt.json().get().to_owned()));
+				let Ok(event) =
+					serde_json::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.json().get())
+				else {
+					continue;
+				};
+				let AnySyncEphemeralRoomEvent::Receipt(receipt) = event else {
+					continue;
+				};
+				let Some((event_id, _)) = receipt.content.0.iter().next() else {
+					continue;
+				};
+				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
+					continue;
+				};
+				collected.push((
+					user_id,
+					count,
+					read_receipt.json().get().to_owned(),
+					event_count,
+				));
 			}
 		}
 
-		build_receipt_map(collected, since, SELECT_RECEIPT_LIMIT, num)
+		collected.sort_by_key(|(_, stream_count, _, event_count)| (*event_count, *stream_count));
+
+		build_receipt_map(
+			collected
+				.into_iter()
+				.map(|(user_id, count, read_receipt_json, _)| (user_id, count, read_receipt_json))
+				.collect(),
+			since,
+			SELECT_RECEIPT_LIMIT,
+			num,
+		)
 	}
 
 	/// Look for presence
@@ -1402,7 +1431,7 @@ pub(crate) fn build_receipt_map(
 
 	for (user_id, count, read_receipt_json) in receipts {
 		if count > since.1 {
-			break;
+			continue;
 		}
 
 		let Ok(event) = serde_json::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
@@ -1715,5 +1744,49 @@ mod tests {
 		let data = &map.read[&user_id];
 		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+	}
+
+	#[test]
+	fn test_build_receipt_map_out_of_order_count_does_not_skip_in_range_receipt() {
+		let mut receipts = Vec::new();
+		let user_id = user_id!("@alice:example.com").to_owned();
+
+		// An out-of-order receipt with a higher stream count comes first.
+		let json_late = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 10000
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 30, json_late.to_string()));
+
+		// The in-range receipt should still be considered even though it appears later.
+		let json_in_range = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event2": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 12345
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 12, json_in_range.to_string()));
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		let map = build_receipt_map(receipts, since, 100, &num);
+
+		assert_eq!(map.read.len(), 1);
+		assert_eq!(num.load(Ordering::Relaxed), 1);
+		assert_eq!(map.read[&user_id].event_ids, vec!["$event2".to_owned()]);
 	}
 }
