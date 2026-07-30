@@ -37,6 +37,7 @@ use ruma::{
 };
 use tracing::warn;
 
+use super::sync::add_membership_to_unsigned;
 use crate::Ruma;
 
 /// list of safe and common non-state events to ignore if the user is ignored
@@ -87,6 +88,17 @@ pub(crate) async fn get_message_events_route(
 
 	if !services.rooms.metadata.exists(room_id).await {
 		return Err!(Request(Forbidden("Room does not exist to this server")));
+	}
+
+	// Check access before parsing pagination tokens — an unauthorized user
+	// should get 403 Forbidden, not a parse error from a stale token.
+	if !services
+		.rooms
+		.state_accessor
+		.user_can_see_state_events(sender_user, room_id)
+		.await
+	{
+		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
 
 	let from: PduCount = body
@@ -142,6 +154,7 @@ pub(crate) async fn get_message_events_route(
 		.take(limit)
 		.then(async |mut pdu| {
 			pdu.1.set_unsigned(Some(sender_user));
+			add_membership_to_unsigned(&services, sender_user, &mut pdu.1).await;
 			if let Err(e) = services
 				.rooms
 				.pdu_metadata

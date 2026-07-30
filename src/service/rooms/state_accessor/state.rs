@@ -53,6 +53,32 @@ pub async fn user_membership(
 		.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
 }
 
+/// Get a user's membership at the point in time when a specific event was
+/// created.
+///
+/// Looks up the event's state snapshot via `pdu_shortstatehash`, then
+/// queries the membership from that snapshot. Falls back to the current
+/// membership from `state_cache` when no snapshot is available (e.g.
+/// backfilled events without state).
+#[implement(super::Service)]
+pub async fn user_membership_at_event(
+	&self,
+	event_id: &EventId,
+	room_id: &ruma::RoomId,
+	user_id: &UserId,
+) -> MembershipState {
+	if let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await {
+		self.user_membership(shortstatehash, user_id).await
+	} else {
+		// No state snapshot... fall back to current membership
+		self.services
+			.state_cache
+			.user_membership(user_id, room_id)
+			.await
+			.unwrap_or(MembershipState::Leave)
+	}
+}
+
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
 #[implement(super::Service)]
 pub async fn state_get_content<T>(

@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use conduwuit::{
 	Event, PduCount, Result, debug_warn, err,
 	matrix::pdu::PduEvent,
+	result::LogErr,
 	trace,
 	utils::stream::{BroadbandExt, ReadyExt, TryIgnore},
 };
@@ -92,6 +93,7 @@ async fn load_timeline(
 					pdu
 				})
 				.then(async move |mut pdu| {
+					add_membership_to_unsigned(services, sender_user, &mut pdu.1).await;
 					if let Err(e) = services
 						.rooms
 						.pdu_metadata
@@ -117,6 +119,7 @@ async fn load_timeline(
 					pdu
 				})
 				.then(async move |mut pdu| {
+					add_membership_to_unsigned(services, sender_user, &mut pdu.1).await;
 					if let Err(e) = services
 						.rooms
 						.pdu_metadata
@@ -253,4 +256,26 @@ async fn shares_a_room(
 		.get_shared_rooms(sender_user, user_id)
 		.ready_any(|room_id| Some(room_id) != ignore_room)
 		.await
+}
+
+/// Look up the requesting user's membership at the event's state snapshot
+/// and set `unsigned.membership` accordingly. Mirrors the pattern used by
+/// `repair_unsigned` (delegates to `user_membership_at_event` on the
+/// state_accessor service).
+pub(crate) async fn add_membership_to_unsigned(
+	services: &Services,
+	user_id: &UserId,
+	pdu: &mut PduEvent,
+) {
+	let Some(room_id) = pdu.room_id_or_hash() else {
+		return;
+	};
+
+	let membership = services
+		.rooms
+		.state_accessor
+		.user_membership_at_event(pdu.event_id(), &room_id, user_id)
+		.await;
+
+	pdu.set_membership(membership.as_str()).log_err().ok();
 }

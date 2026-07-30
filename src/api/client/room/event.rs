@@ -3,7 +3,10 @@ use conduwuit::{Err, Event, Result, debug_warn, err};
 use futures::{FutureExt, TryFutureExt, future::try_join};
 use ruma::api::client::room::get_room_event;
 
-use crate::{Ruma, client::is_ignored_pdu};
+use crate::{
+	Ruma,
+	client::{is_ignored_pdu, sync::add_membership_to_unsigned},
+};
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/event/{eventId}`
 ///
@@ -43,6 +46,9 @@ pub(crate) async fn get_room_event_route(
 	}
 
 	event.set_unsigned(body.sender_user.as_deref());
+	if let Some(sender_user) = body.sender_user.as_deref() {
+		add_membership_to_unsigned(services, sender_user, &mut event).await;
+	}
 
 	Ok(get_room_event::v3::Response { event: event.into_format() })
 }
