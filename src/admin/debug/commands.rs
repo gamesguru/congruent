@@ -1026,6 +1026,7 @@ pub(crate) async fn force_set_state(
 			.set_forward_extremities(
 				room_id.as_ref(),
 				once(tip_pdu.event_id().to_owned()),
+				None,
 				&state_lock,
 			)
 			.await;
@@ -1684,7 +1685,7 @@ async fn promote_sync_anchor(
 				self.services
 					.rooms
 					.state
-					.set_forward_extremities(room_id, once(anchor_id.clone()), state_lock)
+					.set_forward_extremities(room_id, once(anchor_id.clone()), None, state_lock)
 					.await;
 				info!("Promoted {anchor_id} as timeline anchor for /sync");
 			},

@@ -1,0 +1,24 @@
+###############################
+07/31/2026
+###############################
+
+❯ do get-remote-dag, compare-room-state, or other commands actually call `/state` or rather `/state_ids` for efficiency?
+
+Good, that was transient — the loop itself is fine; I'll continue the baseline dump in a moment. First, let me check your question directly in the code.
+
+  Ran 7 shell commands
+
+Answered directly from the code:
+
+compare-room-state (src/admin/yolo/state.rs:23, compare_room_state) uses the full /state endpoint (get_room_state::v1::Request), not /state_ids. It fetches complete PDU JSON for every state event in the room from the remote — not just event IDs.
+
+get-remote-dag (src/admin/yolo/dag.rs:360) uses neither. It doesn't fetch room state snapshots at all — it crawls via /event/{eventId} (get_event::v1) and /get_missing_events, walking prev_events directly to reconstruct the DAG.
+
+Interesting side finding: there is a fetch_state_ids helper (src/admin/yolo/federation.rs:382) that correctly wraps the efficient /state_ids endpoint (get_room_state_ids::v1::Request) — but it's dead code. I grepped the whole codebase and nothing calls it; it's defined and never used.
+
+So the honest answer: compare-room-state is doing more work than it needs to for a comparison — if the command only needs to diff which state event IDs differ between local and remote (rather than needing full content immediately), it should be using /state_ids first, then only fetching full PDUs for the IDs that actually differ. Want me to check compare_room_state's body to see whether it actually needs the full PDU content up front (in which case /state is justified) or whether it's just diffing IDs (in which case switching to the existing-but-unused fetch_state_ids would be a real, low-risk efficiency win)?
+
+✻ Worked for 3m 55s
+
+※ recap: Investigating stuck federation rooms on wombatx and fixing the outlier-extremity bug (patch committed, tests passing). Now verifying the fix actually reduces extremity counts on real sick rooms in the local DB copy before moving to the next patch.
+

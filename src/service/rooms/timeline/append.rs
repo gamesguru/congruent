@@ -241,7 +241,7 @@ where
 	trace!("setting forward extremities");
 	self.services
 		.state
-		.set_forward_extremities(room_id, leaves, state_lock)
+		.set_forward_extremities(room_id, leaves, Some(pdu.event_id()), state_lock)
 		.await;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;

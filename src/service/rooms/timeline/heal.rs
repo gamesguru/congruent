@@ -329,7 +329,12 @@ pub async fn heal_room(
 	if !true_extremities.is_empty() {
 		self.services
 			.state
-			.set_forward_extremities(room_id, true_extremities.clone().into_iter(), &state_lock)
+			.set_forward_extremities(
+				room_id,
+				true_extremities.clone().into_iter(),
+				None,
+				&state_lock,
+			)
 			.await;
 
 		info!("heal_room: set forward extremities to {} true DAG tips", true_extremities.len());

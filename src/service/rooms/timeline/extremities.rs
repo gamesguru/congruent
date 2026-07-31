@@ -423,7 +423,12 @@ impl Service {
 		if update_db {
 			self.services
 				.state
-				.set_forward_extremities(room_id, final_extremities.into_iter(), &state_lock)
+				.set_forward_extremities(
+					room_id,
+					final_extremities.into_iter(),
+					None,
+					&state_lock,
+				)
 				.await;
 		}
 

@@ -644,10 +644,65 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 		event_ids: I,
+		trusted_new_event: Option<&'a EventId>,
 		_state_lock: &'a RoomMutexGuard,
 	) where
 		I: Iterator<Item = OwnedEventId> + Send + 'a,
 	{
+		// Only events that are actually accepted into the timeline may become
+		// citable forward extremities. Outliers, rejected, and soft-failed
+		// events cannot be relied upon to ever converge, so admitting them
+		// here means every future event/state-res pass in this room pays to
+		// re-walk their dependencies indefinitely. This is the single write
+		// path to `roomid_pduleaves`, so enforcing eligibility here covers
+		// all callers (including `recalculate_extremities` and reorder).
+		//
+		// `trusted_new_event`, if given, is the one event currently being
+		// appended by this same operation: its `eventid_metadata` entry is
+		// written moments after this call returns (see
+		// `timeline::append_pdu`), so a metadata lookup for it here would
+		// always miss. It is exempted from the DB check and trusted
+		// directly, since by construction it is being newly accepted into
+		// the timeline right now, not an outlier/rejected/soft-failed event.
+		let mut eligible: Vec<OwnedEventId> = Vec::new();
+		for event_id in event_ids {
+			if trusted_new_event.is_some_and(|trusted| trusted.as_str() == event_id.as_str()) {
+				eligible.push(event_id);
+				continue;
+			}
+
+			match self.services.timeline.get_event_metadata(&event_id).await {
+				| Ok(metadata)
+					if !metadata.is_outlier && !metadata.rejected && !metadata.soft_failed =>
+				{
+					eligible.push(event_id);
+				},
+				| Ok(_) => {
+					debug!(
+						%room_id, %event_id,
+						"Refusing to persist ineligible (outlier/rejected/soft-failed) \
+						 event as a forward extremity",
+					);
+				},
+				| Err(_) => {
+					debug!(
+						%room_id, %event_id,
+						"Refusing to persist forward extremity with unknown event metadata",
+					);
+				},
+			}
+		}
+
+		if eligible.is_empty() {
+			warn!(
+				%room_id,
+				"set_forward_extremities: all candidate tips were ineligible \
+				 (outlier/rejected/soft-failed/unknown); leaving existing forward \
+				 extremities unchanged",
+			);
+			return;
+		}
+
 		let prefix = (room_id, Interfix);
 		self.db
 			.roomid_pduleaves
@@ -660,10 +715,9 @@ impl Service {
 		// tips than this (e.g. from recalculate_extremities),
 		// Keeping the newest tips is preferred since they are most likely to
 		// be merged by future events.
-		let collected: Vec<OwnedEventId> = event_ids.collect();
 		let max_extremities = self.services.globals.max_forward_extremities();
-		let start = collected.len().saturating_sub(max_extremities);
-		for event_id in &collected[start..] {
+		let start = eligible.len().saturating_sub(max_extremities);
+		for event_id in &eligible[start..] {
 			let key = (room_id, &**event_id);
 			self.db.roomid_pduleaves.put_raw(key, &**event_id);
 		}

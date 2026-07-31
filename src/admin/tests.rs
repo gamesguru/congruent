@@ -685,7 +685,12 @@ async fn test_yolo_reorder_timeline() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![join_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![join_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// 4. Append Event B
@@ -1085,6 +1090,110 @@ async fn count_topo_occurrences_for_test(
 		}
 	}
 	count
+}
+
+#[tokio::test]
+async fn test_set_forward_extremities_excludes_ineligible_candidates() {
+	use futures::StreamExt;
+	use ruma::OwnedEventId;
+
+	let (services, _guard) =
+		setup_test_services("set_forward_extremities_excludes_ineligible").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "eligible tip").await;
+
+	// A candidate we never appended anywhere: mark it rejected via the public
+	// pdu_metadata API. Since it has no prior metadata, this also implicitly
+	// flags it as an outlier (see `mark_event_rejected`'s doc comment).
+	let rejected_event_id: OwnedEventId = "$fake_rejected_extremity_candidate_0000"
+		.try_into()
+		.unwrap();
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
+		.await;
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(
+			&room_id,
+			vec![event_id.clone(), rejected_event_id.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
+		.await;
+	drop(state_lock);
+
+	let extremities: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+
+	assert!(
+		extremities.contains(&event_id),
+		"the accepted timeline event must remain a forward extremity"
+	);
+	assert!(
+		!extremities.contains(&rejected_event_id),
+		"a rejected/outlier candidate must never be persisted as a forward extremity"
+	);
+}
+
+#[tokio::test]
+async fn test_set_forward_extremities_all_ineligible_is_noop() {
+	use futures::StreamExt;
+	use ruma::OwnedEventId;
+
+	let (services, _guard) =
+		setup_test_services("set_forward_extremities_all_ineligible_noop").await;
+	let (room_id, event_id) =
+		create_test_room_with_message(&services, "existing eligible tip").await;
+
+	let baseline: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+	assert_eq!(
+		baseline,
+		vec![event_id.clone()],
+		"test setup should start with exactly one forward extremity"
+	);
+
+	let rejected_event_id: OwnedEventId = "$fake_rejected_extremity_candidate_0001"
+		.try_into()
+		.unwrap();
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
+		.await;
+
+	// Passing only ineligible candidates must not empty or corrupt the stored
+	// extremity set: it should be treated as an anomaly and left unchanged.
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(&room_id, vec![rejected_event_id].into_iter(), None, &state_lock)
+		.await;
+	drop(state_lock);
+
+	let extremities: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+	assert_eq!(
+		extremities, baseline,
+		"an all-ineligible candidate set must leave existing extremities unchanged"
+	);
 }
 
 #[tokio::test]
@@ -2241,7 +2350,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![name_a_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![name_a_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// Ensure Name B gets a strictly later origin_server_ts than Name A.
@@ -2266,7 +2380,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![name_a_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![name_a_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// 5. Branch 2: Message "Hello C" (non-state event)
@@ -2289,6 +2408,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.set_forward_extremities(
 			&room_id,
 			vec![name_b_event.clone(), message_c_event.clone()].into_iter(),
+			None,
 			&state_lock,
 		)
 		.await;
