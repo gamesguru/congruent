@@ -208,28 +208,17 @@ async fn thread_id_for_receipt_event(
 	for _ in 0..MAX_THREAD_HOPS {
 		let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
 		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
-			return root_has_thread_bundle(&pdu).then_some(current);
+			return None;
 		};
 
 		if content.relates_to.rel_type == RelationType::Thread {
-			let root = content.relates_to.event_id;
-			let root_pdu = services.rooms.timeline.get_pdu(&root).await.ok()?;
-			return root_has_thread_bundle(&root_pdu).then_some(root);
+			return Some(content.relates_to.event_id);
 		}
 
 		current = content.relates_to.event_id;
 	}
 
-	let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
-	root_has_thread_bundle(&pdu).then_some(current)
-}
-
-fn root_has_thread_bundle<E: Event>(event: &E) -> bool {
-	event
-		.get_unsigned_as_value()
-		.get("m.relations")
-		.and_then(|relations| relations.get("m.thread"))
-		.is_some()
+	None
 }
 
 async fn update_read_receipt(

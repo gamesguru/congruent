@@ -371,11 +371,10 @@ impl Service {
 		let next_count = match self.db.next_timeline_count(&after_pdu).await {
 			| Ok(count) => count,
 			| Err(e) if e.is_not_found() => {
-				let current = self.services.state.get_room_shortstatehash(room_id).await?;
-				self.next_shortstatehash_cache
-					.lock()
-					.insert((shortroomid, after), current);
-				return Ok(current);
+				// Not cached: this fallback means "no PDU after `after` yet", which the
+				// next appended PDU invalidates. Caching it here would leave a stale entry
+				// with no append-time hook to evict it.
+				return self.services.state.get_room_shortstatehash(room_id).await;
 			},
 			| Err(e) => return Err(e),
 		};

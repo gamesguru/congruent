@@ -254,12 +254,12 @@ where
 	let pdu_count = PduCount::Normal(count);
 	let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
 
-	// Insert into the cache FIRST so that if the sync watcher is woken
-	// by the db append, it will see the updated timeline count and not
-	// prematurely early-return with an empty pdus list.
+	// Write first, then publish the count: publishing before the write lets a
+	// concurrently woken sync mint a `next_batch` that covers a PDU which isn't
+	// readable yet, permanently skipping it once that token comes back.
+	self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
 	self.last_timeline_count_cache
 		.insert(room_id.to_owned(), pdu_count);
-	self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
 	drop(cork);
 
 	let resolved_state_applied = resolved_state.is_some();
