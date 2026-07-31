@@ -32,27 +32,12 @@ pub(crate) async fn get_room_state_ids_route(
 		"Serving state_ids request"
 	);
 
-	let is_extremity = services
+	let shortstatehash = services
 		.rooms
-		.state
-		.is_forward_extremity(&body.room_id, &body.event_id)
-		.await;
-
-	let shortstatehash = if is_extremity {
-		services
-			.rooms
-			.state
-			.get_room_shortstatehash(&body.room_id)
-			.await
-			.map_err(|_| err!(Request(NotFound("Room state not found."))))?
-	} else {
-		services
-			.rooms
-			.state_accessor
-			.pdu_shortstatehash(&body.event_id)
-			.await
-			.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?
-	};
+		.state_accessor
+		.pdu_shortstatehash(&body.event_id)
+		.await
+		.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?;
 
 	let pdu_ids: Vec<OwnedEventId> = services
 		.rooms
