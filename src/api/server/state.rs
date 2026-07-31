@@ -31,30 +31,12 @@ pub(crate) async fn get_room_state_route(
 		"Serving full room state request"
 	);
 
-	// For current extremities (DAG tips), prefer the room's current
-	// shortstatehash over the per-event pdu_shortstatehash, which may be
-	// stale after force-set or state updates.
-	let is_extremity = services
+	let shortstatehash = services
 		.rooms
-		.state
-		.is_forward_extremity(&body.room_id, &body.event_id)
-		.await;
-
-	let shortstatehash = if is_extremity {
-		services
-			.rooms
-			.state
-			.get_room_shortstatehash(&body.room_id)
-			.await
-			.map_err(|_| err!(Request(NotFound("Room state not found."))))?
-	} else {
-		services
-			.rooms
-			.state_accessor
-			.pdu_shortstatehash(&body.event_id)
-			.await
-			.map_err(|_| err!(Request(NotFound("PDU state not found."))))?
-	};
+		.state_accessor
+		.pdu_shortstatehash(&body.event_id)
+		.await
+		.map_err(|_| err!(Request(NotFound("PDU state not found."))))?;
 
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms

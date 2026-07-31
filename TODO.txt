@@ -21,4 +21,3 @@ So the honest answer: compare-room-state is doing more work than it needs to for
 ✻ Worked for 3m 55s
 
 ※ recap: Investigating stuck federation rooms on wombatx and fixing the outlier-extremity bug (patch committed, tests passing). Now verifying the fix actually reduces extremity counts on real sick rooms in the local DB copy before moving to the next patch.
-
