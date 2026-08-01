@@ -52,6 +52,8 @@ impl Data {
 		Ok(key.to_vec())
 	}
 
+	pub(super) fn delete_file_metadata_key(&self, key: &[u8]) { self.mediaid_file.remove(key); }
+
 	pub(super) async fn delete_file_mxc(&self, mxc: &Mxc<'_>) {
 		debug!("MXC URI: {mxc}");
 

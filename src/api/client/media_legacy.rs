@@ -7,12 +7,87 @@ use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, 
 use ruma::{
 	Mxc,
 	api::client::media::{
-		create_content, get_content, get_content_as_filename, get_content_thumbnail,
-		get_media_config, get_media_preview,
+		create_content, create_content_async, create_mxc_uri, get_content,
+		get_content_as_filename, get_content_thumbnail, get_media_config, get_media_preview,
 	},
 };
 
 use crate::{Ruma, RumaResponse, client::create_content_route};
+
+/// # `POST /_matrix/media/v1/create`
+///
+/// Reserve an MXC URI for asynchronous upload.
+pub(crate) async fn create_mxc_uri_route(
+	State(services): State<crate::State>,
+	body: Ruma<create_mxc_uri::v1::Request>,
+) -> Result<create_mxc_uri::v1::Response> {
+	let user = body.sender_user();
+	if services.users.is_suspended(user).await? {
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+	}
+
+	let ref mxc = Mxc {
+		server_name: services.globals.server_name(),
+		media_id: &conduwuit::utils::random_string(conduwuit_service::media::MXC_LENGTH),
+	};
+
+	services.media.create_async(mxc, Some(user))?;
+
+	Ok(create_mxc_uri::v1::Response::new(mxc.to_string().into()))
+}
+
+/// # `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}`
+///
+/// Upload media into a previously reserved MXC URI.
+pub(crate) async fn create_content_async_route(
+	State(services): State<crate::State>,
+	ClientIp(client): ClientIp,
+	body: Ruma<create_content_async::v3::Request>,
+) -> Result<create_content_async::v3::Response> {
+	let user = body.sender_user();
+	if services.users.is_suspended(user).await? {
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+	}
+
+	if body.server_name != *services.globals.server_name() {
+		return Err!(Request(NotFound("Cannot upload to a remote media repository.")));
+	}
+
+	let filename = body.filename.as_deref();
+	let content_type = body.content_type.as_deref();
+	let content_disposition = conduwuit::utils::content_disposition::make_content_disposition(
+		None,
+		content_type,
+		filename,
+	);
+	let ref mxc = Mxc {
+		server_name: &body.server_name,
+		media_id: &body.media_id,
+	};
+
+	match services
+		.media
+		.create_async_upload(
+			mxc,
+			Some(user),
+			Some(&content_disposition),
+			content_type,
+			&body.file,
+		)
+		.await
+	{
+		| Ok(()) => {},
+		| Err(e)
+			if matches!(e.kind(), ruma::api::client::error::ErrorKind::CannotOverwriteMedia) =>
+			return Err(e),
+		| Err(e) => {
+			conduwuit::debug_error!(%client, %mxc, "Failed async media upload: {e}");
+			return Err!(Request(Unknown("Failed async media upload.")));
+		},
+	}
+
+	Ok(create_content_async::v3::Response {})
+}
 
 /// # `GET /_matrix/media/v3/config`
 ///

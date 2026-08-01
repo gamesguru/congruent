@@ -334,6 +334,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 
 	if config.allow_legacy_media {
 		router = router
+			.ruma_route(&client::create_mxc_uri_route)
+			.ruma_route(&client::create_content_async_route)
 			.ruma_route(&client::get_media_config_legacy_route)
 			.ruma_route(&client::get_media_preview_legacy_route)
 			.ruma_route(&client::get_content_legacy_route)

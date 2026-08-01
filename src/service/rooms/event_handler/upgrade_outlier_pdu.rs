@@ -822,8 +822,18 @@ where
 				"Skipping /state_ids fetch: not a state event or prev_events are rejected; using current room state"
 			);
 		} else {
-			// Ask /state_ids for the incoming event itself. The endpoint is
-			// expected to return the pre-event state that authorized it.
+			// When we have a single unresolved predecessor, ask /state_ids at
+			// that predecessor first. This matches the gap-recovery path used by
+			// Complement's corrupted-auth-chain test, where /get_missing_events
+			// returns one event but the sender still needs to provide the state
+			// snapshot that links it back into the known DAG.
+			let mut prev_events = incoming_pdu.prev_events();
+			let first_prev = prev_events.next();
+			let fallback_event_id = match (first_prev, prev_events.next()) {
+				| (Some(first_prev), None) => first_prev,
+				| _ => incoming_pdu.event_id(),
+			};
+
 			// Attempt a synchronous /state_ids fetch from the sending server
 			// BEFORE queuing the async DAG healer.
 			//
@@ -842,7 +852,7 @@ where
 				origin,
 				create_event,
 				room_id,
-				incoming_pdu.event_id(),
+				fallback_event_id,
 				false,
 			))
 			.await
