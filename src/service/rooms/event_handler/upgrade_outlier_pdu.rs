@@ -45,6 +45,7 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
 	// hitting federation for state at an event we already know is unusable.
 	prev_fetch_had_invalid_data: bool,
+	state_ids_anchor: Option<&ruma::EventId>,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -115,6 +116,7 @@ where
 		&room_version_id,
 		skip_soft_fail,
 		prev_fetch_had_invalid_data,
+		state_ids_anchor,
 	))
 	.await?;
 
@@ -422,6 +424,7 @@ where
 						&room_version_id,
 						skip_soft_fail,
 						false,
+						None,
 					))
 					.await?;
 				}
@@ -670,6 +673,7 @@ async fn resolve_state_at_incoming_event<Pdu>(
 	room_version_id: &RoomVersionId,
 	skip_soft_fail: bool,
 	prev_fetch_had_invalid_data: bool,
+	state_ids_anchor: Option<&ruma::EventId>,
 ) -> Result<StateAtEvent>
 where
 	Pdu: Event + Send + Sync,
@@ -829,10 +833,11 @@ where
 			// snapshot that links it back into the known DAG.
 			let mut prev_events = incoming_pdu.prev_events();
 			let first_prev = prev_events.next();
-			let fallback_event_id = match (first_prev, prev_events.next()) {
-				| (Some(first_prev), None) => first_prev,
-				| _ => incoming_pdu.event_id(),
-			};
+			let fallback_event_id =
+				state_ids_anchor.unwrap_or_else(|| match (first_prev, prev_events.next()) {
+					| (Some(first_prev), None) => first_prev,
+					| _ => incoming_pdu.event_id(),
+				});
 
 			// Attempt a synchronous /state_ids fetch from the sending server
 			// BEFORE queuing the async DAG healer.

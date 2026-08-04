@@ -562,6 +562,13 @@ pub async fn process_timeline_upgrade(
 		"Handling previous events"
 	);
 
+	let state_ids_anchor = sorted_prev_events.last().and_then(|prev_id| {
+		let (pdu, _) = eventid_info.get(prev_id)?;
+		let mut prev_events = pdu.prev_events();
+		let first_prev = prev_events.next()?.to_owned();
+		prev_events.next().is_none().then_some(first_prev)
+	});
+
 	sorted_prev_events
 		.iter()
 		.try_stream()
@@ -622,6 +629,7 @@ pub async fn process_timeline_upgrade(
 		false,
 		true,
 		prev_fetch_had_invalid_data,
+		state_ids_anchor.as_deref(),
 	))
 	.await
 }
