@@ -119,16 +119,8 @@ pub(crate) async fn create_receipt_route(
 	}
 
 	// MSC3771: event_id must belong to the thread the receipt targets.
-	if matches!(&body.thread, ReceiptThread::Thread(_)) {
-		let resolved = thread_id_for_receipt_event(&services, &body.event_id).await;
-
-		let in_thread = match (&body.thread, resolved.as_deref()) {
-			| (ReceiptThread::Thread(root), Some(parent)) => &**root == parent,
-			| (ReceiptThread::Thread(root), None) => **root == *body.event_id,
-			| _ => false,
-		};
-
-		if !in_thread {
+	if let ReceiptThread::Thread(root) = &body.thread {
+		if !receipt_event_is_in_thread(&services, &body.event_id, root).await {
 			return Err!(Request(InvalidParam("event_id is not related to the given thread_id")));
 		}
 	}
@@ -199,26 +191,36 @@ struct ThreadRelation {
 
 const MAX_THREAD_HOPS: usize = 3;
 
-async fn thread_id_for_receipt_event(
+async fn receipt_event_is_in_thread(
 	services: &crate::State,
 	event_id: &EventId,
-) -> Option<OwnedEventId> {
+	thread_root: &EventId,
+) -> bool {
 	let mut current = event_id.to_owned();
 
 	for _ in 0..MAX_THREAD_HOPS {
-		let pdu = services.rooms.timeline.get_pdu(&current).await.ok()?;
+		if current == thread_root {
+			return true;
+		}
+
+		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
+			return false;
+		};
 		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
-			return None;
+			return false;
 		};
 
+		if content.relates_to.event_id == thread_root {
+			return true;
+		}
 		if content.relates_to.rel_type == RelationType::Thread {
-			return Some(content.relates_to.event_id);
+			return content.relates_to.event_id == thread_root;
 		}
 
 		current = content.relates_to.event_id;
 	}
 
-	None
+	false
 }
 
 async fn update_read_receipt(

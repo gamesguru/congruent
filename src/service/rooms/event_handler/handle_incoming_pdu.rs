@@ -427,9 +427,25 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// shot, then retry handle_outlier_pdu. This also satisfies the
 			// Matrix spec requirement that servers call /state_ids when auth
 			// events are unresolvable via the normal backfill path.
+			let state_ids_anchor =
+				conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id))
+					.ok()
+					.and_then(|pdu| {
+						let mut prev_events = pdu.prev_events();
+						let first_prev = prev_events.next()?.to_owned();
+						prev_events.next().is_none().then_some(first_prev)
+					})
+					.unwrap_or_else(|| event_id.to_owned());
+
 			let retry_result = Box::pin(async {
-				Box::pin(self.fetch_state(origin, create_event, room_id, event_id, false))
-					.await?;
+				Box::pin(self.fetch_state(
+					origin,
+					create_event,
+					room_id,
+					&state_ids_anchor,
+					false,
+				))
+				.await?;
 				Box::pin(self.handle_outlier_pdu(
 					origin,
 					Some(create_event),

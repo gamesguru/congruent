@@ -22,7 +22,9 @@ pub(crate) async fn get_capabilities_route(
 	body: Ruma<get_capabilities::v3::Request>,
 ) -> Result<get_capabilities::v3::Response> {
 	let available: BTreeMap<RoomVersionId, RoomVersionStability> =
-		Server::available_room_versions().collect();
+		Server::available_room_versions()
+			.filter(|(version, _)| services.server.supported_room_version(version))
+			.collect();
 
 	let mut capabilities = Capabilities::default();
 	capabilities.room_versions = RoomVersionsCapability {
