@@ -1,7 +1,7 @@
 {"Action":"pass","Test":"TestRoomCreate"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel/Can_/sync_newly_created_room"}
-{"Action":"skip","Test":"TestRoomCreate/Parallel/POST_/createRoom_creates_a_room_with_the_given_version"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_creates_a_room_with_the_given_version"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_ignores_attempts_to_set_the_room_version_via_creation_content"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room_with_invites"}
