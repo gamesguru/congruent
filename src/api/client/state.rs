@@ -611,30 +611,43 @@ async fn allowed_to_send_state_event(
 				{
 					let room_features = RoomVersion::new(&create_content.room_version);
 					if let Ok(room_features) = room_features {
-						if room_features.explicitly_privilege_room_creators {
-							if let Ok(pl_content) = json.deserialize_as::<serde_json::Value>() {
-								if let Some(users) =
-									pl_content.get("users").and_then(|u| u.as_object())
-								{
-									// Check the room creator (event sender of m.room.create)
-									if users.contains_key(room_create.sender().as_str()) {
-										return Err!(Request(BadJson(
-											"Room creator cannot be set in power levels users \
-											 map"
-										)));
-									}
-									// Check additional_creators
-									if let Some(additional) = create_content.additional_creators {
-										for creator in &additional {
-											if users.contains_key(creator.as_str()) {
-												return Err!(Request(BadJson(
-													"Room creator cannot be set in power levels \
-													 users map: {creator}"
-												)));
-											}
-										}
-									}
+						if room_features.explicitly_privilege_room_creators
+							&& let Ok(mut pl_content) = json.deserialize_as::<serde_json::Value>()
+							&& let Some(pl_obj) = pl_content.as_object_mut()
+						{
+							let mut creators = vec![room_create.sender().as_str().to_owned()];
+							if let Some(additional) = &create_content.additional_creators {
+								creators.extend(additional.iter().map(ToString::to_string));
+							}
+
+							let removed_creator = pl_obj
+								.get_mut("users")
+								.and_then(|u| u.as_object_mut())
+								.is_some_and(|users| {
+									creators
+										.iter()
+										.fold(false, |removed, creator| {
+											users.remove(creator).is_some() || removed
+										})
+								});
+
+							if removed_creator {
+								let users_empty = pl_obj
+									.get("users")
+									.and_then(|u| u.as_object())
+									.is_none_or(serde_json::Map::is_empty);
+								let has_non_users_content =
+									pl_obj.keys().any(|key| key != "users");
+
+								if users_empty && !has_non_users_content {
+									return Err!(Request(BadJson(
+										"Room creator cannot be set in power levels users map"
+									)));
 								}
+
+								*json = Raw::<AnyStateEventContent>::from_json_string(
+									serde_json::to_string(&pl_content)?,
+								)?;
 							}
 						}
 					}

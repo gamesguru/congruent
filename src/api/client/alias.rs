@@ -1,6 +1,7 @@
 use axum::extract::State;
-use conduwuit::{Err, Result};
+use conduwuit::{Err, Result, debug_warn, matrix::pdu::PduBuilder};
 use ruma::api::client::alias::{create_alias, delete_alias, get_alias};
+use ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 
 use crate::Ruma;
 
@@ -53,8 +54,6 @@ pub(crate) async fn create_alias_route(
 /// # `DELETE /_matrix/client/v3/directory/room/{roomAlias}`
 ///
 /// Deletes a room alias from this server.
-///
-/// - TODO: Update canonical alias event
 pub(crate) async fn delete_alias_route(
 	State(services): State<crate::State>,
 	body: Ruma<delete_alias::v3::Request>,
@@ -70,13 +69,46 @@ pub(crate) async fn delete_alias_route(
 		.appservice_checks(&body.room_alias, &body.appservice_info)
 		.await?;
 
+	let room_id = services
+		.rooms
+		.alias
+		.resolve_local_alias(&body.room_alias)
+		.await?;
+	let clears_canonical_alias = services
+		.rooms
+		.state_accessor
+		.get_canonical_alias(&room_id)
+		.await
+		.is_ok_and(|alias| alias == body.room_alias);
+
 	services
 		.rooms
 		.alias
 		.remove_alias(&body.room_alias, sender_user)
 		.await?;
 
-	// TODO: update alt_aliases?
+	if clears_canonical_alias {
+		let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+		if let Err(e) = services
+			.rooms
+			.timeline
+			.build_and_append_pdu(
+				PduBuilder::state(String::new(), &RoomCanonicalAliasEventContent {
+					alias: None,
+					alt_aliases: vec![],
+				}),
+				sender_user,
+				Some(&room_id),
+				&state_lock,
+			)
+			.await
+		{
+			debug_warn!(
+				"failed to clear canonical alias after deleting {} in {}: {e}",
+				body.room_alias, room_id
+			);
+		}
+	}
 
 	Ok(delete_alias::v3::Response::new())
 }
