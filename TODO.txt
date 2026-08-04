@@ -2,6 +2,62 @@
 07/31/2026
 ###############################
 
+
+• Upstream guru/dev-* did fix some of the worst mistakes on this branch, but no, it did not “optimize the shit out of it” end-to-end.
+
+  What upstream clearly does better:
+
+  - It avoids the per-sync per-room SSH write flood on this branch.
+    This branch writes associate_token_shortstatehash(...) on every sync in src/api/client/sync/v3/joined.rs:439. Upstream switched back to deriving state-at-token with next_shortstatehash(...) in src/api/client/sync/v3/
+    joined.rs:450, which is much saner.
+
+  - It keeps the joined_since_last_sync fast paths.
+    Upstream still special-cases new joins in timeline/state handling at src/api/client/sync/v3/joined.rs:537 and src/api/client/sync/v3/joined.rs:623. Your branch dropped that and regressed.
+
+  - It avoids unconditional state_after work.
+    Upstream gates MSC4222 state-after on use_state_after at src/api/client/sync/v3/joined.rs:662. Your branch always builds it when MSC4222 is on.
+
+  What is still expensive in upstream:
+
+  - Sliding sync E2EE is still not cheap.
+    Upstream still walks all joined rooms and does per-room encryption/device-list logic. It uses next_shortstatehash(...) there too, which is better, but it still does a lot of room-by-room work around src/api/client/sync/
+    v5.rs:1892 in the upstream branch.
+
+  - share_encrypted_room(...) and room_members(...) are still on hot paths.
+    Those calls are still in upstream E2EE processing and will cost real time in large encrypted graphs.
+
+  - Room ordering for lists is still brute-force-ish.
+    Upstream fetches latest_pdu_in_room() timestamps and sorts active rooms at src/api/client/sync/v5.rs:1026. That is fine functionally, but not “fully optimized” if you have a lot of rooms.
+
+  - There are still explicit TODOs in sync code.
+    Notably incomplete filters and read-receipt work in v5.rs, plus join/state edge-case TODOs in joined.rs.
+
+  So the real answer is:
+
+  - Upstream fixed several branch-specific regressions.
+  - Upstream is better engineered on sync correctness/perf tradeoffs.
+  - Upstream still leaves substantial optimization headroom, especially around:
+      - E2EE membership/device-list diffing
+      - room ordering / list prep
+      - avoiding repeated room-member scans
+      - cheap state-change fingerprints / accumulators
+
+  If you want the next practical move, I’d target upstream-style behavior first, then optimize beyond it:
+
+  1. revert this branch’s SSH association strategy
+  2. restore the use_state_after gate
+  3. restore joined_since_last_sync behavior
+  4. then attack E2EE diffing with member-only state summaries or an accumulator/fingerprint path
+
+  That is where the remaining real wins are.
+
+
+
+
+###############################
+07/31/2026
+###############################
+
 ❯ do get-remote-dag, compare-room-state, or other commands actually call `/state` or rather `/state_ids` for efficiency?
 
 Good, that was transient — the loop itself is fine; I'll continue the baseline dump in a moment. First, let me check your question directly in the code.

@@ -427,15 +427,41 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// shot, then retry handle_outlier_pdu. This also satisfies the
 			// Matrix spec requirement that servers call /state_ids when auth
 			// events are unresolvable via the normal backfill path.
-			let state_ids_anchor =
-				conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id))
-					.ok()
-					.and_then(|pdu| {
-						let mut prev_events = pdu.prev_events();
-						let first_prev = prev_events.next()?.to_owned();
-						prev_events.next().is_none().then_some(first_prev)
-					})
-					.unwrap_or_else(|| event_id.to_owned());
+			let parsed_pdu =
+				conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id)).ok();
+			let direct_prev = parsed_pdu.as_ref().and_then(|pdu| {
+				let mut prev_events = pdu.prev_events();
+				let first_prev = prev_events.next()?.to_owned();
+				prev_events.next().is_none().then_some(first_prev)
+			});
+			let mut state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
+
+			if is_timeline_event
+				&& let Some(pdu) = parsed_pdu.as_ref()
+				&& direct_prev.is_some()
+			{
+				match Box::pin(self.fetch_prev(
+					origin,
+					create_event,
+					room_id,
+					event_id,
+					pdu.prev_events(),
+					Some(pdu.sender().server_name()),
+				))
+				.await
+				{
+					| Ok((_, _, Some(fetched_prev_anchor), _)) => {
+						state_ids_anchor = fetched_prev_anchor;
+					},
+					| Ok(_) => {},
+					| Err(e) => {
+						warn!(
+							event_id = %event_id,
+							"failed to fetch prev_events before /state_ids retry: {e}"
+						);
+					},
+				}
+			}
 
 			let retry_result = Box::pin(async {
 				Box::pin(self.fetch_state(
@@ -446,6 +472,61 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					false,
 				))
 				.await?;
+
+				let room_version_id = self.services.state.get_room_version(room_id).await?;
+				for missing_id in &missing {
+					if self.services.timeline.pdu_exists(missing_id).await {
+						continue;
+					}
+
+					let request = ruma::api::federation::event::get_event::v1::Request {
+						event_id: missing_id.to_owned(),
+						include_unredacted_content: None,
+					};
+
+					let Ok(response) = self
+						.services
+						.sending
+						.send_federation_request(origin, request)
+						.await
+					else {
+						continue;
+					};
+
+					let Ok((parsed_id, value)) =
+						conduwuit::matrix::event::gen_event_id_canonical_json(
+							&response.pdu,
+							&room_version_id,
+						)
+					else {
+						continue;
+					};
+
+					if parsed_id != *missing_id {
+						warn!(
+							expected = %missing_id,
+							actual = %parsed_id,
+							"fetched missing auth event ID mismatch"
+						);
+						continue;
+					}
+
+					if let Err(e) = Box::pin(self.handle_outlier_pdu(
+						origin,
+						Some(create_event),
+						missing_id,
+						room_id,
+						value,
+						false,
+						false,
+						Some(&room_version_id),
+					))
+					.await
+					{
+						debug_info!("failed to handle directly fetched auth event {missing_id}: {e}");
+					}
+				}
+
 				Box::pin(self.handle_outlier_pdu(
 					origin,
 					Some(create_event),
@@ -546,7 +627,12 @@ pub async fn process_timeline_upgrade(
 
 	// Fetch any missing prev events doing all checks listed here starting at 1.
 	// These are timeline events
-	let (sorted_prev_events, mut eventid_info, prev_fetch_had_invalid_data) =
+	let (
+		sorted_prev_events,
+		mut eventid_info,
+		state_ids_anchor,
+		prev_fetch_had_invalid_data,
+	) =
 		Box::pin(self.fetch_prev(
 			origin,
 			create_event,
@@ -561,13 +647,6 @@ pub async fn process_timeline_upgrade(
 		events = ?sorted_prev_events,
 		"Handling previous events"
 	);
-
-	let state_ids_anchor = sorted_prev_events.last().and_then(|prev_id| {
-		let (pdu, _) = eventid_info.get(prev_id)?;
-		let mut prev_events = pdu.prev_events();
-		let first_prev = prev_events.next()?.to_owned();
-		prev_events.next().is_none().then_some(first_prev)
-	});
 
 	sorted_prev_events
 		.iter()
