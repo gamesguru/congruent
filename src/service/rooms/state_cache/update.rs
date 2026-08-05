@@ -301,9 +301,17 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 }
 
 /// Silent variant of `mark_as_left` for admin healing operations.
-/// Performs the exact same DB writes but does NOT trigger
-/// `update_membership`, presence updates, or device list notifications.
-/// The caller MUST call `update_joined_count` after the batch completes.
+/// Does NOT trigger `update_membership`, presence updates, or device list
+/// notifications. The caller MUST call `update_joined_count` after the
+/// batch completes.
+///
+/// Unlike `mark_as_left`, there is no `leave_pdu` here (this path runs for
+/// admin/reconcile-triggered removals with no real leave event), so there's
+/// no `origin_server_ts` to compare a pending invite against. Rather than
+/// guess, we conservatively preserve any existing invite unconditionally:
+/// clearing it here previously reproduced the `c8a7dcd5c` "stale invite
+/// clear" bug through `reconcile_membership`, which calls this whenever its
+/// room-state snapshot doesn't (yet) reflect a just-landed invite.
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
@@ -324,14 +332,16 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	self.db.userroomid_joined.remove(&userroom_id);
 	self.db.roomuserid_joined.remove(&roomuser_id);
 
-	self.db.userroomid_invitestate.remove(&userroom_id);
-	self.db.roomuserid_invitecount.remove(&roomuser_id);
-	self.db.userroomid_invitesender.remove(&userroom_id);
+	let has_pending_invite = self.invite_state(user_id, room_id).await.is_ok();
+	if !has_pending_invite {
+		self.db.userroomid_invitestate.remove(&userroom_id);
+		self.db.roomuserid_invitecount.remove(&roomuser_id);
+		self.db.userroomid_invitesender.remove(&userroom_id);
+		self.db.roomid_inviteviaservers.remove(room_id);
+	}
 
 	self.db.userroomid_knockedstate.remove(&userroom_id);
 	self.db.roomuserid_knockedcount.remove(&roomuser_id);
-
-	self.db.roomid_inviteviaservers.remove(room_id);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;

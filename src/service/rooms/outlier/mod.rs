@@ -147,18 +147,18 @@ pub fn add_pdu_outlier(
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
 ) {
-	let mut batch = database::rocksdb::WriteBatch::default();
+	let mut batch = database::Batch::new();
 	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
-	self.db.eventid_pdu.apply_batch(&batch);
+	self.db.eventid_pdu.apply_batch(batch);
 	self.db.eventid_pdu.wake(event_id.as_bytes());
 }
 
-/// Append the PDU as an outlier using a WriteBatch.
+/// Append the PDU as an outlier using a Batch.
 #[implement(Service)]
 #[tracing::instrument(skip(self, batch, pdu), level = "debug")]
-pub fn add_pdu_outlier_batch(
-	&self,
-	batch: &mut database::rocksdb::WriteBatch,
+pub fn add_pdu_outlier_batch<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
 	event_id: &EventId,
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
@@ -202,7 +202,7 @@ pub fn add_pdu_outlier_batch(
 	// --- Phase 1: Write ---
 	self.db
 		.eventid_pdu
-		.raw_put_into_batch(batch, event_id.as_bytes(), Json(&pdu));
+		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
 
 	if let Ok(parsed_pdu) =
 		serde_json::from_value::<PduEvent>(serde_json::to_value(&pdu).unwrap())
@@ -241,11 +241,9 @@ pub fn add_pdu_outlier_batch(
 				.unwrap_or_default(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-			self.db.eventid_metadata.insert_into_batch(
-				batch,
-				event_id.as_bytes(),
-				&metadata_bytes,
-			);
+			self.db
+				.eventid_metadata
+				.batch_put(batch, event_id.as_bytes(), &metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -269,7 +267,7 @@ pub fn add_pdu_outlier_batch(
 
 		self.db
 			.shorteventid_shortprevevents
-			.insert_into_batch(batch, &key_bytes, &val_bytes);
+			.batch_put(batch, &key_bytes, &val_bytes);
 
 		let auth_shorts: Vec<rooms::short::ShortEventId> = parsed_pdu
 			.auth_events()
@@ -285,17 +283,15 @@ pub fn add_pdu_outlier_batch(
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 
-		self.db.shorteventid_shortauthevents.insert_into_batch(
-			batch,
-			&key_bytes,
-			&auth_val_bytes,
-		);
+		self.db
+			.shorteventid_shortauthevents
+			.batch_put(batch, &key_bytes, &auth_val_bytes);
 	}
 }
 
 /// Apply a batch of outlier insertions
 #[implement(Service)]
-pub fn apply_outlier_batch(&self, batch: &database::rocksdb::WriteBatch) {
+pub fn apply_outlier_batch(&self, batch: database::Batch<'_>) {
 	self.db.eventid_pdu.apply_batch(batch);
 }
 

@@ -419,29 +419,26 @@ impl Data {
 			return Ok(0);
 		}
 
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 		for key in &keys {
 			self.roomid_topologicalorder_pducount
-				.remove_from_batch(&mut batch, key);
+				.batch_delete(&mut batch, key);
 		}
-		self.roomid_topologicalorder_pducount.apply_batch(&batch);
+		self.roomid_topologicalorder_pducount.apply_batch(batch);
 
 		Ok(keys.len())
 	}
 
-	pub(super) fn insert_topo_pducount_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) fn insert_topo_pducount_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		depth: u64,
 	) {
 		let topo_key = Self::topo_pducount_key(pdu_id, depth);
-		self.roomid_topologicalorder_pducount.insert_into_batch(
-			batch,
-			&topo_key,
-			event_id.as_bytes(),
-		);
+		self.roomid_topologicalorder_pducount
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
 	pub(super) fn topo_key_to_pdu_id(topo_key: &[u8]) -> RawPduId {
@@ -502,20 +499,20 @@ impl Data {
 		self.remove_topo_pducount_at_depth(pdu_id, old_depth);
 	}
 
-	fn remove_stream_and_topo_pducount_from_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	fn remove_stream_and_topo_pducount_from_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id_bytes: &[u8],
 		depth: Option<u64>,
 	) {
 		self.room_pducount_eventid
-			.remove_from_batch(batch, pdu_id.as_bytes());
-		self.eventid_pduid.remove_from_batch(batch, event_id_bytes);
+			.batch_delete(batch, pdu_id.as_bytes());
+		self.eventid_pduid.batch_delete(batch, event_id_bytes);
 
 		if let Some(depth) = depth {
 			self.roomid_topologicalorder_pducount
-				.remove_from_batch(batch, &Self::topo_pducount_key(pdu_id, depth));
+				.batch_delete(batch, &Self::topo_pducount_key(pdu_id, depth));
 		}
 	}
 
@@ -1058,11 +1055,9 @@ impl Data {
 	}
 
 	#[allow(clippy::unused_self)]
-	pub(super) fn db_batch(&self) -> database::rocksdb::WriteBatch {
-		database::rocksdb::WriteBatch::default()
-	}
+	pub(super) fn db_batch(&self) -> database::Batch<'_> { database::Batch::new() }
 
-	pub(super) fn db_apply_batch(&self, batch: &database::rocksdb::WriteBatch) {
+	pub(super) fn db_apply_batch(&self, batch: database::Batch<'_>) {
 		self.eventid_pdu.apply_batch(batch);
 	}
 
@@ -1073,17 +1068,17 @@ impl Data {
 		json: &CanonicalJsonObject,
 		count: PduCount,
 	) {
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 		self.append_pdu_batch(&mut batch, pdu_id, pdu, json, count)
 			.await;
-		self.eventid_pdu.apply_batch(&batch);
+		self.eventid_pdu.apply_batch(batch);
 		self.room_pducount_eventid.wake(pdu_id);
 		self.eventid_pdu.wake(pdu.event_id.as_bytes());
 	}
 
-	pub(super) async fn append_pdu_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) async fn append_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
@@ -1118,25 +1113,24 @@ impl Data {
 		}
 
 		// Map event_id -> pdu_id
-		self.eventid_pduid
-			.insert_into_batch(batch, &event_id_bytes, pdu_id);
+		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
 
 		self.eventid_pdu
-			.raw_put_into_batch(batch, event_id_bytes, Json(json));
+			.batch_raw_put(batch, event_id_bytes, Json(json));
 
 		self.room_pducount_eventid
-			.insert_into_batch(batch, pdu_id, event_id_bytes);
+			.batch_put(batch, pdu_id, event_id_bytes);
 
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
 		self.roomid_topologicalorder_pducount
-			.insert_into_batch(batch, &topo_key, event_id_bytes);
+			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
 		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
 			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
-				self.db["roomid_timestamp_pducount"].insert_into_batch(batch, &ts_key, []);
+				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
 
@@ -1156,7 +1150,7 @@ impl Data {
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
-				.insert_into_batch(batch, event_id_bytes, metadata_bytes);
+				.batch_put(batch, event_id_bytes, metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -1196,9 +1190,9 @@ impl Data {
 	/// and separately is intentional: it's independently testable and
 	/// reviewable, and a bug here before anything reads the index is inert,
 	/// where a bug in the read-path swap would not be.
-	async fn record_backward_extremities_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	async fn record_backward_extremities_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 	) {
@@ -1211,9 +1205,9 @@ impl Data {
 			if let Some(depth) = backward_extremities::unpack_depth_value(&depth_bytes) {
 				let depth_key =
 					backward_extremities::pack_depth_key(shortroomid, depth, &pdu.event_id);
-				self.db["roomid_depth_missingeventid"].remove_from_batch(batch, &depth_key);
+				self.db["roomid_depth_missingeventid"].batch_delete(batch, &depth_key);
 			}
-			self.db["roomid_missingeventid_depth"].remove_from_batch(batch, &event_key);
+			self.db["roomid_missingeventid_depth"].batch_delete(batch, &event_key);
 		}
 
 		// `get_pdu_id` is async, but `missing_prev_events` takes a sync
@@ -1234,8 +1228,8 @@ impl Data {
 		}) {
 			let depth_key = backward_extremities::pack_depth_key(shortroomid, depth, prev_id);
 			let event_key = backward_extremities::pack_event_key(shortroomid, prev_id);
-			self.db["roomid_depth_missingeventid"].insert_into_batch(batch, &depth_key, []);
-			self.db["roomid_missingeventid_depth"].insert_into_batch(
+			self.db["roomid_depth_missingeventid"].batch_put(batch, &depth_key, []);
+			self.db["roomid_missingeventid_depth"].batch_put(
 				batch,
 				&event_key,
 				depth.to_be_bytes(),
@@ -1250,17 +1244,17 @@ impl Data {
 		json: &CanonicalJsonObject,
 		pdu: &PduEvent,
 	) {
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 		self.prepend_backfill_pdu_batch(&mut batch, pdu_id, event_id, json, pdu)
 			.await;
-		self.eventid_pdu.apply_batch(&batch);
+		self.eventid_pdu.apply_batch(batch);
 		self.room_pducount_eventid.wake(pdu_id);
 		self.eventid_pdu.wake(event_id.as_bytes());
 	}
 
-	pub(super) async fn prepend_backfill_pdu_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) async fn prepend_backfill_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		json: &CanonicalJsonObject,
@@ -1292,24 +1286,23 @@ impl Data {
 			}
 		}
 
-		self.eventid_pduid
-			.insert_into_batch(batch, &event_id_bytes, pdu_id);
+		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
 
 		self.eventid_pdu
-			.raw_put_into_batch(batch, event_id_bytes, Json(json));
+			.batch_raw_put(batch, event_id_bytes, Json(json));
 		self.room_pducount_eventid
-			.insert_into_batch(batch, pdu_id, event_id_bytes);
+			.batch_put(batch, pdu_id, event_id_bytes);
 
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
 		self.roomid_topologicalorder_pducount
-			.insert_into_batch(batch, &topo_key, event_id_bytes);
+			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
 		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
 			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
-				self.db["roomid_timestamp_pducount"].insert_into_batch(batch, &ts_key, []);
+				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
 
@@ -1329,7 +1322,7 @@ impl Data {
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
-				.insert_into_batch(batch, event_id_bytes, metadata_bytes);
+				.batch_put(batch, event_id_bytes, metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -1369,13 +1362,13 @@ impl Data {
 			return Err!(Request(NotFound("PDU does not exist.")));
 		}
 
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 
 		let event_id_bytes = event_id.as_bytes();
 
 		// --- Phase 1: Double-Write ---
 		self.eventid_pdu
-			.raw_put_into_batch(&mut batch, event_id_bytes, Json(pdu_json));
+			.batch_raw_put(&mut batch, event_id_bytes, Json(pdu_json));
 
 		if let Ok(pdu) =
 			serde_json::from_value::<PduEvent>(serde_json::to_value(pdu_json).unwrap())
@@ -1388,7 +1381,7 @@ impl Data {
 				};
 
 			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
-			self.roomid_topologicalorder_pducount.insert_into_batch(
+			self.roomid_topologicalorder_pducount.batch_put(
 				&mut batch,
 				&topo_key,
 				event_id_bytes,
@@ -1409,11 +1402,8 @@ impl Data {
 				rejection_reason: String::new(),
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-				self.eventid_metadata.insert_into_batch(
-					&mut batch,
-					event_id_bytes,
-					metadata_bytes,
-				);
+				self.eventid_metadata
+					.batch_put(&mut batch, event_id_bytes, metadata_bytes);
 			}
 
 			let short_event_id = self
@@ -1438,7 +1428,7 @@ impl Data {
 			self.store_shortauthevents_into_batch(&mut batch, short_event_id, &auth_shorts);
 		}
 
-		self.eventid_pdu.apply_batch(&batch);
+		self.eventid_pdu.apply_batch(batch);
 		self.room_pducount_eventid.wake(pdu_id);
 		self.eventid_pdu.wake(event_id_bytes);
 		Ok(())
@@ -2097,9 +2087,9 @@ impl Data {
 		self.shorteventid_shortprevevents.insert(&key, &val);
 	}
 
-	pub(super) fn store_shortprevevents_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) fn store_shortprevevents_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		shorteventid: rooms::short::ShortEventId,
 		shortprevevents: &[rooms::short::ShortEventId],
 	) {
@@ -2109,7 +2099,7 @@ impl Data {
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 		self.shorteventid_shortprevevents
-			.insert_into_batch(batch, &key, &val);
+			.batch_put(batch, &key, &val);
 	}
 
 	pub(super) async fn get_shortprevevents(
@@ -2155,9 +2145,9 @@ impl Data {
 		Ok(auth_shorts)
 	}
 
-	pub(super) fn store_shortauthevents_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) fn store_shortauthevents_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		shorteventid: rooms::short::ShortEventId,
 		shortauthevents: &[rooms::short::ShortEventId],
 	) {
@@ -2167,7 +2157,7 @@ impl Data {
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 		self.shorteventid_shortauthevents
-			.insert_into_batch(batch, &key, &val);
+			.batch_put(batch, &key, &val);
 	}
 
 	pub(super) fn multi_get_shortprevevents<'a, I>(

@@ -6,7 +6,6 @@
 use std::{convert::AsRef, fmt::Debug, io::Write};
 
 use conduwuit::{arrayvec::ArrayVec, implement};
-use rocksdb::WriteBatchWithTransaction;
 use serde::Serialize;
 
 use crate::{
@@ -59,26 +58,6 @@ where
 {
 	let mut val_buf = ValBuf::new();
 	self.raw_bput(key, val, &mut val_buf);
-}
-
-/// Insert Key/Value into batch
-///
-/// - Key is raw
-/// - Val is serialized
-#[implement(super::Map)]
-#[inline]
-pub fn raw_put_into_batch<K, V>(
-	&self,
-	batch: &mut WriteBatchWithTransaction<false>,
-	key: K,
-	val: V,
-) where
-	K: AsRef<[u8]>,
-	V: Serialize,
-{
-	let mut val_buf = ValBuf::new();
-	let val = ser::serialize(&mut val_buf, val).expect("failed to serialize insertion val");
-	self.insert_into_batch(batch, &key, val);
 }
 
 /// Insert Key/Value
@@ -232,58 +211,9 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, iter), fields(%self), level = "trace")]
-pub fn insert_batch<'a, I, K, V>(&'a self, iter: I)
-where
-	I: Iterator<Item = (K, V)> + Send + Debug,
-	K: AsRef<[u8]> + Sized + Debug + 'a,
-	V: AsRef<[u8]> + Sized + 'a,
-{
-	let mut batch = WriteBatchWithTransaction::<false>::default();
-	for (key, val) in iter {
-		batch.put_cf(&self.cf(), key.as_ref(), val.as_ref());
-	}
-
-	let write_options = &self.write_options;
-	self.db
-		.db
-		.write_opt(&batch, write_options)
-		.or_else(or_else)
-		.expect("database insert batch error");
-}
-
-#[implement(super::Map)]
-#[tracing::instrument(skip(self, batch, key, val), fields(%self), level = "trace")]
-pub fn insert_into_batch<K, V>(
-	&self,
-	batch: &mut WriteBatchWithTransaction<false>,
-	key: &K,
-	val: V,
-) where
-	K: AsRef<[u8]> + ?Sized,
-	V: AsRef<[u8]>,
-{
-	batch.put_cf(&self.cf(), key.as_ref(), val.as_ref());
-}
-
-#[implement(super::Map)]
 pub fn wake<K>(&self, key: &K)
 where
 	K: AsRef<[u8]> + ?Sized,
 {
 	self.watchers.wake(key.as_ref());
-}
-
-#[implement(super::Map)]
-#[tracing::instrument(skip(self, batch), fields(%self), level = "trace")]
-pub fn apply_batch(&self, batch: &rocksdb::WriteBatch) {
-	let write_options = &self.write_options;
-	self.db
-		.db
-		.write_opt(batch, write_options)
-		.or_else(or_else)
-		.expect("database apply batch error");
-	if !self.db.corked() {
-		self.db.flush().expect("database flush error");
-	}
 }

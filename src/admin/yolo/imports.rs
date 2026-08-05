@@ -329,7 +329,7 @@ pub(super) async fn import_pdus(
 				}
 			}
 
-			self.services.rooms.timeline.db_apply_batch(&batch);
+			self.services.rooms.timeline.db_apply_batch(batch);
 			info!(
 				"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
 				 {chunk_failed} failed"

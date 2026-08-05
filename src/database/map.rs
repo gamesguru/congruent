@@ -1,3 +1,4 @@
+mod batch;
 mod clear;
 pub mod compact;
 mod contains;
@@ -42,7 +43,7 @@ pub(crate) use self::options::{
 	cache_iter_options_default, cache_read_options_default, iter_options_default,
 	nocache_read_options_default, read_options_default, write_options_default,
 };
-pub use self::{get_batch::Get, qry_batch::Qry};
+pub use self::{batch::Batch, get_batch::Get, qry_batch::Qry};
 use crate::{Engine, watchers::Watchers};
 
 pub struct Map {

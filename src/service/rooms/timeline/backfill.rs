@@ -764,9 +764,9 @@ pub async fn force_insert_pdu(
 
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
-pub async fn force_insert_pdu_batch(
-	&self,
-	batch: &mut database::rocksdb::WriteBatch,
+pub async fn force_insert_pdu_batch<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
 	room_id: &RoomId,
 	event_id: &EventId,
 	pdu: &PduEvent,

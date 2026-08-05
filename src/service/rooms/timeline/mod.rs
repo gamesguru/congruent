@@ -263,11 +263,9 @@ impl Service {
 		}
 	}
 
-	pub fn db_batch(&self) -> database::rocksdb::WriteBatch { self.db.db_batch() }
+	pub fn db_batch(&self) -> database::Batch<'_> { self.db.db_batch() }
 
-	pub fn db_apply_batch(&self, batch: &database::rocksdb::WriteBatch) {
-		self.db.db_apply_batch(batch);
-	}
+	pub fn db_apply_batch(&self, batch: database::Batch<'_>) { self.db.db_apply_batch(batch); }
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn first_pdu_in_room(&self, room_id: &RoomId) -> Result<impl Event> {

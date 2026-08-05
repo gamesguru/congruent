@@ -215,7 +215,7 @@ impl Service {
 				stats.repaired_topo_index = stats.repaired_topo_index.saturating_add(1);
 				topo_batch_len = topo_batch_len.saturating_add(1);
 				if topo_batch_len >= 1000 {
-					self.db.db_apply_batch(&topo_batch);
+					self.db.db_apply_batch(topo_batch);
 					topo_batch = self.db.db_batch();
 					topo_batch_len = 0;
 				}
@@ -323,7 +323,7 @@ impl Service {
 		}
 
 		if rebuild_topo && topo_batch_len > 0 {
-			self.db.db_apply_batch(&topo_batch);
+			self.db.db_apply_batch(topo_batch);
 		}
 
 		// --- Forward extremities (roomid_pduleaves) ---

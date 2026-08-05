@@ -1488,7 +1488,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 		let softfailed_stream = softfailedeventids.raw_stream();
 		pin_mut!(softfailed_stream);
 
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 
 		let mut batch_count = 0_usize;
 
@@ -1501,7 +1501,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 					if !meta.soft_failed {
 						meta.soft_failed = true;
 						if let Ok(new_bytes) = bincode::serialize(&meta) {
-							db["eventid_metadata"].insert_into_batch(
+							db["eventid_metadata"].batch_put(
 								&mut batch,
 								&event_id_bytes,
 								&new_bytes,
@@ -1514,13 +1514,13 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 			}
 
 			if batch_count >= 1000 {
-				db["eventid_metadata"].apply_batch(&batch);
-				batch.clear();
+				db["eventid_metadata"].apply_batch(batch);
+				batch = database::Batch::new();
 				batch_count = 0;
 			}
 		}
 
-		db["eventid_metadata"].apply_batch(&batch);
+		db["eventid_metadata"].apply_batch(batch);
 		db.db
 			.drop_cf("softfailedeventids")
 			.unwrap_or_else(|e| warn!("Failed to drop softfailedeventids: {e}"));
@@ -1563,7 +1563,7 @@ async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
 	let mut total = 0_usize;
 	let mut migrated = 0_usize;
 	let mut skipped = 0_usize;
-	let mut batch = database::rocksdb::WriteBatch::default();
+	let mut batch = database::Batch::new();
 
 	while let Some(Ok((event_id_bytes, old_raw_id_bytes))) = stream.next().await {
 		total = total.saturating_add(1);
@@ -1622,23 +1622,20 @@ async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
 		new_raw_id_bytes[8..16].copy_from_slice(&encoded_count);
 
 		// Apply updates
-		room_pducount_eventid.remove_from_batch(&mut batch, old_raw_id_bytes);
-		room_pducount_eventid.insert_into_batch(&mut batch, &new_raw_id_bytes, event_id_bytes);
-		eventid_pduid.insert_into_batch(&mut batch, event_id_bytes, new_raw_id_bytes);
+		room_pducount_eventid.batch_delete(&mut batch, old_raw_id_bytes);
+		room_pducount_eventid.batch_put(&mut batch, &new_raw_id_bytes, event_id_bytes);
+		eventid_pduid.batch_put(&mut batch, event_id_bytes, new_raw_id_bytes);
 
 		migrated = migrated.saturating_add(1);
 
 		if migrated.is_multiple_of(10000) {
-			room_pducount_eventid.apply_batch(&batch);
-			eventid_pduid.apply_batch(&batch);
-			batch.clear();
+			room_pducount_eventid.apply_batch(batch);
+			batch = database::Batch::new();
 			info!("RawPduId unification: Processed {} PDUs...", migrated);
 		}
 	}
 
-	room_pducount_eventid.apply_batch(&batch);
-	eventid_pduid.apply_batch(&batch);
-	batch.clear();
+	room_pducount_eventid.apply_batch(batch);
 
 	info!(
 		"RawPduId unification complete. Migrated {} PDUs ({} skipped, {} total).",
