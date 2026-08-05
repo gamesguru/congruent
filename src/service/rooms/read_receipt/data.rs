@@ -600,9 +600,27 @@ impl Data {
 			};
 
 			// The event is already on the main timeline (always true for `Main`
-			// receipts): a same-event synthetic copy would only collide with the
-			// original, so there's nothing distinct to synthesize.
+			// receipts): a same-event synthetic copy would usually only collide with
+			// the original. The exception is a real existing unthreaded receipt on
+			// the same event; when a later threaded receipt for the same
+			// `(event, type, user)` arrives, MSC4102 requires the unthreaded receipt
+			// to win in the current sync/federation window too.
 			if target_event_id == *new_event_id {
+				let has_same_event_unthreaded = existing_event
+					.content
+					.0
+					.get(new_event_id)
+					.and_then(|receipts| receipts.get(new_type))
+					.and_then(|users| users.get(user_id))
+					.is_some_and(|receipt| receipt.thread == ReceiptThread::Unthreaded);
+
+				if !has_same_event_unthreaded {
+					continue;
+				}
+
+				let mut unthreaded = new_receipt.clone();
+				unthreaded.thread = ReceiptThread::Unthreaded;
+				synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
 				continue;
 			}
 

@@ -372,14 +372,39 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	self.db.userroomid_joined.remove(&userroom_id);
 	self.db.roomuserid_joined.remove(&roomuser_id);
 
-	self.db.userroomid_invitestate.remove(&userroom_id);
-	self.db.roomuserid_invitecount.remove(&roomuser_id);
-	self.db.userroomid_invitesender.remove(&userroom_id);
+	let preserve_newer_invite = if let Some(leave_pdu) = &leave_pdu {
+		let leave_origin_ts: u64 = leave_pdu.origin_server_ts.into();
+		self.invite_state(user_id, room_id)
+			.await
+			.ok()
+			.and_then(|invite_state| {
+				invite_state
+					.into_iter()
+					.filter_map(|event| {
+						serde_json::from_str::<serde_json::Value>(event.json().get())
+							.ok()?
+							.get("origin_server_ts")?
+							.as_u64()
+					})
+					.max()
+			})
+			.is_some_and(|invite_origin_ts| invite_origin_ts > leave_origin_ts)
+	} else {
+		false
+	};
+
+	if !preserve_newer_invite {
+		self.db.userroomid_invitestate.remove(&userroom_id);
+		self.db.roomuserid_invitecount.remove(&roomuser_id);
+		self.db.userroomid_invitesender.remove(&userroom_id);
+	}
 
 	self.db.userroomid_knockedstate.remove(&userroom_id);
 	self.db.roomuserid_knockedcount.remove(&roomuser_id);
 
-	self.db.roomid_inviteviaservers.remove(room_id);
+	if !preserve_newer_invite {
+		self.db.roomid_inviteviaservers.remove(room_id);
+	}
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
