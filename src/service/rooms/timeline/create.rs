@@ -408,7 +408,8 @@ pub fn hash_sign_and_finalize(
 
 	if uses_server_assigned_event_ids {
 		pdu.event_id = EventId::new(self.services.globals.server_name());
-		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
+		pdu_json
+			.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
 	} else {
 		pdu_json.remove("event_id");
 	}
@@ -429,7 +430,8 @@ pub fn hash_sign_and_finalize(
 
 	if !uses_server_assigned_event_ids {
 		pdu.event_id = gen_event_id(&pdu_json, room_version_id)?;
-		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
+		pdu_json
+			.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
 	}
 
 	// Rehydrate the persisted event from the finalized JSON so the stored PDU

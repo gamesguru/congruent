@@ -523,7 +523,9 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					))
 					.await
 					{
-						debug_info!("failed to handle directly fetched auth event {missing_id}: {e}");
+						debug_info!(
+							"failed to handle directly fetched auth event {missing_id}: {e}"
+						);
 					}
 				}
 
@@ -627,12 +629,7 @@ pub async fn process_timeline_upgrade(
 
 	// Fetch any missing prev events doing all checks listed here starting at 1.
 	// These are timeline events
-	let (
-		sorted_prev_events,
-		mut eventid_info,
-		state_ids_anchor,
-		prev_fetch_had_invalid_data,
-	) =
+	let (sorted_prev_events, mut eventid_info, state_ids_anchor, prev_fetch_had_invalid_data) =
 		Box::pin(self.fetch_prev(
 			origin,
 			create_event,

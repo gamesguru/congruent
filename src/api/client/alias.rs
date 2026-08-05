@@ -1,7 +1,9 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, debug_warn, matrix::pdu::PduBuilder};
-use ruma::api::client::alias::{create_alias, delete_alias, get_alias};
-use ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
+use ruma::{
+	api::client::alias::{create_alias, delete_alias, get_alias},
+	events::room::canonical_alias::RoomCanonicalAliasEventContent,
+};
 
 use crate::Ruma;
 
@@ -105,7 +107,8 @@ pub(crate) async fn delete_alias_route(
 		{
 			debug_warn!(
 				"failed to clear canonical alias after deleting {} in {}: {e}",
-				body.room_alias, room_id
+				body.room_alias,
+				room_id
 			);
 		}
 	}

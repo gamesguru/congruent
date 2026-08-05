@@ -350,10 +350,5 @@ where
 		}
 	}
 
-	Ok((
-		sorted_eids,
-		eventid_info,
-		state_ids_anchor,
-		had_invalid_response,
-	))
+	Ok((sorted_eids, eventid_info, state_ids_anchor, had_invalid_response))
 }

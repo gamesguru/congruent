@@ -575,9 +575,11 @@ where
 					still_missing.len(),
 					still_missing
 				);
-				self.services
-					.outlier
-					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id));
+				self.services.outlier.add_pdu_outlier(
+					pdu_event.event_id(),
+					&incoming_pdu,
+					Some(room_id),
+				);
 				return Err!(MissingAuthEvents(still_missing));
 			}
 		} else {
@@ -589,9 +591,11 @@ where
 				.into_iter()
 				.map(ToOwned::to_owned)
 				.collect();
-			self.services
-				.outlier
-				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id));
+			self.services.outlier.add_pdu_outlier(
+				pdu_event.event_id(),
+				&incoming_pdu,
+				Some(room_id),
+			);
 			return Err!(MissingAuthEvents(missing));
 		}
 	}
