@@ -17,7 +17,7 @@ allow_local_presence = true
 allow_registration = true
 database_path = "/var/lib/continuwuity"
 # By default we use info/warn, only for failures/debugging verbose
-log = "debug"
+log = "info"
 # log = "trace,h2=debug,hyper=debug,conduwuit_database=warn,conduwuit_service::manager=info,conduwuit_api::router=error,conduwuit_router=error,tower_http=error"
 port = [8008, 8448]
 default_room_version = "12"
