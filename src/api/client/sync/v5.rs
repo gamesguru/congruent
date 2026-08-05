@@ -718,13 +718,12 @@ async fn sync_events_v5_route_inner(
 						}
 
 						watcher = services.sync.setup_watch(sender_user, sender_device).await;
+						let (r, re) = build_sync_events_v5(services, &context).await?;
+						response = r;
 						// Read after the loop (or on the next iteration's break check);
 						// clippy can't see across the loop boundary that this is used.
 						#[allow(unused_assignments)]
-						{
-							(response, room_extras) =
-								build_sync_events_v5(services, &context).await?;
-						}
+						(room_extras = re);
 						if !response.rooms.is_empty() || !response.extensions.is_empty() {
 							break;
 						}
