@@ -624,9 +624,11 @@ async fn allowed_to_send_state_event(
 								.get_mut("users")
 								.and_then(|u| u.as_object_mut())
 								.is_some_and(|users| {
-									creators.iter().fold(false, |removed, creator| {
-										users.remove(creator).is_some() || removed
-									})
+									let mut removed = false;
+									for creator in &creators {
+										removed = users.remove(creator).is_some() || removed;
+									}
+									removed
 								});
 
 							if removed_creator {
