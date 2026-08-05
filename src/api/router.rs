@@ -257,6 +257,12 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_pushers_route)
 		.ruma_route(&client::upgrade_room_route)
 		.ruma_route(&client::get_threads_route)
+		.route(
+			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/subscription",
+			get(client::get_thread_subscription_msc4306_route)
+				.put(client::put_thread_subscription_msc4306_route)
+				.delete(client::delete_thread_subscription_msc4306_route),
+		)
 		.ruma_route(&client::get_relating_events_with_rel_type_and_event_type_route)
 		.ruma_route(&client::get_relating_events_with_rel_type_route)
 		.ruma_route(&client::get_relating_events_route)

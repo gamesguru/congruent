@@ -1,11 +1,11 @@
 use axum::{
 	Json,
-	body::{Body, Bytes},
+	body::{Body, to_bytes},
 	extract::{Path, State},
 	response::{IntoResponse, Response},
 };
 use conduwuit::{
-	Err, Result, at, debug_warn, err,
+	Err, Result, at, debug_warn,
 	matrix::{
 		Event,
 		pdu::{PduCount, PduEvent},
@@ -14,7 +14,7 @@ use conduwuit::{
 use futures::StreamExt;
 use http::StatusCode;
 use ruma::{
-	OwnedEventId, OwnedRoomId, OwnedUserId,
+	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
 	uint,
 };
@@ -95,9 +95,13 @@ pub(crate) async fn get_threads_route(
 pub(crate) async fn put_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
-	body: Bytes,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let (parts, body) = request.into_parts();
+	let body = to_bytes(body, services.server.config.max_request_size)
+		.await
+		.unwrap_or_default();
+	let request = hyper::Request::from_parts(parts, Body::empty());
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
 	let body = serde_json::from_slice::<ThreadSubscriptionBody>(&body)

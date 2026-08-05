@@ -121,7 +121,7 @@ impl Service {
 			.timeline
 			.get_pdu(thread_id)
 			.await
-			.is_ok_and(|pdu| pdu.room_id == room_id)
+			.is_ok_and(|pdu| pdu.room_id.as_deref() == Some(room_id))
 	}
 
 	pub async fn get_subscription(
@@ -203,11 +203,9 @@ impl Service {
 			.stream_prefix(&prefix)
 			.ignore_err()
 			.ready_filter_map(
-				|(key, subscription): (
-					(&UserId, OwnedRoomId, OwnedEventId),
-					Json<ThreadSubscription>,
-				)| {
-					let subscription = subscription.0;
+				|(key, subscription): ((&UserId, OwnedRoomId, OwnedEventId), &[u8])| {
+					let subscription =
+						serde_json::from_slice::<ThreadSubscription>(subscription).ok()?;
 					(subscription.subscribed && subscription.bump_stamp > since).then_some((
 						key.1,
 						key.2,
@@ -216,7 +214,7 @@ impl Service {
 				},
 			)
 			.ready_fold(
-				BTreeMap::new(),
+				BTreeMap::<OwnedRoomId, BTreeMap<OwnedEventId, ThreadSubscription>>::new(),
 				|mut subscriptions, (room_id, thread_id, subscription)| {
 					subscriptions
 						.entry(room_id)

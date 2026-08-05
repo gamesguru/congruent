@@ -50,7 +50,7 @@ use ruma::{
 	uint,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::share_encrypted_room;
 use crate::{
@@ -442,6 +442,7 @@ pub(crate) struct CompatSyncRequest {
 	list_filters: BTreeMap<String, CompatListFilters>,
 	required_state_excludes: CompatRequiredStateExcludes,
 	set_presence: PresenceState,
+	thread_subscriptions_enabled: bool,
 }
 
 impl IncomingRequest for CompatSyncRequest {
@@ -460,6 +461,17 @@ impl IncomingRequest for CompatSyncRequest {
 	{
 		let (parts, body) = req.into_parts();
 		let body = body.as_ref();
+		let thread_subscriptions_enabled = serde_json::from_slice::<Value>(body)
+			.ok()
+			.and_then(|body| {
+				body.get("extensions")
+					.and_then(|extensions| {
+						extensions.get("io.element.msc4308.thread_subscriptions")
+					})
+					.and_then(|extension| extension.get("enabled"))
+					.and_then(Value::as_bool)
+			})
+			.unwrap_or(false);
 		let (request, list_filters, required_state_excludes, set_presence) = if body.is_empty() {
 			(
 				sync_events::v5::Request::default(),
@@ -530,6 +542,7 @@ impl IncomingRequest for CompatSyncRequest {
 			list_filters,
 			required_state_excludes,
 			set_presence,
+			thread_subscriptions_enabled,
 		})
 	}
 }
@@ -595,6 +608,7 @@ async fn sync_events_v5_route_inner(
 		mut list_filters,
 		mut required_state_excludes,
 		set_presence,
+		thread_subscriptions_enabled,
 	} = body.body;
 
 	if endpoint.enforces_stable_limits() && request.lists.len() > 100 {
@@ -719,7 +733,17 @@ async fn sync_events_v5_route_inner(
 			.sync
 			.update_snake_sync_pos(&snake_key, response.pos.parse().unwrap_or(globalsince));
 	}
-	sync_events_v5_json_response(response, room_extras)
+	sync_events_v5_json_response(
+		response,
+		room_extras,
+		collect_thread_subscriptions_extension(
+			services,
+			sender_user,
+			globalsince,
+			thread_subscriptions_enabled,
+		)
+		.await?,
+	)
 }
 
 async fn build_sync_events_v5(
@@ -1490,11 +1514,22 @@ fn effective_timeline_limit(
 fn sync_events_v5_json_response(
 	response: sync_events::v5::Response,
 	room_extras: RoomExtras,
+	thread_subscriptions_extension: Option<Value>,
 ) -> Result<axum::response::Response> {
 	let response = response
 		.try_into_http_response::<BytesMut>()
 		.map_err(|e| err!(Database("failed to serialize sync v5 response: {e}")))?;
 	let mut value = serde_json::from_slice::<Value>(response.body())?;
+	if let Some(thread_subscriptions) = thread_subscriptions_extension {
+		value
+			.as_object_mut()
+			.expect("sync response is a JSON object")
+			.entry("extensions")
+			.or_insert_with(|| Value::Object(Map::default()))
+			.as_object_mut()
+			.expect("sync response extensions is a JSON object")
+			.insert("io.element.msc4308.thread_subscriptions".to_owned(), thread_subscriptions);
+	}
 	let Some(rooms) = value.get_mut("rooms").and_then(Value::as_object_mut) else {
 		return Ok(Json(value).into_response());
 	};
@@ -1530,6 +1565,43 @@ fn sync_events_v5_json_response(
 	}
 
 	Ok(Json(value).into_response())
+}
+
+async fn collect_thread_subscriptions_extension(
+	services: &Services,
+	sender_user: &UserId,
+	globalsince: u64,
+	enabled: bool,
+) -> Result<Option<Value>> {
+	if !enabled {
+		return Ok(None);
+	}
+
+	let subscribed = services
+		.rooms
+		.threads
+		.subscriptions_since(sender_user, globalsince)
+		.await
+		.into_iter()
+		.map(|(room_id, subscriptions)| {
+			let subscriptions = subscriptions
+				.into_iter()
+				.map(|(thread_id, subscription)| {
+					(
+						thread_id.to_string(),
+						json!({
+							"automatic": subscription.automatic,
+							"bump_stamp": subscription.bump_stamp,
+						}),
+					)
+				})
+				.collect::<Map<_, _>>();
+
+			(room_id.to_string(), Value::Object(subscriptions))
+		})
+		.collect::<Map<_, _>>();
+
+	Ok(Some(json!({ "subscribed": subscribed })))
 }
 
 fn membership_state_to_str(membership: &MembershipState) -> &str {
