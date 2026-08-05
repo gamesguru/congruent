@@ -28,8 +28,8 @@
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_CannotSendCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
 {"Action":"pass","Test":"TestRoomCreate"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel"}
 {"Action":"pass","Test":"TestRoomCreate/Parallel/Can_/sync_newly_created_room"}
