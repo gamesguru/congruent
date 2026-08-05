@@ -701,8 +701,35 @@ async fn sync_events_v5_route_inner(
 	if waits_for_updates {
 		if response.rooms.is_empty() && response.extensions.is_empty() {
 			if let Some(timeout) = request.timeout {
-				// Hang until new info arrives, or the client's timeout expires.
-				_ = tokio::time::timeout(timeout, watcher).await;
+				// Hang until new info arrives, or the client's timeout expires. A
+				// single wake can be spurious -- a write to a watched prefix that
+				// produces no visible delta here -- so loop rather than treating
+				// one wake as authoritative, matching the v3 sync fix. Re-arm the
+				// watcher before each rebuild, not after, to keep the
+				// arm-before-read ordering that avoids the TOCTOU fixed in
+				// c8f9083c9.
+				if let Some(deadline) = std::time::Instant::now().checked_add(timeout) {
+					let mut watcher = watcher;
+					while let Some(remaining) =
+						deadline.checked_duration_since(std::time::Instant::now())
+					{
+						if tokio::time::timeout(remaining, watcher).await.is_err() {
+							break;
+						}
+
+						watcher = services.sync.setup_watch(sender_user, sender_device).await;
+						// Read after the loop (or on the next iteration's break check);
+						// clippy can't see across the loop boundary that this is used.
+						#[allow(unused_assignments)]
+						{
+							(response, room_extras) =
+								build_sync_events_v5(services, &context).await?;
+						}
+						if !response.rooms.is_empty() || !response.extensions.is_empty() {
+							break;
+						}
+					}
+				}
 			}
 		}
 

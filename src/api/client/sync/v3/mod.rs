@@ -240,11 +240,35 @@ pub(crate) async fn sync_events_route(
 		return Ok(axum::Json(response).into_response());
 	}
 
-	// Hang until new info arrives, or the client's timeout expires
+	// Hang until new info arrives, or the client's timeout expires. A single
+	// wake can be spurious -- a write to a watched prefix that produces no
+	// visible sync delta (count bumps, an invite-sender write, expired
+	// typing) -- so loop rather than treating one wake as authoritative and
+	// returning an empty 200. Each iteration re-arms the watcher *before*
+	// rebuilding, matching the arm-before-read ordering above; re-arming
+	// after the build would reopen the TOCTOU fixed in c8f9083c9.
 	if let Some(timeout) = body.body.timeout {
 		if timeout > Duration::from_secs(0) {
-			_ = tokio::time::timeout(timeout, watcher).await;
-			// Retry returning data
+			let Some(deadline) = timer.checked_add(timeout) else {
+				log_time(&response);
+				return Ok(axum::Json(response).into_response());
+			};
+			let mut watcher = watcher;
+			while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
+			{
+				if tokio::time::timeout(remaining, watcher).await.is_err() {
+					break;
+				}
+
+				watcher = services.sync.setup_watch(sender_user, sender_device).await;
+				let response = build_sync_events(&services, &body, use_state_after).await?;
+				if !is_sync_response_empty(&response) {
+					log_time(&response);
+					return Ok(axum::Json(response).into_response());
+				}
+			}
+
+			// Deadline hit without ever producing a non-empty response.
 			let response = build_sync_events(&services, &body, use_state_after).await?;
 			log_time(&response);
 			return Ok(axum::Json(response).into_response());

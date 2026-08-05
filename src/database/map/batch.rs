@@ -78,15 +78,15 @@ where
 
 #[implement(Map)]
 /// Commit `batch` to the database, then wake every watcher for every key
-/// the batch touched. Takes `batch` by value (not `&Batch`) so it can't be
-/// applied twice by accident -- this is intentional despite the pedantic
-/// `needless_pass_by_value` lint.
-#[allow(clippy::needless_pass_by_value)]
+/// the batch touched. Takes `batch` by value (not `&Batch`) and destructures
+/// it so it can't be applied twice by accident.
 pub fn apply_batch(&self, batch: Batch<'_>) {
+	let Batch { inner, wakes } = batch;
+
 	let write_options = &self.write_options;
 	self.db
 		.db
-		.write_opt(&batch.inner, write_options)
+		.write_opt(&inner, write_options)
 		.or_else(or_else)
 		.expect("database apply batch error");
 
@@ -94,7 +94,7 @@ pub fn apply_batch(&self, batch: Batch<'_>) {
 		self.db.flush().expect("database flush error");
 	}
 
-	for (map, key) in &batch.wakes {
+	for (map, key) in &wakes {
 		map.watchers.wake(key);
 	}
 }
