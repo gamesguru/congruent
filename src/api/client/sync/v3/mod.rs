@@ -608,11 +608,13 @@ pub(crate) async fn build_sync_events(
 
 		// inject missing ephemeral to satisfy complement
 		for (_room_id, room_val) in join.as_object_mut().unwrap() {
-			if !room_val.as_object().unwrap().contains_key("ephemeral") {
-				room_val
-					.as_object_mut()
-					.unwrap()
-					.insert("ephemeral".to_owned(), serde_json::json!({ "events": [] }));
+			let room = room_val.as_object_mut().unwrap();
+			if !room.contains_key("ephemeral") {
+				room.insert("ephemeral".to_owned(), serde_json::json!({ "events": [] }));
+			}
+
+			if is_initial_sync && !room.contains_key("account_data") {
+				room.insert("account_data".to_owned(), serde_json::json!({ "events": [] }));
 			}
 		}
 	}

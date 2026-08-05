@@ -1601,6 +1601,10 @@ async fn collect_thread_subscriptions_extension(
 		})
 		.collect::<Map<_, _>>();
 
+	if subscribed.is_empty() {
+		return Ok(Some(json!({})));
+	}
+
 	Ok(Some(json!({ "subscribed": subscribed })))
 }
 
