@@ -446,7 +446,7 @@ pub async fn backfill_pdu(
 	// event with a Normal count. Keeping Normal is correct — it sorts
 	// in the live timeline where the user expects it. Demoting to
 	// Backfilled would inject the event into the wrong stream position.
-	if self.get_pdu_id(&event_id).await.is_ok() {
+	if self.non_outlier_pdu_exists(&event_id).await {
 		debug!("Event {event_id} already in timeline, skipping backfill");
 		return Ok(());
 	}
@@ -507,7 +507,7 @@ pub async fn backfill_pdu(
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
 	// with concurrent /send transactions inserting the same event.
-	if self.get_pdu_id(&event_id).await.is_ok() {
+	if self.non_outlier_pdu_exists(&event_id).await {
 		debug!("Event {event_id} already in timeline (post-lock check), skipping backfill");
 		return Ok(());
 	}
@@ -549,7 +549,7 @@ pub async fn backfill_pdu(
 #[implement(super::Service)]
 pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
 	// Skip if already in timeline
-	if self.get_pdu_id(event_id).await.is_ok() {
+	if self.non_outlier_pdu_exists(event_id).await {
 		return Ok(());
 	}
 
@@ -640,7 +640,7 @@ pub async fn promote_outliers_sorted(
 
 	for event_id in event_ids {
 		// Skip events already in the timeline
-		if self.get_pdu_id(event_id).await.is_ok() {
+		if self.non_outlier_pdu_exists(event_id).await {
 			continue;
 		}
 
@@ -731,7 +731,7 @@ pub async fn force_insert_pdu(
 	backfill: bool,
 ) -> Result<RawPduId> {
 	// Skip if already in timeline
-	if self.get_pdu_id(event_id).await.is_ok() {
+	if self.non_outlier_pdu_exists(event_id).await {
 		return Err!(Database("PDU {event_id} already in timeline"));
 	}
 
@@ -773,7 +773,7 @@ pub async fn force_insert_pdu_batch(
 	value: &CanonicalJsonObject,
 	backfill: bool,
 ) -> Result<RawPduId> {
-	if self.get_pdu_id(event_id).await.is_ok() {
+	if self.non_outlier_pdu_exists(event_id).await {
 		return Err!(Database("PDU {event_id} already in timeline"));
 	}
 
