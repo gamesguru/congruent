@@ -772,7 +772,7 @@
 {"Action":"pass","Test":"TestSyncTimelineGap/full"}
 {"Action":"pass","Test":"TestSyncTimelineGap/incremental"}
 {"Action":"pass","Test":"TestTentativeEventualJoiningAfterRejecting"}
-{"Action":"fail","Test":"TestThreadReceiptsInSyncMSC4102"}
+{"Action":"pass","Test":"TestThreadReceiptsInSyncMSC4102"}
 {"Action":"pass","Test":"TestThreadedReceipts"}
 {"Action":"pass","Test":"TestThreadsEndpoint"}
 {"Action":"pass","Test":"TestToDeviceMessages"}
@@ -789,7 +789,7 @@
 {"Action":"pass","Test":"TestTyping/Typing_can_be_explicitly_stopped"}
 {"Action":"pass","Test":"TestTyping/Typing_events_DO_NOT_include_a_`room_id`_field"}
 {"Action":"pass","Test":"TestTyping/Typing_notification_sent_to_local_room_members"}
-{"Action":"fail","Test":"TestUnbanViaInvite"}
+{"Action":"pass","Test":"TestUnbanViaInvite"}
 {"Action":"pass","Test":"TestUnknownEndpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Client-server_endpoints"}
 {"Action":"skip","Test":"TestUnknownEndpoints/Key_endpoints"}
