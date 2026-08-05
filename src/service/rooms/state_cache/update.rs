@@ -361,6 +361,9 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let left_count = self.services.globals.next_count().unwrap();
+	let leave_origin_ts = leave_pdu
+		.as_ref()
+		.map(|leave_pdu| u64::from(leave_pdu.origin_server_ts));
 
 	self.db
 		.userroomid_leftstate
@@ -372,8 +375,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	self.db.userroomid_joined.remove(&userroom_id);
 	self.db.roomuserid_joined.remove(&roomuser_id);
 
-	let preserve_newer_invite = if let Some(leave_pdu) = &leave_pdu {
-		let leave_origin_ts: u64 = leave_pdu.origin_server_ts.into();
+	let preserve_newer_invite = if let Some(leave_origin_ts) = leave_origin_ts {
 		self.invite_state(user_id, room_id)
 			.await
 			.ok()
