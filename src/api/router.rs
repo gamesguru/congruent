@@ -9,7 +9,7 @@ use std::str::FromStr;
 use axum::{
 	Router,
 	response::{IntoResponse, Redirect},
-	routing::{any, get, post, put},
+	routing::{any, delete, get, post, put},
 };
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
@@ -68,6 +68,14 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_room_account_data_route)
 		.ruma_route(&client::get_global_account_data_route)
 		.ruma_route(&client::get_room_account_data_route)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/{event_type}",
+			delete(client::delete_global_account_data_msc3391_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/account_data/{event_type}",
+			delete(client::delete_room_account_data_msc3391_route),
+		)
 		.ruma_route(&client::set_displayname_route)
 		.ruma_route(&client::get_displayname_route)
 		.ruma_route(&client::set_avatar_url_route)

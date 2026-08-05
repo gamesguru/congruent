@@ -408,7 +408,7 @@ jobs:
           FAILURES_COUNT=$(echo "$FAILURES" | grep -c '[^[:space:]]' || true)
           if [ "$FAILURES_COUNT" -gt 0 ]; then
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Failed Tests (top 5 of $FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Failed Tests ($FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "$FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -448,7 +448,7 @@ jobs:
               `| ✗ Fail | ${fail} |`,
               `| ⌒ Skip | ${skip} |`,
               '',
-              `<details><summary>Failed Tests (top ${lines.length} of ${fail})</summary>`,
+              `<details><summary>Failed Tests (${fail})</summary>`,
               '',
               failedContent,
               '',

@@ -469,6 +469,10 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::SEQUENTIAL_SMALL
 	},
 	Descriptor {
+		name: "userroomthread_subscription",
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
 		name: "todeviceid_events",
 		..descriptor::RANDOM
 	},

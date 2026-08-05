@@ -8,18 +8,18 @@ use conduwuit_core::{
 		stream::{TryIgnore, WidebandExt},
 	},
 };
-use conduwuit_database::{Deserialized, Map};
+use conduwuit_database::{Deserialized, Interfix, Json, Map};
 use futures::{Stream, StreamExt};
 use ruma::{
-	CanonicalJsonValue, EventId, OwnedEventId, OwnedUserId, RoomId, UserId,
+	CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::threads::get_threads::v1::IncludeThreads,
 	events::relation::{BundledThread, RelationType},
 	uint,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{Dep, rooms, rooms::short::ShortRoomId};
+use crate::{Dep, globals, rooms, rooms::short::ShortRoomId};
 
 pub struct Service {
 	db: Data,
@@ -27,12 +27,14 @@ pub struct Service {
 }
 
 struct Services {
+	globals: Dep<globals::Service>,
 	short: Dep<rooms::short::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
 
 pub(super) struct Data {
 	threadid_userids: Arc<Map>,
+	userroomthread_subscription: Arc<Map>,
 }
 
 /// Maximum relation hops walked when resolving thread membership.
@@ -50,13 +52,23 @@ struct ThreadRelation {
 	event_id: OwnedEventId,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ThreadSubscription {
+	pub subscribed: bool,
+	pub automatic: bool,
+	pub bump_stamp: u64,
+	pub last_unsubscribed: u64,
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			db: Data {
 				threadid_userids: args.db["threadid_userids"].clone(),
+				userroomthread_subscription: args.db["userroomthread_subscription"].clone(),
 			},
 			services: Services {
+				globals: args.depend::<globals::Service>("globals"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
@@ -98,6 +110,122 @@ impl Service {
 	pub async fn get_thread_id_for_event(&self, event_id: &EventId) -> Option<OwnedEventId> {
 		let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
 		self.get_thread_id(&pdu).await
+	}
+
+	pub async fn thread_event_count(&self, event_id: &EventId) -> Result<PduCount> {
+		self.services.timeline.get_pdu_count(event_id).await
+	}
+
+	pub async fn thread_root_exists(&self, room_id: &RoomId, thread_id: &EventId) -> bool {
+		self.services
+			.timeline
+			.get_pdu(thread_id)
+			.await
+			.is_ok_and(|pdu| pdu.room_id == room_id)
+	}
+
+	pub async fn get_subscription(
+		&self,
+		user_id: &UserId,
+		room_id: &RoomId,
+		thread_id: &EventId,
+	) -> Option<ThreadSubscription> {
+		let key = (user_id, room_id, thread_id);
+		self.db
+			.userroomthread_subscription
+			.qry(&key)
+			.await
+			.deserialized()
+			.ok()
+	}
+
+	pub async fn put_subscription(
+		&self,
+		user_id: &UserId,
+		room_id: &RoomId,
+		thread_id: &EventId,
+		automatic: bool,
+	) -> Result<ThreadSubscription> {
+		let previous = self
+			.db
+			.userroomthread_subscription
+			.qry(&(user_id, room_id, thread_id))
+			.await
+			.deserialized()
+			.unwrap_or(ThreadSubscription {
+				subscribed: false,
+				automatic: false,
+				bump_stamp: 0,
+				last_unsubscribed: 0,
+			});
+
+		let subscription = ThreadSubscription {
+			subscribed: true,
+			automatic,
+			bump_stamp: self.services.globals.next_count()?,
+			last_unsubscribed: previous.last_unsubscribed,
+		};
+		self.db
+			.userroomthread_subscription
+			.put((user_id, room_id, thread_id), Json(&subscription));
+
+		Ok(subscription)
+	}
+
+	pub fn delete_subscription(
+		&self,
+		user_id: &UserId,
+		room_id: &RoomId,
+		thread_id: &EventId,
+	) -> Result<ThreadSubscription> {
+		let count = self.services.globals.next_count()?;
+		let subscription = ThreadSubscription {
+			subscribed: false,
+			automatic: false,
+			bump_stamp: count,
+			last_unsubscribed: count,
+		};
+		self.db
+			.userroomthread_subscription
+			.put((user_id, room_id, thread_id), Json(&subscription));
+
+		Ok(subscription)
+	}
+
+	pub async fn subscriptions_since(
+		&self,
+		user_id: &UserId,
+		since: u64,
+	) -> BTreeMap<OwnedRoomId, BTreeMap<OwnedEventId, ThreadSubscription>> {
+		let prefix = (user_id, Interfix);
+		self.db
+			.userroomthread_subscription
+			.stream_prefix(&prefix)
+			.ignore_err()
+			.ready_filter_map(
+				|(key, subscription): (
+					(&UserId, OwnedRoomId, OwnedEventId),
+					Json<ThreadSubscription>,
+				)| {
+					let subscription = subscription.0;
+					(subscription.subscribed && subscription.bump_stamp > since).then_some((
+						key.1,
+						key.2,
+						subscription,
+					))
+				},
+			)
+			.ready_fold(
+				BTreeMap::new(),
+				|mut subscriptions, (room_id, thread_id, subscription)| {
+					subscriptions
+						.entry(room_id)
+						.or_default()
+						.insert(thread_id, subscription);
+					subscriptions
+				},
+			)
+			.await
 	}
 
 	pub async fn add_to_thread<E>(&self, root_event_id: &EventId, event: &E) -> Result
