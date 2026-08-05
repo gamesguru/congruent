@@ -36,19 +36,35 @@ Complement tests have been added, as well functionality for these:
 
 .. code-block:: text
 
-   ✓  tests/msc3890 (9.129s) [Remotely silence local notifications]
-   ✓  tests/msc3967 (9.445s) [Do not require UIA when uploading cross-signing keys]
-   ✓  tests/msc4155 (19.007s) [Invite filtering]
-   ✓  tests/msc4222 (11.685s) [Adding `state_after` to `/sync`]
+  ✓  tests/csapi (10m19.366s)
 
-   ✓ MSC3266 [Room summaries]
-   ✓ MSC3890 [Remotely silence local notifications]
-   ✓ MSC4289 [Explicitly privilege room creators]
+  ✓  tests/msc2836 (46.002s)
+  ✓  tests/msc3391 (21.308s)
+  ✓  tests/msc3757 (15.984s)
+  ✓  tests/msc3874 (17.942s)
+  ✓  tests/msc3890 (9.129s)     [Remotely silence local notifications]
+  ∅  tests/msc3902 (225ms)      [Owned State, not implemented; skipped]
+  ✓  tests/msc3930 (15.021s)
+  ✓  tests/msc3967 (9.445s)     [Do not require UIA when uploading cross-signing keys]
+  ✓  tests/msc4140 (40.107s)    [Delayed events]
+  ✓  tests/msc4155 (19.007s)    [Invite filtering]
+  ✓  tests/msc4186 (1m37.437s)  [SSS - /v5 sliding sync]
+  ✓  tests/msc4222 (11.685s)    [Adding state_after to /sync]
+  ✓  tests/msc4306 (18.482s)
+  ✓  tests/msc4500 (331ms)      [State Accumulator; skipped]
 
-   TODO:
 
-   - MSC4108 [QR Code login]
-   - other complement failures relevant to continuwuity
+  Other features (not exhaustive, non-complement)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  ✓ MSC3266 [Room summaries]
+  ✓ MSC3890 [Remotely silence local notifications]
+
+
+  TODO
+  ~~~~
+
+  - MSC4108 [QR Code login]
 
 
 Ignore the complement results branch
