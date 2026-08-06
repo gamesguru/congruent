@@ -434,7 +434,7 @@ pub async fn add_signing_keys(
 		s
 	};
 
-	let enforce_fsw = self.services.server.config.msc4499_first_seen_wins;
+	let enforce_fsw = self.services.server.config.msc4499_strict_caching;
 	let mut rejected_collision = false;
 
 	// Merging with Collision Detection (First Seen Wins)
@@ -443,7 +443,7 @@ pub async fn add_signing_keys(
 	let collision_action = if enforce_fsw {
 		"Retaining cached key."
 	} else {
-		"Not enforcing because msc4499_first_seen_wins is disabled."
+		"Not enforcing because msc4499_strict_caching is disabled."
 	};
 
 	for (key_id, new_key) in &new_keys.verify_keys {

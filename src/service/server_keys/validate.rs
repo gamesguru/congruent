@@ -11,17 +11,30 @@ const MAX_JSON_SCAN_DEPTH: usize = 128;
 /// `serde_json` silently deduplicates (last-key-wins). Without this pre-scan,
 /// a payload with `{"verify_keys": {"ed25519:foo": ..., "ed25519:foo": ...}}`
 /// would be silently accepted with the second value winning.
-pub(super) fn check_no_duplicate_json_keys(raw: &str) -> Result {
+pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 	// Scan the raw bytes for duplicate keys and count limits FIRST, before
 	// full deserialization. This prevents memory exhaustion if a rogue server
 	// sends 100,000 keys, since we reject it before allocating a JSON tree.
-	let counts = scan_root_sections(raw.as_bytes())?;
+	let counts = match scan_root_sections(raw.as_bytes()) {
+		| Ok(counts) => counts,
+		| Err(e) =>
+			if strict {
+				return Err(e);
+			} else {
+				conduwuit::warn!("MSC4499 (Observation Mode): {e} — allowing payload");
+				return Ok(());
+			},
+	};
 
 	// MSC4499: "If a single key response payload contains more than 50 keys in its
 	// verify_keys dictionary, receiving servers MUST treat the entire response
 	// payload as malformed/hostile and reject it."
 	if counts.verify_keys > 50 {
-		return Err!(BadServerResponse("Too many keys in verify_keys (limit: 50)"));
+		let msg = "Too many keys in verify_keys (limit: 50)";
+		if strict {
+			return Err!(BadServerResponse("{msg}"));
+		}
+		conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
 	}
 
 	// MSC4499: "If a single key response payload contains more than 1000 keys in
@@ -32,14 +45,26 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str) -> Result {
 	// old_verify_keys ceiling here must agree with the storage-layer eviction
 	// target in mod.rs.
 	if counts.old_verify_keys > super::MSC4499_RETIRED_KEY_CEILING {
-		return Err!(BadServerResponse(
+		let msg = format!(
 			"Too many keys in old_verify_keys (limit: {})",
 			super::MSC4499_RETIRED_KEY_CEILING
-		));
+		);
+		if strict {
+			return Err!(BadServerResponse("{msg}"));
+		}
+		conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
 	}
 
-	let value: serde_json::Value =
-		serde_json::from_str(raw).map_err(|e| conduwuit::err!(BadServerResponse("{e}")))?;
+	let value: serde_json::Value = match serde_json::from_str(raw) {
+		| Ok(val) => val,
+		| Err(e) =>
+			if strict {
+				return conduwuit::Err!(BadServerResponse("{e}"));
+			} else {
+				conduwuit::warn!("MSC4499 (Observation Mode): {e} — allowing payload");
+				return Ok(());
+			},
+	};
 
 	let Some(obj) = value.as_object() else {
 		return Ok(());
@@ -55,10 +80,14 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str) -> Result {
 				let old_key = old_val.get("key").and_then(|v| v.as_str());
 				let new_key = verify_val.get("key").and_then(|v| v.as_str());
 				if old_key != new_key {
-					return Err!(BadServerResponse(
+					let msg = format!(
 						"Cross-map collision: key ID {key_id} has different bodies in \
 						 verify_keys and old_verify_keys"
-					));
+					);
+					if strict {
+						return Err!(BadServerResponse("{msg}"));
+					}
+					conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
 				}
 			}
 		}
@@ -314,56 +343,56 @@ mod tests {
 	fn no_duplicates() {
 		let json =
 			r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}, "ed25519:b": {"key": "BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_ok());
+		assert!(check_no_duplicate_json_keys(json, true).is_ok());
 	}
 
 	#[test]
 	fn duplicate_in_verify_keys() {
 		let json =
 			r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}, "ed25519:a": {"key": "BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn duplicate_in_old_verify_keys() {
 		let json = r#"{"old_verify_keys": {"ed25519:a": {"key": "AAA", "expired_ts": 1}, "ed25519:a": {"key": "BBB", "expired_ts": 2}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn duplicate_top_level_section_is_rejected() {
 		let json = r#"{"verify_keys": {}, "verify_keys": {}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn nested_decoy_section_does_not_hide_root_duplicates() {
 		let json = r#"{"unsigned":{"verify_keys":{"ed25519:a":{"key":"AAA"}}},"verify_keys":{"ed25519:a":{"key":"AAA"},"ed25519:a":{"key":"BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn cross_map_collision() {
 		let json = r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}}, "old_verify_keys": {"ed25519:a": {"key": "BBB", "expired_ts": 1}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn cross_map_same_body_is_legal() {
 		let json = r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}}, "old_verify_keys": {"ed25519:a": {"key": "AAA", "expired_ts": 1}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_ok());
+		assert!(check_no_duplicate_json_keys(json, true).is_ok());
 	}
 
 	#[test]
 	fn rejects_escaped_key() {
 		let json = r#"{"verify_keys": {"ed25519:\u0061": {"key": "BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
 	fn rejects_escaped_top_level_section_name() {
 		let json = r#"{"verify\u005fkeys": {"ed25519:a": {"key": "BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json).is_err());
+		assert!(check_no_duplicate_json_keys(json, true).is_err());
 	}
 
 	#[test]
@@ -378,6 +407,6 @@ mod tests {
 		}
 
 		let json = format!(r#"{{"unsigned":{},"verify_keys":{{}}}}"#, nested);
-		assert!(check_no_duplicate_json_keys(&json).is_err());
+		assert!(check_no_duplicate_json_keys(&json, true).is_err());
 	}
 }
