@@ -121,7 +121,7 @@ async fn get_signing_keys_for(
 		return Raw::new(&get_our_signing_keys(services).await).map_err(Into::into);
 	}
 
-	let mut raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
+	let raw_server_key = match services.server_keys.raw_signing_keys_for(server_name).await {
 		| Ok(keys) => Some(keys),
 		| Err(ref e) if e.is_not_found() => None,
 		| Err(e) => return Err(e),
@@ -165,7 +165,7 @@ async fn get_signing_keys_for(
 				.add_signing_keys(&new_keys, conduwuit_service::server_keys::FetchSource::Direct)
 				.await
 			{
-				| Ok(_) => {
+				| Ok(patched_keys) => {
 					merged_server_key = match services
 						.server_keys
 						.merged_signing_keys_for(server_name)
@@ -177,8 +177,7 @@ async fn get_signing_keys_for(
 								"merged_signing_keys_for failed for {server_name} after fetch: \
 								 {e}"
 							);
-							raw_server_key = Some(new_keys);
-							None
+							Some(patched_keys)
 						},
 					};
 				},
