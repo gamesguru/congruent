@@ -216,9 +216,15 @@ pub async fn verify_event(
 			.and_then(|v| v.as_object())
 			.map(|v| serde_json::to_string(v).unwrap_or_default())
 			.unwrap_or_default();
+		// Canonical JSON actually fed into the signature check (post
+		// isolate_origin_signatures, pre our own event_id re-insertion) --
+		// needed to diff against what the origin actually signed when
+		// tracking down canonicalization-mismatch verification failures.
+		// Remove once that's resolved; this is deliberately temporary.
+		let canonical_json = serde_json::to_string(&event).unwrap_or_default();
 		conduwuit::warn!(
 			"Signature verification failed for event {event_id}. Error: {e:?}. Available keys: \
-			 {keys:?}. Event signatures: {signatures}"
+			 {keys:?}. Event signatures: {signatures}. Canonical JSON verified: {canonical_json}"
 		);
 	}
 
