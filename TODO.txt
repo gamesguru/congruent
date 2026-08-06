@@ -1,3 +1,14 @@
+
+8/6/2026
+
+Left as noted-not-fixed (matches your own risk assessment):
+- Effective-retirement-timestamp divergence (stamps now at absence-detection vs. MSC's "last observation still present") — real scope creep (needs last-seen tracking per active key), didn't touch it.
+- Read-modify-write cost — noted, not urgent.
+- Item 4, strict-mode gating behind org.matrix.msc4499_strict_caching — didn't touch; that's a real feature-flag decision, not a code-review fix, and I don't want to make that call unilaterally. Want me to look at what that'd take?
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 7/14/2026
 
 I read through the actual implementation (not just the embedded TODO.txt, which is itself a stale self-review from before this session's latest fixes) and compared it against the current spec state. The gap is bigger than that TODO.txt suggests, in a few places specifically because we moved the spec since that review was written.
