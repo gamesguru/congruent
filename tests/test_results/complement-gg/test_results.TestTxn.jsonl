@@ -1,5 +1,5 @@
-{"Action":"fail","Test":"TestTxnIdWithRefreshToken"}
-{"Action":"fail","Test":"TestTxnIdempotency"}
+{"Action":"skip","Test":"TestTxnIdWithRefreshToken"}
+{"Action":"pass","Test":"TestTxnIdempotency"}
 {"Action":"pass","Test":"TestTxnIdempotencyScopedToDevice"}
 {"Action":"pass","Test":"TestTxnInEvent"}
 {"Action":"pass","Test":"TestTxnScopeOnLocalEcho"}
