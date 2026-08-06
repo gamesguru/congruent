@@ -5,11 +5,10 @@ use std::{
 };
 
 use conduwuit::{
-	Result, debug, err, implement, info,
+	Err, Result, debug, err, implement,
 	matrix::{Event, StateMap},
 	trace,
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryBroadbandExt, TryWidebandExt},
-	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
@@ -45,15 +44,19 @@ where
 		.get_pdu_in_room(Some(room_id), prev_event)
 		.await
 	else {
-		info!("prev_event {prev_event} not found locally; falling back to fetch_state");
+		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
 	};
 
+	// Unlike "not found locally", a prev_event that resolves to a PDU in a
+	// *different* room isn't a delivery gap -- there's no missing state a
+	// federation round trip could supply that would make this legitimate. It's
+	// a malformed or hostile event. Falling back to fetch_state here would
+	// turn a single cheap-to-craft event into a guaranteed outbound
+	// /state_ids request per inbound event, at whatever rate a malicious
+	// origin cares to push transactions. Hard reject instead.
 	if prev_pdu.room_id() != Some(room_id) {
-		warn!(
-			"prev_event {prev_event} claims diff room than {room_id}; fall back to fetch_state"
-		);
-		return Ok(None);
+		return Err!(Database("prev_event {prev_event} claims a different room than {room_id}"));
 	}
 
 	let Ok(prev_event_sstatehash) = self
