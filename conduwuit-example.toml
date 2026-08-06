@@ -772,14 +772,12 @@
 #
 #only_query_trusted_key_servers = false
 
-# Enforce MSC4499 First-Seen-Wins semantics for federation signing keys.
-# When a server re-publishes a key ID with different key material, the
-# first-seen key is retained and the collision is logged. This prevents
-# key hijacking attacks where a compromised server tries to replace an
-# existing key. Setting this to false still logs collisions but does not
-# enforce; useful for observation before enforcement.
+# Enable strict enforcement of MSC4499 server signing key caching and
+# First Seen Wins key-ID uniqueness. When false (observation mode),
+# collisions and malformed historical claims are logged at WARN/ERROR
+# but do not hard-reject the incoming key payload.
 #
-#msc4499_first_seen_wins = true
+#msc4499_strict_caching = true
 
 # Backoff duration in seconds after a failed federation key fetch.
 # During backoff, the server will not re-attempt key fetches for the
