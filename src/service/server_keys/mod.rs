@@ -260,6 +260,7 @@ pub async fn add_signing_keys(
 	let now_plus_skew = MilliSecondsSinceUnixEpoch::from_system_time(now_plus_skew_tp)
 		.expect("UInt should not overflow");
 
+	let mut old_keys_filtered = false;
 	new_keys.old_verify_keys.retain(|key_id, ok| {
 		if ok.expired_ts > now_plus_skew {
 			conduwuit::warn!(
@@ -267,6 +268,7 @@ pub async fn add_signing_keys(
 				 in the future",
 				ts = ok.expired_ts
 			);
+			old_keys_filtered = true;
 			return false;
 		}
 		true
@@ -451,11 +453,20 @@ pub async fn add_signing_keys(
 
 	let now = MilliSecondsSinceUnixEpoch::now();
 
-	// Any key in historical_keys.verify_keys that is NOT in filtered_verify_keys
-	// has been retired. We must move it to old_verify_keys with a fixed expired_ts.
+	// Any key in historical_keys.verify_keys that is genuinely absent from the
+	// origin's new payload has been retired. We must move it to
+	// old_verify_keys with a fixed expired_ts.
+	//
+	// This must check `new_keys.verify_keys`, not `filtered_verify_keys`: a
+	// rejected collision (MSC4499 First-Seen-Wins) also removes the key ID
+	// from `filtered_verify_keys` even though the origin's payload still
+	// includes it (just with different, rejected key material). Treating
+	// that as a retirement would move the still-valid first-seen key into
+	// old_verify_keys with a fresh expired_ts, corrupting the historical
+	// record the notary later serves.
 	let mut retired_keys = Vec::new();
 	for (key_id, key) in &historical_keys.verify_keys {
-		if !filtered_verify_keys.contains_key(key_id) {
+		if !new_keys.verify_keys.contains_key(key_id) {
 			retired_keys.push((key_id.clone(), key.clone()));
 		}
 	}
@@ -581,9 +592,21 @@ pub async fn add_signing_keys(
 	// A rejected collision must not replace the per-origin record, since that raw
 	// blob is later re-signed and served by our notary endpoints.
 	if !rejected_collision {
-		self.db
-			.server_signingkeys
-			.raw_put(origin, Json(raw_new_keys));
+		if old_keys_filtered {
+			// MSC4499 L351-354: a future expired_ts "MUST NOT poison the rest of the
+			// response payload" — the malformed old_verify_keys entry was dropped
+			// from `new_keys` above, so store that sanitized struct instead of the
+			// verbatim raw bytes to keep it out of what we serve. The origin's
+			// self-signature can no longer cover this document (it never signed a
+			// payload missing that entry), but nothing here claims it still does;
+			// our own notary signature over the sanitized document is what's
+			// authoritative once served.
+			self.db.server_signingkeys.raw_put(origin, Json(&new_keys));
+		} else {
+			self.db
+				.server_signingkeys
+				.raw_put(origin, Json(raw_new_keys));
+		}
 	}
 
 	Ok(new_keys)
