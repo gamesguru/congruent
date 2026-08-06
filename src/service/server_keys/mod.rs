@@ -35,6 +35,14 @@ struct BackoffState {
 const BACKOFF_FAILURE_MEMORY: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_FETCH_BACKOFF_ENTRIES: usize = 4096;
 
+/// MSC4499's retired-key ceiling: the maximum number of `old_verify_keys`
+/// entries retained per origin, both as the storage-layer eviction target
+/// here and as the per-response rejection threshold in `validate.rs`. The two
+/// must agree -- if the storage layer ever accepted more than the per-response
+/// check allows, a single oversized response could fill the whole quota in one
+/// shot.
+pub(super) const MSC4499_RETIRED_KEY_CEILING: usize = 3000;
+
 pub struct Service {
 	keypair: Box<Ed25519KeyPair>,
 	verify_keys: VerifyKeys,
@@ -230,7 +238,7 @@ fn corroborated_db_key(origin: &ServerName) -> Vec<u8> {
 ///
 /// Corroborated bindings are retained ahead of uncorroborated ones
 /// regardless of raw recency; within each tier, the most-recently-retired
-/// bindings are retained first (ties broken by key ID, descending, so a
+/// bindings are retained first (ties broken by key ID, ascending, so a
 /// smaller identifier wins the tie). This recomputes the full retained set
 /// from scratch every call rather than only comparing new candidates
 /// against the existing tail, so the result is deterministic regardless of
@@ -540,10 +548,21 @@ pub async fn add_signing_keys(
 	// that as a retirement would move the still-valid first-seen key into
 	// old_verify_keys with a fresh expired_ts, corrupting the historical
 	// record the notary later serves.
+	//
+	// The whole pass is additionally gated on `!rejected_collision`: a payload
+	// that lied about one key ID isn't a trustworthy source for *other* keys'
+	// implicit retirement-by-omission either. Without this, a hostile or
+	// compromised origin could pair a doomed-to-be-rejected collision on key Y
+	// with a quiet omission of an unrelated, legitimate key X in the same
+	// response, and still get X's permanent `expired_ts` stamped from the
+	// omission alone. Skipping retirement for the whole payload just delays
+	// it to the next clean response instead.
 	let mut retired_keys = Vec::new();
-	for (key_id, key) in &historical_keys.verify_keys {
-		if !new_keys.verify_keys.contains_key(key_id) {
-			retired_keys.push((key_id.clone(), key.clone()));
+	if !rejected_collision {
+		for (key_id, key) in &historical_keys.verify_keys {
+			if !new_keys.verify_keys.contains_key(key_id) {
+				retired_keys.push((key_id.clone(), key.clone()));
+			}
 		}
 	}
 	for (key_id, key) in retired_keys {
@@ -592,11 +611,11 @@ pub async fn add_signing_keys(
 	// comparing the newly learned candidates against the existing tail) keeps
 	// this deterministic regardless of arrival order.
 	let old_keys = historical_keys.old_verify_keys.len();
-	if old_keys > 3000 {
+	if old_keys > MSC4499_RETIRED_KEY_CEILING {
 		let to_evict_ids = select_old_verify_keys_to_evict(
 			&historical_keys.old_verify_keys,
 			&corroborated,
-			3000,
+			MSC4499_RETIRED_KEY_CEILING,
 		);
 		conduwuit::debug!(
 			"MSC4499: Evicting {} old_verify_keys for {origin} to respect the 3,000-key \
@@ -696,23 +715,21 @@ pub async fn add_signing_keys(
 
 	// Preserve the last raw payload that matched the accepted first-seen bindings.
 	// A rejected collision must not replace the per-origin record, since that raw
-	// blob is later re-signed and served by our notary endpoints.
-	if !rejected_collision {
-		if old_keys_filtered {
-			// MSC4499 L351-354: a future expired_ts "MUST NOT poison the rest of the
-			// response payload" — the malformed old_verify_keys entry was dropped
-			// from `new_keys` above, so store that sanitized struct instead of the
-			// verbatim raw bytes to keep it out of what we serve. The origin's
-			// self-signature can no longer cover this document (it never signed a
-			// payload missing that entry), but nothing here claims it still does;
-			// our own notary signature over the sanitized document is what's
-			// authoritative once served.
-			self.db.server_signingkeys.raw_put(origin, Json(&new_keys));
-		} else {
-			self.db
-				.server_signingkeys
-				.raw_put(origin, Json(raw_new_keys));
-		}
+	// blob is later re-signed and served by our notary endpoints, and downstream
+	// consumers of /_matrix/key/v2/query verify the origin's own signature on
+	// each server_keys entry in addition to ours -- re-serving anything other
+	// than the verbatim bytes the origin signed breaks that verification for
+	// every entry in the document, not just the one at fault. A payload with a
+	// malformed (future expired_ts) old_verify_keys entry is the same shape of
+	// problem: MSC4499 requires the malformed entry be rejected locally, but
+	// re-serving a hand-edited document is patching a response, which the MSC
+	// explicitly forbids a notary from doing. The remedy in both cases is the
+	// same: decline to update the served cache entry and keep serving the last
+	// known-good self-signed payload rather than a mutated one.
+	if !rejected_collision && !old_keys_filtered {
+		self.db
+			.server_signingkeys
+			.raw_put(origin, Json(raw_new_keys));
 	}
 
 	Ok(new_keys)

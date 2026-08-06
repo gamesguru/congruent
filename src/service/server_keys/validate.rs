@@ -27,10 +27,15 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str) -> Result {
 	// MSC4499: "If a single key response payload contains more than 1000 keys in
 	// its old_verify_keys dictionary, receiving servers SHOULD treat the entire
 	// response payload as malformed/hostile and reject it."
-	// Note: We updated our quota to 3,000 keys total to accommodate the "hostile"
-	// active-key spillover behavior, so the old_verify_keys ceiling is also 3,000.
-	if counts.old_verify_keys > 3000 {
-		return Err!(BadServerResponse("Too many keys in old_verify_keys (limit: 3000)"));
+	// Note: We updated our quota to match MSC4499_RETIRED_KEY_CEILING keys total
+	// to accommodate the "hostile" active-key spillover behavior, so the
+	// old_verify_keys ceiling here must agree with the storage-layer eviction
+	// target in mod.rs.
+	if counts.old_verify_keys > super::MSC4499_RETIRED_KEY_CEILING {
+		return Err!(BadServerResponse(
+			"Too many keys in old_verify_keys (limit: {})",
+			super::MSC4499_RETIRED_KEY_CEILING
+		));
 	}
 
 	let value: serde_json::Value =
