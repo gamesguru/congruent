@@ -1,5 +1,5 @@
 {"Action":"fail","Test":"TestMSC4499Key"}
-{"Action":"skip","Test":"TestMSC4499Key/AdminStartupGuardrails"}
+{"Action":"fail","Test":"TestMSC4499Key/AdminStartupGuardrails"}
 {"Action":"pass","Test":"TestMSC4499Key/BackoffClearedOnSuccess"}
 {"Action":"pass","Test":"TestMSC4499Key/BindingPromotion"}
 {"Action":"pass","Test":"TestMSC4499Key/CorroborationTierRetention"}
