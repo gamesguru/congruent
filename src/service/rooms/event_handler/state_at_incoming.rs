@@ -51,8 +51,7 @@ where
 
 	if prev_pdu.room_id() != Some(room_id) {
 		warn!(
-			"prev_event {prev_event} claims a different room than {room_id}; falling back to \
-			 fetch_state"
+			"prev_event {prev_event} claims diff room than {room_id}; fall back to fetch_state"
 		);
 		return Ok(None);
 	}

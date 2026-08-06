@@ -211,6 +211,68 @@ fn provisional_db_key(origin: &ServerName) -> Vec<u8> {
 	key
 }
 
+/// Constructs the database key for the set of key IDs we have ourselves
+/// independently observed as currently-active (i.e. present in
+/// `verify_keys` of some prior accepted response) before any retirement
+/// claim about them arrived. See MSC4499 "Corroboration tier": this is
+/// local observation history, not an origin-asserted value, and only ever
+/// grows -- corroboration is never revoked.
+fn corroborated_db_key(origin: &ServerName) -> Vec<u8> {
+	let mut key = origin.as_bytes().to_vec();
+	key.extend_from_slice(b"\0corroborated");
+	key
+}
+
+/// MSC4499 "Corroboration tier" retired-key eviction ordering: given the
+/// full retired-key set for a remote server and the subset of those key IDs
+/// we've independently corroborated (previously observed active), returns
+/// the key IDs to evict to bring the set down to `cap` entries.
+///
+/// Corroborated bindings are retained ahead of uncorroborated ones
+/// regardless of raw recency; within each tier, the most-recently-retired
+/// bindings are retained first (ties broken by key ID, descending, so a
+/// smaller identifier wins the tie). This recomputes the full retained set
+/// from scratch every call rather than only comparing new candidates
+/// against the existing tail, so the result is deterministic regardless of
+/// arrival order.
+///
+/// A no-op (empty result) if `old_verify_keys.len() <= cap`.
+fn select_old_verify_keys_to_evict(
+	old_verify_keys: &BTreeMap<OwnedServerSigningKeyId, OldVerifyKey>,
+	corroborated: &std::collections::BTreeSet<OwnedServerSigningKeyId>,
+	cap: usize,
+) -> Vec<OwnedServerSigningKeyId> {
+	if old_verify_keys.len() <= cap {
+		return Vec::new();
+	}
+
+	// Descending by expired_ts (most-recently-retired sorts first, i.e. kept);
+	// on a tie, ascending by key_id (smaller identifier sorts first, i.e. kept)
+	// -- both directions put the *retained* element first in the resulting
+	// vector, since the caller skips the first `cap` entries as "kept" and
+	// evicts the rest.
+	let by_recency =
+		|(id_a, ok_a): &(&OwnedServerSigningKeyId, &OldVerifyKey),
+		 (id_b, ok_b): &(&OwnedServerSigningKeyId, &OldVerifyKey)| {
+			ok_b.expired_ts
+				.cmp(&ok_a.expired_ts)
+				.then_with(|| id_a.cmp(id_b))
+		};
+
+	let (mut corroborated_ovks, mut uncorroborated_ovks): (Vec<_>, Vec<_>) = old_verify_keys
+		.iter()
+		.partition(|(id, _)| corroborated.contains(*id));
+	corroborated_ovks.sort_by(by_recency);
+	uncorroborated_ovks.sort_by(by_recency);
+
+	corroborated_ovks
+		.into_iter()
+		.chain(uncorroborated_ovks)
+		.skip(cap)
+		.map(|(id, _)| id.to_owned())
+		.collect()
+}
+
 /// Where a key observation came from. Only a direct fetch can promote a
 /// provisional (notary-learned) binding to permanent; see MSC4499 "Notary
 /// fallback (two-tier binding)".
@@ -330,6 +392,20 @@ pub async fn add_signing_keys(
 		.deserialized()
 		.unwrap_or_default();
 	let mut provisional_changed = false;
+
+	// MSC4499 "Corroboration tier": key IDs we have ourselves independently
+	// observed as currently-active at some point, tracked so a later eviction
+	// pass can retain them ahead of retired-key claims that arrived
+	// already-retired. This only ever grows.
+	let corroborated_key = corroborated_db_key(origin);
+	let mut corroborated: std::collections::BTreeSet<OwnedServerSigningKeyId> = self
+		.db
+		.server_signingkeys
+		.get(&corroborated_key)
+		.await
+		.deserialized()
+		.unwrap_or_default();
+	let mut corroborated_changed = false;
 	let originally_known_key_ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
 		historical_keys
 			.verify_keys
@@ -478,6 +554,16 @@ pub async fn add_signing_keys(
 			.or_insert_with(|| OldVerifyKey { key: key.key, expired_ts: now });
 	}
 
+	// MSC4499 "Corroboration tier": every key ID accepted as currently active
+	// in this response is now something we've independently observed active,
+	// regardless of source -- record it before it's ever retired. Corroboration
+	// is local observation history and is never revoked once granted.
+	for key_id in filtered_verify_keys.keys() {
+		if corroborated.insert(key_id.clone()) {
+			corroborated_changed = true;
+		}
+	}
+
 	// Store the filtered/merged historical keys
 	historical_keys.verify_keys.extend(filtered_verify_keys);
 	for (key_id, old_key) in filtered_old_verify_keys {
@@ -494,33 +580,47 @@ pub async fn add_signing_keys(
 	// MSC4499: retain at most 3,000 retired keys in old_verify_keys.
 	// Keys in verify_keys are exempt from this quota (verify_keys itself is
 	// capped).
+	//
+	// Per MSC4499's storage considerations, this is a two-tier ordering, not a
+	// flat recency sort: corroborated bindings (key IDs we ourselves saw active
+	// before this retirement claim arrived) are retained ahead of uncorroborated
+	// ones regardless of raw effective-retirement-timestamp recency, since an
+	// uncorroborated old_verify_keys entry is just a self-signed claim with
+	// nothing else backing it up -- cheaper to fabricate in bulk than a
+	// corroborated one. Within each tier, retain the most-recently-retired
+	// first. Recomputing the full retained set on every call (rather than only
+	// comparing the newly learned candidates against the existing tail) keeps
+	// this deterministic regardless of arrival order.
 	let old_keys = historical_keys.old_verify_keys.len();
 	if old_keys > 3000 {
-		let to_evict = old_keys.saturating_sub(3000);
+		let to_evict_ids = select_old_verify_keys_to_evict(
+			&historical_keys.old_verify_keys,
+			&corroborated,
+			3000,
+		);
 		conduwuit::debug!(
-			"MSC4499: Evicting {to_evict} oldest old_verify_keys for {origin} to respect the \
-			 3,000-key retired-key quota"
+			"MSC4499: Evicting {} old_verify_keys for {origin} to respect the 3,000-key \
+			 retired-key quota",
+			to_evict_ids.len()
 		);
 
-		// Collect keys to evict: oldest first (lowest expired_ts).
-		// For ties, break by key_id descending (so smaller identifiers are retained).
-		let mut ovks: Vec<_> = historical_keys.old_verify_keys.iter().collect();
-		ovks.sort_by(|(id_a, ok_a), (id_b, ok_b)| {
-			ok_a.expired_ts
-				.cmp(&ok_b.expired_ts)
-				.then_with(|| id_b.cmp(id_a))
-		});
-
-		let to_evict_ids: Vec<_> = ovks
-			.iter()
-			.take(to_evict)
-			.map(|(id, _)| (*id).to_owned())
-			.collect();
-
 		for id in to_evict_ids {
-			conduwuit::warn!(
-				"MSC4499: evicted old_verify_key {id} for {origin} due to 3,000-key quota"
-			);
+			let was_corroborated = corroborated.remove(&id);
+			if was_corroborated {
+				// MSC4499: eviction of a corroborated binding is itself an anomaly
+				// signal -- reaching the ceiling deeply enough to displace one means
+				// something is flooding this origin's retired-key set.
+				conduwuit::warn!(
+					"MSC4499: evicted corroborated old_verify_key {id} for {origin} due to \
+					 3,000-key quota"
+				);
+				corroborated_changed = true;
+			} else {
+				conduwuit::debug!(
+					"MSC4499: evicted uncorroborated old_verify_key {id} for {origin} due to \
+					 3,000-key quota"
+				);
+			}
 			historical_keys.old_verify_keys.remove(&id);
 			new_keys.old_verify_keys.remove(&id);
 			if provisional.remove(&id) {
@@ -548,6 +648,12 @@ pub async fn add_signing_keys(
 		self.db
 			.server_signingkeys
 			.raw_put(&provisional_key, Json(&provisional));
+	}
+
+	if corroborated_changed {
+		self.db
+			.server_signingkeys
+			.raw_put(&corroborated_key, Json(&corroborated));
 	}
 
 	self.db
@@ -795,12 +901,99 @@ fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 
 #[cfg(test)]
 mod tests {
-	use super::bounded_msc4499_backoff_secs;
+	use std::collections::BTreeSet;
+
+	use ruma::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
+
+	use super::{
+		BTreeMap, OldVerifyKey, bounded_msc4499_backoff_secs, select_old_verify_keys_to_evict,
+	};
 
 	#[test]
 	fn msc4499_backoff_keeps_positive_lower_bound() {
 		assert_eq!(bounded_msc4499_backoff_secs(0), 1);
 		assert_eq!(bounded_msc4499_backoff_secs(2), 2);
 		assert_eq!(bounded_msc4499_backoff_secs(3601), 3600);
+	}
+
+	fn key_id(name: &str) -> OwnedServerSigningKeyId {
+		format!("ed25519:{name}").try_into().unwrap()
+	}
+
+	fn old_verify_key(expired_ts_ms: u64) -> OldVerifyKey {
+		OldVerifyKey::new(
+			MilliSecondsSinceUnixEpoch(expired_ts_ms.try_into().unwrap()),
+			Base64::new(vec![0_u8; 32]),
+		)
+	}
+
+	#[test]
+	fn evict_is_noop_under_cap() {
+		let mut ovks = BTreeMap::new();
+		ovks.insert(key_id("a"), old_verify_key(100));
+		ovks.insert(key_id("b"), old_verify_key(200));
+
+		assert!(select_old_verify_keys_to_evict(&ovks, &BTreeSet::new(), 2).is_empty());
+		assert!(select_old_verify_keys_to_evict(&ovks, &BTreeSet::new(), 5).is_empty());
+	}
+
+	#[test]
+	fn evict_picks_oldest_first_when_uncorroborated() {
+		let mut ovks = BTreeMap::new();
+		ovks.insert(key_id("oldest"), old_verify_key(100));
+		ovks.insert(key_id("middle"), old_verify_key(200));
+		ovks.insert(key_id("newest"), old_verify_key(300));
+
+		let evicted = select_old_verify_keys_to_evict(&ovks, &BTreeSet::new(), 2);
+		assert_eq!(evicted, vec![key_id("oldest")]);
+	}
+
+	#[test]
+	fn evict_prefers_evicting_uncorroborated_over_older_corroborated() {
+		let mut ovks = BTreeMap::new();
+		// Corroborated, but far older than the uncorroborated entries below --
+		// MSC4499 requires it survive ahead of them anyway.
+		ovks.insert(key_id("corroborated_ancient"), old_verify_key(1));
+		ovks.insert(key_id("uncorroborated_newer_1"), old_verify_key(1000));
+		ovks.insert(key_id("uncorroborated_newer_2"), old_verify_key(2000));
+
+		let mut corroborated = BTreeSet::new();
+		corroborated.insert(key_id("corroborated_ancient"));
+
+		// Cap of 2: normally (pure recency) the ancient corroborated key would be
+		// the first evicted. Corroboration must override that.
+		let evicted = select_old_verify_keys_to_evict(&ovks, &corroborated, 2);
+		assert_eq!(evicted, vec![key_id("uncorroborated_newer_1")]);
+	}
+
+	#[test]
+	fn evict_fills_cap_from_corroborated_tier_before_touching_uncorroborated() {
+		let mut ovks = BTreeMap::new();
+		ovks.insert(key_id("corroborated_1"), old_verify_key(100));
+		ovks.insert(key_id("corroborated_2"), old_verify_key(200));
+		ovks.insert(key_id("uncorroborated"), old_verify_key(300));
+
+		let mut corroborated = BTreeSet::new();
+		corroborated.insert(key_id("corroborated_1"));
+		corroborated.insert(key_id("corroborated_2"));
+
+		// Cap of 1: the corroborated tier (2 entries) alone already exceeds it,
+		// so it claims the only slot -- the most-recently-retired corroborated
+		// entry survives, the older corroborated entry is evicted, and the
+		// uncorroborated entry gets none of the remaining slots (there are
+		// none) despite being the most recently retired of all three.
+		let evicted = select_old_verify_keys_to_evict(&ovks, &corroborated, 1);
+		assert_eq!(evicted, vec![key_id("corroborated_1"), key_id("uncorroborated")]);
+	}
+
+	#[test]
+	fn evict_breaks_recency_ties_retaining_smaller_key_id() {
+		let mut ovks = BTreeMap::new();
+		ovks.insert(key_id("aaa"), old_verify_key(500));
+		ovks.insert(key_id("zzz"), old_verify_key(500));
+
+		// Same expired_ts: the smaller key_id ("aaa") is retained, "zzz" evicted.
+		let evicted = select_old_verify_keys_to_evict(&ovks, &BTreeSet::new(), 1);
+		assert_eq!(evicted, vec![key_id("zzz")]);
 	}
 }
