@@ -5,10 +5,11 @@ use std::{
 };
 
 use conduwuit::{
-	Result, debug, err, implement,
+	Result, debug, err, implement, info,
 	matrix::{Event, StateMap},
 	trace,
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryBroadbandExt, TryWidebandExt},
+	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
@@ -32,15 +33,28 @@ where
 		.next()
 		.expect("at least one prev_event");
 
-	let prev_pdu = self
+	// Not found locally is a legitimate, common case -- e.g. the prev_event was
+	// never delivered to us (a prior transaction was rejected, we joined the
+	// room after it, etc.), not a database malfunction. Fall through to the
+	// caller's fetch_state() federation fallback instead of hard-failing the
+	// whole incoming event, matching how state_at_incoming_resolved's
+	// multi-prev-event sibling path already degrades on the equivalent lookup.
+	let Ok(prev_pdu) = self
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
 		.await
-		.map_err(|e| err!(Database("Could not find prev event: {e:?}")))?;
+	else {
+		info!("prev_event {prev_event} not found locally; falling back to fetch_state");
+		return Ok(None);
+	};
 
 	if prev_pdu.room_id() != Some(room_id) {
-		return Err(err!(Database("prev_event is not in the same room")));
+		warn!(
+			"prev_event {prev_event} claims a different room than {room_id}; falling back to \
+			 fetch_state"
+		);
+		return Ok(None);
 	}
 
 	let Ok(prev_event_sstatehash) = self
