@@ -1223,19 +1223,14 @@ impl Service {
 			.fetch_add(pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
-		let preimage = pdus
-			.iter()
-			.map(|raw| raw.get().as_bytes())
-			.chain(edus.iter().map(|raw| raw.json().get().as_bytes()));
-
-		// We prepend the current timestamp to the transaction ID as a defensive
-		// measure to ensure uniqueness. The primary protection against duplicate
-		// transaction IDs is using unique stream_id values in device_list_update
-		// EDUs (see build_device_list_edus), but the timestamp provides an
-		// additional layer of safety against any payload hash collisions.
-		let txn_hash = calculate_hash(preimage);
 		let now = MilliSecondsSinceUnixEpoch::now();
-		let txn_id = format!("{}_{}", now.get(), URL_SAFE_NO_PAD.encode(txn_hash));
+		// Monotonic counter seeded from unix-ms at startup, incremented per
+		// transaction -- same scheme Synapse's TransactionManager uses. Content
+		// hashing isn't needed for uniqueness: the counter alone guarantees each
+		// transaction ID this process emits is distinct, and per-process
+		// uniqueness is all the spec requires (`origin` + `txn_id` together
+		// identify a transaction).
+		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
 		let request = send_transaction_message::v1::Request {
 			transaction_id: txn_id.clone().into(),
 			origin: self.server.name.clone(),

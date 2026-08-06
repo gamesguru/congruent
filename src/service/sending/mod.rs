@@ -42,6 +42,12 @@ pub struct Service {
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
 	pub(super) semaphore: Arc<tokio::sync::Semaphore>,
 	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Monotonic counter for outgoing federation transaction IDs, seeded from
+	/// the current unix-ms timestamp at startup and incremented per
+	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
+	/// Seeding from wall-clock time rather than starting at 0 keeps IDs
+	/// unique across restarts without needing to persist the counter.
+	pub(super) next_txn_id: std::sync::atomic::AtomicU64,
 }
 
 struct Services {
@@ -89,6 +95,9 @@ impl crate::Service for Service {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
+			next_txn_id: std::sync::atomic::AtomicU64::new(
+				ruma::MilliSecondsSinceUnixEpoch::now().get().into(),
+			),
 			server: args.server.clone(),
 			services: Services {
 				client: args.depend::<client::Service>("client"),
