@@ -1196,6 +1196,7 @@ dependencies = [
  "serde_json",
  "sha1 0.11.0",
  "tokio",
+ "tower",
  "tracing",
  "url",
  "xxhash-rust",

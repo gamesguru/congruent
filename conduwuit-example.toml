@@ -461,6 +461,13 @@
 #
 #federation_presence_interval_s = 5
 
+# Timeout for fetching server signing keys from other homeservers
+# (seconds). You may want to lower this in test environments, but in
+# production, giving slower federation origins some time to respond is
+# beneficial.
+#
+#server_key_fetch_timeout = 45
+
 # MSC4284 Policy server request timeout (seconds). Generally policy
 # servers should respond near instantly, however may slow down under
 # load. If a policy server doesn't respond in a short amount of time, the
@@ -868,6 +875,20 @@
 # unless you know exactly what you are doing.
 #
 #only_query_trusted_key_servers = false
+
+# Enable strict enforcement of MSC4499 server signing key caching and
+# First Seen Wins key-ID uniqueness. When false (observation mode),
+# collisions and malformed historical claims are logged at WARN/ERROR
+# but do not hard-reject the incoming key payload.
+#
+#msc4499_strict_caching = true
+
+# Backoff duration in seconds after a failed federation key fetch.
+# During backoff, the server will not re-attempt key fetches for the
+# failing origin. MSC4499 recommends 60 seconds. Reduce for faster
+# complement testing.
+#
+#msc4499_backoff_secs = 60
 
 # Maximum number of keys to request in each trusted server batch query.
 #

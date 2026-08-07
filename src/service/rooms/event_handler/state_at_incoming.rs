@@ -4,7 +4,7 @@ use std::{
 };
 
 use conduwuit::{
-	Result, debug, err, implement,
+	Err, Result, debug, err, implement,
 	matrix::{Event, PduEvent, StateKey, StateMap},
 	trace,
 	utils::stream::{IterStream, TryBroadbandExt},
@@ -71,17 +71,31 @@ where
 		.next()
 		.expect("at least one prev_event");
 
+	// Not found locally is a legitimate, common case -- e.g. the prev_event was
+	// never delivered to us (a prior transaction was rejected, we joined the
+	// room after it, etc.), not a database malfunction. Fall through to the
+	// caller's fetch_state() federation fallback instead of hard-failing the
+	// whole incoming event, matching how state_at_incoming_resolved's
+	// multi-prev-event sibling path already degrades on the equivalent lookup.
 	let Ok(prev_pdu) = self
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
 		.await
 	else {
+		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
 	};
 
+	// Unlike "not found locally", a prev_event that resolves to a PDU in a
+	// *different* room isn't a delivery gap -- there's no missing state a
+	// federation round trip could supply that would make this legitimate. It's
+	// a malformed or hostile event. Falling back to fetch_state here would
+	// turn a single cheap-to-craft event into a guaranteed outbound
+	// /state_ids request per inbound event, at whatever rate a malicious
+	// origin cares to push transactions. Hard reject instead.
 	if prev_pdu.room_id() != Some(room_id) {
-		return Ok(None);
+		return Err!(Database("prev_event {prev_event} claims a different room than {room_id}"));
 	}
 
 	let Ok(prev_event_sstatehash) = self
