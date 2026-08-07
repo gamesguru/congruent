@@ -12,7 +12,8 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, EventId, Int, OwnedEventId, RoomId, RoomVersionId, ServerName, UInt,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, RoomVersionId,
+	ServerName, UInt,
 	api::federation,
 	events::{
 		StateEventType,
@@ -266,6 +267,21 @@ pub async fn backfill_if_required(
 					if pdus.is_empty() {
 						continue;
 					}
+
+					// Sort the batch by actual DAG topology before assigning Backfilled
+					// positions. `backfill_pdu` hands out each event's
+					// `PduCount::Backfilled` slot from a bare `next_count()` call in
+					// whatever order it's given the batch, so the order we hand it *is*
+					// the timeline order. The wire order the spec asks servers to send
+					// (newest-first) is not guaranteed to be a total order -- same-depth
+					// siblings can legally arrive in either relative order, and a remote
+					// server's tiebreak need not match ours. Left untreated, that drift
+					// becomes a permanent wrong position for one event, which then falls
+					// outside a `/messages` page boundary and looks like a dropped event.
+					let pdus = self
+						.topo_sort_backfill_batch(&pdus, &create_event_content.room_version)
+						.await;
+
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
 						if let Err(e) =
@@ -298,6 +314,142 @@ pub async fn backfill_if_required(
 		}
 		// Loop back to re-scan for new gaps created by backfilled events
 	}
+}
+
+/// Reorder a raw `/backfill` response batch into strict newest-first DAG
+/// order before insertion. See the call site comment in
+/// `backfill_if_required` for why the wire order can't be trusted directly.
+/// Uses the same Kahn-sort approach as `promote_outliers_sorted`.
+///
+/// Events that fail to parse (missing/invalid `event_id`, malformed
+/// content, etc.) are dropped from the batch and logged rather than
+/// aborting the whole reorder -- `backfill_pdu` already tolerates and
+/// skips individual bad events without failing the batch, so this matches
+/// existing behavior.
+#[implement(super::Service)]
+async fn topo_sort_backfill_batch(
+	&self,
+	pdus: &[Box<RawJsonValue>],
+	room_version: &RoomVersionId,
+) -> Vec<Box<RawJsonValue>> {
+	let mut events_map: rezzy::HashMap<String, rezzy::LeanEvent> = rezzy::HashMap::new();
+	let mut raw_by_id: std::collections::HashMap<String, Box<RawJsonValue>> =
+		std::collections::HashMap::with_capacity(pdus.len());
+
+	for pdu in pdus {
+		let (_, event_id, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await
+		{
+			| Ok(parsed) => parsed,
+			| Err(e) => {
+				debug_warn!("backfill: dropping unparsable event from reorder batch: {e}");
+				continue;
+			},
+		};
+
+		let event_type = value
+			.get("type")
+			.and_then(CanonicalJsonValue::as_str)
+			.unwrap_or_default()
+			.to_owned();
+		let sender = value
+			.get("sender")
+			.and_then(CanonicalJsonValue::as_str)
+			.unwrap_or_default()
+			.to_owned();
+		let origin_server_ts = value
+			.get("origin_server_ts")
+			.and_then(CanonicalJsonValue::as_integer)
+			.and_then(|ts| u64::try_from(i64::from(ts)).ok())
+			.unwrap_or_default();
+		let depth = value
+			.get("depth")
+			.and_then(CanonicalJsonValue::as_integer)
+			.and_then(|d| u64::try_from(i64::from(d)).ok())
+			.unwrap_or_default();
+		let prev_events = value
+			.get("prev_events")
+			.and_then(CanonicalJsonValue::as_array)
+			.map(|arr| {
+				arr.iter()
+					.filter_map(CanonicalJsonValue::as_str)
+					.map(ToOwned::to_owned)
+					.collect()
+			})
+			.unwrap_or_default();
+		let auth_events = value
+			.get("auth_events")
+			.and_then(CanonicalJsonValue::as_array)
+			.map(|arr| {
+				arr.iter()
+					.filter_map(CanonicalJsonValue::as_str)
+					.map(ToOwned::to_owned)
+					.collect()
+			})
+			.unwrap_or_default();
+		let content = value.get("content").map_or(serde_json::Value::Null, |c| {
+			serde_json::to_value(c).unwrap_or(serde_json::Value::Null)
+		});
+		let state_key = value
+			.get("state_key")
+			.and_then(CanonicalJsonValue::as_str)
+			.map(ToOwned::to_owned);
+
+		let event_id_str = event_id.to_string();
+		events_map.insert(event_id_str.clone(), rezzy::LeanEvent {
+			event_id: event_id_str.clone(),
+			event_type,
+			sender,
+			state_key,
+			content,
+			origin_server_ts,
+			auth_events,
+			prev_events,
+			power_level: 0,
+			depth,
+			..Default::default()
+		});
+		raw_by_id.insert(event_id_str, pdu.clone());
+	}
+
+	if events_map.is_empty() {
+		return pdus.to_vec();
+	}
+
+	let create_ev = events_map
+		.values()
+		.find(|ev| ev.event_type == "m.room.create");
+
+	// Unlike `promote_outliers_sorted`, an unrecognized/future room version
+	// falls back to V2 tie-break semantics instead of aborting: this sort is
+	// a best-effort ordering aid, not an auth decision, so a slightly
+	// different tiebreak on an unknown future version is far better than
+	// dropping the whole batch.
+	let state_res_version = {
+		use ruma::RoomVersionId::*;
+		match room_version {
+			| V12 => rezzy::StateResVersion::V2_1,
+			| _ => rezzy::StateResVersion::V2,
+		}
+	};
+	let mut pl_cache = std::collections::HashMap::new();
+	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
+		&events_map,
+		&events_map, // auth context is the same set
+		create_ev,
+		state_res_version,
+		&mut pl_cache,
+	);
+
+	// `sorted_ids` is ancestors-first (oldest -> newest). We need
+	// newest-first: `backfill_pdu` hands out increasingly-negative
+	// `PduCount::Backfilled` slots in call order, so the oldest event must
+	// be *inserted last* to receive the most-negative (furthest-in-past)
+	// slot.
+	sorted_ids
+		.into_iter()
+		.rev()
+		.filter_map(|id| raw_by_id.remove(&id))
+		.collect()
 }
 
 #[implement(super::Service)]
@@ -484,7 +636,7 @@ pub async fn backfill_pdu(
 			let mut raw = value;
 			raw.insert(
 				"event_id".to_owned(),
-				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+				CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 			let parsed: PduEvent =
 				serde_json::from_value(serde_json::to_value(&raw).expect("valid json"))
@@ -874,10 +1026,7 @@ pub fn prepare_pdu_insert(
 	};
 
 	let mut value = value.clone();
-	value.insert(
-		"event_id".into(),
-		ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
-	);
+	value.insert("event_id".into(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
 
 	Ok((pdu_count, pdu_id, value))
 }

@@ -14,7 +14,6 @@ use axum::{
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
 use http::{StatusCode, Uri, uri};
-use ruma::api::client::error::ErrorKind;
 
 use self::handler::RouterExt;
 pub(super) use self::{
@@ -438,9 +437,7 @@ async fn not_implemented() -> impl IntoResponse {
 	err!(Request(Unrecognized("Not implemented.")))
 }
 
-async fn method_not_allowed() -> impl IntoResponse {
-	StatusCode::METHOD_NOT_ALLOWED
-}
+async fn method_not_allowed() -> impl IntoResponse { StatusCode::METHOD_NOT_ALLOWED }
 
 async fn federation_disabled() -> impl IntoResponse {
 	err!(Request(Forbidden("Federation is disabled.")))
