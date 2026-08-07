@@ -833,11 +833,35 @@ where
 			// snapshot that links it back into the known DAG.
 			let mut prev_events = incoming_pdu.prev_events();
 			let first_prev = prev_events.next();
-			let fallback_event_id =
-				state_ids_anchor.unwrap_or_else(|| match (first_prev, prev_events.next()) {
-					| (Some(first_prev), None) => first_prev,
-					| _ => incoming_pdu.event_id(),
-				});
+			let fallback_event_id = match state_ids_anchor {
+				| Some(anchor) => anchor.to_owned(),
+				| None => match (first_prev, prev_events.next()) {
+					| (Some(first_prev), None) => {
+						let nested_prev = if let Ok(prev_pdu) =
+							self.services.timeline.get_pdu(first_prev).await
+						{
+							let mut nested = prev_pdu.prev_events();
+							match (nested.next(), nested.next()) {
+								| (Some(nested_prev), None) => Some(nested_prev.to_owned()),
+								| _ => None,
+							}
+						} else if let Ok(prev_pdu) =
+							self.services.outlier.get_pdu_outlier(first_prev).await
+						{
+							let mut nested = prev_pdu.prev_events();
+							match (nested.next(), nested.next()) {
+								| (Some(nested_prev), None) => Some(nested_prev.to_owned()),
+								| _ => None,
+							}
+						} else {
+							None
+						};
+
+						nested_prev.unwrap_or_else(|| first_prev.to_owned())
+					},
+					| _ => incoming_pdu.event_id().to_owned(),
+				},
+			};
 
 			// Attempt a synchronous /state_ids fetch from the sending server
 			// BEFORE queuing the async DAG healer.
@@ -857,7 +881,7 @@ where
 				origin,
 				create_event,
 				room_id,
-				fallback_event_id,
+				&fallback_event_id,
 				false,
 			))
 			.await
