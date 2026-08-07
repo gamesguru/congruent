@@ -32,7 +32,7 @@ use crate::{Result, err, error::Error, utils::sys};
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global",
