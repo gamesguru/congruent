@@ -344,15 +344,11 @@ pub async fn backfill_if_required(
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
 #[implement(super::Service)]
-async fn topo_sort_backfill_batch(
-	&self,
-	pdus: &[Box<RawJsonValue>],
-) -> Vec<Box<RawJsonValue>> {
-	let mut keyed: Vec<(u64, String, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
+async fn topo_sort_backfill_batch(&self, pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
+	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
-		let (_, event_id, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await
-		{
+		let (_, _, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await {
 			| Ok(parsed) => parsed,
 			| Err(e) => {
 				debug_warn!("backfill: dropping unparsable event from reorder batch: {e}");
@@ -366,20 +362,23 @@ async fn topo_sort_backfill_batch(
 			.and_then(|d| u64::try_from(i64::from(d)).ok())
 			.unwrap_or_default();
 
-		keyed.push((depth, event_id.to_string(), pdu.clone()));
+		keyed.push((depth, pdu.clone()));
 	}
 
 	// Newest-first (descending depth): `backfill_pdu` hands out
 	// increasingly-negative `PduCount::Backfilled` slots in call order, so
 	// the oldest event must be *inserted last* to receive the
-	// most-negative (furthest-in-past) slot. Ties break on event_id purely
-	// for determinism (stable regardless of hashing/iteration order); it
-	// carries no causal meaning, same as Synapse's insertion-order tiebreak.
-	keyed.sort_by(|(depth_a, id_a, _), (depth_b, id_b, _)| {
-		depth_b.cmp(depth_a).then_with(|| id_b.cmp(id_a))
-	});
+	// most-negative (furthest-in-past) slot. `sort_by` is stable, so
+	// same-depth ties keep their relative wire order -- matching Synapse's
+	// `sorted(new_events, key=lambda x: x.depth)`, which relies on the same
+	// stability for its own ties. No secondary key: a hash-based (event_id)
+	// tiebreak would be more deterministic across repeated runs, but it has
+	// no causal meaning either, and it would throw away whatever ordering
+	// signal the remote server's wire order actually carries -- which is at
+	// least as likely to reflect real send order as a hash comparison is.
+	keyed.sort_by(|(depth_a, _), (depth_b, _)| depth_b.cmp(depth_a));
 
-	keyed.into_iter().map(|(_, _, pdu)| pdu).collect()
+	keyed.into_iter().map(|(_, pdu)| pdu).collect()
 }
 
 #[implement(super::Service)]
