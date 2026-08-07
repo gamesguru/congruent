@@ -13,7 +13,8 @@ use axum::{
 };
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
-use http::{Uri, uri};
+use http::{StatusCode, Uri, uri};
+use ruma::api::client::error::ErrorKind;
 
 use self::handler::RouterExt;
 pub(super) use self::{
@@ -295,6 +296,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 				"/_matrix/key/v2/server/{key_id}",
 				get(server::get_server_keys_deprecated_route),
 			)
+			.route("/_matrix/key/v2/query", post(not_implemented).put(method_not_allowed))
 			.merge(
 			Router::new()
 				.ruma_route(&server::get_public_rooms_route)
@@ -430,6 +432,14 @@ async fn redirect_legacy_preview(uri: Uri) -> impl IntoResponse {
 
 async fn legacy_media_disabled() -> impl IntoResponse {
 	err!(Request(Forbidden("Unauthenticated media is disabled.")))
+}
+
+async fn not_implemented() -> impl IntoResponse {
+	err!(Request(Unrecognized("Not implemented.")))
+}
+
+async fn method_not_allowed() -> impl IntoResponse {
+	StatusCode::METHOD_NOT_ALLOWED
 }
 
 async fn federation_disabled() -> impl IntoResponse {
