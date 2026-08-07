@@ -278,9 +278,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = self
-						.topo_sort_backfill_batch(&pdus, &create_event_content.room_version)
-						.await;
+					let pdus = self.topo_sort_backfill_batch(&pdus).await;
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -319,7 +317,26 @@ pub async fn backfill_if_required(
 /// Reorder a raw `/backfill` response batch into strict newest-first DAG
 /// order before insertion. See the call site comment in
 /// `backfill_if_required` for why the wire order can't be trusted directly.
-/// Uses the same Kahn-sort approach as `promote_outliers_sorted`.
+///
+/// This deliberately does *not* use `rezzy::resolve::sorting::lean_kahn_sort`
+/// (the tool `promote_outliers_sorted` uses for the auth chain): that sort
+/// builds its graph from `auth_events` and tie-breaks by sender power level,
+/// which is correct for ordering create/power_levels/membership during a
+/// `/send_join` promotion, but wrong here -- ordinary timeline messages in
+/// the same room mostly share the same three `auth_events` (create, power
+/// levels, sender's join), so it produces near-empty graph edges between
+/// them and falls back to ranking messages by their *sender's power level*
+/// instead of DAG order. That's a worse bug than the wire-order race it
+/// would be replacing.
+///
+/// Instead this sorts by `depth` directly, matching what Synapse's
+/// `_process_pulled_events` does (`sorted(new_events, key=lambda x: x.depth)`)
+/// for the exact same reason stated in its own comment: wire order isn't
+/// trustworthy, but `depth` is a reliable enough total order for a single
+/// fetched batch, and same-depth ties are broken by insertion order same as
+/// Synapse's `stream_ordering` tiebreak -- there's no secondary signal in
+/// this batch that would resolve concurrent siblings any more "correctly"
+/// than that.
 ///
 /// Events that fail to parse (missing/invalid `event_id`, malformed
 /// content, etc.) are dropped from the batch and logged rather than
@@ -330,11 +347,8 @@ pub async fn backfill_if_required(
 async fn topo_sort_backfill_batch(
 	&self,
 	pdus: &[Box<RawJsonValue>],
-	room_version: &RoomVersionId,
 ) -> Vec<Box<RawJsonValue>> {
-	let mut events_map: rezzy::HashMap<String, rezzy::LeanEvent> = rezzy::HashMap::new();
-	let mut raw_by_id: std::collections::HashMap<String, Box<RawJsonValue>> =
-		std::collections::HashMap::with_capacity(pdus.len());
+	let mut keyed: Vec<(u64, String, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
 		let (_, event_id, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await
@@ -346,110 +360,26 @@ async fn topo_sort_backfill_batch(
 			},
 		};
 
-		let event_type = value
-			.get("type")
-			.and_then(CanonicalJsonValue::as_str)
-			.unwrap_or_default()
-			.to_owned();
-		let sender = value
-			.get("sender")
-			.and_then(CanonicalJsonValue::as_str)
-			.unwrap_or_default()
-			.to_owned();
-		let origin_server_ts = value
-			.get("origin_server_ts")
-			.and_then(CanonicalJsonValue::as_integer)
-			.and_then(|ts| u64::try_from(i64::from(ts)).ok())
-			.unwrap_or_default();
 		let depth = value
 			.get("depth")
 			.and_then(CanonicalJsonValue::as_integer)
 			.and_then(|d| u64::try_from(i64::from(d)).ok())
 			.unwrap_or_default();
-		let prev_events = value
-			.get("prev_events")
-			.and_then(CanonicalJsonValue::as_array)
-			.map(|arr| {
-				arr.iter()
-					.filter_map(CanonicalJsonValue::as_str)
-					.map(ToOwned::to_owned)
-					.collect()
-			})
-			.unwrap_or_default();
-		let auth_events = value
-			.get("auth_events")
-			.and_then(CanonicalJsonValue::as_array)
-			.map(|arr| {
-				arr.iter()
-					.filter_map(CanonicalJsonValue::as_str)
-					.map(ToOwned::to_owned)
-					.collect()
-			})
-			.unwrap_or_default();
-		let content = value.get("content").map_or(serde_json::Value::Null, |c| {
-			serde_json::to_value(c).unwrap_or(serde_json::Value::Null)
-		});
-		let state_key = value
-			.get("state_key")
-			.and_then(CanonicalJsonValue::as_str)
-			.map(ToOwned::to_owned);
 
-		let event_id_str = event_id.to_string();
-		events_map.insert(event_id_str.clone(), rezzy::LeanEvent {
-			event_id: event_id_str.clone(),
-			event_type,
-			sender,
-			state_key,
-			content,
-			origin_server_ts,
-			auth_events,
-			prev_events,
-			power_level: 0,
-			depth,
-			..Default::default()
-		});
-		raw_by_id.insert(event_id_str, pdu.clone());
+		keyed.push((depth, event_id.to_string(), pdu.clone()));
 	}
 
-	if events_map.is_empty() {
-		return pdus.to_vec();
-	}
+	// Newest-first (descending depth): `backfill_pdu` hands out
+	// increasingly-negative `PduCount::Backfilled` slots in call order, so
+	// the oldest event must be *inserted last* to receive the
+	// most-negative (furthest-in-past) slot. Ties break on event_id purely
+	// for determinism (stable regardless of hashing/iteration order); it
+	// carries no causal meaning, same as Synapse's insertion-order tiebreak.
+	keyed.sort_by(|(depth_a, id_a, _), (depth_b, id_b, _)| {
+		depth_b.cmp(depth_a).then_with(|| id_b.cmp(id_a))
+	});
 
-	let create_ev = events_map
-		.values()
-		.find(|ev| ev.event_type == "m.room.create");
-
-	// Unlike `promote_outliers_sorted`, an unrecognized/future room version
-	// falls back to V2 tie-break semantics instead of aborting: this sort is
-	// a best-effort ordering aid, not an auth decision, so a slightly
-	// different tiebreak on an unknown future version is far better than
-	// dropping the whole batch.
-	let state_res_version = {
-		use ruma::RoomVersionId::*;
-		match room_version {
-			| V12 => rezzy::StateResVersion::V2_1,
-			| _ => rezzy::StateResVersion::V2,
-		}
-	};
-	let mut pl_cache = std::collections::HashMap::new();
-	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
-		&events_map,
-		&events_map, // auth context is the same set
-		create_ev,
-		state_res_version,
-		&mut pl_cache,
-	);
-
-	// `sorted_ids` is ancestors-first (oldest -> newest). We need
-	// newest-first: `backfill_pdu` hands out increasingly-negative
-	// `PduCount::Backfilled` slots in call order, so the oldest event must
-	// be *inserted last* to receive the most-negative (furthest-in-past)
-	// slot.
-	sorted_ids
-		.into_iter()
-		.rev()
-		.filter_map(|id| raw_by_id.remove(&id))
-		.collect()
+	keyed.into_iter().map(|(_, _, pdu)| pdu).collect()
 }
 
 #[implement(super::Service)]
