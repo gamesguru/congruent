@@ -12,7 +12,8 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, EventId, Int, OwnedEventId, RoomId, RoomVersionId, ServerName, UInt,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, RoomVersionId,
+	ServerName, UInt,
 	api::federation,
 	events::{
 		StateEventType,
@@ -266,6 +267,19 @@ pub async fn backfill_if_required(
 					if pdus.is_empty() {
 						continue;
 					}
+
+					// Sort the batch by actual DAG topology before assigning Backfilled
+					// positions. `backfill_pdu` hands out each event's
+					// `PduCount::Backfilled` slot from a bare `next_count()` call in
+					// whatever order it's given the batch, so the order we hand it *is*
+					// the timeline order. The wire order the spec asks servers to send
+					// (newest-first) is not guaranteed to be a total order -- same-depth
+					// siblings can legally arrive in either relative order, and a remote
+					// server's tiebreak need not match ours. Left untreated, that drift
+					// becomes a permanent wrong position for one event, which then falls
+					// outside a `/messages` page boundary and looks like a dropped event.
+					let pdus = self.topo_sort_backfill_batch(&pdus).await;
+
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
 						if let Err(e) =
@@ -298,6 +312,73 @@ pub async fn backfill_if_required(
 		}
 		// Loop back to re-scan for new gaps created by backfilled events
 	}
+}
+
+/// Reorder a raw `/backfill` response batch into strict newest-first DAG
+/// order before insertion. See the call site comment in
+/// `backfill_if_required` for why the wire order can't be trusted directly.
+///
+/// This deliberately does *not* use `rezzy::resolve::sorting::lean_kahn_sort`
+/// (the tool `promote_outliers_sorted` uses for the auth chain): that sort
+/// builds its graph from `auth_events` and tie-breaks by sender power level,
+/// which is correct for ordering create/power_levels/membership during a
+/// `/send_join` promotion, but wrong here -- ordinary timeline messages in
+/// the same room mostly share the same three `auth_events` (create, power
+/// levels, sender's join), so it produces near-empty graph edges between
+/// them and falls back to ranking messages by their *sender's power level*
+/// instead of DAG order. That's a worse bug than the wire-order race it
+/// would be replacing.
+///
+/// Instead this sorts by `depth` directly, matching what Synapse's
+/// `_process_pulled_events` does (`sorted(new_events, key=lambda x: x.depth)`)
+/// for the exact same reason stated in its own comment: wire order isn't
+/// trustworthy, but `depth` is a reliable enough total order for a single
+/// fetched batch, and same-depth ties are broken by insertion order same as
+/// Synapse's `stream_ordering` tiebreak -- there's no secondary signal in
+/// this batch that would resolve concurrent siblings any more "correctly"
+/// than that.
+///
+/// Events that fail to parse (missing/invalid `event_id`, malformed
+/// content, etc.) are dropped from the batch and logged rather than
+/// aborting the whole reorder -- `backfill_pdu` already tolerates and
+/// skips individual bad events without failing the batch, so this matches
+/// existing behavior.
+#[implement(super::Service)]
+async fn topo_sort_backfill_batch(&self, pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
+	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
+
+	for pdu in pdus {
+		let (_, _, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await {
+			| Ok(parsed) => parsed,
+			| Err(e) => {
+				debug_warn!("backfill: dropping unparsable event from reorder batch: {e}");
+				continue;
+			},
+		};
+
+		let depth = value
+			.get("depth")
+			.and_then(CanonicalJsonValue::as_integer)
+			.and_then(|d| u64::try_from(i64::from(d)).ok())
+			.unwrap_or_default();
+
+		keyed.push((depth, pdu.clone()));
+	}
+
+	// Newest-first (descending depth): `backfill_pdu` hands out
+	// increasingly-negative `PduCount::Backfilled` slots in call order, so
+	// the oldest event must be *inserted last* to receive the
+	// most-negative (furthest-in-past) slot. `sort_by` is stable, so
+	// same-depth ties keep their relative wire order -- matching Synapse's
+	// `sorted(new_events, key=lambda x: x.depth)`, which relies on the same
+	// stability for its own ties. No secondary key: a hash-based (event_id)
+	// tiebreak would be more deterministic across repeated runs, but it has
+	// no causal meaning either, and it would throw away whatever ordering
+	// signal the remote server's wire order actually carries -- which is at
+	// least as likely to reflect real send order as a hash comparison is.
+	keyed.sort_by(|(depth_a, _), (depth_b, _)| depth_b.cmp(depth_a));
+
+	keyed.into_iter().map(|(_, pdu)| pdu).collect()
 }
 
 #[implement(super::Service)]
@@ -484,7 +565,7 @@ pub async fn backfill_pdu(
 			let mut raw = value;
 			raw.insert(
 				"event_id".to_owned(),
-				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+				CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 			let parsed: PduEvent =
 				serde_json::from_value(serde_json::to_value(&raw).expect("valid json"))
@@ -874,10 +955,7 @@ pub fn prepare_pdu_insert(
 	};
 
 	let mut value = value.clone();
-	value.insert(
-		"event_id".into(),
-		ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
-	);
+	value.insert("event_id".into(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
 
 	Ok((pdu_count, pdu_id, value))
 }
