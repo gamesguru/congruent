@@ -240,8 +240,15 @@ async fn load_key_id_set(
 		| Err(e) if e.is_not_found() => return Ok(std::collections::BTreeSet::new()),
 		| Err(e) => return Err(e),
 	};
-	serde_json::from_slice(handle.as_ref())
-		.map_err(|e| err!(Database("Invalid server_keys key-id set in database: {e}")))
+	match serde_json::from_slice(handle.as_ref()) {
+		| Ok(set) => Ok(set),
+		| Err(json_err) => (&handle).deserialized().map_err(|legacy_err| {
+			err!(Database(
+				"Invalid server_keys key-id set in database: json={json_err}; \
+				 legacy={legacy_err}"
+			))
+		}),
+	}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -671,11 +678,11 @@ pub async fn add_signing_keys(
 			.verify_keys
 			.get(key_id_ref)
 			.is_some_and(|persisted| {
-			new_keys
-				.verify_keys
-				.get(key_id_ref)
-				.is_some_and(|incoming| persisted.key == incoming.key)
-		});
+				new_keys
+					.verify_keys
+					.get(key_id_ref)
+					.is_some_and(|incoming| persisted.key == incoming.key)
+			});
 
 		if landed && corroborated.insert(key_id.clone()) {
 			corroborated_changed = true;
@@ -690,18 +697,28 @@ pub async fn add_signing_keys(
 			.verify_keys
 			.get(key_id_ref)
 			.is_some_and(|persisted| {
-			new_keys
-				.verify_keys
-				.get(key_id_ref)
-				.is_some_and(|incoming| persisted.key == incoming.key)
-		});
+				new_keys
+					.verify_keys
+					.get(key_id_ref)
+					.is_some_and(|incoming| persisted.key == incoming.key)
+			});
 
 		if landed && provisional.insert(key_id.clone()) {
 			provisional_changed = true;
 		}
 	}
 
-	if !rejected_collision {
+	let active_bindings_landed_from_payload =
+		historical_keys
+			.verify_keys
+			.iter()
+			.all(|(key_id, persisted)| {
+				new_keys
+					.verify_keys
+					.get(key_id)
+					.is_some_and(|incoming| persisted.key == incoming.key)
+			});
+	if active_bindings_landed_from_payload {
 		historical_keys.valid_until_ts = new_keys.valid_until_ts;
 	}
 
@@ -1138,6 +1155,23 @@ mod tests {
 		raw(&keys)
 	}
 
+	fn payload_with_old(
+		origin: &ServerName,
+		valid_until_ts: MilliSecondsSinceUnixEpoch,
+		active: impl IntoIterator<Item = (OwnedServerSigningKeyId, u8)>,
+		old: impl IntoIterator<Item = (OwnedServerSigningKeyId, (u64, u8))>,
+	) -> Raw<ServerSigningKeys> {
+		let mut keys = ServerSigningKeys::new(origin.to_owned(), valid_until_ts);
+		for (key_id, key_byte) in active {
+			keys.verify_keys.insert(key_id, verify_key(key_byte));
+		}
+		for (key_id, (expired_ts_ms, key_byte)) in old {
+			keys.old_verify_keys
+				.insert(key_id, old_verify_key_with_material(expired_ts_ms, key_byte));
+		}
+		raw(&keys)
+	}
+
 	async fn load_provisional_set(
 		service: &Service,
 		origin: &ServerName,
@@ -1319,6 +1353,91 @@ mod tests {
 		);
 		assert_eq!(historical.verify_keys.len(), 50);
 		assert!(!provisional.contains(&provisional_key_id));
+	}
+
+	#[tokio::test]
+	async fn load_key_id_set_accepts_legacy_encoded_rows() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("legacy");
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+		let mut legacy_set = BTreeSet::new();
+		legacy_set.insert(key_id.clone());
+
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&provisional_db_key(origin), &legacy_set);
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 7), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let provisional = load_provisional_set(&service, origin).await;
+		assert!(!provisional.contains(&key_id));
+	}
+
+	#[tokio::test]
+	async fn valid_until_updates_when_final_active_set_matches_payload() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let active_key_id = key_id("active");
+		let old_key_id = key_id("old");
+		let past = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_sub(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		let mut historical = ServerSigningKeys::new(origin.to_owned(), past);
+		historical
+			.verify_keys
+			.insert(active_key_id.clone(), verify_key(1));
+		historical
+			.old_verify_keys
+			.insert(old_key_id.clone(), old_verify_key_with_material(100, 2));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&historical_db_key(origin), database::Json(&historical));
+
+		service
+			.add_signing_keys(
+				&payload_with_old(
+					origin,
+					future,
+					std::iter::once((active_key_id.clone(), 1)),
+					std::iter::once((old_key_id.clone(), (100, 3))),
+				),
+				FetchSource::Direct,
+			)
+			.await
+			.unwrap();
+
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		assert_eq!(historical.valid_until_ts, future);
+		assert_eq!(historical.verify_keys.get(&active_key_id).unwrap().key, verify_key(1).key);
+		assert_eq!(
+			historical.old_verify_keys.get(&old_key_id).unwrap().key,
+			Base64::new(vec![2; 32])
+		);
 	}
 
 	fn old_verify_key_with_material(expired_ts_ms: u64, byte: u8) -> OldVerifyKey {
