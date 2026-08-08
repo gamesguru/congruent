@@ -471,35 +471,7 @@ impl Data {
 
 	/// Remove topo entry using a **known** depth, avoiding the `get_blocking`
 	/// call that `remove_topo_pducount` does.
-	pub(super) fn remove_topo_pducount_at_depth(&self, pdu_id: &RawPduId, old_depth: u64) {
-		self.roomid_topologicalorder_pducount
-			.remove(&Self::topo_pducount_key(pdu_id, old_depth));
-	}
-
-	pub(super) fn remove_stream_and_topo_pducount(
-		&self,
-		pdu_id: &RawPduId,
-		event_id_bytes: &[u8],
-	) {
-		self.room_pducount_eventid.remove(pdu_id);
-		self.eventid_pduid.remove(event_id_bytes);
-		self.remove_topo_pducount(pdu_id, event_id_bytes);
-	}
-
-	/// Remove stream + topo indices using a **known** depth, avoiding
-	/// blocking metadata reads.
-	pub(super) fn remove_stream_and_topo_pducount_at_depth(
-		&self,
-		pdu_id: &RawPduId,
-		event_id_bytes: &[u8],
-		old_depth: u64,
-	) {
-		self.room_pducount_eventid.remove(pdu_id);
-		self.eventid_pduid.remove(event_id_bytes);
-		self.remove_topo_pducount_at_depth(pdu_id, old_depth);
-	}
-
-	fn remove_stream_and_topo_pducount_from_batch<'a>(
+	pub(super) fn remove_stream_and_topo_pducount_from_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
@@ -516,26 +488,62 @@ impl Data {
 		}
 	}
 
-	pub(super) fn replace_stream_and_topo_pducount(
-		&self,
+	/// Batched equivalent of `remove_stream_and_topo_pducount`: resolves the
+	/// depth via the same blocking metadata read (`meta.depth`, matching
+	/// `remove_topo_pducount`'s field exactly -- not
+	/// `deprecated_local_topo_depth`, which is a different field with its own
+	/// separate callers), then routes the three deletes into `batch` instead
+	/// of writing them individually.
+	pub(super) fn remove_stream_and_topo_pducount_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		event_id_bytes: &[u8],
+	) {
+		let depth = self
+			.eventid_metadata
+			.get_blocking(event_id_bytes)
+			.ok()
+			.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
+			.map(|meta| meta.depth.into());
+		self.remove_stream_and_topo_pducount_from_batch(batch, pdu_id, event_id_bytes, depth);
+	}
+
+	/// Batched equivalent of `replace_stream_and_topo_pducount`. All four
+	/// writes (stream, `eventid_pduid`, metadata, topo) land in the same
+	/// `database::Batch` and therefore the same atomic RocksDB write --
+	/// unlike the individually-`.insert()`ed version above, a crash (or a
+	/// concurrent reader) can never observe `eventid_pduid`/`eventid_metadata`
+	/// updated while the topo index still points at the old position, or
+	/// vice versa.
+	pub(super) fn replace_stream_and_topo_pducount_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		local_topo_depth: u64,
 		pdu_count: PduCount,
 	) {
 		self.room_pducount_eventid
-			.insert(pdu_id, event_id.as_bytes());
-		self.eventid_pduid.insert(event_id.as_bytes(), pdu_id);
-		self.set_event_metadata_depth_and_count(event_id, local_topo_depth, pdu_count);
+			.batch_put(batch, pdu_id, event_id.as_bytes());
+		self.eventid_pduid
+			.batch_put(batch, event_id.as_bytes(), pdu_id);
+		self.set_event_metadata_depth_and_count_into_batch(
+			batch,
+			event_id,
+			local_topo_depth,
+			pdu_count,
+		);
 		let topo_key = Self::topo_pducount_key(pdu_id, local_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
-	/// Combined write: updates stream + topo index and overwrites metadata
-	/// from a pre-computed `EventMetadata`, avoiding any DB reads.
-	pub(super) fn replace_stream_topo_with_cached_metadata(
-		&self,
+	/// Batched equivalent of `replace_stream_topo_with_cached_metadata` --
+	/// same reasoning as `replace_stream_and_topo_pducount_batch`.
+	pub(super) fn replace_stream_topo_with_cached_metadata_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		local_topo_depth: u64,
@@ -543,10 +551,10 @@ impl Data {
 		meta: &mut rooms::timeline::EventMetadata,
 	) {
 		self.room_pducount_eventid
-			.insert(pdu_id, event_id.as_bytes());
-		self.eventid_pduid.insert(event_id.as_bytes(), pdu_id);
+			.batch_put(batch, pdu_id, event_id.as_bytes());
+		self.eventid_pduid
+			.batch_put(batch, event_id.as_bytes(), pdu_id);
 
-		// Update metadata fields and write in one shot — no read needed
 		meta.deprecated_local_topo_depth = local_topo_depth;
 		meta.pdu_count = match pdu_count {
 			| PduCount::Normal(x) => Some(x),
@@ -555,36 +563,39 @@ impl Data {
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(meta) {
 			self.eventid_metadata
-				.insert(event_id.as_bytes(), &metadata_bytes);
+				.batch_put(batch, event_id.as_bytes(), metadata_bytes);
 		}
 
 		let topo_key = Self::topo_pducount_key(pdu_id, local_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
-	/// Rebuild topo index entry using a cached `EventMetadata`, avoiding
-	/// any blocking DB reads. Updates the topo key and metadata in one shot.
-	pub(super) fn reindex_topo_with_cached_metadata(
-		&self,
+	/// Batched equivalent of `reindex_topo_with_cached_metadata`. The old
+	/// topo entry's removal and the new one's insertion land in the same
+	/// batch as the metadata update, so a reader can never observe the old
+	/// and new topo keys simultaneously absent (or the metadata pointing at
+	/// a depth neither key uses).
+	pub(super) fn reindex_topo_with_cached_metadata_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		new_topo_depth: u64,
 		meta: &mut rooms::timeline::EventMetadata,
 	) {
-		// Remove old topo entry using cached depth
-		self.remove_topo_pducount_at_depth(pdu_id, meta.deprecated_local_topo_depth);
+		let old_topo_key = Self::topo_pducount_key(pdu_id, meta.deprecated_local_topo_depth);
+		self.roomid_topologicalorder_pducount
+			.batch_delete(batch, &old_topo_key);
 
-		// Write new topo entry
 		let topo_key = Self::topo_pducount_key(pdu_id, new_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 
-		// Update metadata with new depth — no read needed
 		meta.deprecated_local_topo_depth = new_topo_depth;
 		if let Ok(metadata_bytes) = bincode::serialize(meta) {
 			self.eventid_metadata
-				.insert(event_id.as_bytes(), &metadata_bytes);
+				.batch_put(batch, event_id.as_bytes(), metadata_bytes);
 		}
 	}
 
@@ -633,6 +644,42 @@ impl Data {
 		}
 	}
 
+	/// Batched equivalent of `reindex_topo`. Both blocking reads (old depth
+	/// via the same lookup `remove_topo_pducount` does, then metadata for
+	/// the update) still happen outside the batch -- RocksDB batches are
+	/// write-only -- but every write lands in `batch` together.
+	pub(super) fn reindex_topo_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		event_id: &EventId,
+		new_topo_depth: u64,
+	) {
+		let event_id_bytes = event_id.as_bytes();
+
+		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
+				let old_topo_key = Self::topo_pducount_key(pdu_id, meta.depth.into());
+				self.roomid_topologicalorder_pducount
+					.batch_delete(batch, &old_topo_key);
+			}
+		}
+
+		let topo_key = Self::topo_pducount_key(pdu_id, new_topo_depth);
+		self.roomid_topologicalorder_pducount
+			.batch_put(batch, &topo_key, event_id_bytes);
+
+		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
+			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
+				meta.deprecated_local_topo_depth = new_topo_depth;
+				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
+					self.eventid_metadata
+						.batch_put(batch, event_id_bytes, metadata_bytes);
+				}
+			}
+		}
+	}
+
 	/// Update only the canonical JSON for a PDU without touching any index.
 	/// Used when state repair modifies `unsigned.prev_content`.
 	pub(super) fn update_pdu_json(&self, event_id: &EventId, json: &CanonicalJsonObject) {
@@ -663,8 +710,13 @@ impl Data {
 		}
 	}
 
-	pub(super) fn set_event_metadata_depth_and_count(
-		&self,
+	/// Batched equivalent of `set_event_metadata_depth_and_count`. The
+	/// read-modify-write still does its read outside the batch (RocksDB
+	/// batches are write-only), but the write half lands in `batch` instead
+	/// of as its own independent `.insert()`.
+	pub(super) fn set_event_metadata_depth_and_count_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		event_id: &EventId,
 		depth: u64,
 		pdu_count: PduCount,
@@ -678,7 +730,7 @@ impl Data {
 				};
 				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
 					self.eventid_metadata
-						.insert(event_id.as_bytes(), &metadata_bytes);
+						.batch_put(batch, event_id.as_bytes(), metadata_bytes);
 				}
 			}
 		}

@@ -120,20 +120,37 @@ impl Service {
 			);
 		}
 
-		let cork = self.db.db.cork();
+		// Every stream/eventid_pduid/metadata/topo write for the whole
+		// rebuild goes into one `database::Batch`, applied atomically at the
+		// end. The previous version wrote each of those four maps with its
+		// own independent `.insert()`/`.remove()` call under a `cork()` --
+		// `cork()` only buffers writes for I/O throughput, it gives no
+		// atomicity guarantee, so a crash (or, since these aren't behind the
+		// per-key locks the normal insert paths use, a concurrent reader)
+		// mid-loop could observe `eventid_pduid`/`eventid_metadata` updated
+		// for an event while `roomid_topologicalorder_pducount` still had
+		// its old entry, or no entry at all. That split is exactly the
+		// "phantom mapping" failure mode `get_pdu_id`'s callers can't
+		// distinguish from a real timeline position -- see
+		// docs/development-gg/backfill-v12-phantom-timeline-membership.md.
+		let mut batch = database::Batch::new();
 		if force_reindex {
 			for (event_id, &(old_count, ..)) in &entries {
 				let old_pdu_id: RawPduId = PduId { shortroomid, shorteventid: old_count }.into();
 				// Use cached depth to avoid blocking metadata read
 				if let Some(meta) = metadata_cache.get(event_id) {
-					self.db.remove_stream_and_topo_pducount_at_depth(
+					self.db.remove_stream_and_topo_pducount_from_batch(
+						&mut batch,
 						&old_pdu_id,
 						event_id.as_bytes(),
-						meta.deprecated_local_topo_depth,
+						Some(meta.deprecated_local_topo_depth),
 					);
 				} else {
-					self.db
-						.remove_stream_and_topo_pducount(&old_pdu_id, event_id.as_bytes());
+					self.db.remove_stream_and_topo_pducount_into_batch(
+						&mut batch,
+						&old_pdu_id,
+						event_id.as_bytes(),
+					);
 				}
 			}
 		}
@@ -150,7 +167,8 @@ impl Service {
 			if force_reindex {
 				// Use cached metadata to avoid blocking DB reads
 				if let Some(meta) = metadata_cache.get_mut(event_id) {
-					self.db.replace_stream_topo_with_cached_metadata(
+					self.db.replace_stream_topo_with_cached_metadata_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
@@ -158,7 +176,8 @@ impl Service {
 						meta,
 					);
 				} else {
-					self.db.replace_stream_and_topo_pducount(
+					self.db.replace_stream_and_topo_pducount_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
@@ -168,18 +187,20 @@ impl Service {
 			} else {
 				// Use cached metadata to avoid blocking DB reads
 				if let Some(meta) = metadata_cache.get_mut(event_id) {
-					self.db.reindex_topo_with_cached_metadata(
+					self.db.reindex_topo_with_cached_metadata_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
 						meta,
 					);
 				} else {
-					self.db.reindex_topo(&pdu_id, event_id, local_topo_depth);
+					self.db
+						.reindex_topo_batch(&mut batch, &pdu_id, event_id, local_topo_depth);
 				}
 			}
 		}
-		drop(cork);
+		self.db.db_apply_batch(batch);
 		debug!("reorder_timeline: topo rebuild took {:?}", reindex_start.elapsed());
 
 		// Final batch: cork_and_sync ensures WAL is durable when dropped
