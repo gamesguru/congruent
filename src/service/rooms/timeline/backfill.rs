@@ -278,7 +278,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = self.topo_sort_backfill_batch(&pdus).await;
+					let pdus = self.topo_sort_backfill_batch(&pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -344,21 +344,26 @@ pub async fn backfill_if_required(
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
 #[implement(super::Service)]
-async fn topo_sort_backfill_batch(&self, pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
+fn topo_sort_backfill_batch(&self, pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
 	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
-		let (_, _, value) = match self.services.event_handler.parse_incoming_pdu(pdu).await {
-			| Ok(parsed) => parsed,
-			| Err(e) => {
-				debug_warn!("backfill: dropping unparsable event from reorder batch: {e}");
-				continue;
-			},
-		};
-
-		let depth = value
-			.get("depth")
-			.and_then(CanonicalJsonValue::as_integer)
+		// Deliberately not `parse_incoming_pdu` here: this pass only ever reads
+		// `depth` out of the raw JSON, but that call also resolves `room_id` --
+		// which, for a v12 non-create event with no inline `room_id`, falls back
+		// to sequentially awaiting up to 10 auth-event DB lookups
+		// (`MAX_AUTH_EVENTS_ROOM_ID_FALLBACK` in parse_incoming_pdu.rs). Paying
+		// that for every event in a batch, on top of `backfill_pdu` doing the
+		// exact same full parse again a moment later for the real insertion,
+		// turns a 500-event v12 backfill response into thousands of sequential
+		// lookups just to sort it. `backfill_pdu` remains the sole place actual
+		// validation and malformed-event dropping happens for this batch -- a
+		// syntactically-broken event here just can't contribute a depth, so it
+		// sorts as depth 0 and gets caught (and logged) by backfill_pdu's own
+		// parse when it's inserted.
+		let depth = serde_json::from_str::<CanonicalJsonObject>(pdu.get())
+			.ok()
+			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_integer))
 			.and_then(|d| u64::try_from(i64::from(d)).ok())
 			.unwrap_or_default();
 
