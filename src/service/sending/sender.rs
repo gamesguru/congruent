@@ -291,11 +291,26 @@ impl Service {
 			if let Destination::Federation(server_name) = dest {
 				let since = self.db.get_latest_educount(server_name).await;
 				let since_upper = self.services.globals.current_count().unwrap_or(0);
+				info!(
+					target: "receipt_debug",
+					%server_name, since, since_upper,
+					"handle_response_ok: empty transaction, checking for pending edus"
+				);
 				if since < since_upper {
+					info!(
+						target: "receipt_debug",
+						%server_name, since, since_upper,
+						"handle_response_ok: since behind since_upper, rescheduling immediate flush"
+					);
 					statuses.remove(dest);
 					self.reschedule_flush(dest.clone(), Duration::from_millis(0));
 					return;
 				}
+				info!(
+					target: "receipt_debug",
+					%server_name, since, since_upper,
+					"handle_response_ok: since caught up, not rescheduling"
+				);
 			}
 			statuses.remove(dest);
 			return;
@@ -636,6 +651,11 @@ impl Service {
 		let since_upper = self.services.globals.current_count()?;
 		let batch = (since, since_upper);
 		debug_assert!(batch.0 <= batch.1, "since range must not be negative");
+		info!(
+			target: "receipt_debug",
+			%server_name, since = batch.0, since_upper = batch.1,
+			"select_edus: window"
+		);
 
 		let device_changes = self.select_edus_device_changes(server_name, batch);
 
@@ -661,6 +681,12 @@ impl Service {
 
 		// The safe global cursor is the minimum of all processed bounds
 		let last_count = device_max.min(receipt_max).min(presence_max);
+		info!(
+			target: "receipt_debug",
+			%server_name, device_max, receipt_max, presence_max, last_count,
+			receipt_found = receipts.is_some(),
+			"select_edus: result bounds"
+		);
 
 		// Collect them all
 		if !device_changes.is_empty() {
@@ -808,6 +834,11 @@ impl Service {
 		since: (u64, u64),
 		num: &std::sync::atomic::AtomicUsize,
 	) -> ReceiptMap {
+		info!(
+			target: "receipt_debug",
+			%room_id, since_lower = since.0, since_upper = since.1,
+			"select_edus_receipts_room: scanning"
+		);
 		let receipts_stream = self
 			.services
 			.read_receipt
@@ -816,7 +847,17 @@ impl Service {
 		pin_mut!(receipts_stream);
 		let mut collected = Vec::new();
 		while let Some((user_id, count, read_receipt)) = receipts_stream.next().await {
+			info!(
+				target: "receipt_debug",
+				%room_id, %user_id, count, since_upper = since.1,
+				"select_edus_receipts_room: saw candidate"
+			);
 			if count > since.1 {
+				info!(
+					target: "receipt_debug",
+					%room_id, %user_id, count, since_upper = since.1,
+					"select_edus_receipts_room: stopping, candidate is past since_upper"
+				);
 				break;
 			}
 			if self.services.globals.user_is_local(&user_id) {
@@ -844,6 +885,11 @@ impl Service {
 		}
 
 		collected.sort_by_key(|(_, stream_count, _, event_count)| (*event_count, *stream_count));
+		info!(
+			target: "receipt_debug",
+			%room_id, collected = collected.len(),
+			"select_edus_receipts_room: done scanning"
+		);
 
 		build_receipt_map(
 			collected
@@ -1183,6 +1229,11 @@ impl Service {
 
 		if pdus.is_empty() && edus.is_empty() {
 			if let Some(count) = edu_count {
+				info!(
+					target: "receipt_debug",
+					%server, count,
+					"send_events: nothing to send, advancing educount watermark anyway"
+				);
 				self.db.set_latest_educount(&server, count);
 			}
 			return Ok(Destination::Federation(server));
@@ -1273,6 +1324,11 @@ impl Service {
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {
+					info!(
+						target: "receipt_debug",
+						%server, count,
+						"send_events: transaction delivered, advancing educount watermark"
+					);
 					self.db.set_latest_educount(&server, count);
 				}
 				Ok(Destination::Federation(server))
