@@ -561,9 +561,24 @@ impl Data {
 			| PduCount::Backfilled(_) => None, /* Force fallback to eventid_pduid for proper
 			                                    * decoding */
 		};
-		if let Ok(metadata_bytes) = bincode::serialize(meta) {
-			self.eventid_metadata
-				.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+		match bincode::serialize(meta) {
+			| Ok(metadata_bytes) => {
+				self.eventid_metadata
+					.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+			},
+			| Err(e) => {
+				// The stream/topo writes for this event are still going into
+				// `batch` below and will land -- only the metadata write
+				// (and its `eventid_metadata` fast-path lookup for
+				// get_pdu_id) is skipped, leaving that one event to fall
+				// back to the `eventid_pduid` legacy path. Not silent: this
+				// is the same shape of write inconsistency
+				// docs/development-gg/backfill-v12-phantom-timeline-membership.md
+				// is about, just smaller, so it's worth knowing about even
+				// though EventMetadata's all-primitive fields make it very
+				// unlikely to actually fire.
+				conduwuit::warn!(%event_id, "Failed to serialize EventMetadata for batch write: {e}");
+			},
 		}
 
 		let topo_key = Self::topo_pducount_key(pdu_id, local_topo_depth);
@@ -593,9 +608,15 @@ impl Data {
 			.batch_put(batch, &topo_key, event_id.as_bytes());
 
 		meta.deprecated_local_topo_depth = new_topo_depth;
-		if let Ok(metadata_bytes) = bincode::serialize(meta) {
-			self.eventid_metadata
-				.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+		match bincode::serialize(meta) {
+			| Ok(metadata_bytes) => {
+				self.eventid_metadata
+					.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+			},
+			| Err(e) => conduwuit::warn!(
+				%event_id,
+				"Failed to serialize EventMetadata for batch write: {e}"
+			),
 		}
 	}
 
@@ -672,9 +693,15 @@ impl Data {
 		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
 			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
 				meta.deprecated_local_topo_depth = new_topo_depth;
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.batch_put(batch, event_id_bytes, metadata_bytes);
+				match bincode::serialize(&meta) {
+					| Ok(metadata_bytes) => {
+						self.eventid_metadata
+							.batch_put(batch, event_id_bytes, metadata_bytes);
+					},
+					| Err(e) => conduwuit::warn!(
+						%event_id,
+						"Failed to serialize EventMetadata for batch write: {e}"
+					),
 				}
 			}
 		}
@@ -728,9 +755,18 @@ impl Data {
 					| PduCount::Normal(x) => Some(x),
 					| PduCount::Backfilled(_) => None, // Force fallback to eventid_pduid
 				};
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+				match bincode::serialize(&meta) {
+					| Ok(metadata_bytes) => {
+						self.eventid_metadata.batch_put(
+							batch,
+							event_id.as_bytes(),
+							metadata_bytes,
+						);
+					},
+					| Err(e) => conduwuit::warn!(
+						%event_id,
+						"Failed to serialize EventMetadata for batch write: {e}"
+					),
 				}
 			}
 		}
