@@ -494,6 +494,18 @@ pub async fn add_signing_keys(
 	// Merging with Collision Detection (First Seen Wins)
 	let mut filtered_verify_keys = new_keys.verify_keys.clone();
 	let mut filtered_old_verify_keys = new_keys.old_verify_keys.clone();
+	let candidate_corroborated: std::collections::BTreeSet<OwnedServerSigningKeyId> =
+		filtered_verify_keys.keys().cloned().collect();
+	let candidate_provisional_adds: std::collections::BTreeSet<OwnedServerSigningKeyId> =
+		if source == FetchSource::Notary {
+			filtered_verify_keys
+				.keys()
+				.filter(|key_id| !originally_known_key_ids.contains(*key_id))
+				.cloned()
+				.collect()
+		} else {
+			std::collections::BTreeSet::new()
+		};
 	let collision_action = if enforce_fsw {
 		"Retaining cached key."
 	} else {
@@ -620,16 +632,6 @@ pub async fn add_signing_keys(
 			.or_insert_with(|| OldVerifyKey { key: key.key, expired_ts: now });
 	}
 
-	// MSC4499 "Corroboration tier": every key ID accepted as currently active
-	// in this response is now something we've independently observed active,
-	// regardless of source -- record it before it's ever retired. Corroboration
-	// is local observation history and is never revoked once granted.
-	for key_id in filtered_verify_keys.keys() {
-		if corroborated.insert(key_id.clone()) {
-			corroborated_changed = true;
-		}
-	}
-
 	// Store the filtered/merged historical keys
 	historical_keys.verify_keys.extend(filtered_verify_keys);
 	for (key_id, old_key) in filtered_old_verify_keys {
@@ -656,6 +658,45 @@ pub async fn add_signing_keys(
 			.unwrap_or(false);
 
 		if landed && provisional.remove(key_id) {
+			provisional_changed = true;
+		}
+	}
+
+	// MSC4499 "Corroboration tier": only mark a key corroborated if the
+	// currently-active binding from this payload actually survived into the
+	// final persisted active set.
+	for key_id in &candidate_corroborated {
+		let key_id_ref: &ServerSigningKeyId = key_id.as_ref();
+		let landed = historical_keys
+			.verify_keys
+			.get(key_id_ref)
+			.is_some_and(|persisted| {
+			new_keys
+				.verify_keys
+				.get(key_id_ref)
+				.is_some_and(|incoming| persisted.key == incoming.key)
+		});
+
+		if landed && corroborated.insert(key_id.clone()) {
+			corroborated_changed = true;
+		}
+	}
+
+	// A first-seen notary key stays provisional only if that active binding
+	// actually survived into the final persisted record.
+	for key_id in &candidate_provisional_adds {
+		let key_id_ref: &ServerSigningKeyId = key_id.as_ref();
+		let landed = historical_keys
+			.verify_keys
+			.get(key_id_ref)
+			.is_some_and(|persisted| {
+			new_keys
+				.verify_keys
+				.get(key_id_ref)
+				.is_some_and(|incoming| persisted.key == incoming.key)
+		});
+
+		if landed && provisional.insert(key_id.clone()) {
 			provisional_changed = true;
 		}
 	}
@@ -716,36 +757,26 @@ pub async fn add_signing_keys(
 		}
 	}
 
-	// MSC4499 "Notary fallback (two-tier binding)": a key ID observed for the
-	// very first time via a notary starts provisional; one observed directly
-	// starts (and stays) permanent, so it's never added here.
-	if source == FetchSource::Notary {
-		for key_id in new_keys
-			.verify_keys
-			.keys()
-			.chain(new_keys.old_verify_keys.keys())
-		{
-			if !originally_known_key_ids.contains(key_id) && provisional.insert(key_id.clone()) {
-				provisional_changed = true;
-			}
-		}
-	}
-
+	let mut writes = Vec::with_capacity(3);
+	writes.push((
+		historical_key,
+		serde_json::to_vec(&historical_keys).expect("historical server_keys is serializable"),
+	));
 	if provisional_changed {
-		self.db
-			.server_signingkeys
-			.raw_put(&provisional_key, Json(&provisional));
+		writes.push((
+			provisional_key,
+			serde_json::to_vec(&provisional).expect("provisional key-id set is serializable"),
+		));
 	}
-
 	if corroborated_changed {
-		self.db
-			.server_signingkeys
-			.raw_put(&corroborated_key, Json(&corroborated));
+		writes.push((
+			corroborated_key,
+			serde_json::to_vec(&corroborated).expect("corroborated key-id set is serializable"),
+		));
 	}
-
 	self.db
 		.server_signingkeys
-		.raw_put(&historical_key, Json(&historical_keys));
+		.insert_batch(writes.into_iter().map(|(key, val)| (key, val)));
 
 	// MSC4499 First-Seen-Wins enforcement on the origin record.
 	// When enabled, replace any colliding keys in new_keys with their first-seen
