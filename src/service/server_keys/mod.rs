@@ -501,18 +501,6 @@ pub async fn add_signing_keys(
 	// Merging with Collision Detection (First Seen Wins)
 	let mut filtered_verify_keys = new_keys.verify_keys.clone();
 	let mut filtered_old_verify_keys = new_keys.old_verify_keys.clone();
-	let candidate_corroborated: std::collections::BTreeSet<OwnedServerSigningKeyId> =
-		filtered_verify_keys.keys().cloned().collect();
-	let candidate_provisional_adds: std::collections::BTreeSet<OwnedServerSigningKeyId> =
-		if source == FetchSource::Notary {
-			filtered_verify_keys
-				.keys()
-				.filter(|key_id| !originally_known_key_ids.contains(*key_id))
-				.cloned()
-				.collect()
-		} else {
-			std::collections::BTreeSet::new()
-		};
 	let collision_action = if enforce_fsw {
 		"Retaining cached key."
 	} else {
@@ -592,6 +580,20 @@ pub async fn add_signing_keys(
 		}
 	}
 
+	let candidate_corroborated: std::collections::BTreeSet<OwnedServerSigningKeyId> =
+		filtered_verify_keys.keys().cloned().collect();
+	let candidate_provisional_adds: std::collections::BTreeSet<OwnedServerSigningKeyId> =
+		if source == FetchSource::Notary {
+			filtered_verify_keys
+				.keys()
+				.chain(filtered_old_verify_keys.keys())
+				.filter(|key_id| !originally_known_key_ids.contains(*key_id))
+				.cloned()
+				.collect()
+		} else {
+			std::collections::BTreeSet::new()
+		};
+
 	// Merge and clean up: if a key exists in both, the new verify_keys takes
 	// precedence and we remove it from historical_keys.old_verify_keys.
 	// Conversely, if a key is in old_verify_keys, we ensure it's not in
@@ -624,7 +626,7 @@ pub async fn add_signing_keys(
 	// omission alone. Skipping retirement for the whole payload just delays
 	// it to the next clean response instead.
 	let mut retired_keys = Vec::new();
-	if !rejected_collision {
+	if source == FetchSource::Direct && !rejected_collision {
 		for (key_id, key) in &historical_keys.verify_keys {
 			if !new_keys.verify_keys.contains_key(key_id) {
 				retired_keys.push((key_id.clone(), key.clone()));
@@ -690,10 +692,11 @@ pub async fn add_signing_keys(
 	}
 
 	// A first-seen notary key stays provisional only if that active binding
-	// actually survived into the final persisted record.
+	// actually survived into the final persisted record, either as an active
+	// key or as a retained historical old_verify_key.
 	for key_id in &candidate_provisional_adds {
 		let key_id_ref: &ServerSigningKeyId = key_id.as_ref();
-		let landed = historical_keys
+		let landed_active = historical_keys
 			.verify_keys
 			.get(key_id_ref)
 			.is_some_and(|persisted| {
@@ -702,8 +705,17 @@ pub async fn add_signing_keys(
 					.get(key_id_ref)
 					.is_some_and(|incoming| persisted.key == incoming.key)
 			});
+		let landed_old = historical_keys
+			.old_verify_keys
+			.get(key_id_ref)
+			.is_some_and(|persisted| {
+				new_keys
+					.old_verify_keys
+					.get(key_id_ref)
+					.is_some_and(|incoming| persisted.key == incoming.key)
+			});
 
-		if landed && provisional.insert(key_id.clone()) {
+		if (landed_active || landed_old) && provisional.insert(key_id.clone()) {
 			provisional_changed = true;
 		}
 	}
@@ -793,7 +805,7 @@ pub async fn add_signing_keys(
 	}
 	self.db
 		.server_signingkeys
-		.insert_batch(writes.into_iter().map(|(key, val)| (key, val)));
+		.insert_batch(writes.into_iter());
 
 	// MSC4499 First-Seen-Wins enforcement on the origin record.
 	// When enabled, replace any colliding keys in new_keys with their first-seen
@@ -1041,7 +1053,7 @@ mod tests {
 		config::Config,
 		log::{Log, LogLevelReloadHandles, capture},
 	};
-	use database::{Database, Deserialized};
+	use database::{Database, Deserialized, Json};
 	use figment::providers::Format;
 	use ruma::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, ServerName,
@@ -1052,7 +1064,8 @@ mod tests {
 
 	use super::{
 		BTreeMap, FetchSource, OldVerifyKey, Service, bounded_msc4499_backoff_secs,
-		historical_db_key, provisional_db_key, select_old_verify_keys_to_evict,
+		corroborated_db_key, historical_db_key, load_key_id_set, provisional_db_key,
+		select_old_verify_keys_to_evict,
 	};
 	use crate::Service as _;
 
@@ -1176,13 +1189,18 @@ mod tests {
 		service: &Service,
 		origin: &ServerName,
 	) -> BTreeSet<OwnedServerSigningKeyId> {
-		service
-			.db
-			.server_signingkeys
-			.get(&provisional_db_key(origin))
+		load_key_id_set(&service.db.server_signingkeys, &provisional_db_key(origin))
 			.await
-			.and_then(|handle| serde_json::from_slice(handle.as_ref()).map_err(Into::into))
-			.unwrap_or_default()
+			.unwrap()
+	}
+
+	async fn load_corroborated_set(
+		service: &Service,
+		origin: &ServerName,
+	) -> BTreeSet<OwnedServerSigningKeyId> {
+		load_key_id_set(&service.db.server_signingkeys, &corroborated_db_key(origin))
+			.await
+			.unwrap()
 	}
 
 	#[tokio::test]
@@ -1277,7 +1295,7 @@ mod tests {
 		service
 			.db
 			.server_signingkeys
-			.raw_put(&historical_db_key(origin), database::Json(&historical));
+			.raw_put(&historical_db_key(origin), Json(&historical));
 
 		service
 			.add_signing_keys(&payload(origin, future, &key_id, 9), FetchSource::Direct)
@@ -1356,16 +1374,127 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn load_key_id_set_accepts_legacy_encoded_rows() {
+	async fn notary_partial_payload_does_not_retire_direct_active_keys() {
 		let _serial = DB_TEST_MUTEX.lock().await;
 		let (_guard, service) = setup_test_service().await;
 		let origin = <&ServerName>::try_from("example.com").unwrap();
-		let key_id = key_id("legacy");
+		let key_a = key_id("direct-a");
+		let key_b = key_id("direct-b");
 		let future = MilliSecondsSinceUnixEpoch::now()
 			.to_system_time()
 			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
 			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
 			.unwrap();
+
+		service
+			.add_signing_keys(
+				&payload_many(
+					origin,
+					future,
+					[(key_a.clone(), 1_u8), (key_b.clone(), 2_u8)],
+				),
+				FetchSource::Direct,
+			)
+			.await
+			.unwrap();
+		service
+			.add_signing_keys(&payload(origin, future, &key_a, 1), FetchSource::Notary)
+			.await
+			.unwrap();
+
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		assert!(historical.verify_keys.contains_key(&key_a));
+		assert!(historical.verify_keys.contains_key(&key_b));
+		assert!(historical.old_verify_keys.is_empty());
+	}
+
+	#[tokio::test]
+	async fn first_seen_notary_old_verify_key_stays_provisional() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("retired-first-seen");
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		service
+			.add_signing_keys(
+				&payload_with_old(
+					origin,
+					future,
+					std::iter::empty(),
+					std::iter::once((key_id.clone(), (100, 7))),
+				),
+				FetchSource::Notary,
+			)
+			.await
+			.unwrap();
+
+		let provisional = load_provisional_set(&service, origin).await;
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		assert!(provisional.contains(&key_id));
+		assert_eq!(
+			historical.old_verify_keys.get(&key_id).unwrap().key,
+			Base64::new(vec![7; 32])
+		);
+	}
+
+	#[tokio::test]
+	async fn fsw_filtered_active_collision_does_not_become_corroborated() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("collision");
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		let mut historical = ServerSigningKeys::new(origin.to_owned(), future);
+		historical.verify_keys.insert(key_id.clone(), verify_key(1));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&historical_db_key(origin), Json(&historical));
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let corroborated = load_corroborated_set(&service, origin).await;
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		assert!(!corroborated.contains(&key_id));
+		assert_eq!(historical.verify_keys.get(&key_id).unwrap().key, verify_key(1).key);
+	}
+
+	#[tokio::test]
+	async fn load_key_id_set_accepts_legacy_encoded_rows() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("legacy");
 		let mut legacy_set = BTreeSet::new();
 		legacy_set.insert(key_id.clone());
 
@@ -1373,13 +1502,9 @@ mod tests {
 			.db
 			.server_signingkeys
 			.raw_put(&provisional_db_key(origin), &legacy_set);
-		service
-			.add_signing_keys(&payload(origin, future, &key_id, 7), FetchSource::Direct)
-			.await
-			.unwrap();
 
 		let provisional = load_provisional_set(&service, origin).await;
-		assert!(!provisional.contains(&key_id));
+		assert!(provisional.contains(&key_id));
 	}
 
 	#[tokio::test]
@@ -1410,7 +1535,7 @@ mod tests {
 		service
 			.db
 			.server_signingkeys
-			.raw_put(&historical_db_key(origin), database::Json(&historical));
+			.raw_put(&historical_db_key(origin), Json(&historical));
 
 		service
 			.add_signing_keys(
