@@ -495,13 +495,14 @@ pub async fn add_signing_keys(
 		&provisional_valid_until_key,
 	)
 	.await?;
-	for key_id in &provisional {
-		provisional_valid_until
-			.entry(key_id.clone())
-			.or_insert(historical_keys.valid_until_ts);
-	}
 	let mut provisional_changed = false;
 	let mut provisional_valid_until_changed = false;
+	for key_id in &provisional {
+		if !provisional_valid_until.contains_key(key_id) {
+			provisional_valid_until.insert(key_id.clone(), historical_keys.valid_until_ts);
+			provisional_valid_until_changed = true;
+		}
+	}
 
 	// MSC4499 "Corroboration tier": key IDs we have ourselves independently
 	// observed as currently-active at some point, tracked so a later eviction
@@ -626,6 +627,17 @@ pub async fn add_signing_keys(
 				.keys()
 				.chain(filtered_old_verify_keys.keys())
 				.filter(|key_id| !originally_known_key_ids.contains(*key_id))
+				.cloned()
+				.collect()
+		} else {
+			std::collections::BTreeSet::new()
+		};
+	let candidate_provisional_refreshes: std::collections::BTreeSet<OwnedServerSigningKeyId> =
+		if source == FetchSource::Notary {
+			filtered_verify_keys
+				.keys()
+				.chain(filtered_old_verify_keys.keys())
+				.filter(|key_id| provisional.contains(*key_id))
 				.cloned()
 				.collect()
 		} else {
@@ -761,6 +773,38 @@ pub async fn add_signing_keys(
 		if (landed_active || landed_old) && provisional.insert(key_id.clone()) {
 			provisional_changed = true;
 		}
+		if landed_active || landed_old {
+			let previous =
+				provisional_valid_until.insert(key_id.clone(), new_keys.valid_until_ts);
+			if previous != Some(new_keys.valid_until_ts) {
+				provisional_valid_until_changed = true;
+			}
+		}
+	}
+
+	for key_id in &candidate_provisional_refreshes {
+		let key_id_ref: &ServerSigningKeyId = key_id.as_ref();
+		let landed_active =
+			historical_keys
+				.verify_keys
+				.get(key_id_ref)
+				.is_some_and(|persisted| {
+					new_keys
+						.verify_keys
+						.get(key_id_ref)
+						.is_some_and(|incoming| persisted.key == incoming.key)
+				});
+		let landed_old =
+			historical_keys
+				.old_verify_keys
+				.get(key_id_ref)
+				.is_some_and(|persisted| {
+					new_keys
+						.old_verify_keys
+						.get(key_id_ref)
+						.is_some_and(|incoming| persisted.key == incoming.key)
+				});
+
 		if landed_active || landed_old {
 			let previous =
 				provisional_valid_until.insert(key_id.clone(), new_keys.valid_until_ts);
@@ -1398,6 +1442,81 @@ mod tests {
 		assert_eq!(historical.verify_keys.get(&stale_key_id).unwrap().key, verify_key(1).key);
 		assert_eq!(provisional_valid_until.get(&stale_key_id), Some(&past));
 		assert!(provisional.contains(&stale_key_id));
+	}
+
+	#[tokio::test]
+	async fn legacy_provisional_entries_backfill_valid_until_once_and_persist_it() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("legacy-provisional");
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		let mut historical = ServerSigningKeys::new(origin.to_owned(), future);
+		historical.verify_keys.insert(key_id.clone(), verify_key(1));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&historical_db_key(origin), Json(&historical));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&provisional_db_key(origin), Json(&BTreeSet::from([key_id.clone()])));
+
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
+		assert_eq!(provisional_valid_until.get(&key_id), Some(&future));
+	}
+
+	#[tokio::test]
+	async fn repeated_notary_observation_refreshes_provisional_expiry() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("renewed-provisional");
+		let past = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_sub(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		service
+			.add_signing_keys(&payload(origin, past, &key_id, 1), FetchSource::Notary)
+			.await
+			.unwrap();
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Notary)
+			.await
+			.unwrap();
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		let provisional = load_provisional_set(&service, origin).await;
+
+		assert_eq!(historical.verify_keys.get(&key_id).unwrap().key, verify_key(2).key);
+		assert!(!provisional.contains(&key_id));
 	}
 
 	#[tokio::test]
