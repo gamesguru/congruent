@@ -231,6 +231,43 @@ fn corroborated_db_key(origin: &ServerName) -> Vec<u8> {
 	key
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveKeyMergeDecision {
+	Accept,
+	PromoteProvisional,
+	RejectCollision,
+}
+
+fn classify_active_key_merge(
+	source: FetchSource,
+	key_id: &ServerSigningKeyId,
+	new_key: &VerifyKey,
+	historical_keys: &ServerSigningKeys,
+	provisional: &std::collections::BTreeSet<OwnedServerSigningKeyId>,
+) -> ActiveKeyMergeDecision {
+	if let Some(existing_key) = historical_keys.verify_keys.get(key_id) {
+		if existing_key.key == new_key.key {
+			return ActiveKeyMergeDecision::Accept;
+		}
+
+		return if source == FetchSource::Direct && provisional.contains(key_id) {
+			ActiveKeyMergeDecision::PromoteProvisional
+		} else {
+			ActiveKeyMergeDecision::RejectCollision
+		};
+	}
+
+	if historical_keys
+		.old_verify_keys
+		.get(key_id)
+		.is_some_and(|existing_old_key| existing_old_key.key != new_key.key)
+	{
+		return ActiveKeyMergeDecision::RejectCollision;
+	}
+
+	ActiveKeyMergeDecision::Accept
+}
+
 /// MSC4499 "Corroboration tier" retired-key eviction ordering: given the
 /// full retired-key set for a remote server and the subset of those key IDs
 /// we've independently corroborated (previously observed active), returns
@@ -447,40 +484,41 @@ pub async fn add_signing_keys(
 	};
 
 	for (key_id, new_key) in &new_keys.verify_keys {
-		if let Some(existing_key) = historical_keys.verify_keys.get(key_id) {
-			if existing_key.key != new_key.key {
-				if source == FetchSource::Direct && provisional.contains(key_id) {
-					// MSC4499 "Notary fallback (two-tier binding)": a direct fetch
-					// overriding a still-live provisional (notary-learned) binding is
-					// promotion, not a collision. Leave filtered_verify_keys untouched
-					// so the new (direct) body wins the merge below.
-					conduwuit::warn!(
-						"MSC4499: direct fetch overrides provisional notary-learned key \
-						 {key_id} for {origin} (two-tier binding promotion); this becomes the \
-						 permanent binding"
-					);
-					provisional.remove(key_id);
-					provisional_changed = true;
-				} else {
-					let existing_fp = get_fingerprint(&existing_key.key);
-					let new_fp = get_fingerprint(&new_key.key);
-					conduwuit::warn!(
-						"Key ID collision detected for server {origin} on active key {key_id}! \
-						 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
-						 {collision_action}"
-					);
-					if enforce_fsw {
-						rejected_collision = true;
-						filtered_verify_keys.remove(key_id);
-					}
-				}
-			}
-		} else if let Some(existing_old_key) = historical_keys.old_verify_keys.get(key_id) {
-			if existing_old_key.key != new_key.key {
-				let existing_fp = get_fingerprint(&existing_old_key.key);
-				let new_fp = get_fingerprint(&new_key.key);
+		match classify_active_key_merge(source, key_id, new_key, &historical_keys, &provisional) {
+			| ActiveKeyMergeDecision::Accept => {},
+			| ActiveKeyMergeDecision::PromoteProvisional => {
+				// MSC4499 "Notary fallback (two-tier binding)": a direct fetch
+				// overriding a still-live provisional (notary-learned) binding is
+				// promotion, not a collision. Leave filtered_verify_keys untouched
+				// so the new (direct) body wins the merge below.
 				conduwuit::warn!(
-					"Key ID collision detected for server {origin} on active/old key {key_id}! \
+					"MSC4499: direct fetch overrides provisional notary-learned key {key_id} \
+					 for {origin} (two-tier binding promotion); this becomes the permanent \
+					 binding"
+				);
+				provisional.remove(key_id);
+				provisional_changed = true;
+			},
+			| ActiveKeyMergeDecision::RejectCollision => {
+				let existing_fp = historical_keys
+					.verify_keys
+					.get(key_id)
+					.map(|existing_key| get_fingerprint(&existing_key.key))
+					.or_else(|| {
+						historical_keys
+							.old_verify_keys
+							.get(key_id)
+							.map(|existing_old_key| get_fingerprint(&existing_old_key.key))
+					})
+					.expect("rejected active-key collision must have an existing binding");
+				let new_fp = get_fingerprint(&new_key.key);
+				let bucket = if historical_keys.verify_keys.contains_key(key_id) {
+					"active"
+				} else {
+					"active/old"
+				};
+				conduwuit::warn!(
+					"Key ID collision detected for server {origin} on {bucket} key {key_id}! \
 					 Cached fingerprint: {existing_fp}, conflicting fingerprint: {new_fp}. \
 					 {collision_action}"
 				);
@@ -488,7 +526,7 @@ pub async fn add_signing_keys(
 					rejected_collision = true;
 					filtered_verify_keys.remove(key_id);
 				}
-			}
+			},
 		}
 	}
 
@@ -920,10 +958,15 @@ fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 mod tests {
 	use std::collections::BTreeSet;
 
-	use ruma::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
+	use ruma::{
+		MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
+		api::federation::discovery::{ServerSigningKeys, VerifyKey},
+		serde::Base64,
+	};
 
 	use super::{
-		BTreeMap, OldVerifyKey, bounded_msc4499_backoff_secs, select_old_verify_keys_to_evict,
+		ActiveKeyMergeDecision, BTreeMap, FetchSource, OldVerifyKey,
+		bounded_msc4499_backoff_secs, classify_active_key_merge, select_old_verify_keys_to_evict,
 	};
 
 	#[test]
@@ -941,6 +984,111 @@ mod tests {
 		OldVerifyKey::new(
 			MilliSecondsSinceUnixEpoch(expired_ts_ms.try_into().unwrap()),
 			Base64::new(vec![0_u8; 32]),
+		)
+	}
+
+	fn verify_key(byte: u8) -> VerifyKey { VerifyKey::new(Base64::new(vec![byte; 32])) }
+
+	fn server_signing_keys() -> ServerSigningKeys {
+		ServerSigningKeys::new(
+			OwnedServerName::try_from("example.com").unwrap(),
+			MilliSecondsSinceUnixEpoch::now(),
+		)
+	}
+
+	#[test]
+	fn direct_fetch_promotes_still_live_provisional_binding() {
+		let key_id = key_id("promoted");
+		let mut historical_keys = server_signing_keys();
+		historical_keys
+			.verify_keys
+			.insert(key_id.clone(), verify_key(1));
+
+		let mut provisional = BTreeSet::new();
+		provisional.insert(key_id.clone());
+
+		assert_eq!(
+			classify_active_key_merge(
+				FetchSource::Direct,
+				key_id.as_ref(),
+				&verify_key(2),
+				&historical_keys,
+				&provisional,
+			),
+			ActiveKeyMergeDecision::PromoteProvisional,
+		);
+	}
+
+	#[test]
+	fn notary_fetch_cannot_promote_provisional_binding() {
+		let key_id = key_id("notary-collision");
+		let mut historical_keys = server_signing_keys();
+		historical_keys
+			.verify_keys
+			.insert(key_id.clone(), verify_key(1));
+
+		let mut provisional = BTreeSet::new();
+		provisional.insert(key_id.clone());
+
+		assert_eq!(
+			classify_active_key_merge(
+				FetchSource::Notary,
+				key_id.as_ref(),
+				&verify_key(2),
+				&historical_keys,
+				&provisional,
+			),
+			ActiveKeyMergeDecision::RejectCollision,
+		);
+	}
+
+	#[test]
+	fn direct_fetch_cannot_promote_retired_binding() {
+		let key_id = key_id("retired");
+		let mut historical_keys = server_signing_keys();
+		historical_keys
+			.old_verify_keys
+			.insert(key_id.clone(), old_verify_key_with_material(100, 1));
+
+		let mut provisional = BTreeSet::new();
+		provisional.insert(key_id.clone());
+
+		assert_eq!(
+			classify_active_key_merge(
+				FetchSource::Direct,
+				key_id.as_ref(),
+				&verify_key(2),
+				&historical_keys,
+				&provisional,
+			),
+			ActiveKeyMergeDecision::RejectCollision,
+		);
+	}
+
+	#[test]
+	fn collision_lookup_is_global_across_active_and_old_bindings() {
+		let key_id = key_id("global");
+		let mut historical_keys = server_signing_keys();
+		historical_keys
+			.old_verify_keys
+			.insert(key_id.clone(), old_verify_key_with_material(100, 7));
+
+		assert_eq!(
+			classify_active_key_merge(
+				FetchSource::Notary,
+				key_id.as_ref(),
+				&verify_key(9),
+				&historical_keys,
+				&BTreeSet::new(),
+			),
+			ActiveKeyMergeDecision::RejectCollision,
+		);
+	}
+
+	fn old_verify_key_with_material(expired_ts_ms: u64, byte: u8) -> OldVerifyKey {
+		OldVerifyKey::new(
+			MilliSecondsSinceUnixEpoch(expired_ts_ms.try_into().unwrap()),
+			Base64::new(vec![byte; 32]),
 		)
 	}
 
