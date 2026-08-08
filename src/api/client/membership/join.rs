@@ -801,14 +801,9 @@ async fn join_room_by_id_helper_remote_process(
 		.reconcile_membership(room_id)
 		.boxed()
 		.await;
-
-	info!("Updating joined counts for new room");
-	services
-		.rooms
-		.state_cache
-		.update_joined_count(room_id)
-		.boxed()
-		.await;
+	// reconcile_membership already ends with its own update_joined_count call
+	// on this exact room, with no state mutation in between -- a second
+	// explicit call here would just re-read the same numbers it just wrote.
 
 	let post_force_count = services
 		.rooms
@@ -817,7 +812,7 @@ async fn join_room_by_id_helper_remote_process(
 		.await
 		.unwrap_or(0);
 	info!(
-		"join: after force_state+update_joined_count for {room_id}: \
+		"join: after force_state+reconcile_membership for {room_id}: \
 		 joined_count={post_force_count}"
 	);
 

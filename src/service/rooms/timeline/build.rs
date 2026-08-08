@@ -167,13 +167,30 @@ pub async fn build_and_append_pdu(
 
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
+	info!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), kind = ?pdu.kind(), state_key = ?pdu.state_key,
+		room_servers_count = servers.len(),
+		"build_and_append_pdu: pre-special-case servers"
+	);
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key_uid) = &pdu
 			.state_key
 			.as_ref()
 			.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 		{
+			info!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), %state_key_uid,
+				"build_and_append_pdu: inserting affected user's server as destination"
+			);
 			servers.insert(state_key_uid.server_name().to_owned());
+		} else {
+			info!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), state_key = ?pdu.state_key,
+				"build_and_append_pdu: RoomMember event but state_key didn't parse as a UserId"
+			);
 		}
 	}
 
@@ -181,6 +198,11 @@ pub async fn build_and_append_pdu(
 	// room_servers() and/or the if statement above
 	servers.remove(self.services.globals.server_name());
 
+	info!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), final_servers = ?servers,
+		"build_and_append_pdu: final destination set"
+	);
 	trace!("Sending PDU {} to {} servers", pdu.event_id(), servers.len());
 	let num_sent = self
 		.services
