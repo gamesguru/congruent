@@ -104,7 +104,7 @@ where
 		match self
 			.services
 			.server_keys
-			.verify_event(&value, Some(&room_version_id))
+			.verify_event_at(&value, Some(&room_version_id), "handle_outlier_pdu::initial")
 			.await
 		{
 			| Ok(ruma::signatures::Verified::All) => value,
@@ -157,7 +157,11 @@ where
 									if matches!(
 										self.services
 											.server_keys
-											.verify_event(&clean_val, Some(&room_version_id))
+											.verify_event_at(
+												&clean_val,
+												Some(&room_version_id),
+												"handle_outlier_pdu::recovered_pristine_copy",
+											)
 											.await,
 										Ok(ruma::signatures::Verified::All)
 									) {

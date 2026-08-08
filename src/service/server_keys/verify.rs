@@ -137,7 +137,10 @@ pub async fn validate_and_add_event_id(
 		conduwuit::info!(
 			"Bypassing signature verification for configured exception event: {event_id}"
 		);
-	} else if let Err(e) = self.verify_event(&value, Some(room_version)).await {
+	} else if let Err(e) = self
+		.verify_event_at(&value, Some(room_version), "validate_and_add_event_id")
+		.await
+	{
 		return Err!(BadServerResponse(debug_error!(
 			"Event {event_id} failed verification: {e:?}"
 		)));
@@ -176,7 +179,10 @@ pub async fn validate_and_add_event_id_no_fetch(
 		conduwuit::info!(
 			"Bypassing signature verification for configured exception event: {event_id}"
 		);
-	} else if let Err(e) = self.verify_event(&value, Some(room_version)).await {
+	} else if let Err(e) = self
+		.verify_event_at(&value, Some(room_version), "validate_and_add_event_id_no_fetch")
+		.await
+	{
 		debug_warn!("Event verification failed");
 		return Err!(BadServerResponse(debug_error!(
 			"Event {event_id} failed verification: {e:?}"
@@ -194,6 +200,17 @@ pub async fn verify_event(
 	&self,
 	event: &CanonicalJsonObject,
 	room_version: Option<&RoomVersionId>,
+) -> Result<Verified> {
+	self.verify_event_at(event, room_version, "verify_event")
+		.await
+}
+
+#[implement(super::Service)]
+pub async fn verify_event_at(
+	&self,
+	event: &CanonicalJsonObject,
+	room_version: Option<&RoomVersionId>,
+	context: &'static str,
 ) -> Result<Verified> {
 	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
 
@@ -223,8 +240,9 @@ pub async fn verify_event(
 		// Remove once that's resolved; this is deliberately temporary.
 		let canonical_json = serde_json::to_string(&event).unwrap_or_default();
 		conduwuit::warn!(
-			"Signature verification failed for event {event_id}. Error: {e:?}. Available keys: \
-			 {keys:?}. Event signatures: {signatures}. Canonical JSON verified: {canonical_json}"
+			"Signature verification failed for event {event_id} in {context}. Error: {e:?}. \
+			 Available keys: {keys:?}. Event signatures: {signatures}. Canonical JSON verified: \
+			 {canonical_json}"
 		);
 	}
 

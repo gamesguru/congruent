@@ -1,6 +1,6 @@
 use std::{collections::HashSet, iter::once};
 
-use conduwuit::{info, trace};
+use conduwuit::{debug, info, trace};
 use conduwuit_core::{
 	Err, Result, err, implement,
 	matrix::{event::Event, pdu::PduBuilder},
@@ -167,7 +167,16 @@ pub async fn build_and_append_pdu(
 
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
-	info!(
+	//
+	// This block's tracing is `debug!`, not `info!`: it runs unconditionally on
+	// every locally-created PDU (not just RoomMember ones), and `?servers`
+	// formats the whole destination set. At `info!` it would run at full cost
+	// on every send in the default log config (`info,memory_serve=warn` in
+	// release builds, `debug` in dev builds) -- `debug!` keeps it opt-in via
+	// the `membership_destination_debug` target (e.g.
+	// `RUST_LOG=membership_destination_debug=debug`) without paying that cost
+	// by default.
+	debug!(
 		target: "membership_destination_debug",
 		event_id = %pdu.event_id(), kind = ?pdu.kind(), state_key = ?pdu.state_key,
 		room_servers_count = servers.len(),
@@ -179,14 +188,14 @@ pub async fn build_and_append_pdu(
 			.as_ref()
 			.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 		{
-			info!(
+			debug!(
 				target: "membership_destination_debug",
 				event_id = %pdu.event_id(), %state_key_uid,
 				"build_and_append_pdu: inserting affected user's server as destination"
 			);
 			servers.insert(state_key_uid.server_name().to_owned());
 		} else {
-			info!(
+			debug!(
 				target: "membership_destination_debug",
 				event_id = %pdu.event_id(), state_key = ?pdu.state_key,
 				"build_and_append_pdu: RoomMember event but state_key didn't parse as a UserId"
@@ -198,7 +207,7 @@ pub async fn build_and_append_pdu(
 	// room_servers() and/or the if statement above
 	servers.remove(self.services.globals.server_name());
 
-	info!(
+	debug!(
 		target: "membership_destination_debug",
 		event_id = %pdu.event_id(), final_servers = ?servers,
 		"build_and_append_pdu: final destination set"

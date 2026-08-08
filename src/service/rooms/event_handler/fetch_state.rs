@@ -214,7 +214,11 @@ where
 						} else {
 							self.services
 								.server_keys
-								.verify_event(&val, Some(&room_version_id))
+								.verify_event_at(
+									&val,
+									Some(&room_version_id),
+									"fetch_state::broad_filter_map",
+								)
 								.await
 						};
 

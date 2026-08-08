@@ -309,11 +309,25 @@ fn strip_v12_create_removes() {
 
 struct TempDbGuard {
 	path: std::path::PathBuf,
+	services: Option<std::sync::Arc<service::Services>>,
 	_serial: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Drop for TempDbGuard {
-	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+	fn drop(&mut self) {
+		if let Some(services) = self.services.take() {
+			if let Ok(handle) = tokio::runtime::Handle::try_current() {
+				tokio::task::block_in_place(|| {
+					handle.block_on(async move {
+						services.stop().await;
+						drop(services);
+					});
+				});
+			}
+		}
+
+		let _ = std::fs::remove_dir_all(&self.path);
+	}
 }
 
 async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>, TempDbGuard) {
@@ -331,8 +345,6 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{prefix}_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
-
-	let guard = TempDbGuard { path: db_path.clone(), _serial: serial };
 
 	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
 		r#"
@@ -368,6 +380,12 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 
 	// Boot admin module context references
 	crate::init(&services.admin).await;
+
+	let guard = TempDbGuard {
+		path: db_path,
+		services: Some(std::sync::Arc::clone(&services)),
+		_serial: serial,
+	};
 
 	(services, guard)
 }

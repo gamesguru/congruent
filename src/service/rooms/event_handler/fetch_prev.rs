@@ -254,7 +254,11 @@ where
 							matches!(
 								self.services
 									.server_keys
-									.verify_event(&val, Some(&room_version_id))
+									.verify_event_at(
+										&val,
+										Some(&room_version_id),
+										"fetch_prev::broad_filter_map",
+									)
 									.await,
 								Ok(ruma::signatures::Verified::All)
 							)
