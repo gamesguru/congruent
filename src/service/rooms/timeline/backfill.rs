@@ -278,7 +278,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = self.topo_sort_backfill_batch(&pdus);
+					let pdus = topo_sort_backfill_batch(&pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -343,8 +343,7 @@ pub async fn backfill_if_required(
 /// aborting the whole reorder -- `backfill_pdu` already tolerates and
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
-#[implement(super::Service)]
-fn topo_sort_backfill_batch(&self, pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
+fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
 	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {

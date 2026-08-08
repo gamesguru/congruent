@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Instant};
 
 use conduwuit::{
 	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
-	utils::continue_exponential_backoff_secs,
+	utils::continue_exponential_backoff_secs, warn,
 };
 use ruma::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
 use tracing::debug;
@@ -57,8 +57,35 @@ where
 		}
 	}
 
-	let Some((pdu, json)) = eventid_info else {
-		return Ok(());
+	let (pdu, json) = match eventid_info {
+		| Some(eventid_info) => eventid_info,
+		| None => {
+			// `fetch_prev` only returns entries for prev_events it actually went
+			// and fetched -- it pre-filters anything `pdu_exists` already knows
+			// about (see its `still_needed` filter), and that check matches
+			// *outliers* too, not just timeline events. So `None` here doesn't
+			// mean "already handled", it can also mean "already known, but only
+			// ever stored as an outlier" -- e.g. pulled in earlier purely to
+			// satisfy some other event's auth chain. Left alone, that event
+			// stays permanently invisible to `/messages`: nothing else in this
+			// call tree will ever revisit it. Recover the stored outlier and
+			// promote it ourselves; `upgrade_outlier_to_timeline_pdu` already
+			// no-ops if it turns out to be a timeline event after all.
+			if self.services.timeline.non_outlier_pdu_exists(prev_id).await {
+				return Ok(());
+			}
+			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
+				return Ok(());
+			}
+			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id).await else {
+				return Ok(());
+			};
+			let Ok(pdu) = PduEvent::from_id_val(prev_id, json.clone(), Some(room_id)) else {
+				warn!("Stored outlier {prev_id} failed to parse back into a PduEvent");
+				return Ok(());
+			};
+			(pdu, json)
+		},
 	};
 
 	// Skip old events
