@@ -266,12 +266,16 @@ pub async fn heal_room(
 
 		// Write to timeline
 		if is_new_insertion {
-			// Pre-emptively update existing_metadata (if any) with the new depth
-			// so append_pdu preserves the CORRECT depth instead of the old one.
-			self.db.set_event_metadata_depth(event_id, new_topo_depth);
+			// append_pdu_batch writes the initial topo entry from the event's
+			// asserted depth. Immediately reindex it to the locally computed
+			// topo depth in the same batch so the write lands atomically.
+			let mut batch = self.db.db_batch();
 			self.db
-				.append_pdu(&pdu_id, &pdu_from_db, &json, pdu_count)
+				.append_pdu_batch(&mut batch, &pdu_id, &pdu_from_db, &json, pdu_count)
 				.await;
+			self.db
+				.reindex_topo_batch(&mut batch, &pdu_id, event_id, new_topo_depth);
+			self.db.db_apply_batch(batch);
 		} else {
 			// Event already in timeline -- only update JSON if state repair modified it
 			self.db.update_pdu_json(event_id, &json);

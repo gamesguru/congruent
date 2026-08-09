@@ -691,7 +691,8 @@ impl Data {
 
 		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
 			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
-				let old_topo_key = Self::topo_pducount_key(pdu_id, meta.depth.into());
+				let old_topo_key =
+					Self::topo_pducount_key(pdu_id, meta.deprecated_local_topo_depth);
 				self.roomid_topologicalorder_pducount
 					.batch_delete(batch, &old_topo_key);
 			}
@@ -733,18 +734,6 @@ impl Data {
 			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
 		} else {
 			None
-		}
-	}
-
-	pub(super) fn set_event_metadata_depth(&self, event_id: &EventId, depth: u64) {
-		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id.as_bytes()) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
-				meta.deprecated_local_topo_depth = depth;
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.insert(event_id.as_bytes(), &metadata_bytes);
-				}
-			}
 		}
 	}
 
