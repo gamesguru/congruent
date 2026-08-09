@@ -6,7 +6,11 @@ mod sign;
 mod validate;
 mod verify;
 
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+	collections::BTreeMap,
+	sync::Arc,
+	time::{Duration, SystemTime},
+};
 
 use conduwuit::{
 	Result, Server, debug_error, debug_warn, err, implement, trace,
@@ -489,6 +493,7 @@ pub async fn add_signing_keys(
 	// the origin-wide cache `valid_until_ts`.
 	let provisional_key = provisional_db_key(origin);
 	let mut provisional = load_key_id_set(&self.db.server_signingkeys, &provisional_key).await?;
+	let now = MilliSecondsSinceUnixEpoch::now();
 	let provisional_valid_until_key = provisional_valid_until_db_key(origin);
 	let mut provisional_valid_until = load_provisional_valid_until_map(
 		&self.db.server_signingkeys,
@@ -499,7 +504,14 @@ pub async fn add_signing_keys(
 	let mut provisional_valid_until_changed = false;
 	for key_id in &provisional {
 		if !provisional_valid_until.contains_key(key_id) {
-			provisional_valid_until.insert(key_id.clone(), historical_keys.valid_until_ts);
+			// Legacy provisional entries predate per-binding liveness tracking.
+			// Treat them conservatively as expired until a fresh notary observation
+			// records an explicit per-binding lifetime.
+			provisional_valid_until.insert(
+				key_id.clone(),
+				MilliSecondsSinceUnixEpoch::from_system_time(SystemTime::UNIX_EPOCH)
+					.expect("UNIX_EPOCH fits in MilliSecondsSinceUnixEpoch"),
+			);
 			provisional_valid_until_changed = true;
 		}
 	}
@@ -534,7 +546,6 @@ pub async fn add_signing_keys(
 
 	let enforce_fsw = self.services.server.config.msc4499_strict_caching;
 	let mut rejected_collision = false;
-	let now = MilliSecondsSinceUnixEpoch::now();
 	let mut promoted_key_ids = std::collections::BTreeSet::new();
 
 	// Merging with Collision Detection (First Seen Wins)
@@ -1445,11 +1456,12 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn legacy_provisional_entries_backfill_valid_until_once_and_persist_it() {
+	async fn legacy_provisional_entries_backfill_as_expired_until_refreshed() {
 		let _serial = DB_TEST_MUTEX.lock().await;
 		let (_guard, service) = setup_test_service().await;
 		let origin = <&ServerName>::try_from("example.com").unwrap();
 		let key_id = key_id("legacy-provisional");
+		let now = MilliSecondsSinceUnixEpoch::now();
 		let future = MilliSecondsSinceUnixEpoch::now()
 			.to_system_time()
 			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
@@ -1472,8 +1484,27 @@ mod tests {
 			.await
 			.unwrap();
 
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		let provisional = load_provisional_set(&service, origin).await;
 		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
-		assert_eq!(provisional_valid_until.get(&key_id), Some(&future));
+		assert_eq!(historical.verify_keys.get(&key_id).unwrap().key, verify_key(1).key);
+		assert!(provisional.contains(&key_id));
+		assert!(
+			provisional_valid_until
+				.get(&key_id)
+				.is_some_and(|expiry| *expiry <= now)
+		);
 	}
 
 	#[tokio::test]
