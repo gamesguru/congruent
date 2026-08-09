@@ -13,6 +13,33 @@ const LIMIT_MAX: usize = 50;
 /// spec says default is 10
 const LIMIT_DEFAULT: usize = 10;
 
+async fn should_walk_prev_edge(
+	services: &crate::State,
+	event_id: &OwnedEventId,
+	prev_event_id: &OwnedEventId,
+) -> bool {
+	match services.rooms.timeline.get_pdu(prev_event_id).await {
+		| Ok(prev_pdu) => {
+			let should_walk = prev_pdu.state_key().is_none();
+			trace!(
+				%event_id,
+				%prev_event_id,
+				prev_is_state = !should_walk,
+				"evaluated get_missing_events prev edge"
+			);
+			should_walk
+		},
+		| Err(e) => {
+			trace!(
+				%event_id,
+				%prev_event_id,
+				"could not inspect prev event while evaluating get_missing_events edge: {e}"
+			);
+			true
+		},
+	}
+}
+
 /// # `POST /_matrix/federation/v1/get_missing_events/{roomId}`
 ///
 /// Retrieves events that the sender is missing.
@@ -93,9 +120,13 @@ pub(crate) async fn get_missing_events_route(
 		trace!(
 			%next_event_id,
 			prev_events = ?pdu.prev_events().collect::<Vec<_>>(),
-			"adding event to results and queueing prev events"
+			"adding event to results and evaluating prev edges"
 		);
-		queue.extend(pdu.prev_events.clone());
+		for prev_event_id in &pdu.prev_events {
+			if should_walk_prev_edge(&services, &next_event_id, prev_event_id).await {
+				queue.push_back(prev_event_id.clone());
+			}
+		}
 		seen.insert(next_event_id.clone());
 		if body.latest_events.contains(&next_event_id) {
 			continue; // Don't include latest_events in results,
