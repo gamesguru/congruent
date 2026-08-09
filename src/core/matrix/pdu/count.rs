@@ -261,3 +261,68 @@ mod tests {
 		assert!(last_active > starting_count, "active rooms must NOT trigger sync early return");
 	}
 }
+
+use std::array::TryFromSliceError;
+
+/// Unified timeline coordinate representing both live and backfill events.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TimelineKey {
+	/// True Matrix DAG depth (`topological_ordering`).
+	pub depth: u64,
+	/// Monotonic sequence (`stream_ordering`): positive for live, negative for
+	/// backfill.
+	pub stream_ordering: i64,
+}
+
+impl TimelineKey {
+	#[inline]
+	#[must_use]
+	pub fn new(depth: u64, stream_ordering: i64) -> Self { Self { depth, stream_ordering } }
+
+	/// Encodes into a 16-byte big-endian array optimized for newest-to-oldest
+	/// lexicographical range scans (`ORDER BY depth DESC, stream_ordering
+	/// DESC`).
+	#[inline]
+	#[must_use]
+	pub fn to_be_bytes(&self) -> [u8; 16] {
+		let mut buf = [0_u8; 16];
+
+		// Primary Axis: Inverted Depth (DESC)
+		let desc_depth = !self.depth;
+		buf[0..8].copy_from_slice(&desc_depth.to_be_bytes());
+
+		// Secondary Axis: Inverted Offset-Binary Stream Ordering (DESC)
+		let offset_binary = (self.stream_ordering as u64) ^ 0x8000_0000_0000_0000;
+		let desc_stream = !offset_binary;
+		buf[8..16].copy_from_slice(&desc_stream.to_be_bytes());
+
+		buf
+	}
+
+	/// Decodes a 16-byte KV slice back into a TimelineKey during pagination.
+	#[inline]
+	#[must_use]
+	pub fn from_bytes(bytes: &[u8; 16]) -> Self {
+		let mut depth_bytes = [0_u8; 8];
+		depth_bytes.copy_from_slice(&bytes[0..8]);
+		let depth = !u64::from_be_bytes(depth_bytes);
+
+		let mut stream_bytes = [0_u8; 8];
+		stream_bytes.copy_from_slice(&bytes[8..16]);
+		let desc_stream = u64::from_be_bytes(stream_bytes);
+
+		let offset_binary = !desc_stream;
+		let stream_ordering = (offset_binary ^ 0x8000_0000_0000_0000) as i64;
+
+		Self { depth, stream_ordering }
+	}
+}
+
+impl TryFrom<&[u8]> for TimelineKey {
+	type Error = TryFromSliceError;
+
+	fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+		let bytes: &[u8; 16] = slice.try_into()?;
+		Ok(Self::from_bytes(bytes))
+	}
+}

@@ -20,7 +20,7 @@ use serde_json::value::RawValue as RawJsonValue;
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,
 	builder::{Builder, Builder as PduBuilder},
-	count::Count,
+	count::{Count, TimelineKey},
 	id::{ShortId, *},
 	raw_id::*,
 	topo::TopoToken,

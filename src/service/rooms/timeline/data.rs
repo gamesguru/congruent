@@ -6,7 +6,7 @@ use std::{
 
 use conduwuit::{
 	Err, Event, PduCount, PduEvent, Result, at, err,
-	matrix::pdu::TopoToken,
+	matrix::pdu::{TimelineKey, TopoToken},
 	result::NotFound,
 	utils::{
 		self,
@@ -398,10 +398,14 @@ impl Data {
 	}
 
 	pub(crate) fn topo_pducount_key(pdu_id: &RawPduId, depth: u64) -> Vec<u8> {
+		let mut shorteventid = [0_u8; 8];
+		shorteventid.copy_from_slice(&pdu_id.shorteventid());
+		let stream_ordering = i64::from_be_bytes(PduCount::offset_binary_encoding(shorteventid));
+		let timeline_key = TimelineKey::new(depth, stream_ordering);
+
 		let mut topo_key = Vec::with_capacity(24);
 		topo_key.extend_from_slice(&pdu_id.shortroomid());
-		topo_key.extend_from_slice(&depth.to_be_bytes());
-		topo_key.extend_from_slice(&pdu_id.shorteventid());
+		topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 		topo_key
 	}
 
@@ -456,8 +460,12 @@ impl Data {
 		let mut pdu_id_bytes = [0_u8; 16];
 		pdu_id_bytes[0..8].copy_from_slice(&topo_key[0..8]);
 
-		let mut count_bytes = [0_u8; 8];
-		count_bytes.copy_from_slice(&topo_key[16..24]);
+		let mut timeline_bytes = [0_u8; 16];
+		timeline_bytes.copy_from_slice(&topo_key[8..24]);
+		let timeline_key = TimelineKey::from_bytes(&timeline_bytes);
+
+		let count_bytes =
+			PduCount::offset_binary_encoding(timeline_key.stream_ordering.to_be_bytes());
 		pdu_id_bytes[8..16].copy_from_slice(&count_bytes);
 
 		pdu_id_bytes.as_slice().into()
@@ -2102,7 +2110,11 @@ impl Data {
 			// RocksDB cursor invalidation through try_buffered
 			.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
 			.try_filter_map(move |(topo_key, event_id_bytes)| async move {
-				let depth = u64::from_be_bytes(topo_key[8..16].try_into().expect("topo key must be 24 bytes"));
+				let mut timeline_bytes = [0_u8; 16];
+				timeline_bytes.copy_from_slice(&topo_key[8..24]);
+				let timeline_key = TimelineKey::from_bytes(&timeline_bytes);
+				let depth = timeline_key.depth;
+
 				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
 				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
 				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
