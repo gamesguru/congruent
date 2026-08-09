@@ -635,5 +635,5 @@ fn num_senders(args: &crate::Args<'_>) -> usize {
 	args.server
 		.config
 		.sender_workers
-		.clamp(MIN_SENDERS, max_senders)
+		.clamp(MIN_SENDERS, max_senders.max(MIN_SENDERS))
 }
