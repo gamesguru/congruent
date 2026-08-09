@@ -661,6 +661,14 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 
+	// Re-check after acquiring insert lock to prevent TOCTOU races with a
+	// concurrent backfill_pdu/append_pdu/force_insert_pdu inserting the
+	// same event (see docs/development-gg/backfill-append-toctou-race.md).
+	if self.non_outlier_pdu_exists(event_id).await {
+		drop(insert_lock);
+		return Ok(());
+	}
+
 	// Use backfill (negative) PDU count — these are historical events
 	// that predate the join, not new forward events.
 	let count: i64 = self.services.globals.next_count()?.try_into()?;
@@ -835,6 +843,14 @@ pub async fn force_insert_pdu(
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
+
+	// Re-check after acquiring insert lock to prevent TOCTOU races with a
+	// concurrent backfill_pdu/append_pdu/promote_outlier inserting the same
+	// event (see docs/development-gg/backfill-append-toctou-race.md).
+	if self.non_outlier_pdu_exists(event_id).await {
+		drop(insert_lock);
+		return Err!(Database("PDU {event_id} already in timeline"));
+	}
 
 	let (pdu_count, pdu_id, value) =
 		self.prepare_pdu_insert(shortroomid, event_id, value, backfill)?;

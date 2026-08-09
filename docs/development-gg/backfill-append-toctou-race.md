@@ -139,6 +139,35 @@ This work is unrelated to the `TestMessagesOverFederation` mechanism
 above — confirmed by tracing the actual log line through the pre-fix
 branch logic, not assumed.
 
+## Audit of every `mutex_insert` call site
+
+Grepped every acquisition of the shared per-room `mutex_insert` lock across
+`src/service/rooms/timeline/` to check for the same asymmetry:
+
+| Site | Recheck under lock? | Status |
+| --- | --- | --- |
+| `backfill_pdu` (`backfill.rs:596`) | Yes (pre-existing) | OK |
+| `append_pdu` (`append.rs:247`) | **No** | **Fixed** (draft, commit `b2cc8fde0`) |
+| `promote_outlier` (`backfill.rs:647`) | **No** | **Fixed** (this commit) |
+| `force_insert_pdu` (`backfill.rs:822`) | **No** | **Fixed** (this commit) |
+| `reorder_timeline` (`reorder.rs:36`) | N/A | Not vulnerable — rebuilds the topo index over an already-collected entry set, not a check-then-insert of one incoming event |
+
+All three real gaps now get the same recheck-after-lock treatment
+`backfill_pdu` already had. None of these fixes are validated against the
+actual failing Complement test yet — see "Next steps" below.
+
+## Draft fix status
+
+- `append_pdu`: recheck added, returns the existing `RawPduId` via
+  `get_pdu_id` on collision (commit `b2cc8fde0`). Open question noted
+  inline: skipping on collision also skips `force_state`/push-rule
+  evaluation/auth-chain-caching for this call — unverified whether that's
+  ever actually needed for an event that already landed via
+  `backfill_pdu` (which never does those things itself).
+- `promote_outlier`, `force_insert_pdu`: recheck added, simple no-op /
+  error return on collision — lower risk than `append_pdu`'s case since
+  neither of these has the force_state/push-rule side-effect concern.
+
 ## Next steps
 
 1. Debug-profile build (`make build PROFILE=dev` or equivalent) with the
