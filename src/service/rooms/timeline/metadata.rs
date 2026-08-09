@@ -1,3 +1,4 @@
+use conduwuit::matrix::pdu::PduCount;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -39,6 +40,14 @@ struct EventMetadataV1 {
 }
 
 impl EventMetadata {
+	#[inline]
+	#[must_use]
+	pub fn matches_timeline_position(&self, depth: u64, pdu_count: PduCount) -> bool {
+		!self.is_outlier
+			&& self.deprecated_local_topo_depth == depth
+			&& self.pdu_count == Some(pdu_count.into_unsigned())
+	}
+
 	/// Deserialize from bincode bytes, falling back to the old 8-field
 	/// schema if the current 12-field layout fails (e.g. pre-migration
 	/// entries written before `local_topological_depth`, `pdu_count`,

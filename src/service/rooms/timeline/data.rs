@@ -2101,12 +2101,20 @@ impl Data {
 			// Clone raw bytes to owned before async resolve to avoid
 			// RocksDB cursor invalidation through try_buffered
 			.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-			.and_then(move |(topo_key, event_id_bytes)| async move {
+			.try_filter_map(move |(topo_key, event_id_bytes)| async move {
 				let depth = u64::from_be_bytes(topo_key[8..16].try_into().expect("topo key must be 24 bytes"));
 				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
 				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
 				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
-				Ok((TopoToken { depth, pdu_count }, pdu))
+				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
+				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) else {
+					return Ok(None);
+				};
+				if !metadata.matches_timeline_position(depth, pdu_count) {
+					return Ok(None);
+				}
+
+				Ok(Some((TopoToken { depth, pdu_count }, pdu)))
 			})
 	}
 
