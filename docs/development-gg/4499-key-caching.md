@@ -197,8 +197,13 @@ log which events (or at minimum which rooms/time window) were verified under the
 displaced binding, and MAY re-verify recent events. Bindings observed directly
 from the origin server are **permanent** (see below). Servers MUST NOT treat
 notary unavailability as a verification success. A provisional binding MUST NOT
-be overridden if its cached `valid_until_ts` has passed, or if it was learned
-from `old_verify_keys` with a past `expired_ts`.
+be overridden once that same provisional observation is no longer live for
+promotion purposes on the receiving server, or if it was learned from
+`old_verify_keys` with a past `expired_ts`. This liveness check is about the
+provisional observation itself, not about any unrelated origin-wide cache
+metadata: implementations that bound the promotion window MUST track that bound
+per provisional binding, so that refreshing one key does not silently extend or
+shorten another key's override window.
 
 <!-- synapse-derived: complement coverage currently exercises the core
 promotion path against Synapse in TestMSC4499Key/BindingPromotion; the
@@ -854,53 +859,56 @@ to make room for a new one reopens exactly the TOFU window this record exists to
 close.
 
 That means the digest-binding set cannot be bounded by eviction; it MUST instead
-be bounded by refusing new entries once a per-origin cap is reached.
-Implementations MUST enforce a maximum on digest-binding records per remote
-server name, RECOMMENDED at 30,000 — an order of magnitude above the 3,000-entry
-retired-key ceiling, since digest bindings accumulate for the full lifetime of a
-key ID even after its verification material is pruned, but still small and fixed
-(at ~70 bytes/record, roughly 2 MiB per origin at the recommended cap). A
-different fixed value has no wire-visible effect as long as it is enforced
-deterministically and consistently by a given implementation; the requirement
-that matters for interoperability is that reaching _some_ fixed per-origin
-ceiling is itself the anomaly signal described below, not the exact number. A
-key ID observed for the first time by a given origin after that origin's
-digest-binding set is already at the cap MUST be rejected: no digest-binding
-record is created for it, and the key body it names MUST NOT be used to verify
-signatures, since without a recorded digest binding there is nothing to protect
-a later, colliding body for the same key ID from being silently accepted. This
-MUST be logged at warning level; the response containing it MUST otherwise still
-be processed normally (this is a per-key-ID rejection, not a payload-level one)
-— other key IDs in the same response that are still under the cap are bound and
-usable as normal. Key IDs already bound before the cap was reached continue to
-be checked and enforced as normal. This cap is sized to accommodate legitimate
-bulk first contact — a peer joining federation late and backfilling a full
-3,000-entry retired-key response in one exchange (see
+be bounded by refusing new entries once a fixed cap is reached. Implementations
+MUST enforce a maximum on digest-binding records independently per
+`(remote server name, source category)`, where source category is direct-fetch
+or notary-observed, RECOMMENDED at 30,000 for each bucket — an order of
+magnitude above the 3,000-entry retired-key ceiling, since digest bindings
+accumulate for the full lifetime of a key ID even after its verification
+material is pruned, but still small and fixed (at ~70 bytes/record, roughly 2
+MiB per origin per bucket at the recommended cap). A different fixed value has
+no wire-visible effect as long as it is enforced deterministically and
+consistently by a given implementation; the requirement that matters for
+interoperability is that reaching _some_ fixed ceiling for a given
+`(origin, source category)` bucket is itself the anomaly signal described below,
+not the exact number. A key ID observed for the first time for a given
+`(origin, source category)` bucket after that bucket's digest-binding set is
+already at the cap MUST be rejected: no digest-binding record is created for it,
+and the key body it names MUST NOT be used to verify signatures, since without a
+recorded digest binding there is nothing to protect a later, colliding body for
+the same key ID from being silently accepted. This MUST be logged at warning
+level; the response containing it MUST otherwise still be processed normally
+(this is a per-key-ID rejection, not a payload-level one) — other key IDs in the
+same response that are still under the relevant cap are bound and usable as
+normal. Key IDs already bound before the cap was reached continue to be checked
+and enforced as normal. This cap is sized to accommodate legitimate bulk first
+contact — a peer joining federation late and backfilling a full 3,000-entry
+retired-key response in one exchange (see
 [Storage considerations](#storage-considerations) above, and the
 uncorroborated-binding case under
 [Recovery from key loss](#recovery-from-key-loss)) still lands an order of
 magnitude below the cap — so it does not need a companion rate limit on ordinary
-operation to be effective; reaching the cap for one origin at all is itself the
-anomaly signal described elsewhere in this section ("unambiguously hostile"),
-consistent with this MSC's existing choice to leave rate-limiting of novel
-key-ID discovery to individual implementations rather than mandating one (see
-[Other considerations](#other-considerations)).
+operation to be effective; reaching the cap for one origin/source bucket at all
+is itself the anomaly signal described elsewhere in this section ("unambiguously
+hostile"), consistent with this MSC's existing choice to leave rate-limiting of
+novel key-ID discovery to individual implementations rather than mandating one
+(see [Other considerations](#other-considerations)).
 
 **Cap accounting MUST be segregated by source.** A digest binding for origin `X`
 can be learned two ways: a direct fetch from `X`, or a notary response _about_
-`X`. If both sources drew from the same per-origin budget, a malicious or
-compromised notary could serve enough synthetic key IDs attributed to a victim
-origin it does not control to exhaust that victim's cap on every peer that
-queries through it, and cause the victim's own subsequent genuine key IDs —
-learned later via direct fetch — to be rejected under the cap even though the
-victim never misbehaved. This inverts the anomaly signal above: reaching the cap
-would no longer mean the origin in question is hostile, only that something
-claiming to speak for it is. To prevent this, implementations MUST maintain the
-cap independently per `(remote server name, source category)`, where source
-category is direct-fetch or notary-observed: a notary-sourced flood against one
-origin exhausts only that origin's notary-sourced budget and MUST NOT consume or
-block that origin's direct-fetch budget, or vice versa. This source split
-applies only to cap accounting; the binding namespace is global per
+`X`. If both sources drew from the same budget, a malicious or compromised
+notary could serve enough synthetic key IDs attributed to a victim origin it
+does not control to exhaust that victim's cap on every peer that queries through
+it, and cause the victim's own subsequent genuine key IDs — learned later via
+direct fetch — to be rejected under the cap even though the victim never
+misbehaved. This inverts the anomaly signal above: reaching the cap would no
+longer mean the origin in question is hostile, only that something claiming to
+speak for it is. To prevent this, implementations MUST maintain the cap
+independently per `(remote server name, source category)`, where source category
+is direct-fetch or notary-observed: a notary-sourced flood against one origin
+exhausts only that origin's notary-sourced budget and MUST NOT consume or block
+that origin's direct-fetch budget, or vice versa. This source split applies only
+to cap accounting; the binding namespace is global per
 `(server_name, algorithm, key_id)` tuple, so collision detection and lookup MUST
 consider every binding for that tuple regardless of which source budget it was
 counted against. When a provisional (notary-observed) binding is promoted to
@@ -953,16 +961,17 @@ existing record.
   to individual implementations to apply at their own discretion.
 
 - **The provisional-binding freeze is a deliberate trade, not an oversight.** A
-  provisional binding that has expired or been retired MUST NOT be overridden by
-  a later direct fetch (see Notary fallback). This is intentional: a direct
-  fetch cannot attest anything about a key the origin no longer serves, and
-  allowing post-expiry rewrites would let an attacker rewrite historical
-  verification after the fact. The consequence is that a notary-poisoned binding
-  that expires or is retired before any direct confirmation is frozen in that
-  poisoned state permanently, recoverable only through the manual eviction
-  mechanism described under [Recovery from key loss](#recovery-from-key-loss).
-  This MSC accepts that trade — auditability of historical verification over
-  automated self-healing — as the safer default.
+  provisional binding that has retired, or whose own local promotion window has
+  elapsed, MUST NOT be overridden by a later direct fetch (see Notary fallback).
+  This is intentional: a direct fetch cannot attest anything about a key the
+  origin no longer serves, and allowing post-liveness rewrites would let an
+  attacker rewrite historical verification after the fact. The consequence is
+  that a notary-poisoned binding that retires or otherwise ages out before any
+  direct confirmation is frozen in that poisoned state permanently, recoverable
+  only through the manual eviction mechanism described under
+  [Recovery from key loss](#recovery-from-key-loss). This MSC accepts that trade
+  — auditability of historical verification over automated self-healing — as the
+  safer default.
 
 ## Implementation and rollout notes
 

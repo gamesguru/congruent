@@ -1345,6 +1345,8 @@ mod tests {
 			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Notary)
 			.await
 			.unwrap();
+		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
+		assert_eq!(provisional_valid_until.get(&key_id), Some(&future));
 		service
 			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
 			.await
@@ -1528,6 +1530,69 @@ mod tests {
 			.add_signing_keys(&payload(origin, past, &key_id, 1), FetchSource::Notary)
 			.await
 			.unwrap();
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Notary)
+			.await
+			.unwrap();
+		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
+		assert_eq!(provisional_valid_until.get(&key_id), Some(&future));
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
+			.await
+			.unwrap();
+
+		let historical: ServerSigningKeys = service
+			.db
+			.server_signingkeys
+			.get(&historical_db_key(origin))
+			.await
+			.deserialized()
+			.unwrap();
+		let provisional = load_provisional_set(&service, origin).await;
+
+		assert_eq!(historical.verify_keys.get(&key_id).unwrap().key, verify_key(2).key);
+		assert!(!provisional.contains(&key_id));
+	}
+
+	#[tokio::test]
+	async fn legacy_provisional_backfill_can_refresh_then_promote() {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, service) = setup_test_service().await;
+		let origin = <&ServerName>::try_from("example.com").unwrap();
+		let key_id = key_id("legacy-refresh-promote");
+		let now = MilliSecondsSinceUnixEpoch::now();
+		let future = MilliSecondsSinceUnixEpoch::now()
+			.to_system_time()
+			.and_then(|tp| tp.checked_add(std::time::Duration::from_secs(3600)))
+			.and_then(MilliSecondsSinceUnixEpoch::from_system_time)
+			.unwrap();
+
+		let mut historical = ServerSigningKeys::new(origin.to_owned(), future);
+		historical.verify_keys.insert(key_id.clone(), verify_key(1));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&historical_db_key(origin), Json(&historical));
+		service
+			.db
+			.server_signingkeys
+			.raw_put(&provisional_db_key(origin), Json(&BTreeSet::from([key_id.clone()])));
+
+		// Legacy entry has no per-key expiry yet, so first touch backfills it as
+		// expired and a direct collision must not promote.
+		service
+			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
+			.await
+			.unwrap();
+		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
+		assert!(
+			provisional_valid_until
+				.get(&key_id)
+				.is_some_and(|expiry| *expiry <= now)
+		);
+
+		// A fresh notary observation of the same binding refreshes per-key
+		// liveness, after which the direct collision becomes a valid promotion.
 		service
 			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Notary)
 			.await
