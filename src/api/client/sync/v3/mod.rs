@@ -520,6 +520,37 @@ pub(crate) async fn build_sync_events(
 
 	let (joined_rooms, joined_state_after, mut device_list_updates) = joined_rooms;
 	let (left_rooms, left_state_after) = left_rooms;
+	let joined_room_ids: HashSet<OwnedRoomId> = joined_rooms.keys().cloned().collect();
+	let left_room_ids: HashSet<OwnedRoomId> = left_rooms.keys().cloned().collect();
+
+	for room_id in services
+		.rooms
+		.state_cache
+		.rooms_invited(syncing_user)
+		.map(|(room_id, _)| room_id)
+		.collect::<Vec<_>>()
+		.await
+	{
+		let invite_count = services
+			.rooms
+			.state_cache
+			.get_invite_count(&room_id, syncing_user)
+			.await
+			.ok();
+		let include_invite = last_sync_end_count < invite_count;
+		conduwuit::info!(
+			target: "sync_invite_debug",
+			%room_id,
+			%syncing_user,
+			invite_count = invite_count.unwrap_or(0),
+			last_sync_end_count = last_sync_end_count.unwrap_or(0),
+			current_count,
+			include_invite,
+			in_joined = joined_room_ids.contains(&room_id),
+			in_left = left_room_ids.contains(&room_id),
+			"invite gate evaluation"
+		);
+	}
 
 	for room_id in left_rooms.keys() {
 		if invited_rooms.contains_key(room_id) {

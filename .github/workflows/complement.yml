@@ -249,6 +249,56 @@ jobs:
           echo "| ✗ Fail | $FAIL |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ⌒ Skip | $SKIP |" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      - name: Print failing test log excerpts
+        if: always()
+        continue-on-error: true
+        run: |
+          RESULTS="tests/test_results/complement/test_results.jsonl"
+          LOGS="tests/test_results/complement/test_logs.jsonl"
+          if [ ! -f "$RESULTS" ] || [ ! -f "$LOGS" ]; then
+            echo "Results/logs file missing, skipping failing test excerpts."
+            exit 0
+          fi
+
+          FAILED_TESTS=$(jq -r 'select(.Action == "fail" and .Test != null) | .Test' "$RESULTS" \
+            | sort -u \
+            | head -n 5)
+
+          if [ -z "$FAILED_TESTS" ]; then
+            echo "No failing tests to print."
+            exit 0
+          fi
+
+          echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### Failing Test Log Excerpts" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          while IFS= read -r test_name; do
+            [ -n "$test_name" ] || continue
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>${test_name}</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```text' | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 - "$LOGS" "$test_name" <<'PY' | tail -n 80 | tee -a "$GITHUB_STEP_SUMMARY"
+            import json
+            import sys
+
+            path, test_name = sys.argv[1], sys.argv[2]
+            matched = []
+            with open(path) as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if obj.get("Test") == test_name and obj.get("Output"):
+                        matched.append(obj["Output"].rstrip("\n"))
+
+            for line in matched:
+                print(line)
+            PY
+            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
+          done <<EOF
+          $FAILED_TESTS
+          EOF
+
       - name: Get conduwuit version
         id: version
         if: always()
