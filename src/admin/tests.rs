@@ -1081,7 +1081,8 @@ async fn create_test_room_with_message(
 fn topo_pducount_key_for_test(pdu_id: &conduwuit::matrix::pdu::RawId, depth: u64) -> Vec<u8> {
 	let mut shorteventid = [0_u8; 8];
 	shorteventid.copy_from_slice(&pdu_id.shorteventid());
-	let stream_ordering = i64::from_be_bytes(conduwuit::matrix::pdu::Count::offset_binary_encoding(shorteventid));
+	let stream_ordering =
+		i64::from_be_bytes(conduwuit::matrix::pdu::Count::offset_binary_encoding(shorteventid));
 	let timeline_key = conduwuit::matrix::pdu::TimelineKey::new(depth, stream_ordering);
 
 	let mut topo_key = Vec::with_capacity(24);
