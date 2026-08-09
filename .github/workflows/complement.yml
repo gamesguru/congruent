@@ -278,21 +278,9 @@ jobs:
             echo "<details><summary>${test_name}</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```text' | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 - "$LOGS" "$test_name" <<'PY' | tail -n 80 | tee -a "$GITHUB_STEP_SUMMARY"
-            import json
-            import sys
-
-            path, test_name = sys.argv[1], sys.argv[2]
-            matched = []
-            with open(path) as f:
-                for line in f:
-                    obj = json.loads(line)
-                    if obj.get("Test") == test_name and obj.get("Output"):
-                        matched.append(obj["Output"].rstrip("\n"))
-
-            for line in matched:
-                print(line)
-            PY
+            jq -r --arg t "$test_name" \
+              'select(.Test == $t and .Output != null) | .Output' \
+              "$LOGS" | tail -n 80 | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
           done <<EOF
