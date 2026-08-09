@@ -246,62 +246,52 @@ where
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 
-	// DRAFT FIX, unverified -- mirrors backfill_pdu's own TOCTOU recheck
-	// (backfill.rs:598) under the same shared per-room mutex_insert lock.
-	// Without this, a concurrent backfill_pdu that already inserted this
-	// exact event (e.g. discovered independently as a gap-filler while this
-	// normal /send was in flight) left no guard here: append_pdu would
-	// insert a *second*, redundant row for the same event under a fresh
-	// PduCount::Normal.
-	//
-	// Known open question this fix does NOT resolve: skipping here also
-	// skips this call's force_state/push-notification/auth-chain-cache work
-	// below. That's fine if backfill_pdu's insert already represents
-	// everything this event needs -- but backfill_pdu never calls
-	// force_state or evaluates push rules (it's the historical-event path,
-	// not the live-state path). If this event legitimately needed this
-	// call's live-state side effects, skipping them here could trade the
-	// duplicate-row bug for a silently-skipped-state-advancement bug
-	// instead. Not yet verified either way -- see
-	// docs/development-gg/backfill-append-toctou-race.md.
-	if self.non_outlier_pdu_exists(pdu.event_id()).await {
+	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
 			target: "backfill_debug",
 			event_id = %pdu.event_id(),
 			%room_id,
 			"append_pdu: event already exists in timeline under the insert lock -- \
-			 skipping redundant insert (DRAFT FIX, see backfill-append-toctou-race.md)"
+			 skipping redundant DB insert but continuing with state/push processing"
 		);
-		if let Ok(existing_pdu_id) = self.get_pdu_id(pdu.event_id()).await {
-			drop(insert_lock);
-			drop(cork);
-			return Ok(existing_pdu_id);
+		if let (Ok(pdu_id), Ok(pdu_count)) =
+			(self.get_pdu_id(pdu.event_id()).await, self.get_pdu_count(pdu.event_id()).await)
+		{
+			Some((pdu_id, pdu_count))
+		} else {
+			None
 		}
-		// Fall through if we can't resolve the existing pdu_id for some
-		// reason -- better to risk the original duplicate-insert bug than
-		// to error out an otherwise-valid event.
-	}
+	} else {
+		None
+	};
 
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	let count = self.services.globals.next_count()?;
-	let pdu_count = PduCount::Normal(count);
-	let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
+	let (pdu_id, pdu_count, count) = if let Some((existing_id, existing_count)) = existing_pdu {
+		let c = match existing_count {
+			| PduCount::Normal(x) => x as u64,
+			| PduCount::Backfilled(x) => x as u64,
+		};
+		(existing_id, existing_count, c)
+	} else {
+		let count = self.services.globals.next_count()?;
+		let pdu_count = PduCount::Normal(count);
+		let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
 
-	// TEMPORARY diagnostic only -- unconditional, so it can be correlated by
-	// event_id/timestamp against backfill_pdu's matching "about to insert" /
-	// "insert complete" lines even if the collision check above didn't fire.
-	info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
+		// TEMPORARY diagnostic only
+		info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
-	// Write first, then publish the count: publishing before the write lets a
-	// concurrently woken sync mint a `next_batch` that covers a PDU which isn't
-	// readable yet, permanently skipping it once that token comes back.
-	self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
-	info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
-	self.last_timeline_count_cache
-		.insert(room_id.to_owned(), pdu_count);
+		// Write first, then publish the count
+		self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
+		info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
+
+		self.last_timeline_count_cache
+			.insert(room_id.to_owned(), pdu_count);
+
+		(pdu_id, pdu_count, count)
+	};
 	drop(cork);
 
 	let resolved_state_applied = resolved_state.is_some();

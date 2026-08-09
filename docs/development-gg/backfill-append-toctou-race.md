@@ -158,12 +158,7 @@ actual failing Complement test yet — see "Next steps" below.
 
 ## Draft fix status
 
-- `append_pdu`: recheck added, returns the existing `RawPduId` via
-  `get_pdu_id` on collision (commit `b2cc8fde0`). Open question noted
-  inline: skipping on collision also skips `force_state`/push-rule
-  evaluation/auth-chain-caching for this call — unverified whether that's
-  ever actually needed for an event that already landed via
-  `backfill_pdu` (which never does those things itself).
+- `append_pdu`: recheck added (commit `b2cc8fde0`, updated in working tree). Initially, this draft skipped the rest of the function on collision. A newer iteration resolves this: it skips the redundant DB insert but correctly continues execution to process `force_state`, push-rule evaluation, and auth-chain-caching, mitigating the risk of skipped state changes.
 - `promote_outlier`, `force_insert_pdu`: recheck added, simple no-op /
   error return on collision — lower risk than `append_pdu`'s case since
   neither of these has the force_state/push-rule side-effect concern.

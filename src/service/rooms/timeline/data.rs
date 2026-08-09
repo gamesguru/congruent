@@ -2636,6 +2636,57 @@ mod tests {
 		);
 	}
 
+	/// Verify the `topo_pducount_key` -> `topo_key_to_pdu_id` round-trip is
+	/// exact for `Backfilled` (negative) counts specifically — every other
+	/// test in this module only exercises small positive (`Normal`) counts.
+	/// This is the untested case relevant to the
+	/// `TestMessagesOverFederation` backfill investigation (see
+	/// docs/development-gg/backfill-append-toctou-race.md): if this
+	/// round-trip is lossy for negative counts, a backfilled event's topo
+	/// index entry could silently point at the wrong (or a colliding)
+	/// pdu_id.
+	#[test]
+	fn topo_key_roundtrips_backfilled_counts() {
+		let room = 1_u64;
+		for count in [-1_i64, -2, -3, -100, -9999, i64::MIN + 1] {
+			let pdu_id = make_pdu_id(room, count);
+			let depth = 7_u64;
+			let key = Data::topo_pducount_key(&pdu_id, depth);
+			let recovered = Data::topo_key_to_pdu_id(&key);
+			assert_eq!(
+				recovered.as_ref(),
+				pdu_id.as_ref(),
+				"round-trip must be exact for Backfilled count {count}"
+			);
+		}
+	}
+
+	/// Verify that a `Backfilled` (negative) count at a lower depth sorts
+	/// *before* (i.e. older than) `Normal` (positive) counts at higher
+	/// depths, and that among same-depth entries mixing polarities, the
+	/// depth-then-count ordering invariant still holds. This is the exact
+	/// shape of the `TestMessagesOverFederation` scenario: a
+	/// backfill-discovered gap-filler event (negative count) sitting
+	/// between live (positive count) events at adjacent depths.
+	#[test]
+	fn topo_keys_order_backfilled_and_normal_consistently() {
+		let room = 1_u64;
+
+		let key_backfilled_low_depth = Data::topo_pducount_key(&make_pdu_id(room, -50), 3);
+		let key_backfilled_high_depth = Data::topo_pducount_key(&make_pdu_id(room, -1), 4);
+		let key_normal_higher_depth = Data::topo_pducount_key(&make_pdu_id(room, 10), 5);
+
+		assert!(
+			key_backfilled_low_depth < key_backfilled_high_depth,
+			"lower depth (3) must sort before higher depth (4) regardless of Backfilled count \
+			 magnitude"
+		);
+		assert!(
+			key_backfilled_high_depth < key_normal_higher_depth,
+			"Backfilled entry at depth 4 must sort before Normal entry at depth 5"
+		);
+	}
+
 	/// Verify that topo keys sort by depth first, then count — the
 	/// structural invariant that makes Synapse-style pagination correct.
 	#[test]
