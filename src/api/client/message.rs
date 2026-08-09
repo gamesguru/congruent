@@ -165,10 +165,15 @@ pub(crate) async fn get_message_events_route(
 	let mut events = Vec::with_capacity(limit);
 	let mut next_token = None;
 	let mut exhausted = true;
+	let mut consumed = 0_usize;
+	let mut filtered_event = 0_usize;
+	let mut filtered_ignored = 0_usize;
+	let mut filtered_visibility = 0_usize;
 
 	let mut stream = it;
 	while let Some(item) = stream.next().await {
 		let (token, pdu) = item;
+		consumed = consumed.saturating_add(1);
 
 		if Some(token) == to {
 			break;
@@ -177,14 +182,17 @@ pub(crate) async fn get_message_events_route(
 		next_token = Some(token);
 
 		let Some(item) = event_filter((token, pdu), filter) else {
+			filtered_event = filtered_event.saturating_add(1);
 			continue;
 		};
 
 		let Some(item) = ignored_filter(&services, item, sender_user).await else {
+			filtered_ignored = filtered_ignored.saturating_add(1);
 			continue;
 		};
 
 		let Some(mut item) = visibility_filter(&services, item, sender_user).await else {
+			filtered_visibility = filtered_visibility.saturating_add(1);
 			continue;
 		};
 
@@ -266,10 +274,15 @@ pub(crate) async fn get_message_events_route(
 	};
 
 	info!(
-		"/messages: room={room_id} returning {} events, start={}, end={:?}",
+		"/messages: room={room_id} returning {} events, start={}, end={:?}, consumed={}, \
+		 filtered_event={}, filtered_ignored={}, filtered_visibility={}",
 		resp.chunk.len(),
 		resp.start,
-		resp.end
+		resp.end,
+		consumed,
+		filtered_event,
+		filtered_ignored,
+		filtered_visibility
 	);
 
 	Ok(resp)
