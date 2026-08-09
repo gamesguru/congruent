@@ -267,6 +267,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 				"/_matrix/key/v2/server/{key_id}",
 				get(server::get_server_keys_deprecated_route),
 			)
+			.ruma_route(&server::get_remote_server_keys_route)
+			.ruma_route(&server::get_remote_server_keys_batch_route)
 			.ruma_route(&server::get_public_rooms_route)
 			.ruma_route(&server::get_public_rooms_filtered_route)
 			.ruma_route(&server::send_transaction_message_route)

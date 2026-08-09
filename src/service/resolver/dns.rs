@@ -2,28 +2,36 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use conduwuit::{Result, Server, err};
 use futures::FutureExt;
-use hickory_resolver::{TokioResolver, lookup_ip::LookupIp};
+use hickory_resolver::TokioResolver;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
 use super::cache::{Cache, CachedOverride};
+use crate::{Dep, client};
 
 pub struct Resolver {
 	pub(crate) resolver: Arc<TokioResolver>,
 	pub(crate) hooked: Arc<Hooked>,
 	server: Arc<Server>,
+	client: Dep<client::Service>,
 }
 
 pub(crate) struct Hooked {
 	resolver: Arc<TokioResolver>,
 	cache: Arc<Cache>,
 	server: Arc<Server>,
+	client: Dep<client::Service>,
 }
 
 type ResolvingResult = Result<Addrs, Box<dyn std::error::Error + Send + Sync>>;
 
 impl Resolver {
 	#[allow(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-	pub(crate) fn build(server: &Arc<Server>, cache: Arc<Cache>) -> Result<Arc<Self>> {
+	pub(crate) fn build(
+		server: &Arc<Server>,
+		cache: Arc<Cache>,
+		client_resolver: Dep<client::Service>,
+		client_hooked: Dep<client::Service>,
+	) -> Result<Arc<Self>> {
 		let config = &server.config;
 		let (sys_conf, mut opts) = hickory_resolver::system_conf::read_system_conf()
 			.map_err(|e| err!(error!("Failed to configure DNS resolver from system: {e}")))?;
@@ -78,8 +86,14 @@ impl Resolver {
 
 		Ok(Arc::new(Self {
 			resolver: resolver.clone(),
-			hooked: Arc::new(Hooked { resolver, cache, server: server.clone() }),
+			hooked: Arc::new(Hooked {
+				resolver,
+				cache,
+				server: server.clone(),
+				client: client_hooked,
+			}),
 			server: server.clone(),
+			client: client_resolver,
 		}))
 	}
 
@@ -90,14 +104,21 @@ impl Resolver {
 
 impl Resolve for Resolver {
 	fn resolve(&self, name: Name) -> Resolving {
-		resolve_to_reqwest(self.server.clone(), self.resolver.clone(), name).boxed()
+		resolve_to_reqwest(self.server.clone(), self.resolver.clone(), self.client.clone(), name)
+			.boxed()
 	}
 }
 
 impl Resolve for Hooked {
 	fn resolve(&self, name: Name) -> Resolving {
-		hooked_resolve(self.cache.clone(), self.server.clone(), self.resolver.clone(), name)
-			.boxed()
+		hooked_resolve(
+			self.cache.clone(),
+			self.server.clone(),
+			self.resolver.clone(),
+			self.client.clone(),
+			name,
+		)
+		.boxed()
 	}
 }
 
@@ -110,14 +131,16 @@ async fn hooked_resolve(
 	cache: Arc<Cache>,
 	server: Arc<Server>,
 	resolver: Arc<TokioResolver>,
+	client: Arc<client::Service>,
 	name: Name,
 ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
 	match cache.get_override(name.as_str()).await {
-		| Ok(cached) if cached.valid() => cached_to_reqwest(cached).await,
+		| Ok(cached) if cached.valid() => cached_to_reqwest(cached, client).await,
 		| Ok(CachedOverride { overriding, .. }) if overriding.is_some() =>
 			resolve_to_reqwest(
 				server,
 				resolver,
+				client,
 				overriding
 					.as_deref()
 					.map(str::parse)
@@ -127,31 +150,52 @@ async fn hooked_resolve(
 			.boxed()
 			.await,
 
-		| _ => resolve_to_reqwest(server, resolver, name).boxed().await,
+		| _ =>
+			resolve_to_reqwest(server, resolver, client, name)
+				.boxed()
+				.await,
+	}
+}
+
+fn is_valid_ip(ip: &std::net::IpAddr, client: &client::Service) -> bool {
+	use ipaddress::IPAddress;
+	if let Ok(parsed_ip) = IPAddress::parse(ip.to_string()) {
+		client.valid_cidr_range(&parsed_ip)
+	} else {
+		false
 	}
 }
 
 async fn resolve_to_reqwest(
 	server: Arc<Server>,
 	resolver: Arc<TokioResolver>,
+	client: Arc<client::Service>,
 	name: Name,
 ) -> ResolvingResult {
 	use std::{io, io::ErrorKind::Interrupted};
 
 	let handle_shutdown = || Box::new(io::Error::new(Interrupted, "Server shutting down"));
-	let handle_results =
-		|results: LookupIp| Box::new(results.into_iter().map(|ip| SocketAddr::new(ip, 0)));
 
 	tokio::select! {
-		results = resolver.lookup_ip(name.as_str()) => Ok(handle_results(results?)),
+		results = resolver.lookup_ip(name.as_str()) => {
+			let ips = results?
+				.into_iter()
+				.filter(move |ip| is_valid_ip(ip, &client))
+				.map(|ip| SocketAddr::new(ip, 0));
+			Ok(Box::new(ips))
+		}
 		() = server.until_shutdown() => Err(handle_shutdown()),
 	}
 }
 
-async fn cached_to_reqwest(cached: CachedOverride) -> ResolvingResult {
+async fn cached_to_reqwest(
+	cached: CachedOverride,
+	client: Arc<client::Service>,
+) -> ResolvingResult {
 	let addrs = cached
 		.ips
 		.into_iter()
+		.filter(move |ip| is_valid_ip(ip, &client))
 		.map(move |ip| SocketAddr::new(ip, cached.port));
 
 	Ok(Box::new(addrs))

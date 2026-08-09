@@ -1,0 +1,75 @@
+
+8/6/2026
+
+Left as noted-not-fixed (matches your own risk assessment):
+- Effective-retirement-timestamp divergence (stamps now at absence-detection vs. MSC's "last observation still present") — real scope creep (needs last-seen tracking per active key), didn't touch it.
+- Read-modify-write cost — noted, not urgent.
+- Item 4, strict-mode gating behind org.matrix.msc4499_strict_caching — didn't touch; that's a real feature-flag decision, not a code-review fix, and I don't want to make that call unilaterally. Want me to look at what that'd take?
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+7/14/2026
+
+I read through the actual implementation (not just the embedded TODO.txt, which is itself a stale self-review from before this session's latest fixes) and compared it against the current spec state. The gap is bigger than that TODO.txt suggests, in a few places specifically because we moved the spec since that review was written.
+
+High-severity, high-confidence gaps:
+
+1. No corroboration tier at all. Eviction in add_signing_keys is flat oldest-expired_ts-first (ovks.sort_by(|... | ok_a.expired_ts.cmp(&ok_b.expired_ts)...)) with zero corroborated/uncorroborated distinction. This is the exact vulnerability the corroboration tier exists to close — a rogue origin can flood-evict a target's history today, with none of the anti-gaming protection we spent most of this session building. This is the single biggest gap.
+2. No provisional/permanent notary two-tier binding. add_signing_keys treats direct fetches and notary relays identically for First-Seen-Wins purposes — there's no "provisional until direct-confirmed" staging, no override rule, no freeze-on-expiry. This is the core TOFU-poisoning defense in the spec and it's structurally absent, not just incomplete.
+3. expired_ts first-assignment-wins isn't implemented — and this is new since your last review. historical_keys.old_verify_keys.extend(filtered_old_verify_keys) does last-write-wins on Rust's BTreeMap::extend. The collision check right above it only compares key bodies (existing_old_key.key != new_old_key.key), never expired_ts. So two responses with the same key body but different expired_ts sail straight through the collision check and the second one silently overwrites the first via .extend() — precisely the backdating bug we just closed in the spec text this session.
+4. Storage ceiling counts active + retired together. total_keys = verify_keys.len() + old_verify_keys.len(); if total_keys > 3000 { evict } — this is the exact "two 3,000s don't reconcile" issue we fixed in the spec a few commits ago, except baked into the implementation the other way: the spec now explicitly exempts active keys from the 3,000, and this code doesn't.
+5. Duplicate-key scan is scoped too narrowly. check_no_duplicate_json_keys only walks verify_keys and old_verify_keys as named sections. The spec requires rejecting duplicates "at any depth, anywhere in the response document" — a duplicate top-level server_name or something nested in signatures wouldn't be caught here.
+
+Worth flagging, lower confidence:
+
+6. Backoff growth is already exponential in current code: record_backoff multiplies msc4499_backoff_secs by 1x, 2x, 4x, etc. and caps at 1 hour.
+7. Possible signature-invalidation bug in the FSW patching block (if vk.key != *first_seen { vk.key = first_seen.clone(); }) — this mutates the key body after the origin's original signature was presumably already deserialized into signatures. If that field isn't cleared/re-derived, a notary serving a patched response would be bundling a key body the origin never actually signed under a signature claiming it did. I can't fully confirm this from the diff alone (don't have full visibility into sign_json/to_canonical_object semantics here) — worth a direct look if you want it chased down.
+
+Matches the current spec cleanly: active-key ceiling (50), per-response retired-key ceiling (3,000), 5-minute expired_ts future-skew check, cross-map body-collision rejection, the T < expired_ts historical-verification boundary, no purge-on-valid_until_ts-expiry, and fetch coalescing via the per-server mutex.
+
+Net: it's a serious, substantial implementation effort, but items 1–4 are the load-bearing security mechanisms this session's work centers on, and none of them are there yet. Want me to go deeper on the signature-patching concern, or is this enough to take back to that branch?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+7/7/2026
+
+• Mostly yes, but not perfectly aligned with the current 4499 draft.
+
+  What looks implemented correctly in 75.patch:
+
+  - raw duplicate-JSON-key detection before deserialization
+  - cross-map collision rejection between verify_keys and old_verify_keys
+  - verify_keys active-key ceiling of 50
+  - First Seen Wins enforcement machinery
+  - negative caching / backoff / coalescing
+  - expired_ts future-sanity filtering with 5-minute skew
+  - historical-event validity checks against origin_server_ts
+  - quota eviction logic, eventually moved to 3,000
+  - notary returns patched/filtered keys rather than blindly forwarding garbage
+
+  What still looks off against the latest draft:
+
+  - Deterministic pruning is incomplete.
+    The patch evicts by oldest expired_ts, but I did not see the explicit tie-break by key_id. So same-input/same-output determinism is not fully nailed down.
+
+  - The 3,000 rule is partly modeled as payload validation, not just retained-cache behavior.
+    There is code rejecting old_verify_keys > 3000 on ingestion. That is stronger and slightly different from “retain at most 3,000 cached key IDs per remote server.”
+
+  - The convergence wording is not really implemented as such.
+    I do not see an explicit “re-evaluate full locally known candidate set with the same pruning rule when new history is learned” concept spelled out in the implementation. There is merge/spillover behavior, but not the clean spec shape.
+
+  - Rollout behavior is implementation-specific.
+    The patch has an enforce_fsw flag, which matches the rollout idea, but that means behavior may differ depending on config, whereas the draft now presents the strict rule as normative and the rollout as transitional guidance.
+
+  - I would want to inspect the notary-vs-direct provisional freeze path more carefully before saying it is exact.
+    The test results embedded in the patch suggest it was being driven toward parity, but patch archaeology is not the same as a clean final review of the target repo.
+
+  So the honest answer is:
+
+  - Implemented in spirit: yes, strongly.
+  - Implemented exactly as the latest draft now reads: not quite.
+
+  If you want the short verdict: 75.patch is clearly a serious MSC4499 implementation effort and covers most of the important contract, but it is probably one review pass behind the final spec wording you now have. The biggest specific gap I see is the missing explicit deterministic tie-break in pruning.

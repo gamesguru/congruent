@@ -94,6 +94,7 @@ serde_json.workspace = true
 serde.workspace = true
 sha1.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tracing.workspace = true
 url.workspace = true
 

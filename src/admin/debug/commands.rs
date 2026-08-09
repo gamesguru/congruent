@@ -683,19 +683,22 @@ pub(super) async fn get_signing_keys(
 		return self.write_str(&out).await;
 	}
 
-	let signing_keys = if query {
-		self.services
+	let out = if query {
+		let signing_keys = self
+			.services
 			.server_keys
 			.server_request(&server_name)
-			.await?
+			.await?;
+		format!("```json\n{}\n```", signing_keys.json().get())
 	} else {
-		self.services
+		let signing_keys = self
+			.services
 			.server_keys
 			.signing_keys_for(&server_name)
-			.await?
+			.await?;
+		format!("```rs\n{signing_keys:#?}\n```")
 	};
 
-	let out = format!("```rs\n{signing_keys:#?}\n```");
 	self.write_str(&out).await
 }
 
