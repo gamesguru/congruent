@@ -1858,7 +1858,7 @@ impl Data {
 
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
-				.rev_raw_stream_from(&topo_key);
+				.raw_stream_from(&topo_key);
 			Ok(self
 				.parse_topo_stream(raw_stream, prefix)
 				.ready_try_filter_map(move |item| match count_ceiling {
@@ -1916,7 +1916,7 @@ impl Data {
 
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
-				.raw_stream_from(&topo_key);
+				.rev_raw_stream_from(&topo_key);
 			Ok(self
 				.parse_topo_stream(raw_stream, prefix)
 				.ready_try_filter_map(move |item| match count_floor {
