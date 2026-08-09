@@ -1191,6 +1191,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rezzy",
  "ruma",
+ "rustls",
  "serde",
  "serde_html_form 0.4.0",
  "serde_json",

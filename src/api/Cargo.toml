@@ -100,5 +100,8 @@ tracing.workspace = true
 url.workspace = true
 xxhash-rust.workspace = true
 
+[dev-dependencies]
+rustls = { workspace = true, features = ["aws_lc_rs"] }
+
 [lints]
 workspace = true

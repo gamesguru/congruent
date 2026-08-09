@@ -33,7 +33,7 @@ impl Service {
 		force_reindex: bool,
 	) -> Result<usize> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
-		let _insert_lock = self.mutex_insert.lock(room_id).await;
+		let insert_lock = self.mutex_insert.lock(room_id).await;
 
 		// Lightweight collection: reads only metadata + shortprevevents,
 		// avoids full PDU JSON deserialization.
@@ -134,14 +134,13 @@ impl Service {
 		// would let one event's delete clobber another event's newly-moved
 		// count key.
 		let mut batch = database::Batch::new();
+		let cleared_topo = self
+			.db
+			.clear_room_topo_index_into_batch(&mut batch, room_id)
+			.await?;
+		debug!("reorder_timeline: queued deletion of {cleared_topo} existing topo index rows");
+
 		if force_reindex {
-			let cleared_topo = self
-				.db
-				.clear_room_topo_index_into_batch(&mut batch, room_id)
-				.await?;
-			debug!(
-				"reorder_timeline: queued deletion of {cleared_topo} existing topo index rows"
-			);
 			for (event_id, &(old_count, ..)) in &entries {
 				let old_pdu_id: RawPduId = PduId { shortroomid, shorteventid: old_count }.into();
 				// Use cached depth to avoid blocking metadata read
@@ -217,6 +216,7 @@ impl Service {
 			self.db.db_apply_batch(batch);
 		}
 		debug!("reorder_timeline: topo rebuild took {:?}", reindex_start.elapsed());
+		drop(insert_lock);
 
 		// Final batch: cork_and_sync ensures WAL is durable when dropped
 		let final_sync = self.db.db.cork_and_sync();
