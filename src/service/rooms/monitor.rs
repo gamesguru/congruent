@@ -74,11 +74,19 @@ impl Service {
 
 		let mut interval = tokio::time::interval(Duration::from_secs(sweep_interval));
 		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		let mut shutdown = self.services.server.signal.subscribe();
 		// consume the immediate first tick so we don't double-scan on startup
 		interval.tick().await;
 
 		loop {
-			interval.tick().await;
+			tokio::select! {
+				_ = interval.tick() => {},
+				_ = shutdown.recv() => break Ok(()),
+			}
+
+			if !self.services.server.running() {
+				break Ok(());
+			}
 
 			if !self.services.server.config.allow_federation {
 				continue;

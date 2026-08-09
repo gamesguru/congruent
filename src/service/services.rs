@@ -170,6 +170,12 @@ impl Services {
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
 
+		// Some service workers exit only after the server enters stopping state
+		// and receives a shutdown signal. Interrupting alone is insufficient.
+		if self.server.running() {
+			self.server.shutdown().unwrap_or_else(error::default_log);
+		}
+
 		// set the server user as offline
 		if self.server.config.allow_local_presence {
 			_ = self

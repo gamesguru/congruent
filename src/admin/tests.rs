@@ -400,7 +400,7 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 	(services, guard)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_audit_membership_drift() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -418,7 +418,6 @@ async fn test_yolo_audit_membership_drift() {
 		.short
 		.get_or_create_shortroomid(&room_id)
 		.await;
-
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 
 	// Create bot user
@@ -494,7 +493,6 @@ async fn test_yolo_audit_membership_drift() {
 		)
 		.await
 		.unwrap();
-
 	drop(state_lock);
 
 	// Assert cache is currently consistent
@@ -632,7 +630,7 @@ async fn test_yolo_audit_membership_drift() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -842,7 +840,7 @@ async fn test_yolo_reorder_timeline() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	use conduwuit::{
 		PduCount,
@@ -1120,7 +1118,7 @@ async fn count_topo_occurrences_for_test(
 	count
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	use futures::StreamExt;
 	use ruma::OwnedEventId;
@@ -1171,7 +1169,7 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	use futures::StreamExt;
 	use ruma::OwnedEventId;
@@ -1224,7 +1222,7 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reindex_short_removes_stale_topo_entries() {
 	let (services, _guard) = setup_test_services("reindex_short_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
@@ -1254,7 +1252,7 @@ async fn test_yolo_reindex_short_removes_stale_topo_entries() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
 	let (services, _guard) = setup_test_services("reorder_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
@@ -1283,7 +1281,7 @@ async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_busted_dag_resolution() {
 	use std::path::Path;
 
@@ -1433,7 +1431,7 @@ async fn test_busted_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_unredacted_room_dag_resolution() {
 	use std::path::Path;
 
@@ -1575,7 +1573,7 @@ async fn test_unredacted_room_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_unredacted_lounge_dag_resolution() {
 	use std::path::Path;
 
@@ -1786,7 +1784,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	assert!(mismatches == 0, "{mismatches} state resolution mismatches (see above)");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_nheko_dag_resolution() {
 	use std::path::Path;
 
@@ -1928,7 +1926,7 @@ async fn test_nheko_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_heal_receipts() {
 	use conduwuit_database::Json;
 	use futures::StreamExt;
@@ -2013,7 +2011,7 @@ async fn test_yolo_heal_receipts() {
 	assert_eq!(count, 1, "Expected exactly 1 receipt remaining, got {count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_threaded_receipts_notification_counters() {
 	use ruma::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
 
@@ -2150,7 +2148,7 @@ async fn test_threaded_receipts_notification_counters() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -2296,7 +2294,7 @@ async fn test_knocking_dag_resolution() {
 	println!("DAG knocking state resolved successfully without panicking!");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline_state_resolution() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -2508,7 +2506,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_janian_dag_reorder_with_state() {
 	use std::path::Path;
 

@@ -1,6 +1,7 @@
 use std::{
 	collections::{HashMap, HashSet},
 	fmt::Write,
+	time::Instant,
 };
 
 use conduwuit::{
@@ -1043,10 +1044,14 @@ pub(super) async fn audit_membership(
 	at_event: Option<OwnedEventId>,
 	clean: bool,
 ) -> Result {
+	let audit_started = Instant::now();
+	info!("audit-membership: start room_id={room_id} clean={clean} remote={server:?}");
+
 	// ── Phase 1: Timeline vs State Snapshot ──────────────────────────────
 	self.write_str("**Phase 1: Timeline vs State Snapshot**\n")
 		.await?;
 
+	let timeline_scan_started = Instant::now();
 	let mut timeline_membership: HashMap<OwnedUserId, (String, String)> = HashMap::new();
 
 	let pdus = self
@@ -1082,6 +1087,12 @@ pub(super) async fn audit_membership(
 
 		timeline_count = timeline_count.saturating_add(1);
 	}
+	info!(
+		"audit-membership: timeline scan room_id={room_id} events={timeline_count} \
+		 unique_users={} elapsed={:?}",
+		timeline_membership.len(),
+		timeline_scan_started.elapsed()
+	);
 
 	let state_hash = self
 		.services
@@ -1092,6 +1103,7 @@ pub(super) async fn audit_membership(
 
 	let state = self.services.rooms.state_accessor.state_full(state_hash);
 
+	let state_scan_started = Instant::now();
 	pin_mut!(state);
 	let mut state_membership: HashMap<OwnedUserId, (String, String)> = HashMap::new();
 
@@ -1113,6 +1125,11 @@ pub(super) async fn audit_membership(
 			state_membership.insert(user_id, (membership, event_id));
 		}
 	}
+	info!(
+		"audit-membership: state snapshot room_id={room_id} users={} elapsed={:?}",
+		state_membership.len(),
+		state_scan_started.elapsed()
+	);
 
 	let mut divergences = Vec::new();
 	let mut total_purged = 0_usize;
@@ -1122,6 +1139,7 @@ pub(super) async fn audit_membership(
 	loop {
 		pass_num = pass_num.saturating_add(1);
 		let mut pass_purged = 0_usize;
+		let clean_pass_started = Instant::now();
 
 		// Rebuild timeline membership for this pass
 		let mut tl_membership_pass: HashMap<OwnedUserId, (String, String)> = HashMap::new();
@@ -1234,6 +1252,13 @@ pub(super) async fn audit_membership(
 			}
 			break;
 		}
+
+		info!(
+			"audit-membership: clean pass room_id={room_id} pass={} purged={} elapsed={:?}",
+			pass_num,
+			pass_purged,
+			clean_pass_started.elapsed()
+		);
 	}
 
 	if clean && total_purged > 100 {
@@ -1280,11 +1305,19 @@ pub(super) async fn audit_membership(
 	}
 
 	self.write_str(&out).await?;
+	info!(
+		"audit-membership: phase1 complete room_id={room_id} divergences={} total_purged={} \
+		 elapsed={:?}",
+		divergences.len(),
+		total_purged,
+		audit_started.elapsed()
+	);
 
 	// ── Phase 2: State Snapshot vs Cache ─────────────────────────────────
 	self.write_str("\n**Phase 2: State Snapshot vs Cache**\n")
 		.await?;
 
+	let cache_phase_started = Instant::now();
 	let mut state_joined: HashSet<OwnedUserId> = HashSet::new();
 	let mut state_invited: HashSet<OwnedUserId> = HashSet::new();
 	let mut state_left = 0_usize;
@@ -1331,6 +1364,11 @@ pub(super) async fn audit_membership(
 		.map(ToOwned::to_owned)
 		.collect()
 		.await;
+	info!(
+		"audit-membership: cache joined members room_id={room_id} count={} elapsed={:?}",
+		cached_joined_members.len(),
+		cache_phase_started.elapsed()
+	);
 
 	let cached_invited_members: HashSet<OwnedUserId> = self
 		.services
@@ -1340,6 +1378,11 @@ pub(super) async fn audit_membership(
 		.map(ToOwned::to_owned)
 		.collect()
 		.await;
+	info!(
+		"audit-membership: cache invited members room_id={room_id} count={} elapsed={:?}",
+		cached_invited_members.len(),
+		cache_phase_started.elapsed()
+	);
 
 	let mut cache_mismatches = Vec::new();
 
@@ -1411,12 +1454,24 @@ pub(super) async fn audit_membership(
 
 		self.write_str(&out).await?;
 	}
+	info!(
+		"audit-membership: phase2 compare room_id={room_id} mismatches={} state_joined={} \
+		 state_invited={} elapsed={:?}",
+		cache_mismatches.len(),
+		state_joined.len(),
+		state_invited.len(),
+		cache_phase_started.elapsed()
+	);
 
 	// ── Phase 2.5: Aggregate count cross-check + active healing ──────────
 	let state_joined_count: u64 = state_joined
 		.len()
 		.try_into()
 		.expect("joined count overflow");
+	let state_invited_count: u64 = state_invited
+		.len()
+		.try_into()
+		.expect("invited count overflow");
 	let cached_joined_u64 = self
 		.services
 		.rooms
@@ -1424,18 +1479,42 @@ pub(super) async fn audit_membership(
 		.room_joined_count(&room_id)
 		.await
 		.unwrap_or(0);
+	let cached_invited_u64 = cached_invited;
 
-	if cached_joined_u64 != state_joined_count || !cache_mismatches.is_empty() {
+	if cached_joined_u64 != state_joined_count
+		|| cached_invited_u64 != state_invited_count
+		|| !cache_mismatches.is_empty()
+	{
+		let heal_started = Instant::now();
+		let mut healed_extra_joined = 0_usize;
+		let mut healed_extra_invited = 0_usize;
+		let mut healed_missing_joined = 0_usize;
+		let mut healed_missing_invited = 0_usize;
 		self.write_str(&format!(
-			"\n✗ CACHE INCONSISTENCY (state: {state_joined_count}, cache: {cached_joined_u64}, \
-			 mismatches: {}). Healing…",
-			cache_mismatches.len()
+			"\n✗ CACHE INCONSISTENCY (joined state: {state_joined_count}, joined cache: \
+			 {cached_joined_u64}, invited state: {state_invited_count}, invited cache: \
+			 {cached_invited_u64}, mismatches: {}). Healing…",
+			cache_mismatches.len(),
 		))
 		.await?;
+
+		if cache_mismatches.is_empty() {
+			self.services.db["roomid_joinedcount"].raw_put(&room_id, state_joined_count);
+			self.services.db["roomid_invitedcount"].raw_put(&room_id, state_invited_count);
+			self.write_str("\n✓ Cache repaired.\n").await?;
+			info!(
+				"audit-membership: count-only heal room_id={room_id} joined={} invited={} elapsed={:?}",
+				state_joined_count,
+				state_invited_count,
+				heal_started.elapsed()
+			);
+			return Ok(());
+		}
 
 		// Heal EXTRA users (in cache but not state)
 		for user_id in &cached_joined_members {
 			if !state_joined.contains(user_id) {
+				healed_extra_joined = healed_extra_joined.saturating_add(1);
 				self.services
 					.rooms
 					.state_cache
@@ -1445,6 +1524,7 @@ pub(super) async fn audit_membership(
 		}
 		for user_id in &cached_invited_members {
 			if !state_invited.contains(user_id) {
+				healed_extra_invited = healed_extra_invited.saturating_add(1);
 				self.services
 					.rooms
 					.state_cache
@@ -1456,6 +1536,7 @@ pub(super) async fn audit_membership(
 		// Heal MISSING users (in state but not cache)
 		for user_id in &state_joined {
 			if !cached_joined_members.contains(user_id) {
+				healed_missing_joined = healed_missing_joined.saturating_add(1);
 				self.services
 					.rooms
 					.state_cache
@@ -1466,6 +1547,7 @@ pub(super) async fn audit_membership(
 
 		for user_id in &state_invited {
 			if !cached_invited_members.contains(user_id) {
+				healed_missing_invited = healed_missing_invited.saturating_add(1);
 				// Heal invite by fetching the actual PDU from the authoritative state
 				if let Ok(pdu) = self
 					.services
@@ -1490,6 +1572,15 @@ pub(super) async fn audit_membership(
 			.update_joined_count(&room_id)
 			.await;
 		self.write_str("\n✓ Cache repaired.\n").await?;
+		info!(
+			"audit-membership: cache heal room_id={room_id} extra_joined={} extra_invited={} \
+			 missing_joined={} missing_invited={} elapsed={:?}",
+			healed_extra_joined,
+			healed_extra_invited,
+			healed_missing_joined,
+			healed_missing_invited,
+			heal_started.elapsed()
+		);
 	}
 
 	// ── Phase 3: Remote comparison (optional) ────────────────────────────
@@ -1749,6 +1840,11 @@ pub(super) async fn audit_membership(
 			},
 		}
 	}
+
+	info!(
+		"audit-membership: complete room_id={room_id} total_elapsed={:?}",
+		audit_started.elapsed()
+	);
 
 	Ok(())
 }
