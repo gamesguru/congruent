@@ -405,7 +405,11 @@ impl Data {
 		topo_key
 	}
 
-	pub(super) async fn clear_room_topo_index(&self, room_id: &RoomId) -> Result<usize> {
+	pub(super) async fn clear_room_topo_index_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		room_id: &RoomId,
+	) -> Result<usize> {
 		let shortroomid = self.services.short.get_shortroomid(room_id).await?;
 		let prefix = shortroomid.to_be_bytes();
 		let keys = self
@@ -419,14 +423,21 @@ impl Data {
 			return Ok(0);
 		}
 
-		let mut batch = database::Batch::new();
 		for key in &keys {
 			self.roomid_topologicalorder_pducount
-				.batch_delete(&mut batch, key);
+				.batch_delete(batch, key);
 		}
-		self.roomid_topologicalorder_pducount.apply_batch(batch);
 
 		Ok(keys.len())
+	}
+
+	pub(super) async fn clear_room_topo_index(&self, room_id: &RoomId) -> Result<usize> {
+		let mut batch = database::Batch::new();
+		let cleared = self
+			.clear_room_topo_index_into_batch(&mut batch, room_id)
+			.await?;
+		self.roomid_topologicalorder_pducount.apply_batch(batch);
+		Ok(cleared)
 	}
 
 	pub(super) fn insert_topo_pducount_into_batch<'a>(

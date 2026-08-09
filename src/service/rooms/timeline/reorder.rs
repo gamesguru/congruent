@@ -80,9 +80,6 @@ impl Service {
 		let count = sorted.len();
 		let reindex_start = std::time::Instant::now();
 		debug!("reorder_timeline: rebuilding topological index for {count} events...");
-		let cleared_topo = self.db.clear_room_topo_index(room_id).await?;
-		debug!("reorder_timeline: cleared {cleared_topo} existing topo index rows");
-
 		let mut available_counts: Vec<PduCount> = Vec::new();
 		if force_reindex {
 			available_counts = entries
@@ -134,6 +131,11 @@ impl Service {
 		// distinguish from a real timeline position -- see
 		// docs/development-gg/backfill-v12-phantom-timeline-membership.md.
 		let mut batch = database::Batch::new();
+		let cleared_topo = self
+			.db
+			.clear_room_topo_index_into_batch(&mut batch, room_id)
+			.await?;
+		debug!("reorder_timeline: queued deletion of {cleared_topo} existing topo index rows");
 		if force_reindex {
 			for (event_id, &(old_count, ..)) in &entries {
 				let old_pdu_id: RawPduId = PduId { shortroomid, shorteventid: old_count }.into();

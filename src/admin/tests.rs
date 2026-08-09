@@ -316,14 +316,24 @@ struct TempDbGuard {
 impl Drop for TempDbGuard {
 	fn drop(&mut self) {
 		if let Some(services) = self.services.take() {
-			if let Ok(handle) = tokio::runtime::Handle::try_current() {
-				tokio::task::block_in_place(|| {
-					handle.block_on(async move {
-						services.stop().await;
-						drop(services);
-					});
+			let _ = std::thread::Builder::new()
+				.name("admin-test-shutdown".into())
+				.spawn(move || {
+					if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+						.enable_all()
+						.build()
+					{
+						runtime.block_on(async move {
+							services.stop().await;
+							drop(services);
+						});
+					}
+				})
+				.and_then(|thread| {
+					thread
+						.join()
+						.map_err(|_| std::io::Error::other("admin test shutdown thread panicked"))
 				});
-			}
 		}
 
 		let _ = std::fs::remove_dir_all(&self.path);
