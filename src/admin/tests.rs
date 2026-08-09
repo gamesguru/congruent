@@ -858,10 +858,14 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	};
 
 	fn topo_pducount_key(pdu_id: &RawPduId, depth: u64) -> Vec<u8> {
+		let mut shorteventid = [0_u8; 8];
+		shorteventid.copy_from_slice(&pdu_id.shorteventid());
+		let stream_ordering = i64::from_be_bytes(PduCount::offset_binary_encoding(shorteventid));
+		let timeline_key = conduwuit::matrix::pdu::TimelineKey::new(depth, stream_ordering);
+
 		let mut topo_key = Vec::with_capacity(24);
 		topo_key.extend_from_slice(&pdu_id.shortroomid());
-		topo_key.extend_from_slice(&depth.to_be_bytes());
-		topo_key.extend_from_slice(&pdu_id.shorteventid());
+		topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 		topo_key
 	}
 
@@ -1075,10 +1079,14 @@ async fn create_test_room_with_message(
 }
 
 fn topo_pducount_key_for_test(pdu_id: &conduwuit::matrix::pdu::RawId, depth: u64) -> Vec<u8> {
+	let mut shorteventid = [0_u8; 8];
+	shorteventid.copy_from_slice(&pdu_id.shorteventid());
+	let stream_ordering = i64::from_be_bytes(conduwuit::matrix::pdu::Count::offset_binary_encoding(shorteventid));
+	let timeline_key = conduwuit::matrix::pdu::TimelineKey::new(depth, stream_ordering);
+
 	let mut topo_key = Vec::with_capacity(24);
 	topo_key.extend_from_slice(&pdu_id.shortroomid());
-	topo_key.extend_from_slice(&depth.to_be_bytes());
-	topo_key.extend_from_slice(&pdu_id.shorteventid());
+	topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 	topo_key
 }
 
