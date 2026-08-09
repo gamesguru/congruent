@@ -366,6 +366,11 @@ database_path = "{}"
 
 	#[tokio::test]
 	async fn route_includes_historical_keys_in_json_response() {
+		#[cfg(feature = "aws_lc_rs")]
+		let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+		#[cfg(all(feature = "ring", not(feature = "aws_lc_rs")))]
+		let _ = rustls::crypto::ring::default_provider().install_default();
+
 		let mut temp_root = std::env::temp_dir();
 		temp_root.push(format!(
 			"continuwuity-server-keys-route-{}-{}",
