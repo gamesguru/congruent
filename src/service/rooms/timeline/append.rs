@@ -270,11 +270,7 @@ where
 		.reset_notification_counts(pdu.sender(), room_id);
 
 	let (pdu_id, pdu_count, count) = if let Some((existing_id, existing_count)) = existing_pdu {
-		let c = match existing_count {
-			| PduCount::Normal(x) => x as u64,
-			| PduCount::Backfilled(x) => x as u64,
-		};
-		(existing_id, existing_count, c)
+		(existing_id, existing_count, existing_count.into_unsigned())
 	} else {
 		let count = self.services.globals.next_count()?;
 		let pdu_count = PduCount::Normal(count);
