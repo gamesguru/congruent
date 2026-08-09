@@ -81,6 +81,17 @@ where
 		for aid in incoming_pdu.auth_events() {
 			let exists = self.services.timeline.pdu_exists(aid).await;
 			let accepted = self.services.pdu_metadata.is_event_accepted(aid).await;
+			if !exists {
+				if !is_forward_extremity {
+					info!(
+						event_id = %incoming_pdu.event_id(),
+						auth_event_id = %aid,
+						"Deferring prev-event timeline upgrade until missing auth event is recovered"
+					);
+					return Ok(None);
+				}
+			}
+
 			if !exists || !accepted {
 				info!(
 					"Rejecting incoming event {} which depends on missing/rejected auth event \
