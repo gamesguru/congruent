@@ -65,6 +65,7 @@ where
 				.is_some_and(|reason| {
 					reason.contains("structurally invalid in get_missing_events response")
 						|| reason.contains("all prev_events unknown and /state_ids fetch failed")
+						|| reason.contains("missing auth events after /state_ids retry")
 				})
 		} else {
 			false

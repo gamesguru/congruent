@@ -557,13 +557,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					self.services
 						.outlier
 						.add_pdu_outlier(event_id, &value, Some(room_id));
-					self.services
-						.pdu_metadata
-						.mark_event_rejected(
-							event_id,
-							"missing auth events after /state_ids retry",
-						)
-						.await;
 
 					return Ok(None);
 				},
