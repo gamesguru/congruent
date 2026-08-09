@@ -745,7 +745,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	Ok(())
 }
 
-const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v2";
+const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v3";
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
 async fn populate_topological_index(services: &Services) -> Result<()> {
@@ -820,11 +820,12 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			}
 
 			let global_depth: u64 = meta.depth.into();
+			let stream_ordering = i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
+			let timeline_key = conduwuit::pdu::TimelineKey::new(global_depth, stream_ordering);
 
 			let mut topo_key = Vec::with_capacity(24);
 			topo_key.extend_from_slice(&shortroomid);
-			topo_key.extend_from_slice(&global_depth.to_be_bytes());
-			topo_key.extend_from_slice(&count_bytes);
+			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
 			roomid_topologicalorder_pducount.put(&topo_key, batch_entries[i].1.clone());
 
