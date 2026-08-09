@@ -458,11 +458,30 @@ pub(crate) async fn build_sync_events(
 
 			// only sync this invite if it was sent after the last /sync call
 			if last_sync_end_count < invite_count {
+				conduwuit::info!(
+					target: "sync_invite_debug",
+					%room_id,
+					%syncing_user,
+					?invite_count,
+					?last_sync_end_count,
+					current_count,
+					"including room in invite section"
+				);
 				let invited_room = InvitedRoom {
 					invite_state: InviteState { events: invite_state },
 				};
 
 				invited_rooms.insert(room_id, invited_room);
+			} else {
+				conduwuit::info!(
+					target: "sync_invite_debug",
+					%room_id,
+					%syncing_user,
+					?invite_count,
+					?last_sync_end_count,
+					current_count,
+					"skipping room from invite section"
+				);
 			}
 			invited_rooms
 		});
@@ -501,6 +520,19 @@ pub(crate) async fn build_sync_events(
 
 	let (joined_rooms, joined_state_after, mut device_list_updates) = joined_rooms;
 	let (left_rooms, left_state_after) = left_rooms;
+
+	for room_id in left_rooms.keys() {
+		if invited_rooms.contains_key(room_id) {
+			conduwuit::warn!(
+				target: "sync_invite_debug",
+				%room_id,
+				%syncing_user,
+				?last_sync_end_count,
+				current_count,
+				"room appears in both left and invite sync sections"
+			);
+		}
+	}
 
 	let presence_updates: OptionFuture<_> = services
 		.config
