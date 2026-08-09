@@ -66,12 +66,19 @@ event retrieval (backfill) and forward timeline construction.
 | Subtest                                                                  | Status  | Notes |
 | ------------------------------------------------------------------------ | ------- | ----- |
 | `Visible shared history after re-joining room (backfill)`                | ❌ fail |       |
-| ↳ `messagesRequestLimit is lower than the number of messages backfilled` | ❌ fail |       |
+| ↳ `messagesRequestLimit is lower than the number of messages backfilled` | ❌ fail | see [backfill-append-toctou-race.md](backfill-append-toctou-race.md) |
 
 **Impact**: After leaving and re-joining a room, historical messages from the
 period of absence are not correctly backfilled from the remote server. This
 affects users who rejoin rooms after a gap (including power outage scenarios
 where the server misses events while offline).
+
+**Investigation in progress**: consistently reproduces as exactly one
+missing event — always the one that required a genuine backfill gap-fill.
+Two live hypotheses (silently-swallowed `associate_current_state` error;
+a TOCTOU asymmetry between `backfill_pdu` and `append_pdu`'s insert-lock
+handling), neither confirmed yet. Cache staleness and WAL-timing explanations
+have been ruled out. Full notes: [backfill-append-toctou-race.md](backfill-append-toctou-race.md).
 
 ### `TestOutboundFederationEventSizeGetMissingEvents`
 
