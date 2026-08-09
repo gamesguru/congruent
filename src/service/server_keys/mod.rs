@@ -1597,6 +1597,8 @@ mod tests {
 			.add_signing_keys(&payload(origin, future, &key_id, 1), FetchSource::Notary)
 			.await
 			.unwrap();
+		let provisional_valid_until = load_provisional_valid_until(&service, origin).await;
+		assert_eq!(provisional_valid_until.get(&key_id), Some(&future));
 		service
 			.add_signing_keys(&payload(origin, future, &key_id, 2), FetchSource::Direct)
 			.await
