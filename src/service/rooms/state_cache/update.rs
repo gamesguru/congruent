@@ -350,6 +350,49 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	self.invalidate_server_visibility(user_id, room_id).await;
 }
 
+/// Silent variant of `mark_as_invited` for admin healing operations.
+/// Performs the invite-state DB writes without invite filtering, device list
+/// notifications, or sync-side side effects beyond the raw membership tables.
+/// The caller MUST call `update_joined_count` after the batch completes.
+#[implement(super::Service)]
+#[tracing::instrument(skip(self, last_state, invite_via), level = "debug")]
+pub async fn mark_as_invited_silent(
+	&self,
+	user_id: &UserId,
+	room_id: &RoomId,
+	last_state: Option<Vec<Raw<AnyStrippedStateEvent>>>,
+	invite_via: Option<Vec<OwnedServerName>>,
+) {
+	let roomuser_id = (room_id, user_id);
+	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+
+	let userroom_id = (user_id, room_id);
+	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+
+	self.db
+		.userroomid_invitestate
+		.raw_put(&userroom_id, Json(last_state.unwrap_or_default()));
+	self.db
+		.roomuserid_invitecount
+		.raw_aput::<8, _, _>(&roomuser_id, self.services.globals.next_count().unwrap());
+
+	self.set_other_membership_states(
+		&userroom_id,
+		&roomuser_id,
+		room_id,
+		MembershipKind::Invited,
+		false,
+	);
+	self.unforget(room_id, user_id);
+
+	if let Some(servers) = invite_via.filter(is_not_empty!()) {
+		self.add_servers_invite_via(room_id, servers).await;
+	}
+
+	self.invalidate_user_visibility(user_id, room_id).await;
+	self.invalidate_server_visibility(user_id, room_id).await;
+}
+
 /// Silent variant of `mark_as_left` for admin healing operations.
 /// Does NOT trigger `update_membership`, presence updates, or device list
 /// notifications. The caller MUST call `update_joined_count` after the
@@ -635,6 +678,16 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	let mut members_synced = 0_usize;
 	let mut state_joined: HashSet<OwnedUserId> = HashSet::new();
 	let mut state_invited: HashSet<OwnedUserId> = HashSet::new();
+	let cached_joined: HashSet<OwnedUserId> = self
+		.room_members(room_id)
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
+	let cached_invited: HashSet<OwnedUserId> = self
+		.room_members_invited(room_id)
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
 
 	let room_ssh_opt = self
 		.services
@@ -662,48 +715,33 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 
 			match membership {
 				| "join" => {
-					state_joined.insert(uid.clone());
-					if !self.is_joined(&uid, room_id).await {
-						self.mark_as_joined_silent(&uid, room_id).await;
-						members_synced = members_synced.saturating_add(1);
-					}
+					state_joined.insert(uid);
 				},
 				| "invite" => {
-					state_invited.insert(uid.clone());
+					state_invited.insert(uid);
 				},
-				| _ =>
-					if self.is_invited_or_joined(&uid, room_id).await {
-						self.mark_as_left_silent(&uid, room_id).await;
-						members_synced = members_synced.saturating_add(1);
-					},
+				| _ => {},
 			}
 		}
 	}
 
-	// Sweep stale joined cache entries
-	let cached_members: Vec<OwnedUserId> = self
-		.room_members(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-
-	let mut stale_removed = 0_usize;
-	for user_id in &cached_members {
-		if !state_joined.contains(user_id) && !state_invited.contains(user_id) {
-			self.mark_as_left_silent(user_id, room_id).await;
-			stale_removed = stale_removed.saturating_add(1);
-		}
+	for user_id in state_joined.difference(&cached_joined) {
+		self.mark_as_joined_silent(user_id, room_id).await;
+		members_synced = members_synced.saturating_add(1);
+	}
+	for user_id in state_invited.difference(&cached_invited) {
+		self.mark_as_invited_silent(user_id, room_id, None, None)
+			.await;
+		members_synced = members_synced.saturating_add(1);
 	}
 
-	// Sweep stale invited cache entries
-	let cached_invited: Vec<OwnedUserId> = self
-		.room_members_invited(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-
-	for user_id in &cached_invited {
-		if !state_invited.contains(user_id) && !state_joined.contains(user_id) {
+	let mut stale_removed = 0_usize;
+	for user_id in cached_joined.difference(&state_joined) {
+		self.mark_as_left_silent(user_id, room_id).await;
+		stale_removed = stale_removed.saturating_add(1);
+	}
+	for user_id in cached_invited.difference(&state_invited) {
+		if !state_joined.contains(user_id) {
 			self.mark_as_left_silent(user_id, room_id).await;
 			stale_removed = stale_removed.saturating_add(1);
 		}

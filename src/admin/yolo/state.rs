@@ -1503,7 +1503,8 @@ pub(super) async fn audit_membership(
 			self.services.db["roomid_invitedcount"].raw_put(&room_id, state_invited_count);
 			self.write_str("\n✓ Cache repaired.\n").await?;
 			info!(
-				"audit-membership: count-only heal room_id={room_id} joined={} invited={} elapsed={:?}",
+				"audit-membership: count-only heal room_id={room_id} joined={} invited={} \
+				 elapsed={:?}",
 				state_joined_count,
 				state_invited_count,
 				heal_started.elapsed()
