@@ -252,13 +252,15 @@ pub(crate) async fn get_message_events_route(
 
 	// Return the raw cursor of the oldest event we actually consumed, not the
 	// last visible event. That keeps pagination moving even when filters skip an
-	// entire page, and it still preserves the old "omit end when nothing matched"
-	// behavior at the edge of the timeline.
-	let next_token = if events.is_empty() && exhausted {
-		None
-	} else {
-		next_token
-	};
+	// entire page. For backward pagination, once the iterator is exhausted
+	// we've hit the start of visible history and must not advertise a dead
+	// cursor for the client to follow.
+	let next_token =
+		if exhausted && (events.is_empty() || matches!(body.dir, Direction::Backward)) {
+			None
+		} else {
+			next_token
+		};
 
 	let chunk = events
 		.into_iter()

@@ -318,6 +318,7 @@ mod tests {
 			config_path,
 			format!(
 				r#"
+[global]
 server_name = "example.com"
 database_path = "{}"
 "#,

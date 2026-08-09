@@ -178,7 +178,12 @@ pub async fn backfill_if_required(
 		let mut known_ids: std::collections::HashSet<OwnedEventId> =
 			std::collections::HashSet::with_capacity(all_prev_ids.len());
 		for prev_id in &all_prev_ids {
-			if self.get_pdu_id(prev_id).await.is_ok() {
+			// Outliers exist in `eventid_pdu`, but they are still gaps in the
+			// timeline because `/messages` scans the non-outlier topo index. If
+			// we treat an outlier parent as "known" here, pagination can advance
+			// past its depth and only upgrade it later during a deeper backfill,
+			// permanently stranding that event behind the cursor.
+			if self.non_outlier_pdu_exists(prev_id).await {
 				known_ids.insert(prev_id.clone());
 			}
 		}
