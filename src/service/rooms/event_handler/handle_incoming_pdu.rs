@@ -415,7 +415,11 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						.add_pdu_outlier(event_id, &value, Some(room_id));
 					self.services
 						.pdu_metadata
-						.mark_event_rejected(event_id, &format!("auth event {mid} is rejected"))
+						.mark_event_rejected(
+							event_id,
+							&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
+								.with_detail(mid),
+						)
 						.await;
 					return Ok(None);
 				}

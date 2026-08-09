@@ -25,6 +25,150 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 }
 
+/// Machine-checkable classification of why an event was rejected during
+/// outlier/auth processing.
+///
+/// This exists so retry classification never has to substring-match
+/// arbitrary human prose — that broke silently in practice: `"auth event
+/// {mid} is rejected"` (`handle_incoming_pdu.rs`) and `"depends on rejected
+/// auth event {aid}"` (`handle_outlier_pdu.rs`) are the same underlying
+/// cause (a cascading rejection, worth retrying if the dependency's own
+/// verdict later changes), but only one of those two wordings matched the
+/// old `.contains(...)` list. `tag()` is the single string persisted via
+/// `mark_event_rejected` for a given variant, `parse` recovers the variant
+/// from a stored reason by matching only that leading tag (not the
+/// free-text detail after it), and `is_retryable` is a plain match — so
+/// renaming a detail message, or adding a new call site, can't silently
+/// change retry behavior the way a fresh literal string always could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionCode {
+	/// Signature verification failed against the origin's keys. Permanent —
+	/// the same bytes will never verify differently.
+	SignatureVerificationFailed,
+	/// The PDU didn't parse into a valid `PduEvent` at all. Permanent — the
+	/// data itself is malformed.
+	InvalidPduFormat,
+	/// This event's own auth chain includes an event we've already
+	/// rejected. Retryable: if the dependency's rejection later turns out
+	/// to have been resolution-related and gets un-rejected, this event's
+	/// verdict should be re-evaluated too, not inherit the stale one
+	/// forever.
+	DependsOnRejectedAuthEvent,
+	/// We could not resolve one of this event's auth events at all (not
+	/// locally, not via `/event_auth`, not via `/state_ids`). Retryable —
+	/// this is a resolution failure, not evidence the event is invalid; a
+	/// caller with more context (a fuller state snapshot, a successful
+	/// backfill) may be able to supply the missing data.
+	MissingAuthEvent,
+	/// Two auth events share the same type+state_key. Permanent — a
+	/// structural property of the claimed auth event set that can't change
+	/// on retry.
+	DuplicateAuthEventKey,
+	/// No `m.room.create` in the resolved auth events (room versions that
+	/// require one). Permanent for the same reason as above.
+	MissingCreateEvent,
+	/// The event's claimed auth events were all resolved, but the auth
+	/// check against them failed. Permanent — re-running the same check
+	/// against the same resolved auth events can't change the outcome.
+	AuthCheckFailed,
+	/// A `/get_missing_events` response contained a prev_event that failed
+	/// canonical-JSON validation. Retryable — a different server, or a
+	/// retry of the same server, may return well-formed data.
+	StructurallyInvalidInGetMissingEvents,
+	/// All of this event's prev_events were unknown and the `/state_ids`
+	/// fetch used to recover state also failed. Retryable — a subsequent
+	/// attempt (e.g. once a sibling event fills in the gap, or federation
+	/// recovers) may succeed where this one didn't.
+	AllPrevEventsUnknownStateIdsFailed,
+	/// `/state_ids` was retried and auth events were still missing
+	/// afterward. Retryable for the same reason as the two above.
+	MissingAuthEventsAfterStateIdsRetry,
+}
+
+impl RejectionCode {
+	/// The stable string persisted via `mark_event_rejected` for this
+	/// variant. Callers that want to attach dynamic detail (an event ID,
+	/// say) should use [`Self::with_detail`] instead so the detail doesn't
+	/// end up as part of what [`Self::parse`] has to match against.
+	#[must_use]
+	pub const fn tag(self) -> &'static str {
+		match self {
+			| Self::SignatureVerificationFailed => "signature_verification_failed",
+			| Self::InvalidPduFormat => "invalid_pdu_format",
+			| Self::DependsOnRejectedAuthEvent => "depends_on_rejected_auth_event",
+			| Self::MissingAuthEvent => "missing_auth_event",
+			| Self::DuplicateAuthEventKey => "duplicate_auth_event_key",
+			| Self::MissingCreateEvent => "missing_create_event",
+			| Self::AuthCheckFailed => "auth_check_failed",
+			| Self::StructurallyInvalidInGetMissingEvents =>
+				"structurally_invalid_in_get_missing_events",
+			| Self::AllPrevEventsUnknownStateIdsFailed =>
+				"all_prev_events_unknown_state_ids_failed",
+			| Self::MissingAuthEventsAfterStateIdsRetry =>
+				"missing_auth_events_after_state_ids_retry",
+		}
+	}
+
+	/// Whether this class of rejection is worth retrying once more context
+	/// is available (see the variant docs above for the reasoning behind
+	/// each one).
+	#[must_use]
+	pub const fn is_retryable(self) -> bool {
+		matches!(
+			self,
+			Self::DependsOnRejectedAuthEvent
+				| Self::MissingAuthEvent
+				| Self::StructurallyInvalidInGetMissingEvents
+				| Self::AllPrevEventsUnknownStateIdsFailed
+				| Self::MissingAuthEventsAfterStateIdsRetry
+		)
+	}
+
+	/// Build the reason string to persist: this variant's stable tag,
+	/// followed by a free-text detail for admin/debug readability (e.g. the
+	/// specific event ID involved). Only the tag is ever matched back by
+	/// [`Self::parse`] — the detail can say anything without risk of
+	/// breaking retry classification.
+	pub fn with_detail<D: std::fmt::Display>(self, detail: D) -> String {
+		format!("{}: {detail}", self.tag())
+	}
+
+	/// Recover the code from a reason string previously produced by
+	/// [`Self::tag`] or [`Self::with_detail`]. Matches only the leading
+	/// tag (everything before the first `:`), so it's exact even as detail
+	/// wording changes. Returns `None` for anything that isn't one of our
+	/// known tags (e.g. a reason string predating this enum, or a typo) —
+	/// callers should treat that as "not retryable" rather than guessing.
+	#[must_use]
+	pub fn parse(reason: &str) -> Option<Self> {
+		let tag = reason.split(':').next().unwrap_or(reason).trim();
+		[
+			Self::SignatureVerificationFailed,
+			Self::InvalidPduFormat,
+			Self::DependsOnRejectedAuthEvent,
+			Self::MissingAuthEvent,
+			Self::DuplicateAuthEventKey,
+			Self::MissingCreateEvent,
+			Self::AuthCheckFailed,
+			Self::StructurallyInvalidInGetMissingEvents,
+			Self::AllPrevEventsUnknownStateIdsFailed,
+			Self::MissingAuthEventsAfterStateIdsRetry,
+		]
+		.into_iter()
+		.find(|code| code.tag() == tag)
+	}
+}
+
+/// Returns true if a persisted rejection reason (from
+/// `get_rejection_reason`) is worth retrying. See [`RejectionCode`] for the
+/// classification and reasoning; a reason that doesn't parse as one of our
+/// known codes is treated as not retryable (permanent) rather than guessed
+/// at.
+#[must_use]
+pub fn is_retryable_rejection_reason(reason: &str) -> bool {
+	RejectionCode::parse(reason).is_some_and(RejectionCode::is_retryable)
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
@@ -190,6 +334,33 @@ impl Service {
 
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
 		self.db.get_rejection_reason(event_id).await
+	}
+
+	/// Returns true if `event_id` is currently marked rejected for a reason
+	/// worth retrying (see [`is_retryable_rejection_reason`]), and if so,
+	/// clears the rejection so the next processing attempt starts fresh
+	/// instead of being permanently short-circuited by the stale verdict.
+	///
+	/// Callers that hit an "already known and rejected" gate before doing
+	/// their own work (e.g. `handle_outlier_pdu`'s early return) should use
+	/// this instead of a bare `is_event_rejected` check, so a caller with
+	/// more context than whichever attempt originally rejected the event
+	/// (a fuller state snapshot, a successful backfill, a later `/send`)
+	/// gets a real chance to reach a different, correct verdict rather than
+	/// inheriting a resolution failure that was never about the event
+	/// itself being invalid.
+	pub async fn take_retry_if_rejection_retryable(&self, event_id: &EventId) -> bool {
+		if !self.is_event_rejected(event_id).await {
+			return false;
+		}
+		let retryable = self
+			.get_rejection_reason(event_id)
+			.await
+			.is_some_and(|reason| is_retryable_rejection_reason(&reason));
+		if retryable {
+			self.unmark_event_rejected(event_id);
+		}
+		retryable
 	}
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }

@@ -9,7 +9,7 @@ use ruma::{
 };
 
 use super::{check_room_id, get_room_version_id, to_room_version};
-use crate::rooms::timeline::pdu_fits;
+use crate::rooms::{pdu_metadata::RejectionCode, timeline::pdu_fits};
 
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
@@ -33,19 +33,45 @@ where
 			if pdu.room_id_or_hash().as_deref() == Some(room_id) {
 				// If this event was previously rejected, propagate the
 				// rejection so callers treat it as invalid (e.g. when
-				// checking auth chains of dependent events).
-				if self.services.pdu_metadata.is_event_rejected(event_id).await {
+				// checking auth chains of dependent events) -- UNLESS the
+				// rejection reason indicates it was our own failure to
+				// *resolve* this event's dependencies (missing auth events,
+				// a degraded-context fetch, etc.) rather than the event
+				// itself being invalid. Those are worth retrying: a caller
+				// with better context than whoever originally rejected it
+				// (a fuller state snapshot, a successful backfill, a normal
+				// `/send`) may reach a different, correct verdict. Without
+				// this, a single degraded attempt (e.g. the last-resort
+				// `GET /event/{id}` fallback in `resolve_state_at_incoming_event`,
+				// which runs with no state snapshot at all) can permanently
+				// poison an event for every future caller, including ones
+				// with full context -- backfill silently drops it forever,
+				// and it can never be re-delivered.
+				if self
+					.services
+					.pdu_metadata
+					.take_retry_if_rejection_retryable(event_id)
+					.await
+				{
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						"handle_outlier_pdu: retrying previously-rejected event (prior \
+						 rejection was resolution-related, not intrinsic to the event)"
+					);
+				} else if self.services.pdu_metadata.is_event_rejected(event_id).await {
 					return Err!(Request(Forbidden(
 						"Event {event_id} is already known and rejected"
 					)));
+				} else {
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						event_type = ?pdu.kind,
+						"handle_outlier_pdu: early return, event already known"
+					);
+					return Ok((pdu, json));
 				}
-				info!(
-					target: "state_res_debug",
-					%event_id,
-					event_type = ?pdu.kind,
-					"handle_outlier_pdu: early return, event already known"
-				);
-				return Ok((pdu, json));
 			}
 		}
 	}
@@ -225,7 +251,10 @@ where
 					.add_pdu_outlier(event_id, &value, Some(room_id));
 				self.services
 					.pdu_metadata
-					.mark_event_rejected(event_id, "signature verification failed")
+					.mark_event_rejected(
+						event_id,
+						RejectionCode::SignatureVerificationFailed.tag(),
+					)
 					.await;
 				return Err!(Request(InvalidParam(debug_error!(
 					"Signature verification failed for {event_id}: {e}"
@@ -259,7 +288,7 @@ where
 			// failing with MissingAuthEvents.
 			self.services
 				.pdu_metadata
-				.mark_event_rejected(event_id, "invalid PDU format")
+				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
 				.await;
 			self.services
 				.outlier
@@ -281,7 +310,10 @@ where
 		if self.services.pdu_metadata.is_event_rejected(aid).await {
 			self.services
 				.pdu_metadata
-				.mark_event_rejected(event_id, &format!("depends on rejected auth event {aid}"))
+				.mark_event_rejected(
+					event_id,
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
+				)
 				.await;
 			self.services.outlier.add_pdu_outlier(
 				pdu_event.event_id(),
@@ -292,7 +324,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					pdu_event.event_id(),
-					&format!("depends on rejected auth event {aid}"),
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 				)
 				.await;
 			return Err!(Request(Forbidden("Event depends on rejected auth event {aid}")));
@@ -350,7 +382,7 @@ where
 					.pdu_metadata
 					.mark_event_rejected(
 						event_id,
-						&format!("depends on rejected auth event {mid}"),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
 					)
 					.await;
 				self.services.outlier.add_pdu_outlier(
@@ -550,7 +582,7 @@ where
 							.pdu_metadata
 							.mark_event_rejected(
 								event_id,
-								&format!("depends on rejected auth event {id}"),
+								&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 							)
 							.await;
 						self.services.outlier.add_pdu_outlier(
@@ -562,7 +594,7 @@ where
 							.pdu_metadata
 							.mark_event_rejected(
 								pdu_event.event_id(),
-								&format!("depends on rejected auth event {id}"),
+								&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 							)
 							.await;
 						return Err!(Request(Forbidden(
@@ -613,7 +645,10 @@ where
 		if self.services.pdu_metadata.is_event_rejected(id).await {
 			self.services
 				.pdu_metadata
-				.mark_event_rejected(event_id, &format!("depends on rejected auth event {id}"))
+				.mark_event_rejected(
+					event_id,
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
+				)
 				.await;
 			self.services.outlier.add_pdu_outlier(
 				pdu_event.event_id(),
@@ -624,7 +659,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					pdu_event.event_id(),
-					&format!("depends on rejected auth event {id}"),
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 				)
 				.await;
 			return Err!(Request(Forbidden("Event depends on rejected auth event {id}")));
@@ -633,7 +668,7 @@ where
 		let Some(auth_event) = auth_events.get(id).map(ToOwned::to_owned) else {
 			self.services
 				.pdu_metadata
-				.mark_event_rejected(event_id, &format!("missing auth event {id}"))
+				.mark_event_rejected(event_id, &RejectionCode::MissingAuthEvent.with_detail(id))
 				.await;
 			self.services.outlier.add_pdu_outlier(
 				pdu_event.event_id(),
@@ -660,7 +695,7 @@ where
 			| hash_map::Entry::Occupied(_) => {
 				self.services
 					.pdu_metadata
-					.mark_event_rejected(event_id, "duplicate auth event type+state_key")
+					.mark_event_rejected(event_id, RejectionCode::DuplicateAuthEventKey.tag())
 					.await;
 				self.services.outlier.add_pdu_outlier(
 					pdu_event.event_id(),
@@ -685,7 +720,7 @@ where
 	{
 		self.services
 			.pdu_metadata
-			.mark_event_rejected(event_id, "missing m.room.create in auth events")
+			.mark_event_rejected(event_id, RejectionCode::MissingCreateEvent.tag())
 			.await;
 		self.services
 			.outlier
@@ -707,7 +742,7 @@ where
 	if !auth_check {
 		self.services
 			.pdu_metadata
-			.mark_event_rejected(event_id, "auth check failed")
+			.mark_event_rejected(event_id, RejectionCode::AuthCheckFailed.tag())
 			.await;
 		self.services
 			.outlier

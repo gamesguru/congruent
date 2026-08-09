@@ -81,10 +81,7 @@ where
 					.get_rejection_reason(prev_id)
 					.await
 					.is_some_and(|reason| {
-						reason.contains("structurally invalid in get_missing_events response")
-							|| reason
-								.contains("all prev_events unknown and /state_ids fetch failed")
-							|| reason.contains("missing auth events after /state_ids retry")
+						crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 					});
 				if !retry_worthy {
 					return Ok(());

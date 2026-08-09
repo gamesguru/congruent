@@ -427,7 +427,7 @@ async fn walk_up(
 
 		let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		if parent.is_none() && can_fetch {
-			fetch_missing(services, room_id, &parent_id).await;
+			Box::pin(fetch_missing(services, room_id, &parent_id)).await;
 			parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 		}
 		let Some(parent) = parent else {
@@ -472,7 +472,7 @@ pub(crate) async fn resolve(
 				.and_then(Event::room_id_or_hash)
 				.or_else(|| params.room_id.clone());
 			if let Some(room_id) = room_id {
-				fetch_full(services, &room_id, &params).await;
+				Box::pin(fetch_full(services, &room_id, &params)).await;
 				anchor = services.rooms.timeline.get_pdu(&params.event_id).await.ok();
 			}
 		}
@@ -500,7 +500,7 @@ pub(crate) async fn resolve(
 		if let Some((parent_id, _rel_type)) = parent_of(&anchor) {
 			let mut parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 			if parent.is_none() && can_fetch {
-				fetch_missing(services, &room_id, &parent_id).await;
+				Box::pin(fetch_missing(services, &room_id, &parent_id)).await;
 				parent = services.rooms.timeline.get_pdu(&parent_id).await.ok();
 			}
 			if let Some(parent) = parent {

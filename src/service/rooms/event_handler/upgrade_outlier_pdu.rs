@@ -19,7 +19,8 @@ use ruma::{
 
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::{
-	short::ShortStateHash, state_compressor::HashSetCompressStateEvent, timeline::RawPduId,
+	pdu_metadata::RejectionCode, short::ShortStateHash,
+	state_compressor::HashSetCompressStateEvent, timeline::RawPduId,
 };
 
 /// Upgrade an outlier PDU to a full timeline event.
@@ -50,8 +51,6 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
-	const RETRYABLE_MISSING_AUTH_REASON: &str = "missing auth events after /state_ids retry";
-
 	// Skip the PDU if we already have it as a timeline event
 	if let Ok(pduid) = self
 		.services
@@ -77,7 +76,10 @@ where
 			.pdu_metadata
 			.get_rejection_reason(incoming_pdu.event_id())
 			.await
-			.is_some_and(|reason| reason.contains(RETRYABLE_MISSING_AUTH_REASON));
+			.is_some_and(|reason| {
+				RejectionCode::parse(&reason)
+					== Some(RejectionCode::MissingAuthEventsAfterStateIdsRetry)
+			});
 
 	if rejected && !skip_soft_fail && !retryable_missing_auth_rejection {
 		return Err!(Request(Forbidden("Event has been rejected")));
@@ -98,7 +100,7 @@ where
 						.pdu_metadata
 						.mark_event_rejected(
 							incoming_pdu.event_id(),
-							RETRYABLE_MISSING_AUTH_REASON,
+							RejectionCode::MissingAuthEventsAfterStateIdsRetry.tag(),
 						)
 						.await;
 					info!(
@@ -120,7 +122,7 @@ where
 					.pdu_metadata
 					.mark_event_rejected(
 						incoming_pdu.event_id(),
-						&format!("depends on missing or rejected auth event {aid}"),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 					)
 					.await;
 				return Err!(Request(Forbidden(
@@ -177,7 +179,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					incoming_pdu.event_id(),
-					&format!("auth event {event_id} is rejected"),
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(event_id),
 				)
 				.await;
 			return Err!(Request(Forbidden(
@@ -239,7 +241,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					incoming_pdu.event_id(),
-					"auth check failed against claimed auth_events",
+					RejectionCode::AuthCheckFailed.tag(),
 				)
 				.await;
 
@@ -320,7 +322,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					incoming_pdu.event_id(),
-					"auth check failed against state at event",
+					RejectionCode::AuthCheckFailed.tag(),
 				)
 				.await;
 
@@ -841,7 +843,7 @@ where
 				.pdu_metadata
 				.mark_event_rejected(
 					incoming_pdu.event_id(),
-					"prev_event was structurally invalid in get_missing_events response",
+					RejectionCode::StructurallyInvalidInGetMissingEvents.tag(),
 				)
 				.await;
 			return Err!(Request(Forbidden(
@@ -1049,7 +1051,7 @@ where
 								.pdu_metadata
 								.mark_event_rejected(
 									incoming_pdu.event_id(),
-									"all prev_events unknown and /state_ids fetch failed",
+									RejectionCode::AllPrevEventsUnknownStateIdsFailed.tag(),
 								)
 								.await;
 							return Err!(Request(Forbidden(
