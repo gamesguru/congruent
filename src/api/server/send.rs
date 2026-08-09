@@ -224,18 +224,22 @@ async fn process_inbound_transaction(
 		.transactions_processed
 		.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-	// Spawn EDU processing into background so PDU pipeline starts immediately.
-	// EDUs are lightweight DB writes (to-device, receipts, typing) that don't
-	// need to block the transaction response.
+	// Process EDUs concurrently with the PDU pipeline, but don't acknowledge the
+	// transaction until both sides have actually committed. Returning 200 before
+	// receipt/typing/device-list EDUs land creates an ack-before-commit race:
+	// the sender advances its EDU watermark while the receiver may still not
+	// have applied the write or an ACL gate for that same transaction.
 	let edu_origin = body.origin().to_owned();
-	services.server.runtime().spawn(async move {
+	let edu_processing = async {
 		edus.for_each_concurrent(automatic_width(), |edu| {
 			handle_edu(&services, &client, &edu_origin, edu)
 		})
 		.await;
-	});
+	};
 
-	let results = match handle(&services, &client, body.origin(), pdus).await {
+	let ((), results) =
+		tokio::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
+	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
 			fail_federation_txn(services, &txn_key, &sender, err);
