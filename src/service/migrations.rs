@@ -820,7 +820,8 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			}
 
 			let global_depth: u64 = meta.depth.into();
-			let stream_ordering = i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
+			let stream_ordering =
+				i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
 			let timeline_key = conduwuit::pdu::TimelineKey::new(global_depth, stream_ordering);
 
 			let mut topo_key = Vec::with_capacity(24);
