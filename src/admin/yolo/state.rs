@@ -1509,12 +1509,11 @@ pub(super) async fn audit_membership(
 				state_invited_count,
 				heal_started.elapsed()
 			);
-			return Ok(());
 		}
 
 		// Heal EXTRA users (in cache but not state)
 		for user_id in &cached_joined_members {
-			if !state_joined.contains(user_id) {
+			if !state_joined.contains(user_id) && !state_invited.contains(user_id) {
 				healed_extra_joined = healed_extra_joined.saturating_add(1);
 				self.services
 					.rooms
@@ -1548,7 +1547,6 @@ pub(super) async fn audit_membership(
 
 		for user_id in &state_invited {
 			if !cached_invited_members.contains(user_id) {
-				healed_missing_invited = healed_missing_invited.saturating_add(1);
 				// Heal invite by fetching the actual PDU from the authoritative state
 				if let Ok(pdu) = self
 					.services
@@ -1557,12 +1555,16 @@ pub(super) async fn audit_membership(
 					.state_get(state_hash, &StateEventType::RoomMember, user_id.as_str())
 					.await
 				{
-					let _ = self
+					if self
 						.services
 						.rooms
 						.state_cache
 						.update_membership(&room_id, user_id, &pdu, false)
-						.await;
+						.await
+						.is_ok()
+					{
+						healed_missing_invited = healed_missing_invited.saturating_add(1);
+					}
 				}
 			}
 		}

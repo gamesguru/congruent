@@ -50,6 +50,8 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
+	const RETRYABLE_MISSING_AUTH_REASON: &str = "missing auth events after /state_ids retry";
+
 	// Skip the PDU if we already have it as a timeline event
 	if let Ok(pduid) = self
 		.services
@@ -68,7 +70,16 @@ where
 			.pdu_metadata
 			.is_event_soft_failed(incoming_pdu.event_id())
 	);
-	if rejected && !skip_soft_fail {
+	let retryable_missing_auth_rejection = rejected
+		&& !skip_soft_fail
+		&& self
+			.services
+			.pdu_metadata
+			.get_rejection_reason(incoming_pdu.event_id())
+			.await
+			.is_some_and(|reason| reason.contains(RETRYABLE_MISSING_AUTH_REASON));
+
+	if rejected && !skip_soft_fail && !retryable_missing_auth_rejection {
 		return Err!(Request(Forbidden("Event has been rejected")));
 	} else if soft_failed_early && !skip_soft_fail {
 		// Return Ok(None) so the remote server stops endlessly retrying
@@ -83,6 +94,13 @@ where
 			let accepted = self.services.pdu_metadata.is_event_accepted(aid).await;
 			if !exists {
 				if !is_forward_extremity {
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(
+							incoming_pdu.event_id(),
+							RETRYABLE_MISSING_AUTH_REASON,
+						)
+						.await;
 					info!(
 						event_id = %incoming_pdu.event_id(),
 						auth_event_id = %aid,

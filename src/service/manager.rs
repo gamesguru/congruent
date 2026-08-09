@@ -75,14 +75,20 @@ impl Manager {
 
 	pub(super) async fn stop(&self) {
 		if let Some(manager) = self.manager.lock().await.take() {
+			manager.abort();
+
 			// Shutdown must not hang forever on workers that miss or ignore the
 			// interrupt/shutdown contract. At this point the server is already in
-			// stopping state, so abort lingering workers and let the manager drain
-			// the join set.
+			// stopping state, so abort lingering workers after interrupting the
+			// manager task. The manager can be blocked in `join_next()` while
+			// holding `workers`, so aborting it first ensures this lock is
+			// actually acquirable here.
 			self.workers.lock().await.abort_all();
 			debug!("Waiting for service manager...");
 			if let Err(e) = manager.await {
-				error!("Manager shutdown error: {e:?}");
+				if !e.is_cancelled() {
+					error!("Manager shutdown error: {e:?}");
+				}
 			}
 		}
 	}

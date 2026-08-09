@@ -10,6 +10,8 @@ use ruma::{OwnedEventId, RoomId};
 use super::Service;
 
 impl Service {
+	const REORDER_BATCH_OPS: usize = 25_000;
+
 	/// Rebuild the topological index for a room using proper DAG
 	/// topological sort.
 	///
@@ -31,11 +33,7 @@ impl Service {
 		force_reindex: bool,
 	) -> Result<usize> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
-		let _insert_lock = if force_reindex {
-			Some(self.mutex_insert.lock(room_id).await)
-		} else {
-			None
-		};
+		let _insert_lock = self.mutex_insert.lock(room_id).await;
 
 		// Lightweight collection: reads only metadata + shortprevevents,
 		// avoids full PDU JSON deserialization.
@@ -117,26 +115,33 @@ impl Service {
 			);
 		}
 
-		// Every stream/eventid_pduid/metadata/topo write for the whole
-		// rebuild goes into one `database::Batch`, applied atomically at the
-		// end. The previous version wrote each of those four maps with its
-		// own independent `.insert()`/`.remove()` call under a `cork()` --
-		// `cork()` only buffers writes for I/O throughput, it gives no
-		// atomicity guarantee, so a crash (or, since these aren't behind the
-		// per-key locks the normal insert paths use, a concurrent reader)
-		// mid-loop could observe `eventid_pduid`/`eventid_metadata` updated
-		// for an event while `roomid_topologicalorder_pducount` still had
-		// its old entry, or no entry at all. That split is exactly the
-		// "phantom mapping" failure mode `get_pdu_id`'s callers can't
-		// distinguish from a real timeline position -- see
+		// The previous version wrote each of these maps with independent
+		// `.insert()`/`.remove()` calls under a `cork()` -- `cork()` only
+		// buffers writes for I/O throughput, it gives no atomicity guarantee,
+		// so a crash (or, since these aren't behind the per-key locks the
+		// normal insert paths use, a concurrent reader) mid-loop could
+		// observe `eventid_pduid`/`eventid_metadata` updated for an event
+		// while `roomid_topologicalorder_pducount` still had its old entry,
+		// or no entry at all. That split is exactly the "phantom mapping"
+		// failure mode `get_pdu_id`'s callers can't distinguish from a real
+		// timeline position -- see
 		// docs/development-gg/backfill-v12-phantom-timeline-membership.md.
+		//
+		// Non-force reorders can safely stream bounded batches because each
+		// event's old topo key is deleted and its new topo key inserted in the
+		// same write batch. Force reindex still needs a single whole-room batch
+		// because it may renumber stream counts, and chunking that rename
+		// would let one event's delete clobber another event's newly-moved
+		// count key.
 		let mut batch = database::Batch::new();
-		let cleared_topo = self
-			.db
-			.clear_room_topo_index_into_batch(&mut batch, room_id)
-			.await?;
-		debug!("reorder_timeline: queued deletion of {cleared_topo} existing topo index rows");
 		if force_reindex {
+			let cleared_topo = self
+				.db
+				.clear_room_topo_index_into_batch(&mut batch, room_id)
+				.await?;
+			debug!(
+				"reorder_timeline: queued deletion of {cleared_topo} existing topo index rows"
+			);
 			for (event_id, &(old_count, ..)) in &entries {
 				let old_pdu_id: RawPduId = PduId { shortroomid, shorteventid: old_count }.into();
 				// Use cached depth to avoid blocking metadata read
@@ -201,8 +206,16 @@ impl Service {
 						.reindex_topo_batch(&mut batch, &pdu_id, event_id, local_topo_depth);
 				}
 			}
+
+			if !force_reindex && batch.len() >= Self::REORDER_BATCH_OPS {
+				self.db.db_apply_batch(batch);
+				batch = database::Batch::new();
+			}
 		}
-		self.db.db_apply_batch(batch);
+
+		if !batch.is_empty() {
+			self.db.db_apply_batch(batch);
+		}
 		debug!("reorder_timeline: topo rebuild took {:?}", reindex_start.elapsed());
 
 		// Final batch: cork_and_sync ensures WAL is durable when dropped

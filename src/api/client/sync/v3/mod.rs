@@ -473,14 +473,14 @@ pub(crate) async fn build_sync_events(
 
 				invited_rooms.insert(room_id, invited_room);
 			} else {
-				conduwuit::warn!(
+				conduwuit::info!(
 					target: "sync_invite_debug",
 					%room_id,
 					%syncing_user,
 					?invite_count,
 					?last_sync_end_count,
 					current_count,
-					"skipping room from invite section (stale invite_count)"
+					"skipping room from invite section (invite already seen in an earlier sync)"
 				);
 			}
 			invited_rooms

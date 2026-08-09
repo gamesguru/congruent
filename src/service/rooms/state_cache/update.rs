@@ -355,12 +355,13 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 /// notifications, or sync-side side effects beyond the raw membership tables.
 /// The caller MUST call `update_joined_count` after the batch completes.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, last_state, invite_via), level = "debug")]
+#[tracing::instrument(skip(self, last_state, sender_user, invite_via), level = "debug")]
 pub async fn mark_as_invited_silent(
 	&self,
 	user_id: &UserId,
 	room_id: &RoomId,
 	last_state: Option<Vec<Raw<AnyStrippedStateEvent>>>,
+	sender_user: Option<&UserId>,
 	invite_via: Option<Vec<OwnedServerName>>,
 ) {
 	let roomuser_id = (room_id, user_id);
@@ -375,6 +376,11 @@ pub async fn mark_as_invited_silent(
 	self.db
 		.roomuserid_invitecount
 		.raw_aput::<8, _, _>(&roomuser_id, self.services.globals.next_count().unwrap());
+	if let Some(sender_user) = sender_user {
+		self.db
+			.userroomid_invitesender
+			.insert(&userroom_id, sender_user);
+	}
 
 	self.set_other_membership_states(
 		&userroom_id,
@@ -730,15 +736,39 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 		members_synced = members_synced.saturating_add(1);
 	}
 	for user_id in state_invited.difference(&cached_invited) {
-		self.mark_as_invited_silent(user_id, room_id, None, None)
-			.await;
+		if let Some(room_ssh) = room_ssh_opt {
+			if let Ok(pdu) = self
+				.services
+				.state_accessor
+				.state_get(room_ssh, &StateEventType::RoomMember, user_id.as_str())
+				.await
+			{
+				let last_state = self.services.state.summary_stripped(&pdu, room_id).await;
+				self.mark_as_invited_silent(
+					user_id,
+					room_id,
+					Some(last_state),
+					Some(pdu.sender()),
+					None,
+				)
+				.await;
+			} else {
+				self.mark_as_invited_silent(user_id, room_id, None, None, None)
+					.await;
+			}
+		} else {
+			self.mark_as_invited_silent(user_id, room_id, None, None, None)
+				.await;
+		}
 		members_synced = members_synced.saturating_add(1);
 	}
 
 	let mut stale_removed = 0_usize;
 	for user_id in cached_joined.difference(&state_joined) {
-		self.mark_as_left_silent(user_id, room_id).await;
-		stale_removed = stale_removed.saturating_add(1);
+		if !state_invited.contains(user_id) {
+			self.mark_as_left_silent(user_id, room_id).await;
+			stale_removed = stale_removed.saturating_add(1);
+		}
 	}
 	for user_id in cached_invited.difference(&state_invited) {
 		if !state_joined.contains(user_id) {

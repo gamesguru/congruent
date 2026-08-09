@@ -81,7 +81,7 @@ impl Service {
 		loop {
 			tokio::select! {
 				_ = interval.tick() => {},
-				_ = shutdown.recv() => break Ok(()),
+				_ = shutdown.recv() => {},
 			}
 
 			if !self.services.server.running() {

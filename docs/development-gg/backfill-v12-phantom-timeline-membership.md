@@ -139,18 +139,15 @@ Neither of these *is* `roomid_topologicalorder_pducount`, the index
 `/messages` actually reads (`topo_pdus_rev`). The normal insert paths
 (`prepend_backfill_pdu_batch`, `append_pdu_batch`) write all of these
 together in one `WriteBatch`, so they can't disagree by construction. But
-`eventid_metadata` and `eventid_pduid` *can* individually be written outside
-that batch: `replace_stream_and_topo_pducount` / `set_event_metadata_depth_and_count`
-(`data.rs:519-533`) write `room_pducount_eventid`, `eventid_pduid`,
-`eventid_metadata`, and the topo index as **four separate, unbatched**
-`.insert()` calls — not atomic, and callable from a different lock scope
-than the main insert paths. Its only known caller is `reorder.rs`'s admin
-"reorder timeline" tooling, which this test doesn't exercise, so it's very
-unlikely to be the actual source here — but it's the one place in the
-codebase that already demonstrates split writes to these two mappings are
-possible, and is worth ruling out explicitly (or generalizing the concern
-to whatever *does* turn out to write them) before trusting either fix
-candidate below.
+`eventid_metadata` and `eventid_pduid` are no longer written that way by the
+reorder helpers on current HEAD: `replace_stream_and_topo_pducount_batch` /
+`set_event_metadata_depth_and_count_into_batch` now land
+`room_pducount_eventid`, `eventid_pduid`, `eventid_metadata`, and the topo
+index in a single RocksDB `WriteBatch`, so those four mappings are atomic
+with respect to each other. `reorder.rs` is still worth checking for other
+consistency bugs (for example room-wide index rebuild races or oversized
+batches), but it is **not** the remaining example of split, unbatched writes
+to these mappings.
 
 **Not yet checked:** whether some part of the join/state-resolution path
 (distinct from the normal insert functions) writes `eventid_metadata` for an

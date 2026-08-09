@@ -279,7 +279,7 @@ jobs:
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```text' | tee -a "$GITHUB_STEP_SUMMARY"
             jq -r --arg t "$test_name" \
-              'select(.Test == $t and .Output != null) | .Output' \
+              'select(.Test == $t and .Output != null) | .Output | gsub("\n+$"; "")' \
               "$LOGS" | tail -n 80 | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
