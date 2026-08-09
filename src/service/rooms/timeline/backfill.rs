@@ -613,11 +613,18 @@ pub async fn backfill_pdu(
 	}
 	.into();
 
+	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: about to insert");
+
 	// Insert pdu
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
-	self.associate_current_state(&room_id, &event_id).await?;
+	if let Err(e) = self.associate_current_state(&room_id, &event_id).await {
+		warn!(target: "backfill_debug", %event_id, count, "backfill_pdu: associate_current_state FAILED: {e}");
+		return Err(e);
+	}
+
+	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 
 	drop(insert_lock);
 

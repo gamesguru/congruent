@@ -58,7 +58,8 @@ pub enum RejectionCode {
 	/// this event's verdict too. Treating this tag itself as retryable
 	/// would strip the permanence guarantee from every event that
 	/// legitimately, permanently cascades from an intrinsically-bad auth
-	/// event (Complement's `TestInboundFederationRejectsEventsWithRejectedAuthEvents`
+	/// event (Complement's
+	/// `TestInboundFederationRejectsEventsWithRejectedAuthEvents`
 	/// exists specifically to check that cascade stays permanent — mirrors
 	/// Synapse's `AUTH_ERROR` being terminal).
 	DependsOnRejectedAuthEvent,
