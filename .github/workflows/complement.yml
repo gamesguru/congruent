@@ -563,7 +563,7 @@ jobs:
         run: |
           ARCH="${{ matrix.arch }}"
           OS="${{ matrix.os }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "${RESULTS_OUTCOME}" = "success" ]; then
