@@ -246,6 +246,21 @@ where
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
 
+	// TEMPORARY diagnostic only -- append_pdu has no existence recheck under
+	// the lock the way backfill_pdu does (see
+	// docs/development-gg/backfill-append-toctou-race.md). This doesn't
+	// change behavior, just makes a concurrent double-insert visible if one
+	// is happening.
+	if self.non_outlier_pdu_exists(pdu.event_id()).await {
+		warn!(
+			target: "backfill_debug",
+			event_id = %pdu.event_id(),
+			%room_id,
+			"append_pdu: event already exists in timeline under the insert lock -- \
+			 about to insert a SECOND time (no recheck guards this path)"
+		);
+	}
+
 	self.services
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
