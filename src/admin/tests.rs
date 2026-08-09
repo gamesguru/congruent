@@ -961,14 +961,13 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	}
 	assert_eq!(stream_duplicates, 2, "test setup should create a duplicate stream entry");
 
-	let mut topo_duplicates = 0_usize;
-	let mut topo_stream = Box::pin(services.rooms.timeline.topo_pdus(&room_id, None));
-	while let Some(item) = topo_stream.next().await {
-		let (_, pdu) = item.unwrap();
-		if pdu.event_id == duplicated_event {
-			topo_duplicates = topo_duplicates.saturating_add(1);
-		}
-	}
+	// topo_pdus filters entries whose encoded position doesn't match the
+	// event's canonical EventMetadata (see comment on
+	// `count_topo_occurrences_for_test`) — exactly the mismatch this test
+	// just manufactured — so use a raw column scan here, not topo_pdus,
+	// to verify the corrupted entry actually landed in the DB.
+	let topo_duplicates =
+		count_topo_occurrences_for_test(&services, &room_id, &duplicated_event).await;
 	assert_eq!(topo_duplicates, 2, "test setup should create a duplicate topo entry");
 
 	let res = services
@@ -1109,6 +1108,20 @@ async fn seed_stale_topo_entry_for_test(
 	services.db["roomid_topologicalorder_pducount"].insert(&stale_topo_key, event_id.as_bytes());
 }
 
+/// Counts raw entries for `event_id` in the `roomid_topologicalorder_pducount`
+/// column, scanning the column directly rather than going through
+/// `Service::topo_pdus`.
+///
+/// `topo_pdus` deliberately filters out any entry whose encoded
+/// (depth, pdu_count) doesn't match the event's canonical `EventMetadata`
+/// (see `EventMetadata::matches_timeline_position`) — that's the read-time
+/// safety property that keeps stale/duplicate index entries from ever being
+/// served to clients. The tests using this helper manufacture exactly that
+/// kind of mismatched entry on purpose, to verify `yolo dedup-room` /
+/// `reindex-short` / `reorder-timeline` clean it up — none of which rely on
+/// `topo_pdus` to find what to repair (they scan `all_pdus` or rebuild the
+/// column outright), so this helper needs to see the raw, unfiltered count
+/// to make that assertion meaningful.
 async fn count_topo_occurrences_for_test(
 	services: &std::sync::Arc<service::Services>,
 	room_id: &ruma::RoomId,
@@ -1116,11 +1129,15 @@ async fn count_topo_occurrences_for_test(
 ) -> usize {
 	use futures::StreamExt;
 
+	let shortroomid = services.rooms.short.get_shortroomid(room_id).await.unwrap();
+	let prefix = shortroomid.to_be_bytes();
+
 	let mut count = 0_usize;
-	let mut stream = Box::pin(services.rooms.timeline.topo_pdus(room_id, None));
+	let mut stream =
+		Box::pin(services.db["roomid_topologicalorder_pducount"].raw_stream_prefix(&prefix));
 	while let Some(item) = stream.next().await {
-		let (_, pdu) = item.unwrap();
-		if pdu.event_id == event_id {
+		let (_, val) = item.unwrap();
+		if val == event_id.as_bytes() {
 			count = count.saturating_add(1);
 		}
 	}
