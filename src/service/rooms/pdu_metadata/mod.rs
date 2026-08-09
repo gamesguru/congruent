@@ -49,10 +49,18 @@ pub enum RejectionCode {
 	/// data itself is malformed.
 	InvalidPduFormat,
 	/// This event's own auth chain includes an event we've already
-	/// rejected. Retryable: if the dependency's rejection later turns out
-	/// to have been resolution-related and gets un-rejected, this event's
-	/// verdict should be re-evaluated too, not inherit the stale one
-	/// forever.
+	/// rejected. Permanent — deliberately *not* retryable, even though the
+	/// dependency's own rejection might itself have been resolution-related
+	/// and could later get un-rejected. This is a cascading judgment about
+	/// *another* event's current state, not a resolution failure of this
+	/// event's own; if the dependency's rejection is ever lifted, whatever
+	/// later re-processes the dependency fresh will naturally re-derive
+	/// this event's verdict too. Treating this tag itself as retryable
+	/// would strip the permanence guarantee from every event that
+	/// legitimately, permanently cascades from an intrinsically-bad auth
+	/// event (Complement's `TestInboundFederationRejectsEventsWithRejectedAuthEvents`
+	/// exists specifically to check that cascade stays permanent — mirrors
+	/// Synapse's `AUTH_ERROR` being terminal).
 	DependsOnRejectedAuthEvent,
 	/// We could not resolve one of this event's auth events at all (not
 	/// locally, not via `/event_auth`, not via `/state_ids`). Retryable —
@@ -116,8 +124,7 @@ impl RejectionCode {
 	pub const fn is_retryable(self) -> bool {
 		matches!(
 			self,
-			Self::DependsOnRejectedAuthEvent
-				| Self::MissingAuthEvent
+			Self::MissingAuthEvent
 				| Self::StructurallyInvalidInGetMissingEvents
 				| Self::AllPrevEventsUnknownStateIdsFailed
 				| Self::MissingAuthEventsAfterStateIdsRetry
