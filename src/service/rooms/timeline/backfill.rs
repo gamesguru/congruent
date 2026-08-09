@@ -537,7 +537,7 @@ pub async fn backfill_pdu(
 	// in the live timeline where the user expects it. Demoting to
 	// Backfilled would inject the event into the wrong stream position.
 	if self.non_outlier_pdu_exists(&event_id).await {
-		debug!("Event {event_id} already in timeline, skipping backfill");
+		info!(target: "backfill_debug", %event_id, "backfill_pdu: already in timeline (pre-lock check), skipping");
 		return Ok(());
 	}
 
@@ -598,7 +598,12 @@ pub async fn backfill_pdu(
 	// Re-check after acquiring insert lock to prevent TOCTOU races
 	// with concurrent /send transactions inserting the same event.
 	if self.non_outlier_pdu_exists(&event_id).await {
-		debug!("Event {event_id} already in timeline (post-lock check), skipping backfill");
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			"backfill_pdu: already in timeline (post-lock check) -- TOCTOU race caught, \
+			 skipping redundant insert"
+		);
 		return Ok(());
 	}
 
@@ -665,6 +670,13 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	// concurrent backfill_pdu/append_pdu/force_insert_pdu inserting the
 	// same event (see docs/development-gg/backfill-append-toctou-race.md).
 	if self.non_outlier_pdu_exists(event_id).await {
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event already in timeline under the insert lock -- \
+			 skipping redundant insert (TOCTOU race caught)"
+		);
 		drop(insert_lock);
 		return Ok(());
 	}
@@ -848,6 +860,13 @@ pub async fn force_insert_pdu(
 	// concurrent backfill_pdu/append_pdu/promote_outlier inserting the same
 	// event (see docs/development-gg/backfill-append-toctou-race.md).
 	if self.non_outlier_pdu_exists(event_id).await {
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"force_insert_pdu: event already in timeline under the insert lock -- \
+			 skipping redundant insert (TOCTOU race caught)"
+		);
 		drop(insert_lock);
 		return Err!(Database("PDU {event_id} already in timeline"));
 	}
