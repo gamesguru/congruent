@@ -947,21 +947,116 @@ where
 						.await;
 
 					if all_prevs_unknown {
-						info!(
-							event_id = %incoming_pdu.event_id,
-							"Rejecting event: all prev_events unknown and /state_ids fetch failed"
-						);
-						self.services
-							.pdu_metadata
-							.mark_event_rejected(
-								incoming_pdu.event_id(),
-								"all prev_events unknown and /state_ids fetch failed",
-							)
+						// Last resort before rejecting: make a single,
+						// non-recursive attempt to materialize each prev_event
+						// via GET /event/{id}. /state_ids just failed, so we
+						// have no state snapshot — but a server that doesn't
+						// serve /state_ids may still serve individual events.
+						// Without this, a prev_event we were never sent (e.g.
+						// its own /send was rejected for an unrelated reason,
+						// like a signature we can't verify) leaves us with no
+						// cryptographic or structural facts about it, and the
+						// only options are: reject the child outright, or
+						// evaluate it against synthetic/current state — the
+						// latter is the DAG-takeover hazard Synapse's
+						// `on_receive_pdu` rejects for (a forged
+						// single-extremity event judged against today's power
+						// levels instead of its claimed ancestry).
+						//
+						// Fetched events go through the same signature/hash
+						// checks and auth-event resolution as any other
+						// outlier (`handle_outlier_pdu`) and are persisted as
+						// accepted or rejected accordingly. We do NOT chase
+						// their own prev_events — this is a single hop per
+						// prev_event, bounded by prev_events().count()
+						// (already capped at 20 in parse_incoming_pdu), fired
+						// concurrently, not a backfill.
+						futures::stream::iter(incoming_pdu.prev_events())
+							.for_each_concurrent(4, |prev_id| async move {
+								debug!(
+									event_id = %incoming_pdu.event_id,
+									%prev_id,
+									%origin,
+									"prev_event still unknown after /state_ids failure; \
+									 attempting single-hop /event fetch"
+								);
+								let Ok(res) = self
+									.services
+									.sending
+									.send_federation_request(
+										origin,
+										ruma::api::federation::event::get_event::v1::Request::new(
+											prev_id.to_owned(),
+											None,
+										),
+									)
+									.await
+								else {
+									return;
+								};
+								let Ok((fetched_id, val)) =
+									conduwuit::matrix::event::gen_event_id_canonical_json(
+										&res.pdu,
+										room_version_id,
+									)
+								else {
+									return;
+								};
+								if fetched_id != *prev_id {
+									return;
+								}
+
+								// Verified and persisted as an outlier
+								// (accepted or rejected) by handle_outlier_pdu;
+								// the Result doesn't matter here — either way,
+								// the prev_event is now "known" below.
+								drop(
+									self.handle_outlier_pdu(
+										origin,
+										Some(create_event),
+										&fetched_id,
+										room_id,
+										val,
+										false,
+										false,
+										Some(room_version_id),
+									)
+									.await,
+								);
+							})
 							.await;
-						return Err!(Request(Forbidden(
-							"Cannot determine state: all prev_events unknown and /state_ids \
-							 fetch failed"
-						)));
+
+						let all_prevs_still_unknown =
+							futures::stream::iter(incoming_pdu.prev_events())
+								.all(|prev_id| async move {
+									self.services.timeline.get_pdu_id(prev_id).await.is_err()
+										&& self
+											.services
+											.outlier
+											.get_pdu_outlier(prev_id)
+											.await
+											.is_err()
+								})
+								.await;
+
+						if all_prevs_still_unknown {
+							info!(
+								event_id = %incoming_pdu.event_id,
+								"Rejecting event: all prev_events unknown and /state_ids and \
+								 /event fetches failed"
+							);
+							self.services
+								.pdu_metadata
+								.mark_event_rejected(
+									incoming_pdu.event_id(),
+									"all prev_events unknown and /state_ids fetch failed",
+								)
+								.await;
+							return Err!(Request(Forbidden(
+								"Cannot determine state: all prev_events unknown and /state_ids \
+								 fetch failed"
+							)));
+						}
 					}
 
 					// All prev_events exist but state hashes not computed — safe to
