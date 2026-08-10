@@ -26,22 +26,35 @@ pub(super) async fn reorder_timeline(
 			.await?;
 
 		let mut count = 0_usize;
+		let mut failures: Vec<(OwnedRoomId, String)> = Vec::new();
 		for room_id in room_ids {
-			if Box::pin(self.services.rooms.timeline.reorder_timeline(
+			match Box::pin(self.services.rooms.timeline.reorder_timeline(
 				&room_id,
 				no_compute_state,
 				force_reindex,
 			))
 			.await
-			.is_ok()
 			{
-				count = count.saturating_add(1);
+				| Ok(_) => count = count.saturating_add(1),
+				| Err(error) => failures.push((room_id, error.to_string())),
 			}
 		}
 
-		return self
-			.write_str(&format!("Reordered timeline for {count} rooms. Clients should re-sync."))
-			.await;
+		if failures.is_empty() {
+			return self
+				.write_str(&format!("Reordered timeline for {count} rooms. Clients should re-sync."))
+				.await;
+		}
+
+		let mut output = format!(
+			"Reordered timeline for {count} rooms. {} rooms failed:\n",
+			failures.len()
+		);
+		for (room_id, error) in &failures {
+			output.push_str(&format!("- {room_id}: {error}\n"));
+		}
+
+		return self.write_str(&output).await;
 	}
 
 	let room_id = room_id.ok_or_else(|| err!("room_id is required unless --all is specified"))?;

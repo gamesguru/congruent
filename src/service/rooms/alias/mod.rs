@@ -13,7 +13,10 @@ use ruma::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
 	events::{
 		StateEventType,
-		room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent},
+		room::{
+			create::RoomCreateEventContent,
+			power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent},
+		},
 	},
 };
 
@@ -121,34 +124,50 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<bool> {
-		if let Ok(power_levels) = self
+		let room_version_id = self.services.state_accessor.services.state.get_room_version(room_id);
+		let create_event = self
+			.services
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomCreate, "");
+		let power_levels = self
 			.services
 			.state_accessor
 			.room_state_get_content::<RoomPowerLevelsEventContent>(
 				room_id,
 				&StateEventType::RoomPowerLevels,
 				"",
-			)
-			.map_ok(RoomPowerLevels::from)
-			.await
-		{
-			return Ok(
-				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
 			);
+		let (room_version_id, create_event, power_levels) =
+			futures::join!(room_version_id, create_event, power_levels);
+
+		let room_version = conduwuit::RoomVersion::new(
+			&room_version_id.map_err(|_| err!(Request(NotFound("Unknown room"))))?,
+		)
+		.expect("room version must be supported");
+		let create_event = create_event.map_err(|_| err!(Request(NotFound("Unknown room"))))?;
+
+		if room_version.explicitly_privilege_room_creators {
+			let create_content: RoomCreateEventContent =
+				serde_json::from_str(create_event.content().get())
+					.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
+			let user_owned = user_id.to_owned();
+			if create_event.sender() == user_id
+				|| create_content
+					.additional_creators
+					.as_ref()
+					.is_some_and(|creators| creators.contains(&user_owned))
+			{
+				return Ok(true);
+			}
+		}
+
+		if let Ok(power_levels) = power_levels.map(RoomPowerLevels::from) {
+			return Ok(power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias));
 		}
 
 		// If there is no power levels event, only the room creator can change
 		// canonical aliases.
-		if let Ok(event) = self
-			.services
-			.state_accessor
-			.room_state_get(room_id, &StateEventType::RoomCreate, "")
-			.await
-		{
-			return Ok(event.sender() == user_id);
-		}
-
-		Err!(Database("Room has no m.room.create event"))
+		Ok(create_event.sender() == user_id)
 	}
 
 	#[tracing::instrument(skip(self))]

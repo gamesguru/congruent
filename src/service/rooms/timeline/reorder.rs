@@ -79,9 +79,10 @@ impl Service {
 		let count = sorted.len();
 		if force_reindex && count > Self::MAX_FORCE_REINDEX_EVENTS {
 			return Err!(Request(InvalidParam(
-				"force_reindex is currently limited to rooms with at most \
-				 MAX_FORCE_REINDEX_EVENTS events because it requires a single atomic whole-room \
-				 rewrite; rerun without force_reindex for large rooms"
+				"force_reindex is currently limited to rooms with at most {} events because it \
+				 requires a single atomic whole-room rewrite; rerun without force_reindex for \
+				 large rooms",
+				Self::MAX_FORCE_REINDEX_EVENTS
 			)));
 		}
 		let reindex_start = std::time::Instant::now();

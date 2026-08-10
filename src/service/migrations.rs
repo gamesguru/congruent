@@ -362,6 +362,10 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run 'populate_pdu_count_in_metadata': {e}"))?;
 	}
 
+	if services.globals.db.database_version().await < 20 {
+		services.globals.db.bump_database_version(20);
+	}
+
 	if services.globals.db.database_version().await != DATABASE_VERSION {
 		return Err!(Database(
 			"Database version {} does not match expected version {DATABASE_VERSION} after \

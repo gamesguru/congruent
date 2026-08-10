@@ -201,7 +201,7 @@ async fn receipt_event_is_in_thread(
 
 	for _ in 0..MAX_THREAD_HOPS {
 		if current == thread_root {
-			return event_id == thread_root || hops > 1;
+			return event_id == thread_root;
 		}
 
 		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
