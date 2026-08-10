@@ -98,3 +98,61 @@ impl EventMetadata {
 		})
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn base() -> EventMetadata {
+		EventMetadata {
+			deprecated_local_topo_depth: 5,
+			is_outlier: false,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn normal_matches_exact_count_only() {
+		let meta = EventMetadata { pdu_count: Some(3), ..base() };
+		assert!(meta.matches_timeline_position(5, PduCount::Normal(3)));
+		assert!(!meta.matches_timeline_position(5, PduCount::Normal(4)));
+		assert!(!meta.matches_timeline_position(6, PduCount::Normal(3)));
+	}
+
+	#[test]
+	fn backfilled_matches_none_pdu_count() {
+		// Current write sites always store None for Backfilled events.
+		let meta = EventMetadata { pdu_count: None, ..base() };
+		assert!(meta.matches_timeline_position(5, PduCount::Backfilled(-3)));
+		assert!(meta.matches_timeline_position(5, PduCount::Backfilled(-999)));
+		assert!(!meta.matches_timeline_position(6, PduCount::Backfilled(-3)));
+	}
+
+	#[test]
+	fn backfilled_matches_legacy_unsigned_abs_encoding() {
+		// The pre-fix `populate_pdu_count_in_metadata` migration wrote
+		// `Some(count.unsigned_abs())` for Backfilled rows. Those rows must
+		// still be recognized until they are naturally rewritten.
+		let meta = EventMetadata { pdu_count: Some(7), ..base() };
+		assert!(meta.matches_timeline_position(5, PduCount::Backfilled(-7)));
+	}
+
+	#[test]
+	fn backfilled_rejects_mismatched_legacy_count() {
+		// A legacy Some(n) must not match a Backfilled key whose exact count
+		// doesn't correspond -- otherwise this degenerates back into "any
+		// backfilled record matches any backfilled key at this depth".
+		let meta = EventMetadata { pdu_count: Some(7), ..base() };
+		assert!(!meta.matches_timeline_position(5, PduCount::Backfilled(-8)));
+	}
+
+	#[test]
+	fn outlier_never_matches() {
+		let meta = EventMetadata {
+			pdu_count: None,
+			is_outlier: true,
+			..base()
+		};
+		assert!(!meta.matches_timeline_position(5, PduCount::Backfilled(-3)));
+	}
+}
