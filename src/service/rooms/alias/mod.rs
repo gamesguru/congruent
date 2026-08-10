@@ -8,7 +8,7 @@ use conduwuit::{
 	utils::{ReadyExt, stream::TryIgnore},
 };
 use database::{Deserialized, Ignore, Interfix, Map};
-use futures::{Stream, StreamExt, TryFutureExt};
+use futures::{Stream, StreamExt};
 use ruma::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
 	events::{
@@ -38,6 +38,7 @@ struct Services {
 	appservice: Dep<appservice::Service>,
 	globals: Dep<globals::Service>,
 	sending: Dep<sending::Service>,
+	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 }
@@ -55,6 +56,7 @@ impl crate::Service for Service {
 				appservice: args.depend::<appservice::Service>("appservice"),
 				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<sending::Service>("sending"),
+				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
@@ -124,12 +126,7 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<bool> {
-		let room_version_id = self
-			.services
-			.state_accessor
-			.services
-			.state
-			.get_room_version(room_id);
+		let room_version_id = self.services.state.get_room_version(room_id);
 		let create_event =
 			self.services
 				.state_accessor

@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use conduwuit::{Result, err, matrix::Event};
 use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId};
@@ -51,7 +53,7 @@ pub(super) async fn reorder_timeline(
 		let mut output =
 			format!("Reordered timeline for {count} rooms. {} rooms failed:\n", failures.len());
 		for (room_id, error) in &failures {
-			output.push_str(&format!("- {room_id}: {error}\n"));
+			let _ = writeln!(output, "- {room_id}: {error}");
 		}
 
 		return self.write_str(&output).await;
