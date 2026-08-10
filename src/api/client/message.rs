@@ -21,7 +21,7 @@ use conduwuit_service::{
 		timeline::TopoIterItem,
 	},
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, future::OptionFuture, pin_mut};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture, pin_mut};
 use ruma::{
 	DeviceId, RoomId, UserId,
 	api::{
@@ -121,6 +121,11 @@ pub(crate) async fn get_message_events_route(
 				pdu_count: PduCount::max(),
 			},
 		});
+	let from = if matches!(body.dir, Direction::Backward) {
+		normalize_backward_from_token(&services, room_id, from).await?
+	} else {
+		from
+	};
 
 	let to: Option<TopoToken> = body.to.as_deref().map(str::parse).transpose()?;
 
@@ -315,6 +320,32 @@ pub(crate) async fn get_message_events_route(
 	);
 
 	Ok(resp)
+}
+
+async fn normalize_backward_from_token(
+	services: &Services,
+	room_id: &RoomId,
+	from: TopoToken,
+) -> Result<TopoToken> {
+	let last_timeline_count = services.rooms.timeline.last_timeline_count(room_id).await?;
+	if from.pdu_count <= last_timeline_count {
+		return Ok(from);
+	}
+
+	let stream = services.rooms.timeline.topo_pdus_rev(room_id, None);
+	pin_mut!(stream);
+	let latest = stream.try_next().await?.map(at!(0)).unwrap_or(from);
+
+	info!(
+		target: "pagination_debug",
+		%room_id,
+		requested_from = %from,
+		normalized_from = %latest,
+		?last_timeline_count,
+		"/messages: clamped backward pagination token to latest known timeline position",
+	);
+
+	Ok(latest)
 }
 
 pub(crate) async fn lazy_loading_witness<'a, I>(

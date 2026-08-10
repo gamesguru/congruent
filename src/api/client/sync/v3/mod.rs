@@ -609,6 +609,17 @@ pub(crate) async fn build_sync_events(
 		);
 	}
 
+	// A leave and subsequent visibility-restoring update (for example, an invite
+	// arriving before the next /sync response is built) can otherwise surface as
+	// both `left` and `changed` for the same user in one response. Prefer the
+	// current visibility-restoring state and suppress the stale `left`.
+	device_list_updates.left.retain(|user_id| {
+		!device_list_updates
+			.changed
+			.iter()
+			.any(|changed| changed == user_id)
+	});
+
 	let mut presence_updates = presence_updates.unwrap_or_default();
 	if services.config.allow_local_presence {
 		collect_member_presence(
