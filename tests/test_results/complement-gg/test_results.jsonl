@@ -21,7 +21,7 @@
 {"Action":"pass","Test":"TestBannedUserCannotSendJoin"}
 {"Action":"skip","Test":"TestCanRegisterAdmin"}
 {"Action":"pass","Test":"TestCannotKickLeftUser"}
-{"Action":"fail","Test":"TestCannotKickNonPresentUser"}
+{"Action":"pass","Test":"TestCannotKickNonPresentUser"}
 {"Action":"pass","Test":"TestCannotSendKnockViaSendKnockInMSC3787Room"}
 {"Action":"pass","Test":"TestCannotSendKnockViaSendKnockInMSC3787Room/event_with_mismatched_state_key"}
 {"Action":"pass","Test":"TestCannotSendKnockViaSendKnockInMSC3787Room/invite_event"}
@@ -129,7 +129,14 @@
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
-{"Action":"fail","Test":"TestDeviceManagement"}
+{"Action":"pass","Test":"TestDeviceManagement"}
+{"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
+{"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"}
+{"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}"}
+{"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}_gives_a_404_for_unknown_devices"}
+{"Action":"pass","Test":"TestDeviceManagement/GET_/devices"}
+{"Action":"pass","Test":"TestDeviceManagement/PUT_/device/{deviceId}_gives_a_404_for_unknown_devices"}
+{"Action":"pass","Test":"TestDeviceManagement/PUT_/device/{deviceId}_updates_device_fields"}
 {"Action":"pass","Test":"TestDisplayNameUpdate"}
 {"Action":"pass","Test":"TestE2EKeyBackupReplaceRoomKeyRules"}
 {"Action":"pass","Test":"TestE2EKeyBackupReplaceRoomKeyRules/parallel"}
@@ -325,10 +332,10 @@
 {"Action":"pass","Test":"TestLogout/Request_to_logout_without_an_access_token_is_rejected"}
 {"Action":"skip","Test":"TestMSC3757OwnedState"}
 {"Action":"pass","Test":"TestMSC3967"}
-{"Action":"fail","Test":"TestMSC4186SlidingSync"}
+{"Action":"pass","Test":"TestMSC4186SlidingSync"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/BulkLoad"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/CombiningRoomConfigs"}
-{"Action":"fail","Test":"TestMSC4186SlidingSync/ExpandedTimeline"}
+{"Action":"pass","Test":"TestMSC4186SlidingSync/ExpandedTimeline"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/ExtensionsToDevice"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/Heroes"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/IncrementalRoomDeltas"}
@@ -811,7 +818,7 @@
 {"Action":"pass","Test":"TestThreadSubscriptions/Nonexistent_threads_return_404"}
 {"Action":"pass","Test":"TestThreadSubscriptions/Server-side_automatic_subscription_ordering_conflict"}
 {"Action":"pass","Test":"TestThreadSubscriptions/Unsubscribe_succeeds_even_with_no_subscription"}
-{"Action":"fail","Test":"TestThreadedReceipts"}
+{"Action":"pass","Test":"TestThreadedReceipts"}
 {"Action":"pass","Test":"TestThreadsEndpoint"}
 {"Action":"pass","Test":"TestToDeviceMessages"}
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation"}
