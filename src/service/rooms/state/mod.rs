@@ -111,6 +111,33 @@ impl Service {
 			statediffremoved,
 			state_lock,
 			true,
+			None,
+		)
+		.await
+	}
+
+	/// Same as `force_state`, but for callers that already hold
+	/// `rooms::timeline::Service::mutex_insert` for this room (currently only
+	/// `append_pdu`). Passing that guard through lets the outlier-demotion
+	/// step below skip re-acquiring the same non-reentrant lock, which would
+	/// otherwise deadlock the calling task against itself.
+	pub async fn force_state_insert_locked(
+		&self,
+		room_id: &RoomId,
+		shortstatehash: u64,
+		statediffnew: Arc<CompressedState>,
+		statediffremoved: Arc<CompressedState>,
+		state_lock: &RoomMutexGuard,
+		insert_lock: &rooms::timeline::InsertMutexGuard,
+	) -> Result {
+		self.force_state_inner(
+			room_id,
+			shortstatehash,
+			statediffnew,
+			statediffremoved,
+			state_lock,
+			true,
+			Some(insert_lock),
 		)
 		.await
 	}
@@ -133,6 +160,7 @@ impl Service {
 			statediffremoved,
 			state_lock,
 			false,
+			None,
 		)
 		.await
 	}
@@ -145,6 +173,7 @@ impl Service {
 		statediffremoved: Arc<CompressedState>,
 		state_lock: &RoomMutexGuard,
 		update_cache: bool,
+		insert_lock: Option<&rooms::timeline::InsertMutexGuard>,
 	) -> Result {
 		info!(
 			target: "force_state",
@@ -305,10 +334,19 @@ impl Service {
 
 			let pdu_json = self.services.timeline.get_pdu_json(&event_id).await;
 			if let Ok(pdu_json) = &pdu_json {
-				self.services
-					.outlier
-					.add_pdu_outlier(&event_id, pdu_json, Some(room_id))
-					.await;
+				match insert_lock {
+					| Some(insert_lock) => self.services.outlier.add_pdu_outlier_locked(
+						&event_id,
+						pdu_json,
+						Some(room_id),
+						insert_lock,
+					),
+					| None =>
+						self.services
+							.outlier
+							.add_pdu_outlier(&event_id, pdu_json, Some(room_id))
+							.await,
+				}
 			}
 		}
 		info!(target: "force_state", "removed events done, updating joined count");

@@ -162,6 +162,34 @@ pub async fn add_pdu_outlier(
 		| None => None,
 	};
 
+	self.add_pdu_outlier_inner(event_id, pdu, room_id);
+}
+
+/// Same as `add_pdu_outlier`, but for callers that already hold
+/// `rooms::timeline::Service::mutex_insert` for this room (e.g.
+/// `force_state` invoked from inside `append_pdu`). `mutex_insert` is not
+/// reentrant, so re-locking here from the same call stack would deadlock;
+/// the `&InsertMutexGuard` parameter is unused beyond proving at the call
+/// site that the lock is genuinely already held.
+#[implement(Service)]
+#[tracing::instrument(skip(self, pdu, _insert_lock), level = "debug")]
+pub fn add_pdu_outlier_locked(
+	&self,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	_insert_lock: &rooms::timeline::InsertMutexGuard,
+) {
+	self.add_pdu_outlier_inner(event_id, pdu, room_id);
+}
+
+#[implement(Service)]
+fn add_pdu_outlier_inner(
+	&self,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
 	let mut batch = database::Batch::new();
 	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
 	self.db.eventid_pdu.apply_batch(batch);

@@ -20,6 +20,12 @@ use std::{fmt::Write, ops::Bound, sync::Arc};
 
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
+/// Proof that the caller already holds `Service::mutex_insert` for a room.
+/// Threaded through `force_state`/`force_state_quiet` so their outlier
+/// demotion step can skip re-acquiring the same non-reentrant per-room lock
+/// when called from inside `append_pdu` (which holds it for the whole
+/// insert), while still self-locking when called from anywhere else.
+pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
 	Result, Server, SyncMutex, at, err,
 	matrix::{

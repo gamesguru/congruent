@@ -292,12 +292,15 @@ where
 
 	let resolved_state_applied = resolved_state.is_some();
 	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
-		Box::pin(self.services.state.force_state(
+		// Still holding `insert_lock`: force_state's outlier-demotion step must not
+		// try to re-acquire it (self-deadlock), so pass it through as proof.
+		Box::pin(self.services.state.force_state_insert_locked(
 			room_id,
 			shortstatehash,
 			added,
 			removed,
 			state_lock,
+			&insert_lock,
 		))
 		.await?;
 	}
