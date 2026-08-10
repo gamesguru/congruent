@@ -607,11 +607,10 @@ where
 									"incomplete auth events after auth chain fetch",
 								)
 								.await;
-							self.services.outlier.add_pdu_outlier(
-								&next_id,
-								&value,
-								Some(room_id),
-							);
+							self.services
+								.outlier
+								.add_pdu_outlier(&next_id, &value, Some(room_id))
+								.await;
 							back_off(next_id.clone());
 						}
 					} else {

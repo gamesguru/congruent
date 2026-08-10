@@ -548,20 +548,17 @@ pub async fn backfill_pdu(
 	// events), fall back to storing the raw PDU directly.
 	let room_version_id = self.services.state.get_room_version(&room_id).await?;
 
-	let (pdu_event, json_value) = match self
-		.services
-		.event_handler
-		.handle_outlier_pdu(
-			origin,
-			None::<&PduEvent>,
-			&event_id,
-			&room_id,
-			value.clone(),
-			false,
-			false,
-			Some(&room_version_id),
-		)
-		.await
+	let (pdu_event, json_value) = match Box::pin(self.services.event_handler.handle_outlier_pdu(
+		origin,
+		None::<&PduEvent>,
+		&event_id,
+		&room_id,
+		value.clone(),
+		false,
+		false,
+		Some(&room_version_id),
+	))
+	.await
 	{
 		| Ok(result) => result,
 		| Err(Error::MissingAuthEvents(_)) => {

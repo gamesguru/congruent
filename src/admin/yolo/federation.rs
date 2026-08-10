@@ -465,7 +465,8 @@ pub(super) async fn fetch_state_ids(
 					self.services
 						.rooms
 						.outlier
-						.add_pdu_outlier(&eid, &val, Some(&room_id));
+						.add_pdu_outlier(&eid, &val, Some(&room_id))
+						.await;
 					fetched = fetched.saturating_add(1);
 				} else {
 					failed = failed.saturating_add(1);

@@ -636,7 +636,8 @@ async fn join_room_by_id_helper_remote_process(
 				services
 					.rooms
 					.outlier
-					.add_pdu_outlier(&event_id, &value, Some(room_id));
+					.add_pdu_outlier(&event_id, &value, Some(room_id))
+					.await;
 				services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
 				eids.push(event_id.clone());
 				if let Some(state_key) = &pdu.state_key {
@@ -697,7 +698,8 @@ async fn join_room_by_id_helper_remote_process(
 			services
 				.rooms
 				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id));
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
 			services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
 			eids.push(event_id);
 			eids

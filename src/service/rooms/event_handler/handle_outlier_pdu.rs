@@ -248,7 +248,8 @@ where
 				);
 				self.services
 					.outlier
-					.add_pdu_outlier(event_id, &value, Some(room_id));
+					.add_pdu_outlier(event_id, &value, Some(room_id))
+					.await;
 				self.services
 					.pdu_metadata
 					.mark_event_rejected(
@@ -292,7 +293,8 @@ where
 				.await;
 			self.services
 				.outlier
-				.add_pdu_outlier(event_id, &incoming_pdu, Some(room_id));
+				.add_pdu_outlier(event_id, &incoming_pdu, Some(room_id))
+				.await;
 			return Err!(Request(BadJson(debug_warn!("Event is not a valid PDU: {e}"))));
 		},
 	};
@@ -315,11 +317,10 @@ where
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 				)
 				.await;
-			self.services.outlier.add_pdu_outlier(
-				pdu_event.event_id(),
-				&incoming_pdu,
-				Some(room_id),
-			);
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
@@ -385,11 +386,10 @@ where
 						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
 					)
 					.await;
-				self.services.outlier.add_pdu_outlier(
-					pdu_event.event_id(),
-					&incoming_pdu,
-					Some(room_id),
-				);
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+					.await;
 				return Err!(Request(Forbidden("Event depends on rejected auth event {mid}")));
 			}
 		}
@@ -585,11 +585,10 @@ where
 								&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 							)
 							.await;
-						self.services.outlier.add_pdu_outlier(
-							pdu_event.event_id(),
-							&incoming_pdu,
-							Some(room_id),
-						);
+						self.services
+							.outlier
+							.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+							.await;
 						self.services
 							.pdu_metadata
 							.mark_event_rejected(
@@ -611,11 +610,10 @@ where
 					still_missing.len(),
 					still_missing
 				);
-				self.services.outlier.add_pdu_outlier(
-					pdu_event.event_id(),
-					&incoming_pdu,
-					Some(room_id),
-				);
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+					.await;
 				return Err!(MissingAuthEvents(still_missing));
 			}
 		} else {
@@ -627,11 +625,10 @@ where
 				.into_iter()
 				.map(ToOwned::to_owned)
 				.collect();
-			self.services.outlier.add_pdu_outlier(
-				pdu_event.event_id(),
-				&incoming_pdu,
-				Some(room_id),
-			);
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
 			return Err!(MissingAuthEvents(missing));
 		}
 	}
@@ -650,11 +647,10 @@ where
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 				)
 				.await;
-			self.services.outlier.add_pdu_outlier(
-				pdu_event.event_id(),
-				&incoming_pdu,
-				Some(room_id),
-			);
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
@@ -670,11 +666,10 @@ where
 				.pdu_metadata
 				.mark_event_rejected(event_id, &RejectionCode::MissingAuthEvent.with_detail(id))
 				.await;
-			self.services.outlier.add_pdu_outlier(
-				pdu_event.event_id(),
-				&incoming_pdu,
-				Some(room_id),
-			);
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
 			return Err!(Request(InvalidParam(debug_error!(
 				"Could not fetch all auth events for outlier {event_id}, still missing: {id}"
 			))));
@@ -697,11 +692,10 @@ where
 					.pdu_metadata
 					.mark_event_rejected(event_id, RejectionCode::DuplicateAuthEventKey.tag())
 					.await;
-				self.services.outlier.add_pdu_outlier(
-					pdu_event.event_id(),
-					&incoming_pdu,
-					Some(room_id),
-				);
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+					.await;
 				return Err!(Request(InvalidParam(
 					"Auth event's type and state_key combination exists multiple times: {}, {}",
 					auth_event.kind,
@@ -724,7 +718,8 @@ where
 			.await;
 		self.services
 			.outlier
-			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id));
+			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+			.await;
 		return Err!(Request(InvalidParam(
 			"Incoming event missing m.room.create in auth events"
 		)));
@@ -746,7 +741,8 @@ where
 			.await;
 		self.services
 			.outlier
-			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id));
+			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+			.await;
 		return Err!(Request(Forbidden(
 			"Event authorisation fails based on event's claimed auth events"
 		)));
@@ -757,7 +753,8 @@ where
 	// 7. Persist the event as an outlier.
 	self.services
 		.outlier
-		.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id));
+		.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+		.await;
 
 	trace!("Added pdu as outlier.");
 

@@ -28,7 +28,6 @@ struct Data {
 
 struct Services {
 	short: Dep<rooms::short::Service>,
-	#[allow(dead_code)]
 	timeline: Dep<rooms::timeline::Service>,
 }
 
@@ -139,18 +138,58 @@ pub fn room_stream<'a>(
 }
 
 /// Append the PDU as an outlier.
+///
+/// Holds the same per-room `mutex_insert` lock that
+/// `append_pdu`/`backfill_pdu`/`promote_outlier`/`force_insert_pdu` use for
+/// their own check-then-insert of `eventid_metadata`. Without this, the
+/// guard in `add_pdu_outlier_batch` (skip if the event is already in the
+/// timeline) is a plain read-then-write with nothing stopping a concurrent
+/// timeline insert from landing between the read and the write, letting
+/// this call clobber a just-appended timeline event back into an outlier.
 #[implement(Service)]
 #[tracing::instrument(skip(self, pdu), level = "debug")]
-pub fn add_pdu_outlier(
+pub async fn add_pdu_outlier(
 	&self,
 	event_id: &EventId,
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
 ) {
+	let room_id_for_lock = derive_room_id(pdu, room_id, event_id);
+	let _guard = match room_id_for_lock.as_deref() {
+		| Some(room_id) => Some(self.services.timeline.mutex_insert.lock(room_id).await),
+		// No determinable room_id (should be rare/impossible outside of malformed
+		// input); nothing else can be racing writes for a room we can't identify.
+		| None => None,
+	};
+
 	let mut batch = database::Batch::new();
 	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
 	self.db.eventid_pdu.apply_batch(batch);
 	self.db.eventid_pdu.wake(event_id.as_bytes());
+}
+
+/// Determine the room a PDU belongs to, mirroring the priority order used in
+/// `add_pdu_outlier_batch`'s `room_id_from_pdu`: the PDU's own `room_id`
+/// field first (authoritative once present), then the caller-supplied hint,
+/// then (for `m.room.create` only) the room id derivable from the event id
+/// itself.
+fn derive_room_id(
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	event_id: &EventId,
+) -> Option<OwnedRoomId> {
+	pdu.get("room_id")
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|r| <&RoomId>::try_from(r).ok())
+		.map(ToOwned::to_owned)
+		.or_else(|| room_id.map(ToOwned::to_owned))
+		.or_else(|| {
+			let is_create =
+				pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
+			is_create
+				.then(|| event_id.as_str().replace('$', "!"))
+				.and_then(|r| OwnedRoomId::parse(r).ok())
+		})
 }
 
 /// Append the PDU as an outlier using a Batch.
@@ -185,19 +224,7 @@ pub fn add_pdu_outlier_batch<'a>(
 	let mut pdu = pdu.clone();
 	pdu.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
 
-	let room_id_from_pdu = pdu
-		.get("room_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| <&RoomId>::try_from(r).ok())
-		.map(ToOwned::to_owned)
-		.or_else(|| room_id.map(ToOwned::to_owned))
-		.or_else(|| {
-			let is_create =
-				pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
-			is_create
-				.then(|| event_id.as_str().replace('$', "!"))
-				.and_then(|r| OwnedRoomId::parse(r).ok())
-		});
+	let room_id_from_pdu = derive_room_id(&pdu, room_id, event_id);
 
 	// --- Phase 1: Write ---
 	self.db

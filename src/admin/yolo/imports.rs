@@ -236,21 +236,17 @@ pub(super) async fn import_pdus(
 						pdu_val.remove("event_id");
 					}
 
-					let handled = self
-						.services
-						.rooms
-						.event_handler
-						.handle_outlier_pdu(
-							&origin,
-							create_event.as_ref().as_ref(),
-							&eid,
-							&room_id,
-							pdu_val,
-							true,
-							skip_sig_verify,
-							Some(&room_version),
-						)
-						.await;
+					let handled = Box::pin(self.services.rooms.event_handler.handle_outlier_pdu(
+						&origin,
+						create_event.as_ref().as_ref(),
+						&eid,
+						&room_id,
+						pdu_val,
+						true,
+						skip_sig_verify,
+						Some(&room_version),
+					))
+					.await;
 
 					match handled {
 						| Ok((new_pdu, _)) => {
@@ -269,7 +265,8 @@ pub(super) async fn import_pdus(
 						self.services
 							.rooms
 							.outlier
-							.add_pdu_outlier(&eid, &value, Some(&room_id));
+							.add_pdu_outlier(&eid, &value, Some(&room_id))
+							.await;
 						return Ok((eid.clone(), true));
 					}
 					if force {
@@ -385,7 +382,8 @@ pub(super) async fn import_outliers(&self, jsonl: String) -> Result {
 		self.services
 			.rooms
 			.outlier
-			.add_pdu_outlier(&event_id, &pdu, None);
+			.add_pdu_outlier(&event_id, &pdu, None)
+			.await;
 		count = count.saturating_add(1);
 	}
 

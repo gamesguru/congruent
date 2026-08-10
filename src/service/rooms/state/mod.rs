@@ -307,7 +307,8 @@ impl Service {
 			if let Ok(pdu_json) = &pdu_json {
 				self.services
 					.outlier
-					.add_pdu_outlier(&event_id, pdu_json, Some(room_id));
+					.add_pdu_outlier(&event_id, pdu_json, Some(room_id))
+					.await;
 			}
 		}
 		info!(target: "force_state", "removed events done, updating joined count");

@@ -191,20 +191,17 @@ async fn persist_federation_events(
 		let mut still_pending = Vec::new();
 		let mut made_progress = false;
 		for (event_id, value, report) in pending {
-			match services
-				.rooms
-				.event_handler
-				.handle_outlier_pdu(
-					origin,
-					None::<&PduEvent>,
-					&event_id,
-					room_id,
-					value.clone(),
-					false,
-					false,
-					Some(&room_version),
-				)
-				.await
+			match Box::pin(services.rooms.event_handler.handle_outlier_pdu(
+				origin,
+				None::<&PduEvent>,
+				&event_id,
+				room_id,
+				value.clone(),
+				false,
+				false,
+				Some(&room_version),
+			))
+			.await
 			{
 				| Ok((pdu, _)) => {
 					if let Some((counts, hash)) = report {
@@ -267,7 +264,7 @@ async fn fetch_missing(services: &Services, room_id: &RoomId, event_id: &ruma::E
 			.into_iter()
 			.chain(response.events)
 			.collect();
-		persist_federation_events(services, &dest, room_id, raws).await;
+		Box::pin(persist_federation_events(services, &dest, room_id, raws)).await;
 	}
 }
 
@@ -300,7 +297,7 @@ async fn fetch_full(services: &Services, room_id: &RoomId, params: &Params) {
 			.into_iter()
 			.chain(response.events)
 			.collect();
-		persist_federation_events(services, &dest, room_id, raws).await;
+		Box::pin(persist_federation_events(services, &dest, room_id, raws)).await;
 	}
 }
 

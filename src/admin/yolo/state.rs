@@ -131,11 +131,11 @@ pub(super) async fn compare_room_state(
 								"PDU {eid} failed signature verification, storing as rejected \
 								 outlier: {e}"
 							);
-							self.services.rooms.outlier.add_pdu_outlier(
-								&eid,
-								&val,
-								Some(&room_id),
-							);
+							self.services
+								.rooms
+								.outlier
+								.add_pdu_outlier(&eid, &val, Some(&room_id))
+								.await;
 							self.services
 								.rooms
 								.pdu_metadata
@@ -556,11 +556,11 @@ pub(super) async fn compare_room_state(
 								"compare_room_state: PDU {eid} failed verification, storing as \
 								 rejected outlier: {e}"
 							);
-							self.services.rooms.outlier.add_pdu_outlier(
-								&eid,
-								&val,
-								Some(&room_id),
-							);
+							self.services
+								.rooms
+								.outlier
+								.add_pdu_outlier(&eid, &val, Some(&room_id))
+								.await;
 							self.services
 								.rooms
 								.pdu_metadata
@@ -1189,11 +1189,11 @@ pub(super) async fn audit_membership(
 					if let Ok(pdu_json) =
 						self.services.rooms.timeline.get_pdu_json(&event_id).await
 					{
-						self.services.rooms.outlier.add_pdu_outlier(
-							&event_id,
-							&pdu_json,
-							Some(&room_id),
-						);
+						self.services
+							.rooms
+							.outlier
+							.add_pdu_outlier(&event_id, &pdu_json, Some(&room_id))
+							.await;
 					}
 					// remove_from_timeline demotes back to outlier.
 					// no additional flag needed; rescue-room will re-evaluate.
@@ -1638,11 +1638,11 @@ pub(super) async fn audit_membership(
 									"audit_membership: PDU {eid} failed sig verify, storing as \
 									 rejected outlier: {e}"
 								);
-								self.services.rooms.outlier.add_pdu_outlier(
-									&eid,
-									&val,
-									Some(&room_id),
-								);
+								self.services
+									.rooms
+									.outlier
+									.add_pdu_outlier(&eid, &val, Some(&room_id))
+									.await;
 								self.services
 									.rooms
 									.pdu_metadata

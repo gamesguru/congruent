@@ -883,11 +883,11 @@ pub(super) async fn dag_merge_base(
 				let pdu =
 					PduEvent::from_id_val(&validated_id, value.clone(), Some(room_id.as_ref()))
 						.ok()?;
-				self.services.rooms.outlier.add_pdu_outlier(
-					&validated_id,
-					&value,
-					Some(room_id.as_ref()),
-				);
+				self.services
+					.rooms
+					.outlier
+					.add_pdu_outlier(&validated_id, &value, Some(room_id.as_ref()))
+					.await;
 				Some(pdu)
 			}
 			.await;
@@ -1625,11 +1625,11 @@ pub(super) async fn fetch_missing_events(
 								.pdu_exists(&event_id)
 								.await
 							{
-								self.services.rooms.outlier.add_pdu_outlier(
-									&event_id,
-									&value,
-									Some(&room_id),
-								);
+								self.services
+									.rooms
+									.outlier
+									.add_pdu_outlier(&event_id, &value, Some(&room_id))
+									.await;
 								round_filled = round_filled.saturating_add(1);
 
 								// Collect prev_events of the newly fetched events as potential

@@ -1324,7 +1324,8 @@ async fn validate_and_extract_state(
 			self.services
 				.rooms
 				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id));
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
 		}
 
 		if let Some(state_key) = &state_key_opt {
@@ -1388,7 +1389,8 @@ async fn validate_and_add_auth_chain(
 				self.services
 					.rooms
 					.outlier
-					.add_pdu_outlier(&event_id, &json, Some(room_id));
+					.add_pdu_outlier(&event_id, &json, Some(room_id))
+					.await;
 			}
 			// Clear markers for existing auth events to heal any previous
 			// soft-fails/rejections
@@ -1430,7 +1432,8 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id));
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
 			auth_added = auth_added.saturating_add(1);
 		}
 

@@ -1013,7 +1013,7 @@ where
 								// the Result doesn't matter here — either way,
 								// the prev_event is now "known" below.
 								drop(
-									self.handle_outlier_pdu(
+									Box::pin(self.handle_outlier_pdu(
 										origin,
 										Some(create_event),
 										&fetched_id,
@@ -1022,7 +1022,7 @@ where
 										false,
 										false,
 										Some(room_version_id),
-									)
+									))
 									.await,
 								);
 							})

@@ -301,7 +301,8 @@ where
 							);
 							self.services
 								.outlier
-								.add_pdu_outlier(&eid, &val, Some(room_id));
+								.add_pdu_outlier(&eid, &val, Some(room_id))
+								.await;
 						}
 						None
 					}
@@ -333,18 +334,17 @@ where
 	// timeline!
 	for eid in &sorted_eids {
 		if let Some((_, val)) = verified_events.remove(eid) {
-			if let Ok((pdu, val)) = self
-				.handle_outlier_pdu(
-					origin,
-					Some(create_event),
-					eid,
-					room_id,
-					val,
-					false, // auth_events_known
-					true,  // skip_sig_verify
-					Some(&room_version_id),
-				)
-				.await
+			if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
+				origin,
+				Some(create_event),
+				eid,
+				room_id,
+				val,
+				false, // auth_events_known
+				true,  // skip_sig_verify
+				Some(&room_version_id),
+			))
+			.await
 			{
 				eventid_info.insert(eid.clone(), (pdu, val));
 			} else {

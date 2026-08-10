@@ -250,11 +250,10 @@ where
 												eid.as_str().to_owned(),
 											),
 										);
-										self.services.outlier.add_pdu_outlier(
-											&eid,
-											&val,
-											Some(room_id),
-										);
+										self.services
+											.outlier
+											.add_pdu_outlier(&eid, &val, Some(room_id))
+											.await;
 										return None;
 									}
 								}
@@ -299,7 +298,8 @@ where
 								);
 								self.services
 									.outlier
-									.add_pdu_outlier(&eid, &val, Some(room_id));
+									.add_pdu_outlier(&eid, &val, Some(room_id))
+									.await;
 							},
 						}
 						None
@@ -323,18 +323,17 @@ where
 	// handle_outlier_pdu queries the DB).
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
-			if let Err(e) = self
-				.handle_outlier_pdu(
-					origin,
-					Some(create_event),
-					&eid,
-					room_id,
-					val,
-					true, // is_outlier
-					true, // skip_sig_verify (already done above)
-					Some(&room_version_id),
-				)
-				.await
+			if let Err(e) = Box::pin(self.handle_outlier_pdu(
+				origin,
+				Some(create_event),
+				&eid,
+				room_id,
+				val,
+				true, // is_outlier
+				true, // skip_sig_verify (already done above)
+				Some(&room_version_id),
+			))
+			.await
 			{
 				debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
 			}

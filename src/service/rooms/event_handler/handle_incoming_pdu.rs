@@ -162,7 +162,8 @@ pub async fn handle_incoming_pdu<'a>(
 			// ran out of time. It can be retried or upgraded later.
 			self.services
 				.outlier
-				.add_pdu_outlier(event_id, &outlier_value, Some(room_id));
+				.add_pdu_outlier(event_id, &outlier_value, Some(room_id))
+				.await;
 
 			Err!(Request(Unknown("PDU processing timed out, please retry later.")))
 		},
@@ -340,7 +341,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				// retry finds it and doesn't loop with 404s.
 				self.services
 					.outlier
-					.add_pdu_outlier(event_id, &value, Some(room_id));
+					.add_pdu_outlier(event_id, &value, Some(room_id))
+					.await;
 				return Ok(None);
 			}
 		}
@@ -362,7 +364,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			);
 			self.services
 				.outlier
-				.add_pdu_outlier(event_id, &value, Some(room_id));
+				.add_pdu_outlier(event_id, &value, Some(room_id))
+				.await;
 			return Ok(None);
 		} else {
 			info!(
@@ -385,18 +388,17 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		.room_state_get(room_id, &StateEventType::RoomCreate, "")
 		.await?);
 
-	let (incoming_pdu, val) = match self
-		.handle_outlier_pdu(
-			origin,
-			Some(create_event),
-			event_id,
-			room_id,
-			value.clone(),
-			false,
-			false,
-			room_version_override,
-		)
-		.await
+	let (incoming_pdu, val) = match Box::pin(self.handle_outlier_pdu(
+		origin,
+		Some(create_event),
+		event_id,
+		room_id,
+		value.clone(),
+		false,
+		false,
+		room_version_override,
+	))
+	.await
 	{
 		| Ok(res) => res,
 		| Err(conduwuit::Error::MissingAuthEvents(missing)) => {
@@ -412,7 +414,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					);
 					self.services
 						.outlier
-						.add_pdu_outlier(event_id, &value, Some(room_id));
+						.add_pdu_outlier(event_id, &value, Some(room_id))
+						.await;
 					self.services
 						.pdu_metadata
 						.mark_event_rejected(
@@ -560,7 +563,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					);
 					self.services
 						.outlier
-						.add_pdu_outlier(event_id, &value, Some(room_id));
+						.add_pdu_outlier(event_id, &value, Some(room_id))
+						.await;
 
 					return Ok(None);
 				},
@@ -576,7 +580,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			);
 			self.services
 				.outlier
-				.add_pdu_outlier(event_id, &value, Some(room_id));
+				.add_pdu_outlier(event_id, &value, Some(room_id))
+				.await;
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, "depends on rejected auth event")
