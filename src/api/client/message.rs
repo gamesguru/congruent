@@ -175,24 +175,43 @@ pub(crate) async fn get_message_events_route(
 		let (token, pdu) = item;
 		consumed = consumed.saturating_add(1);
 
+		info!(
+			target: "pagination_debug",
+			%token, event_id = %pdu.event_id(), event_type = %pdu.kind(),
+			"/messages: raw item consumed from topo stream"
+		);
+
 		if Some(token) == to {
 			break;
 		}
 
 		next_token = Some(token);
 
+		let event_id_for_trace = pdu.event_id().to_owned();
 		let Some(item) = event_filter((token, pdu), filter) else {
 			filtered_event = filtered_event.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by event_filter (RoomEventFilter)"
+			);
 			continue;
 		};
 
 		let Some(item) = ignored_filter(&services, item, sender_user).await else {
 			filtered_ignored = filtered_ignored.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by ignored_filter"
+			);
 			continue;
 		};
 
 		let Some(mut item) = visibility_filter(&services, item, sender_user).await else {
 			filtered_visibility = filtered_visibility.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by visibility_filter (user_can_see_event)"
+			);
 			continue;
 		};
 

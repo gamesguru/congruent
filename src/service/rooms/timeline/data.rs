@@ -1855,6 +1855,13 @@ impl Data {
 				Self::topo_pducount_key(&current, until.depth)
 			};
 
+			conduwuit::info!(
+				target: "pagination_debug",
+				%room_id, until_depth = until.depth, until_pdu_count = ?until.pdu_count,
+				is_legacy = until.is_legacy(), seek_key = ?topo_key,
+				"topo_pdus_rev: seeking"
+			);
+
 			// Legacy tokens are stream positions, not concrete topo cursors. When
 			// seeking them from u64::MAX depth, exclude events which arrived after the
 			// sync position. Concrete t<depth>_<count> tokens already encode the topo
@@ -1917,6 +1924,13 @@ impl Data {
 					.await?;
 				Self::topo_pducount_key(&current, from.depth)
 			};
+
+			conduwuit::info!(
+				target: "pagination_debug",
+				%room_id, from_depth = from.depth, from_pdu_count = ?from.pdu_count,
+				is_legacy = from.is_legacy(), seek_key = ?topo_key,
+				"topo_pdus: seeking"
+			);
 
 			let count_floor = from.is_legacy().then_some(from.pdu_count);
 
@@ -2126,11 +2140,34 @@ impl Data {
 				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
 				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
 				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) else {
+					conduwuit::info!(
+						target: "pagination_debug",
+						event_id = %String::from_utf8_lossy(&event_id_bytes),
+						?depth, ?pdu_count,
+						"parse_topo_stream: DROPPED (metadata deserialize failed)"
+					);
 					return Ok(None);
 				};
 				if !metadata.matches_timeline_position(depth, pdu_count) {
+					conduwuit::info!(
+						target: "pagination_debug",
+						event_id = %String::from_utf8_lossy(&event_id_bytes),
+						key_depth = depth,
+						key_pdu_count = ?pdu_count,
+						meta_depth = metadata.deprecated_local_topo_depth,
+						meta_pdu_count = ?metadata.pdu_count,
+						meta_is_outlier = metadata.is_outlier,
+						"parse_topo_stream: DROPPED (matches_timeline_position == false)"
+					);
 					return Ok(None);
 				}
+
+				conduwuit::info!(
+					target: "pagination_debug",
+					event_id = %String::from_utf8_lossy(&event_id_bytes),
+					?depth, ?pdu_count,
+					"parse_topo_stream: yielding"
+				);
 
 				Ok(Some((TopoToken { depth, pdu_count }, pdu)))
 			})
