@@ -119,27 +119,16 @@ pub(crate) async fn delete_alias_route(
 			}
 			content.alt_aliases = retained_alt_aliases;
 
-			// Alias creators/admins may remove a local alias even if they lack
-			// permission to send `m.room.canonical_alias`. Preserve that policy by
-			// only attempting the state update when the sender can actually
-			// authorize it; otherwise we still remove the directory mapping.
-			if services
+			services
 				.rooms
-				.alias
-				.user_can_change_canonical_alias(&room_id, sender_user)
-				.await?
-			{
-				services
-					.rooms
-					.timeline
-					.build_and_append_pdu(
-						PduBuilder::state(String::new(), &content),
-						sender_user,
-						Some(&room_id),
-						&state_lock,
-					)
-					.await?;
-			}
+				.timeline
+				.build_and_append_pdu(
+					PduBuilder::state(String::new(), &content),
+					sender_user,
+					Some(&room_id),
+					&state_lock,
+				)
+				.await?;
 		}
 	}
 
