@@ -311,6 +311,8 @@ pub(super) async fn build_membership_template_pdu(
 
 	drop(state_lock);
 	pdu_json.remove("event_id");
+	pdu_json.remove("hashes");
+	pdu_json.remove("signatures");
 
 	Ok(serde_json::value::to_raw_value(&pdu_json)
 		.expect("CanonicalJson can be serialized to JSON"))

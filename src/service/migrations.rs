@@ -33,7 +33,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 19;
+pub(crate) const DATABASE_VERSION: u64 = 20;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -107,7 +107,7 @@ async fn fresh(services: &Services) -> Result<()> {
 	db["global"].insert(b"fix_corrupt_msc4133_fields", []);
 	db["global"].insert(b"populate_userroomid_leftstate_table", []);
 	db["global"].insert(b"fix_local_invite_state", []);
-	// v19 - PDU and read receipt refactor/optimization
+	// v20 - PDU/read-receipt refactor plus RawPduId format unification
 	db["global"].insert(MIGRATE_EVENT_STORE_TO_SSOT_MARKER, []);
 	db["global"].insert(MIGRATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
 	db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
@@ -802,7 +802,7 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 				continue;
 			};
 
-			let Ok(meta) = crate::rooms::timeline::EventMetadata::from_bincode(&meta_handle)
+			let Ok(mut meta) = crate::rooms::timeline::EventMetadata::from_bincode(&meta_handle)
 			else {
 				continue;
 			};
@@ -828,6 +828,10 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
 			roomid_topologicalorder_pducount.put(&topo_key, batch_entries[i].1.clone());
+			meta.deprecated_local_topo_depth = global_depth;
+			if let Ok(metadata_bytes) = bincode::serialize(&meta) {
+				eventid_metadata.put(batch_entries[i].1.as_slice(), metadata_bytes);
+			}
 
 			total_migrated = total_migrated.saturating_add(1);
 			if total_migrated.is_multiple_of(10000) {
@@ -1693,6 +1697,6 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 19);
+		assert_eq!(DATABASE_VERSION, 20);
 	}
 }

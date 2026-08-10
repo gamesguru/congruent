@@ -202,7 +202,10 @@ where
 			}
 
 			let pdu = (self.fetch_pdu)(&event_id)?;
-			let lean = Arc::new(pdu_to_lean(&pdu));
+			let power_level = sender_power_level_from_auth(&pdu, |auth_event_id| {
+				(self.fetch_pdu)(auth_event_id)
+			});
+			let lean = Arc::new(pdu_to_lean(&pdu, power_level));
 
 			self.global_cache.insert(event_id, lean.clone());
 
@@ -315,16 +318,54 @@ where
 	Ok(resolved)
 }
 
-fn pdu_to_lean(pdu: &conduwuit_core::PduEvent) -> rezzy::LeanEvent<String> {
+fn sender_power_level_from_auth<F>(pdu: &conduwuit_core::PduEvent, mut fetch_auth: F) -> i64
+where
+	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
+{
+	if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+		return i64::MAX;
+	}
+
+	for auth_event_id in &pdu.auth_events {
+		let Some(auth_pdu) = fetch_auth(auth_event_id) else {
+			continue;
+		};
+
+		if auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+			|| auth_pdu.state_key.as_deref() != Some("")
+		{
+			continue;
+		}
+
+		let content_val: serde_json::Value =
+			serde_json::from_str(auth_pdu.content.get()).unwrap_or(serde_json::Value::Null);
+		let parse_intlike = |value: &serde_json::Value| {
+			value
+				.as_i64()
+				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+		};
+
+		if let Some(user_level) = content_val
+			.get("users")
+			.and_then(serde_json::Value::as_object)
+			.and_then(|users| users.get(pdu.sender.as_str()))
+			.and_then(parse_intlike)
+		{
+			return user_level;
+		}
+
+		return content_val
+			.get("users_default")
+			.and_then(parse_intlike)
+			.unwrap_or(0);
+	}
+
+	0
+}
+
+fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
 	let content_val: serde_json::Value =
 		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
-	let power_level = content_val
-		.get("power_level")
-		.and_then(|pl| {
-			pl.as_i64()
-				.or_else(|| pl.as_str().and_then(|s| s.parse().ok()))
-		})
-		.unwrap_or(0);
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),

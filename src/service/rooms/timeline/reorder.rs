@@ -10,6 +10,7 @@ use ruma::{OwnedEventId, RoomId};
 use super::Service;
 
 impl Service {
+	const MAX_FORCE_REINDEX_EVENTS: usize = 25_000;
 	const REORDER_BATCH_OPS: usize = 25_000;
 
 	/// Rebuild the topological index for a room using proper DAG
@@ -76,6 +77,13 @@ impl Service {
 
 		// Rebuild topological index
 		let count = sorted.len();
+		if force_reindex && count > Self::MAX_FORCE_REINDEX_EVENTS {
+			return Err!(Request(InvalidParam(
+				"force_reindex is currently limited to rooms with at most \
+				 MAX_FORCE_REINDEX_EVENTS events because it requires a single atomic whole-room \
+				 rewrite; rerun without force_reindex for large rooms"
+			)));
+		}
 		let reindex_start = std::time::Instant::now();
 		debug!("reorder_timeline: rebuilding topological index for {count} events...");
 		let mut available_counts: Vec<PduCount> = Vec::new();

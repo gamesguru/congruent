@@ -2266,13 +2266,16 @@ impl Data {
 				self.room_pducount_eventid
 					.rev_raw_stream_from(&current)
 					.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
-					.map_ok(|(_key, val)| {
-						let s = std::str::from_utf8(val).expect("invalid event id utf8");
-						let event_id = <&EventId>::try_from(s).expect("invalid event id bytes");
+					.and_then(move |(_key, val)| async move {
+						let s = std::str::from_utf8(val)
+							.map_err(|e| err!(Database("Invalid event id utf8: {e:?}")))?;
+						let event_id = <&EventId>::try_from(s)
+							.map_err(|e| err!(Database("Invalid event id bytes: {e:?}")))?;
 						self.services
 							.short
-							.get_shorteventid_blocking(event_id)
-							.expect("missing short event id")
+							.get_shorteventid(event_id)
+							.await
+							.map_err(|e| err!(Database("Missing short event id: {e}")))
 					})
 			})
 			.try_flatten_stream()
