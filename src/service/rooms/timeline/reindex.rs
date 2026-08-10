@@ -193,8 +193,8 @@ impl Service {
 						short_state_hash: None,
 						deprecated_local_topo_depth: pdu.depth().into(),
 						pdu_count: match count {
-							| conduwuit::matrix::pdu::PduCount::Normal(x) => Some(*x),
-							| conduwuit::matrix::pdu::PduCount::Backfilled(_) => None,
+							| PduCount::Normal(x) => Some(*x),
+							| PduCount::Backfilled(_) => None,
 						},
 						soft_fail_reason: String::new(),
 						rejection_reason: String::new(),

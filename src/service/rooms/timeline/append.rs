@@ -292,10 +292,14 @@ where
 
 	let resolved_state_applied = resolved_state.is_some();
 	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
-		self.services
-			.state
-			.force_state(room_id, shortstatehash, added, removed, state_lock)
-			.await?;
+		Box::pin(self.services.state.force_state(
+			room_id,
+			shortstatehash,
+			added,
+			removed,
+			state_lock,
+		))
+		.await?;
 	}
 
 	// Flattened Auth Chain Cache:
