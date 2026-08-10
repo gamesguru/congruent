@@ -13,8 +13,8 @@ use conduwuit_core::{
 };
 use futures::{StreamExt, TryStreamExt, future};
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId,
-	RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
+	UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	uint,
 };
