@@ -13,8 +13,18 @@ pub struct EventMetadata {
 	pub short_state_hash: Option<u64>,
 	#[serde(default)]
 	pub deprecated_local_topo_depth: u64,
-	/// Timeline position counter. `None` = legacy record (not yet migrated).
-	/// `Some(0)` = outlier / not in timeline. Normal events start at 1.
+	/// Timeline position counter for `Normal` (live) events. `None` means
+	/// either a legacy record (not yet migrated) or a `Backfilled` event --
+	/// the exact negative counter is never stored here (see
+	/// `matches_timeline_position`). `Some(0)` = outlier / not in timeline.
+	/// Normal events start at 1.
+	///
+	/// Some pre-existing databases may carry a stale `Some(n)` for a
+	/// `Backfilled` event, written by the `populate_pdu_count_in_metadata`
+	/// migration before it was taught to skip backfilled counts: it took
+	/// `unsigned_abs()` of the signed count, which collides `Backfilled(-n)`
+	/// with `Normal(n)`. `matches_timeline_position` tolerates that legacy
+	/// encoding.
 	#[serde(default)]
 	pub pdu_count: Option<u64>,
 	/// Reason why this event was soft-failed (empty = no reason stored).
@@ -47,7 +57,23 @@ impl EventMetadata {
 			&& self.deprecated_local_topo_depth == depth
 			&& match pdu_count {
 				| PduCount::Normal(_) => self.pdu_count == Some(pdu_count.into_unsigned()),
-				| PduCount::Backfilled(_) => self.pdu_count.is_none(),
+				// Every current write site (insert_pdu, replace_pdu, reindex.rs,
+				// reorder.rs) stores `None` for a Backfilled event, so `None` is
+				// the expected value here. But some pre-existing rows were
+				// written by the older `populate_pdu_count_in_metadata`
+				// migration, which took `unsigned_abs()` of the signed count
+				// before it was taught to skip Backfilled events -- that
+				// collides `Backfilled(-n)` with `Normal(n)` and left
+				// `Some(n.unsigned_abs())` on disk. Accept that specific legacy
+				// encoding too, so those rows aren't dropped from pagination
+				// until they're naturally rewritten. This is an exact per-key
+				// comparison (unlike the bare `is_none()` case), so it does not
+				// re-introduce the coarse "any backfilled record matches"
+				// acceptance for rows using this encoding.
+				| PduCount::Backfilled(n) => match self.pdu_count {
+					| None => true,
+					| Some(legacy) => legacy == n.unsigned_abs(),
+				},
 			}
 	}
 

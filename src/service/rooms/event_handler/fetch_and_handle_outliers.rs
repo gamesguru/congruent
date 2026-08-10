@@ -599,12 +599,21 @@ where
 							suspended = true;
 							unprocessed.push((next_id, value));
 						} else {
-							warn!(target: "auth_chain", "Permanently backing off event {next_id} after auth chain fetch yielded incomplete auth events");
+							warn!(target: "auth_chain", "Backing off event {next_id} after auth chain fetch yielded incomplete auth events");
+							// `missing` can run into the hundreds (e.g. MSC4297); persist
+							// only a count plus the first few IDs rather than the
+							// full list, to keep the stored reason bounded.
+							let preview: Vec<_> = missing.iter().take(5).collect();
 							self.services
 								.pdu_metadata
 								.mark_event_rejected(
 									&next_id,
-									"incomplete auth events after auth chain fetch",
+									&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
+										.with_detail(format!(
+											"{} auth events still missing after /event_auth \
+											 retry, e.g. {preview:?}",
+											missing.len()
+										)),
 								)
 								.await;
 							self.services

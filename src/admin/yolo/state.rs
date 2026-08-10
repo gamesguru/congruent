@@ -1186,22 +1186,53 @@ pub(super) async fn audit_membership(
 
 			if is_divergent && clean {
 				if let Ok(event_id) = OwnedEventId::try_from(tl_event.as_str()) {
+					// Demote timeline -> outlier atomically under the room's insert
+					// lock. add_pdu_outlier's "already in timeline" guard checks the
+					// *existing* eventid_metadata entry, which for an event still in
+					// the timeline says `is_outlier: false` -- so if we persisted the
+					// outlier copy first, the write would be silently skipped, and
+					// remove_from_timeline (seeing no outlier metadata) would then
+					// delete the event's only copy outright instead of demoting it.
+					// Stripping the timeline pointers (and the stale metadata) first
+					// means add_pdu_outlier_locked's guard sees no prior entry and
+					// actually writes the outlier. Holding mutex_insert across both
+					// calls prevents any concurrent writer for this room from
+					// observing the event in the gap where it has neither timeline
+					// pointers nor outlier metadata.
+					let insert_lock = self
+						.services
+						.rooms
+						.timeline
+						.mutex_insert
+						.lock(&room_id)
+						.await;
+
 					if let Ok(pdu_json) =
 						self.services.rooms.timeline.get_pdu_json(&event_id).await
 					{
 						self.services
 							.rooms
-							.outlier
-							.add_pdu_outlier(&event_id, &pdu_json, Some(&room_id))
+							.timeline
+							.remove_timeline_pointers(&event_id)
+							.await;
+
+						self.services.rooms.outlier.add_pdu_outlier_locked(
+							&event_id,
+							&pdu_json,
+							Some(&room_id),
+							&insert_lock,
+						);
+					} else {
+						// No PDU JSON to demote to; fall back to the old
+						// delete-everything behavior for this unrecoverable event.
+						self.services
+							.rooms
+							.timeline
+							.remove_from_timeline(&event_id)
 							.await;
 					}
-					// remove_from_timeline demotes back to outlier.
-					// no additional flag needed; rescue-room will re-evaluate.
-					self.services
-						.rooms
-						.timeline
-						.remove_from_timeline(&event_id)
-						.await;
+
+					drop(insert_lock);
 
 					pass_purged = pass_purged.saturating_add(1);
 					total_purged = total_purged.saturating_add(1);

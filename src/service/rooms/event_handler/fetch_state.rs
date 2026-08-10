@@ -241,7 +241,8 @@ where
 											.pdu_metadata
 											.mark_event_rejected(
 												&eid,
-												"redaction failed after hash mismatch",
+												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+													.with_detail("redaction failed after hash mismatch"),
 											)
 											.await;
 										val.insert(
@@ -290,7 +291,11 @@ where
 								// re-fetch
 								self.services
 									.pdu_metadata
-									.mark_event_rejected(&eid, "signature verification failed")
+									.mark_event_rejected(
+										&eid,
+										crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
+											.tag(),
+									)
 									.await;
 								val.insert(
 									"event_id".to_owned(),

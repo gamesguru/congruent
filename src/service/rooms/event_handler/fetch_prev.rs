@@ -293,7 +293,11 @@ where
 						} else {
 							self.services
 								.pdu_metadata
-								.mark_event_rejected(&eid, "signature verification failed")
+								.mark_event_rejected(
+									&eid,
+									crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
+										.tag(),
+								)
 								.await;
 							val.insert(
 								"event_id".to_owned(),

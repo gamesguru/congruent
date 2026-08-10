@@ -461,6 +461,17 @@ impl Service {
 		self.db.remove_from_timeline(event_id).await;
 	}
 
+	/// Strips only the event's timeline pointers plus its now-stale
+	/// `is_outlier: false` metadata, leaving the PDU JSON itself intact.
+	/// Callers demoting a timeline event to an outlier must hold
+	/// `mutex_insert` for the room across this call and the subsequent
+	/// `add_pdu_outlier_locked` call, so no concurrent writer can observe
+	/// the event with neither timeline pointers nor outlier metadata.
+	#[inline]
+	pub async fn remove_timeline_pointers(&self, event_id: &EventId) {
+		self.db.remove_timeline_pointers(event_id).await;
+	}
+
 	#[inline]
 	pub async fn drop_duplicate_pdu(&self, pdu_id: &RawPduId) {
 		self.db.drop_duplicate_pdu(pdu_id);

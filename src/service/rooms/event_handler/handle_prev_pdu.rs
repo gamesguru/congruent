@@ -75,6 +75,15 @@ where
 				return Ok(());
 			}
 			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
+				// Read-only check here: whether we go on to actually retry is
+				// still gated by the further early-returns below (outlier JSON
+				// missing, unparsable, or too old), and we must not clear the
+				// rejection marker unless we're actually about to hand the event
+				// to `upgrade_outlier_to_timeline_pdu` for reprocessing. Clearing
+				// it here and then bailing out below would leave the event
+				// looking "accepted" (`is_event_accepted` is just
+				// `!is_event_rejected`) to every other caller without ever having
+				// re-evaluated it.
 				let retry_worthy = self
 					.services
 					.pdu_metadata
@@ -102,6 +111,16 @@ where
 	if pdu.origin_server_ts() < first_ts_in_room {
 		return Ok(());
 	}
+
+	// We're now committed to actually reprocessing `prev_id` via
+	// `upgrade_outlier_to_timeline_pdu` below, so this is the right point to
+	// clear a retryable rejection marker -- atomically with the decision to
+	// retry, not before it (see the comment above). If the event turned out
+	// not to be marked rejected at all, this is a no-op.
+	self.services
+		.pdu_metadata
+		.take_retry_if_rejection_retryable(prev_id)
+		.await;
 
 	let start_time = Instant::now();
 	self.federation_handletime

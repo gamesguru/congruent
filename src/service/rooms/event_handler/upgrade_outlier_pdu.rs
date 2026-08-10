@@ -864,7 +864,23 @@ where
 			// snapshot that links it back into the known DAG.
 			let mut prev_events = incoming_pdu.prev_events();
 			let first_prev = prev_events.next();
-			let fallback_event_id = match state_ids_anchor {
+
+			// Only trust a caller-supplied `state_ids_anchor` when it is actually
+			// one of this event's own prev_events. It's computed upstream from a
+			// gap-recovery /get_missing_events fetch and can otherwise point at
+			// an unrelated event further back in the DAG; querying /state_ids
+			// against that would authenticate `incoming_pdu` against state that
+			// doesn't actually precede it. Re-derive a fresh iterator since
+			// `prev_events` above was already partially consumed.
+			let validated_anchor = state_ids_anchor
+				.filter(|anchor| incoming_pdu.prev_events().any(|prev_id| prev_id == *anchor));
+
+			// The single prev_event id is the preferred /state_ids target: its
+			// resolved state is the state immediately preceding `incoming_pdu`.
+			// `incoming_pdu.event_id()` below is only the last-resort fallback,
+			// used when there are zero or multiple prev_events and therefore no
+			// single direct predecessor to anchor the lookup on.
+			let state_lookup_event_id = match validated_anchor {
 				| Some(anchor) => anchor.to_owned(),
 				| None => match (first_prev, prev_events.next()) {
 					| (Some(first_prev), None) => {
@@ -912,7 +928,7 @@ where
 				origin,
 				create_event,
 				room_id,
-				&fallback_event_id,
+				&state_lookup_event_id,
 				false,
 			))
 			.await
@@ -1028,9 +1044,18 @@ where
 							})
 							.await;
 
-						let all_prevs_still_unknown =
+						// Require EVERY prev_event to now be known (in the timeline or
+						// stored as an outlier) before it's safe to fall through to
+						// the current-room-state authorization below. A single-hop
+						// /event fetch above is fired concurrently for each
+						// still-unknown prev_event, and a partial result — some
+						// prevs fetched, others still genuinely unknown — must
+						// still be rejected: authorizing against current state
+						// while any claimed predecessor remains unverified is the
+						// DAG-takeover hazard this whole fallback exists to avoid.
+						let any_prev_still_unknown =
 							futures::stream::iter(incoming_pdu.prev_events())
-								.all(|prev_id| async move {
+								.any(|prev_id| async move {
 									self.services.timeline.get_pdu_id(prev_id).await.is_err()
 										&& self
 											.services
@@ -1041,11 +1066,11 @@ where
 								})
 								.await;
 
-						if all_prevs_still_unknown {
+						if any_prev_still_unknown {
 							info!(
 								event_id = %incoming_pdu.event_id,
-								"Rejecting event: all prev_events unknown and /state_ids and \
-								 /event fetches failed"
+								"Rejecting event: at least one prev_event still unknown after \
+								 /state_ids and /event fetches failed"
 							);
 							self.services
 								.pdu_metadata

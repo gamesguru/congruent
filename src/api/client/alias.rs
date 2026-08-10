@@ -1,8 +1,8 @@
 use axum::extract::State;
-use conduwuit::{Err, Result, debug_warn, matrix::pdu::PduBuilder};
+use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
 use ruma::{
 	api::client::alias::{create_alias, delete_alias, get_alias},
-	events::room::canonical_alias::RoomCanonicalAliasEventContent,
+	events::{StateEventType, room::canonical_alias::RoomCanonicalAliasEventContent},
 };
 
 use crate::Ruma;
@@ -76,42 +76,73 @@ pub(crate) async fn delete_alias_route(
 		.alias
 		.resolve_local_alias(&body.room_alias)
 		.await?;
-	let clears_canonical_alias = services
+
+	// Perform the permission checks up-front, before any state is mutated. This
+	// duplicates the checks `remove_alias` performs internally, but ensures a
+	// request that would ultimately be rejected can't first append a state event
+	// or otherwise leave the room in a half-updated condition.
+	services
+		.rooms
+		.alias
+		.ensure_user_can_remove_alias(&body.room_alias, sender_user)
+		.await?;
+
+	// Hold the room's state lock across the read of the current canonical-alias
+	// content and the write of its replacement, so a concurrent canonical-alias
+	// update can't be clobbered by (or clobber) this deletion.
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+
+	let current_canonical_alias = services
 		.rooms
 		.state_accessor
-		.get_canonical_alias(&room_id)
+		.room_state_get_content::<RoomCanonicalAliasEventContent>(
+			&room_id,
+			&StateEventType::RoomCanonicalAlias,
+			"",
+		)
 		.await
-		.is_ok_and(|alias| alias == body.room_alias);
+		.ok();
+
+	if let Some(mut content) = current_canonical_alias {
+		let clears_canonical_alias = content.alias.as_ref() == Some(&body.room_alias);
+		let retained_alt_aliases: Vec<_> = content
+			.alt_aliases
+			.iter()
+			.filter(|alias| **alias != body.room_alias)
+			.cloned()
+			.collect();
+		let removes_alt_alias = retained_alt_aliases.len() != content.alt_aliases.len();
+
+		if clears_canonical_alias || removes_alt_alias {
+			if clears_canonical_alias {
+				content.alias = None;
+			}
+			content.alt_aliases = retained_alt_aliases;
+
+			// Update the room's canonical-alias state *before* removing the
+			// directory mapping, and propagate failure instead of swallowing it:
+			// if the state can't be updated, the alias deletion is aborted so we
+			// never end up with room state pointing at a deleted alias.
+			services
+				.rooms
+				.timeline
+				.build_and_append_pdu(
+					PduBuilder::state(String::new(), &content),
+					sender_user,
+					Some(&room_id),
+					&state_lock,
+				)
+				.await?;
+		}
+	}
+
+	drop(state_lock);
 
 	services
 		.rooms
 		.alias
 		.remove_alias(&body.room_alias, sender_user)
 		.await?;
-
-	if clears_canonical_alias {
-		let state_lock = services.rooms.state.mutex.lock(&room_id).await;
-		if let Err(e) = services
-			.rooms
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(String::new(), &RoomCanonicalAliasEventContent {
-					alias: None,
-					alt_aliases: vec![],
-				}),
-				sender_user,
-				Some(&room_id),
-				&state_lock,
-			)
-			.await
-		{
-			debug_warn!(
-				"failed to clear canonical alias after deleting {} in {}: {e}",
-				body.room_alias,
-				room_id
-			);
-		}
-	}
 
 	Ok(delete_alias::v3::Response::new())
 }

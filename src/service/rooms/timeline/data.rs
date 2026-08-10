@@ -652,6 +652,34 @@ impl Data {
 		}
 	}
 
+	/// Strips only the timeline-membership of `event_id` (the
+	/// `eventid_pduid`/`room_pducount_eventid`/topo pointers, plus the stale
+	/// `eventid_metadata` entry those pointers were keyed against), leaving
+	/// `eventid_pdu` untouched.
+	///
+	/// This exists for callers that intend to immediately re-persist the
+	/// event as an outlier (e.g. `add_pdu_outlier`/`add_pdu_outlier_locked`)
+	/// under the same `mutex_insert` guard: `add_pdu_outlier_batch`'s "never
+	/// overwrite a timeline event" guard keys off the *existing*
+	/// `eventid_metadata` entry, so as long as that entry still says
+	/// `is_outlier: false` (which it does for any event currently in the
+	/// timeline) the outlier write is silently skipped. Clearing the
+	/// metadata here first lets the subsequent outlier write land.
+	///
+	/// Mirrors `remove_from_timeline`'s statement order --
+	/// `remove_topo_pducount` still needs to read the old `eventid_metadata`
+	/// for the event's depth, so that removal must happen before this
+	/// function's own metadata deletion, not after.
+	pub(super) async fn remove_timeline_pointers(&self, event_id: &EventId) {
+		if let Ok(pduid) = self.get_pdu_id(event_id).await {
+			self.eventid_pduid.remove(event_id);
+			self.room_pducount_eventid.remove(&pduid);
+			self.remove_topo_pducount(&pduid, event_id.as_bytes());
+		}
+
+		self.eventid_metadata.remove(event_id.as_bytes());
+	}
+
 	/// Rebuild the topological index entry for a single event without
 	/// touching stream order. Removes the old topo key, computes a new
 	/// `deprecated_local_topo_depth`, writes the new topo key, and updates

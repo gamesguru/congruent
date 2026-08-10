@@ -582,10 +582,25 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				.outlier
 				.add_pdu_outlier(event_id, &value, Some(room_id))
 				.await;
-			self.services
-				.pdu_metadata
-				.mark_event_rejected(event_id, "depends on rejected auth event")
-				.await;
+			// Only the "depends on rejected auth event" case is actually a fresh
+			// cascading rejection to record here. The "is already known and
+			// rejected" message (from handle_outlier_pdu's early-return branch)
+			// means the event was already marked rejected earlier -- for some
+			// non-retryable reason, since a retryable one would have been
+			// cleared by `take_retry_if_rejection_retryable` before that message
+			// could be produced -- and re-marking it here with a
+			// `DependsOnRejectedAuthEvent` tag would overwrite and lose that
+			// original, more specific rejection reason.
+			if msg.contains("Event depends on rejected auth event") {
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						event_id,
+						&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
+							.with_detail(msg),
+					)
+					.await;
+			}
 			return Ok(None);
 		},
 		| Err(e) => return Err(e),

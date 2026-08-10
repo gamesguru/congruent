@@ -93,8 +93,16 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self))]
-	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
+	/// Checks whether `user_id` is permitted to remove `alias`, without
+	/// actually removing it. Callers that need to perform other room
+	/// operations (e.g. updating canonical-alias state) alongside the
+	/// removal should call this first so a request that will ultimately be
+	/// rejected is rejected before anything is mutated.
+	pub async fn ensure_user_can_remove_alias(
+		&self,
+		alias: &RoomAliasId,
+		user_id: &UserId,
+	) -> Result<()> {
 		if alias == self.services.globals.admin_alias
 			&& user_id != self.services.globals.server_user
 		{
@@ -104,6 +112,13 @@ impl Service {
 		if !self.user_can_remove_alias(alias, user_id).await? {
 			return Err!(Request(Forbidden("User is not permitted to remove this alias.")));
 		}
+
+		Ok(())
+	}
+
+	#[tracing::instrument(skip(self))]
+	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
+		self.ensure_user_can_remove_alias(alias, user_id).await?;
 
 		let alias_full = alias.as_bytes().to_vec();
 		let alias = alias.alias();

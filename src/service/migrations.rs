@@ -912,8 +912,18 @@ async fn populate_pdu_count_in_metadata(services: &Services) -> Result<()> {
 			} else {
 				count_bytes.copy_from_slice(&pdu_id_bytes[8..16]);
 			}
-			let count = i64::from_be_bytes(count_bytes).unsigned_abs();
-			meta.pdu_count = Some(count);
+			// `unsigned_abs()` here would fold Backfilled(-n) and Normal(n) onto
+			// the same Some(n), which then fails `matches_timeline_position`'s
+			// `Backfilled(_) => self.pdu_count.is_none()` arm for every
+			// backfilled event this migration touches (dropping them from
+			// topological pagination). Only Normal counts get a stored value;
+			// Backfilled counts stay None, matching every other write site
+			// (insert_pdu, replace_pdu, reindex.rs, reorder.rs).
+			meta.pdu_count =
+				match conduwuit::PduCount::from_signed(i64::from_be_bytes(count_bytes)) {
+					| conduwuit::PduCount::Normal(x) => Some(x),
+					| conduwuit::PduCount::Backfilled(_) => None,
+				};
 
 			if let Ok(new_bytes) = bincode::serialize(&meta) {
 				eventid_metadata.insert(&batch_entries[i].0, new_bytes);

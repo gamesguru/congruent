@@ -694,6 +694,17 @@ async fn join_room_by_id_helper_remote_process(
 			}
 		})
 		.fold(Vec::new(), |mut eids, (event_id, value)| async move {
+			if PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).is_err() {
+				info!("Invalid PDU in send_join auth_chain: {event_id}: {value:#?}");
+				return eids;
+			}
+			if !pdu_fits(&mut value.clone()) {
+				warn!(
+					"dropping incoming PDU {event_id} in room {room_id} from room join \
+					 auth_chain because it exceeds 65535 bytes or is otherwise too large."
+				);
+				return eids;
+			}
 			trace!(%event_id, "Adding PDU as an outlier from send_join auth_chain");
 			services
 				.rooms
