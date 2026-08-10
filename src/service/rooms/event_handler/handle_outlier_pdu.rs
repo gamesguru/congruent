@@ -370,267 +370,19 @@ where
 		"Auth events local lookup summary"
 	);
 	if !missing_auth_events.is_empty() {
-		const MAX_INLINE_FETCH: usize = 5;
-
-		// Defense-in-depth: re-check if any missing auth events have been
-		// marked rejected since the initial loop above. A sibling
-		// event in the same transaction batch may have processed and
-		// rejected the auth event already, so we can skip the network
-		// request entirely.
-		for mid in &missing_auth_events {
-			if self.services.pdu_metadata.is_event_rejected(mid).await {
-				self.services
-					.pdu_metadata
-					.mark_event_rejected(
-						event_id,
-						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
-					)
-					.await;
-				self.services
-					.outlier
-					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-					.await;
-				return Err!(Request(Forbidden("Event depends on rejected auth event {mid}")));
-			}
-		}
-
-		// For a small number of missing auth events, try /event_auth inline.
-		// This satisfies complement tests that register /event_auth handlers
-		// (e.g. TestInboundFederationRejectsEventsWithRejectedAuthEvents).
-		// For large missing counts (e.g. MSC4297 with 250+ events), skip
-		// /event_auth to avoid excessive HTTP overhead and let the caller
-		// retry via /state_ids instead.
-		let mut rejected_in_chain = std::collections::BTreeSet::<OwnedEventId>::new();
-		if missing_auth_events.len() <= MAX_INLINE_FETCH {
-			info!(
-				target: "state_res_debug",
-				%event_id,
-				count = missing_auth_events.len(),
-				"Fetching missing auth events via /event_auth"
-			);
-			if let Ok(response) = self
-				.services
-				.sending
-				.send_federation_request(
-					origin,
-					ruma::api::federation::authorization::get_event_authorization::v1::Request {
-						room_id: room_id.to_owned(),
-						event_id: event_id.to_owned(),
-					},
-				)
-				.await
-			{
-				let mut auth_chain_map = HashMap::new();
-				info!(
-					target: "state_res_debug",
-					%event_id,
-					chain_len = response.auth_chain.len(),
-					"Processing /event_auth response"
-				);
-				for auth_pdu in &response.auth_chain {
-					match conduwuit::matrix::event::gen_event_id_canonical_json(
-						auth_pdu,
-						&room_version_id,
-					) {
-						| Ok((ref auth_eid, auth_val)) => {
-							// Note: `auth_val` must NOT have `event_id` inserted here.
-							// `from_id_val` inserts it into its own copy for
-							// deserialization, but `redact()` (used during signature
-							// verification in the recursive `handle_outlier_pdu` call
-							// below) treats `event_id` as an allowed top-level key and
-							// would include it in the canonical JSON that's checked
-							// against the signature — even though V3+ events are never
-							// signed with an `event_id` field on the wire, which broke
-							// verification for every event pulled in via /event_auth.
-							match PduEvent::from_id_val(auth_eid, auth_val.clone(), Some(room_id))
-							{
-								| Ok(parsed) =>
-									if check_room_id(room_id, &parsed).is_ok() {
-										info!(
-											target: "state_res_debug",
-											%event_id,
-											auth_eid = %auth_eid,
-											event_type = ?parsed.kind,
-											"Parsed auth chain event from /event_auth"
-										);
-										auth_chain_map
-											.insert(auth_eid.clone(), (auth_val.clone(), parsed));
-									} else {
-										warn!(%event_id, %auth_eid, "room_id mismatch in /event_auth chain");
-									},
-								| Err(e) => {
-									warn!(%event_id, %auth_eid, "Failed to parse auth chain event as PduEvent: {e}");
-								},
-							}
-						},
-						| Err(e) => {
-							warn!(%event_id, "Failed to gen_event_id from /event_auth chain: {e}");
-						},
-					}
-				}
-
-				let mut in_degree = HashMap::new();
-				for (eid, (_, pdu)) in &auth_chain_map {
-					let mut count = 0_usize;
-					for auth_id in pdu.auth_events() {
-						if auth_chain_map.contains_key(auth_id) {
-							count = count.saturating_add(1);
-						}
-					}
-					in_degree.insert(eid.clone(), count);
-				}
-
-				let mut sorted_auth_chain = Vec::new();
-				let mut queue: Vec<_> = in_degree
-					.iter()
-					.filter_map(|(k, &v)| if v == 0 { Some(k.clone()) } else { None })
-					.collect();
-
-				while let Some(eid) = queue.pop() {
-					sorted_auth_chain.push(eid.clone());
-					for (other_eid, (_, other_pdu)) in &auth_chain_map {
-						if other_pdu.auth_events().any(|aid| aid == eid) {
-							if let Some(deg) = in_degree.get_mut(other_eid) {
-								*deg = deg.saturating_sub(1);
-								if *deg == 0 {
-									queue.push(other_eid.clone());
-								}
-							}
-						}
-					}
-				}
-
-				for auth_eid in sorted_auth_chain {
-					if let Some((auth_val, _)) = auth_chain_map.remove(&auth_eid) {
-						if !auth_events.contains_key(&auth_eid) {
-							info!(
-								target: "state_res_debug",
-								%event_id,
-								%auth_eid,
-								"Processing auth chain event recursively"
-							);
-							match Box::pin(self.handle_outlier_pdu(
-								origin,
-								create_event,
-								&auth_eid,
-								room_id,
-								auth_val,
-								true,
-								false,
-								room_version_override,
-							))
-							.await
-							{
-								| Ok((pdu, _)) => {
-									info!(
-										target: "state_res_debug",
-										%event_id,
-										%auth_eid,
-										resolved_id = %pdu.event_id(),
-										"Auth chain event accepted"
-									);
-									auth_events.insert(pdu.event_id().to_owned(), pdu);
-								},
-								| Err(ref e) => {
-									info!(
-										target: "state_res_debug",
-										%event_id,
-										%auth_eid,
-										"Auth chain event rejected/failed: {e}"
-									);
-									rejected_in_chain.insert(auth_eid.clone());
-								},
-							}
-						} else {
-							info!(
-								target: "state_res_debug",
-								%event_id,
-								%auth_eid,
-								"Skipping auth chain event, already in auth_events"
-							);
-						}
-					}
-				}
-			}
-
-			// Re-check: are we still missing auth events after /event_auth?
-			info!(
-				target: "state_res_debug",
-				%event_id,
-				auth_events_count = auth_events.len(),
-				rejected_count = rejected_in_chain.len(),
-				rejected = ?rejected_in_chain,
-				"Re-checking auth events after /event_auth"
-			);
-			let mut still_missing = Vec::new();
-			for id in pdu_event.auth_events() {
-				let in_auth = auth_events.contains_key(id);
-				let in_rejected = rejected_in_chain.contains(id);
-				let in_db_rejected = self.services.pdu_metadata.is_event_rejected(id).await;
-				info!(
-					target: "state_res_debug",
-					%event_id,
-					auth_event_id = %id,
-					in_auth,
-					in_rejected,
-					in_db_rejected,
-					"Auth event status"
-				);
-				if !in_auth {
-					if in_rejected || in_db_rejected {
-						self.services
-							.pdu_metadata
-							.mark_event_rejected(
-								event_id,
-								&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
-							)
-							.await;
-						self.services
-							.outlier
-							.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-							.await;
-						self.services
-							.pdu_metadata
-							.mark_event_rejected(
-								pdu_event.event_id(),
-								&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
-							)
-							.await;
-						return Err!(Request(Forbidden(
-							"Event depends on rejected auth event {id}"
-						)));
-					}
-					still_missing.push(id.to_owned());
-				}
-			}
-
-			if !still_missing.is_empty() {
-				debug_info!(
-					"Still missing {} auth events for {event_id} after /event_auth: {:?}",
-					still_missing.len(),
-					still_missing
-				);
-				self.services
-					.outlier
-					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-					.await;
-				return Err!(MissingAuthEvents(still_missing));
-			}
-		} else {
-			info!(
-				"Missing {} auth events for {event_id}; will be resolved via /state_ids retry",
-				missing_auth_events.len()
-			);
-			let missing: Vec<_> = missing_auth_events
-				.into_iter()
-				.map(ToOwned::to_owned)
-				.collect();
-			self.services
-				.outlier
-				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-				.await;
-			return Err!(MissingAuthEvents(missing));
-		}
+		self.resolve_missing_outlier_auth_events(
+			origin,
+			create_event,
+			event_id,
+			room_id,
+			&pdu_event,
+			&incoming_pdu,
+			&room_version_id,
+			room_version_override,
+			&missing_auth_events,
+			&mut auth_events,
+		)
+		.await?;
 	}
 	debug!("No missing auth events for outlier event {event_id}");
 
@@ -759,4 +511,262 @@ where
 	trace!("Added pdu as outlier.");
 
 	Ok((pdu_event, incoming_pdu))
+}
+
+#[implement(super::Service)]
+#[allow(clippy::too_many_arguments)]
+async fn resolve_missing_outlier_auth_events<'a, Pdu>(
+	&self,
+	origin: &'a ServerName,
+	create_event: Option<&'a Pdu>,
+	event_id: &'a EventId,
+	room_id: &'a RoomId,
+	pdu_event: &PduEvent,
+	incoming_pdu: &CanonicalJsonObject,
+	room_version_id: &ruma::RoomVersionId,
+	room_version_override: Option<&'a ruma::RoomVersionId>,
+	missing_auth_events: &[&EventId],
+	auth_events: &mut HashMap<OwnedEventId, PduEvent>,
+) -> Result<()>
+where
+	Pdu: Event + Send + Sync,
+{
+	const MAX_INLINE_FETCH: usize = 5;
+
+	for mid in missing_auth_events {
+		if self.services.pdu_metadata.is_event_rejected(mid).await {
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					event_id,
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
+				)
+				.await;
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+				.await;
+			return Err!(Request(Forbidden("Event depends on rejected auth event {mid}")));
+		}
+	}
+
+	if missing_auth_events.len() > MAX_INLINE_FETCH {
+		info!(
+			"Missing {} auth events for {event_id}; will be resolved via /state_ids retry",
+			missing_auth_events.len()
+		);
+		let missing: Vec<_> = missing_auth_events
+			.iter()
+			.map(|id| (*id).to_owned())
+			.collect();
+		self.services
+			.outlier
+			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+			.await;
+		return Err!(MissingAuthEvents(missing));
+	}
+
+	info!(
+		target: "state_res_debug",
+		%event_id,
+		count = missing_auth_events.len(),
+		"Fetching missing auth events via /event_auth"
+	);
+
+	let mut rejected_in_chain = std::collections::BTreeSet::<OwnedEventId>::new();
+	if let Ok(response) = self
+		.services
+		.sending
+		.send_federation_request(
+			origin,
+			ruma::api::federation::authorization::get_event_authorization::v1::Request {
+				room_id: room_id.to_owned(),
+				event_id: event_id.to_owned(),
+			},
+		)
+		.await
+	{
+		let mut auth_chain_map = HashMap::new();
+		info!(
+			target: "state_res_debug",
+			%event_id,
+			chain_len = response.auth_chain.len(),
+			"Processing /event_auth response"
+		);
+		for auth_pdu in &response.auth_chain {
+			match conduwuit::matrix::event::gen_event_id_canonical_json(auth_pdu, room_version_id)
+			{
+				| Ok((ref auth_eid, auth_val)) => {
+					match PduEvent::from_id_val(auth_eid, auth_val.clone(), Some(room_id)) {
+						| Ok(parsed) =>
+							if check_room_id(room_id, &parsed).is_ok() {
+								info!(
+									target: "state_res_debug",
+									%event_id,
+									auth_eid = %auth_eid,
+									event_type = ?parsed.kind,
+									"Parsed auth chain event from /event_auth"
+								);
+								auth_chain_map
+									.insert(auth_eid.clone(), (auth_val.clone(), parsed));
+							} else {
+								warn!(%event_id, %auth_eid, "room_id mismatch in /event_auth chain");
+							},
+						| Err(e) => {
+							warn!(%event_id, %auth_eid, "Failed to parse auth chain event as PduEvent: {e}");
+						},
+					}
+				},
+				| Err(e) => {
+					warn!(%event_id, "Failed to gen_event_id from /event_auth chain: {e}");
+				},
+			}
+		}
+
+		let mut in_degree = HashMap::new();
+		for (eid, (_, pdu)) in &auth_chain_map {
+			let mut count = 0_usize;
+			for auth_id in pdu.auth_events() {
+				if auth_chain_map.contains_key(auth_id) {
+					count = count.saturating_add(1);
+				}
+			}
+			in_degree.insert(eid.clone(), count);
+		}
+
+		let mut sorted_auth_chain = Vec::new();
+		let mut queue: Vec<_> = in_degree
+			.iter()
+			.filter_map(|(k, &v)| if v == 0 { Some(k.clone()) } else { None })
+			.collect();
+
+		while let Some(eid) = queue.pop() {
+			sorted_auth_chain.push(eid.clone());
+			for (other_eid, (_, other_pdu)) in &auth_chain_map {
+				if other_pdu.auth_events().any(|aid| aid == eid) {
+					if let Some(deg) = in_degree.get_mut(other_eid) {
+						*deg = deg.saturating_sub(1);
+						if *deg == 0 {
+							queue.push(other_eid.clone());
+						}
+					}
+				}
+			}
+		}
+
+		for auth_eid in sorted_auth_chain {
+			if let Some((auth_val, _)) = auth_chain_map.remove(&auth_eid) {
+				if !auth_events.contains_key(&auth_eid) {
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						%auth_eid,
+						"Processing auth chain event recursively"
+					);
+					match Box::pin(self.handle_outlier_pdu(
+						origin,
+						create_event,
+						&auth_eid,
+						room_id,
+						auth_val,
+						true,
+						false,
+						room_version_override,
+					))
+					.await
+					{
+						| Ok((pdu, _)) => {
+							info!(
+								target: "state_res_debug",
+								%event_id,
+								%auth_eid,
+								resolved_id = %pdu.event_id(),
+								"Auth chain event accepted"
+							);
+							auth_events.insert(pdu.event_id().to_owned(), pdu);
+						},
+						| Err(ref e) => {
+							info!(
+								target: "state_res_debug",
+								%event_id,
+								%auth_eid,
+								"Auth chain event rejected/failed: {e}"
+							);
+							rejected_in_chain.insert(auth_eid.clone());
+						},
+					}
+				} else {
+					info!(
+						target: "state_res_debug",
+						%event_id,
+						%auth_eid,
+						"Skipping auth chain event, already in auth_events"
+					);
+				}
+			}
+		}
+	}
+
+	info!(
+		target: "state_res_debug",
+		%event_id,
+		auth_events_count = auth_events.len(),
+		rejected_count = rejected_in_chain.len(),
+		rejected = ?rejected_in_chain,
+		"Re-checking auth events after /event_auth"
+	);
+	let mut still_missing = Vec::new();
+	for id in pdu_event.auth_events() {
+		let in_auth = auth_events.contains_key(id);
+		let in_rejected = rejected_in_chain.contains(id);
+		let in_db_rejected = self.services.pdu_metadata.is_event_rejected(id).await;
+		info!(
+			target: "state_res_debug",
+			%event_id,
+			auth_event_id = %id,
+			in_auth,
+			in_rejected,
+			in_db_rejected,
+			"Auth event status"
+		);
+		if !in_auth {
+			if in_rejected || in_db_rejected {
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						event_id,
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
+					)
+					.await;
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+					.await;
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						pdu_event.event_id(),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
+					)
+					.await;
+				return Err!(Request(Forbidden("Event depends on rejected auth event {id}")));
+			}
+			still_missing.push(id.to_owned());
+		}
+	}
+
+	if !still_missing.is_empty() {
+		debug_info!(
+			"Still missing {} auth events for {event_id} after /event_auth: {:?}",
+			still_missing.len(),
+			still_missing
+		);
+		self.services
+			.outlier
+			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+			.await;
+		return Err!(MissingAuthEvents(still_missing));
+	}
+
+	Ok(())
 }

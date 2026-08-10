@@ -383,8 +383,7 @@ where
 		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
 			create_pdu.content.get(),
 		)
-		.ok()
-		.is_some_and(|create_content| {
+		.is_ok_and(|create_content| {
 			create_content
 				.creator
 				.as_ref()
