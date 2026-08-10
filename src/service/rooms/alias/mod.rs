@@ -124,11 +124,16 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<bool> {
-		let room_version_id = self.services.state_accessor.services.state.get_room_version(room_id);
-		let create_event = self
+		let room_version_id = self
 			.services
 			.state_accessor
-			.room_state_get(room_id, &StateEventType::RoomCreate, "");
+			.services
+			.state
+			.get_room_version(room_id);
+		let create_event =
+			self.services
+				.state_accessor
+				.room_state_get(room_id, &StateEventType::RoomCreate, "");
 		let power_levels = self
 			.services
 			.state_accessor
@@ -162,7 +167,9 @@ impl Service {
 		}
 
 		if let Ok(power_levels) = power_levels.map(RoomPowerLevels::from) {
-			return Ok(power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias));
+			return Ok(
+				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
+			);
 		}
 
 		// If there is no power levels event, only the room creator can change

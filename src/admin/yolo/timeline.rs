@@ -42,14 +42,14 @@ pub(super) async fn reorder_timeline(
 
 		if failures.is_empty() {
 			return self
-				.write_str(&format!("Reordered timeline for {count} rooms. Clients should re-sync."))
+				.write_str(&format!(
+					"Reordered timeline for {count} rooms. Clients should re-sync."
+				))
 				.await;
 		}
 
-		let mut output = format!(
-			"Reordered timeline for {count} rooms. {} rooms failed:\n",
-			failures.len()
-		);
+		let mut output =
+			format!("Reordered timeline for {count} rooms. {} rooms failed:\n", failures.len());
 		for (room_id, error) in &failures {
 			output.push_str(&format!("- {room_id}: {error}\n"));
 		}
