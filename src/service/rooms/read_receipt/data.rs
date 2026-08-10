@@ -2,13 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
 	Err, Result, SyncMutex,
-	matrix::{
-		event::Event,
-		pdu::{PduCount, PduId, RawPduId},
-	},
+	matrix::{event::Event, pdu::PduCount},
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 };
-use database::{Deserialized, Json, Map};
+use database::{Json, Map};
 use futures::{Stream, StreamExt};
 use ruma::{
 	CanonicalJsonObject, OwnedUserId, RoomId, UserId,
@@ -22,9 +19,6 @@ use ruma::{
 use crate::{Dep, globals};
 
 pub(super) struct Data {
-	roomuserid_privateread: Option<Arc<Map>>,
-	roomuserid_privatereadevent: Option<Arc<Map>>,
-	roomuserid_lastprivatereadupdate: Option<Arc<Map>>,
 	roomuserid_privatereadreceipt: Arc<Map>,
 	roomuserid_readreceipt: Arc<Map>,
 	services: Services,
@@ -37,7 +31,6 @@ struct Services {
 	globals: Dep<globals::Service>,
 	timeline: Dep<crate::rooms::timeline::Service>,
 	threads: Dep<crate::rooms::threads::Service>,
-	short: Dep<crate::rooms::short::Service>,
 }
 
 pub(super) type ReceiptItem = (OwnedUserId, u64, Raw<AnySyncEphemeralRoomEvent>);
@@ -48,13 +41,6 @@ impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
 		Self {
-			roomuserid_privateread: Map::open(&db.db, "roomuserid_privateread").ok(),
-			roomuserid_privatereadevent: Map::open(&db.db, "roomuserid_privatereadevent").ok(),
-			roomuserid_lastprivatereadupdate: Map::open(
-				&db.db,
-				"roomuserid_lastprivatereadupdate",
-			)
-			.ok(),
 			roomuserid_privatereadreceipt: db["roomuserid_privatereadreceipt"].clone(),
 			roomuserid_readreceipt: db["roomuserid_readreceipt"].clone(),
 			readreceiptid_readreceipt: db["readreceiptid_readreceipt"].clone(),
@@ -64,7 +50,6 @@ impl Data {
 				globals: args.depend::<globals::Service>("globals"),
 				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
 				threads: args.depend::<crate::rooms::threads::Service>("rooms::threads"),
-				short: args.depend::<crate::rooms::short::Service>("rooms::short"),
 			},
 		}
 	}
@@ -147,7 +132,6 @@ impl Data {
 	) -> Result<Option<(u64, ReceiptEvent)>> {
 		let key = roomuserid_key(room_id, user_id);
 
-		// Try the new consolidated map first
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
 			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
 				return Ok(combine_private_read_receipts(room_id, receipts));
@@ -160,60 +144,7 @@ impl Data {
 			}
 		}
 
-		// Fallback to legacy map
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-
-		let count = if let Some(legacy_count_map) = &self.roomuserid_privateread {
-			legacy_count_map
-				.get(&legacy_key)
-				.await
-				.map(|bytes| {
-					conduwuit::utils::u64_from_bytes(&bytes).expect("bytes have right length")
-				})
-				.ok()
-		} else {
-			None
-		};
-
-		let Some(count) = count else {
-			return Ok(None);
-		};
-
-		// Fast path: try to get the full JSON event
-		if let Some(legacy_event_map) = &self.roomuserid_privatereadevent {
-			if let Ok(handle) = legacy_event_map.get(&legacy_key).await {
-				if let Ok(event) = handle.deserialized() {
-					return Ok(Some((count, event)));
-				}
-			}
-		}
-
-		// Fallback for legacy private read receipts that were only saved as a u64 count
-		let mut user_map = BTreeMap::new();
-		user_map.insert(user_id.to_owned(), Receipt {
-			thread: ReceiptThread::Unthreaded,
-			ts: None, // Legacy receipts have no timestamp
-		});
-
-		let shortroomid = self.services.short.get_shortroomid(room_id).await?;
-		let shorteventid = PduCount::Normal(count);
-		let pdu_id: RawPduId = PduId { shortroomid, shorteventid }.into();
-		let pdu = self.services.timeline.get_pdu_from_id(&pdu_id).await?;
-		let event_id = pdu.event_id;
-
-		let mut receipt_map = BTreeMap::new();
-		receipt_map.insert(ReceiptType::ReadPrivate, user_map);
-		let mut content = BTreeMap::new();
-		content.insert(event_id, receipt_map);
-
-		let event = ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(content),
-			room_id: room_id.to_owned(),
-		};
-
-		Ok(Some((count, event)))
+		Ok(None)
 	}
 
 	pub(super) async fn readreceipt_update(
@@ -484,21 +415,6 @@ impl Data {
 
 		let next_count = self.services.globals.next_count()?;
 
-		// Delete from legacy maps so they don't shadow in private_read_get during the
-		// transitional phase
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		if let Some(legacy_count_map) = &self.roomuserid_privateread {
-			legacy_count_map.remove(&legacy_key);
-		}
-		if let Some(legacy_event_map) = &self.roomuserid_privatereadevent {
-			legacy_event_map.remove(&legacy_key);
-		}
-		if let Some(legacy_update_map) = &self.roomuserid_lastprivatereadupdate {
-			legacy_update_map.remove(&legacy_key);
-		}
-
 		receipts.insert(thread_key, (count, receipt.clone(), next_count));
 		self.roomuserid_privatereadreceipt.put(key, Json(receipts));
 
@@ -528,18 +444,11 @@ impl Data {
 			}
 		}
 
-		if !thread_key(thread).is_empty() {
-			return Err!(Database("No private read receipt was set for thread."));
+		if thread_key(thread).is_empty() {
+			Err!(Database("No private read receipt was set."))
+		} else {
+			Err!(Database("No private read receipt was set for thread."))
 		}
-
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		let Some(legacy_count_map) = &self.roomuserid_privateread else {
-			return Err!(Database("No private read receipt was set."));
-		};
-
-		legacy_count_map.qry(&legacy_key).await.deserialized()
 	}
 
 	pub(super) async fn last_privateread_update(
@@ -561,17 +470,6 @@ impl Data {
 				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
 			{
 				return update_count;
-			}
-		}
-
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		if let Some(legacy_update_map) = &self.roomuserid_lastprivatereadupdate {
-			if let Ok(handle) = legacy_update_map.qry(&legacy_key).await {
-				if let Ok(update_count) = handle.deserialized() {
-					return update_count;
-				}
 			}
 		}
 

@@ -501,14 +501,27 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 
 	let db = &services.db;
 	let new_receipt_map = db["roomuserid_privatereadreceipt"].clone();
-	let Ok(legacy_count_map) = database::Map::open(&db.db, "roomuserid_privateread") else {
+	let Some(legacy_count_map) = db
+		.db
+		.cf_exists("roomuserid_privateread")
+		.then(|| database::Map::open(&db.db, "roomuserid_privateread"))
+		.transpose()?
+	else {
 		info!("Legacy private read receipt maps not present; marking migration complete.");
 		db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
 		db.db.sort()?;
 		return Ok(());
 	};
-	let legacy_event_map = database::Map::open(&db.db, "roomuserid_privatereadevent").ok();
-	let legacy_update_map = database::Map::open(&db.db, "roomuserid_lastprivatereadupdate").ok();
+	let legacy_event_map = db
+		.db
+		.cf_exists("roomuserid_privatereadevent")
+		.then(|| database::Map::open(&db.db, "roomuserid_privatereadevent"))
+		.transpose()?;
+	let legacy_update_map = db
+		.db
+		.cf_exists("roomuserid_lastprivatereadupdate")
+		.then(|| database::Map::open(&db.db, "roomuserid_lastprivatereadupdate"))
+		.transpose()?;
 
 	let stream = legacy_count_map.raw_stream();
 	pin_mut!(stream);
@@ -605,6 +618,21 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 		"Successfully migrated {total_migrated} private read receipts ({with_event} with event, \
 		 {count_only} count-only, {skipped} skipped)."
 	);
+	if db.db.cf_exists("roomuserid_privateread") {
+		db.db
+			.drop_cf("roomuserid_privateread")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_privateread: {e}"));
+	}
+	if db.db.cf_exists("roomuserid_privatereadevent") {
+		db.db
+			.drop_cf("roomuserid_privatereadevent")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_privatereadevent: {e}"));
+	}
+	if db.db.cf_exists("roomuserid_lastprivatereadupdate") {
+		db.db
+			.drop_cf("roomuserid_lastprivatereadupdate")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_lastprivatereadupdate: {e}"));
+	}
 	db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
 	db.db.sort()?;
 	Ok(())
