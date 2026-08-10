@@ -185,6 +185,7 @@ where
 	struct LocalArenaProvider<'a, F> {
 		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String>>>,
+		version: rezzy::StateResVersion,
 		fetch_pdu: F,
 	}
 
@@ -202,7 +203,7 @@ where
 			}
 
 			let pdu = (self.fetch_pdu)(&event_id)?;
-			let power_level = sender_power_level_from_auth(&pdu, |auth_event_id| {
+			let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
 				(self.fetch_pdu)(auth_event_id)
 			});
 			let lean = Arc::new(pdu_to_lean(&pdu, power_level));
@@ -261,6 +262,7 @@ where
 	let provider = LocalArenaProvider {
 		global_cache: &self.services.short.leanevent_cache,
 		arena: typed_arena::Arena::new(),
+		version,
 		fetch_pdu,
 	};
 
@@ -318,7 +320,11 @@ where
 	Ok(resolved)
 }
 
-fn sender_power_level_from_auth<F>(pdu: &conduwuit_core::PduEvent, mut fetch_auth: F) -> i64
+fn sender_power_level_from_auth<F>(
+	version: rezzy::StateResVersion,
+	pdu: &conduwuit_core::PduEvent,
+	mut fetch_auth: F,
+) -> i64
 where
 	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 {
@@ -326,10 +332,18 @@ where
 		return i64::MAX;
 	}
 
+	let mut create_pdu = None;
+
 	for auth_event_id in &pdu.auth_events {
 		let Some(auth_pdu) = fetch_auth(auth_event_id) else {
 			continue;
 		};
+
+		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
+			&& auth_pdu.state_key.as_deref() == Some("")
+		{
+			create_pdu = Some(auth_pdu.clone());
+		}
 
 		if auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
 			|| auth_pdu.state_key.as_deref() != Some("")
@@ -360,7 +374,41 @@ where
 			.unwrap_or(0);
 	}
 
-	0
+	let Some(create_pdu) = create_pdu else {
+		return 0;
+	};
+
+	#[allow(deprecated)]
+	let is_creator = create_pdu.sender == pdu.sender
+		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+			create_pdu.content.get(),
+		)
+		.ok()
+		.is_some_and(|create_content| {
+			create_content
+				.creator
+				.as_ref()
+				.is_some_and(|creator| creator == &pdu.sender)
+				|| create_content
+					.additional_creators
+					.as_ref()
+					.is_some_and(|creators| creators.iter().any(|creator| creator == &pdu.sender))
+		});
+
+	if !is_creator {
+		return 0;
+	}
+
+	if matches!(
+		version,
+		rezzy::StateResVersion::V2_1
+			| rezzy::StateResVersion::V2_1_1
+			| rezzy::StateResVersion::V2_2
+	) {
+		i64::MAX
+	} else {
+		100
+	}
 }
 
 fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
