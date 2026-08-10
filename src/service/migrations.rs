@@ -522,97 +522,97 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 		.cf_exists("roomuserid_lastprivatereadupdate")
 		.then(|| database::Map::open(&db.db, "roomuserid_lastprivatereadupdate"))
 		.transpose()?;
+	let (total_migrated, with_event, count_only, skipped) = {
+		let stream = legacy_count_map.raw_stream();
+		pin_mut!(stream);
+		let mut total_migrated: usize = 0;
+		let mut with_event: usize = 0;
+		let mut count_only: usize = 0;
+		let mut skipped: usize = 0;
 
-	let stream = legacy_count_map.raw_stream();
-	pin_mut!(stream);
-	let mut total_migrated: usize = 0;
-	let mut with_event: usize = 0;
-	let mut count_only: usize = 0;
-	let mut skipped: usize = 0;
+		while let Some((key, value)) = stream.try_next().await? {
+			let Some(sep) = key.iter().position(|&b| b == database::SEP) else {
+				continue;
+			};
 
-	while let Some((key, value)) = stream.try_next().await? {
-		let Some(sep) = key.iter().position(|&b| b == database::SEP) else {
-			continue;
-		};
+			let room_id_bytes = &key[..sep];
+			let user_id_bytes = &key[sep.saturating_add(1)..];
 
-		let room_id_bytes = &key[..sep];
-		let user_id_bytes = &key[sep.saturating_add(1)..];
+			let Ok(room_id) = <&RoomId>::try_from(
+				conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
+			) else {
+				skipped = skipped.saturating_add(1);
+				continue;
+			};
+			let Ok(user_id) = <&UserId>::try_from(
+				conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
+			) else {
+				skipped = skipped.saturating_add(1);
+				continue;
+			};
 
-		let Ok(room_id) = <&RoomId>::try_from(
-			conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
-		) else {
-			skipped = skipped.saturating_add(1);
-			continue;
-		};
-		let Ok(user_id) = <&UserId>::try_from(
-			conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
-		) else {
-			skipped = skipped.saturating_add(1);
-			continue;
-		};
+			let count =
+				conduwuit::utils::u64_from_bytes(value.get(..8).unwrap_or_default()).unwrap_or(0);
 
-		let count =
-			conduwuit::utils::u64_from_bytes(value.get(..8).unwrap_or_default()).unwrap_or(0);
+			let mut legacy_key = room_id.as_bytes().to_vec();
+			legacy_key.push(0xFF);
+			legacy_key.extend_from_slice(user_id.as_bytes());
 
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-
-		let event: ruma::events::receipt::ReceiptEvent =
-			if let Some(legacy_event_map) = &legacy_event_map {
-				if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
-					with_event = with_event.saturating_add(1);
-					serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+			let event: ruma::events::receipt::ReceiptEvent =
+				if let Some(legacy_event_map) = &legacy_event_map {
+					if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
+						with_event = with_event.saturating_add(1);
+						serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+							ruma::events::receipt::ReceiptEvent {
+								content: ruma::events::receipt::ReceiptEventContent(
+									std::collections::BTreeMap::new(),
+								),
+								room_id: room_id.to_owned(),
+							}
+						})
+					} else {
+						count_only = count_only.saturating_add(1);
 						ruma::events::receipt::ReceiptEvent {
 							content: ruma::events::receipt::ReceiptEventContent(
 								std::collections::BTreeMap::new(),
 							),
 							room_id: room_id.to_owned(),
 						}
-					})
+					}
 				} else {
 					count_only = count_only.saturating_add(1);
-					// No cached event -- store receipt with count only (no DB lookups)
 					ruma::events::receipt::ReceiptEvent {
 						content: ruma::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
 						room_id: room_id.to_owned(),
 					}
-				}
-			} else {
-				count_only = count_only.saturating_add(1);
-				// Count-only entries remain valid migration input even if the
-				// auxiliary cached-event map has already been removed.
-				ruma::events::receipt::ReceiptEvent {
-					content: ruma::events::receipt::ReceiptEventContent(
-						std::collections::BTreeMap::new(),
-					),
-					room_id: room_id.to_owned(),
-				}
-			};
+				};
 
-		let update_count = if let Some(legacy_update_map) = &legacy_update_map {
-			if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
-				conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
+			let update_count = if let Some(legacy_update_map) = &legacy_update_map {
+				if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
+					conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
+				} else {
+					0
+				}
 			} else {
 				0
+			};
+
+			let mut new_key = room_id.as_bytes().to_vec();
+			new_key.push(database::SEP);
+			new_key.extend_from_slice(user_id.as_bytes());
+
+			new_receipt_map.put(new_key, Json((count, event, update_count)));
+			total_migrated = total_migrated.saturating_add(1);
+
+			if total_migrated.is_multiple_of(5000) {
+				info!("Migrated {} private read receipts...", total_migrated);
 			}
-		} else {
-			0
-		};
-
-		let mut new_key = room_id.as_bytes().to_vec();
-		new_key.push(database::SEP);
-		new_key.extend_from_slice(user_id.as_bytes());
-
-		new_receipt_map.put(new_key, Json((count, event, update_count)));
-		total_migrated = total_migrated.saturating_add(1);
-
-		if total_migrated.is_multiple_of(5000) {
-			info!("Migrated {} private read receipts...", total_migrated);
 		}
-	}
+
+		(total_migrated, with_event, count_only, skipped)
+	};
 
 	info!(
 		"Successfully migrated {total_migrated} private read receipts ({with_event} with event, \

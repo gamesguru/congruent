@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
 	Err, Result, SyncMutex,
-	matrix::{event::Event, pdu::PduCount},
+	matrix::{
+		event::Event,
+		pdu::{PduCount, PduId, RawPduId},
+	},
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 };
 use database::{Json, Map};
@@ -29,6 +32,7 @@ pub(super) struct Data {
 
 struct Services {
 	globals: Dep<globals::Service>,
+	short: Dep<crate::rooms::short::Service>,
 	timeline: Dep<crate::rooms::timeline::Service>,
 	threads: Dep<crate::rooms::threads::Service>,
 }
@@ -48,6 +52,7 @@ impl Data {
 			readreceipt_update_mutex: MutexMap::new(),
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
+				short: args.depend::<crate::rooms::short::Service>("rooms::short"),
 				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
 				threads: args.depend::<crate::rooms::threads::Service>("rooms::threads"),
 			},
@@ -140,11 +145,46 @@ impl Data {
 			if let Ok((count, event, _update_count)) =
 				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
 			{
+				if event.content.0.is_empty() {
+					return self
+						.reconstruct_private_read_from_count(room_id, user_id, count)
+						.await;
+				}
+
 				return Ok(Some((count, event)));
 			}
 		}
 
 		Ok(None)
+	}
+
+	async fn reconstruct_private_read_from_count(
+		&self,
+		room_id: &RoomId,
+		user_id: &UserId,
+		count: u64,
+	) -> Result<Option<(u64, ReceiptEvent)>> {
+		let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+		let shorteventid = PduCount::Normal(count);
+		let pdu_id: RawPduId = PduId { shortroomid, shorteventid }.into();
+		let pdu = self.services.timeline.get_pdu_from_id(&pdu_id).await?;
+		let event_id = pdu.event_id;
+
+		let mut user_map = BTreeMap::new();
+		user_map.insert(user_id.to_owned(), Receipt {
+			thread: ReceiptThread::Unthreaded,
+			ts: None,
+		});
+
+		let mut receipt_map = BTreeMap::new();
+		receipt_map.insert(ReceiptType::ReadPrivate, user_map);
+		let mut content = BTreeMap::new();
+		content.insert(event_id, receipt_map);
+
+		Ok(Some((count, ReceiptEvent {
+			content: ruma::events::receipt::ReceiptEventContent(content),
+			room_id: room_id.to_owned(),
+		})))
 	}
 
 	pub(super) async fn readreceipt_update(

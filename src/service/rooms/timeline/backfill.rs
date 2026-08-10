@@ -462,20 +462,18 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 			| Ok(value) => match self
 				.services
 				.event_handler
-				// A remote /event fetch used by /event, /context and
-				// /timestamp_to_event must recover the predecessor chain like any
-				// other timeline ingress; otherwise the target event can be
-				// visible while its immediate history remains permanently absent
-				// from subsequent pagination.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, true, None)
+				// `/event`, `/context` and `/timestamp_to_event` fetch arbitrary
+				// historical events. Ingest them as outliers first, then
+				// materialize their predecessor chain into the backfilled
+				// timeline so they keep their historical position instead of
+				// becoming new forward timeline/extremity events.
+				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, None)
 				.boxed()
 				.await
 			{
 				| Ok(_) => {
-					// Timestamp lookup and /event retrieval need a timeline PDU,
-					// not merely a validated outlier. The timeline path above will
-					// usually persist one directly; keep this promotion as a safety
-					// net for paths that still only materialize an outlier.
+					self.materialize_remote_history(room_id, event_id).await?;
+
 					if self.get_pdu_id(event_id).await.is_err() {
 						self.promote_outlier(room_id, event_id).await?;
 					}
@@ -507,6 +505,50 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 	}
 
 	Err!("No servers could be used to fetch {} in {}.", room_id, event_id)
+}
+
+#[implement(super::Service)]
+async fn materialize_remote_history(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+	const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
+
+	self.materialize_remote_history_limited(room_id, event_id, MAX_REMOTE_HISTORY_DEPTH)
+		.await
+}
+
+#[implement(super::Service)]
+async fn materialize_remote_history_limited(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+	remaining_depth: usize,
+) -> Result<()> {
+	if self.get_pdu_id(event_id).await.is_ok() || remaining_depth == 0 {
+		return Ok(());
+	}
+
+	let pdu = self.get_pdu(event_id).await?;
+	for prev_id in pdu.prev_events() {
+		if self.get_pdu_id(prev_id).await.is_ok() {
+			continue;
+		}
+
+		if self.get_pdu(prev_id).await.is_err() {
+			let _ = Box::pin(self.get_remote_pdu(room_id, prev_id)).await;
+		} else {
+			Box::pin(self.materialize_remote_history_limited(
+				room_id,
+				prev_id,
+				remaining_depth.saturating_sub(1),
+			))
+			.await?;
+		}
+	}
+
+	if self.get_pdu_id(event_id).await.is_err() {
+		self.promote_outlier(room_id, event_id).await?;
+	}
+
+	Ok(())
 }
 
 /// TODO: Known gap — early state events (create, initial joins, power levels)
