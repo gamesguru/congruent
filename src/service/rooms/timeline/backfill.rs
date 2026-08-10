@@ -462,18 +462,21 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 			| Ok(value) => match self
 				.services
 				.event_handler
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, None)
+				// A remote /event fetch used by /event, /context and
+				// /timestamp_to_event must recover the predecessor chain like any
+				// other timeline ingress; otherwise the target event can be
+				// visible while its immediate history remains permanently absent
+				// from subsequent pagination.
+				.handle_incoming_pdu(backfill_server, room_id, event_id, value, true, None)
 				.boxed()
 				.await
 			{
 				| Ok(_) => {
 					// Timestamp lookup and /event retrieval need a timeline PDU,
-					// not merely the validated outlier left by handle_incoming_pdu.
-					// Promote it here so /context can resolve its PduId.
+					// not merely a validated outlier. The timeline path above will
+					// usually persist one directly; keep this promotion as a safety
+					// net for paths that still only materialize an outlier.
 					if self.get_pdu_id(event_id).await.is_err() {
-						// The event has already passed the outlier handler. Promote it
-						// directly; sorting a one-event map has no ancestor context and
-						// can legitimately produce no sortable IDs.
 						self.promote_outlier(room_id, event_id).await?;
 					}
 					debug!("Successfully backfilled {event_id} from {backfill_server}");
