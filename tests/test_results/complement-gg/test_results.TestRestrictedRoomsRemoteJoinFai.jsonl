@@ -1,2 +1,2 @@
-{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
-{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}
+{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
+{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}

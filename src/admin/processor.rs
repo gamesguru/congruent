@@ -34,7 +34,6 @@ type ParsedCommand<'a> = (AdminCommand, Vec<String>, Vec<&'a str>);
 #[must_use]
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
-#[must_use]
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
 	Box::pin(async move { handle_command(services, command).await })
 }
