@@ -500,10 +500,15 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 	info!("Starting private read receipt migration...");
 
 	let db = &services.db;
-	let legacy_count_map = db["roomuserid_privateread"].clone();
-	let legacy_event_map = db["roomuserid_privatereadevent"].clone();
-	let legacy_update_map = db["roomuserid_lastprivatereadupdate"].clone();
 	let new_receipt_map = db["roomuserid_privatereadreceipt"].clone();
+	let Ok(legacy_count_map) = database::Map::open(&db.db, "roomuserid_privateread") else {
+		info!("Legacy private read receipt maps not present; marking migration complete.");
+		db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
+		db.db.sort()?;
+		return Ok(());
+	};
+	let legacy_event_map = database::Map::open(&db.db, "roomuserid_privatereadevent").ok();
+	let legacy_update_map = database::Map::open(&db.db, "roomuserid_lastprivatereadupdate").ok();
 
 	let stream = legacy_count_map.raw_stream();
 	pin_mut!(stream);
@@ -541,19 +546,31 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 		legacy_key.extend_from_slice(user_id.as_bytes());
 
 		let event: ruma::events::receipt::ReceiptEvent =
-			if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
-				with_event = with_event.saturating_add(1);
-				serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+			if let Some(legacy_event_map) = &legacy_event_map {
+				if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
+					with_event = with_event.saturating_add(1);
+					serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+						ruma::events::receipt::ReceiptEvent {
+							content: ruma::events::receipt::ReceiptEventContent(
+								std::collections::BTreeMap::new(),
+							),
+							room_id: room_id.to_owned(),
+						}
+					})
+				} else {
+					count_only = count_only.saturating_add(1);
+					// No cached event -- store receipt with count only (no DB lookups)
 					ruma::events::receipt::ReceiptEvent {
 						content: ruma::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
 						room_id: room_id.to_owned(),
 					}
-				})
+				}
 			} else {
 				count_only = count_only.saturating_add(1);
-				// No cached event -- store receipt with count only (no DB lookups)
+				// Count-only entries remain valid migration input even if the
+				// auxiliary cached-event map has already been removed.
 				ruma::events::receipt::ReceiptEvent {
 					content: ruma::events::receipt::ReceiptEventContent(
 						std::collections::BTreeMap::new(),
@@ -562,8 +579,12 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 				}
 			};
 
-		let update_count = if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
-			conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
+		let update_count = if let Some(legacy_update_map) = &legacy_update_map {
+			if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
+				conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
+			} else {
+				0
+			}
 		} else {
 			0
 		};

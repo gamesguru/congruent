@@ -600,6 +600,55 @@ impl Service {
 		self.db.get_non_outlier_pdu_in_room(room_id, event_id).await
 	}
 
+	#[inline]
+	pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
+		self.services.outlier.get_pdu_outlier(event_id).await
+	}
+
+	#[inline]
+	pub fn clear_outlier_flag(&self, event_id: &EventId) {
+		self.services.outlier.clear_outlier_flag(event_id);
+	}
+
+	#[inline]
+	pub async fn add_pdu_outlier(
+		&self,
+		event_id: &EventId,
+		pdu: &CanonicalJsonObject,
+		room_id: Option<&RoomId>,
+	) {
+		self.services
+			.outlier
+			.add_pdu_outlier(event_id, pdu, room_id)
+			.await;
+	}
+
+	#[inline]
+	pub fn add_pdu_outlier_locked(
+		&self,
+		event_id: &EventId,
+		pdu: &CanonicalJsonObject,
+		room_id: Option<&RoomId>,
+		insert_lock: &InsertMutexGuard,
+	) {
+		self.services
+			.outlier
+			.add_pdu_outlier_locked(event_id, pdu, room_id, insert_lock);
+	}
+
+	#[inline]
+	pub async fn remove_outlier(&self, event_id: &EventId) {
+		self.services.outlier.remove_outlier(event_id).await;
+	}
+
+	#[inline]
+	pub fn room_outlier_stream<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+	) -> impl Stream<Item = (OwnedEventId, PduEvent)> + Send + 'a {
+		self.services.outlier.room_stream(room_id)
+	}
+
 	/// Checks if pdu exists directly in the timeline (non-outlier).
 	#[inline]
 	pub async fn non_outlier_pdu_exists(&self, event_id: &EventId) -> bool {

@@ -655,7 +655,7 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 		return Ok(());
 	}
 
-	let value = self.services.outlier.get_outlier_pdu_json(event_id).await?;
+	let value = self.get_outlier_pdu_json(event_id).await?;
 
 	let pdu: PduEvent = serde_json::from_value(
 		serde_json::to_value(&value).map_err(|e| err!(Database("Bad outlier JSON: {e:?}")))?,
@@ -704,7 +704,7 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
 	// Remove from outlier room index
-	self.services.outlier.clear_outlier_flag(event_id);
+	self.clear_outlier_flag(event_id);
 	self.services.pdu_metadata.clear_pdu_markers(event_id);
 
 	Ok(())
@@ -761,7 +761,7 @@ pub async fn promote_outliers_sorted(
 			continue;
 		}
 
-		let Ok(pdu) = self.services.outlier.get_pdu_outlier(event_id).await else {
+		let Ok(pdu) = self.get_pdu_outlier(event_id).await else {
 			continue;
 		};
 

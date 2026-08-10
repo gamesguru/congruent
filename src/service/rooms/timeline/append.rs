@@ -83,7 +83,7 @@ where
 	// appear in /sync or /messages. Store the state association (above) for
 	// DAG integrity, but do NOT append to the timeline sequence.
 	if soft_fail {
-		self.services.outlier.clear_outlier_flag(pdu.event_id());
+		self.clear_outlier_flag(pdu.event_id());
 		self.services
 			.pdu_metadata
 			.unmark_event_rejected(pdu.event_id());
@@ -109,7 +109,7 @@ where
 	// Clean up the outlier table entry now that this event is in the timeline.
 	// Without this, events upgraded via the federation path remain in both the
 	// timeline and outlier tables indefinitely (the "stuck" state bug).
-	self.services.outlier.clear_outlier_flag(pdu.event_id());
+	self.clear_outlier_flag(pdu.event_id());
 
 	// Clear any stale rejection flags now that the event is accepted into
 	// the timeline. Without this, events that were rejected during initial

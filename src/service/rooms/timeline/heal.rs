@@ -287,7 +287,7 @@ pub async fn heal_room(
 		self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 		// Clean up the outlier table entry if it exists.
-		self.services.outlier.remove_outlier(event_id).await;
+		self.remove_outlier(event_id).await;
 
 		inserted = inserted.saturating_add(1);
 

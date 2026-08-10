@@ -196,14 +196,6 @@ pub(super) static MAPS: &[Descriptor] = &[
 		name: "registrationtoken_info",
 		..descriptor::RANDOM_SMALL
 	},
-	// TODO: Legacy Conduit table, superseded by eventid_metadata.rejected
-	// and eventid_metadata.soft_failed fields. No service code references
-	// this CF. Remove in a future schema version bump.
-	Descriptor {
-		name: "rejectedeventids",
-		key_size_hint: Some(48),
-		..descriptor::RANDOM_SMALL
-	},
 	// Primary timeline index, keyed by stream order (monotonic server-local
 	// counter from globals.next_count()). Used by /sync, read receipts, and
 	// notification counting. Key: (shortroomid: u64, pdu_count: u64) -> event_id.
@@ -326,13 +318,6 @@ pub(super) static MAPS: &[Descriptor] = &[
 		val_size_hint: Some(8),
 		..descriptor::RANDOM_SMALL
 	},
-	// TODO: legacy, superseded by roomuserid_privatereadreceipt. No longer written;
-	// only read as a fallback in read_receipt/data.rs. Remove once a migration
-	// backfills roomuserid_privatereadreceipt from this map.
-	Descriptor {
-		name: "roomuserid_lastprivatereadupdate",
-		..descriptor::RANDOM_SMALL
-	},
 	Descriptor {
 		name: "roomuserid_leftcount",
 		val_size_hint: Some(8),
@@ -343,23 +328,8 @@ pub(super) static MAPS: &[Descriptor] = &[
 		val_size_hint: Some(0),
 		..descriptor::RANDOM_SMALL
 	},
-	// TODO: legacy, superseded by roomuserid_privatereadreceipt. No longer written;
-	// only read as a fallback in read_receipt/data.rs. Remove once a migration
-	// backfills roomuserid_privatereadreceipt from this map.
-	Descriptor {
-		name: "roomuserid_privateread",
-		..descriptor::RANDOM_SMALL
-	},
-	// TODO: legacy, superseded by roomuserid_privatereadreceipt. No longer written;
-	// only read as a fallback in read_receipt/data.rs. Remove once a migration
-	// backfills roomuserid_privatereadreceipt from this map.
-	Descriptor {
-		name: "roomuserid_privatereadevent",
-		..descriptor::RANDOM_SMALL
-	},
 	// Consolidated, thread-aware private read receipt map (MSC4102). Supersedes
-	// roomuserid_privateread, roomuserid_privatereadevent, and
-	// roomuserid_lastprivatereadupdate above.
+	// legacy private-read CFs when present.
 	Descriptor {
 		name: "roomuserid_privatereadreceipt",
 		val_size_hint: Some(1024),

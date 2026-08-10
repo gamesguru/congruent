@@ -893,7 +893,7 @@ where
 								| _ => None,
 							}
 						} else if let Ok(prev_pdu) =
-							self.services.outlier.get_pdu_outlier(first_prev).await
+							self.services.timeline.get_pdu_outlier(first_prev).await
 						{
 							let mut nested = prev_pdu.prev_events();
 							match (nested.next(), nested.next()) {

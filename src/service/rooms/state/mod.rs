@@ -47,7 +47,6 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_compressor: Dep<rooms::state_compressor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
-	outlier: Dep<rooms::outlier::Service>,
 }
 
 struct Data {
@@ -74,7 +73,6 @@ impl crate::Service for Service {
 				state_compressor: args
 					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
-				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
@@ -336,7 +334,7 @@ impl Service {
 			let pdu_json = self.services.timeline.get_pdu_json(&event_id).await;
 			if let Ok(pdu_json) = &pdu_json {
 				match insert_lock {
-					| Some(insert_lock) => self.services.outlier.add_pdu_outlier_locked(
+					| Some(insert_lock) => self.services.timeline.add_pdu_outlier_locked(
 						&event_id,
 						pdu_json,
 						Some(room_id),
@@ -344,7 +342,7 @@ impl Service {
 					),
 					| None =>
 						self.services
-							.outlier
+							.timeline
 							.add_pdu_outlier(&event_id, pdu_json, Some(room_id))
 							.await,
 				}
@@ -611,7 +609,7 @@ impl Service {
 
 		// Fallback: the create event might be an outlier (not in the state
 		// snapshot). Scan outliers for this room to find it.
-		let mut outlier_stream = Box::pin(self.services.outlier.room_stream(room_id));
+		let mut outlier_stream = Box::pin(self.services.timeline.room_outlier_stream(room_id));
 		while let Some((_eid, pdu)) = outlier_stream.next().await {
 			if pdu.kind == TimelineEventType::RoomCreate {
 				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
