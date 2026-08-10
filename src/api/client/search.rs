@@ -152,25 +152,20 @@ async fn category_room_events(
 		.collect()
 		.await;
 
-	let results: Vec<SearchResult> = results
-		.into_iter()
-		.map(at!(2))
-		.flatten()
-		.stream()
-		.then(|mut pdu| async {
-			if let Err(e) = services
-				.rooms
-				.pdu_metadata
-				.add_bundled_aggregations_to_pdu(sender_user, &mut pdu)
-				.await
-			{
-				debug_warn!("Failed to add bundled aggregations to search result: {e}");
-			}
-			pdu
-		})
-		.then(|pdu| build_search_result(services, sender_user, criteria, pdu))
-		.collect()
-		.await;
+	let mut search_results = Vec::new();
+	for mut pdu in results.into_iter().map(at!(2)).flatten() {
+		if let Err(e) = services
+			.rooms
+			.pdu_metadata
+			.add_bundled_aggregations_to_pdu(sender_user, &mut pdu)
+			.await
+		{
+			debug_warn!("Failed to add bundled aggregations to search result: {e}");
+		}
+
+		search_results.push(build_search_result(services, sender_user, criteria, pdu).await);
+	}
+	let results: Vec<SearchResult> = search_results;
 
 	let highlights = criteria
 		.search_term

@@ -199,22 +199,22 @@ async fn receipt_event_is_in_thread(
 	let mut current = event_id.to_owned();
 
 	for _ in 0..MAX_THREAD_HOPS {
-			if current == thread_root {
-				return event_id == thread_root;
-			}
+		if current == thread_root {
+			return event_id == thread_root;
+		}
 
-			let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
-				return false;
-			};
-			let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
-				return false;
-			};
+		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
+			return false;
+		};
+		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
+			return false;
+		};
 
-			if content.relates_to.rel_type == RelationType::Thread {
-				return content.relates_to.event_id == thread_root;
-			}
+		if content.relates_to.rel_type == RelationType::Thread {
+			return content.relates_to.event_id == thread_root;
+		}
 
-			current = content.relates_to.event_id;
+		current = content.relates_to.event_id;
 	}
 
 	false

@@ -1,10 +1,4 @@
-		if force_reindex {
-			let cleared_topo = self
-				.db
-				.clear_room_topo_index_into_batch(&mut batch, room_id)
-				.await?;
-			debug!("reorder_timeline: queued deletion of {cleared_topo} existing topo index rows");
-		}
+use std::collections::HashMap;
 
 use conduwuit_core::{
 	Err, Result, debug, info,
