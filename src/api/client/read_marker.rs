@@ -197,10 +197,11 @@ async fn receipt_event_is_in_thread(
 	thread_root: &EventId,
 ) -> bool {
 	let mut current = event_id.to_owned();
+	let mut hops = 0_usize;
 
 	for _ in 0..MAX_THREAD_HOPS {
 		if current == thread_root {
-			return event_id == thread_root;
+			return event_id == thread_root || hops > 1;
 		}
 
 		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
@@ -215,6 +216,7 @@ async fn receipt_event_is_in_thread(
 		}
 
 		current = content.relates_to.event_id;
+		hops = hops.saturating_add(1);
 	}
 
 	false

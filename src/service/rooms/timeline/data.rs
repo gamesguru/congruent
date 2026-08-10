@@ -1880,33 +1880,37 @@ impl Data {
 				.to_be_bytes()
 				.to_vec();
 
-			let topo_key = if until.is_legacy() {
-				// Legacy tokens don't have depth, fallback to the old buggy behavior just for
-				// them
-				self.count_to_id(
+			let current = self
+				.count_to_id(
 					room_id,
 					until.pdu_count.saturating_inc(Direction::Backward),
 					Direction::Backward,
 				)
-				.and_then(move |current| async move {
-					self.legacy_seek_topo_key(
-						room_id,
-						until.pdu_count,
-						&current,
-						Direction::Backward,
-					)
-					.await
-				})
+				.await?;
+
+			let token_topo_key = if until.is_legacy() {
+				None
+			} else {
+				let token_pdu_id = self.count_to_id(room_id, until.pdu_count, Direction::Backward).await?;
+				Some(Self::topo_pducount_key(&token_pdu_id, until.depth))
+			};
+
+			let topo_key = if until.is_legacy() {
+				// Legacy tokens don't have depth, fallback to the old buggy behavior just for
+				// them
+				self.legacy_seek_topo_key(
+					room_id,
+					until.pdu_count,
+					&current,
+					Direction::Backward,
+				)
 				.await?
 			} else {
-				let current = self
-					.count_to_id(
-						room_id,
-						until.pdu_count.saturating_inc(Direction::Backward),
-						Direction::Backward,
-					)
-					.await?;
-				Self::topo_pducount_key(&current, until.depth)
+				// Resume concrete topo tokens from the top of the room's topo index, then
+				// trim by the exact token boundary below. Seeking directly from
+				// `(until.depth, until.count)` misses older events which are inserted later
+				// (e.g. backfill gap-fillers) but sort *before* the stale token.
+				Self::topo_pducount_key(&current, u64::MAX)
 			};
 
 			conduwuit::info!(
@@ -1918,14 +1922,18 @@ impl Data {
 
 			// Legacy tokens are stream positions, not concrete topo cursors. When
 			// seeking them from u64::MAX depth, exclude events which arrived after the
-			// sync position. Concrete t<depth>_<count> tokens already encode the topo
-			// boundary and must not be stream-count capped, or valid older topo events
-			// with later stream positions can be skipped.
+			// sync position by count. Concrete t<depth>_<count> tokens instead use the
+			// exact topo boundary filter below, which still admits older events inserted
+			// later with higher stream positions.
 			let count_ceiling = until.is_legacy().then_some(until.pdu_count);
 
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
-				.rev_raw_stream_from(&topo_key);
+				.rev_raw_stream_from(&topo_key)
+				.ready_try_filter_map(move |(key, val)| match &token_topo_key {
+					| Some(token_topo_key) if key >= token_topo_key.as_slice() => Ok(None),
+					| _ => Ok(Some((key, val))),
+				});
 			Ok(self
 				.parse_topo_stream(raw_stream, prefix)
 				.ready_try_filter_map(move |item| match count_ceiling {
@@ -3076,6 +3084,39 @@ mod tests {
 		simulate_backward_pagination(room, topo_entries, limit, inflate_depth, Some(start_from))
 	}
 
+	/// Simulate backward pagination from a concrete topo token while filtering by
+	/// the token's exact topo boundary rather than by stream count alone.
+	fn simulate_backward_pagination_from_concrete_token(
+		room: u64,
+		topo_entries: &[(String, u64, i64)],
+		limit: usize,
+		start_from: (u64, i64),
+	) -> Vec<Vec<String>> {
+		let mut keyed: Vec<(Vec<u8>, String)> = topo_entries
+			.iter()
+			.map(|(id, depth, count)| {
+				let key = Data::topo_pducount_key(&make_pdu_id(room, *count), *depth);
+				(key, id.clone())
+			})
+			.collect();
+		keyed.sort_by(|a, b| b.0.cmp(&a.0));
+
+		let token_key = Data::topo_pducount_key(&make_pdu_id(room, start_from.1), start_from.0);
+		let mut pages = Vec::new();
+		let mut remaining: Vec<String> = keyed
+			.into_iter()
+			.filter(|(key, _)| *key < token_key)
+			.map(|(_, id)| id)
+			.collect();
+
+		while !remaining.is_empty() {
+			let split_at = remaining.len().min(limit);
+			pages.push(remaining.drain(..split_at).collect());
+		}
+
+		pages
+	}
+
 	/// Regression test for TestNetworkPartitionOrdering.
 	///
 	/// Models the real complement scenario:
@@ -3117,6 +3158,37 @@ mod tests {
 
 		let violations = verify_pagination(&events_map, &pages);
 		assert!(violations.is_empty(), "pagination must have no violations, got: {violations:?}");
+	}
+
+	/// A stale concrete topo token must still discover older events which arrive
+	/// later via backfill. Count-only filtering would wrongly drop `MISSING`
+	/// here because it arrived after the token, even though it sorts before the
+	/// token in topo order.
+	#[test]
+	fn concrete_backward_token_includes_late_inserted_older_event() {
+		let topo_entries = vec![
+			("CREATE".into(), 1_u64, -3_i64),
+			("JOIN".into(), 2, -2),
+			("POWER".into(), 3, -1),
+			("M0".into(), 4, 10),
+			("M1".into(), 5, 11),
+			("MISSING".into(), 6, 99),
+			("M2".into(), 7, 12),
+			("M3".into(), 8, 13),
+		];
+
+		let pages = simulate_backward_pagination_from_concrete_token(1, &topo_entries, 10, (7, 12));
+		let all_events: Vec<String> = pages.into_iter().flatten().collect();
+
+		assert!(
+			all_events.contains(&"MISSING".to_owned()),
+			"late-inserted older event must still be reachable from a stale concrete token, got \
+			 {all_events:?}"
+		);
+		assert!(
+			!all_events.contains(&"M2".to_owned()) && !all_events.contains(&"M3".to_owned()),
+			"events at or after the concrete token must remain excluded, got {all_events:?}"
+		);
 	}
 
 	/// max() seek recovers remote branch events in the partition scenario,

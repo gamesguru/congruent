@@ -91,6 +91,12 @@ pub(crate) async fn delete_alias_route(
 	// content and the write of its replacement, so a concurrent canonical-alias
 	// update can't be clobbered by (or clobber) this deletion.
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	let can_change_canonical_alias = services
+		.rooms
+		.alias
+		.user_can_change_canonical_alias(&room_id, sender_user)
+		.await
+		.unwrap_or(false);
 
 	let current_canonical_alias = services
 		.rooms
@@ -113,7 +119,7 @@ pub(crate) async fn delete_alias_route(
 			.collect();
 		let removes_alt_alias = retained_alt_aliases.len() != content.alt_aliases.len();
 
-		if clears_canonical_alias || removes_alt_alias {
+		if can_change_canonical_alias && (clears_canonical_alias || removes_alt_alias) {
 			if clears_canonical_alias {
 				content.alias = None;
 			}
