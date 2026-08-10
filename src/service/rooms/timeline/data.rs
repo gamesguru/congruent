@@ -1413,7 +1413,10 @@ impl Data {
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
-			pdu_count: Some(pdu_id.pdu_count().into_unsigned()),
+			pdu_count: match pdu_id.pdu_count() {
+				| PduCount::Normal(x) => Some(x),
+				| PduCount::Backfilled(_) => None,
+			},
 			soft_fail_reason: String::new(),
 			rejection_reason: String::new(),
 		};
@@ -1494,7 +1497,10 @@ impl Data {
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 				deprecated_local_topo_depth: pdu.depth().into(),
-				pdu_count: Some(pdu_id.pdu_count().into_unsigned()),
+				pdu_count: match pdu_id.pdu_count() {
+					| PduCount::Normal(x) => Some(x),
+					| PduCount::Backfilled(_) => None,
+				},
 				soft_fail_reason: String::new(),
 				rejection_reason: String::new(),
 			};
