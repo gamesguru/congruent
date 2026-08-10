@@ -1891,20 +1891,17 @@ impl Data {
 			let token_topo_key = if until.is_legacy() {
 				None
 			} else {
-				let token_pdu_id = self.count_to_id(room_id, until.pdu_count, Direction::Backward).await?;
+				let token_pdu_id = self
+					.count_to_id(room_id, until.pdu_count, Direction::Backward)
+					.await?;
 				Some(Self::topo_pducount_key(&token_pdu_id, until.depth))
 			};
 
 			let topo_key = if until.is_legacy() {
 				// Legacy tokens don't have depth, fallback to the old buggy behavior just for
 				// them
-				self.legacy_seek_topo_key(
-					room_id,
-					until.pdu_count,
-					&current,
-					Direction::Backward,
-				)
-				.await?
+				self.legacy_seek_topo_key(room_id, until.pdu_count, &current, Direction::Backward)
+					.await?
 			} else {
 				// Resume concrete topo tokens from the top of the room's topo index, then
 				// trim by the exact token boundary below. Seeking directly from
@@ -3084,8 +3081,8 @@ mod tests {
 		simulate_backward_pagination(room, topo_entries, limit, inflate_depth, Some(start_from))
 	}
 
-	/// Simulate backward pagination from a concrete topo token while filtering by
-	/// the token's exact topo boundary rather than by stream count alone.
+	/// Simulate backward pagination from a concrete topo token while filtering
+	/// by the token's exact topo boundary rather than by stream count alone.
 	fn simulate_backward_pagination_from_concrete_token(
 		room: u64,
 		topo_entries: &[(String, u64, i64)],
@@ -3160,10 +3157,10 @@ mod tests {
 		assert!(violations.is_empty(), "pagination must have no violations, got: {violations:?}");
 	}
 
-	/// A stale concrete topo token must still discover older events which arrive
-	/// later via backfill. Count-only filtering would wrongly drop `MISSING`
-	/// here because it arrived after the token, even though it sorts before the
-	/// token in topo order.
+	/// A stale concrete topo token must still discover older events which
+	/// arrive later via backfill. Count-only filtering would wrongly drop
+	/// `MISSING` here because it arrived after the token, even though it sorts
+	/// before the token in topo order.
 	#[test]
 	fn concrete_backward_token_includes_late_inserted_older_event() {
 		let topo_entries = vec![
@@ -3177,7 +3174,8 @@ mod tests {
 			("M3".into(), 8, 13),
 		];
 
-		let pages = simulate_backward_pagination_from_concrete_token(1, &topo_entries, 10, (7, 12));
+		let pages =
+			simulate_backward_pagination_from_concrete_token(1, &topo_entries, 10, (7, 12));
 		let all_events: Vec<String> = pages.into_iter().flatten().collect();
 
 		assert!(

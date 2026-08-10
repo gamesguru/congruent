@@ -950,17 +950,22 @@ where
 					// authorize against current room state either: the unknown
 					// edge could still anchor the event to a different auth
 					// context.
-					let any_prev_unknown = futures::stream::iter(incoming_pdu.prev_events())
-						.any(|prev_id| async move {
-							self.services.timeline.get_pdu_id(prev_id).await.is_err()
-								&& self
-									.services
-									.outlier
-									.get_pdu_outlier(prev_id)
-									.await
-									.is_err()
-						})
-						.await;
+					let unknown_prev_ids: Vec<_> =
+						futures::stream::iter(incoming_pdu.prev_events())
+							.filter_map(|prev_id| async move {
+								(self.services.timeline.get_pdu_id(prev_id).await.is_err()
+									&& self
+										.services
+										.outlier
+										.get_pdu_outlier(prev_id)
+										.await
+										.is_err())
+								.then(|| prev_id.to_owned())
+							})
+							.collect()
+							.await;
+
+					let any_prev_unknown = !unknown_prev_ids.is_empty();
 
 					if any_prev_unknown {
 						// Last resort before rejecting: make a single,
@@ -987,7 +992,7 @@ where
 						// prev_event, bounded by prev_events().count()
 						// (already capped at 20 in parse_incoming_pdu), fired
 						// concurrently, not a backfill.
-						futures::stream::iter(incoming_pdu.prev_events())
+						futures::stream::iter(unknown_prev_ids.iter())
 							.for_each_concurrent(4, |prev_id| async move {
 								debug!(
 									event_id = %incoming_pdu.event_id,
@@ -1002,7 +1007,7 @@ where
 									.send_federation_request(
 										origin,
 										ruma::api::federation::event::get_event::v1::Request::new(
-											prev_id.to_owned(),
+											prev_id.clone(),
 											None,
 										),
 									)
@@ -1018,7 +1023,7 @@ where
 								else {
 									return;
 								};
-								if fetched_id != *prev_id {
+								if fetched_id != **prev_id {
 									return;
 								}
 

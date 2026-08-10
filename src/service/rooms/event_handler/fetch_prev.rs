@@ -250,12 +250,13 @@ where
 						}
 					}
 
-					val.insert(
+					let mut parse_val = val.clone();
+					parse_val.insert(
 						"event_id".to_owned(),
 						CanonicalJsonValue::String(eid.as_str().to_owned()),
 					);
 
-					if let Ok(pdu) = PduEvent::from_id_val(&eid, val.clone(), Some(room_id)) {
+					if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
 						if check_room_id(room_id, &pdu).is_ok() {
 							return Some((eid, (pdu, val)));
 						}
