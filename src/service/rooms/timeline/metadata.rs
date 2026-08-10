@@ -45,7 +45,10 @@ impl EventMetadata {
 	pub fn matches_timeline_position(&self, depth: u64, pdu_count: PduCount) -> bool {
 		!self.is_outlier
 			&& self.deprecated_local_topo_depth == depth
-			&& self.pdu_count == Some(pdu_count.into_unsigned())
+			&& match pdu_count {
+				| PduCount::Normal(_) => self.pdu_count == Some(pdu_count.into_unsigned()),
+				| PduCount::Backfilled(_) => self.pdu_count.is_none(),
+			}
 	}
 
 	/// Deserialize from bincode bytes, falling back to the old 8-field
