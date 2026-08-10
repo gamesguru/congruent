@@ -230,86 +230,38 @@ where
 		}
 	}
 
-	let mut verified_events: HashMap<OwnedEventId, (PduEvent, ruma::CanonicalJsonObject)> =
+	let mut candidate_events: HashMap<OwnedEventId, (PduEvent, ruma::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
 			.broad_filter_map({
-				let room_version_id = room_version_id.clone();
-				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| {
-					let room_version_id = room_version_id.clone();
-					async move {
-						let stashed_unsigned = val.remove("unsigned");
-
-						let passes_sig = if self
-							.services
-							.server
-							.config
-							.bypassed_signature_events
-							.contains(&eid)
-						{
-							true
-						} else {
-							matches!(
-								self.services
-									.server_keys
-									.verify_event_at(
-										&val,
-										Some(&room_version_id),
-										"fetch_prev::broad_filter_map",
-									)
-									.await,
-								Ok(ruma::signatures::Verified::All)
-							)
-						};
-
-						if passes_sig {
-							if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) =
-								stashed_unsigned
-							{
-								unsigned_obj.remove("prev_content");
-								unsigned_obj.remove("prev_sender");
-								unsigned_obj.remove("replaces_state");
-								if !unsigned_obj.is_empty() {
-									val.insert(
-										"unsigned".to_owned(),
-										CanonicalJsonValue::Object(unsigned_obj),
-									);
-								}
-							}
-
+				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
+					if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) =
+						val.remove("unsigned")
+					{
+						unsigned_obj.remove("prev_content");
+						unsigned_obj.remove("prev_sender");
+						unsigned_obj.remove("replaces_state");
+						if !unsigned_obj.is_empty() {
 							val.insert(
-								"event_id".to_owned(),
-								CanonicalJsonValue::String(eid.as_str().to_owned()),
+								"unsigned".to_owned(),
+								CanonicalJsonValue::Object(unsigned_obj),
 							);
-
-							if let Ok(pdu) =
-								PduEvent::from_id_val(&eid, val.clone(), Some(room_id))
-							{
-								if check_room_id(room_id, &pdu).is_ok() {
-									return Some((eid, (pdu, val)));
-								}
-							}
-						} else {
-							self.services
-								.pdu_metadata
-								.mark_event_rejected(
-									&eid,
-									crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
-										.tag(),
-								)
-								.await;
-							val.insert(
-								"event_id".to_owned(),
-								CanonicalJsonValue::String(eid.as_str().to_owned()),
-							);
-							self.services
-								.outlier
-								.add_pdu_outlier(&eid, &val, Some(room_id))
-								.await;
 						}
-						None
 					}
+
+					val.insert(
+						"event_id".to_owned(),
+						CanonicalJsonValue::String(eid.as_str().to_owned()),
+					);
+
+					if let Ok(pdu) = PduEvent::from_id_val(&eid, val.clone(), Some(room_id)) {
+						if check_room_id(room_id, &pdu).is_ok() {
+							return Some((eid, (pdu, val)));
+						}
+					}
+
+					None
 				}
 			})
 			.collect()
@@ -317,14 +269,14 @@ where
 
 	let mut graph = HashMap::new();
 	let mut entries = HashMap::new();
-	for (eid, (pdu, _)) in &verified_events {
+	for (eid, (pdu, _)) in &candidate_events {
 		graph.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
 		entries
 			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 	let state_ids_anchor = sorted_eids.last().and_then(|prev_id| {
-		let (pdu, _) = verified_events.get(prev_id)?;
+		let (pdu, _) = candidate_events.get(prev_id)?;
 		let mut prev_events = pdu.prev_events();
 		let first_prev = prev_events.next()?.to_owned();
 		prev_events.next().is_none().then_some(first_prev)
@@ -337,7 +289,7 @@ where
 	// We just iterate in any order. The topological sorting here is for the
 	// timeline!
 	for eid in &sorted_eids {
-		if let Some((_, val)) = verified_events.remove(eid) {
+		if let Some((_, val)) = candidate_events.remove(eid) {
 			if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
 				origin,
 				Some(create_event),
@@ -345,7 +297,7 @@ where
 				room_id,
 				val,
 				false, // auth_events_known
-				true,  // skip_sig_verify
+				false, // skip_sig_verify
 				Some(&room_version_id),
 			))
 			.await

@@ -943,17 +943,15 @@ where
 					state_at_event = Some(StateAtEvent::Resolved(fetched_state));
 				},
 				| Ok(None) | Err(_) => {
-					// Check if prev_events are completely unknown — not in the
-					// timeline AND not even stored as outliers. If they are, we
-					// cannot determine the correct state-at-event. Mark as
-					// rejected so the unreject path can re-evaluate later.
-					//
-					// Events whose prev_events reference KNOWN events (even
-					// rejected outliers) can safely fall through to the current
-					// room state fallback — the auth check will still reject
-					// invalid events.
-					let all_prevs_unknown = futures::stream::iter(incoming_pdu.prev_events())
-						.all(|prev_id| async move {
+					// If any predecessor is still completely unknown — not in
+					// the timeline and not even persisted as an outlier — we
+					// still do not know the event's real state-at-event. A
+					// mixed known/unknown predecessor set is not safe to
+					// authorize against current room state either: the unknown
+					// edge could still anchor the event to a different auth
+					// context.
+					let any_prev_unknown = futures::stream::iter(incoming_pdu.prev_events())
+						.any(|prev_id| async move {
 							self.services.timeline.get_pdu_id(prev_id).await.is_err()
 								&& self
 									.services
@@ -964,7 +962,7 @@ where
 						})
 						.await;
 
-					if all_prevs_unknown {
+					if any_prev_unknown {
 						// Last resort before rejecting: make a single,
 						// non-recursive attempt to materialize each prev_event
 						// via GET /event/{id}. /state_ids just failed, so we
@@ -1080,8 +1078,8 @@ where
 								)
 								.await;
 							return Err!(Request(Forbidden(
-								"Cannot determine state: all prev_events unknown and /state_ids \
-								 fetch failed"
+								"Cannot determine state: prev_events remain unknown after \
+								 /state_ids fetch failed"
 							)));
 						}
 					}
