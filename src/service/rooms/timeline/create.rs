@@ -13,7 +13,7 @@ use conduwuit_core::{
 };
 use futures::{StreamExt, TryStreamExt, future};
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId,
 	RoomVersionId, UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	uint,
@@ -403,16 +403,7 @@ pub fn hash_sign_and_finalize(
 	let mut pdu_json = utils::to_canonical_object(&*pdu).map_err(|e| {
 		err!(Request(BadJson(warn!("Failed to convert PDU to canonical JSON: {e}"))))
 	})?;
-	let uses_server_assigned_event_ids =
-		matches!(room_version_id, &RoomVersionId::V1 | &RoomVersionId::V2);
-
-	if uses_server_assigned_event_ids {
-		pdu.event_id = EventId::new(self.services.globals.server_name());
-		pdu_json
-			.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
-	} else {
-		pdu_json.remove("event_id");
-	}
+	pdu_json.remove("event_id");
 
 	// Sign
 	if let Err(e) = self
@@ -428,11 +419,8 @@ pub fn hash_sign_and_finalize(
 		};
 	}
 
-	if !uses_server_assigned_event_ids {
-		pdu.event_id = gen_event_id(&pdu_json, room_version_id)?;
-		pdu_json
-			.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
-	}
+	pdu.event_id = gen_event_id(&pdu_json, room_version_id)?;
+	pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
 
 	// Rehydrate the persisted event from the finalized JSON so the stored PDU
 	// carries the same hashes/signatures as the canonical representation.
