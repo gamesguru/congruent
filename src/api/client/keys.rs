@@ -568,19 +568,22 @@ where
 	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
-				for (user_id, devices) in &response.device_keys {
+				let mut filtered_device_keys = BTreeMap::new();
+				for (user_id, devices) in response.device_keys {
 					if user_id.server_name().as_str() != server.as_str()
 						|| !requested_users.contains(user_id.as_str())
 					{
 						continue;
 					}
 
-					for (device_id, device_keys) in devices {
+					for (device_id, device_keys) in &devices {
 						services
 							.users
-							.cache_remote_device_keys(user_id, device_id, device_keys)
+							.cache_remote_device_keys(&user_id, device_id, device_keys)
 							.await;
 					}
+
+					filtered_device_keys.insert(user_id, devices);
 				}
 
 				for (user, master_key) in response.master_keys {
@@ -644,7 +647,7 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
-				device_keys.extend(response.device_keys);
+				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
 				failures.insert(server.to_string(), json!({ "error": e.to_string() }));

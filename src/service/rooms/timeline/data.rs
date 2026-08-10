@@ -193,6 +193,10 @@ impl Data {
 		Ok(count)
 	}
 
+	pub(super) fn apply_batch(&self, batch: database::Batch<'_>) {
+		self.eventid_pdu.apply_batch(batch);
+	}
+
 	pub(super) async fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
 		let mut prevs = HashSet::new();
 		if let Ok((pdu, _)) = self.get_from_eventid_pdu(event_id).await {
@@ -678,6 +682,34 @@ impl Data {
 		}
 
 		self.eventid_metadata.remove(event_id.as_bytes());
+	}
+
+	/// Batched equivalent of `remove_timeline_pointers`. This is for demotion
+	/// paths that will atomically rewrite the same event as an outlier in the
+	/// same RocksDB commit, so a crash cannot leave the JSON reachable through
+	/// neither the timeline indices nor outlier metadata.
+	pub(super) async fn remove_timeline_pointers_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		event_id: &EventId,
+	) {
+		if let Ok(pduid) = self.get_pdu_id(event_id).await {
+			let depth = self
+				.eventid_metadata
+				.get_blocking(event_id.as_bytes())
+				.ok()
+				.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
+				.map(|meta| meta.depth.into());
+			self.remove_stream_and_topo_pducount_from_batch(
+				batch,
+				&pduid,
+				event_id.as_bytes(),
+				depth,
+			);
+		}
+
+		self.eventid_metadata
+			.batch_delete(batch, event_id.as_bytes());
 	}
 
 	/// Rebuild the topological index entry for a single event without

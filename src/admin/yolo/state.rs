@@ -9,6 +9,7 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 	warn,
 };
+use conduwuit_database::Batch;
 use futures::{StreamExt, pin_mut};
 use ruma::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId,
@@ -1210,18 +1211,19 @@ pub(super) async fn audit_membership(
 					if let Ok(pdu_json) =
 						self.services.rooms.timeline.get_pdu_json(&event_id).await
 					{
+						let mut batch = Batch::new();
 						self.services
 							.rooms
 							.timeline
-							.remove_timeline_pointers(&event_id)
+							.remove_timeline_pointers_batch(&mut batch, &event_id)
 							.await;
-
-						self.services.rooms.outlier.add_pdu_outlier_locked(
+						self.services.rooms.outlier.add_pdu_outlier_batch(
+							&mut batch,
 							&event_id,
 							&pdu_json,
 							Some(&room_id),
-							&insert_lock,
 						);
+						self.services.rooms.timeline.apply_batch(batch);
 					} else {
 						// No PDU JSON to demote to; fall back to the old
 						// delete-everything behavior for this unrecoverable event.

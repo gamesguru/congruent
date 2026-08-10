@@ -473,6 +473,20 @@ impl Service {
 	}
 
 	#[inline]
+	pub async fn remove_timeline_pointers_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		event_id: &EventId,
+	) {
+		self.db
+			.remove_timeline_pointers_batch(batch, event_id)
+			.await;
+	}
+
+	#[inline]
+	pub fn apply_batch(&self, batch: database::Batch<'_>) { self.db.apply_batch(batch); }
+
+	#[inline]
 	pub async fn drop_duplicate_pdu(&self, pdu_id: &RawPduId) {
 		self.db.drop_duplicate_pdu(pdu_id);
 	}

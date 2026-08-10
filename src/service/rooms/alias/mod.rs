@@ -116,6 +116,41 @@ impl Service {
 		Ok(())
 	}
 
+	pub async fn user_can_change_canonical_alias(
+		&self,
+		room_id: &RoomId,
+		user_id: &UserId,
+	) -> Result<bool> {
+		if let Ok(power_levels) = self
+			.services
+			.state_accessor
+			.room_state_get_content::<RoomPowerLevelsEventContent>(
+				room_id,
+				&StateEventType::RoomPowerLevels,
+				"",
+			)
+			.map_ok(RoomPowerLevels::from)
+			.await
+		{
+			return Ok(
+				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
+			);
+		}
+
+		// If there is no power levels event, only the room creator can change
+		// canonical aliases.
+		if let Ok(event) = self
+			.services
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomCreate, "")
+			.await
+		{
+			return Ok(event.sender() == user_id);
+		}
+
+		Err!(Database("Room has no m.room.create event"))
+	}
+
 	#[tracing::instrument(skip(self))]
 	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
 		self.ensure_user_can_remove_alias(alias, user_id).await?;
@@ -258,35 +293,8 @@ impl Service {
 			return Ok(true);
 		}
 
-		// Checking whether the user is able to change canonical aliases of the room
-		if let Ok(power_levels) = self
-			.services
-			.state_accessor
-			.room_state_get_content::<RoomPowerLevelsEventContent>(
-				&room_id,
-				&StateEventType::RoomPowerLevels,
-				"",
-			)
-			.map_ok(RoomPowerLevels::from)
+		self.user_can_change_canonical_alias(&room_id, user_id)
 			.await
-		{
-			return Ok(
-				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
-			);
-		}
-
-		// If there is no power levels event, only the room creator can change
-		// canonical aliases
-		if let Ok(event) = self
-			.services
-			.state_accessor
-			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-			.await
-		{
-			return Ok(event.sender() == user_id);
-		}
-
-		Err!(Database("Room has no m.room.create event"))
 	}
 
 	async fn who_created_alias(&self, alias: &RoomAliasId) -> Result<OwnedUserId> {
