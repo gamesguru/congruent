@@ -745,7 +745,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	Ok(())
 }
 
-const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v3";
+const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v4";
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
 async fn populate_topological_index(services: &Services) -> Result<()> {

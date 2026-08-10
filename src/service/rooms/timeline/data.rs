@@ -1390,7 +1390,6 @@ impl Data {
 			.batch_put(batch, pdu_id, event_id_bytes);
 
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
-		conduwuit::info!(target: "backfill_debug", ?pdu_id, %event_id, depth = ?pdu.depth(), topo_key = ?topo_key, "prepend_backfill_pdu_batch: writing topo key");
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
@@ -2130,11 +2129,9 @@ impl Data {
 					return Ok(None);
 				};
 				if !metadata.matches_timeline_position(depth, pdu_count) {
-					conduwuit::info!(target: "backfill_debug", ?pdu_id, depth, ?pdu_count, meta_depth = metadata.deprecated_local_topo_depth, meta_pdu_count = ?metadata.pdu_count, "parse_topo_stream: skipping due to mismatch");
 					return Ok(None);
 				}
 
-				conduwuit::info!(target: "backfill_debug", ?pdu_id, depth, ?pdu_count, "parse_topo_stream: matched and returning event");
 				Ok(Some((TopoToken { depth, pdu_count }, pdu)))
 			})
 	}
