@@ -336,17 +336,8 @@ pub(crate) async fn get_room_dag_route(
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
-	// Check if we can serve from cache
 	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
 		== ruma::events::room::join_rules::JoinRule::Public;
-
-	if is_public {
-		if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
-			if ts.elapsed() < Duration::from_secs(2) {
-				return Ok(axum::Json(cached_events.clone()));
-			}
-		}
-	}
 
 	if !is_public {
 		// Extract token for private rooms
@@ -372,6 +363,12 @@ pub(crate) async fn get_room_dag_route(
 			return Err!(Request(Forbidden(
 				"You must be a server admin to view this private room's DAG."
 			)));
+		}
+	}
+
+	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
+		if ts.elapsed() < Duration::from_secs(2) {
+			return Ok(axum::Json(cached_events.clone()));
 		}
 	}
 
