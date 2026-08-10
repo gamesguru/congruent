@@ -14,6 +14,7 @@ use conduwuit::{
 use database::Database;
 
 /// Abstract interface for a Service
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub(crate) trait Service: Any + Send + Sync {
 	/// Implement the construction of the service instance. Services are
