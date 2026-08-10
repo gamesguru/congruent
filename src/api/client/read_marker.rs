@@ -201,7 +201,9 @@ async fn receipt_event_is_in_thread(
 
 	for _ in 0..MAX_THREAD_HOPS {
 		if current == thread_root {
-			return event_id == thread_root;
+			// Direct receipts on the submitted root are valid, and we also accept
+			// relation chains that reach the root via an intermediate event.
+			return event_id == thread_root || hops > 1;
 		}
 
 		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
