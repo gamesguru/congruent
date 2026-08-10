@@ -295,7 +295,7 @@ async fn load_timeline(
 			limited = true;
 
 			// The chronological edge has shifted; point prev_batch to the new front
-			prev_batch = pdus.front().map(|(count, _)| *count);
+			prev_batch = pdus.iter().map(|(count, _)| *count).min();
 		}
 	}
 

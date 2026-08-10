@@ -193,7 +193,6 @@ fn add_pdu_outlier_inner(
 	let mut batch = database::Batch::new();
 	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
 	self.db.eventid_pdu.apply_batch(batch);
-	self.db.eventid_pdu.wake(event_id.as_bytes());
 }
 
 /// Determine the room a PDU belongs to, mirroring the priority order used in
