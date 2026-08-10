@@ -1076,7 +1076,7 @@ where
 								.pdu_metadata
 								.mark_event_rejected(
 									incoming_pdu.event_id(),
-									RejectionCode::AllPrevEventsUnknownStateIdsFailed.tag(),
+									RejectionCode::PrevEventUnknownStateIdsFailed.tag(),
 								)
 								.await;
 							return Err!(Request(Forbidden(

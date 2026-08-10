@@ -84,11 +84,12 @@ pub enum RejectionCode {
 	/// canonical-JSON validation. Retryable — a different server, or a
 	/// retry of the same server, may return well-formed data.
 	StructurallyInvalidInGetMissingEvents,
-	/// All of this event's prev_events were unknown and the `/state_ids`
-	/// fetch used to recover state also failed. Retryable — a subsequent
+	/// At least one of this event's prev_events was still unknown after the
+	/// `/state_ids` fetch used to recover state (and a follow-up single-hop
+	/// `/event` fetch) both failed to resolve it. Retryable — a subsequent
 	/// attempt (e.g. once a sibling event fills in the gap, or federation
 	/// recovers) may succeed where this one didn't.
-	AllPrevEventsUnknownStateIdsFailed,
+	PrevEventUnknownStateIdsFailed,
 	/// `/state_ids` was retried and auth events were still missing
 	/// afterward. Retryable for the same reason as the two above.
 	MissingAuthEventsAfterStateIdsRetry,
@@ -111,8 +112,7 @@ impl RejectionCode {
 			| Self::AuthCheckFailed => "auth_check_failed",
 			| Self::StructurallyInvalidInGetMissingEvents =>
 				"structurally_invalid_in_get_missing_events",
-			| Self::AllPrevEventsUnknownStateIdsFailed =>
-				"all_prev_events_unknown_state_ids_failed",
+			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
 			| Self::MissingAuthEventsAfterStateIdsRetry =>
 				"missing_auth_events_after_state_ids_retry",
 		}
@@ -127,7 +127,7 @@ impl RejectionCode {
 			self,
 			Self::MissingAuthEvent
 				| Self::StructurallyInvalidInGetMissingEvents
-				| Self::AllPrevEventsUnknownStateIdsFailed
+				| Self::PrevEventUnknownStateIdsFailed
 				| Self::MissingAuthEventsAfterStateIdsRetry
 		)
 	}
@@ -159,7 +159,7 @@ impl RejectionCode {
 			Self::MissingCreateEvent,
 			Self::AuthCheckFailed,
 			Self::StructurallyInvalidInGetMissingEvents,
-			Self::AllPrevEventsUnknownStateIdsFailed,
+			Self::PrevEventUnknownStateIdsFailed,
 			Self::MissingAuthEventsAfterStateIdsRetry,
 		]
 		.into_iter()
