@@ -165,6 +165,7 @@ impl Service {
 		.await
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	async fn force_state_inner(
 		&self,
 		room_id: &RoomId,
