@@ -130,6 +130,15 @@ pub(crate) async fn get_message_events_route(
 		.unwrap_or(LIMIT_DEFAULT)
 		.min(LIMIT_MAX);
 
+	if limit == 0 {
+		return Ok(get_message_events::v3::Response {
+			start: from.to_string(),
+			end: None,
+			chunk: Vec::new(),
+			state: Vec::new(),
+		});
+	}
+
 	info!(
 		"/messages: room={room_id} dir={:?} from={from} to={to:?} limit={limit}",
 		body.dir

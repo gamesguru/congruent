@@ -269,8 +269,13 @@ where
 		.user
 		.reset_notification_counts(pdu.sender(), room_id);
 
-	let (pdu_id, pdu_count, count) = if let Some((existing_id, existing_count)) = existing_pdu {
-		(existing_id, existing_count, existing_count.into_unsigned())
+	let (pdu_id, pdu_count, private_read_count) = if let Some((existing_id, existing_count)) =
+		existing_pdu
+	{
+		(existing_id, existing_count, match existing_count {
+			| PduCount::Normal(count) => Some(count),
+			| PduCount::Backfilled(_) => None,
+		})
 	} else {
 		let count = self.services.globals.next_count()?;
 		let pdu_count = PduCount::Normal(count);
@@ -286,7 +291,7 @@ where
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
 
-		(pdu_id, pdu_count, count)
+		(pdu_id, pdu_count, Some(count))
 	};
 	drop(cork);
 
@@ -359,9 +364,14 @@ where
 	};
 
 	// Wake sync only after the event is visible in the room timeline.
-	self.services
-		.read_receipt
-		.private_read_set(room_id, pdu.sender(), count, &receipt_event)?;
+	if let Some(count) = private_read_count {
+		self.services.read_receipt.private_read_set(
+			room_id,
+			pdu.sender(),
+			count,
+			&receipt_event,
+		)?;
+	}
 
 	drop(insert_lock);
 

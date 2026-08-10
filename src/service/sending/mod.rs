@@ -343,6 +343,7 @@ impl Service {
 		servers: Vec<OwnedServerName>,
 		pdu_id: &RawPduId,
 		timeout: Duration,
+		timeout_message: &'static str,
 	) -> Result<()> {
 		if servers.is_empty() {
 			return Ok(());
@@ -377,9 +378,7 @@ impl Service {
 
 			let remaining = timeout.saturating_sub(started_at.elapsed());
 			if remaining.is_zero() {
-				return Err(err!(Request(Unknown(
-					"Timed out waiting for outbound federation to deliver join event."
-				))));
+				return Err(err!(Request(Unknown("{timeout_message}"))));
 			}
 
 			let mut watchers = futures::stream::FuturesUnordered::new();

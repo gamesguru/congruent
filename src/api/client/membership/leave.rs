@@ -186,7 +186,12 @@ pub async fn leave_room(
 
 					services
 						.sending
-						.wait_for_pdu_servers(remote_servers, &pdu_id, Duration::from_secs(15))
+						.wait_for_pdu_servers(
+							remote_servers,
+							&pdu_id,
+							Duration::from_secs(15),
+							"Timed out waiting for outbound federation to deliver leave event.",
+						)
 						.await?;
 
 					// `build_and_append_pdu` calls `mark_as_left` internally, so we return early.

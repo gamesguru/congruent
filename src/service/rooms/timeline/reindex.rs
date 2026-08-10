@@ -262,19 +262,21 @@ impl Service {
 			};
 
 			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
-			if stored_auth_shorts.as_ref() != Some(&auth_shorts) {
+			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
+			if auth_events_repaired {
 				self.db.store_shortauthevents(short_eid, &auth_shorts);
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}
 
 			// --- shorteventid_authchain (incremental) ---
 			// auth_chain[e] = auth_events(e) ∪ ⋃(auth_chain[ae])
-			if self
-				.services
-				.auth_chain
-				.get_cached_eventid_authchain(&[short_eid])
-				.await
-				.is_err()
+			if auth_events_repaired
+				|| self
+					.services
+					.auth_chain
+					.get_cached_eventid_authchain(&[short_eid])
+					.await
+					.is_err()
 			{
 				let mut full_chain = RoaringTreemap::new();
 				for &auth_short in &auth_shorts {

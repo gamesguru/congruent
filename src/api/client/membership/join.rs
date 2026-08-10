@@ -962,7 +962,7 @@ async fn join_room_by_id_helper_local(
 		if !matches!(room_version, V1 | V2 | V3 | V4 | V5 | V6 | V7) {
 			// This is a restricted room, check if we can complete the join requirements
 			// locally.
-			let restricted_result =
+			let mut restricted_result =
 				user_can_perform_restricted_join(services, sender_user, room_id, &room_version)
 					.await;
 			match &restricted_result {
@@ -991,14 +991,45 @@ async fn join_room_by_id_helper_local(
 						}
 
 						state_lock = services.rooms.state.mutex.lock(room_id).await;
-						auth_user = select_authorising_user(services, room_id, allowed_rooms)
-							.await
-							.ok();
+						restricted_result = user_can_perform_restricted_join(
+							services,
+							sender_user,
+							room_id,
+							&room_version,
+						)
+						.await;
+						match &restricted_result {
+							| Ok(Some(refreshed_allowed_rooms)) => {
+								auth_user = select_authorising_user(
+									services,
+									room_id,
+									refreshed_allowed_rooms,
+								)
+								.await
+								.ok();
+							},
+							| Err(e) if e.status_code() == http::StatusCode::FORBIDDEN => {
+								info!("User cannot perform restricted join after retry: {e}");
+							},
+							| Err(_) => {
+								return join_restricted_via_remote(
+									services,
+									sender_user,
+									room_id,
+									reason,
+									servers,
+									state_lock,
+									json_body,
+								)
+								.await;
+							},
+							| Ok(None) => {},
+						}
 					}
 
 					// User qualifies but no local authorizer found -- another
 					// server might be able to authorize, so go remote.
-					if auth_user.is_none() {
+					if auth_user.is_none() && matches!(&restricted_result, Ok(Some(_))) {
 						return join_restricted_via_remote(
 							services,
 							sender_user,
@@ -1088,7 +1119,12 @@ async fn join_room_by_id_helper_local(
 
 	services
 		.sending
-		.wait_for_pdu_servers(remote_servers, &pdu_id, Duration::from_secs(15))
+		.wait_for_pdu_servers(
+			remote_servers,
+			&pdu_id,
+			Duration::from_secs(15),
+			"Timed out waiting for outbound federation to deliver join event.",
+		)
 		.await?;
 
 	info!("Joined room locally");

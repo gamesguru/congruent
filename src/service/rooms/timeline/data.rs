@@ -1196,8 +1196,6 @@ impl Data {
 		self.append_pdu_batch(&mut batch, pdu_id, pdu, json, count)
 			.await;
 		self.eventid_pdu.apply_batch(batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(pdu.event_id.as_bytes());
 	}
 
 	pub(super) async fn append_pdu_batch<'a>(
@@ -1372,8 +1370,6 @@ impl Data {
 		self.prepend_backfill_pdu_batch(&mut batch, pdu_id, event_id, json, pdu)
 			.await;
 		self.eventid_pdu.apply_batch(batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(event_id.as_bytes());
 	}
 
 	pub(super) async fn prepend_backfill_pdu_batch<'a>(
@@ -1559,8 +1555,6 @@ impl Data {
 		}
 
 		self.eventid_pdu.apply_batch(batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(event_id_bytes);
 		Ok(())
 	}
 

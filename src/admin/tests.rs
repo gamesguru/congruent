@@ -989,14 +989,8 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	}
 	assert_eq!(stream_duplicates, 1, "dedup-room should remove duplicate stream entry");
 
-	let mut topo_duplicates = 0_usize;
-	let mut topo_stream = Box::pin(services.rooms.timeline.topo_pdus(&room_id, None));
-	while let Some(item) = topo_stream.next().await {
-		let (_, pdu) = item.unwrap();
-		if pdu.event_id == duplicated_event {
-			topo_duplicates = topo_duplicates.saturating_add(1);
-		}
-	}
+	let topo_duplicates =
+		count_topo_occurrences_for_test(&services, &room_id, &duplicated_event).await;
 	assert_eq!(topo_duplicates, 1, "dedup-room should remove duplicate topo entry");
 }
 

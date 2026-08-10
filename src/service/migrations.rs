@@ -740,7 +740,6 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	);
 
 	db["global"].insert(MIGRATE_EVENT_STORE_TO_SSOT_MARKER, []);
-	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
 	db.db.sort()?;
 	Ok(())
 }

@@ -1490,7 +1490,10 @@ pub(super) async fn audit_auth_chain(
 	}
 	for eid in &missing {
 		if !fetched_ids.iter().any(|fid| fid == eid) {
-			let _ = writeln!(result_out, "  ✗ {eid} (not found on any server)");
+			let _ = writeln!(
+				result_out,
+				"  ✗ {eid} (fetch failed, was rejected, or was not found on any server)"
+			);
 		}
 	}
 	self.write_str(&result_out).await

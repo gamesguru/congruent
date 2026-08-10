@@ -1009,13 +1009,12 @@ pub(super) async fn force_leave_remote_room(
 	}
 	let leave_pdu = remote_leave_room(self.services, &user_id, &room_id, None, vias)
 		.boxed()
-		.await
-		.ok();
+		.await?;
 
 	self.services
 		.rooms
 		.state_cache
-		.mark_as_left(&user_id, &room_id, leave_pdu)
+		.mark_as_left(&user_id, &room_id, Some(leave_pdu))
 		.await;
 
 	self.services

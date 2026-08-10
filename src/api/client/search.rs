@@ -20,6 +20,7 @@ use ruma::{
 };
 use search_events::v3::{Request, Response};
 
+use super::message::visibility_filter;
 use crate::Ruma;
 
 type RoomStates = BTreeMap<OwnedRoomId, RoomState>;
@@ -184,10 +185,19 @@ async fn category_room_events(
 								.rooms
 								.timeline
 								.pdus_rev(&room_id, std::ops::Bound::Excluded(count))
-								.take(before_limit);
+								.map_ok(|item| ((), item.1));
 							pin_mut!(stream);
-							while let Some(Ok((_, prev_pdu))) = stream.next().await {
+							while let Some(Ok(item)) = stream.next().await {
+								let Some((_, prev_pdu)) =
+									visibility_filter(services, item, sender_user).await
+								else {
+									continue;
+								};
+
 								events_before.push(prev_pdu.into_format());
+								if events_before.len() >= before_limit {
+									break;
+								}
 							}
 						}
 
@@ -197,10 +207,19 @@ async fn category_room_events(
 								.rooms
 								.timeline
 								.pdus(&room_id, std::ops::Bound::Excluded(count))
-								.take(after_limit);
+								.map_ok(|item| ((), item.1));
 							pin_mut!(stream);
-							while let Some(Ok((_, next_pdu))) = stream.next().await {
+							while let Some(Ok(item)) = stream.next().await {
+								let Some((_, next_pdu)) =
+									visibility_filter(services, item, sender_user).await
+								else {
+									continue;
+								};
+
 								events_after.push(next_pdu.into_format());
+								if events_after.len() >= after_limit {
+									break;
+								}
 							}
 						}
 					}
