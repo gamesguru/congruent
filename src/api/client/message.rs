@@ -302,7 +302,7 @@ pub(crate) async fn get_message_events_route(
 
 	let resp = get_message_events::v3::Response {
 		start: from.to_string(),
-		end: next_token.as_ref().map(TopoToken::to_string),
+		end: next_token.as_ref().map(|t| format!("{t}")),
 		chunk,
 		state,
 	};

@@ -216,7 +216,7 @@ where
 						suggested_only,
 					})
 					.as_ref()
-					.map(PaginationToken::to_string)
+					.map(|t| format!("{t}"))
 			}
 		})
 		.into();

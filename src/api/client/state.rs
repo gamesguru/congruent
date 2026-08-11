@@ -617,7 +617,7 @@ async fn allowed_to_send_state_event(
 						{
 							let mut creators = vec![room_create.sender().as_str().to_owned()];
 							if let Some(additional) = &create_content.additional_creators {
-								creators.extend(additional.iter().map(ToString::to_string));
+								creators.extend(additional.iter().map(|u| format!("{u}")));
 							}
 
 							let removed_creator = pl_obj

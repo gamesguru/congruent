@@ -178,7 +178,7 @@ impl DagExportStats {
 					self.state_events = self.state_events.saturating_add(1);
 					self.last_is_state_event = true;
 					self.last_event_type = Some(pdu.kind().clone());
-					self.last_state_key = pdu.state_key.as_ref().map(ToString::to_string);
+					self.last_state_key = pdu.state_key.as_ref().map(|k| format!("{k}"));
 				} else {
 					self.last_is_state_event = false;
 				}

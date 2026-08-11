@@ -444,13 +444,13 @@ fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanE
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),
-		state_key: pdu.state_key.as_ref().map(ToString::to_string),
+		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
 		origin_server_ts: pdu.origin_server_ts.into(),
 		sender: pdu.sender.to_string(),
 		content: content_val,
-		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
-		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
+		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
+		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 		depth: u64::from(pdu.depth),
 		..Default::default()
 	}

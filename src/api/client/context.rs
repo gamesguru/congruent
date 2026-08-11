@@ -254,14 +254,14 @@ pub(crate) async fn get_context_route(
 		.map(at!(0))
 		.or(Some(base_token))
 		.as_ref()
-		.map(TopoToken::to_string);
+		.map(|t| format!("{t}"));
 	let end = events_after
 		.last()
 		.map(at!(0))
 		.or(next_token)
 		.or(Some(base_token))
 		.as_ref()
-		.map(TopoToken::to_string);
+		.map(|t| format!("{t}"));
 	info!(
 		%room_id,
 		%event_id,

@@ -82,7 +82,7 @@ pub(crate) async fn get_threads_route(
 			.filter(|_| threads.len() >= limit)
 			.map(at!(0))
 			.as_ref()
-			.map(ToString::to_string),
+			.map(|c| format!("{c}")),
 
 		chunk: threads
 			.into_iter()

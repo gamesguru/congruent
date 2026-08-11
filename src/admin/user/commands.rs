@@ -41,7 +41,7 @@ pub(super) async fn list_users(&self) -> Result {
 		.services
 		.users
 		.list_local_users()
-		.map(ToString::to_string)
+		.map(|id| format!("{id}"))
 		.collect()
 		.await;
 

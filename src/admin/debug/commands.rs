@@ -183,7 +183,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 					"- **redacted_by**:      {}",
 					meta.redacted_by
 						.as_ref()
-						.map_or_else(|| "None".to_owned(), ToString::to_string)
+						.map_or_else(|| "None".to_owned(), |id| format!("{id}"))
 				)?;
 				writeln!(
 					out,

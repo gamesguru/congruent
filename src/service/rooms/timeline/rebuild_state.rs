@@ -60,13 +60,13 @@ fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),
-		state_key: pdu.state_key.as_ref().map(ToString::to_string),
+		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
 		origin_server_ts: pdu.origin_server_ts.into(),
 		sender: pdu.sender.to_string(),
 		content: content_val,
-		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
-		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
+		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
+		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 		depth: u64::from(pdu.depth),
 		..Default::default()
 	}
@@ -368,8 +368,8 @@ impl super::Service {
 				// Non-state event: skeleton for DAG traversal only
 				rezzy::LeanEvent {
 					event_id: eid.to_string(),
-					prev_events: prev.iter().map(ToString::to_string).collect(),
-					auth_events: auth.iter().map(ToString::to_string).collect(),
+					prev_events: prev.iter().map(|id| format!("{id}")).collect(),
+					auth_events: auth.iter().map(|id| format!("{id}")).collect(),
 					depth: *depth,
 					rejected: false,
 					soft_fail: false,
@@ -496,7 +496,7 @@ impl super::Service {
 							break StateUpdateOwned::Unchanged {
 								parent_event_id: prev
 									.first()
-									.map(ToString::to_string)
+									.map(|id| format!("{id}"))
 									.unwrap_or_default(),
 							};
 						};
@@ -775,7 +775,7 @@ impl super::Service {
 		let conflicted_events: HashMap<String, rezzy::LeanEvent> = if is_v2_1_plus {
 			// MSC4297 (V2.1+): rezzy computes the exact HashMap we need
 			let direct_conflicted: Vec<String> =
-				conflicted_eids.iter().map(ToString::to_string).collect();
+				conflicted_eids.iter().map(|id| format!("{id}")).collect();
 			eprintln!(
 				"[resolve_fork] computing V2.1+ conflicted subgraph ({} direct_conflicted, {} \
 				 auth_context)...",

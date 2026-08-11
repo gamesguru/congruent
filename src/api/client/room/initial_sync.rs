@@ -70,13 +70,13 @@ pub(crate) async fn room_initial_sync_route(
 			.await?;
 
 	let messages = PaginationChunk {
-		start: events.last().map(at!(0)).as_ref().map(ToString::to_string),
+		start: events.last().map(at!(0)).as_ref().map(|c| format!("{c}")),
 
 		end: events
 			.first()
 			.map(at!(0))
 			.as_ref()
-			.map(ToString::to_string)
+			.map(|c| format!("{c}"))
 			.unwrap_or_default(),
 
 		chunk: events

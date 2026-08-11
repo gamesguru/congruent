@@ -176,7 +176,7 @@ async fn category_room_events(
 	let next_batch = (results.len() >= limit)
 		.then_some(next_batch.saturating_add(results.len()))
 		.as_ref()
-		.map(ToString::to_string);
+		.map(|n| format!("{n}"));
 
 	Ok(ResultRoomEvents {
 		count: Some(total),
