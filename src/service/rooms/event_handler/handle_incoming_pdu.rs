@@ -402,6 +402,20 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	{
 		| Ok(res) => res,
 		| Err(conduwuit::Error::MissingAuthEvents(missing)) => {
+			// A backfill-driven `/event`/`/context` fetch (see backfill.rs's
+			// `get_remote_pdu`) can hand us a `missing` list running into the
+			// hundreds for a deep or adversarial auth chain (the same MSC4297
+			// scenario documented in fetch_and_handle_outliers.rs). Without a
+			// bound, one inbound event could drive hundreds of sequential
+			// `/event` requests here and monopolize the 600s PDU receive
+			// timeout. Mirror handle_outlier_pdu's MAX_INLINE_FETCH: resolve
+			// only a small prefix synchronously; anything beyond that is left
+			// unresolved and falls through to the outlier fallback below the
+			// same as if the whole retry had failed, to be picked up
+			// opportunistically later (e.g. once a dependent event references
+			// it) instead of blocking this request.
+			const MAX_INLINE_FETCH: usize = 5;
+
 			// Before attempting expensive /state/ federation requests, check
 			// whether the missing auth events are already known to be rejected.
 			// If they are, this event inherits the rejection and no network
@@ -469,20 +483,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					},
 				}
 			}
-
-			// A backfill-driven `/event`/`/context` fetch (see backfill.rs's
-			// `get_remote_pdu`) can hand us a `missing` list running into the
-			// hundreds for a deep or adversarial auth chain (the same MSC4297
-			// scenario documented in fetch_and_handle_outliers.rs). Without a
-			// bound, one inbound event could drive hundreds of sequential
-			// `/event` requests here and monopolize the 600s PDU receive
-			// timeout. Mirror handle_outlier_pdu's MAX_INLINE_FETCH: resolve
-			// only a small prefix synchronously; anything beyond that is left
-			// unresolved and falls through to the outlier fallback below the
-			// same as if the whole retry had failed, to be picked up
-			// opportunistically later (e.g. once a dependent event references
-			// it) instead of blocking this request.
-			const MAX_INLINE_FETCH: usize = 5;
 
 			let retry_result = Box::pin(async {
 				Box::pin(self.fetch_state(
