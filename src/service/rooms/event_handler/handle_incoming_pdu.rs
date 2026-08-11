@@ -470,6 +470,20 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				}
 			}
 
+			// A backfill-driven `/event`/`/context` fetch (see backfill.rs's
+			// `get_remote_pdu`) can hand us a `missing` list running into the
+			// hundreds for a deep or adversarial auth chain (the same MSC4297
+			// scenario documented in fetch_and_handle_outliers.rs). Without a
+			// bound, one inbound event could drive hundreds of sequential
+			// `/event` requests here and monopolize the 600s PDU receive
+			// timeout. Mirror handle_outlier_pdu's MAX_INLINE_FETCH: resolve
+			// only a small prefix synchronously; anything beyond that is left
+			// unresolved and falls through to the outlier fallback below the
+			// same as if the whole retry had failed, to be picked up
+			// opportunistically later (e.g. once a dependent event references
+			// it) instead of blocking this request.
+			const MAX_INLINE_FETCH: usize = 5;
+
 			let retry_result = Box::pin(async {
 				Box::pin(self.fetch_state(
 					origin,
@@ -481,10 +495,21 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				.await?;
 
 				let room_version_id = self.services.state.get_room_version(room_id).await?;
+				let mut inline_fetches = 0_usize;
 				for missing_id in &missing {
 					if self.services.timeline.pdu_exists(missing_id).await {
 						continue;
 					}
+
+					if inline_fetches >= MAX_INLINE_FETCH {
+						debug_info!(
+							event_id = %event_id,
+							remaining = missing.len(),
+							"Reached inline missing-auth-event fetch limit; deferring the rest"
+						);
+						break;
+					}
+					inline_fetches = inline_fetches.saturating_add(1);
 
 					let request = ruma::api::federation::event::get_event::v1::Request {
 						event_id: missing_id.to_owned(),

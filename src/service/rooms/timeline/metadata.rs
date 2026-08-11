@@ -71,6 +71,17 @@ impl EventMetadata {
 				// re-introduce the coarse "any backfilled record matches"
 				// acceptance for rows using this encoding.
 				| PduCount::Backfilled(n) => match self.pdu_count {
+					// `None` can't distinguish *which* Backfilled counter this
+					// metadata belongs to -- it matches every Backfilled key at
+					// this depth, not just the one the topo entry actually
+					// points at. That's intentional: this function has no DB
+					// access to disambiguate further. Callers that resolve a
+					// topo key to metadata for a Backfilled count (currently
+					// only `parse_topo_stream`) MUST additionally confirm the
+					// topo key's `PduId` matches the event's canonical position
+					// (e.g. via `eventid_pduid`) before accepting a `None`
+					// match, or a stale/orphaned topo entry left behind by a
+					// reindex/reorder can be returned as if it were current.
 					| None => true,
 					| Some(legacy) => legacy == n.unsigned_abs(),
 				},

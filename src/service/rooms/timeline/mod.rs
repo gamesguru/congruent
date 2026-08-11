@@ -176,11 +176,11 @@ impl crate::Service for Service {
 			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
 			last_timeline_count_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
-				.time_to_idle(std::time::Duration::from_secs(600))
+				.time_to_idle(std::time::Duration::from_mins(10))
 				.build(),
 			backfill_gap_free_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
-				.time_to_idle(std::time::Duration::from_secs(600))
+				.time_to_idle(std::time::Duration::from_mins(10))
 				.build(),
 			services: Services {
 				server: args.server.clone(),

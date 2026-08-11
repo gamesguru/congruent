@@ -618,6 +618,18 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 		"Successfully migrated {total_migrated} private read receipts ({with_event} with event, \
 		 {count_only} count-only, {skipped} skipped)."
 	);
+
+	// `Map::open` stashes a lifetime-erased `Arc<ColumnFamily>` (see the SAFETY
+	// comment in `map/open.rs`) that becomes invalid the moment its column
+	// family is dropped. These are the only owners of that handle, so drop
+	// them explicitly before `drop_cf` below invalidates the handles --
+	// otherwise we'd be holding dangling column family handles, risking a
+	// crash (or worse) the next time they're touched, including on their own
+	// eventual `Drop`.
+	drop(legacy_count_map);
+	drop(legacy_event_map);
+	drop(legacy_update_map);
+
 	if db.db.cf_exists("roomuserid_privateread") {
 		db.db
 			.drop_cf("roomuserid_privateread")
@@ -793,6 +805,23 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	);
 
 	db["global"].insert(MIGRATE_EVENT_STORE_TO_SSOT_MARKER, []);
+
+	// Phase 1 above writes `roomid_topologicalorder_pducount` entries using an
+	// ad-hoc key layout (shortroomid ++ raw depth ++ raw count bytes), not the
+	// canonical `TimelineKey`-based encoding `populate_topological_index` (and
+	// every read-path helper, e.g. `Data::topo_pducount_key`) expects. That's
+	// fine on a normal upgrade because `populate_topological_index` runs right
+	// after this in `migrate()` and unconditionally clears + rebuilds the
+	// whole index. But `ssot_needs_run` in `migrate()` also reruns this
+	// function whenever `eventid_pdu` is empty, independent of whether its own
+	// marker is set -- if that ever fires on a database that already has the
+	// topo index rebuild marker set from a prior successful boot, the legacy
+	// keys written here would silently corrupt an already-correct index with
+	// nothing to clean them up afterwards. Clear the rebuild marker
+	// unconditionally so the guard in `migrate()` always reruns
+	// `populate_topological_index` after this function touches the topo
+	// index, regardless of which boot performed the write.
+	db["global"].remove(POPULATE_TOPOLOGICAL_INDEX_MARKER);
 	db.db.sort()?;
 	Ok(())
 }

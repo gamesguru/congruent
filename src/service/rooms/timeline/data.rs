@@ -184,9 +184,10 @@ impl Data {
 
 		while let Some((_, pdu)) = pdus.try_next().await? {
 			if let Ok(json) = self.get_non_outlier_pdu_json(&pdu.event_id).await {
+				// `raw_put` already wakes watchers for this key (see
+				// `Map::insert`); an extra explicit wake here would be redundant.
 				self.eventid_pdu
 					.raw_put(pdu.event_id.as_bytes(), Json(&json));
-				self.eventid_pdu.wake(pdu.event_id.as_bytes());
 				count = count.saturating_add(1);
 			}
 		}
@@ -1910,7 +1911,7 @@ impl Data {
 				Self::topo_pducount_key(&current, u64::MAX)
 			};
 
-			conduwuit::info!(
+			conduwuit::debug!(
 				target: "pagination_debug",
 				%room_id, until_depth = until.depth, until_pdu_count = ?until.pdu_count,
 				is_legacy = until.is_legacy(), seek_key = ?topo_key,
@@ -1984,7 +1985,7 @@ impl Data {
 				Self::topo_pducount_key(&current, from.depth)
 			};
 
-			conduwuit::info!(
+			conduwuit::debug!(
 				target: "pagination_debug",
 				%room_id, from_depth = from.depth, from_pdu_count = ?from.pdu_count,
 				is_legacy = from.is_legacy(), seek_key = ?topo_key,
@@ -2199,7 +2200,7 @@ impl Data {
 				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
 				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
 				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) else {
-					conduwuit::info!(
+					conduwuit::debug!(
 						target: "pagination_debug",
 						event_id = %String::from_utf8_lossy(&event_id_bytes),
 						?depth, ?pdu_count,
@@ -2208,7 +2209,7 @@ impl Data {
 					return Ok(None);
 				};
 				if !metadata.matches_timeline_position(depth, pdu_count) {
-					conduwuit::info!(
+					conduwuit::debug!(
 						target: "pagination_debug",
 						event_id = %String::from_utf8_lossy(&event_id_bytes),
 						key_depth = depth,
@@ -2221,7 +2222,39 @@ impl Data {
 					return Ok(None);
 				}
 
-				conduwuit::info!(
+				// `EventMetadata::pdu_count` never records the exact negative counter
+				// for a Backfilled event (see its doc comment), so
+				// `matches_timeline_position` treats `None` as matching *any*
+				// Backfilled key at the right depth -- it can't by itself tell a
+				// stale/orphaned topo entry (left behind by a reindex/reorder that
+				// moved this event_id to a different depth or counter) from the
+				// entry that is actually this event's current position. Cross-check
+				// against `eventid_pduid`, which every write site (append_pdu_batch,
+				// prepend_backfill_pdu_batch, reindex.rs, reorder.rs) keeps pointed
+				// at the event's live position, and drop the key if it disagrees.
+				if matches!(pdu_count, PduCount::Backfilled(_)) {
+					let Ok(canonical_id) = self.eventid_pduid.get(&event_id_bytes).await else {
+						conduwuit::debug!(
+							target: "pagination_debug",
+							event_id = %String::from_utf8_lossy(&event_id_bytes),
+							?depth, ?pdu_count,
+							"parse_topo_stream: DROPPED (no eventid_pduid entry for backfilled event)"
+						);
+						return Ok(None);
+					};
+					if RawPduId::from(&*canonical_id) != pdu_id {
+						conduwuit::debug!(
+							target: "pagination_debug",
+							event_id = %String::from_utf8_lossy(&event_id_bytes),
+							?depth, ?pdu_count,
+							canonical_id = ?RawPduId::from(&*canonical_id),
+							"parse_topo_stream: DROPPED (stale backfilled topo entry, event has moved)"
+						);
+						return Ok(None);
+					}
+				}
+
+				conduwuit::debug!(
 					target: "pagination_debug",
 					event_id = %String::from_utf8_lossy(&event_id_bytes),
 					?depth, ?pdu_count,

@@ -332,7 +332,25 @@ where
 		return i64::MAX;
 	}
 
+	// Room version 12+ ("explicitly privilege room creators", see
+	// `RoomVersion::explicitly_privilege_room_creators` and the auth-rules
+	// checks in `state_res::event_auth`): the room creator, and any user
+	// listed in the create event's `additional_creators`, always sort with
+	// `i64::MAX` power for state-resolution purposes -- this overrides
+	// whatever (if anything) the power-levels event says about them.
+	let explicitly_privilege_room_creators = matches!(
+		version,
+		rezzy::StateResVersion::V2_1
+			| rezzy::StateResVersion::V2_1_1
+			| rezzy::StateResVersion::V2_2
+	);
+
+	// Scan the full auth chain up-front so both the create event and a
+	// power-levels event can be found regardless of which order they appear
+	// in `auth_events` -- a PL-bearing event must not return before the
+	// creator-privilege override below has had a chance to apply.
 	let mut create_pdu = None;
+	let mut pl_level = None;
 
 	for auth_event_id in &pdu.auth_events {
 		let Some(auth_pdu) = fetch_auth(auth_event_id) else {
@@ -342,10 +360,12 @@ where
 		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
 			&& auth_pdu.state_key.as_deref() == Some("")
 		{
-			create_pdu = Some(auth_pdu.clone());
+			create_pdu = Some(auth_pdu);
+			continue;
 		}
 
-		if auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+		if pl_level.is_some()
+			|| auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
 			|| auth_pdu.state_key.as_deref() != Some("")
 		{
 			continue;
@@ -359,27 +379,52 @@ where
 				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 		};
 
-		if let Some(user_level) = content_val
+		let level = content_val
 			.get("users")
 			.and_then(serde_json::Value::as_object)
 			.and_then(|users| users.get(pdu.sender.as_str()))
 			.and_then(parse_intlike)
-		{
-			return user_level;
-		}
-
-		return content_val
-			.get("users_default")
-			.and_then(parse_intlike)
+			.or_else(|| content_val.get("users_default").and_then(parse_intlike))
 			.unwrap_or(0);
+
+		pl_level = Some(level);
 	}
 
-	let Some(create_pdu) = create_pdu else {
-		return 0;
+	let Some(create_pdu) = create_pdu.as_ref() else {
+		return pl_level.unwrap_or(0);
 	};
 
+	if explicitly_privilege_room_creators {
+		// Room version 12+: creator status is determined solely by "sent the
+		// create event" or "listed in `additional_creators`" -- the deprecated
+		// `creator` content field is a pre-v11 concept and irrelevant here (see
+		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
+		let is_v12_creator = create_pdu.sender == pdu.sender
+			|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+				create_pdu.content.get(),
+			)
+			.is_ok_and(|create_content| {
+				create_content
+					.additional_creators
+					.as_ref()
+					.is_some_and(|creators| creators.iter().any(|creator| creator == &pdu.sender))
+			});
+
+		if is_v12_creator {
+			return i64::MAX;
+		}
+
+		return pl_level.unwrap_or(0);
+	}
+
+	if let Some(level) = pl_level {
+		return level;
+	}
+
+	// Pre-v12 fallback: with no power-levels event found in the auth chain,
+	// only the room's original creator gets an implicit power level of 100.
 	#[allow(deprecated)]
-	let is_creator = create_pdu.sender == pdu.sender
+	let is_pre_v12_creator = create_pdu.sender == pdu.sender
 		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
 			create_pdu.content.get(),
 		)
@@ -388,26 +433,9 @@ where
 				.creator
 				.as_ref()
 				.is_some_and(|creator| creator == &pdu.sender)
-				|| create_content
-					.additional_creators
-					.as_ref()
-					.is_some_and(|creators| creators.iter().any(|creator| creator == &pdu.sender))
 		});
 
-	if !is_creator {
-		return 0;
-	}
-
-	if matches!(
-		version,
-		rezzy::StateResVersion::V2_1
-			| rezzy::StateResVersion::V2_1_1
-			| rezzy::StateResVersion::V2_2
-	) {
-		i64::MAX
-	} else {
-		100
-	}
+	if is_pre_v12_creator { 100 } else { 0 }
 }
 
 fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {

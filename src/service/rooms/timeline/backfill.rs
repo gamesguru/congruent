@@ -24,6 +24,14 @@ use serde_json::value::RawValue as RawJsonValue;
 
 use crate::rooms::short::ShortStateKey;
 
+/// Maximum number of prev_event hops [`materialize_remote_history_limited`]
+/// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
+/// fetches) will walk backwards from a single [`get_remote_pdu`] call. Must
+/// be threaded through every recursive/fallback call as a shrinking budget
+/// rather than handed out fresh at each hop -- see
+/// [`get_remote_pdu_limited`]'s doc comment.
+const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
+
 #[implement(super::Service)]
 #[tracing::instrument(name = "backfill", level = "trace", skip(self))]
 pub async fn backfill_if_required(
@@ -393,6 +401,26 @@ fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>
 #[implement(super::Service)]
 #[tracing::instrument(name = "get_remote_pdu", level = "debug", skip(self))]
 pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
+	self.get_remote_pdu_limited(room_id, event_id, MAX_REMOTE_HISTORY_DEPTH)
+		.await
+}
+
+/// Same as [`Self::get_remote_pdu`], but threading a remaining-depth
+/// budget through to the predecessor-chain materialization that follows a
+/// successful fetch, instead of always handing it a fresh
+/// [`MAX_REMOTE_HISTORY_DEPTH`]. Called directly (recursively, via
+/// [`Self::materialize_remote_history_limited`]) whenever a predecessor
+/// turns out to be unknown even as an outlier and has to be fetched from
+/// federation in turn -- resetting the budget at each such hop would let a
+/// chain of "not found locally" predecessors walk an unbounded number of
+/// remote ancestors, one `MAX_REMOTE_HISTORY_DEPTH`-sized hop at a time.
+#[implement(super::Service)]
+async fn get_remote_pdu_limited(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+	remaining_depth: usize,
+) -> Result<PduEvent> {
 	let _mutex = self.mutex_fetch.lock(event_id).await;
 
 	let local = self.get_pdu(event_id).await;
@@ -472,7 +500,8 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 				.await
 			{
 				| Ok(_) => {
-					self.materialize_remote_history(room_id, event_id).await?;
+					self.materialize_remote_history_limited(room_id, event_id, remaining_depth)
+						.await?;
 
 					if self.get_pdu_id(event_id).await.is_err() {
 						self.promote_outlier(room_id, event_id).await?;
@@ -508,14 +537,6 @@ pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Resu
 }
 
 #[implement(super::Service)]
-async fn materialize_remote_history(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
-
-	self.materialize_remote_history_limited(room_id, event_id, MAX_REMOTE_HISTORY_DEPTH)
-		.await
-}
-
-#[implement(super::Service)]
 async fn materialize_remote_history_limited(
 	&self,
 	room_id: &RoomId,
@@ -532,15 +553,19 @@ async fn materialize_remote_history_limited(
 			continue;
 		}
 
+		let remaining_depth = remaining_depth.saturating_sub(1);
 		if self.get_pdu(prev_id).await.is_err() {
-			let _ = Box::pin(self.get_remote_pdu(room_id, prev_id)).await;
+			// Budget exhausted: stop walking back into remote history
+			// instead of starting a fresh fetch chain with a reset budget
+			// (see `get_remote_pdu_limited`'s doc comment).
+			if remaining_depth == 0 {
+				continue;
+			}
+			let _ =
+				Box::pin(self.get_remote_pdu_limited(room_id, prev_id, remaining_depth)).await;
 		} else {
-			Box::pin(self.materialize_remote_history_limited(
-				room_id,
-				prev_id,
-				remaining_depth.saturating_sub(1),
-			))
-			.await?;
+			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, remaining_depth))
+				.await?;
 		}
 	}
 

@@ -326,7 +326,7 @@ pub async fn add_signing_keys(
 	// be treated as malformed for that specific key entry, but MUST NOT poison
 	// the rest of the response payload."
 	let now_plus_skew_tp =
-		timepoint_from_now(Duration::from_secs(300)).expect("SystemTime should not overflow");
+		timepoint_from_now(Duration::from_mins(5)).expect("SystemTime should not overflow");
 	let now_plus_skew = MilliSecondsSinceUnixEpoch::from_system_time(now_plus_skew_tp)
 		.expect("UInt should not overflow");
 

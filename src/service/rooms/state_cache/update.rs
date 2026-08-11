@@ -344,8 +344,6 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	);
 	self.unforget(room_id, user_id);
 
-	self.db.roomid_inviteviaservers.remove(room_id);
-
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
 }
@@ -465,9 +463,6 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let left_count = self.services.globals.next_count().unwrap();
-	let leave_origin_ts = leave_pdu
-		.as_ref()
-		.map(|leave_pdu| u64::from(leave_pdu.origin_server_ts));
 
 	self.db
 		.userroomid_leftstate
@@ -476,25 +471,17 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 		.roomuserid_leftcount
 		.raw_aput::<8, _, _>(&roomuser_id, left_count);
 
-	let preserve_newer_invite = if let Some(leave_origin_ts) = leave_origin_ts {
-		self.invite_state(user_id, room_id)
-			.await
-			.ok()
-			.and_then(|invite_state| {
-				invite_state
-					.into_iter()
-					.filter_map(|event| {
-						serde_json::from_str::<serde_json::Value>(event.json().get())
-							.ok()?
-							.get("origin_server_ts")?
-							.as_u64()
-					})
-					.max()
-			})
-			.is_some_and(|invite_origin_ts| invite_origin_ts > leave_origin_ts)
-	} else {
-		false
-	};
+	// Compare local processing order (the monotonic counters assigned by
+	// `next_count` when each event was handled) rather than `origin_server_ts`:
+	// that timestamp is set by the sending server's own clock, so a leave
+	// processed after an invite can still carry an earlier `origin_server_ts`
+	// than the invite if the inviting server's clock is ahead of ours. The
+	// counters reflect the order we actually applied the events in, which is
+	// what determines which state is current.
+	let preserve_newer_invite = self
+		.get_invite_count(room_id, user_id)
+		.await
+		.is_ok_and(|invite_count| invite_count > left_count);
 
 	self.set_other_membership_states(
 		&userroom_id,

@@ -93,7 +93,6 @@ where
 	if !skip_soft_fail {
 		for aid in incoming_pdu.auth_events() {
 			let exists = self.services.timeline.pdu_exists(aid).await;
-			let accepted = self.services.pdu_metadata.is_event_accepted(aid).await;
 			if !exists {
 				if !is_forward_extremity {
 					self.services
@@ -110,12 +109,37 @@ where
 					);
 					return Ok(None);
 				}
+
+				// This is the forward-extremity (top-level) event itself, so
+				// unlike the deferred case above we do need to answer the
+				// caller with an error now rather than silently swallowing
+				// it. But `aid` merely being absent locally is a resolution
+				// failure, not evidence it was ever rejected -- classify it
+				// with the retryable `MissingAuthEvent` (mirrors
+				// handle_outlier_pdu's own classification for the same
+				// situation), not the deliberately-permanent
+				// `DependsOnRejectedAuthEvent`. Conflating the two would
+				// permanently poison this event even though a later
+				// successful backfill/state fetch could supply `aid` and
+				// let a fresh attempt reach a different, correct verdict.
+				info!(
+					"Rejecting incoming event {} which depends on missing auth event {aid}",
+					incoming_pdu.event_id()
+				);
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						&RejectionCode::MissingAuthEvent.with_detail(aid),
+					)
+					.await;
+				return Err!(Request(Forbidden("Event depends on missing auth event {aid}")));
 			}
 
-			if !exists || !accepted {
+			let accepted = self.services.pdu_metadata.is_event_accepted(aid).await;
+			if !accepted {
 				info!(
-					"Rejecting incoming event {} which depends on missing/rejected auth event \
-					 {aid}",
+					"Rejecting incoming event {} which depends on rejected auth event {aid}",
 					incoming_pdu.event_id()
 				);
 				self.services
@@ -125,9 +149,7 @@ where
 						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 					)
 					.await;
-				return Err!(Request(Forbidden(
-					"Event depends on missing or rejected auth event {aid}"
-				)));
+				return Err!(Request(Forbidden("Event depends on rejected auth event {aid}")));
 			}
 		}
 	}

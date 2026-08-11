@@ -92,10 +92,17 @@ pub(crate) async fn get_context_route(
 		pdu_count: base_count,
 	};
 
-	let base_event = ignored_filter(&services, (base_token, base_pdu), sender_user);
+	let base_event = ignored_filter(&services, (base_token, base_pdu), sender_user).boxed();
 
 	// PDUs are used to get seen user IDs and then returned in response.
-
+	//
+	// Each of these is a deeply nested chain of stream combinators, so its
+	// generated future type is enormous. Box it individually (rather than
+	// relying on the single `.boxed()` on the outer `join3`) so the giant
+	// state machine is moved to the heap right away instead of first being
+	// materialized on this function's stack frame as a field of the `Join3`
+	// struct -- without this, building that struct alone needs a couple
+	// hundred KB of stack, which risks overflow.
 	let events_before = services
 		.rooms
 		.timeline
@@ -118,7 +125,8 @@ pub(crate) async fn get_context_route(
 		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
 		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
-		.collect();
+		.collect()
+		.boxed();
 
 	let events_after = services
 		.rooms
@@ -142,13 +150,14 @@ pub(crate) async fn get_context_route(
 		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
 		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
-		.collect();
+		.collect()
+		.boxed();
 
 	let (base_event, events_before, events_after): (
 		Option<(TopoToken, PduEvent)>,
 		Vec<_>,
 		Vec<_>,
-	) = join3(base_event, events_before, events_after).boxed().await;
+	) = join3(base_event, events_before, events_after).await;
 
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,

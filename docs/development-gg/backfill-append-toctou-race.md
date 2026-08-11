@@ -4,6 +4,17 @@ Status: **unconfirmed, in progress**. This is a working log, not a fix
 writeup — see `complement-failures.md` for the tracked failure entry this
 supports.
 
+> **Update:** hypothesis #2 below (`append_pdu` has no TOCTOU recheck) was
+> the initial finding, written before a fix was drafted. It has since been
+> addressed — `append_pdu` now takes `mutex_insert` and rechecks
+> `non_outlier_pdu_exists` under the lock (`append.rs` around the
+> `insert_lock` acquisition), mirroring `backfill_pdu`'s existing recheck.
+> See "Audit of every `mutex_insert` call site" and "Draft fix status"
+> below, which already reflect this; the hypothesis section itself is left
+> as originally written for the investigation history, but should be read
+> as superseded by those two sections, not as the current state of the
+> code.
+
 ## Symptom
 
 `TestMessagesOverFederation/Visible shared history after re-joining room
@@ -171,9 +182,10 @@ actual failing Complement test yet — see "Next steps" below.
    capture whether `$Jgq5bqxt...`-equivalent reaches
    `"backfill_pdu: about to insert"` / `"insert complete"` /
    `"associate_current_state FAILED"`.
-3. If it inserts cleanly, add an existence check (or at minimum a
+3. ~~If it inserts cleanly, add an existence check (or at minimum a
    duplicate-detection log) to `append_pdu` mirroring `backfill_pdu`'s
-   TOCTOU recheck, and look for a concurrent `/send` racing the same
-   event_id in the logs around the same timestamp.
+   TOCTOU recheck~~ — done (see "Draft fix status" above); still worth
+   looking for a concurrent `/send` racing the same event_id in the logs
+   around the same timestamp to confirm it was actually this mechanism.
 4. Revert or downgrade the temporary `info!`/`warn!` instrumentation in
    `backfill.rs` back to `debug!` once root-caused.
