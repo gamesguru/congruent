@@ -17,7 +17,7 @@ endif
 # export PREFIX=/usr/local
 # export ROCKSDB_INCLUDE_DIR=${PREFIX}/include
 # export ROCKSDB_LIB_DIR=${PREFIX}/lib
-# export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:${LD_LIBRARY_PATH}
+# export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:${LD_LIBRARY_PATH:-}
 # #export CPU_TARGET=skylake
 # export OS_VERSION=ubuntu-24.04
 # export GH_REPO=.../continuwuity
@@ -330,7 +330,15 @@ complement/build: ##H Build conduwuit w direct_tls
 complement/docker: ##H Build docker image from existing binary
 	@echo "Building Complement Docker image using base image: $(COMPLEMENT_BASE_IMAGE)..."
 	-docker pull $(COMPLEMENT_BASE_IMAGE)
-	DOCKER_BUILDKIT=1 docker buildx build \
+	@set -e; \
+	if docker buildx version >/dev/null 2>&1; then \
+		DOCKER_CMD='docker buildx build'; \
+		DOCKER_LOAD='--load'; \
+	else \
+		DOCKER_CMD='docker build'; \
+		DOCKER_LOAD=''; \
+	fi; \
+	$$DOCKER_CMD \
 		--build-arg BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) \
 		--build-arg BINARY_PATH=target/latest/conduwuit \
 		--build-arg UID=$(shell id -u) \
@@ -338,7 +346,8 @@ complement/docker: ##H Build docker image from existing binary
 		--pull=false \
 		-t $(COMPLEMENT_IMAGE) \
 		-f ./docker/complement.Dockerfile \
-		--load .
+		$$DOCKER_LOAD \
+		.
 
 .PHONY: complement/stats
 complement/stats: ##H Check local test stats
