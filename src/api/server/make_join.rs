@@ -270,6 +270,7 @@ pub(crate) async fn user_can_perform_restricted_join(
 		.collect();
 
 	let mut valid_allowed_rooms = Vec::new();
+	let mut has_unsupported_allow_rule = false;
 	let mut could_satisfy = true;
 	for allow_rule in &r.allow {
 		match allow_rule {
@@ -311,6 +312,7 @@ pub(crate) async fn user_can_perform_restricted_join(
 			},
 			| _ => {
 				// We don't recognise this join rule, so we cannot satisfy the request.
+				has_unsupported_allow_rule = true;
 				could_satisfy = false;
 				debug_info!(
 					"Unsupported allow rule in restricted join for room {}: {:?}",
@@ -323,6 +325,13 @@ pub(crate) async fn user_can_perform_restricted_join(
 
 	if !valid_allowed_rooms.is_empty() {
 		return Ok(Some(valid_allowed_rooms));
+	}
+
+	if has_unsupported_allow_rule {
+		// Malformed or unsupported allow rules are not something another server
+		// can legitimately "fix" on our behalf. Fail closed instead of falling
+		// back to a remote join that would accept broken room state.
+		return Err!(Request(Forbidden("You are not invited to this room.")));
 	}
 
 	if could_satisfy {
