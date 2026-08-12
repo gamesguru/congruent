@@ -12,6 +12,9 @@ pub struct Store {
 	/// Content-addressed cache of parsed HamtNodes in memory.
 	/// Deduplicates subtrees across different room states automatically since
 	/// the key is purely the StructuralHash.
+	///
+	/// Note: `u64, u64` is currently a placeholder for `ShortStateKey` and
+	/// `ShortEventId` which are the actual domain types.
 	node_cache: moka::sync::Cache<StructuralHash, Arc<HamtNode<u64, u64>>>,
 }
 
@@ -35,7 +38,7 @@ impl Store {
 
 		let bytes = self.db.get_blocking(hash)?;
 		if bytes.is_empty() {
-			return Err(err!(Request(NotFound("State HAMT node not found in database."))));
+			return Err(err!(Database(error!("State HAMT node not found in database."))));
 		}
 
 		let persisted = PersistedInternalNode::<u64, u64>::decode_v1(&bytes)
