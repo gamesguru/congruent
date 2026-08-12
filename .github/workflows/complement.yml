@@ -172,12 +172,6 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: complement-src/go.sum
 
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
-
-      - name: Install just
-        run: cargo install just --locked --version 1.34.0
-
       - name: Configure Docker Network Firewall
         run: |
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
@@ -189,7 +183,21 @@ jobs:
           COMPLEMENT_SHARE_ENV_PREFIX: PASS_
           PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
           COMPLEMENT_RESULTS_DIR: tests/test_results/complement
-        run: just complement
+        shell: bash
+        run: |
+          COMPLEMENT_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
+          HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
+          MOUNTS="/usr/local/lib:/usr/local/lib:ro"
+          if [ -n "$HOST_LIBS" ]; then
+            MOUNTS="$MOUNTS;$HOST_LIBS"
+          fi
+          env \
+            COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 \
+            RESULTS_DIR="${COMPLEMENT_RESULTS_DIR}" \
+            COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" \
+            COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+            COMPLEMENT_RUN="." \
+            ./bin/complement ./complement-src
 
       - name: Compare results with baseline
         continue-on-error: true
