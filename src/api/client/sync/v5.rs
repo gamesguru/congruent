@@ -789,6 +789,7 @@ async fn build_sync_events_v5(
 		.iter()
 		.chain(all_invited_rooms.iter())
 		.chain(all_knocked_rooms.iter())
+		.chain(all_left_rooms.iter())
 		.cloned()
 		.collect();
 
@@ -805,6 +806,7 @@ async fn build_sync_events_v5(
 	let pos = next_batch.clone().to_string();
 
 	let mut todo_rooms: TodoRooms = BTreeMap::new();
+	let mut failed_room_ids: BTreeSet<OwnedRoomId> = BTreeSet::new();
 
 	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, body);
 
@@ -873,6 +875,7 @@ async fn build_sync_events_v5(
 		all_invited_rooms.clone(),
 		all_knocked_rooms.clone(),
 		&todo_rooms,
+		&mut failed_room_ids,
 		&mut response,
 		body,
 		timeline_limits,
@@ -888,6 +891,7 @@ async fn build_sync_events_v5(
 		let snake_key = into_snake_key(sender_user, sender_device, body.conn_id.clone());
 		let next_limits: BTreeMap<OwnedRoomId, usize> = todo_rooms
 			.iter()
+			.filter(|(room_id, _)| !failed_room_ids.contains(*room_id))
 			.map(|(room_id, (_, limit, roomsince))| {
 				(
 					room_id.clone(),
@@ -1162,6 +1166,7 @@ async fn process_rooms<'a, Rooms>(
 	all_invited_rooms: Rooms,
 	all_knocked_rooms: Rooms,
 	todo_rooms: &TodoRooms,
+	failed_room_ids: &mut BTreeSet<OwnedRoomId>,
 	response: &mut sync_events::v5::Response,
 	body: &sync_events::v5::Request,
 	timeline_limits: &BTreeMap<OwnedRoomId, usize>,
@@ -1193,17 +1198,22 @@ where
 				continue;
 			};
 
-			if *roomsince >= invite_count {
-				continue;
+			if *roomsince < invite_count {
+				// TODO: figure out a timestamp we can use for remote invites
+				invite_state = match services
+					.rooms
+					.state_cache
+					.invite_state(sender_user, room_id)
+					.await
+				{
+					| Ok(invite_state) => Some(invite_state),
+					| Err(err) => {
+						warn!("Encountered missing invite state in {}, error {}", room_id, err);
+						failed_room_ids.insert(room_id.clone());
+						continue;
+					},
+				};
 			}
-
-			// TODO: figure out a timestamp we can use for remote invites
-			invite_state = services
-				.rooms
-				.state_cache
-				.invite_state(sender_user, room_id)
-				.await
-				.ok();
 
 			(timeline_pdus, limited, prev_batch) = (VecDeque::new(), true, None);
 		} else if all_knocked_rooms.clone().any(is_equal_to!(new_room_id)) {
@@ -1216,16 +1226,21 @@ where
 				continue;
 			};
 
-			if *roomsince >= knock_count {
-				continue;
+			if *roomsince < knock_count {
+				invite_state = match services
+					.rooms
+					.state_cache
+					.knock_state(sender_user, room_id)
+					.await
+				{
+					| Ok(knock_state) => Some(knock_state),
+					| Err(err) => {
+						warn!("Encountered missing knock state in {}, error {}", room_id, err);
+						failed_room_ids.insert(room_id.clone());
+						continue;
+					},
+				};
 			}
-
-			invite_state = services
-				.rooms
-				.state_cache
-				.knock_state(sender_user, room_id)
-				.await
-				.ok();
 
 			(timeline_pdus, limited, prev_batch) = (VecDeque::new(), true, None);
 		} else {
