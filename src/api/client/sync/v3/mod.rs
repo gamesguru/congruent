@@ -462,14 +462,9 @@ pub(crate) async fn build_sync_events(
 						%room_id,
 						%syncing_user,
 						?err,
-						"invite state present with no invite count; repairing"
+						"invite state present with no invite count; using current sync watermark"
 					);
-					services
-						.rooms
-						.state_cache
-						.repair_invite_count(&room_id, syncing_user)
-						.await
-						.ok()
+					Some(current_count.saturating_add(1))
 				},
 			};
 
@@ -527,14 +522,9 @@ pub(crate) async fn build_sync_events(
 						%room_id,
 						%syncing_user,
 						?err,
-						"knock state present with no knock count; repairing"
+						"knock state present with no knock count; using current sync watermark"
 					);
-					services
-						.rooms
-						.state_cache
-						.repair_knock_count(&room_id, syncing_user)
-						.await
-						.ok()
+					Some(current_count.saturating_add(1))
 				},
 			};
 

@@ -464,24 +464,53 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let left_count = self.services.globals.next_count().unwrap();
 
+	let leave_origin_server_ts = leave_pdu
+		.as_ref()
+		.map(|leave_pdu| leave_pdu.origin_server_ts().0.into());
+	let preserve_newer_invite =
+		if let Some(leave_pdu) = leave_pdu.as_ref() {
+			self.left_state(user_id, room_id)
+				.await
+				.ok()
+				.flatten()
+				.is_some_and(|existing_leave| existing_leave.event_id() == leave_pdu.event_id())
+		} else {
+			false
+		} || match (leave_origin_server_ts, self.invite_state(user_id, room_id).await) {
+			| (Some(leave_origin_server_ts), Ok(pending_invite_state)) =>
+				pending_invite_state.into_iter().any(|event| {
+					event
+						.get_field::<String>("type")
+						.ok()
+						.flatten()
+						.is_some_and(|t| t == "m.room.member")
+						&& event
+							.get_field::<OwnedUserId>("state_key")
+							.ok()
+							.flatten()
+							.is_some_and(|s| s == *user_id)
+						&& event
+							.get_field::<RoomMemberEventContent>("content")
+							.ok()
+							.flatten()
+							.is_some_and(|c| c.membership == MembershipState::Invite)
+						&& event
+							.get_field::<u64>("origin_server_ts")
+							.ok()
+							.flatten()
+							.is_some_and(|invite_origin_server_ts| {
+								invite_origin_server_ts > leave_origin_server_ts
+							})
+				}),
+			| (_, Err(_)) | (None, _) => false,
+		};
+
 	self.db
 		.userroomid_leftstate
 		.raw_put(&userroom_id, Json(leave_pdu));
 	self.db
 		.roomuserid_leftcount
 		.raw_aput::<8, _, _>(&roomuser_id, left_count);
-
-	// Compare local processing order (the monotonic counters assigned by
-	// `next_count` when each event was handled) rather than `origin_server_ts`:
-	// that timestamp is set by the sending server's own clock, so a leave
-	// processed after an invite can still carry an earlier `origin_server_ts`
-	// than the invite if the inviting server's clock is ahead of ours. The
-	// counters reflect the order we actually applied the events in, which is
-	// what determines which state is current.
-	let preserve_newer_invite = self
-		.get_invite_count(room_id, user_id)
-		.await
-		.is_ok_and(|invite_count| invite_count > left_count);
 
 	self.set_other_membership_states(
 		&userroom_id,
