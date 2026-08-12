@@ -180,7 +180,6 @@ record_result() {
 
     # Keep a live human-readable status stream while the JSONL snapshot is rewritten.
     printf '%s\t%s\n' "$action" "$test_name"
-    write_results_snapshot
 }
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
@@ -217,6 +216,8 @@ done < "$EVENTS_FIFO"
 wait "$PRODUCER_PID"
 TEST_EXIT_CODE=$?
 set -e
+
+write_results_snapshot
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
     echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
