@@ -847,13 +847,13 @@ impl Service {
 		pin_mut!(receipts_stream);
 		let mut collected = Vec::new();
 		while let Some((user_id, count, read_receipt)) = receipts_stream.next().await {
-			info!(
+			trace!(
 				target: "receipt_debug",
 				%room_id, %user_id, count, since_upper = since.1,
 				"select_edus_receipts_room: saw candidate"
 			);
 			if count > since.1 {
-				info!(
+				trace!(
 					target: "receipt_debug",
 					%room_id, %user_id, count, since_upper = since.1,
 					"select_edus_receipts_room: stopping, candidate is past since_upper"

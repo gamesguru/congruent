@@ -13,8 +13,8 @@ pub(super) type MapsKey = &'static str;
 pub(super) type MapsVal = Arc<Map>;
 
 pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> {
-	let descriptors = descriptors();
-	open_list(db, &descriptors)
+	let descriptors = active_descriptors();
+	open_list(db, descriptors)
 }
 
 pub(super) fn descriptors() -> Vec<Descriptor> {
@@ -24,6 +24,8 @@ pub(super) fn descriptors() -> Vec<Descriptor> {
 	descriptors.extend_from_slice(DEPRECATED_MAPS);
 	descriptors
 }
+
+pub(super) fn active_descriptors() -> &'static [Descriptor] { ACTIVE_MAPS }
 
 #[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
