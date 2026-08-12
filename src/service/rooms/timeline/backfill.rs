@@ -1,4 +1,11 @@
-use std::{iter::once, sync::Arc};
+use std::{
+	collections::HashSet,
+	iter::once,
+	sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	},
+};
 
 use conduwuit::{Err, Error, PduEvent, RoomVersion};
 use conduwuit_core::{
@@ -31,6 +38,48 @@ use crate::rooms::short::ShortStateKey;
 /// rather than handed out fresh at each hop -- see
 /// [`get_remote_pdu_limited`]'s doc comment.
 const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
+
+struct RemoteHistoryBudget {
+	remaining: AtomicUsize,
+	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
+}
+
+impl RemoteHistoryBudget {
+	fn new(limit: usize, root: OwnedEventId) -> Self {
+		let mut visited = HashSet::with_capacity(limit.saturating_add(1));
+		visited.insert(root);
+
+		Self {
+			remaining: AtomicUsize::new(limit),
+			visited: tokio::sync::Mutex::new(visited),
+		}
+	}
+
+	async fn try_visit(&self, event_id: &EventId) -> bool {
+		let mut visited = self.visited.lock().await;
+		if !visited.insert(event_id.to_owned()) {
+			return false;
+		}
+		drop(visited);
+
+		let mut remaining = self.remaining.load(Ordering::Relaxed);
+		while let Some(next) = remaining.checked_sub(1) {
+			match self.remaining.compare_exchange_weak(
+				remaining,
+				next,
+				Ordering::Relaxed,
+				Ordering::Relaxed,
+			) {
+				| Ok(_) => return true,
+				| Err(observed) => remaining = observed,
+			}
+		}
+
+		let mut visited = self.visited.lock().await;
+		visited.remove(event_id);
+		false
+	}
+}
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "backfill", level = "trace", skip(self))]
@@ -183,8 +232,7 @@ pub async fn backfill_if_required(
 				}
 			}
 		}
-		let mut known_ids: std::collections::HashSet<OwnedEventId> =
-			std::collections::HashSet::with_capacity(all_prev_ids.len());
+		let mut known_ids: HashSet<OwnedEventId> = HashSet::with_capacity(all_prev_ids.len());
 		for prev_id in &all_prev_ids {
 			// Outliers exist in `eventid_pdu`, but they are still gaps in the
 			// timeline because `/messages` scans the non-outlier topo index. If
@@ -214,7 +262,7 @@ pub async fn backfill_if_required(
 		let mut backwards_extremities: Vec<OwnedEventId> =
 			gaps.iter().map(|gap| gap.event_id.clone()).collect();
 		backwards_extremities.sort_unstable();
-		let unique_missing: std::collections::HashSet<&EventId> = gaps
+		let unique_missing: HashSet<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
@@ -401,25 +449,25 @@ fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>
 #[implement(super::Service)]
 #[tracing::instrument(name = "get_remote_pdu", level = "debug", skip(self))]
 pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
-	self.get_remote_pdu_limited(room_id, event_id, MAX_REMOTE_HISTORY_DEPTH)
+	let budget =
+		Arc::new(RemoteHistoryBudget::new(MAX_REMOTE_HISTORY_DEPTH, event_id.to_owned()));
+	self.get_remote_pdu_limited(room_id, event_id, &budget)
 		.await
 }
 
-/// Same as [`Self::get_remote_pdu`], but threading a remaining-depth
+/// Same as [`Self::get_remote_pdu`], but threading a shared per-request
 /// budget through to the predecessor-chain materialization that follows a
-/// successful fetch, instead of always handing it a fresh
-/// [`MAX_REMOTE_HISTORY_DEPTH`]. Called directly (recursively, via
+/// successful fetch. Called directly (recursively, via
 /// [`Self::materialize_remote_history_limited`]) whenever a predecessor
 /// turns out to be unknown even as an outlier and has to be fetched from
-/// federation in turn -- resetting the budget at each such hop would let a
-/// chain of "not found locally" predecessors walk an unbounded number of
-/// remote ancestors, one `MAX_REMOTE_HISTORY_DEPTH`-sized hop at a time.
+/// federation in turn -- handing each sibling branch a fresh budget would
+/// let remote-history fanout multiply the total work for one request.
 #[implement(super::Service)]
 async fn get_remote_pdu_limited(
 	&self,
 	room_id: &RoomId,
 	event_id: &EventId,
-	remaining_depth: usize,
+	budget: &Arc<RemoteHistoryBudget>,
 ) -> Result<PduEvent> {
 	let _mutex = self.mutex_fetch.lock(event_id).await;
 
@@ -500,7 +548,7 @@ async fn get_remote_pdu_limited(
 				.await
 			{
 				| Ok(_) => {
-					self.materialize_remote_history_limited(room_id, event_id, remaining_depth)
+					self.materialize_remote_history_limited(room_id, event_id, budget)
 						.await?;
 
 					if self.get_pdu_id(event_id).await.is_err() {
@@ -541,9 +589,9 @@ async fn materialize_remote_history_limited(
 	&self,
 	room_id: &RoomId,
 	event_id: &EventId,
-	remaining_depth: usize,
+	budget: &Arc<RemoteHistoryBudget>,
 ) -> Result<()> {
-	if self.get_pdu_id(event_id).await.is_ok() || remaining_depth == 0 {
+	if self.get_pdu_id(event_id).await.is_ok() {
 		return Ok(());
 	}
 
@@ -553,19 +601,14 @@ async fn materialize_remote_history_limited(
 			continue;
 		}
 
-		let remaining_depth = remaining_depth.saturating_sub(1);
+		if !budget.try_visit(prev_id).await {
+			continue;
+		}
+
 		if self.get_pdu(prev_id).await.is_err() {
-			// Budget exhausted: stop walking back into remote history
-			// instead of starting a fresh fetch chain with a reset budget
-			// (see `get_remote_pdu_limited`'s doc comment).
-			if remaining_depth == 0 {
-				continue;
-			}
-			let _ =
-				Box::pin(self.get_remote_pdu_limited(room_id, prev_id, remaining_depth)).await;
+			let _ = Box::pin(self.get_remote_pdu_limited(room_id, prev_id, budget)).await;
 		} else {
-			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, remaining_depth))
-				.await?;
+			Box::pin(self.materialize_remote_history_limited(room_id, prev_id, budget)).await?;
 		}
 	}
 

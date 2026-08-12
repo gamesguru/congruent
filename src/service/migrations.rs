@@ -809,19 +809,15 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	// Phase 1 above writes `roomid_topologicalorder_pducount` entries using an
 	// ad-hoc key layout (shortroomid ++ raw depth ++ raw count bytes), not the
 	// canonical `TimelineKey`-based encoding `populate_topological_index` (and
-	// every read-path helper, e.g. `Data::topo_pducount_key`) expects. That's
-	// fine on a normal upgrade because `populate_topological_index` runs right
-	// after this in `migrate()` and unconditionally clears + rebuilds the
-	// whole index. But `ssot_needs_run` in `migrate()` also reruns this
-	// function whenever `eventid_pdu` is empty, independent of whether its own
-	// marker is set -- if that ever fires on a database that already has the
-	// topo index rebuild marker set from a prior successful boot, the legacy
-	// keys written here would silently corrupt an already-correct index with
-	// nothing to clean them up afterwards. Clear the rebuild marker
-	// unconditionally so the guard in `migrate()` always reruns
-	// `populate_topological_index` after this function touches the topo
-	// index, regardless of which boot performed the write.
-	db["global"].remove(POPULATE_TOPOLOGICAL_INDEX_MARKER);
+	// every read-path helper, e.g. `Data::topo_pducount_key`) expects. On a
+	// normal upgrade `populate_topological_index` runs right after this and
+	// rebuilds the whole index, so only clear its marker when this invocation
+	// actually wrote timeline entries that require that rebuild. If no legacy
+	// timeline PDUs were migrated (`timeline == 0`), clearing the marker would
+	// force a full rebuild on every boot whenever `eventid_pdu` stays empty.
+	if timeline > 0 {
+		db["global"].remove(POPULATE_TOPOLOGICAL_INDEX_MARKER);
+	}
 	db.db.sort()?;
 	Ok(())
 }

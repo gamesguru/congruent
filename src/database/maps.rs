@@ -4,6 +4,7 @@ use conduwuit::Result;
 
 use crate::{
 	Engine, Map,
+	deprecated_maps::DEPRECATED_MAPS,
 	engine::descriptor::{self, CacheDisp, Descriptor},
 };
 
@@ -11,7 +12,18 @@ pub(super) type Maps = BTreeMap<MapsKey, MapsVal>;
 pub(super) type MapsKey = &'static str;
 pub(super) type MapsVal = Arc<Map>;
 
-pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> { open_list(db, MAPS) }
+pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> {
+	let descriptors = descriptors();
+	open_list(db, &descriptors)
+}
+
+pub(super) fn descriptors() -> Vec<Descriptor> {
+	let capacity = ACTIVE_MAPS.len().saturating_add(DEPRECATED_MAPS.len());
+	let mut descriptors = Vec::with_capacity(capacity);
+	descriptors.extend_from_slice(ACTIVE_MAPS);
+	descriptors.extend_from_slice(DEPRECATED_MAPS);
+	descriptors
+}
 
 #[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
@@ -20,7 +32,7 @@ pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
 		.collect()
 }
 
-pub(super) static MAPS: &[Descriptor] = &[
+pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "alias_roomid",
 		..descriptor::RANDOM_SMALL
@@ -595,8 +607,11 @@ pub(super) static MAPS: &[Descriptor] = &[
 	},
 ];
 
-/// Returns an iterator of column family names from the static MAPS list.
-/// Used for schema fingerprinting across crate boundaries.
+/// Returns an iterator of column family names from the active and deprecated
+/// descriptor lists. Used for schema fingerprinting across crate boundaries.
 pub fn column_family_names() -> impl Iterator<Item = &'static str> {
-	MAPS.iter().map(|desc| desc.name)
+	ACTIVE_MAPS
+		.iter()
+		.chain(DEPRECATED_MAPS.iter())
+		.map(|desc| desc.name)
 }

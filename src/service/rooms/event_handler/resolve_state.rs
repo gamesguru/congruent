@@ -353,6 +353,10 @@ where
 	let mut pl_level = None;
 
 	for auth_event_id in &pdu.auth_events {
+		if create_pdu.is_some() && pl_level.is_some() {
+			break;
+		}
+
 		let Some(auth_pdu) = fetch_auth(auth_event_id) else {
 			continue;
 		};

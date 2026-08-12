@@ -77,8 +77,7 @@ where
 			.get_rejection_reason(incoming_pdu.event_id())
 			.await
 			.is_some_and(|reason| {
-				RejectionCode::parse(&reason)
-					== Some(RejectionCode::MissingAuthEventsAfterStateIdsRetry)
+				crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 			});
 
 	if rejected && !skip_soft_fail && !retryable_missing_auth_rejection {

@@ -613,12 +613,10 @@ pub(crate) async fn build_sync_events(
 	// arriving before the next /sync response is built) can otherwise surface as
 	// both `left` and `changed` for the same user in one response. Prefer the
 	// current visibility-restoring state and suppress the stale `left`.
-	device_list_updates.left.retain(|user_id| {
-		!device_list_updates
-			.changed
-			.iter()
-			.any(|changed| changed == user_id)
-	});
+	let changed_users = device_list_updates.changed.iter().collect::<HashSet<_>>();
+	device_list_updates
+		.left
+		.retain(|user_id| !changed_users.contains(user_id));
 
 	let mut presence_updates = presence_updates.unwrap_or_default();
 	if services.config.allow_local_presence {

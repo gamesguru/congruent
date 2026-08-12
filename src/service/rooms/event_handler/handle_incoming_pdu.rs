@@ -502,9 +502,11 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					}
 
 					if inline_fetches >= MAX_INLINE_FETCH {
+						let remaining = missing.len().saturating_sub(inline_fetches);
 						debug_info!(
 							event_id = %event_id,
-							remaining = missing.len(),
+							remaining,
+							total = missing.len(),
 							"Reached inline missing-auth-event fetch limit; deferring the rest"
 						);
 						break;
