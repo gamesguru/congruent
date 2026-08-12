@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt};
-use database::{Json, serialize_key};
+use database::{Batch, Json, serialize_key};
 use futures::StreamExt;
 use ruma::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
@@ -285,6 +285,53 @@ fn set_other_membership_states(
 	}
 }
 
+#[implement(super::Service)]
+fn set_other_membership_states_into_batch<'a>(
+	&'a self,
+	batch: &mut Batch<'a>,
+	userroom_id: &[u8],
+	roomuser_id: &[u8],
+	room_id: &RoomId,
+	keep: MembershipKind,
+	preserve_invite: bool,
+) {
+	if keep != MembershipKind::Joined {
+		self.db.userroomid_joined.batch_delete(batch, userroom_id);
+		self.db.roomuserid_joined.batch_delete(batch, roomuser_id);
+	}
+
+	if keep != MembershipKind::Invited && !preserve_invite {
+		self.db
+			.userroomid_invitestate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_invitecount
+			.batch_delete(batch, roomuser_id);
+		self.db
+			.userroomid_invitesender
+			.batch_delete(batch, userroom_id);
+		self.db.roomid_inviteviaservers.batch_delete(batch, room_id);
+	}
+
+	if keep != MembershipKind::Left {
+		self.db
+			.userroomid_leftstate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_leftcount
+			.batch_delete(batch, roomuser_id);
+	}
+
+	if keep != MembershipKind::Knocked {
+		self.db
+			.userroomid_knockedstate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_knockedcount
+			.batch_delete(batch, roomuser_id);
+	}
+}
+
 /// Direct DB function to directly mark a user as joined. It is not
 /// recommended to use this directly. You most likely should use
 /// `update_membership` instead
@@ -302,17 +349,26 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let mut batch = Batch::new();
 
-	self.db.userroomid_joined.insert(&userroom_id, []);
-	self.db.roomuserid_joined.insert(&roomuser_id, []);
-
-	self.set_other_membership_states(
+	self.db
+		.userroomid_joined
+		.batch_put(&mut batch, &userroom_id, []);
+	self.db
+		.roomuserid_joined
+		.batch_put(&mut batch, &roomuser_id, []);
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Joined,
 		false,
 	);
+	self.db
+		.roomuserid_forgotten
+		.batch_delete(&mut batch, &roomuser_id);
+	self.db.userroomid_joined.apply_batch(batch);
 	self.unforget(room_id, user_id);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
@@ -331,17 +387,26 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let mut batch = Batch::new();
 
-	self.db.userroomid_joined.insert(&userroom_id, []);
-	self.db.roomuserid_joined.insert(&roomuser_id, []);
-
-	self.set_other_membership_states(
+	self.db
+		.userroomid_joined
+		.batch_put(&mut batch, &userroom_id, []);
+	self.db
+		.roomuserid_joined
+		.batch_put(&mut batch, &roomuser_id, []);
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Joined,
 		false,
 	);
+	self.db
+		.roomuserid_forgotten
+		.batch_delete(&mut batch, &roomuser_id);
+	self.db.userroomid_joined.apply_batch(batch);
 	self.unforget(room_id, user_id);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
@@ -417,23 +482,30 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let mut batch = Batch::new();
 
 	// Write left state with no PDU (admin operation, no actual leave event)
-	self.db
-		.userroomid_leftstate
-		.raw_put(&userroom_id, Json(Option::<Pdu>::None));
-	self.db
-		.roomuserid_leftcount
-		.raw_aput::<8, _, _>(&roomuser_id, self.services.globals.next_count().unwrap());
+	self.db.userroomid_leftstate.batch_raw_put(
+		&mut batch,
+		&userroom_id,
+		Json(Option::<Pdu>::None),
+	);
+	self.db.roomuserid_leftcount.batch_raw_put(
+		&mut batch,
+		&roomuser_id,
+		self.services.globals.next_count().unwrap(),
+	);
 
 	let has_pending_invite = self.invite_state(user_id, room_id).await.is_ok();
-	self.set_other_membership_states(
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Left,
 		has_pending_invite,
 	);
+	self.db.userroomid_joined.apply_batch(batch);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
@@ -463,6 +535,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let left_count = self.services.globals.next_count().unwrap();
+	let mut batch = Batch::new();
 
 	let leave_origin_server_ts = leave_pdu
 		.as_ref()
@@ -507,18 +580,20 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 
 	self.db
 		.userroomid_leftstate
-		.raw_put(&userroom_id, Json(leave_pdu));
+		.batch_raw_put(&mut batch, &userroom_id, Json(leave_pdu));
 	self.db
 		.roomuserid_leftcount
-		.raw_aput::<8, _, _>(&roomuser_id, left_count);
+		.batch_raw_put(&mut batch, &roomuser_id, left_count);
 
-	self.set_other_membership_states(
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Left,
 		preserve_newer_invite,
 	);
+	self.db.userroomid_joined.apply_batch(batch);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
@@ -587,21 +662,26 @@ pub fn mark_as_knocked(
 		"mark_as_knocked called for user_id={} room_id={} new_count={} knocked_state={:?}",
 		user_id, room_id, new_count, knocked_state
 	);
+	let mut batch = Batch::new();
 
-	self.db
-		.userroomid_knockedstate
-		.raw_put(&userroom_id, Json(knocked_state.unwrap_or_default()));
+	self.db.userroomid_knockedstate.batch_raw_put(
+		&mut batch,
+		&userroom_id,
+		Json(knocked_state.unwrap_or_default()),
+	);
 	self.db
 		.roomuserid_knockedcount
-		.raw_aput::<8, _, _>(&roomuser_id, new_count);
+		.batch_raw_put(&mut batch, &roomuser_id, new_count);
 
-	self.set_other_membership_states(
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Knocked,
 		false,
 	);
+	self.db.userroomid_joined.apply_batch(batch);
 	self.unforget(room_id, user_id);
 }
 
@@ -666,24 +746,34 @@ pub async fn mark_as_invited(
 
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+	let mut batch = Batch::new();
 
-	self.db
-		.userroomid_invitestate
-		.raw_put(&userroom_id, Json(last_state.unwrap_or_default()));
-	self.db
-		.roomuserid_invitecount
-		.raw_aput::<8, _, _>(&roomuser_id, self.services.globals.next_count().unwrap());
+	self.db.userroomid_invitestate.batch_raw_put(
+		&mut batch,
+		&userroom_id,
+		Json(last_state.unwrap_or_default()),
+	);
+	self.db.roomuserid_invitecount.batch_raw_put(
+		&mut batch,
+		&roomuser_id,
+		self.services.globals.next_count().unwrap(),
+	);
 	self.db
 		.userroomid_invitesender
-		.insert(&userroom_id, sender_user);
+		.batch_put(&mut batch, &userroom_id, sender_user);
 
-	self.set_other_membership_states(
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Invited,
 		false,
 	);
+	self.db
+		.roomuserid_forgotten
+		.batch_delete(&mut batch, &roomuser_id);
+	self.db.userroomid_joined.apply_batch(batch);
 	self.unforget(room_id, user_id);
 
 	if let Some(servers) = invite_via.filter(is_not_empty!()) {
