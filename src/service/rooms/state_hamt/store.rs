@@ -1,0 +1,85 @@
+use std::sync::Arc;
+
+use conduwuit::{Result, err};
+use database::Map;
+use rezzy::hamt::{HamtNode, codec::PersistedInternalNode, hash::StructuralHash};
+
+/// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
+pub struct Store {
+	/// RocksDB column family containing the densely persisted nodes.
+	db: Arc<Map>,
+
+	/// Content-addressed cache of parsed HamtNodes in memory.
+	/// Deduplicates subtrees across different room states automatically since
+	/// the key is purely the StructuralHash.
+	node_cache: moka::sync::Cache<StructuralHash, Arc<HamtNode<u64, u64>>>,
+}
+
+impl Store {
+	pub fn new(db: Arc<Map>) -> Self {
+		// Use a generic capacity for now. In a full production setup, this
+		// could be wired to a config value like other caches.
+		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
+
+		Self { db, node_cache }
+	}
+
+	/// Fetches a node by its structural hash synchronously (for the resolver).
+	///
+	/// Checks the memory cache first. On miss, reads from RocksDB and
+	/// parses the dense format into an in-memory `HamtNode`.
+	pub fn get_node_blocking(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
+		if let Some(node) = self.node_cache.get(hash) {
+			return Ok(node);
+		}
+
+		let bytes = self.db.get_blocking(hash)?;
+		if bytes.is_empty() {
+			return Err(err!(Request(NotFound("State HAMT node not found in database."))));
+		}
+
+		let persisted = PersistedInternalNode::<u64, u64>::decode_v1(&bytes)
+			.map_err(|e| err!(Database(error!("{e}"))))?;
+
+		let node =
+			Arc::new(HamtNode::try_from(persisted).map_err(|e| err!(Database(error!("{e}"))))?);
+
+		self.node_cache.insert(*hash, node.clone());
+
+		Ok(node)
+	}
+
+	/// Persists a node to RocksDB and populates the cache.
+	pub fn put_node(&self, node: Arc<HamtNode<u64, u64>>) {
+		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
+		let bytes = persisted.encode_v1();
+
+		// Cache it immediately so concurrent reads can hit memory
+		self.node_cache.insert(node.structural_hash, node);
+
+		self.db.insert(&persisted.structural_hash, &bytes);
+	}
+
+	/// Provides a synchronous resolver closure for `isolate_delta`.
+	///
+	/// # Important Architecture Note
+	/// `isolate_delta` is synchronous and `#![no_std]` in `rezzy`. However,
+	/// it triggers lazy node resolutions which require hitting the database.
+	/// Because this closure runs in a sync context but must perform blocking
+	/// I/O, we MUST wrap the execution in `tokio::task::block_in_place`.
+	///
+	/// This strictly requires a multi-threaded Tokio runtime. It will panic on
+	/// a single-threaded runtime. It also pins the current worker thread for
+	/// the duration of the `isolate_delta` walk if multiple resolutions
+	/// happen.
+	pub fn get_blocking_resolver(
+		&self,
+	) -> impl FnMut(&StructuralHash) -> Arc<HamtNode<u64, u64>> + '_ {
+		move |hash: &StructuralHash| {
+			tokio::task::block_in_place(|| {
+				self.get_node_blocking(hash)
+					.expect("Failed to resolve HAMT node during diff")
+			})
+		}
+	}
+}
