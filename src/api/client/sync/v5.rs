@@ -785,6 +785,13 @@ async fn build_sync_events_v5(
 		all_left_rooms
 	);
 
+	let allowed_rooms: BTreeSet<OwnedRoomId> = all_joined_rooms
+		.iter()
+		.chain(all_invited_rooms.iter())
+		.chain(all_knocked_rooms.iter())
+		.cloned()
+		.collect();
+
 	let all_joined_rooms = all_joined_rooms.iter().map(AsRef::as_ref);
 	let all_invited_rooms = all_invited_rooms.iter().map(AsRef::as_ref);
 	let all_knocked_rooms = all_knocked_rooms.iter().map(AsRef::as_ref);
@@ -852,6 +859,7 @@ async fn build_sync_events_v5(
 		sync_info,
 		next_batch,
 		known_rooms,
+		&allowed_rooms,
 		required_state_excludes,
 		CachePolicy { endpoint, persist: persist_cache },
 		&mut todo_rooms,
@@ -863,6 +871,7 @@ async fn build_sync_events_v5(
 		sender_user,
 		next_batch,
 		all_invited_rooms.clone(),
+		all_knocked_rooms.clone(),
 		&todo_rooms,
 		&mut response,
 		body,
@@ -901,17 +910,23 @@ fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
 		.any(|room| !room.timeline.is_empty())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_subscriptions(
 	services: &Services,
 	(sender_user, sender_device, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	known_rooms: &KnownRooms,
+	allowed_rooms: &BTreeSet<OwnedRoomId>,
 	required_state_excludes: Option<&CompatRequiredStateExcludes>,
 	cache_policy: CachePolicy,
 	todo_rooms: &mut TodoRooms,
 ) {
 	let mut known_subscription_rooms = BTreeSet::new();
 	for (room_id, room) in &body.room_subscriptions {
+		if !allowed_rooms.contains(room_id) {
+			continue;
+		}
+
 		let not_exists = services.rooms.metadata.exists(room_id).eq(&false);
 
 		let is_disabled = services.rooms.metadata.is_disabled(room_id);
@@ -1145,6 +1160,7 @@ async fn process_rooms<'a, Rooms>(
 	sender_user: &UserId,
 	next_batch: u64,
 	all_invited_rooms: Rooms,
+	all_knocked_rooms: Rooms,
 	todo_rooms: &TodoRooms,
 	response: &mut sync_events::v5::Response,
 	body: &sync_events::v5::Request,
@@ -1168,11 +1184,46 @@ where
 		let (timeline_pdus, limited, prev_batch);
 		let new_room_id: &RoomId = (*room_id).as_ref();
 		if all_invited_rooms.clone().any(is_equal_to!(new_room_id)) {
+			let Ok(invite_count) = services
+				.rooms
+				.state_cache
+				.get_invite_count(room_id, sender_user)
+				.await
+			else {
+				continue;
+			};
+
+			if *roomsince >= invite_count {
+				continue;
+			}
+
 			// TODO: figure out a timestamp we can use for remote invites
 			invite_state = services
 				.rooms
 				.state_cache
 				.invite_state(sender_user, room_id)
+				.await
+				.ok();
+
+			(timeline_pdus, limited, prev_batch) = (VecDeque::new(), true, None);
+		} else if all_knocked_rooms.clone().any(is_equal_to!(new_room_id)) {
+			let Ok(knock_count) = services
+				.rooms
+				.state_cache
+				.get_knock_count(room_id, sender_user)
+				.await
+			else {
+				continue;
+			};
+
+			if *roomsince >= knock_count {
+				continue;
+			}
+
+			invite_state = services
+				.rooms
+				.state_cache
+				.knock_state(sender_user, room_id)
 				.await
 				.ok();
 
