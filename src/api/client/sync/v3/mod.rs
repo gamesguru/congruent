@@ -449,12 +449,29 @@ pub(crate) async fn build_sync_events(
 			}
 		})
 		.fold_default(|mut invited_rooms: BTreeMap<_, _>, (room_id, invite_state)| async move {
-			let invite_count = services
+			let invite_count = match services
 				.rooms
 				.state_cache
 				.get_invite_count(&room_id, syncing_user)
 				.await
-				.ok();
+			{
+				| Ok(invite_count) => Some(invite_count),
+				| Err(err) => {
+					warn!(
+						target: "sync_invite_debug",
+						%room_id,
+						%syncing_user,
+						?err,
+						"invite state present with no invite count; repairing"
+					);
+					services
+						.rooms
+						.state_cache
+						.repair_invite_count(&room_id, syncing_user)
+						.await
+						.ok()
+				},
+			};
 
 			// only sync this invite if it was sent after the last /sync call
 			let include_invite = match (last_sync_end_count, invite_count) {
@@ -497,12 +514,29 @@ pub(crate) async fn build_sync_events(
 		.state_cache
 		.rooms_knocked(syncing_user)
 		.fold_default(|mut knocked_rooms: BTreeMap<_, _>, (room_id, knock_state)| async move {
-			let knock_count = services
+			let knock_count = match services
 				.rooms
 				.state_cache
 				.get_knock_count(&room_id, syncing_user)
 				.await
-				.ok();
+			{
+				| Ok(knock_count) => Some(knock_count),
+				| Err(err) => {
+					warn!(
+						target: "knock_debug",
+						%room_id,
+						%syncing_user,
+						?err,
+						"knock state present with no knock count; repairing"
+					);
+					services
+						.rooms
+						.state_cache
+						.repair_knock_count(&room_id, syncing_user)
+						.await
+						.ok()
+				},
+			};
 
 			tracing::info!(
 				target: "knock_debug",
