@@ -700,6 +700,15 @@ pub async fn mark_as_invited(
 #[implement(super::Service)]
 #[tracing::instrument(level = "debug", skip(self))]
 pub async fn repair_invite_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
+	// Serialize the repair against membership updates for the same room so we
+	// do not resurrect a count that was legitimately removed or overwrite a
+	// newer one that landed while we were between read and write.
+	let _state_lock = self.services.state.mutex.lock(room_id).await;
+
+	if let Ok(invite_count) = self.get_invite_count(room_id, user_id).await {
+		return Ok(invite_count);
+	}
+
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let invite_count = self.services.globals.next_count()?;
@@ -713,6 +722,15 @@ pub async fn repair_invite_count(&self, room_id: &RoomId, user_id: &UserId) -> R
 #[implement(super::Service)]
 #[tracing::instrument(level = "debug", skip(self))]
 pub async fn repair_knock_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
+	// Serialize the repair against membership updates for the same room so we
+	// do not resurrect a count that was legitimately removed or overwrite a
+	// newer one that landed while we were between read and write.
+	let _state_lock = self.services.state.mutex.lock(room_id).await;
+
+	if let Ok(knock_count) = self.get_knock_count(room_id, user_id).await {
+		return Ok(knock_count);
+	}
+
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 	let knock_count = self.services.globals.next_count()?;
