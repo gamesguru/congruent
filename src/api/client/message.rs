@@ -183,6 +183,7 @@ pub(crate) async fn get_message_events_route(
 	let mut filtered_event = 0_usize;
 	let mut filtered_ignored = 0_usize;
 	let mut filtered_visibility = 0_usize;
+	let mut skipped_boundary = false;
 
 	let mut stream = it;
 	while let Some(item) = stream.next().await {
@@ -194,6 +195,16 @@ pub(crate) async fn get_message_events_route(
 			%token, event_id = %pdu.event_id(), event_type = %pdu.kind(),
 			"/messages: raw item consumed from topo stream"
 		);
+
+		if matches!(body.dir, Direction::Backward) && !skipped_boundary && token == from {
+			skipped_boundary = true;
+			info!(
+				target: "pagination_debug",
+				%token, event_id = %pdu.event_id(),
+				"/messages: skipped exact backward boundary to avoid overlap"
+			);
+			continue;
+		}
 
 		if Some(token) == to {
 			break;

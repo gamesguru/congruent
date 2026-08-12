@@ -1917,15 +1917,15 @@ impl Data {
 			// Legacy tokens are stream positions, not concrete topo cursors. When
 			// seeking them from u64::MAX depth, exclude events which arrived after the
 			// sync position by count. Concrete t<depth>_<count> tokens instead use the
-			// exact topo boundary filter below, which still admits older events inserted
-			// later with higher stream positions.
+			// inclusive topo boundary filter below, which still admits older events
+			// inserted later with higher stream positions.
 			let count_ceiling = until.is_legacy().then_some(until.pdu_count);
 
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
 				.rev_raw_stream_from(&topo_key)
 				.ready_try_filter_map(move |(key, val)| match &token_topo_key {
-					| Some(token_topo_key) if key >= token_topo_key.as_slice() => Ok(None),
+					| Some(token_topo_key) if key > token_topo_key.as_slice() => Ok(None),
 					| _ => Ok(Some((key, val))),
 				});
 			Ok(self
