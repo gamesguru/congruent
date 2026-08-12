@@ -318,11 +318,6 @@ features = [
 version = "2.0.12"
 default-features = false
 
-# Used when hashing the state
-[workspace.dependencies.ring]
-version = "0.17.14"
-default-features = false
-
 # Used to make working with iterators easier, was already a transitive depdendency
 [workspace.dependencies.itertools]
 version = "0.14.0"
