@@ -172,9 +172,6 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: complement-src/go.sum
 
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
-
       - name: Install just
         run: cargo install just --locked --version 1.34.0
 
