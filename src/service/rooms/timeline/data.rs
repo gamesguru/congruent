@@ -1882,11 +1882,7 @@ impl Data {
 				.to_vec();
 
 			let current = self
-				.count_to_id(
-					room_id,
-					until.pdu_count.saturating_inc(Direction::Backward),
-					Direction::Backward,
-				)
+				.count_to_id(room_id, until.pdu_count, Direction::Backward)
 				.await?;
 
 			let token_topo_key = if until.is_legacy() {
