@@ -93,34 +93,15 @@ where
 		for aid in incoming_pdu.auth_events() {
 			let exists = self.services.timeline.pdu_exists(aid).await;
 			if !exists {
-				if !is_forward_extremity {
-					self.services
-						.pdu_metadata
-						.mark_event_rejected(
-							incoming_pdu.event_id(),
-							RejectionCode::MissingAuthEventsAfterStateIdsRetry.tag(),
-						)
-						.await;
-					info!(
-						event_id = %incoming_pdu.event_id(),
-						auth_event_id = %aid,
-						"Deferring prev-event timeline upgrade until missing auth event is recovered"
-					);
-					return Ok(None);
-				}
-
-				// This is the forward-extremity (top-level) event itself, so
-				// unlike the deferred case above we do need to answer the
-				// caller with an error now rather than silently swallowing
-				// it. But `aid` merely being absent locally is a resolution
-				// failure, not evidence it was ever rejected -- classify it
-				// with the retryable `MissingAuthEvent` (mirrors
-				// handle_outlier_pdu's own classification for the same
-				// situation), not the deliberately-permanent
-				// `DependsOnRejectedAuthEvent`. Conflating the two would
-				// permanently poison this event even though a later
-				// successful backfill/state fetch could supply `aid` and
-				// let a fresh attempt reach a different, correct verdict.
+				// An absent auth event is a resolution failure, not evidence
+				// it was ever rejected -- classify it with the retryable
+				// `MissingAuthEvent` (mirrors handle_outlier_pdu's own
+				// classification for the same situation), not the
+				// deliberately-permanent `DependsOnRejectedAuthEvent`.
+				// Conflating the two would permanently poison this event even
+				// though a later successful backfill/state fetch could supply
+				// `aid` and let a fresh attempt reach a different, correct
+				// verdict.
 				info!(
 					"Rejecting incoming event {} which depends on missing auth event {aid}",
 					incoming_pdu.event_id()

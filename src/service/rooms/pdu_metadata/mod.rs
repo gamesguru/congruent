@@ -90,9 +90,6 @@ pub enum RejectionCode {
 	/// attempt (e.g. once a sibling event fills in the gap, or federation
 	/// recovers) may succeed where this one didn't.
 	PrevEventUnknownStateIdsFailed,
-	/// `/state_ids` was retried and auth events were still missing
-	/// afterward. Retryable for the same reason as the two above.
-	MissingAuthEventsAfterStateIdsRetry,
 }
 
 impl RejectionCode {
@@ -113,8 +110,6 @@ impl RejectionCode {
 			| Self::StructurallyInvalidInGetMissingEvents =>
 				"structurally_invalid_in_get_missing_events",
 			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
-			| Self::MissingAuthEventsAfterStateIdsRetry =>
-				"missing_auth_events_after_state_ids_retry",
 		}
 	}
 
@@ -128,7 +123,6 @@ impl RejectionCode {
 			Self::MissingAuthEvent
 				| Self::StructurallyInvalidInGetMissingEvents
 				| Self::PrevEventUnknownStateIdsFailed
-				| Self::MissingAuthEventsAfterStateIdsRetry
 		)
 	}
 
@@ -160,7 +154,6 @@ impl RejectionCode {
 			Self::AuthCheckFailed,
 			Self::StructurallyInvalidInGetMissingEvents,
 			Self::PrevEventUnknownStateIdsFailed,
-			Self::MissingAuthEventsAfterStateIdsRetry,
 		]
 		.into_iter()
 		.find(|code| code.tag() == tag)
