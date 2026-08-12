@@ -172,6 +172,9 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: complement-src/go.sum
 
+      - name: jq version
+        run: jq --version
+
       - name: Configure Docker Network Firewall
         run: |
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
