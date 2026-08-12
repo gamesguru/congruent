@@ -199,6 +199,7 @@ pub async fn backfill_if_required(
 	// prev_events. This matches Synapse's behavior where backfilled events create
 	// new backward extremities that are discovered on subsequent pagination calls.
 	let backfill_limit: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
+	let scan_limit = usize::try_from(backfill_limit).expect("u32 fits in usize");
 	let mut budget = 5_u32;
 
 	loop {
@@ -209,7 +210,7 @@ pub async fn backfill_if_required(
 		let mut scanned = 0_usize;
 		let mut pdus = self
 			.pdus_rev(room_id, std::ops::Bound::Included(from))
-			.take(limit)
+			.take(scan_limit)
 			.boxed();
 		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
 			scanned = scanned.saturating_add(1);
@@ -250,7 +251,7 @@ pub async fn backfill_if_required(
 		if gaps.is_empty() {
 			info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
 			self.backfill_gap_free_cache
-				.insert(room_id.to_owned(), (from, limit));
+				.insert(room_id.to_owned(), (from, scan_limit));
 			return Ok(());
 		}
 
