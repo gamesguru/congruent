@@ -238,4 +238,4 @@ if [ "$TEST_EXIT_CODE" -ne 0 ]; then
     exit "$TEST_EXIT_CODE"
 fi
 
-exit 0
+exit "$TEST_EXIT_CODE"
