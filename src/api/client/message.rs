@@ -336,16 +336,32 @@ async fn normalize_backward_from_token(
 	pin_mut!(stream);
 	let latest = stream.try_next().await?.map(at!(0)).unwrap_or(from);
 
+	// `topo_pdus_rev` treats its `until` token as an exclusive boundary --
+	// "the caller already consumed this position, don't repeat it" -- which is
+	// correct for a real resume token (one returned to a client as `end`) but
+	// wrong here: the caller hasn't seen anything yet, they just asked for the
+	// newest messages without supplying a `from`. Returning `latest` verbatim
+	// would make the boundary filter (`key >= token_topo_key`, keyed primarily
+	// on depth) exclude the newest event's own key, silently dropping it from
+	// every from-less backward pagination. Keep the real `pdu_count` (still
+	// needed by `backfill_if_required` and lazy-loading below), but clamp
+	// `depth` to u64::MAX so the boundary sorts after every real event's key
+	// and excludes nothing.
+	let normalized = TopoToken {
+		depth: u64::MAX,
+		pdu_count: latest.pdu_count,
+	};
+
 	info!(
 		target: "pagination_debug",
 		%room_id,
 		requested_from = %from,
-		normalized_from = %latest,
+		normalized_from = %normalized,
 		?last_timeline_count,
 		"/messages: clamped backward pagination token to latest known timeline position",
 	);
 
-	Ok(latest)
+	Ok(normalized)
 }
 
 pub(crate) async fn lazy_loading_witness<'a, I>(
