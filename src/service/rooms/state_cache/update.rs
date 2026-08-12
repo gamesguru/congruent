@@ -693,53 +693,6 @@ pub async fn mark_as_invited(
 	Ok(())
 }
 
-/// Repair a missing invite count by allocating a fresh count and writing it.
-///
-/// This is a read-repair path for split membership state: the invite payload
-/// exists, but the corresponding invite counter row is absent.
-#[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self))]
-pub async fn repair_invite_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
-	// Serialize the repair against membership updates for the same room so we
-	// do not resurrect a count that was legitimately removed or overwrite a
-	// newer one that landed while we were between read and write.
-	let _state_lock = self.services.state.mutex.lock(room_id).await;
-
-	if let Ok(invite_count) = self.get_invite_count(room_id, user_id).await {
-		return Ok(invite_count);
-	}
-
-	let roomuser_id = (room_id, user_id);
-	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
-	let invite_count = self.services.globals.next_count()?;
-	self.db
-		.roomuserid_invitecount
-		.raw_aput::<8, _, _>(&roomuser_id, invite_count);
-	Ok(invite_count)
-}
-
-/// Repair a missing knock count by allocating a fresh count and writing it.
-#[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self))]
-pub async fn repair_knock_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
-	// Serialize the repair against membership updates for the same room so we
-	// do not resurrect a count that was legitimately removed or overwrite a
-	// newer one that landed while we were between read and write.
-	let _state_lock = self.services.state.mutex.lock(room_id).await;
-
-	if let Ok(knock_count) = self.get_knock_count(room_id, user_id).await {
-		return Ok(knock_count);
-	}
-
-	let roomuser_id = (room_id, user_id);
-	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
-	let knock_count = self.services.globals.next_count()?;
-	self.db
-		.roomuserid_knockedcount
-		.raw_aput::<8, _, _>(&roomuser_id, knock_count);
-	Ok(knock_count)
-}
-
 /// Rebuild the membership cache from the current room state snapshot.
 /// Extracted from the reorder_timeline logic for reuse.
 #[implement(super::Service)]

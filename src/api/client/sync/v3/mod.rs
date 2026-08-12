@@ -449,12 +449,12 @@ pub(crate) async fn build_sync_events(
 			}
 		})
 		.fold_default(|mut invited_rooms: BTreeMap<_, _>, (room_id, invite_state)| async move {
-			let invite_count = match services
+			let invite_count = services
 				.rooms
 				.state_cache
 				.get_invite_count(&room_id, syncing_user)
-				.await
-			{
+				.await;
+			let invite_count = match invite_count {
 				| Ok(invite_count) => Some(invite_count),
 				| Err(err) => {
 					warn!(
@@ -462,9 +462,9 @@ pub(crate) async fn build_sync_events(
 						%room_id,
 						%syncing_user,
 						?err,
-						"invite state present with no invite count; using current sync watermark"
+						"invite state present with no invite count"
 					);
-					Some(current_count.saturating_add(1))
+					None
 				},
 			};
 
@@ -509,12 +509,12 @@ pub(crate) async fn build_sync_events(
 		.state_cache
 		.rooms_knocked(syncing_user)
 		.fold_default(|mut knocked_rooms: BTreeMap<_, _>, (room_id, knock_state)| async move {
-			let knock_count = match services
+			let knock_count = services
 				.rooms
 				.state_cache
 				.get_knock_count(&room_id, syncing_user)
-				.await
-			{
+				.await;
+			let knock_count = match knock_count {
 				| Ok(knock_count) => Some(knock_count),
 				| Err(err) => {
 					warn!(
@@ -522,9 +522,9 @@ pub(crate) async fn build_sync_events(
 						%room_id,
 						%syncing_user,
 						?err,
-						"knock state present with no knock count; using current sync watermark"
+						"knock state present with no knock count"
 					);
-					Some(current_count.saturating_add(1))
+					None
 				},
 			};
 
