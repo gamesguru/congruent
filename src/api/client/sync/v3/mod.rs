@@ -457,7 +457,13 @@ pub(crate) async fn build_sync_events(
 				.ok();
 
 			// only sync this invite if it was sent after the last /sync call
-			if last_sync_end_count < invite_count {
+			let include_invite = match (last_sync_end_count, invite_count) {
+				| (None, _) | (_, None) => true,
+				| (Some(last_sync_end_count), Some(invite_count)) =>
+					last_sync_end_count < invite_count,
+			};
+
+			if include_invite {
 				conduwuit::info!(
 					target: "sync_invite_debug",
 					%room_id,
@@ -505,7 +511,13 @@ pub(crate) async fn build_sync_events(
 			);
 
 			// only sync this knock if it was sent after the last /sync call
-			if last_sync_end_count < knock_count {
+			let include_knock = match (last_sync_end_count, knock_count) {
+				| (None, _) | (_, None) => true,
+				| (Some(last_sync_end_count), Some(knock_count)) =>
+					last_sync_end_count < knock_count,
+			};
+
+			if include_knock {
 				let knocked_room = KnockedRoom {
 					knock_state: KnockState { events: knock_state },
 				};
