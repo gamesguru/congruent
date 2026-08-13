@@ -486,3 +486,6 @@ impl Service {
 			.await
 	}
 }
+
+#[cfg(test)]
+mod tests;

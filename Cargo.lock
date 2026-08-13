@@ -1256,6 +1256,7 @@ dependencies = [
  "reqwest 0.13.2",
  "rezzy",
  "ruma",
+ "rustls",
  "rustyline-async",
  "sd-notify",
  "serde",

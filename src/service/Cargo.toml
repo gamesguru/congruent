@@ -114,6 +114,7 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["toml"] }
+rustls.workspace = true
 
 [lints]
 workspace = true
