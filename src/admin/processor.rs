@@ -338,4 +338,5 @@ fn looks_like_markdown(s: &str) -> bool {
 		|| s.contains("```")
 		|| s.contains("**")
 		|| s.contains("](")
+		|| s.lines().any(|line| line.trim_start().starts_with('|'))
 }
