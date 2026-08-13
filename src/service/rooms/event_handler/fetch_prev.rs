@@ -291,21 +291,72 @@ where
 	// timeline!
 	for eid in &sorted_eids {
 		if let Some((_, val)) = candidate_events.remove(eid) {
-			if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
+			let handled = match Box::pin(self.handle_outlier_pdu(
 				origin,
 				Some(create_event),
 				eid,
 				room_id,
-				val,
+				val.clone(),
 				false, // auth_events_known
 				false, // skip_sig_verify
 				Some(&room_version_id),
 			))
 			.await
 			{
+				| Ok(res) => Some(res),
+				| Err(conduwuit::Error::MissingAuthEvents(missing)) => {
+					// `fetch_prev` used to drop this path immediately, which meant
+					// its direct outlier handling never benefited from the same
+					// bounded auth-event recovery used elsewhere. Reuse the outlier
+					// fetch pipeline once here so the existing routing / backoff
+					// machinery can try to fill the gap before we retry.
+					let fetched = self
+						.fetch_and_handle_outliers(
+							origin,
+							missing.iter().map(AsRef::as_ref),
+							Some(create_event),
+							room_id,
+							false,
+							Some(&room_version_id),
+							None,
+						)
+						.await;
+					if fetched.is_empty() {
+						info!(
+							%eid,
+							"fetch_prev /event fallback fetched no missing auth events"
+						);
+					}
+
+					match Box::pin(self.handle_outlier_pdu(
+						origin,
+						Some(create_event),
+						eid,
+						room_id,
+						val,
+						false, // auth_events_known
+						false, // skip_sig_verify
+						Some(&room_version_id),
+					))
+					.await
+					{
+						| Ok(res) => Some(res),
+						| Err(e) => {
+							info!(
+								"Failed to handle outlier after auth-event fallback: {eid}: {e}"
+							);
+							None
+						},
+					}
+				},
+				| Err(e) => {
+					info!("Failed to handle outlier: {eid}: {e}");
+					None
+				},
+			};
+
+			if let Some((pdu, val)) = handled {
 				eventid_info.insert(eid.clone(), (pdu, val));
-			} else {
-				info!("Failed to handle outlier: {eid}");
 			}
 		}
 	}

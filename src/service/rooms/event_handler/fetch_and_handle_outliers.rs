@@ -83,6 +83,13 @@ where
 	let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::with_capacity(128);
 	let mut auth_chain_fetched: HashSet<OwnedEventId> = HashSet::with_capacity(128);
 	let mut individual_auth_fetch_attempted: HashSet<OwnedEventId> = HashSet::new();
+	// `graph` membership means "known to the topological sort", not "we've
+	// issued a fetch for this ID" -- tier 1 below inserts placeholder graph
+	// nodes for missing auth events regardless of whether the bulk fetch
+	// actually resolves them, so gating the individual-fetch fallback on
+	// `!graph.contains_key(id)` would always be false by the time it runs.
+	// Track fetch-attempted IDs separately.
+	let mut individually_fetch_requested: HashSet<OwnedEventId> = HashSet::new();
 	let mut active_fetches = FuturesUnordered::new();
 	let fetch_concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(
 		self.services.server.concurrency_scaled(2),
@@ -616,8 +623,10 @@ where
 								missing.len()
 							);
 							for auth_event in missing {
-								if !graph.contains_key(auth_event) {
+								if individually_fetch_requested.insert(auth_event.clone()) {
 									push_fetch(auth_event.clone(), true, &mut active_fetches);
+								}
+								if !graph.contains_key(auth_event) {
 									graph.insert(auth_event.clone(), HashSet::new());
 								}
 							}
