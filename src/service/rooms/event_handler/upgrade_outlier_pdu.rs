@@ -637,7 +637,6 @@ where
 			state_ids_compressed,
 			None,
 			soft_fail,
-			false,
 			&state_lock,
 			room_id,
 		))
