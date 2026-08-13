@@ -123,7 +123,7 @@ pub struct Service {
 	/// form sidesteps that while still allowing the cache to survive
 	/// unrelated writes: the room state hash is the invalidation token.
 	pub backfill_gap_free_cache:
-		moka::sync::Cache<OwnedRoomId, (ShortStateHash, PduCount, usize)>,
+		moka::sync::Cache<OwnedRoomId, (ShortStateHash, TopoToken, usize)>,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
@@ -248,6 +248,21 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	#[inline]
+	fn backfill_gap_free_cache_hit(
+		cached: Option<(ShortStateHash, TopoToken, usize)>,
+		current_statehash: ShortStateHash,
+		from: TopoToken,
+		scan_limit: usize,
+	) -> bool {
+		current_statehash != 0
+			&& cached.is_some_and(|(verified_statehash, verified_from, verified_limit)| {
+				verified_statehash == current_statehash
+					&& verified_from == from
+					&& verified_limit >= scan_limit
+			})
+	}
+
 	/// Index a PDU's body for full-text search if it's a RoomMessage.
 	/// Encapsulates the pattern duplicated across append, backfill, and heal.
 	pub(super) fn index_pdu_search(
@@ -491,6 +506,46 @@ impl Service {
 	#[inline]
 	pub async fn reindex_timeline(&self, room_id: &RoomId) -> Result<usize> {
 		self.db.reindex_timeline(room_id).await
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn backfill_gap_cache_requires_matching_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_rejects_zero_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_requires_sufficient_limit() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 100));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
 	}
 }
 

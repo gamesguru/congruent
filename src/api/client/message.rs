@@ -153,7 +153,7 @@ pub(crate) async fn get_message_events_route(
 		services
 			.rooms
 			.timeline
-			.backfill_if_required(room_id, from.pdu_count, limit)
+			.backfill_if_required(room_id, from, limit)
 			.boxed()
 			.await
 			.log_err()

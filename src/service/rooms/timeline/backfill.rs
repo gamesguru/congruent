@@ -29,6 +29,7 @@ use ruma::{
 };
 use serde_json::value::RawValue as RawJsonValue;
 
+use super::TopoToken;
 use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
@@ -86,7 +87,7 @@ impl RemoteHistoryBudget {
 pub async fn backfill_if_required(
 	&self,
 	room_id: &RoomId,
-	from: PduCount,
+	from: TopoToken,
 	limit: usize,
 ) -> Result<()> {
 	let joined_count = self
@@ -139,13 +140,12 @@ pub async fn backfill_if_required(
 		.get_room_shortstatehash(room_id)
 		.await
 		.unwrap_or(0);
-	if current_shortstatehash != 0
-		&& let Some((verified_statehash, verified_from, verified_limit)) =
-			self.backfill_gap_free_cache.get(&room_id.to_owned())
-		&& verified_statehash == current_shortstatehash
-		&& verified_from == from
-		&& verified_limit >= usize::try_from(scan_limit_u32).unwrap_or(100)
-	{
+	if Self::backfill_gap_free_cache_hit(
+		self.backfill_gap_free_cache.get(&room_id.to_owned()),
+		current_shortstatehash,
+		from,
+		usize::try_from(scan_limit_u32).unwrap_or(100),
+	) {
 		debug!(
 			%room_id, %from, %limit,
 			"backfill: skipping scan, already verified gap-free for this state window"
@@ -220,17 +220,17 @@ pub async fn backfill_if_required(
 			std::collections::HashMap::new();
 		let mut scanned = 0_usize;
 		let mut pdus = self
-			.pdus_rev(room_id, std::ops::Bound::Included(from))
+			.topo_pdus_rev(room_id, Some(from))
 			.take(scan_limit.saturating_add(1))
 			.boxed();
-		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
+		while let Some(Ok((topo_token, pdu))) = pdus.next().await {
 			if scanned == scan_limit {
 				saw_extra_timeline_pdu = true;
 				break;
 			}
 			scanned = scanned.saturating_add(1);
 			debug!(
-				?pdu_id,
+				?topo_token,
 				event_id = %pdu.event_id,
 				prev_events = ?pdu.prev_events,
 				"backfill: scanned timeline PDU"
@@ -281,10 +281,8 @@ pub async fn backfill_if_required(
 			}
 
 			if current_shortstatehash != 0 {
-				self.backfill_gap_free_cache.insert(
-					room_id.to_owned(),
-					(current_shortstatehash, from, scan_limit),
-				);
+				self.backfill_gap_free_cache
+					.insert(room_id.to_owned(), (current_shortstatehash, from, scan_limit));
 			}
 			return Ok(());
 		}
