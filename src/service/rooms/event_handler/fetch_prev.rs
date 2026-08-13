@@ -228,64 +228,64 @@ where
 		}
 	}
 
-	let candidate_events: HashMap<OwnedEventId, ruma::CanonicalJsonObject> = unknown_events
-		.into_iter()
-		.stream()
-		.broad_filter_map({
-			move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
-				if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) = val.remove("unsigned")
-				{
-					unsigned_obj.remove("prev_content");
-					unsigned_obj.remove("prev_sender");
-					unsigned_obj.remove("replaces_state");
-					if !unsigned_obj.is_empty() {
-						val.insert(
-							"unsigned".to_owned(),
-							CanonicalJsonValue::Object(unsigned_obj),
-						);
+	let candidate_entries: Vec<(OwnedEventId, ruma::CanonicalJsonObject, PduEvent)> =
+		unknown_events
+			.into_iter()
+			.stream()
+			.broad_filter_map({
+				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
+					if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) =
+						val.remove("unsigned")
+					{
+						unsigned_obj.remove("prev_content");
+						unsigned_obj.remove("prev_sender");
+						unsigned_obj.remove("replaces_state");
+						if !unsigned_obj.is_empty() {
+							val.insert(
+								"unsigned".to_owned(),
+								CanonicalJsonValue::Object(unsigned_obj),
+							);
+						}
 					}
+
+					let mut parse_val = val.clone();
+					parse_val.insert(
+						"event_id".to_owned(),
+						CanonicalJsonValue::String(eid.as_str().to_owned()),
+					);
+
+					if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id))
+						&& check_room_id(room_id, &pdu).is_ok()
+					{
+						return Some((eid, val, pdu));
+					}
+
+					None
 				}
+			})
+			.collect()
+			.await;
 
-				let mut parse_val = val.clone();
-				parse_val.insert(
-					"event_id".to_owned(),
-					CanonicalJsonValue::String(eid.as_str().to_owned()),
-				);
+	let candidate_events: HashMap<OwnedEventId, ruma::CanonicalJsonObject> = candidate_entries
+		.iter()
+		.map(|(eid, val, _)| (eid.clone(), val.clone()))
+		.collect();
 
-				if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id))
-					&& check_room_id(room_id, &pdu).is_ok()
-				{
-					return Some((eid, val));
-				}
-
-				None
-			}
-		})
-		.collect()
-		.await;
+	let candidate_pdus: HashMap<OwnedEventId, PduEvent> = candidate_entries
+		.iter()
+		.map(|(eid, _, pdu)| (eid.clone(), pdu.clone()))
+		.collect();
 
 	let mut graph = HashMap::new();
 	let mut entries = HashMap::new();
-	for (eid, val) in &candidate_events {
-		let mut parse_val = val.clone();
-		parse_val
-			.insert("event_id".to_owned(), CanonicalJsonValue::String(eid.as_str().to_owned()));
-		let Ok(pdu) = PduEvent::from_id_val(eid, parse_val, Some(room_id)) else {
-			continue;
-		};
+	for (eid, pdu) in &candidate_pdus {
 		graph.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
 		entries
 			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 	let state_ids_anchor = sorted_eids.last().and_then(|prev_id| {
-		let val = candidate_events.get(prev_id)?;
-		let mut parse_val = val.clone();
-		parse_val.insert(
-			"event_id".to_owned(),
-			CanonicalJsonValue::String(prev_id.as_str().to_owned()),
-		);
-		let pdu = PduEvent::from_id_val(prev_id, parse_val, Some(room_id)).ok()?;
+		let pdu = candidate_pdus.get(prev_id)?;
 		let mut prev_events = pdu.prev_events();
 		let first_prev = prev_events.next()?.to_owned();
 		prev_events.next().is_none().then_some(first_prev)

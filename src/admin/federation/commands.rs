@@ -181,20 +181,19 @@ pub(super) async fn sending_queue(
 			.await;
 	}
 
-	let destinations: Vec<_> = self
-		.services
-		.sending
-		.queued_destinations()
-		.await
+	let destinations = self.services.sending.queued_destinations().await;
+	let destinations: Vec<_> = destinations
 		.into_iter()
-		.filter(|(dest, _, _)| match server.as_ref() {
-			| Some(filter) => dest == filter.as_str(),
-			| None => true,
-		})
+		.filter(|(dest, ..)| server.as_ref().is_none_or(|filter| dest == filter.as_str()))
 		.collect();
 
 	if destinations.is_empty() {
-		return self.write_str("Sending queue is empty.").await;
+		return match server {
+			| Some(server) =>
+				self.write_str(&format!("Sending queue is empty for {server}."))
+					.await,
+			| None => self.write_str("Sending queue is empty.").await,
+		};
 	}
 
 	let mut out = String::from("Outbound Sending Queue:\n```\n");
@@ -202,11 +201,6 @@ pub(super) async fn sending_queue(
 	let mut total_active = 0_usize;
 
 	for (dest, queued, active) in &destinations {
-		if let Some(ref filter) = server {
-			if dest != filter.as_str() {
-				continue;
-			}
-		}
 		total_queued = total_queued.saturating_add(*queued);
 		total_active = total_active.saturating_add(*active);
 		writeln!(out, "{dest:50}  queued={queued:>6}  active={active:>4}")?;

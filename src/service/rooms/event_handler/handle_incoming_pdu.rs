@@ -686,37 +686,37 @@ pub async fn process_timeline_upgrade(
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
+	let mut eventid_info: HashMap<
+		OwnedEventId,
+		(conduwuit::PduEvent, BTreeMap<String, CanonicalJsonValue>),
+	> = HashMap::new();
+
+	for prev_id in &sorted_prev_events {
+		let Some(val) = fetched_prev_events.get(prev_id).cloned() else {
+			continue;
+		};
+
+		if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
+			origin,
+			Some(create_event),
+			prev_id,
+			room_id,
+			val,
+			false,
+			false,
+			Some(&room_version_id),
+		))
+		.await
+		{
+			eventid_info.insert(prev_id.clone(), (pdu, val));
+		}
+	}
+
 	// Keep the actual write phase inside one flush boundary so prev-event
 	// repairs and the incoming event become visible together.
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
-			let mut eventid_info: HashMap<
-				OwnedEventId,
-				(conduwuit::PduEvent, BTreeMap<String, CanonicalJsonValue>),
-			> = HashMap::new();
-
-			for prev_id in &sorted_prev_events {
-				let Some(val) = fetched_prev_events.get(prev_id).cloned() else {
-					continue;
-				};
-
-				if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
-					origin,
-					Some(create_event),
-					prev_id,
-					room_id,
-					val,
-					false,
-					false,
-					Some(&room_version_id),
-				))
-				.await
-				{
-					eventid_info.insert(prev_id.clone(), (pdu, val));
-				}
-			}
-
 			sorted_prev_events
 				.iter()
 				.try_stream()

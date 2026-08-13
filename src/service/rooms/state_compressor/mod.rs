@@ -44,6 +44,12 @@ struct StateDiff {
 	removed: Arc<CompressedState>,
 }
 
+/// One frame in a compressed state stack.
+///
+/// `full_state` is only guaranteed to be `Some(...)` for the top-most frame
+/// returned by `load_shortstatehash_info` and related builders. Parent frames
+/// intentionally drop it once their children have been derived, so callers must
+/// only dereference the last frame's `full_state`.
 #[derive(Clone, Default)]
 pub struct ShortStateInfo {
 	pub shortstatehash: ShortStateHash,
