@@ -20,6 +20,7 @@ impl<'a> Batch<'a> {
 	}
 
 	pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, map: &Map, key: K, val: V) {
+		assert!(Arc::ptr_eq(self.db, map.db()), "map belongs to a different database engine");
 		self.batch.put_cf(&map.cf(), key.as_ref(), val.as_ref());
 	}
 

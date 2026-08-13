@@ -31,7 +31,7 @@ impl Store {
 	}
 
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
-		self.get_node_blocking(hash)
+		tokio::task::block_in_place(|| self.get_node_blocking(hash))
 	}
 
 	/// Fetches a node by its structural hash synchronously (for the resolver).

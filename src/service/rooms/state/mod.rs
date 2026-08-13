@@ -95,31 +95,37 @@ impl Service {
 		new_root_handle: &rezzy::hamt::RootHandle,
 		state_lock: &RoomMutexGuard,
 	) -> Result<()> {
-		let current_root = self.get_room_state_hamt(room_id).await?;
+		let current_root_res = self.get_room_state_hamt(room_id).await;
 
-		let old_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&current_root.structural_hash)?;
-		let new_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&new_root_handle.structural_hash)?;
+		let (added, removed) = tokio::task::block_in_place(|| {
+			let old_node = match &current_root_res {
+				| Ok(root) => self
+					.services
+					.state_hamt
+					.store
+					.get_node_blocking(&root.structural_hash)?,
+				| Err(e) if e.is_not_found() => rezzy::hamt::HamtNode::new_in_memory_only(),
+				| Err(e) => return Err(e.clone()),
+			};
+			let new_node = self
+				.services
+				.state_hamt
+				.store
+				.get_node_blocking(&new_root_handle.structural_hash)?;
 
-		let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
-			self.services.state_hamt.store.get_node_blocking(hash)
-		};
+			let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
+				self.services.state_hamt.store.get_node_blocking(hash)
+			};
 
-		let lattice = rezzy::state::LtHash::default();
-		let (added, removed) = rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
-			&old_node,
-			&lattice,
-			&new_node,
-			&lattice,
-			&mut resolver,
-		)?;
+			let lattice = rezzy::state::LtHash::default();
+			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
+				&old_node,
+				&lattice,
+				&new_node,
+				&lattice,
+				&mut resolver,
+			)
+		})?;
 
 		// resolve PDUs
 		let mut added_pdus = Vec::with_capacity(added.len());
