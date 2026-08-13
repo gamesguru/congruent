@@ -169,19 +169,20 @@ pub async fn room_state_get_hamt(
 		.await?;
 
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node_blocking(&root_handle.structural_hash)?;
 
-	let shorteventid = {
+	let shorteventid = tokio::task::block_in_place(|| {
+		let root_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&root_handle.structural_hash)?;
+
 		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
 		root_node
 			.search(room_id.as_bytes(), &shortstatekey, &mut resolver)
 			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
-			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))?
-	};
+			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
+	})?;
 
 	let event_id = self
 		.services
@@ -203,22 +204,23 @@ pub fn state_full_ids_hamt<'a>(
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(StateEventType, String, OwnedEventId)>> {
 	let structural_hash = root_handle.structural_hash;
-	let short_states_result = (|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-		let root_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&structural_hash)?;
-		let mut short_states = Vec::new();
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		root_node
-			.visit_entries(&mut resolver, &mut |&k, &v| {
-				short_states.push((k, v));
-				Ok(())
-			})
-			.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
-		Ok(short_states)
-	})();
+	let short_states_result =
+		tokio::task::block_in_place(|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+			let root_node = self
+				.services
+				.state_hamt
+				.store
+				.get_node_blocking(&structural_hash)?;
+			let mut short_states = Vec::new();
+			let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+			root_node
+				.visit_entries(&mut resolver, &mut |&k, &v| {
+					short_states.push((k, v));
+					Ok(())
+				})
+				.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+			Ok(short_states)
+		});
 
 	match short_states_result {
 		| Ok(short_states) => {
