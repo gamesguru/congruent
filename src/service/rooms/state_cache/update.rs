@@ -244,9 +244,9 @@ enum MembershipKind {
 
 #[allow(single_use_lifetimes)]
 #[implement(super::Service)]
-fn set_other_membership_states_into_batch<'a, 'b>(
+fn set_other_membership_states_into_batch<'a>(
 	&'a self,
-	batch: &'b mut Batch<'a>,
+	batch: &mut Batch<'a>,
 	userroom_id: &[u8],
 	roomuser_id: &[u8],
 	room_id: &RoomId,
