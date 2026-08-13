@@ -46,12 +46,18 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	new_room_leaves: Leaves,
 	soft_fail: bool,
 	resolved_state_applied: bool,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
+	ctx: AppendPduContext<'a>,
 ) -> Result<Option<RawPduId>>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
 	// We defer state association until after soft-fail checks to avoid persisting
 	// HAMT nodes and mappings for rejected/soft-failed events.
 
@@ -68,22 +74,13 @@ where
 		return Ok(None);
 	}
 
-	let previous_root_handle = self.services.state.get_room_state_hamt(room_id).await.ok();
-
 	let pdu_id = self
 		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, AppendPduContext {
 			state_lock,
 			room_id,
-			state_root_handle: None,
-			prev_state_root_handle: previous_root_handle,
+			state_root_handle,
+			prev_state_root_handle,
 		})
-		.await?;
-
-	// Publish the state association only after the timeline append succeeds so
-	// we never leave a room pointer on a state root whose event wasn't stored.
-	self.services
-		.state
-		.set_event_state(room_id, pdu, state_lock)
 		.await?;
 
 	// Process admin commands for federation events
@@ -211,6 +208,11 @@ where
 	// Insert pdu
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
 	drop(cork);
+
+	self.services
+		.state
+		.set_event_state_with_root(room_id, pdu, state_lock, state_root_handle.as_ref())
+		.await?;
 
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),

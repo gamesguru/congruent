@@ -189,7 +189,7 @@ async fn test_state_equivalence() {
 	let (root1, _) = services
 		.rooms
 		.state
-		.append_to_state(&event1, &room_id, &mutex)
+		.append_to_state(&event1, &room_id, &mutex, None)
 		.await
 		.expect("append 1 failed");
 	services
@@ -202,7 +202,7 @@ async fn test_state_equivalence() {
 	let (root2, _) = services
 		.rooms
 		.state
-		.append_to_state(&event2, &room_id, &mutex)
+		.append_to_state(&event2, &room_id, &mutex, None)
 		.await
 		.expect("append 2 failed");
 	services

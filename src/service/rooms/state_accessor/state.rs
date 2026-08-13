@@ -537,7 +537,8 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<boo
 	match self.load_full_state(shortstatehash).await {
 		| Ok(s) => Ok(s.is_empty()),
 		// load_full_state is not yet implemented for the legacy shortstatehash path;
-		// fall back to "not empty" so callers conservatively use this state.
+		// fall back to "empty" so joined sync uses current_shortstatehash and
+		// includes m.room.create for rooms that start at the timeline boundary.
 		| Err(e)
 			if e.is_not_found()
 				|| matches!(
@@ -547,7 +548,7 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<boo
 						_
 					)
 				) =>
-			Ok(false),
+			Ok(true),
 		| Err(e) => Err(e),
 	}
 }

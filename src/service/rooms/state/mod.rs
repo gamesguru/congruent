@@ -196,6 +196,18 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 	) -> Result<rezzy::hamt::RootHandle> {
+		self.set_event_state_with_root(room_id, new_pdu, state_lock, None)
+			.await
+	}
+
+	#[tracing::instrument(skip_all, level = "debug")]
+	pub async fn set_event_state_with_root(
+		&self,
+		room_id: &RoomId,
+		new_pdu: &PduEvent,
+		state_lock: &RoomMutexGuard,
+		state_root_handle: Option<&rezzy::hamt::RootHandle>,
+	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
 			.short
@@ -204,10 +216,14 @@ impl Service {
 
 		let is_state = new_pdu.state_key().is_some();
 		let (root_handle, new_node) = if is_state {
-			let (handle, node) = self.append_to_state(new_pdu, room_id, state_lock).await?;
+			let (handle, node) = self
+				.append_to_state(new_pdu, room_id, state_lock, state_root_handle)
+				.await?;
 			(handle, Some(node))
 		} else {
-			let root = self.get_room_state_hamt(room_id).await?;
+			let root = state_root_handle
+				.cloned()
+				.unwrap_or(self.get_room_state_hamt(room_id).await?);
 			(root, None)
 		};
 
@@ -248,6 +264,7 @@ impl Service {
 		new_pdu: &PduEvent,
 		room_id: &RoomId,
 		_state_lock: &RoomMutexGuard,
+		state_root_handle: Option<&rezzy::hamt::RootHandle>,
 	) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
 		let Some(state_key) = new_pdu.state_key() else {
 			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
@@ -261,7 +278,37 @@ impl Service {
 			.await;
 
 		let mut current: HashMap<ShortStateKey, OwnedEventId> =
-			if let Ok(root_handle) = self.get_room_state_hamt(room_id).await {
+			if let Some(root_handle) = state_root_handle {
+				let mut map = HashMap::new();
+				if let Ok(node) = self
+					.services
+					.state_hamt
+					.store
+					.get_node(&root_handle.structural_hash)
+				{
+					let mut short_events = Vec::new();
+					let _ = node.visit_entries(
+						&mut self.services.state_hamt.store.get_blocking_resolver(),
+						&mut |k, v| {
+							short_events.push((*k, *v));
+							Ok::<(), conduwuit::Error>(())
+						},
+					);
+					for (sk, se) in short_events {
+						if sk != new_shortstatekey {
+							if let Ok(eid) = self
+								.services
+								.short
+								.get_eventid_from_short::<OwnedEventId>(se)
+								.await
+							{
+								map.insert(sk, eid);
+							}
+						}
+					}
+				}
+				map
+			} else if let Ok(root_handle) = self.get_room_state_hamt(room_id).await {
 				let mut map = HashMap::new();
 				if let Ok(node) = self
 					.services

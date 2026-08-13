@@ -217,10 +217,13 @@ where
 		incoming_pdu.prev_events().count()
 	);
 
+	let mut new_room_state: Option<rezzy::hamt::RootHandle> = None;
+	let mut previous_root_handle: Option<rezzy::hamt::RootHandle> = None;
+
 	if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
-		// We also add state after incoming event to the fork states
+		// We also add state after incoming event to the fork states.
 		let mut state_after = state_at_incoming_event.clone();
 		let shortstatekey = self
 			.services
@@ -231,16 +234,13 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
-		let new_room_state = self
-			.resolve_state(room_id, &room_version_id, state_after)
-			.await?;
+		previous_root_handle = self.services.state.get_room_state_hamt(room_id).await.ok();
+		new_room_state = Some(
+			self.resolve_state(room_id, &room_version_id, state_after)
+				.await?,
+		);
 
 		debug!("Forcing new room state");
-		let state_lock = self.services.state.mutex.lock(room_id).await;
-		self.services
-			.state
-			.set_room_state_hamt(room_id, &new_room_state, &state_lock);
-
 		// Note: The legacy force_state updated joined counts and caches.
 		// For now we just add HAMT pointer (MSC4511 phase 2 changes).
 	}
@@ -304,26 +304,24 @@ where
 
 	// 14. Check if the event passes auth based on the "current state" of the room,
 	//     if not soft fail it
+	let append_ctx = crate::rooms::timeline::AppendPduContext {
+		state_lock: &state_lock,
+		room_id,
+		state_root_handle: new_room_state.clone(),
+		prev_state_root_handle: previous_root_handle.clone(),
+	};
+
 	if soft_fail {
 		info!(
 			event_id = %incoming_pdu.event_id,
 			"Soft failing event"
 		);
-		// assert!(extremities.is_empty(), "soft_fail extremities empty");
 		let extremities = extremities.iter().map(Borrow::borrow);
 		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
 
 		self.services
 			.timeline
-			.append_incoming_pdu(
-				&incoming_pdu,
-				val,
-				extremities,
-				soft_fail,
-				false,
-				&state_lock,
-				room_id,
-			)
+			.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, false, append_ctx)
 			.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
@@ -354,8 +352,7 @@ where
 			extremities,
 			soft_fail,
 			incoming_pdu.state_key.is_some(),
-			&state_lock,
-			room_id,
+			append_ctx,
 		)
 		.await?;
 

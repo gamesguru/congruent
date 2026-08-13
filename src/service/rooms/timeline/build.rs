@@ -117,7 +117,7 @@ pub async fn build_and_append_pdu(
 	let statehashid = self
 		.services
 		.state
-		.append_to_state(&pdu, &room_id, state_lock)
+		.append_to_state(&pdu, &room_id, state_lock, None)
 		.await?;
 	trace!("State hash ID for {room_id}: {statehashid:?}");
 	self.services

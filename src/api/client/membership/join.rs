@@ -901,7 +901,7 @@ async fn join_room_by_id_helper_remote_process(
 	let statehashid = services
 		.rooms
 		.state
-		.append_to_state(&parsed_join_pdu, room_id, &state_lock)
+		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
 		.await?;
 	services
 		.rooms
