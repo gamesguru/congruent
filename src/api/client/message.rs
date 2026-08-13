@@ -196,7 +196,11 @@ pub(crate) async fn get_message_events_route(
 			"/messages: raw item consumed from topo stream"
 		);
 
-		if matches!(body.dir, Direction::Backward) && !skipped_boundary && token == from {
+		if matches!(body.dir, Direction::Backward)
+			&& !skipped_boundary
+			&& token == from
+			&& Some(token) != to
+		{
 			skipped_boundary = true;
 			info!(
 				target: "pagination_debug",
