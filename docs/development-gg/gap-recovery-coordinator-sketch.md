@@ -130,8 +130,8 @@ Suggested order, each step shippable and independently revertable:
   the `TestCorruptedAuthChain` outcome, or anything behavioral. Extracting a
   shared coordinator should be behavior-preserving by construction (each
   migrated call site keeps its current policy as the coordinator's default
-  for that `GapKind`, verified against the characterization tests from step
-    1. — policy changes are a separate, later decision.
+  for that `GapKind`, verified against the characterization tests from step 1.
+  Policy changes are a separate, later decision.
 - Not a redesign of `resolve_missing_outlier_auth_events`'s inline bulk
   fetch — that one stays as-is per the earlier decision in
   `event-auth-fallback-vs-synapse.md`; it's listed in the table for

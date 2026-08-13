@@ -661,43 +661,37 @@ pub async fn process_timeline_upgrade(
 	origin: &ServerName,
 	room_id: &RoomId,
 ) -> Result<Option<RawPduId>> {
-	// Keep the entire room transaction inside one flush boundary so the
-	// prev-event repairs and the incoming event become visible together.
+	let event_id = incoming_pdu.event_id().to_owned();
+
+	// Skip old events
+	let first_ts_in_room = self
+		.services
+		.timeline
+		.first_pdu_in_room(room_id)
+		.await?
+		.origin_server_ts();
+
+	// Fetch any missing prev events before taking the write cork so remote I/O
+	// does not suppress unrelated WAL flushes across the whole server.
+	// These are timeline events.
+	let (sorted_prev_events, mut eventid_info, state_ids_anchor, prev_fetch_had_invalid_data) =
+		Box::pin(self.fetch_prev(
+			origin,
+			create_event,
+			room_id,
+			event_id.as_ref(),
+			incoming_pdu.prev_events(),
+			Some(incoming_pdu.sender().server_name()),
+		))
+		.await?;
+
+	debug!(events = ?sorted_prev_events, "Handling previous events");
+
+	// Keep the actual write phase inside one flush boundary so prev-event
+	// repairs and the incoming event become visible together.
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
-			let event_id = incoming_pdu.event_id();
-
-			// Skip old events
-			let first_ts_in_room = self
-				.services
-				.timeline
-				.first_pdu_in_room(room_id)
-				.await?
-				.origin_server_ts();
-
-			// Fetch any missing prev events doing all checks listed here starting at 1.
-			// These are timeline events
-			let (
-				sorted_prev_events,
-				mut eventid_info,
-				state_ids_anchor,
-				prev_fetch_had_invalid_data,
-			) = Box::pin(self.fetch_prev(
-				origin,
-				create_event,
-				room_id,
-				event_id,
-				incoming_pdu.prev_events(),
-				Some(incoming_pdu.sender().server_name()),
-			))
-			.await?;
-
-			debug!(
-				events = ?sorted_prev_events,
-				"Handling previous events"
-			);
-
 			sorted_prev_events
 				.iter()
 				.try_stream()
@@ -705,7 +699,7 @@ pub async fn process_timeline_upgrade(
 				.try_for_each(|prev_id| {
 					self.handle_prev_pdu(
 						origin,
-						event_id,
+						event_id.as_ref(),
 						room_id,
 						eventid_info.remove(prev_id),
 						create_event,
@@ -739,7 +733,7 @@ pub async fn process_timeline_upgrade(
 			let start_time = Instant::now();
 			self.federation_handletime
 				.write()
-				.insert(room_id.into(), (event_id.to_owned(), start_time));
+				.insert(room_id.into(), (event_id.clone(), start_time));
 
 			defer! {{
 				if self.services.server.running() {

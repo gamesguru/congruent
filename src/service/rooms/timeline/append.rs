@@ -165,8 +165,13 @@ where
 	Leaves: Iterator<Item = OwnedEventId> + Send + 'a,
 {
 	let AppendOptions { resolved_state, soft_fail } = options;
-	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
-	let cork = self.db.db.cork_and_flush();
+	// Coalesce timeline writes; if we're already inside a broader room cork,
+	// keep this append from flushing early and let the outer scope publish once.
+	let cork = if self.db.db.db.corked() {
+		self.db.db.cork()
+	} else {
+		self.db.db.cork_and_flush()
+	};
 
 	let shortroomid = self
 		.services

@@ -152,8 +152,8 @@ On inserting event `E` (depth `E.depth`):
 
 1. For each `prev_id` in `E.prev_events`: if `get_pdu_id(prev_id)` fails
    (not known locally), write `roomid_depth_missingeventid[shortroomid,
-E.depth, prev_id] = ()` and `roomid_missingeventid_depth[shortroomid,
-prev_id] = E.depth`.
+   E.depth, prev_id] = ()` and `roomid_missingeventid_depth[shortroomid,
+   prev_id] = E.depth`.
 2. Resolve: look up `roomid_missingeventid_depth[shortroomid, E.event_id]`.
    If present, `E` was itself a recorded extremity — delete both index
    entries (using the stored depth to construct the CF-1 key).
