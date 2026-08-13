@@ -1,45 +1,28 @@
 [package]
-name = "conduwuit_service"
 description.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
-version.workspace = true
+edition.workspace     = true
+homepage.workspace    = true
+license.workspace     = true
+name                  = "conduwuit_service"
+readme.workspace      = true
+repository.workspace  = true
+version.workspace     = true
 
 [lib]
-path = "mod.rs"
 crate-type = [
 	"rlib",
-#	"dylib",
+	#	"dylib",
 ]
+path = "mod.rs"
 
 [features]
-blurhashing = [
-	"dep:image",
-	"dep:blurhash",
-]
-brotli_compression = [
-	"conduwuit-core/brotli_compression",
-	"reqwest/brotli",
-]
-console = [
-	"dep:rustyline-async",
-	"dep:termimad",
-]
+blurhashing = ["dep:blurhash", "dep:image"]
+brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]
+console = ["dep:rustyline-async", "dep:termimad"]
 element_hacks = []
-gzip_compression = [
-	"conduwuit-core/gzip_compression",
-	"reqwest/gzip",
-]
-io_uring = [
-	"conduwuit-database/io_uring",
-]
-jemalloc = [
-	"conduwuit-core/jemalloc",
-	"conduwuit-database/jemalloc",
-]
+gzip_compression = ["conduwuit-core/gzip_compression", "reqwest/gzip"]
+io_uring = ["conduwuit-database/io_uring"]
+jemalloc = ["conduwuit-core/jemalloc", "conduwuit-database/jemalloc"]
 jemalloc_conf = [
 	"conduwuit-core/jemalloc_conf",
 	"conduwuit-database/jemalloc_conf",
@@ -52,12 +35,8 @@ jemalloc_stats = [
 	"conduwuit-core/jemalloc_stats",
 	"conduwuit-database/jemalloc_stats",
 ]
-ldap = [
-    "dep:ldap3"
-]
-media_thumbnail = [
-	"dep:image",
-]
+ldap = ["dep:ldap3"]
+media_thumbnail = ["dep:image"]
 release_max_log_level = [
 	"conduwuit-core/release_max_log_level",
 	"conduwuit-database/release_max_log_level",
@@ -66,23 +45,20 @@ release_max_log_level = [
 	"tracing/max_level_trace",
 	"tracing/release_max_level_info",
 ]
-systemd = [
-	"dep:sd-notify",
-]
-url_preview = [
-	"dep:image",
-	"dep:webpage",
-]
+systemd = ["dep:sd-notify"]
+url_preview = ["dep:image", "dep:webpage"]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
 	"conduwuit-database/zstd_compression",
-    "reqwest/zstd",
+	"reqwest/zstd",
 ]
 
 [dependencies]
 askama.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+blurhash.optional = true
+blurhash.workspace = true
 bytes.workspace = true
 conduwuit-core.workspace = true
 conduwuit-database.workspace = true
@@ -94,47 +70,46 @@ futures.workspace = true
 governor.workspace = true
 hickory-resolver.workspace = true
 http.workspace = true
-image.workspace = true
 image.optional = true
+image.workspace = true
 ipaddress.workspace = true
 itertools.workspace = true
-ldap3.workspace = true
 ldap3.optional = true
+ldap3.workspace = true
+lettre.workspace = true
+linkify = "0.10.0"
 log.workspace = true
 loole.workspace = true
 lru-cache.workspace = true
+moka.workspace = true
 nonzero_ext.workspace = true
 rand.workspace = true
+recaptcha-verify = { version = "0.2.0", default-features = false }
 regex.workspace = true
 reqwest.workspace = true
-ruma.workspace = true
+reqwest_recaptcha = { package = "reqwest", version = "0.12.28", default-features = false, features = [
+	"rustls-tls-native-roots-no-provider",
+] } # As long as recaptcha-verify's reqwest is outdated
 rezzy.workspace = true
-rustyline-async.workspace = true
+ruma.workspace = true
 rustyline-async.optional = true
-serde_json.workspace = true
+rustyline-async.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
-termimad.workspace = true
 termimad.optional = true
+termimad.workspace = true
 tokio.workspace = true
-moka.workspace = true
 tracing.workspace = true
 url.workspace = true
-webpage.workspace = true
 webpage.optional = true
-blurhash.workspace = true
-blurhash.optional = true
-recaptcha-verify = { version = "0.2.0", default-features = false }
-reqwest_recaptcha = { package = "reqwest", version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots-no-provider"]  } # As long as recaptcha-verify's reqwest is outdated
+webpage.workspace = true
 yansi.workspace = true
-linkify = "0.10.0"
-lettre.workspace = true
-
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
+sd-notify.optional  = true
 sd-notify.workspace = true
-sd-notify.optional = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["toml"] }
