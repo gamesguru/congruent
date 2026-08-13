@@ -98,7 +98,10 @@ impl Service {
 		if self.first_run_marker.set(marker).is_err() {
 			// Another startup path already initialized the marker. That is fine as long as
 			// both paths computed the same state.
-			debug_assert!(self.first_run_marker.get().is_some());
+			debug_assert!(
+				self.first_run_marker.get().is_some(),
+				"first_run_marker should be initialized by one of the startup paths"
+			);
 		}
 
 		Ok(())
