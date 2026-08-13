@@ -240,125 +240,60 @@ enum MembershipKind {
 	Invited,
 }
 
-/// Clears the membership tables other than `keep`. This is the one place
-/// the set/clear matrix lives -- `mark_as_joined[_silent]`,
-/// `mark_as_left[_silent]`, `mark_as_knocked`, and `mark_as_invited` all
-/// delegate here instead of hand-rolling their own copy of "clear the
-/// other three," which is what let them drift in the first place (see
-/// `c8a7dcd5c` and the `mark_as_left_silent` asymmetry it exposed: the
-/// silent variant had its own copy of this block that never got the
-/// `preserve_newer_invite` guard the non-silent one gained).
-///
-/// `preserve_invite` lets a leave-shaped caller keep the invite state
-/// instead of clearing it (see `preserve_newer_invite` in `mark_as_left`
-/// and the has-pending-invite check in `mark_as_left_silent`); it has no
-/// effect when `keep` is already `Invited`.
-macro_rules! clear_other_membership_states {
-	(
-		$keep:expr,
-		$preserve_invite:expr,
-		$joined:expr,
-		$invited:expr,
-		$left:expr,
-		$knocked:expr $(,)?
-	) => {{
-		if $keep != MembershipKind::Joined {
-			$joined;
-		}
-
-		if $keep != MembershipKind::Invited && !$preserve_invite {
-			$invited;
-		}
-
-		if $keep != MembershipKind::Left {
-			$left;
-		}
-
-		if $keep != MembershipKind::Knocked {
-			$knocked;
-		}
-	}};
-}
-
+#[allow(single_use_lifetimes)]
 #[implement(super::Service)]
-fn set_other_membership_states(
-	&self,
-	userroom_id: &[u8],
-	roomuser_id: &[u8],
-	room_id: &RoomId,
-	keep: MembershipKind,
-	preserve_invite: bool,
-) {
-	clear_other_membership_states!(
-		keep,
-		preserve_invite,
-		{
-			self.db.userroomid_joined.remove(userroom_id);
-			self.db.roomuserid_joined.remove(roomuser_id);
-		},
-		{
-			self.db.userroomid_invitestate.remove(userroom_id);
-			self.db.roomuserid_invitecount.remove(roomuser_id);
-			self.db.userroomid_invitesender.remove(userroom_id);
-			self.db.roomid_inviteviaservers.remove(room_id);
-		},
-		{
-			self.db.userroomid_leftstate.remove(userroom_id);
-			self.db.roomuserid_leftcount.remove(roomuser_id);
-		},
-		{
-			self.db.userroomid_knockedstate.remove(userroom_id);
-			self.db.roomuserid_knockedcount.remove(roomuser_id);
-		},
-	);
-}
-
-#[implement(super::Service)]
-fn set_other_membership_states_into_batch<'a>(
+fn set_other_membership_states_into_batch<'a, 'b>(
 	&'a self,
-	batch: &mut Batch<'a>,
+	batch: &'b mut Batch<'a>,
 	userroom_id: &[u8],
 	roomuser_id: &[u8],
 	room_id: &RoomId,
 	keep: MembershipKind,
 	preserve_invite: bool,
 ) {
-	clear_other_membership_states!(
-		keep,
-		preserve_invite,
-		{
-			self.db.userroomid_joined.batch_delete(batch, userroom_id);
-			self.db.roomuserid_joined.batch_delete(batch, roomuser_id);
-		},
-		{
-			self.db
-				.userroomid_invitestate
-				.batch_delete(batch, userroom_id);
-			self.db
-				.roomuserid_invitecount
-				.batch_delete(batch, roomuser_id);
-			self.db
-				.userroomid_invitesender
-				.batch_delete(batch, userroom_id);
-			self.db.roomid_inviteviaservers.batch_delete(batch, room_id);
-		},
-		{
-			self.db
-				.userroomid_leftstate
-				.batch_delete(batch, userroom_id);
-			self.db
-				.roomuserid_leftcount
-				.batch_delete(batch, roomuser_id);
-		},
-		{
-			self.db
-				.userroomid_knockedstate
-				.batch_delete(batch, userroom_id);
-			self.db
-				.roomuserid_knockedcount
-				.batch_delete(batch, roomuser_id);
-		},
-	);
+	// Keep this matrix in one place. The silent and non-silent invite/leave/
+	// join/knock paths all route through this helper.
+	if keep != MembershipKind::Joined {
+		self.db
+			.userroomid_joined
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_joined
+			.batch_delete(batch, roomuser_id);
+	}
+
+	if keep != MembershipKind::Invited && !preserve_invite {
+		self.db
+			.userroomid_invitestate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_invitecount
+			.batch_delete(batch, roomuser_id);
+		self.db
+			.userroomid_invitesender
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomid_inviteviaservers
+			.batch_delete(batch, room_id);
+	}
+
+	if keep != MembershipKind::Left {
+		self.db
+			.userroomid_leftstate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_leftcount
+			.batch_delete(batch, roomuser_id);
+	}
+
+	if keep != MembershipKind::Knocked {
+		self.db
+			.userroomid_knockedstate
+			.batch_delete(batch, userroom_id);
+		self.db
+			.roomuserid_knockedcount
+			.batch_delete(batch, roomuser_id);
+	}
 }
 
 /// Direct DB function to directly mark a user as joined. It is not
@@ -461,26 +396,36 @@ pub async fn mark_as_invited_silent(
 
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+	let mut batch = Batch::new();
 
-	self.db
-		.userroomid_invitestate
-		.raw_put(&userroom_id, Json(last_state.unwrap_or_default()));
-	self.db
-		.roomuserid_invitecount
-		.raw_aput::<8, _, _>(&roomuser_id, self.services.globals.next_count().unwrap());
+	self.db.userroomid_invitestate.batch_raw_put(
+		&mut batch,
+		&userroom_id,
+		Json(last_state.unwrap_or_default()),
+	);
+	self.db.roomuserid_invitecount.batch_raw_put(
+		&mut batch,
+		&roomuser_id,
+		self.services.globals.next_count().unwrap(),
+	);
 	if let Some(sender_user) = sender_user {
 		self.db
 			.userroomid_invitesender
-			.insert(&userroom_id, sender_user);
+			.batch_put(&mut batch, &userroom_id, sender_user);
 	}
 
-	self.set_other_membership_states(
+	self.set_other_membership_states_into_batch(
+		&mut batch,
 		&userroom_id,
 		&roomuser_id,
 		room_id,
 		MembershipKind::Invited,
 		false,
 	);
+	self.db
+		.roomuserid_forgotten
+		.batch_delete(&mut batch, &roomuser_id);
+	self.db.userroomid_joined.apply_batch(batch);
 	self.unforget(room_id, user_id);
 
 	if let Some(servers) = invite_via.filter(is_not_empty!()) {
