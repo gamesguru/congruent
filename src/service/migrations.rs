@@ -32,7 +32,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 21;
+pub(crate) const DATABASE_VERSION: u64 = 20;
 
 pub(crate) async fn migrations(services: &Services) -> Result<()> {
 	let users_count = services.users.count().await;
@@ -235,11 +235,11 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
 	}
 
-	// Version 21 - build HAMT roots for existing rooms
-	if services.globals.db.database_version().await < 21 {
-		Box::pin(db_lt_21(services))
+	// Version 20 - build HAMT roots for existing rooms
+	if services.globals.db.database_version().await < 20 {
+		Box::pin(db_lt_20(services))
 			.await
-			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
+			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
 	}
 
 	assert_eq!(
@@ -894,18 +894,19 @@ async fn legacy_get_statediff(
 	let mut removed = std::collections::HashSet::new();
 
 	let mut i = STRIDE;
-	while let Some(v) = slice.get(i..i + 2 * STRIDE) {
+	while let Some(v) = slice.get(i..i.saturating_add(2_usize.saturating_mul(STRIDE))) {
 		if add_mode && v.starts_with(0_u64.to_be_bytes().as_slice()) {
 			add_mode = false;
-			i += STRIDE;
+			i = i.saturating_add(STRIDE);
 			continue;
 		}
+
 		if add_mode {
 			added.insert(v.try_into().unwrap());
 		} else {
 			removed.insert(v.try_into().unwrap());
 		}
-		i += 2 * STRIDE;
+		i = i.saturating_add(2_usize.saturating_mul(STRIDE));
 	}
 
 	Ok(StateDiff {
@@ -940,8 +941,8 @@ async fn legacy_get_full_state(
 	Ok(full_state)
 }
 
-async fn db_lt_21(services: &Services) -> Result<()> {
-	info!("Running v21 migration (building HAMT roots for existing rooms)...");
+async fn db_lt_20(services: &Services) -> Result<()> {
+	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
@@ -993,6 +994,6 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 		}
 	}
 
-	services.globals.db.bump_database_version(21);
+	services.globals.db.bump_database_version(20);
 	Ok(())
 }
