@@ -87,7 +87,7 @@ impl Service {
 		_removed: Vec<(ShortStateKey, ShortEventId)>,
 		_state_lock: &RoomMutexGuard,
 	) -> Result {
-		unimplemented!("TODO: HAMT traversal for force_state")
+		Err(err!(Request(NotImplemented("TODO: HAMT traversal for force_state"))))
 	}
 
 	/// Generates a new StateHash and associates it with the incoming event.
@@ -101,7 +101,7 @@ impl Service {
 		_room_id: &RoomId,
 		_state_ids: Vec<(ShortStateKey, ShortEventId)>,
 	) -> Result<ShortStateHash> {
-		unimplemented!("TODO: Generate HAMT root for set_event_state")
+		Err(err!(Request(NotImplemented("TODO: Generate HAMT root for set_event_state"))))
 	}
 
 	/// Generates a new StateHash and associates it with the incoming event.
@@ -110,7 +110,7 @@ impl Service {
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
 	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn append_to_state(&self, _new_pdu: &PduEvent, _room_id: &RoomId) -> Result<u64> {
-		unimplemented!("TODO: Generate HAMT root for append_to_state")
+		Err(err!(Request(NotImplemented("TODO: Generate HAMT root for append_to_state"))))
 	}
 
 	#[tracing::instrument(skip_all, level = "debug")]

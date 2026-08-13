@@ -144,12 +144,8 @@ async fn compute_state_hash_for_pdu(
 	_event_id: &OwnedEventId,
 	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
-	// TODO: implement
-	Some(StateHashInfo {
-		algorithm: "lthash16".to_owned(),
-		before: String::new(),
-		after: String::new(),
-	})
+	// TODO(MSC00DC/HAMT): implement state hash computation
+	None
 }
 
 type SendingError = (Destination, Error);

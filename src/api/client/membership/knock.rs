@@ -3,7 +3,7 @@ use std::{borrow::Borrow, collections::HashMap, iter::once};
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug, debug_info, debug_warn, err, info,
+	Err, Result, debug_info, debug_warn, err, info,
 	matrix::{
 		event::gen_event_id,
 		pdu::{PduBuilder, PduEvent},
@@ -484,6 +484,7 @@ async fn knock_room_helper_local(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
+			false,
 			&state_lock,
 			room_id,
 		)
@@ -492,6 +493,7 @@ async fn knock_room_helper_local(
 	Ok(())
 }
 
+#[allow(unused_variables, unreachable_code, unused_assignments, unused_mut)]
 async fn knock_room_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -633,24 +635,14 @@ async fn knock_room_helper_remote(
 		state_map.insert(shortstatekey, event_id.clone());
 	}
 
-	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
-	// persistence. state_map will be passed into HAMT force_state once
-	// implemented.
 	let _ = state_map;
-	let (statehash_before_knock, added, removed) = (0_u64, vec![], vec![]);
+	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
+	// persistence. Persist state_map directly once implemented.
+	return Err(err!(Request(NotImplemented(
+		"HAMT state transition persistence is not yet implemented."
+	))));
 
-	debug!("Forcing state for new room");
-	services
-		.rooms
-		.state
-		.force_state(room_id, statehash_before_knock, added, removed, &state_lock)
-		.await?;
-
-	let statehash_after_knock = services
-		.rooms
-		.state
-		.append_to_state(&parsed_knock_pdu, room_id)
-		.await?;
+	let statehash_after_knock = 0;
 
 	info!("Appending room knock event locally");
 	services
@@ -660,6 +652,7 @@ async fn knock_room_helper_remote(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
+			false,
 			&state_lock,
 			room_id,
 		)

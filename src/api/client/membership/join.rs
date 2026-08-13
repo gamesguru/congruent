@@ -623,6 +623,7 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
+#[allow(unused_variables, unreachable_code, unused_assignments, unused_mut)]
 #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
@@ -763,18 +764,13 @@ async fn join_room_by_id_helper_remote_process(
 		return Err!(Request(Forbidden("Auth check failed")));
 	}
 
+	let _ = &state; // state will be passed into HAMT force_state once implemented
 	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
 	// persistence. The HAMT root will be computed from the full state set directly
 	// once implemented.
-	let _ = &state; // state will be passed into HAMT force_state once implemented
-	let (statehash_before_join, added, removed) = (0_u64, vec![], vec![]);
-
-	debug!("Forcing state for new room");
-	services
-		.rooms
-		.state
-		.force_state(room_id, statehash_before_join, added, removed, &state_lock)
-		.await?;
+	return Err(err!(Request(NotImplemented(
+		"HAMT state transition persistence is not yet implemented."
+	))));
 
 	debug!("Updating joined counts for new room");
 	// Update our membership locally to join state before calculating the joined
@@ -879,6 +875,7 @@ async fn join_room_by_id_helper_remote_process(
 			&parsed_join_pdu,
 			join_event,
 			once(parsed_join_pdu.event_id.borrow()),
+			false,
 			&state_lock,
 			room_id,
 		)

@@ -236,6 +236,10 @@ where
 			.await?;
 
 		debug!("Forcing new room state (stub)");
+		// TODO(MSC00DC/HAMT): Call force_state with new_room_state once implemented.
+		return Err(err!(Request(NotImplemented(
+			"HAMT state transition persistence is not yet implemented for upgraded outliers."
+		))));
 	}
 
 	if !soft_fail {
@@ -308,7 +312,15 @@ where
 
 		self.services
 			.timeline
-			.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, &state_lock, room_id)
+			.append_incoming_pdu(
+				&incoming_pdu,
+				val,
+				extremities,
+				soft_fail,
+				false,
+				&state_lock,
+				room_id,
+			)
 			.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
@@ -333,7 +345,15 @@ where
 	let pdu_id = self
 		.services
 		.timeline
-		.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, &state_lock, room_id)
+		.append_incoming_pdu(
+			&incoming_pdu,
+			val,
+			extremities,
+			soft_fail,
+			incoming_pdu.state_key.is_some(),
+			&state_lock,
+			room_id,
+		)
 		.await?;
 
 	// Event has passed all auth/stateres checks

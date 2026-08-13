@@ -67,18 +67,12 @@ pub(crate) async fn get_state_accumulator_route(
 		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
-	let _shortstatehash = services
-		.rooms
-		.state_accessor
-		.pdu_shortstatehash(&query.event_id)
-		.await
-		.map_err(|_| err!(Request(NotFound("Event not found or has no state."))))?;
-
 	// TODO(MSC00DC/HAMT): derive LtHash from the HAMT store once it exposes
 	// LtHash lookup by shortstatehash. state_compressor has been removed.
-	Err!(Request(NotFound(
-		"State accumulator endpoint is not yet available during HAMT migration."
-	)))
+	Err(conduwuit::Error::BadRequest(
+		ruma::api::client::error::ErrorKind::Unrecognized,
+		"State accumulator endpoint is not yet available during HAMT migration.",
+	))
 }
 
 async fn verify_federation_request(
@@ -142,9 +136,8 @@ async fn verify_federation_request(
 }
 
 #[cfg(test)]
+use conduwuit_core::utils::hash::lthash::serialize_lthash;
 mod tests {
-	use super::*;
-
 	#[test]
 	fn test_serialize_empty_lthash() {
 		let empty_lthash = rezzy::LtHash::ZERO;

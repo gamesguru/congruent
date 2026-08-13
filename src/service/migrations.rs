@@ -852,6 +852,7 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 async fn db_lt_19(services: &Services) -> Result<()> {
 	// TODO: re-implement this.
 	info!("Running v19 migration (skipping LtHash population as state_compressor is removed)...");
+	services.db["global"].insert(b"lthash_population_skipped_v19", []);
 
 	services.globals.db.bump_database_version(19);
 	Ok(())

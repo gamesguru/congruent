@@ -67,26 +67,20 @@ pub async fn resolve_state(
 	let (fork_states, auth_chain_sets) = try_join(fork_states, auth_chain_sets).await?;
 
 	trace!("Resolving state");
-	let state = self
+	let _state = self
 		.state_resolution(room_id, room_version_id, fork_states.iter(), &auth_chain_sets)
 		.boxed()
 		.await?;
 
 	trace!("State resolution done.");
 
-	let mut lattice = rezzy::LtHash::ZERO;
-	for ((event_type, state_key), event_id) in &state {
-		lattice.insert(&event_type.to_string(), state_key, event_id);
-	}
-
-	let structural_hash = [0_u8; 16]; // TODO: build HAMT tree
-	let root_handle = self
-		.services
-		.state_hamt
-		.store
-		.root_handle(structural_hash, &lattice);
-
-	Ok(root_handle)
+	// TODO(MSC00DC/HAMT): rezzy does not yet expose a builder for constructing a
+	// full HAMT from a lattice iterator. Once available, persist every constructed
+	// node through state_hamt's put_node mechanism, then pass the computed root
+	// hash to Store::root_handle.
+	Err(err!(Request(NotImplemented(
+		"HAMT construction from lattice is not yet implemented."
+	))))
 }
 
 #[implement(super::Service)]

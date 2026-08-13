@@ -365,12 +365,13 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "load", level = "debug", skip(self))]
+#[tracing::instrument(name = "load", level = "debug", skip_all)]
+#[allow(clippy::used_underscore_binding)]
 async fn load_full_state(
 	&self,
-	shortstatehash: ShortStateHash,
+	_shortstatehash: ShortStateHash,
 ) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
-	unimplemented!("TODO: Traverse HAMT to build full state");
+	Err(err!(Request(NotImplemented("TODO: Traverse HAMT to build full state"))))
 }
 
 /// Returns the state hash for this pdu.

@@ -38,6 +38,7 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
 	soft_fail: bool,
+	resolved_state_applied: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<Option<RawPduId>>
@@ -47,10 +48,8 @@ where
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail.
-	self.services
-		.state
-		.set_event_state(&pdu.event_id, room_id, vec![])
-		.await?;
+	// TODO(MSC00DC/HAMT): Defer state association write until the HAMT root is
+	// persisted. set_event_state is currently returning NotImplemented.
 
 	if soft_fail {
 		self.services
@@ -66,7 +65,7 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, state_lock, room_id)
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, state_lock, room_id)
 		.await?;
 
 	// Process admin commands for federation events
@@ -105,6 +104,7 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
+	resolved_state_applied: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<RawPduId>
@@ -192,7 +192,6 @@ where
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
 	drop(cork);
 
-	let resolved_state_applied = false;
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(

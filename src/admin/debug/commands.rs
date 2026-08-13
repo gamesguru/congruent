@@ -504,6 +504,7 @@ pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 
 #[admin_command]
 #[tracing::instrument(skip(self), level = "info")]
+#[allow(unreachable_code, unused_variables)]
 pub(super) async fn force_set_room_state_from_server(
 	&self,
 	room_id: OwnedRoomId,
@@ -618,6 +619,7 @@ pub(super) async fn force_set_room_state_from_server(
 	}
 
 	info!("Resolving new room state");
+	#[allow(unreachable_code)]
 	let new_room_state = self
 		.services
 		.rooms
@@ -625,20 +627,12 @@ pub(super) async fn force_set_room_state_from_server(
 		.resolve_state(&room_id, &room_version, state)
 		.await?;
 
-	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
-	// persistence. new_room_state will be passed into force_state directly once
-	// HAMT is wired up.
 	let _ = new_room_state;
-	let (short_state_hash, added, removed) = (0_u64, vec![], vec![]);
-
-	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
-
-	info!("Forcing new room state");
-	self.services
-		.rooms
-		.state
-		.force_state(room_id.clone().as_ref(), short_state_hash, added, removed, &state_lock)
-		.await?;
+	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
+	// persistence. Persist new_room_state directly once HAMT is wired up.
+	return Err(conduwuit::err!(Request(NotImplemented(
+		"HAMT state transition persistence is not yet implemented."
+	))));
 
 	info!(
 		"Updating joined counts for room just in case (e.g. we may have found a difference in \
