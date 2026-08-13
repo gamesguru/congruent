@@ -203,6 +203,7 @@ pub async fn backfill_if_required(
 	// new backward extremities that are discovered on subsequent pagination calls.
 	let scan_limit: usize = usize::try_from(scan_limit_u32).expect("u32 fits in usize");
 	let mut budget = 5_u32;
+	let mut verify_after_promotion = false;
 
 	loop {
 		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
@@ -261,8 +262,15 @@ pub async fn backfill_if_required(
 				let promoted = self.promote_room_state_outliers(room_id).await?;
 				if promoted > 0 {
 					info!("backfill: promoted {promoted} state outliers at timeline boundary");
+					verify_after_promotion = true;
 					continue;
 				}
+			}
+			if verify_after_promotion {
+				// A promotion can expose a previously hidden ancestor chain. Require one
+				// additional gap-free pass before caching the window as stable.
+				verify_after_promotion = false;
+				continue;
 			}
 			self.backfill_gap_free_cache
 				.insert(room_id.to_owned(), (from, scan_limit));
