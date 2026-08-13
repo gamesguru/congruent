@@ -905,10 +905,18 @@ async fn handle_edu_device_list_update(
 			.send_federation_request(user_id.server_name(), request)
 			.await
 		else {
-			services
-				.users
-				.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
-			services.users.mark_device_key_update(&user_id).await;
+			// The EDU only carried a stream position, so we need a follow-up
+			// /user/devices fetch to decide whether anything actually changed.
+			// If that fetch fails, defer processing instead of fabricating a
+			// local keychange. The sender will retry the EDU, and we can only
+			// safely advance the remote cursor once we have confirmed state.
+			tracing::warn!(
+				%user_id,
+				%origin,
+				incoming_stream_id,
+				last_seen_stream_id,
+				"failed to fetch remote device list; deferring update"
+			);
 			return;
 		};
 

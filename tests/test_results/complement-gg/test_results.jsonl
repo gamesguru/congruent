@@ -124,9 +124,9 @@
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_joins_a_room"}
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_leaves_a_room"}
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_rejoins_a_room"}
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/good_connectivity"}
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
 {"Action":"pass","Test":"TestDeviceManagement"}
