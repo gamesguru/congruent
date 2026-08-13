@@ -787,10 +787,13 @@ pub async fn backfill_pdu(
 		| Some(count) => count.try_into()?,
 		| None => self.services.globals.next_count()?.try_into()?,
 	};
+	let count = count
+		.checked_neg()
+		.expect("backfill counts are strictly positive before negation");
 
 	let pdu_id: RawPduId = PduId {
 		shortroomid,
-		shorteventid: PduCount::Backfilled(-count),
+		shorteventid: PduCount::Backfilled(count),
 	}
 	.into();
 
