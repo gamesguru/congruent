@@ -160,7 +160,7 @@ pub async fn build_and_append_pdu(
 	self.services
 		.state_hamt
 		.store
-		.persist_node_recursive(&statehashid.1);
+		.persist_node_recursive(statehashid.1);
 	self.services
 		.state
 		.set_room_state_hamt(&room_id, &statehashid.0, state_lock);

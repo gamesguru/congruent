@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use conduwuit::{Err, Event, Pdu, Result, implement, is_not_empty, utils::ReadyExt, warn};
+use conduwuit::{Err, Error, Event, Pdu, Result, implement, is_not_empty, utils::ReadyExt, warn};
 use database::{Json, serialize_key};
 use futures::StreamExt;
 use ruma::{
@@ -417,7 +417,7 @@ pub async fn update_caches_for_state_delta(
 						// The user has a member event in the new state,
 						// added_events will handle it.
 					},
-					| Err(conduwuit::Error::BadRequest(
+					| Err(Error::BadRequest(
 						ruma::api::client::error::ErrorKind::NotFound,
 						_,
 					)) => {
