@@ -123,10 +123,13 @@ pub async fn backfill_if_required(
 	// Tier 2: skip the scan entirely if this exact (from, limit) window was
 	// already verified gap-free. A larger previously-verified window covers
 	// this request too. See the doc comment on `backfill_gap_free_cache`.
+	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
 	if let Some((verified_from, verified_limit)) =
 		self.backfill_gap_free_cache.get(&room_id.to_owned())
 	{
-		if verified_from == from && verified_limit >= limit {
+		if verified_from == from
+			&& verified_limit >= usize::try_from(scan_limit_u32).unwrap_or(100)
+		{
 			debug!(
 				%room_id, %from, %limit,
 				"backfill: skipping scan, already verified gap-free for this window"
@@ -198,8 +201,7 @@ pub async fn backfill_if_required(
 	// for new backward extremities created by the newly inserted events'
 	// prev_events. This matches Synapse's behavior where backfilled events create
 	// new backward extremities that are discovered on subsequent pagination calls.
-	let backfill_limit: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
-	let scan_limit = usize::try_from(backfill_limit).expect("u32 fits in usize");
+	let scan_limit: usize = usize::try_from(scan_limit_u32).expect("u32 fits in usize");
 	let mut budget = 5_u32;
 
 	loop {
@@ -315,7 +317,7 @@ pub async fn backfill_if_required(
 					federation::backfill::get_backfill::v1::Request {
 						room_id: room_id.to_owned(),
 						v: backwards_extremities.clone(),
-						limit: UInt::from(backfill_limit),
+						limit: UInt::from(scan_limit_u32),
 					},
 				)
 				.await;
