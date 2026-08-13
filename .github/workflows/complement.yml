@@ -20,6 +20,7 @@ jobs:
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
+      COMPLEMENT_PARALLEL: 24
       FEATURES: "direct_tls,url_preview"
 
     strategy:
