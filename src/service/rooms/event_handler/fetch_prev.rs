@@ -254,13 +254,20 @@ where
 						CanonicalJsonValue::String(eid.as_str().to_owned()),
 					);
 
-					if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id))
-						&& check_room_id(room_id, &pdu).is_ok()
-					{
-						return Some((eid, val, pdu));
+					match PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
+						| Ok(pdu) =>
+							if check_room_id(room_id, &pdu).is_ok() {
+								Some((eid, val, pdu))
+							} else {
+								None
+							},
+						| Err(_) => None,
 					}
+				}
+			})
+			.collect()
+			.await;
 
-					None
 	let mut candidate_events = HashMap::with_capacity(candidate_entries.len());
 	let mut candidate_pdus = HashMap::with_capacity(candidate_entries.len());
 	for (eid, val, pdu) in candidate_entries {
