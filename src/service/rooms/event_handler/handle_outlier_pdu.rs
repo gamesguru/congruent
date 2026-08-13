@@ -566,11 +566,19 @@ where
 		return Err!(MissingAuthEvents(missing));
 	}
 
-	info!(
+	// This is the last-resort fallback for missing auth events: we already
+	// tried a local lookup (timeline + outlier store) above and came up
+	// short. A bulk /event_auth call is efficient, but it's also the
+	// federation request most likely to be unhandled or misbehave on the
+	// remote (see: TestCorruptedAuthChain, where an unregistered /event_auth
+	// handler turned a partial-chain scenario into a fatal 404). Log this
+	// loudly so it's visible without grepping for `state_res_debug`.
+	warn!(
 		target: "state_res_debug",
 		%event_id,
 		count = missing_auth_events.len(),
-		"Fetching missing auth events via /event_auth"
+		missing = ?missing_auth_events,
+		"Falling back to /event_auth for missing auth events"
 	);
 
 	let mut rejected_in_chain = std::collections::BTreeSet::<OwnedEventId>::new();
