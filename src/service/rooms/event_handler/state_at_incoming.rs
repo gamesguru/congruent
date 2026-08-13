@@ -255,29 +255,6 @@ async fn get_extremity_lthash<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
-	let mut lthash = self
-		.services
-		.state_compressor
-		.get_lthash(sstatehash)
-		.await?;
-
-	if let Some(state_key) = prev_event.state_key() {
-		let event_type = prev_event.kind().to_string();
-
-		// If the previous state had a different event for this state key, remove its
-		// hash.
-		if let Ok(old_event_id) = self
-			.services
-			.state_accessor
-			.state_get_id::<OwnedEventId>(sstatehash, &event_type.as_str().into(), state_key)
-			.await
-		{
-			lthash.remove(&event_type, state_key, &old_event_id);
-		}
-
-		// Add the hash of the new state event.
-		lthash.insert(&event_type, state_key, prev_event.event_id());
-	}
-
-	Ok(lthash)
+	// TODO: re-implement.
+	Ok(rezzy::LtHash::ZERO)
 }

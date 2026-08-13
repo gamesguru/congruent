@@ -48,7 +48,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	user: Dep<rooms::user::Service>,
 	users: Dep<users::Service>,
 	presence: Dep<presence::Service>,
@@ -96,8 +96,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
 				presence: args.depend::<presence::Service>("presence"),

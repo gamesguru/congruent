@@ -850,51 +850,8 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 }
 
 async fn db_lt_19(services: &Services) -> Result<()> {
-	info!("Running v19 migration (populating LtHash state accumulators)...");
-	let db = &services.db;
-	let mut cork = db.cork_and_sync();
-
-	let shortstatehash_statediff = db["shortstatehash_statediff"].clone();
-	let shortstatehash_lthash = db["shortstatehash_lthash"].clone();
-
-	let mut count = 0_usize;
-	let mut migrated = 0_usize;
-
-	let stream = shortstatehash_statediff.raw_stream();
-	pin_mut!(stream);
-
-	while let Some(result) = stream.next().await {
-		let (ssh_bytes, _) =
-			result.map_err(|e| err!(Database("v19 migration stream error: {e}")))?;
-		count = count.saturating_add(1);
-
-		let needs_compute = match shortstatehash_lthash.get(&ssh_bytes).await {
-			| Ok(_) => false,
-			| Err(e) if e.is_not_found() => true,
-			| Err(e) =>
-				return Err!(Database("v19 migration failed reading shortstatehash_lthash: {e}")),
-		};
-		if needs_compute {
-			let ssh = conduwuit::utils::u64_from_bytes(ssh_bytes)
-				.map_err(|e| err!(Database("bad shortstatehash: {e}")))?;
-
-			let diff = services.rooms.state_compressor.get_statediff(ssh).await?;
-			services
-				.rooms
-				.state_compressor
-				.update_lthash(ssh, diff.parent, &diff.added, &diff.removed)
-				.await?;
-
-			migrated = migrated.saturating_add(1);
-			if migrated.is_multiple_of(1000) {
-				info!("LtHash population: processed {}/{} state groups...", migrated, count);
-				drop(cork);
-				cork = db.cork_and_sync();
-			}
-		}
-	}
-
-	info!("LtHash population complete. Migrated {}/{} state groups.", migrated, count);
+	// TODO: re-implement this.
+	info!("Running v19 migration (skipping LtHash population as state_compressor is removed)...");
 
 	services.globals.db.bump_database_version(19);
 	Ok(())

@@ -28,10 +28,7 @@ use ruma::{
 };
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
-use crate::{
-	appservice::NamespaceRegex,
-	rooms::state_compressor::{CompressedState, HashSetCompressStateEvent},
-};
+use crate::appservice::NamespaceRegex;
 
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.

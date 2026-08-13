@@ -11,7 +11,7 @@ use futures::{FutureExt, StreamExt, future::ready};
 use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::{state_compressor::CompressedState, timeline::RawPduId};
+use crate::rooms::timeline::RawPduId;
 
 #[implement(super::Service)]
 pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(

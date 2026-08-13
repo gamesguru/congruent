@@ -41,7 +41,7 @@ pub struct Service {
 struct Services {
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
@@ -59,8 +59,7 @@ impl crate::Service for Service {
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),

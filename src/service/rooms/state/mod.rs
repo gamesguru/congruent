@@ -27,10 +27,7 @@ use ruma::{
 
 use crate::{
 	Dep, globals, rooms,
-	rooms::{
-		short::{ShortEventId, ShortStateHash},
-		state_compressor::{CompressedState, parse_compressed_state_event},
-	},
+	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
 };
 
 pub struct Service {
@@ -44,8 +41,8 @@ struct Services {
 	short: Dep<rooms::short::Service>,
 	spaces: Dep<rooms::spaces::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
 
@@ -68,10 +65,9 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
 			db: Data {
@@ -98,134 +94,25 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		shortstatehash: u64,
-		statediffnew: Arc<CompressedState>,
-		_statediffremoved: Arc<CompressedState>,
+		_added: Vec<(ShortStateKey, ShortEventId)>,
+		_removed: Vec<(ShortStateKey, ShortEventId)>,
 		state_lock: &RoomMutexGuard,
 	) -> Result {
-		let event_ids = statediffnew
-			.iter()
-			.stream()
-			.map(|&new| parse_compressed_state_event(new).1)
-			.then(|shorteventid| {
-				self.services
-					.short
-					.get_eventid_from_short::<Box<_>>(shorteventid)
-			})
-			.ignore_err();
-
-		pin_mut!(event_ids);
-		while let Some(event_id) = event_ids.next().await {
-			let Ok(pdu) = self
-				.services
-				.timeline
-				.get_pdu_in_room(Some(room_id), &event_id)
-				.await
-			else {
-				continue;
-			};
-
-			match pdu.kind {
-				| TimelineEventType::RoomMember => {
-					let Some(user_id) = pdu.state_key.as_ref().map(UserId::parse).flat_ok()
-					else {
-						continue;
-					};
-
-					self.services
-						.state_cache
-						.update_membership(room_id, user_id, &pdu, false)
-						.await?;
-				},
-				| TimelineEventType::SpaceChild => {
-					self.services
-						.spaces
-						.roomid_spacehierarchy_cache
-						.lock()
-						.await
-						.remove(room_id);
-				},
-				| _ => continue,
-			}
-		}
-
-		self.services.state_cache.update_joined_count(room_id).await;
-
-		self.set_room_state(room_id, shortstatehash, state_lock);
-
-		Ok(())
+		unimplemented!("TODO: HAMT traversal for force_state")
 	}
 
 	/// Generates a new StateHash and associates it with the incoming event.
 	///
 	/// This adds all current state events (not including the incoming event)
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
-	#[tracing::instrument(skip(self, state_ids_compressed), level = "debug")]
+	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn set_event_state(
 		&self,
 		event_id: &EventId,
 		room_id: &RoomId,
-		state_ids_compressed: Arc<CompressedState>,
+		_state_ids: Vec<(ShortStateKey, ShortEventId)>,
 	) -> Result<ShortStateHash> {
-		const KEY_LEN: usize = size_of::<ShortEventId>();
-		const VAL_LEN: usize = size_of::<ShortStateHash>();
-
-		let shorteventid = self
-			.services
-			.short
-			.get_or_create_shorteventid(event_id)
-			.await;
-
-		let previous_shortstatehash = self.get_room_shortstatehash(room_id).await;
-
-		let state_hash = calculate_hash(state_ids_compressed.iter().map(|s| &s[..]));
-
-		let (shortstatehash, already_existed) = self
-			.services
-			.short
-			.get_or_create_shortstatehash(&state_hash)
-			.await;
-
-		if !already_existed {
-			let states_parents = match previous_shortstatehash {
-				| Ok(p) =>
-					self.services
-						.state_compressor
-						.load_shortstatehash_info(p)
-						.await?,
-				| _ => Vec::new(),
-			};
-
-			let (statediffnew, statediffremoved) =
-				if let Some(parent_stateinfo) = states_parents.last() {
-					let statediffnew: CompressedState = state_ids_compressed
-						.difference(&parent_stateinfo.full_state)
-						.copied()
-						.collect();
-
-					let statediffremoved: CompressedState = parent_stateinfo
-						.full_state
-						.difference(&state_ids_compressed)
-						.copied()
-						.collect();
-
-					(Arc::new(statediffnew), Arc::new(statediffremoved))
-				} else {
-					(state_ids_compressed, Arc::new(CompressedState::new()))
-				};
-			self.services.state_compressor.save_state_from_diff(
-				shortstatehash,
-				statediffnew,
-				statediffremoved,
-				1_000_000, // high number because no state will be based on this one
-				states_parents,
-			)?;
-		}
-
-		self.db
-			.shorteventid_shortstatehash
-			.aput::<KEY_LEN, VAL_LEN, _, _>(shorteventid, shortstatehash);
-
-		Ok(shortstatehash)
+		unimplemented!("TODO: Generate HAMT root for set_event_state")
 	}
 
 	/// Generates a new StateHash and associates it with the incoming event.
@@ -234,82 +121,7 @@ impl Service {
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
 	#[tracing::instrument(skip(self, new_pdu), level = "debug")]
 	pub async fn append_to_state(&self, new_pdu: &PduEvent, room_id: &RoomId) -> Result<u64> {
-		const BUFSIZE: usize = size_of::<u64>();
-
-		let shorteventid = self
-			.services
-			.short
-			.get_or_create_shorteventid(&new_pdu.event_id)
-			.await;
-
-		let previous_shortstatehash = self.get_room_shortstatehash(room_id).await;
-
-		if let Ok(p) = previous_shortstatehash {
-			self.db
-				.shorteventid_shortstatehash
-				.aput::<BUFSIZE, BUFSIZE, _, _>(shorteventid, p);
-		}
-
-		match &new_pdu.state_key {
-			| Some(state_key) => {
-				let states_parents = match previous_shortstatehash {
-					| Ok(p) =>
-						self.services
-							.state_compressor
-							.load_shortstatehash_info(p)
-							.await?,
-					| _ => Vec::new(),
-				};
-
-				let shortstatekey = self
-					.services
-					.short
-					.get_or_create_shortstatekey(&new_pdu.kind.to_string().into(), state_key)
-					.await;
-
-				let new = self
-					.services
-					.state_compressor
-					.compress_state_event(shortstatekey, &new_pdu.event_id)
-					.await;
-
-				let replaces = states_parents
-					.last()
-					.map(|info| {
-						info.full_state
-							.iter()
-							.find(|bytes| bytes.starts_with(&shortstatekey.to_be_bytes()))
-					})
-					.unwrap_or_default();
-
-				if Some(&new) == replaces {
-					return Ok(previous_shortstatehash.expect("must exist"));
-				}
-
-				// TODO: statehash with deterministic inputs
-				let shortstatehash = self.services.globals.next_count()?;
-
-				let mut statediffnew = CompressedState::new();
-				statediffnew.insert(new);
-
-				let mut statediffremoved = CompressedState::new();
-				if let Some(replaces) = replaces {
-					statediffremoved.insert(*replaces);
-				}
-
-				self.services.state_compressor.save_state_from_diff(
-					shortstatehash,
-					Arc::new(statediffnew),
-					Arc::new(statediffremoved),
-					2,
-					states_parents,
-				)?;
-
-				Ok(shortstatehash)
-			},
-			| _ =>
-				Ok(previous_shortstatehash.expect("first event in room must be a state event")),
-		}
+		unimplemented!("TODO: Generate HAMT root for append_to_state")
 	}
 
 	#[tracing::instrument(skip_all, level = "debug")]

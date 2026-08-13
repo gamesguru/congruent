@@ -83,6 +83,11 @@ impl Store {
 			if let Ok(handle) = tokio::runtime::Handle::try_current() {
 				if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
 					return tokio::task::block_in_place(|| self.get_node_blocking(hash));
+				} else {
+					return Err(err!(Database(error!(
+						"Unsupported Tokio runtime flavor for synchronous HAMT resolution: \
+						 CurrentThread"
+					))));
 				}
 			}
 			self.get_node_blocking(hash)

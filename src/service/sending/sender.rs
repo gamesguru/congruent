@@ -146,42 +146,11 @@ async fn compute_state_hash_for_pdu(
 	event_id: &OwnedEventId,
 	value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
-	let sstatehash_before = services
-		.state_accessor
-		.pdu_shortstatehash(event_id)
-		.await
-		.ok()?;
-	let lthash_before = services
-		.state_compressor
-		.get_lthash(sstatehash_before)
-		.await
-		.ok()?;
-	let before_digest = serialize_lthash(&lthash_before).1;
-
-	let mut after_digest = before_digest.clone();
-
-	if let Some(state_key) = value.get("state_key").and_then(|k| k.as_str()) {
-		if let Some(ev_type_str) = value.get("type").and_then(|t| t.as_str()) {
-			let ev_type = StateEventType::from(ev_type_str);
-			let mut lthash_after = lthash_before;
-
-			if let Ok(old_event_id) = services
-				.state_accessor
-				.state_get_id::<OwnedEventId>(sstatehash_before, &ev_type, state_key)
-				.await
-			{
-				lthash_after.remove(ev_type_str, state_key, &old_event_id);
-			}
-
-			lthash_after.insert(ev_type_str, state_key, event_id);
-			after_digest = serialize_lthash(&lthash_after).1;
-		}
-	}
-
+	// TODO: implement
 	Some(StateHashInfo {
 		algorithm: "lthash16".to_owned(),
-		before: before_digest,
-		after: after_digest,
+		before: "".to_owned(),
+		after: "".to_owned(),
 	})
 }
 

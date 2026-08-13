@@ -20,10 +20,7 @@ use ruma::{
 };
 use serde::Deserialize;
 
-use crate::rooms::{
-	short::{ShortEventId, ShortStateHash, ShortStateKey},
-	state_compressor::{CompressedState, compress_state_event, parse_compressed_state_event},
-};
+use crate::rooms::short::{ShortEventId, ShortStateHash, ShortStateKey};
 
 /// The user was a joined member at this state (potentially in the past)
 #[implement(super::Service)]
@@ -107,14 +104,10 @@ pub async fn state_contains_shortstatekey(
 	shortstatehash: ShortStateHash,
 	shortstatekey: ShortStateKey,
 ) -> bool {
-	let start = compress_state_event(shortstatekey, 0);
-	let end = compress_state_event(shortstatekey, u64::MAX);
-
 	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| full_state.range(start..=end).next().copied())
 		.await
-		.flat_ok()
-		.is_some()
+		.map(|full_state| full_state.contains_key(&shortstatekey))
+		.unwrap_or(false)
 }
 
 /// Returns a single EventId from `room_id` with key (`event_type`,
@@ -155,19 +148,11 @@ pub async fn state_get_shortid(
 		.get_shortstatekey(event_type, state_key)
 		.await?;
 
-	let start = compress_state_event(shortstatekey, 0);
-	let end = compress_state_event(shortstatekey, u64::MAX);
 	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| {
-			full_state
-				.range(start..=end)
-				.next()
-				.copied()
-				.map(parse_compressed_state_event)
-				.map(at!(1))
-				.ok_or(err!(Request(NotFound("Not found in room state"))))
-		})
 		.await?
+		.get(&shortstatekey)
+		.copied()
+		.ok_or(err!(Request(NotFound("Not found in room state"))))
 }
 
 /// Iterates the state_keys for an event_type in the state; current state
@@ -290,9 +275,8 @@ pub async fn state_added(
 	let full_state_b = self.load_full_state(shortstatehash.1).await?;
 
 	Ok(full_state_b
-		.difference(&full_state_a)
-		.copied()
-		.map(parse_compressed_state_event)
+		.into_iter()
+		.filter(|(k, v)| full_state_a.get(k) != Some(v))
 		.collect())
 }
 
@@ -367,14 +351,7 @@ pub fn state_full_shortids(
 	shortstatehash: ShortStateHash,
 ) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
 	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| {
-			full_state
-				.deref()
-				.iter()
-				.copied()
-				.map(parse_compressed_state_event)
-				.collect()
-		})
+		.map_ok(|full_state| full_state.into_iter().collect::<Vec<_>>())
 		.map_ok(Vec::into_iter)
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
@@ -392,13 +369,11 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "load", level = "debug", skip(self))]
-async fn load_full_state(&self, shortstatehash: ShortStateHash) -> Result<Arc<CompressedState>> {
-	self.services
-		.state_compressor
-		.load_shortstatehash_info(shortstatehash)
-		.map_err(|e| err!(Database("Missing state IDs: {e}")))
-		.map_ok(|vec| vec.last().expect("at least one layer").full_state.clone())
-		.await
+async fn load_full_state(
+	&self,
+	shortstatehash: ShortStateHash,
+) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
+	unimplemented!("TODO: Traverse HAMT to build full state");
 }
 
 /// Returns the state hash for this pdu.

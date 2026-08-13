@@ -39,8 +39,8 @@ struct Services {
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	server: Arc<Server>,
 }
@@ -65,10 +65,9 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				server: args.server.clone(),
 			},

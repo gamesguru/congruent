@@ -13,8 +13,6 @@ use conduwuit::{
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
 
-use crate::rooms::state_compressor::CompressedState;
-
 #[implement(super::Service)]
 #[tracing::instrument(name = "resolve", level = "debug", skip_all)]
 pub async fn resolve_state(
@@ -22,7 +20,7 @@ pub async fn resolve_state(
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
 	incoming_state: HashMap<u64, OwnedEventId>,
-) -> Result<Arc<CompressedState>> {
+) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
 	let current_sstatehash = self
 		.services
@@ -76,27 +74,20 @@ pub async fn resolve_state(
 		.await?;
 
 	trace!("State resolution done.");
-	let state_events: Vec<_> = state
-		.iter()
-		.stream()
-		.wide_then(|((event_type, state_key), event_id)| {
-			self.services
-				.short
-				.get_or_create_shortstatekey(event_type, state_key)
-				.map(move |shortstatekey| (shortstatekey, event_id))
-		})
-		.collect()
-		.await;
 
-	trace!("Compressing state...");
-	let new_room_state: CompressedState = self
+	let mut lattice = rezzy::LtHash::ZERO;
+	for ((event_type, state_key), event_id) in state.iter() {
+		lattice.insert(&event_type.to_string(), state_key, event_id);
+	}
+
+	let structural_hash = [0_u8; 16]; // TODO: build HAMT tree
+	let root_handle = self
 		.services
-		.state_compressor
-		.compress_state_events(state_events.iter().map(|(ssk, eid)| (ssk, (*eid).borrow())))
-		.collect()
-		.await;
+		.state_hamt
+		.store
+		.root_handle(structural_hash, &lattice);
 
-	Ok(Arc::new(new_room_state))
+	Ok(root_handle)
 }
 
 #[implement(super::Service)]
