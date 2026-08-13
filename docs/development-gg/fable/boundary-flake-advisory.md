@@ -28,7 +28,7 @@ That is no longer evidence about the authors; it is evidence about the API.
 
 ### What the writeup gets right
 
-The bug is deterministic; the *visible symptom* is run-dependent; therefore CI triage saw
+The bug is deterministic; the _visible symptom_ is run-dependent; therefore CI triage saw
 "flaky" where the code was consistently wrong. That conclusion is correct and is the important
 one. The evidence is strong: three different test families, one shared root cause, and
 `TestMessagesPaginationStress` failing with the **same event ID at every limit** (1, 3, 7, 50)
@@ -38,31 +38,31 @@ is exactly the signature of a structural off-by-one and exactly not the signatur
 
 > "they request `/context` tokens exactly one `PduCount` apart"
 
-Not literally true, on two counts, and the correct version is *stronger* for your case:
+Not literally true, on two counts, and the correct version is _stronger_ for your case:
 
 **(a) The tokens are event tokens, not arithmetic neighbors.** `context.rs` derives them as
 `start = events_before.last() token` and `end = events_after.last() token` (falling back to
-`base_token`). They are the counts of two *different real events*, not `base ± 1`.
+`base_token`). They are the counts of two _different real events_, not `base ± 1`.
 
 **(b) With a global counter, no two events in one room are reliably adjacent.**
 `prepare_pdu_insert` and `append_pdu` draw from `globals.next_count()` — shared across every
 room on the server. `TestJumpToDateEndpoint` runs its subtests under `t.Parallel()`, each in
 its own room, against one homeserver, while other test families run concurrently. So the
 counts assigned inside any one room are interleaved with every other room's traffic, and the
-numeric gaps between consecutive events *in the same room* vary run to run.
+numeric gaps between consecutive events _in the same room_ vary run to run.
 
 ### The corrected mechanism
 
 The exclusive boundary only bites when **an event of this room sits exactly at the requested
 `from` count**. Pagination tokens are derived from real events (point (a)), so the event at
-`from` always exists — the question is *which* event it is, and whether that event is the one
+`from` always exists — the question is _which_ event it is, and whether that event is the one
 carrying the dangling `prev_events` pointer that the gap scan must see.
 
 Per-run global-counter interleaving (point (b)), plus the insertion order of the join/backfill
 sequence (each prepend draws a fresh global count, so backfilled events' relative counts depend
 on when they were inserted relative to the other rooms' traffic), determines the count layout
 of each subtest's room. Same topology, different layout each run. The off-by-one always drops
-exactly one event from the scan window; which *assertion* notices depends on whether the
+exactly one event from the scan window; which _assertion_ notices depends on whether the
 dropped event is eventA's child or eventB's child in that run's layout. Hence `(start)` and
 `(end)` trading places across the 22:08 and 01:17 runs, with different missing event IDs —
 both observations are exactly what this predicts.
@@ -70,7 +70,7 @@ both observations are exactly what this predicts.
 **No nondeterminism in `backfill_if_required` is required to explain the flip.** The
 sensitivity lives entirely in token/count assignment upstream of it.
 
-### But you asked whether the loop is *also* nondeterministic — it is, in three benign-until-they-aren't ways
+### But you asked whether the loop is _also_ nondeterministic — it is, in three benign-until-they-aren't ways
 
 Since the question was explicitly "is the model explaining this away too neatly," here is what
 is genuinely nondeterministic in the loop, and why none of it explains these failures but two
@@ -78,7 +78,7 @@ of them deserve fixes anyway:
 
 1. **`event_map` is a `HashMap`; `gaps` ordering follows its iteration order.** The
    `/backfill` request's `extremities` vec therefore varies per run. Remotes walk their own
-   DAG from those extremities, so the *set* of returned events is stable, but the insertion
+   DAG from those extremities, so the _set_ of returned events is stable, but the insertion
    order of the response can vary → different prepend counts → different backfilled layout.
    This feeds mechanism (b) above; it does not independently break anything, but it makes runs
    non-reproducible. Sort `backwards_extremities` before building the request. One line,
@@ -88,7 +88,7 @@ of them deserve fixes anyway:
    both insert the response. Whether the second insert is safely idempotent depends on the
    existence check inside the prepend path — verify it, because a double prepend would assign
    the same event **two different Backfilled counts**, which is a duplicate-event bug that
-   would look *exactly* like this class of flake. Complement's `t.Parallel()` makes this
+   would look _exactly_ like this class of flake. Complement's `t.Parallel()` makes this
    window real, not theoretical. A per-room async mutex or singleflight around the whole
    gap-scan-and-fill closes it.
 3. **The budget loop's stopping point** depends on how many gaps each `/backfill` response
@@ -122,11 +122,11 @@ pdus:      EXCLUSIVE of `from`.  To include it, pass from.saturating_inc(Backwar
 **The two primitives require opposite-sign adjustments for the same intent.** A developer who
 correctly learns "inclusive means +1" from the `pdus_rev` fix will then write a latent bug at
 any `pdus` call site — silently, skipping one event, in whatever feature they're building. The
-wrapper fixed one convention at two call sites; the trap is the *pair*.
+wrapper fixed one convention at two call sites; the trap is the _pair_.
 
 And the wrapper is advisory: `pdus_rev` remains callable directly (members.rs was migrated,
 but nothing stops the next call site), and the comment-based warning regime has now failed
-twice with the docstring *three lines from the edit*.
+twice with the docstring _three lines from the edit_.
 
 ### Recommended shape
 
@@ -166,7 +166,7 @@ Then:
   permanent one; keeping both means two ways to say the same thing.
 - Make the raw exclusive-seek variants `pub(super)` (they already are at the data layer — the
   service-layer re-exports in `timeline/mod.rs` are the leak; narrow those).
-- `topo_pdus_rev` takes the same treatment. Its exclusive boundary is *correct* for its two
+- `topo_pdus_rev` takes the same treatment. Its exclusive boundary is _correct_ for its two
   current callers (`context.rs` events_before/events_after and `/messages` pagination — the
   Matrix spec makes pagination tokens exclusive), which is exactly why the parameter should say
   `From::Exclusive(base_token)` out loud: the next reader learns the spec constraint from the
@@ -223,23 +223,23 @@ Tiering the fix:
    map lookup.
 3. **Right:** persist backward extremities at **write** time. When inserting any timeline
    event, if a `prev_event` is absent from the timeline, record `(room_id, missing_id,
-   child_id)` in a backward-extremities table; remove entries when the missing event arrives.
+child_id)` in a backward-extremities table; remove entries when the missing event arrives.
    `backfill_if_required` becomes "any extremities in range? if not, return" — one indexed
    read. This is Synapse's design and it exists because Synapse hit exactly this
-   read-amplification wall. It also *deletes the boundary-scan code entirely*, which — given
+   read-amplification wall. It also _deletes the boundary-scan code entirely_, which — given
    this file's history — is the most durable fix of all: the third regression cannot happen in
    code that no longer exists.
 
 Option 3 is a schema change and belongs in its own commit series with a migration; don't
 bundle it with the correctness work. But put it on the roadmap now, because §1's analysis
-shows the scan is also the *fragile* part, not just the slow part.
+shows the scan is also the _fragile_ part, not just the slow part.
 
 ---
 
 ## 4. Tests: yes, and here is the exact list
 
 The writeup's framing is right: the only detector for this bug class today is a slow
-integration suite whose failures *look* environmental (§1 explains why). That is the worst
+integration suite whose failures _look_ environmental (§1 explains why). That is the worst
 possible detector for a deterministic off-by-one. The unit tests are small because the
 primitives are small:
 
@@ -280,7 +280,7 @@ conversation's earlier rounds) five separate fix attempts.
    on both `pdus` and `pdus_rev` (opposite-sign conventions are the real trap); raw variants go
    private.
 2. Explanation directionally right; true mechanism is global-counter interleaving across
-   parallel rooms deciding *which* event sits at the excluded boundary — no budget-loop race
+   parallel rooms deciding _which_ event sits at the excluded boundary — no budget-loop race
    needed, but sort the extremities vec, add per-room singleflight, and verify prepend
    idempotency anyway.
 3. Real problem; short-term singleflight + skip-fast paths, long-term persist backward

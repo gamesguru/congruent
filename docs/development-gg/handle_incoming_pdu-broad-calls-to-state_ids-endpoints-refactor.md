@@ -138,11 +138,11 @@ Used by the monitor and background healing workers.
 6. Make `/state_ids` calls observable with a reason/mode field in logs and
    metrics.
 7. Add tests covering:
-   - no `/state_ids` request during a first join with complete `send_join` state;
-   - `/state_ids` still used for a live event with missing state;
-   - incomplete join state defers or rejects promotion rather than using current
-     state incorrectly;
-   - backfill does not synchronously block on `/state_ids`.
+    - no `/state_ids` request during a first join with complete `send_join` state;
+    - `/state_ids` still used for a live event with missing state;
+    - incomplete join state defers or rejects promotion rather than using current
+      state incorrectly;
+    - backfill does not synchronously block on `/state_ids`.
 
 ## Temporary Diagnostic Rule
 

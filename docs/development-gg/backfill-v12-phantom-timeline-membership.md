@@ -14,15 +14,66 @@ a second unverified change onto the same surface.
 
 `TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)`,
 the `messagesRequestLimit`-lower-than-backfilled case (20 messages sent,
-limit=10). Consistently and only on **room_version=12**. Message index 18 of
-20 (the second-to-last message, direct `prev_event` of the last message) is
-never returned by any `/messages` page across a full backward traversal to
-the start of the room. Confirmed across three independent runs, three
-different rooms, same shape every time:
+limit=10). Message index 18 of 20 (the second-to-last message, direct
+`prev_event` of the last message) is never returned by any `/messages` page
+across a full backward traversal to the start of the room. Confirmed across
+five additional independent runs since the original three below, same shape
+every time:
 
 - Run `31240375066` (`amd64 ubuntu-24.04-v12`): `$wMeUhZ6Xb8kLyVNb80Vi9YE9DLS4rCXskzovLkBpuUg` missing.
 - Run `31241023834` (`amd64 ubuntu-24.04-v12`): same test, different room, same index missing.
 - Run `31267318970` (`amd64 ubuntu-22.04-v12`): `$gtk-MtPypI_2PSZ9fgl7lTywDdq6eMj5c1LzAlLw4Nk` missing, child `$vXF1rN3KSbYS--fVVKoMN4jno2sUgGGiiQ_HAc-5AMA` present.
+- Run `31666441322` (arm64 ubuntu-24.04): two adjacent events missing this time
+  (indices 17 and 18) instead of one — `$O9bjGHIb09FCBCs0HDYvylfDNlnWa0hELiZKvcb8fv0`
+  and `$I1OqqPmmqCtRh7XNWEaju2W3q3OPTT8LJHQO0n-AoNo`. Both confirmed present in
+  `eventid_pdu`/`append_pdu: insert complete` on the serving homeserver (topo
+  writes completed, per timestamp, ~6-10ms _before_ the `/messages` call that
+  should have returned them — ruling out a simple write-after-read race for
+  this instance).
+- Run `31668463227` / commit `0ca548647`: **two different stranded events in
+  the same run**, one per arm64 job —
+    - arm64-v11: `$Hd735Ac1tD65KI1I_tKVByAD5NzVIkhkhlFZG4kZ6Bw`, index 18, inserted
+      via `backfill_pdu` (`prepend_backfill_pdu_batch`, `Backfilled(-862)`) after
+      `backfill_if_required`'s gap-scan rediscovered it 100ms+ after an earlier
+      outlier-only fetch.
+    - arm64-v12: `$1id4YyJezjz0hslPQmnZE8LNXSqSlFgvq-HxZl8Wrh4`, index 18, inserted
+      via `append_pdu` (`append_pdu_batch`, `Normal(862)`) from the live
+      federation-transaction path, no backfill involved.
+
+    **Different insertion function, different count region (Backfilled vs.
+    Normal), same run, same symptom.** That weakens "which insert function
+    ran" as the discriminator. What both share, identically, immediately
+    before the write: a `"DAG fork detected: resolving state across
+prev_events + current extremities ... n_prev=1 n_extremities=1 n_total=2"`
+    step, followed by `"State resolution completed for incoming PDU"`. Every
+    stranded event traced so far (this run and the `31267318970`/`31240375066`
+    runs above) went through this DAG-fork-merge branch specifically, never
+    the plain fast-forward branch (`"Fast-forward state update, skipping state
+resolution"` — seen in the same logs for _other_, non-stranded events).
+    Not proof, but a real correlation across every instance traced — worth
+    checking whether the `depth` value this branch assigns/uses differs from
+    what fast-forward would compute, since a wrong depth would misplace the
+    topo-index entry without any write being "missing" in the sense audited
+    below.
+
+- PR #47 CI run `#1984` (5-way job matrix): **4 of 5 jobs fail with this exact
+  signature** (856 pass / 3 fail / 11 skip, identical failing-test list) —
+  amd64-22.04-v12, amd64-24.04-v12, arm64-24.04-v12, **and arm64-24.04-v11**.
+  Only amd64-24.04-v11 passes clean (859/0/11).
+
+### Correction: this is not "v12 only"
+
+The original three runs were all v12, which is why the title and this
+section originally said "consistently and only on room_version=12." That
+does not hold up against the larger sample: **arm64-ubuntu-24.04-v11 fails
+with the identical signature**, in two separate runs now (`31668463227` and
+PR #47 run `#1984`), while **amd64-ubuntu-24.04-v11 passes clean** in both.
+The pattern that actually fits the data is arch/timing-sensitivity, not a
+room-version gate — v12's extra auth/creator-gate bookkeeping plausibly
+widens the same timing window that arm64 already hits more reliably on its
+own, rather than v12 being a distinct trigger. Title kept for continuity
+(existing cross-references), but don't read "v12" as a hard precondition
+when reproducing this.
 
 This is **not** the mechanism `3e218c4ab` fixed (see below) — that fix
 cleared all `ubuntu-24.04` configs (both arches, both room versions) on run
@@ -30,10 +81,14 @@ cleared all `ubuntu-24.04` configs (both arches, both room versions) on run
 that fix untouched, because the trigger below diverts control before
 `3e218c4ab`'s code path is ever reached.
 
-## Trigger: a real, intermittent signature-verification failure, v12-only
+## Trigger: a real, intermittent signature-verification failure
+
+(Originally described as "v12-only" below — see the correction above. The
+three original repro runs were all v12, so references to "v12" in this
+section reflect that original sample, not a confirmed precondition.)
 
 The **last** message in the room (message 20/20, e.g. `$vXF1rN3KSbYS...`,
-`depth: 27`) fails cryptographic signature verification on its *first*
+`depth: 27`) fails cryptographic signature verification on its _first_
 fetch route, every single time this failure has been observed:
 
 ```
@@ -52,7 +107,7 @@ That event is fetched via **two independent routes** in the same join:
    `add_pdu_outlier`, and is dropped from that call's `eventid_info`.
 2. `join_remote_process`'s explicit "fetching join extremity" fetch
    (`join.rs`, `conduwuit_api::client::membership::join: fetching join
-   extremity`) — goes through `handle_outlier_pdu` again independently.
+extremity`) — goes through `handle_outlier_pdu` again independently.
    **Succeeds** this time, and the event gets promoted normally
    (`"Upgrading PDU from outlier to timeline"`).
 
@@ -70,18 +125,18 @@ not a coincidence.
 
 ## Consequence: the parent gets silently stranded, twice
 
-Because the *first* verify attempt on the child failed, that first
+Because the _first_ verify attempt on the child failed, that first
 `fetch_prev` call never got to process the child's own `prev_events` — the
 child wasn't in its `eventid_info`, so nothing walked further back from it
 that round.
 
-Once the *second* fetch succeeds and the child is promoted, its own
+Once the _second_ fetch succeeds and the child is promoted, its own
 `process_timeline_upgrade` runs, calls `fetch_prev` again for the child's
 `prev_events`, correctly discovers the parent (message 18) as missing,
 fetches it, and it passes both `fetch_prev`'s sig check and
 `handle_outlier_pdu`'s auth-chain check cleanly (`found=2 missing=0`, no
 warnings). It lands in `eventid_info`. `process_timeline_upgrade` then calls
-`handle_prev_pdu(..., Some((pdu, json)), ...)` for it — the *normal*, non-`None`
+`handle_prev_pdu(..., Some((pdu, json)), ...)` for it — the _normal_, non-`None`
 branch. `3e218c4ab`'s fix (which only changed the `None` branch) never
 engages here; this is a different mechanism.
 
@@ -105,7 +160,7 @@ Log evidence this branch is the one taken, for the parent (`$gtk-MtPyp`, run
 ```
 
 512 microseconds between the parent's successful auth-chain check and the
-*child's own* state resolution resuming — with **no** `"Upgrading PDU from
+_child's own_ state resolution resuming — with **no** `"Upgrading PDU from
 outlier to timeline"` log (the only log between `get_pdu_id`'s early return
 and the real upgrade path), no `"Event was previously soft-failed"`, no
 `"Prev $gtk-MtPyp failed"` (which would appear if `handle_prev_pdu`
@@ -117,7 +172,7 @@ the real upgrade logs something or returns `Err`; this is the only silent
 start of the room.
 
 **Second skip, same phantom mapping:** `backfill_if_required`'s own gap-scan
-independently rediscovers this exact gap 100ms later (a *third* fetch/attempt,
+independently rediscovers this exact gap 100ms later (a _third_ fetch/attempt,
 via `/backfill` this time) and calls `backfill_pdu`, whose own guard —
 `non_outlier_pdu_exists` — presumably reads the same
 `eventid_metadata`/`eventid_pduid` mapping `get_pdu_id` does and also
@@ -135,7 +190,7 @@ signal, two independent skip paths, one message permanently missing from
    `Some`, trust it.
 2. **Legacy fallback**: `eventid_pduid`.
 
-Neither of these *is* `roomid_topologicalorder_pducount`, the index
+Neither of these _is_ `roomid_topologicalorder_pducount`, the index
 `/messages` actually reads (`topo_pdus_rev`). The normal insert paths
 (`prepend_backfill_pdu_batch`, `append_pdu_batch`) write all of these
 together in one `WriteBatch`, so they can't disagree by construction. But
@@ -154,6 +209,128 @@ to these mappings.
 event as a side effect of using its `depth` for state-res bookkeeping,
 without that event ever going through a real insert. This is the next thing
 to check, with a real DB to inspect (see "Next step").
+
+## Write-path audit (static only, no Docker) — what's confirmed and what's ruled out
+
+A second pass (this session, plus an independently-run parallel trace that
+converged on the same `get_pdu_id`/data.rs:854 mechanism from a different
+angle — good cross-check) read every writer of `eventid_metadata` end to
+end. Line numbers are current HEAD, not the `data.rs:697` cited above (the
+file has moved since); the mechanism is unchanged.
+
+**Confirmed correct, by direct code reading — not just inference:**
+
+- `append_pdu_batch` and `prepend_backfill_pdu_batch` (`timeline/data.rs`)
+  both write `roomid_topologicalorder_pducount`, `eventid_pduid`,
+  `room_pducount_eventid`, and `eventid_metadata` (with `pdu_count: Some(..)`)
+  into the _same_ `database::Batch` object, applied as one unit. No `.await`
+  splits the topo write from the metadata write within either function. This
+  matches the doc's original claim; verified directly, not assumed.
+- Both functions are called from call sites that hold the room's
+  `mutex_insert` for the duration of the write (`timeline/append.rs:247`,
+  `timeline/backfill.rs:747`) — so live-federation delivery and backfill
+  gap-fill can't race each other's writes for the same room.
+- `append_pdu`'s own duplicate-insert guard
+  (`self.non_outlier_pdu_exists(...)` at `append.rs:248`) runs **after**
+  acquiring `mutex_insert`, so two concurrent callers converging on the same
+  event self-heal correctly: the second one sees the first's real entry
+  under the lock and reuses it rather than double-inserting or skipping.
+- `add_pdu_outlier_batch` (`rooms/outlier/mod.rs:~225`, flagged as a
+  suspect by the parallel trace above) is **not** the hazard it looks like.
+  It always constructs a fresh `EventMetadata` with `pdu_count: None`
+  explicitly, and guards itself: if the existing stored metadata shows
+  `is_outlier: false` (i.e. already a real timeline entry), it logs and
+  returns without writing at all. This closes out that specific guess —
+  don't re-check this file next time without new evidence.
+- The `TimelineKey` encoding (`core/matrix/pdu/count.rs`) — depth as the
+  primary axis, big-endian, unsigned-comparable; `stream_ordering` as
+  offset-binary-encoded secondary axis (XOR sign bit, the standard technique
+  for sorting signed ints under unsigned byte comparison) — is structurally
+  correct. A high-depth event with a deeply negative (`Backfilled`) count
+  sorts in its correct depth bucket regardless of the count's sign or
+  magnitude; it does not get shunted next to unrelated low-depth entries
+  that happen to share the Backfilled region. Ruled out as an independent
+  explanation.
+- `topo_pdus_rev`'s boundary logic (`timeline/data.rs:1894-1929`) reseeks
+  from `depth = u64::MAX` on _every_ page (not incrementally continuing from
+  the prior page), specifically so a backfill gap-filler landing after a
+  page was already served can still be picked up on the next page — per its
+  own comment, built for exactly this failure class. Traced by hand against
+  the run-`31668463227` log: for the first page the boundary token has
+  `until.depth = u64::MAX` too (the literal sentinel), so the depth-based
+  cutoff barely constrains anything and the missing event's real depth
+  (26, one less than its child's logged `depth: 27`) should pass it fine.
+  Doesn't explain the miss on its own.
+- `count_to_id` (`timeline/data.rs:2087`) is a pure deterministic encode —
+  `PduId { shortroomid, shorteventid }` — no DB read at all. Can't be
+  "stale." Ruled out.
+
+**A latent race on marker fields — a separate, real bug, not a proven cause
+of this failure. Flagging so it isn't re-discovered and folded into the
+causal chain for this bug without new evidence:**
+
+`rooms/pdu_metadata/data.rs`'s `mark_event_rejected` (`:188`),
+`mark_event_soft_failed` (`:138`), `unmark_event_rejected`, and
+`unmark_event_soft_failed` (`:225`) each do an unbatched, unsynchronized
+read-`eventid_metadata`-mutate-one-field-`.insert()`-the-whole-struct-back
+cycle, entirely outside `mutex_insert` and outside any `database::Batch`.
+**None of them ever set `pdu_count`** — they only toggle the
+soft-fail/rejected markers, copying `pdu_count` forward unchanged from
+whatever they read. By themselves they cannot manufacture a fake timeline
+membership; only the pre-existing value survives. Independently confirmed
+by a second static pass, so treat this as settled, not just asserted.
+
+The theoretical race they're still capable of is narrower than originally
+framed here: they _can_ race against an in-flight `append_pdu_batch`/
+`prepend_backfill_pdu_batch` for the same event — if one of these reads the
+pre-append metadata (`pdu_count: None`) and its write lands _after_ the real
+insert's batch commits, it silently reverts `eventid_metadata.pdu_count`
+back to `None` — a real, verified inconsistency bug, worth its own fix.
+
+But it can only produce a **false negative** (a real timeline event's
+`pdu_count` field reverted to looking unset), not the **false positive**
+(`get_pdu_id` returning `Some` for an event with no real entry) this bug
+needs. And even the false-negative direction self-heals for both consumers
+in the doc's trace: `get_pdu_id` falls back to `eventid_pduid` (untouched by
+this race — only `append_pdu_batch`/`prepend_backfill_pdu_batch` write it,
+same atomic batch as everything else), and `non_outlier_pdu_exists`
+additionally cross-checks `room_pducount_eventid.exists(&pduid)` (same
+atomicity guarantee) rather than trusting `get_pdu_id`'s answer alone. So
+this race doesn't currently look load-bearing for the actual stranding —
+noted here mainly so the next person doesn't spend the same hour on it.
+
+**Net result of this pass:** I did not find a writer-side static path in the
+audited code (the four writers listed above) that obviously explains the
+false positive `get_pdu_id`/`non_outlier_pdu_exists` would need to produce.
+That is narrower than "ruled out" — the state-resolution/bookkeeping paths
+this doc already flagged as unchecked (previous section) remain unchecked,
+and an absence of an obvious mechanism in what's been read is not proof
+none exists elsewhere. The log evidence (silent `Ok` where every other
+branch logs or errors, sub-millisecond timing) still points at a phantom
+mapping of some kind; this pass only narrows _where it isn't_, not where it
+is. Candidates _not yet ruled out_, in priority order given the evidence
+above:
+
+1. **The DAG-fork-merge depth correlation** (see the `31668463227` entry in
+   "Symptom" above) — every stranded event traced across every run shares
+   this one step immediately before the write, regardless of which insert
+   function ultimately runs. Check what `pdu.depth()` actually resolves to
+   for an event processed through this branch vs. what fast-forward would
+   give it, and whether that depth is consistent with the depth the child
+   event (`n8pHPQnL6...`/`$6rFEpnkP...`-class, always the direct child of
+   the stranded event) expects its parent to have. This is the most
+   concrete, narrowly-scoped lead so far — check it first.
+2. Whether `eventid_pduid` or `room_pducount_eventid` can end up out of sync
+   with the topo index through some path outside the four writers audited
+   here (state-resolution bookkeeping is still explicitly unchecked, per the
+   paragraph above this section).
+3. Whether the two concurrent fetch/verify routes in the trigger mechanism
+   can each derive a _different_ `RawPduId` for the same event via two
+   independent `next_count()` calls before either acquires `mutex_insert` —
+   worth confirming `upgrade_outlier_to_timeline_pdu`'s early-return check
+   (`upgrade_outlier_pdu.rs:53-61`) itself runs unlocked, and whether that
+   specific gap (not the write side, the _decision_ side) is where two
+   racing callers can diverge.
 
 ## What NOT to do without Docker access
 
@@ -194,7 +371,7 @@ that's done is a separate, open question.
 
 ## What `3e218c4ab` already fixed (separate, real, unaffected by the above)
 
-`handle_prev_pdu`'s `None`-`eventid_info` branch (a *different* silent-skip:
+`handle_prev_pdu`'s `None`-`eventid_info` branch (a _different_ silent-skip:
 `fetch_prev` omits a `prev_id` from its result when `pdu_exists` — which
 matches outlier-only events — already considered it "not needed", and the
 old code read `None` as "nothing to do" instead of "might be outlier-only,

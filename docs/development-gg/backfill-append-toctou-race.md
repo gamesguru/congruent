@@ -34,7 +34,7 @@ state_res_debug: handle_outlier_pdu: early return, event already known event_id=
 backfill: no gaps (scanned 10 events from 807)
 ```
 
-`$Jgq5bqxt...` (the missing gap-filler) is the *only* event in the 27-event
+`$Jgq5bqxt...` (the missing gap-filler) is the _only_ event in the 27-event
 batch that logs the "already known" early-return branch — implying it was
 already present as a bare **outlier** (not yet promoted to the timeline)
 before this backfill call, most likely because Complement's join/state-res
@@ -55,7 +55,7 @@ self.associate_current_state(&room_id, &event_id).await?;
 ```
 
 If `associate_current_state` errors, the `?` propagates up through
-`backfill_pdu`'s `Result`, and the *only* caller
+`backfill_pdu`'s `Result`, and the _only_ caller
 (`backfill_if_required`'s loop) does:
 
 ```rust
@@ -97,8 +97,8 @@ inserts an event as `Backfilled`, a concurrent normal `/send` delivering
 that same event (plausible here — Complement's join/state-res flow can
 independently discover and later re-deliver the same event) queues up
 behind it, acquires the lock second, and — with no recheck — inserts it
-*again* under a fresh `Normal` count. This is a confirmed *code* gap; it
-is not yet confirmed to be *this* symptom's cause. It's unclear from
+_again_ under a fresh `Normal` count. This is a confirmed _code_ gap; it
+is not yet confirmed to be _this_ symptom's cause. It's unclear from
 reading alone whether a duplicate insert under two different `PduCount`s
 would manifest as a missing event (vs. a duplicate) without tracing the
 `shorteventid`/`eventid_pduid` allocation path further.
@@ -119,7 +119,7 @@ would manifest as a missing event (vs. a duplicate) without tracing the
 - **Rejection-cache poisoning** (the originally-suspected mechanism,
   see below): disproven for this specific trace. The pre-fix
   `"early return, event already known"` log line is only reachable
-  *after* `is_event_rejected` has already returned `false` — meaning
+  _after_ `is_event_rejected` has already returned `false` — meaning
   `$Jgq5bqxt...` was accepted, not rejected, when backfill reached it.
 
 ## Related, independently-verified fixes made along the way (not the same bug)
@@ -155,13 +155,13 @@ branch logic, not assumed.
 Grepped every acquisition of the shared per-room `mutex_insert` lock across
 `src/service/rooms/timeline/` to check for the same asymmetry:
 
-| Site | Recheck under lock? | Status |
-| --- | --- | --- |
-| `backfill_pdu` (`backfill.rs:596`) | Yes (pre-existing) | OK |
-| `append_pdu` (`append.rs:247`) | **No** | **Fixed** (draft, commit `b2cc8fde0`) |
-| `promote_outlier` (`backfill.rs:647`) | **No** | **Fixed** (this commit) |
-| `force_insert_pdu` (`backfill.rs:822`) | **No** | **Fixed** (this commit) |
-| `reorder_timeline` (`reorder.rs:36`) | N/A | Not vulnerable — rebuilds the topo index over an already-collected entry set, not a check-then-insert of one incoming event |
+| Site                                   | Recheck under lock? | Status                                                                                                                      |
+| -------------------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `backfill_pdu` (`backfill.rs:596`)     | Yes (pre-existing)  | OK                                                                                                                          |
+| `append_pdu` (`append.rs:247`)         | **No**              | **Fixed** (draft, commit `b2cc8fde0`)                                                                                       |
+| `promote_outlier` (`backfill.rs:647`)  | **No**              | **Fixed** (this commit)                                                                                                     |
+| `force_insert_pdu` (`backfill.rs:822`) | **No**              | **Fixed** (this commit)                                                                                                     |
+| `reorder_timeline` (`reorder.rs:36`)   | N/A                 | Not vulnerable — rebuilds the topo index over an already-collected entry set, not a check-then-insert of one incoming event |
 
 All three real gaps now get the same recheck-after-lock treatment
 `backfill_pdu` already had. None of these fixes are validated against the

@@ -24,7 +24,7 @@ replacement" section below describes bounding the index scan near the
 caller's position via Synapse's `nearby_depth` padding heuristic. The
 reverted implementation skipped that (existence check across the whole
 room instead) to avoid tuning a heuristic under time pressure. Given the
-regression, it's worth reconsidering whether *that specific simplification*
+regression, it's worth reconsidering whether _that specific simplification_
 is implicated -- an unbounded-by-position scan returning a very large or
 oddly-ordered extremities set is a plausible source of exactly the kind of
 "pagination integrity" failure complement caught, though this is a
@@ -32,6 +32,7 @@ hypothesis to verify, not a confirmed cause.
 
 **Open question: what actually broke.** Not yet root-caused. Candidates
 worth checking first, in rough order of suspicion:
+
 1. The child-vs-missing-parent event_id fix (see below) itself -- verify
    the value written by `record_backward_extremities_into_batch` and read
    by `nearby_backward_extremities` actually agree in all cases, including
@@ -45,13 +46,13 @@ worth checking first, in rough order of suspicion:
 3. Whether the migration path and the write-path can disagree for a room
    populated partly before and partly after `8d7951099` within the same
    complement test run (i.e. a race between migration-driven population
-   and live write-path population for the *same* room during the test).
+   and live write-path population for the _same_ room during the test).
 
 **Previously landed (and still landed) as part of the reverted commit's
 write-side correctness work, independent of the read-path bug:**
 `record_backward_extremities_into_batch`'s CF1 value was originally `()`,
 matching Synapse's schema literally. But this codebase's `/backfill` call
-wants *child* event IDs (events with a missing parent), not the missing
+wants _child_ event IDs (events with a missing parent), not the missing
 parent's own ID. This fix was reverted along with everything else in
 `969cb1528` and will need to be re-applied (and re-verified) when parts 2+3
 are attempted again.
@@ -68,8 +69,8 @@ replacement" below).
 "does this room have a gap near `from`?" by scanning up to `limit` PDUs
 backward from `from` on every backward `/messages` call, building a
 `HashMap<OwnedEventId, PduEvent>`, and running `rezzy::find_backward_extremities`
-over it. Tiers 1/2 stop the *redundant* work (concurrent/repeat identical
-scans); they don't stop the *first* scan for a given window, which still
+over it. Tiers 1/2 stop the _redundant_ work (concurrent/repeat identical
+scans); they don't stop the _first_ scan for a given window, which still
 costs a full `limit`-sized range read plus existence probes for every
 `prev_event` not already in the scanned map. On a large, active room this is
 read amplification on the hot path of every backward pagination.
@@ -81,7 +82,7 @@ not from memory:
 
 **Schema** (`synapse/storage/databases/main/events.py`,
 `event_federation.py`): a table `event_backward_extremities(room_id,
-event_id)` where `event_id` is the *missing* event — the backward extremity
+event_id)` where `event_id` is the _missing_ event — the backward extremity
 itself — plus the pre-existing `event_edges(event_id, prev_event_id)` DAG
 table, and a newer `timeline_gaps(room_id, instance_name, stream_ordering)`
 table for MSC3871-style gap signaling independent of backfill points.
@@ -89,12 +90,13 @@ table for MSC3871-style gap signaling independent of backfill points.
 **Write time** — `_update_backward_extremities` (`events.py:3645`), called
 for every newly-persisted non-outlier event and every outlier promotion
 (`events.py:2691`):
+
 1. Collect the event's `prev_event_ids()`.
-2. Query which of those are *not* already known as non-outlier local events.
+2. Query which of those are _not_ already known as non-outlier local events.
 3. `upsert` the remainder into `event_backward_extremities`.
 4. Record the stream position into `timeline_gaps`.
 5. **Delete** `event_backward_extremities` rows for any event that is
-   *itself* now being persisted (`events.py:3712`,
+   _itself_ now being persisted (`events.py:3712`,
    `DELETE FROM event_backward_extremities WHERE event_id = ? AND room_id = ?`)
    — a formerly-missing parent stops being an extremity the moment it
    arrives.
@@ -129,7 +131,7 @@ replaces the entire scan-and-decide loop with one bounded range read.
 `[shortroomid: 8B][event_id]` → `depth: 8B`
 Synapse deletes by primary key (`event_id`) directly because their table is
 naturally keyed that way; ours is keyed by depth for the read path, so we
-need this second index to know *which* CF-1 key to delete when a missing
+need this second index to know _which_ CF-1 key to delete when a missing
 event finally arrives — an O(1) point lookup instead of a scan.
 
 This is a direct copy of the existing dual-index pattern in this codebase,
@@ -147,10 +149,11 @@ needs the equivalent extremity bookkeeping, in the same places:
 `promote_outlier`, `force_insert_pdu`, `force_insert_pdu_batch`.
 
 On inserting event `E` (depth `E.depth`):
+
 1. For each `prev_id` in `E.prev_events`: if `get_pdu_id(prev_id)` fails
    (not known locally), write `roomid_depth_missingeventid[shortroomid,
-   E.depth, prev_id] = ()` and `roomid_missingeventid_depth[shortroomid,
-   prev_id] = E.depth`.
+E.depth, prev_id] = ()` and `roomid_missingeventid_depth[shortroomid,
+prev_id] = E.depth`.
 2. Resolve: look up `roomid_missingeventid_depth[shortroomid, E.event_id]`.
    If present, `E` was itself a recorded extremity — delete both index
    entries (using the stored depth to construct the CF-1 key).
@@ -177,7 +180,7 @@ same way `pdus_rev_exclusive_until`/`pdus_exclusive_from` were.
 but not-yet-visible extremities are still found), and if the range is empty,
 return immediately. If not empty, fire the `/backfill` federation request as
 today. The `HashMap`/`rezzy::find_backward_extremities` scan-and-detect logic
-is deleted entirely — the index already *is* the detection result.
+is deleted entirely — the index already _is_ the detection result.
 
 Tiers 1 and 2's caching becomes mostly redundant once this lands (a range
 scan is cheap enough that memoizing it is unlikely to be worth the

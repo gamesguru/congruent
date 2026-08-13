@@ -63,9 +63,9 @@ event retrieval (backfill) and forward timeline construction.
 
 ### `TestMessagesOverFederation`
 
-| Subtest                                                                  | Status  | Notes |
-| ------------------------------------------------------------------------ | ------- | ----- |
-| `Visible shared history after re-joining room (backfill)`                | ❌ fail |       |
+| Subtest                                                                  | Status  | Notes                                                                |
+| ------------------------------------------------------------------------ | ------- | -------------------------------------------------------------------- |
+| `Visible shared history after re-joining room (backfill)`                | ❌ fail |                                                                      |
 | ↳ `messagesRequestLimit is lower than the number of messages backfilled` | ❌ fail | see [backfill-append-toctou-race.md](backfill-append-toctou-race.md) |
 
 **Impact**: After leaving and re-joining a room, historical messages from the
