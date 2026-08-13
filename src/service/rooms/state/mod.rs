@@ -131,40 +131,32 @@ impl Service {
 		// resolve PDUs
 		let mut added_pdus = Vec::with_capacity(added.len());
 		for (_k, event_id) in added {
-			if let Ok(event_id_obj) = self
+			let event_id_obj = self
 				.services
 				.short
 				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await
-			{
-				if let Ok(pdu) = self
-					.services
-					.timeline
-					.get_pdu_in_room(Some(room_id), &event_id_obj)
-					.await
-				{
-					added_pdus.push(Arc::new(pdu));
-				}
-			}
+				.await?;
+			let pdu = self
+				.services
+				.timeline
+				.get_pdu_in_room(Some(room_id), &event_id_obj)
+				.await?;
+			added_pdus.push(Arc::new(pdu));
 		}
 
 		let mut removed_pdus = Vec::with_capacity(removed.len());
 		for (_k, event_id) in removed {
-			if let Ok(event_id_obj) = self
+			let event_id_obj = self
 				.services
 				.short
 				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await
-			{
-				if let Ok(pdu) = self
-					.services
-					.timeline
-					.get_pdu_in_room(Some(room_id), &event_id_obj)
-					.await
-				{
-					removed_pdus.push(Arc::new(pdu));
-				}
-			}
+				.await?;
+			let pdu = self
+				.services
+				.timeline
+				.get_pdu_in_room(Some(room_id), &event_id_obj)
+				.await?;
+			removed_pdus.push(Arc::new(pdu));
 		}
 
 		self.set_room_state_hamt(room_id, new_root_handle, state_lock);

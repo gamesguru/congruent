@@ -95,36 +95,14 @@ async fn test_state_round_trip() {
 	// Acquire a state lock
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 
-	// Test append_to_state
-	let (root_handle, node) = services
+	// Use set_event_state instead of append_to_state
+	// This generates a root handle and atomically maps the shortevent ID.
+	let root_handle = services
 		.rooms
 		.state
-		.append_to_state(&pdu, &room_id, &mutex)
+		.set_event_state(&room_id, &pdu, &mutex)
 		.await
-		.expect("append_to_state failed");
-
-	// Write batch for event state (like set_event_state does)
-	let mut batch =
-		conduwuit_database::Batch::new(&services.rooms.state.db.shorteventid_roothandle);
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive_batch(node, &mut batch);
-
-	let serialized = conduwuit_database::serialize_to_vec(&(
-		root_handle.structural_hash,
-		root_handle.state_group_id,
-	))
-	.unwrap();
-
-	batch.insert(
-		&services.rooms.state.db.shorteventid_roothandle,
-		1_u64.to_be_bytes(),
-		&serialized,
-	);
-	batch.insert(&services.rooms.state.db.roomid_roothandle, room_id.as_bytes(), &serialized);
-	batch.commit();
+		.expect("set_event_state failed");
 
 	// Verify room state reflects the update
 	let retrieved_root = services
@@ -135,6 +113,25 @@ async fn test_state_round_trip() {
 		.expect("failed to get room state");
 	assert_eq!(retrieved_root.structural_hash, root_handle.structural_hash);
 	assert_eq!(retrieved_root.state_group_id, root_handle.state_group_id);
+
+	// Verify the short-event mapping was actually created
+	let shorteventid = services
+		.short
+		.get_shorteventid(pdu.event_id())
+		.await
+		.expect("shorteventid should exist after set_event_state");
+	let serialized = services
+		.rooms
+		.state
+		.db
+		.shorteventid_roothandle
+		.get(&shorteventid.unwrap().to_be_bytes())
+		.await
+		.deserialized::<(rezzy::hamt::StructuralHash, rezzy::hamt::StateGroupId)>()
+		.expect("mapped roothandle should exist");
+
+	assert_eq!(serialized.0, root_handle.structural_hash);
+	assert_eq!(serialized.1, root_handle.state_group_id);
 }
 
 #[tokio::test]
