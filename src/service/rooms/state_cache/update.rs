@@ -118,16 +118,18 @@ pub async fn update_membership(
 			self.mark_as_joined(user_id, room_id).await;
 		},
 		| MembershipState::Invite => {
-			let last_state = self.services.state.summary_stripped(pdu, room_id).await;
-			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(last_state), None)
+			let mut invite_state = self.services.state.summary_stripped(pdu, room_id).await;
+			invite_state.push(pdu.to_format());
+			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(invite_state), None)
 				.await?;
 		},
 		| MembershipState::Leave | MembershipState::Ban => {
 			self.mark_as_left(user_id, room_id, Some(pdu.clone())).await;
 		},
 		| MembershipState::Knock => {
-			let last_state = self.services.state.summary_stripped(pdu, room_id).await;
-			self.mark_as_knocked(user_id, room_id, Some(last_state));
+			let mut knock_state = self.services.state.summary_stripped(pdu, room_id).await;
+			knock_state.push(pdu.to_format());
+			self.mark_as_knocked(user_id, room_id, Some(knock_state));
 		},
 		| _ => {},
 	}
@@ -254,12 +256,8 @@ fn set_other_membership_states_into_batch<'a, 'b>(
 	// Keep this matrix in one place. The silent and non-silent invite/leave/
 	// join/knock paths all route through this helper.
 	if keep != MembershipKind::Joined {
-		self.db
-			.userroomid_joined
-			.batch_delete(batch, userroom_id);
-		self.db
-			.roomuserid_joined
-			.batch_delete(batch, roomuser_id);
+		self.db.userroomid_joined.batch_delete(batch, userroom_id);
+		self.db.roomuserid_joined.batch_delete(batch, roomuser_id);
 	}
 
 	if keep != MembershipKind::Invited && !preserve_invite {
@@ -272,9 +270,7 @@ fn set_other_membership_states_into_batch<'a, 'b>(
 		self.db
 			.userroomid_invitesender
 			.batch_delete(batch, userroom_id);
-		self.db
-			.roomid_inviteviaservers
-			.batch_delete(batch, room_id);
+		self.db.roomid_inviteviaservers.batch_delete(batch, room_id);
 	}
 
 	if keep != MembershipKind::Left {
@@ -823,7 +819,8 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 				.state_get(room_ssh, &StateEventType::RoomMember, user_id.as_str())
 				.await
 			{
-				let last_state = self.services.state.summary_stripped(&pdu, room_id).await;
+				let mut last_state = self.services.state.summary_stripped(&pdu, room_id).await;
+				last_state.push(pdu.to_format());
 				self.mark_as_invited_silent(
 					user_id,
 					room_id,
