@@ -1,8 +1,12 @@
 # Diagnosis: v12 `TestMessagesOverFederation` re-join failure (message 18/20 stranded)
 
-Status: root-caused to a specific line, not yet fixed. Do not attempt the
-obvious patch (gating `upgrade_outlier_to_timeline_pdu`'s early-return on the
-topo index, or making `get_pdu_id` authoritative) without first reading
+Status: root-caused to a specific line, not yet fixed and verified. One
+candidate fix has been applied to `append.rs`'s soft-fail branch (see
+"Candidate fix applied, unverified" near the end) — real invariant
+violation, plausible connection to this bug, **not proven** to be the cause,
+**not yet run against Complement**. Do not attempt the other obvious patches
+(gating `upgrade_outlier_to_timeline_pdu`'s early-return on the topo index,
+or making `get_pdu_id` authoritative) without first reading
 `backfill-extremities-write-time-design.md` — every candidate fix here
 touches "what does 'this event is in the timeline' mean", which is exactly
 the surface `969cb1528` got wrong and `2239f27ce` reverted, with a **100%
@@ -368,6 +372,78 @@ that's done is a separate, open question.
    `roomid_topologicalorder_pducount` directly for that event via the admin
    `heal`/inspection tooling to confirm or rule out the phantom-mapping
    theory before writing a fix.
+
+## Ruled out: `add_pdu_outlier` synchronization (not part of the causal chain)
+
+A lead raised mid-investigation: ~20 of the ~22 call sites of
+`add_pdu_outlier` use the plain (non-`_locked`) variant, which looked at
+first glance like an unsynchronized write racing `append_pdu`'s
+`mutex_insert`-protected write. **This is wrong — checked directly against
+the implementation, not assumed:**
+
+```rust
+// rooms/outlier/mod.rs:151
+pub async fn add_pdu_outlier(&self, event_id: &EventId, pdu: &CanonicalJsonObject, room_id: Option<&RoomId>) {
+    let room_id_for_lock = derive_room_id(pdu, room_id, event_id);
+    let _guard = match room_id_for_lock.as_deref() {
+        | Some(room_id) => Some(self.services.timeline.mutex_insert.lock(room_id).await),
+        | None => None,
+    };
+    self.add_pdu_outlier_inner(event_id, pdu, room_id);
+}
+```
+
+`add_pdu_outlier` acquires `mutex_insert` **internally** before writing.
+`add_pdu_outlier_locked` isn't "the synchronized variant" — its own doc
+comment says it's for callers that **already hold** the lock (e.g.
+`force_state` invoked from inside `append_pdu`), since the mutex isn't
+reentrant and re-locking from the same call stack would deadlock. Both
+variants funnel into the same `add_pdu_outlier_inner` → `add_pdu_outlier_batch`
+under the same lock either way. There is no TOCTOU gap on this surface.
+Ruled out — don't re-raise this lead without new evidence.
+
+## Candidate fix applied, unverified: `clear_outlier_flag` in the soft-fail branch
+
+Applied to `src/service/rooms/timeline/append.rs`'s `append_incoming_pdu`,
+staged, **not yet run against Complement**:
+
+```diff
+ 	if soft_fail {
+-		self.clear_outlier_flag(pdu.event_id());
+ 		self.services
+ 			.pdu_metadata
+ 			.unmark_event_rejected(pdu.event_id());
+```
+
+**Why it's a real bug independent of whether it's this bug's cause:**
+`clear_outlier_flag`'s own doc comment: "This is used when an event is
+promoted to or already exists in the timeline." The soft-fail branch does
+neither — it returns `Ok(None)` without ever calling `append_pdu`. Calling
+it there produces a third, undefined state: `is_outlier: false` but
+`pdu_count: None` — not a real outlier, not a real timeline entry. Checked
+every consumer of `EventMetadata.is_outlier` in the service layer;
+`outlier_pdu_exists` (`data.rs:1153`) and `add_pdu_outlier_batch`'s "never
+overwrite a timeline event" guard both trust `is_outlier: false` as a
+reliable proxy for "safely in the timeline," which becomes false for
+exactly this limbo state.
+
+**What's NOT verified:** the exact causal link to the `/messages` stranding.
+`get_pdu_id`'s early-return check (this doc's traced mechanism) keys off
+`pdu_count`, not `is_outlier` — so on paper a retry of a soft-failed event
+should still correctly fail that check and reprocess normally through
+`append_pdu`, which unconditionally overwrites `is_outlier` with a fresh
+correct value regardless of what a prior soft-fail left behind. Tracing
+through every downstream consumer of the limbo state (`extremities.rs`'s
+outlier/bridge classification turned out to self-heal via the `soft_failed`
+flag, which `mark_event_soft_failed` sets correctly *before* this branch
+runs — checked, not an issue) did not turn up a confirmed path from this
+bug to the exact symptom. It's applied because it's correct on its own
+merits and low-risk (doesn't touch the get_pdu_id/topo-index authority
+question the "what NOT to do" section warns about), not because the causal
+chain is proven. **Needs a Complement run before treating this as fixing
+the actual bug** — if `TestMessagesOverFederation`'s re-join case still
+fails after this, the two remaining candidates (DAG-fork/depth correlation;
+decision-side early-return race) are next.
 
 ## What `3e218c4ab` already fixed (separate, real, unaffected by the above)
 

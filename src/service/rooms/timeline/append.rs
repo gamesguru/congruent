@@ -81,9 +81,10 @@ where
 	// Soft-failed events pass auth against the state at the event but fail
 	// against the current room state. Per spec §11.33.2.6 they SHOULD NOT
 	// appear in /sync or /messages. Store the state association (above) for
-	// DAG integrity, but do NOT append to the timeline sequence.
+	// DAG integrity, but do NOT append to the timeline sequence or clear the
+	// outlier marker yet. The event still isn't in the timeline at this point,
+	// so it must remain an outlier until a successful append happens.
 	if soft_fail {
-		self.clear_outlier_flag(pdu.event_id());
 		self.services
 			.pdu_metadata
 			.unmark_event_rejected(pdu.event_id());
