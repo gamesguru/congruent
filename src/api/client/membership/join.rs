@@ -895,10 +895,10 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	let statehash_after_join = services
+	services
 		.rooms
 		.state
-		.append_to_state(&parsed_join_pdu, room_id)
+		.append_to_state(&parsed_join_pdu, room_id, &state_lock)
 		.await?;
 
 	info!("Appending new room join event");
@@ -914,14 +914,6 @@ async fn join_room_by_id_helper_remote_process(
 			room_id,
 		)
 		.await?;
-
-	info!("Setting final room state for new room");
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	services
-		.rooms
-		.state
-		.set_room_state(room_id, statehash_after_join, &state_lock);
 
 	Ok(())
 }

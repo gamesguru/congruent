@@ -112,7 +112,11 @@ pub async fn build_and_append_pdu(
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail.
 	trace!("Appending {} state for room {room_id}", pdu.event_id());
-	let statehashid = self.services.state.append_to_state(&pdu, &room_id).await?;
+	let statehashid = self
+		.services
+		.state
+		.append_to_state(&pdu, &room_id, state_lock)
+		.await?;
 	trace!("State hash ID for {room_id}: {statehashid:?}");
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());

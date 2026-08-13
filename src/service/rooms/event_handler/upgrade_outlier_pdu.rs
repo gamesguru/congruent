@@ -231,15 +231,18 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
-		let _new_room_state = self
+		let new_room_state = self
 			.resolve_state(room_id, &room_version_id, state_after)
 			.await?;
 
-		debug!("Forcing new room state (stub)");
-		// TODO(MSC00DC/HAMT): Call force_state with new_room_state once implemented.
-		return Err(err!(Request(NotImplemented(
-			"HAMT state transition persistence is not yet implemented for upgraded outliers."
-		))));
+		debug!("Forcing new room state");
+		let state_lock = self.services.state.mutex.lock(room_id).await;
+		self.services
+			.state
+			.set_room_state_hamt(room_id, &new_room_state, &state_lock);
+
+		// Note: The legacy force_state updated joined counts and caches.
+		// For now we just add HAMT pointer (MSC4511 phase 2 changes).
 	}
 
 	if !soft_fail {
