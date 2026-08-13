@@ -4735,7 +4735,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.5.2"
-source = "git+https://github.com/gamesguru/rezzy.git?branch=dev#646a14201d53e4daa35e5c40d3c35198dc202214"
+source = "git+https://github.com/gamesguru/rezzy.git?branch=dev#73eff70bb026edd40067c19b511fab3985272d71"
 dependencies = [
  "base64 0.22.1",
  "blake2",

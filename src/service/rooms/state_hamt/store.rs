@@ -69,20 +69,20 @@ impl Store {
 	/// `isolate_delta` is synchronous and `#![no_std]` in `rezzy`. However,
 	/// it triggers lazy node resolutions which require hitting the database.
 	/// Because this closure runs in a sync context but must perform blocking
-	/// I/O, we MUST wrap the execution in `tokio::task::block_in_place`.
-	///
-	/// This strictly requires a multi-threaded Tokio runtime. It will panic on
-	/// a single-threaded runtime. It also pins the current worker thread for
-	/// the duration of the `isolate_delta` walk if multiple resolutions
-	/// happen.
+	/// I/O, we use `tokio::task::block_in_place` if running under a
+	/// multithreaded runtime, or block the thread directly (via the blocking
+	/// RocksDB API) if we're not executing within Tokio's worker pool (e.g.
+	/// tests or synchronous spawns).
 	pub fn get_blocking_resolver(
 		&self,
-	) -> impl FnMut(&StructuralHash) -> Arc<HamtNode<u64, u64>> + '_ {
+	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_ {
 		move |hash: &StructuralHash| {
-			tokio::task::block_in_place(|| {
-				self.get_node_blocking(hash)
-					.expect("Failed to resolve HAMT node during diff")
-			})
+			if let Ok(handle) = tokio::runtime::Handle::try_current() {
+				if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+					return tokio::task::block_in_place(|| self.get_node_blocking(hash));
+				}
+			}
+			self.get_node_blocking(hash)
 		}
 	}
 }
