@@ -124,6 +124,7 @@ pub async fn build_and_append_pdu(
 			// of the room
 			once(pdu.event_id().to_owned()),
 			AppendOptions { resolved_state: None, soft_fail: false },
+			false,
 			state_lock,
 			&room_id,
 		)

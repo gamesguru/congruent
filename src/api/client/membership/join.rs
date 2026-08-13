@@ -882,6 +882,7 @@ async fn join_room_by_id_helper_remote_process(
 			join_event,
 			once(parsed_join_pdu.event_id.clone()),
 			AppendOptions { resolved_state: None, soft_fail: false },
+			false,
 			&state_lock,
 			room_id,
 		)

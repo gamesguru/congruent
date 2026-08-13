@@ -444,6 +444,7 @@ async fn knock_room_helper_local(
 		knock_event,
 		once(parsed_knock_pdu.event_id.clone()),
 		AppendOptions { resolved_state: None, soft_fail: false },
+		false,
 		&state_lock,
 		room_id,
 	))
@@ -632,6 +633,7 @@ async fn knock_room_helper_remote(
 		knock_event,
 		once(parsed_knock_pdu.event_id.clone()),
 		AppendOptions { resolved_state: None, soft_fail: false },
+		false,
 		&state_lock,
 		room_id,
 	))

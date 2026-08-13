@@ -64,6 +64,7 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	state_ids_compressed: Arc<CompressedState>,
 	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
+	inside_flush_boundary: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<Option<RawPduId>>
@@ -102,6 +103,7 @@ where
 			pdu_json,
 			new_room_leaves,
 			AppendOptions { resolved_state, soft_fail },
+			inside_flush_boundary,
 			state_lock,
 			room_id,
 		)
@@ -158,6 +160,7 @@ pub async fn append_pdu<'a, Leaves>(
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
 	options: AppendOptions,
+	inside_flush_boundary: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<RawPduId>
@@ -165,9 +168,10 @@ where
 	Leaves: Iterator<Item = OwnedEventId> + Send + 'a,
 {
 	let AppendOptions { resolved_state, soft_fail } = options;
-	// Coalesce timeline writes; if we're already inside a broader room cork,
-	// keep this append from flushing early and let the outer scope publish once.
-	let cork = if self.db.db.db.corked() {
+	// Coalesce timeline writes; callers that are already inside a broader room
+	// flush boundary pass `inside_flush_boundary = true` so we don't publish
+	// half-finished repairs before the enclosing transaction is complete.
+	let cork = if inside_flush_boundary {
 		self.db.db.cork()
 	} else {
 		self.db.db.cork_and_flush()

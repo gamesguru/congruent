@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, hash_map},
+	collections::{BTreeMap, HashMap, hash_map},
 	time::Instant,
 };
 
@@ -12,7 +12,7 @@ use futures::{
 	future::{OptionFuture, try_join4},
 };
 use ruma::{
-	CanonicalJsonValue, EventId, OwnedUserId, RoomId, ServerName, UserId,
+	CanonicalJsonValue, EventId, OwnedEventId, OwnedUserId, RoomId, ServerName, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -463,7 +463,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			{
 				match Box::pin(self.fetch_prev(
 					origin,
-					create_event,
 					room_id,
 					event_id,
 					pdu.prev_events(),
@@ -670,14 +669,14 @@ pub async fn process_timeline_upgrade(
 		.first_pdu_in_room(room_id)
 		.await?
 		.origin_server_ts();
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
 
 	// Fetch any missing prev events before taking the write cork so remote I/O
 	// does not suppress unrelated WAL flushes across the whole server.
 	// These are timeline events.
-	let (sorted_prev_events, mut eventid_info, state_ids_anchor, prev_fetch_had_invalid_data) =
+	let (sorted_prev_events, fetched_prev_events, state_ids_anchor, prev_fetch_had_invalid_data) =
 		Box::pin(self.fetch_prev(
 			origin,
-			create_event,
 			room_id,
 			event_id.as_ref(),
 			incoming_pdu.prev_events(),
@@ -692,6 +691,32 @@ pub async fn process_timeline_upgrade(
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
+			let mut eventid_info: HashMap<
+				OwnedEventId,
+				(conduwuit::PduEvent, BTreeMap<String, CanonicalJsonValue>),
+			> = HashMap::new();
+
+			for prev_id in &sorted_prev_events {
+				let Some(val) = fetched_prev_events.get(prev_id).cloned() else {
+					continue;
+				};
+
+				if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
+					origin,
+					Some(create_event),
+					prev_id,
+					room_id,
+					val,
+					false,
+					false,
+					Some(&room_version_id),
+				))
+				.await
+				{
+					eventid_info.insert(prev_id.clone(), (pdu, val));
+				}
+			}
+
 			sorted_prev_events
 				.iter()
 				.try_stream()

@@ -21,17 +21,16 @@ use super::check_room_id;
 #[implement(super::Service)]
 #[tracing::instrument(level = "debug", skip_all, fields(%origin))]
 #[allow(clippy::type_complexity)]
-pub(super) async fn fetch_prev<'a, Pdu, Events>(
+pub(super) async fn fetch_prev<'a, Events>(
 	&self,
 	origin: &ServerName,
-	create_event: &Pdu,
 	room_id: &RoomId,
 	latest_event: &'a EventId,
 	initial_set: Events,
 	event_sender_server: Option<&ServerName>,
 ) -> Result<(
 	Vec<OwnedEventId>,
-	HashMap<OwnedEventId, (PduEvent, BTreeMap<String, CanonicalJsonValue>)>,
+	HashMap<OwnedEventId, BTreeMap<String, CanonicalJsonValue>>,
 	Option<OwnedEventId>,
 	// True if the /get_missing_events response contained at least one event
 	// that failed canonical-JSON validation. Such an event can never be
@@ -41,7 +40,6 @@ pub(super) async fn fetch_prev<'a, Pdu, Events>(
 	bool,
 )>
 where
-	Pdu: Event + Send + Sync,
 	Events: Iterator<Item = &'a EventId> + Clone + Send,
 {
 	let still_needed: Vec<OwnedEventId> = initial_set.map(ToOwned::to_owned).collect();
@@ -230,83 +228,69 @@ where
 		}
 	}
 
-	let mut candidate_events: HashMap<OwnedEventId, (PduEvent, ruma::CanonicalJsonObject)> =
-		unknown_events
-			.into_iter()
-			.stream()
-			.broad_filter_map({
-				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
-					if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) =
-						val.remove("unsigned")
-					{
-						unsigned_obj.remove("prev_content");
-						unsigned_obj.remove("prev_sender");
-						unsigned_obj.remove("replaces_state");
-						if !unsigned_obj.is_empty() {
-							val.insert(
-								"unsigned".to_owned(),
-								CanonicalJsonValue::Object(unsigned_obj),
-							);
-						}
+	let candidate_events: HashMap<OwnedEventId, ruma::CanonicalJsonObject> = unknown_events
+		.into_iter()
+		.stream()
+		.broad_filter_map({
+			move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
+				if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) = val.remove("unsigned")
+				{
+					unsigned_obj.remove("prev_content");
+					unsigned_obj.remove("prev_sender");
+					unsigned_obj.remove("replaces_state");
+					if !unsigned_obj.is_empty() {
+						val.insert(
+							"unsigned".to_owned(),
+							CanonicalJsonValue::Object(unsigned_obj),
+						);
 					}
-
-					let mut parse_val = val.clone();
-					parse_val.insert(
-						"event_id".to_owned(),
-						CanonicalJsonValue::String(eid.as_str().to_owned()),
-					);
-
-					if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
-						if check_room_id(room_id, &pdu).is_ok() {
-							return Some((eid, (pdu, val)));
-						}
-					}
-
-					None
 				}
-			})
-			.collect()
-			.await;
+
+				let mut parse_val = val.clone();
+				parse_val.insert(
+					"event_id".to_owned(),
+					CanonicalJsonValue::String(eid.as_str().to_owned()),
+				);
+
+				if let Ok(pdu) = PduEvent::from_id_val(&eid, parse_val, Some(room_id))
+					&& check_room_id(room_id, &pdu).is_ok()
+				{
+					return Some((eid, val));
+				}
+
+				None
+			}
+		})
+		.collect()
+		.await;
 
 	let mut graph = HashMap::new();
 	let mut entries = HashMap::new();
-	for (eid, (pdu, _)) in &candidate_events {
+	for (eid, val) in &candidate_events {
+		let mut parse_val = val.clone();
+		parse_val
+			.insert("event_id".to_owned(), CanonicalJsonValue::String(eid.as_str().to_owned()));
+		let pdu = match PduEvent::from_id_val(eid, parse_val, Some(room_id)) {
+			| Ok(pdu) => pdu,
+			| Err(_) => continue,
+		};
 		graph.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
 		entries
 			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 	let state_ids_anchor = sorted_eids.last().and_then(|prev_id| {
-		let (pdu, _) = candidate_events.get(prev_id)?;
+		let val = candidate_events.get(prev_id)?;
+		let mut parse_val = val.clone();
+		parse_val.insert(
+			"event_id".to_owned(),
+			CanonicalJsonValue::String(prev_id.as_str().to_owned()),
+		);
+		let pdu = PduEvent::from_id_val(prev_id, parse_val, Some(room_id)).ok()?;
 		let mut prev_events = pdu.prev_events();
 		let first_prev = prev_events.next()?.to_owned();
 		prev_events.next().is_none().then_some(first_prev)
 	});
 
-	let mut eventid_info = HashMap::new();
-
-	// Sort topologically for auth_check? No, handle_outlier_pdu cares about auth
-	// events. The events are timeline gaps, their auth events are likely known.
-	// We just iterate in any order. The topological sorting here is for the
-	// timeline!
-	for eid in &sorted_eids {
-		if let Some((_, val)) = candidate_events.remove(eid) {
-			if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
-				origin,
-				Some(create_event),
-				eid,
-				room_id,
-				val,
-				false, // auth_events_known
-				false, // skip_sig_verify
-				Some(&room_version_id),
-			))
-			.await
-			{
-				eventid_info.insert(eid.clone(), (pdu, val));
-			}
-		}
-	}
-
-	Ok((sorted_eids, eventid_info, state_ids_anchor, had_invalid_response))
+	Ok((sorted_eids, candidate_events, state_ids_anchor, had_invalid_response))
 }
