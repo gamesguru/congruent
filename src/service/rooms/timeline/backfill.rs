@@ -210,11 +210,16 @@ pub async fn backfill_if_required(
 		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
 			std::collections::HashMap::new();
 		let mut scanned = 0_usize;
+		let mut saw_extra_timeline_pdu = false;
 		let mut pdus = self
 			.pdus_rev(room_id, std::ops::Bound::Included(from))
-			.take(scan_limit)
+			.take(scan_limit.saturating_add(1))
 			.boxed();
 		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
+			if scanned == scan_limit {
+				saw_extra_timeline_pdu = true;
+				break;
+			}
 			scanned = scanned.saturating_add(1);
 			debug!(
 				?pdu_id,
@@ -252,6 +257,12 @@ pub async fn backfill_if_required(
 
 		if gaps.is_empty() {
 			info!("backfill: no gaps in {room_id} (scanned {scanned} events from {from})");
+			if !saw_extra_timeline_pdu {
+				let promoted = self.promote_room_state_outliers(room_id).await?;
+				if promoted > 0 {
+					info!("backfill: promoted {promoted} state outliers at timeline boundary");
+				}
+			}
 			self.backfill_gap_free_cache
 				.insert(room_id.to_owned(), (from, scan_limit));
 			return Ok(());
@@ -622,13 +633,31 @@ async fn materialize_remote_history_limited(
 	Ok(())
 }
 
-/// TODO: Known gap — early state events (create, initial joins, power levels)
-/// arrive via `/send_join` and are stored as **outliers**, not timeline PDUs.
-/// When backfill reaches the bottom of the DAG, these outlier ancestors are
-/// never promoted into the visible timeline. Users scrolling up will see
-/// backfilled messages but not the room's origin events. Fix: after backfill
-/// exhausts prev_events into outlier territory, promote those outliers into
-/// the timeline ordered by `origin_server_ts`.
+#[implement(super::Service)]
+async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
+	let room_version = self.services.state.get_room_version(room_id).await?;
+	let mut outlier_state_event_ids = Vec::new();
+	let mut room_state = Box::pin(self.services.state_accessor.room_state_full_pdus(room_id));
+
+	while let Some(result) = room_state.next().await {
+		let Ok(pdu) = result else {
+			continue;
+		};
+		let event_id = pdu.event_id().to_owned();
+		if self.non_outlier_pdu_exists(&event_id).await {
+			continue;
+		}
+		outlier_state_event_ids.push(event_id);
+	}
+
+	if outlier_state_event_ids.is_empty() {
+		return Ok(0);
+	}
+
+	self.promote_outliers_sorted(room_id, &outlier_state_event_ids, &room_version)
+		.await
+}
+
 #[implement(super::Service)]
 #[tracing::instrument(skip(self, pdu), level = "debug")]
 pub async fn backfill_pdu(
