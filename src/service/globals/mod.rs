@@ -42,12 +42,23 @@ impl crate::Service for Service {
 		);
 
 		let mut server_secret = [0_u8; 32];
-		if let Ok(secret) = args.db["global"].get_blocking(b"server_secret") {
-			server_secret.copy_from_slice(&secret);
-		} else {
-			use rand::Rng;
-			rand::rng().fill_bytes(&mut server_secret);
-			args.db["global"].insert(b"server_secret", server_secret);
+		match args.db["global"].get_blocking(b"server_secret") {
+			| Ok(secret) =>
+				if secret.len() == 32 {
+					server_secret.copy_from_slice(&secret);
+				} else {
+					return Err(conduwuit_core::err!(Database(
+						"server_secret in database has invalid length {} (expected 32); \
+						 database may be corrupt",
+						secret.len()
+					)));
+				},
+			| Err(e) if e.is_not_found() => {
+				use rand::Rng;
+				rand::rng().fill_bytes(&mut server_secret);
+				args.db["global"].insert(b"server_secret", server_secret);
+			},
+			| Err(e) => return Err(e),
 		}
 
 		Ok(Arc::new(Self {

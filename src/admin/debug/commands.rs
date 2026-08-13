@@ -507,134 +507,17 @@ pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 #[allow(unreachable_code, unused_variables)]
 pub(super) async fn force_set_room_state_from_server(
 	&self,
-	room_id: OwnedRoomId,
-	server_name: OwnedServerName,
-	at_event: Option<OwnedEventId>,
+	_room_id: OwnedRoomId,
+	_server_name: OwnedServerName,
+	_at_event: Option<OwnedEventId>,
 ) -> Result {
 	self.bail_restricted()?;
 
-	if !self
-		.services
-		.rooms
-		.state_cache
-		.server_in_room(&self.services.server.name, &room_id)
-		.await
-	{
-		return Err!("We are not participating in the room / we don't know about the room ID.");
-	}
-
-	let at_event_id = match at_event {
-		| Some(event_id) => event_id,
-		| None => self
-			.services
-			.rooms
-			.timeline
-			.latest_pdu_in_room(&room_id)
-			.await
-			.map_err(|_| err!(Database("Failed to find the latest PDU in database")))?
-			.event_id()
-			.to_owned(),
-	};
-
-	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
-
-	#[allow(clippy::collection_is_never_read)]
-	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
-
-	let remote_state_response = self
-		.services
-		.sending
-		.send_federation_request(&server_name, get_room_state::v1::Request {
-			room_id: room_id.clone(),
-			event_id: at_event_id,
-		})
-		.await?;
-
-	for pdu in remote_state_response.pdus.clone() {
-		match self
-			.services
-			.rooms
-			.event_handler
-			.parse_incoming_pdu(&pdu)
-			.await
-		{
-			| Ok(t) => t,
-			| Err(e) => {
-				warn!("Could not parse PDU, ignoring: {e}");
-				continue;
-			},
-		};
-	}
-
-	info!("Going through room_state response PDUs");
-	for result in remote_state_response.pdus.iter().map(|pdu| {
-		self.services
-			.server_keys
-			.validate_and_add_event_id(pdu, &room_version)
-	}) {
-		let Ok((event_id, value)) = result.await else {
-			continue;
-		};
-
-		let pdu = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id.as_ref()))
-			.map_err(|e| {
-				debug_error!(
-					"Invalid PDU in fetching remote room state PDUs response: {value:#?}"
-				);
-				err!(BadServerResponse(debug_error!("Invalid PDU in send_join response: {e:?}")))
-			})?;
-		if pdu.room_id_or_hash().as_deref() != Some(room_id.as_ref()) {
-			return Err!(BadServerResponse("Remote room_state PDU belongs to a different room"));
-		}
-		self.services
-			.rooms
-			.outlier
-			.add_pdu_outlier(&event_id, &value);
-
-		if let Some(state_key) = &pdu.state_key {
-			let shortstatekey = self
-				.services
-				.rooms
-				.short
-				.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-				.await;
-
-			state.insert(shortstatekey, pdu.event_id.clone());
-		}
-	}
-
-	info!("Going through auth_chain response");
-	for result in remote_state_response.auth_chain.iter().map(|pdu| {
-		self.services
-			.server_keys
-			.validate_and_add_event_id(pdu, &room_version)
-	}) {
-		let Ok((event_id, value)) = result.await else {
-			continue;
-		};
-
-		self.services
-			.rooms
-			.outlier
-			.add_pdu_outlier(&event_id, &value);
-	}
-
+	// TODO(MSC00DC/HAMT): force_state pointer transition is not yet implemented.
+	// Return early before making any federation requests or DB mutations.
 	return Err(conduwuit::err!(Request(NotImplemented(
 		"TODO(MSC00DC/HAMT): force_state pointer transition"
 	))));
-
-	info!(
-		"Updating joined counts for room just in case (e.g. we may have found a difference in \
-		 the room's m.room.member state"
-	);
-	self.services
-		.rooms
-		.state_cache
-		.update_joined_count(&room_id)
-		.await;
-
-	self.write_str("Successfully forced the room state from the requested remote server.")
-		.await
 }
 
 #[admin_command]

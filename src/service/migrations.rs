@@ -885,6 +885,14 @@ async fn legacy_get_statediff(
 
 	let slice: &[u8] = &value;
 
+	if slice.len() < STRIDE {
+		return Err(err!(Database(
+			"Truncated legacy state-diff record for shortstatehash {shortstatehash}: length {} \
+			 is less than minimum stride {STRIDE}",
+			slice.len()
+		)));
+	}
+
 	let parent = conduwuit::utils::u64_from_bytes(&slice[0..8])
 		.ok()
 		.filter(|parent| *parent != 0);
@@ -946,51 +954,67 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
-		if let Ok(shortstatehash) = services.rooms.state.get_room_shortstatehash(room_id).await {
-			let full_state = legacy_get_full_state(services, shortstatehash).await?;
+		match services.rooms.state.get_room_shortstatehash(room_id).await {
+			| Err(e) if e.is_not_found() => {
+				// Room has no state yet (e.g. partial join); skip.
+				debug_warn!(
+					"Skipping room {room_id} in v20 migration: no shortstatehash (room may be \
+					 incomplete)"
+				);
+				continue;
+			},
+			| Err(e) => return Err(e),
+			| Ok(shortstatehash) => {
+				let full_state = legacy_get_full_state(services, shortstatehash).await?;
 
-			let mut lattice = rezzy::state::LtHash::default();
-			let mut entries = Vec::with_capacity(full_state.len());
+				let mut lattice = rezzy::state::LtHash::default();
+				let mut entries = Vec::with_capacity(full_state.len());
 
-			for state_event in full_state {
-				let shortstatekey =
-					conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
-				let shorteventid =
-					conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
+				for state_event in full_state {
+					let shortstatekey =
+						conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
+					let shorteventid =
+						conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
 
-				let (ty, sk) = services
+					let (ty, sk) = services
+						.rooms
+						.short
+						.get_statekey_from_short(shortstatekey)
+						.await?;
+					let event_id: ruma::OwnedEventId = services
+						.rooms
+						.short
+						.get_eventid_from_short(shorteventid)
+						.await?;
+
+					lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+					entries.push((shortstatekey, shorteventid));
+				}
+
+				let structural_key = crate::rooms::state_hamt::room_structural_key(
+					&services.globals.server_secret,
+					room_id,
+				);
+
+				let (root_handle, root_node) =
+					rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+						.map_err(|e| {
+							err!(error!("Failed to build HAMT root for room {room_id}: {e:?}"))
+						})?;
+
+				services
 					.rooms
-					.short
-					.get_statekey_from_short(shortstatekey)
-					.await?;
-				let event_id: ruma::OwnedEventId = services
-					.rooms
-					.short
-					.get_eventid_from_short(shorteventid)
-					.await?;
+					.state_hamt
+					.store
+					.persist_node_recursive(root_node);
 
-				lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
-				entries.push((shortstatekey, shorteventid));
-			}
-
-			let structural_key = crate::rooms::state_hamt::room_structural_key(
-				&services.globals.server_secret,
-				room_id,
-			);
-
-			let (root_handle, root_node) =
-				rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries).map_err(
-					|e| err!(error!("Failed to build HAMT root for room {room_id}: {e:?}")),
-				)?;
-
-			services
-				.rooms
-				.state_hamt
-				.store
-				.persist_node_recursive(root_node);
-
-			// Persist the root handle as JSON to satisfy database serialization
-			services.db["roomid_roothandle"].put(room_id.as_bytes(), Json(&root_handle));
+				// Use the same binary tuple encoding as set_room_state_hamt (raw_aput).
+				// Writing JSON here would make get_room_state_hamt unable to read the value.
+				const BUFSIZE: usize = 49;
+				let data = (root_handle.structural_hash, root_handle.state_group_id);
+				services.db["roomid_roothandle"]
+					.raw_aput::<BUFSIZE, _, _>(room_id.as_bytes(), data);
+			},
 		}
 	}
 
