@@ -965,6 +965,8 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 			},
 			| Err(e) => return Err(e),
 			| Ok(shortstatehash) => {
+				const BUFSIZE: usize = 49;
+
 				let full_state = legacy_get_full_state(services, shortstatehash).await?;
 
 				let mut lattice = rezzy::state::LtHash::default();
@@ -1010,7 +1012,6 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 
 				// Use the same binary tuple encoding as set_room_state_hamt (raw_aput).
 				// Writing JSON here would make get_room_state_hamt unable to read the value.
-				const BUFSIZE: usize = 49;
 				let data = (root_handle.structural_hash, root_handle.state_group_id);
 				services.db["roomid_roothandle"]
 					.raw_aput::<BUFSIZE, _, _>(room_id.as_bytes(), data);

@@ -70,13 +70,15 @@ pub async fn state_contains(
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<bool> {
-	let Ok(shortstatekey) = self
+	let shortstatekey = match self
 		.services
 		.short
 		.get_shortstatekey(event_type, state_key)
 		.await
-	else {
-		return Ok(false);
+	{
+		| Ok(key) => key,
+		| Err(e) if e.is_not_found() => return Ok(false),
+		| Err(e) => return Err(e),
 	};
 
 	self.state_contains_shortstatekey(shortstatehash, shortstatekey)
@@ -535,9 +537,22 @@ pub fn state_full_shortids(
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<bool> {
-	self.load_full_state(shortstatehash)
-		.await
-		.map(|s| s.is_empty())
+	match self.load_full_state(shortstatehash).await {
+		| Ok(s) => Ok(s.is_empty()),
+		// load_full_state is not yet implemented for the legacy shortstatehash path;
+		// fall back to "not empty" so callers conservatively use this state.
+		| Err(e)
+			if e.is_not_found()
+				|| matches!(
+					e,
+					conduwuit::Error::BadRequest(
+						ruma::api::client::error::ErrorKind::NotImplemented,
+						_
+					)
+				) =>
+			Ok(false),
+		| Err(e) => Err(e),
+	}
 }
 
 #[implement(super::Service)]

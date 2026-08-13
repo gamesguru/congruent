@@ -1,12 +1,11 @@
 use std::{
-	collections::HashMap,
 	fmt::Write,
 	iter::once,
 	time::{Instant, SystemTime},
 };
 
 use conduwuit::{
-	Err, Result, debug_error, err, info,
+	Err, Result, err, info,
 	matrix::{
 		Event,
 		pdu::{PduEvent, PduId, RawPduId},
@@ -22,7 +21,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use lettre::message::Mailbox;
 use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
-	RoomVersionId, api::federation::event::get_room_state, events::AnyStateEvent, serde::Raw,
+	RoomVersionId, events::AnyStateEvent, serde::Raw,
 };
 use service::rooms::short::{ShortEventId, ShortRoomId};
 use tracing_subscriber::EnvFilter;
