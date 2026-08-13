@@ -261,20 +261,12 @@ where
 					}
 
 					None
-				}
-			})
-			.collect()
-			.await;
-
-	let candidate_events: HashMap<OwnedEventId, ruma::CanonicalJsonObject> = candidate_entries
-		.iter()
-		.map(|(eid, val, _)| (eid.clone(), val.clone()))
-		.collect();
-
-	let candidate_pdus: HashMap<OwnedEventId, PduEvent> = candidate_entries
-		.iter()
-		.map(|(eid, _, pdu)| (eid.clone(), pdu.clone()))
-		.collect();
+	let mut candidate_events = HashMap::with_capacity(candidate_entries.len());
+	let mut candidate_pdus = HashMap::with_capacity(candidate_entries.len());
+	for (eid, val, pdu) in candidate_entries {
+		candidate_events.insert(eid.clone(), val);
+		candidate_pdus.insert(eid, pdu);
+	}
 
 	let mut graph = HashMap::new();
 	let mut entries = HashMap::new();
