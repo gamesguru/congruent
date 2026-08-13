@@ -475,6 +475,7 @@ async fn knock_room_helper_local(
 		.state_cache
 		.update_membership(room_id, sender_user, &parsed_knock_pdu, false)
 		.await?;
+	let current_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Appending room knock event locally");
 	services
@@ -487,6 +488,8 @@ async fn knock_room_helper_local(
 			false,
 			&state_lock,
 			room_id,
+			current_root_handle.as_ref(),
+			current_root_handle.as_ref(),
 		)
 		.await?;
 

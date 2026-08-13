@@ -94,6 +94,36 @@ pub async fn room_state_get(
 		.await
 }
 
+/// Returns a single PDU from `room_id` at the given HAMT root with key
+/// (`event_type`, `state_key`).
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn room_state_get_hamt_at_root(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Pdu> {
+	self.state_get_in_room_hamt(room_id, root_handle, event_type, state_key)
+		.await
+}
+
+/// Returns a single PDU from `room_id` with key (`event_type`,`state_key`)
+/// via the current HAMT root.
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn room_state_get_hamt(
+	&self,
+	room_id: &RoomId,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Pdu> {
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+	self.room_state_get_hamt_at_root(room_id, &root_handle, event_type, state_key)
+		.await
+}
+
 /// Returns all state keys for the given `room_id` and `event_type`.
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]

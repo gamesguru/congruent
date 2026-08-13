@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use conduwuit::{Err, Error, Event, Pdu, Result, implement, is_not_empty, utils::ReadyExt, warn};
+use conduwuit::{Err, Event, Pdu, Result, implement, is_not_empty, utils::ReadyExt, warn};
 use database::{Json, serialize_key};
 use futures::StreamExt;
 use ruma::{
@@ -382,6 +382,7 @@ pub async fn mark_as_invited(
 pub async fn update_caches_for_state_delta(
 	&self,
 	room_id: &RoomId,
+	new_root_handle: &rezzy::hamt::RootHandle,
 	removed_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
 	added_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
 ) -> Result<()> {
@@ -398,6 +399,13 @@ pub async fn update_caches_for_state_delta(
 					.await
 					.remove(room_id);
 			},
+			| ruma::events::TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
+					.remove(room_id);
+			},
 			| ruma::events::TimelineEventType::RoomMember => {
 				// For removed memberships that have NO corresponding added event in the delta,
 				// we must ensure they are marked as left.
@@ -406,25 +414,23 @@ pub async fn update_caches_for_state_delta(
 					UserId::parse(pdu.state_key().expect("Member event has state_key"))
 						.expect("Valid UserId");
 
-				// Re-evaluate from the *new* state (which is currently the active room state)
 				let get_res = self
 					.services
 					.state_accessor
-					.room_state_get(room_id, &StateEventType::RoomMember, target_user_id.as_str())
+					.room_state_get_hamt_at_root(
+						room_id,
+						new_root_handle,
+						&StateEventType::RoomMember,
+						target_user_id.as_str(),
+					)
 					.await;
-				match get_res {
-					| Ok(_) => {
-						// The user has a member event in the new state,
-						// added_events will handle it.
-					},
-					| Err(Error::Request(ruma::api::client::error::ErrorKind::NotFound, ..)) => {
-						// The user has no member event in the new state at all.
-						self.mark_as_left(target_user_id, room_id, None).await;
-						memberships_changed = true;
-					},
-					| Err(e) => {
-						return Err(e);
-					},
+				if get_res.is_err() {
+					// The user has no member event in the new state at all.
+					self.mark_as_left(target_user_id, room_id, None).await;
+					memberships_changed = true;
+				} else {
+					// The user has a member event in the new state,
+					// added_events will handle it.
 				}
 			},
 			| _ => {},
@@ -440,6 +446,13 @@ pub async fn update_caches_for_state_delta(
 					.roomid_spacehierarchy_cache
 					.lock()
 					.await
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
 					.remove(room_id);
 			},
 			| ruma::events::TimelineEventType::RoomMember => {

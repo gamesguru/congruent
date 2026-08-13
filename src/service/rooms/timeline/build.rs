@@ -108,6 +108,8 @@ pub async fn build_and_append_pdu(
 			.await;
 	}
 
+	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
+
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail.
@@ -118,6 +120,10 @@ pub async fn build_and_append_pdu(
 		.append_to_state(&pdu, &room_id, state_lock)
 		.await?;
 	trace!("State hash ID for {room_id}: {statehashid:?}");
+	self.services
+		.state_hamt
+		.store
+		.persist_node_recursive(statehashid.1.clone());
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -130,6 +136,8 @@ pub async fn build_and_append_pdu(
 			*pdu.kind() != TimelineEventType::RoomMember,
 			state_lock,
 			&room_id,
+			Some(&statehashid.0),
+			previous_root_handle.as_ref(),
 		)
 		.boxed()
 		.await?;
@@ -158,10 +166,6 @@ pub async fn build_and_append_pdu(
 	// in time where events in the current room state do not exist
 	trace!("Setting room state for room {room_id}");
 	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(statehashid.1);
 		self.services
 			.state
 			.set_room_state_hamt(&room_id, &statehashid.0, state_lock);

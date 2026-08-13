@@ -8,6 +8,7 @@ use conduwuit_core::{
 	log::{Log, LogLevelReloadHandles, capture},
 	matrix::PduEvent,
 };
+use database::Deserialized;
 use figment::providers::Format;
 use ruma::{
 	CanonicalJsonObject, EventId, RoomId, RoomVersionId, UserId, events::StateEventType,
@@ -116,8 +117,9 @@ async fn test_state_round_trip() {
 
 	// Verify the short-event mapping was actually created
 	let shorteventid = services
+		.rooms
 		.short
-		.get_shorteventid(pdu.event_id())
+		.get_shorteventid(&pdu.event_id)
 		.await
 		.expect("shorteventid should exist after set_event_state");
 	let serialized = services
@@ -125,7 +127,7 @@ async fn test_state_round_trip() {
 		.state
 		.db
 		.shorteventid_roothandle
-		.get(&shorteventid.unwrap().to_be_bytes())
+		.get(&shorteventid.to_be_bytes())
 		.await
 		.deserialized::<(rezzy::hamt::StructuralHash, rezzy::hamt::StateGroupId)>()
 		.expect("mapped roothandle should exist");

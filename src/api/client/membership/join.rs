@@ -891,17 +891,23 @@ async fn join_room_by_id_helper_remote_process(
 
 	// Re-acquire the state lock before appending our join event
 	state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without its state. Both append_to_state and append_pdu
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	services
+	let statehashid = services
 		.rooms
 		.state
 		.append_to_state(&parsed_join_pdu, room_id, &state_lock)
 		.await?;
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(statehashid.1.clone());
 
 	info!("Appending new room join event");
 	services
@@ -914,6 +920,8 @@ async fn join_room_by_id_helper_remote_process(
 			false,
 			&state_lock,
 			room_id,
+			Some(&statehashid.0),
+			previous_root_handle.as_ref(),
 		)
 		.await?;
 

@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, mem::size_of};
 
 use conduwuit::{
-	Result, at, err, implement,
+	Pdu, Result, at, err, implement,
 	matrix::{Event, StateKey},
 	pair_of,
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
@@ -120,17 +120,15 @@ pub async fn state_contains_shortstatekey_hamt(
 		room_id,
 	);
 
-	let res = tokio::task::block_in_place(|| {
-		let root_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&root_handle.structural_hash)?;
-
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		root_node.search(&structural_key, &shortstatekey, &mut resolver)
-	})
-	.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let res = root_node
+		.search(&structural_key, &shortstatekey, &mut resolver)
+		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
 
 	Ok(res.is_some())
 }
@@ -199,26 +197,45 @@ pub async fn state_get_shortid_hamt(
 		room_id,
 	);
 
-	tokio::task::block_in_place(|| {
-		let root_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&root_handle.structural_hash)?;
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	root_node
+		.search(&structural_key, &shortstatekey, &mut resolver)
+		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
+		.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
+}
 
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		root_node
-			.search(&structural_key, &shortstatekey, &mut resolver)
-			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
-			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
-	})
+#[implement(super::Service)]
+pub async fn state_get_in_room_hamt(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Pdu> {
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
+		.await?;
+	let event_id: OwnedEventId = self
+		.services
+		.short
+		.get_eventid_from_short(shorteventid)
+		.await?;
+	self.services
+		.timeline
+		.get_pdu_in_room(Some(room_id), &event_id)
+		.await
 }
 
 /// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 #[allow(unused_variables)]
-pub async fn room_state_get_hamt(
+pub async fn room_state_get_hamt_legacy(
 	&self,
 	room_id: &ruma::RoomId,
 	event_type: &StateEventType,
@@ -232,24 +249,9 @@ pub async fn room_state_get_hamt(
 
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 
-	let shorteventid = tokio::task::block_in_place(|| {
-		let root_node = self
-			.services
-			.state_hamt
-			.store
-			.get_node_blocking(&root_handle.structural_hash)?;
-
-		let structural_key = crate::rooms::state_hamt::room_structural_key(
-			&self.services.globals.server_secret,
-			room_id,
-		);
-
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		root_node
-			.search(&structural_key, &shortstatekey, &mut resolver)
-			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
-			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
-	})?;
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
+		.await?;
 
 	let event_id = self
 		.services
@@ -271,23 +273,18 @@ pub fn state_full_ids_hamt<'a>(
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(StateEventType, String, OwnedEventId)>> {
 	let structural_hash = root_handle.structural_hash;
-	let short_states_result =
-		tokio::task::block_in_place(|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-			let root_node = self
-				.services
-				.state_hamt
-				.store
-				.get_node_blocking(&structural_hash)?;
-			let mut short_states = Vec::new();
-			let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-			root_node
-				.visit_entries(&mut resolver, &mut |&k, &v| {
-					short_states.push((k, v));
-					Ok(())
-				})
-				.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
-			Ok(short_states)
-		});
+	let short_states_result = (|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+		let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
+		let mut short_states = Vec::new();
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		root_node
+			.visit_entries(&mut resolver, &mut |&k, &v| {
+				short_states.push((k, v));
+				Ok(())
+			})
+			.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+		Ok(short_states)
+	})();
 
 	match short_states_result {
 		| Ok(short_states) => {
@@ -598,24 +595,16 @@ pub async fn load_full_state_hamt(
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
 	let structural_hash = root_handle.structural_hash;
-	tokio::task::block_in_place(
-		|| -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
-			let root_node = self
-				.services
-				.state_hamt
-				.store
-				.get_node_blocking(&structural_hash)?;
-			let mut short_states = std::collections::HashMap::new();
-			let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-			root_node
-				.visit_entries(&mut resolver, &mut |&k, &v| {
-					short_states.insert(k, v);
-					Ok(())
-				})
-				.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
-			Ok(short_states)
-		},
-	)
+	let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
+	let mut short_states = std::collections::HashMap::new();
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	root_node
+		.visit_entries(&mut resolver, &mut |&k, &v| {
+			short_states.insert(k, v);
+			Ok(())
+		})
+		.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+	Ok(short_states)
 }
 
 /// Returns the state hash for this pdu.

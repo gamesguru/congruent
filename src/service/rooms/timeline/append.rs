@@ -61,16 +61,26 @@ where
 		return Ok(None);
 	}
 
-	// Now that we've passed soft-fail checks, associate state with the PDU.
-	// This is done before append_pdu so we don't have a moment in time with
-	// the pdu without its state (since append_pdu can't fail).
+	let previous_root_handle = self.services.state.get_room_state_hamt(room_id).await.ok();
+
+	let pdu_id = self
+		.append_pdu(
+			pdu,
+			pdu_json,
+			new_room_leaves,
+			resolved_state_applied,
+			state_lock,
+			room_id,
+			None,
+			previous_root_handle.as_ref(),
+		)
+		.await?;
+
+	// Publish the state association only after the timeline append succeeds so
+	// we never leave a room pointer on a state root whose event wasn't stored.
 	self.services
 		.state
 		.set_event_state(room_id, pdu, state_lock)
-		.await?;
-
-	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, state_lock, room_id)
 		.await?;
 
 	// Process admin commands for federation events
@@ -112,6 +122,8 @@ pub async fn append_pdu<'a, Leaves>(
 	resolved_state_applied: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
+	state_root_handle: Option<&rezzy::hamt::RootHandle>,
+	prev_state_root_handle: Option<&rezzy::hamt::RootHandle>,
 ) -> Result<RawPduId>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
@@ -130,20 +142,16 @@ where
 	// but state events need to have previous content in the unsigned field, so
 	// clients can easily interpret things like membership changes
 	if let Some(state_key) = pdu.state_key() {
+		let event_type: StateEventType = pdu.kind().to_string().into();
 		if let CanonicalJsonValue::Object(unsigned) = pdu_json
 			.entry("unsigned".to_owned())
 			.or_insert_with(|| CanonicalJsonValue::Object(BTreeMap::default()))
 		{
-			if let Ok(shortstatehash) = self
-				.services
-				.state_accessor
-				.pdu_shortstatehash(pdu.event_id())
-				.await
-			{
+			if let Some(prev_root_handle) = prev_state_root_handle {
 				if let Ok(prev_state) = self
 					.services
 					.state_accessor
-					.state_get(shortstatehash, &pdu.kind().to_string().into(), state_key)
+					.state_get_in_room_hamt(room_id, prev_root_handle, &event_type, state_key)
 					.await
 				{
 					unsigned.insert(
@@ -223,12 +231,21 @@ where
 	drop(insert_lock);
 
 	// See if the event matches any known pushers via power level
-	let power_levels: RoomPowerLevelsEventContent = self
-		.services
-		.state_accessor
-		.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
-		.await
-		.unwrap_or_default();
+	let power_levels: RoomPowerLevelsEventContent = match state_root_handle {
+		| Some(root_handle) => self
+			.services
+			.state_accessor
+			.state_get_in_room_hamt(room_id, root_handle, &StateEventType::RoomPowerLevels, "")
+			.await
+			.and_then(|pdu| pdu.get_content())
+			.unwrap_or_default(),
+		| None => self
+			.services
+			.state_accessor
+			.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
+			.await
+			.unwrap_or_default(),
+	};
 
 	let mut push_target: HashSet<_> = self
 			.services
