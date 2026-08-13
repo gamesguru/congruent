@@ -156,14 +156,43 @@ pub async fn state_get_shortid(
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 #[allow(unused_variables)]
-pub fn room_state_get_hamt(
+pub async fn room_state_get_hamt(
 	&self,
 	room_id: &ruma::RoomId,
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<std::sync::Arc<conduwuit::PduEvent>> {
-	// TODO(MSC00DC/HAMT): Implement
-	unimplemented!("HAMT migration phase 2: pointer transition");
+	let shortstatekey = self
+		.services
+		.short
+		.get_shortstatekey(event_type, state_key)
+		.await?;
+
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node_blocking(&root_handle.structural_hash)?;
+
+	let shorteventid = {
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		root_node
+			.search(room_id.as_bytes(), &shortstatekey, &mut resolver)
+			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
+			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))?
+	};
+
+	let event_id = self
+		.services
+		.short
+		.get_eventid_from_short::<OwnedEventId>(shorteventid)
+		.await?;
+	self.services
+		.timeline
+		.get_pdu(&event_id)
+		.await
+		.map(std::sync::Arc::new)
 }
 
 /// Returns a Stream of all the full state for a given RootHandle.
@@ -173,8 +202,40 @@ pub fn state_full_ids_hamt<'a>(
 	&'a self,
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(StateEventType, String, OwnedEventId)>> {
-	// TODO(MSC00DC/HAMT): Implement
-	unimplemented!("HAMT migration phase 2: pointer transition");
+	let structural_hash = root_handle.structural_hash;
+	let short_states_result = (|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+		let root_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&structural_hash)?;
+		let mut short_states = Vec::new();
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		root_node
+			.visit_entries(&mut resolver, &mut |&k, &v| {
+				short_states.push((k, v));
+				Ok(())
+			})
+			.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+		Ok(short_states)
+	})();
+
+	match short_states_result {
+		| Ok(short_states) => {
+			let stream =
+				futures::stream::iter(short_states).then(move |(ssk, seid)| async move {
+					let (ty, key) = self.services.short.get_statekey_from_short(ssk).await?;
+					let event_id = self
+						.services
+						.short
+						.get_eventid_from_short::<OwnedEventId>(seid)
+						.await?;
+					Ok((ty, key.to_string(), event_id))
+				});
+			stream.boxed()
+		},
+		| Err(e) => futures::stream::once(async move { Err(e) }).boxed(),
+	}
 }
 
 /// Iterates the state_keys for an event_type in the state; current state

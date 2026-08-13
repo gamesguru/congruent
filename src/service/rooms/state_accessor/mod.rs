@@ -41,7 +41,7 @@ pub struct Service {
 struct Services {
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
-	_state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
+	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
@@ -58,7 +58,7 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
-				_state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 			},
 			db: Data {
