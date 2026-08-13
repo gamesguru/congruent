@@ -541,13 +541,7 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<boo
 		// includes m.room.create for rooms that start at the timeline boundary.
 		| Err(e)
 			if e.is_not_found()
-				|| matches!(
-					e,
-					conduwuit::Error::BadRequest(
-						ruma::api::client::error::ErrorKind::NotImplemented,
-						_
-					)
-				) =>
+				|| e.kind() == ruma::api::client::error::ErrorKind::NotImplemented =>
 			Ok(true),
 		| Err(e) => Err(e),
 	}
