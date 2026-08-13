@@ -137,6 +137,27 @@ servers to contact, leading to:
 - **Stuck outliers** when an event's prev_events can't be fetched by the
   single path that tries
 
+## Auth-Chain Resolution Note
+
+`handle_outlier_pdu` currently prefers a bulk `/event_auth` fetch for
+missing auth events, then falls back to single-hop `/event/{id}` fetches
+for whatever remains missing.
+
+That is a valid optimization, but it is not the same strategy Synapse
+uses. Synapse resolves missing auth events by fetching the missing event
+IDs individually via `/event/{id}`; it does not have a bulk `/event_auth`
+size cliff in this path. The tradeoff is straightforward:
+
+- Bulk `/event_auth` is cheaper when the remote can satisfy the whole
+  chain in one response.
+- Individual `/event` fetches are more uniform and degrade more
+  gracefully when the remote only partially supports the auth-chain path
+  or when the total auth chain is large but the local gap is small.
+
+This is a design note, not a root-cause claim for any specific failing
+test. The code keeps the bulk path as the first attempt and adds a
+bounded per-event fallback for the remaining missing auth events.
+
 ### Related Issues
 
 - Stuck outlier `$gpwWnqDYqCLRDVHXE8S45KVSJnyVBOJoRgBIWlz4Zuc` in

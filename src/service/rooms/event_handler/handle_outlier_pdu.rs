@@ -769,11 +769,87 @@ where
 			still_missing.len(),
 			still_missing
 		);
-		self.services
-			.outlier
-			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
-			.await;
-		return Err!(MissingAuthEvents(still_missing));
+
+		warn!(
+			target: "state_res_debug",
+			%event_id,
+			count = still_missing.len(),
+			missing = ?still_missing,
+			"Falling back to single-hop /event fetches for remaining missing auth events"
+		);
+
+		for missing_id in still_missing.clone() {
+			if auth_events.contains_key(&missing_id) {
+				continue;
+			}
+
+			let request = ruma::api::federation::event::get_event::v1::Request {
+				event_id: missing_id.clone(),
+				include_unredacted_content: None,
+			};
+
+			let Ok(response) = self
+				.services
+				.sending
+				.send_federation_request(origin, request)
+				.await
+			else {
+				continue;
+			};
+
+			let Ok((parsed_id, value)) = conduwuit::matrix::event::gen_event_id_canonical_json(
+				&response.pdu,
+				room_version_id,
+			) else {
+				continue;
+			};
+
+			if parsed_id != missing_id {
+				warn!(
+					target: "state_res_debug",
+					%event_id,
+					expected = %missing_id,
+					actual = %parsed_id,
+					"fetched missing auth event ID mismatch"
+				);
+				continue;
+			}
+
+			match Box::pin(self.handle_outlier_pdu(
+				origin,
+				create_event,
+				&parsed_id,
+				room_id,
+				value,
+				false,
+				false,
+				Some(room_version_id),
+			))
+			.await
+			{
+				| Ok((pdu, _)) => {
+					auth_events.insert(pdu.event_id().to_owned(), pdu);
+				},
+				| Err(e) => {
+					debug_info!(%event_id, %missing_id, "single-hop /event fetch failed to resolve auth event: {e:?}");
+				},
+			}
+		}
+
+		still_missing.clear();
+		for id in pdu_event.auth_events() {
+			if !auth_events.contains_key(id) {
+				still_missing.push(id.to_owned());
+			}
+		}
+
+		if !still_missing.is_empty() {
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+				.await;
+			return Err!(MissingAuthEvents(still_missing));
+		}
 	}
 
 	Ok(())
