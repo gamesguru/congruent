@@ -270,9 +270,8 @@ where
 		let mut parse_val = val.clone();
 		parse_val
 			.insert("event_id".to_owned(), CanonicalJsonValue::String(eid.as_str().to_owned()));
-		let pdu = match PduEvent::from_id_val(eid, parse_val, Some(room_id)) {
-			| Ok(pdu) => pdu,
-			| Err(_) => continue,
+		let Ok(pdu) = PduEvent::from_id_val(eid, parse_val, Some(room_id)) else {
+			continue;
 		};
 		graph.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
 		entries

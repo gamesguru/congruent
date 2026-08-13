@@ -153,6 +153,7 @@ where
 ///
 /// Returns pdu id
 #[implement(super::Service)]
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn append_pdu<'a, Leaves>(
 	&'a self,
