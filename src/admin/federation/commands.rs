@@ -181,7 +181,17 @@ pub(super) async fn sending_queue(
 			.await;
 	}
 
-	let destinations = self.services.sending.queued_destinations().await;
+	let destinations: Vec<_> = self
+		.services
+		.sending
+		.queued_destinations()
+		.await
+		.into_iter()
+		.filter(|(dest, _, _)| match server.as_ref() {
+			| Some(filter) => dest == filter.as_str(),
+			| None => true,
+		})
+		.collect();
 
 	if destinations.is_empty() {
 		return self.write_str("Sending queue is empty.").await;
