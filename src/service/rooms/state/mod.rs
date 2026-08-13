@@ -86,30 +86,68 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	/// Set the room to the given statehash and update caches.
+	/// Set the room to the given state root and update caches.
 	pub async fn force_state(
 		&self,
-		_room_id: &RoomId,
-		_shortstatehash: u64,
-		_added: Vec<(ShortStateKey, ShortEventId)>,
-		_removed: Vec<(ShortStateKey, ShortEventId)>,
-		_state_lock: &RoomMutexGuard,
-	) -> Result {
-		Err(err!(Request(NotImplemented("TODO: HAMT traversal for force_state"))))
+		room_id: &RoomId,
+		new_root_handle: &rezzy::hamt::RootHandle,
+		state_lock: &RoomMutexGuard,
+	) -> Result<()> {
+		// TODO: Implement explicit replace tuples logic in side-effect layer
+		// We will need to compute the delta between current_root and new_root_handle
+		// and define `update_caches_replace`, `update_caches_add`,
+		// `update_caches_remove` on `state_accessor` or `state_cache` which properly
+		// takes (old, new) PDU combinations to avoid transient cache errors.
+
+		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
+
+		Ok(())
 	}
 
-	/// Generates a new StateHash and associates it with the incoming event.
+	/// Generates a new RootHandle and associates it with the incoming event.
 	///
 	/// This adds all current state events (not including the incoming event)
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
 	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
-		_event_id: &EventId,
-		_room_id: &RoomId,
-		_state_ids: Vec<(ShortStateKey, ShortEventId)>,
-	) -> Result<ShortStateHash> {
-		Err(err!(Request(NotImplemented("TODO: Generate HAMT root for set_event_state"))))
+		room_id: &RoomId,
+		new_pdu: &PduEvent,
+		state_lock: &RoomMutexGuard,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shorteventid = self
+			.services
+			.short
+			.get_or_create_shorteventid(new_pdu.event_id())
+			.await;
+
+		let is_state = new_pdu.state_key().is_some();
+		let (root_handle, new_node) = if is_state {
+			let (handle, node) = self.append_to_state(new_pdu, room_id, state_lock).await?;
+			(handle, Some(node))
+		} else {
+			let root = self.get_room_state_hamt(room_id).await?;
+			(root, None)
+		};
+
+		let mut batch = conduwuit_database::Batch::new(&self.db.shorteventid_roothandle);
+
+		if let Some(node) = new_node {
+			self.services
+				.state_hamt
+				.store
+				.persist_node_recursive_batch(node, &mut batch);
+		}
+
+		let serialized = conduwuit_database::serialize_to_vec((
+			root_handle.structural_hash,
+			root_handle.state_group_id,
+		))
+		.unwrap();
+		batch.insert(&self.db.shorteventid_roothandle, shorteventid.to_be_bytes(), serialized);
+		batch.commit();
+
+		Ok(root_handle)
 	}
 
 	/// Generates a new StateHash and associates it with the incoming event.
@@ -121,11 +159,10 @@ impl Service {
 		&self,
 		new_pdu: &PduEvent,
 		room_id: &RoomId,
-		state_lock: &RoomMutexGuard,
-	) -> Result<u64> {
+		_state_lock: &RoomMutexGuard,
+	) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
 		let Some(state_key) = new_pdu.state_key() else {
-			// Non-state events do not change the room state
-			return Ok(0);
+			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
 		};
 
 		let event_type: StateEventType = new_pdu.kind().to_string().into();
@@ -135,29 +172,46 @@ impl Service {
 			.get_or_create_shortstatekey(&event_type, state_key)
 			.await;
 
-		// Collect the current state, dropping the slot we are about to replace
 		let mut current: HashMap<ShortStateKey, OwnedEventId> =
-			if let Ok(sstatehash) = self.get_room_shortstatehash(room_id).await {
-				self.services
-					.state_accessor
-					.state_full_ids(sstatehash)
-					.ready_filter_map(|(ssk, eid): (ShortStateKey, OwnedEventId)| {
-						(ssk != new_shortstatekey).then_some((ssk, eid))
-					})
-					.collect()
-					.await
+			if let Ok(root_handle) = self.get_room_state_hamt(room_id).await {
+				let mut map = HashMap::new();
+				if let Ok(node) = self
+					.services
+					.state_hamt
+					.store
+					.get_node(&root_handle.structural_hash)
+				{
+					let mut short_events = Vec::new();
+					let _ = node.visit_entries(
+						&mut self.services.state_hamt.store.get_blocking_resolver(),
+						&mut |k, v| {
+							short_events.push((*k, *v));
+							Ok::<(), conduwuit::Error>(())
+						},
+					);
+					for (sk, se) in short_events {
+						if sk != new_shortstatekey {
+							if let Ok(eid) = self
+								.services
+								.short
+								.get_eventid_from_short::<OwnedEventId>(se)
+								.await
+							{
+								map.insert(sk, eid);
+							}
+						}
+					}
+				}
+				map
 			} else {
 				HashMap::new()
 			};
 
-		// Insert/replace the new event
 		current.insert(new_shortstatekey, new_pdu.event_id().to_owned());
 
-		// Unzip in a single pass so ordering is guaranteed consistent
 		let (short_state_keys, event_ids): (Vec<ShortStateKey>, Vec<OwnedEventId>) =
 			current.into_iter().unzip();
 
-		// Resolve ShortStateKey → (StateEventType, StateKey) for lattice hashing
 		let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
 			.services
 			.short
@@ -192,13 +246,7 @@ impl Service {
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
 
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-		self.set_room_state_hamt(room_id, &root_handle, state_lock);
-
-		Ok(0)
+		Ok((root_handle, root_node))
 	}
 
 	#[tracing::instrument(skip_all, level = "debug")]

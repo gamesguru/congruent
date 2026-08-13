@@ -48,8 +48,10 @@ where
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail.
-	// TODO(MSC00DC/HAMT): Defer state association write until the HAMT root is
-	// persisted. set_event_state is currently returning NotImplemented.
+	self.services
+		.state
+		.set_event_state(room_id, pdu, state_lock)
+		.await?;
 
 	if soft_fail {
 		self.services

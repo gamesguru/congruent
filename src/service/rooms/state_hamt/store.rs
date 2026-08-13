@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use conduwuit::{Result, err};
-use database::Map;
+use database::{Batch, Map};
 use rezzy::{
 	LtHash,
-	hamt::{HamtNode, RootHandle, codec::PersistedInternalNode, hash::StructuralHash},
+	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
 };
 
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
@@ -28,6 +28,10 @@ impl Store {
 		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
 
 		Self { db, node_cache }
+	}
+
+	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
+		self.get_node_blocking(hash)
 	}
 
 	/// Fetches a node by its structural hash synchronously (for the resolver).
@@ -66,6 +70,18 @@ impl Store {
 		self.db.insert(&persisted.structural_hash, &bytes);
 	}
 
+	/// Persists a node to RocksDB in the provided WriteBatch and populates the
+	/// cache.
+	pub fn put_node_batch(&self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'_>) {
+		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
+		let bytes = persisted.encode_v1();
+
+		// Cache it immediately so concurrent reads can hit memory
+		self.node_cache.insert(node.structural_hash, node);
+
+		batch.insert(&self.db, persisted.structural_hash.as_ref(), bytes.as_slice());
+	}
+
 	/// Persists a node and all of its resolved children recursively.
 	pub fn persist_node_recursive(&self, node: Arc<HamtNode<u64, u64>>) {
 		for child in &node.children {
@@ -74,6 +90,21 @@ impl Store {
 			}
 		}
 		self.put_node(node);
+	}
+
+	/// Persists a node and all of its resolved children recursively into a
+	/// batch.
+	pub fn persist_node_recursive_batch(
+		&self,
+		node: Arc<HamtNode<u64, u64>>,
+		batch: &mut Batch<'_>,
+	) {
+		for child in &node.children {
+			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+				self.persist_node_recursive_batch(child_node.clone(), batch);
+			}
+		}
+		self.put_node_batch(node, batch);
 	}
 
 	/// Provides a synchronous resolver closure for `isolate_delta`.

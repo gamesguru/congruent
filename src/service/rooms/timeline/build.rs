@@ -159,7 +159,7 @@ pub async fn build_and_append_pdu(
 	trace!("Setting room state for room {room_id}");
 	self.services
 		.state
-		.set_room_state(&room_id, statehashid, state_lock);
+		.set_room_state_hamt(&room_id, &statehashid.0, state_lock);
 
 	let mut servers: HashSet<OwnedServerName> = self
 		.services
