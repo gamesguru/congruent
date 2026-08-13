@@ -84,7 +84,7 @@
 {"Action":"pass","Test":"TestContent"}
 {"Action":"pass","Test":"TestContentCSAPIMediaV1"}
 {"Action":"pass","Test":"TestContentMediaV1"}
-{"Action":"fail","Test":"TestCorruptedAuthChain"}
+{"Action":"pass","Test":"TestCorruptedAuthChain"}
 {"Action":"pass","Test":"TestCumulativeJoinLeaveJoinSync"}
 {"Action":"pass","Test":"TestDeactivateAccount"}
 {"Action":"pass","Test":"TestDeactivateAccount/After_deactivating_account,_can't_log_in_with_password"}
@@ -783,6 +783,7 @@
 {"Action":"pass","Test":"TestSendMessageWithTxn"}
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
+{"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
