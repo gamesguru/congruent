@@ -12,16 +12,6 @@ pub(crate) struct StateAccumulatorQuery {
 	pub event_id: OwnedEventId,
 }
 
-// TODO: do we still want/need this?
-// #[derive(Serialize)]
-// pub(crate) struct StateAccumulatorResponse {
-// 	pub event_id: OwnedEventId,
-// 	pub algorithm: String,
-// 	pub lattice: String,
-// 	pub n_state_events: u64,
-// 	pub digest: String,
-// }
-
 pub(crate) async fn get_state_accumulator_route(
 	State(services): State<crate::State>,
 	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
@@ -69,10 +59,9 @@ pub(crate) async fn get_state_accumulator_route(
 
 	// TODO(MSC00DC/HAMT): derive LtHash from the HAMT store once it exposes
 	// LtHash lookup by shortstatehash. state_compressor has been removed.
-	Err(conduwuit::Error::BadRequest(
-		ruma::api::client::error::ErrorKind::Unrecognized,
-		"State accumulator endpoint is not yet available during HAMT migration.",
-	))
+	Err(err!(Request(NotFound(
+		"State accumulator endpoint is not yet available during HAMT migration."
+	))))
 }
 
 async fn verify_federation_request(

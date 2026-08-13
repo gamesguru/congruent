@@ -603,6 +603,7 @@ async fn knock_room_helper_remote(
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
+	let mut lattice = rezzy::state::LtHash::default();
 
 	for event in state {
 		let Some(state_key) = event.get("state_key") else {
@@ -632,15 +633,30 @@ async fn knock_room_helper_remote(
 			.await;
 
 		services.rooms.outlier.add_pdu_outlier(&event_id, &event);
+		lattice.insert(event_type.to_string().as_str(), state_key.as_str(), event_id.as_str());
 		state_map.insert(shortstatekey, event_id.clone());
 	}
 
-	let _ = state_map;
-	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
-	// persistence. Persist state_map directly once implemented.
-	return Err(err!(Request(NotImplemented(
-		"HAMT state transition persistence is not yet implemented."
-	))));
+	let mut entries = Vec::with_capacity(state_map.len());
+	for (&shortstatekey, event_id) in &state_map {
+		let shorteventid = services
+			.rooms
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key = room_id.as_bytes();
+	let (_root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
+
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
 
 	let statehash_after_knock = 0;
 

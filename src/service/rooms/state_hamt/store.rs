@@ -66,6 +66,16 @@ impl Store {
 		self.db.insert(&persisted.structural_hash, &bytes);
 	}
 
+	/// Persists a node and all of its resolved children recursively.
+	pub fn persist_node_recursive(&self, node: Arc<HamtNode<u64, u64>>) {
+		for child in &node.children {
+			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+				self.persist_node_recursive(child_node.clone());
+			}
+		}
+		self.put_node(node);
+	}
+
 	/// Provides a synchronous resolver closure for `isolate_delta`.
 	///
 	/// # Important Architecture Note

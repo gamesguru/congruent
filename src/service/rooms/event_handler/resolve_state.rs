@@ -18,7 +18,7 @@ pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
-	incoming_state: HashMap<u64, OwnedEventId>,
+	incomingstate: HashMap<u64, OwnedEventId>,
 ) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
 	let current_sstatehash = self
@@ -28,7 +28,7 @@ pub async fn resolve_state(
 		.map_err(|e| err!(Database(error!("No state for {room_id:?}: {e:?}"))))
 		.await?;
 
-	let current_state_ids: HashMap<_, _> = self
+	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
 		.state_full_ids(current_sstatehash)
@@ -36,8 +36,8 @@ pub async fn resolve_state(
 		.await;
 
 	trace!("Loading fork states");
-	let fork_states = [current_state_ids, incoming_state];
-	let auth_chain_sets = fork_states
+	let forkstates = [currentstate_ids, incomingstate];
+	let auth_chain_sets = forkstates
 		.iter()
 		.try_stream()
 		.wide_and_then(|state| {
@@ -48,39 +48,59 @@ pub async fn resolve_state(
 		})
 		.try_collect::<Vec<HashSet<OwnedEventId>>>();
 
-	let fork_states = fork_states
+	let forkstates = forkstates
 		.iter()
 		.stream()
-		.wide_then(|fork_state| {
-			let shortstatekeys = fork_state.keys().copied().stream();
-			let event_ids = fork_state.values().cloned().stream();
+		.wide_then(|forkstate| {
+			let shortstatekeys = forkstate.keys().copied().stream();
+			let event_ids = forkstate.values().cloned().stream();
 			self.services
 				.short
 				.multi_get_statekey_from_short(shortstatekeys)
 				.zip(event_ids)
-				.ready_filter_map(|(ty_sk, id)| Some((ty_sk.ok()?, id)))
+				.ready_filter_map(|(ty_sk, id): (Result<_>, _)| Some((ty_sk.ok()?, id)))
 				.collect()
 		})
 		.map(Ok::<_, Error>)
 		.try_collect::<Vec<StateMap<OwnedEventId>>>();
 
-	let (fork_states, auth_chain_sets) = try_join(fork_states, auth_chain_sets).await?;
+	let (forkstates, auth_chain_sets): (Vec<StateMap<OwnedEventId>>, Vec<HashSet<OwnedEventId>>) =
+		try_join(forkstates, auth_chain_sets).await?;
 
 	trace!("Resolving state");
-	let _state = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), &auth_chain_sets)
+	let state: StateMap<OwnedEventId> = self
+		.state_resolution(room_id, room_version_id, forkstates.iter(), &auth_chain_sets)
 		.boxed()
 		.await?;
 
 	trace!("State resolution done.");
 
-	// TODO(MSC00DC/HAMT): rezzy does not yet expose a builder for constructing a
-	// full HAMT from a lattice iterator. Once available, persist every constructed
-	// node through state_hamt's put_node mechanism, then pass the computed root
-	// hash to Store::root_handle.
-	Err(err!(Request(NotImplemented(
-		"HAMT construction from lattice is not yet implemented."
-	))))
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(state.len());
+
+	for ((ty, sk), id) in &state {
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(ty, sk)
+			.await;
+		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key = room_id.as_bytes();
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
+
+	self.services
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
+
+	Ok(root_handle)
 }
 
 #[implement(super::Service)]

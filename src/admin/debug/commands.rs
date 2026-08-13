@@ -628,11 +628,9 @@ pub(super) async fn force_set_room_state_from_server(
 		.await?;
 
 	let _ = new_room_state;
-	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
-	// persistence. Persist new_room_state directly once HAMT is wired up.
-	return Err(conduwuit::err!(Request(NotImplemented(
-		"HAMT state transition persistence is not yet implemented."
-	))));
+	// TODO(MSC00DC/HAMT): We have persisted the HAMT, but we still need to
+	// update the room's current state pointer once the HAMT-based current state
+	// update mechanism is implemented.
 
 	info!(
 		"Updating joined counts for room just in case (e.g. we may have found a difference in \

@@ -673,35 +673,45 @@ async fn join_room_by_id_helper_remote_process(
 					})
 			})
 			.ready_filter_map(Result::ok)
-			.fold(HashMap::new(), |mut state, (event_id, value)| async move {
-				let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)) {
-					| Ok(pdu) => pdu,
-					| Err(e) => {
-						debug_warn!("Invalid PDU in send_join response: {e:?}: {value:#?}");
-						return state;
-					},
-				};
-				if !pdu_fits(&mut value.clone()) {
-					warn!(
-						"dropping incoming PDU {event_id} in room {room_id} from room join \
-						 because it exceeds 65535 bytes or is otherwise too large."
-					);
-					return state;
-				}
-				services.rooms.outlier.add_pdu_outlier(&event_id, &value);
-				if let Some(state_key) = &pdu.state_key {
-					let shortstatekey = services
-						.rooms
-						.short
-						.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-						.await;
+			.fold(
+				(HashMap::new(), rezzy::state::LtHash::default()),
+				|(mut state, mut lattice), (event_id, value)| async move {
+					let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id))
+					{
+						| Ok(pdu) => pdu,
+						| Err(e) => {
+							debug_warn!("Invalid PDU in send_join response: {e:?}: {value:#?}");
+							return (state, lattice);
+						},
+					};
+					if !pdu_fits(&mut value.clone()) {
+						warn!(
+							"dropping incoming PDU {event_id} in room {room_id} from room join \
+							 because it exceeds 65535 bytes or is otherwise too large."
+						);
+						return (state, lattice);
+					}
+					services.rooms.outlier.add_pdu_outlier(&event_id, &value);
+					if let Some(state_key) = &pdu.state_key {
+						let shortstatekey = services
+							.rooms
+							.short
+							.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
+							.await;
 
-					state.insert(shortstatekey, pdu.event_id.clone());
-				}
-				state
-			}),
+						lattice.insert(
+							&pdu.kind.to_string(),
+							state_key.as_str(),
+							pdu.event_id.as_str(),
+						);
+						state.insert(shortstatekey, pdu.event_id.clone());
+					}
+					(state, lattice)
+				},
+			),
 	)
 	.await;
+	let (state, lattice) = state;
 
 	drop(cork);
 
@@ -764,13 +774,26 @@ async fn join_room_by_id_helper_remote_process(
 		return Err!(Request(Forbidden("Auth check failed")));
 	}
 
-	let _ = &state; // state will be passed into HAMT force_state once implemented
-	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
-	// persistence. The HAMT root will be computed from the full state set directly
-	// once implemented.
-	return Err(err!(Request(NotImplemented(
-		"HAMT state transition persistence is not yet implemented."
-	))));
+	let mut entries = Vec::with_capacity(state.len());
+	for (&shortstatekey, event_id) in &state {
+		let shorteventid = services
+			.rooms
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key = room_id.as_bytes();
+	let (_root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
+
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
 
 	debug!("Updating joined counts for new room");
 	// Update our membership locally to join state before calculating the joined
