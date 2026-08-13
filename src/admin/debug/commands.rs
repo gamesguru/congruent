@@ -627,13 +627,12 @@ pub(super) async fn force_set_room_state_from_server(
 		.resolve_state(&room_id, &room_version, state)
 		.await?;
 
-	let _ = new_room_state;
-	// TODO(MSC00DC/HAMT): We have persisted the HAMT, but we still need to
-	// update the room's current state pointer once the HAMT-based current state
-	// update mechanism is implemented.
-	return Err(conduwuit::err!(Request(NotImplemented(
-		"State forcing not completely migrated to HAMT (update state pointer missing)"
-	))));
+	let _ = &new_room_state;
+	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
+	self.services
+		.rooms
+		.state
+		.set_room_state_hamt(&room_id, &new_room_state, &state_lock);
 
 	info!(
 		"Updating joined counts for room just in case (e.g. we may have found a difference in \

@@ -648,7 +648,7 @@ async fn knock_room_helper_remote(
 	}
 
 	let structural_key = room_id.as_bytes();
-	let (_root_handle, root_node) =
+	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
 
@@ -658,11 +658,10 @@ async fn knock_room_helper_remote(
 		.store
 		.persist_node_recursive(root_node);
 
-	return Err!(Request(NotImplemented(
-		"Remote knock not completely migrated to HAMT (update state pointer missing)"
-	)));
-	#[allow(unreachable_code)]
-	let statehash_after_knock = 0;
+	services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	info!("Appending room knock event locally");
 	services
@@ -680,11 +679,8 @@ async fn knock_room_helper_remote(
 
 	info!("Setting final room state for new room");
 	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	services
-		.rooms
-		.state
-		.set_room_state(room_id, statehash_after_knock, &state_lock);
+	// in time where events in the current room state do not exist — pointer already
+	// updated via set_room_state_hamt above.
 
 	info!("Updating membership locally to knock state with provided stripped state events");
 	services.rooms.state_cache.mark_as_knocked(

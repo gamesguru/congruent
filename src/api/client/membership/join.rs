@@ -791,7 +791,7 @@ async fn join_room_by_id_helper_remote_process(
 	}
 
 	let structural_key = room_id.as_bytes();
-	let (_root_handle, root_node) =
+	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
 
@@ -801,9 +801,10 @@ async fn join_room_by_id_helper_remote_process(
 		.store
 		.persist_node_recursive(root_node);
 
-	return Err!(Request(NotImplemented(
-		"Remote join not completely migrated to HAMT (update state pointer missing)"
-	)));
+	services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	debug!("Updating joined counts for new room");
 	// Update our membership locally to join state before calculating the joined
