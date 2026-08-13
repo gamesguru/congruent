@@ -1,7 +1,4 @@
-use std::{
-	collections::{BTreeMap, HashSet},
-	sync::Arc,
-};
+use std::collections::{BTreeMap, HashSet};
 
 use conduwuit::trace;
 use conduwuit_core::{
@@ -40,8 +37,6 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
-	state_ids_compressed: Arc<CompressedState>,
-	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
@@ -54,7 +49,7 @@ where
 	// fail.
 	self.services
 		.state
-		.set_event_state(&pdu.event_id, room_id, state_ids_compressed)
+		.set_event_state(&pdu.event_id, room_id, vec![])
 		.await?;
 
 	if soft_fail {
@@ -71,7 +66,7 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state, state_lock, room_id)
+		.append_pdu(pdu, pdu_json, new_room_leaves, state_lock, room_id)
 		.await?;
 
 	// Process admin commands for federation events
@@ -110,7 +105,6 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
-	resolved_state: Option<HashSetCompressStateEvent>,
 	state_lock: &'a RoomMutexGuard,
 	room_id: &'a ruma::RoomId,
 ) -> Result<RawPduId>
@@ -198,14 +192,7 @@ where
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
 	drop(cork);
 
-	let resolved_state_applied = resolved_state.is_some();
-	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
-		self.services
-			.state
-			.force_state(room_id, shortstatehash, added, removed, state_lock)
-			.await?;
-	}
-
+	let resolved_state_applied = false;
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(

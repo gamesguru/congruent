@@ -1,13 +1,10 @@
-use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, mem::size_of};
 
 use conduwuit::{
 	Result, at, err, implement,
 	matrix::{Event, StateKey},
 	pair_of,
-	utils::{
-		result::FlatOk,
-		stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
-	},
+	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
 };
 use database::Deserialized;
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};

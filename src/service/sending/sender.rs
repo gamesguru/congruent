@@ -40,7 +40,7 @@ use ruma::{
 	},
 	device_id,
 	events::{
-		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType, StateEventType,
+		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType,
 		push_rules::PushRulesEvent,
 		receipt::{ReceiptThread, ReceiptType},
 	},
@@ -121,8 +121,6 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 		Ok(http::Request::from_parts(parts, new_body_t))
 	}
 }
-
-pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
 
 async fn compute_outbound_state_hashes(
 	services: &super::Services,

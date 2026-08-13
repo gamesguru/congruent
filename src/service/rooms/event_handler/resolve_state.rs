@@ -1,7 +1,6 @@
 use std::{
 	borrow::Borrow,
 	collections::{HashMap, HashSet},
-	sync::Arc,
 };
 
 use conduwuit::{

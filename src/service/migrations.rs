@@ -11,7 +11,7 @@ use conduwuit::{
 	warn,
 };
 use database::Json;
-use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,

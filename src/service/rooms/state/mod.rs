@@ -4,18 +4,15 @@ use async_trait::async_trait;
 use conduwuit::{RoomVersion, debug};
 use conduwuit_core::{
 	Event, PduEvent, Result, err,
-	result::FlatOk,
 	state_res::{self, StateMap},
 	utils::{
-		IterStream, MutexMap, MutexMapGuard, ReadyExt, calculate_hash,
+		IterStream, MutexMap, MutexMapGuard, ReadyExt,
 		stream::{BroadbandExt, TryIgnore},
 	},
 	warn,
 };
 use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
-use futures::{
-	FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all, pin_mut,
-};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
 	events::{
@@ -92,11 +89,11 @@ impl Service {
 	/// Set the room to the given statehash and update caches.
 	pub async fn force_state(
 		&self,
-		room_id: &RoomId,
-		shortstatehash: u64,
+		_room_id: &RoomId,
+		_shortstatehash: u64,
 		_added: Vec<(ShortStateKey, ShortEventId)>,
 		_removed: Vec<(ShortStateKey, ShortEventId)>,
-		state_lock: &RoomMutexGuard,
+		_state_lock: &RoomMutexGuard,
 	) -> Result {
 		unimplemented!("TODO: HAMT traversal for force_state")
 	}
@@ -108,8 +105,8 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn set_event_state(
 		&self,
-		event_id: &EventId,
-		room_id: &RoomId,
+		_event_id: &EventId,
+		_room_id: &RoomId,
 		_state_ids: Vec<(ShortStateKey, ShortEventId)>,
 	) -> Result<ShortStateHash> {
 		unimplemented!("TODO: Generate HAMT root for set_event_state")
@@ -119,8 +116,8 @@ impl Service {
 	///
 	/// This adds all current state events (not including the incoming event)
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
-	#[tracing::instrument(skip(self, new_pdu), level = "debug")]
-	pub async fn append_to_state(&self, new_pdu: &PduEvent, room_id: &RoomId) -> Result<u64> {
+	#[tracing::instrument(skip_all, level = "debug")]
+	pub async fn append_to_state(&self, _new_pdu: &PduEvent, _room_id: &RoomId) -> Result<u64> {
 		unimplemented!("TODO: Generate HAMT root for append_to_state")
 	}
 

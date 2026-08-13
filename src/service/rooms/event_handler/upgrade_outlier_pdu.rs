@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::BTreeMap, sync::Arc, time::Instant};
+use std::{borrow::Borrow, collections::BTreeMap, time::Instant};
 
 use conduwuit::{
 	Err, Result, debug, debug_info, err, implement, info, is_equal_to,
@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::stream::{BroadbandExt, ReadyExt},
 	warn,
 };
-use futures::{FutureExt, StreamExt, future::ready};
+use futures::{StreamExt, future::ready};
 use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
@@ -217,19 +217,7 @@ where
 		incoming_pdu.prev_events().count()
 	);
 
-	let state_ids_compressed: Arc<CompressedState> = self
-		.services
-		.state_compressor
-		.compress_state_events(
-			state_at_incoming_event
-				.iter()
-				.map(|(ssk, eid)| (ssk, eid.borrow())),
-		)
-		.collect()
-		.map(Arc::new)
-		.await;
-
-	let resolved_state = if let Some(state_key) = incoming_pdu.state_key() {
+	if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
 		// We also add state after incoming event to the fork states
@@ -247,19 +235,8 @@ where
 			.resolve_state(room_id, &room_version_id, state_after)
 			.await?;
 
-		// Set the new room state to the resolved state
-		debug!("Forcing new room state");
-		let resolved_state = Box::pin(
-			self.services
-				.state_compressor
-				.save_state(room_id, new_room_state),
-		)
-		.await?;
-
-		Some(resolved_state)
-	} else {
-		None
-	};
+		debug!("Forcing new room state (stub)");
+	}
 
 	if !soft_fail {
 		// Don't call the below checks on events that have already soft-failed, there's
@@ -331,16 +308,7 @@ where
 
 		self.services
 			.timeline
-			.append_incoming_pdu(
-				&incoming_pdu,
-				val,
-				extremities,
-				state_ids_compressed,
-				None,
-				soft_fail,
-				&state_lock,
-				room_id,
-			)
+			.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, &state_lock, room_id)
 			.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
@@ -365,16 +333,7 @@ where
 	let pdu_id = self
 		.services
 		.timeline
-		.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities,
-			state_ids_compressed,
-			resolved_state,
-			soft_fail,
-			&state_lock,
-			room_id,
-		)
+		.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, &state_lock, room_id)
 		.await?;
 
 	// Event has passed all auth/stateres checks
