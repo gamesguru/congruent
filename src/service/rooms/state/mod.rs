@@ -144,13 +144,15 @@ impl Service {
 			root_handle.state_group_id,
 		))
 		.unwrap();
-		batch.insert(&self.db.shorteventid_roothandle, shorteventid.to_be_bytes(), serialized);
-		batch.commit();
 
-		// For state events, update the room's current-state pointer.
+		// Atomically map the new PDU's shortevent ID to its RootHandle,
+		// and for state events, advance the room's current-state pointer.
+		batch.insert(&self.db.shorteventid_roothandle, shorteventid.to_be_bytes(), &serialized);
 		if is_state {
-			self.set_room_state_hamt(room_id, &root_handle, state_lock);
+			batch.insert(&self.db.roomid_roothandle, room_id.as_bytes(), &serialized);
 		}
+
+		batch.commit();
 
 		Ok(root_handle)
 	}
