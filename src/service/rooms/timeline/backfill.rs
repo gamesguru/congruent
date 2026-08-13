@@ -212,7 +212,7 @@ pub async fn backfill_if_required(
 		let mut scanned = 0_usize;
 		let mut pdus = self
 			.pdus_rev(room_id, std::ops::Bound::Included(from))
-			.take(scan_limit.saturating_add(1))
+			.take(scan_limit)
 			.boxed();
 		while let Some(Ok((pdu_id, pdu))) = pdus.next().await {
 			if scanned == scan_limit {
