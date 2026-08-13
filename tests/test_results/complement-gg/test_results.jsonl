@@ -124,9 +124,9 @@
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_joins_a_room"}
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_leaves_a_room"}
 {"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_rejoins_a_room"}
-{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation"}
+{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/good_connectivity"}
-{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
+{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
 {"Action":"pass","Test":"TestDeviceManagement"}
@@ -184,7 +184,7 @@
 {"Action":"pass","Test":"TestGetFilteredRoomMembers/membership/join"}
 {"Action":"pass","Test":"TestGetFilteredRoomMembers/membership/leave"}
 {"Action":"pass","Test":"TestGetFilteredRoomMembers/not_membership"}
-{"Action":"fail","Test":"TestGetMissingEventsGapFilling"}
+{"Action":"pass","Test":"TestGetMissingEventsGapFilling"}
 {"Action":"pass","Test":"TestGetRoomMembers"}
 {"Action":"pass","Test":"TestGetRoomMembersAtPoint"}
 {"Action":"pass","Test":"TestInboundCanReturnMissingEvents"}
@@ -807,9 +807,9 @@
 {"Action":"pass","Test":"TestSyncLeaveSection/Left_rooms_appear_in_the_leave_section_of_sync"}
 {"Action":"pass","Test":"TestSyncLeaveSection/Newly_left_rooms_appear_in_the_leave_section_of_incremental_sync"}
 {"Action":"pass","Test":"TestSyncOmitsStateChangeOnFilteredEvents"}
-{"Action":"fail","Test":"TestSyncTimelineGap"}
-{"Action":"fail","Test":"TestSyncTimelineGap/full"}
-{"Action":"fail","Test":"TestSyncTimelineGap/incremental"}
+{"Action":"pass","Test":"TestSyncTimelineGap"}
+{"Action":"pass","Test":"TestSyncTimelineGap/full"}
+{"Action":"pass","Test":"TestSyncTimelineGap/incremental"}
 {"Action":"pass","Test":"TestTentativeEventualJoiningAfterRejecting"}
 {"Action":"pass","Test":"TestThreadReceiptsInSyncMSC4102"}
 {"Action":"pass","Test":"TestThreadSubscriptions"}

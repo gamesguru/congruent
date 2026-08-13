@@ -1,3 +1,0 @@
-{"Action":"fail","Test":"TestSyncTimelineGap"}
-{"Action":"fail","Test":"TestSyncTimelineGap/full"}
-{"Action":"fail","Test":"TestSyncTimelineGap/incremental"}
