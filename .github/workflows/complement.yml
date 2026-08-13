@@ -28,29 +28,29 @@ jobs:
         include:
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-22.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
 
     # For writing/updating PR comments on running test totals (# pass/fail/skip)
