@@ -661,95 +661,106 @@ pub async fn process_timeline_upgrade(
 	origin: &ServerName,
 	room_id: &RoomId,
 ) -> Result<Option<RawPduId>> {
-	let event_id = incoming_pdu.event_id();
-
-	// Skip old events
-	let first_ts_in_room = self
-		.services
+	// Keep the entire room transaction inside one flush boundary so the
+	// prev-event repairs and the incoming event become visible together.
+	self.services
 		.timeline
-		.first_pdu_in_room(room_id)
-		.await?
-		.origin_server_ts();
+		.with_cork_and_flush(|| async move {
+			let event_id = incoming_pdu.event_id();
 
-	// Fetch any missing prev events doing all checks listed here starting at 1.
-	// These are timeline events
-	let (sorted_prev_events, mut eventid_info, state_ids_anchor, prev_fetch_had_invalid_data) =
-		Box::pin(self.fetch_prev(
-			origin,
-			create_event,
-			room_id,
-			event_id,
-			incoming_pdu.prev_events(),
-			Some(incoming_pdu.sender().server_name()),
-		))
-		.await?;
+			// Skip old events
+			let first_ts_in_room = self
+				.services
+				.timeline
+				.first_pdu_in_room(room_id)
+				.await?
+				.origin_server_ts();
 
-	debug!(
-		events = ?sorted_prev_events,
-		"Handling previous events"
-	);
-
-	sorted_prev_events
-		.iter()
-		.try_stream()
-		.map_ok(AsRef::as_ref)
-		.try_for_each(|prev_id| {
-			self.handle_prev_pdu(
+			// Fetch any missing prev events doing all checks listed here starting at 1.
+			// These are timeline events
+			let (
+				sorted_prev_events,
+				mut eventid_info,
+				state_ids_anchor,
+				prev_fetch_had_invalid_data,
+			) = Box::pin(self.fetch_prev(
 				origin,
-				event_id,
-				room_id,
-				eventid_info.remove(prev_id),
 				create_event,
-				first_ts_in_room,
-				prev_id,
-			)
-			.inspect_err(move |e| {
-				warn!("Prev {prev_id} failed: {e}");
-				match self
-					.services
-					.globals
-					.bad_event_ratelimiter
-					.write()
-					.entry(prev_id.into())
-				{
-					| hash_map::Entry::Vacant(e) => {
-						e.insert((Instant::now(), 1));
-					},
-					| hash_map::Entry::Occupied(mut e) => {
-						let tries = e.get().1.saturating_add(1);
-						*e.get_mut() = (Instant::now(), tries);
-					},
-				}
-			})
-			.map(|_| self.services.server.check_running())
-		})
-		.boxed()
-		.await?;
+				room_id,
+				event_id,
+				incoming_pdu.prev_events(),
+				Some(incoming_pdu.sender().server_name()),
+			))
+			.await?;
 
-	// Done with prev events, now handling the incoming event
-	let start_time = Instant::now();
-	self.federation_handletime
-		.write()
-		.insert(room_id.into(), (event_id.to_owned(), start_time));
+			debug!(
+				events = ?sorted_prev_events,
+				"Handling previous events"
+			);
 
-	defer! {{
-		if self.services.server.running() {
+			sorted_prev_events
+				.iter()
+				.try_stream()
+				.map_ok(AsRef::as_ref)
+				.try_for_each(|prev_id| {
+					self.handle_prev_pdu(
+						origin,
+						event_id,
+						room_id,
+						eventid_info.remove(prev_id),
+						create_event,
+						first_ts_in_room,
+						prev_id,
+					)
+					.inspect_err(move |e| {
+						warn!("Prev {prev_id} failed: {e}");
+						match self
+							.services
+							.globals
+							.bad_event_ratelimiter
+							.write()
+							.entry(prev_id.into())
+						{
+							| hash_map::Entry::Vacant(e) => {
+								e.insert((Instant::now(), 1));
+							},
+							| hash_map::Entry::Occupied(mut e) => {
+								let tries = e.get().1.saturating_add(1);
+								*e.get_mut() = (Instant::now(), tries);
+							},
+						}
+					})
+					.map(|_| self.services.server.check_running())
+				})
+				.boxed()
+				.await?;
+
+			// Done with prev events, now handling the incoming event
+			let start_time = Instant::now();
 			self.federation_handletime
 				.write()
-				.remove(room_id);
-		}
-	}};
+				.insert(room_id.into(), (event_id.to_owned(), start_time));
 
-	Box::pin(self.upgrade_outlier_to_timeline_pdu(
-		incoming_pdu,
-		val,
-		create_event,
-		origin,
-		room_id,
-		false,
-		true,
-		prev_fetch_had_invalid_data,
-		state_ids_anchor.as_deref(),
-	))
-	.await
+			defer! {{
+				if self.services.server.running() {
+					self.federation_handletime
+						.write()
+						.remove(room_id);
+				}
+			}};
+
+			Box::pin(self.upgrade_outlier_to_timeline_pdu(
+				incoming_pdu,
+				val,
+				create_event,
+				origin,
+				room_id,
+				false,
+				true,
+				prev_fetch_had_invalid_data,
+				state_ids_anchor.as_deref(),
+			))
+			.await
+		})
+		.await
 }

@@ -866,6 +866,19 @@ impl Service {
 		self.db
 			.topo_pdus(room_id, from.unwrap_or_else(TopoToken::min))
 	}
+
+	/// Coalesce a group of timeline writes into one flush boundary.
+	///
+	/// Used by federation intake so a room transaction's prev-event repairs
+	/// and the incoming event itself become visible together to `/sync`.
+	pub async fn with_cork_and_flush<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork_and_flush();
+		f().await
+	}
 }
 
 impl Service {
