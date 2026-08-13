@@ -82,6 +82,7 @@ where
 	let mut fetched_info: HashMap<OwnedEventId, CanonicalJsonObject> = HashMap::new();
 	let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::with_capacity(128);
 	let mut auth_chain_fetched: HashSet<OwnedEventId> = HashSet::with_capacity(128);
+	let mut individual_auth_fetch_attempted: HashSet<OwnedEventId> = HashSet::new();
 	let mut active_fetches = FuturesUnordered::new();
 	let fetch_concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(
 		self.services.server.concurrency_scaled(2),
@@ -598,8 +599,32 @@ where
 							}
 							suspended = true;
 							unprocessed.push((next_id, value));
+						} else if individual_auth_fetch_attempted.insert(next_id.clone()) {
+							// Bulk /event_auth has now been tried (and retried) and still
+							// left auth events missing -- either the remote doesn't
+							// implement /event_auth, or it's misbehaving for this room.
+							// Fall back to fetching exactly the still-missing IDs
+							// individually, same as the initial fetches above: through
+							// `push_fetch`, so this gets the same multi-server routing
+							// list, ratelimiting, and retry-with-backoff as any other
+							// event fetch, rather than a bespoke recovery path. This
+							// mirrors Synapse's `_get_events_and_persist`, which resolves
+							// this exact gap with per-ID `/event/{id}` fetches.
+							debug_info!(
+								"Bulk /event_auth left {} auth events missing for {next_id}; \
+								 falling back to individual /event fetches",
+								missing.len()
+							);
+							for auth_event in missing {
+								if !graph.contains_key(auth_event) {
+									push_fetch(auth_event.clone(), true, &mut active_fetches);
+									graph.insert(auth_event.clone(), HashSet::new());
+								}
+							}
+							suspended = true;
+							unprocessed.push((next_id, value));
 						} else {
-							warn!(target: "auth_chain", "Backing off event {next_id} after auth chain fetch yielded incomplete auth events");
+							warn!(target: "auth_chain", "Backing off event {next_id} after individual auth-event fallback still left events missing");
 							// `missing` can run into the hundreds (e.g. MSC4297); persist
 							// only a count plus the first few IDs rather than the
 							// full list, to keep the stored reason bounded.
@@ -610,8 +635,8 @@ where
 									&next_id,
 									&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
 										.with_detail(format!(
-											"{} auth events still missing after /event_auth \
-											 retry, e.g. {preview:?}",
+											"{} auth events still missing after /event_auth and \
+											 individual /event retries, e.g. {preview:?}",
 											missing.len()
 										)),
 								)

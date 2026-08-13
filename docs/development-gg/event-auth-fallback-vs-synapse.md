@@ -46,7 +46,7 @@ case'"), which:
   (which resolves the requested event's auth chain by looking it up in
   `room.Timeline` — `federation/handle.go:334`) can serve it.
 
-Caveat, unverified: the mock handler looks up the *requested* event ID (per
+Caveat, unverified: the mock handler looks up the _requested_ event ID (per
 the log, whichever event maps to `$il_W700...`) in `Timeline`, not just its
 auth events. `MustCreateEvent` never auto-adds events to `Timeline` — only
 explicit `AddEvent`/manual-append calls do. This patch only explicitly adds
@@ -109,7 +109,7 @@ Tradeoffs, for the record:
 - **Round trips**: bulk `/event_auth` (ours) is O(1) requests vs. Synapse's
   O(N) individual fetches for the same gap — a real win when N is more than a
   couple and network latency dominates.
-- **Payload size**: `/event_auth` returns the *entire* auth chain
+- **Payload size**: `/event_auth` returns the _entire_ auth chain
   unconditionally, not just what's missing. `MAX_INLINE_FETCH=5` assumes "few
   missing → small total chain," which doesn't hold for an established room
   with a large total auth chain and only a small local gap (Synapse's own
@@ -121,8 +121,8 @@ Tradeoffs, for the record:
   `/event_auth` is all-or-nothing at the transport level: an unimplemented,
   erroring, or timed-out endpoint loses the entire batch, with no partial
   credit. This test file itself documents `/event_auth` as an interop-risk
-  endpoint — it explicitly skips Dendrite because *"Dendrite doesn't make
-  exactly the same requests as it seems to fallback to /event_auth."*
+  endpoint — it explicitly skips Dendrite because _"Dendrite doesn't make
+  exactly the same requests as it seems to fallback to /event_auth."_
 - **Determinism**: our `>5` branch introduces a second, timing-sensitive
   resolution path (the async `/state_ids` healer, which elsewhere in this
   codebase is noted to race against a remote server's lifetime in Complement
@@ -131,16 +131,28 @@ Tradeoffs, for the record:
 
 ## Decision
 
-Keep the current `/event_auth` resolution algorithm as-is. This is a design
-divergence worth knowing about, not a demonstrated bug — `TestCorruptedAuthChain`
-only has 1 missing auth event, so it always takes our inline `<=5` path
-regardless of this comparison; the actual failure was the missing mock
-handler registration, not the choice of resolution strategy.
+Keep the current inline `/event_auth` fast path in
+`resolve_missing_outlier_auth_events` as the first attempt — this is a
+design divergence worth knowing about, not a demonstrated bug.
+`TestCorruptedAuthChain` only has 1 missing auth event, so it always takes
+our inline `<=5` path regardless of this comparison; the actual failure was
+the missing mock handler registration, not the choice of resolution
+strategy.
 
-If this is revisited later, the safest direction is additive, not a
-replacement: keep `/event_auth` as the fast path, and add a fallback to
-per-event `GET /event/{id}` for whatever is still missing after `/event_auth`
-returns incomplete or fails outright — mirroring the existing single-hop
-`/event` fallback already used for missing `prev_events` in
-`upgrade_outlier_pdu.rs`. Do not replace the current path outright without a
-reproducible failing case and a regression test backing the change.
+**Update:** the additive per-event fallback was implemented, but _not_
+inline inside `resolve_missing_outlier_auth_events` (an earlier attempt at
+that, commit `aa22c268a`, was reverted — it recursed back into
+`handle_outlier_pdu` per missing event with no ratelimiting and only
+`origin` as a source, duplicating and bypassing the retry/backoff
+machinery `fetch_and_handle_outliers` already has, on a function that was
+specifically split three days prior to reduce stack use). Instead, the
+fallback now lives in `fetch_and_handle_outliers`'s existing suspend/retry
+loop, as a second tier after the bulk `/event_auth` retry: individual
+`GET /event/{id}` fetches for whatever is still missing, via the same
+`push_fetch` used for every other event fetch (multi-server routing list,
+ratelimiting, retry-with-backoff already built in). See
+`federation-fetch-paths.md` for the tiering. This still did not have a
+reproducible failing case backing it — it remains unverified against a
+live Complement run — but it's structured additively (bulk stays the fast
+path) and reuses existing, already-tuned recovery infrastructure rather
+than adding a new one.

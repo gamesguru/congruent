@@ -35,25 +35,23 @@ every time:
   should have returned them — ruling out a simple write-after-read race for
   this instance).
 - Run `31668463227` / commit `0ca548647`: **two different stranded events in
-  the same run**, one per arm64 job —
-    - arm64-v11: `$Hd735Ac1tD65KI1I_tKVByAD5NzVIkhkhlFZG4kZ6Bw`, index 18, inserted
-      via `backfill_pdu` (`prepend_backfill_pdu_batch`, `Backfilled(-862)`) after
-      `backfill_if_required`'s gap-scan rediscovered it 100ms+ after an earlier
-      outlier-only fetch.
-    - arm64-v12: `$1id4YyJezjz0hslPQmnZE8LNXSqSlFgvq-HxZl8Wrh4`, index 18, inserted
-      via `append_pdu` (`append_pdu_batch`, `Normal(862)`) from the live
-      federation-transaction path, no backfill involved.
+  the same run**, one per arm64 job — - arm64-v11: `$Hd735Ac1tD65KI1I_tKVByAD5NzVIkhkhlFZG4kZ6Bw`, index 18, inserted
+  via `backfill_pdu` (`prepend_backfill_pdu_batch`, `Backfilled(-862)`) after
+  `backfill_if_required`'s gap-scan rediscovered it 100ms+ after an earlier
+  outlier-only fetch. - arm64-v12: `$1id4YyJezjz0hslPQmnZE8LNXSqSlFgvq-HxZl8Wrh4`, index 18, inserted
+  via `append_pdu` (`append_pdu_batch`, `Normal(862)`) from the live
+  federation-transaction path, no backfill involved.
 
-    **Different insertion function, different count region (Backfilled vs.
-    Normal), same run, same symptom.** That weakens "which insert function
-    ran" as the discriminator. What both share, identically, immediately
-    before the write: a `"DAG fork detected: resolving state across
-prev_events + current extremities ... n_prev=1 n_extremities=1 n_total=2"`
-    step, followed by `"State resolution completed for incoming PDU"`. Every
+        **Different insertion function, different count region (Backfilled vs.
+        Normal), same run, same symptom.** That weakens "which insert function
+        ran" as the discriminator. What both share, identically, immediately
+        before the write: a `"DAG fork detected: resolving state across
+
+    prev*events + current extremities ... n_prev=1 n_extremities=1 n_total=2"`    step, followed by`"State resolution completed for incoming PDU"`. Every
     stranded event traced so far (this run and the `31267318970`/`31240375066`
     runs above) went through this DAG-fork-merge branch specifically, never
     the plain fast-forward branch (`"Fast-forward state update, skipping state
-resolution"` — seen in the same logs for _other_, non-stranded events).
+    resolution"` — seen in the same logs for \_other*, non-stranded events).
     Not proof, but a real correlation across every instance traced — worth
     checking whether the `depth` value this branch assigns/uses differs from
     what fast-forward would compute, since a wrong depth would misplace the
@@ -435,7 +433,7 @@ should still correctly fail that check and reprocess normally through
 correct value regardless of what a prior soft-fail left behind. Tracing
 through every downstream consumer of the limbo state (`extremities.rs`'s
 outlier/bridge classification turned out to self-heal via the `soft_failed`
-flag, which `mark_event_soft_failed` sets correctly *before* this branch
+flag, which `mark_event_soft_failed` sets correctly _before_ this branch
 runs — checked, not an issue) did not turn up a confirmed path from this
 bug to the exact symptom. It's applied because it's correct on its own
 merits and low-risk (doesn't touch the get_pdu_id/topo-index authority
