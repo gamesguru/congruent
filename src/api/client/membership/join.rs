@@ -42,11 +42,7 @@ use ruma::{
 use service::{
 	Services,
 	appservice::RegistrationInfo,
-	rooms::{
-		state::RoomMutexGuard,
-		state_compressor::{CompressedState, HashSetCompressStateEvent},
-		timeline::pdu_fits,
-	},
+	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use tokio::join;
 
@@ -767,26 +763,11 @@ async fn join_room_by_id_helper_remote_process(
 		return Err!(Request(Forbidden("Auth check failed")));
 	}
 
-	info!("Compressing state from send_join");
-	let compressed: CompressedState = services
-		.rooms
-		.state_compressor
-		.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.await;
-
-	debug!("Saving compressed state");
-	let HashSetCompressStateEvent {
-		shortstatehash: statehash_before_join,
-		added,
-		removed,
-	} = Box::pin(
-		services
-			.rooms
-			.state_compressor
-			.save_state(room_id, Arc::new(compressed)),
-	)
-	.await?;
+	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
+	// persistence. The HAMT root will be computed from the full state set directly
+	// once implemented.
+	let _ = &state; // state will be passed into HAMT force_state once implemented
+	let (statehash_before_join, added, removed) = (0_u64, vec![], vec![]);
 
 	debug!("Forcing state for new room");
 	services
@@ -898,7 +879,6 @@ async fn join_room_by_id_helper_remote_process(
 			&parsed_join_pdu,
 			join_event,
 			once(parsed_join_pdu.event_id.borrow()),
-			None,
 			&state_lock,
 			room_id,
 		)

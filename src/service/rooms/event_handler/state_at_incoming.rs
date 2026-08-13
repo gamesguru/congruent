@@ -249,8 +249,8 @@ where
 #[implement(super::Service)]
 async fn get_extremity_lthash<Pdu>(
 	&self,
-	sstatehash: u64,
-	prev_event: &Pdu,
+	_sstatehash: u64,
+	_prev_event: &Pdu,
 ) -> Result<rezzy::LtHash>
 where
 	Pdu: Event + Send + Sync,

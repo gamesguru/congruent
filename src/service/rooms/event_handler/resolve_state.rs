@@ -75,7 +75,7 @@ pub async fn resolve_state(
 	trace!("State resolution done.");
 
 	let mut lattice = rezzy::LtHash::ZERO;
-	for ((event_type, state_key), event_id) in state.iter() {
+	for ((event_type, state_key), event_id) in &state {
 		lattice.insert(&event_type.to_string(), state_key, event_id);
 	}
 

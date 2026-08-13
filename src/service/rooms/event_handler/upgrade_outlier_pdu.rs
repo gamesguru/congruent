@@ -231,7 +231,7 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
-		let new_room_state = self
+		let _new_room_state = self
 			.resolve_state(room_id, &room_version_id, state_after)
 			.await?;
 

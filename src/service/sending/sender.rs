@@ -140,15 +140,15 @@ async fn compute_outbound_state_hashes(
 }
 
 async fn compute_state_hash_for_pdu(
-	services: &super::Services,
-	event_id: &OwnedEventId,
-	value: &CanonicalJsonObject,
+	_services: &super::Services,
+	_event_id: &OwnedEventId,
+	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
 	// TODO: implement
 	Some(StateHashInfo {
 		algorithm: "lthash16".to_owned(),
-		before: "".to_owned(),
-		after: "".to_owned(),
+		before: String::new(),
+		after: String::new(),
 	})
 }
 

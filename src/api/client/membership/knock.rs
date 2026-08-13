@@ -30,13 +30,7 @@ use ruma::{
 		},
 	},
 };
-use service::{
-	Services,
-	rooms::{
-		state::RoomMutexGuard,
-		state_compressor::{CompressedState, HashSetCompressStateEvent},
-	},
-};
+use service::{Services, rooms::state::RoomMutexGuard};
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
 use crate::Ruma;
@@ -490,7 +484,6 @@ async fn knock_room_helper_local(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
-			None,
 			&state_lock,
 			room_id,
 		)
@@ -640,26 +633,11 @@ async fn knock_room_helper_remote(
 		state_map.insert(shortstatekey, event_id.clone());
 	}
 
-	info!("Compressing state from send_knock");
-	let compressed: CompressedState = services
-		.rooms
-		.state_compressor
-		.compress_state_events(state_map.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.await;
-
-	debug!("Saving compressed state");
-	let HashSetCompressStateEvent {
-		shortstatehash: statehash_before_knock,
-		added,
-		removed,
-	} = Box::pin(
-		services
-			.rooms
-			.state_compressor
-			.save_state(room_id, Arc::new(compressed)),
-	)
-	.await?;
+	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
+	// persistence. state_map will be passed into HAMT force_state once
+	// implemented.
+	let _ = state_map;
+	let (statehash_before_knock, added, removed) = (0_u64, vec![], vec![]);
 
 	debug!("Forcing state for new room");
 	services
@@ -682,7 +660,6 @@ async fn knock_room_helper_remote(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
-			None,
 			&state_lock,
 			room_id,
 		)
