@@ -32,7 +32,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 20;
+pub(crate) const DATABASE_VERSION: u64 = 21;
 
 pub(crate) async fn migrations(services: &Services) -> Result<()> {
 	let users_count = services.users.count().await;
@@ -235,11 +235,11 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
 	}
 
-	// Version 20 - build HAMT roots for existing rooms
-	if services.globals.db.database_version().await < 20 {
-		Box::pin(db_lt_20(services))
+	// Version 21 - build HAMT roots for existing rooms
+	if services.globals.db.database_version().await < 21 {
+		Box::pin(db_lt_21(services))
 			.await
-			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
+			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
 	}
 
 	assert_eq!(
@@ -867,18 +867,18 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 
 #[derive(Clone)]
 struct StateDiff {
-    parent: Option<ShortStateHash>,
-    added: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
-    removed: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
+	parent: Option<ShortStateHash>,
+	added: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
+	removed: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
 }
 
 async fn legacy_get_statediff(
-    services: &Services,
-    shortstatehash: ShortStateHash,
+	services: &Services,
+	shortstatehash: ShortStateHash,
 ) -> Result<StateDiff> {
-    	const STRIDE: usize = size_of::<ShortStateHash>();
+	const STRIDE: usize = size_of::<ShortStateHash>();
 
-    	let value = services.db["shortstatehash_statediff"]
+	let value = services.db["shortstatehash_statediff"]
 		.get(&shortstatehash.to_be_bytes())
 		.await
 		.map_err(|e| err!(Database("Failed to find StateDiff: {e}")))?;
@@ -886,94 +886,113 @@ async fn legacy_get_statediff(
 	let slice: &[u8] = &value;
 
 	let parent = conduwuit::utils::u64_from_bytes(&slice[0..8])
-        .ok()
-        .filter(|parent| *parent != 0);
+		.ok()
+		.filter(|parent| *parent != 0);
 
-    let mut add_mode = true;
-    let mut added = std::collections::HashSet::new();
-    let mut removed = std::collections::HashSet::new();
+	let mut add_mode = true;
+	let mut added = std::collections::HashSet::new();
+	let mut removed = std::collections::HashSet::new();
 
-    	let mut i = STRIDE;
+	let mut i = STRIDE;
 	while let Some(v) = slice.get(i..i + 2 * STRIDE) {
 		if add_mode && v.starts_with(0_u64.to_be_bytes().as_slice()) {
-            add_mode = false;
-            i += STRIDE;
-            continue;
-        }
-        if add_mode {
-            added.insert(v.try_into().unwrap());
-        } else {
-            removed.insert(v.try_into().unwrap());
-        }
-        i += 2 * STRIDE;
-    }
+			add_mode = false;
+			i += STRIDE;
+			continue;
+		}
+		if add_mode {
+			added.insert(v.try_into().unwrap());
+		} else {
+			removed.insert(v.try_into().unwrap());
+		}
+		i += 2 * STRIDE;
+	}
 
-    Ok(StateDiff { parent, added: std::sync::Arc::new(added), removed: std::sync::Arc::new(removed) })
+	Ok(StateDiff {
+		parent,
+		added: std::sync::Arc::new(added),
+		removed: std::sync::Arc::new(removed),
+	})
 }
 
 async fn legacy_get_full_state(
-    services: &Services,
-    shortstatehash: ShortStateHash,
+	services: &Services,
+	shortstatehash: ShortStateHash,
 ) -> Result<std::collections::HashSet<[u8; 16]>> {
-    let mut stack = Vec::new();
-    let mut curr = Some(shortstatehash);
-    while let Some(hash) = curr {
-        let diff = legacy_get_statediff(services, hash).await?;
-        stack.push(diff.clone());
-        curr = diff.parent;
-    }
+	let mut stack = Vec::new();
+	let mut curr = Some(shortstatehash);
+	while let Some(hash) = curr {
+		let diff = legacy_get_statediff(services, hash).await?;
+		stack.push(diff.clone());
+		curr = diff.parent;
+	}
 
-    let mut full_state = std::collections::HashSet::new();
-    for diff in stack.into_iter().rev() {
-        for add in diff.added.iter() {
-            full_state.insert(*add);
-        }
-        for rm in diff.removed.iter() {
-            full_state.remove(rm);
-        }
-    }
-    
-    Ok(full_state)
+	let mut full_state = std::collections::HashSet::new();
+	for diff in stack.into_iter().rev() {
+		for add in diff.added.iter() {
+			full_state.insert(*add);
+		}
+		for rm in diff.removed.iter() {
+			full_state.remove(rm);
+		}
+	}
+
+	Ok(full_state)
 }
 
-async fn db_lt_20(services: &Services) -> Result<()> {
-    info!("Running v20 migration (building HAMT roots for existing rooms)...");
+async fn db_lt_21(services: &Services) -> Result<()> {
+	info!("Running v21 migration (building HAMT roots for existing rooms)...");
 
-    let mut room_stream = services.rooms.metadata.iter_ids();
-    while let Some(room_id) = room_stream.next().await {
-        if let Ok(shortstatehash) = services.rooms.state.get_room_shortstatehash(room_id).await {
-            let full_state = legacy_get_full_state(services, shortstatehash).await?;
-            
-            let mut lattice = rezzy::state::LtHash::default();
-            let mut entries = Vec::with_capacity(full_state.len());
+	let mut room_stream = services.rooms.metadata.iter_ids();
+	while let Some(room_id) = room_stream.next().await {
+		if let Ok(shortstatehash) = services.rooms.state.get_room_shortstatehash(room_id).await {
+			let full_state = legacy_get_full_state(services, shortstatehash).await?;
 
-            for state_event in full_state {
-                let shortstatekey = conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
-                let shorteventid = conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
+			let mut lattice = rezzy::state::LtHash::default();
+			let mut entries = Vec::with_capacity(full_state.len());
 
-                let (ty, sk) = services.rooms.short.get_statekey_from_short(shortstatekey).await?;
-                let event_id: ruma::OwnedEventId = services.rooms.short.get_eventid_from_short(shorteventid).await?;
+			for state_event in full_state {
+				let shortstatekey =
+					conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
+				let shorteventid =
+					conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
 
-                lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
-                entries.push((shortstatekey, shorteventid));
-            }
+				let (ty, sk) = services
+					.rooms
+					.short
+					.get_statekey_from_short(shortstatekey)
+					.await?;
+				let event_id: ruma::OwnedEventId = services
+					.rooms
+					.short
+					.get_eventid_from_short(shorteventid)
+					.await?;
 
-            let structural_key = crate::rooms::state_hamt::room_structural_key(
-                &services.globals.server_secret,
-                room_id,
-            );
-            
-            let (root_handle, root_node) =
-                rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
-                    .map_err(|e| err!(error!("Failed to build HAMT root for room {room_id}: {e:?}")))?;
+				lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+				entries.push((shortstatekey, shorteventid));
+			}
 
-            services.rooms.state_hamt.store.persist_node_recursive(root_node);
-            
-            // Persist the root handle as JSON to satisfy database serialization
-            services.db["roomid_roothandle"].put(room_id.as_bytes(), Json(&root_handle));
-        }
-    }
+			let structural_key = crate::rooms::state_hamt::room_structural_key(
+				&services.globals.server_secret,
+				room_id,
+			);
 
-    services.globals.db.bump_database_version(20);
-    Ok(())
+			let (root_handle, root_node) =
+				rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries).map_err(
+					|e| err!(error!("Failed to build HAMT root for room {room_id}: {e:?}")),
+				)?;
+
+			services
+				.rooms
+				.state_hamt
+				.store
+				.persist_node_recursive(root_node);
+
+			// Persist the root handle as JSON to satisfy database serialization
+			services.db["roomid_roothandle"].put(room_id.as_bytes(), Json(&root_handle));
+		}
+	}
+
+	services.globals.db.bump_database_version(21);
+	Ok(())
 }

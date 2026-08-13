@@ -580,6 +580,7 @@ async fn build_state_events(
 					.state_accessor
 					.state_is_empty(shortstatehash)
 					.await
+					.unwrap_or(true)
 				{
 					return shortstatehash;
 				}

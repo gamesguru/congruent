@@ -69,14 +69,14 @@ pub async fn state_contains(
 	shortstatehash: ShortStateHash,
 	event_type: &StateEventType,
 	state_key: &str,
-) -> bool {
+) -> Result<bool> {
 	let Ok(shortstatekey) = self
 		.services
 		.short
 		.get_shortstatekey(event_type, state_key)
 		.await
 	else {
-		return false;
+		return Ok(false);
 	};
 
 	self.state_contains_shortstatekey(shortstatehash, shortstatekey)
@@ -100,11 +100,10 @@ pub async fn state_contains_shortstatekey(
 	&self,
 	shortstatehash: ShortStateHash,
 	shortstatekey: ShortStateKey,
-) -> bool {
+) -> Result<bool> {
 	self.load_full_state(shortstatehash)
 		.await
 		.map(|full_state| full_state.contains_key(&shortstatekey))
-		.unwrap_or(false)
 }
 
 #[implement(super::Service)]
@@ -112,14 +111,13 @@ pub async fn state_contains_shortstatekey_hamt(
 	&self,
 	root_handle: &rezzy::hamt::RootHandle,
 	shortstatekey: ShortStateKey,
-) -> bool {
+) -> Result<bool> {
 	// TODO(MSC00DC/HAMT): We currently use load_full_state_hamt here because we
 	// don't have the `room_id` in scope to perform an O(log N) `search`.
 	// To optimize this, the caller chain must be refactored to pass `&RoomId`.
 	self.load_full_state_hamt(root_handle)
 		.await
 		.map(|full_state| full_state.contains_key(&shortstatekey))
-		.unwrap_or(false)
 }
 
 /// Returns a single EventId from `room_id` with key (`event_type`,
@@ -507,11 +505,10 @@ pub fn state_full_shortids(
 
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
-pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
+pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<bool> {
 	self.load_full_state(shortstatehash)
 		.await
 		.map(|s| s.is_empty())
-		.unwrap_or(true)
 }
 
 #[implement(super::Service)]
@@ -529,7 +526,7 @@ pub fn state_full_shortids_hamt<'a>(
 
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
-pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> bool {
+pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	// A new, completely empty HAMT has a specific structural hash (usually 32 zero
 	// bytes or the hash of an empty string, depending on the lattice). But to be
 	// perfectly safe and consistent, we'll just check if load_full_state_hamt
@@ -538,7 +535,6 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 	self.load_full_state_hamt(root_handle)
 		.await
 		.map(|s| s.is_empty())
-		.unwrap_or(true)
 }
 
 #[implement(super::Service)]
