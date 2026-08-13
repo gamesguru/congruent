@@ -371,3 +371,86 @@ pub async fn mark_as_invited(
 
 	Ok(())
 }
+
+/// Update caches based on a state replacement (delta between old and new
+/// state).
+///
+/// This is used when `force_state` replaces the room state entirely. We must
+/// update the derived caches to reflect the new state.
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn update_caches_for_state_delta(
+	&self,
+	room_id: &RoomId,
+	removed_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+	added_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+) -> Result<()> {
+	let mut memberships_changed = false;
+
+	// 1. Invalidate derived caches for removed events.
+	for pdu in removed_events {
+		match pdu.kind() {
+			| ruma::events::TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomMember => {
+				// For removed memberships that have NO corresponding added event in the delta,
+				// we must ensure they are marked as left.
+				// (If they are replaced, the added_events loop will overwrite them correctly).
+				let target_user_id =
+					UserId::parse(pdu.state_key().expect("Member event has state_key"))
+						.expect("Valid UserId");
+
+				// Re-evaluate from the *new* state (which is currently the active room state)
+				if self
+					.services
+					.state_accessor
+					.room_state_get(room_id, &StateEventType::RoomMember, target_user_id.as_str())
+					.await
+					.is_err()
+				{
+					// The user has no member event in the new state at all.
+					self.mark_as_left(target_user_id, room_id, None).await;
+					memberships_changed = true;
+				}
+			},
+			| _ => {},
+		}
+	}
+
+	// 2. Process added/changed events normally
+	for pdu in added_events {
+		match pdu.kind() {
+			| ruma::events::TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomMember => {
+				let target_user_id =
+					UserId::parse(pdu.state_key().expect("Member event has state_key"))
+						.expect("Valid UserId");
+
+				self.update_membership(room_id, target_user_id, &pdu, false)
+					.await?;
+				memberships_changed = true;
+			},
+			| _ => {},
+		}
+	}
+
+	// 3. Recompute derived aggregate caches if needed
+	if memberships_changed {
+		self.update_joined_count(room_id).await;
+	}
+
+	Ok(())
+}

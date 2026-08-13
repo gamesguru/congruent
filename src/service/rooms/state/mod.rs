@@ -39,6 +39,7 @@ struct Services {
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	globals: Dep<crate::globals::Service>,
+	state_cache: Dep<rooms::state_cache::Service>,
 }
 
 struct Data {
@@ -64,6 +65,7 @@ impl crate::Service for Service {
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				globals: args.depend::<crate::globals::Service>("globals"),
+				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
@@ -93,13 +95,84 @@ impl Service {
 		new_root_handle: &rezzy::hamt::RootHandle,
 		state_lock: &RoomMutexGuard,
 	) -> Result<()> {
-		// TODO: Implement explicit replace tuples logic in side-effect layer
-		// We will need to compute the delta between current_root and new_root_handle
-		// and define `update_caches_replace`, `update_caches_add`,
-		// `update_caches_remove` on `state_accessor` or `state_cache` which properly
-		// takes (old, new) PDU combinations to avoid transient cache errors.
+		let current_root = self.get_room_state_hamt(room_id).await?;
+
+		let old_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&current_root.structural_hash)
+			.expect("failed to load current state");
+		let new_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&new_root_handle.structural_hash)
+			.expect("failed to load new state");
+
+		let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
+			Ok(self
+				.services
+				.state_hamt
+				.store
+				.get_node_blocking(hash)
+				.expect("failed to resolve node"))
+		};
+
+		let lattice = rezzy::state::LtHash::default();
+		let (added, removed) = rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
+			&old_node,
+			&lattice,
+			&new_node,
+			&lattice,
+			&mut resolver,
+		)?;
+
+		// resolve PDUs
+		let mut added_pdus = Vec::with_capacity(added.len());
+		for (_k, event_id) in added {
+			if let Ok(event_id_obj) = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(event_id)
+				.await
+			{
+				if let Ok(pdu) = self
+					.services
+					.timeline
+					.get_pdu_in_room(Some(room_id), &event_id_obj)
+					.await
+				{
+					added_pdus.push(Arc::new(pdu));
+				}
+			}
+		}
+
+		let mut removed_pdus = Vec::with_capacity(removed.len());
+		for (_k, event_id) in removed {
+			if let Ok(event_id_obj) = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(event_id)
+				.await
+			{
+				if let Ok(pdu) = self
+					.services
+					.timeline
+					.get_pdu_in_room(Some(room_id), &event_id_obj)
+					.await
+				{
+					removed_pdus.push(Arc::new(pdu));
+				}
+			}
+		}
 
 		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
+
+		self.services
+			.state_cache
+			.update_caches_for_state_delta(room_id, removed_pdus, added_pdus)
+			.await?;
 
 		Ok(())
 	}
