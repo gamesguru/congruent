@@ -43,6 +43,7 @@ struct Data {
 	shorteventid_shortstatehash: Arc<Map>,
 	roomid_shortstatehash: Arc<Map>,
 	roomid_pduleaves: Arc<Map>,
+	roomid_roothandle: Arc<Map>,
 }
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
@@ -63,6 +64,7 @@ impl crate::Service for Service {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
+				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 			},
 		}))
 	}
@@ -167,7 +169,6 @@ impl Service {
 
 	/// Set the state HAMT RootHandle to a new version.
 	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
-	#[allow(unused_variables)]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
@@ -175,16 +176,28 @@ impl Service {
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
 	) {
-		// TODO(MSC00DC/HAMT): Implement
-		unimplemented!("HAMT migration phase 2: pointer transition");
+		const BUFSIZE: usize = 48;
+
+		let data = (root_handle.structural_hash, root_handle.state_group_id);
+		self.db
+			.roomid_roothandle
+			.raw_aput::<BUFSIZE, _, _>(room_id, data);
 	}
 
 	/// Returns the room's current HAMT RootHandle.
 	#[tracing::instrument(skip(self), level = "debug")]
-	#[allow(unused_variables)]
-	pub fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
-		// TODO(MSC00DC/HAMT): Implement
-		unimplemented!("HAMT migration phase 2: pointer transition");
+	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
+		let data: (rezzy::hamt::StructuralHash, rezzy::hamt::StateGroupId) = self
+			.db
+			.roomid_roothandle
+			.get(room_id)
+			.await
+			.deserialized()?;
+
+		Ok(rezzy::hamt::RootHandle {
+			structural_hash: data.0,
+			state_group_id: data.1,
+		})
 	}
 
 	/// Returns the room's version.

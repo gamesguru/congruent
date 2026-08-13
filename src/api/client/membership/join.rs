@@ -675,7 +675,8 @@ async fn join_room_by_id_helper_remote_process(
 			.ready_filter_map(Result::ok)
 			.fold(
 				HashMap::new(),
-				|mut deduplicated: HashMap<(StateEventType, String), _>, (event_id, value)| async move {
+				|mut deduplicated: HashMap<(StateEventType, String), ruma::OwnedEventId>,
+				 (event_id, value)| async move {
 					let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id))
 					{
 						| Ok(pdu) => pdu,
@@ -693,8 +694,10 @@ async fn join_room_by_id_helper_remote_process(
 					}
 					services.rooms.outlier.add_pdu_outlier(&event_id, &value);
 					if let Some(state_key) = &pdu.state_key {
-						deduplicated
-							.insert((pdu.kind.clone().into(), state_key.to_string()), pdu);
+						deduplicated.insert(
+							(pdu.kind.clone().into(), state_key.to_string()),
+							pdu.event_id.clone(),
+						);
 					}
 					deduplicated
 				},
@@ -705,15 +708,15 @@ async fn join_room_by_id_helper_remote_process(
 	let mut deduplicated = state;
 	let mut state = HashMap::new();
 	let mut lattice = rezzy::state::LtHash::default();
-	for ((kind, state_key), pdu) in deduplicated {
+	for ((kind, state_key), event_id) in deduplicated {
 		let shortstatekey = services
 			.rooms
 			.short
 			.get_or_create_shortstatekey(&kind.to_string().into(), &state_key)
 			.await;
 
-		lattice.insert(&kind.to_string(), state_key.as_str(), pdu.event_id.as_str());
-		state.insert(shortstatekey, pdu.event_id.clone());
+		lattice.insert(&kind.to_string(), state_key.as_str(), event_id.as_str());
+		state.insert(shortstatekey, event_id);
 	}
 
 	drop(cork);
