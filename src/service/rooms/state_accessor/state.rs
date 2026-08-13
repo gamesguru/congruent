@@ -152,6 +152,31 @@ pub async fn state_get_shortid(
 		.ok_or(err!(Request(NotFound("Not found in room state"))))
 }
 
+/// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+#[allow(unused_variables)]
+pub fn room_state_get_hamt(
+	&self,
+	room_id: &ruma::RoomId,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<std::sync::Arc<conduwuit::PduEvent>> {
+	// TODO(MSC00DC/HAMT): Implement
+	unimplemented!("HAMT migration phase 2: pointer transition");
+}
+
+/// Returns a Stream of all the full state for a given RootHandle.
+#[implement(super::Service)]
+#[allow(unused_variables)]
+pub fn state_full_ids_hamt<'a>(
+	&'a self,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> futures::stream::BoxStream<'a, Result<(StateEventType, String, OwnedEventId)>> {
+	// TODO(MSC00DC/HAMT): Implement
+	unimplemented!("HAMT migration phase 2: pointer transition");
+}
+
 /// Iterates the state_keys for an event_type in the state; current state
 /// event_id included.
 #[implement(super::Service)]

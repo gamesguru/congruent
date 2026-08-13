@@ -165,6 +165,28 @@ impl Service {
 			.raw_aput::<BUFSIZE, _, _>(room_id, shortstatehash);
 	}
 
+	/// Set the state HAMT RootHandle to a new version.
+	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
+	#[allow(unused_variables)]
+	pub fn set_room_state_hamt(
+		&self,
+		room_id: &RoomId,
+		root_handle: &rezzy::hamt::RootHandle,
+		// Take mutex guard to make sure users get the room state mutex
+		_mutex_lock: &RoomMutexGuard,
+	) {
+		// TODO(MSC00DC/HAMT): Implement
+		unimplemented!("HAMT migration phase 2: pointer transition");
+	}
+
+	/// Returns the room's current HAMT RootHandle.
+	#[tracing::instrument(skip(self), level = "debug")]
+	#[allow(unused_variables)]
+	pub fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
+		// TODO(MSC00DC/HAMT): Implement
+		unimplemented!("HAMT migration phase 2: pointer transition");
+	}
+
 	/// Returns the room's version.
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
