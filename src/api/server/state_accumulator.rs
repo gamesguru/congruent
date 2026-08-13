@@ -3,7 +3,7 @@ use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::AccessCheck;
 
@@ -12,14 +12,15 @@ pub(crate) struct StateAccumulatorQuery {
 	pub event_id: OwnedEventId,
 }
 
-#[derive(Serialize)]
-pub(crate) struct StateAccumulatorResponse {
-	pub event_id: OwnedEventId,
-	pub algorithm: String,
-	pub lattice: String,
-	pub n_state_events: u64,
-	pub digest: String,
-}
+// TODO: do we still want/need this?
+// #[derive(Serialize)]
+// pub(crate) struct StateAccumulatorResponse {
+// 	pub event_id: OwnedEventId,
+// 	pub algorithm: String,
+// 	pub lattice: String,
+// 	pub n_state_events: u64,
+// 	pub digest: String,
+// }
 
 pub(crate) async fn get_state_accumulator_route(
 	State(services): State<crate::State>,

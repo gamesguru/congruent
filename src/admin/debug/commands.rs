@@ -24,10 +24,7 @@ use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId, api::federation::event::get_room_state, events::AnyStateEvent, serde::Raw,
 };
-use service::rooms::{
-	short::{ShortEventId, ShortRoomId},
-	state_compressor::HashSetCompressStateEvent,
-};
+use service::rooms::short::{ShortEventId, ShortRoomId};
 use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
@@ -628,18 +625,11 @@ pub(super) async fn force_set_room_state_from_server(
 		.resolve_state(&room_id, &room_version, state)
 		.await?;
 
-	info!("Compressing new room state");
-	let HashSetCompressStateEvent {
-		shortstatehash: short_state_hash,
-		added,
-		removed,
-	} = Box::pin(
-		self.services
-			.rooms
-			.state_compressor
-			.save_state(room_id.clone().as_ref(), new_room_state),
-	)
-	.await?;
+	// TODO(MSC00DC/HAMT): Replace state_compressor with HAMT-based state
+	// persistence. new_room_state will be passed into force_state directly once
+	// HAMT is wired up.
+	let _ = new_room_state;
+	let (short_state_hash, added, removed) = (0_u64, vec![], vec![]);
 
 	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
 
