@@ -1,14 +1,18 @@
-use std::{borrow::Borrow, collections::BTreeMap, time::Instant};
+use std::{
+	borrow::Borrow,
+	collections::{BTreeMap, HashMap},
+	time::Instant,
+};
 
 use conduwuit::{
 	Err, Result, debug, debug_info, err, implement, info, is_equal_to,
 	matrix::{Event, EventTypeExt, PduEvent, StateKey, state_res},
 	trace,
-	utils::stream::{BroadbandExt, ReadyExt},
+	utils::stream::{BroadbandExt, IterStream, ReadyExt},
 	warn,
 };
 use futures::{StreamExt, future::ready};
-use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
+use ruma::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::timeline::RawPduId;
@@ -234,7 +238,10 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
-		previous_root_handle = self.services.state.get_room_state_hamt(room_id).await.ok();
+		previous_root_handle = Some(
+			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+				.await?,
+		);
 		new_room_state = Some(
 			self.resolve_state(room_id, &room_version_id, state_after)
 				.await?,
@@ -364,4 +371,68 @@ where
 	);
 
 	Ok(pdu_id)
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+async fn state_map_to_root_handle(
+	&self,
+	room_id: &RoomId,
+	short_state: &HashMap<u64, OwnedEventId>,
+) -> Result<rezzy::hamt::RootHandle> {
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(short_state.len());
+	let mut short_state_keys = Vec::with_capacity(short_state.len());
+	let mut event_ids = Vec::with_capacity(short_state.len());
+
+	for (&shortstatekey, event_id) in short_state {
+		short_state_keys.push(shortstatekey);
+		event_ids.push(event_id.clone());
+	}
+
+	let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
+		.services
+		.short
+		.multi_get_statekey_from_short(short_state_keys.iter().copied().stream())
+		.collect()
+		.await;
+
+	for ((shortstatekey, event_id), key_result) in short_state_keys
+		.into_iter()
+		.zip(event_ids.into_iter())
+		.zip(string_keys.into_iter())
+	{
+		let event_id = event_id.as_ref();
+		let shorteventid = self
+			.services
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+
+		if let Ok((event_type, state_key)) = key_result {
+			lattice.insert(
+				event_type.to_string().as_str(),
+				state_key.as_str(),
+				event_id.as_str(),
+			);
+		}
+	}
+
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
+
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
+
+	Ok(root_handle)
 }

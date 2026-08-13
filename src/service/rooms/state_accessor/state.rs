@@ -534,17 +534,9 @@ pub fn state_full_shortids(
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<bool> {
-	match self.load_full_state(shortstatehash).await {
-		| Ok(s) => Ok(s.is_empty()),
-		// load_full_state is not yet implemented for the legacy shortstatehash path;
-		// fall back to "empty" so joined sync uses current_shortstatehash and
-		// includes m.room.create for rooms that start at the timeline boundary.
-		| Err(e)
-			if e.is_not_found()
-				|| e.kind() == ruma::api::client::error::ErrorKind::NotImplemented =>
-			Ok(true),
-		| Err(e) => Err(e),
-	}
+	self.load_full_state(shortstatehash)
+		.await
+		.map(|s| s.is_empty())
 }
 
 #[implement(super::Service)]

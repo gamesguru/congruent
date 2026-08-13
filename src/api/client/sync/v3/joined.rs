@@ -571,16 +571,11 @@ async fn build_state_events(
 				.pdu_shortstatehash(&pdu.event_id)
 				.await
 			{
-				// If the timeline starts exactly at the beginning of the room (like in spaces)
-				// the state before that first event will be completely empty. In this case,
-				// or if we fail to resolve, we use current_shortstatehash to ensure clients
-				// get the m.room.create event in their initial sync state.
-				if !services
-					.rooms
-					.state_accessor
-					.state_is_empty(shortstatehash)
-					.await?
-				{
+				// The state before the first timeline event is only empty when the first
+				// event is the room create event. We avoid the legacy empty-state fallback
+				// here because it cannot currently distinguish unresolved state from a
+				// genuinely empty pre-timeline state.
+				if *pdu.kind() != RoomCreate {
 					return Ok::<_, Error>(shortstatehash);
 				}
 			}
