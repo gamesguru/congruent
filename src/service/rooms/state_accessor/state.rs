@@ -218,7 +218,7 @@ pub async fn state_get_in_room_hamt(
 	state_key: &str,
 ) -> Result<Pdu> {
 	let shorteventid = self
-		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
+		.state_get_shortid_hamt(room_id, root_handle, event_type, state_key)
 		.await?;
 	let event_id: OwnedEventId = self
 		.services

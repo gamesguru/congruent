@@ -8,6 +8,7 @@ mod redact;
 
 use std::{fmt::Write, mem::size_of, sync::Arc};
 
+pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId};
 use conduwuit_core::{

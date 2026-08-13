@@ -464,6 +464,7 @@ async fn knock_room_helper_local(
 	let parsed_knock_pdu =
 		PduEvent::from_id_val(&event_id, knock_event.clone(), Some(room_id))
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Updating membership locally to knock state with provided stripped state events");
 	// TODO: this call does not appear to do anything because `update_membership`
@@ -486,10 +487,12 @@ async fn knock_room_helper_local(
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
 			false,
-			&state_lock,
-			room_id,
-			current_root_handle.as_ref(),
-			current_root_handle.as_ref(),
+			service::rooms::timeline::AppendPduContext {
+				state_lock: &state_lock,
+				room_id,
+				state_root_handle: current_root_handle,
+				prev_state_root_handle: previous_root_handle,
+			},
 		)
 		.await?;
 
@@ -597,6 +600,7 @@ async fn knock_room_helper_remote(
 	let parsed_knock_pdu =
 		PduEvent::from_id_val(&event_id, knock_event.clone(), Some(room_id))
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Going through send_knock response knock state events");
 	let state = send_knock_response
@@ -677,8 +681,12 @@ async fn knock_room_helper_remote(
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
 			false,
-			&state_lock,
-			room_id,
+			service::rooms::timeline::AppendPduContext {
+				state_lock: &state_lock,
+				room_id,
+				state_root_handle: Some(root_handle.clone()),
+				prev_state_root_handle: previous_root_handle,
+			},
 		)
 		.await?;
 

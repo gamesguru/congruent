@@ -134,10 +134,12 @@ pub async fn build_and_append_pdu(
 			// of the room
 			once(pdu.event_id()),
 			*pdu.kind() != TimelineEventType::RoomMember,
-			state_lock,
-			&room_id,
-			Some(&statehashid.0),
-			previous_root_handle.as_ref(),
+			crate::rooms::timeline::AppendPduContext {
+				state_lock,
+				room_id: &room_id,
+				state_root_handle: Some(statehashid.0.clone()),
+				prev_state_root_handle: previous_root_handle,
+			},
 		)
 		.boxed()
 		.await?;

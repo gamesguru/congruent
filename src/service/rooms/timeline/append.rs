@@ -27,6 +27,13 @@ use ruma::{
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
 use crate::appservice::NamespaceRegex;
 
+pub struct AppendPduContext<'a> {
+	pub state_lock: &'a RoomMutexGuard,
+	pub room_id: &'a ruma::RoomId,
+	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
+	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
+}
+
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
@@ -64,16 +71,12 @@ where
 	let previous_root_handle = self.services.state.get_room_state_hamt(room_id).await.ok();
 
 	let pdu_id = self
-		.append_pdu(
-			pdu,
-			pdu_json,
-			new_room_leaves,
-			resolved_state_applied,
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, AppendPduContext {
 			state_lock,
 			room_id,
-			None,
-			previous_root_handle.as_ref(),
-		)
+			state_root_handle: None,
+			prev_state_root_handle: previous_root_handle,
+		})
 		.await?;
 
 	// Publish the state association only after the timeline append succeeds so
@@ -120,14 +123,18 @@ pub async fn append_pdu<'a, Leaves>(
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
 	resolved_state_applied: bool,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
-	state_root_handle: Option<&rezzy::hamt::RootHandle>,
-	prev_state_root_handle: Option<&rezzy::hamt::RootHandle>,
+	ctx: AppendPduContext<'a>,
 ) -> Result<RawPduId>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
 	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
 	let cork = self.db.db.cork_and_flush();
 
@@ -151,7 +158,7 @@ where
 				if let Ok(prev_state) = self
 					.services
 					.state_accessor
-					.state_get_in_room_hamt(room_id, prev_root_handle, &event_type, state_key)
+					.state_get_in_room_hamt(room_id, &prev_root_handle, &event_type, state_key)
 					.await
 				{
 					unsigned.insert(
@@ -235,7 +242,7 @@ where
 		| Some(root_handle) => self
 			.services
 			.state_accessor
-			.state_get_in_room_hamt(room_id, root_handle, &StateEventType::RoomPowerLevels, "")
+			.state_get_in_room_hamt(room_id, &root_handle, &StateEventType::RoomPowerLevels, "")
 			.await
 			.and_then(|pdu| pdu.get_content())
 			.unwrap_or_default(),

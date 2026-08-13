@@ -918,10 +918,12 @@ async fn join_room_by_id_helper_remote_process(
 			join_event,
 			once(parsed_join_pdu.event_id.borrow()),
 			false,
-			&state_lock,
-			room_id,
-			Some(&statehashid.0),
-			previous_root_handle.as_ref(),
+			service::rooms::timeline::AppendPduContext {
+				state_lock: &state_lock,
+				room_id,
+				state_root_handle: Some(statehashid.0.clone()),
+				prev_state_root_handle: previous_root_handle,
+			},
 		)
 		.await?;
 
