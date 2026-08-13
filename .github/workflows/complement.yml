@@ -268,6 +268,7 @@ jobs:
           import html
           import json
           import os
+          import re
           import pathlib
 
           results_path = pathlib.Path(os.environ["RESULTS"])
@@ -324,10 +325,15 @@ jobs:
               summary.write("\n### Failing Test Log Excerpts\n")
               for test in failed:
                   summary.write(f"\n<details><summary>{html.escape(test)}</summary>\n\n")
-                  summary.write("<pre>\n")
+                  max_backticks = 0
                   for out_line in excerpts[test]:
-                      summary.write(html.escape(out_line) + "\n")
-                  summary.write("</pre>\n</details>\n")
+                      for match in re.finditer(r"`+", out_line):
+                          max_backticks = max(max_backticks, len(match.group(0)))
+                  fence = "`" * max(3, max_backticks + 1)
+                  summary.write(f"{fence}text\n")
+                  for out_line in excerpts[test]:
+                      summary.write(out_line + "\n")
+                  summary.write(f"{fence}\n</details>\n")
           PY
 
       - name: Get conduwuit version

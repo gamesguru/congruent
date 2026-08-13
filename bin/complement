@@ -188,7 +188,7 @@ set +e
         COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
         go test -json "${TEST_FLAGS[@]}" \
         | tee "$LOG_FILE" \
-        | jq -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
+        | jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
         > "$EVENTS_FIFO"
 ) &
 PRODUCER_PID=$!
