@@ -407,16 +407,32 @@ pub async fn update_caches_for_state_delta(
 						.expect("Valid UserId");
 
 				// Re-evaluate from the *new* state (which is currently the active room state)
-				if self
+				let get_res = self
 					.services
 					.state_accessor
 					.room_state_get(room_id, &StateEventType::RoomMember, target_user_id.as_str())
-					.await
-					.is_err()
-				{
-					// The user has no member event in the new state at all.
-					self.mark_as_left(target_user_id, room_id, None).await;
-					memberships_changed = true;
+					.await;
+				match get_res {
+					| Ok(_) => {
+						// The user has a member event in the new state,
+						// added_events will handle it.
+					},
+					| Err(e)
+						if matches!(
+							e,
+							conduwuit::Error::BadRequest(
+								ruma::api::client::error::ErrorKind::NotFound,
+								_
+							)
+						) =>
+					{
+						// The user has no member event in the new state at all.
+						self.mark_as_left(&target_user_id, room_id, None).await;
+						memberships_changed = true;
+					},
+					| Err(e) => {
+						return Err(e);
+					},
 				}
 			},
 			| _ => {},

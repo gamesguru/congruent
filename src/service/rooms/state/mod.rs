@@ -101,22 +101,15 @@ impl Service {
 			.services
 			.state_hamt
 			.store
-			.get_node_blocking(&current_root.structural_hash)
-			.expect("failed to load current state");
+			.get_node_blocking(&current_root.structural_hash)?;
 		let new_node = self
 			.services
 			.state_hamt
 			.store
-			.get_node_blocking(&new_root_handle.structural_hash)
-			.expect("failed to load new state");
+			.get_node_blocking(&new_root_handle.structural_hash)?;
 
 		let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
-			Ok(self
-				.services
-				.state_hamt
-				.store
-				.get_node_blocking(hash)
-				.expect("failed to resolve node"))
+			self.services.state_hamt.store.get_node_blocking(hash)
 		};
 
 		let lattice = rezzy::state::LtHash::default();
@@ -159,12 +152,12 @@ impl Service {
 			removed_pdus.push(Arc::new(pdu));
 		}
 
-		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
-
 		self.services
 			.state_cache
 			.update_caches_for_state_delta(room_id, removed_pdus, added_pdus)
 			.await?;
+
+		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
 
 		Ok(())
 	}
