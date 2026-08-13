@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use conduwuit::{Result, err};
 use database::Map;
-use rezzy::hamt::{HamtNode, codec::PersistedInternalNode, hash::StructuralHash};
+use rezzy::{
+	LtHash,
+	hamt::{HamtNode, RootHandle, codec::PersistedInternalNode, hash::StructuralHash},
+};
 
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 pub struct Store {
@@ -84,5 +87,18 @@ impl Store {
 			}
 			self.get_node_blocking(hash)
 		}
+	}
+
+	/// Derives the deterministic `RootHandle` (structural hash + the
+	/// cross-server-comparable `StateGroupId`) for a resolved root, from
+	/// rezzy's `LtHash` state accumulator.
+	///
+	/// This is the MSC00DC root: `state_group_id` is `BLAKE2b-256(lattice)`
+	/// (rezzy's `LtHash::checksum`), reproducible by any server that
+	/// resolves to the same state — unlike `structural_hash`, which is a
+	/// local-only cache key and must never be compared across servers.
+	#[must_use]
+	pub fn root_handle(&self, structural_hash: StructuralHash, lattice: &LtHash) -> RootHandle {
+		RootHandle::from_lthash(structural_hash, lattice)
 	}
 }
