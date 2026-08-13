@@ -253,6 +253,33 @@ enum MembershipKind {
 /// instead of clearing it (see `preserve_newer_invite` in `mark_as_left`
 /// and the has-pending-invite check in `mark_as_left_silent`); it has no
 /// effect when `keep` is already `Invited`.
+macro_rules! clear_other_membership_states {
+	(
+		$keep:expr,
+		$preserve_invite:expr,
+		$joined:expr,
+		$invited:expr,
+		$left:expr,
+		$knocked:expr $(,)?
+	) => {{
+		if $keep != MembershipKind::Joined {
+			$joined;
+		}
+
+		if $keep != MembershipKind::Invited && !$preserve_invite {
+			$invited;
+		}
+
+		if $keep != MembershipKind::Left {
+			$left;
+		}
+
+		if $keep != MembershipKind::Knocked {
+			$knocked;
+		}
+	}};
+}
+
 #[implement(super::Service)]
 fn set_other_membership_states(
 	&self,
@@ -262,27 +289,28 @@ fn set_other_membership_states(
 	keep: MembershipKind,
 	preserve_invite: bool,
 ) {
-	if keep != MembershipKind::Joined {
-		self.db.userroomid_joined.remove(userroom_id);
-		self.db.roomuserid_joined.remove(roomuser_id);
-	}
-
-	if keep != MembershipKind::Invited && !preserve_invite {
-		self.db.userroomid_invitestate.remove(userroom_id);
-		self.db.roomuserid_invitecount.remove(roomuser_id);
-		self.db.userroomid_invitesender.remove(userroom_id);
-		self.db.roomid_inviteviaservers.remove(room_id);
-	}
-
-	if keep != MembershipKind::Left {
-		self.db.userroomid_leftstate.remove(userroom_id);
-		self.db.roomuserid_leftcount.remove(roomuser_id);
-	}
-
-	if keep != MembershipKind::Knocked {
-		self.db.userroomid_knockedstate.remove(userroom_id);
-		self.db.roomuserid_knockedcount.remove(roomuser_id);
-	}
+	clear_other_membership_states!(
+		keep,
+		preserve_invite,
+		{
+			self.db.userroomid_joined.remove(userroom_id);
+			self.db.roomuserid_joined.remove(roomuser_id);
+		},
+		{
+			self.db.userroomid_invitestate.remove(userroom_id);
+			self.db.roomuserid_invitecount.remove(roomuser_id);
+			self.db.userroomid_invitesender.remove(userroom_id);
+			self.db.roomid_inviteviaservers.remove(room_id);
+		},
+		{
+			self.db.userroomid_leftstate.remove(userroom_id);
+			self.db.roomuserid_leftcount.remove(roomuser_id);
+		},
+		{
+			self.db.userroomid_knockedstate.remove(userroom_id);
+			self.db.roomuserid_knockedcount.remove(roomuser_id);
+		},
+	);
 }
 
 #[implement(super::Service)]
@@ -295,41 +323,42 @@ fn set_other_membership_states_into_batch<'a>(
 	keep: MembershipKind,
 	preserve_invite: bool,
 ) {
-	if keep != MembershipKind::Joined {
-		self.db.userroomid_joined.batch_delete(batch, userroom_id);
-		self.db.roomuserid_joined.batch_delete(batch, roomuser_id);
-	}
-
-	if keep != MembershipKind::Invited && !preserve_invite {
-		self.db
-			.userroomid_invitestate
-			.batch_delete(batch, userroom_id);
-		self.db
-			.roomuserid_invitecount
-			.batch_delete(batch, roomuser_id);
-		self.db
-			.userroomid_invitesender
-			.batch_delete(batch, userroom_id);
-		self.db.roomid_inviteviaservers.batch_delete(batch, room_id);
-	}
-
-	if keep != MembershipKind::Left {
-		self.db
-			.userroomid_leftstate
-			.batch_delete(batch, userroom_id);
-		self.db
-			.roomuserid_leftcount
-			.batch_delete(batch, roomuser_id);
-	}
-
-	if keep != MembershipKind::Knocked {
-		self.db
-			.userroomid_knockedstate
-			.batch_delete(batch, userroom_id);
-		self.db
-			.roomuserid_knockedcount
-			.batch_delete(batch, roomuser_id);
-	}
+	clear_other_membership_states!(
+		keep,
+		preserve_invite,
+		{
+			self.db.userroomid_joined.batch_delete(batch, userroom_id);
+			self.db.roomuserid_joined.batch_delete(batch, roomuser_id);
+		},
+		{
+			self.db
+				.userroomid_invitestate
+				.batch_delete(batch, userroom_id);
+			self.db
+				.roomuserid_invitecount
+				.batch_delete(batch, roomuser_id);
+			self.db
+				.userroomid_invitesender
+				.batch_delete(batch, userroom_id);
+			self.db.roomid_inviteviaservers.batch_delete(batch, room_id);
+		},
+		{
+			self.db
+				.userroomid_leftstate
+				.batch_delete(batch, userroom_id);
+			self.db
+				.roomuserid_leftcount
+				.batch_delete(batch, roomuser_id);
+		},
+		{
+			self.db
+				.userroomid_knockedstate
+				.batch_delete(batch, userroom_id);
+			self.db
+				.roomuserid_knockedcount
+				.batch_delete(batch, roomuser_id);
+		},
+	);
 }
 
 /// Direct DB function to directly mark a user as joined. It is not
