@@ -19,3 +19,16 @@ impl crate::Service for Service {
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
+
+/// Computes the structural key for a room's HAMT using a per-server secret
+/// and the room ID. This prevents grinding attacks on the HAMT topology.
+#[must_use]
+pub fn room_structural_key(server_secret: &[u8; 32], room_id: &ruma::RoomId) -> [u8; 32] {
+	use hmac::{Hmac, Mac, digest::KeyInit};
+	use sha2::Sha256;
+
+	let mut mac =
+		Hmac::<Sha256>::new_from_slice(server_secret).expect("HMAC can take key of any size");
+	mac.update(room_id.as_bytes());
+	mac.finalize().into_bytes().into()
+}

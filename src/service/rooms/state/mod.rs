@@ -38,6 +38,7 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	globals: Dep<crate::globals::Service>,
 }
 
 struct Data {
@@ -45,6 +46,7 @@ struct Data {
 	roomid_shortstatehash: Arc<Map>,
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
+	shorteventid_roothandle: Arc<Map>,
 }
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
@@ -61,12 +63,14 @@ impl crate::Service for Service {
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
+				globals: args.depend::<crate::globals::Service>("globals"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
+				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
 			},
 		}))
 	}
@@ -182,9 +186,10 @@ impl Service {
 			}
 		}
 
-		let structural_key = room_id.as_bytes();
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
 		let (root_handle, root_node) =
-			rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
 
 		self.services
@@ -303,6 +308,17 @@ impl Service {
 	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
 		self.db
 			.shorteventid_shortstatehash
+			.qry(&shorteventid)
+			.await
+			.deserialized()
+	}
+
+	pub async fn get_roothandle(
+		&self,
+		shorteventid: ShortEventId,
+	) -> Result<rezzy::hamt::RootHandle> {
+		self.db
+			.shorteventid_roothandle
 			.qry(&shorteventid)
 			.await
 			.deserialized()

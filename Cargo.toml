@@ -994,3 +994,6 @@ collapsible_if = "allow"
 
 # TODO: break these apart
 cognitive_complexity = "allow"
+
+[patch."https://github.com/gamesguru/rezzy.git"]
+rezzy = { path = "../rezzy" }

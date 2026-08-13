@@ -90,9 +90,12 @@ pub async fn resolve_state(
 		entries.push((shortstatekey, shorteventid));
 	}
 
-	let structural_key = room_id.as_bytes();
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
 	self.services

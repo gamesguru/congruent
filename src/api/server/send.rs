@@ -290,10 +290,17 @@ async fn inject_state_hash_mismatches(
 /// `state_compressor` service. Reimplement once the HAMT store exposes LtHash
 /// lookup by `shortstatehash`.
 async fn compute_receiver_after_digest(
-	_services: &crate::State,
-	_event_id: &OwnedEventId,
+	services: &crate::State,
+	event_id: &OwnedEventId,
 ) -> Option<String> {
-	None
+	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.ok()?;
+	Some(hex::encode(root_handle.state_group_id))
 }
 
 /// Handles a failed federation transaction by sending the error through

@@ -18,7 +18,7 @@ pub(crate) async fn get_state_accumulator_route(
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
-) -> Result<()> {
+) -> Result<String> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
@@ -57,11 +57,21 @@ pub(crate) async fn get_state_accumulator_route(
 		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
-	// TODO(MSC00DC/HAMT): derive LtHash from the HAMT store once it exposes
-	// LtHash lookup by shortstatehash. state_compressor has been removed.
-	Err(err!(Request(NotFound(
-		"State accumulator endpoint is not yet available during HAMT migration."
-	))))
+	let shorteventid = services
+		.rooms
+		.short
+		.get_shorteventid(&query.event_id)
+		.await
+		.map_err(|_| err!(Request(NotFound("Event short ID not found."))))?;
+
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.map_err(|_| err!(Request(NotFound("Root handle not found for event."))))?;
+
+	Ok(hex::encode(root_handle.state_group_id))
 }
 
 async fn verify_federation_request(

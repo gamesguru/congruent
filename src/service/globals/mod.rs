@@ -18,6 +18,7 @@ pub struct Service {
 	pub server_user: OwnedUserId,
 	pub admin_alias: OwnedRoomAliasId,
 	pub turn_secret: String,
+	pub server_secret: [u8; 32],
 }
 
 type RateLimitState = (Instant, u32); // Time if last failed try, number of failed tries
@@ -40,6 +41,15 @@ impl crate::Service for Service {
 			},
 		);
 
+		let mut server_secret = [0_u8; 32];
+		if let Ok(secret) = args.db["global"].get_blocking(b"server_secret") {
+			server_secret.copy_from_slice(&secret);
+		} else {
+			use rand::Rng;
+			rand::rng().fill_bytes(&mut server_secret);
+			args.db["global"].insert(b"server_secret", server_secret);
+		}
+
 		Ok(Arc::new(Self {
 			db,
 			server: args.server.clone(),
@@ -52,6 +62,7 @@ impl crate::Service for Service {
 			)
 			.expect("@conduit:server_name is valid"),
 			turn_secret,
+			server_secret,
 		}))
 	}
 
