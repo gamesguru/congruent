@@ -109,24 +109,21 @@ pub struct Service {
 	pub mutex_backfill: RoomMutexMap,
 	/// Tier 2 of the backfill scan perf work (see
 	/// `docs/development-gg/room-issues.csv`): remembers the exact
-	/// `(from, limit)` of the most recent gap-free `backfill_if_required`
-	/// scan per room. A repeat request for that *exact* `from` with a
-	/// `limit` no larger than what was already verified skips the scan
-	/// entirely.
+	/// `(state_hash, from, limit)` of the most recent gap-free
+	/// `backfill_if_required` scan per room. A repeat request for that
+	/// *exact* `from` with a `limit` no larger than what was already
+	/// verified skips the scan entirely, but only if the room's current
+	/// short-state-hash still matches the one observed during the scan.
 	///
 	/// This is intentionally narrower than a "gap-free below count X"
 	/// boundary cache: `backfill_if_required` verifies gap-freedom only
 	/// within the fixed-size window it scans (anchored at `from`), not
 	/// "everything below `from`", so a boundary-style cache would need to
 	/// track ranges, not a single count, to stay correct. The exact-tuple
-	/// form sidesteps that: once a specific `(from, limit)` window is
-	/// verified gap-free, that fact cannot become false later (PDUs and
-	/// their `prev_events` are immutable), so the cache does not strictly
-	/// need invalidation for correctness -- entries are still invalidated
-	/// on backward inserts anyway (see `backfill_pdu`/`promote_outlier`),
-	/// purely so the cache doesn't accumulate now-irrelevant historical
-	/// entries and to avoid depending on that invariant holding forever.
-	pub backfill_gap_free_cache: moka::sync::Cache<OwnedRoomId, (PduCount, usize)>,
+	/// form sidesteps that while still allowing the cache to survive
+	/// unrelated writes: the room state hash is the invalidation token.
+	pub backfill_gap_free_cache:
+		moka::sync::Cache<OwnedRoomId, (ShortStateHash, PduCount, usize)>,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,

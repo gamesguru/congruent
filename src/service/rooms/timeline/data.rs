@@ -119,6 +119,23 @@ impl Data {
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))
 	}
 
+	/// Batch-fetch `EventMetadata` for a list of event ids.
+	pub(super) async fn get_event_metadata_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> Vec<Result<rooms::timeline::EventMetadata>> {
+		self.eventid_metadata
+			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.map(|res| {
+				res.and_then(|handle| {
+					rooms::timeline::EventMetadata::from_bincode(&handle)
+						.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))
+				})
+			})
+			.collect()
+			.await
+	}
+
 	pub(super) fn store_eventid_metadata(&self, event_id_bytes: &[u8], metadata_bytes: Vec<u8>) {
 		self.eventid_metadata.insert(event_id_bytes, metadata_bytes);
 	}

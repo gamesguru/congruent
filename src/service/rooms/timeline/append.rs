@@ -292,12 +292,6 @@ where
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
 
-		// Any live timeline insert can invalidate a previously cached
-		// "gap-free" backfill window for this room. The cache is only an
-		// optimization; keep it conservative so pagination re-scans after
-		// new history lands.
-		self.backfill_gap_free_cache.invalidate(room_id);
-
 		(pdu_id, pdu_count, Some(count))
 	};
 	drop(cork);

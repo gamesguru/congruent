@@ -120,24 +120,6 @@ pub async fn backfill_if_required(
 		return Ok(());
 	}
 
-	// Tier 2: skip the scan entirely if this exact (from, limit) window was
-	// already verified gap-free. A larger previously-verified window covers
-	// this request too. See the doc comment on `backfill_gap_free_cache`.
-	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
-	if let Some((verified_from, verified_limit)) =
-		self.backfill_gap_free_cache.get(&room_id.to_owned())
-	{
-		if verified_from == from
-			&& verified_limit >= usize::try_from(scan_limit_u32).unwrap_or(100)
-		{
-			debug!(
-				%room_id, %from, %limit,
-				"backfill: skipping scan, already verified gap-free for this window"
-			);
-			return Ok(());
-		}
-	}
-
 	// Singleflight the scan-and-decide phase per room: concurrent backward
 	// /messages calls on the same room would otherwise each run a full scan,
 	// reach the same gap conclusion, and fire duplicate /backfill requests.
@@ -145,6 +127,31 @@ pub async fn backfill_if_required(
 	// per-room lock with a post-lock existence recheck), so this is purely
 	// about not doing the scan and the federation round-trip N times over.
 	let _backfill_lock = self.mutex_backfill.lock(room_id).await;
+
+	// Tier 2: skip the scan entirely if this exact `(state_hash, from, limit)`
+	// window was already verified gap-free. A larger previously-verified
+	// window covers this request too, but only while the room state hash still
+	// matches the one observed during the scan.
+	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
+	let current_shortstatehash = self
+		.services
+		.state
+		.get_room_shortstatehash(room_id)
+		.await
+		.unwrap_or(0);
+	if current_shortstatehash != 0
+		&& let Some((verified_statehash, verified_from, verified_limit)) =
+			self.backfill_gap_free_cache.get(&room_id.to_owned())
+		&& verified_statehash == current_shortstatehash
+		&& verified_from == from
+		&& verified_limit >= usize::try_from(scan_limit_u32).unwrap_or(100)
+	{
+		debug!(
+			%room_id, %from, %limit,
+			"backfill: skipping scan, already verified gap-free for this state window"
+		);
+		return Ok(());
+	}
 
 	let power_levels: RoomPowerLevelsEventContent = self
 		.services
@@ -273,8 +280,12 @@ pub async fn backfill_if_required(
 				continue;
 			}
 
-			self.backfill_gap_free_cache
-				.insert(room_id.to_owned(), (from, scan_limit));
+			if current_shortstatehash != 0 {
+				self.backfill_gap_free_cache.insert(
+					room_id.to_owned(),
+					(current_shortstatehash, from, scan_limit),
+				);
+			}
 			return Ok(());
 		}
 
@@ -402,18 +413,33 @@ pub async fn backfill_if_required(
 #[implement(super::Service)]
 async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	let room_version = self.services.state.get_room_version(room_id).await?;
-	let mut outlier_state_event_ids = Vec::new();
-	let mut room_state = Box::pin(self.services.state_accessor.room_state_full_pdus(room_id));
+	let state_pdus = self
+		.services
+		.state_accessor
+		.room_state_full_pdus(room_id)
+		.filter_map(|result| async move { result.ok() })
+		.collect::<Vec<_>>()
+		.await;
 
-	while let Some(result) = room_state.next().await {
-		let Ok(pdu) = result else {
-			continue;
-		};
+	let state_event_ids: Vec<OwnedEventId> = state_pdus
+		.iter()
+		.map(|pdu| pdu.event_id().to_owned())
+		.collect();
+	let state_metadata = self.db.get_event_metadata_batch(&state_event_ids).await;
+
+	let mut outlier_state_event_ids = Vec::new();
+	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
-		if self.non_outlier_pdu_exists(&event_id).await {
-			continue;
+		match metadata {
+			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
+			| Ok(_) => continue,
+			| Err(_) => {
+				if self.non_outlier_pdu_exists(&event_id).await {
+					continue;
+				}
+				outlier_state_event_ids.push(event_id);
+			},
 		}
-		outlier_state_event_ids.push(event_id);
 	}
 
 	if outlier_state_event_ids.is_empty() {
@@ -785,11 +811,6 @@ pub async fn backfill_pdu(
 
 	drop(insert_lock);
 
-	// A backward-prepended event can retroactively be the missing parent a
-	// previously-cached "gap-free" window was still waiting on further back
-	// in history; drop the cached verification so the next request re-scans.
-	self.backfill_gap_free_cache.invalidate(&room_id);
-
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu_event);
 	drop(mutex_lock);
 
@@ -849,9 +870,6 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
-
-	// See the matching comment in `backfill_pdu`.
-	self.backfill_gap_free_cache.invalidate(room_id);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
@@ -1036,11 +1054,6 @@ pub async fn force_insert_pdu(
 
 	drop(insert_lock);
 
-	if backfill {
-		// See the matching comment in `backfill_pdu`.
-		self.backfill_gap_free_cache.invalidate(room_id);
-	}
-
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
@@ -1070,8 +1083,6 @@ pub async fn force_insert_pdu_batch<'a>(
 		self.db
 			.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, pdu)
 			.await;
-		// See the matching comment in `backfill_pdu`.
-		self.backfill_gap_free_cache.invalidate(room_id);
 	} else {
 		self.db
 			.append_pdu_batch(batch, &pdu_id, pdu, &value, pdu_count)
