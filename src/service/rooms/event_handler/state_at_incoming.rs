@@ -256,5 +256,5 @@ where
 	Pdu: Event + Send + Sync,
 {
 	// TODO: re-implement.
-	Ok(rezzy::LtHash::ZERO)
+\tErr(err!(Database("LtHash calculation is not implemented")))
 }
