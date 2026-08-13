@@ -109,15 +109,28 @@ pub async fn state_contains_shortstatekey(
 #[implement(super::Service)]
 pub async fn state_contains_shortstatekey_hamt(
 	&self,
+	room_id: &ruma::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	shortstatekey: ShortStateKey,
 ) -> Result<bool> {
-	// TODO(MSC00DC/HAMT): We currently use load_full_state_hamt here because we
-	// don't have the `room_id` in scope to perform an O(log N) `search`.
-	// To optimize this, the caller chain must be refactored to pass `&RoomId`.
-	self.load_full_state_hamt(root_handle)
-		.await
-		.map(|full_state| full_state.contains_key(&shortstatekey))
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+
+	let res = tokio::task::block_in_place(|| {
+		let root_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&root_handle.structural_hash)?;
+
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		root_node.search(&structural_key, &shortstatekey, &mut resolver)
+	})
+	.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
+
+	Ok(res.is_some())
 }
 
 /// Returns a single EventId from `room_id` with key (`event_type`,
@@ -168,6 +181,7 @@ pub async fn state_get_shortid(
 #[implement(super::Service)]
 pub async fn state_get_shortid_hamt(
 	&self,
+	room_id: &ruma::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -178,14 +192,24 @@ pub async fn state_get_shortid_hamt(
 		.get_shortstatekey(event_type, state_key)
 		.await?;
 
-	// TODO(MSC00DC/HAMT): We currently use load_full_state_hamt here because we
-	// don't have the `room_id` in scope to perform an O(log N) `search`.
-	// To optimize this, the caller chain must be refactored to pass `&RoomId`.
-	self.load_full_state_hamt(root_handle)
-		.await?
-		.get(&shortstatekey)
-		.copied()
-		.ok_or(err!(Request(NotFound("Not found in room state"))))
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+
+	tokio::task::block_in_place(|| {
+		let root_node = self
+			.services
+			.state_hamt
+			.store
+			.get_node_blocking(&root_handle.structural_hash)?;
+
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		root_node
+			.search(&structural_key, &shortstatekey, &mut resolver)
+			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
+			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
+	})
 }
 
 /// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
@@ -213,9 +237,14 @@ pub async fn room_state_get_hamt(
 			.store
 			.get_node_blocking(&root_handle.structural_hash)?;
 
+		let structural_key = crate::rooms::state_hamt::room_structural_key(
+			&self.services.globals.server_secret,
+			room_id,
+		);
+
 		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
 		root_node
-			.search(room_id.as_bytes(), &shortstatekey, &mut resolver)
+			.search(&structural_key, &shortstatekey, &mut resolver)
 			.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
 			.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
 	})?;

@@ -39,6 +39,7 @@ pub struct Service {
 }
 
 struct Services {
+	globals: Dep<crate::globals::Service>,
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
 	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
@@ -55,6 +56,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: Services {
+				globals: args.depend::<crate::globals::Service>("globals"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
