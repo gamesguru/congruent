@@ -674,14 +674,14 @@ async fn join_room_by_id_helper_remote_process(
 			})
 			.ready_filter_map(Result::ok)
 			.fold(
-				(HashMap::new(), rezzy::state::LtHash::default()),
-				|(mut state, mut lattice), (event_id, value)| async move {
+				HashMap::new(),
+				|mut deduplicated: HashMap<(StateEventType, String), _>, (event_id, value)| async move {
 					let pdu = match PduEvent::from_id_val(&event_id, value.clone(), Some(room_id))
 					{
 						| Ok(pdu) => pdu,
 						| Err(e) => {
 							debug_warn!("Invalid PDU in send_join response: {e:?}: {value:#?}");
-							return (state, lattice);
+							return deduplicated;
 						},
 					};
 					if !pdu_fits(&mut value.clone()) {
@@ -689,29 +689,32 @@ async fn join_room_by_id_helper_remote_process(
 							"dropping incoming PDU {event_id} in room {room_id} from room join \
 							 because it exceeds 65535 bytes or is otherwise too large."
 						);
-						return (state, lattice);
+						return deduplicated;
 					}
 					services.rooms.outlier.add_pdu_outlier(&event_id, &value);
 					if let Some(state_key) = &pdu.state_key {
-						let shortstatekey = services
-							.rooms
-							.short
-							.get_or_create_shortstatekey(&pdu.kind.to_string().into(), state_key)
-							.await;
-
-						lattice.insert(
-							&pdu.kind.to_string(),
-							state_key.as_str(),
-							pdu.event_id.as_str(),
-						);
-						state.insert(shortstatekey, pdu.event_id.clone());
+						deduplicated
+							.insert((pdu.kind.clone().into(), state_key.to_string()), pdu);
 					}
-					(state, lattice)
+					deduplicated
 				},
 			),
 	)
 	.await;
-	let (state, lattice) = state;
+
+	let mut deduplicated = state;
+	let mut state = HashMap::new();
+	let mut lattice = rezzy::state::LtHash::default();
+	for ((kind, state_key), pdu) in deduplicated {
+		let shortstatekey = services
+			.rooms
+			.short
+			.get_or_create_shortstatekey(&kind.to_string().into(), &state_key)
+			.await;
+
+		lattice.insert(&kind.to_string(), state_key.as_str(), pdu.event_id.as_str());
+		state.insert(shortstatekey, pdu.event_id.clone());
+	}
 
 	drop(cork);
 
@@ -794,6 +797,10 @@ async fn join_room_by_id_helper_remote_process(
 		.state_hamt
 		.store
 		.persist_node_recursive(root_node);
+
+	return Err!(Request(NotImplemented(
+		"Remote join not completely migrated to HAMT (update state pointer missing)"
+	)));
 
 	debug!("Updating joined counts for new room");
 	// Update our membership locally to join state before calculating the joined

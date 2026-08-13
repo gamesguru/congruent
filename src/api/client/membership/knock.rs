@@ -658,6 +658,10 @@ async fn knock_room_helper_remote(
 		.store
 		.persist_node_recursive(root_node);
 
+	return Err!(Request(NotImplemented(
+		"Remote knock not completely migrated to HAMT (update state pointer missing)"
+	)));
+	#[allow(unreachable_code)]
 	let statehash_after_knock = 0;
 
 	info!("Appending room knock event locally");
