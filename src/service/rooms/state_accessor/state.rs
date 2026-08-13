@@ -107,6 +107,21 @@ pub async fn state_contains_shortstatekey(
 		.unwrap_or(false)
 }
 
+#[implement(super::Service)]
+pub async fn state_contains_shortstatekey_hamt(
+	&self,
+	root_handle: &rezzy::hamt::RootHandle,
+	shortstatekey: ShortStateKey,
+) -> bool {
+	// TODO(MSC00DC/HAMT): We currently use load_full_state_hamt here because we
+	// don't have the `room_id` in scope to perform an O(log N) `search`.
+	// To optimize this, the caller chain must be refactored to pass `&RoomId`.
+	self.load_full_state_hamt(root_handle)
+		.await
+		.map(|full_state| full_state.contains_key(&shortstatekey))
+		.unwrap_or(false)
+}
+
 /// Returns a single EventId from `room_id` with key (`event_type`,
 /// `state_key`).
 #[implement(super::Service)]
@@ -146,6 +161,29 @@ pub async fn state_get_shortid(
 		.await?;
 
 	self.load_full_state(shortstatehash)
+		.await?
+		.get(&shortstatekey)
+		.copied()
+		.ok_or(err!(Request(NotFound("Not found in room state"))))
+}
+
+#[implement(super::Service)]
+pub async fn state_get_shortid_hamt(
+	&self,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<ShortEventId> {
+	let shortstatekey = self
+		.services
+		.short
+		.get_shortstatekey(event_type, state_key)
+		.await?;
+
+	// TODO(MSC00DC/HAMT): We currently use load_full_state_hamt here because we
+	// don't have the `room_id` in scope to perform an O(log N) `search`.
+	// To optimize this, the caller chain must be refactored to pass `&RoomId`.
+	self.load_full_state_hamt(root_handle)
 		.await?
 		.get(&shortstatekey)
 		.copied()
@@ -366,6 +404,30 @@ pub async fn state_added(
 }
 
 #[implement(super::Service)]
+#[inline]
+pub async fn state_removed_hamt(
+	&self,
+	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
+) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+	self.state_added_hamt((root_handles.1, root_handles.0))
+		.await
+}
+
+#[implement(super::Service)]
+pub async fn state_added_hamt(
+	&self,
+	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
+) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+	let full_state_a = self.load_full_state_hamt(root_handles.0).await?;
+	let full_state_b = self.load_full_state_hamt(root_handles.1).await?;
+
+	Ok(full_state_b
+		.into_iter()
+		.filter(|(k, v)| full_state_a.get(k) != Some(v))
+		.collect())
+}
+
+#[implement(super::Service)]
 pub fn state_full(
 	&self,
 	shortstatehash: ShortStateHash,
@@ -453,6 +515,33 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
 }
 
 #[implement(super::Service)]
+pub fn state_full_shortids_hamt<'a>(
+	&'a self,
+	root_handle: &'a rezzy::hamt::RootHandle,
+) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + 'a {
+	self.load_full_state_hamt(root_handle)
+		.map_ok(|full_state| full_state.into_iter().collect::<Vec<_>>())
+		.map_ok(Vec::into_iter)
+		.map_ok(IterStream::try_stream)
+		.try_flatten_stream()
+		.boxed()
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> bool {
+	// A new, completely empty HAMT has a specific structural hash (usually 32 zero
+	// bytes or the hash of an empty string, depending on the lattice). But to be
+	// perfectly safe and consistent, we'll just check if load_full_state_hamt
+	// yields an empty map. Optimizing this to an early exit could be a future
+	// step.
+	self.load_full_state_hamt(root_handle)
+		.await
+		.map(|s| s.is_empty())
+		.unwrap_or(true)
+}
+
+#[implement(super::Service)]
 #[tracing::instrument(name = "load", level = "debug", skip_all)]
 #[allow(clippy::used_underscore_binding)]
 async fn load_full_state(
@@ -460,6 +549,33 @@ async fn load_full_state(
 	_shortstatehash: ShortStateHash,
 ) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
 	Err(err!(Request(NotImplemented("TODO: Traverse HAMT to build full state"))))
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
+pub async fn load_full_state_hamt(
+	&self,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
+	let structural_hash = root_handle.structural_hash;
+	tokio::task::block_in_place(
+		|| -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
+			let root_node = self
+				.services
+				.state_hamt
+				.store
+				.get_node_blocking(&structural_hash)?;
+			let mut short_states = std::collections::HashMap::new();
+			let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+			root_node
+				.visit_entries(&mut resolver, &mut |&k, &v| {
+					short_states.insert(k, v);
+					Ok(())
+				})
+				.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+			Ok(short_states)
+		},
+	)
 }
 
 /// Returns the state hash for this pdu.
