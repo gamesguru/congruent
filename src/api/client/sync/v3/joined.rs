@@ -579,15 +579,14 @@ async fn build_state_events(
 					.rooms
 					.state_accessor
 					.state_is_empty(shortstatehash)
-					.await
-					.unwrap_or(true)
+					.await?
 				{
-					return shortstatehash;
+					return Ok::<_, Error>(shortstatehash);
 				}
 			}
 		}
 
-		current_shortstatehash
+		Ok::<_, Error>(current_shortstatehash)
 	};
 
 	// the user IDs of members whose membership needs to be sent to the client, if
@@ -597,6 +596,7 @@ async fn build_state_events(
 
 	let (timeline_start_shortstatehash, lazily_loaded_members) =
 		join(timeline_start_shortstatehash, lazily_loaded_members).await;
+	let timeline_start_shortstatehash = timeline_start_shortstatehash?;
 
 	// compute the state delta between the previous sync and this sync.
 	match (last_sync_end_count, last_sync_end_shortstatehash) {

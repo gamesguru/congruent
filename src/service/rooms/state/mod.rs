@@ -147,6 +147,11 @@ impl Service {
 		batch.insert(&self.db.shorteventid_roothandle, shorteventid.to_be_bytes(), serialized);
 		batch.commit();
 
+		// For state events, update the room's current-state pointer.
+		if is_state {
+			self.set_room_state_hamt(room_id, &root_handle, state_lock);
+		}
+
 		Ok(root_handle)
 	}
 

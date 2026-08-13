@@ -45,13 +45,8 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
-	// We append to state before appending the pdu, so we don't have a moment in
-	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	self.services
-		.state
-		.set_event_state(room_id, pdu, state_lock)
-		.await?;
+	// We defer state association until after soft-fail checks to avoid persisting
+	// HAMT nodes and mappings for rejected/soft-failed events.
 
 	if soft_fail {
 		self.services
@@ -65,6 +60,14 @@ where
 
 		return Ok(None);
 	}
+
+	// Now that we've passed soft-fail checks, associate state with the PDU.
+	// This is done before append_pdu so we don't have a moment in time with
+	// the pdu without its state (since append_pdu can't fail).
+	self.services
+		.state
+		.set_event_state(room_id, pdu, state_lock)
+		.await?;
 
 	let pdu_id = self
 		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, state_lock, room_id)
