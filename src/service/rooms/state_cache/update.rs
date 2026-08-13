@@ -118,8 +118,7 @@ pub async fn update_membership(
 			self.mark_as_joined(user_id, room_id).await;
 		},
 		| MembershipState::Invite => {
-			let mut invite_state = self.services.state.summary_stripped(pdu, room_id).await;
-			invite_state.push(pdu.to_format());
+			let invite_state = self.services.state.summary_stripped(pdu, room_id).await;
 			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(invite_state), None)
 				.await?;
 		},
@@ -127,8 +126,7 @@ pub async fn update_membership(
 			self.mark_as_left(user_id, room_id, Some(pdu.clone())).await;
 		},
 		| MembershipState::Knock => {
-			let mut knock_state = self.services.state.summary_stripped(pdu, room_id).await;
-			knock_state.push(pdu.to_format());
+			let knock_state = self.services.state.summary_stripped(pdu, room_id).await;
 			self.mark_as_knocked(user_id, room_id, Some(knock_state));
 		},
 		| _ => {},
@@ -819,8 +817,7 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 				.state_get(room_ssh, &StateEventType::RoomMember, user_id.as_str())
 				.await
 			{
-				let mut last_state = self.services.state.summary_stripped(&pdu, room_id).await;
-				last_state.push(pdu.to_format());
+				let last_state = self.services.state.summary_stripped(&pdu, room_id).await;
 				self.mark_as_invited_silent(
 					user_id,
 					room_id,

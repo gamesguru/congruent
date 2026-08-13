@@ -261,16 +261,17 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl"
-          LOGS="tests/test_results/complement/test_logs.jsonl"
+          RESULTS="tests/test_results/complement/test_results.jsonl" \
+          LOGS="tests/test_results/complement/test_logs.jsonl" \
           python3 - <<'PY'
           import collections
+          import html
           import json
           import os
           import pathlib
 
-          results_path = pathlib.Path("tests/test_results/complement/test_results.jsonl")
-          logs_path = pathlib.Path("tests/test_results/complement/test_logs.jsonl")
+          results_path = pathlib.Path(os.environ["RESULTS"])
+          logs_path = pathlib.Path(os.environ["LOGS"])
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
           if not results_path.is_file() or not logs_path.is_file() or not summary_path:
@@ -322,11 +323,11 @@ jobs:
           with open(summary_path, "a", encoding="utf-8") as summary:
               summary.write("\n### Failing Test Log Excerpts\n")
               for test in failed:
-                  summary.write(f"\n<details><summary>{test}</summary>\n\n")
-                  summary.write("```text\n")
+                  summary.write(f"\n<details><summary>{html.escape(test)}</summary>\n\n")
+                  summary.write("<pre>\n")
                   for out_line in excerpts[test]:
-                      summary.write(out_line + "\n")
-                  summary.write("```\n</details>\n")
+                      summary.write(html.escape(out_line) + "\n")
+                  summary.write("</pre>\n</details>\n")
           PY
 
       - name: Get conduwuit version

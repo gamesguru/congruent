@@ -261,6 +261,7 @@ pub async fn backfill_if_required(
 				let promoted = self.promote_room_state_outliers(room_id).await?;
 				if promoted > 0 {
 					info!("backfill: promoted {promoted} state outliers at timeline boundary");
+					continue;
 				}
 			}
 			self.backfill_gap_free_cache
