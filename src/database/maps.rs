@@ -198,7 +198,7 @@ pub(super) static MAPS: &[Descriptor] = &[
 	},
 	Descriptor {
 		name: "roomid_roothandle",
-		val_size_hint: Some(32),
+		val_size_hint: Some(48),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {

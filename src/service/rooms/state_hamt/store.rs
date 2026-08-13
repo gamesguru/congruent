@@ -94,10 +94,10 @@ impl Store {
 				if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
 					return tokio::task::block_in_place(|| self.get_node_blocking(hash));
 				}
-				return Err(err!(Database(error!(
-					"Unsupported Tokio runtime flavor for synchronous HAMT resolution: \
-					 CurrentThread"
-				))));
+				// `block_in_place` panics on a `CurrentThread` runtime, so fall back to
+				// blocking the thread directly via the synchronous RocksDB API, same as
+				// when no runtime is present at all.
+				return self.get_node_blocking(hash);
 			}
 			self.get_node_blocking(hash)
 		}

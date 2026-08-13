@@ -125,12 +125,14 @@ async fn verify_federation_request(
 }
 
 #[cfg(test)]
-use conduwuit_core::utils::hash::lthash::serialize_lthash;
 mod tests {
+	use conduwuit_core::utils::hash::lthash::serialize_lthash;
+	use ruma::OwnedEventId;
+
 	#[test]
 	fn test_serialize_empty_lthash() {
 		let empty_lthash = rezzy::LtHash::ZERO;
-		let (lattice, digest) = serialize_lthash(&empty_lthash);
+		let (lattice, digest): (String, String) = serialize_lthash(&empty_lthash);
 
 		// The lattice for an empty LtHash is 2048 null bytes.
 		// 2048 bytes of 0s encoded in base64url without padding:
@@ -145,7 +147,7 @@ mod tests {
 		assert!(
 			digest
 				.chars()
-				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 		);
 	}
 
@@ -158,7 +160,7 @@ mod tests {
 		lthash.insert("m.room.name", "", &event_id1);
 		lthash.insert("m.room.topic", "", &event_id2);
 
-		let (lattice, digest) = serialize_lthash(&lthash);
+		let (lattice, digest): (String, String) = serialize_lthash(&lthash);
 
 		// Lattice must remain exactly 2731 base64url-encoded characters long (2048
 		// bytes without padding)
@@ -169,12 +171,12 @@ mod tests {
 		assert!(
 			digest
 				.chars()
-				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 		);
 
 		// The digest and lattice should no longer be the empty one
 		let empty_lthash = rezzy::LtHash::ZERO;
-		let (empty_lattice, empty_digest) = serialize_lthash(&empty_lthash);
+		let (empty_lattice, empty_digest): (String, String) = serialize_lthash(&empty_lthash);
 		assert_ne!(lattice, empty_lattice);
 		assert_ne!(digest, empty_digest);
 	}
