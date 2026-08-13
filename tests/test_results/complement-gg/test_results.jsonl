@@ -82,7 +82,7 @@
 {"Action":"pass","Test":"TestClientSpacesSummary/suggested_only"}
 {"Action":"pass","Test":"TestComplementCanCreateValidV12Rooms"}
 {"Action":"pass","Test":"TestContent"}
-{"Action":"fail","Test":"TestContentCSAPIMediaV1"}
+{"Action":"pass","Test":"TestContentCSAPIMediaV1"}
 {"Action":"pass","Test":"TestContentMediaV1"}
 {"Action":"pass","Test":"TestCorruptedAuthChain"}
 {"Action":"pass","Test":"TestCumulativeJoinLeaveJoinSync"}
