@@ -155,30 +155,15 @@ TEST_FLAGS=(
     "${TEST_PACKAGES[@]}"
 )
 
-declare -A RESULTS_ACTIONS=()
-
-write_results_snapshot() {
-    local tmp_results
-    tmp_results="$(mktemp "${RESULTS_FILE}.tmp.XXXXXX")"
-
-    : > "$tmp_results"
-    local test_name
-    while IFS= read -r test_name; do
-        [ -n "$test_name" ] || continue
-        jq -nc --arg Action "${RESULTS_ACTIONS[$test_name]}" --arg Test "$test_name" \
-            '{Action: $Action, Test: $Test}' >> "$tmp_results"
-    done < <(printf '%s\n' "${!RESULTS_ACTIONS[@]}" | sort)
-
-    mv "$tmp_results" "$RESULTS_FILE"
-}
-
 record_result() {
     local action="$1"
     local test_name="$2"
 
-    RESULTS_ACTIONS["$test_name"]="$action"
+    # Stream straight to the results file as results arrive; no in-memory
+    # aggregation and no full-file rewrite per event.
+    jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >> "$RESULTS_FILE"
 
-    # Keep a live human-readable status stream while the JSONL snapshot is rewritten.
+    # Keep a live human-readable status stream alongside the JSONL file.
     printf '%s\t%s\n' "$action" "$test_name"
 }
 
@@ -217,9 +202,12 @@ wait "$PRODUCER_PID"
 TEST_EXIT_CODE=$?
 set -e
 
-write_results_snapshot
-
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
+    # One cheap sort at the very end for reproducible diffs, rather than
+    # re-sorting/re-writing the whole file after every test.
+    tmp_results="$(mktemp "${RESULTS_FILE}.tmp.XXXXXX")"
+    jq -sc 'sort_by(.Test) | .[]' "$RESULTS_FILE" > "$tmp_results"
+    mv "$tmp_results" "$RESULTS_FILE"
     echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
 else
     echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
