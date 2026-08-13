@@ -240,7 +240,6 @@ enum MembershipKind {
 	Invited,
 }
 
-#[allow(single_use_lifetimes)]
 #[implement(super::Service)]
 fn set_other_membership_states_into_batch<'a>(
 	&'a self,

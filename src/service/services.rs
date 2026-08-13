@@ -146,6 +146,10 @@ impl Services {
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 
+		// Initialize first-run state before listeners start accepting requests so
+		// registration and banner checks cannot race the firstrun worker.
+		self.firstrun.initialize_first_run_marker().await?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;

@@ -66,7 +66,15 @@ impl crate::Service for Service {
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 
-	async fn worker(self: Arc<Self>) -> Result {
+	async fn worker(self: Arc<Self>) -> Result { self.initialize_first_run_marker().await }
+}
+
+impl Service {
+	pub(crate) async fn initialize_first_run_marker(&self) -> Result {
+		if self.first_run_marker.get().is_some() {
+			return Ok(());
+		}
+
 		// first run mode will be enabled if there are no local users, provided it's not
 		// forcibly disabled for Complement tests
 		let is_first_run = !self.services.config.force_disable_first_run_mode
@@ -79,28 +87,28 @@ impl crate::Service for Service {
 				.await
 				.is_none();
 
-		self.first_run_marker
-			.set(if is_first_run {
-				// first run mode is active (empty inner lock)
-				OnceLock::new()
-			} else {
-				// first run mode is inactive (already filled inner lock)
-				OnceLock::from(())
-			})
-			.expect("Service worker should only be called once");
+		let marker = if is_first_run {
+			// first run mode is active (empty inner lock)
+			OnceLock::new()
+		} else {
+			// first run mode is inactive (already filled inner lock)
+			OnceLock::from(())
+		};
+
+		if self.first_run_marker.set(marker).is_err() {
+			// Another startup path already initialized the marker. That is fine as long as
+			// both paths computed the same state.
+			debug_assert!(self.first_run_marker.get().is_some());
+		}
 
 		Ok(())
 	}
-}
 
-impl Service {
 	/// Check if first run mode is active.
 	pub fn is_first_run(&self) -> bool {
 		self.first_run_marker
 			.get()
-			.expect("First run mode should not be checked during server startup")
-			.get()
-			.is_none()
+			.is_some_and(|marker| marker.get().is_none())
 	}
 
 	/// Disable first run mode and begin normal operation.
@@ -110,9 +118,7 @@ impl Service {
 	fn disable_first_run(&self) -> bool {
 		self.first_run_marker
 			.get()
-			.expect("First run mode should not be disabled during server startup")
-			.set(())
-			.is_ok()
+			.is_some_and(|marker| marker.set(()).is_ok())
 	}
 
 	/// If first-run mode is active, grant admin powers to the specified user
