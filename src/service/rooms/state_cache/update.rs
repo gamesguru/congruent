@@ -414,7 +414,7 @@ pub async fn update_caches_for_state_delta(
 					UserId::parse(pdu.state_key().expect("Member event has state_key"))
 						.expect("Valid UserId");
 
-				let get_res = self
+				match self
 					.services
 					.state_accessor
 					.room_state_get_hamt_at_root(
@@ -423,14 +423,18 @@ pub async fn update_caches_for_state_delta(
 						&StateEventType::RoomMember,
 						target_user_id.as_str(),
 					)
-					.await;
-				if get_res.is_err() {
-					// The user has no member event in the new state at all.
-					self.mark_as_left(target_user_id, room_id, None).await;
-					memberships_changed = true;
-				} else {
-					// The user has a member event in the new state,
-					// added_events will handle it.
+					.await
+				{
+					| Ok(_) => {
+						// The user has a member event in the new state,
+						// added_events will handle it.
+					},
+					| Err(e) if e.is_not_found() => {
+						// The user has no member event in the new state at all.
+						self.mark_as_left(target_user_id, room_id, None).await;
+						memberships_changed = true;
+					},
+					| Err(e) => return Err(e),
 				}
 			},
 			| _ => {},
