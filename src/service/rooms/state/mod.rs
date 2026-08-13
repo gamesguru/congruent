@@ -12,6 +12,9 @@ use conduwuit_core::{
 	warn,
 };
 use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
+
+/// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
+type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
@@ -97,42 +100,41 @@ impl Service {
 	) -> Result<()> {
 		let current_root_res = self.get_room_state_hamt(room_id).await;
 
-		let (added, removed): (Vec<(u64, u64)>, Vec<(u64, u64)>) =
-			tokio::task::block_in_place(|| {
-				let old_node = match current_root_res {
-					| Ok(root) => self
-						.services
-						.state_hamt
-						.store
-						.get_node_blocking(&root.structural_hash)?,
-					| Err(ref e) if e.is_not_found() => Arc::new(rezzy::hamt::HamtNode {
-						datamap: 0,
-						nodemap: 0,
-						leaves: vec![],
-						children: vec![],
-						structural_hash: rezzy::hamt::StructuralHash::default(),
-					}),
-					| Err(e) => return Err(e),
-				};
-				let new_node = self
+		let (added, removed): HamtDelta = tokio::task::block_in_place(|| {
+			let old_node = match current_root_res {
+				| Ok(root) => self
 					.services
 					.state_hamt
 					.store
-					.get_node_blocking(&new_root_handle.structural_hash)?;
+					.get_node_blocking(&root.structural_hash)?,
+				| Err(ref e) if e.is_not_found() => Arc::new(rezzy::hamt::HamtNode {
+					datamap: 0,
+					nodemap: 0,
+					leaves: vec![],
+					children: vec![],
+					structural_hash: rezzy::hamt::StructuralHash::default(),
+				}),
+				| Err(e) => return Err(e),
+			};
+			let new_node = self
+				.services
+				.state_hamt
+				.store
+				.get_node_blocking(&new_root_handle.structural_hash)?;
 
-				let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
-					self.services.state_hamt.store.get_node_blocking(hash)
-				};
+			let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
+				self.services.state_hamt.store.get_node_blocking(hash)
+			};
 
-				let lattice = rezzy::state::LtHash::default();
-				rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
-					&old_node,
-					&lattice,
-					&new_node,
-					&lattice,
-					&mut resolver,
-				)
-			})?;
+			let lattice = rezzy::state::LtHash::default();
+			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
+				&old_node,
+				&lattice,
+				&new_node,
+				&lattice,
+				&mut resolver,
+			)
+		})?;
 
 		// resolve PDUs
 		let mut added_pdus = Vec::with_capacity(added.len());
