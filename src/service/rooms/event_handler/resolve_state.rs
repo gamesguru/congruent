@@ -98,10 +98,12 @@ pub async fn resolve_state(
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
-	self.services
-		.state_hamt
-		.store
-		.persist_node_recursive(root_node);
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
 
 	Ok(root_handle)
 }

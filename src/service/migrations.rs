@@ -950,6 +950,8 @@ async fn legacy_get_full_state(
 }
 
 async fn db_lt_20(services: &Services) -> Result<()> {
+	const BUFSIZE: usize = 49;
+
 	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
@@ -965,8 +967,6 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 			},
 			| Err(e) => return Err(e),
 			| Ok(shortstatehash) => {
-				const BUFSIZE: usize = 49;
-
 				let full_state = legacy_get_full_state(services, shortstatehash).await?;
 
 				let mut lattice = rezzy::state::LtHash::default();

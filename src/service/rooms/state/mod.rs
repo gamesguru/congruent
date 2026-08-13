@@ -116,11 +116,21 @@ impl Service {
 				}),
 				| Err(e) => return Err(e),
 			};
-			let new_node = self
-				.services
-				.state_hamt
-				.store
-				.get_node_blocking(&new_root_handle.structural_hash)?;
+			let new_node =
+				if new_root_handle.structural_hash == rezzy::hamt::StructuralHash::default() {
+					Arc::new(rezzy::hamt::HamtNode {
+						datamap: 0,
+						nodemap: 0,
+						leaves: vec![],
+						children: vec![],
+						structural_hash: rezzy::hamt::StructuralHash::default(),
+					})
+				} else {
+					self.services
+						.state_hamt
+						.store
+						.get_node_blocking(&new_root_handle.structural_hash)?
+				};
 
 			let mut resolver = |hash: &rezzy::hamt::StructuralHash| {
 				self.services.state_hamt.store.get_node_blocking(hash)

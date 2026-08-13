@@ -417,10 +417,7 @@ pub async fn update_caches_for_state_delta(
 						// The user has a member event in the new state,
 						// added_events will handle it.
 					},
-					| Err(Error::BadRequest(
-						ruma::api::client::error::ErrorKind::NotFound,
-						_,
-					)) => {
+					| Err(Error::Request(ruma::api::client::error::ErrorKind::NotFound, ..)) => {
 						// The user has no member event in the new state at all.
 						self.mark_as_left(target_user_id, room_id, None).await;
 						memberships_changed = true;

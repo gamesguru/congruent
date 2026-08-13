@@ -506,11 +506,12 @@ pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 #[allow(unreachable_code, unused_variables)]
 pub(super) async fn force_set_room_state_from_server(
 	&self,
-	_room_id: OwnedRoomId,
-	_server_name: OwnedServerName,
-	_at_event: Option<OwnedEventId>,
+	room_id: OwnedRoomId,
+	server_name: OwnedServerName,
+	at_event: Option<OwnedEventId>,
 ) -> Result {
 	self.bail_restricted()?;
+	let _ = (&room_id, &server_name, &at_event);
 
 	// TODO(MSC00DC/HAMT): force_state pointer transition is not yet implemented.
 	// Return early before making any federation requests or DB mutations.
