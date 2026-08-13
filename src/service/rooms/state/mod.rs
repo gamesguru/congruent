@@ -257,7 +257,7 @@ impl Service {
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
 	) {
-		const BUFSIZE: usize = 48;
+		const BUFSIZE: usize = 49;
 
 		let data = (root_handle.structural_hash, root_handle.state_group_id);
 		self.db

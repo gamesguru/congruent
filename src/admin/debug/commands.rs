@@ -538,6 +538,7 @@ pub(super) async fn force_set_room_state_from_server(
 
 	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
 
+	#[allow(clippy::collection_is_never_read)]
 	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
 
 	let remote_state_response = self
@@ -618,21 +619,9 @@ pub(super) async fn force_set_room_state_from_server(
 			.add_pdu_outlier(&event_id, &value);
 	}
 
-	info!("Resolving new room state");
-	#[allow(unreachable_code)]
-	let new_room_state = self
-		.services
-		.rooms
-		.event_handler
-		.resolve_state(&room_id, &room_version, state)
-		.await?;
-
-	let _ = &new_room_state;
-	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
-	self.services
-		.rooms
-		.state
-		.set_room_state_hamt(&room_id, &new_room_state, &state_lock);
+	return Err(conduwuit::err!(Request(NotImplemented(
+		"TODO(MSC00DC/HAMT): force_state pointer transition"
+	))));
 
 	info!(
 		"Updating joined counts for room just in case (e.g. we may have found a difference in \

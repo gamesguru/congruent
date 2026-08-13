@@ -95,9 +95,11 @@ impl Store {
 					return tokio::task::block_in_place(|| self.get_node_blocking(hash));
 				}
 				// `block_in_place` panics on a `CurrentThread` runtime, so fall back to
-				// blocking the thread directly via the synchronous RocksDB API, same as
-				// when no runtime is present at all.
-				return self.get_node_blocking(hash);
+				// an explicit error to prevent stalling the only executor thread.
+				return Err(conduwuit::err!(error!(
+					"HAMT operations require a multithreaded Tokio runtime to avoid stalling \
+					 the executor."
+				)));
 			}
 			self.get_node_blocking(hash)
 		}

@@ -790,6 +790,8 @@ async fn join_room_by_id_helper_remote_process(
 		entries.push((shortstatekey, shorteventid));
 	}
 
+	return Err(err!(Request(NotImplemented("TODO(MSC00DC/HAMT): remote join append"))));
+
 	let structural_key = room_id.as_bytes();
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)

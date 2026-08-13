@@ -647,6 +647,8 @@ async fn knock_room_helper_remote(
 		entries.push((shortstatekey, shorteventid));
 	}
 
+	return Err(err!(Request(NotImplemented("TODO(MSC00DC/HAMT): remote knock append"))));
+
 	let structural_key = room_id.as_bytes();
 	let (root_handle, root_node) =
 		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
