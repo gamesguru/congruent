@@ -606,42 +606,20 @@ where
 	)
 	.await;
 
-	let pdu_id = if !is_forward_extremity && !soft_fail {
-		// Historical prev-walk events are recovered as timeline history, not
-		// as live forward inserts. Route them through the backfill inserter so
-		// they get negative `Backfilled` counts instead of poisoning the
-		// live-stream order with `Normal` counts.
-		self.services
-			.state
-			.set_event_state(&incoming_pdu.event_id, room_id, state_ids_compressed.clone())
-			.await?;
-
-		let pdu_id = self
-			.services
-			.timeline
-			.force_insert_pdu(room_id, incoming_pdu.event_id(), &incoming_pdu, &val, true)
-			.await?;
-
-		self.services
-			.timeline
-			.clear_outlier_flag(incoming_pdu.event_id());
-		self.services
-			.pdu_metadata
-			.clear_pdu_markers(incoming_pdu.event_id());
-		Some(pdu_id)
-	} else {
-		Box::pin(self.services.timeline.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities.into_iter(),
-			state_ids_compressed,
-			None,
-			soft_fail,
-			&state_lock,
-			room_id,
-		))
-		.await?
-	};
+	// Recovered federation history is still new to this homeserver, so it
+	// must stay in the sync-visible live stream. Use the normal append path
+	// here; only explicit `/backfill` pagination inserts use backfilled counts.
+	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
+		&incoming_pdu,
+		val,
+		extremities.into_iter(),
+		state_ids_compressed,
+		None,
+		soft_fail,
+		&state_lock,
+		room_id,
+	))
+	.await?;
 
 	if soft_fail {
 		self.services.pdu_metadata.mark_event_soft_failed(
