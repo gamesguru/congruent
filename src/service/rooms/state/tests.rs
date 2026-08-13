@@ -225,4 +225,41 @@ async fn test_state_equivalence() {
 		.await
 		.expect("failed to get state");
 	assert_eq!(final_root.structural_hash, root2.structural_hash);
+
+	let create_shortstatekey = services
+		.rooms
+		.short
+		.get_shortstatekey(&StateEventType::RoomCreate, "")
+		.await
+		.expect("create shortstatekey should exist");
+	let create_shorteventid = services
+		.rooms
+		.short
+		.get_shorteventid(&event1.event_id)
+		.await
+		.expect("create shorteventid should exist");
+	let member_shortstatekey = services
+		.rooms
+		.short
+		.get_shortstatekey(&StateEventType::RoomMember, "@alice:test.conduwuit.local")
+		.await
+		.expect("member shortstatekey should exist");
+	let member_shorteventid = services
+		.rooms
+		.short
+		.get_shorteventid(&event2.event_id)
+		.await
+		.expect("member shorteventid should exist");
+
+	let expected = std::collections::HashMap::from([
+		(create_shortstatekey, create_shorteventid),
+		(member_shortstatekey, member_shorteventid),
+	]);
+	let actual = services
+		.rooms
+		.state
+		.load_full_state_hamt(&final_root)
+		.await
+		.expect("failed to load HAMT state");
+	assert_eq!(actual, expected);
 }

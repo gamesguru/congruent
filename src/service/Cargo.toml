@@ -16,6 +16,7 @@ crate-type = [
 path = "mod.rs"
 
 [features]
+aws_lc_rs = ["rustls/aws_lc_rs"]
 blurhashing = ["dep:blurhash", "dep:image"]
 brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]
 console = ["dep:rustyline-async", "dep:termimad"]
@@ -45,6 +46,7 @@ release_max_log_level = [
 	"tracing/max_level_trace",
 	"tracing/release_max_level_info",
 ]
+ring = ["rustls/ring"]
 systemd = ["dep:sd-notify"]
 url_preview = ["dep:image", "dep:webpage"]
 zstd_compression = [
