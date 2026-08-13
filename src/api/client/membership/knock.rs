@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, iter::once};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;

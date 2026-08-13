@@ -27,9 +27,7 @@ pub(crate) async fn get_state_accumulator_route(
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
-) -> Result<impl axum::response::IntoResponse> {
-	use futures::StreamExt;
-
+) -> Result<()> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
@@ -68,37 +66,18 @@ pub(crate) async fn get_state_accumulator_route(
 		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
-	let shortstatehash = services
+	let _shortstatehash = services
 		.rooms
 		.state_accessor
 		.pdu_shortstatehash(&query.event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Event not found or has no state."))))?;
 
-	let lthash = services
-		.rooms
-		.state_compressor
-		.get_lthash(shortstatehash)
-		.await?;
-
-	let (lattice, digest) = serialize_lthash(&lthash);
-
-	let n_state_events = services
-		.rooms
-		.state_accessor
-		.state_full_shortids(shortstatehash)
-		.count()
-		.await;
-
-	let response = StateAccumulatorResponse {
-		event_id: query.event_id,
-		algorithm: "lthash16".to_owned(),
-		lattice,
-		n_state_events: n_state_events.try_into().unwrap_or_default(),
-		digest,
-	};
-
-	Ok(axum::Json(response))
+	// TODO(MSC00DC/HAMT): derive LtHash from the HAMT store once it exposes
+	// LtHash lookup by shortstatehash. state_compressor has been removed.
+	Err!(Request(NotFound(
+		"State accumulator endpoint is not yet available during HAMT migration."
+	)))
 }
 
 async fn verify_federation_request(
@@ -160,8 +139,6 @@ async fn verify_federation_request(
 
 	Ok(())
 }
-
-pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
 
 #[cfg(test)]
 mod tests {

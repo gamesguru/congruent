@@ -23,7 +23,7 @@ use ruma::{
 };
 
 use crate::{
-	Dep, globals, rooms,
+	Dep, rooms,
 	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
 };
 
@@ -34,11 +34,7 @@ pub struct Service {
 }
 
 struct Services {
-	globals: Dep<globals::Service>,
 	short: Dep<rooms::short::Service>,
-	spaces: Dep<rooms::spaces::Service>,
-	state_cache: Dep<rooms::state_cache::Service>,
-	state_hamt: Dep<rooms::state_hamt::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
@@ -58,11 +54,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			mutex: RoomMutexMap::new(),
 			services: Services {
-				globals: args.depend::<globals::Service>("globals"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
-				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
-				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
-				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
@@ -102,7 +94,7 @@ impl Service {
 	///
 	/// This adds all current state events (not including the incoming event)
 	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
-	#[tracing::instrument(skip(self), level = "debug")]
+	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
 		_event_id: &EventId,

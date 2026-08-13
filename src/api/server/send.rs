@@ -38,10 +38,7 @@ use ruma::{
 			send_transaction_message,
 		},
 	},
-	events::{
-		StateEventType,
-		receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
-	},
+	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
 	serde::Raw,
 	to_device::DeviceIdOrAllDevices,
@@ -287,50 +284,16 @@ async fn inject_state_hash_mismatches(
 }
 
 /// Compute the "after" digest for a received event by applying its state
-/// delta to the before-state LtHash.  `pdu_shortstatehash` returns the state
-/// snapshot *before* the event, so for state events we must remove the
-/// previous event at (type, state_key) and insert the new one.
+/// delta to the before-state LtHash.
+///
+/// TODO(MSC00DC/HAMT): not yet implemented — `get_lthash` was on the removed
+/// `state_compressor` service. Reimplement once the HAMT store exposes LtHash
+/// lookup by `shortstatehash`.
 async fn compute_receiver_after_digest(
-	services: &crate::State,
-	event_id: &OwnedEventId,
+	_services: &crate::State,
+	_event_id: &OwnedEventId,
 ) -> Option<String> {
-	let sstatehash = services
-		.rooms
-		.state_accessor
-		.pdu_shortstatehash(event_id)
-		.await
-		.ok()?;
-	let lthash_before = services
-		.rooms
-		.state_compressor
-		.get_lthash(sstatehash)
-		.await
-		.ok()?;
-
-	// Check if this is a state event that modifies the hash
-	let pdu = services.rooms.timeline.get_pdu(event_id).await.ok()?;
-	if let Some(state_key) = &pdu.state_key {
-		let ev_type = StateEventType::from(pdu.kind.to_string().as_str());
-		let ev_type_str = pdu.kind.to_string();
-		let mut lthash_after = lthash_before;
-
-		// Remove old event at this (type, state_key) if one exists
-		if let Ok(old_event_id) = services
-			.rooms
-			.state_accessor
-			.state_get_id::<OwnedEventId>(sstatehash, &ev_type, state_key)
-			.await
-		{
-			lthash_after.remove(&ev_type_str, state_key, &old_event_id);
-		}
-
-		// Insert the new event
-		lthash_after.insert(&ev_type_str, state_key, event_id);
-		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_after).1)
-	} else {
-		// Non-state event: after == before
-		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_before).1)
-	}
+	None
 }
 
 /// Handles a failed federation transaction by sending the error through
