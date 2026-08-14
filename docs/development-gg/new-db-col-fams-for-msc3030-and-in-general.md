@@ -23,6 +23,19 @@ RocksDB sorts keys lexicographically, so scanning with a `shortroomid` prefix is
 
 This is exactly why `rebuild_state` extracts auth_events during Phase 1's topo scan — it piggybacks on the room-scoped sequential iteration to avoid 60K random point reads later.
 
+One subtle point worth documenting explicitly: the _allocator_ for `shortroomid` and `shorteventid` is global and monotonic (`globals.next_count()`), but the _room-scoped behavior_ comes from how those IDs are used in RocksDB keys.
+
+- `shortroomid` is attached to the room and becomes the prefix for timeline scans.
+- `shorteventid` is just a compact event handle; it is not room-local and should not be treated as a per-room sequence.
+
+So the invariant is really "room-scoped key prefixes over globally allocated short IDs", not "short IDs themselves are sequential within a room."
+
+That also suggests a concrete storage improvement for auth/prev edges:
+
+- `shorteventid_shortauthevents` and `shorteventid_shortprevevents` are currently keyed by `shorteventid` alone, so room-wide scans have to bounce through lots of unrelated event keys.
+- A room-prefixed dual key, e.g. `shortroomid || shorteventid`, would cluster a room's edge lookups together and should improve cache locality and reduce random reads during room-local traversal.
+- This would be an optimization for hot paths like state recovery, backfill, and auth-chain reconstruction. It should be documented as a performance-oriented storage change, not as a semantic requirement of the event model.
+
 ---
 
 Good question — let me check what actually uses those tables:
