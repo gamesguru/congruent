@@ -23,6 +23,22 @@ use crate::rooms::{
 	state_compressor::HashSetCompressStateEvent, timeline::RawPduId,
 };
 
+fn choose_state_ids_target(
+	incoming_prev_events: &[OwnedEventId],
+	state_ids_anchor: Option<&ruma::EventId>,
+	incoming_event_id: &ruma::EventId,
+) -> OwnedEventId {
+	match incoming_prev_events {
+		| [only_prev] => {
+			let only_prev: &ruma::EventId = only_prev.as_ref();
+			state_ids_anchor
+				.filter(|anchor| *anchor == only_prev)
+				.map_or_else(|| only_prev.to_owned(), ToOwned::to_owned)
+		},
+		| _ => incoming_event_id.to_owned(),
+	}
+}
+
 /// Upgrade an outlier PDU to a full timeline event.
 ///
 /// Performs auth checks, state resolution, soft-fail evaluation, and finally
@@ -868,53 +884,16 @@ where
 			// Complement's corrupted-auth-chain test, where /get_missing_events
 			// returns one event but the sender still needs to provide the state
 			// snapshot that links it back into the known DAG.
-			let mut prev_events = incoming_pdu.prev_events();
-			let first_prev = prev_events.next();
-
-			// Only trust a caller-supplied `state_ids_anchor` when it is actually
-			// one of this event's own prev_events. It's computed upstream from a
-			// gap-recovery /get_missing_events fetch and can otherwise point at
-			// an unrelated event further back in the DAG; querying /state_ids
-			// against that would authenticate `incoming_pdu` against state that
-			// doesn't actually precede it. Re-derive a fresh iterator since
-			// `prev_events` above was already partially consumed.
-			let validated_anchor = state_ids_anchor
-				.filter(|anchor| incoming_pdu.prev_events().any(|prev_id| prev_id == *anchor));
-
-			// The single prev_event id is the preferred /state_ids target: its
-			// resolved state is the state immediately preceding `incoming_pdu`.
-			// `incoming_pdu.event_id()` below is only the last-resort fallback,
-			// used when there are zero or multiple prev_events and therefore no
-			// single direct predecessor to anchor the lookup on.
-			let state_lookup_event_id = match validated_anchor {
-				| Some(anchor) => anchor.to_owned(),
-				| None => match (first_prev, prev_events.next()) {
-					| (Some(first_prev), None) => {
-						let nested_prev = if let Ok(prev_pdu) =
-							self.services.timeline.get_pdu(first_prev).await
-						{
-							let mut nested = prev_pdu.prev_events();
-							match (nested.next(), nested.next()) {
-								| (Some(nested_prev), None) => Some(nested_prev.to_owned()),
-								| _ => None,
-							}
-						} else if let Ok(prev_pdu) =
-							self.services.timeline.get_pdu_outlier(first_prev).await
-						{
-							let mut nested = prev_pdu.prev_events();
-							match (nested.next(), nested.next()) {
-								| (Some(nested_prev), None) => Some(nested_prev.to_owned()),
-								| _ => None,
-							}
-						} else {
-							None
-						};
-
-						nested_prev.unwrap_or_else(|| first_prev.to_owned())
-					},
-					| _ => incoming_pdu.event_id().to_owned(),
-				},
-			};
+			// Only trust a caller-supplied `state_ids_anchor` for the single-prev
+			// case. It comes from gap recovery and is safe as a direct /state_ids
+			// target only when there is no fork to resolve.
+			let incoming_prev_events: Vec<OwnedEventId> =
+				incoming_pdu.prev_events().map(OwnedEventId::from).collect();
+			let state_lookup_event_id = choose_state_ids_target(
+				&incoming_prev_events,
+				state_ids_anchor,
+				incoming_pdu.event_id(),
+			);
 
 			// Attempt a synchronous /state_ids fetch from the sending server
 			// BEFORE queuing the async DAG healer.
@@ -1093,15 +1072,15 @@ where
 								 /state_ids fetch failed"
 							)));
 						}
-					}
 
-					// All prev_events exist but state hashes not computed — safe to
-					// fall back to current room state for the auth check.
-					info!(
-						target: "state_res_debug",
-						event_id = %incoming_pdu.event_id,
-						"fetch_state failed but prev_events present; falling back to current room state"
-					);
+						// All prev_events exist but state hashes not computed — safe to
+						// fall back to current room state for the auth check.
+						info!(
+							target: "state_res_debug",
+							event_id = %incoming_pdu.event_id,
+							"fetch_state failed but prev_events present; falling back to current room state"
+						);
+					}
 				},
 			}
 		}
@@ -1332,4 +1311,69 @@ async fn calculate_state_delta(
 	}
 
 	Ok(Some(state_delta))
+}
+
+#[cfg(test)]
+mod tests {
+	use ruma::event_id;
+
+	use super::choose_state_ids_target;
+
+	#[test]
+	fn state_ids_target_prefers_validated_anchor_for_single_prev() {
+		let incoming_event_id = event_id!("$send:test");
+		let anchor = event_id!("$state:test");
+		let prevs = vec![anchor.to_owned()];
+
+		let target = choose_state_ids_target(&prevs, Some(anchor), incoming_event_id);
+
+		assert_eq!(target, anchor.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_falls_back_to_single_prev_when_anchor_is_invalid() {
+		let incoming_event_id = event_id!("$send:test");
+		let first_prev = event_id!("$gme:test");
+		let prevs = vec![first_prev.to_owned()];
+
+		let target = choose_state_ids_target(
+			&prevs,
+			Some(event_id!("$unrelated:test")),
+			incoming_event_id,
+		);
+
+		assert_eq!(target, first_prev.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_uses_single_prev_when_anchor_missing() {
+		let incoming_event_id = event_id!("$send:test");
+		let first_prev = event_id!("$gme:test");
+		let prevs = vec![first_prev.to_owned()];
+
+		let target = choose_state_ids_target(&prevs, None, incoming_event_id);
+
+		assert_eq!(target, first_prev.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_uses_incoming_event_when_multiple_prevs() {
+		let incoming_event_id = event_id!("$send:test");
+		let prevs = vec![event_id!("$a:test").to_owned(), event_id!("$b:test").to_owned()];
+
+		let target = choose_state_ids_target(&prevs, None, incoming_event_id);
+
+		assert_eq!(target, incoming_event_id.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_ignores_anchor_when_multiple_prevs() {
+		let incoming_event_id = event_id!("$send:test");
+		let anchor = event_id!("$state:test");
+		let prevs = vec![anchor.to_owned(), event_id!("$b:test").to_owned()];
+
+		let target = choose_state_ids_target(&prevs, Some(anchor), incoming_event_id);
+
+		assert_eq!(target, incoming_event_id.to_owned());
+	}
 }
