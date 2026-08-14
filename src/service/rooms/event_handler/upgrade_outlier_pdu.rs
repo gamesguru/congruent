@@ -867,234 +867,247 @@ where
 				"Cannot determine state: prev_event was structurally invalid"
 			)));
 		}
-		// When we have a single unresolved predecessor, ask /state_ids at
-		// that predecessor first. This matches the gap-recovery path used by
-		// Complement's corrupted-auth-chain test, where /get_missing_events
-		// returns one event but the sender still needs to provide the state
-		// snapshot that links it back into the known DAG.
-		// For a single unresolved predecessor, ask /state_ids at that
-		// predecessor. If there are multiple prev_events, fall back to the
-		// incoming event itself so state resolution can account for the fork.
-		let incoming_prev_events: Vec<OwnedEventId> =
-			incoming_pdu.prev_events().map(OwnedEventId::from).collect();
-		let state_lookup_event_id =
-			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id());
-
-		// Attempt a synchronous /state_ids fetch from the sending server
-		// BEFORE queuing the async DAG healer.
-		//
-		// The healer fires asynchronously (after a delay), which races with
-		// the sending server's lifetime: in Complement tests the fake
-		// federation server shuts down when the test times out, so the
-		// healer's /state_ids calls always arrive too late and "all servers
-		// failed". Fetching inline here gives us a shot while the sender
-		// is still alive.
-		debug!(
-			event_id = %incoming_pdu.event_id,
-			%origin,
-			"local state unavailable; attempting synchronous /state_ids fetch"
-		);
-		// Lift the enclosing write-phase cork for the duration of this
-		// /state_ids round-trip (and any fallback fetches below): this
-		// function runs inside `with_cork_and_flush` for both the
-		// incoming event and every prev-event repair, and holding that
-		// cork across federation I/O would suppress unrelated WAL
-		// flushes across the whole server for as long as the remote
-		// takes to answer.
-		match self
-			.services
-			.timeline
-			.without_cork(|| {
-				Box::pin(self.fetch_state(
-					origin,
-					create_event,
-					room_id,
-					&state_lookup_event_id,
-					false,
-				))
+		let any_prev_unknown = futures::stream::iter(incoming_pdu.prev_events())
+			.any(|prev_id| async move {
+				self.services.timeline.get_pdu_id(prev_id).await.is_err()
+					&& self
+						.services
+						.outlier
+						.get_pdu_outlier(prev_id)
+						.await
+						.is_err()
 			})
-			.await
-		{
-			| Ok(Some(fetched_state)) => {
-				info!(
-					target: "state_res_debug",
-					event_id = %incoming_pdu.event_id,
-					n_state = fetched_state.len(),
-					"fetched state via /state_ids; proceeding with auth check"
-				);
-				state_at_event = Some(StateAtEvent::Resolved(fetched_state));
-			},
-			| Ok(None) | Err(_) => {
-				// If any predecessor is still completely unknown — not in
-				// the timeline and not even persisted as an outlier — we
-				// still do not know the event's real state-at-event. A
-				// mixed known/unknown predecessor set is not safe to
-				// authorize against current room state either: the unknown
-				// edge could still anchor the event to a different auth
-				// context.
-				let unknown_prev_ids: Vec<_> = futures::stream::iter(incoming_pdu.prev_events())
-					.filter_map(|prev_id| async move {
-						(self.services.timeline.get_pdu_id(prev_id).await.is_err()
-							&& self
-								.services
-								.outlier
-								.get_pdu_outlier(prev_id)
-								.await
-								.is_err())
-						.then(|| prev_id.to_owned())
-					})
-					.collect()
-					.await;
+			.await;
 
-				let any_prev_unknown = !unknown_prev_ids.is_empty();
+		if any_prev_unknown {
+			// When we have a single unresolved predecessor, ask /state_ids at
+			// that predecessor first. This matches the gap-recovery path used by
+			// Complement's corrupted-auth-chain test, where /get_missing_events
+			// returns one event but the sender still needs to provide the state
+			// snapshot that links it back into the known DAG.
+			// For a single unresolved predecessor, ask /state_ids at that
+			// predecessor. If there are multiple prev_events, fall back to the
+			// incoming event itself so state resolution can account for the fork.
+			let incoming_prev_events: Vec<OwnedEventId> =
+				incoming_pdu.prev_events().map(OwnedEventId::from).collect();
+			let state_lookup_event_id =
+				choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id());
 
-				if any_prev_unknown {
-					// Last resort before rejecting: make a single,
-					// non-recursive attempt to materialize each prev_event
-					// via GET /event/{id}. /state_ids just failed, so we
-					// have no state snapshot — but a server that doesn't
-					// serve /state_ids may still serve individual events.
-					// Without this, a prev_event we were never sent (e.g.
-					// its own /send was rejected for an unrelated reason,
-					// like a signature we can't verify) leaves us with no
-					// cryptographic or structural facts about it, and the
-					// only options are: reject the child outright, or
-					// evaluate it against synthetic/current state — the
-					// latter is the DAG-takeover hazard Synapse's
-					// `on_receive_pdu` rejects for (a forged
-					// single-extremity event judged against today's power
-					// levels instead of its claimed ancestry).
-					//
-					// Fetched events go through the same signature/hash
-					// checks and auth-event resolution as any other
-					// outlier (`handle_outlier_pdu`) and are persisted as
-					// accepted or rejected accordingly. We do NOT chase
-					// their own prev_events — this is a single hop per
-					// prev_event, bounded by prev_events().count()
-					// (already capped at 20 in parse_incoming_pdu), fired
-					// concurrently, not a backfill.
-					// Same reasoning as the /state_ids fetch above: these
-					// single-hop /event fetches and the handle_outlier_pdu
-					// calls below them (which may themselves fall back to
-					// /event_auth) are remote I/O and must not hold the
-					// enclosing cork. Lift it once around the whole
-					// concurrent fan-out rather than per-task: `without_cork`
-					// only ever releases one *held* cork at a time (it can't
-					// safely release more without risking the shared
-					// refcount underflowing), so wrapping each of the up-to-4
-					// concurrent tasks individually would leave all but one
-					// of them running corked anyway.
-					self.services
-						.timeline
-						.without_cork(|| {
-							futures::stream::iter(unknown_prev_ids.iter()).for_each_concurrent(
-								4,
-								|prev_id| async move {
-									debug!(
-										event_id = %incoming_pdu.event_id,
-										%prev_id,
-										%origin,
-										"prev_event still unknown after /state_ids failure; \
-										 attempting single-hop /event fetch"
-									);
-									let Ok(res) = self
-											.services
-											.sending
-											.send_federation_request(
-												origin,
-												ruma::api::federation::event::get_event::v1::Request::new(
-													prev_id.clone(),
-													None,
-												),
-											)
-											.await
-										else {
-											return;
-										};
-									let Ok((fetched_id, val)) =
-										conduwuit::matrix::event::gen_event_id_canonical_json(
-											&res.pdu,
-											room_version_id,
-										)
-									else {
-										return;
-									};
-									if fetched_id != **prev_id {
-										return;
-									}
-
-									// Verified and persisted as an outlier
-									// (accepted or rejected) by handle_outlier_pdu;
-									// the Result doesn't matter here — either way,
-									// the prev_event is now "known" below.
-									drop(
-										Box::pin(self.handle_outlier_pdu(
-											origin,
-											Some(create_event),
-											&fetched_id,
-											room_id,
-											val,
-											false,
-											false,
-											Some(room_version_id),
-										))
-										.await,
-									);
-								},
-							)
-						})
-						.await;
-
-					// Require EVERY prev_event to now be known (in the timeline or
-					// stored as an outlier) before it's safe to fall through to
-					// the current-room-state authorization below. A single-hop
-					// /event fetch above is fired concurrently for each
-					// still-unknown prev_event, and a partial result — some
-					// prevs fetched, others still genuinely unknown — must
-					// still be rejected: authorizing against current state
-					// while any claimed predecessor remains unverified is the
-					// DAG-takeover hazard this whole fallback exists to avoid.
-					let any_prev_still_unknown =
+			// Attempt a synchronous /state_ids fetch from the sending server
+			// BEFORE queuing the async DAG healer.
+			//
+			// The healer fires asynchronously (after a delay), which races with
+			// the sending server's lifetime: in Complement tests the fake
+			// federation server shuts down when the test times out, so the
+			// healer's /state_ids calls always arrive too late and "all servers
+			// failed". Fetching inline here gives us a shot while the sender
+			// is still alive.
+			debug!(
+				event_id = %incoming_pdu.event_id,
+				%origin,
+				"local state unavailable; attempting synchronous /state_ids fetch"
+			);
+			// Lift the enclosing write-phase cork for the duration of this
+			// /state_ids round-trip (and any fallback fetches below): this
+			// function runs inside `with_cork_and_flush` for both the
+			// incoming event and every prev-event repair, and holding that
+			// cork across federation I/O would suppress unrelated WAL
+			// flushes across the whole server for as long as the remote
+			// takes to answer.
+			match self
+				.services
+				.timeline
+				.without_cork(|| {
+					Box::pin(self.fetch_state(
+						origin,
+						create_event,
+						room_id,
+						&state_lookup_event_id,
+						false,
+					))
+				})
+				.await
+			{
+				| Ok(Some(fetched_state)) => {
+					info!(
+						target: "state_res_debug",
+						event_id = %incoming_pdu.event_id,
+						n_state = fetched_state.len(),
+						"fetched state via /state_ids; proceeding with auth check"
+					);
+					state_at_event = Some(StateAtEvent::Resolved(fetched_state));
+				},
+				| Ok(None) | Err(_) => {
+					// If any predecessor is still completely unknown — not in
+					// the timeline and not even persisted as an outlier — we
+					// still do not know the event's real state-at-event. A
+					// mixed known/unknown predecessor set is not safe to
+					// authorize against current room state either: the unknown
+					// edge could still anchor the event to a different auth
+					// context.
+					let unknown_prev_ids: Vec<_> =
 						futures::stream::iter(incoming_pdu.prev_events())
-							.any(|prev_id| async move {
-								self.services.timeline.get_pdu_id(prev_id).await.is_err()
+							.filter_map(|prev_id| async move {
+								(self.services.timeline.get_pdu_id(prev_id).await.is_err()
 									&& self
 										.services
 										.outlier
 										.get_pdu_outlier(prev_id)
 										.await
-										.is_err()
+										.is_err())
+								.then(|| prev_id.to_owned())
+							})
+							.collect()
+							.await;
+
+					let any_prev_still_unknown = !unknown_prev_ids.is_empty();
+
+					if any_prev_still_unknown {
+						// Last resort before rejecting: make a single,
+						// non-recursive attempt to materialize each prev_event
+						// via GET /event/{id}. /state_ids just failed, so we
+						// have no state snapshot — but a server that doesn't
+						// serve /state_ids may still serve individual events.
+						// Without this, a prev_event we were never sent (e.g.
+						// its own /send was rejected for an unrelated reason,
+						// like a signature we can't verify) leaves us with no
+						// cryptographic or structural facts about it, and the
+						// only options are: reject the child outright, or
+						// evaluate it against synthetic/current state — the
+						// latter is the DAG-takeover hazard Synapse's
+						// `on_receive_pdu` rejects for (a forged
+						// single-extremity event judged against today's power
+						// levels instead of its claimed ancestry).
+						//
+						// Fetched events go through the same signature/hash
+						// checks and auth-event resolution as any other
+						// outlier (`handle_outlier_pdu`) and are persisted as
+						// accepted or rejected accordingly. We do NOT chase
+						// their own prev_events — this is a single hop per
+						// prev_event, bounded by prev_events().count()
+						// (already capped at 20 in parse_incoming_pdu), fired
+						// concurrently, not a backfill.
+						// Same reasoning as the /state_ids fetch above: these
+						// single-hop /event fetches and the handle_outlier_pdu
+						// calls below them (which may themselves fall back to
+						// /event_auth) are remote I/O and must not hold the
+						// enclosing cork. Lift it once around the whole
+						// concurrent fan-out rather than per-task: `without_cork`
+						// only ever releases one *held* cork at a time (it can't
+						// safely release more without risking the shared
+						// refcount underflowing), so wrapping each of the up-to-4
+						// concurrent tasks individually would leave all but one
+						// of them running corked anyway.
+						self.services
+							.timeline
+							.without_cork(|| {
+								futures::stream::iter(unknown_prev_ids.iter())
+									.for_each_concurrent(4, |prev_id| async move {
+										debug!(
+											event_id = %incoming_pdu.event_id,
+											%prev_id,
+											%origin,
+											"prev_event still unknown after /state_ids failure; \
+											 attempting single-hop /event fetch"
+										);
+										let Ok(res) = self
+												.services
+												.sending
+												.send_federation_request(
+													origin,
+													ruma::api::federation::event::get_event::v1::Request::new(
+														prev_id.clone(),
+														None,
+													),
+												)
+												.await
+											else {
+												return;
+											};
+										let Ok((fetched_id, val)) =
+											conduwuit::matrix::event::gen_event_id_canonical_json(
+												&res.pdu,
+												room_version_id,
+											)
+										else {
+											return;
+										};
+										if fetched_id != **prev_id {
+											return;
+										}
+
+										// Verified and persisted as an outlier
+										// (accepted or rejected) by handle_outlier_pdu;
+										// the Result doesn't matter here — either way,
+										// the prev_event is now "known" below.
+										drop(
+											Box::pin(self.handle_outlier_pdu(
+												origin,
+												Some(create_event),
+												&fetched_id,
+												room_id,
+												val,
+												false,
+												false,
+												Some(room_version_id),
+											))
+											.await,
+										);
+									})
 							})
 							.await;
 
-					if any_prev_still_unknown {
-						info!(
-							event_id = %incoming_pdu.event_id,
-							"Rejecting event: at least one prev_event still unknown after \
-							 /state_ids and /event fetches failed"
-						);
-						self.services
-							.pdu_metadata
-							.mark_event_rejected(
-								incoming_pdu.event_id(),
-								RejectionCode::PrevEventUnknownStateIdsFailed.tag(),
-							)
-							.await;
-						return Err!(Request(Forbidden(
-							"Cannot determine state: prev_events remain unknown after \
-							 /state_ids fetch failed"
-						)));
-					}
+						// Require EVERY prev_event to now be known (in the timeline or
+						// stored as an outlier) before it's safe to fall through to
+						// the current-room-state authorization below. A single-hop
+						// /event fetch above is fired concurrently for each
+						// still-unknown prev_event, and a partial result — some
+						// prevs fetched, others still genuinely unknown — must
+						// still be rejected: authorizing against current state
+						// while any claimed predecessor remains unverified is the
+						// DAG-takeover hazard this whole fallback exists to avoid.
+						let any_prev_still_unknown =
+							futures::stream::iter(incoming_pdu.prev_events())
+								.any(|prev_id| async move {
+									self.services.timeline.get_pdu_id(prev_id).await.is_err()
+										&& self
+											.services
+											.outlier
+											.get_pdu_outlier(prev_id)
+											.await
+											.is_err()
+								})
+								.await;
 
-					// All prev_events exist but state hashes not computed — safe to
-					// fall back to current room state for the auth check.
-					info!(
-						target: "state_res_debug",
-						event_id = %incoming_pdu.event_id,
-						"fetch_state failed but prev_events present; falling back to current room state"
-					);
-				}
-			},
+						if any_prev_still_unknown {
+							info!(
+								event_id = %incoming_pdu.event_id,
+								"Rejecting event: at least one prev_event still unknown after \
+								 /state_ids and /event fetches failed"
+							);
+							self.services
+								.pdu_metadata
+								.mark_event_rejected(
+									incoming_pdu.event_id(),
+									RejectionCode::PrevEventUnknownStateIdsFailed.tag(),
+								)
+								.await;
+							return Err!(Request(Forbidden(
+								"Cannot determine state: prev_events remain unknown after \
+								 /state_ids fetch failed"
+							)));
+						}
+
+						// All prev_events exist but state hashes not computed — safe to
+						// fall back to current room state for the auth check.
+						info!(
+							target: "state_res_debug",
+							event_id = %incoming_pdu.event_id,
+							"fetch_state failed but prev_events present; falling back to current room state"
+						);
+					}
+				},
+			}
 		}
 	}
 
