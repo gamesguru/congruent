@@ -35,6 +35,21 @@ pub struct Engine {
 	pub(crate) ctx: Arc<Context>,
 	pub(crate) checksums: bool,
 	corks: AtomicU32,
+	// Number of currently-active temporary lifts (`Uncork`, see `cork.rs`).
+	// Deliberately a *separate* counter from `corks` rather than borrowing
+	// against it: `corks` only ever moves in balanced +1/-1 pairs from
+	// `Cork::new`/`Cork::drop`, so it can never underflow regardless of what
+	// concurrent `Uncork`s are doing. If `Uncork` instead decremented
+	// `corks` directly (as an earlier version of this code did), a
+	// concurrent, *unrelated* `Cork::drop`'s unconditional decrement could
+	// fire while that unit was "on loan" to an `Uncork`, wrapping the
+	// unsigned counter and leaving `corked()` stuck permanently `true` --
+	// i.e. writes silently stop flushing forever. With two independent
+	// counters that failure mode is unreachable: the worst outcome of any
+	// interleaving is `lifts` transiently exceeding `corks`, which just
+	// makes `corked()` read `false` a little more often than strictly
+	// necessary (extra flushes, never lost ones).
+	lifts: AtomicU32,
 }
 
 pub(crate) type Db = DBWithThreadMode<MultiThreaded>;
@@ -98,24 +113,25 @@ impl Engine {
 	#[inline]
 	pub(crate) fn uncork(&self) { self.corks.fetch_sub(1, Ordering::Relaxed); }
 
-	/// Decrement the cork count by exactly one, but only if it is currently
-	/// nonzero. Returns whether a decrement actually happened. Unlike
-	/// `uncork()`, this never takes the (unsigned) counter below zero, which
-	/// matters when the caller intends to restore what it took rather than
-	/// unconditionally add/subtract a fixed amount -- see `Uncork` in
-	/// `cork.rs`, which uses this to safely lift an *unknown* number of
-	/// concurrently-held outer corks by exactly the one it can account for.
+	/// Mark one more temporary lift as active -- see `Uncork` in `cork.rs`.
+	/// Always succeeds and is always paired with a later `unlift()`; unlike
+	/// the `corks` counter, this never needs to be conditional because it
+	/// doesn't borrow against another counter's balance.
 	#[inline]
-	pub(crate) fn try_uncork_one(&self) -> bool {
-		// `try_update` (the suggested rename) is still unstable (rust#135894)
-		#[allow(deprecated, deprecated_in_future)]
-		self.corks
-			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| c.checked_sub(1))
-			.is_ok()
-	}
+	pub(crate) fn lift(&self) { self.lifts.fetch_add(1, Ordering::Relaxed); }
 
 	#[inline]
-	pub fn corked(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
+	pub(crate) fn unlift(&self) { self.lifts.fetch_sub(1, Ordering::Relaxed); }
+
+	/// True while at least one held cork is not currently lifted. Both
+	/// loads are independent and not synchronized against each other, so
+	/// this is a best-effort/racy read by design (matches `Uncork`'s
+	/// best-effort semantics, see its doc comment) -- never treat it as
+	/// more than a heuristic for deciding whether to flush eagerly.
+	#[inline]
+	pub fn corked(&self) -> bool {
+		self.corks.load(Ordering::Relaxed) > self.lifts.load(Ordering::Relaxed)
+	}
 
 	/// Query for database property by null-terminated name which is expected to
 	/// have a result with an integer representation. This is intended for
