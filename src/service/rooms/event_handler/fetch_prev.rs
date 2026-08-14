@@ -31,7 +31,6 @@ pub(super) async fn fetch_prev<'a, Events>(
 ) -> Result<(
 	Vec<OwnedEventId>,
 	HashMap<OwnedEventId, BTreeMap<String, CanonicalJsonValue>>,
-	Option<OwnedEventId>,
 	// True if the /get_missing_events response contained at least one event
 	// that failed canonical-JSON validation. Such an event can never be
 	// resolved by any other federation call either (the data itself is
@@ -72,7 +71,7 @@ where
 	}
 
 	if remaining.is_empty() {
-		return Ok((Vec::new(), HashMap::new(), None, false));
+		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
 	let servers = self
@@ -205,7 +204,7 @@ where
 
 	if missing_events.is_empty() {
 		warn!("All servers failed to return /get_missing_events");
-		return Ok((Vec::new(), HashMap::new(), None, false));
+		return Ok((Vec::new(), HashMap::new(), false));
 	}
 
 	let mut unknown_events = Vec::new();
@@ -283,12 +282,5 @@ where
 			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
-	let state_ids_anchor = sorted_eids.last().and_then(|prev_id| {
-		let pdu = candidate_pdus.get(prev_id)?;
-		let mut prev_events = pdu.prev_events();
-		let first_prev = prev_events.next()?.to_owned();
-		prev_events.next().is_none().then_some(first_prev)
-	});
-
-	Ok((sorted_eids, candidate_events, state_ids_anchor, had_invalid_response))
+	Ok((sorted_eids, candidate_events, had_invalid_response))
 }

@@ -25,16 +25,10 @@ use crate::rooms::{
 
 fn choose_state_ids_target(
 	incoming_prev_events: &[OwnedEventId],
-	state_ids_anchor: Option<&ruma::EventId>,
 	incoming_event_id: &ruma::EventId,
 ) -> OwnedEventId {
 	match incoming_prev_events {
-		| [only_prev] => {
-			let only_prev: &ruma::EventId = only_prev.as_ref();
-			state_ids_anchor
-				.filter(|anchor| *anchor == only_prev)
-				.map_or_else(|| only_prev.to_owned(), ToOwned::to_owned)
-		},
+		| [only_prev] => only_prev.to_owned(),
 		| _ => incoming_event_id.to_owned(),
 	}
 }
@@ -62,7 +56,6 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
 	// hitting federation for state at an event we already know is unusable.
 	prev_fetch_had_invalid_data: bool,
-	state_ids_anchor: Option<&ruma::EventId>,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -165,7 +158,6 @@ where
 		&room_version_id,
 		skip_soft_fail,
 		prev_fetch_had_invalid_data,
-		state_ids_anchor,
 	))
 	.await?;
 
@@ -473,7 +465,6 @@ where
 						&room_version_id,
 						skip_soft_fail,
 						false,
-						None,
 					))
 					.await?;
 				}
@@ -726,7 +717,6 @@ async fn resolve_state_at_incoming_event<Pdu>(
 	room_version_id: &RoomVersionId,
 	skip_soft_fail: bool,
 	prev_fetch_had_invalid_data: bool,
-	state_ids_anchor: Option<&ruma::EventId>,
 ) -> Result<StateAtEvent>
 where
 	Pdu: Event + Send + Sync,
@@ -884,16 +874,13 @@ where
 			// Complement's corrupted-auth-chain test, where /get_missing_events
 			// returns one event but the sender still needs to provide the state
 			// snapshot that links it back into the known DAG.
-			// Only trust a caller-supplied `state_ids_anchor` for the single-prev
-			// case. It comes from gap recovery and is safe as a direct /state_ids
-			// target only when there is no fork to resolve.
+			// For a single unresolved predecessor, ask /state_ids at that
+			// predecessor. If there are multiple prev_events, fall back to the
+			// incoming event itself so state resolution can account for the fork.
 			let incoming_prev_events: Vec<OwnedEventId> =
 				incoming_pdu.prev_events().map(OwnedEventId::from).collect();
-			let state_lookup_event_id = choose_state_ids_target(
-				&incoming_prev_events,
-				state_ids_anchor,
-				incoming_pdu.event_id(),
-			);
+			let state_lookup_event_id =
+				choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id());
 
 			// Attempt a synchronous /state_ids fetch from the sending server
 			// BEFORE queuing the async DAG healer.
@@ -1315,45 +1302,29 @@ async fn calculate_state_delta(
 
 #[cfg(test)]
 mod tests {
-	use ruma::event_id;
+	use ruma::{OwnedEventId, event_id};
 
 	use super::choose_state_ids_target;
 
 	#[test]
-	fn state_ids_target_prefers_validated_anchor_for_single_prev() {
+	fn state_ids_target_uses_single_prev() {
 		let incoming_event_id = event_id!("$send:test");
-		let anchor = event_id!("$state:test");
-		let prevs = vec![anchor.to_owned()];
+		let prev = event_id!("$state:test");
+		let prevs = vec![prev.to_owned()];
 
-		let target = choose_state_ids_target(&prevs, Some(anchor), incoming_event_id);
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
 
-		assert_eq!(target, anchor.to_owned());
+		assert_eq!(target, prev.to_owned());
 	}
 
 	#[test]
-	fn state_ids_target_falls_back_to_single_prev_when_anchor_is_invalid() {
+	fn state_ids_target_uses_incoming_event_when_no_prevs() {
 		let incoming_event_id = event_id!("$send:test");
-		let first_prev = event_id!("$gme:test");
-		let prevs = vec![first_prev.to_owned()];
+		let prevs: Vec<OwnedEventId> = Vec::new();
 
-		let target = choose_state_ids_target(
-			&prevs,
-			Some(event_id!("$unrelated:test")),
-			incoming_event_id,
-		);
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
 
-		assert_eq!(target, first_prev.to_owned());
-	}
-
-	#[test]
-	fn state_ids_target_uses_single_prev_when_anchor_missing() {
-		let incoming_event_id = event_id!("$send:test");
-		let first_prev = event_id!("$gme:test");
-		let prevs = vec![first_prev.to_owned()];
-
-		let target = choose_state_ids_target(&prevs, None, incoming_event_id);
-
-		assert_eq!(target, first_prev.to_owned());
+		assert_eq!(target, incoming_event_id.to_owned());
 	}
 
 	#[test]
@@ -1361,18 +1332,7 @@ mod tests {
 		let incoming_event_id = event_id!("$send:test");
 		let prevs = vec![event_id!("$a:test").to_owned(), event_id!("$b:test").to_owned()];
 
-		let target = choose_state_ids_target(&prevs, None, incoming_event_id);
-
-		assert_eq!(target, incoming_event_id.to_owned());
-	}
-
-	#[test]
-	fn state_ids_target_ignores_anchor_when_multiple_prevs() {
-		let incoming_event_id = event_id!("$send:test");
-		let anchor = event_id!("$state:test");
-		let prevs = vec![anchor.to_owned(), event_id!("$b:test").to_owned()];
-
-		let target = choose_state_ids_target(&prevs, Some(anchor), incoming_event_id);
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
 
 		assert_eq!(target, incoming_event_id.to_owned());
 	}

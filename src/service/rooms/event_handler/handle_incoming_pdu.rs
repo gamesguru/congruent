@@ -455,13 +455,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				let first_prev = prev_events.next()?.to_owned();
 				prev_events.next().is_none().then_some(first_prev)
 			});
-			let mut state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
+			let state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
 
 			if is_timeline_event
 				&& let Some(pdu) = parsed_pdu.as_ref()
 				&& direct_prev.is_some()
 			{
-				match Box::pin(self.fetch_prev(
+				if let Err(e) = Box::pin(self.fetch_prev(
 					origin,
 					room_id,
 					event_id,
@@ -470,16 +470,10 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				))
 				.await
 				{
-					| Ok((_, _, Some(fetched_prev_anchor), _)) => {
-						state_ids_anchor = fetched_prev_anchor;
-					},
-					| Ok(_) => {},
-					| Err(e) => {
-						warn!(
-							event_id = %event_id,
-							"failed to fetch prev_events before /state_ids retry: {e}"
-						);
-					},
+					warn!(
+						event_id = %event_id,
+						"failed to fetch prev_events before /state_ids retry: {e}"
+					);
 				}
 			}
 
@@ -674,7 +668,7 @@ pub async fn process_timeline_upgrade(
 	// Fetch any missing prev events before taking the write cork so remote I/O
 	// does not suppress unrelated WAL flushes across the whole server.
 	// These are timeline events.
-	let (sorted_prev_events, fetched_prev_events, state_ids_anchor, prev_fetch_had_invalid_data) =
+	let (sorted_prev_events, fetched_prev_events, prev_fetch_had_invalid_data) =
 		Box::pin(self.fetch_prev(
 			origin,
 			room_id,
@@ -730,7 +724,6 @@ pub async fn process_timeline_upgrade(
 						create_event,
 						first_ts_in_room,
 						prev_id,
-						state_ids_anchor.as_deref(),
 					)
 					.inspect_err(move |e| {
 						warn!("Prev {prev_id} failed: {e}");
@@ -778,7 +771,6 @@ pub async fn process_timeline_upgrade(
 				false,
 				true,
 				prev_fetch_had_invalid_data,
-				state_ids_anchor.as_deref(),
 			))
 			.await
 		})
