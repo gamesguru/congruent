@@ -1,5 +1,5 @@
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::{BTreeMap, HashMap, HashSet},
 	time::{Duration, Instant},
 };
 
@@ -227,59 +227,64 @@ where
 		}
 	}
 
-	let candidate_entries: Vec<(OwnedEventId, ruma::CanonicalJsonObject, PduEvent)> =
-		unknown_events
-			.into_iter()
-			.stream()
-			.broad_filter_map({
-				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
-					if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) =
-						val.remove("unsigned")
-					{
-						unsigned_obj.remove("prev_content");
-						unsigned_obj.remove("prev_sender");
-						unsigned_obj.remove("replaces_state");
-						if !unsigned_obj.is_empty() {
-							val.insert(
-								"unsigned".to_owned(),
-								CanonicalJsonValue::Object(unsigned_obj),
-							);
-						}
-					}
-
-					let mut parse_val = val.clone();
-					parse_val.insert(
-						"event_id".to_owned(),
-						CanonicalJsonValue::String(eid.as_str().to_owned()),
-					);
-
-					match PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
-						| Ok(pdu) =>
-							if check_room_id(room_id, &pdu).is_ok() {
-								Some((eid, val, pdu))
-							} else {
-								None
-							},
-						| Err(_) => None,
+	// Only the fields `graph`/`entries` need are carried out of the closure;
+	// the full `PduEvent` (which owns its own copy of the event content,
+	// separate from `val`) is dropped here rather than being kept alive in
+	// an extra map until the end of the function.
+	let candidate_entries: Vec<(
+		OwnedEventId,
+		ruma::CanonicalJsonObject,
+		HashSet<OwnedEventId>,
+		ruma::UInt,
+		ruma::UInt,
+	)> = unknown_events
+		.into_iter()
+		.stream()
+		.broad_filter_map({
+			move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
+				if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) = val.remove("unsigned")
+				{
+					unsigned_obj.remove("prev_content");
+					unsigned_obj.remove("prev_sender");
+					unsigned_obj.remove("replaces_state");
+					if !unsigned_obj.is_empty() {
+						val.insert(
+							"unsigned".to_owned(),
+							CanonicalJsonValue::Object(unsigned_obj),
+						);
 					}
 				}
-			})
-			.collect()
-			.await;
+
+				let mut parse_val = val.clone();
+				parse_val.insert(
+					"event_id".to_owned(),
+					CanonicalJsonValue::String(eid.as_str().to_owned()),
+				);
+
+				match PduEvent::from_id_val(&eid, parse_val, Some(room_id)) {
+					| Ok(pdu) =>
+						if check_room_id(room_id, &pdu).is_ok() {
+							let prev_events = pdu.prev_events().map(ToOwned::to_owned).collect();
+							let depth = pdu.depth();
+							let origin_server_ts = pdu.origin_server_ts;
+							Some((eid, val, prev_events, depth, origin_server_ts))
+						} else {
+							None
+						},
+					| Err(_) => None,
+				}
+			}
+		})
+		.collect()
+		.await;
 
 	let mut candidate_events = HashMap::with_capacity(candidate_entries.len());
-	let mut candidate_pdus = HashMap::with_capacity(candidate_entries.len());
-	for (eid, val, pdu) in candidate_entries {
-		candidate_events.insert(eid.clone(), val);
-		candidate_pdus.insert(eid, pdu);
-	}
-
-	let mut graph = HashMap::new();
-	let mut entries = HashMap::new();
-	for (eid, pdu) in &candidate_pdus {
-		graph.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
-		entries
-			.insert(eid.clone(), (0_u64.into(), pdu.depth().into(), pdu.origin_server_ts.into()));
+	let mut graph = HashMap::with_capacity(candidate_entries.len());
+	let mut entries = HashMap::with_capacity(candidate_entries.len());
+	for (eid, val, prev_events, depth, origin_server_ts) in candidate_entries {
+		graph.insert(eid.clone(), prev_events);
+		entries.insert(eid.clone(), (0_u64.into(), depth.into(), origin_server_ts.into()));
+		candidate_events.insert(eid, val);
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 	Ok((sorted_eids, candidate_events, had_invalid_response))
