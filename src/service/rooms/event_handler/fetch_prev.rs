@@ -305,7 +305,12 @@ where
 /// one prev_event, that's the deepest still-unresolved point in this batch
 /// and the most useful anchor for a caller's `/state_ids` retry (see the
 /// `fetch_prev` return-type doc comment). `None` if there's no last
-/// candidate, or its prev_events aren't exactly one.
+/// candidate, its prev_events aren't exactly one, or that single prev_event
+/// is itself one of the candidates in this same batch (`/get_missing_events`
+/// can return a multi-hop chain in one response) -- anchoring `/state_ids`
+/// there would ask for state from *before* an event this same call is about
+/// to fetch/process, silently omitting whatever state change that candidate
+/// itself introduces.
 fn deep_state_ids_anchor(
 	sorted_eids: &[OwnedEventId],
 	graph: &HashMap<OwnedEventId, HashSet<OwnedEventId>>,
@@ -314,7 +319,7 @@ fn deep_state_ids_anchor(
 	let parents = graph.get(last_id)?;
 	let mut iter = parents.iter();
 	let only = iter.next()?;
-	iter.next().is_none().then(|| only.clone())
+	(iter.next().is_none() && !graph.contains_key(only)).then(|| only.clone())
 }
 
 #[cfg(test)]
@@ -352,6 +357,21 @@ mod tests {
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
 		graph.insert(gme, [a, b].into_iter().collect());
+
+		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
+	}
+
+	#[test]
+	fn deep_anchor_none_when_single_prev_is_itself_a_candidate() {
+		// A multi-hop /get_missing_events response: both `gme` and its own
+		// single prev `state_ids` were fetched together in this batch.
+		let gme = event_id!("$gme:test").to_owned();
+		let state_ids = event_id!("$state_ids:test").to_owned();
+		let external = event_id!("$external:test").to_owned();
+		let sorted = vec![state_ids.clone(), gme.clone()];
+		let mut graph = HashMap::new();
+		graph.insert(gme, [state_ids.clone()].into_iter().collect());
+		graph.insert(state_ids, [external].into_iter().collect());
 
 		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
 	}
