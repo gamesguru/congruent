@@ -31,6 +31,15 @@ pub(super) async fn fetch_prev<'a, Events>(
 ) -> Result<(
 	Vec<OwnedEventId>,
 	HashMap<OwnedEventId, BTreeMap<String, CanonicalJsonValue>>,
+	// The single unresolved prev_event of the *last-sorted fetched
+	// candidate*, when it has exactly one -- i.e. one hop further back
+	// than `latest_event`'s own direct prev. `/get_missing_events`
+	// commonly returns only the immediate gap-filler (one candidate)
+	// whose own prev_event is still unknown; that deeper event, not the
+	// candidate itself, is what the sender can actually provide a
+	// `/state_ids` snapshot anchored at. `None` when the last candidate
+	// has zero or multiple prev_events (nothing single to anchor on).
+	Option<OwnedEventId>,
 	// True if the /get_missing_events response contained at least one event
 	// that failed canonical-JSON validation. Such an event can never be
 	// resolved by any other federation call either (the data itself is
@@ -71,7 +80,7 @@ where
 	}
 
 	if remaining.is_empty() {
-		return Ok((Vec::new(), HashMap::new(), false));
+		return Ok((Vec::new(), HashMap::new(), None, false));
 	}
 
 	let servers = self
@@ -204,7 +213,7 @@ where
 
 	if missing_events.is_empty() {
 		warn!("All servers failed to return /get_missing_events");
-		return Ok((Vec::new(), HashMap::new(), false));
+		return Ok((Vec::new(), HashMap::new(), None, false));
 	}
 
 	let mut unknown_events = Vec::new();
@@ -287,5 +296,69 @@ where
 		candidate_events.insert(eid, val);
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
-	Ok((sorted_eids, candidate_events, had_invalid_response))
+	let deep_anchor = deep_state_ids_anchor(&sorted_eids, &graph);
+
+	Ok((sorted_eids, candidate_events, deep_anchor, had_invalid_response))
+}
+
+/// One hop further back than the last fetched candidate: if it has exactly
+/// one prev_event, that's the deepest still-unresolved point in this batch
+/// and the most useful anchor for a caller's `/state_ids` retry (see the
+/// `fetch_prev` return-type doc comment). `None` if there's no last
+/// candidate, or its prev_events aren't exactly one.
+fn deep_state_ids_anchor(
+	sorted_eids: &[OwnedEventId],
+	graph: &HashMap<OwnedEventId, HashSet<OwnedEventId>>,
+) -> Option<OwnedEventId> {
+	let last_id = sorted_eids.last()?;
+	let parents = graph.get(last_id)?;
+	let mut iter = parents.iter();
+	let only = iter.next()?;
+	iter.next().is_none().then(|| only.clone())
+}
+
+#[cfg(test)]
+mod tests {
+	use ruma::event_id;
+
+	use super::*;
+
+	#[test]
+	fn deep_anchor_uses_last_candidates_single_prev() {
+		let gme = event_id!("$gme:test").to_owned();
+		let state_ids = event_id!("$state_ids:test").to_owned();
+		let sorted = vec![gme.clone()];
+		let mut graph = HashMap::new();
+		graph.insert(gme, [state_ids.clone()].into_iter().collect());
+
+		assert_eq!(deep_state_ids_anchor(&sorted, &graph), Some(state_ids));
+	}
+
+	#[test]
+	fn deep_anchor_none_when_last_candidate_has_no_prevs() {
+		let gme = event_id!("$gme:test").to_owned();
+		let sorted = vec![gme.clone()];
+		let mut graph = HashMap::new();
+		graph.insert(gme, HashSet::new());
+
+		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
+	}
+
+	#[test]
+	fn deep_anchor_none_when_last_candidate_has_multiple_prevs() {
+		let gme = event_id!("$gme:test").to_owned();
+		let a = event_id!("$a:test").to_owned();
+		let b = event_id!("$b:test").to_owned();
+		let sorted = vec![gme.clone()];
+		let mut graph = HashMap::new();
+		graph.insert(gme, [a, b].into_iter().collect());
+
+		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
+	}
+
+	#[test]
+	fn deep_anchor_none_when_no_candidates() {
+		let graph = HashMap::new();
+		assert_eq!(deep_state_ids_anchor(&[], &graph), None);
+	}
 }
