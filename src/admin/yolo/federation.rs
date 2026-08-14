@@ -257,7 +257,6 @@ pub(super) async fn fetch_pdu(
 				false,
 				true,
 				false,
-				None,
 			),
 	)
 	.await?;

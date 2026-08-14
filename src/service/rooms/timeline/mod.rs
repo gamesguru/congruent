@@ -879,6 +879,21 @@ impl Service {
 		let _cork = self.db.db.cork_and_flush();
 		f().await
 	}
+
+	/// Briefly lift an enclosing `with_cork_and_flush` boundary around
+	/// `f`, so remote I/O run in the middle of a corked write phase (e.g.
+	/// federation fetches performed while resolving a prev-event's missing
+	/// state/auth events) doesn't suppress unrelated WAL flushes across the
+	/// whole server for the duration. The outer cork is restored once `f`
+	/// completes. Harmless to call when no cork is currently held.
+	pub async fn without_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _uncork = self.db.db.uncork_briefly();
+		f().await
+	}
 }
 
 impl Service {

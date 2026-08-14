@@ -20,6 +20,14 @@ impl Database {
 	#[inline]
 	#[must_use]
 	pub fn cork_and_sync(&self) -> Cork { Cork::new(&self.db, true, true) }
+
+	/// Briefly lift an outer cork so unrelated flushes aren't held back
+	/// while awaiting long-running I/O (e.g. federation round-trips) in the
+	/// middle of an existing corked write phase. The outer cork is restored
+	/// when the returned guard drops. Safe to nest; corking is refcounted.
+	#[inline]
+	#[must_use]
+	pub fn uncork_briefly(&self) -> Uncork { Uncork::new(&self.db) }
 }
 
 impl Cork {
@@ -40,4 +48,21 @@ impl Drop for Cork {
 			self.db.sync().ok();
 		}
 	}
+}
+
+pub struct Uncork {
+	db: Arc<Engine>,
+}
+
+impl Uncork {
+	#[inline]
+	fn new(db: &Arc<Engine>) -> Self {
+		db.uncork();
+		Self { db: db.clone() }
+	}
+}
+
+impl Drop for Uncork {
+	#[inline]
+	fn drop(&mut self) { self.db.cork(); }
 }

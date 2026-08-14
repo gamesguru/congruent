@@ -896,14 +896,26 @@ where
 				%origin,
 				"local state unavailable; attempting synchronous /state_ids fetch"
 			);
-			match Box::pin(self.fetch_state(
-				origin,
-				create_event,
-				room_id,
-				&state_lookup_event_id,
-				false,
-			))
-			.await
+			// Lift the enclosing write-phase cork for the duration of this
+			// /state_ids round-trip (and any fallback fetches below): this
+			// function runs inside `with_cork_and_flush` for both the
+			// incoming event and every prev-event repair, and holding that
+			// cork across federation I/O would suppress unrelated WAL
+			// flushes across the whole server for as long as the remote
+			// takes to answer.
+			match self
+				.services
+				.timeline
+				.without_cork(|| {
+					Box::pin(self.fetch_state(
+						origin,
+						create_event,
+						room_id,
+						&state_lookup_event_id,
+						false,
+					))
+				})
+				.await
 			{
 				| Ok(Some(fetched_state)) => {
 					info!(
@@ -966,56 +978,66 @@ where
 						// concurrently, not a backfill.
 						futures::stream::iter(unknown_prev_ids.iter())
 							.for_each_concurrent(4, |prev_id| async move {
-								debug!(
-									event_id = %incoming_pdu.event_id,
-									%prev_id,
-									%origin,
-									"prev_event still unknown after /state_ids failure; \
-									 attempting single-hop /event fetch"
-								);
-								let Ok(res) = self
-									.services
-									.sending
-									.send_federation_request(
-										origin,
-										ruma::api::federation::event::get_event::v1::Request::new(
-											prev_id.clone(),
-											None,
-										),
-									)
-									.await
-								else {
-									return;
-								};
-								let Ok((fetched_id, val)) =
-									conduwuit::matrix::event::gen_event_id_canonical_json(
-										&res.pdu,
-										room_version_id,
-									)
-								else {
-									return;
-								};
-								if fetched_id != **prev_id {
-									return;
-								}
+								// Same reasoning as the /state_ids fetch above:
+								// this single-hop /event fetch and the
+								// handle_outlier_pdu call below it (which may
+								// itself fall back to /event_auth) are remote
+								// I/O and must not hold the enclosing cork.
+								self.services
+									.timeline
+									.without_cork(|| async move {
+										debug!(
+											event_id = %incoming_pdu.event_id,
+											%prev_id,
+											%origin,
+											"prev_event still unknown after /state_ids failure; \
+											 attempting single-hop /event fetch"
+										);
+										let Ok(res) = self
+											.services
+											.sending
+											.send_federation_request(
+												origin,
+												ruma::api::federation::event::get_event::v1::Request::new(
+													prev_id.clone(),
+													None,
+												),
+											)
+											.await
+										else {
+											return;
+										};
+										let Ok((fetched_id, val)) =
+											conduwuit::matrix::event::gen_event_id_canonical_json(
+												&res.pdu,
+												room_version_id,
+											)
+										else {
+											return;
+										};
+										if fetched_id != **prev_id {
+											return;
+										}
 
-								// Verified and persisted as an outlier
-								// (accepted or rejected) by handle_outlier_pdu;
-								// the Result doesn't matter here — either way,
-								// the prev_event is now "known" below.
-								drop(
-									Box::pin(self.handle_outlier_pdu(
-										origin,
-										Some(create_event),
-										&fetched_id,
-										room_id,
-										val,
-										false,
-										false,
-										Some(room_version_id),
-									))
-									.await,
-								);
+										// Verified and persisted as an outlier
+										// (accepted or rejected) by handle_outlier_pdu;
+										// the Result doesn't matter here — either way,
+										// the prev_event is now "known" below.
+										drop(
+											Box::pin(self.handle_outlier_pdu(
+												origin,
+												Some(create_event),
+												&fetched_id,
+												room_id,
+												val,
+												false,
+												false,
+												Some(room_version_id),
+											))
+											.await,
+										);
+									})
+									.await;
 							})
 							.await;
 
