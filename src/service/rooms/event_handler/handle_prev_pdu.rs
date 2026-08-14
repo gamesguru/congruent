@@ -25,6 +25,7 @@ pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	create_event: &'a Pdu,
 	first_ts_in_room: MilliSecondsSinceUnixEpoch,
 	prev_id: &'a EventId,
+	state_ids_anchor: Option<&'a EventId>,
 ) -> Result
 where
 	Pdu: Event + Send + Sync,
@@ -145,7 +146,7 @@ where
 		false,
 		false,
 		false,
-		None,
+		state_ids_anchor,
 	))
 	.await?;
 

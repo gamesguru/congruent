@@ -730,6 +730,7 @@ pub async fn process_timeline_upgrade(
 						create_event,
 						first_ts_in_room,
 						prev_id,
+						state_ids_anchor.as_deref(),
 					)
 					.inspect_err(move |e| {
 						warn!("Prev {prev_id} failed: {e}");
