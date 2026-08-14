@@ -98,6 +98,22 @@ impl Engine {
 	#[inline]
 	pub(crate) fn uncork(&self) { self.corks.fetch_sub(1, Ordering::Relaxed); }
 
+	/// Decrement the cork count by exactly one, but only if it is currently
+	/// nonzero. Returns whether a decrement actually happened. Unlike
+	/// `uncork()`, this never takes the (unsigned) counter below zero, which
+	/// matters when the caller intends to restore what it took rather than
+	/// unconditionally add/subtract a fixed amount -- see `Uncork` in
+	/// `cork.rs`, which uses this to safely lift an *unknown* number of
+	/// concurrently-held outer corks by exactly the one it can account for.
+	#[inline]
+	pub(crate) fn try_uncork_one(&self) -> bool {
+		// `try_update` (the suggested rename) is still unstable (rust#135894)
+		#[allow(deprecated, deprecated_in_future)]
+		self.corks
+			.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| c.checked_sub(1))
+			.is_ok()
+	}
+
 	#[inline]
 	pub fn corked(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
 

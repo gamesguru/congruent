@@ -982,16 +982,22 @@ where
 						// prev_event, bounded by prev_events().count()
 						// (already capped at 20 in parse_incoming_pdu), fired
 						// concurrently, not a backfill.
-						futures::stream::iter(unknown_prev_ids.iter())
-							.for_each_concurrent(4, |prev_id| async move {
-								// Same reasoning as the /state_ids fetch above:
-								// this single-hop /event fetch and the
-								// handle_outlier_pdu call below it (which may
-								// itself fall back to /event_auth) are remote
-								// I/O and must not hold the enclosing cork.
-								self.services
-									.timeline
-									.without_cork(|| async move {
+						// Same reasoning as the /state_ids fetch above: these
+						// single-hop /event fetches and the handle_outlier_pdu
+						// calls below them (which may themselves fall back to
+						// /event_auth) are remote I/O and must not hold the
+						// enclosing cork. Lift it once around the whole
+						// concurrent fan-out rather than per-task: `without_cork`
+						// only ever releases one *held* cork at a time (it can't
+						// safely release more without risking the shared
+						// refcount underflowing), so wrapping each of the up-to-4
+						// concurrent tasks individually would leave all but one
+						// of them running corked anyway.
+						self.services
+							.timeline
+							.without_cork(|| {
+								futures::stream::iter(unknown_prev_ids.iter())
+									.for_each_concurrent(4, |prev_id| async move {
 										debug!(
 											event_id = %incoming_pdu.event_id,
 											%prev_id,
@@ -1043,7 +1049,6 @@ where
 											.await,
 										);
 									})
-									.await;
 							})
 							.await;
 
