@@ -40,7 +40,7 @@ fn choose_state_ids_target(
 /// thin; the heavy lifting is delegated to the helpers below so that each
 /// async state-machine stays within the stack-frame budget.
 #[implement(super::Service)]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	&self,
 	incoming_pdu: PduEvent,
@@ -56,6 +56,12 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
 	// hitting federation for state at an event we already know is unusable.
 	prev_fetch_had_invalid_data: bool,
+	// True when the caller already holds a `with_cork_and_flush` boundary
+	// (the federation prev-event/incoming-event paths). Callers that invoke
+	// this directly with no outer flush boundary (admin rescue commands)
+	// must pass `false` so the timeline insert below flushes itself instead
+	// of silently relying on some later, unrelated write to flush it.
+	inside_flush_boundary: bool,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -623,7 +629,7 @@ where
 		state_ids_compressed,
 		None,
 		soft_fail,
-		true,
+		inside_flush_boundary,
 		&state_lock,
 		room_id,
 	))

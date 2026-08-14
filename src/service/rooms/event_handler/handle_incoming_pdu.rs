@@ -680,31 +680,45 @@ pub async fn process_timeline_upgrade(
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
-	let mut eventid_info: HashMap<
-		OwnedEventId,
-		(conduwuit::PduEvent, BTreeMap<String, CanonicalJsonValue>),
-	> = HashMap::new();
+	// Corked (but not flushed) for the whole loop so a gap with many
+	// predecessors doesn't pay for one synchronous engine flush per outlier
+	// persisted inside `handle_outlier_pdu` -- it releases this cork itself
+	// around each federation round-trip it makes, so unrelated flushes
+	// elsewhere on the server still aren't held back while we wait on the
+	// network.
+	let mut eventid_info = self
+		.services
+		.timeline
+		.with_cork(|| async {
+			let mut eventid_info: HashMap<
+				OwnedEventId,
+				(conduwuit::PduEvent, BTreeMap<String, CanonicalJsonValue>),
+			> = HashMap::new();
 
-	for prev_id in &sorted_prev_events {
-		let Some(val) = fetched_prev_events.get(prev_id).cloned() else {
-			continue;
-		};
+			for prev_id in &sorted_prev_events {
+				let Some(val) = fetched_prev_events.get(prev_id).cloned() else {
+					continue;
+				};
 
-		if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
-			origin,
-			Some(create_event),
-			prev_id,
-			room_id,
-			val,
-			false,
-			false,
-			Some(&room_version_id),
-		))
-		.await
-		{
-			eventid_info.insert(prev_id.clone(), (pdu, val));
-		}
-	}
+				if let Ok((pdu, val)) = Box::pin(self.handle_outlier_pdu(
+					origin,
+					Some(create_event),
+					prev_id,
+					room_id,
+					val,
+					false,
+					false,
+					Some(&room_version_id),
+				))
+				.await
+				{
+					eventid_info.insert(prev_id.clone(), (pdu, val));
+				}
+			}
+
+			eventid_info
+		})
+		.await;
 
 	// Keep the actual write phase inside one flush boundary so prev-event
 	// repairs and the incoming event become visible together.
@@ -771,6 +785,7 @@ pub async fn process_timeline_upgrade(
 				false,
 				true,
 				prev_fetch_had_invalid_data,
+				true,
 			))
 			.await
 		})

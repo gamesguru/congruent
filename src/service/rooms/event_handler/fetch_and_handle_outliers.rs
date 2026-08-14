@@ -631,7 +631,29 @@ where
 								missing.len()
 							);
 							for auth_event in missing {
-								if individually_fetch_in_flight.insert(auth_event.clone()) {
+								let ratelimited = if let Some((time, tries)) = self
+									.services
+									.globals
+									.bad_event_ratelimiter
+									.read()
+									.get(&**auth_event)
+								{
+									const MIN_DURATION: u64 = 60 * 2;
+									const MAX_DURATION: u64 = 60 * 60 * 8;
+									continue_exponential_backoff_secs(
+										MIN_DURATION,
+										MAX_DURATION,
+										time.elapsed(),
+										*tries,
+									)
+								} else {
+									false
+								};
+
+								if ratelimited {
+									info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited, skipping individual fetch)");
+								} else if individually_fetch_in_flight.insert(auth_event.clone())
+								{
 									push_fetch(auth_event.clone(), true, &mut active_fetches);
 								}
 								if !graph.contains_key(auth_event) {

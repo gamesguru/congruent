@@ -136,6 +136,8 @@ where
 	}};
 
 	// Keep the large upgrade future out of handle_prev_pdu's own future.
+	// Called from within handle_incoming_pdu's `with_cork_and_flush`, so the
+	// timeline insert below must not flush on its own.
 	Box::pin(self.upgrade_outlier_to_timeline_pdu(
 		pdu,
 		json,
@@ -145,6 +147,7 @@ where
 		false,
 		false,
 		false,
+		true,
 	))
 	.await?;
 

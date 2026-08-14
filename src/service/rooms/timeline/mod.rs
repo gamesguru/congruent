@@ -880,6 +880,21 @@ impl Service {
 		f().await
 	}
 
+	/// Coalesce a group of timeline writes without forcing a flush when `f`
+	/// completes. Unlike `with_cork_and_flush`, callers are expected to
+	/// either be nested inside an outer flush boundary or not need one
+	/// (e.g. batching outlier persistence ahead of a later
+	/// `with_cork_and_flush`) -- use this when per-write flushing, not
+	/// durability, is the problem being solved.
+	pub async fn with_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork();
+		f().await
+	}
+
 	/// Briefly lift an enclosing `with_cork_and_flush` boundary around
 	/// `f`, so remote I/O run in the middle of a corked write phase (e.g.
 	/// federation fetches performed while resolving a prev-event's missing

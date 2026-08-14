@@ -342,14 +342,13 @@ fn looks_like_markdown(s: &str) -> bool {
 		|| s.contains("```")
 		|| BOLD_RE
 			.get_or_init(|| {
-				Regex::new(r"(^|[^\w*])\*\*[^\s*][^*]*[^\s*]\*\*([^\w*]|$)")
+				Regex::new(r"(^|[^\w])\*\*[^\s][\s\S]*?[^\s]\*\*([^\w]|$)")
 					.expect("valid bold regex")
 			})
 			.is_match(s)
 		|| LINK_RE
 			.get_or_init(|| {
-				Regex::new(r"\[[^\]\n]+\]\((?:https?://|/|#)[^) \n]+\)")
-					.expect("valid markdown link regex")
+				Regex::new(r"\[[^\]\n]+\]\([^()\s]+\)").expect("valid markdown link regex")
 			})
 			.is_match(s)
 		|| s.lines().any(|line| line.trim_start().starts_with('|'))

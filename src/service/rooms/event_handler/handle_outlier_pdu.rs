@@ -164,14 +164,16 @@ where
 						);
 						if let Ok(res) = self
 							.services
-							.sending
-							.send_federation_request(
-								server,
-								ruma::api::federation::event::get_event::v1::Request {
-									event_id: event_id.to_owned(),
-									include_unredacted_content: None,
-								},
-							)
+							.timeline
+							.without_cork(|| {
+								self.services.sending.send_federation_request(
+									server,
+									ruma::api::federation::event::get_event::v1::Request {
+										event_id: event_id.to_owned(),
+										include_unredacted_content: None,
+									},
+								)
+							})
 							.await
 						{
 							if let Ok((eid, clean_val)) =
@@ -207,14 +209,16 @@ where
 					// Re-fetch since we can't move clean_val out of the nested scope
 					if let Ok(res) = self
 						.services
-						.sending
-						.send_federation_request(
-							sender_server.as_ref().unwrap(),
-							ruma::api::federation::event::get_event::v1::Request {
-								event_id: event_id.to_owned(),
-								include_unredacted_content: None,
-							},
-						)
+						.timeline
+						.without_cork(|| {
+							self.services.sending.send_federation_request(
+								sender_server.as_ref().unwrap(),
+								ruma::api::federation::event::get_event::v1::Request {
+									event_id: event_id.to_owned(),
+									include_unredacted_content: None,
+								},
+							)
+						})
 						.await
 					{
 						if let Ok((_, clean_val)) =
@@ -584,14 +588,16 @@ where
 	let mut rejected_in_chain = std::collections::BTreeSet::<OwnedEventId>::new();
 	if let Ok(response) = self
 		.services
-		.sending
-		.send_federation_request(
-			origin,
-			ruma::api::federation::authorization::get_event_authorization::v1::Request {
-				room_id: room_id.to_owned(),
-				event_id: event_id.to_owned(),
-			},
-		)
+		.timeline
+		.without_cork(|| {
+			self.services.sending.send_federation_request(
+				origin,
+				ruma::api::federation::authorization::get_event_authorization::v1::Request {
+					room_id: room_id.to_owned(),
+					event_id: event_id.to_owned(),
+				},
+			)
+		})
 		.await
 	{
 		let mut auth_chain_map = HashMap::new();
