@@ -1,3 +1,4 @@
+{"Action":"pass","Test":"TestCorruptedAuthChain"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_fail_initially"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_fail_when_left_allowed_room"}
