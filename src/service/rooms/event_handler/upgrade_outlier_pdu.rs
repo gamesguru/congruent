@@ -834,23 +834,6 @@ where
 		// Local state is unavailable — prev_events are not yet in DB or their
 		// state hashes have not been computed.
 		//
-		// Before making any network requests, check whether state is missing
-		// because prev_events are rejected. If they are, a /state_ids fetch
-		// would be wasted traffic — just fall through to the current room
-		// state fallback. The auth check will still reject invalid events.
-		let all_prevs_rejected = futures::stream::iter(incoming_pdu.prev_events())
-			.all(|prev_id| async move {
-				self.services.pdu_metadata.is_event_rejected(prev_id).await
-					|| self.services.timeline.get_pdu_id(prev_id).await.is_ok()
-			})
-			.await;
-
-		let any_prev_rejected = futures::stream::iter(incoming_pdu.prev_events())
-			.any(
-				|prev_id| async move { self.services.pdu_metadata.is_event_rejected(prev_id).await },
-			)
-			.await;
-
 		let all_prevs_unknown = futures::stream::iter(incoming_pdu.prev_events())
 			.all(|prev_id| async move {
 				self.services.timeline.get_pdu_id(prev_id).await.is_err()
@@ -882,23 +865,6 @@ where
 				.await;
 			return Err!(Request(Forbidden(
 				"Cannot determine state: prev_event was structurally invalid"
-			)));
-		} else if any_prev_rejected && all_prevs_rejected {
-			// All prev_events are rejected. Do not fall back to current-room
-			// state, since that would authorize against an unrelated context.
-			info!(
-				event_id = %incoming_pdu.event_id,
-				"Rejecting event: all prev_events are rejected; refusing current-room-state fallback"
-			);
-			self.services
-				.pdu_metadata
-				.mark_event_rejected(
-					incoming_pdu.event_id(),
-					RejectionCode::PrevEventsRejected.tag(),
-				)
-				.await;
-			return Err!(Request(Forbidden(
-				"Cannot determine state: all prev_events are rejected"
 			)));
 		}
 		// When we have a single unresolved predecessor, ask /state_ids at
