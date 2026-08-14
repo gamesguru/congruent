@@ -604,7 +604,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			}
 		},
 		| Err(conduwuit::Error::Request(_, ref msg, ..))
-			if msg.contains("Event depends on rejected prev event") =>
+			if msg.contains("Cannot determine state: all prev_events are rejected") =>
 		{
 			info!(
 				"Event {event_id} rejected because it depends on rejected prev event(s). \
