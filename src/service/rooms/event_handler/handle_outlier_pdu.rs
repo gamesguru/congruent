@@ -575,8 +575,9 @@ where
 	// short. A bulk /event_auth call is efficient, but it's also the
 	// federation request most likely to be unhandled or misbehave on the
 	// remote (see: TestCorruptedAuthChain, where an unregistered /event_auth
-	// handler turned a partial-chain scenario into a fatal 404). Log this
-	// loudly so it's visible without grepping for `state_res_debug`.
+	// handler turned a partial-chain scenario into a fatal 404). If this
+	// still cannot resolve the chain, the caller decides whether that should
+	// become a retryable rejection or a clean ACK.
 	warn!(
 		target: "state_res_debug",
 		%event_id,

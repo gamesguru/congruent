@@ -63,6 +63,12 @@ pub enum RejectionCode {
 	/// exists specifically to check that cascade stays permanent — mirrors
 	/// Synapse's `AUTH_ERROR` being terminal).
 	DependsOnRejectedAuthEvent,
+	/// This event's prev_events point only at rejected predecessors.
+	/// Retryable — the rejection is about the event's current resolution
+	/// context, not the event bytes themselves. If the predecessor rejection
+	/// is later cleared, a fresh attempt may be able to resolve state and
+	/// auth correctly.
+	PrevEventsRejected,
 	/// We could not resolve one of this event's auth events at all (not
 	/// locally, not via `/event_auth`, not via `/state_ids`). Retryable —
 	/// this is a resolution failure, not evidence the event is invalid; a
@@ -103,6 +109,7 @@ impl RejectionCode {
 			| Self::SignatureVerificationFailed => "signature_verification_failed",
 			| Self::InvalidPduFormat => "invalid_pdu_format",
 			| Self::DependsOnRejectedAuthEvent => "depends_on_rejected_auth_event",
+			| Self::PrevEventsRejected => "prev_events_rejected",
 			| Self::MissingAuthEvent => "missing_auth_event",
 			| Self::DuplicateAuthEventKey => "duplicate_auth_event_key",
 			| Self::MissingCreateEvent => "missing_create_event",
@@ -121,6 +128,7 @@ impl RejectionCode {
 		matches!(
 			self,
 			Self::MissingAuthEvent
+				| Self::PrevEventsRejected
 				| Self::StructurallyInvalidInGetMissingEvents
 				| Self::PrevEventUnknownStateIdsFailed
 		)
@@ -148,6 +156,7 @@ impl RejectionCode {
 			Self::SignatureVerificationFailed,
 			Self::InvalidPduFormat,
 			Self::DependsOnRejectedAuthEvent,
+			Self::PrevEventsRejected,
 			Self::MissingAuthEvent,
 			Self::DuplicateAuthEventKey,
 			Self::MissingCreateEvent,

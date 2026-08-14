@@ -222,6 +222,8 @@ where
 			if let Some(state_key) = &pdu.state_key {
 				let key = StateEventType::from(pdu.kind().clone());
 				auth_events.insert((key, state_key.clone()), pdu);
+			} else {
+				missing_auth_events = true;
 			}
 		} else {
 			missing_auth_events = true;
@@ -883,12 +885,22 @@ where
 				"Cannot determine state: prev_event was structurally invalid"
 			)));
 		} else if any_prev_rejected && all_prevs_rejected {
-			// All non-timeline prev_events are rejected — no point fetching
-			// state from federation. Fall through to current room state.
-			debug!(
+			// All prev_events are rejected. Do not fall back to current-room
+			// state, since that would authorize against an unrelated context.
+			info!(
 				event_id = %incoming_pdu.event_id,
-				"Skipping /state_ids fetch: not a state event or prev_events are rejected; using current room state"
+				"Rejecting event: all prev_events are rejected; refusing current-room-state fallback"
 			);
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					RejectionCode::PrevEventsRejected.tag(),
+				)
+				.await;
+			return Err!(Request(Forbidden(
+				"Cannot determine state: all prev_events are rejected"
+			)));
 		} else {
 			// When we have a single unresolved predecessor, ask /state_ids at
 			// that predecessor first. This matches the gap-recovery path used by

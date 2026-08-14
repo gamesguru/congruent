@@ -604,6 +604,19 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			}
 		},
 		| Err(conduwuit::Error::Request(_, ref msg, ..))
+			if msg.contains("Event depends on rejected prev event") =>
+		{
+			info!(
+				"Event {event_id} rejected because it depends on rejected prev event(s). \
+				 Returning Ok(None) to acknowledge the transaction."
+			);
+			self.services
+				.outlier
+				.add_pdu_outlier(event_id, &value, Some(room_id))
+				.await;
+			return Ok(None);
+		},
+		| Err(conduwuit::Error::Request(_, ref msg, ..))
 			if msg.contains("Event depends on rejected auth event")
 				|| msg.contains("is already known and rejected") =>
 		{
