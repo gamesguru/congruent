@@ -23,6 +23,21 @@ use crate::rooms::{
 	state_compressor::HashSetCompressStateEvent, timeline::RawPduId,
 };
 
+/// Picks which event ID to request `/state_ids` at.
+///
+/// Per the federation API, `/state_ids?event_id=X` returns the room's state
+/// *prior to* X -- the state X itself was authorized against, not
+/// including any change X makes. So the choice here matters: if the
+/// incoming event has exactly one `prev_event`, we can ask for state
+/// *at that prev_event* and get back the precise pre-state the incoming
+/// event needs to be authorized against. If X is itself a state event
+/// (e.g. a membership change), requesting `/state_ids` at X (the `_`
+/// fallback below, used when there's a fork or multiple prevs to resolve
+/// via state res instead) would omit X's own contribution -- fine for
+/// state resolution, since that's the point, but callers evaluating
+/// *this* event's own auth grant must anchor at its prev_event, not at
+/// itself, or they'll authorize it against state that doesn't yet
+/// reflect what came immediately before it.
 fn choose_state_ids_target(
 	incoming_prev_events: &[OwnedEventId],
 	incoming_event_id: &ruma::EventId,
