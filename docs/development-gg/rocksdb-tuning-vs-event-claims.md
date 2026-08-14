@@ -12,12 +12,12 @@ blurred together in casual discussion:
 2. **Generic database tuning**
    The performance and storage wins come from RocksDB configuration, not from a
    special event-layer compression format. The relevant knobs are:
-   - Zstd / other SST compression
-   - bottommost compression
-   - WAL compression
-   - direct I/O
-   - compaction and background thread tuning
-   - cache sizing and block-table layout
+    - Zstd / other SST compression
+    - bottommost compression
+    - WAL compression
+    - direct I/O
+    - compaction and background thread tuning
+    - cache sizing and block-table layout
 
 ## What "highly compressed" actually means
 
@@ -43,7 +43,7 @@ format beyond normal RocksDB key/value persistence.
 
 ## Relevant code paths
 
-- [Room deletion and purge flow](/run/media/shane/shane4tb-ent/repos/tuwunel/src/service/rooms/delete/mod.rs)
-- [Database-wide RocksDB options](/run/media/shane/shane4tb-ent/repos/tuwunel/src/database/engine/db_opts.rs)
-- [Per-column compression and table options](/run/media/shane/shane4tb-ent/repos/tuwunel/src/database/engine/cf_opts.rs)
-- [RocksDB maintenance notes](/run/media/shane/shane4tb-ent/repos/tuwunel/docs/maintenance.md)
+- [Room deletion and purge flow](src/admin/room/commands.rs)
+- [Database-wide RocksDB options](src/database/engine/db_opts.rs)
+- [Per-column compression and table options](src/database/engine/cf_opts.rs)
+- [RocksDB maintenance notes](docs/maintenance.mdx)
