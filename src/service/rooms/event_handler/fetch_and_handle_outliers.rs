@@ -57,6 +57,28 @@ where
 		},
 	};
 
+	// Shared by every site that decides whether to fetch a missing *auth*
+	// event (as opposed to `back_off`'s per-event write side, or the
+	// differently-tuned backoff window used for top-level timeline events)
+	// so the two durations below can't drift out of sync between callers.
+	let auth_event_ratelimited = |id: &EventId| {
+		self.services
+			.globals
+			.bad_event_ratelimiter
+			.read()
+			.get(id)
+			.is_some_and(|(time, tries)| {
+				const MIN_DURATION: u64 = 60 * 2;
+				const MAX_DURATION: u64 = 60 * 60 * 8;
+				continue_exponential_backoff_secs(
+					MIN_DURATION,
+					MAX_DURATION,
+					time.elapsed(),
+					*tries,
+				)
+			})
+	};
+
 	let mut routing_servers = if let Some(explicit) = explicit_routing_servers {
 		explicit
 	} else {
@@ -362,26 +384,7 @@ where
 												.pdu_exists(&auth_event)
 												.await
 											{
-												let ratelimited = if let Some((time, tries)) =
-													self.services
-														.globals
-														.bad_event_ratelimiter
-														.read()
-														.get(&*auth_event)
-												{
-													const MIN_DURATION: u64 = 60 * 2;
-													const MAX_DURATION: u64 = 60 * 60 * 8;
-													continue_exponential_backoff_secs(
-														MIN_DURATION,
-														MAX_DURATION,
-														time.elapsed(),
-														*tries,
-													)
-												} else {
-													false
-												};
-
-												if ratelimited {
+												if auth_event_ratelimited(&auth_event) {
 													info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited)");
 													continue;
 												}
@@ -630,38 +633,40 @@ where
 								 falling back to individual /event fetches",
 								missing.len()
 							);
+							// Whether at least one auth event actually got a fetch
+							// scheduled (either just now, or already in flight from
+							// an earlier round). If every single one is presently
+							// ratelimited, there is nothing to wait on this round --
+							// requeuing `next_id` anyway would let it fall through to
+							// the terminal `else` below on its very next pass (since
+							// `individual_auth_fetch_attempted` is a one-shot flag,
+							// already consumed above) and get permanently rejected
+							// before any backoff window actually expired.
+							let mut any_scheduled = false;
 							for auth_event in missing {
-								let ratelimited = if let Some((time, tries)) = self
-									.services
-									.globals
-									.bad_event_ratelimiter
-									.read()
-									.get(&**auth_event)
-								{
-									const MIN_DURATION: u64 = 60 * 2;
-									const MAX_DURATION: u64 = 60 * 60 * 8;
-									continue_exponential_backoff_secs(
-										MIN_DURATION,
-										MAX_DURATION,
-										time.elapsed(),
-										*tries,
-									)
-								} else {
-									false
-								};
-
-								if ratelimited {
+								if auth_event_ratelimited(auth_event) {
 									info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited, skipping individual fetch)");
-								} else if individually_fetch_in_flight.insert(auth_event.clone())
-								{
-									push_fetch(auth_event.clone(), true, &mut active_fetches);
+								} else {
+									any_scheduled = true;
+									if individually_fetch_in_flight.insert(auth_event.clone()) {
+										push_fetch(auth_event.clone(), true, &mut active_fetches);
+									}
 								}
 								if !graph.contains_key(auth_event) {
 									graph.insert(auth_event.clone(), HashSet::new());
 								}
 							}
-							suspended = true;
-							unprocessed.push((next_id, value));
+
+							if any_scheduled {
+								suspended = true;
+								unprocessed.push((next_id, value));
+							} else {
+								debug_info!(
+									"All individual auth-event fallback fetches for {next_id} \
+									 are ratelimited; deferring to a future retry instead of \
+									 rejecting early"
+								);
+							}
 						} else {
 							warn!(target: "auth_chain", "Backing off event {next_id} after individual auth-event fallback still left events missing");
 							// `missing` can run into the hundreds (e.g. MSC4297); persist
