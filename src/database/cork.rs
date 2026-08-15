@@ -78,7 +78,7 @@ pub struct Uncork {
 impl Uncork {
 	#[inline]
 	fn new(db: &Arc<Engine>) -> Self {
-		let lifted = db.corked();
+		let lifted = db.has_corks();
 		if lifted {
 			db.lift();
 		}

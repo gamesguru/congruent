@@ -563,13 +563,22 @@ where
 
 		check_room_id(room_id, &auth_event)?;
 
-		match auth_events_by_key.entry((
-			auth_event.kind.to_string().into(),
-			auth_event
-				.state_key
-				.clone()
-				.expect("all auth events have state keys"),
-		)) {
+		let Some(ref state_key) = auth_event.state_key else {
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
+				.await;
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
+			return Err!(Request(InvalidParam(
+				"Auth event is not a state event: {}",
+				auth_event.event_id()
+			)));
+		};
+
+		match auth_events_by_key.entry((auth_event.kind.to_string().into(), state_key.clone())) {
 			| hash_map::Entry::Vacant(v) => {
 				v.insert(auth_event);
 			},
@@ -894,16 +903,25 @@ where
 					))
 					.await
 					{
-						| Ok((pdu, _)) => {
-							info!(
-								target: "state_res_debug",
-								%event_id,
-								%auth_eid,
-								resolved_id = %pdu.event_id(),
-								"Auth chain event accepted"
-							);
-							auth_events.insert(pdu.event_id().to_owned(), pdu);
-						},
+						| Ok((pdu, _)) =>
+							if pdu.state_key.is_none() {
+								warn!(
+									target: "state_res_debug",
+									%event_id,
+									auth_eid = %pdu.event_id(),
+									"Auth chain event from /event_auth is not a state event"
+								);
+								rejected_in_chain.insert(auth_eid.clone());
+							} else {
+								info!(
+									target: "state_res_debug",
+									%event_id,
+									%auth_eid,
+									resolved_id = %pdu.event_id(),
+									"Auth chain event accepted"
+								);
+								auth_events.insert(pdu.event_id().to_owned(), pdu);
+							},
 						| Err(ref e) => {
 							info!(
 								target: "state_res_debug",

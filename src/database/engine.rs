@@ -123,6 +123,9 @@ impl Engine {
 	#[inline]
 	pub(crate) fn unlift(&self) { self.lifts.fetch_sub(1, Ordering::Relaxed); }
 
+	#[inline]
+	pub(crate) fn has_corks(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
+
 	/// True while at least one held cork is not currently lifted. Both
 	/// loads are independent and not synchronized against each other, so
 	/// this is a best-effort/racy read by design (matches `Uncork`'s
