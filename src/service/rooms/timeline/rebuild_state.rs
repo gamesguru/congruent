@@ -1,16 +1,15 @@
 use std::{
 	collections::{BTreeSet, HashMap, HashSet},
-	pin::pin,
 	sync::Arc,
 	time::Instant,
 };
 
+use conduwuit::utils::timeline_sorter::sort_timeline_events;
 use conduwuit_core::{
 	Result, debug, info,
 	matrix::{event::Event, state_res::StateMap},
 	warn,
 };
-use futures::StreamExt;
 use ruma::{OwnedEventId, RoomId, RoomVersionId, events::TimelineEventType};
 
 use crate::rooms;
@@ -88,7 +87,7 @@ impl super::Service {
 
 		// Phase 1: Stream events and extract metadata + keep state PDUs
 		eprintln!("[rebuild_state] Phase 1: streaming events...");
-		let (events_meta, room_version, state_pdus) = self.rebuild_stream_events(room_id).await;
+		let (events_meta, room_version, state_pdus) = self.rebuild_stream_events(room_id).await?;
 		eprintln!("[rebuild_state] Phase 1 done: {} events", events_meta.len());
 
 		let event_set: HashSet<OwnedEventId> =
@@ -153,18 +152,23 @@ impl super::Service {
 	async fn rebuild_stream_events(
 		&self,
 		room_id: &RoomId,
-	) -> (Vec<EventMeta>, RoomVersionId, Vec<Option<rezzy::LeanEvent>>) {
+	) -> Result<(Vec<EventMeta>, RoomVersionId, Vec<Option<rezzy::LeanEvent>>)> {
 		info!("rebuild_state: streaming events in topological order...");
 		let start = Instant::now();
+
+		let (entries, graph, _metadata_cache) = self.db.collect_reorder_entries(room_id).await?;
+		let sorted = sort_timeline_events(&entries, &graph);
 
 		let mut events_meta: Vec<EventMeta> = Vec::new();
 		let mut state_pdus: Vec<Option<rezzy::LeanEvent>> = Vec::new();
 		let mut room_version = RoomVersionId::V1;
 		let mut room_version_found = false;
 
-		let mut stream = pin!(self.topo_pdus(room_id, None));
-		while let Some(Ok((_pdu_count, pdu))) = stream.next().await {
-			let eid = pdu.event_id().to_owned();
+		for eid in sorted {
+			let Ok((pdu, _json)) = self.db.get_from_eventid_pdu(&eid).await else {
+				warn!("rebuild_state: skipping missing PDU while streaming {eid}");
+				continue;
+			};
 			let prev: Vec<OwnedEventId> = pdu.prev_events().map(ToOwned::to_owned).collect();
 			let auth: Vec<OwnedEventId> = pdu.auth_events().map(ToOwned::to_owned).collect();
 			let is_state = pdu.state_key().is_some();
@@ -186,7 +190,7 @@ impl super::Service {
 				}
 			}
 
-			events_meta.push((eid, prev, auth, state_key, depth));
+			events_meta.push((eid.clone(), prev, auth, state_key, depth));
 			// Keep state event PDUs for fork resolution; drop messages
 			state_pdus.push(if is_state { Some(pdu_to_lean(&pdu)) } else { None });
 		}
@@ -199,7 +203,7 @@ impl super::Service {
 			start.elapsed(),
 			room_version,
 		);
-		(events_meta, room_version, state_pdus)
+		Ok((events_meta, room_version, state_pdus))
 	}
 
 	// ── Phase 2b: Pre-compute auth chains bottom-up ──
