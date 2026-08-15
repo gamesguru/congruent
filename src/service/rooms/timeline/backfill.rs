@@ -30,7 +30,10 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::{pdu_metadata::is_retryable_rejection_reason, short::ShortStateKey};
+use crate::rooms::{
+	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
+	short::ShortStateKey,
+};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -434,8 +437,26 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 				// evidence that the event is invalid. Let them back through
 				// promotion after clearing the retryable marker so a later
 				// retry path does not treat the stored outlier as already
-				// settled.
-				if meta.is_outlier && is_retryable_rejection_reason(&meta.rejection_reason) {
+				// settled -- but `promote_outlier` skips all auth checks on
+				// the assumption its input already passed them, so this must
+				// exclude `MissingAuthEvent` specifically: that reason means
+				// *this event's own* auth chain never finished resolving, so
+				// there's no validated auth verdict to trust here at all
+				// (contrast e.g. `StateResolutionFailedWithPrevsPresent`,
+				// which is attached only after this event's own auth check
+				// already succeeded -- see `is_event_pending_auth_resolution`'s
+				// doc comment). Force-promoting an unvalidated event would be
+				// an auth bypass, not a legitimate retry. Leave it rejected;
+				// it can only be safely revalidated by a real
+				// `handle_outlier_pdu` re-run, not by this promotion pass.
+				let pending_auth_resolution = matches!(
+					RejectionCode::parse(&meta.rejection_reason),
+					Some(RejectionCode::MissingAuthEvent)
+				);
+				if meta.is_outlier
+					&& !pending_auth_resolution
+					&& is_retryable_rejection_reason(&meta.rejection_reason)
+				{
 					if self
 						.services
 						.pdu_metadata
@@ -449,6 +470,18 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
 			| Ok(_) => continue,
 			| Err(_) => {
+				// No batch metadata to inspect here (the batch lookup itself
+				// failed) -- fall back to the narrower live check so this
+				// path doesn't force-promote an event whose own auth chain
+				// never finished resolving. See the comment above.
+				if self
+					.services
+					.pdu_metadata
+					.is_event_pending_auth_resolution(&event_id)
+					.await
+				{
+					continue;
+				}
 				if self
 					.services
 					.pdu_metadata
