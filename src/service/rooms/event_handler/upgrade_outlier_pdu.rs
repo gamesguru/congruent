@@ -1101,7 +1101,7 @@ where
 											val,
 											false,
 											false,
-											Some(room_version_id),
+											room_version_id,
 											super::AuthRecoveryStage::AfterStateIds,
 										))
 										.await,

@@ -209,7 +209,7 @@ pub(crate) async fn invite_helper(
 				&event_id,
 				value,
 				true,
-				None,
+				&room_version_id,
 			)
 			.boxed()
 			.await?

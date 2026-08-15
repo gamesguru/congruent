@@ -831,8 +831,14 @@ async fn join_room_by_id_helper_remote_process(
 	drop(state_lock);
 
 	if !send_join_response.room_state.members_omitted && !remote_latest_events.is_empty() {
-		handle_missing_join_extremities(services, room_id, &remote_server, remote_latest_events)
-			.await;
+		handle_missing_join_extremities(
+			services,
+			room_id,
+			&room_version_id,
+			&remote_server,
+			remote_latest_events,
+		)
+		.await;
 	}
 
 	// Re-acquire the state lock before appending our join event
@@ -904,6 +910,7 @@ async fn join_room_by_id_helper_remote_process(
 async fn handle_missing_join_extremities(
 	services: &Services,
 	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
 	remote_server: &OwnedServerName,
 	remote_latest_events: Vec<ruma::OwnedEventId>,
 ) {
@@ -965,7 +972,14 @@ async fn handle_missing_join_extremities(
 		if let Err(e) = services
 			.rooms
 			.event_handler
-			.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true)
+			.handle_incoming_pdu(
+				remote_server,
+				room_id,
+				&parsed_event_id,
+				value,
+				true,
+				room_version_id,
+			)
 			.boxed()
 			.await
 		{
@@ -1418,6 +1432,7 @@ async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
 	event_id: &ruma::OwnedEventId,
 ) -> Result<()> {
 	info!(
@@ -1459,7 +1474,14 @@ async fn fetch_missing_extremity(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+				.handle_incoming_pdu(
+					remote_server,
+					room_id,
+					&parsed_event_id,
+					value,
+					true,
+					room_version_id,
+				)
 				.await?;
 			return Ok(());
 		}
@@ -1495,7 +1517,14 @@ async fn fetch_missing_extremity(
 	services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true, None)
+		.handle_incoming_pdu(
+			remote_server,
+			room_id,
+			&parsed_event_id,
+			value,
+			true,
+			room_version_id,
+		)
 		.await?;
 
 	Ok(())

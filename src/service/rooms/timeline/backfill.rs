@@ -674,7 +674,7 @@ async fn get_remote_pdu_limited(
 				// materialize their predecessor chain into the backfilled
 				// timeline so they keep their historical position instead of
 				// becoming new forward timeline/extremity events.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, None)
+				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, &room_version_id)
 				.boxed()
 				.await
 			{
@@ -791,7 +791,7 @@ pub async fn backfill_pdu(
 		value.clone(),
 		false,
 		false,
-		Some(&room_version_id),
+		&room_version_id,
 		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))
 	.await

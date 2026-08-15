@@ -523,6 +523,8 @@ async fn handle_room(
 		.lock(&room_id)
 		.await;
 
+	let room_version_id = services.rooms.state.get_room_version(&room_id).await?;
+
 	let room_id = &room_id;
 	let pdu_map: HashMap<OwnedEventId, CanonicalJsonObject> = pdus
 		.into_iter()
@@ -550,12 +552,14 @@ async fn handle_room(
 			.server
 			.check_running()
 			.map_err(|_| TransactionError::ShuttingDown)?;
-		let result = Box::pin(
-			services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
-		)
+		let result = Box::pin(services.rooms.event_handler.handle_incoming_pdu(
+			origin,
+			room_id,
+			&event_id,
+			value,
+			true,
+			&room_version_id,
+		))
 		.await
 		.map(|_| ());
 

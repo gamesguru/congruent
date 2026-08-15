@@ -404,13 +404,19 @@ impl Service {
 					continue;
 				}
 
+				let Ok(room_version_id) = self.services.state.get_room_version(room_id).await
+				else {
+					warn!(target: "forwardfill", "Failed to determine room version for {room_id}");
+					continue;
+				};
+
 				if let Err(e) = Box::pin(self.services.event_handler.handle_incoming_pdu(
 					target_server,
 					room_id,
 					&parsed_event_id,
 					value,
 					true,
-					None,
+					&room_version_id,
 				))
 				.await
 				{

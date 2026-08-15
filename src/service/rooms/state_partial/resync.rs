@@ -184,6 +184,7 @@ impl Service {
 								value,
 								// minimize work, store as outliers
 								false,
+								&room_version,
 							)
 							.await;
 					}
@@ -232,6 +233,7 @@ impl Service {
 								value.clone(),
 								// minimize work, store as outliers
 								false,
+								&room_version,
 							)
 							.await
 							.ok()?;

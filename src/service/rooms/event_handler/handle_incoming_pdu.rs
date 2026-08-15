@@ -129,7 +129,7 @@ pub async fn handle_incoming_pdu<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version: &'a ruma::RoomVersionId,
 ) -> Result<Option<RawPduId>> {
 	// Prepare outlier value in case we need to soft-fail on timeout
 	let mut outlier_value = value.clone();
@@ -142,7 +142,7 @@ pub async fn handle_incoming_pdu<'a>(
 		event_id,
 		value,
 		is_timeline_event,
-		room_version_override,
+		room_version,
 	);
 
 	let pdu_timeout = self.services.server.config.pdu_receive_timeout;
@@ -179,7 +179,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version: &'a ruma::RoomVersionId,
 ) -> Result<Option<RawPduId>> {
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
@@ -400,7 +400,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		value.clone(),
 		false,
 		false,
-		room_version_override,
+		room_version,
 		AuthRecoveryStage::BeforeStateIds,
 	))
 	.await
@@ -573,7 +573,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						value,
 						false,
 						false,
-						Some(&room_version_id),
+						&room_version_id,
 						AuthRecoveryStage::AfterStateIds,
 					))
 					.await
@@ -592,7 +592,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					value.clone(),
 					false,
 					false,
-					room_version_override,
+					room_version,
 					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
@@ -755,7 +755,7 @@ pub async fn process_timeline_upgrade(
 					val,
 					false,
 					false,
-					Some(&room_version_id),
+					&room_version_id,
 					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
