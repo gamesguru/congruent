@@ -46,6 +46,19 @@ fn choose_state_ids_target(
 	}
 }
 
+enum ClaimedAuthEventResolution {
+	PresentState(Box<PduEvent>),
+	PresentNonState,
+}
+
+fn classify_claimed_auth_event(pdu: PduEvent) -> ClaimedAuthEventResolution {
+	if pdu.state_key.is_some() {
+		ClaimedAuthEventResolution::PresentState(Box::new(pdu))
+	} else {
+		ClaimedAuthEventResolution::PresentNonState
+	}
+}
+
 /// Upgrade an outlier PDU to a full timeline event.
 ///
 /// Performs auth checks, state resolution, soft-fail evaluation, and finally
@@ -235,29 +248,36 @@ where
 		}
 
 		if let Ok(pdu) = self.services.timeline.get_pdu(event_id).await {
-			if let Some(state_key) = &pdu.state_key {
-				let key = StateEventType::from(pdu.kind().clone());
-				auth_events.insert((key, state_key.clone()), pdu);
-			} else {
-				warn!(
-					event_id = %incoming_pdu.event_id,
-					auth_event_id = %event_id,
-					"Auth event exists locally but is not a state event"
-				);
-				self.services
-					.pdu_metadata
-					.mark_event_rejected(
-						incoming_pdu.event_id(),
-						RejectionCode::InvalidPduFormat.tag(),
-					)
-					.await;
-				self.services
-					.outlier
-					.add_pdu_outlier(incoming_pdu.event_id(), &val, Some(room_id))
-					.await;
-				return Err!(Request(Forbidden(
-					"Event authorisation fails because it references a non-state auth event"
-				)));
+			match classify_claimed_auth_event(pdu) {
+				| ClaimedAuthEventResolution::PresentState(pdu) => {
+					let key = StateEventType::from(pdu.kind().clone());
+					let state_key = pdu
+						.state_key
+						.clone()
+						.expect("state event classification guarantees a state_key");
+					auth_events.insert((key, state_key), *pdu);
+				},
+				| ClaimedAuthEventResolution::PresentNonState => {
+					warn!(
+						event_id = %incoming_pdu.event_id,
+						auth_event_id = %event_id,
+						"Auth event exists locally but is not a state event"
+					);
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(
+							incoming_pdu.event_id(),
+							RejectionCode::InvalidPduFormat.tag(),
+						)
+						.await;
+					self.services
+						.outlier
+						.add_pdu_outlier(incoming_pdu.event_id(), &val, Some(room_id))
+						.await;
+					return Err!(Request(Forbidden(
+						"Event authorisation fails because it references a non-state auth event"
+					)));
+				},
 			}
 		} else {
 			missing_auth_events = true;
@@ -1384,9 +1404,43 @@ async fn calculate_state_delta(
 
 #[cfg(test)]
 mod tests {
-	use ruma::{OwnedEventId, event_id};
+	use std::collections::BTreeMap;
 
-	use super::choose_state_ids_target;
+	use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, event_id, room_id};
+
+	use super::{
+		ClaimedAuthEventResolution, choose_state_ids_target, classify_claimed_auth_event,
+	};
+
+	fn make_test_pdu(
+		event_id: &ruma::EventId,
+		room_id: &ruma::RoomId,
+		event_type: &str,
+		state_key: Option<&str>,
+	) -> conduwuit::PduEvent {
+		let mut json = CanonicalJsonObject::new();
+		json.insert(
+			"event_id".to_owned(),
+			CanonicalJsonValue::String(event_id.as_str().to_owned()),
+		);
+		json.insert(
+			"room_id".to_owned(),
+			CanonicalJsonValue::String(room_id.as_str().to_owned()),
+		);
+		json.insert("type".to_owned(), CanonicalJsonValue::String(event_type.to_owned()));
+		json.insert("sender".to_owned(), CanonicalJsonValue::String("@user:test".to_owned()));
+		json.insert("origin_server_ts".to_owned(), CanonicalJsonValue::Integer(1.into()));
+		json.insert("depth".to_owned(), CanonicalJsonValue::Integer(1.into()));
+		json.insert("auth_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
+		json.insert("prev_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
+		json.insert("content".to_owned(), CanonicalJsonValue::Object(BTreeMap::new()));
+		if let Some(state_key) = state_key {
+			json.insert("state_key".to_owned(), CanonicalJsonValue::String(state_key.to_owned()));
+		}
+
+		conduwuit::PduEvent::from_id_val(event_id, json, Some(room_id))
+			.expect("test PDU should parse")
+	}
 
 	#[test]
 	fn state_ids_target_uses_single_prev() {
@@ -1417,5 +1471,29 @@ mod tests {
 		let target = choose_state_ids_target(&prevs, incoming_event_id);
 
 		assert_eq!(target, incoming_event_id.to_owned());
+	}
+
+	#[test]
+	fn claimed_auth_event_resolution_distinguishes_non_state_from_missing() {
+		let room_id = room_id!("!room:test");
+		let event_id = event_id!("$msg:test");
+		let pdu = make_test_pdu(event_id, room_id, "m.room.message", None);
+
+		assert!(matches!(
+			classify_claimed_auth_event(pdu),
+			ClaimedAuthEventResolution::PresentNonState
+		));
+	}
+
+	#[test]
+	fn claimed_auth_event_resolution_accepts_state_events() {
+		let room_id = room_id!("!room:test");
+		let event_id = event_id!("$state:test");
+		let pdu = make_test_pdu(event_id, room_id, "m.room.member", Some(""));
+
+		assert!(matches!(
+			classify_claimed_auth_event(pdu),
+			ClaimedAuthEventResolution::PresentState(_)
+		));
 	}
 }

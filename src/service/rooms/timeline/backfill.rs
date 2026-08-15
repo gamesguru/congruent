@@ -43,6 +43,19 @@ use crate::rooms::{
 /// [`get_remote_pdu_limited`]'s doc comment.
 const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
 
+enum PromotionCleanupDecision {
+	ClearMarkers,
+	PreserveRejection,
+}
+
+fn promotion_cleanup_decision(rejected_during_promotion: bool) -> PromotionCleanupDecision {
+	if rejected_during_promotion {
+		PromotionCleanupDecision::PreserveRejection
+	} else {
+		PromotionCleanupDecision::ClearMarkers
+	}
+}
+
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
 	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
@@ -938,18 +951,21 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	// this insert. Once the event is visible, later rejection writes should be
 	// refused, so preserve any rejection that landed before the timeline insert
 	// instead of clearing it here.
-	let rejected_during_promotion = self.services.pdu_metadata.is_event_rejected(event_id).await;
-	if rejected_during_promotion {
-		warn!(
-			target: "backfill_debug",
-			%event_id,
-			%room_id,
-			"promote_outlier: event was rejected during promotion; leaving rejection in place"
-		);
-	} else {
-		// Clear any stale rejection flags now that the event is accepted into
-		// the timeline.
-		self.services.pdu_metadata.clear_pdu_markers(event_id);
+	match promotion_cleanup_decision(self.services.pdu_metadata.is_event_rejected(event_id).await)
+	{
+		| PromotionCleanupDecision::PreserveRejection => {
+			warn!(
+				target: "backfill_debug",
+				%event_id,
+				%room_id,
+				"promote_outlier: event was rejected during promotion; leaving rejection in place"
+			);
+		},
+		| PromotionCleanupDecision::ClearMarkers => {
+			// Clear any stale rejection flags now that the event is accepted into
+			// the timeline.
+			self.services.pdu_metadata.clear_pdu_markers(event_id);
+		},
 	}
 
 	drop(insert_lock);
@@ -1139,6 +1155,27 @@ pub async fn force_insert_pdu(
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{PromotionCleanupDecision, promotion_cleanup_decision};
+
+	#[test]
+	fn promotion_cleanup_preserves_concurrent_rejection() {
+		assert!(matches!(
+			promotion_cleanup_decision(true),
+			PromotionCleanupDecision::PreserveRejection
+		));
+	}
+
+	#[test]
+	fn promotion_cleanup_clears_when_no_rejection_raced() {
+		assert!(matches!(
+			promotion_cleanup_decision(false),
+			PromotionCleanupDecision::ClearMarkers
+		));
+	}
 }
 
 #[implement(super::Service)]

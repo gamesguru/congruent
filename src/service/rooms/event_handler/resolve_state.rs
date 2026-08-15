@@ -167,7 +167,7 @@ where
 		.map(|map| {
 			let mut ss = rezzy::SharedState::new();
 			for ((ty, sk), id) in *map {
-				ss.insert((ty.to_string(), sk.to_string()), id.to_string());
+				ss.insert((ty.to_string().into(), sk.to_string()), id.to_string());
 			}
 			ss
 		})
@@ -310,7 +310,7 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.into();
+		let ty: ruma::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);

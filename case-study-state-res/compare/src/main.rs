@@ -495,7 +495,7 @@ fn resolve_via_rezzy(
 				.copied()
 				.unwrap_or(0);
 			if count == num_maps {
-				unconflicted.insert((key.0.clone(), key.1.clone()), id.clone());
+				unconflicted.insert((key.0.clone().into(), key.1.clone()), id.clone());
 				continue;
 			}
 		}
@@ -641,7 +641,7 @@ fn resolve_via_rezzy(
 	// Convert back to StateMap
 	let mut resolved = HashMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.into();
+		let ty: ruma::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::state_key::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);

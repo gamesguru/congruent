@@ -539,7 +539,10 @@ impl super::Service {
 							let tc0 = Instant::now();
 							let mut compressed = BTreeSet::new();
 							for (key, ev_id_str) in &state {
-								let ssk = ssk_cache.get(key).copied().unwrap_or(0);
+								let ssk = ssk_cache
+									.get(&(key.0.to_string(), key.1.clone()))
+									.copied()
+									.unwrap_or(0);
 								let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
 								let compressed_val =
 									rooms::state_compressor::compress_state_event(ssk, sei);
@@ -651,7 +654,10 @@ impl super::Service {
 			}
 		}
 
-		let mut unconflicted = std::collections::BTreeMap::new();
+		let mut unconflicted: std::collections::BTreeMap<
+			(rezzy::basespec::event_types::EventType, String),
+			String,
+		> = std::collections::BTreeMap::new();
 		let mut conflicted_keys: HashSet<(String, String)> = HashSet::new();
 
 		for (key, ids) in &key_to_ids {
@@ -662,7 +668,7 @@ impl super::Service {
 					.copied()
 					.unwrap_or(0);
 				if count == num_maps {
-					unconflicted.insert((key.0.clone(), key.1.clone()), id.clone());
+					unconflicted.insert((key.0.clone().into(), key.1.clone()), id.clone());
 					continue;
 				}
 			}
@@ -833,7 +839,7 @@ impl super::Service {
 		// 8. Convert back to Ruma StateMap
 		let mut resolved = StateMap::new();
 		for ((ty_str, sk_str), eid_str) in resolved_lean {
-			let ty: ruma::events::StateEventType = ty_str.into();
+			let ty: ruma::events::StateEventType = ty_str.to_string().into();
 			let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 			if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 				resolved.insert((ty, sk), eid);
