@@ -7,6 +7,8 @@ use conduwuit::{
 use ruma::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
 use tracing::debug;
 
+use crate::rooms::pdu_metadata::RejectionCode;
+
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
@@ -109,6 +111,25 @@ where
 
 	// Skip old events
 	if pdu.origin_server_ts() < first_ts_in_room {
+		return Ok(());
+	}
+
+	// If this prev_event already failed state resolution with all of its
+	// predecessors present, don't immediately re-enter the same recovery
+	// ladder here. Leaving it as a retryable outlier is enough for later
+	// explicit retries, but promoting it synchronously as a dependency just
+	// replays the same half-resolved anchor choice that produced the
+	// failure in the first place.
+	if self
+		.services
+		.pdu_metadata
+		.get_rejection_reason(prev_id)
+		.await
+		.as_deref()
+		.and_then(RejectionCode::parse)
+		.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent)
+	{
+		debug!(?prev_id, "Skipping immediate prev-event retry after state-resolution failure");
 		return Ok(());
 	}
 
