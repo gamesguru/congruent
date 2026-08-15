@@ -524,6 +524,12 @@ async fn handle_edu_receipt_room_user(
 		.state_cache
 		.server_in_room(origin, room_id)
 		.await
+		&& !services
+			.rooms
+			.state_partial
+			.is_partial_from_server(room_id, origin)
+			.await
+			.unwrap_or(false)
 	{
 		debug_warn!(
 			%user_id, %room_id, %origin,
@@ -586,6 +592,12 @@ async fn handle_edu_typing(
 		.state_cache
 		.is_joined(&typing.user_id, &typing.room_id)
 		.await
+		&& !services
+			.rooms
+			.state_partial
+			.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
+			.await
+			.unwrap_or(false)
 	{
 		debug_warn!(
 			%typing.user_id, %typing.room_id, %origin,
