@@ -238,7 +238,8 @@ impl Service {
 					}
 
 					// Collect newly received state events into Map (shortstatekey -> event_id)
-					let pdu = PduEvent::from_id_val(&calculated_event_id, value).ok()?;
+					let pdu = PduEvent::from_id_val(&calculated_event_id, value, Some(&room_id))
+						.ok()?;
 					let state_key = pdu.state_key.as_ref()?;
 					let shortstatekey = self_copy
 						.services
@@ -350,6 +351,7 @@ mod tests {
 	#[test]
 	fn test_pdu_parsing() {
 		let event_id = conduwuit::ruma::owned_event_id!("$event:example.com");
+		let room_id = conduwuit::ruma::owned_room_id!("!room:example.com");
 		let json = serde_json::json!({
 			"content": { "body": "test" },
 			"type": "m.room.message",
@@ -363,7 +365,11 @@ mod tests {
 			"signatures": { "example.com": { "ed25519:key": "sig" } }
 		});
 
-		let pdu = PduEvent::from_id_val(&event_id, serde_json::from_value(json).unwrap());
+		let pdu = PduEvent::from_id_val(
+			&event_id,
+			serde_json::from_value(json).unwrap(),
+			Some(&room_id),
+		);
 		assert!(pdu.is_ok());
 	}
 

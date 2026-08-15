@@ -806,67 +806,8 @@ async fn join_room_by_id_helper_remote_process(
 	drop(state_lock);
 
 	if !remote_latest_events.is_empty() {
-		let mut missing_latest = Vec::new();
-		for event_id in &remote_latest_events {
-			if !services.rooms.timeline.pdu_exists(event_id).await {
-				missing_latest.push(event_id.clone());
-			}
-		}
-		if !missing_latest.is_empty() {
-			info!(
-				"Forward-filling {} missing extremities from {} after joining room {}",
-				missing_latest.len(),
-				remote_server,
-				room_id
-			);
-			for event_id in missing_latest {
-				let request = federation::event::get_event::v1::Request {
-					event_id: event_id.clone(),
-					include_unredacted_content: Some(false),
-				};
-				let response = match services
-					.sending
-					.send_federation_request(&remote_server, request)
-					.await
-				{
-					| Ok(r) => r,
-					| Err(e) => {
-						warn!("Failed to fetch missing extremity {event_id}: {e}");
-						continue;
-					},
-				};
-				let (parsed_room_id, parsed_event_id, value) = match services
-					.rooms
-					.event_handler
-					.parse_incoming_pdu(&response.pdu)
-					.await
-				{
-					| Ok(v) => v,
-					| Err(e) => {
-						warn!("Failed to parse extremity {event_id}: {e}");
-						continue;
-					},
-				};
-				if parsed_room_id != room_id {
-					warn!(
-						%parsed_event_id,
-						%parsed_room_id,
-						%room_id,
-						%remote_server,
-						"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
-					);
-					continue;
-				}
-				if let Err(e) = services
-					.rooms
-					.event_handler
-					.handle_incoming_pdu(&remote_server, room_id, &parsed_event_id, value, true)
-					.await
-				{
-					warn!("Failed to handle extremity {event_id}: {e}");
-				}
-			}
-		}
+		handle_missing_join_extremities(services, room_id, &remote_server, remote_latest_events)
+			.await;
 	}
 
 	// Re-acquire the state lock before appending our join event
@@ -915,6 +856,79 @@ async fn join_room_by_id_helper_remote_process(
 	}
 
 	Ok(())
+}
+
+async fn handle_missing_join_extremities(
+	services: &Services,
+	room_id: &RoomId,
+	remote_server: &OwnedServerName,
+	remote_latest_events: Vec<ruma::OwnedEventId>,
+) {
+	let mut missing_latest = Vec::new();
+	for event_id in &remote_latest_events {
+		if !services.rooms.timeline.pdu_exists(event_id).await {
+			missing_latest.push(event_id.clone());
+		}
+	}
+	if missing_latest.is_empty() {
+		return;
+	}
+
+	info!(
+		"Forward-filling {} missing extremities from {} after joining room {}",
+		missing_latest.len(),
+		remote_server,
+		room_id
+	);
+
+	for event_id in missing_latest {
+		let request = federation::event::get_event::v1::Request {
+			event_id: event_id.clone(),
+			include_unredacted_content: Some(false),
+		};
+		let response = match services
+			.sending
+			.send_federation_request(remote_server, request)
+			.await
+		{
+			| Ok(r) => r,
+			| Err(e) => {
+				warn!("Failed to fetch missing extremity {event_id}: {e}");
+				continue;
+			},
+		};
+		let (parsed_room_id, parsed_event_id, value) = match services
+			.rooms
+			.event_handler
+			.parse_incoming_pdu(&response.pdu)
+			.await
+		{
+			| Ok(v) => v,
+			| Err(e) => {
+				warn!("Failed to parse extremity {event_id}: {e}");
+				continue;
+			},
+		};
+		if parsed_room_id != room_id {
+			warn!(
+				%parsed_event_id,
+				%parsed_room_id,
+				%room_id,
+				%remote_server,
+				"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
+			);
+			continue;
+		}
+		if let Err(e) = services
+			.rooms
+			.event_handler
+			.handle_incoming_pdu(remote_server, room_id, &parsed_event_id, value, true)
+			.boxed()
+			.await
+		{
+			warn!("Failed to handle extremity {event_id}: {e}");
+		}
+	}
 }
 
 #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_local", level = "info")]
