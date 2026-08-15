@@ -30,7 +30,7 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::short::ShortStateKey;
+use crate::rooms::{pdu_metadata::is_retryable_rejection_reason, short::ShortStateKey};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -428,27 +428,39 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	let mut outlier_state_event_ids = Vec::new();
 	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
-		// `promote_outlier` skips all auth checks on the assumption the
-		// caller already knows the event is valid. An event still marked
-		// rejected (including a pending/retryable verdict left behind by
-		// `handle_outlier_pdu`'s missing-auth-event recovery) has not
-		// cleared that bar yet, so don't let it in via this path either.
-		if self
-			.services
-			.pdu_metadata
-			.is_event_rejected(&event_id)
-			.await
-		{
-			continue;
-		}
 		match metadata {
+			| Ok(meta) if meta.rejected => {
+				// Retryable rejections are recovery markers, not permanent
+				// evidence that the event is invalid. Let them back through
+				// promotion after clearing the retryable marker so a later
+				// retry path does not treat the stored outlier as already
+				// settled.
+				if meta.is_outlier && is_retryable_rejection_reason(&meta.rejection_reason) {
+					if self
+						.services
+						.pdu_metadata
+						.take_retry_if_rejection_retryable(&event_id)
+						.await
+					{
+						outlier_state_event_ids.push(event_id);
+					}
+				}
+			},
 			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
 			| Ok(_) => continue,
 			| Err(_) => {
-				if self.non_outlier_pdu_exists(&event_id).await {
+				if self
+					.services
+					.pdu_metadata
+					.take_retry_if_rejection_retryable(&event_id)
+					.await
+				{
+					outlier_state_event_ids.push(event_id);
+				} else if self.non_outlier_pdu_exists(&event_id).await {
 					continue;
+				} else {
+					outlier_state_event_ids.push(event_id);
 				}
-				outlier_state_event_ids.push(event_id);
 			},
 		}
 	}
@@ -855,6 +867,20 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 			%room_id,
 			"promote_outlier: event already in timeline under the insert lock -- \
 			 skipping redundant insert (TOCTOU race caught)"
+		);
+		drop(insert_lock);
+		return Ok(());
+	}
+
+	// A concurrent retry may have rejected this event after the caller's
+	// earlier metadata check but before we acquired the insertion lock.
+	// Do not promote an event that is now explicitly rejected.
+	if self.services.pdu_metadata.is_event_rejected(event_id).await {
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event was rejected before insert-lock promotion, skipping"
 		);
 		drop(insert_lock);
 		return Ok(());

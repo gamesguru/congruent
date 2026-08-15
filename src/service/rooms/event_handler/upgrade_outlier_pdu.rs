@@ -195,6 +195,7 @@ where
 	debug!(event_id = %incoming_pdu.event_id, "Gathering explicitly claimed auth events");
 	let mut auth_events = HashMap::new();
 	let mut missing_auth_events = false;
+	let mut missing_auth_event_ids = Vec::new();
 
 	for event_id in incoming_pdu.auth_events() {
 		// A bare `is_event_rejected` would also hard-cascade on an auth event
@@ -234,9 +235,11 @@ where
 				auth_events.insert((key, state_key.clone()), pdu);
 			} else {
 				missing_auth_events = true;
+				missing_auth_event_ids.push(OwnedEventId::from(event_id));
 			}
 		} else {
 			missing_auth_events = true;
+			missing_auth_event_ids.push(OwnedEventId::from(event_id));
 		}
 	}
 
@@ -259,6 +262,23 @@ where
 				auth_events.entry((k, s)).or_insert(pdu);
 			}
 		}
+	}
+
+	let unresolved_missing_auth_events: Vec<OwnedEventId> = missing_auth_event_ids
+		.into_iter()
+		.filter(|missing_id| !auth_events.values().any(|pdu| pdu.event_id() == missing_id))
+		.collect();
+
+	if !unresolved_missing_auth_events.is_empty() {
+		let primary_missing = unresolved_missing_auth_events[0].clone();
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(
+				incoming_pdu.event_id(),
+				&RejectionCode::MissingAuthEvent.with_detail(primary_missing),
+			)
+			.await;
+		return Err!(MissingAuthEvents(unresolved_missing_auth_events));
 	}
 
 	let state_provider =

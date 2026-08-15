@@ -372,14 +372,17 @@ impl Service {
 	/// of a bare `is_event_rejected` check, or a purely transient rejection
 	/// on the dependency permanently poisons every event that depends on it.
 	pub async fn is_event_permanently_rejected(&self, event_id: &EventId) -> bool {
-		if !self.is_event_rejected(event_id).await {
+		// A single read: `get_rejection_reason` already returns `None` for
+		// anything not currently rejected (see its impl in `data.rs`), so a
+		// separate `is_event_rejected` pre-check only opens a TOCTOU window --
+		// a concurrent retry (`take_retry_if_rejection_retryable`) clearing the
+		// rejection between the two reads would make this method fall through
+		// to `!retryable == true` on a stale `None` reason, i.e. report a
+		// no-longer-rejected event as *permanently* rejected.
+		let Some(reason) = self.get_rejection_reason(event_id).await else {
 			return false;
-		}
-		let retryable = self
-			.get_rejection_reason(event_id)
-			.await
-			.is_some_and(|reason| is_retryable_rejection_reason(&reason));
-		!retryable
+		};
+		!is_retryable_rejection_reason(&reason)
 	}
 
 	/// Returns true if the event is marked rejected specifically because
@@ -424,13 +427,13 @@ impl Service {
 	/// inheriting a resolution failure that was never about the event
 	/// itself being invalid.
 	pub async fn take_retry_if_rejection_retryable(&self, event_id: &EventId) -> bool {
-		if !self.is_event_rejected(event_id).await {
+		// Single read for the same reason as `is_event_permanently_rejected`:
+		// avoid a TOCTOU window between an `is_event_rejected` check and a
+		// separate `get_rejection_reason` read.
+		let Some(reason) = self.get_rejection_reason(event_id).await else {
 			return false;
-		}
-		let retryable = self
-			.get_rejection_reason(event_id)
-			.await
-			.is_some_and(|reason| is_retryable_rejection_reason(&reason));
+		};
+		let retryable = is_retryable_rejection_reason(&reason);
 		if retryable {
 			self.unmark_event_rejected(event_id);
 		}

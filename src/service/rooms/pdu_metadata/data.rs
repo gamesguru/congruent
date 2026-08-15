@@ -17,6 +17,7 @@ use crate::{
 	Dep,
 	rooms::{
 		self,
+		pdu_metadata::is_retryable_rejection_reason,
 		short::{ShortEventId, ShortRoomId},
 		timeline::{PduId, PdusIterItem, RawPduId},
 	},
@@ -194,7 +195,19 @@ impl Data {
 			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
 		};
 
-		if !meta.rejected || meta.rejection_reason.is_empty() {
+		let new_reason_retryable = is_retryable_rejection_reason(reason);
+		let existing_reason_retryable = !meta.rejection_reason.is_empty()
+			&& is_retryable_rejection_reason(&meta.rejection_reason);
+
+		// Keep the first rejection by default, but allow a later *permanent*
+		// rejection to replace an earlier retryable placeholder. That prevents
+		// retryable sentinels like `MissingAuthEvent` from masking the real
+		// reason when an intrinsic validation failure is discovered later in
+		// the same attempt.
+		if !meta.rejected
+			|| meta.rejection_reason.is_empty()
+			|| (existing_reason_retryable && !new_reason_retryable)
+		{
 			meta.rejected = true;
 			reason.clone_into(&mut meta.rejection_reason);
 			if let Ok(new_bytes) = bincode::serialize(&meta) {
