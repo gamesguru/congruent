@@ -118,6 +118,9 @@ where
 		active.push(async move {
 			let t = Instant::now();
 			let latest_events = vec![latest_event_owned];
+			let deadline = tokio::time::Instant::now()
+				.checked_add(Duration::from_secs(self.services.server.config.fetch_prev_timeout))
+				.expect("deadline should not overflow");
 			info!(
 				"Asking {server} for missing events in {room_id_owned} (latest: \
 				 {latest_events:?}, earliest_count: {}, missing: {remaining:?})",
@@ -133,8 +136,8 @@ where
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
 					};
-					let res = tokio::time::timeout(
-						Duration::from_secs(10), // Time budget
+					let res = tokio::time::timeout_at(
+						deadline,
 						self.services
 							.sending
 							.send_federation_request(&server, request),
@@ -142,7 +145,10 @@ where
 					.await;
 
 					match &res {
-						| Ok(Err(Error::BadServerResponse(msg))) if attempt == 0 => {
+						| Ok(Err(Error::BadServerResponse(msg)))
+							if attempt == 0
+								&& msg.starts_with("Server returned bad 200 response:") =>
+						{
 							info!(
 								%server,
 								%msg,

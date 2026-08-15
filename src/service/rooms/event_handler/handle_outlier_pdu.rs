@@ -911,7 +911,24 @@ where
 									auth_eid = %pdu.event_id(),
 									"Auth chain event from /event_auth is not a state event"
 								);
-								rejected_in_chain.insert(auth_eid.clone());
+								self.services
+									.pdu_metadata
+									.mark_event_rejected(
+										event_id,
+										RejectionCode::InvalidPduFormat.tag(),
+									)
+									.await;
+								self.services
+									.outlier
+									.add_pdu_outlier(
+										pdu_event.event_id(),
+										incoming_pdu,
+										Some(room_id),
+									)
+									.await;
+								return Err!(Request(InvalidParam(
+									"Auth chain event from /event_auth is not a state event"
+								)));
 							} else {
 								info!(
 									target: "state_res_debug",
