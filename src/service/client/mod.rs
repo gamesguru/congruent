@@ -46,16 +46,32 @@ impl crate::Service for Service {
 				.dns_resolver(resolver.resolver.clone())
 				.build()?,
 
-			url_preview: base(config)
-				.and_then(|builder| {
-					builder_interface(builder, url_preview_bind_iface.as_deref())
-				})?
-				.local_address(url_preview_bind_addr)
-				.dns_resolver(resolver.resolver.clone())
-				.timeout(Duration::from_secs(config.url_preview_timeout))
-				.redirect(redirect::Policy::limited(3))
-				.user_agent(url_preview_user_agent)
-				.build()?,
+			url_preview: {
+				let mut headers = reqwest::header::HeaderMap::new();
+				headers.insert(
+					reqwest::header::ACCEPT_LANGUAGE,
+					"en-US,en;q=0.9".parse().expect("valid header"),
+				);
+				headers.insert(
+					reqwest::header::ACCEPT,
+					"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/\
+					 webp,*/*;q=0.8"
+						.parse()
+						.expect("valid header"),
+				);
+
+				base(config)
+					.and_then(|builder| {
+						builder_interface(builder, url_preview_bind_iface.as_deref())
+					})?
+					.local_address(url_preview_bind_addr)
+					.dns_resolver(resolver.resolver.clone())
+					.timeout(Duration::from_secs(config.url_preview_timeout))
+					.redirect(redirect::Policy::limited(3))
+					.user_agent(url_preview_user_agent)
+					.default_headers(headers)
+					.build()?
+			},
 
 			extern_media: base(config)?
 				.dns_resolver(resolver.resolver.clone())

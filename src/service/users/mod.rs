@@ -15,7 +15,7 @@ use conduwuit_core::{debug, error};
 use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
-use ldap3::{LdapConnAsync, Scope, SearchEntry};
+use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use ruma::{
 	DeviceId, KeyId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId,
 	OneTimeKeyName, OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedUserId, RoomId, UInt, UserId,
@@ -55,7 +55,6 @@ struct Services {
 	admin: Dep<admin::Service>,
 	appservice: Dep<appservice::Service>,
 	globals: Dep<globals::Service>,
-	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 }
 
@@ -96,8 +95,6 @@ impl crate::Service for Service {
 				admin: args.depend::<admin::Service>("admin"),
 				appservice: args.depend::<appservice::Service>("appservice"),
 				globals: args.depend::<globals::Service>("globals"),
-				state_accessor: args
-					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 			},
 			db: Data {
@@ -342,6 +339,7 @@ impl Service {
 
 	/// Find out which user an access token belongs to.
 	pub async fn find_from_token(&self, token: &str) -> Result<(OwnedUserId, OwnedDeviceId)> {
+		assert!(!token.is_empty(), "Empty access token");
 		self.db.token_userdeviceid.get(token).await.deserialized()
 	}
 
@@ -863,16 +861,22 @@ impl Service {
 			.await
 			.map_err(|_| err!(Request(InvalidParam("Tried to sign nonexistent key"))))?
 			.deserialized()
-			.map_err(|e| err!(Database(debug_warn!("key in keyid_key is invalid: {e:?}"))))?;
+			.map_err(|e| err!(Database(info!("key in keyid_key is invalid: {e:?}"))))?;
 
 		let signatures = cross_signing_key
-			.get_mut("signatures")
-			.ok_or_else(|| {
-				err!(Database(debug_warn!("key in keyid_key has no signatures field")))
-			})?
+			.as_object_mut()
+			.ok_or_else(|| err!(Database(info!("key in keyid_key is not an object"))))?
+			.entry("signatures")
+			.or_insert_with(|| {
+				info!(
+					target: "cross_signing",
+					"Key {key_id} of {target_id} has no signatures field, initializing empty"
+				);
+				serde_json::json!({})
+			})
 			.as_object_mut()
 			.ok_or_else(|| {
-				err!(Database(debug_warn!("key in keyid_key has invalid signatures field.")))
+				err!(Database(info!("key in keyid_key has invalid signatures field.")))
 			})?
 			.entry(sender_id.to_string())
 			.or_insert_with(|| serde_json::Map::new().into());
@@ -880,7 +884,7 @@ impl Service {
 		signatures
 			.as_object_mut()
 			.ok_or_else(|| {
-				err!(Database(debug_warn!("signatures in keyid_key for a user is invalid.")))
+				err!(Database(info!("signatures in keyid_key for a user is invalid.")))
 			})?
 			.insert(signature.0, signature.1.into());
 
@@ -936,12 +940,11 @@ impl Service {
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
 		let count = self.services.globals.next_count().unwrap();
+		info!(%user_id, %count, "Marking device key update");
 
 		self.services
 			.state_cache
 			.rooms_joined(user_id)
-			// Don't send key updates to unencrypted rooms
-			.filter(|room_id| self.services.state_accessor.is_encrypted_room(room_id))
 			.ready_for_each(|room_id| {
 				let key = (room_id, count);
 				self.db.keychangeid_userid.put_raw(key, user_id);
@@ -1108,7 +1111,9 @@ impl Service {
 	) -> Result<()> {
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
 		self.update_device_metadata_no_increment(user_id, device_id, device)
-			.await
+			.await?;
+		self.mark_device_key_update(user_id).await;
+		Ok(())
 	}
 
 	// Updates device metadata without incrementing the device list version.
@@ -1330,6 +1335,24 @@ impl Service {
 		}
 	}
 
+	#[cfg(feature = "ldap")]
+	async fn create_ldap_connection(
+		config: &conduwuit_core::config::LdapConfig,
+		uri: &str,
+	) -> Result<(LdapConnAsync, ldap3::Ldap), ldap3::LdapError> {
+		let mut settings = LdapConnSettings::new();
+
+		if config.use_starttls {
+			settings = settings.set_starttls(true);
+		}
+
+		if config.disable_tls_verification {
+			settings = settings.set_no_tls_verify(true);
+		}
+
+		LdapConnAsync::with_settings(settings, uri).await
+	}
+
 	#[cfg(not(feature = "ldap"))]
 	pub async fn search_ldap(&self, _user_id: &UserId) -> Result<Vec<(String, Option<bool>)>> {
 		Err!(FeatureDisabled("ldap"))
@@ -1347,7 +1370,7 @@ impl Service {
 			.ok_or_else(|| err!(Ldap(error!("LDAP URI is not configured."))))?;
 
 		debug!(?uri, "LDAP creating connection...");
-		let (conn, mut ldap) = LdapConnAsync::new(uri.as_str())
+		let (conn, mut ldap) = Self::create_ldap_connection(config, uri.as_str())
 			.await
 			.map_err(|e| err!(Ldap(error!(%user_id, "LDAP connection setup error: {e}"))))?;
 
@@ -1456,9 +1479,9 @@ impl Service {
 			.ok_or_else(|| err!(Ldap(error!("LDAP URI is not configured."))))?;
 
 		debug!(?uri, "LDAP creating connection...");
-		let (conn, mut ldap) = LdapConnAsync::new(uri.as_str())
+		let (conn, mut ldap) = Self::create_ldap_connection(config, uri.as_str())
 			.await
-			.map_err(|e| err!(Ldap(error!(?user_dn, "LDAP connection setup error: {e}"))))?;
+			.map_err(|e| err!(Ldap(error!(%user_dn, "LDAP connection setup error: {e}"))))?;
 
 		let driver = self.services.server.runtime().spawn(async move {
 			match conn.drive().await {

@@ -355,7 +355,12 @@ remote-debug-poc config="conduwuit-example.toml":
 # Run Complement tests (requires complement-src)
 # Usage: just complement TestName
 complement args=".":
-    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 COMPLEMENT_RUN="{{args}}" ./bin/complement ./complement-src
+    #!/usr/bin/env bash
+    set -euo pipefail
+    HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
+    MOUNTS="{{PREFIX}}/lib:{{PREFIX}}/lib:ro"
+    if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
+    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 COMPLEMENT_BASE_IMAGE="continuwuity:complement" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{args}}" RESULTS_DIR="{{env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement")}}" ./bin/complement ./complement-src
 
 # -----------------------------------------------------------------------------
 # Complement CI
@@ -370,22 +375,10 @@ ci-complement-docker:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    echo "Copying dynamically linked libraries to target/{{PROFILE}}/lib/..."
-    mkdir -p target/{{PROFILE}}/lib && rm -f target/{{PROFILE}}/lib/*
-
-    LD_LIBRARY_PATH="${ROCKSDB_LIB_DIR:-}:$(echo ${LD_LIBRARY_PATH:-})" \
-        ldd target/latest/conduwuit | awk '/=> \// {print $3}' \
-        | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|ld-linux|libdl\.so|libpthread\.so|librt\.so' \
-        | xargs -I {} cp "{}" target/{{PROFILE}}/lib/ || true
-
-    rm -rf target/latest/lib
-    ln -sfn ../{{PROFILE}}/lib target/latest/lib
-
     echo "Building Complement Docker image using base image: {{COMPLEMENT_BASE_IMAGE}}..."
     DOCKER_BUILDKIT=1 docker buildx build \
             --build-arg BASE_IMAGE={{COMPLEMENT_BASE_IMAGE}} \
             --build-arg BINARY_PATH=target/latest/conduwuit \
-            --build-arg LIB_PATH=target/{{PROFILE}}/lib \
             --build-arg UID="$(id -u)" \
             --build-arg GID="$(id -g)" \
             -t {{COMPLEMENT_IMAGE}} \
@@ -397,7 +390,8 @@ ci-complement-stats:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    RESULTS="tests/test_results/complement/test_results.jsonl"
+    RESULTS_DIR="{{env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement-gg")}}"
+    RESULTS="$RESULTS_DIR/test_results.jsonl"
     if [ ! -f "$RESULTS" ]; then
         echo "ERROR: $RESULTS does not exist"
         exit 1
@@ -424,7 +418,7 @@ ci-complement-stats:
 
     echo ""
     echo "Last modified by:"
-    git log -5 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+    git log -5 --format="%an (%ad) %H" origin/main -- tests/test_results/complement-gg/test_results.jsonl
 
 # -----------------------------------------------------------------------------
 # CI Database Queries

@@ -1,0 +1,11 @@
+{"Action":"pass","Test":"TestRoomMembers"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room_with_custom_content"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room_with_custom_content"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/ban_can_ban_a_user"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/invite_can_send_an_invite"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/join_can_join_a_room"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/leave_can_leave_a_room"}
+{"Action":"pass","Test":"TestRoomMembers/Parallel/Test_that_we_can_be_reinvited_to_a_room_we_created"}

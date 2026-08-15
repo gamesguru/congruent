@@ -173,7 +173,7 @@ pub trait Event: Clone + Debug {
 	/// The `RoomId` or hash of this event.
 	/// This should only be preferred over room_id() if the event is a v12
 	/// create event.
-	fn room_id_or_hash(&self) -> OwnedRoomId;
+	fn room_id_or_hash(&self) -> Option<OwnedRoomId>;
 
 	/// The `UserId` of this event.
 	fn sender(&self) -> &UserId;

@@ -72,7 +72,7 @@ pub(crate) async fn get_context_route(
 
 	let (base_id, base_pdu, visible) = try_join3(base_id, base_pdu, visible).await?;
 
-	if base_pdu.room_id_or_hash() != *room_id || base_pdu.event_id != *event_id {
+	if base_pdu.room_id_or_hash().as_ref() != Some(room_id) || base_pdu.event_id != *event_id {
 		return Err!(Request(NotFound("Event not found.")));
 	}
 
@@ -219,14 +219,14 @@ pub(crate) async fn get_context_route(
 		start: events_before
 			.last()
 			.map(at!(0))
-			.or(Some(base_count))
+			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Backward)))
 			.as_ref()
 			.map(ToString::to_string),
 
 		end: events_after
 			.last()
 			.map(at!(0))
-			.or(Some(base_count))
+			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Forward)))
 			.as_ref()
 			.map(ToString::to_string),
 

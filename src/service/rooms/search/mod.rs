@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
 use conduwuit::{
 	PduCount, PduEvent, Result,

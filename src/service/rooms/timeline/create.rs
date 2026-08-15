@@ -226,15 +226,20 @@ pub async fn create_event(
 	let room_id_or_hash = pdu.room_id_or_hash();
 	let create_pdu = match &pdu.kind {
 		| TimelineEventType::RoomCreate => None,
-		| _ => Some(
-			self.services
-				.state_accessor
-				.room_state_get(&room_id_or_hash, &StateEventType::RoomCreate, "")
-				.await
-				.map_err(|e| {
-					err!(Request(Forbidden(warn!("Failed to fetch room create event: {e}"))))
-				})?,
-		),
+		| _ => {
+			let room_id = room_id_or_hash.ok_or_else(|| {
+				err!(Request(Forbidden(warn!("Failed to determine room ID for event"))))
+			})?;
+			Some(
+				self.services
+					.state_accessor
+					.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+					.await
+					.map_err(|e| {
+						err!(Request(Forbidden(warn!("Failed to fetch room create event: {e}"))))
+					})?,
+			)
+		},
 	};
 	let create_event = match &pdu.kind {
 		| TimelineEventType::RoomCreate => &pdu,
@@ -299,6 +304,16 @@ pub async fn create_hash_and_sign_event(
 	// Generate event id
 	pdu.event_id = gen_event_id(&pdu_json, &room_version_id)?;
 	pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
+
+	// MSC4291: ensure room_id is in our internal representation even if it's
+	// v12+
+	if pdu.room_id.is_none() {
+		let internal_room_id = pdu
+			.room_id_or_hash()
+			.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+		pdu.room_id = Some(internal_room_id);
+	}
+
 	// Verify that the *full* PDU isn't over 64KiB.
 	// Ruma only validates that it's under 64KiB before signing and hashing.
 	// Has to be cloned to prevent mutating pdu_json itself :(
@@ -308,7 +323,7 @@ pub async fn create_hash_and_sign_event(
 	}
 
 	// Check with the policy server
-	if room_id.is_some() {
+	if pdu.room_id.is_some() {
 		trace!(
 			"Checking event in room {} with policy server",
 			pdu.room_id.as_ref().map_or("None", |id| id.as_str())

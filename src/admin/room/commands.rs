@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::OwnedRoomId;
+use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
 
 use crate::{PAGE_SIZE, admin_command, get_room_info};
 
@@ -82,4 +82,13 @@ pub(super) async fn exists(&self, room_id: OwnedRoomId) -> Result {
 	let result = self.services.rooms.metadata.exists(&room_id).await;
 
 	self.write_str(&format!("{result}")).await
+}
+
+#[admin_command]
+pub(super) async fn purge_sync_tokens(&self, _room: OwnedRoomOrAliasId) -> Result {
+	self.write_str(
+		"The server is running the stateless sync model. Database-backed sync tokens have been \
+		 dropped, so no tokens remain to be purged.",
+	)
+	.await
 }

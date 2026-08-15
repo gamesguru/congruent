@@ -139,11 +139,11 @@ jobs:
             fi
           }
 
-          add_target "x86-64-v2" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_X86_64_V2 }}" "x86-64-v2" ""
+          # add_target "x86-64-v2" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_X86_64_V2 }}" "x86-64-v2" ""
           add_target "x86-64-v3" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_HASWELL }}" "x86-64-v3" ""
           add_target "x86-64-v4" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_SKYLAKE }}" "x86-64-v4" ""
           add_target "arm64-generic" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_ARM64_GENERIC }}" "generic" "16"
-          add_target "arm64-cortex-a76" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_ARM64_PI5 }}" "cortex-a76" "16"
+          # add_target "arm64-cortex-a76" "${{ vars.C10Y_ENABLE_GITHUB_WORKFLOW_BUILD_CPU_ARM64_PI5 }}" "cortex-a76" "16"
 
           echo "matrix=$JSON" >> $GITHUB_OUTPUT
           echo "run_any=$RUN_ANY" >> $GITHUB_OUTPUT
@@ -169,7 +169,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             build-essential pkg-config liburing-dev \
             libbz2-dev clang libclang-dev llvm-dev mold

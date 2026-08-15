@@ -33,9 +33,6 @@ gzip_compression = [
 	"conduwuit-core/gzip_compression",
 	"reqwest/gzip",
 ]
-http3 = [
-	"conduwuit-core/http3",
-]
 io_uring = [
 	"conduwuit-database/io_uring",
 ]
@@ -128,12 +125,17 @@ webpage.optional = true
 blurhash.workspace = true
 blurhash.optional = true
 recaptcha-verify = { version = "0.2.0", default-features = false }
+reqwest_recaptcha = { package = "reqwest", version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots-no-provider"]  } # As long as recaptcha-verify's reqwest is outdated
 yansi.workspace = true
+linkify = "0.10.0"
 lettre.workspace = true
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true
 sd-notify.optional = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["toml"] }
 
 [lints]
 workspace = true

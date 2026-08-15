@@ -66,7 +66,7 @@ We're working our way through all of the issues in the [Forgejo project](https:/
 
 ### Can I migrate my data from x?
 
-- Conduwuit: Yes
+- Conduwuit: No longer strictly compatible. This fork pre-emptively truncates the synctoken table, and deeper database changes (planned for the `guru/dev-2026-...` branch shortly) are underway.
 - Conduit: No, database is now incompatible
 - Grapevine: No, database is now incompatible
 - Dendrite: No

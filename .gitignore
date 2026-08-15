@@ -94,8 +94,10 @@ test-conduit.toml
 rustc-ice-*
 
 # complement test logs are huge
+complement-src/
 tests/test_results/complement/test_logs.jsonl
 *.db
+tests/test_results/complement/backups/raw_issues_v11_v12.txt
 
 # Node
 node_modules/
@@ -104,9 +106,18 @@ node_modules/
 doc_build/
 .rspress/
 
-# professor
+# custom files
 /.tmp/
+.complement-logs*
 .~*
 ._*
 ~$*
 *.swp
+test_logs.jsonl
+test_results.jsonl
+__pycache__/
+
+# submodules and unwanted tracks and such
+matrix-spec-txt/
+ruma-upstream/
+ruwuma/

@@ -2,7 +2,7 @@ use std::cmp;
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Event, PduCount, Result, info,
+	Err, Event, Pdu, PduCount, Result, err, info,
 	result::LogErr,
 	utils::{IterStream, ReadyExt, stream::TryTools},
 };
@@ -78,21 +78,25 @@ pub(crate) async fn get_backfill_route(
 			.pdus_rev(&body.room_id, Some(from.saturating_add(1)))
 			.try_take(limit)
 			.try_filter_map(|(_, pdu)| async move {
-				Ok(services
+				let room_id = pdu
+					.room_id_or_hash()
+					.ok_or_else(|| err!(Database("Event has no room_id")))?;
+				let visible = services
 					.rooms
 					.state_accessor
-					.server_can_see_event(body.origin(), &pdu.room_id_or_hash(), &pdu.event_id)
-					.await
-					.then_some(pdu))
+					.server_can_see_event(body.origin(), &room_id, &pdu.event_id)
+					.await;
+
+				if visible { Ok(Some(pdu)) } else { Ok(None) }
 			})
-			.and_then(async |mut pdu| {
+			.map_ok(|mut pdu: Pdu| {
 				// Strip the transaction ID, as that is private
 				pdu.remove_transaction_id().log_err().ok();
 				// Add age, as this is specified
 				pdu.add_age().log_err().ok();
 				// It's not clear if we should strip or add any more data, leave as is.
 				// In particular: Redaction?
-				Ok(pdu)
+				pdu
 			})
 			.try_filter_map(|pdu| async move {
 				Ok(services

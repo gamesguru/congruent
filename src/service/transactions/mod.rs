@@ -9,7 +9,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use conduwuit::{Error, Result, SyncRwLock, debug_warn, warn};
+use conduwuit::{
+	Error, Result, SyncRwLock, debug_warn,
+	utils::{MutexMap, MutexMapGuard},
+	warn,
+};
 use database::{Handle, Map};
 use ruma::{
 	DeviceId, OwnedServerName, OwnedTransactionId, TransactionId, UserId,
@@ -85,6 +89,7 @@ pub enum FederationTxnState {
 pub struct Service {
 	services: Services,
 	db: Data,
+	client_txn_mutex: MutexMap<Vec<u8>, ()>,
 	federation_txn_state: Arc<SyncRwLock<HashMap<TxnKey, TxnState>>>,
 	last_cleanup: AtomicU64,
 }
@@ -107,6 +112,7 @@ impl crate::Service for Service {
 			db: Data {
 				userdevicetxnid_response: args.db["userdevicetxnid_response"].clone(),
 			},
+			client_txn_mutex: MutexMap::new(),
 			federation_txn_state: Arc::new(SyncRwLock::new(HashMap::new())),
 			last_cleanup: AtomicU64::new(0),
 		}))
@@ -132,6 +138,29 @@ impl Service {
 			.count()
 	}
 
+	fn client_txn_key(
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		txn_id: &TransactionId,
+	) -> Vec<u8> {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+		key
+	}
+
+	pub async fn lock_client_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		txn_id: &TransactionId,
+	) -> MutexMapGuard<Vec<u8>, ()> {
+		let key = Self::client_txn_key(user_id, device_id, txn_id);
+		self.client_txn_mutex.lock(key.as_slice()).await
+	}
+
 	pub fn add_client_txnid(
 		&self,
 		user_id: &UserId,
@@ -139,11 +168,7 @@ impl Service {
 		txn_id: &TransactionId,
 		data: &[u8],
 	) {
-		let mut key = user_id.as_bytes().to_vec();
-		key.push(0xFF);
-		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
-		key.push(0xFF);
-		key.extend_from_slice(txn_id.as_bytes());
+		let key = Self::client_txn_key(user_id, device_id, txn_id);
 
 		self.db.userdevicetxnid_response.insert(&key, data);
 	}

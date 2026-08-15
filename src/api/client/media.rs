@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::extract::State;
-use axum_client_ip::InsecureClientIp;
+use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_warn, err, error,
 	utils::{self, content_disposition::make_content_disposition, math::ruma_from_usize},
@@ -10,7 +10,6 @@ use conduwuit_service::{
 	Services,
 	media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta, MXC_LENGTH},
 };
-use reqwest::Url;
 use ruma::{
 	Mxc, UserId,
 	api::client::{
@@ -48,7 +47,7 @@ pub(crate) async fn get_media_config_route(
 )]
 pub(crate) async fn create_content_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
 ) -> Result<create_content::v3::Response> {
 	let user = body.sender_user();
@@ -98,7 +97,7 @@ pub(crate) async fn create_content_route(
 )]
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let user = body.sender_user();
@@ -153,7 +152,7 @@ pub(crate) async fn get_content_thumbnail_route(
 )]
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
 	let user = body.sender_user();
@@ -207,7 +206,7 @@ pub(crate) async fn get_content_route(
 )]
 pub(crate) async fn get_content_as_filename_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v1::Request>,
 ) -> Result<get_content_as_filename::v1::Response> {
 	let user = body.sender_user();
@@ -263,13 +262,13 @@ pub(crate) async fn get_content_as_filename_route(
 )]
 pub(crate) async fn get_media_preview_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v1::Request>,
 ) -> Result<get_media_preview::v1::Response> {
 	let sender_user = body.sender_user();
 
 	let url = &body.url;
-	let url = Url::parse(&body.url).map_err(|e| {
+	let url = conduwuit_service::media::parse_preview_url(&body.url).map_err(|e| {
 		err!(Request(InvalidParam(
 			debug_warn!(%sender_user, %url, "Requested URL is not valid: {e}")
 		)))

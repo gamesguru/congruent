@@ -27,7 +27,7 @@ async fn should_rescind_invite(
 	content: &mut BTreeMap<String, CanonicalJsonValue>,
 	sender: &UserId,
 	room_id: &RoomId,
-) -> Result<Option<PduEvent>> {
+) -> Result<Option<(OwnedUserId, PduEvent)>> {
 	// We insert a bogus event ID since we can't actually calculate the right one
 	content.insert("event_id".to_owned(), CanonicalJsonValue::String("$rescind".to_owned()));
 	let pdu_event = serde_json::from_value::<PduEvent>(
@@ -36,9 +36,9 @@ async fn should_rescind_invite(
 	.map_err(|e| err!("invalid PDU: {e}"))?;
 
 	if pdu_event.room_id().is_none_or(|r| r != room_id)
-		&& pdu_event.sender() != sender
-		&& pdu_event.event_type() != &TimelineEventType::RoomMember
-		&& pdu_event.state_key().is_none_or(|v| v == sender.as_str())
+		|| pdu_event.sender() != sender
+		|| pdu_event.event_type() != &TimelineEventType::RoomMember
+		|| pdu_event.state_key().is_none_or(|v| v == sender.as_str())
 	{
 		return Ok(None);
 	}
@@ -64,17 +64,17 @@ async fn should_rescind_invite(
 		if event
 			.get_field::<String>("type")?
 			.is_some_and(|t| t == "m.room.member")
-			|| event
+			&& event
 				.get_field::<OwnedUserId>("state_key")?
 				.is_some_and(|s| s == *target_user_id)
-			|| event
+			&& event
 				.get_field::<OwnedUserId>("sender")?
 				.is_some_and(|s| s == *sender)
-			|| event
+			&& event
 				.get_field::<RoomMemberEventContent>("content")?
 				.is_some_and(|c| c.membership == MembershipState::Invite)
 		{
-			return Ok(Some(pdu_event));
+			return Ok(Some((target_user_id.to_owned(), pdu_event)));
 		}
 	}
 
@@ -140,7 +140,12 @@ pub async fn handle_incoming_pdu<'a>(
 	trace!("processing incoming PDU from {origin} for room {room_id} with event id {event_id}");
 
 	// 1.1 Check we even know about the room
-	let meta_exists = self.services.metadata.exists(room_id).map(Ok);
+	let is_joining = self.services.state_cache.is_joining(room_id);
+	let meta_exists = self
+		.services
+		.metadata
+		.exists(room_id)
+		.map(move |exists| Ok(exists || is_joining));
 
 	// 1.2 Check if the room is disabled
 	let is_disabled = self.services.metadata.is_disabled(room_id).map(Ok);
@@ -173,28 +178,34 @@ pub async fn handle_incoming_pdu<'a>(
 		return Err!(Request(Forbidden("Federation of this room is disabled by this server.")));
 	}
 
-	if !self
+	// Snapshot participation under the room lock so we do not branch on a stale
+	// projection while a concurrent membership transition is still committing.
+	let state_lock = self.services.state.mutex.lock(room_id).await;
+	let server_in_room = self
 		.services
 		.state_cache
 		.server_in_room(self.services.globals.server_name(), room_id)
-		.await
-	{
+		.await;
+	let is_joining = self.services.state_cache.is_joining(room_id);
+	drop(state_lock);
+
+	if !server_in_room && !is_joining {
 		let is_room_member_event =
 			value.get("type").and_then(|t| t.as_str()) == Some("m.room.member");
 
 		// Is this a federated invite rescind?
 		// copied from https://github.com/element-hq/synapse/blob/7e4588a/synapse/handlers/federation_event.py#L255-L300
 		if is_room_member_event {
-			if let Some(pdu) =
+			if let Some((target_user_id, pdu)) =
 				should_rescind_invite(&self.services, &mut value.clone(), sender, room_id).await?
 			{
 				debug_info!(
-					"Invite to {room_id} appears to have been rescinded by {sender}, marking as \
-					 left"
+					"Invite to {room_id} appears to have been rescinded by {sender}, marking \
+					 {target_user_id} as left"
 				);
 				self.services
 					.state_cache
-					.mark_as_left(sender, room_id, Some(pdu))
+					.mark_as_left(&target_user_id, room_id, Some(pdu))
 					.await;
 				return Ok(None);
 			}
@@ -241,8 +252,8 @@ pub async fn handle_incoming_pdu<'a>(
 		.services
 		.timeline
 		.first_pdu_in_room(room_id)
-		.await?
-		.origin_server_ts();
+		.await
+		.map_or_else(|_| create_event.origin_server_ts(), |pdu| pdu.origin_server_ts());
 
 	// 9. Fetch any missing prev events doing all checks listed here starting at 1.
 	//    These are timeline events
@@ -304,10 +315,17 @@ pub async fn handle_incoming_pdu<'a>(
 			.remove(room_id);
 	}};
 
-	self.upgrade_outlier_to_timeline_pdu(incoming_pdu, val, create_event, origin, room_id)
-		.boxed()
-		.inspect_ok(|_| {
-			self.processed_pdu_cache.insert(event_id.to_owned(), ());
-		})
-		.await
+	self.upgrade_outlier_to_timeline_pdu(
+		incoming_pdu,
+		val,
+		create_event,
+		origin,
+		room_id,
+		is_timeline_event,
+	)
+	.boxed()
+	.inspect_ok(|_| {
+		self.processed_pdu_cache.insert(event_id.to_owned(), ());
+	})
+	.await
 }

@@ -2,7 +2,7 @@ use std::{collections::HashSet, iter::once};
 
 use conduwuit::trace;
 use conduwuit_core::{
-	Err, Result, implement,
+	Err, Result, err, implement,
 	matrix::{event::Event, pdu::PduBuilder},
 	utils::{IterStream, ReadyExt},
 };
@@ -36,7 +36,10 @@ pub async fn build_and_append_pdu(
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
 
-	let room_id = pdu.room_id_or_hash();
+	let room_id = room_id
+		.map(ToOwned::to_owned)
+		.or_else(|| pdu.room_id_or_hash())
+		.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}
@@ -120,6 +123,7 @@ pub async fn build_and_append_pdu(
 			// Since this PDU references all pdu_leaves we can update the leaves
 			// of the room
 			once(pdu.event_id()),
+			None,
 			state_lock,
 			&room_id,
 		)
@@ -208,6 +212,10 @@ where
 			let server_user = &self.services.globals.server_user.to_string();
 
 			let content: RoomMemberEventContent = pdu.get_content()?;
+			let room_id = pdu
+				.room_id_or_hash()
+				.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+
 			match content.membership {
 				| MembershipState::Leave => {
 					if target == server_user {
@@ -219,7 +227,7 @@ where
 					let count = self
 						.services
 						.state_cache
-						.room_members(&pdu.room_id_or_hash())
+						.room_members(&room_id) // Avoid redundant re-evaluation
 						.ready_filter(|user| self.services.globals.user_is_local(user))
 						.ready_filter(|user| *user != target)
 						.boxed()
@@ -243,7 +251,7 @@ where
 					let count = self
 						.services
 						.state_cache
-						.room_members(&pdu.room_id_or_hash())
+						.room_members(&room_id) // Avoid redundant re-evaluation
 						.ready_filter(|user| self.services.globals.user_is_local(user))
 						.ready_filter(|user| *user != target)
 						.boxed()

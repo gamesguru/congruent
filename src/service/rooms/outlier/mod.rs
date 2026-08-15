@@ -50,3 +50,7 @@ pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
 pub fn add_pdu_outlier(&self, event_id: &EventId, pdu: &CanonicalJsonObject) {
 	self.db.eventid_outlierpdu.raw_put(event_id, Json(pdu));
 }
+
+/// Clear all outlier PDUs.
+#[implement(Service)]
+pub async fn clear_outliers(&self) { self.db.eventid_outlierpdu.clear().await; }

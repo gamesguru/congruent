@@ -339,16 +339,50 @@ where
 	Id: Clone + Eq + Hash + Send,
 	Hasher: BuildHasher + Send + Sync,
 {
-	let num_sets = auth_chain_sets.len();
-	let mut id_counts: HashMap<Id, usize> = HashMap::new();
+	use roaring::RoaringBitmap;
+
+	let mut id_to_index = HashMap::new();
+	let mut index_to_id = Vec::new();
+
 	for id in auth_chain_sets.iter().flatten() {
-		*id_counts.entry(id.clone()).or_default() += 1;
+		if !id_to_index.contains_key(id) {
+			let idx = u32::try_from(index_to_id.len()).expect("too many event IDs");
+			id_to_index.insert(id, idx);
+			index_to_id.push(id);
+		}
 	}
 
-	id_counts
+	let mut union = RoaringBitmap::new();
+	let mut intersection = RoaringBitmap::new();
+	let mut first = true;
+
+	for set in auth_chain_sets {
+		let mut bitmap = RoaringBitmap::new();
+		for id in set {
+			if let Some(&idx) = id_to_index.get(id) {
+				bitmap.insert(idx);
+			}
+		}
+		if first {
+			union.clone_from(&bitmap);
+			intersection = bitmap;
+			first = false;
+		} else {
+			union |= &bitmap;
+			intersection &= bitmap;
+		}
+	}
+
+	let diff = union - intersection;
+	let result_ids: Vec<Id> = diff
 		.into_iter()
-		.filter_map(move |(id, count)| (count < num_sets).then_some(id))
-		.stream()
+		.map(move |idx| {
+			let index = usize::try_from(idx).expect("idx fits in usize");
+			(*index_to_id[index]).clone()
+		})
+		.collect();
+
+	result_ids.into_iter().stream()
 }
 
 /// Events are sorted from "earliest" to "latest".
@@ -672,7 +706,11 @@ where
 		let mut auth_state = StateMap::new();
 		if room_version.room_ids_as_hashes {
 			trace!("room version uses hashed IDs, manually fetching create event");
-			let create_event_id_raw = event.room_id_or_hash().as_str().replace('!', "$");
+			let room_id = event
+				.room_id_or_hash()
+				.ok_or_else(|| Error::InvalidPdu("Event has no room_id".into()))?;
+
+			let create_event_id_raw = room_id.as_str().replace('!', "$");
 			let create_event_id = EventId::parse(&create_event_id_raw).map_err(|e| {
 				Error::InvalidPdu(format!(
 					"Failed to parse create event ID from room ID/hash: {e}"
@@ -734,16 +772,17 @@ where
 			)
 		};
 
-		let auth_result = auth_check(
-			room_version,
-			&event,
-			current_third_party,
-			fetch_state,
-			&fetch_state(&StateEventType::RoomCreate, "")
-				.await
-				.expect("create event must exist"),
-		)
-		.await;
+		let Some(create_event) = fetch_state(&StateEventType::RoomCreate, "").await else {
+			warn!(
+				event_id = event.event_id().as_str(),
+				"event failed auth check: missing create event"
+			);
+			continue;
+		};
+
+		let auth_result =
+			auth_check(room_version, &event, current_third_party, fetch_state, &create_event)
+				.await;
 
 		match auth_result {
 			| Ok(true) => {

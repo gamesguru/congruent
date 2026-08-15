@@ -1,0 +1,3 @@
+{"Action":"pass","Test":"TestFederationKeyUploadQuery"}
+{"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
+{"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}

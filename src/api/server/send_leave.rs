@@ -78,15 +78,22 @@ async fn create_leave_event(
 		return Err!(Request(BadJson("Could not convert event to canonical json.")));
 	};
 
-	let event_room_id: OwnedRoomId = serde_json::from_value(
-		serde_json::to_value(
-			value
-				.get("room_id")
-				.ok_or_else(|| err!(Request(BadJson("Event missing room_id property."))))?,
-		)
-		.expect("CanonicalJson is valid json value"),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}")))))?;
+	let event_room_id: OwnedRoomId = if let Some(room_id_val) = value.get("room_id") {
+		serde_json::from_value(room_id_val.clone().into()).map_err(|e| {
+			err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}"))))
+		})?
+	} else if services
+		.rooms
+		.state
+		.get_room_version(room_id)
+		.await
+		.is_ok_and(|v| {
+			conduwuit::matrix::state_res::RoomVersion::new(&v).is_ok_and(|v| v.room_ids_as_hashes)
+		}) {
+		room_id.to_owned()
+	} else {
+		return Err!(Request(BadJson("Event missing room_id property.")));
+	};
 
 	if event_room_id != room_id {
 		return Err!(Request(BadJson("Event room_id does not match request path room ID.")));

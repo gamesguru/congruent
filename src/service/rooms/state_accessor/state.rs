@@ -1,7 +1,7 @@
-use std::{borrow::Borrow, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
 
 use conduwuit::{
-	Pdu, Result, at, err, implement,
+	Result, at, err, implement,
 	matrix::{Event, StateKey},
 	pair_of,
 	utils::{
@@ -115,20 +115,6 @@ pub async fn state_contains_shortstatekey(
 		.await
 		.flat_ok()
 		.is_some()
-}
-
-/// Returns a single PDU from `room_id` with key (`event_type`,
-/// `state_key`).
-#[implement(super::Service)]
-pub async fn state_get(
-	&self,
-	shortstatehash: ShortStateHash,
-	event_type: &StateEventType,
-	state_key: &str,
-) -> Result<Pdu> {
-	self.state_get_id(shortstatehash, event_type, state_key)
-		.and_then(async |event_id: OwnedEventId| self.services.timeline.get_pdu(&event_id).await)
-		.await
 }
 
 /// Returns a single EventId from `room_id` with key (`event_type`,
@@ -393,6 +379,15 @@ pub fn state_full_shortids(
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
 		.boxed()
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
+	self.load_full_state(shortstatehash)
+		.await
+		.map(|s| s.is_empty())
+		.unwrap_or(true)
 }
 
 #[implement(super::Service)]

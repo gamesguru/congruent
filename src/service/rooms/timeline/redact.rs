@@ -39,13 +39,13 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 		}
 	}
 
-	let room_version_id = self
-		.services
-		.state
-		.get_room_version(&pdu.room_id_or_hash())
-		.await?;
+	let room_id = pdu
+		.room_id_or_hash()
+		.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
 
-	pdu.redact(&room_version_id, reason.to_value())?;
+	let room_version = self.services.state.get_room_version(&room_id).await?;
+
+	pdu.redact(&room_version, reason.to_value())?;
 
 	let obj = utils::to_canonical_object(&pdu).map_err(|e| {
 		err!(Database(error!(%event_id, ?e, "Failed to convert PDU to canonical JSON")))

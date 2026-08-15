@@ -1,6 +1,6 @@
 mod data;
 
-use std::{collections::HashMap, fmt::Write, sync::Arc, time::Instant};
+use std::{collections::HashMap, fmt::Write, mem::size_of, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
@@ -79,6 +79,9 @@ impl crate::Service for Service {
 impl Service {
 	#[inline]
 	pub fn next_count(&self) -> Result<u64> { self.db.next_count() }
+
+	#[inline]
+	pub fn next_count_batch(&self, diff: u64) -> Result<u64> { self.db.next_count_batch(diff) }
 
 	#[inline]
 	pub fn current_count(&self) -> Result<u64> { Ok(self.db.current_count()) }

@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use arrayvec::ArrayVec;
 
 use super::{Count, Id, ShortEventId, ShortId, ShortRoomId};

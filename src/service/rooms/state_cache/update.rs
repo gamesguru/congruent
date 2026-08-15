@@ -122,6 +122,10 @@ pub async fn update_membership(
 			self.mark_as_invited(user_id, room_id, pdu.sender(), Some(last_state), None)
 				.await?;
 		},
+		| MembershipState::Knock => {
+			let last_state = self.services.state.summary_stripped(pdu, room_id).await;
+			self.mark_as_knocked(user_id, room_id, Some(last_state));
+		},
 		| MembershipState::Leave | MembershipState::Ban => {
 			self.mark_as_left(user_id, room_id, Some(pdu.clone())).await;
 		},
@@ -140,7 +144,6 @@ pub async fn update_membership(
 pub async fn update_joined_count(&self, room_id: &RoomId) {
 	let mut joinedcount = 0_u64;
 	let mut invitedcount = 0_u64;
-	let mut knockedcount = 0_u64;
 	let mut joined_servers = HashSet::new();
 
 	self.room_members(room_id)
@@ -158,19 +161,8 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 			.unwrap_or(0),
 	);
 
-	knockedcount = knockedcount.saturating_add(
-		self.room_members_knocked(room_id)
-			.count()
-			.await
-			.try_into()
-			.unwrap_or(0),
-	);
-
 	self.db.roomid_joinedcount.raw_put(room_id, joinedcount);
 	self.db.roomid_invitedcount.raw_put(room_id, invitedcount);
-	self.db
-		.roomuserid_knockedcount
-		.raw_put(room_id, knockedcount);
 
 	self.room_servers(room_id)
 		.ready_for_each(|old_joined_server| {

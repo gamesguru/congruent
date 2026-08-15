@@ -1,6 +1,7 @@
 use std::{
 	borrow::Cow,
 	fmt,
+	mem::size_of_val,
 	net::{IpAddr, SocketAddr},
 };
 

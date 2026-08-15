@@ -1,0 +1,3 @@
+{"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync"}
+{"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_incremental_sliding_sync"}
+{"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_initial_sliding_sync"}

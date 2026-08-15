@@ -11,10 +11,7 @@ use futures::{FutureExt, StreamExt, future::ready};
 use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::{
-	state_compressor::{CompressedState, HashSetCompressStateEvent},
-	timeline::RawPduId,
-};
+use crate::rooms::{state_compressor::CompressedState, timeline::RawPduId};
 
 #[implement(super::Service)]
 pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(
@@ -24,6 +21,7 @@ pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	create_event: &Pdu,
 	origin: &ServerName,
 	room_id: &RoomId,
+	is_timeline_event: bool,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -63,7 +61,8 @@ where
 		"Resolving state at event"
 	);
 	let mut state_at_incoming_event = if incoming_pdu.prev_events().count() == 1 {
-		self.state_at_incoming_degree_one(&incoming_pdu).await?
+		self.state_at_incoming_degree_one(&incoming_pdu, room_id)
+			.await?
 	} else {
 		self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
 			.await?
@@ -131,56 +130,60 @@ where
 		return Ok(Some(pduid));
 	}
 
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Gathering auth events"
-	);
-	let auth_events = self
-		.services
-		.state
-		.get_auth_events(
-			room_id,
-			incoming_pdu.kind(),
-			incoming_pdu.sender(),
-			incoming_pdu.state_key(),
-			incoming_pdu.content(),
+	let mut soft_fail = if is_timeline_event {
+		debug!(
+			event_id = %incoming_pdu.event_id,
+			"Gathering auth events"
+		);
+		let auth_events = self
+			.services
+			.state
+			.get_auth_events(
+				room_id,
+				incoming_pdu.kind(),
+				incoming_pdu.sender(),
+				incoming_pdu.state_key(),
+				incoming_pdu.content(),
+				&room_version,
+			)
+			.await?;
+
+		let state_fetch = |k: &StateEventType, s: &str| {
+			let key = k.with_state_key(s);
+			ready(auth_events.get(&key).map(ToOwned::to_owned))
+		};
+
+		debug!(
+			event_id = %incoming_pdu.event_id,
+			"Running auth check with claimed state auth"
+		);
+		let auth_check = state_res::event_auth::auth_check(
 			&room_version,
+			&incoming_pdu,
+			None, // third-party invite
+			state_fetch,
+			create_event.as_pdu(),
 		)
-		.await?;
+		.await
+		.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
 
-	let state_fetch = |k: &StateEventType, s: &str| {
-		let key = k.with_state_key(s);
-		ready(auth_events.get(&key).map(ToOwned::to_owned))
-	};
-
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Running auth check with claimed state auth"
-	);
-	let auth_check = state_res::event_auth::auth_check(
-		&room_version,
-		&incoming_pdu,
-		None, // third-party invite
-		state_fetch,
-		create_event.as_pdu(),
-	)
-	.await
-	.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
-
-	// Soft fail check before doing state res
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Performing soft-fail check"
-	);
-	let mut soft_fail = match (auth_check, incoming_pdu.redacts_id(&room_version_id)) {
-		| (false, _) => true,
-		| (true, None) => false,
-		| (true, Some(redact_id)) =>
-			!self
-				.services
-				.state_accessor
-				.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
-				.await?,
+		// Soft fail check before doing state res
+		debug!(
+			event_id = %incoming_pdu.event_id,
+			"Performing soft-fail check"
+		);
+		match (auth_check, incoming_pdu.redacts_id(&room_version_id)) {
+			| (false, _) => true,
+			| (true, None) => false,
+			| (true, Some(redact_id)) =>
+				!self
+					.services
+					.state_accessor
+					.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
+					.await?,
+		}
+	} else {
+		false
 	};
 
 	// Now we calculate the set of extremities this room has after the incoming
@@ -226,21 +229,19 @@ where
 		.map(Arc::new)
 		.await;
 
-	if incoming_pdu.state_key().is_some() {
+	let resolved_state = if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
 		// We also add state after incoming event to the fork states
 		let mut state_after = state_at_incoming_event.clone();
-		if let Some(state_key) = incoming_pdu.state_key() {
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
-				.await;
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
+			.await;
 
-			let event_id = incoming_pdu.event_id();
-			state_after.insert(shortstatekey, event_id.to_owned());
-		}
+		let event_id = incoming_pdu.event_id();
+		state_after.insert(shortstatekey, event_id.to_owned());
 
 		let new_room_state = self
 			.resolve_state(room_id, &room_version_id, state_after)
@@ -248,17 +249,16 @@ where
 
 		// Set the new room state to the resolved state
 		debug!("Forcing new room state");
-		let HashSetCompressStateEvent { shortstatehash, added, removed } = self
+		let resolved_state = self
 			.services
 			.state_compressor
 			.save_state(room_id, new_room_state)
 			.await?;
 
-		self.services
-			.state
-			.force_state(room_id, shortstatehash, added, removed, &state_lock)
-			.await?;
-	}
+		Some(resolved_state)
+	} else {
+		None
+	};
 
 	if !soft_fail {
 		// Don't call the below checks on events that have already soft-failed, there's
@@ -335,6 +335,7 @@ where
 				val,
 				extremities,
 				state_ids_compressed,
+				None,
 				soft_fail,
 				&state_lock,
 				room_id,
@@ -368,6 +369,7 @@ where
 			val,
 			extremities,
 			state_ids_compressed,
+			resolved_state,
 			soft_fail,
 			&state_lock,
 			room_id,

@@ -106,12 +106,14 @@ pub(crate) async fn upload_keys_route(
 					.users
 					.add_device_keys(sender_user, sender_device, device_keys)
 					.await;
+				flush_user_rooms(&services, sender_user).await;
 			}
 		} else {
 			services
 				.users
 				.add_device_keys(sender_user, sender_device, device_keys)
 				.await;
+			flush_user_rooms(&services, sender_user).await;
 		}
 	}
 
@@ -219,6 +221,8 @@ pub(crate) async fn upload_signing_keys_route(
 			true, // notify so that other users see the new keys
 		)
 		.await?;
+
+	flush_user_rooms(&services, sender_user).await;
 
 	info!(
 		target: "cross_signing",
@@ -363,6 +367,8 @@ pub(crate) async fn upload_signatures_route(
 			}
 		}
 	}
+
+	flush_user_rooms(&services, sender_user).await;
 
 	Ok(upload_signatures::v3::Response { failures: BTreeMap::new() })
 }
@@ -662,21 +668,23 @@ pub(crate) async fn claim_keys_helper(
 				.entry(user_id.server_name())
 				.or_insert_with(Vec::new)
 				.push((user_id, map));
-		}
-
-		let mut container = BTreeMap::new();
-		for (device_id, key_algorithm) in map {
-			if let Ok(one_time_keys) = services
-				.users
-				.take_one_time_key(user_id, device_id, key_algorithm)
-				.await
-			{
-				let mut c = BTreeMap::new();
-				c.insert(one_time_keys.0, one_time_keys.1);
-				container.insert(device_id.clone(), c);
+		} else {
+			let mut container = BTreeMap::new();
+			for (device_id, key_algorithm) in map {
+				if let Ok(one_time_keys) = services
+					.users
+					.take_one_time_key(user_id, device_id, key_algorithm)
+					.await
+				{
+					let mut c = BTreeMap::new();
+					c.insert(one_time_keys.0, one_time_keys.1);
+					container.insert(device_id.clone(), c);
+				}
+			}
+			if !container.is_empty() {
+				one_time_keys.insert(user_id.clone(), container);
 			}
 		}
-		one_time_keys.insert(user_id.clone(), container);
 	}
 
 	let mut failures = BTreeMap::new();
@@ -709,9 +717,12 @@ pub(crate) async fn claim_keys_helper(
 
 	for (server, response) in futures {
 		match response {
-			| Ok(keys) => {
-				one_time_keys.extend(keys.one_time_keys);
-			},
+			| Ok(keys) =>
+				for (user_id, keys) in keys.one_time_keys {
+					if !keys.is_empty() {
+						one_time_keys.insert(user_id, keys);
+					}
+				},
 			| Err(e) => {
 				failures.insert(server.to_string(), json!({"error": e.to_string()}));
 			},
@@ -719,4 +730,12 @@ pub(crate) async fn claim_keys_helper(
 	}
 
 	Ok(claim_keys::v3::Response { failures, one_time_keys })
+}
+
+async fn flush_user_rooms(services: &Services, user_id: &UserId) {
+	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
+	tokio::pin!(rooms_joined);
+	while let Some(room_id) = rooms_joined.next().await {
+		let _ = services.sending.flush_room(room_id).await;
+	}
 }

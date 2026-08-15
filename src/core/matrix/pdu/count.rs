@@ -7,13 +7,32 @@ use std::{
 };
 
 use ruma::api::Direction;
+use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, err};
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug, Serialize)]
 pub enum Count {
 	Normal(u64),
 	Backfilled(i64),
+}
+
+impl<'de> Deserialize<'de> for Count {
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>,
+	{
+		#[derive(Deserialize)]
+		enum CountHelper {
+			Normal(u64),
+			Backfilled(i64),
+		}
+
+		match CountHelper::deserialize(deserializer)? {
+			| CountHelper::Normal(i) => Ok(Self::from_unsigned(i)),
+			| CountHelper::Backfilled(i) => Ok(Self::from_signed(i)),
+		}
+	}
 }
 
 impl Count {
@@ -175,4 +194,29 @@ impl Ord for Count {
 
 impl Default for Count {
 	fn default() -> Self { Self::Normal(0) }
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_count_deserialization_invariants() {
+		// Valid Normal Count deserialization
+		let normal_json = "{\"Normal\":5}";
+		let normal: Count = serde_json::from_str(normal_json).unwrap();
+		assert_eq!(normal, Count::Normal(5));
+
+		// Valid Backfilled Count deserialization (negative index)
+		let backfilled_json = "{\"Backfilled\":-5}";
+		let backfilled: Count = serde_json::from_str(backfilled_json).unwrap();
+		assert_eq!(backfilled, Count::Backfilled(-5));
+
+		// Invalid Backfilled Count deserialization (positive index)
+		// Should be converted to Normal(5) through from_signed(5)
+		let invalid_backfilled_json = "{\"Backfilled\":5}";
+		let count: Count = serde_json::from_str(invalid_backfilled_json).unwrap();
+		assert_eq!(count, Count::Normal(5));
+		count.debug_assert_valid(); // This would panic if the invariant was bypassed!
+	}
 }

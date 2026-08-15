@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use conduwuit::{Result, SyncRwLock, utils};
+use conduwuit::{Result, SyncRwLock, err, utils};
 use database::{Database, Deserialized, Map};
 
 pub struct Data {
@@ -22,19 +22,29 @@ impl Data {
 	}
 
 	pub fn next_count(&self) -> Result<u64> {
+		self.next_count_batch(1)
+			.map(|start| start.saturating_add(1))
+	}
+
+	pub fn next_count_batch(&self, diff: u64) -> Result<u64> {
 		let _cork = self.db.cork();
 		let mut lock = self.counter.write();
 		let counter: &mut u64 = &mut lock;
+
+		#[cfg(debug_assertions)]
 		debug_assert!(
 			*counter == Self::stored_count(&self.global).unwrap_or_default(),
 			"counter mismatch"
 		);
 
-		*counter = counter.checked_add(1).unwrap_or(*counter);
+		let start = *counter;
+		*counter = counter
+			.checked_add(diff)
+			.ok_or_else(|| err!(Database("global counter overflow")))?;
 
 		self.global.insert(COUNTER, counter.to_be_bytes());
 
-		Ok(*counter)
+		Ok(start)
 	}
 
 	#[inline]

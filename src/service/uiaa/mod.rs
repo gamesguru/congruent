@@ -372,11 +372,12 @@ impl Service {
 							});
 						}
 					},
-					| _ =>
+					| _ => {
 						return Err(StandardErrorBody {
 							kind: ErrorKind::Unrecognized,
 							message: "Identifier type not recognized".to_owned(),
-						}),
+						});
+					},
 				};
 
 				let Ok(user_id) = UserId::parse_with_server_name(

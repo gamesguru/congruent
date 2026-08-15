@@ -1,7 +1,8 @@
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
-	Result, Server, SyncRwLock, debug, debug_info, error, info, trace, utils::stream::IterStream,
+	Result, Server, SyncRwLock, debug, debug_info, error, info, trace,
+	utils::stream::{IterStream, ReadyExt},
 	warn,
 };
 use database::Database;
@@ -93,6 +94,7 @@ impl Services {
 			rooms: rooms::Service {
 				alias: build!(rooms::alias::Service),
 				auth_chain: build!(rooms::auth_chain::Service),
+				delayed_events: build!(rooms::delayed_events::Service),
 				directory: build!(rooms::directory::Service),
 				event_handler: build!(rooms::event_handler::Service),
 				lazy_loading: build!(rooms::lazy_loading::Service),
@@ -195,10 +197,12 @@ impl Services {
 	}
 
 	pub async fn clear_cache(&self) {
+		use conduwuit::utils::stream::BroadbandExt;
 		self.services()
-			.for_each(|service| async move {
+			.broad_then(|service| async move {
 				service.clear_cache().await;
 			})
+			.ready_for_each(|()| ())
 			.await;
 	}
 

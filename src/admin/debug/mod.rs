@@ -225,6 +225,15 @@ pub enum DebugCommand {
 		level: Option<i32>,
 	},
 
+	/// Purge outlier PDUs from the database
+	PurgeOutliers,
+
+	/// Backfill the timestamp index for MSC3030
+	BackfillTimestampIndex {
+		/// Room ID to backfill (otherwise all rooms)
+		room: Option<OwnedRoomId>,
+	},
+
 	/// Send a test email to the invoking admin's email address
 	SendTestEmail,
 

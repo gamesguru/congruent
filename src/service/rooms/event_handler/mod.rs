@@ -95,8 +95,16 @@ impl Service {
 		self.services.timeline.pdu_exists(&event_id).await
 	}
 
-	async fn event_fetch(&self, event_id: OwnedEventId) -> Option<PduEvent> {
-		self.services.timeline.get_pdu(&event_id).await.ok()
+	async fn event_fetch(
+		&self,
+		room_id: Option<&RoomId>,
+		event_id: OwnedEventId,
+	) -> Option<PduEvent> {
+		self.services
+			.timeline
+			.get_pdu_in_room(room_id, &event_id)
+			.await
+			.ok()
 	}
 }
 

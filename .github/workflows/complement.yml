@@ -17,7 +17,7 @@ jobs:
   complement-tests:
     # NOTE: to enable GitHub builds/workflows, add a REPOSITORY_VARIABLE
     # i.e., under /settings/variables/actions, C10Y_SOME_ENV_VAR=1
-    if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
+    # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
       FEATURES: "direct_tls"
@@ -27,23 +27,31 @@ jobs:
       matrix:
         include:
           - arch: amd64
+            os: ubuntu-24.04
+            profile: release-quick
+            room_version: "12"
+          - arch: amd64
             os: ubuntu-22.04
             profile: release-quick
+            room_version: "12"
+          - arch: arm64
+            prebuilt_arch: arm64-cortex-a76
+            target_cpu: cortex-a76
+            jemalloc_lg_page: 16
+            os: ubuntu-24.04
+            profile: release-quick
+            room_version: "12"
           - arch: amd64
             os: ubuntu-24.04
             profile: release-quick
-          - arch: arm64
-            prebuilt_arch: arm64-cortex-a76
-            target_cpu: cortex-a76
-            jemalloc_lg_page: 16
-            os: ubuntu-22.04
-            profile: release-quick
+            room_version: "11"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
             profile: release-quick
+            room_version: "11"
 
     # For writing/updating PR comments on running test totals (# pass/fail/skip)
     # and pushing the generated github-badge.json to the badges branch
@@ -57,13 +65,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
+          submodules: recursive
 
       - name: Fetch tags and origin/main for comparison
         run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             build-essential \
             pkg-config \
@@ -146,21 +155,16 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: conduwuit-${{ matrix.profile }}-direct_tls-${{ matrix.arch }}-${{ matrix.os }}
+          name: conduwuit-${{ matrix.profile }}-direct_tls-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
             target/latest/conduwuit
             target/latest/conduwuit.asc
             target/latest/lib/
           retention-days: 60
+          overwrite: true
 
       - name: Capture baseline stats
         run: VERBOSE=1 make complement/stats | tee baseline_stats.txt
-
-      - name: Checkout Complement
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          repository: matrix-org/complement
-          path: complement-src
 
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -176,8 +180,13 @@ jobs:
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
 
       - name: Run Complement tests
+        env:
+          CONDUWUIT_SENDER_TIMEOUT: 5
+          CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
+          COMPLEMENT_SHARE_ENV_PREFIX: PASS_
+          PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
         run: |
-          ./bin/complement ./complement-src
+          make complement/run COMPLEMENT_DIR=./complement-src
 
       - name: Compare results with baseline
         continue-on-error: true
@@ -188,9 +197,10 @@ jobs:
         run: git diff --color=always tests/test_results/complement/test_results.jsonl
 
       - name: Upload test logs
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}
+          name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
             tests/test_results/complement/test_results.jsonl
             tests/test_results/complement/test_logs.jsonl
@@ -198,14 +208,19 @@ jobs:
 
       - name: Parse Complement results
         id: results
+        if: always()
         run: |
           RESULTS="tests/test_results/complement/test_results.jsonl"
+          if [ ! -f "$RESULTS" ]; then
+            echo "Results file not found, skipping parsing."
+            exit 0
+          fi
 
           # Inject arch, os, and profile into the JSONL file itself.
           # We use a temp file to avoid reading/writing to the same file.
           TEMP_RESULTS=$(mktemp)
-          jq -c --arg a "${{ matrix.arch }}" --arg o "${{ matrix.os }}" --arg p "${{ matrix.profile }}" \
-            '. + {arch: $a, os: $o, profile: $p}' "$RESULTS" > "$TEMP_RESULTS"
+          jq -c --arg a "${{ matrix.arch }}" --arg o "${{ matrix.os }}" --arg p "${{ matrix.profile }}" --arg rv "${{ matrix.room_version }}" \
+            '. + {arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS" > "$TEMP_RESULTS"
           mv "$TEMP_RESULTS" "$RESULTS"
 
           PASS=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS")
@@ -240,6 +255,7 @@ jobs:
           echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
       - name: Update Results Ledger
         if: always()
+        continue-on-error: true
         uses: ./.github/actions/update-results-ledger
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -253,12 +269,18 @@ jobs:
           arch: ${{ matrix.arch }}
           os: ${{ matrix.os }}
           profile: ${{ matrix.profile }}
+          room_version: ${{ matrix.room_version }}
 
       - name: Ingest results into PostgreSQL
         if: always()
+        continue-on-error: true
         env:
           SSH_PASSPHRASE: ${{ secrets.C10Y_SSH_KEY_PRIVATE_PASSPHRASE || '' }}
         run: |
+          if [ -z "${{ secrets.C10Y_SSH_KEY_PRIVATE }}" ]; then
+            echo "PostgreSQL secrets not available, skipping ingestion."
+            exit 0
+          fi
           mkdir -p ~/.ssh
           echo "${{ secrets.C10Y_SSH_KEY_PRIVATE }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
@@ -266,7 +288,8 @@ jobs:
           # Use ssh-agent to load the key (handles passphrases via DISPLAY workaround or expect if needed,
           # but usually CI keys are passwordless. If it has a password, sshpass can feed it)
           if [ -n "$SSH_PASSPHRASE" ]; then
-            sudo apt-get update && sudo apt-get install -y sshpass
+            sudo apt-get update || true
+            sudo apt-get install -y sshpass
             export SSH_ASKPASS_REQUIRE=force
             export SSH_ASKPASS_CMD="echo $SSH_PASSPHRASE"
             # Actually, standard sshpass is easier:
@@ -297,34 +320,126 @@ jobs:
           ssh-keyscan -p 22 nutra.tk | tee -a ~/.ssh/known_hosts
       - name: Run Postgres Ingestion
         if: always()
+        continue-on-error: true
         uses: ./.github/actions/postgres
         with:
           ssh_target: "git@nutra.tk"
           database_url: ${{ secrets.C10Y_POSTGRES_URL }}
-          setup_tables: ${{ github.ref == 'refs/heads/main' }}
+          setup_tables: false
           rebuild_db: false
+          results_file: tests/test_results/complement/test_results.jsonl
+          run_metadata: >-
+            {
+              "commit_hash": "${{ github.event.pull_request.head.sha || github.sha }}",
+              "branch": "${{ github.head_ref || github.ref_name }}",
+              "arch": "${{ matrix.arch }}",
+              "os": "${{ matrix.os }}",
+              "profile": "${{ matrix.profile }}",
+              "room_version": "${{ matrix.room_version }}",
+              "version_string": "${{ steps.version.outputs.version }}",
+              "features": "${{ env.FEATURES }}",
+              "pass": ${{ steps.results.outputs.pass || 0 }},
+              "fail": ${{ steps.results.outputs.fail || 0 }},
+              "skip": ${{ steps.results.outputs.skip || 0 }}
+            }
 
       - name: Query updated Postgres stats
+        if: always()
+        continue-on-error: true
         env:
           PAGER: cat
           DATABASE_URL: ${{ secrets.C10Y_POSTGRES_URL }}
-        run: python3 .github/actions/postgres/ci-query-failures.py
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL not set, skipping query."
+            exit 0
+          fi
+          python3 .github/actions/postgres/ci-query-failures.py
 
       - name: Get newly failing tests
         id: new_failures
+        if: always()
+        continue-on-error: true
         env:
           DATABASE_URL: ${{ secrets.C10Y_POSTGRES_URL }}
         run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL not set, skipping failures check."
+            exit 0
+          fi
           SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           ARCH="${{ matrix.arch }}"
           OS="${{ matrix.os }}"
           PROFILE="${{ matrix.profile }}"
+          ROOM_VERSION="${{ matrix.room_version }}"
+          FEATURES="${{ env.FEATURES }}"
 
-          # Fetch the newly failing tests for this specific run
-          NEW_FAILURES=$(./bin/db-shell -A -t -c "SELECT new_failures_list FROM v_run_regressions WHERE commit_hash LIKE '${SHA}%' AND arch = '${ARCH}' AND os = '${OS}' AND profile = '${PROFILE}' LIMIT 1;" | sed 's/\\n/\n/g')
+          # Fetch the newly failing and passing tests for this specific run.
+          # Keep this query branch-local instead of depending on v_run_regressions,
+          # because that shared view may be managed by another branch.
+          COMMON_CTES="
+            WITH current_run AS (
+              SELECT r.id, r.os
+              FROM runs r
+              WHERE r.commit_hash LIKE '${SHA}%'
+                AND r.arch IS NOT DISTINCT FROM '${ARCH}'
+                AND r.os IS NOT DISTINCT FROM '${OS}'
+                AND r.profile IS NOT DISTINCT FROM '${PROFILE}'
+                AND r.room_version IS NOT DISTINCT FROM '${ROOM_VERSION}'
+                AND COALESCE(regexp_replace(btrim(r.features, ' ,'), '[,\s]+', ' ', 'g'), '') IS NOT DISTINCT FROM COALESCE(regexp_replace(btrim('${FEATURES}', ' ,'), '[,\s]+', ' ', 'g'), '')
+                AND EXISTS (SELECT 1 FROM run_details rd WHERE rd.run_id = r.id)
+              ORDER BY r.run_date DESC, r.id DESC
+              LIMIT 1
+            ),
+            baseline_selection AS (
+              SELECT DISTINCT ON (arch, os)
+                id,
+                os
+              FROM runs
+              WHERE (branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
+                OR version_string LIKE '%main%')
+              ORDER BY
+                arch,
+                os,
+                run_date DESC,
+                id DESC
+            ),
+            baseline_status AS (
+              SELECT
+                bsel.os,
+                rd.test_name,
+                bool_or(rd.status = 'pass') AS any_pass,
+                bool_or(rd.status = 'skip') AS any_skip
+              FROM baseline_selection bsel
+              JOIN run_details rd ON rd.run_id = bsel.id
+              GROUP BY
+                bsel.os,
+                rd.test_name
+            )"
+          NEW_FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
+            SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
+            FROM current_run r
+            JOIN run_details rd ON rd.run_id = r.id
+            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
+            WHERE rd.status = 'fail'
+              AND bs.test_name IS NOT NULL
+              AND (bs.any_pass OR bs.any_skip);" | sed 's/\\n/\n/g')
+          NEW_PASSES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
+            SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
+            FROM current_run r
+            JOIN run_details rd ON rd.run_id = r.id
+            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
+            WHERE rd.status = 'pass'
+              AND bs.test_name IS NOT NULL
+              AND NOT bs.any_pass;" | sed 's/\\n/\n/g')
+
 
           echo "new_failures<<EOF" | tee -a "$GITHUB_OUTPUT"
           echo "$NEW_FAILURES" | tee -a "$GITHUB_OUTPUT"
+          echo "EOF" | tee -a "$GITHUB_OUTPUT"
+
+          echo "new_passes<<EOF" | tee -a "$GITHUB_OUTPUT"
+          echo "$NEW_PASSES" | tee -a "$GITHUB_OUTPUT"
           echo "EOF" | tee -a "$GITHUB_OUTPUT"
 
           # Count non-empty lines of new failures
@@ -339,11 +454,24 @@ jobs:
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+          # Count non-empty lines of new passes
+          NEW_PASSES_COUNT=$(echo "$NEW_PASSES" | grep -c '[^[:space:]]' || true)
+          if [ "$NEW_PASSES_COUNT" -gt 0 ]; then
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Newly Passed Tests ($NEW_PASSES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "$NEW_PASSES" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Post Complement results to PR
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         env:
           FAILED_TESTS: ${{ steps.new_failures.outputs.new_failures }}
+          PASSED_TESTS: ${{ steps.new_failures.outputs.new_passes }}
         with:
           script: |
             const pass = ${{ steps.results.outputs.pass || 0 }};
@@ -352,7 +480,9 @@ jobs:
             const total = ${{ steps.results.outputs.total || 0 }};
             const arch = '${{ matrix.arch }}';
             const os = '${{ matrix.os }}';
+            const roomVersion = '${{ matrix.room_version }}';
             const failedTestsRaw = process.env.FAILED_TESTS || '';
+            const passedTestsRaw = process.env.PASSED_TESTS || '';
 
             const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0);
             let failedContent = 'No newly failing tests recorded.';
@@ -361,9 +491,12 @@ jobs:
               failedContent = '```\n' + list + '\n```';
             }
 
-            let currentRun = [
-              `## Complement Test Results (${arch} ${os})`,
+            const passedLines = passedTestsRaw.trim().split('\n').filter(l => l.length > 0);
+
+            const currentRunLines = [
+              `## Complement Test Results (${arch} ${os} v${roomVersion})`,
               `**Commit:** \`${context.payload.pull_request.head.ref}\` (\`${context.payload.pull_request.head.sha.substring(0, 7)}\`)`,
+              `**Logs:** [View / Download Logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
               '',
               '| Status | Count |',
               '|--------|-------|',
@@ -377,7 +510,21 @@ jobs:
               failedContent,
               '',
               '</details>',
-            ].join('\n');
+            ];
+
+            if (passedLines.length > 0) {
+              const passedContent = '```\n' + passedLines.join('\n') + '\n```';
+              currentRunLines.push(
+                '',
+                `<details><summary>Newly Passed Tests (${passedLines.length})</summary>`,
+                '',
+                passedContent,
+                '',
+                '</details>'
+              );
+            }
+
+            let currentRun = currentRunLines.join('\n');
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -385,24 +532,41 @@ jobs:
               issue_number: context.issue.number,
             });
 
-            const marker = `<!-- complement-test-results-${arch}-${os} -->`;
+            const marker = `<!-- complement-test-results-${arch}-${os}-v${roomVersion} -->`;
             const existing = comments.find(c =>
               c.body && c.body.includes(marker)
             );
 
+            const heading = `## Complement Test Results (${arch} ${os} v${roomVersion})`;
+            const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const previousRunsSummary = '<details><summary>Previous Runs</summary>';
+            const extractRuns = (body) => {
+              const withoutMarker = body.replace(marker, '').trim();
+              const previousIndex = withoutMarker.indexOf(previousRunsSummary);
+              const currentSection = previousIndex === -1
+                ? withoutMarker
+                : withoutMarker.slice(0, previousIndex).trim();
+              const previousBlock = previousIndex === -1
+                ? ''
+                : withoutMarker
+                    .slice(previousIndex + previousRunsSummary.length)
+                    .replace(/\s*<\/details>\s*$/, '')
+                    .trim();
+
+              return [currentSection, ...previousBlock
+                .split(new RegExp(`(?=^${escapeRegExp(heading)}$)`, 'm'))
+              ]
+                .map(section => section.trim())
+                .filter(section => section.startsWith(heading));
+            };
+
             let body = currentRun + '\n\n' + marker;
 
             if (existing) {
-              let oldBody = existing.body.replace(marker, '').replace(`## Complement Test Results (${arch} ${os})`, '').trim();
-              if (oldBody.length > 0) {
-                const maxPreviousRuns = 6;
-                let parts = oldBody.split('<details><summary>Previous Runs</summary>');
-                if (parts.length > maxPreviousRuns + 1) {
-                  parts = parts.slice(0, maxPreviousRuns + 1);
-                  oldBody = parts.join('<details><summary>Previous Runs</summary>');
-                  oldBody += '\n\n' + '</details>\n\n'.repeat(maxPreviousRuns).trim();
-                }
-                body = currentRun + '\n\n<details><summary>Previous Runs</summary>\n\n' + oldBody + '\n\n</details>\n\n' + marker;
+              const maxPreviousRuns = 6;
+              const previousRuns = extractRuns(existing.body).slice(0, maxPreviousRuns);
+              if (previousRuns.length > 0) {
+                body = currentRun + '\n\n<details><summary>Previous Runs</summary>\n\n' + previousRuns.join('\n\n') + '\n\n</details>\n\n' + marker;
               }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -418,3 +582,37 @@ jobs:
                 body,
               });
             }
+
+      - name: Notify Matrix room
+        if: always()
+        env:
+          MATRIX_TOKEN: ${{ secrets.NUTRA_BOT_PAT }}
+          MATRIX_ROOM_ID: ${{ vars.C10Y_MATRIX_NOTIFY_ROOM_ID || '!m82A7i5caVq0WrL0mc:nutra.tk' }}
+          MATRIX_HOMESERVER: ${{ vars.C10Y_MATRIX_NOTIFY_HOMESERVER || 'https://matrix.nutra.tk' }}
+          RESULTS_OUTCOME: ${{ steps.results.outcome || '' }}
+          REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          ARCH="${{ matrix.arch }}"
+          OS="${{ matrix.os }}"
+          SHA="${{ github.sha }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ "${RESULTS_OUTCOME}" = "success" ]; then
+            PASS="${{ steps.results.outputs.pass || 0 }}"
+            FAIL="${{ steps.results.outputs.fail || 0 }}"
+            SKIP="${{ steps.results.outputs.skip || 0 }}"
+            TOTAL="${{ steps.results.outputs.total || 0 }}"
+            MARK=$([[ "$FAIL" == "0" ]] && echo "✓" || echo "✗")
+            MSG="${MARK} Complement (${ARCH} ${OS}): ${PASS} pass, ${FAIL} fail, ${SKIP} skip / ${TOTAL} total -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
+          else
+            MSG="✗ Complement (${ARCH} ${OS}): job failed before producing test counts -- ${REF} @ ${SHA:0:7} -- ${RUN_URL}"
+          fi
+
+          if [ -n "${MATRIX_TOKEN}" ]; then
+            TXN_ID="ci-$(date +%s)-${RANDOM}"
+            jq -n --arg body "${MSG}" '{msgtype: "m.text", body: $body}' | curl -sf -X PUT \
+              "${MATRIX_HOMESERVER}/_matrix/client/v3/rooms/${MATRIX_ROOM_ID}/send/m.room.message/${TXN_ID}" \
+              -H "Authorization: Bearer ${MATRIX_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data @- || echo "Matrix notify failed (non-fatal)"
+          fi

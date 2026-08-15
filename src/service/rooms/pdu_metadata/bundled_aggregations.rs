@@ -26,10 +26,14 @@ impl super::Service {
 			return Ok(None);
 		}
 
+		let room_id = pdu
+			.room_id_or_hash()
+			.ok_or_else(|| err!(Database("Event has no room_id")))?;
+
 		let relations = self
 			.get_relations(
 				user_id,
-				&pdu.room_id_or_hash(),
+				&room_id,
 				pdu.event_id(),
 				conduwuit::PduCount::max(),
 				MAX_BUNDLED_RELATIONS,
@@ -125,6 +129,9 @@ impl super::Service {
 		original_event: &PduEvent,
 		replacement_events: &[&'a PdusIterItem],
 	) -> Result<Option<&'a PduEvent>> {
+		let room_id = original_event
+			.room_id_or_hash()
+			.ok_or_else(|| err!(Database("Event has no room_id")))?;
 		// Filter valid replacements and find the maximum in a single pass
 		let mut result: Option<&PduEvent> = None;
 
@@ -148,14 +155,15 @@ impl super::Service {
 					}
 				},
 			};
-			if let Some(pdu) = next
-				&& self
+			if let Some(pdu) = next {
+				if self
 					.services
 					.state_accessor
-					.user_can_see_event(user_id, &pdu.room_id_or_hash(), pdu.event_id())
+					.user_can_see_event(user_id, &room_id, pdu.event_id())
 					.await
-			{
-				result = Some(pdu);
+				{
+					result = Some(pdu);
+				}
 			}
 		}
 

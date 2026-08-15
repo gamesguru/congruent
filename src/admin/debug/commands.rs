@@ -18,12 +18,11 @@ use conduwuit::{
 	},
 	warn,
 };
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use lettre::message::Mailbox;
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId,
-	OwnedRoomOrAliasId, OwnedServerName, RoomId, RoomVersionId,
-	api::federation::event::get_room_state, events::AnyStateEvent, serde::Raw,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
+	RoomVersionId, api::federation::event::get_room_state, events::AnyStateEvent, serde::Raw,
 };
 use service::rooms::{
 	short::{ShortEventId, ShortRoomId},
@@ -41,24 +40,20 @@ pub(super) async fn echo(&self, message: Vec<String>) -> Result {
 
 #[admin_command]
 pub(super) async fn get_auth_chain(&self, event_id: OwnedEventId) -> Result {
-	let Ok(event) = self.services.rooms.timeline.get_pdu_json(&event_id).await else {
+	let Ok(event) = self.services.rooms.timeline.get_pdu(&event_id).await else {
 		return Err!("Event not found.");
 	};
 
-	let room_id_str = event
-		.get("room_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.ok_or_else(|| err!(Database("Invalid event in database")))?;
-
-	let room_id = <&RoomId>::try_from(room_id_str)
-		.map_err(|_| err!(Database("Invalid room id field in event in database")))?;
+	let room_id = event
+		.room_id_or_hash()
+		.ok_or_else(|| err!(Database("Event has no room_id")))?;
 
 	let start = Instant::now();
 	let count = self
 		.services
 		.rooms
 		.auth_chain
-		.event_ids_iter(room_id, once(event_id.as_ref()))
+		.event_ids_iter(&room_id, once(event_id.as_ref()))
 		.ready_filter_map(Result::ok)
 		.count()
 		.await;
@@ -582,11 +577,16 @@ pub(super) async fn force_set_room_state_from_server(
 			continue;
 		};
 
-		let pdu = PduEvent::from_id_val(&event_id, value.clone()).map_err(|e| {
-			debug_error!("Invalid PDU in fetching remote room state PDUs response: {value:#?}");
-			err!(BadServerResponse(debug_error!("Invalid PDU in send_join response: {e:?}")))
-		})?;
-
+		let pdu = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id.as_ref()))
+			.map_err(|e| {
+				debug_error!(
+					"Invalid PDU in fetching remote room state PDUs response: {value:#?}"
+				);
+				err!(BadServerResponse(debug_error!("Invalid PDU in send_join response: {e:?}")))
+			})?;
+		if pdu.room_id_or_hash().as_deref() != Some(room_id.as_ref()) {
+			return Err!(BadServerResponse("Remote room_state PDU belongs to a different room"));
+		}
 		self.services
 			.rooms
 			.outlier
@@ -876,6 +876,39 @@ pub(super) async fn trim_memory(&self) -> Result {
 	conduwuit::alloc::trim(None)?;
 
 	writeln!(self, "done").await
+}
+
+#[admin_command]
+pub(super) async fn purge_outliers(&self) -> Result {
+	self.services.rooms.outlier.clear_outliers().await;
+	write!(self, "Successfully cleared all outlier PDUs.").await
+}
+
+#[admin_command]
+pub(super) async fn backfill_timestamp_index(&self, room: Option<OwnedRoomId>) -> Result {
+	if let Some(room_id) = room {
+		self.services
+			.rooms
+			.timeline
+			.backfill_timestamp_index(&room_id)
+			.await?;
+		let out = format!("Successfully backfilled timestamp index for {room_id}.");
+		self.write_str(&out).await
+	} else {
+		let mut count: u64 = 0;
+		let rooms = self.services.rooms.metadata.iter_ids();
+		pin_mut!(rooms);
+		while let Some(room_id) = rooms.next().await {
+			self.services
+				.rooms
+				.timeline
+				.backfill_timestamp_index(room_id)
+				.await?;
+			count = count.saturating_add(1);
+		}
+		let out = format!("Successfully backfilled timestamp index for {count} rooms.");
+		self.write_str(&out).await
+	}
 }
 
 #[admin_command]

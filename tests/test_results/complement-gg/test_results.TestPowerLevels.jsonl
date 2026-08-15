@@ -1,0 +1,4 @@
+{"Action":"pass","Test":"TestPowerLevels"}
+{"Action":"pass","Test":"TestPowerLevels/GET_/rooms/:room_id/state/m.room.power_levels_can_fetch_levels"}
+{"Action":"pass","Test":"TestPowerLevels/PUT_/rooms/:room_id/state/m.room.power_levels_can_set_levels"}
+{"Action":"pass","Test":"TestPowerLevels/PUT_power_levels_should_not_explode_if_the_old_power_levels_were_empty"}

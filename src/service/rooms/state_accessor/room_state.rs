@@ -88,7 +88,9 @@ pub async fn room_state_get(
 	self.services
 		.state
 		.get_room_shortstatehash(room_id)
-		.and_then(|shortstatehash| self.state_get(shortstatehash, event_type, state_key))
+		.and_then(|shortstatehash| {
+			self.state_get_in_room(Some(room_id), shortstatehash, event_type, state_key)
+		})
 		.await
 }
 

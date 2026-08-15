@@ -63,14 +63,22 @@ async fn create_join_event(
 		return Err!(Request(BadJson("Could not convert event to canonical json.")));
 	};
 
-	let event_room_id: OwnedRoomId = serde_json::from_value(
-		value
-			.get("room_id")
-			.ok_or_else(|| err!(Request(BadJson("Event missing room_id property."))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}")))))?;
+	let event_room_id: OwnedRoomId = if let Some(room_id_val) = value.get("room_id") {
+		serde_json::from_value(room_id_val.clone().into()).map_err(|e| {
+			err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}"))))
+		})?
+	} else if services
+		.rooms
+		.state
+		.get_room_version(room_id)
+		.await
+		.is_ok_and(|v| {
+			conduwuit::matrix::state_res::RoomVersion::new(&v).is_ok_and(|v| v.room_ids_as_hashes)
+		}) {
+		room_id.to_owned()
+	} else {
+		return Err!(Request(BadJson("Event missing room_id property.")));
+	};
 
 	if event_room_id != room_id {
 		return Err!(Request(BadJson("Event room_id does not match request path room ID.")));
@@ -216,7 +224,11 @@ async fn create_join_event(
 		.broad_filter_map(|event_id| async move {
 			if omit_members {
 				if let Ok(e) = event_id.as_ref() {
-					let pdu = services.rooms.timeline.get_pdu(e).await;
+					let pdu = services
+						.rooms
+						.timeline
+						.get_pdu_in_room(Some(room_id), e)
+						.await;
 					if pdu.is_ok_and(|p| p.kind().to_cow_str() == "m.room.member") {
 						trace!("omitting member event {e:?} from returned state");
 						// skip members
@@ -256,7 +268,10 @@ async fn create_join_event(
 		.boxed()
 		.await?;
 	info!(fast_join = %omit_members, "Sending join event to other servers");
-	services.sending.send_pdu_room(room_id, &pdu_id).await?;
+	services
+		.sending
+		.send_pdu_room_except(room_id, &pdu_id, origin)
+		.await?;
 	debug!("Finished sending join event");
 	let servers_in_room: Option<Vec<_>> = if !omit_members {
 		None

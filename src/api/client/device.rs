@@ -1,5 +1,5 @@
 use axum::extract::State;
-use axum_client_ip::InsecureClientIp;
+use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, err, utils};
 use futures::StreamExt;
 use ruma::{
@@ -50,7 +50,7 @@ pub(crate) async fn get_device_route(
 #[tracing::instrument(skip_all, fields(%client), name = "update_device", level = "debug")]
 pub(crate) async fn update_device_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<update_device::v3::Request>,
 ) -> Result<update_device::v3::Response> {
 	let sender_user = body.sender_user();
@@ -72,6 +72,8 @@ pub(crate) async fn update_device_route(
 				.users
 				.update_device_metadata(sender_user, &body.device_id, &device)
 				.await?;
+
+			flush_user_rooms(&services, sender_user).await;
 
 			Ok(update_device::v3::Response {})
 		},
@@ -133,6 +135,7 @@ pub(crate) async fn delete_device_route(
 			.users
 			.remove_device(sender_user, &body.device_id)
 			.await;
+		flush_user_rooms(&services, sender_user).await;
 
 		return Ok(delete_device::v3::Response {});
 	}
@@ -151,6 +154,7 @@ pub(crate) async fn delete_device_route(
 		.users
 		.remove_device(sender_user, &body.device_id)
 		.await;
+	flush_user_rooms(&services, sender_user).await;
 
 	Ok(delete_device::v3::Response {})
 }
@@ -183,6 +187,7 @@ pub(crate) async fn delete_devices_route(
 		for device_id in &body.devices {
 			services.users.remove_device(sender_user, device_id).await;
 		}
+		flush_user_rooms(&services, sender_user).await;
 
 		return Ok(delete_devices::v3::Response {});
 	}
@@ -200,6 +205,15 @@ pub(crate) async fn delete_devices_route(
 	for device_id in &body.devices {
 		services.users.remove_device(sender_user, device_id).await;
 	}
+	flush_user_rooms(&services, sender_user).await;
 
 	Ok(delete_devices::v3::Response {})
+}
+
+async fn flush_user_rooms(services: &conduwuit_service::Services, user_id: &ruma::UserId) {
+	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
+	tokio::pin!(rooms_joined);
+	while let Some(room_id) = rooms_joined.next().await {
+		let _ = services.sending.flush_room(room_id).await;
+	}
 }

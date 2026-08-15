@@ -1,12 +1,9 @@
 use std::{borrow::Borrow, iter::once};
 
 use axum::extract::State;
-use conduwuit::{Err, Error, Result, info, utils::stream::ReadyExt};
+use conduwuit::{Err, Error, Event, Result, info, utils::stream::ReadyExt};
 use futures::StreamExt;
-use ruma::{
-	RoomId,
-	api::{client::error::ErrorKind, federation::authorization::get_event_authorization},
-};
+use ruma::api::{client::error::ErrorKind, federation::authorization::get_event_authorization};
 
 use super::AccessCheck;
 use crate::Ruma;
@@ -45,22 +42,18 @@ pub(crate) async fn get_event_authorization_route(
 	let event = services
 		.rooms
 		.timeline
-		.get_pdu_json(&body.event_id)
+		.get_pdu(&body.event_id)
 		.await
 		.map_err(|_| Error::BadRequest(ErrorKind::NotFound, "Event not found."))?;
 
-	let room_id_str = event
-		.get("room_id")
-		.and_then(|val| val.as_str())
-		.ok_or_else(|| Error::bad_database("Invalid event in database."))?;
-
-	let room_id = <&RoomId>::try_from(room_id_str)
-		.map_err(|_| Error::bad_database("Invalid room_id in event in database."))?;
+	if event.room_id_or_hash().as_deref() != Some(body.room_id.as_ref()) {
+		return Err!(Request(NotFound("Event does not belong to this room.")));
+	}
 
 	let auth_chain = services
 		.rooms
 		.auth_chain
-		.event_ids_iter(room_id, once(body.event_id.borrow()))
+		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
 		.ready_filter_map(Result::ok)
 		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).await.ok() })
 		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))

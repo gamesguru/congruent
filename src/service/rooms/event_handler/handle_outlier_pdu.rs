@@ -7,7 +7,7 @@ use conduwuit::{
 use futures::future::ready;
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
-	events::StateEventType,
+	events::{StateEventType, TimelineEventType},
 };
 
 use super::{check_room_id, get_room_version_id, to_room_version};
@@ -170,12 +170,16 @@ where
 		}
 	}
 
-	// The original create event must be in the auth events
-	if !matches!(
-		auth_events_by_key.get(&(StateEventType::RoomCreate, String::new().into())),
-		Some(_) | None
-	) {
-		return Err!(Request(InvalidParam("Incoming event refers to wrong create event.")));
+	// The original create event must be in the auth events for v11 and below.
+	// The create event itself has an empty auth_events array (it's the DAG root).
+	// For v12+, create is not required in auth_events.
+	if pdu_event.event_type() != &TimelineEventType::RoomCreate
+		&& !to_room_version(&room_version_id).room_ids_as_hashes
+		&& !auth_events_by_key.contains_key(&(StateEventType::RoomCreate, String::new().into()))
+	{
+		return Err!(Request(InvalidParam(
+			"Incoming event missing m.room.create in auth events"
+		)));
 	}
 
 	let state_fetch = |ty: &StateEventType, sk: &str| {
