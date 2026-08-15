@@ -800,12 +800,16 @@ async fn join_room_by_id_helper_remote_process(
 
 	// To prevent our join event from getting assigned a lower PduCount than the
 	// preceding historical extremities (which causes a chronologically
-	// out-of-order room timeline in client syncs), we drop the state lock
-	// temporarily, fetch and handle those extremities synchronously, and then
-	// re-acquire the lock before appending our join event.
+	// out-of-order room timeline in client syncs), we normally drop the state
+	// lock temporarily, fetch and handle those extremities synchronously, and
+	// then re-acquire the lock before appending our join event.
+	//
+	// Partial-state joins are the exception: the room will be resynced by the
+	// MSC3902 worker, so we must not block the `/join` response on forward-filling
+	// missing extremities from the remote server.
 	drop(state_lock);
 
-	if !remote_latest_events.is_empty() {
+	if !send_join_response.room_state.members_omitted && !remote_latest_events.is_empty() {
 		handle_missing_join_extremities(services, room_id, &remote_server, remote_latest_events)
 			.await;
 	}

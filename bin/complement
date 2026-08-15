@@ -31,6 +31,27 @@ RUN_TESTS="${COMPLEMENT_RUN:-.}"
 # Parallelism for tests. Default to 2 to improve stability on high-core machines.
 COMPLEMENT_PARALLEL="${COMPLEMENT_PARALLEL:-2}"
 
+# Homeserver under test. Default to the image name prefix from COMPLEMENT_BASE_IMAGE.
+# Accepted values:
+# - conduit
+# - conduwuit
+# - continuwuity
+# - tuwunel
+COMPLEMENT_HOMESERVER="${COMPLEMENT_HOMESERVER:-${COMPLEMENT_BASE_IMAGE%%:*}}"
+case "$COMPLEMENT_HOMESERVER" in
+    conduit|conduwuit|continuwuity|tuwunel)
+        COMPLEMENT_BLACKLIST_TAG="${COMPLEMENT_HOMESERVER}_blacklist"
+        ;;
+    *_blacklist)
+        COMPLEMENT_BLACKLIST_TAG="$COMPLEMENT_HOMESERVER"
+        ;;
+    *)
+        echo "Unknown COMPLEMENT_HOMESERVER: $COMPLEMENT_HOMESERVER"
+        echo "Use one of: conduit, conduwuit, continuwuity, tuwunel"
+        exit 1
+        ;;
+esac
+
 # On Linux, host.docker.internal doesn't work by default.
 # We try to detect the docker0 bridge IP and use it.
 if [[ "$OSTYPE" == "linux-gnu"* ]] && [ -z "${COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT:-}" ]; then
@@ -67,13 +88,43 @@ fi
 toplevel="$(git rev-parse --show-toplevel)"
 pushd "$toplevel" > /dev/null
 
-# Cleanup leftover Complement containers and images
+# Namespace Complement's generated containers and images per checkout.
+# This keeps local runs from clobbering each other and makes cleanup safer.
+if [ -z "${COMPLEMENT_PACKAGE_NAMESPACE_PREFIX:-}" ]; then
+    branch_slug=$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) \
+        | tr '[:upper:]/:@ ' '[:lower:]----' \
+        | tr -cs 'a-z0-9_.-' '-' \
+        | sed 's/^-//;s/-$//' \
+        | cut -c1-48)
+    branch_slug="${branch_slug:-detached}"
+    workspace_hash=$(printf '%s' "$toplevel" | sha1sum | awk '{print substr($1, 1, 8)}')
+    export COMPLEMENT_PACKAGE_NAMESPACE_PREFIX="${branch_slug}_${workspace_hash}"
+fi
+
+# Mark homeserver containers spawned by this wrapper run so cleanup only removes
+# containers created by this invocation.
+COMPLEMENT_WRAPPER_TOKEN="${COMPLEMENT_WRAPPER_TOKEN:-"complement-$$-$(date +%s%N)"}"
+COMPLEMENT_WRAPPER_ENV_PREFIX="${COMPLEMENT_SHARE_ENV_PREFIX:-COMPLEMENT_WRAPPER_}"
+COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_TOKEN"
+printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
+export "$COMPLEMENT_WRAPPER_ENV_NAME"
+export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
+
+# Cleanup only Complement containers spawned by this wrapper run.
 cleanup_complement_containers() {
-    local containers
-    containers=$(docker ps -a --filter "name=complement_" -q)
-    if [ -n "$containers" ]; then
-        echo "Cleaning up leftover Complement containers..."
-        echo "$containers" | xargs -r docker rm -f
+    local containers container ours=()
+    mapfile -t containers < <(docker ps -aq --filter "name=complement")
+
+    for container in "${containers[@]}"; do
+        if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
+            | grep -Fxq "COMPLEMENT_WRAPPER_TOKEN=$COMPLEMENT_WRAPPER_TOKEN"; then
+            ours+=("$container")
+        fi
+    done
+
+    if [ "${#ours[@]}" -gt 0 ]; then
+        echo "Cleaning up Complement containers spawned by this run..."
+        printf '%s\n' "${ours[@]}" | xargs -r docker rm -f
     fi
 
     # TODO: perhaps also prune images here?
@@ -112,7 +163,7 @@ if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
     test_name="${BASH_REMATCH[1]}"
     mapfile -t matched_packages < <(
         cd "$COMPLEMENT_SRC"
-        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}\\(" tests \
+        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests \
             | xargs -r -n1 dirname \
             | sed 's#^#./#' \
             | sort -u
@@ -125,7 +176,7 @@ fi
 
 # Common flags for both test runners
 TEST_FLAGS=(
-    -tags "conduwuit_blacklist"
+    -tags "$COMPLEMENT_BLACKLIST_TAG"
     -skip "$SKIPPED_COMPLEMENT_TESTS"
     -run "$RUN_TESTS"
     -p "$COMPLEMENT_PARALLEL"
