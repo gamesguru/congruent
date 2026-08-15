@@ -1434,6 +1434,10 @@ mod tests {
 		json.insert("auth_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
 		json.insert("prev_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
 		json.insert("content".to_owned(), CanonicalJsonValue::Object(BTreeMap::new()));
+		let mut hashes = BTreeMap::new();
+		hashes.insert("sha256".to_owned(), CanonicalJsonValue::String(String::new()));
+		json.insert("hashes".to_owned(), CanonicalJsonValue::Object(hashes));
+		json.insert("signatures".to_owned(), CanonicalJsonValue::Object(BTreeMap::new()));
 		if let Some(state_key) = state_key {
 			json.insert("state_key".to_owned(), CanonicalJsonValue::String(state_key.to_owned()));
 		}
