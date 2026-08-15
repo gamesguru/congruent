@@ -92,6 +92,7 @@ vars: ##H Print debug info
 PROFILE ?=
 p ?=
 CRATE ?=
+NO_SCCACHE ?=
 CARGO_SCOPE ?= $(if $(p),-p $(p),$(if $(CRATE),-p $(CRATE),--workspace))
 CARGO_FLAGS ?= $(if $(PROFILE),--profile $(PROFILE),) --config Cargo.custom.toml
 
@@ -174,6 +175,7 @@ test:   ##H Run tests
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
+		NO_SCCACHE=$(NO_SCCACHE) \
 		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
 
 .PHONY: cov

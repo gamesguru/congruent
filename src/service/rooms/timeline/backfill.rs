@@ -934,13 +934,30 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 		.await;
 	self.associate_current_state(room_id, event_id).await?;
 
+	// A retry can still win the race between the earlier metadata checks and
+	// this insert. Once the event is visible, later rejection writes should be
+	// refused, so preserve any rejection that landed before the timeline insert
+	// instead of clearing it here.
+	let rejected_during_promotion = self.services.pdu_metadata.is_event_rejected(event_id).await;
+	if rejected_during_promotion {
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event was rejected during promotion; leaving rejection in place"
+		);
+	} else {
+		// Clear any stale rejection flags now that the event is accepted into
+		// the timeline.
+		self.services.pdu_metadata.clear_pdu_markers(event_id);
+	}
+
 	drop(insert_lock);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
 
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
-	self.services.pdu_metadata.clear_pdu_markers(event_id);
 
 	Ok(())
 }

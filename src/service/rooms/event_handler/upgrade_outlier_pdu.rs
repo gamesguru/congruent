@@ -239,8 +239,25 @@ where
 				let key = StateEventType::from(pdu.kind().clone());
 				auth_events.insert((key, state_key.clone()), pdu);
 			} else {
-				missing_auth_events = true;
-				missing_auth_event_ids.push(OwnedEventId::from(event_id));
+				warn!(
+					event_id = %incoming_pdu.event_id,
+					auth_event_id = %event_id,
+					"Auth event exists locally but is not a state event"
+				);
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						RejectionCode::InvalidPduFormat.tag(),
+					)
+					.await;
+				self.services
+					.outlier
+					.add_pdu_outlier(incoming_pdu.event_id(), &val, Some(room_id))
+					.await;
+				return Err!(Request(Forbidden(
+					"Event authorisation fails because it references a non-state auth event"
+				)));
 			}
 		} else {
 			missing_auth_events = true;
