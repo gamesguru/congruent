@@ -18,8 +18,6 @@ use serde::Serialize;
 use url::Url;
 
 use super::Service;
-#[cfg(feature = "url_preview")]
-use crate::conduwuit::utils::response::LimitReadExt;
 
 #[derive(Serialize, Default, Clone)]
 pub struct UrlPreviewData {
