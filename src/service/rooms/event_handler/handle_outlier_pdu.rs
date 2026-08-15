@@ -11,6 +11,12 @@ use ruma::{
 use super::{check_room_id, get_room_version_id, to_room_version};
 use crate::rooms::{pdu_metadata::RejectionCode, timeline::pdu_fits};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthRecoveryStage {
+	BeforeStateIds,
+	AfterStateIds,
+}
+
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_outlier_pdu<'a, Pdu>(
@@ -23,7 +29,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
 	room_version_override: Option<&'a ruma::RoomVersionId>,
-	allow_event_auth_fallback: bool,
+	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
 where
 	Pdu: Event + Send + Sync,
@@ -386,7 +392,7 @@ where
 			room_version_override,
 			&missing_auth_events,
 			&mut auth_events,
-			allow_event_auth_fallback,
+			auth_recovery_stage,
 		)
 		.await?;
 	}
@@ -533,7 +539,7 @@ async fn resolve_missing_outlier_auth_events<'a, Pdu>(
 	room_version_override: Option<&'a ruma::RoomVersionId>,
 	missing_auth_events: &[&EventId],
 	auth_events: &mut HashMap<OwnedEventId, PduEvent>,
-	allow_event_auth_fallback: bool,
+	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<()>
 where
 	Pdu: Event + Send + Sync,
@@ -569,11 +575,11 @@ where
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
-		.await;
+			.await;
 		return Err!(MissingAuthEvents(missing));
 	}
 
-	if !allow_event_auth_fallback {
+	if matches!(auth_recovery_stage, AuthRecoveryStage::BeforeStateIds) {
 		info!(
 			target: "state_res_debug",
 			%event_id,
@@ -708,7 +714,7 @@ where
 						true,
 						false,
 						room_version_override,
-						allow_event_auth_fallback,
+						auth_recovery_stage,
 					))
 					.await
 					{

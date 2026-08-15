@@ -1027,7 +1027,7 @@ where
 											false,
 											false,
 											Some(room_version_id),
-											true,
+											super::AuthRecoveryStage::AfterStateIds,
 										))
 										.await,
 									);

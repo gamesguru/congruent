@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use conduwuit::{Err, Event, PduEvent, Result, err};
-use conduwuit_service::Services;
+use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
 use ruma::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
@@ -200,7 +200,7 @@ async fn persist_federation_events(
 				false,
 				false,
 				Some(&room_version),
-				false,
+				AuthRecoveryStage::BeforeStateIds,
 			))
 			.await
 			{

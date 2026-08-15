@@ -29,6 +29,7 @@ use conduwuit::{
 	utils::{MutexMap, stream::ReadyExt},
 };
 use futures::StreamExt;
+pub use handle_outlier_pdu::AuthRecoveryStage;
 use ruma::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId,
 	events::room::create::RoomCreateEventContent,

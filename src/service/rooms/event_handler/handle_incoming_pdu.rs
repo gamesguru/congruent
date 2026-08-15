@@ -20,6 +20,7 @@ use ruma::{
 };
 use tracing::debug;
 
+use super::handle_outlier_pdu::AuthRecoveryStage;
 use crate::rooms::timeline::{RawPduId, pdu_fits};
 
 async fn should_rescind_invite(
@@ -397,7 +398,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		false,
 		false,
 		room_version_override,
-		false,
+		AuthRecoveryStage::BeforeStateIds,
 	))
 	.await
 	{
@@ -561,7 +562,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						false,
 						false,
 						Some(&room_version_id),
-						true,
+						AuthRecoveryStage::AfterStateIds,
 					))
 					.await
 					{
@@ -580,7 +581,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					false,
 					false,
 					room_version_override,
-					true,
+					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
 			})
@@ -742,7 +743,7 @@ pub async fn process_timeline_upgrade(
 					false,
 					false,
 					Some(&room_version_id),
-					true,
+					AuthRecoveryStage::AfterStateIds,
 				))
 				.await
 				{

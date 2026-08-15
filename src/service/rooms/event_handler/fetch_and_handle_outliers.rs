@@ -590,7 +590,7 @@ where
 				true,
 				skip_sig_verify,
 				room_version_override,
-				false,
+				super::AuthRecoveryStage::BeforeStateIds,
 			))
 			.await
 			{

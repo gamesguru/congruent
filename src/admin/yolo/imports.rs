@@ -1,4 +1,5 @@
 use conduwuit::{Err, Result, err, info, warn};
+use conduwuit_service::rooms::event_handler::AuthRecoveryStage;
 use ruma::{
 	CanonicalJsonObject, OwnedEventId, OwnedRoomId, RoomVersionId, events::StateEventType,
 };
@@ -245,7 +246,7 @@ pub(super) async fn import_pdus(
 						true,
 						skip_sig_verify,
 						Some(&room_version),
-						false,
+						AuthRecoveryStage::BeforeStateIds,
 					))
 					.await;
 

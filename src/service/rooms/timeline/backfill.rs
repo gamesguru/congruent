@@ -736,7 +736,7 @@ pub async fn backfill_pdu(
 		false,
 		false,
 		Some(&room_version_id),
-		false,
+		crate::rooms::event_handler::AuthRecoveryStage::BeforeStateIds,
 	))
 	.await
 	{
