@@ -367,28 +367,6 @@ where
 	// message could slip through.
 	let mut soft_fail = false;
 
-	let state_ids_compressed = match &state_at_incoming_event {
-		| StateAtEvent::FastForward(shortstatehash) => {
-			self.services
-				.state_compressor
-				.load_shortstatehash_info(*shortstatehash)
-				.await?
-				.pop()
-				.expect("top frame must have full_state")
-				.full_state
-				.expect("must have full_state")
-				.clone() // This is Arc<CompressedState>
-		},
-		| StateAtEvent::Compressed(compressed) => compressed.clone(),
-		| StateAtEvent::Resolved(state) =>
-			self.services
-				.state_compressor
-				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-				.collect()
-				.map(Arc::new)
-				.await,
-	};
-
 	// Finalize soft_fail before any state processing: check policy server
 	// and redaction status so we can skip expensive state resolution for
 	// events that will be rejected.
@@ -570,7 +548,7 @@ where
 				//
 				// DAG integrity is preserved because append_incoming_pdu
 				// still calls set_event_state using state_ids_compressed
-				// (computed prior to the OCC loop).
+				// after soft_fail is fully decided.
 				if soft_fail {
 					state_delta_opt = None;
 				} else {
@@ -603,6 +581,28 @@ where
 		))
 		.await?;
 	}
+
+	let state_ids_compressed = match &state_at_incoming_event {
+		| StateAtEvent::FastForward(shortstatehash) => {
+			self.services
+				.state_compressor
+				.load_shortstatehash_info(*shortstatehash)
+				.await?
+				.pop()
+				.expect("top frame must have full_state")
+				.full_state
+				.expect("must have full_state")
+				.clone() // This is Arc<CompressedState>
+		},
+		| StateAtEvent::Compressed(compressed) => compressed.clone(),
+		| StateAtEvent::Resolved(state) =>
+			self.services
+				.state_compressor
+				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
+				.collect()
+				.map(Arc::new)
+				.await,
+	};
 
 	let current_extremities: Vec<OwnedEventId> = self
 		.services
@@ -1076,8 +1076,9 @@ where
 					}
 
 					// All prev_events exist but we still couldn't recover a
-					// resolvable state snapshot. Fail closed instead of
-					// authorizing against current room state.
+					// resolvable state snapshot. We do not authorize against the
+					// current room state here; that would turn a missing ancestry
+					// problem into a fail-open historical authorization bug.
 					info!(
 						target: "state_res_debug",
 						event_id = %incoming_pdu.event_id,
