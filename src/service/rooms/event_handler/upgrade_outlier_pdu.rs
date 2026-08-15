@@ -1085,6 +1085,12 @@ where
 						event_id = %incoming_pdu.event_id,
 						"fetch_state failed but prev_events present; state remains unresolved"
 					);
+					let rejection_reason = RejectionCode::PrevEventUnknownStateIdsFailed
+						.with_detail("state resolution failed");
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(incoming_pdu.event_id(), rejection_reason.as_str())
+						.await;
 				}
 			},
 		}
