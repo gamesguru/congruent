@@ -582,7 +582,7 @@ async fn join_room_by_id_helper_remote_process(
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
 	event_id: ruma::OwnedEventId,
-	state_lock: RoomMutexGuard,
+	mut state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
 	remote_latest_events: Vec<ruma::OwnedEventId>,
 ) -> Result {

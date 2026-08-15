@@ -723,7 +723,7 @@ pub async fn process_timeline_upgrade(
 		Some(incoming_pdu.sender().server_name()),
 	))
 	.await?;
-	self.processed_pdu_cache.insert(event_id.to_owned(), ());
+	self.processed_pdu_cache.insert(event_id.clone(), ());
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 

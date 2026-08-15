@@ -338,7 +338,14 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	let pdu_id = services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(origin, room_id, event_id, value, true, room_version_id)
+		.handle_incoming_pdu(
+			origin,
+			room_id,
+			event_id,
+			value,
+			true,
+			room_version_id.expect("room version must be known for membership handling"),
+		)
 		.boxed()
 		.await?
 		.ok_or_else(|| err!(Request(InvalidParam("Could not accept as timeline event."))))?;

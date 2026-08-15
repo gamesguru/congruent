@@ -523,7 +523,12 @@ async fn handle_room(
 		.lock(&room_id)
 		.await;
 
-	let room_version_id = services.rooms.state.get_room_version(&room_id).await?;
+	let room_version_id = services
+		.rooms
+		.state
+		.get_room_version(&room_id)
+		.await
+		.map_err(|e| TransactionError::Transient(e.to_string()))?;
 
 	let room_id = &room_id;
 	let pdu_map: HashMap<OwnedEventId, CanonicalJsonObject> = pdus

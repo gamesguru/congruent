@@ -1451,6 +1451,7 @@ pub(super) async fn audit_auth_chain(
 
 	// --fetch: reuse the battle-tested outlier fetch pipeline (32-server EMA
 	// fallback, backoff, full signature validation, rate-limit tracking)
+	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
 
 	let mut out = format!(
 		"Fetching {} missing events via fetch_and_handle_outliers pipeline...\n",

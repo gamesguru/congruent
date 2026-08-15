@@ -646,6 +646,7 @@ async fn get_remote_pdu_limited(
 		}
 	});
 
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
 	let mut servers = self.get_backfill_servers(room_id, room_mods).await.boxed();
 
 	while let Some(ref backfill_server) = servers.next().await {
