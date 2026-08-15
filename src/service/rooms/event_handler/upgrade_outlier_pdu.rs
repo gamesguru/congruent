@@ -261,7 +261,7 @@ where
 					warn!(
 						event_id = %incoming_pdu.event_id,
 						auth_event_id = %event_id,
-						"Auth event exists locally but is not a state event"
+						"Claimed auth event exists locally but is not a state event"
 					);
 					self.services
 						.pdu_metadata
@@ -269,10 +269,6 @@ where
 							incoming_pdu.event_id(),
 							RejectionCode::InvalidPduFormat.tag(),
 						)
-						.await;
-					self.services
-						.outlier
-						.add_pdu_outlier(incoming_pdu.event_id(), &val, Some(room_id))
 						.await;
 					return Err!(Request(Forbidden(
 						"Event authorisation fails because it references a non-state auth event"
