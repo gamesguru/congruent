@@ -10,10 +10,10 @@ strip            = "none"
 
 # Dev/testing build with fast compile time, decent runtime performance.
 # Here, "quick" refers to compile time, not runtime speed.
-# NOTE: for smaller binaries on disk, put: strip = "symbols"
+# NOTE: if you want smaller binaries on disk, keep debuginfo light too.
 [profile.dev-quick]
 codegen-units = 256
-debug         = "full"
+debug         = "line-tables-only"
 incremental   = true
 inherits      = "dev"
 lto           = "off"
