@@ -11,15 +11,6 @@ pub fn parse_and_clean_pdu(
 	room_id: &RoomId,
 	room_version: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject, PduEvent)> {
-	let event_id = match value
-		.get("event_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|id| OwnedEventId::parse(id).ok())
-	{
-		| Some(id) => id,
-		| None => crate::matrix::event::gen_event_id(&value, room_version)?,
-	};
-
 	// Strip diagnostic/internal fields that were injected during export or
 	// debugging
 	crate::utils::pdu_json_canonical_strip(&mut value);
@@ -33,6 +24,15 @@ pub fn parse_and_clean_pdu(
 		value.remove("room_id");
 	}
 
+	let event_id = match value
+		.get("event_id")
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|id| OwnedEventId::parse(id).ok())
+	{
+		| Some(id) => id,
+		| None => crate::matrix::event::gen_event_id(&value, room_version)?,
+	};
+
 	let pdu = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id))?;
 
 	Ok((event_id, value, pdu))
@@ -40,10 +40,11 @@ pub fn parse_and_clean_pdu(
 
 #[cfg(test)]
 mod tests {
-	use ruma::{room_id, room_version_id};
+	use ruma::{events::TimelineEventType, room_id, room_version_id};
 	use serde_json::json;
 
 	use super::*;
+	use crate::matrix::event::gen_event_id;
 
 	#[test]
 	fn test_parse_and_clean_pdu() {
@@ -81,5 +82,73 @@ mod tests {
 		assert!(!clean_val.contains_key("prev_state_events"));
 		assert!(clean_val.contains_key("room_id")); // Only stripped for m.room.create in v11+
 		assert_eq!(pdu.sender.as_str(), "@user:example.com");
+	}
+
+	#[test]
+	fn v12_create_event_hashes_after_room_id_stripping() {
+		let room_id = room_id!("!abc1234567890123456789012345678901234567890:example.org");
+		let version = room_version_id!("12");
+
+		let value: CanonicalJsonObject = serde_json::from_value(json!({
+			"type": "m.room.create",
+			"room_id": room_id.as_str(),
+			"sender": "@alice:example.org",
+			"origin_server_ts": 12345,
+			"content": { "creator": "@alice:example.org", "room_version": "12" },
+			"auth_events": [],
+			"prev_events": [],
+			"depth": 1,
+			"hashes": { "sha256": "fakehash" },
+			"signatures": {
+				"example.org": { "ed25519:1": "fakesig" }
+			}
+		}))
+		.unwrap();
+
+		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+
+		assert!(
+			!clean_val.contains_key("room_id"),
+			"V12 create events must drop room_id before hashing"
+		);
+		assert_eq!(
+			event_id,
+			gen_event_id(&clean_val, &version).unwrap(),
+			"derived event_id must match cleaned canonical JSON"
+		);
+		assert_eq!(pdu.kind, TimelineEventType::RoomCreate);
+	}
+
+	#[test]
+	fn v12_non_create_event_keeps_room_id_before_hashing() {
+		let room_id = room_id!("!test:example.com");
+		let version = room_version_id!("12");
+
+		let value: CanonicalJsonObject = serde_json::from_value(json!({
+			"type": "m.room.member",
+			"room_id": room_id.as_str(),
+			"sender": "@alice:example.org",
+			"state_key": "@alice:example.org",
+			"origin_server_ts": 12345,
+			"content": { "membership": "join" },
+			"auth_events": [],
+			"prev_events": [],
+			"depth": 1,
+			"hashes": { "sha256": "fakehash" },
+			"signatures": {
+				"example.org": { "ed25519:1": "fakesig" }
+			}
+		}))
+		.unwrap();
+
+		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+
+		assert!(clean_val.contains_key("room_id"), "non-create events must retain room_id");
+		assert_eq!(
+			event_id,
+			gen_event_id(&clean_val, &version).unwrap(),
+			"derived event_id must still match the cleaned canonical JSON"
+		);
+		assert_eq!(pdu.kind, TimelineEventType::RoomMember);
 	}
 }
