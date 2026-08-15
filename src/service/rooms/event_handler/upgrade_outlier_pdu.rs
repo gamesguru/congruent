@@ -937,9 +937,13 @@ where
 		}
 		let incoming_prev_events: Vec<OwnedEventId> =
 			incoming_pdu.prev_events().map(OwnedEventId::from).collect();
-		let state_lookup_event_id = state_ids_anchor_hint.cloned().unwrap_or_else(|| {
+		let state_lookup_event_id = if incoming_prev_events.len() == 1 {
+			state_ids_anchor_hint.cloned().unwrap_or_else(|| {
+				choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id())
+			})
+		} else {
 			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id())
-		});
+		};
 
 		// Attempt a synchronous /state_ids fetch from the sending server
 		// BEFORE queuing the async DAG healer.
