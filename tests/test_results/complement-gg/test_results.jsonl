@@ -784,7 +784,7 @@
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
 {"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
-{"Action":"fail","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
+{"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
