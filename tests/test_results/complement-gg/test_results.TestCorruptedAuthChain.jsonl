@@ -1,1 +1,1 @@
-{"Action":"fail","Test":"TestCorruptedAuthChain"}
+{"Action":"pass","Test":"TestCorruptedAuthChain"}
