@@ -4,7 +4,7 @@ use std::{
 };
 
 use conduwuit::{
-	Event, PduEvent, Result, implement, info,
+	Error, Event, PduEvent, Result, implement, info,
 	utils::stream::{BroadbandExt, IterStream},
 	warn,
 };
@@ -123,20 +123,37 @@ where
 				 {latest_events:?}, earliest_count: {}, missing: {remaining:?})",
 				earliest.len()
 			);
-			let res = tokio::time::timeout(
-				Duration::from_secs(10), // Time budget
-				self.services.sending.send_federation_request(
-					&server,
-					get_missing_events::v1::Request {
-						room_id: room_id_owned,
-						earliest_events: earliest,
-						latest_events,
+			let res = {
+				let mut attempt = 0_usize;
+				loop {
+					let request = get_missing_events::v1::Request {
+						room_id: room_id_owned.clone(),
+						earliest_events: earliest.clone(),
+						latest_events: latest_events.clone(),
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
-					},
-				),
-			)
-			.await;
+					};
+					let res = tokio::time::timeout(
+						Duration::from_secs(10), // Time budget
+						self.services
+							.sending
+							.send_federation_request(&server, request),
+					)
+					.await;
+
+					match &res {
+						| Ok(Err(Error::BadServerResponse(msg))) if attempt == 0 => {
+							info!(
+								%server,
+								%msg,
+								"fetch_prev /get_missing_events returned malformed response; retrying once"
+							);
+							attempt = attempt.saturating_add(1);
+						},
+						| _ => break res,
+					}
+				}
+			};
 			(server, res, t.elapsed())
 		});
 
