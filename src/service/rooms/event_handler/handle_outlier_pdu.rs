@@ -455,6 +455,10 @@ where
 						RejectionCode::InvalidPduFormat.tag(),
 					)
 					.await;
+				self.services
+					.outlier
+					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+					.await;
 				return Err!(Request(InvalidParam(
 					"Auth event exists locally but is not a state event"
 				)));
