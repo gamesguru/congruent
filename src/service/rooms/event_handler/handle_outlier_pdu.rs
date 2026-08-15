@@ -106,6 +106,24 @@ where
 			"dropping incoming PDU {event_id} in room {room_id} from {origin} because it \
 			 exceeds 65535 bytes or is otherwise too large."
 		);
+		// Persist as permanently rejected -- unlike a missing/unresolved
+		// dependency, this event's size will never change on retry. Without
+		// this, a recursive auth-chain caller's `is_event_permanently_rejected`
+		// check sees "not rejected at all" (nothing was ever persisted) and
+		// misfiles this as merely `still_missing`/retryable instead of
+		// cascading a permanent rejection to dependents.
+		value.insert(
+			"event_id".to_owned(),
+			CanonicalJsonValue::String(event_id.as_str().to_owned()),
+		);
+		self.services
+			.outlier
+			.add_pdu_outlier(event_id, &value, Some(room_id))
+			.await;
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
+			.await;
 		return Err!(Request(TooLarge("PDU is too large")));
 	}
 	// Strip unsigned before signature verification (unsigned is not signed,
@@ -254,18 +272,43 @@ where
 							clean_val
 						} else {
 							debug_info!("Calculated hash does not match (redaction): {event_id}");
-							ruma::canonical_json::redact(value, &room_version_id, None)
-								.map_err(|_| err!(Request(InvalidParam("Redaction failed"))))?
+							match ruma::canonical_json::redact(
+								value.clone(),
+								&room_version_id,
+								None,
+							) {
+								| Ok(redacted) => redacted,
+								| Err(_) => {
+									self.mark_redaction_failure_rejected(
+										event_id, room_id, value,
+									)
+									.await;
+									return Err!(Request(InvalidParam("Redaction failed")));
+								},
+							}
 						}
 					} else {
 						debug_info!("Calculated hash does not match (redaction): {event_id}");
-						ruma::canonical_json::redact(value, &room_version_id, None)
-							.map_err(|_| err!(Request(InvalidParam("Redaction failed"))))?
+						match ruma::canonical_json::redact(value.clone(), &room_version_id, None)
+						{
+							| Ok(redacted) => redacted,
+							| Err(_) => {
+								self.mark_redaction_failure_rejected(event_id, room_id, value)
+									.await;
+								return Err!(Request(InvalidParam("Redaction failed")));
+							},
+						}
 					}
 				} else {
 					debug_info!("Calculated hash does not match (redaction): {event_id}");
-					ruma::canonical_json::redact(value, &room_version_id, None)
-						.map_err(|_| err!(Request(InvalidParam("Redaction failed"))))?
+					match ruma::canonical_json::redact(value.clone(), &room_version_id, None) {
+						| Ok(redacted) => redacted,
+						| Err(_) => {
+							self.mark_redaction_failure_rejected(event_id, room_id, value)
+								.await;
+							return Err!(Request(InvalidParam("Redaction failed")));
+						},
+					}
 				}
 			},
 			| Err(e) => {
@@ -594,6 +637,32 @@ where
 	trace!("Added pdu as outlier.");
 
 	Ok((pdu_event, incoming_pdu))
+}
+
+/// Persist a permanent rejection for an event whose content-hash mismatch
+/// couldn't even be recovered via redaction (`redact()` itself failed,
+/// meaning the JSON is too malformed to canonicalize at all -- not merely
+/// "needs redacting"). Without this, `is_event_permanently_rejected` sees
+/// nothing was ever persisted for this event, and a recursive auth-chain
+/// caller misfiles this permanent, intrinsic failure as merely
+/// `still_missing`/retryable.
+#[implement(super::Service)]
+async fn mark_redaction_failure_rejected(
+	&self,
+	event_id: &EventId,
+	room_id: &RoomId,
+	value: CanonicalJsonObject,
+) {
+	let mut value = value;
+	value.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
+	self.services
+		.outlier
+		.add_pdu_outlier(event_id, &value, Some(room_id))
+		.await;
+	self.services
+		.pdu_metadata
+		.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
+		.await;
 }
 
 #[implement(super::Service)]
