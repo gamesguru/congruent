@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, future::ready};
+use std::{cmp, collections::HashMap, future::ready, sync::Arc};
 
 use conduwuit::{
 	Err, Event, Pdu, Result, debug, debug_info, debug_warn, err, error, info,
@@ -868,8 +868,8 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 #[derive(Clone)]
 struct StateDiff {
 	parent: Option<ShortStateHash>,
-	added: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
-	removed: std::sync::Arc<std::collections::HashSet<[u8; 16]>>,
+	added: Arc<std::collections::HashSet<[u8; 16]>>,
+	removed: Arc<std::collections::HashSet<[u8; 16]>>,
 }
 
 async fn legacy_get_statediff(
@@ -919,8 +919,8 @@ async fn legacy_get_statediff(
 
 	Ok(StateDiff {
 		parent,
-		added: std::sync::Arc::new(added),
-		removed: std::sync::Arc::new(removed),
+		added: Arc::new(added),
+		removed: Arc::new(removed),
 	})
 }
 
@@ -947,6 +947,47 @@ async fn legacy_get_full_state(
 	}
 
 	Ok(full_state)
+}
+
+async fn legacy_build_root_handle_for_state(
+	services: &Services,
+	room_id: &RoomId,
+	shortstatehash: ShortStateHash,
+) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
+	let full_state = legacy_get_full_state(services, shortstatehash).await?;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(full_state.len());
+
+	for state_event in full_state {
+		let shortstatekey = conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
+		let shorteventid = conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
+
+		let (ty, sk) = services
+			.rooms
+			.short
+			.get_statekey_from_short(shortstatekey)
+			.await?;
+		let event_id: ruma::OwnedEventId = services
+			.rooms
+			.short
+			.get_eventid_from_short(shorteventid)
+			.await?;
+
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries).map_err(|e| {
+			err!(error!(
+				"Failed to build HAMT root for room {room_id} and state {shortstatehash}: {e:?}"
+			))
+		})?;
+
+	Ok((root_handle, root_node))
 }
 
 async fn db_lt_20(services: &Services) -> Result<()> {
@@ -1018,6 +1059,61 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 			},
 		}
 	}
+
+	info!("Backfilling per-event HAMT root handles for existing events...");
+	let short_state_events = services.db["shorteventid_shortstatehash"]
+		.stream::<crate::rooms::short::ShortEventId, ShortStateHash>()
+		.try_collect::<Vec<_>>()
+		.await?;
+
+	let mut events_by_state: HashMap<
+		(OwnedRoomId, ShortStateHash),
+		Vec<crate::rooms::short::ShortEventId>,
+	> = HashMap::new();
+	for (shorteventid, shortstatehash) in short_state_events {
+		let event_id: ruma::OwnedEventId = services
+			.rooms
+			.short
+			.get_eventid_from_short(shorteventid)
+			.await?;
+		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
+		let room_id = pdu
+			.room_id_or_hash()
+			.expect("timeline PDU must have a room_id")
+			.clone();
+
+		events_by_state
+			.entry((room_id, shortstatehash))
+			.or_default()
+			.push(shorteventid);
+	}
+
+	let mut batch = conduwuit_database::Batch::new(&services.db["shorteventid_roothandle"]);
+	for ((room_id, shortstatehash), shorteventids) in events_by_state {
+		let (root_handle, root_node) =
+			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
+
+		services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+
+		let serialized = conduwuit_database::serialize_to_vec((
+			root_handle.structural_hash,
+			root_handle.state_group_id,
+		))
+		.unwrap();
+
+		for shorteventid in shorteventids {
+			batch.insert(
+				&services.db["shorteventid_roothandle"],
+				shorteventid.to_be_bytes(),
+				&serialized,
+			);
+		}
+	}
+	batch.commit();
 
 	services.globals.db.bump_database_version(20);
 	Ok(())
