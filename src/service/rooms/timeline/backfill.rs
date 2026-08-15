@@ -470,14 +470,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 					&& !pending_auth_resolution
 					&& is_retryable_rejection_reason(&meta.rejection_reason)
 				{
-					if self
-						.services
-						.pdu_metadata
-						.take_retry_if_rejection_retryable(&event_id)
-						.await
-					{
-						outlier_state_event_ids.push(event_id);
-					}
+					outlier_state_event_ids.push(event_id);
 				}
 			},
 			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
@@ -495,18 +488,10 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 				{
 					continue;
 				}
-				if self
-					.services
-					.pdu_metadata
-					.take_retry_if_rejection_retryable(&event_id)
-					.await
-				{
-					outlier_state_event_ids.push(event_id);
-				} else if self.non_outlier_pdu_exists(&event_id).await {
+				if self.non_outlier_pdu_exists(&event_id).await {
 					continue;
-				} else {
-					outlier_state_event_ids.push(event_id);
 				}
+				outlier_state_event_ids.push(event_id);
 			},
 		}
 	}
@@ -948,9 +933,9 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	self.associate_current_state(room_id, event_id).await?;
 
 	// A retry can still win the race between the earlier metadata checks and
-	// this insert. Once the event is visible, later rejection writes should be
-	// refused, so preserve any rejection that landed before the timeline insert
-	// instead of clearing it here.
+	// this insert. The room insert lock keeps the read/clear pair below
+	// synchronized with retry writers that use the same lock, so a rejection
+	// written after the read cannot be erased here.
 	match promotion_cleanup_decision(self.services.pdu_metadata.is_event_rejected(event_id).await)
 	{
 		| PromotionCleanupDecision::PreserveRejection => {

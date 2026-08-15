@@ -133,16 +133,6 @@ where
 		return Ok(());
 	}
 
-	// We're now committed to actually reprocessing `prev_id` via
-	// `upgrade_outlier_to_timeline_pdu` below, so this is the right point to
-	// clear a retryable rejection marker -- atomically with the decision to
-	// retry, not before it (see the comment above). If the event turned out
-	// not to be marked rejected at all, this is a no-op.
-	self.services
-		.pdu_metadata
-		.take_retry_if_rejection_retryable(prev_id)
-		.await;
-
 	let start_time = Instant::now();
 	self.federation_handletime
 		.write()

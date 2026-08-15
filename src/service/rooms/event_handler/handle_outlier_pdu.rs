@@ -54,6 +54,7 @@ where
 				// poison an event for every future caller, including ones
 				// with full context -- backfill silently drops it forever,
 				// and it can never be re-delivered.
+				let _insert_lock = self.services.timeline.mutex_insert.lock(room_id).await;
 				if self
 					.services
 					.pdu_metadata

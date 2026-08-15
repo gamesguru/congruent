@@ -328,15 +328,20 @@ impl super::Service {
 			}
 		}
 
-		let mut ssk_cache: HashMap<(String, String), u64> =
-			HashMap::with_capacity(unique_state_keys.len());
+		let mut ssk_cache: HashMap<
+			rezzy::basespec::event_types::EventType,
+			HashMap<String, u64>,
+		> = HashMap::with_capacity(unique_state_keys.len());
 		for (ty, sk) in &unique_state_keys {
 			let ssk = self
 				.services
 				.short
 				.get_or_create_shortstatekey(&ty.as_str().into(), sk)
 				.await;
-			ssk_cache.insert((ty.clone(), sk.clone()), ssk);
+			ssk_cache
+				.entry(ty.clone().into())
+				.or_default()
+				.insert(sk.clone(), ssk);
 		}
 
 		let mut sei_cache: HashMap<OwnedEventId, u64> =
@@ -540,7 +545,8 @@ impl super::Service {
 							let mut compressed = BTreeSet::new();
 							for (key, ev_id_str) in &state {
 								let ssk = ssk_cache
-									.get(&(key.0.to_string(), key.1.clone()))
+									.get(&key.0)
+									.and_then(|keys| keys.get(&key.1))
 									.copied()
 									.unwrap_or(0);
 								let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
