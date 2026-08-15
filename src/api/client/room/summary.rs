@@ -59,6 +59,18 @@ pub(crate) async fn get_room_summary(
 		.resolve_with_servers(&body.room_id_or_alias, Some(body.via.clone()))
 		.await?;
 
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(&room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await
+	} else {
+		servers
+	};
+
 	if services.rooms.metadata.is_banned(&room_id).await {
 		return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 	}
@@ -74,21 +86,14 @@ async fn room_summary_response(
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
-	if services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), room_id)
+	match local_room_summary_response(services, room_id, sender_user)
+		.boxed()
 		.await
 	{
-		match local_room_summary_response(services, room_id, sender_user)
-			.boxed()
-			.await
-		{
-			| Ok(response) => return Ok(response),
-			| Err(e) => {
-				debug_warn!("Failed to get local room summary: {e:?}, falling back to remote");
-			},
-		}
+		| Ok(response) => return Ok(response),
+		| Err(e) => {
+			debug_warn!("Failed to get local room summary: {e:?}, falling back to remote");
+		},
 	}
 
 	let room =
@@ -248,9 +253,21 @@ async fn remote_room_summary_hierarchy_response(
 			"Federaton of room {room_id} is currently disabled on this server."
 		)));
 	}
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await
+	} else {
+		servers.to_vec()
+	};
+
 	if servers.is_empty() {
-		return Err!(Request(MissingParam(
-			"No servers were provided to fetch the room over federation"
+		return Err!(Request(NotFound(
+			"Room is known locally but no federation servers are available for summary lookup"
 		)));
 	}
 
