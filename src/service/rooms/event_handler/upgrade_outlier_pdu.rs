@@ -197,7 +197,19 @@ where
 	let mut missing_auth_events = false;
 
 	for event_id in incoming_pdu.auth_events() {
-		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id).await;
+		// A bare `is_event_rejected` would also hard-cascade on an auth event
+		// that's only retryably rejected (e.g. its own `MissingAuthEvent`
+		// resolution never finished) -- permanently poisoning `incoming_pdu`
+		// with `DependsOnRejectedAuthEvent` for a dependency that might still
+		// resolve later. Use the narrower permanent check; a retryable
+		// rejection here just falls through to the `get_pdu` lookup below,
+		// which fails and sets `missing_auth_events`, same as a genuinely
+		// missing auth event.
+		let is_rejected = self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(event_id)
+			.await;
 		if is_rejected && !skip_soft_fail {
 			warn!(
 				event_id = %incoming_pdu.event_id,
