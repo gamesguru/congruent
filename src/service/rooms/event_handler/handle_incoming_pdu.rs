@@ -397,6 +397,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		false,
 		false,
 		room_version_override,
+		false,
 	))
 	.await
 	{
@@ -560,6 +561,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						false,
 						false,
 						Some(&room_version_id),
+						true,
 					))
 					.await
 					{
@@ -578,6 +580,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					false,
 					false,
 					room_version_override,
+					true,
 				))
 				.await
 			})
@@ -739,6 +742,7 @@ pub async fn process_timeline_upgrade(
 					false,
 					false,
 					Some(&room_version_id),
+					true,
 				))
 				.await
 				{

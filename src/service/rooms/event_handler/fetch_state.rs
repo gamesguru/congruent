@@ -337,6 +337,7 @@ where
 				true, // is_outlier
 				true, // skip_sig_verify (already done above)
 				Some(&room_version_id),
+				true,
 			))
 			.await
 			{

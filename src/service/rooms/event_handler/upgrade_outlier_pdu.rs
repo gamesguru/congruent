@@ -1027,6 +1027,7 @@ where
 											false,
 											false,
 											Some(room_version_id),
+											true,
 										))
 										.await,
 									);

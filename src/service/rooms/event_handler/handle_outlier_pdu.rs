@@ -23,6 +23,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
 	room_version_override: Option<&'a ruma::RoomVersionId>,
+	allow_event_auth_fallback: bool,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
 where
 	Pdu: Event + Send + Sync,
@@ -385,6 +386,7 @@ where
 			room_version_override,
 			&missing_auth_events,
 			&mut auth_events,
+			allow_event_auth_fallback,
 		)
 		.await?;
 	}
@@ -531,6 +533,7 @@ async fn resolve_missing_outlier_auth_events<'a, Pdu>(
 	room_version_override: Option<&'a ruma::RoomVersionId>,
 	missing_auth_events: &[&EventId],
 	auth_events: &mut HashMap<OwnedEventId, PduEvent>,
+	allow_event_auth_fallback: bool,
 ) -> Result<()>
 where
 	Pdu: Event + Send + Sync,
@@ -558,6 +561,24 @@ where
 		info!(
 			"Missing {} auth events for {event_id}; will be resolved via /state_ids retry",
 			missing_auth_events.len()
+		);
+		let missing: Vec<_> = missing_auth_events
+			.iter()
+			.map(|id| (*id).to_owned())
+			.collect();
+		self.services
+			.outlier
+			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
+		.await;
+		return Err!(MissingAuthEvents(missing));
+	}
+
+	if !allow_event_auth_fallback {
+		info!(
+			target: "state_res_debug",
+			%event_id,
+			count = missing_auth_events.len(),
+			"Deferring /event_auth fallback until after /state_ids retry"
 		);
 		let missing: Vec<_> = missing_auth_events
 			.iter()
@@ -687,6 +708,7 @@ where
 						true,
 						false,
 						room_version_override,
+						allow_event_auth_fallback,
 					))
 					.await
 					{

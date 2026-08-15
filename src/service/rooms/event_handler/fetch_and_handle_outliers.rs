@@ -590,6 +590,7 @@ where
 				true,
 				skip_sig_verify,
 				room_version_override,
+				false,
 			))
 			.await
 			{

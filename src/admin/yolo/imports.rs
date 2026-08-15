@@ -245,6 +245,7 @@ pub(super) async fn import_pdus(
 						true,
 						skip_sig_verify,
 						Some(&room_version),
+						false,
 					))
 					.await;
 

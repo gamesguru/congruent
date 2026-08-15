@@ -736,6 +736,7 @@ pub async fn backfill_pdu(
 		false,
 		false,
 		Some(&room_version_id),
+		false,
 	))
 	.await
 	{

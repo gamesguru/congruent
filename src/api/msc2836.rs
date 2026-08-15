@@ -200,6 +200,7 @@ async fn persist_federation_events(
 				false,
 				false,
 				Some(&room_version),
+				false,
 			))
 			.await
 			{
