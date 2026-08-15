@@ -196,7 +196,10 @@
 {"Action":"pass","Test":"TestInboundFederationProfile"}
 {"Action":"pass","Test":"TestInboundFederationProfile/Inbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestInboundFederationProfile/Non-numeric_ports_in_server_names_are_rejected"}
-{"Action":"fail","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents"}
+{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents"}
+{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/Outlier_should_be_rejected"}
+{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/sent_event_1_should_be_rejected"}
+{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/sent_event_2_should_be_rejected"}
 {"Action":"pass","Test":"TestInviteFiltering"}
 {"Action":"pass","Test":"TestInviteFiltering/Can_allow_a_user_from_a_blocked_server"}
 {"Action":"pass","Test":"TestInviteFiltering/Can_block_a_single_user"}
@@ -404,7 +407,7 @@
 {"Action":"pass","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_incremental_sliding_sync"}
 {"Action":"pass","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_initial_sliding_sync"}
 {"Action":"pass","Test":"TestMSC4311FullCreateEventOnStrippedState"}
-{"Action":"fail","Test":"TestMSC4499Key"}
+{"Action":"pass","Test":"TestMSC4499Key"}
 {"Action":"skip","Test":"TestMSC4499Key/AdminStartupGuardrails"}
 {"Action":"pass","Test":"TestMSC4499Key/BackoffClearedOnSuccess"}
 {"Action":"pass","Test":"TestMSC4499Key/BindingPromotion"}
@@ -421,8 +424,8 @@
 {"Action":"pass","Test":"TestMSC4499Key/IdenticalCrossMapIsLegal"}
 {"Action":"pass","Test":"TestMSC4499Key/IntraPayloadRejection"}
 {"Action":"skip","Test":"TestMSC4499Key/LocalRecoveryFromKeyLoss"}
-{"Action":"fail","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification"}
-{"Action":"fail","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification/FullyLostKeyRemainsUnverifiableToColdPeers"}
+{"Action":"pass","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification"}
+{"Action":"pass","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification/FullyLostKeyRemainsUnverifiableToColdPeers"}
 {"Action":"pass","Test":"TestMSC4499Key/LostKeyPublicationHistoricalVerification/PublishedLostKeyPreservesHistoricalVerification"}
 {"Action":"pass","Test":"TestMSC4499Key/NegativeCachingAndBackoff"}
 {"Action":"pass","Test":"TestMSC4499Key/NotaryMustNotPatchCollidingResponse"}
@@ -526,7 +529,7 @@
 {"Action":"pass","Test":"TestNotPresentUserCannotBanOthers"}
 {"Action":"pass","Test":"TestOlderLeftRoomsNotInLeaveSection"}
 {"Action":"pass","Test":"TestOutboundFederationEventSizeGetMissingEvents"}
-{"Action":"fail","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
+{"Action":"pass","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}
