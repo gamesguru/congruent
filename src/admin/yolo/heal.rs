@@ -253,6 +253,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				true,  // skip_soft_fail: always lenient for admin rescue
 				true,  // is_forward_extremity
 				false, // prev_fetch_had_invalid_data: no fresh fetch_prev here
+				None,
 				// No outer `with_cork_and_flush` on this admin path -- the
 				// timeline insert must flush itself.
 				false,

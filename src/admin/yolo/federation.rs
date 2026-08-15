@@ -257,6 +257,7 @@ pub(super) async fn fetch_pdu(
 				false,
 				true,
 				false,
+				None,
 				// No outer `with_cork_and_flush` on this admin path -- the
 				// timeline insert must flush itself.
 				false,

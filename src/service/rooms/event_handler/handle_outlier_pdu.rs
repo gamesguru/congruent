@@ -447,6 +447,18 @@ where
 			.await
 		{
 			check_room_id(room_id, &auth_event)?;
+			if auth_event.state_key.is_none() {
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						pdu_event.event_id(),
+						RejectionCode::InvalidPduFormat.tag(),
+					)
+					.await;
+				return Err!(Request(InvalidParam(
+					"Auth event exists locally but is not a state event"
+				)));
+			}
 			info!(
 				target: "state_res_debug",
 				%event_id,

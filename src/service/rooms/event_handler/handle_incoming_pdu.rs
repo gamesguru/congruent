@@ -707,19 +707,19 @@ pub async fn process_timeline_upgrade(
 	// Fetch any missing prev events before taking the write cork so remote I/O
 	// does not suppress unrelated WAL flushes across the whole server.
 	// These are timeline events.
-	// The deeper-anchor hint (3rd element) isn't needed here: each prev_event
-	// in this batch gets its own per-event /state_ids anchor selection,
-	// correctly computed from *its own* prev_events, when it's upgraded
-	// below.
-	let (sorted_prev_events, fetched_prev_events, _, prev_fetch_had_invalid_data) =
-		Box::pin(self.fetch_prev(
-			origin,
-			room_id,
-			event_id.as_ref(),
-			incoming_pdu.prev_events(),
-			Some(incoming_pdu.sender().server_name()),
-		))
-		.await?;
+	let (
+		sorted_prev_events,
+		fetched_prev_events,
+		prev_fetch_deeper_anchor,
+		prev_fetch_had_invalid_data,
+	) = Box::pin(self.fetch_prev(
+		origin,
+		room_id,
+		event_id.as_ref(),
+		incoming_pdu.prev_events(),
+		Some(incoming_pdu.sender().server_name()),
+	))
+	.await?;
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
@@ -829,6 +829,7 @@ pub async fn process_timeline_upgrade(
 				false,
 				true,
 				prev_fetch_had_invalid_data,
+				prev_fetch_deeper_anchor,
 				true,
 			))
 			.await

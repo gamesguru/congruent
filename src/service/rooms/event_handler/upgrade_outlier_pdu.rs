@@ -69,6 +69,10 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
 	// hitting federation for state at an event we already know is unusable.
 	prev_fetch_had_invalid_data: bool,
+	// Deepest still-unresolved prev_event discovered while fetching this
+	// event's own prevs. When present, it is a better `/state_ids` anchor than
+	// the immediate prev for the incoming event's first state-resolution pass.
+	prev_fetch_deeper_anchor: Option<OwnedEventId>,
 	// True when the caller already holds a `with_cork_and_flush` boundary
 	// (the federation prev-event/incoming-event paths). Callers that invoke
 	// this directly with no outer flush boundary (admin rescue commands)
@@ -177,6 +181,7 @@ where
 		&room_version_id,
 		skip_soft_fail,
 		prev_fetch_had_invalid_data,
+		prev_fetch_deeper_anchor.as_ref(),
 	))
 	.await?;
 
@@ -504,6 +509,7 @@ where
 						&room_version_id,
 						skip_soft_fail,
 						false,
+						prev_fetch_deeper_anchor.as_ref(),
 					))
 					.await?;
 				}
@@ -801,6 +807,7 @@ async fn resolve_state_at_incoming_event<Pdu>(
 	room_version_id: &RoomVersionId,
 	skip_soft_fail: bool,
 	prev_fetch_had_invalid_data: bool,
+	state_ids_anchor_hint: Option<&OwnedEventId>,
 ) -> Result<StateAtEvent>
 where
 	Pdu: Event + Send + Sync,
@@ -930,8 +937,9 @@ where
 		}
 		let incoming_prev_events: Vec<OwnedEventId> =
 			incoming_pdu.prev_events().map(OwnedEventId::from).collect();
-		let state_lookup_event_id =
-			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id());
+		let state_lookup_event_id = state_ids_anchor_hint.cloned().unwrap_or_else(|| {
+			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id())
+		});
 
 		// Attempt a synchronous /state_ids fetch from the sending server
 		// BEFORE queuing the async DAG healer.

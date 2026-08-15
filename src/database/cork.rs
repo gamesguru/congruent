@@ -72,17 +72,25 @@ impl Drop for Cork {
 
 pub struct Uncork {
 	db: Arc<Engine>,
+	lifted: bool,
 }
 
 impl Uncork {
 	#[inline]
 	fn new(db: &Arc<Engine>) -> Self {
-		db.lift();
-		Self { db: db.clone() }
+		let lifted = db.corked();
+		if lifted {
+			db.lift();
+		}
+		Self { db: db.clone(), lifted }
 	}
 }
 
 impl Drop for Uncork {
 	#[inline]
-	fn drop(&mut self) { self.db.unlift(); }
+	fn drop(&mut self) {
+		if self.lifted {
+			self.db.unlift();
+		}
+	}
 }
