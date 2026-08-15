@@ -419,11 +419,20 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			const MAX_INLINE_FETCH: usize = 5;
 
 			// Before attempting expensive /state/ federation requests, check
-			// whether the missing auth events are already known to be rejected.
-			// If they are, this event inherits the rejection and no network
-			// fetch is needed (spec step 5: reject if auth events are rejected).
+			// whether the missing auth events are already known to be
+			// *permanently* rejected. If they are, this event inherits the
+			// rejection and no network fetch is needed (spec step 5: reject
+			// if auth events are rejected). A merely-pending/retryable
+			// verdict on `mid` (e.g. left by `handle_outlier_pdu`'s own
+			// missing-auth-event recovery) must not cascade here -- fall
+			// through to the /state_ids retry below instead.
 			for mid in &missing {
-				if self.services.pdu_metadata.is_event_rejected(mid).await {
+				if self
+					.services
+					.pdu_metadata
+					.is_event_permanently_rejected(mid)
+					.await
+				{
 					info!(
 						"Event {event_id} rejected: missing auth event {mid} is already marked \
 						 rejected; skipping /state/ fetch"

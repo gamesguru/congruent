@@ -428,6 +428,19 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	let mut outlier_state_event_ids = Vec::new();
 	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
+		// `promote_outlier` skips all auth checks on the assumption the
+		// caller already knows the event is valid. An event still marked
+		// rejected (including a pending/retryable verdict left behind by
+		// `handle_outlier_pdu`'s missing-auth-event recovery) has not
+		// cleared that bar yet, so don't let it in via this path either.
+		if self
+			.services
+			.pdu_metadata
+			.is_event_rejected(&event_id)
+			.await
+		{
+			continue;
+		}
 		match metadata {
 			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
 			| Ok(_) => continue,

@@ -66,6 +66,24 @@ where
 						"handle_outlier_pdu: retrying previously-rejected event (prior \
 						 rejection was resolution-related, not intrinsic to the event)"
 					);
+					// `take_retry_if_rejection_retryable` already cleared the
+					// rejection mark so this attempt starts fresh. Immediately
+					// restore a placeholder "pending" mark for the duration of
+					// this attempt: several exit paths below (`pdu_fits`,
+					// `check_room_id`, room-version lookup, etc.) return early
+					// via `?`/`return Err!` without marking anything, and the
+					// stored outlier from the previous attempt is still
+					// sitting in the DB. Without this, one of those bare exits
+					// would leave that stale outlier unmarked again --
+					// reopening the exact "un-rejected pending outlier trusted
+					// by a later invocation" bug this retry path exists to
+					// avoid. Any exit that explicitly marks a more specific
+					// reason overwrites this placeholder; the success path at
+					// the end of this function clears it.
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
+						.await;
 				} else if self.services.pdu_metadata.is_event_rejected(event_id).await {
 					return Err!(Request(Forbidden(
 						"Event {event_id} is already known and rejected"
@@ -316,11 +334,19 @@ where
 	let mut auth_events: HashMap<OwnedEventId, PduEvent> = HashMap::new();
 
 	for aid in pdu_event.auth_events() {
-		// If any of the auth events are already marked as rejected, this event is
-		// automatically rejected. We must check this BEFORE attempting to fetch the
-		// auth event to avoid deadlocks (e.g. MissingAuthEvents) when an auth event
-		// is unparsable but correctly marked as rejected in our database.
-		if self.services.pdu_metadata.is_event_rejected(aid).await {
+		// If any of the auth events are already marked as *permanently* rejected,
+		// this event is automatically rejected. We must check this BEFORE
+		// attempting to fetch the auth event to avoid deadlocks (e.g.
+		// MissingAuthEvents) when an auth event is unparsable but correctly
+		// marked as rejected in our database. A transiently-rejected auth event
+		// (missing/unresolved, not intrinsically bad) must NOT hard-cascade here
+		// -- fall through and let it be treated as missing/retryable below.
+		if self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(aid)
+			.await
+		{
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
@@ -340,6 +366,35 @@ where
 				)
 				.await;
 			return Err!(Request(Forbidden("Event depends on rejected auth event {aid}")));
+		}
+
+		if self
+			.services
+			.pdu_metadata
+			.is_event_pending_auth_resolution(aid)
+			.await
+		{
+			// This auth event's *own* outlier auth check never completed
+			// (still marked `MissingAuthEvent` from a prior attempt) --
+			// don't trust whatever bytes are sitting in the outlier store
+			// for it as validated auth context. Treat it as unresolved so
+			// it goes through the missing-auth-event recovery path below,
+			// which re-runs `handle_outlier_pdu` on it and gets a fresh,
+			// fully-validated verdict.
+			//
+			// Deliberately narrower than a bare `is_event_rejected`: other
+			// retryable codes (e.g. `StateResolutionFailedWithPrevsPresent`)
+			// get attached *after* this event's own auth check already
+			// succeeded, at a later timeline-upgrade stage -- those are
+			// valid, trustworthy auth context and must not be treated as
+			// unresolved here.
+			info!(
+				target: "state_res_debug",
+				%event_id,
+				auth_event_id = %aid,
+				"Auth event transiently rejected locally, treating as unresolved for outlier"
+			);
+			continue;
 		}
 
 		if let Ok(auth_event) = self
@@ -401,9 +456,17 @@ where
 	// Build map of auth events and reject if we are still missing some
 	let mut auth_events_by_key: HashMap<_, _> = HashMap::with_capacity(auth_events.len());
 	for id in pdu_event.auth_events() {
-		// Re-check for rejected auth events. We might have fetched them via /event_auth
-		// and discovered they were rejected. If they are, this event must be rejected.
-		if self.services.pdu_metadata.is_event_rejected(id).await {
+		// Re-check for rejected auth events. We might have fetched them via
+		// /event_auth and discovered they were rejected. If they are
+		// *permanently* rejected, this event must be rejected too. A
+		// transiently-rejected one falls through to the missing-auth-event
+		// branch below instead of hard-cascading.
+		if self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(id)
+			.await
+		{
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
@@ -520,6 +583,14 @@ where
 		.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
 		.await;
 
+	// Full validation completed successfully: clear any pending/rejected
+	// mark left behind by an earlier attempt (e.g. the placeholder set when
+	// entering the retry branch above, or a stale mark from before this
+	// function was called at all). Without this, a prior rejection --
+	// retryable or not -- would keep shadowing an event that has now
+	// genuinely passed auth.
+	self.services.pdu_metadata.unmark_event_rejected(event_id);
+
 	trace!("Added pdu as outlier.");
 
 	Ok((pdu_event, incoming_pdu))
@@ -547,7 +618,12 @@ where
 	const MAX_INLINE_FETCH: usize = 5;
 
 	for mid in missing_auth_events {
-		if self.services.pdu_metadata.is_event_rejected(mid).await {
+		if self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(mid)
+			.await
+		{
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
@@ -572,6 +648,15 @@ where
 			.iter()
 			.map(|id| (*id).to_owned())
 			.collect();
+		// Mark as pending/retryable *before* persisting the outlier: a bare
+		// outlier with no rejection record would be indistinguishable from a
+		// fully-validated one to the "already known" early return at the top
+		// of `handle_outlier_pdu`, letting a later invocation return it
+		// without ever re-running auth checks.
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
+			.await;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -590,6 +675,12 @@ where
 			.iter()
 			.map(|id| (*id).to_owned())
 			.collect();
+		// See comment above: mark pending/retryable before persisting, so a
+		// later invocation doesn't treat this outlier as already-validated.
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
+			.await;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -762,18 +853,29 @@ where
 	for id in pdu_event.auth_events() {
 		let in_auth = auth_events.contains_key(id);
 		let in_rejected = rejected_in_chain.contains(id);
-		let in_db_rejected = self.services.pdu_metadata.is_event_rejected(id).await;
+		// Only a *permanent* rejection (bad signature, failed auth check,
+		// etc.) may hard-cascade here. `rejected_in_chain` and a bare
+		// `is_event_rejected` both include ids whose recursive
+		// `handle_outlier_pdu` call merely couldn't resolve them in time
+		// (MissingAuthEvents) -- those are pushed to `still_missing` below
+		// instead, so they get a retryable verdict rather than a permanent
+		// one.
+		let permanently_rejected = self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(id)
+			.await;
 		info!(
 			target: "state_res_debug",
 			%event_id,
 			auth_event_id = %id,
 			in_auth,
 			in_rejected,
-			in_db_rejected,
+			permanently_rejected,
 			"Auth event status"
 		);
 		if !in_auth {
-			if in_rejected || in_db_rejected {
+			if permanently_rejected {
 				self.services
 					.pdu_metadata
 					.mark_event_rejected(
@@ -813,6 +915,13 @@ where
 			"Falling back to /event_auth left auth events unresolved; deferring to caller retry"
 		);
 
+		// See the comment at the earlier `MissingAuthEvents` returns: mark
+		// pending/retryable before persisting the outlier so a later
+		// invocation re-validates instead of trusting this outlier as-is.
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
+			.await;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))

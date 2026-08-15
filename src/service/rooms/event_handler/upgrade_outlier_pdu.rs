@@ -435,9 +435,17 @@ where
 	// state resolution.
 	let state_delta_opt;
 	let state_lock;
+	let state_ids_compressed;
 
 	if !is_forward_extremity {
 		state_delta_opt = None;
+		// Compute the compressed state association WITHOUT the lock. For
+		// StateAtEvent::Resolved this can be thousands of short-ID lookups;
+		// none of it depends on the room's committed current state, so it
+		// must not happen while state_lock is held (see below).
+		state_ids_compressed = self
+			.compress_state_at_event(&state_at_incoming_event)
+			.await?;
 		// Dummy lock to satisfy lifetimes since we aren't mutating state
 		state_lock = self.services.state.mutex.lock(room_id).await;
 	} else {
@@ -477,6 +485,18 @@ where
 					room_id,
 					&room_version_id,
 				)
+				.await?;
+
+			// Also compute the compressed state association WITHOUT the
+			// lock. For StateAtEvent::Resolved this can be thousands of
+			// short-ID lookups; state_at_incoming_event is fully finalized
+			// by this point in the iteration (any fast-forward re-eval
+			// above already happened before we get here), so recomputing
+			// it here -- once per retry, matching that iteration's state --
+			// is correct and keeps the expensive work out of the critical
+			// section below.
+			let compressed_this_iter = self
+				.compress_state_at_event(&state_at_incoming_event)
 				.await?;
 
 			// Acquire lock for the commit phase
@@ -554,6 +574,7 @@ where
 				} else {
 					state_delta_opt = delta;
 				}
+				state_ids_compressed = compressed_this_iter;
 				state_lock = lock;
 				break;
 			}
@@ -581,28 +602,6 @@ where
 		))
 		.await?;
 	}
-
-	let state_ids_compressed = match &state_at_incoming_event {
-		| StateAtEvent::FastForward(shortstatehash) => {
-			self.services
-				.state_compressor
-				.load_shortstatehash_info(*shortstatehash)
-				.await?
-				.pop()
-				.expect("top frame must have full_state")
-				.full_state
-				.expect("must have full_state")
-				.clone() // This is Arc<CompressedState>
-		},
-		| StateAtEvent::Compressed(compressed) => compressed.clone(),
-		| StateAtEvent::Resolved(state) =>
-			self.services
-				.state_compressor
-				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-				.collect()
-				.map(Arc::new)
-				.await,
-	};
 
 	let current_extremities: Vec<OwnedEventId> = self
 		.services
@@ -678,6 +677,38 @@ enum StateAtEvent {
 	Resolved(HashMap<u64, OwnedEventId>),
 	Compressed(Arc<crate::rooms::state_compressor::CompressedState>),
 	FastForward(ShortStateHash),
+}
+
+/// Build the compressed state association for `state_at_event`. For
+/// `StateAtEvent::Resolved` this can perform thousands of short-ID lookups,
+/// so callers must invoke this *before* acquiring `state.mutex` for the
+/// room -- never while holding it, or every other writer in the room blocks
+/// for the full duration of the compression.
+#[implement(super::Service)]
+async fn compress_state_at_event(
+	&self,
+	state_at_event: &StateAtEvent,
+) -> Result<Arc<crate::rooms::state_compressor::CompressedState>> {
+	Ok(match state_at_event {
+		| StateAtEvent::FastForward(shortstatehash) => self
+			.services
+			.state_compressor
+			.load_shortstatehash_info(*shortstatehash)
+			.await?
+			.pop()
+			.expect("top frame must have full_state")
+			.full_state
+			.expect("must have full_state")
+			, // This is Arc<CompressedState>
+		| StateAtEvent::Compressed(compressed) => compressed.clone(),
+		| StateAtEvent::Resolved(state) =>
+			self.services
+				.state_compressor
+				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
+				.collect()
+				.map(Arc::new)
+				.await,
+	})
 }
 
 #[implement(super::Service)]
@@ -1085,7 +1116,7 @@ where
 						event_id = %incoming_pdu.event_id,
 						"fetch_state failed but prev_events present; state remains unresolved"
 					);
-					let rejection_reason = RejectionCode::PrevEventUnknownStateIdsFailed
+					let rejection_reason = RejectionCode::StateResolutionFailedWithPrevsPresent
 						.with_detail("state resolution failed");
 					self.services
 						.pdu_metadata
