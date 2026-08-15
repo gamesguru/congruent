@@ -324,7 +324,7 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	room_id: &RoomId,
 	event_id: &EventId,
 	value: ruma::CanonicalJsonObject,
-	room_version_id: Option<&ruma::RoomVersionId>,
+	room_version_id: &ruma::RoomVersionId,
 ) -> Result<conduwuit_core::pdu::RawPduId> {
 	use futures::FutureExt;
 
@@ -344,7 +344,7 @@ pub(super) async fn handle_and_send_incoming_pdu(
 			event_id,
 			value,
 			true,
-			room_version_id.expect("room version must be known for membership handling"),
+			room_version_id,
 		)
 		.boxed()
 		.await?
