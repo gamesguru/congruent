@@ -18,4 +18,4 @@ incremental   = true
 inherits      = "dev"
 lto           = "off"
 opt-level     = 0
-strip         = "none"
+strip         = "symbols"

@@ -163,8 +163,11 @@ record_result() {
     # aggregation and no full-file rewrite per event.
     jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >> "$RESULTS_FILE"
 
-    # Keep a live human-readable status stream alongside the JSONL file.
-    printf '%s\t%s\n' "$action" "$test_name"
+    # Keep the live human-readable status stream focused on pass/fail noise.
+    # Skips still land in the JSONL results file and the final summary.
+    if [ "$action" != "skip" ]; then
+        printf '%s\t%s\n' "$action" "$test_name"
+    fi
 }
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
