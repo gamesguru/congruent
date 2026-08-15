@@ -932,56 +932,9 @@ async fn handle_missing_join_extremities(
 	);
 
 	for event_id in missing_latest {
-		let request = federation::event::get_event::v1::Request {
-			event_id: event_id.clone(),
-			include_unredacted_content: Some(false),
-		};
-		let response = match services
-			.sending
-			.send_federation_request(remote_server, request)
-			.await
-		{
-			| Ok(r) => r,
-			| Err(e) => {
-				warn!("Failed to fetch missing extremity {event_id}: {e}");
-				continue;
-			},
-		};
-		let (parsed_room_id, parsed_event_id, value) = match services
-			.rooms
-			.event_handler
-			.parse_incoming_pdu(&response.pdu)
-			.await
-		{
-			| Ok(v) => v,
-			| Err(e) => {
-				warn!("Failed to parse extremity {event_id}: {e}");
-				continue;
-			},
-		};
-		if parsed_room_id != room_id {
-			warn!(
-				%parsed_event_id,
-				%parsed_room_id,
-				%room_id,
-				%remote_server,
-				"Room ID mismatch in send_join extremity fetch: event belongs to parsed room, expected target room"
-			);
-			continue;
-		}
-		if let Err(e) = services
-			.rooms
-			.event_handler
-			.handle_incoming_pdu(
-				remote_server,
-				room_id,
-				&parsed_event_id,
-				value,
-				true,
-				room_version_id,
-			)
-			.boxed()
-			.await
+		if let Err(e) =
+			fetch_missing_extremity(services, remote_server, room_id, room_version_id, &event_id)
+				.await
 		{
 			warn!("Failed to handle extremity {event_id}: {e}");
 		}
