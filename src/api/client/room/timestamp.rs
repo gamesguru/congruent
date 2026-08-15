@@ -25,7 +25,7 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 	if !services
 		.rooms
 		.state_cache
-		.is_joined(body.sender_user(), room_id)
+		.can_access_history(body.sender_user(), room_id)
 		.await
 	{
 		return Err!(Request(Forbidden(

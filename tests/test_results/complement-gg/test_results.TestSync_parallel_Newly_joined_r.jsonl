@@ -1,0 +1,7 @@
+{"Action":"fail","Test":"TestSync"}
+{"Action":"fail","Test":"TestSync/parallel"}
+{"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync"}
+{"Action":"pass","Test":"TestSyncFilter"}
+{"Action":"pass","Test":"TestSyncLeaveSection"}
+{"Action":"fail","Test":"TestSyncOmitsStateChangeOnFilteredEvents"}
+{"Action":"fail","Test":"TestSyncTimelineGap"}

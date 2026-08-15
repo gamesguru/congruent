@@ -29,3 +29,18 @@ pub fn gen_event_id(
 
 	Ok(event_id)
 }
+
+/// Generates a correct eventId from raw stored bytes, avoiding serde
+/// round-trip issues that would produce false hash mismatches.
+pub fn gen_event_id_from_bytes(
+	raw_bytes: &[u8],
+	room_version_id: &RoomVersionId,
+) -> Result<OwnedEventId> {
+	let raw_str = std::str::from_utf8(raw_bytes)
+		.map_err(|e| err!(Database("stored PDU is not valid UTF-8: {e}")))?;
+
+	let value: CanonicalJsonObject = serde_json::from_str(raw_str)
+		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
+
+	gen_event_id(&value, room_version_id)
+}

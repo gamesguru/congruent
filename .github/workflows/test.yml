@@ -22,6 +22,9 @@ jobs:
     env:
       PROFILE: dev-quick
 
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -63,19 +66,23 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show && rustup component add clippy rustfmt
 
-      - name: Install nightly rustfmt
-        run: rustup toolchain install nightly --component rustfmt --component clippy
+      - name: Install nightly toolchain (for fmt + llvm-cov)
+        run: rustup toolchain install nightly --component rustfmt --component clippy --component llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Install pre-commit
         run: pip install pre-commit
 
       - name: Debug checks
         run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars doctor cpu-info
+
       - name: Format
         run: make format
 
       - name: Test
-        run: make test
+        run: set -o pipefail; make test 2>&1 | tee test-results.txt
 
       - name: DNS Integration Test (Respects /etc/hosts)
         env:
@@ -84,5 +91,101 @@ jobs:
           echo "127.0.0.1 conduwuit.test" | sudo tee -a /etc/hosts
           cargo test --quiet --package conduwuit_service --lib resolver::tests::test_dns_resolution_integration
 
+      - name: Code Coverage
+        continue-on-error: true
+        run: |
+          cargo +nightly llvm-cov --lib --all-features \
+            --codecov --output-path coverage.json
+          cargo +nightly llvm-cov --lib --all-features \
+            --html --output-dir .coverage
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results
+          path: test-results.txt
+          retention-days: 30
+
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.json
+            .coverage/
+          retention-days: 30
+
+      - name: Test Summary
+        if: always()
+        run: |
+          PASSED=$(grep -oE '[0-9]+ passed' test-results.txt | awk '{s+=$1} END {print s}' || true)
+          FAILED=$(grep -oE '[0-9]+ failed' test-results.txt | awk '{s+=$1} END {print s}' || true)
+          IGNORED=$(grep -oE '[0-9]+ ignored' test-results.txt | awk '{s+=$1} END {print s}' || true)
+          echo "### Unit Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✓ Passed | ${PASSED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✗ Failed | ${FAILED:-0} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⌒ Ignored | ${IGNORED:-0} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.json
+          fail_ci_if_error: false
+
       - name: Lint
         run: make lint
+
+  publish-badge:
+    needs: clippy-checks
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Test Results
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
+      - name: Generate and Publish Badge
+        run: |
+          PASSED=$(grep -oE '[0-9]+ passed' test-results.txt | awk '{s+=$1} END {print s}' || true)
+          FAILED=$(grep -oE '[0-9]+ failed' test-results.txt | awk '{s+=$1} END {print s}' || true)
+          IGNORED=$(grep -oE '[0-9]+ ignored' test-results.txt | awk '{s+=$1} END {print s}' || true)
+
+          python3 ./scripts/generate_badge.py "${PASSED:-0}" "${FAILED:-0}" "${IGNORED:-0}"
+
+          # Branch-specific filename (e.g. tests-main.svg, tests-guru-dev-2026-03-27-b1-presence-b2-federation.svg)
+          BRANCH="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          SAFE_BRANCH=$(echo "$BRANCH" | tr '/+' '-')
+          BADGE_FILE="tests-${SAFE_BRANCH}.svg"
+
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          # Stash the generated SVG before switching branches
+          cp tests.svg "/tmp/${BADGE_FILE}"
+
+          # Checkout the existing badge branch (shared with Complement badges)
+          git fetch origin _metadata/badges || true
+          if git rev-parse --verify origin/_metadata/badges >/dev/null 2>&1; then
+            git checkout _metadata/badges
+          else
+            git checkout --orphan _metadata/badges
+            git rm -rf .
+          fi
+
+          cp "/tmp/${BADGE_FILE}" "${BADGE_FILE}"
+          git add "${BADGE_FILE}"
+          git diff --cached --quiet || git commit -m "Update unit test badge for ${BRANCH} [skip ci]"
+          git push origin HEAD:_metadata/badges

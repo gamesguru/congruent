@@ -1,13 +1,14 @@
+use std::time::Duration;
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug, debug_warn, info, trace,
+	Err, Result, debug, debug_warn, trace,
 	utils::{IterStream, future::TryExtExt},
 };
 use futures::{
-	FutureExt, StreamExt, TryFutureExt,
+	FutureExt, StreamExt,
 	future::{OptionFuture, join3},
-	stream::FuturesUnordered,
 };
 use ruma::{
 	OwnedServerName, RoomId, UserId,
@@ -225,12 +226,18 @@ async fn local_room_summary_response(
 }
 
 /// used by MSC3266 to fetch a room's info if we do not know about it
+///
+/// Tries servers sequentially (up to a limit) rather than blasting all servers
+/// simultaneously, to avoid wasting federation connection budget.
 async fn remote_room_summary_hierarchy_response(
 	services: &Services,
 	room_id: &RoomId,
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<SpaceHierarchyParentSummary> {
+	const MAX_SERVERS_TO_TRY: usize = 5;
+	const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 	trace!(sender_user = ?sender_user.map(tracing::field::display), ?servers, "Sending remote room summary response for {room_id:?}");
 	if !services.config.allow_federation {
 		return Err!(Request(Forbidden("Federation is disabled.")));
@@ -249,48 +256,50 @@ async fn remote_room_summary_hierarchy_response(
 
 	let request = get_hierarchy::v1::Request::new(room_id.to_owned());
 
-	let mut requests: FuturesUnordered<_> = servers
-		.iter()
-		.map(|server| {
-			info!("Fetching room summary for {room_id} from server {server}");
+	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
+		debug!("Fetching room summary for {room_id} from server {server}");
+		let result = tokio::time::timeout(
+			REQUEST_TIMEOUT,
 			services
 				.sending
-				.send_federation_request(server, request.clone())
-				.inspect_ok(move |v| {
-					debug!("Fetched room summary for {room_id} from server {server}: {v:?}");
-				})
-				.inspect_err(move |e| {
-					info!("Failed to fetch room summary for {room_id} from server {server}: {e}");
-				})
-		})
-		.collect();
+				.send_federation_request(server, request.clone()),
+		)
+		.await;
 
-	while let Some(Ok(response)) = requests.next().await {
-		trace!("{response:?}");
-		let room = response.room.clone();
-		if room.room_id != room_id {
-			debug_warn!(
-				"Room ID {} returned does not belong to the requested room ID {}",
-				room.room_id,
-				room_id
-			);
-			continue;
-		}
+		match result {
+			| Ok(Ok(response)) => {
+				let room = response.room.clone();
+				if room.room_id != room_id {
+					debug_warn!(
+						"Room ID {} returned does not belong to the requested room ID {}",
+						room.room_id,
+						room_id
+					);
+					continue;
+				}
 
-		if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
-			return user_can_see_summary(
-				services,
-				room_id,
-				&room.join_rule,
-				room.guest_can_join,
-				room.world_readable,
-				room.allowed_room_ids.iter().map(AsRef::as_ref),
-				sender_user,
-			)
-			.await
-			.map(|()| room);
+				if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
+					return user_can_see_summary(
+						services,
+						room_id,
+						&room.join_rule,
+						room.guest_can_join,
+						room.world_readable,
+						room.allowed_room_ids.iter().map(AsRef::as_ref),
+						sender_user,
+					)
+					.await
+					.map(|()| room);
+				}
+				return Ok(room);
+			},
+			| Ok(Err(e)) => {
+				debug!("Failed to fetch room summary for {room_id} from server {server}: {e}");
+			},
+			| Err(_elapsed) => {
+				debug!("Timed out fetching room summary for {room_id} from server {server}");
+			},
 		}
-		return Ok(room);
 	}
 
 	Err!(Request(NotFound("Room not found or is not accessible")))

@@ -90,6 +90,7 @@ rand.workspace = true
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 regex.workspace = true
 reqwest.workspace = true
+rezzy.workspace = true
 sha2.workspace = true
 ruma.workspace = true
 sanitize-filename.workspace = true
@@ -119,6 +120,7 @@ parking_lot.workspace = true
 lock_api.workspace = true
 moka = { version = "0.12.14", features = ["sync"] }
 hyper-util.workspace = true
+dashmap.workspace = true
 rustc-hash.workspace = true
 
 [target.'cfg(unix)'.dependencies]

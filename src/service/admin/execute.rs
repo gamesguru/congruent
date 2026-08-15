@@ -15,7 +15,7 @@ pub(super) async fn console_auto_start(&self) {
 		if self.services.server.config.admin_console_automatic {
 			// Allow more of the startup sequence to execute before spawning
 			tokio::task::yield_now().await;
-			self.console.start().await;
+			self.console.start();
 		}
 	}
 }

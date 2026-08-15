@@ -1,0 +1,6 @@
+{"Action":"pass","Test":"TestRoomAlias"}
+{"Action":"pass","Test":"TestRoomAlias/Parallel"}
+{"Action":"pass","Test":"TestRoomAlias/Parallel/GET_/rooms/:room_id/aliases_lists_aliases"}
+{"Action":"pass","Test":"TestRoomAlias/Parallel/Only_room_members_can_list_aliases_of_a_room"}
+{"Action":"pass","Test":"TestRoomAlias/Parallel/PUT_/directory/room/:room_alias_creates_alias"}
+{"Action":"pass","Test":"TestRoomAlias/Parallel/Room_aliases_can_contain_Unicode"}

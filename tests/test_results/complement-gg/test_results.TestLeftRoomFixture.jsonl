@@ -1,0 +1,6 @@
+{"Action":"pass","Test":"TestLeftRoomFixture"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_'m.room.name'_state_for_a_departed_room"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/members_for_a_departed_room"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/messages_for_a_departed_room"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/state_for_a_departed_room"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Getting_messages_going_forward_is_limited_for_a_departed_room"}

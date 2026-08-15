@@ -1,0 +1,5 @@
+{"Action":"fail","Test":"TestOutboundFederationEventSizeGetMissingEvents"}
+{"Action":"fail","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
+{"Action":"pass","Test":"TestOutboundFederationProfile"}
+{"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
+{"Action":"pass","Test":"TestOutboundFederationSend"}

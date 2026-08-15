@@ -1,0 +1,2 @@
+{"Action":"pass","Test":"TestDeviceListUpdates"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_rejoins_a_room"}

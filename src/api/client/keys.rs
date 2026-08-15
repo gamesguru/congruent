@@ -98,22 +98,38 @@ pub(crate) async fn upload_keys_route(
 					%sender_user,
 					%sender_device,
 					?device_keys,
-					"Ignoring user uploaded keys as they are an exact copy already in the \
-					 database"
+					"Merging cross-signing signatures for re-uploaded exact copy of keys"
 				);
+
+				let mut new_device_keys_json =
+					serde_json::to_value(device_keys).expect("device_keys must be valid JSON");
+				let existing_device_keys_json = serde_json::to_value(&existing_keys)
+					.expect("existing_keys must be valid JSON");
+
+				conduwuit_service::users::merge_signatures(
+					&mut new_device_keys_json,
+					&existing_device_keys_json,
+				);
+
+				let merged_keys: Raw<ruma::encryption::DeviceKeys> =
+					serde_json::from_value(new_device_keys_json)
+						.expect("Merged JSON must be valid Raw<DeviceKeys>");
+
+				services
+					.users
+					.add_device_keys(sender_user, sender_device, &merged_keys)
+					.await;
 			} else {
 				services
 					.users
 					.add_device_keys(sender_user, sender_device, device_keys)
 					.await;
-				flush_user_rooms(&services, sender_user).await;
 			}
 		} else {
 			services
 				.users
 				.add_device_keys(sender_user, sender_device, device_keys)
 				.await;
-			flush_user_rooms(&services, sender_user).await;
 		}
 	}
 
@@ -221,8 +237,6 @@ pub(crate) async fn upload_signing_keys_route(
 			true, // notify so that other users see the new keys
 		)
 		.await?;
-
-	flush_user_rooms(&services, sender_user).await;
 
 	info!(
 		target: "cross_signing",
@@ -368,8 +382,6 @@ pub(crate) async fn upload_signatures_route(
 		}
 	}
 
-	flush_user_rooms(&services, sender_user).await;
-
 	Ok(upload_signatures::v3::Response { failures: BTreeMap::new() })
 }
 
@@ -478,8 +490,8 @@ where
 
 			device_keys.insert(user_id.to_owned(), container);
 		} else {
+			let mut container = BTreeMap::new();
 			for device_id in device_ids {
-				let mut container = BTreeMap::new();
 				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
 					let metadata = services
 						.users
@@ -496,9 +508,8 @@ where
 
 					container.insert(device_id.to_owned(), keys);
 				}
-
-				device_keys.insert(user_id.to_owned(), container);
 			}
+			device_keys.insert(user_id.to_owned(), container);
 		}
 
 		if let Ok(master_key) = services
@@ -528,6 +539,10 @@ where
 		.into_iter()
 		.stream()
 		.wide_filter_map(|(server, vec)| async move {
+			let requested_users = vec
+				.iter()
+				.map(|(user_id, _)| user_id.as_str().to_owned())
+				.collect::<HashSet<_>>();
 			let mut device_keys_input_fed = BTreeMap::new();
 			for (user_id, keys) in vec {
 				device_keys_input_fed.insert(user_id.to_owned(), keys.clone());
@@ -544,15 +559,33 @@ where
 			.map_err(|_| err!(Request(Unknown("Timeout when getting keys over federation."))))
 			.and_then(|res| res);
 
-			Some((server, response))
+			Some((server, requested_users, response))
 		})
 		.collect::<FuturesUnordered<_>>()
 		.await
 		.into_iter();
 
-	for (server, response) in futures {
+	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
+				let mut filtered_device_keys = BTreeMap::new();
+				for (user_id, devices) in response.device_keys {
+					if user_id.server_name().as_str() != server.as_str()
+						|| !requested_users.contains(user_id.as_str())
+					{
+						continue;
+					}
+
+					for (device_id, device_keys) in &devices {
+						services
+							.users
+							.cache_remote_device_keys(&user_id, device_id, device_keys)
+							.await;
+					}
+
+					filtered_device_keys.insert(user_id, devices);
+				}
+
 				for (user, master_key) in response.master_keys {
 					let (master_key_id, mut master_key) =
 						match parse_master_key(&user, &master_key) {
@@ -569,7 +602,11 @@ where
 
 					if let Ok(our_master_key) = services
 						.users
-						.get_key(&master_key_id, sender_user, &user, &allowed_signatures)
+						// Use |_| true here: we need ALL stored signatures (including
+						// from other local users) so they survive the merge back into
+						// the DB. The requesting user's visibility filter is applied
+						// separately to the response.
+						.get_key(&master_key_id, sender_user, &user, &|_: &UserId| true)
 						.await
 					{
 						if let Ok((_, mut our_master_key)) =
@@ -610,7 +647,7 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
-				device_keys.extend(response.device_keys);
+				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
 				failures.insert(server.to_string(), json!({ "error": e.to_string() }));
@@ -730,12 +767,4 @@ pub(crate) async fn claim_keys_helper(
 	}
 
 	Ok(claim_keys::v3::Response { failures, one_time_keys })
-}
-
-async fn flush_user_rooms(services: &Services, user_id: &UserId) {
-	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
-	tokio::pin!(rooms_joined);
-	while let Some(room_id) = rooms_joined.next().await {
-		let _ = services.sending.flush_room(room_id).await;
-	}
 }

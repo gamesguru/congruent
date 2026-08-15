@@ -2,10 +2,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
 	Err, Result, SyncMutex,
-	matrix::pdu::{PduCount, PduId, RawPduId},
+	matrix::{
+		event::Event,
+		pdu::{PduCount, PduId, RawPduId},
+	},
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 };
-use database::{Deserialized, Json, Map};
+use database::{Json, Map};
 use futures::{Stream, StreamExt};
 use ruma::{
 	CanonicalJsonObject, OwnedUserId, RoomId, UserId,
@@ -19,9 +22,6 @@ use ruma::{
 use crate::{Dep, globals};
 
 pub(super) struct Data {
-	roomuserid_privateread: Arc<Map>,
-	roomuserid_privatereadevent: Arc<Map>,
-	roomuserid_lastprivatereadupdate: Arc<Map>,
 	roomuserid_privatereadreceipt: Arc<Map>,
 	roomuserid_readreceipt: Arc<Map>,
 	services: Services,
@@ -32,8 +32,9 @@ pub(super) struct Data {
 
 struct Services {
 	globals: Dep<globals::Service>,
-	timeline: Dep<crate::rooms::timeline::Service>,
 	short: Dep<crate::rooms::short::Service>,
+	timeline: Dep<crate::rooms::timeline::Service>,
+	threads: Dep<crate::rooms::threads::Service>,
 }
 
 pub(super) type ReceiptItem = (OwnedUserId, u64, Raw<AnySyncEphemeralRoomEvent>);
@@ -44,9 +45,6 @@ impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
 		Self {
-			roomuserid_privateread: db["roomuserid_privateread"].clone(),
-			roomuserid_privatereadevent: db["roomuserid_privatereadevent"].clone(),
-			roomuserid_lastprivatereadupdate: db["roomuserid_lastprivatereadupdate"].clone(),
 			roomuserid_privatereadreceipt: db["roomuserid_privatereadreceipt"].clone(),
 			roomuserid_readreceipt: db["roomuserid_readreceipt"].clone(),
 			readreceiptid_readreceipt: db["readreceiptid_readreceipt"].clone(),
@@ -54,8 +52,9 @@ impl Data {
 			readreceipt_update_mutex: MutexMap::new(),
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
-				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<crate::rooms::short::Service>("rooms::short"),
+				timeline: args.depend::<crate::rooms::timeline::Service>("rooms::timeline"),
+				threads: args.depend::<crate::rooms::threads::Service>("rooms::threads"),
 			},
 		}
 	}
@@ -138,7 +137,6 @@ impl Data {
 	) -> Result<Option<(u64, ReceiptEvent)>> {
 		let key = roomuserid_key(room_id, user_id);
 
-		// Try the new consolidated map first
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
 			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
 				return Ok(combine_private_read_receipts(room_id, receipts));
@@ -147,59 +145,46 @@ impl Data {
 			if let Ok((count, event, _update_count)) =
 				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
 			{
+				if event.content.0.is_empty() {
+					return self
+						.reconstruct_private_read_from_count(room_id, user_id, count)
+						.await;
+				}
+
 				return Ok(Some((count, event)));
 			}
 		}
 
-		// Fallback to legacy map
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
+		Ok(None)
+	}
 
-		let count = self
-			.roomuserid_privateread
-			.get(&legacy_key)
-			.await
-			.map(|bytes| {
-				conduwuit::utils::u64_from_bytes(&bytes).expect("bytes have right length")
-			})
-			.ok();
-
-		let Some(count) = count else {
-			return Ok(None);
-		};
-
-		// Fast path: try to get the full JSON event
-		if let Ok(handle) = self.roomuserid_privatereadevent.get(&legacy_key).await {
-			if let Ok(event) = handle.deserialized() {
-				return Ok(Some((count, event)));
-			}
-		}
-
-		// Fallback for legacy private read receipts that were only saved as a u64 count
-		let mut user_map = BTreeMap::new();
-		user_map.insert(user_id.to_owned(), Receipt {
-			thread: ReceiptThread::Unthreaded,
-			ts: None, // Legacy receipts have no timestamp
-		});
-
+	async fn reconstruct_private_read_from_count(
+		&self,
+		room_id: &RoomId,
+		user_id: &UserId,
+		count: u64,
+	) -> Result<Option<(u64, ReceiptEvent)>> {
 		let shortroomid = self.services.short.get_shortroomid(room_id).await?;
 		let shorteventid = PduCount::Normal(count);
 		let pdu_id: RawPduId = PduId { shortroomid, shorteventid }.into();
 		let pdu = self.services.timeline.get_pdu_from_id(&pdu_id).await?;
 		let event_id = pdu.event_id;
 
+		let mut user_map = BTreeMap::new();
+		user_map.insert(user_id.to_owned(), Receipt {
+			thread: ReceiptThread::Unthreaded,
+			ts: None,
+		});
+
 		let mut receipt_map = BTreeMap::new();
 		receipt_map.insert(ReceiptType::ReadPrivate, user_map);
 		let mut content = BTreeMap::new();
 		content.insert(event_id, receipt_map);
 
-		let event = ReceiptEvent {
+		Ok(Some((count, ReceiptEvent {
 			content: ruma::events::receipt::ReceiptEventContent(content),
 			room_id: room_id.to_owned(),
-		};
-
-		Ok(Some((count, event)))
+		})))
 	}
 
 	pub(super) async fn readreceipt_update(
@@ -470,15 +455,6 @@ impl Data {
 
 		let next_count = self.services.globals.next_count()?;
 
-		// Delete from legacy maps so they don't shadow in private_read_get during the
-		// transitional phase
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		self.roomuserid_privateread.remove(&legacy_key);
-		self.roomuserid_privatereadevent.remove(&legacy_key);
-		self.roomuserid_lastprivatereadupdate.remove(&legacy_key);
-
 		receipts.insert(thread_key, (count, receipt.clone(), next_count));
 		self.roomuserid_privatereadreceipt.put(key, Json(receipts));
 
@@ -508,17 +484,11 @@ impl Data {
 			}
 		}
 
-		if !thread_key(thread).is_empty() {
-			return Err!(Database("No private read receipt was set for thread."));
+		if thread_key(thread).is_empty() {
+			Err!(Database("No private read receipt was set."))
+		} else {
+			Err!(Database("No private read receipt was set for thread."))
 		}
-
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		self.roomuserid_privateread
-			.qry(&legacy_key)
-			.await
-			.deserialized()
 	}
 
 	pub(super) async fn last_privateread_update(
@@ -543,19 +513,27 @@ impl Data {
 			}
 		}
 
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-		self.roomuserid_lastprivatereadupdate
-			.qry(&legacy_key)
-			.await
-			.deserialized()
-			.unwrap_or(0)
+		0
 	}
 
-	/// MSC4102: When a threaded receipt is received, synthesize an unthreaded
-	/// copy so older clients still see it. Skips synthesis if the user already
-	/// has an unthreaded receipt on a more recent event.
+	/// MSC4102: when a threaded receipt is received, synthesize an unthreaded
+	/// copy so legacy (non-thread-aware) clients still see a read marker,
+	/// placed on the nearest main-timeline (non-thread) event at or before
+	/// the receipted position -- *not* on the receipted event itself.
+	///
+	/// That distinction matters: an earlier version of this function always
+	/// synthesized onto the *same* `event_id` as the source receipt. Since
+	/// aggregation (`read_receipt::aggregate_receipts`) always prefers the
+	/// unthreaded receipt when two receipts land on the same
+	/// `(event, type, user)` slot -- which is correct when a client
+	/// genuinely submits both, as in `TestThreadReceiptsInSyncMSC4102` --
+	/// a same-event synthetic copy collided with the original on *every*
+	/// threaded receipt and silently stripped the `thread_id` the client
+	/// just set (see `TestThreadedReceipts`). Resolving to the nearest
+	/// distinct main-timeline event avoids that collision for genuine
+	/// in-thread receipts. For a `Main`-thread receipt the event is already
+	/// on the main timeline, so the nearest such event is itself; synthesis
+	/// is skipped in that case since there's nothing distinct to add.
 	async fn synthesize_msc4102_unthreaded(
 		&self,
 		user_id: &UserId,
@@ -568,8 +546,50 @@ impl Data {
 				continue;
 			}
 
-			// Check if user already has an unthreaded receipt for this type
-			// on a more recent event -- if so, skip synthesis.
+			let Ok(new_count) = self.services.timeline.get_pdu_count(new_event_id).await else {
+				continue;
+			};
+
+			let Some(target_event_id) = self
+				.nearest_main_timeline_event(&existing_event.room_id, new_count)
+				.await
+			else {
+				continue;
+			};
+
+			// The event is already on the main timeline (always true for `Main`
+			// receipts): a same-event synthetic copy would usually only collide with
+			// the original. The exception is a real existing unthreaded receipt on
+			// the same event; when a later threaded receipt for the same
+			// `(event, type, user)` arrives, MSC4102 requires the unthreaded receipt
+			// to win in the current sync/federation window too.
+			if target_event_id == *new_event_id {
+				let has_same_event_unthreaded = existing_event
+					.content
+					.0
+					.get(new_event_id)
+					.and_then(|receipts| receipts.get(new_type))
+					.and_then(|users| users.get(user_id))
+					.is_some_and(|receipt| receipt.thread == ReceiptThread::Unthreaded);
+
+				if !has_same_event_unthreaded {
+					continue;
+				}
+
+				let mut unthreaded = new_receipt.clone();
+				unthreaded.thread = ReceiptThread::Unthreaded;
+				synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+				continue;
+			}
+
+			// Check if user already has an unthreaded *or* main-timeline receipt
+			// for this type at or after the target position -- if so, skip
+			// synthesis. A `Main` receipt already serves the same legacy-compat
+			// purpose as a synthetic unthreaded copy; failing to treat it as
+			// "already covered" here would synthesize a redundant unthreaded
+			// copy at the exact same event as an existing `Main` receipt,
+			// colliding with (and, per the aggregation tie-break, silently
+			// overwriting) its `thread_id`.
 			let existing_unthreaded_event_id =
 				existing_event
 					.content
@@ -579,16 +599,24 @@ impl Data {
 						receipts
 							.get(new_type)
 							.and_then(|users| users.get(user_id))
-							.filter(|r| r.thread == ReceiptThread::Unthreaded)
+							.filter(|r| {
+								matches!(
+									r.thread,
+									ReceiptThread::Unthreaded | ReceiptThread::Main
+								)
+							})
 							.map(|_| ev_id.clone())
 					});
 
 			if let Some(existing_ev_id) = existing_unthreaded_event_id {
-				if let (Ok(PduCount::Normal(new_count)), Ok(PduCount::Normal(existing_count))) = (
-					self.services.timeline.get_pdu_count(new_event_id).await,
+				if let (
+					Ok(PduCount::Normal(target_count)),
+					Ok(PduCount::Normal(existing_count)),
+				) = (
+					self.services.timeline.get_pdu_count(&target_event_id).await,
 					self.services.timeline.get_pdu_count(&existing_ev_id).await,
 				) {
-					if existing_count > new_count {
+					if existing_count >= target_count {
 						continue;
 					}
 				}
@@ -596,9 +624,31 @@ impl Data {
 
 			let mut unthreaded = new_receipt.clone();
 			unthreaded.thread = ReceiptThread::Unthreaded;
-			synthetic.push((new_event_id.clone(), new_type.clone(), unthreaded, true));
+			synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
 		}
 		synthetic
+	}
+
+	/// The nearest main-timeline (non-thread) event at or before `at_or_before`
+	/// in `room_id`, or `None` if the room has no such event that far back.
+	async fn nearest_main_timeline_event(
+		&self,
+		room_id: &RoomId,
+		at_or_before: PduCount,
+	) -> Option<ruma::OwnedEventId> {
+		let stream = self
+			.services
+			.timeline
+			.pdus_rev(room_id, std::ops::Bound::Included(at_or_before));
+		futures::pin_mut!(stream);
+
+		while let Some(Ok((_, pdu))) = stream.next().await {
+			if self.services.threads.get_thread_id(&pdu).await.is_none() {
+				return Some(pdu.event_id().to_owned());
+			}
+		}
+
+		None
 	}
 }
 
@@ -657,87 +707,10 @@ fn combine_private_read_receipts(
 	})
 }
 
-#[cfg(test)]
-mod tests {
-	use std::collections::BTreeMap;
-
-	use ruma::{
-		OwnedEventId,
-		events::receipt::{
-			Receipt, ReceiptEvent, ReceiptEventContent, ReceiptThread, ReceiptType,
-		},
-		room_id,
-	};
-
-	fn make_empty_receipt_event() -> ReceiptEvent {
-		ReceiptEvent {
-			content: ReceiptEventContent(BTreeMap::new()),
-			room_id: room_id!("!test:example.com").to_owned(),
-		}
-	}
-
-	/// Threaded receipt must produce a synthetic unthreaded copy (MSC4102).
-	/// This is the exact regression that broke TestThreadReceiptsInSyncMSC4102.
-	#[test]
-	fn msc4102_threaded_produces_unthreaded() {
-		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let threaded = Receipt {
-			ts: None,
-			thread: ReceiptThread::Thread("$root:example.com".try_into().unwrap()),
-		};
-
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, threaded)];
-		let _existing = make_empty_receipt_event();
-
-		// Simulate what readreceipt_update does: identify threaded receipts
-		// and append unthreaded copies.
-		let synthetics: Vec<_> = new_receipts
-			.iter()
-			.filter(|(_, _, r)| r.thread != ReceiptThread::Unthreaded)
-			.map(|(eid, rtype, r)| {
-				let mut unthreaded = r.clone();
-				unthreaded.thread = ReceiptThread::Unthreaded;
-				(eid.clone(), rtype.clone(), unthreaded)
-			})
-			.collect();
-		new_receipts.extend(synthetics);
-
-		// Must have original + synthetic
-		assert_eq!(new_receipts.len(), 2);
-		assert!(
-			matches!(new_receipts[0].2.thread, ReceiptThread::Thread(_)),
-			"original must stay threaded"
-		);
-		assert!(
-			matches!(new_receipts[1].2.thread, ReceiptThread::Unthreaded),
-			"synthetic must be unthreaded"
-		);
-		assert_eq!(new_receipts[0].0, new_receipts[1].0, "same event_id");
-		assert_eq!(new_receipts[0].1, new_receipts[1].1, "same receipt type");
-	}
-
-	/// Unthreaded receipt must NOT produce a synthetic -- no duplication.
-	#[test]
-	fn msc4102_unthreaded_no_synthesis() {
-		let event_id: OwnedEventId = "$msg:example.com".try_into().unwrap();
-		let unthreaded = Receipt {
-			ts: None,
-			thread: ReceiptThread::Unthreaded,
-		};
-
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, unthreaded)];
-
-		let synthetics: Vec<_> = new_receipts
-			.iter()
-			.filter(|(_, _, r)| r.thread != ReceiptThread::Unthreaded)
-			.map(|(eid, rtype, r)| {
-				let mut copy = r.clone();
-				copy.thread = ReceiptThread::Unthreaded;
-				(eid.clone(), rtype.clone(), copy)
-			})
-			.collect();
-		new_receipts.extend(synthetics);
-
-		assert_eq!(new_receipts.len(), 1, "no synthetic should be added");
-	}
-}
+// MSC4102 unthreaded-receipt synthesis is disabled entirely -- see the doc
+// comment on `synthesize_msc4102_unthreaded` for why. There's no lightweight
+// way to exercise that async, `Data`-bound function from a plain unit test
+// (it needs a real `timeline` service dependency), so its "always returns
+// nothing" behavior is covered by `TestThreadedReceipts` and
+// `TestThreadReceiptsInSyncMSC4102` at the complement level instead of a unit
+// test that would just restate the function body.

@@ -67,7 +67,7 @@ impl Display for PaginationToken {
 		let short_room_ids = self
 			.short_room_ids
 			.iter()
-			.map(ToString::to_string)
+			.map(|id| format!("{id}"))
 			.collect::<Vec<_>>()
 			.join(",");
 

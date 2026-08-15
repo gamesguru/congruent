@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use conduwuit::{Result, implement};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use rocksdb::Direction;
+use futures::{Stream, StreamExt};
 use serde::Deserialize;
-use tokio::task;
 
 use crate::{keyval, keyval::KeyVal, stream};
 
@@ -29,34 +27,14 @@ where
 #[implement(super::Map)]
 #[tracing::instrument(skip(self), fields(%self), level = "trace")]
 pub fn rev_raw_stream(self: &Arc<Self>) -> impl Stream<Item = Result<KeyVal<'_>>> + Send {
-	use crate::pool::Seek;
-
-	let opts = super::iter_options_default(&self.db);
-	let state = stream::State::new(self, opts);
-	if is_cached(self) {
-		let state = state.init_rev(None);
-		return task::consume_budget()
-			.map(move |()| stream::ItemsRev::<'_>::from(state))
-			.into_stream()
-			.flatten()
-			.boxed();
-	}
-
-	let seek = Seek {
-		map: self.clone(),
-		dir: Direction::Reverse,
-		state: crate::pool::into_send_seek(state),
-		key: None,
-		res: None,
-	};
-
-	self.db
-		.pool
-		.execute_iter(seek)
-		.ok_into::<stream::ItemsRev<'_>>()
-		.into_stream()
-		.try_flatten()
-		.boxed()
+	super::macros::stream_boilerplate!(
+		map = self,
+		is_cached = is_cached(self),
+		init = init_rev,
+		key = None,
+		dir = rocksdb::Direction::Reverse,
+		stream_type = ItemsRev
+	)
 }
 
 #[tracing::instrument(

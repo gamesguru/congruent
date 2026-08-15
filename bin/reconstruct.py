@@ -34,9 +34,9 @@ config["global"]["turn_uris"] = [
     "turns:turn.nutra.tk:5349?transport=udp",
     "turns:turn.nutra.tk:5349?transport=tcp",
 ]
-config["global"][
-    "turn_secret"
-] = "cce010efa85189b63ce2b2bf530049e8ac965275366e06f4a739e419e1837424"
+config["global"]["turn_secret"] = (
+    "cce010efa85189b63ce2b2bf530049e8ac965275366e06f4a739e419e1837424"
+)
 config["global"]["turn_ttl"] = 86400
 config["global"]["auto_join_rooms"] = ["#nutra:nutra.tk", "#general:nutra.tk"]
 config["global"]["auto_deactivate_banned_room_attempts"] = False
@@ -97,9 +97,9 @@ config["global"]["ignore_messages_from_server_names"] = []
 config["global"]["send_messages_from_ignored_users_to_client"] = False
 config["global"]["url_preview_domain_explicit_allowlist"] = ["*"]
 config["global"]["url_preview_check_root_domain"] = False
-config["global"][
-    "url_preview_user_agent"
-] = "continuwuity/<version> (bot; +https://continuwuity.org)"
+config["global"]["url_preview_user_agent"] = (
+    "continuwuity/<version> (bot; +https://continuwuity.org)"
+)
 config["global"]["forbidden_alias_names"] = []
 config["global"]["forbidden_usernames"] = []
 config["global"]["startup_netburst"] = True

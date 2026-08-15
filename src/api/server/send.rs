@@ -7,7 +7,7 @@ use std::{
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Error, Result, debug, debug_warn, err, error,
+	Err, Error, Result, debug, debug_warn, defer, err, error, info,
 	result::LogErr,
 	state_res::lexicographical_topological_sort,
 	trace,
@@ -29,15 +29,19 @@ use ruma::{
 	RoomId, ServerName, UInt, UserId,
 	api::{
 		client::error::{ErrorKind, ErrorKind::LimitExceeded},
-		federation::transactions::{
-			edu::{
-				DeviceListUpdateContent, DirectDeviceContent, Edu, PresenceContent,
-				PresenceUpdate, ReceiptContent, ReceiptData, ReceiptMap, SigningKeyUpdateContent,
-				TypingContent,
+		federation::{
+			device::get_devices,
+			transactions::{
+				edu::{
+					DeviceListUpdateContent, DirectDeviceContent, Edu, PresenceContent,
+					PresenceUpdate, ReceiptContent, ReceiptData, ReceiptMap,
+					SigningKeyUpdateContent, TypingContent,
+				},
+				send_transaction_message,
 			},
-			send_transaction_message,
 		},
 	},
+	encryption::DeviceKeys,
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
 	serde::Raw,
@@ -47,7 +51,7 @@ use service::transactions::{
 	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use tokio::sync::watch::{Receiver, Sender};
-use tracing::instrument;
+use tracing::Instrument;
 
 use crate::Ruma;
 
@@ -85,24 +89,63 @@ pub(crate) async fn send_transaction_message_route(
 	// Atomically check cache, join active, or start new transaction
 	match services
 		.transactions
-		.get_or_start_federation_txn(txn_key.clone())?
+		.get_or_start_federation_txn(txn_key.clone())
 	{
-		| FederationTxnState::Cached(response) => {
+		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
 			Ok(response)
 		},
-		| FederationTxnState::Active(receiver) => {
+		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
 			wait_for_result(receiver).await
 		},
-		| FederationTxnState::Started { receiver, sender } => {
+		| Ok(FederationTxnState::Started { receiver, sender }) => {
 			// We're the first, spawn the processing task
-			services
-				.server
-				.runtime()
-				.spawn(process_inbound_transaction(services, body, client, txn_key, sender));
+			let span = if body.pdus.is_empty() {
+				tracing::info_span!(
+					"edu",
+					id = ?body.transaction_id.as_str(),
+					origin = ?body.origin(),
+				)
+			} else {
+				tracing::info_span!(
+					"federation",
+					id = ?body.transaction_id.as_str(),
+					origin = ?body.origin(),
+				)
+			};
+			services.server.runtime().spawn(
+				process_inbound_transaction(services, body, client, txn_key, sender)
+					.instrument(span),
+			);
 			// and wait for it
 			wait_for_result(receiver).await
+		},
+		| Err(e) => {
+			if matches!(e, Error::BadRequest(LimitExceeded { .. }, _)) {
+				// We're rejecting the transaction due to load.
+				// Process the EDUs anyway so we don't miss ephemeral keys that might otherwise
+				// be dropped by the sender if they eventually give up retrying!
+				let edus: Vec<_> = body.body.edus.clone();
+				let origin = body.origin().to_owned();
+
+				services.server.runtime().spawn(async move {
+					let edus_stream = edus
+						.into_iter()
+						.map(|edu| edu.into_json().get().to_owned())
+						.map(|json_str| serde_json::from_str(&json_str))
+						.filter_map(Result::ok)
+						.stream();
+
+					edus_stream
+						.for_each_concurrent(automatic_width(), |edu| {
+							handle_edu(&services, &client, &origin, edu)
+						})
+						.await;
+				});
+			}
+
+			Err(e)
 		},
 	}
 }
@@ -132,13 +175,6 @@ async fn wait_for_result(
 	}
 }
 
-#[instrument(
-	skip_all,
-	fields(
-		id = ?body.transaction_id.as_str(),
-		origin = ?body.origin()
-	)
-)]
 async fn process_inbound_transaction(
 	services: crate::State,
 	body: Ruma<send_transaction_message::v1::Request>,
@@ -161,10 +197,49 @@ async fn process_inbound_transaction(
 		.map(|edu| edu.json().get())
 		.map(serde_json::from_str)
 		.filter_map(Result::ok)
+		.collect::<Vec<_>>()
+		.into_iter()
 		.stream();
 
-	debug!(pdus = body.pdus.len(), edus = body.edus.len(), "Processing transaction",);
-	let results = match handle(&services, &client, body.origin(), pdus, edus).await {
+	let pdu_ids: Vec<_> = body
+		.pdus
+		.iter()
+		.filter_map(|pdu| serde_json::from_str::<serde_json::Value>(pdu.get()).ok())
+		.filter_map(|pdu| {
+			pdu.get("event_id")
+				.and_then(|e| e.as_str())
+				.map(ToOwned::to_owned)
+		})
+		.collect();
+
+	info!(
+		pdus = body.pdus.len(),
+		edus = body.edus.len(),
+		pdu_ids = ?pdu_ids,
+		"Processing transaction"
+	);
+	services
+		.server
+		.metrics
+		.transactions_processed
+		.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+	// Process EDUs concurrently with the PDU pipeline, but don't acknowledge the
+	// transaction until both sides have actually committed. Returning 200 before
+	// receipt/typing/device-list EDUs land creates an ack-before-commit race:
+	// the sender advances its EDU watermark while the receiver may still not
+	// have applied the write or an ACL gate for that same transaction.
+	let edu_origin = body.origin().to_owned();
+	let edu_processing = async {
+		edus.for_each_concurrent(automatic_width(), |edu| {
+			handle_edu(&services, &client, &edu_origin, edu)
+		})
+		.await;
+	};
+
+	let ((), results) =
+		tokio::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
+	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
 			fail_federation_txn(services, &txn_key, &sender, err);
@@ -180,13 +255,86 @@ async fn process_inbound_transaction(
 		}
 	}
 
-	debug!(
-		pdus = body.pdus.len(),
-		edus = body.edus.len(),
-		elapsed = ?txn_start_time.elapsed(),
-		"Finished processing transaction"
-	);
+	let elapsed = txn_start_time.elapsed();
 
+	// Record transaction timing metrics
+	let elapsed_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+	services
+		.server
+		.metrics
+		.transactions_time
+		.fetch_add(elapsed_us, std::sync::atomic::Ordering::Relaxed);
+	services
+		.server
+		.metrics
+		.transactions_max_time_1m
+		.fetch_max(elapsed_us, std::sync::atomic::Ordering::Relaxed);
+	if elapsed > Duration::from_secs(1) {
+		services
+			.server
+			.metrics
+			.transactions_slow_1s
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	}
+	if elapsed > Duration::from_secs(10) {
+		services
+			.server
+			.metrics
+			.transactions_slow_10s
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	}
+	if elapsed > Duration::from_secs(100) {
+		services
+			.server
+			.metrics
+			.transactions_slow_100s
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	}
+
+	// Print update
+	if elapsed < Duration::from_millis(50) {
+		debug!(
+			target: "federation",
+			pdus = body.pdus.len(),
+			edus = body.edus.len(),
+			?elapsed,
+			"Nominal txn"
+		);
+	} else if elapsed < Duration::from_secs(1) {
+		info!(
+			target: "federation",
+			pdus = body.pdus.len(),
+			edus = body.edus.len(),
+			?elapsed,
+			"Nominal txn"
+		);
+	} else if elapsed < Duration::from_secs(10) {
+		info!(
+			target: "federation",
+			pdus = body.pdus.len(),
+			edus = body.edus.len(),
+			?elapsed,
+			"Slow txn"
+		);
+	} else if elapsed < Duration::from_secs(100) {
+		warn!(
+			target: "federation",
+			pdus = body.pdus.len(),
+			edus = body.edus.len(),
+			?elapsed,
+			"Very slow txn"
+		);
+	} else {
+		warn!(
+			target: "federation",
+			pdus = body.pdus.len(),
+			edus = body.edus.len(),
+			?elapsed,
+			"Stalled txn"
+		);
+	}
+
+	// Bundle response
 	let response = send_transaction_message::v1::Response {
 		pdus: results
 			.into_iter()
@@ -227,6 +375,11 @@ fn transaction_error_to_response(err: &TransactionError) -> Error {
 			"Server is shutting down, please retry later".into(),
 			StatusCode::SERVICE_UNAVAILABLE,
 		),
+		| TransactionError::Transient(e) => Error::Request(
+			ErrorKind::Unknown,
+			format!("Transient error, please retry: {e}").into(),
+			StatusCode::INTERNAL_SERVER_ERROR,
+		),
 	}
 }
 async fn handle(
@@ -234,7 +387,6 @@ async fn handle(
 	client: &IpAddr,
 	origin: &ServerName,
 	pdus: impl Stream<Item = Pdu> + Send,
-	edus: impl Stream<Item = Edu> + Send,
 ) -> std::result::Result<ResolvedMap, TransactionError> {
 	// group pdus by room
 	let pdus = pdus
@@ -260,11 +412,6 @@ async fn handle(
 		.try_collect()
 		.boxed()
 		.await?;
-
-	// evaluate edus after pdus, at least for now.
-	edus.for_each_concurrent(automatic_width(), |edu| handle_edu(services, client, origin, edu))
-		.boxed()
-		.await;
 
 	Ok(results)
 }
@@ -292,15 +439,26 @@ async fn build_local_dag(
 		// sort below. If there are multiple events with omitted prevs, they will be
 		// ordered by timestamp, then event ID. At that point though, it's unlikely to
 		// matter.
-		let prev_events = value
+		let mut prev_events: HashSet<OwnedEventId> = value
 			.get("prev_events")
 			.unwrap()
 			.as_array()
 			.unwrap()
 			.iter()
-			.map(|v| OwnedEventId::parse(v.as_str().unwrap()).unwrap())
+			.filter_map(|v| v.as_str())
+			.filter_map(|s| OwnedEventId::parse(s).ok())
 			.filter(|id| pdu_map.contains_key(id))
 			.collect();
+
+		if let Some(auth_events) = value.get("auth_events").and_then(|v| v.as_array()) {
+			prev_events.extend(
+				auth_events
+					.iter()
+					.filter_map(|v| v.as_str())
+					.filter_map(|s| OwnedEventId::parse(s).ok())
+					.filter(|id| pdu_map.contains_key(id)),
+			);
+		}
 
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
@@ -344,6 +502,20 @@ async fn handle_room(
 	room_id: OwnedRoomId,
 	pdus: impl Iterator<Item = Pdu> + Send,
 ) -> std::result::Result<Vec<(OwnedEventId, Result)>, TransactionError> {
+	services
+		.server
+		.metrics
+		.federation_active_rooms
+		.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+	defer! {{
+		services
+			.server
+			.metrics
+			.federation_active_rooms
+			.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+	}}
+
 	let _room_lock = services
 		.rooms
 		.event_handler
@@ -369,6 +541,7 @@ async fn handle_room(
 	};
 	let mut results = Vec::with_capacity(sorted_event_ids.len());
 	for event_id in sorted_event_ids {
+		tokio::task::yield_now().await;
 		let value = pdu_map
 			.get(&event_id)
 			.expect("sorted event IDs must be from the original map")
@@ -377,12 +550,30 @@ async fn handle_room(
 			.server
 			.check_running()
 			.map_err(|_| TransactionError::ShuttingDown)?;
-		let result = services
-			.rooms
-			.event_handler
-			.handle_incoming_pdu(origin, room_id, &event_id, value, true)
-			.await
-			.map(|_| ());
+		let result = Box::pin(
+			services
+				.rooms
+				.event_handler
+				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
+		)
+		.await
+		.map(|_| ());
+
+		if let Err(ref e) = result {
+			// Only abort the entire transaction for truly local failures
+			// (database errors, internal panics) — NOT for federation connection
+			// errors to third-party servers or per-PDU auth rejections. Those are
+			// per-PDU failures that won't be fixed by the sender retrying the
+			// same transaction.
+			if e.status_code().is_server_error()
+				&& services.server.running()
+				&& !e.to_string().contains("Federation connection error")
+				&& !matches!(e, Error::MissingAuthEvents(_))
+			{
+				return Err(TransactionError::Transient(e.to_string()));
+			}
+		}
+
 		results.push((event_id, result));
 	}
 	Ok(results)
@@ -390,23 +581,29 @@ async fn handle_room(
 
 async fn handle_edu(services: &Services, client: &IpAddr, origin: &ServerName, edu: Edu) {
 	match edu {
-		| Edu::Presence(presence) if services.server.config.allow_incoming_presence =>
-			handle_edu_presence(services, client, origin, presence).await,
+		| Edu::Presence(presence) if services.server.config.allow_incoming_presence => {
+			handle_edu_presence(services, client, origin, presence).await;
+		},
 
-		| Edu::Receipt(receipt) if services.server.config.allow_incoming_read_receipts =>
-			handle_edu_receipt(services, client, origin, receipt).await,
+		| Edu::Receipt(receipt) if services.server.config.allow_incoming_read_receipts => {
+			handle_edu_receipt(services, client, origin, receipt).await;
+		},
 
-		| Edu::Typing(typing) if services.server.config.allow_incoming_typing =>
-			handle_edu_typing(services, client, origin, typing).await,
+		| Edu::Typing(typing) if services.server.config.allow_incoming_typing => {
+			handle_edu_typing(services, client, origin, typing).await;
+		},
 
-		| Edu::DeviceListUpdate(content) =>
-			handle_edu_device_list_update(services, client, origin, content).await,
+		| Edu::DeviceListUpdate(content) => {
+			handle_edu_device_list_update(services, client, origin, content).await;
+		},
 
-		| Edu::DirectToDevice(content) =>
-			handle_edu_direct_to_device(services, client, origin, content).await,
+		| Edu::DirectToDevice(content) => {
+			handle_edu_direct_to_device(services, client, origin, content).await;
+		},
 
-		| Edu::SigningKeyUpdate(content) =>
-			handle_edu_signing_key_update(services, client, origin, content).await,
+		| Edu::SigningKeyUpdate(content) => {
+			handle_edu_signing_key_update(services, client, origin, content).await;
+		},
 
 		| Edu::_Custom(ref _custom) => debug_warn!(?edu, "received custom/unknown EDU"),
 
@@ -420,14 +617,25 @@ async fn handle_edu_presence(
 	origin: &ServerName,
 	presence: PresenceContent,
 ) {
-	presence
+	let fut = presence
 		.push
 		.into_iter()
 		.stream()
 		.for_each_concurrent(automatic_width(), |update| {
 			handle_edu_presence_update(services, origin, update)
-		})
-		.await;
+		});
+
+	let timeout = services.server.config.federation_presence_interval_s;
+	if tokio::time::timeout(Duration::from_secs(timeout), fut)
+		.await
+		.is_err()
+	{
+		info!(
+			%origin,
+			timeout,
+			"Congestion: presence updates took too long, dropping remaining"
+		);
+	}
 }
 
 async fn handle_edu_presence_update(
@@ -435,6 +643,8 @@ async fn handle_edu_presence_update(
 	origin: &ServerName,
 	update: PresenceUpdate,
 ) {
+	tokio::task::yield_now().await;
+
 	if update.user_id.server_name() != origin {
 		debug_warn!(
 			%update.user_id, %origin,
@@ -523,13 +733,12 @@ async fn handle_edu_receipt_room_user(
 		.rooms
 		.state_cache
 		.server_in_room(origin, room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(room_id, origin)
 		.await
-		&& !services
-			.rooms
-			.state_partial
-			.is_partial_from_server(room_id, origin)
-			.await
-			.unwrap_or(false)
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%user_id, %room_id, %origin,
@@ -591,13 +800,12 @@ async fn handle_edu_typing(
 		.rooms
 		.state_cache
 		.is_joined(&typing.user_id, &typing.room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
 		.await
-		&& !services
-			.rooms
-			.state_partial
-			.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
-			.await
-			.unwrap_or(false)
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%typing.user_id, %typing.room_id, %origin,
@@ -634,7 +842,15 @@ async fn handle_edu_device_list_update(
 	origin: &ServerName,
 	content: DeviceListUpdateContent,
 ) {
-	let DeviceListUpdateContent { user_id, .. } = content;
+	let DeviceListUpdateContent {
+		user_id,
+		device_id,
+		stream_id,
+		prev_id,
+		deleted,
+		keys,
+		device_display_name,
+	} = content;
 
 	if user_id.server_name() != origin {
 		debug_warn!(
@@ -644,7 +860,201 @@ async fn handle_edu_device_list_update(
 		return;
 	}
 
-	services.users.mark_device_key_update(&user_id).await;
+	info!(%user_id, %origin, "Received DeviceListUpdate event");
+
+	let incoming_stream_id = u64::from(stream_id);
+	let last_seen_stream_id = services.users.remote_device_list_stream_id(&user_id).await;
+
+	if incoming_stream_id <= last_seen_stream_id {
+		return;
+	}
+
+	if prev_id
+		.iter()
+		.map(|prev| u64::from(*prev))
+		.any(|prev| prev > last_seen_stream_id && prev != incoming_stream_id)
+	{
+		// TODO: Synapse keeps a richer pending-update pipeline keyed by prev_id, which
+		// lets it reconcile some out-of-order EDUs locally instead of forcing clients
+		// to refetch. We intentionally keep this lighter for now and conservatively
+		// surface a change.
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+		services.users.mark_device_key_update(&user_id).await;
+		return;
+	}
+
+	if deleted == Some(true) {
+		let had_cached_keys = services
+			.users
+			.get_device_keys(&user_id, &device_id)
+			.await
+			.is_ok();
+
+		services
+			.users
+			.remove_remote_device_keys(&user_id, &device_id)
+			.await;
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+
+		if had_cached_keys {
+			services.users.mark_device_key_update(&user_id).await;
+		}
+
+		return;
+	}
+
+	let Some(incoming_keys) = keys else {
+		let request = get_devices::v1::Request { user_id: user_id.clone() };
+
+		let Ok(response) = services
+			.sending
+			.send_federation_request(user_id.server_name(), request)
+			.await
+		else {
+			// The EDU only carried a stream position, so we need a follow-up
+			// /user/devices fetch to decide whether anything actually changed.
+			// If that fetch fails, defer processing instead of fabricating a
+			// local keychange. The sender will retry the EDU, and we can only
+			// safely advance the remote cursor once we have confirmed state.
+			tracing::warn!(
+				%user_id,
+				%origin,
+				incoming_stream_id,
+				last_seen_stream_id,
+				"failed to fetch remote device list; deferring update"
+			);
+			return;
+		};
+
+		let fetched_stream_id = u64::from(response.stream_id);
+		if fetched_stream_id <= last_seen_stream_id {
+			return;
+		}
+
+		// TODO: Synapse tracks and replays prev_id chains locally, which lets it avoid
+		// some of these fallback /user/devices fetches and save federation bandwidth.
+		let mut actually_changed = false;
+		for device in response.devices {
+			let incoming_keys = inject_device_display_name(
+				device.keys.clone(),
+				device.device_display_name.as_ref(),
+			);
+
+			let existing_keys = services
+				.users
+				.get_device_keys(&user_id, &device.device_id)
+				.await
+				.ok();
+			let keys_changed = match existing_keys {
+				| Some(existing_keys) =>
+					remote_device_keys_differ(&existing_keys, &incoming_keys),
+				| None => true,
+			};
+
+			if keys_changed {
+				actually_changed = true;
+			}
+
+			services
+				.users
+				.cache_remote_device_keys(&user_id, &device.device_id, &incoming_keys)
+				.await;
+		}
+
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, fetched_stream_id);
+
+		if actually_changed {
+			services.users.mark_device_key_update(&user_id).await;
+		}
+
+		return;
+	};
+
+	let incoming_keys = inject_device_display_name(incoming_keys, device_display_name.as_ref());
+
+	let existing_keys = services
+		.users
+		.get_device_keys(&user_id, &device_id)
+		.await
+		.ok();
+	let keys_changed = match existing_keys {
+		| Some(existing_keys) => remote_device_keys_differ(&existing_keys, &incoming_keys),
+		| None => true,
+	};
+
+	services
+		.users
+		.cache_remote_device_keys(&user_id, &device_id, &incoming_keys)
+		.await;
+	services
+		.users
+		.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+
+	if keys_changed {
+		services.users.mark_device_key_update(&user_id).await;
+	}
+}
+
+fn inject_device_display_name(
+	mut keys: Raw<DeviceKeys>,
+	display_name: Option<&String>,
+) -> Raw<DeviceKeys> {
+	let Ok(mut object) = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()
+	else {
+		return keys;
+	};
+
+	let mut modified = false;
+
+	match display_name {
+		| Some(name) => {
+			let unsigned = object
+				.entry("unsigned")
+				.or_insert_with(|| serde_json::json!({}));
+			if let serde_json::Value::Object(unsigned_object) = unsigned {
+				if unsigned_object
+					.get("device_display_name")
+					.and_then(|v| v.as_str())
+					!= Some(name)
+				{
+					unsigned_object.insert("device_display_name".to_owned(), name.clone().into());
+					modified = true;
+				}
+			}
+		},
+		| None => {
+			if let Some(serde_json::Value::Object(unsigned_object)) = object.get_mut("unsigned") {
+				if unsigned_object.remove("device_display_name").is_some() {
+					modified = true;
+				}
+			}
+		},
+	}
+
+	if modified {
+		if let Ok(raw) = serde_json::value::to_raw_value(&object) {
+			keys = Raw::from_json(raw);
+		}
+	}
+
+	keys
+}
+
+fn remote_device_keys_differ(
+	existing_keys: &Raw<DeviceKeys>,
+	incoming_keys: &Raw<DeviceKeys>,
+) -> bool {
+	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
+		| (Ok(existing_keys), Ok(incoming_keys)) =>
+			serde_json::to_value(existing_keys).ok() != serde_json::to_value(incoming_keys).ok(),
+		| _ => existing_keys.json().get() != incoming_keys.json().get(),
+	}
 }
 
 async fn handle_edu_direct_to_device(
@@ -713,8 +1123,17 @@ async fn handle_edu_direct_to_device_user<Event: Send + Sync>(
 			.deserialize_as()
 			.map_err(|e| err!(Request(InvalidParam(error!("To-Device event is invalid: {e}")))))
 		else {
+			info!(
+				%sender, %target_user_id, ?target_device_id_maybe, ev_type,
+				"Failed to deserialize To-Device event, dropping"
+			);
 			continue;
 		};
+
+		info!(
+			%sender, %target_user_id, ?target_device_id_maybe, ev_type,
+			"Received To-Device event"
+		);
 
 		handle_edu_direct_to_device_event(
 			services,

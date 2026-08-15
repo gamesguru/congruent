@@ -1,0 +1,3 @@
+{"Action":"pass","Test":"TestInboundFederationProfile"}
+{"Action":"pass","Test":"TestInboundFederationProfile/Inbound_federation_can_query_profile_data"}
+{"Action":"pass","Test":"TestInboundFederationProfile/Non-numeric_ports_in_server_names_are_rejected"}

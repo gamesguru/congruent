@@ -1,0 +1,14 @@
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoin"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_fail_initially"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_fail_when_left_allowed_room"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_fail_with_mangled_join_rules"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_succeed_when_invited"}
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoin/Join_should_succeed_when_joined_to_allowed_room"}
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_initially"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_when_left_allowed_room"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_with_mangled_join_rules"}
+{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_succeed_when_invited"}
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_succeed_when_joined_to_allowed_room"}
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
+{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}

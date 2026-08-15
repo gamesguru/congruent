@@ -3,8 +3,7 @@ pub mod resync;
 use std::sync::Arc;
 
 use conduwuit::Result;
-use database::Map;
-use database::Deserialized;
+use database::{Deserialized, Map};
 use ruma::{OwnedServerName, RoomId, ServerName};
 
 use crate::{Dep, rooms};

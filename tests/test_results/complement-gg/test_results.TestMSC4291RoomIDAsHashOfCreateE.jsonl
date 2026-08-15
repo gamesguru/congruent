@@ -1,0 +1,5 @@
+{"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent"}
+{"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_AuthEventsOmitsCreateEvent"}
+{"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_CannotSendCreateEvent"}
+{"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent"}
+{"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms"}

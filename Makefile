@@ -17,7 +17,7 @@ endif
 # export PREFIX=/usr/local
 # export ROCKSDB_INCLUDE_DIR=${PREFIX}/include
 # export ROCKSDB_LIB_DIR=${PREFIX}/lib
-# export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:${LD_LIBRARY_PATH}
+# export LD_LIBRARY_PATH=${ROCKSDB_LIB_DIR}:${LD_LIBRARY_PATH:-}
 # #export CPU_TARGET=skylake
 # export OS_VERSION=ubuntu-24.04
 # export GH_REPO=.../continuwuity
@@ -159,7 +159,9 @@ lint:   ##H Lint code
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo clippy $(CARGO_SCOPE) --locked --no-deps $(CARGO_FLAGS) $$(if [ -n "$$CI" ]; then echo "-- -D warnings"; fi)
+		CC=gcc \
+		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
+		cargo +nightly clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
 
 .PHONY: test
 test:   ##H Run tests
@@ -172,7 +174,34 @@ test:   ##H Run tests
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo test $(CARGO_SCOPE) --locked --all-targets --timings $(CARGO_FLAGS)
+		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
+
+.PHONY: cov
+cov:    ##H Run tests with llvm-cov coverage (text summary)
+	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
+		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
+		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
+		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
+		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
+		AWS_LC_RS_NO_BUNDLE=1 \
+		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
+		cargo +nightly llvm-cov --lib --all-features \
+			--ignore-filename-regex 'src/admin|/tests\.rs' \
+			$(CARGO_SCOPE)
+
+.PHONY: cov/html
+cov/html:       ##H Run tests with llvm-cov and open HTML report
+	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
+		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
+		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
+		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
+		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
+		AWS_LC_RS_NO_BUNDLE=1 \
+		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
+		cargo +nightly llvm-cov --lib --all-features \
+			--ignore-filename-regex 'src/admin|/tests\.rs' \
+			--html --open \
+			$(CARGO_SCOPE)
 
 
 PREFIX ?= /usr/local
@@ -200,7 +229,7 @@ build:  ##H Build with selected profile
 		ROCKSDB_STATIC=$(ROCKSDB_STATIC) \
 		ROCKSDB_LIB_STATIC=$(ROCKSDB_LIB_STATIC) \
 # 		RUSTFLAGS="-L $(ROCKSDB_LIB_DIR) -l z -l bz2 -l lz4 -l snappy -l zstd -l uring -l stdc++ $$RUSTFLAGS" \
-		cargo build --features $(FEATURES) --locked $(CARGO_FLAGS)
+		cargo build --features $(FEATURES) --locked --timings $(CARGO_FLAGS)
 	@echo "Build finished! Hard-linking '$(PROFILE)' binary to target/latest/"
 	mkdir -p target/latest target/debug
 	-ln -f target/$(if $(CARGO_BUILD_TARGET),$(CARGO_BUILD_TARGET)/)$(if $(filter $(PROFILE),dev test),debug,$(PROFILE))/conduwuit target/latest/conduwuit
@@ -288,7 +317,7 @@ build-docs:     ##H Regenerate docs (admin commands, etc.)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 COMPLEMENT_DIR ?=
-COMPLEMENT_IMAGE ?= continuwuity:complement
+COMPLEMENT_IMAGE ?= continuwuity:complement-$(shell (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$$//' | cut -c1-96)
 COMPLEMENT_BASE_IMAGE ?= ubuntu:latest
 
 .PHONY: complement/build
@@ -300,30 +329,25 @@ complement/build: ##H Build conduwuit w direct_tls
 .PHONY: complement/docker
 complement/docker: ##H Build docker image from existing binary
 	@echo "Building Complement Docker image using base image: $(COMPLEMENT_BASE_IMAGE)..."
-	DOCKER_BUILDKIT=1 docker buildx build \
+	-docker pull $(COMPLEMENT_BASE_IMAGE)
+	@set -e; \
+	if docker buildx version >/dev/null 2>&1; then \
+		DOCKER_CMD='docker buildx build'; \
+		DOCKER_LOAD='--load'; \
+	else \
+		DOCKER_CMD='docker build'; \
+		DOCKER_LOAD=''; \
+	fi; \
+	$$DOCKER_CMD \
 		--build-arg BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) \
 		--build-arg BINARY_PATH=target/latest/conduwuit \
 		--build-arg UID=$(shell id -u) \
 		--build-arg GID=$(shell id -g) \
+		--pull=false \
 		-t $(COMPLEMENT_IMAGE) \
 		-f ./docker/complement.Dockerfile \
-		--load .
-
-HOST_LIBS_MOUNTS = $(shell LD_LIBRARY_PATH="$(ROCKSDB_LIB_DIR):$(LD_LIBRARY_PATH)" ldd target/latest/conduwuit | grep -E '=> /' | awk '{print $$3}' | grep -vE '^/usr/local/|libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so|ld-linux' | awk '{print $$1":"$$1":ro"}' | paste -sd ';' - || true)
-
-.PHONY: complement/run
-complement/run: ##H Run Complement docker tests locally (requires COMPLEMENT_DIR)
-	@test -d "$(COMPLEMENT_DIR)" || (echo "ERROR: COMPLEMENT_DIR ($(COMPLEMENT_DIR)) does not exist" && exit 1)
-	@echo "Running Complement tests from $(COMPLEMENT_DIR)..."
-	COMPLEMENT_BASE_IMAGE="$(COMPLEMENT_IMAGE)" COMPLEMENT_HOST_MOUNTS="$(PREFIX)/lib:$(PREFIX)/lib:ro$(if $(HOST_LIBS_MOUNTS),;$(HOST_LIBS_MOUNTS))" ./bin/complement $(COMPLEMENT_DIR)
-
-
-.PHONY: complement/clean
-complement/clean: ##H Force-remove all Complement Docker containers and networks
-	@echo "Cleaning up Complement docker resources..."
-	@docker ps -aq --filter "name=complement_" | xargs -r docker rm -f
-	@docker network ls -q --filter "name=complement_" | xargs -r docker network rm
-	@echo "Done."
+		$$DOCKER_LOAD \
+		.
 
 .PHONY: complement/stats
 complement/stats: ##H Check local test stats
@@ -450,7 +474,8 @@ download:	##H Download CI binary (set RUN to a specific RunID)
 	@chmod +x target/ci/conduwuit
 	@echo "Downloaded to target/ci/conduwuit"
 	@./target/ci/conduwuit -V
-	@ln -sfn ci target/latest
+	@rm -rf target/latest
+	@ln -s ci target/latest
 
 .PHONY: download/hash
 download/hash:	##H Download CI binary by Git commit hash (set HASH=)

@@ -36,6 +36,9 @@ inputs:
   room_version:
     description: "Room version"
     default: ""
+  github_run_id:
+    description: "GitHub Actions run ID"
+    default: ""
 
 outputs:
   upstream_commit:
@@ -63,6 +66,7 @@ runs:
         OS="${{ inputs.os }}"
         PROFILE="${{ inputs.profile }}"
         ROOM_VERSION="${{ inputs.room_version }}"
+        GITHUB_RUN_ID="${{ inputs.github_run_id }}"
 
         # Extract commit hash from version string, fall back to env
         BIN_VER_HASH=$(echo "$VERSION_STRING" | sed -n 's/.*~\([0-9a-f]\{7,\}\).*/\1/p')
@@ -145,8 +149,8 @@ runs:
           SAFE_PROFILE=$(echo "$PROFILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
           SAFE_ROOM_VERSION=$(echo "$ROOM_VERSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
 
-          jq -c --arg h "$COMMIT_HASH" --arg a "$ARCH" --arg o "$OS" --arg p "$PROFILE" --arg rv "$ROOM_VERSION" \
-            '. + {commit: $h, arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS_FILE" \
+          jq -c --arg h "$COMMIT_HASH" --arg a "$ARCH" --arg o "$OS" --arg p "$PROFILE" --arg rv "$ROOM_VERSION" --arg grid "$GITHUB_RUN_ID" \
+            '. + {commit: $h, arch: $a, os: $o, profile: $p, room_version: $rv, github_run_id: (if $grid | test("^[0-9]+$") then ($grid | tonumber) else null end)}' "$RESULTS_FILE" \
             > "$LEDGER_DIR/runs_data/${COMMIT_HASH}-${SAFE_ARCH}-${SAFE_OS}-${SAFE_PROFILE}-${SAFE_ROOM_VERSION}.jsonl"
         fi
 
@@ -172,6 +176,7 @@ runs:
           --arg version_string "$VERSION_STRING" \
           --arg features "$FEATURES" \
           --arg room_version "$ROOM_VERSION" \
+          --arg github_run_id "$GITHUB_RUN_ID" \
           --arg pass "$PASS" \
           --arg skip "$SKIP" \
           --arg fail "$FAIL" \
@@ -190,34 +195,36 @@ runs:
             version_string: $version_string,
             features: $features,
             room_version: $room_version,
+            github_run_id: (if $github_run_id | test("^[0-9]+$") then ($github_run_id|tonumber) else null end),
             binary_sha256: $binary_sha256,
             passed_count: ($pass|tonumber),
             skipped_count: ($skip|tonumber),
             failed_count: ($fail|tonumber)
           }' >> runs.jsonl
 
-        # Generate badge JSON (shields.io endpoint schema)
-        if [ "$BRANCH_NAME" = "main" ] || [ "$BRANCH_NAME" = "main-upstream" ]; then
-          if [ "$FAIL" -gt 0 ]; then COLOR="red"
-          elif [ "$SKIP" -gt 0 ]; then COLOR="yellow"
-          else COLOR="green"
-          fi
-
-          # shields.io compatible schema
-          jq -n \
-            --arg pass "$PASS" \
-            --arg skip "$SKIP" \
-            --arg fail "$FAIL" \
-            --arg color "$COLOR" \
-            --arg provider_name "$PROVIDER" \
-            '{
-              schemaVersion: 1,
-              label: "Complement Tests (\($provider_name))",
-              message: "\($pass) pass, \($skip) skip, \($fail) fail",
-              color: $color
-            }' > "badge-${BRANCH_NAME}.json"
-          git add "badge-${BRANCH_NAME}.json"
+        # Generate badge JSON (shields.io endpoint schema) for every branch
+        if [ "$FAIL" -gt 0 ]; then COLOR="red"
+        elif [ "$SKIP" -gt 0 ]; then COLOR="yellow"
+        else COLOR="green"
         fi
+
+        # Sanitize branch name for filename (slashes → dashes, etc.)
+        SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's|[/+]|-|g; s|[^a-zA-Z0-9._-]|_|g')
+
+        # shields.io compatible schema
+        jq -n \
+          --arg pass "$PASS" \
+          --arg skip "$SKIP" \
+          --arg fail "$FAIL" \
+          --arg color "$COLOR" \
+          --arg provider_name "$PROVIDER" \
+          '{
+            schemaVersion: 1,
+            label: "Complement Tests (\($provider_name))",
+            message: "\($pass) pass, \($skip) skip, \($fail) fail",
+            color: $color
+          }' > "badge-${SAFE_BRANCH}.json"
+        git add "badge-${SAFE_BRANCH}.json"
 
         # Commit and push, retrying
         git add runs.jsonl runs_data/ 2>/dev/null || true

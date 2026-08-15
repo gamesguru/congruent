@@ -1,0 +1,9 @@
+{"Action":"pass","Test":"TestThreadSubscriptions"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Can_create_automatic_subscription_to_a_thread"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Can_subscribe_to_and_unsubscribe_from_a_thread"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Cannot_use_thread_root_as_automatic_subscription_cause_event"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Error_when_using_invalid_automatic_event_ID"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Manual_subscriptions_overwrite_automatic_subscriptions"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Nonexistent_threads_return_404"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Server-side_automatic_subscription_ordering_conflict"}
+{"Action":"pass","Test":"TestThreadSubscriptions/Unsubscribe_succeeds_even_with_no_subscription"}

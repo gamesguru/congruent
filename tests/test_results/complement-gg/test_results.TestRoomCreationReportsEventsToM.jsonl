@@ -1,0 +1,7 @@
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Joining_room_twice_is_idempotent"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Room_creation_reports_m.room.create_to_myself"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Room_creation_reports_m.room.member_to_myself"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Setting_room_topic_reports_m.room.topic_to_myself"}
+{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Setting_state_twice_is_idempotent"}

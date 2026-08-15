@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
 use axum::extract::State;
 use conduwuit::{
 	Err, Pdu, Result, debug_info, debug_warn, err,
 	matrix::{event::gen_event_id, pdu::PduBuilder},
-	utils::{self, FutureBoolExt},
+	utils::{self, FutureBoolExt, stream::ReadyExt},
 	warn,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
@@ -96,6 +96,9 @@ pub async fn leave_room(
 
 	in cases 1 and 2, we have to update the state cache using `mark_as_left` directly.
 	otherwise `build_and_append_pdu` will take care of updating the state cache for us.
+
+	TODO: collapse these split cache update paths behind one helper which emits the
+	final persisted membership transition and then derives cache state from it.
 	*/
 
 	// `leave_pdu` is the outlier `m.room.member` event which will be synced to the
@@ -108,12 +111,11 @@ pub async fn leave_room(
 		// Take the room lock before deciding between local and remote leave handling so
 		// we don't route based on a stale participation snapshot.
 		let state_lock = services.rooms.state.mutex.lock(room_id).await;
-		let dont_have_room = services
+		let dont_have_room = !services
 			.rooms
 			.state_cache
-			.server_in_room(services.globals.server_name(), room_id)
-			.await
-			.eq(&false);
+			.server_is_participant(services.globals.server_name(), room_id)
+			.await;
 		let is_invited = services
 			.rooms
 			.state_cache
@@ -153,7 +155,7 @@ pub async fn leave_room(
 
 			match user_member_event_content {
 				| Ok(content) => {
-					services
+					let event_id = services
 						.rooms
 						.timeline
 						.build_and_append_pdu(
@@ -167,6 +169,28 @@ pub async fn leave_room(
 							user_id,
 							Some(room_id),
 							&state_lock,
+						)
+						.await?;
+					let pdu_id = services.rooms.timeline.get_pdu_id(&event_id).await?;
+
+					drop(state_lock);
+
+					let remote_servers = services
+						.rooms
+						.state_cache
+						.room_servers(room_id)
+						.ready_filter(|server| !services.globals.server_is_ours(server))
+						.map(ToOwned::to_owned)
+						.collect::<Vec<_>>()
+						.await;
+
+					services
+						.sending
+						.wait_for_pdu_servers(
+							remote_servers,
+							&pdu_id,
+							Duration::from_secs(15),
+							"Timed out waiting for outbound federation to deliver leave event.",
 						)
 						.await?;
 
@@ -327,7 +351,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 			)
 			.await;
 
-		let error = make_leave_response.as_ref().err().map(ToString::to_string);
+		let error = make_leave_response.as_ref().err().map(|e| format!("{e}"));
 		make_leave_response_and_server = make_leave_response.map(|r| (r, remote_server.clone()));
 
 		if make_leave_response_and_server.is_ok() {
@@ -439,7 +463,8 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	services
 		.rooms
 		.outlier
-		.add_pdu_outlier(&event_id, &leave_event);
+		.add_pdu_outlier(&event_id, &leave_event, Some(room_id))
+		.await;
 
 	let leave_pdu = Pdu::from_id_val(&event_id, leave_event, Some(room_id)).map_err(|e| {
 		err!(BadServerResponse("Invalid leave PDU received during federated leave: {e:?}"))

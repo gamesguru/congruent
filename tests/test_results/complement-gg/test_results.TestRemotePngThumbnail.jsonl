@@ -1,0 +1,3 @@
+{"Action":"pass","Test":"TestRemotePngThumbnail"}
+{"Action":"pass","Test":"TestRemotePngThumbnail/test_/_matrix/client/v1/media_endpoint"}
+{"Action":"pass","Test":"TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint"}

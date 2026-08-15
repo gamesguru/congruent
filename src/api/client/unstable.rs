@@ -10,6 +10,7 @@ use ruma::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
+			relations::event_relationships,
 		},
 		federation,
 	},
@@ -17,7 +18,10 @@ use ruma::{
 };
 
 use super::{update_avatar_url, update_displayname};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	msc2836::{self, Params, Requester},
+};
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
 ///
@@ -298,4 +302,158 @@ pub(crate) async fn get_profile_key_route(
 	}
 
 	Ok(get_profile_key::unstable::Response { value: profile_key_value })
+}
+
+use std::{
+	sync::LazyLock,
+	time::{Duration, Instant},
+};
+
+use tokio::sync::RwLock;
+
+type DagCacheMap = std::collections::HashMap<OwnedRoomId, (Instant, Vec<serde_json::Value>)>;
+
+static DAG_CACHE: LazyLock<RwLock<DagCacheMap>> =
+	LazyLock::new(|| RwLock::new(DagCacheMap::new()));
+
+/// # `GET /_matrix/client/unstable/org.continuwuity.dag/{roomId}`
+///
+/// Fetches the local DAG for the given room, returning raw JSON arrays.
+/// Cached for 2 seconds to support hundreds of concurrent forensic viewers.
+pub(crate) async fn get_room_dag_route(
+	State(services): State<crate::State>,
+	axum::extract::Path(room_id_str): axum::extract::Path<String>,
+	auth: Option<
+		axum_extra::TypedHeader<
+			axum_extra::headers::Authorization<axum_extra::headers::authorization::Bearer>,
+		>,
+	>,
+) -> Result<impl axum::response::IntoResponse> {
+	use conduwuit::{Err, err};
+	use futures::StreamExt;
+	use ruma::OwnedRoomId;
+
+	let room_id = OwnedRoomId::try_from(room_id_str)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+
+	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
+		== ruma::events::room::join_rules::JoinRule::Public;
+
+	if !is_public {
+		// Extract token for private rooms
+		let token = match auth {
+			| Some(axum_extra::TypedHeader(axum_extra::headers::Authorization(bearer))) =>
+				bearer.token().to_owned(),
+			| None => {
+				return Err!(Request(MissingToken("Missing access token for private room.")));
+			},
+		};
+
+		// Validate user
+		let (user_id, _) = services.users.find_from_token(&token).await.map_err(|_| {
+			conduwuit::Error::Request(
+				ruma::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
+				"Invalid access token.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			)
+		})?;
+
+		// Require server admin
+		if !services.users.is_admin(&user_id).await {
+			return Err!(Request(Forbidden(
+				"You must be a server admin to view this private room's DAG."
+			)));
+		}
+	}
+
+	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
+		if ts.elapsed() < Duration::from_secs(2) {
+			return Ok(axum::Json(cached_events.clone()));
+		}
+	}
+
+	let mut events = Vec::new();
+	// Use pdus_rev to fetch from latest to oldest, avoiding full timeline scan.
+	let pdus = services
+		.rooms
+		.timeline
+		.pdus_rev(&room_id, std::ops::Bound::Unbounded);
+	futures::pin_mut!(pdus);
+
+	// Limit to the latest 200 events for performance
+	let mut count: usize = 0;
+	while let Some(Ok((_, pdu))) = pdus.next().await {
+		if count >= 200 {
+			break;
+		}
+
+		let mut obj: serde_json::Map<String, serde_json::Value> =
+			serde_json::from_value(serde_json::to_value(&pdu)?)?;
+
+		if let Ok(ssh) = services
+			.rooms
+			.state_accessor
+			.pdu_shortstatehash(&pdu.event_id)
+			.await
+		{
+			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(ssh));
+		}
+
+		// Add event_id in case PduEvent serialization omits it (V3+ rooms)
+		obj.insert("event_id".to_owned(), serde_json::Value::String(pdu.event_id.to_string()));
+
+		events.push(serde_json::Value::Object(obj));
+		count = count.saturating_add(1);
+	}
+
+	// Reverse so they are chronologically ordered (oldest to newest)
+	events.reverse();
+
+	// Update cache
+	DAG_CACHE
+		.write()
+		.await
+		.insert(room_id.clone(), (Instant::now(), events.clone()));
+
+	Ok(axum::Json(events))
+}
+
+/// # `POST /_matrix/client/unstable/event_relationships`
+///
+/// Walks the `m.relationship` DAG from an anchor event, fetching missing
+/// events over federation as needed.
+///
+/// An implementation of [MSC2836](https://github.com/matrix-org/matrix-spec-proposals/pull/2836)
+pub(crate) async fn get_event_relationships_route(
+	State(services): State<crate::State>,
+	body: Ruma<event_relationships::unstable::Request>,
+) -> Result<event_relationships::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	let params = Params::defaulted(msc2836::DefaultedParams {
+		event_id: body.event_id.clone(),
+		room_id: body.room_id.clone(),
+		max_depth: body.max_depth,
+		max_breadth: body.max_breadth,
+		limit: body.limit,
+		depth_first: body.depth_first,
+		recent_first: body.recent_first,
+		include_parent: body.include_parent,
+		include_children: body.include_children,
+		direction: body.direction.clone(),
+	});
+
+	let (events, limited) =
+		Box::pin(msc2836::resolve(&services, Requester::Client(sender_user), params)).await?;
+
+	let mut raw_events = Vec::with_capacity(events.len());
+	for pdu in &events {
+		raw_events.push(msc2836::to_raw_json_with_children(&services, pdu).await);
+	}
+
+	Ok(event_relationships::unstable::Response {
+		events: raw_events,
+		next_batch: None,
+		limited,
+	})
 }

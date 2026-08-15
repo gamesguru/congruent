@@ -1,0 +1,15 @@
+{"Action":"pass","Test":"TestRoomState"}
+{"Action":"pass","Test":"TestRoomState/Parallel"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/directory/room/:room_alias_yields_room_ID"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/joined_rooms_lists_newly-created_room"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_fetches_my_membership"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_is_forbidden_after_leaving_room"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.member/:user_id?format=event_fetches_my_membership_event"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.member/:user_id_fetches_my_membership"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.name_gets_name"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.power_levels_fetches_powerlevels"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.topic_gets_topic"}
+{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state_fetches_entire_room_state"}
+{"Action":"pass","Test":"TestRoomState/Parallel/POST_/rooms/:room_id/state/m.room.name_sets_name"}
+{"Action":"pass","Test":"TestRoomState/Parallel/PUT_/createRoom_with_creation_content"}
+{"Action":"pass","Test":"TestRoomState/Parallel/PUT_/rooms/:room_id/state/m.room.topic_sets_topic"}

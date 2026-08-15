@@ -1,0 +1,16 @@
+{"Action":"pass","Test":"TestRoomCreate"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/Can_/sync_newly_created_room"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_creates_a_room_with_the_given_version"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_ignores_attempts_to_set_the_room_version_via_creation_content"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room_with_invites"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_public_room"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_room_with_a_name"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_room_with_a_topic"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_room_with_a_topic_and_writes_rich_topic_representation"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_room_with_a_topic_via_initial_state"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_room_with_a_topic_via_initial_state_overwritten_by_topic"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_rejects_attempts_to_create_rooms_with_numeric_versions"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_rejects_attempts_to_create_rooms_with_unknown_versions"}
+{"Action":"pass","Test":"TestRoomCreate/Parallel/Rooms_can_be_created_with_an_initial_invite_list_(SYN-205)"}

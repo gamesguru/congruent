@@ -1,0 +1,3 @@
+{"Action":"fail","Test":"TestRoomReceipts"}
+{"Action":"pass","Test":"TestRoomReceipts/Receipts_DO_NOT_include_a_`room_id`_field"}
+{"Action":"fail","Test":"TestRoomReceipts/Receipts_cannot_be_moved_backwards"}

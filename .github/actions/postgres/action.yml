@@ -22,7 +22,7 @@ inputs:
     description: "Path to local test_results.jsonl for direct ingest"
     default: ""
   run_metadata:
-    description: "JSON object with run metadata: {commit_hash, branch, arch, os, profile, room_version, version_string, features, pass, fail, skip}"
+    description: "JSON object with run metadata: {commit_hash, branch, arch, os, profile, room_version, version_string, features, github_run_id, pass, fail, skip}"
     default: ""
 
 runs:
@@ -50,6 +50,7 @@ runs:
       shell: bash
       env:
         SSH_TARGET: ${{ inputs.ssh_target }}
+        DATABASE_URL: ${{ inputs.database_url }}
         RESULTS_FILE: ${{ inputs.results_file }}
         RUN_META: ${{ inputs.run_metadata }}
       run: |

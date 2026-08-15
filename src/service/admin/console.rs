@@ -1,8 +1,11 @@
 #![cfg(feature = "console")]
 
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
-use conduwuit::{Server, SyncMutex, debug, defer, error, log, log::is_systemd_mode};
+use conduwuit::{
+	Server, SyncMutex, console_history::ConsoleHistory, debug, defer, error, log,
+	log::is_systemd_mode,
+};
 use futures::future::{AbortHandle, Abortable};
 use ruma::events::room::message::RoomMessageEventContent;
 use rustyline_async::{Readline, ReadlineError, ReadlineEvent};
@@ -20,12 +23,11 @@ pub struct Console {
 	worker_join: SyncMutex<Option<JoinHandle<()>>>,
 	input_abort: SyncMutex<Option<AbortHandle>>,
 	command_abort: SyncMutex<Option<AbortHandle>>,
-	history: SyncMutex<VecDeque<String>>,
+	history: SyncMutex<ConsoleHistory>,
 	output: MadSkin,
 }
 
 const PROMPT: &str = "uwu> ";
-const HISTORY_LIMIT: usize = 48;
 
 impl Console {
 	pub(super) fn new(args: &crate::Args<'_>) -> Arc<Self> {
@@ -35,12 +37,12 @@ impl Console {
 			worker_join: None.into(),
 			input_abort: None.into(),
 			command_abort: None.into(),
-			history: VecDeque::with_capacity(HISTORY_LIMIT).into(),
+			history: ConsoleHistory::new().into(),
 			output: configure_output(MadSkin::default_dark()),
 		})
 	}
 
-	pub(super) async fn handle_signal(self: &Arc<Self>, sig: &'static str) {
+	pub(super) fn handle_signal(self: &Arc<Self>, sig: &'static str) {
 		use std::io::IsTerminal;
 
 		if !self.server.running() {
@@ -50,14 +52,14 @@ impl Console {
 			if running {
 				self.interrupt_command();
 			} else if std::io::stdout().is_terminal() {
-				self.start().await;
+				self.start();
 			} else {
 				self.server.shutdown().unwrap_or_else(error::default_log);
 			}
 		}
 	}
 
-	pub async fn start(self: &Arc<Self>) {
+	pub fn start(self: &Arc<Self>) {
 		let mut worker_join = self.worker_join.lock();
 		if worker_join.is_none() {
 			let self_ = Arc::clone(self);
@@ -212,8 +214,9 @@ impl Console {
 						}
 					};
 
-					let output_body = match result {
-						| Ok(Some(ref content)) | Err(ref content) => content.body(),
+					let output_body = match &result {
+						| Ok(Some(content)) => content.body(),
+						| Err(content) => content.body(),
 						| Ok(None) => "",
 					};
 
@@ -260,7 +263,7 @@ impl Console {
 			return;
 		}
 
-		self.add_history(line.clone());
+		self.add_history(&line);
 		let future = self.clone().process(line);
 
 		let (abort, abort_reg) = AbortHandle::new_pair();
@@ -299,18 +302,14 @@ impl Console {
 	}
 
 	fn set_history(&self, readline: &mut Readline) {
-		self.history.lock().iter().rev().for_each(|entry| {
+		self.history.lock().iter().for_each(|entry| {
 			readline
 				.add_history_entry(entry.clone())
 				.expect("added history entry");
 		});
 	}
 
-	fn add_history(&self, line: String) {
-		let mut history = self.history.lock();
-		history.push_front(line);
-		history.truncate(HISTORY_LIMIT);
-	}
+	fn add_history(&self, line: &str) { self.history.lock().add(line); }
 
 	fn tab_complete(&self, line: &str) -> String {
 		self.admin

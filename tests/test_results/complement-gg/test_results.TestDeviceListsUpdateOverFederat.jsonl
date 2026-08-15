@@ -1,0 +1,5 @@
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/good_connectivity"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
+{"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}

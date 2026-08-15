@@ -1,0 +1,8 @@
+{"Action":"pass","Test":"TestSearch"}
+{"Action":"pass","Test":"TestSearch/parallel"}
+{"Action":"pass","Test":"TestSearch/parallel/Can_back-paginate_search_results"}
+{"Action":"pass","Test":"TestSearch/parallel/Can_get_context_around_search_results"}
+{"Action":"pass","Test":"TestSearch/parallel/Can_search_for_an_event_by_body"}
+{"Action":"pass","Test":"TestSearch/parallel/Search_results_with_rank_ordering_do_not_include_redacted_events"}
+{"Action":"pass","Test":"TestSearch/parallel/Search_results_with_recent_ordering_do_not_include_redacted_events"}
+{"Action":"pass","Test":"TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"}

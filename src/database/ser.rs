@@ -201,7 +201,7 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 					.serialize(&mut Serializer::new(&mut Writer::new(&mut *self.out)))
 					.map_err(|e| Self::Error::SerdeSer(e.to_string().into()))
 			},
-			| _ => unhandled!("Unrecognized serialization Newtype {name:?}"),
+			| _ => value.serialize(self),
 		}
 	}
 

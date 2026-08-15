@@ -1,0 +1,4 @@
+{"Action":"pass","Test":"TestTyping"}
+{"Action":"pass","Test":"TestTyping/Typing_can_be_explicitly_stopped"}
+{"Action":"pass","Test":"TestTyping/Typing_events_DO_NOT_include_a_`room_id`_field"}
+{"Action":"pass","Test":"TestTyping/Typing_notification_sent_to_local_room_members"}

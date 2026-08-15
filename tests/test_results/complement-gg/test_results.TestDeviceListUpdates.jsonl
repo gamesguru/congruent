@@ -1,0 +1,11 @@
+{"Action":"pass","Test":"TestDeviceListUpdates"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_joining_a_room_with_a_local_user"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_joining_a_room_with_a_remote_user"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_leaving_a_room_with_a_local_user"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_leaving_a_room_with_a_remote_user"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_local_user_joins_a_room"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_local_user_leaves_a_room"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_local_user_rejoins_a_room"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_joins_a_room"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_leaves_a_room"}
+{"Action":"pass","Test":"TestDeviceListUpdates/when_remote_user_rejoins_a_room"}

@@ -53,6 +53,10 @@ pub struct Args {
 	#[arg(long)]
 	pub execute: Vec<String>,
 
+	/// Drop all sync tokens from the database during startup (migration).
+	#[arg(long)]
+	pub drop_sync_tokens: bool,
+
 	/// Set functional testing modes if available. Ex '--test=smoke'
 	#[arg(long, hide(true))]
 	pub test: Vec<String>,

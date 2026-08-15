@@ -1,0 +1,2 @@
+{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinLocalUser"}
+{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room"}

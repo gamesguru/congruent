@@ -34,13 +34,16 @@ impl crate::Service for Service {
 	#[allow(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let cache = Cache::new(&args);
+		let client1 = args.depend::<client::Service>("client");
+		let client2 = args.depend::<client::Service>("client");
+		let client3 = args.depend::<client::Service>("client");
 		Ok(Arc::new(Self {
 			cache: cache.clone(),
-			resolver: Resolver::build(args.server, cache)?,
+			resolver: Resolver::build(args.server, cache, client1, client2)?,
 			resolving: MutexMap::new(),
 			services: Services {
 				server: args.server.clone(),
-				client: args.depend::<client::Service>("client"),
+				client: client3,
 			},
 		}))
 	}
