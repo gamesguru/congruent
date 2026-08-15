@@ -720,11 +720,9 @@ pub async fn backfill_pdu(
 		return Ok(());
 	}
 
-	// Backfill events come from a trusted /backfill response. We only need
-	// signature verification + basic auth, not the full federation pipeline
-	// (which fails when auth chain events aren't available locally — common
-	// after a new join). If outlier processing fails (e.g. missing auth
-	// events), fall back to storing the raw PDU directly.
+	// Backfill events come from a trusted /backfill response. We still need
+	// auth validation, but backfill can recover missing auth context via the
+	// post-state recovery stage before giving up.
 	let room_version_id = self.services.state.get_room_version(&room_id).await?;
 
 	let (pdu_event, json_value) = match Box::pin(self.services.event_handler.handle_outlier_pdu(
@@ -736,27 +734,20 @@ pub async fn backfill_pdu(
 		false,
 		false,
 		Some(&room_version_id),
-		crate::rooms::event_handler::AuthRecoveryStage::BeforeStateIds,
+		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))
 	.await
 	{
 		| Ok(result) => result,
-		| Err(Error::MissingAuthEvents(_)) => {
-			// Missing auth events are expected during backfill (we don't have
-			// the room's full history yet). Insert the raw PDU directly.
-			info!(
+		| Err(e @ Error::MissingAuthEvents(_)) => {
+			// `handle_outlier_pdu` already persists the event as an outlier when
+			// auth recovery cannot complete. Do not bypass validation by inserting
+			// the raw PDU into the timeline.
+			warn!(
 				target: "backfill_debug",
-				"handle_outlier_pdu failed for backfill event {event_id} due to missing auth events, inserting raw"
+				"handle_outlier_pdu could not fully validate backfill event {event_id}; leaving it as an outlier"
 			);
-			let mut raw = value;
-			raw.insert(
-				"event_id".to_owned(),
-				CanonicalJsonValue::String(event_id.as_str().to_owned()),
-			);
-			let parsed: PduEvent =
-				serde_json::from_value(serde_json::to_value(&raw).expect("valid json"))
-					.map_err(|e| err!(Database("Bad backfill PDU {event_id}: {e}")))?;
-			(parsed, raw)
+			return Err(e);
 		},
 		| Err(e) => {
 			warn!("handle_outlier_pdu rejected backfill event {event_id}: {e}");
