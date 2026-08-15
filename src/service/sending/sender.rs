@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use conduwuit::info;
+use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
@@ -291,13 +291,13 @@ impl Service {
 			if let Destination::Federation(server_name) = dest {
 				let since = self.db.get_latest_educount(server_name).await;
 				let since_upper = self.services.globals.current_count().unwrap_or(0);
-				info!(
+				debug!(
 					target: "receipt_debug",
 					%server_name, since, since_upper,
 					"handle_response_ok: empty transaction, checking for pending edus"
 				);
 				if since < since_upper {
-					info!(
+					debug!(
 						target: "receipt_debug",
 						%server_name, since, since_upper,
 						"handle_response_ok: since behind since_upper, rescheduling immediate flush"
@@ -306,7 +306,7 @@ impl Service {
 					self.reschedule_flush(dest.clone(), Duration::from_millis(0));
 					return;
 				}
-				info!(
+				debug!(
 					target: "receipt_debug",
 					%server_name, since, since_upper,
 					"handle_response_ok: since caught up, not rescheduling"
@@ -651,7 +651,7 @@ impl Service {
 		let since_upper = self.services.globals.current_count()?;
 		let batch = (since, since_upper);
 		debug_assert!(batch.0 <= batch.1, "since range must not be negative");
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%server_name, since = batch.0, since_upper = batch.1,
 			"select_edus: window"
@@ -681,7 +681,7 @@ impl Service {
 
 		// The safe global cursor is the minimum of all processed bounds
 		let last_count = device_max.min(receipt_max).min(presence_max);
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%server_name, device_max, receipt_max, presence_max, last_count,
 			receipt_found = receipts.is_some(),
@@ -834,7 +834,7 @@ impl Service {
 		since: (u64, u64),
 		num: &std::sync::atomic::AtomicUsize,
 	) -> ReceiptMap {
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%room_id, since_lower = since.0, since_upper = since.1,
 			"select_edus_receipts_room: scanning"
@@ -885,7 +885,7 @@ impl Service {
 		}
 
 		collected.sort_by_key(|(_, stream_count, _, event_count)| (*event_count, *stream_count));
-		info!(
+		debug!(
 			target: "receipt_debug",
 			%room_id, collected = collected.len(),
 			"select_edus_receipts_room: done scanning"
@@ -1290,11 +1290,11 @@ impl Service {
 			edus,
 		};
 
-		tracing::info!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
 		let result = self
 			.send_federation_request_on(&self.services.client.sender, &server, request)
 			.await;
-		tracing::info!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
@@ -1324,7 +1324,7 @@ impl Service {
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {
-					info!(
+					debug!(
 						target: "receipt_debug",
 						%server, count,
 						"send_events: transaction delivered, advancing educount watermark"
