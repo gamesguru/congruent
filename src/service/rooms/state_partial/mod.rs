@@ -58,7 +58,7 @@ impl crate::Service for Service {
 
 impl Service {
 	#[tracing::instrument(skip(self))]
-	pub fn mark_as_partial(&self, room_id: &ruma::RoomId, remote_server: &ruma::ServerName) {
+	pub fn mark_as_partial(&self, room_id: &RoomId, remote_server: &ServerName) {
 		self.db
 			.state_partial_rooms
 			.insert(room_id.as_bytes(), remote_server.as_bytes());
