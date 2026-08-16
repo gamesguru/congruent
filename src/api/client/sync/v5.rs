@@ -735,15 +735,6 @@ async fn sync_events_v5_route_inner(
 		// Rebuild the response after waking up to avoid returning advanced tokens
 		// without their associated events. The probe above intentionally did not
 		// update sticky room state because no response had been delivered yet.
-		for _ in 0..5 {
-			let (retry_response, _) = build_sync_events_v5(services, &context).await?;
-			if retry_response.rooms.is_empty() || response_has_timeline_events(&retry_response) {
-				break;
-			}
-
-			tokio::time::sleep(Duration::from_millis(20)).await;
-		}
-
 		context.persist_cache = true;
 		(response, room_extras) = build_sync_events_v5(services, &context).await?;
 	}
@@ -942,13 +933,6 @@ async fn build_sync_events_v5(
 	}
 
 	Ok((response, room_extras))
-}
-
-fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
-	response
-		.rooms
-		.values()
-		.any(|room| !room.timeline.is_empty())
 }
 
 async fn fetch_subscriptions(
