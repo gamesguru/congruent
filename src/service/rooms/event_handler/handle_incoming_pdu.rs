@@ -466,17 +466,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				let first_prev = prev_events.next()?.to_owned();
 				prev_events.next().is_none().then_some(first_prev)
 			});
-			let state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
+			let mut state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
 
 			if is_timeline_event
 				&& let Some(pdu) = parsed_pdu.as_ref()
 				&& direct_prev.is_some()
 			{
-				// Keep the `/state_ids` anchor tied to the event's direct prev.
-				// Refining it from the fetched batch makes the snapshot target
-				// depend on `get_missing_events` response shape, which is exactly
-				// the sort of wobble we do not want in the recovery path.
-				if let Err(e) = Box::pin(self.fetch_prev(
+				match Box::pin(self.fetch_prev(
 					origin,
 					room_id,
 					event_id,
@@ -485,10 +481,16 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				))
 				.await
 				{
-					warn!(
-						event_id = %event_id,
-						"failed to fetch prev_events before /state_ids retry: {e}"
-					);
+					| Ok((_, _, Some(deeper_anchor), _)) => {
+						state_ids_anchor = deeper_anchor;
+					},
+					| Ok(_) => {},
+					| Err(e) => {
+						warn!(
+							event_id = %event_id,
+							"failed to fetch prev_events before /state_ids retry: {e}"
+						);
+					},
 				}
 			}
 
