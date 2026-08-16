@@ -313,6 +313,7 @@ pub async fn backfill_if_required(
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
 		unique_missing.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+		unique_missing.dedup();
 
 		let mut repeat_hasher = DefaultHasher::new();
 		room_id.as_str().hash(&mut repeat_hasher);

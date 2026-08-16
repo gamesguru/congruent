@@ -194,7 +194,7 @@ impl crate::Service for Service {
 				.build(),
 			backfill_gap_repeat_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
-				.time_to_idle(std::time::Duration::from_secs(15))
+				.time_to_live(std::time::Duration::from_secs(15))
 				.build(),
 			services: Services {
 				server: args.server.clone(),
