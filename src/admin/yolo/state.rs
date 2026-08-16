@@ -1211,19 +1211,34 @@ pub(super) async fn audit_membership(
 					if let Ok(pdu_json) =
 						self.services.rooms.timeline.get_pdu_json(&event_id).await
 					{
-						let mut batch = Batch::new();
+						// Two separate applied batches, not one: add_pdu_outlier_batch's
+						// "already in timeline" guard does a live, synchronous read of
+						// eventid_metadata -- it cannot see writes still sitting unapplied
+						// in a Batch. Queuing both calls into one Batch and applying once
+						// meant the guard always read the *pre-removal* metadata (still
+						// `is_outlier: false`), concluded the event was "already in
+						// timeline", and silently skipped writing the outlier copy --
+						// while the removal half went through regardless. That left the
+						// event torn: no timeline pointers, no state hash, but also never
+						// actually marked as an outlier. Applying the removal first makes
+						// it visible to the guard's read before add_pdu_outlier_batch runs,
+						// so it now behaves the way the comment above always assumed.
+						let mut remove_batch = Batch::new();
 						self.services
 							.rooms
 							.timeline
-							.remove_timeline_pointers_batch(&mut batch, &event_id)
+							.remove_timeline_pointers_batch(&mut remove_batch, &event_id)
 							.await;
+						self.services.rooms.timeline.apply_batch(remove_batch);
+
+						let mut outlier_batch = Batch::new();
 						self.services.rooms.outlier.add_pdu_outlier_batch(
-							&mut batch,
+							&mut outlier_batch,
 							&event_id,
 							&pdu_json,
 							Some(&room_id),
 						);
-						self.services.rooms.timeline.apply_batch(batch);
+						self.services.rooms.timeline.apply_batch(outlier_batch);
 					} else {
 						// No PDU JSON to demote to; fall back to the old
 						// delete-everything behavior for this unrecoverable event.

@@ -630,6 +630,176 @@ async fn test_yolo_audit_membership_drift() {
 	);
 }
 
+/// Regression test for the demote-timeline-to-outlier "torn state" bug used
+/// by `yolo audit-membership --clean`'s divergence repair: an event ends up
+/// with `is_outlier: false` (stale) but no timeline pointers/state hash --
+/// neither a normal timeline event nor a real outlier.
+///
+/// Root cause: `add_pdu_outlier_batch`'s "already in timeline" guard does a
+/// live, synchronous `eventid_metadata` read. Queuing both
+/// `remove_timeline_pointers_batch` and `add_pdu_outlier_batch` into one
+/// `Batch` and applying it once meant the guard's read never saw the
+/// removal -- it read the pre-removal metadata, concluded the event was
+/// "already in timeline", and silently skipped writing the outlier copy,
+/// while the removal half of the batch went through regardless.
+///
+/// This exercises the two calls exactly as `yolo/state.rs`'s clean-repair
+/// path now does: the removal applied and committed *before*
+/// `add_pdu_outlier_batch` runs, so its guard sees accurate state.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
+	use conduwuit::pdu::PduBuilder;
+	use ruma::{
+		RoomId, RoomVersionId,
+		events::room::{create::RoomCreateEventContent, member::{MembershipState, RoomMemberEventContent}},
+	};
+	let (services, _guard) = setup_test_services("demote_torn").await;
+
+	let room_id = RoomId::new(services.globals.server_name());
+	let _short_id = services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+
+	let server_user = services.globals.server_user.as_ref();
+	services.users.create(server_user, None, None).await.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomCreateEventContent {
+				federate: true,
+				predecessor: None,
+				room_version: RoomVersionId::V11,
+				..RoomCreateEventContent::new_v11()
+			}),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(server_user),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	use ruma::events::room::{
+		join_rules::{JoinRule, RoomJoinRulesEventContent},
+		power_levels::RoomPowerLevelsEventContent,
+	};
+	let mut power_levels = RoomPowerLevelsEventContent::new();
+	power_levels
+		.users
+		.insert(server_user.to_owned(), ruma::int!(100));
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &power_levels),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomJoinRulesEventContent::new(JoinRule::Public)),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	let user_id = ruma::user_id!("@torn:test.conduwuit.local");
+	services.users.create(user_id, None, None).await.unwrap();
+	let event_id = services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(user_id.as_str()),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			user_id,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	// Precondition: a normal, fully-appended timeline event.
+	let meta_before = services
+		.rooms
+		.timeline
+		.get_event_metadata(&event_id)
+		.await
+		.unwrap();
+	assert!(!meta_before.is_outlier, "precondition: event should start as a timeline event");
+
+	let pdu_json = services
+		.rooms
+		.timeline
+		.get_pdu_json(&event_id)
+		.await
+		.unwrap();
+
+	// Reproduce yolo/state.rs's demote-to-outlier sequence: two separately
+	// applied batches under the room's insert lock, exactly as the fix
+	// requires.
+	let insert_lock = services.rooms.timeline.mutex_insert.lock(&room_id).await;
+
+	let mut remove_batch = conduwuit_database::Batch::new();
+	services
+		.rooms
+		.timeline
+		.remove_timeline_pointers_batch(&mut remove_batch, &event_id)
+		.await;
+	services.rooms.timeline.apply_batch(remove_batch);
+
+	let mut outlier_batch = conduwuit_database::Batch::new();
+	services.rooms.outlier.add_pdu_outlier_batch(
+		&mut outlier_batch,
+		&event_id,
+		&pdu_json,
+		Some(&room_id),
+	);
+	services.rooms.timeline.apply_batch(outlier_batch);
+
+	drop(insert_lock);
+
+	let meta_after = services
+		.rooms
+		.timeline
+		.get_event_metadata(&event_id)
+		.await
+		.unwrap();
+	assert!(
+		meta_after.is_outlier,
+		"event must end up marked as an outlier after demotion -- is_outlier=false with no \
+		 timeline pointers means it's torn between both states: {meta_after:?}"
+	);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
