@@ -31,7 +31,10 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::pdu_metadata::{RejectionCode, is_retryable_rejection_reason};
+use crate::rooms::{
+	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
+	short::ShortStateKey,
+};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -1047,17 +1050,7 @@ pub async fn promote_outlier_batch<'a>(
 	self.db
 		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
 		.await;
-	// No real backfill-source origin is available on this path (unlike
-	// backfill_pdu, which knows exactly which server it pulled from) -- fall
-	// back to the event's own claimed origin, then its sender's homeserver.
-	// Only consulted as a last-resort /state_ids fallback if local
-	// resolution can't determine state-at-event from events already known.
-	let origin = pdu
-		.origin
-		.clone()
-		.unwrap_or_else(|| pdu.sender.server_name().to_owned());
-	self.associate_resolved_state(room_id, &pdu, &origin)
-		.await?;
+	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
 
@@ -1161,6 +1154,29 @@ async fn associate_resolved_state(
 	self.services
 		.state
 		.set_event_state(pdu.event_id(), room_id, compressed)
+		.await?;
+	Ok(())
+}
+
+#[implement(super::Service)]
+async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
+	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
+		.services
+		.state_accessor
+		.state_full_ids::<OwnedEventId>(shortstatehash)
+		.collect::<Vec<_>>()
+		.await;
+	let compressed: crate::rooms::state_compressor::CompressedState = self
+		.services
+		.state_compressor
+		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
+		.collect()
+		.await;
+
+	self.services
+		.state
+		.set_event_state(event_id, room_id, Arc::new(compressed))
 		.await?;
 	Ok(())
 }
