@@ -1,7 +1,4 @@
-use std::{
-	collections::{HashMap, HashSet},
-	fmt::Write,
-};
+use std::{collections::HashSet, fmt::Write};
 
 use conduwuit::{
 	Result, err, info,
@@ -76,63 +73,60 @@ pub(super) async fn rescue_room(
 			.await;
 	}
 
-	let mut events: HashMap<OwnedEventId, PduEvent> = self
+	let mut event_ids: Vec<OwnedEventId> = self
 		.services
 		.rooms
 		.outlier
 		.room_stream(&room_id)
+		.map(|(event_id, _)| event_id)
 		.collect()
 		.await;
 
 	if let Some(limit) = timeline_limit {
 		self.write_str(&format!("Including last {limit} timeline PDUs for re-processing..."))
 			.await?;
-		let timeline_pdus: Vec<(OwnedEventId, PduEvent)> = self
+		let timeline_pdus: Vec<OwnedEventId> = self
 			.services
 			.rooms
 			.timeline
 			.pdus_rev(&room_id, std::ops::Bound::Unbounded)
 			.filter_map(|item| ready(item.ok()))
 			.take(limit)
-			.map(|(_, pdu)| (pdu.event_id().to_owned(), pdu))
+			.map(|(_, pdu)| pdu.event_id().to_owned())
 			.collect()
 			.await;
 
-		for (event_id, pdu) in timeline_pdus {
-			events.entry(event_id).or_insert(pdu);
-		}
+		event_ids.extend(timeline_pdus);
 	}
 
-	if events.is_empty() {
+	let mut seen = HashSet::new();
+	event_ids.retain(|event_id| seen.insert(event_id.clone()));
+
+	if event_ids.is_empty() {
 		return self.write_str("No outliers found in this room.").await;
 	}
 
+	if force {
+		for event_id in &event_ids {
+			self.services.rooms.pdu_metadata.clear_pdu_markers(event_id);
+		}
+	}
+
 	self.write_str(&format!(
-		"Healing {} events in room {room_id} via heal_room()...",
-		events.len()
+		"Promoting {} events in room {room_id} via promote_outliers_sorted()...",
+		event_ids.len()
 	))
 	.await?;
-	let result = Box::pin(self.services.rooms.timeline.heal_room(
+	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
+	let promoted = Box::pin(self.services.rooms.timeline.promote_outliers_sorted(
 		&room_id,
-		events,
-		None,
-		&conduwuit_service::rooms::timeline::HealOptions {
-			clear_markers: force,
-			compute_state: false,
-			rebuild_membership: false,
-			is_reorder: reorder,
-		},
+		&event_ids,
+		&room_version,
 	))
 	.await?;
 
-	let msg = format!(
-		"Healed room {room_id}: {} inserted, {} skipped, {} failed, {} extremities.",
-		result.inserted,
-		result.skipped,
-		result.failed,
-		result.extremities.len()
-	);
-	self.write_str(&msg).await?;
+	self.write_str(&format!("Promoted {promoted} events in room {room_id}."))
+		.await?;
 
 	if reorder {
 		self.write_str(&format!("Reordering timeline for {room_id} after rescue..."))

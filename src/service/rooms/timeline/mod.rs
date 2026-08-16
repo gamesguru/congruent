@@ -5,7 +5,6 @@ mod build;
 mod create;
 mod data;
 pub mod extremities;
-mod heal;
 mod helpers;
 mod metadata;
 mod notifications;
@@ -47,7 +46,6 @@ pub use self::{
 	append::AppendOptions,
 	create::pdu_fits,
 	data::{PdusIterItem, TopoIterItem},
-	heal::{HealOptions, HealResult},
 	metadata::EventMetadata,
 	reachability::LiveReachability,
 	repair_unsigned::update_unsigned_prev_content,
