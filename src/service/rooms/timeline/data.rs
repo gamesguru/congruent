@@ -731,41 +731,12 @@ impl Data {
 	}
 
 	/// Rebuild the topological index entry for a single event without
-	/// touching stream order. Removes the old topo key, computes a new
+	/// touching stream order: removes the old topo key, computes a new
 	/// `deprecated_local_topo_depth`, writes the new topo key, and updates
-	/// metadata.
-	pub(super) fn reindex_topo(
-		&self,
-		pdu_id: &RawPduId,
-		event_id: &EventId,
-		new_topo_depth: u64,
-	) {
-		let event_id_bytes = event_id.as_bytes();
-
-		// Remove old topo entry
-		self.remove_topo_pducount(pdu_id, event_id_bytes);
-
-		// Write new topo entry
-		let topo_key = Self::topo_pducount_key(pdu_id, new_topo_depth);
-		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id_bytes);
-
-		// Update metadata with new topo depth
-		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
-				meta.deprecated_local_topo_depth = new_topo_depth;
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.insert(event_id_bytes, &metadata_bytes);
-				}
-			}
-		}
-	}
-
-	/// Batched equivalent of `reindex_topo`. Both blocking reads (old depth
-	/// via the same lookup `remove_topo_pducount` does, then metadata for
-	/// the update) still happen outside the batch -- RocksDB batches are
-	/// write-only -- but every write lands in `batch` together.
+	/// metadata. Both blocking reads (old depth via the same lookup
+	/// `remove_topo_pducount` does, then metadata for the update) still
+	/// happen outside the batch -- RocksDB batches are write-only -- but
+	/// every write lands in `batch` together.
 	pub(super) fn reindex_topo_batch<'a>(
 		&'a self,
 		batch: &mut database::Batch<'a>,
@@ -802,24 +773,6 @@ impl Data {
 					),
 				}
 			}
-		}
-	}
-
-	/// Update only the canonical JSON for a PDU without touching any index.
-	/// Used when state repair modifies `unsigned.prev_content`.
-	pub(super) fn update_pdu_json(&self, event_id: &EventId, json: &CanonicalJsonObject) {
-		self.eventid_pdu
-			.insert(event_id.as_bytes(), serde_json::to_vec(json).expect("json"));
-	}
-
-	pub(super) fn get_event_metadata_blocking(
-		&self,
-		event_id: &EventId,
-	) -> Option<rooms::timeline::EventMetadata> {
-		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id.as_bytes()) {
-			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
-		} else {
-			None
 		}
 	}
 
