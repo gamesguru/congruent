@@ -66,6 +66,14 @@ async fn load_timeline(
 		room_id, sender_user, starting_count, ending_count, limit
 	);
 
+	// `fetch_limit` items are drained via `.take(fetch_limit)` below, then one
+	// more is peeked via `.next()` to determine `limited` -- so the stream only
+	// ever needs to yield `fetch_limit + 1` items. Bounding it to `stream_limit`
+	// here, before `wide_then`, keeps its concurrent per-item DB work
+	// proportional to that instead of `wide_then`'s full concurrency width.
+	let fetch_limit = limit.saturating_add(1);
+	let stream_limit = fetch_limit.saturating_add(1);
+
 	let mut pdu_stream = match starting_count {
 		| Some(starting_count) => {
 			let last_timeline_count = services
@@ -115,6 +123,15 @@ async fn load_timeline(
 				.ready_take_while(move |&(pducount, _)| {
 					is_expanded_timeline || pducount > starting_count
 				})
+				// Bound *before* wide_then: wide_then's concurrent `.buffered(width)`
+				// (width defaults to 32, see `automatic_width`) eagerly pulls and starts
+				// up to `width` upstream items to fill its concurrency window before
+				// yielding anything, regardless of how many the caller actually wants.
+				// Left unbounded here, every sync poll for every room ran up to 32
+				// concurrent add_membership_to_unsigned + add_bundled_aggregations_to_pdu
+				// DB lookups even for a `limit=3` request, discarding all but a handful
+				// of the results.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -145,6 +162,8 @@ async fn load_timeline(
 				)
 				.inspect_err(|e| warn!("sync initial timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
+				// See the comment on the incremental-sync branch above -- same reasoning.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -165,9 +184,8 @@ async fn load_timeline(
 		},
 	};
 
-	// 1. Fetch one extra PDU to evaluate layout limits without shifting the window
-	let fetch_limit = limit.saturating_add(1);
-
+	// 1. `fetch_limit` (defined above) fetches one extra PDU to evaluate layout
+	//    limits without shifting the window.
 	// 2. Stream layout into a temporary sequence container
 	let mut pdus = pdu_stream
 		.by_ref()
