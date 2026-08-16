@@ -466,34 +466,15 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				let first_prev = prev_events.next()?.to_owned();
 				prev_events.next().is_none().then_some(first_prev)
 			});
+			// `fetch_state` below is anchored on the incoming event's own
+			// direct prev (or the event itself); a separate `fetch_prev`
+			// (/get_missing_events) round trip used to run here just to
+			// compute a deeper anchor, but that anchor is intentionally not
+			// used -- this path always keeps the direct prev as the state
+			// anchor. Calling `fetch_prev` for a fully discarded result only
+			// added a redundant federation request that could delay retries
+			// on an unresolved direct prev, so it has been removed.
 			let state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
-
-			if is_timeline_event
-				&& let Some(pdu) = parsed_pdu.as_ref()
-				&& direct_prev.is_some()
-			{
-				match Box::pin(self.fetch_prev(
-					origin,
-					room_id,
-					event_id,
-					pdu.prev_events(),
-					Some(pdu.sender().server_name()),
-				))
-				.await
-				{
-					| Ok(_) => {
-						// The deeper anchor is intentionally ignored here; this
-						// path keeps the incoming event's own direct prev
-						// as the state anchor.
-					},
-					| Err(e) => {
-						warn!(
-							event_id = %event_id,
-							"failed to fetch prev_events before /state_ids retry: {e}"
-						);
-					},
-				}
-			}
 
 			let retry_result = Box::pin(async {
 				Box::pin(self.fetch_state(
