@@ -572,11 +572,10 @@ impl super::Service {
 							let result = self
 								.services
 								.state_compressor
-								.save_state_with_parent(
-									room_id,
-									Some(current_shortstatehash),
-									Arc::new(compressed),
-								)
+								// rebuild_state is an administrative bulk repair path.
+								// Using the root write path avoids walking the entire
+								// ancestor diff chain for every intermediate state.
+								.save_state_as_root(room_id, Arc::new(compressed))
 								.await?;
 							let ssh = result.shortstatehash;
 							lthash_to_ssh.insert(*hash, ssh);
