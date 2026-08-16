@@ -124,6 +124,12 @@ pub struct Service {
 	/// unrelated writes: the room state hash is the invalidation token.
 	pub backfill_gap_free_cache:
 		moka::sync::Cache<OwnedRoomId, (ShortStateHash, TopoToken, usize)>,
+	/// Short-lived suppression for repeated unresolved backfill windows.
+	/// If the same room/window/gap signature comes back unchanged after a
+	/// failed federation attempt, re-scanning and re-requesting it again is
+	/// pure CPU/network waste. This is intentionally short TTL so a transient
+	/// remote failure can still be retried shortly after.
+	pub backfill_gap_repeat_cache: moka::sync::Cache<(OwnedRoomId, u64), ()>,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
@@ -178,6 +184,10 @@ impl crate::Service for Service {
 			backfill_gap_free_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
 				.time_to_idle(std::time::Duration::from_mins(10))
+				.build(),
+			backfill_gap_repeat_cache: moka::sync::Cache::builder()
+				.max_capacity(100_000)
+				.time_to_idle(std::time::Duration::from_secs(15))
 				.build(),
 			services: Services {
 				server: args.server.clone(),

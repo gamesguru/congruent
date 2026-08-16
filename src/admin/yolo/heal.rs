@@ -134,17 +134,28 @@ pub(super) async fn rescue_room(
 	);
 	self.write_str(&msg).await?;
 
-	self.write_str(&format!("Rebuilding state for {room_id} using rezzy..."))
+	if reorder {
+		self.write_str(&format!("Reordering timeline for {room_id} after rescue..."))
+			.await?;
+		Box::pin(self.services.rooms.timeline.reorder_timeline(
+			&room_id,
+			false,
+			false,
+		))
 		.await?;
-	Box::pin(self.services.rooms.timeline.rebuild_state(&room_id)).await?;
+	} else {
+		self.write_str(&format!("Rebuilding state for {room_id} using rezzy..."))
+			.await?;
+		Box::pin(self.services.rooms.timeline.rebuild_state(&room_id)).await?;
 
-	self.write_str(&format!("Rebuilding membership cache for {room_id}..."))
-		.await?;
-	self.services
-		.rooms
-		.state_cache
-		.reconcile_membership(&room_id)
-		.await;
+		self.write_str(&format!("Rebuilding membership cache for {room_id}..."))
+			.await?;
+		self.services
+			.rooms
+			.state_cache
+			.reconcile_membership(&room_id)
+			.await;
+	}
 
 	if !heal_from.is_empty() {
 		// Find the latest local event to use as at_event for bootstrapping

@@ -1,5 +1,6 @@
 use std::{
-	collections::HashSet,
+	collections::{HashSet, hash_map::DefaultHasher},
+	hash::{Hash, Hasher},
 	iter::once,
 	sync::{
 		Arc,
@@ -311,10 +312,37 @@ pub async fn backfill_if_required(
 		let mut backwards_extremities: Vec<OwnedEventId> =
 			gaps.iter().map(|gap| gap.event_id.clone()).collect();
 		backwards_extremities.sort_unstable();
-		let unique_missing: HashSet<&EventId> = gaps
+		let mut unique_missing: Vec<&EventId> = gaps
 			.iter()
 			.flat_map(|gap| gap.missing_prev_events.iter().map(AsRef::as_ref))
 			.collect();
+		unique_missing.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+
+		let mut repeat_hasher = DefaultHasher::new();
+		room_id.as_str().hash(&mut repeat_hasher);
+		from.to_string().hash(&mut repeat_hasher);
+		scan_limit_u32.hash(&mut repeat_hasher);
+		for extremity in &backwards_extremities {
+			extremity.as_str().hash(&mut repeat_hasher);
+		}
+		for missing in &unique_missing {
+			missing.as_str().hash(&mut repeat_hasher);
+		}
+		let repeat_fingerprint = repeat_hasher.finish();
+
+		if self
+			.backfill_gap_repeat_cache
+			.get(&(room_id.to_owned(), repeat_fingerprint))
+			.is_some()
+		{
+			debug!(
+				%room_id, %from, %scan_limit_u32, %repeat_fingerprint,
+				"backfill: suppressing repeated unresolved gap window"
+			);
+			return Ok(());
+		}
+		self.backfill_gap_repeat_cache
+			.insert((room_id.to_owned(), repeat_fingerprint), ());
 
 		if budget == 0 {
 			info!(

@@ -161,8 +161,12 @@ impl super::Service {
 
 		let mut events_meta: Vec<EventMeta> = Vec::new();
 		let mut state_pdus: Vec<Option<rezzy::LeanEvent>> = Vec::new();
-		let mut room_version = RoomVersionId::V1;
-		let mut room_version_found = false;
+		let mut room_version = self
+			.services
+			.state
+			.get_room_version(room_id)
+			.await
+			.unwrap_or(RoomVersionId::V1);
 
 		for eid in sorted {
 			let Ok((pdu, _json)) = self.db.get_from_eventid_pdu(&eid).await else {
@@ -180,13 +184,17 @@ impl super::Service {
 			// Timeline events are authoritative; clear any stale rejection flags.
 			self.services.pdu_metadata.unmark_event_rejected(&eid);
 
-			if !room_version_found && *pdu.kind() == TimelineEventType::RoomCreate {
+			if *pdu.kind() == TimelineEventType::RoomCreate {
 				if let Ok(create_content) = serde_json::from_str::<
 					ruma::events::room::create::RoomCreateEventContent,
 				>(pdu.content().get())
 				{
 					room_version = create_content.room_version;
-					room_version_found = true;
+				} else {
+					warn!(
+						"rebuild_state: create event {eid} could not be parsed for room version; \
+						 using cached room version {room_version}"
+					);
 				}
 			}
 

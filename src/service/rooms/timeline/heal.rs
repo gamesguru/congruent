@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use conduwuit::utils::timeline_sorter::sort_timeline_events;
 use conduwuit_core::{
 	Result, info,
 	matrix::{
@@ -119,6 +120,36 @@ impl CompactDag {
 		indices
 	}
 
+	/// Topological sort for stateful healing.
+	///
+	/// This must be used whenever we are recomputing state because membership
+	/// transitions depend on causal order, not just timestamps.
+	fn topo_sort(&self, events: &HashMap<OwnedEventId, PduEvent>) -> Vec<OwnedEventId> {
+		let mut entries = HashMap::with_capacity(events.len());
+		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> =
+			HashMap::with_capacity(events.len());
+
+		for (event_id, pdu) in events {
+			entries.insert(
+				event_id.clone(),
+				(
+					PduCount::from(u64::from(pdu.depth)),
+					u64::from(pdu.depth),
+					u64::from(pdu.origin_server_ts),
+				),
+			);
+			graph.insert(
+				event_id.clone(),
+				pdu.prev_events()
+					.filter(|prev_id| events.contains_key(*prev_id))
+					.map(ToOwned::to_owned)
+					.collect(),
+			);
+		}
+
+		sort_timeline_events(&entries, &graph)
+	}
+
 	/// Compute forward extremities: events in sorted that have no children.
 	fn extremities(&self, sorted: &[u32]) -> Vec<OwnedEventId> {
 		sorted
@@ -158,13 +189,30 @@ pub async fn heal_room(
 	// Phase 1: Build compact DAG with u32 indices + roaring bitmap
 	let dag = CompactDag::build(&events);
 
-	// Phase 2: Chronological sort by origin_server_ts
-	info!("heal_room: sorting {} events by origin_server_ts...", events.len());
-	let sorted = dag.chrono_sort();
-	info!("heal_room: sorted {} events", sorted.len());
+	// Phase 2: Sort events. Chronological order is fine for pure timeline
+	// repair, but stateful healing must use DAG order so membership changes
+	// are applied causally.
+	let sorted_event_ids = if options.compute_state {
+		info!("heal_room: sorting {} events topologically for state rebuild...", events.len());
+		let sorted = dag.topo_sort(&events);
+		info!("heal_room: sorted {} events topologically", sorted.len());
+		sorted
+	} else {
+		info!("heal_room: sorting {} events by origin_server_ts...", events.len());
+		let sorted = dag
+			.chrono_sort()
+			.into_iter()
+			.map(|idx| dag.id(idx).clone())
+			.collect::<Vec<_>>();
+		info!("heal_room: sorted {} events chronologically", sorted.len());
+		sorted
+	};
 
-	if sorted.len() != events.len() {
-		warn!("heal_room: sort dropped {} events", events.len().saturating_sub(sorted.len()));
+	if sorted_event_ids.len() != events.len() {
+		warn!(
+			"heal_room: sort dropped {} events",
+			events.len().saturating_sub(sorted_event_ids.len())
+		);
 	}
 
 	// Phase 3: Stream order is immutable — we do NOT remove or backup
@@ -175,15 +223,15 @@ pub async fn heal_room(
 	// Phase 4: Insert events into the timeline. For events that already
 	// have a stream order (existing timeline entries), preserve it. For
 	// outlier promotions, assign a new stream count.
-	let count = sorted.len();
+	let count = sorted_event_ids.len();
 
 	info!("heal_room: processing {count} events for timeline insertion");
 
 	let mut current_shortstatehash = if options.compute_state {
 		// Try to seed from the oldest event's prev_events state
 		let mut ssh = 0_u64;
-		if let Some(&oldest_idx) = sorted.first() {
-			if let Some(oldest_pdu) = events.get(dag.id(oldest_idx)) {
+		if let Some(oldest_event_id) = sorted_event_ids.first() {
+			if let Some(oldest_pdu) = events.get(oldest_event_id) {
 				if let Some(prev) = oldest_pdu.prev_events.first() {
 					if let Ok(prev_ssh) =
 						self.services.state_accessor.pdu_shortstatehash(prev).await
@@ -203,8 +251,7 @@ pub async fn heal_room(
 	let mut failed = 0_usize;
 	let mut cork = Some(self.db.db.cork());
 
-	for &idx in &sorted {
-		let event_id = dag.id(idx);
+	for event_id in &sorted_event_ids {
 		let Some(pdu) = events.get(event_id) else {
 			skipped = skipped.saturating_add(1);
 			continue;
@@ -315,7 +362,17 @@ pub async fn heal_room(
 	}
 
 	// Phase 5: Calculate forward extremities using roaring bitmap
-	let mut true_extremities = dag.extremities(&sorted);
+	let mut true_extremities = sorted_event_ids
+		.iter()
+		.filter_map(|event_id| {
+			let idx = dag.id_to_idx.get(event_id)?;
+			if dag.has_children.contains(*idx) {
+				None
+			} else {
+				Some(event_id.clone())
+			}
+		})
+		.collect::<Vec<_>>();
 
 	// Preserve outlier extremities not in our event set
 	let current_exts: Vec<OwnedEventId> = self
