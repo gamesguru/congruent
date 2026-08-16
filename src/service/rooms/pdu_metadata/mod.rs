@@ -332,6 +332,11 @@ impl Service {
 		self.db.mark_event_rejected(event_id, reason);
 	}
 
+	/// Directly marks an event as rejected, bypassing the
+	/// `is_event_visible_to_clients` async timeline visibility check. Callers
+	/// MUST assert that the target event is a newly imported outlier
+	/// that is guaranteed not to have already passed authentication or been
+	/// exposed on the room timeline.
 	pub fn mark_event_rejected_skip_visibility_check(&self, event_id: &EventId, reason: &str) {
 		self.db.mark_event_rejected(event_id, reason);
 	}

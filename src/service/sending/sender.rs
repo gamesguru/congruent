@@ -722,7 +722,7 @@ impl Service {
 			.services
 			.users
 			.last_device_key_update_count
-			.load(Ordering::Relaxed);
+			.load(Ordering::Acquire);
 
 		if since.0 == 0 && since.0 >= last_update {
 			// New server with no previous sync token AND no recent device key

@@ -2014,3 +2014,35 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 	let new = utils::increment(old.ok().as_deref());
 	db.insert(key, new);
 }
+
+#[cfg(test)]
+mod tests {
+	use serde_json::json;
+
+	use super::merge_signatures;
+
+	#[test]
+	fn merge_signatures_is_idempotent() {
+		let old = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let mut new = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let before = serde_json::to_vec(&new).unwrap();
+		merge_signatures(&mut new, &old);
+		let after = serde_json::to_vec(&new).unwrap();
+
+		assert_eq!(before, after, "Merging identical signatures must be a no-op");
+	}
+}
