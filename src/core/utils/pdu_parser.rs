@@ -11,6 +11,13 @@ pub fn parse_and_clean_pdu(
 	room_id: &RoomId,
 	room_version: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject, PduEvent)> {
+	// Preserve an explicit event_id (e.g. from an imported/exported PDU) before
+	// it gets stripped below, so it isn't needlessly regenerated.
+	let explicit_event_id = value
+		.get("event_id")
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|id| OwnedEventId::parse(id).ok());
+
 	// Strip diagnostic/internal fields that were injected during export or
 	// debugging
 	crate::utils::pdu_json_canonical_strip(&mut value);
@@ -24,11 +31,7 @@ pub fn parse_and_clean_pdu(
 		value.remove("room_id");
 	}
 
-	let event_id = match value
-		.get("event_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|id| OwnedEventId::parse(id).ok())
-	{
+	let event_id = match explicit_event_id {
 		| Some(id) => id,
 		| None => crate::matrix::event::gen_event_id(&value, room_version)?,
 	};
@@ -86,26 +89,40 @@ mod tests {
 
 	#[test]
 	fn v12_create_event_hashes_after_room_id_stripping() {
-		let room_id = room_id!("!abc1234567890123456789012345678901234567890:example.org");
 		let version = room_version_id!("12");
 
-		let value: CanonicalJsonObject = serde_json::from_value(json!({
-			"type": "m.room.create",
-			"room_id": room_id.as_str(),
-			"sender": "@alice:example.org",
-			"origin_server_ts": 12345,
-			"content": { "creator": "@alice:example.org", "room_version": "12" },
-			"auth_events": [],
-			"prev_events": [],
-			"depth": 1,
-			"hashes": { "sha256": "fakehash" },
-			"signatures": {
-				"example.org": { "ed25519:1": "fakesig" }
-			}
-		}))
-		.unwrap();
+		let make_value = || {
+			serde_json::from_value::<CanonicalJsonObject>(json!({
+				"type": "m.room.create",
+				"sender": "@alice:example.org",
+				"origin_server_ts": 12345,
+				"content": { "creator": "@alice:example.org", "room_version": "12" },
+				"auth_events": [],
+				"prev_events": [],
+				"depth": 1,
+				"hashes": { "sha256": "fakehash" },
+				"signatures": {
+					"example.org": { "ed25519:1": "fakesig" }
+				}
+			}))
+			.unwrap()
+		};
 
-		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+		// V12 room_ids are derived from the create event's own reference hash
+		// ($ -> !), so the expected room_id can't be chosen up front: compute
+		// it the same way the real PDU-import path does, from the hash of the
+		// room_id-less event.
+		let expected_event_id = gen_event_id(&make_value(), &version).unwrap();
+		let room_id_str = expected_event_id.as_str().replacen('$', "!", 1);
+		let room_id = RoomId::parse(&room_id_str).unwrap();
+
+		let mut value = make_value();
+		value.insert(
+			"room_id".to_owned(),
+			CanonicalJsonValue::String(room_id.as_str().to_owned()),
+		);
+
+		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();
 
 		assert!(
 			!clean_val.contains_key("room_id"),
