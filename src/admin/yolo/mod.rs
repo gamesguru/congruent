@@ -144,11 +144,6 @@ pub enum YoloCommand {
 	RecalculateExtremities {
 		/// The room ID or alias.
 		room: OwnedRoomOrAliasId,
-
-		/// The number of recent events to analyze (default: 50, or -1 for all
-		/// events)
-		#[arg(allow_hyphen_values = true, long, default_value_t = 50)]
-		tail: i64,
 	},
 
 	/// Read-only calculation of the true topological DAG forward extremities
@@ -156,11 +151,6 @@ pub enum YoloCommand {
 	CountExtremities {
 		/// The room ID or alias.
 		room: OwnedRoomOrAliasId,
-
-		/// The number of recent events to analyze (default: 50, or -1 for all
-		/// events)
-		#[arg(allow_hyphen_values = true, long, default_value_t = 50)]
-		tail: i64,
 	},
 
 	/// Purge outlier PDUs that already exist in our timeline.
