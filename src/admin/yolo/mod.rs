@@ -435,6 +435,9 @@ pub enum YoloCommand {
 		/// Only show counts and stats, omit the full event ID lists.
 		#[arg(long)]
 		summary: bool,
+		/// Fetch missing state event bodies for richer diff output.
+		#[arg(long)]
+		get_missing: bool,
 		/// Skip signature verification (prevents DB write contention)
 		#[arg(long)]
 		skip_sig_verify: bool,

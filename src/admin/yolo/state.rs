@@ -13,7 +13,7 @@ use conduwuit_database::Batch;
 use futures::{StreamExt, pin_mut};
 use ruma::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId,
-	api::federation::event::get_room_state,
+	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
 };
 use serde_json::Value as JsonValue;
@@ -29,11 +29,10 @@ pub(super) async fn compare_room_state(
 	at_event: Option<OwnedEventId>,
 	conflict: Option<OwnedUserId>,
 	summary: bool,
+	get_missing: bool,
 	skip_sig_verify: bool,
 ) -> Result {
 	use std::fmt::Write;
-
-	use ruma::api::federation::event::get_room_state;
 
 	if servers.is_empty() {
 		return Err!(Request(InvalidParam("Provide at least one server to compare against.")));
@@ -67,7 +66,7 @@ pub(super) async fn compare_room_state(
 	let response = match self
 		.services
 		.sending
-		.send_federation_request(server, get_room_state::v1::Request {
+		.send_federation_request(server, get_room_state_ids::v1::Request {
 			room_id: room_id.clone(),
 			event_id: at_event_id.clone(),
 		})
@@ -101,36 +100,79 @@ pub(super) async fn compare_room_state(
 		.as_ref()
 		.map(|u| ("m.room.member".to_owned(), u.to_string()));
 	let mut conflict_entries: Vec<(String, String, u64, String, String, String)> = Vec::new();
+	let mut remote_state_ids: HashSet<OwnedEventId> = HashSet::new();
+	let mut local_state_ids: HashSet<OwnedEventId> = HashSet::new();
 
-	for pdu_raw in &response.pdus {
-		let (event_id, value) = if skip_sig_verify {
-			match conduwuit::matrix::event::gen_event_id_canonical_json(pdu_raw, &room_version) {
-				| Ok((eid, val)) => (eid, val),
-				| Err(e) => {
-					warn!("Skipping PDU, canonicalization failed: {e}");
-					skipped = skipped.saturating_add(1);
-					continue;
-				},
+	let load_state_event_for_compare = |server: OwnedServerName, event_id: OwnedEventId| {
+		let room_version = room_version.clone();
+		let room_id = room_id.clone();
+		async move {
+			if let Ok(pdu) = self.services.rooms.timeline.get_pdu(&event_id).await {
+				return Ok::<Option<(PduEvent, bool)>, conduwuit::Error>(Some((pdu, false)));
 			}
-		} else {
-			match self
+
+			if let Ok(json) = self
 				.services
-				.server_keys
-				.validate_and_add_event_id(pdu_raw, &room_version)
+				.rooms
+				.outlier
+				.get_outlier_pdu_json(&event_id)
+				.await
+			{
+				let pdu = serde_json::from_value::<PduEvent>(
+					serde_json::to_value(&json)
+						.map_err(|e| err!(Request(InvalidParam("{e}"))))?,
+				)
+				.map_err(|e| err!(Request(InvalidParam("Failed to parse local outlier: {e}"))))?;
+				return Ok(Some((pdu, false)));
+			}
+
+			if !get_missing {
+				return Ok(None);
+			}
+
+			let response = match self
+				.services
+				.sending
+				.send_federation_request(
+					&server,
+					get_event::v1::Request::new(event_id.clone(), None),
+				)
 				.await
 			{
 				| Ok(r) => r,
 				| Err(e) => {
-					// Persist as rejected outlier so the event is available for
-					// auth chain lookups and state resolution context
-					match conduwuit::matrix::event::gen_event_id_canonical_json(
-						pdu_raw,
+					warn!("compare_room_state: failed to fetch {event_id} from {server}: {e}");
+					return Ok(None);
+				},
+			};
+
+			let (event_id, value, sig_failed) = if skip_sig_verify {
+				match conduwuit::matrix::event::gen_event_id_canonical_json(
+					&response.pdu,
+					&room_version,
+				) {
+					| Ok((eid, val)) => (eid, val, false),
+					| Err(e) => {
+						warn!("compare_room_state: canonicalization failed for {event_id}: {e}");
+						return Ok(None);
+					},
+				}
+			} else {
+				match self
+					.services
+					.server_keys
+					.validate_and_add_event_id(&response.pdu, &room_version)
+					.await
+				{
+					| Ok(r) => (r.0, r.1, false),
+					| Err(e) => match conduwuit::matrix::event::gen_event_id_canonical_json(
+						&response.pdu,
 						&room_version,
 					) {
 						| Ok((eid, val)) => {
 							warn!(
-								"PDU {eid} failed signature verification, storing as rejected \
-								 outlier: {e}"
+								"compare_room_state: PDU {eid} failed verification, storing as \
+								 rejected outlier: {e}"
 							);
 							self.services
 								.rooms
@@ -145,82 +187,41 @@ pub(super) async fn compare_room_state(
 									"signature verification failed in compare-room-state",
 								)
 								.await;
-							// Still count membership for the remote's totals —
-							// the remote sent this as part of their state.
-							if let Ok(pdu) =
-								PduEvent::from_id_val(&eid, val, Some(room_id.as_ref()))
-							{
-								if pdu.kind == TimelineEventType::RoomMember {
-									if let Some(state_key) = &pdu.state_key {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("unknown");
-										match membership {
-											| "join" => {
-												remote_joined.insert(state_key.to_string());
-												remote_invited.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-											| "invite" => {
-												remote_invited.insert(state_key.to_string());
-												remote_joined.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-											| "leave" => {
-												remote_left.insert(state_key.to_string());
-												remote_joined.remove(state_key.as_str());
-												remote_invited.remove(state_key.as_str());
-											},
-											| _ => {
-												remote_joined.remove(state_key.as_str());
-												remote_invited.remove(state_key.as_str());
-												remote_left.remove(state_key.as_str());
-											},
-										}
-									}
-								}
-								if let Some(state_key) = &pdu.state_key {
-									remote_state.insert(
-										(pdu.kind.to_string(), state_key.to_string()),
-										eid.clone(),
-									);
-								}
-								event_timestamps
-									.insert(eid.clone(), u64::from(pdu.origin_server_ts));
-								let content: JsonValue = pdu.get_content_as_value();
-								let membership = content
-									.get("membership")
-									.and_then(|v| v.as_str())
-									.unwrap_or("")
-									.to_owned();
-								event_meta
-									.insert(eid.clone(), (membership, pdu.sender().to_string()));
-							}
-							skipped = skipped.saturating_add(1);
-							continue;
+							(eid, val, true)
 						},
 						| Err(e2) => {
-							warn!("Skipping PDU, canonicalization failed: {e2}");
-							skipped = skipped.saturating_add(1);
-							continue;
+							warn!(
+								"compare_room_state: canonicalization failed for {event_id}: \
+								 {e2}"
+							);
+							return Ok(None);
 						},
-					}
-				},
-			}
-		};
+					},
+				}
+			};
 
-		let pdu = match PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) {
-			| Ok(pdu) => pdu,
-			| Err(e) => {
-				warn!(
-					"Skipping PDU {event_id}, deserialization failed (likely oversized ID): {e}"
-				);
-				skipped = skipped.saturating_add(1);
-				continue;
-			},
+			let pdu =
+				PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())).map_err(|e| {
+					err!(Request(InvalidParam("Failed to parse state event {event_id}: {e}")))
+				})?;
+
+			Ok(Some((pdu, sig_failed)))
+		}
+	};
+
+	for state_event_id in &response.pdu_ids {
+		remote_state_ids.insert(state_event_id.clone());
+		let Some((pdu, sig_failed)) =
+			load_state_event_for_compare(server.clone(), state_event_id.clone()).await?
+		else {
+			skipped = skipped.saturating_add(1);
+			continue;
 		};
+		if sig_failed {
+			skipped = skipped.saturating_add(1);
+		}
+
+		let event_id = pdu.event_id().to_owned();
 		event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
 		if let Some(state_key) = &pdu.state_key {
 			remote_state.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
@@ -352,6 +353,7 @@ pub(super) async fn compare_room_state(
 		pin_mut!(state_full);
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
+			local_state_ids.insert(eid.clone());
 			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0.into());
 			local_state.insert((event_type.to_string(), state_key.to_string()), eid.clone());
 			// Store metadata for richer diff output
@@ -425,6 +427,15 @@ pub(super) async fn compare_room_state(
 	}
 	missing_locally.sort_by_key(|(ts, _)| *ts);
 
+	for event_id in remote_state_ids.difference(&local_state_ids) {
+		if event_meta.contains_key(event_id) {
+			continue;
+		}
+		let ts = event_timestamps.get(event_id).copied().unwrap_or(0);
+		missing_locally.push((ts, format!("{event_id} (???? ?????) ??????")));
+	}
+	missing_locally.sort_by_key(|(ts, _)| *ts);
+
 	let mut extra_locally = Vec::new();
 	for (key, event_id) in &local_state {
 		if remote_state.get(key) != Some(event_id) {
@@ -438,6 +449,15 @@ pub(super) async fn compare_room_state(
 			extra_locally
 				.push((ts, format!("{event_id} ({} {}) {}{extra}", key.0, key.1, format_ts(ts))));
 		}
+	}
+	extra_locally.sort_by_key(|(ts, _)| *ts);
+
+	for event_id in local_state_ids.difference(&remote_state_ids) {
+		if event_meta.contains_key(event_id) {
+			continue;
+		}
+		let ts = event_timestamps.get(event_id).copied().unwrap_or(0);
+		extra_locally.push((ts, format!("{event_id} (???? ?????) ??????")));
 	}
 	extra_locally.sort_by_key(|(ts, _)| *ts);
 
@@ -518,7 +538,7 @@ pub(super) async fn compare_room_state(
 			let response = match self
 				.services
 				.sending
-				.send_federation_request(cmp_server, get_room_state::v1::Request {
+				.send_federation_request(cmp_server, get_room_state_ids::v1::Request {
 					room_id: room_id.clone(),
 					event_id: at_event_id.clone(),
 				})
@@ -537,105 +557,18 @@ pub(super) async fn compare_room_state(
 			let mut cmp_joined: HashSet<String> = HashSet::new();
 			let mut cmp_invited: HashSet<String> = HashSet::new();
 			let mut cmp_left: HashSet<String> = HashSet::new();
-			for pdu_raw in &response.pdus {
-				let (event_id, value) = match if skip_sig_verify {
-					conduwuit::matrix::event::gen_event_id_canonical_json(pdu_raw, &room_version)
-				} else {
-					self.services
-						.server_keys
-						.validate_and_add_event_id(pdu_raw, &room_version)
-						.await
-				} {
-					| Ok(r) => r,
-					| Err(e) => {
-						if let Ok((eid, val)) =
-							conduwuit::matrix::event::gen_event_id_canonical_json(
-								pdu_raw,
-								&room_version,
-							) {
-							warn!(
-								"compare_room_state: PDU {eid} failed verification, storing as \
-								 rejected outlier: {e}"
-							);
-							self.services
-								.rooms
-								.outlier
-								.add_pdu_outlier(&eid, &val, Some(&room_id))
-								.await;
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_rejected(
-									&eid,
-									"signature verification failed in compare-room-state",
-								)
-								.await;
-							// Still count membership — remote sent this as
-							// part of their state.
-							if let Ok(pdu) =
-								PduEvent::from_id_val(&eid, val, Some(room_id.as_ref()))
-							{
-								event_timestamps
-									.insert(eid.clone(), u64::from(pdu.origin_server_ts));
-								if let Some(state_key) = &pdu.state_key {
-									server_state.insert(
-										(pdu.kind.to_string(), state_key.to_string()),
-										eid.clone(),
-									);
-									if !event_meta.contains_key(&eid) {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("")
-											.to_owned();
-										event_meta.insert(
-											eid.clone(),
-											(membership, pdu.sender().to_string()),
-										);
-									}
-								}
-								if pdu.kind == TimelineEventType::RoomMember {
-									if let Some(state_key) = &pdu.state_key {
-										let content: JsonValue = pdu.get_content_as_value();
-										let membership = content
-											.get("membership")
-											.and_then(|v| v.as_str())
-											.unwrap_or("unknown");
-										match membership {
-											| "join" => {
-												cmp_joined.insert(state_key.to_string());
-												cmp_invited.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-											| "invite" => {
-												cmp_invited.insert(state_key.to_string());
-												cmp_joined.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-											| "leave" => {
-												cmp_left.insert(state_key.to_string());
-												cmp_joined.remove(state_key.as_str());
-												cmp_invited.remove(state_key.as_str());
-											},
-											| _ => {
-												cmp_joined.remove(state_key.as_str());
-												cmp_invited.remove(state_key.as_str());
-												cmp_left.remove(state_key.as_str());
-											},
-										}
-									}
-								}
-							}
-						}
-						verify_errors = verify_errors.saturating_add(1);
-						continue;
-					},
-				};
-				let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref()))
+			for state_event_id in &response.pdu_ids {
+				let Some((pdu, sig_failed)) =
+					load_state_event_for_compare(cmp_server.clone(), state_event_id.clone())
+						.await?
 				else {
+					verify_errors = verify_errors.saturating_add(1);
 					continue;
 				};
+				if sig_failed {
+					verify_errors = verify_errors.saturating_add(1);
+				}
+				let event_id = pdu.event_id().to_owned();
 				event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
 				if let Some(state_key) = &pdu.state_key {
 					server_state
