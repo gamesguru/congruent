@@ -31,10 +31,7 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::{
-	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
-	short::ShortStateKey,
-};
+use crate::rooms::pdu_metadata::{RejectionCode, is_retryable_rejection_reason};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -996,6 +993,12 @@ pub async fn promote_outlier_batch<'a>(
 	)
 	.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
 
+	// Compute the event's genuine state-at-event via real state resolution
+	// BEFORE acquiring insert_lock. This can perform federation I/O if local
+	// ancestry is missing, and must not hold the room-wide insert lock.
+	let origin = pdu.sender().server_name();
+	self.associate_resolved_state(room_id, &pdu, origin).await?;
+
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
@@ -1050,7 +1053,6 @@ pub async fn promote_outlier_batch<'a>(
 	self.db
 		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
 		.await;
-	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
 
@@ -1136,10 +1138,6 @@ async fn associate_resolved_state(
 			false, // skip_soft_fail: enforce real auth + remote fallback, matching the live path
 			false, // prev_fetch_had_invalid_data: not applicable outside fetch_prev
 			None,  // state_ids_anchor_hint
-			// merge_current_extremities: false -- this is historical data, never fold
-			// in the room's current live tip when this event's own prev_events don't
-			// match it (they never will, for anything actually historical).
-			false,
 		)
 		.await?;
 
@@ -1154,29 +1152,6 @@ async fn associate_resolved_state(
 	self.services
 		.state
 		.set_event_state(pdu.event_id(), room_id, compressed)
-		.await?;
-	Ok(())
-}
-
-#[implement(super::Service)]
-async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
-	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
-		.services
-		.state_accessor
-		.state_full_ids::<OwnedEventId>(shortstatehash)
-		.collect::<Vec<_>>()
-		.await;
-	let compressed: crate::rooms::state_compressor::CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
-		.collect()
-		.await;
-
-	self.services
-		.state
-		.set_event_state(event_id, room_id, Arc::new(compressed))
 		.await?;
 	Ok(())
 }

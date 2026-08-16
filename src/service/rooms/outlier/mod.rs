@@ -229,22 +229,52 @@ pub fn add_pdu_outlier_batch<'a>(
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
 ) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, false);
+}
+
+/// Append the PDU as an outlier during demotion of a timeline event.
+///
+/// Bypasses the `!meta.is_outlier` guard because the event's timeline pointers
+/// are being removed in the same `Batch`.
+#[implement(Service)]
+#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
+pub fn add_pdu_outlier_batch_demote<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, true);
+}
+
+#[implement(Service)]
+fn add_pdu_outlier_batch_impl<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	demote: bool,
+) {
 	// Guard: never overwrite an event that already has a timeline entry.
 	// The eventid_pdu and eventid_metadata tables are shared between timeline
 	// and outlier paths. Re-adding a timeline event as an outlier would set
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
 	let mut existing_outlier_meta = None;
-	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
-		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
-			if !meta.is_outlier {
-				info!(
-					%event_id,
-					"add_pdu_outlier: skipping, event already in timeline"
-				);
-				return;
+	if !demote {
+		if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
+				if !meta.is_outlier {
+					info!(
+						%event_id,
+						"add_pdu_outlier: skipping, event already in timeline"
+					);
+					return;
+				}
+				existing_outlier_meta = Some(meta);
 			}
-			existing_outlier_meta = Some(meta);
 		}
 	}
 

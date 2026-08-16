@@ -195,7 +195,6 @@ where
 		skip_soft_fail,
 		prev_fetch_had_invalid_data,
 		prev_fetch_deeper_anchor.as_ref(),
-		is_forward_extremity,
 	))
 	.await?;
 
@@ -544,7 +543,6 @@ where
 						skip_soft_fail,
 						false,
 						prev_fetch_deeper_anchor.as_ref(),
-						true,
 					))
 					.await?;
 				}
@@ -843,22 +841,6 @@ pub(crate) async fn resolve_state_at_incoming_event<Pdu>(
 	skip_soft_fail: bool,
 	prev_fetch_had_invalid_data: bool,
 	state_ids_anchor_hint: Option<&OwnedEventId>,
-	// Whether a detected DAG fork (incoming prev_events != current forward
-	// extremities) should fold the room's *current* forward extremities into
-	// the resolution. This is correct -- required, even -- when the incoming
-	// event is about to become the room's new live tip (`is_forward_extremity:
-	// true` in `upgrade_outlier_to_timeline_pdu`): the room's new state after
-	// accepting a fork must account for every live branch, not just the one
-	// this event descends from.
-	//
-	// It is WRONG for backfilled historical events: their prev_events not
-	// matching today's forward extremities is not a real fork needing
-	// reconciliation, it's simply because they predate today's tip by
-	// definition. Merging in current_extremities there would contaminate a
-	// historical state snapshot with state that, chronologically, didn't
-	// exist yet. Backfill callers must pass `false` and resolve purely from
-	// the event's own prev_events.
-	merge_current_extremities: bool,
 ) -> Result<StateAtEvent>
 where
 	Pdu: Event + Send + Sync,
@@ -877,7 +859,6 @@ where
 	let exact_match = !current_extremities.is_empty()
 		&& prev_events.len() == current_extremities.len()
 		&& current_extremities.iter().all(|e| prev_events.contains(e));
-	let is_dag_fork = !exact_match;
 
 	let mut state_at_event: Option<StateAtEvent> = None;
 
@@ -900,43 +881,9 @@ where
 			incoming_pdu.prev_events().count()
 		);
 
-		// When the incoming event creates a DAG fork (its prev_events don't
-		// match the current forward extremities), we MUST resolve state across
-		// both the incoming event's prev_events AND the current forward
-		// extremities. Without this, state resolution uses only the fork's
-		// state — which may lack memberships that exist in the current state
-		// (e.g., a user who joined on the other fork). `force_state` would
-		// then apply the fork's state as a delta, removing those memberships.
-		//
-		// This matches Synapse's `compute_event_context()` which resolves
-		// state groups across all prev_events (including current extremities
-		// that aren't in the incoming event's prev_events).
-		let resolved_state = if is_dag_fork && merge_current_extremities {
-			// Collect all events we need to resolve across: the incoming
-			// event's prev_events PLUS the current forward extremities.
-			let mut all_extremities: Vec<OwnedEventId> = prev_events.clone();
-			for ext in &current_extremities {
-				if !all_extremities.contains(ext) {
-					all_extremities.push(ext.clone());
-				}
-			}
-
-			info!(
-				event_id = %incoming_pdu.event_id(),
-				n_prev = prev_events.len(),
-				n_extremities = current_extremities.len(),
-				n_total = all_extremities.len(),
-				"DAG fork detected: resolving state across prev_events + current extremities"
-			);
-
-			self.resolve_extremities(
-				all_extremities.iter().map(AsRef::as_ref),
-				room_id,
-				room_version_id,
-				None,
-			)
-			.await?
-		} else if incoming_pdu.prev_events().count() == 1 {
+		// An event's state association (`state_at_event`) MUST be resolved strictly
+		// from its own `prev_events`.
+		let resolved_state = if incoming_pdu.prev_events().count() == 1 {
 			self.state_at_incoming_degree_one(incoming_pdu, room_id)
 				.await?
 		} else {
