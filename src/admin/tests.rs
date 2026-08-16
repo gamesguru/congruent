@@ -770,27 +770,22 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.await
 		.unwrap();
 
-	// Reproduce yolo/state.rs's demote-to-outlier sequence: two separately
-	// applied batches under the room's insert lock, exactly as the fix
-	// requires.
+	// Demote to outlier sequence: atomic batch under the room's insert lock.
 	let insert_lock = services.rooms.timeline.mutex_insert.lock(&room_id).await;
 
-	let mut remove_batch = conduwuit_database::Batch::new();
+	let mut demote_batch = conduwuit_database::Batch::new();
 	services
 		.rooms
 		.timeline
-		.remove_timeline_pointers_batch(&mut remove_batch, &event_id)
+		.remove_timeline_pointers_batch(&mut demote_batch, &event_id)
 		.await;
-	services.rooms.timeline.apply_batch(remove_batch);
-
-	let mut outlier_batch = conduwuit_database::Batch::new();
-	services.rooms.outlier.add_pdu_outlier_batch(
-		&mut outlier_batch,
+	services.rooms.outlier.add_pdu_outlier_batch_demote(
+		&mut demote_batch,
 		&event_id,
 		&pdu_json,
 		Some(&room_id),
 	);
-	services.rooms.timeline.apply_batch(outlier_batch);
+	services.rooms.timeline.apply_batch(demote_batch);
 
 	drop(insert_lock);
 

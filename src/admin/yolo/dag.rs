@@ -34,21 +34,27 @@ pub(super) async fn get_room_dag(
 ) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room_id).await?;
 	let pdu_ids: Vec<OwnedEventId> = if topo {
+		use futures::TryStreamExt;
 		self.services
 			.rooms
 			.timeline
 			.topo_pdus(&room_id, None)
 			.filter_map(|res: Result<(_, PduEvent)>| {
 				futures::future::ready(match res {
-					| Ok((_, pdu)) => Some(pdu.event_id().to_owned()),
-					| Err(e) => {
-						warn!("get_room_dag --topo: skipping undecodable topo row: {e}");
+					| Ok((_, pdu)) => Some(Ok(pdu.event_id().to_owned())),
+					| Err(
+						conduwuit::Error::SerdeDe(_)
+						| conduwuit::Error::Json(_)
+						| conduwuit::Error::CanonicalJson(_),
+					) => {
+						warn!("get_room_dag --topo: skipping undecodable topo row");
 						None
 					},
+					| Err(e) => Some(Err(e)),
 				})
 			})
-			.collect()
-			.await
+			.try_collect()
+			.await?
 	} else {
 		self.services
 			.rooms
