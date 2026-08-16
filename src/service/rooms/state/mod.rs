@@ -304,10 +304,13 @@ impl Service {
 						// Replacement member events were already processed by the new-events
 						// loop above. Without a replacement, the user is absent from the new
 						// state and must be marked left.
+						//
+						// Use the silent variant here so we do not wipe a just-added invite
+						// when state resolution is transitioning from leave/ban -> invite.
 						if !new_state_events.contains_key(&shortstatekey) {
 							self.services
 								.state_cache
-								.mark_as_left(user_id, room_id, None)
+								.mark_as_left_silent(user_id, room_id)
 								.await;
 						}
 					}
