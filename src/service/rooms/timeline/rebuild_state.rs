@@ -192,8 +192,8 @@ impl super::Service {
 					room_version = create_content.room_version;
 				} else {
 					warn!(
-						"rebuild_state: create event {eid} could not be parsed for room version; \
-						 using cached room version {room_version}"
+						"rebuild_state: create event {eid} could not be parsed for room \
+						 version; using cached room version {room_version}"
 					);
 				}
 			}

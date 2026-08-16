@@ -137,11 +137,12 @@ pub(super) async fn rescue_room(
 	if reorder {
 		self.write_str(&format!("Reordering timeline for {room_id} after rescue..."))
 			.await?;
-		Box::pin(self.services.rooms.timeline.reorder_timeline(
-			&room_id,
-			false,
-			false,
-		))
+		Box::pin(
+			self.services
+				.rooms
+				.timeline
+				.reorder_timeline(&room_id, false, false),
+		)
 		.await?;
 	} else {
 		self.write_str(&format!("Rebuilding state for {room_id} using rezzy..."))

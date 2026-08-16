@@ -124,7 +124,7 @@ impl CompactDag {
 	///
 	/// This must be used whenever we are recomputing state because membership
 	/// transitions depend on causal order, not just timestamps.
-	fn topo_sort(&self, events: &HashMap<OwnedEventId, PduEvent>) -> Vec<OwnedEventId> {
+	fn topo_sort(events: &HashMap<OwnedEventId, PduEvent>) -> Vec<OwnedEventId> {
 		let mut entries = HashMap::with_capacity(events.len());
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> =
 			HashMap::with_capacity(events.len());
@@ -148,15 +148,6 @@ impl CompactDag {
 		}
 
 		sort_timeline_events(&entries, &graph)
-	}
-
-	/// Compute forward extremities: events in sorted that have no children.
-	fn extremities(&self, sorted: &[u32]) -> Vec<OwnedEventId> {
-		sorted
-			.iter()
-			.filter(|&&i| !self.has_children.contains(i))
-			.map(|&i| self.idx_to_id[idx(i)].clone())
-			.collect()
 	}
 
 	/// Map a u32 index back to its event ID.
@@ -194,7 +185,7 @@ pub async fn heal_room(
 	// are applied causally.
 	let sorted_event_ids = if options.compute_state {
 		info!("heal_room: sorting {} events topologically for state rebuild...", events.len());
-		let sorted = dag.topo_sort(&events);
+		let sorted = CompactDag::topo_sort(&events);
 		info!("heal_room: sorted {} events topologically", sorted.len());
 		sorted
 	} else {
