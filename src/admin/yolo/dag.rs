@@ -6,6 +6,7 @@ use std::{
 use conduwuit::{
 	Err, PduCount, Result, err, info,
 	matrix::{Event, pdu::PduEvent},
+	utils::stream::TryIgnore,
 	warn,
 };
 use futures::StreamExt;
@@ -30,16 +31,27 @@ pub(super) async fn get_room_dag(
 	outliers: bool,
 	segments: bool,
 	merge_outliers: bool,
+	topo: bool,
 ) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room_id).await?;
-	let pdu_ids: Vec<OwnedEventId> = self
-		.services
-		.rooms
-		.timeline
-		.all_pdus(&room_id)
-		.map(|(_, pdu)| pdu.event_id().to_owned())
-		.collect()
-		.await;
+	let pdu_ids: Vec<OwnedEventId> = if topo {
+		self.services
+			.rooms
+			.timeline
+			.topo_pdus(&room_id, None)
+			.ignore_err()
+			.map(|(_, pdu): (_, PduEvent)| pdu.event_id().to_owned())
+			.collect()
+			.await
+	} else {
+		self.services
+			.rooms
+			.timeline
+			.all_pdus(&room_id)
+			.map(|(_, pdu)| pdu.event_id().to_owned())
+			.collect()
+			.await
+	};
 
 	let actual_start = if start < 0 {
 		let offset = usize::try_from(start.unsigned_abs()).unwrap_or(usize::MAX);
@@ -659,7 +671,7 @@ pub(super) async fn get_remote_dag(
 		let mut batch_pdus = Vec::new();
 		let mut batch_event_ids = HashSet::new();
 
-		while let Some((raw_pdu, validation_res)) = verifications.next().await {
+		while let Some((_raw_pdu, validation_res)) = verifications.next().await {
 			let (event_id, mut value) = match validation_res {
 				| Ok((eid, val)) => (eid, val),
 				| Err(e) => {
@@ -675,29 +687,21 @@ pub(super) async fn get_remote_dag(
 				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 
-			batch_pdus.push((event_id, value, raw_pdu));
+			batch_pdus.push((event_id, value));
 		}
 
-		for (event_id, value, raw_pdu) in batch_pdus {
+		for (event_id, value) in batch_pdus {
 			if seen.contains(&event_id) {
 				continue;
 			}
 			seen.insert(event_id.clone());
 
-			let Ok(pdu) = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id.as_ref()))
-			else {
+			let json = serde_json::to_string(&value).ok();
+			let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) else {
 				continue;
 			};
 
-			let mut export_val: serde_json::Map<String, serde_json::Value> =
-				serde_json::from_str(raw_pdu.get()).unwrap_or_default();
-			if !export_val.contains_key("event_id") {
-				export_val.insert(
-					"event_id".to_owned(),
-					serde_json::Value::String(event_id.to_string()),
-				);
-			}
-			if let Ok(json) = serde_json::to_string(&export_val) {
+			if let Some(json) = json {
 				if writer.write_all(json.as_bytes()).await.is_ok() {
 					let _ = writer.write_all(b"\n").await;
 				}

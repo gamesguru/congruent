@@ -300,6 +300,12 @@ pub enum YoloCommand {
 		/// separate file
 		#[arg(long)]
 		merge_outliers: bool,
+		/// Walk `roomid_topologicalorder_pducount` (the actual index
+		/// `/messages` and `/sync` paginate over) instead of raw arrival
+		/// order. Use this to check what clients really see, since arrival
+		/// order is immutable and `reorder-timeline` never touches it.
+		#[arg(long)]
+		topo: bool,
 	},
 
 	/// Fetch a room's DAG from a remote server via federation backfill API
