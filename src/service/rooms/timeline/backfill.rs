@@ -900,6 +900,24 @@ pub async fn backfill_pdu(
 /// the event is valid (e.g. it came from a send_join response).
 #[implement(super::Service)]
 pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+	let mut batch = database::Batch::new();
+	self.promote_outlier_batch(&mut batch, room_id, event_id)
+		.await?;
+	self.db_apply_batch(batch);
+	Ok(())
+}
+
+/// Batched variant of [`Self::promote_outlier`]. The caller owns the
+/// `Batch` and is responsible for applying it (typically once per chunk of
+/// events, mirroring [`Self::force_insert_pdu_batch`]) so bulk promotions
+/// don't fire one DB commit -- and one `/sync` wake -- per event.
+#[implement(super::Service)]
+pub async fn promote_outlier_batch<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<()> {
 	// Skip if already in timeline
 	if self.non_outlier_pdu_exists(event_id).await {
 		return Ok(());
@@ -956,7 +974,7 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 	.into();
 
 	self.db
-		.prepend_backfill_pdu(&pdu_id, event_id, &value, &pdu)
+		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
 		.await;
 	self.associate_current_state(room_id, event_id).await?;
 

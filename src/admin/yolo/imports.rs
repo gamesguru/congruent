@@ -290,10 +290,12 @@ pub(super) async fn import_pdus(
 							)
 							.await?;
 					} else {
+						// Batched like the skip_auth branch above -- one DB commit (and
+						// one /sync wake) per chunk instead of per event.
 						self.services
 							.rooms
 							.timeline
-							.promote_outlier(&room_id, &eid)
+							.promote_outlier_batch(&mut batch, &room_id, &eid)
 							.await?;
 					}
 
