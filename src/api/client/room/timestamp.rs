@@ -104,11 +104,13 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 						);
 						None
 					} else {
-						match services
-							.rooms
-							.timeline
-							.get_remote_pdu(room_id, &fed.event_id)
-							.await
+						match Box::pin(
+							services
+								.rooms
+								.timeline
+								.get_remote_pdu(room_id, &fed.event_id),
+						)
+						.await
 						{
 							| Ok(pdu) => {
 								if services

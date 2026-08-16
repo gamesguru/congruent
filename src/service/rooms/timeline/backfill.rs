@@ -31,10 +31,7 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::{
-	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
-	short::ShortStateKey,
-};
+use crate::rooms::pdu_metadata::{RejectionCode, is_retryable_rejection_reason};
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -840,6 +837,21 @@ pub async fn backfill_pdu(
 		},
 	};
 
+	// Compute the event's genuine state-at-event via real state resolution
+	// BEFORE acquiring insert_lock. This can involve federation I/O
+	// (/state_ids or single-hop /event fallback if local resolution can't
+	// determine state-at-event) and must not run inside mutex_insert's
+	// room-wide critical section -- otherwise one slow backfilled event
+	// serializes every other concurrent insert into this room, live /send
+	// included.
+	if let Err(e) = self
+		.associate_resolved_state(&room_id, &pdu_event, origin)
+		.await
+	{
+		warn!(target: "backfill_debug", %event_id, "backfill_pdu: associate_resolved_state FAILED: {e}");
+		return Err(e);
+	}
+
 	let shortroomid = self
 		.services
 		.short
@@ -849,7 +861,11 @@ pub async fn backfill_pdu(
 	let insert_lock = self.mutex_insert.lock(&room_id).await;
 
 	// Re-check after acquiring insert lock to prevent TOCTOU races
-	// with concurrent /send transactions inserting the same event.
+	// with concurrent /send transactions inserting the same event. If a
+	// concurrent insert won this race, the state association written above
+	// is harmless (redundant, not wrong -- state resolution is deterministic
+	// and reads only from already-persisted ancestors) and we still skip the
+	// actual timeline insert.
 	if self.non_outlier_pdu_exists(&event_id).await {
 		warn!(
 			target: "backfill_debug",
@@ -880,10 +896,6 @@ pub async fn backfill_pdu(
 	self.db
 		.prepend_backfill_pdu(&pdu_id, &event_id, &json_value, &pdu_event)
 		.await;
-	if let Err(e) = self.associate_current_state(&room_id, &event_id).await {
-		warn!(target: "backfill_debug", %event_id, count, "backfill_pdu: associate_current_state FAILED: {e}");
-		return Err(e);
-	}
 
 	info!(target: "backfill_debug", %event_id, count, "backfill_pdu: insert complete");
 
@@ -1035,7 +1047,17 @@ pub async fn promote_outlier_batch<'a>(
 	self.db
 		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
 		.await;
-	self.associate_current_state(room_id, event_id).await?;
+	// No real backfill-source origin is available on this path (unlike
+	// backfill_pdu, which knows exactly which server it pulled from) -- fall
+	// back to the event's own claimed origin, then its sender's homeserver.
+	// Only consulted as a last-resort /state_ids fallback if local
+	// resolution can't determine state-at-event from events already known.
+	let origin = pdu
+		.origin
+		.clone()
+		.unwrap_or_else(|| pdu.sender.server_name().to_owned());
+	self.associate_resolved_state(room_id, &pdu, &origin)
+		.await?;
 
 	drop(insert_lock);
 
@@ -1070,25 +1092,75 @@ pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId)
 	}
 }
 
+/// Associate a backfilled event with its genuine state-at-event, computed via
+/// real state resolution over the event's own `prev_events` -- the same
+/// pipeline live federation `/send` events use
+/// (`event_handler::resolve_state_at_incoming_event`/`compress_state_at_event`,
+/// normally reached through `upgrade_outlier_to_timeline_pdu`'s
+/// `is_forward_extremity: false` branch).
+///
+/// This replaces a previous implementation that stamped the room's *current*
+/// live state onto the backfilled event unmodified -- which silently
+/// dropped every backfilled state event's own effect (a member join never
+/// showing up as joined, a superseded `join_rules` never actually
+/// superseding) because it never folded the event's own `(type, state_key)`
+/// into the snapshot it wrote. See
+/// docs/development-gg/backfill-state-association-bug.md.
+///
+/// Only writes the per-event state association (`set_event_state`) -- never
+/// merges into the room's live current state, matching backfilled events'
+/// semantics (they are historical, not the tip).
+///
+/// `origin` should be the actual server this event was backfilled from
+/// (`backfill_pdu`'s own `origin` parameter) wherever the caller has one --
+/// it's used as the `/state_ids`/`/event` fallback target if local
+/// resolution can't determine state-at-event from events we already have,
+/// and the backfill source is the right server to ask, not necessarily the
+/// event's sender's homeserver.
 #[implement(super::Service)]
-async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
-	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
+async fn associate_resolved_state(
+	&self,
+	room_id: &RoomId,
+	pdu: &PduEvent,
+	origin: &ServerName,
+) -> Result<()> {
+	let create_event = self
 		.services
 		.state_accessor
-		.state_full_ids::<OwnedEventId>(shortstatehash)
-		.collect::<Vec<_>>()
-		.await;
-	let compressed: crate::rooms::state_compressor::CompressedState = self
+		.room_state_get(room_id, &StateEventType::RoomCreate, "")
+		.await?;
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
+
+	let state_at_event = self
 		.services
-		.state_compressor
-		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
-		.collect()
-		.await;
+		.event_handler
+		.resolve_state_at_incoming_event(
+			pdu,
+			&create_event,
+			origin,
+			room_id,
+			&room_version_id,
+			false, // skip_soft_fail: enforce real auth + remote fallback, matching the live path
+			false, // prev_fetch_had_invalid_data: not applicable outside fetch_prev
+			None,  // state_ids_anchor_hint
+			// merge_current_extremities: false -- this is historical data, never fold
+			// in the room's current live tip when this event's own prev_events don't
+			// match it (they never will, for anything actually historical).
+			false,
+		)
+		.await?;
+
+	// Must run before acquiring any state.mutex guard for this room --
+	// compress_state_at_event can perform thousands of short-ID lookups.
+	let compressed = self
+		.services
+		.event_handler
+		.compress_state_at_event(&state_at_event)
+		.await?;
 
 	self.services
 		.state
-		.set_event_state(event_id, room_id, Arc::new(compressed))
+		.set_event_state(pdu.event_id(), room_id, compressed)
 		.await?;
 	Ok(())
 }

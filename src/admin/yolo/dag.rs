@@ -6,7 +6,6 @@ use std::{
 use conduwuit::{
 	Err, PduCount, Result, err, info,
 	matrix::{Event, pdu::PduEvent},
-	utils::stream::TryIgnore,
 	warn,
 };
 use futures::StreamExt;
@@ -39,8 +38,15 @@ pub(super) async fn get_room_dag(
 			.rooms
 			.timeline
 			.topo_pdus(&room_id, None)
-			.ignore_err()
-			.map(|(_, pdu): (_, PduEvent)| pdu.event_id().to_owned())
+			.filter_map(|res: Result<(_, PduEvent)>| {
+				futures::future::ready(match res {
+					| Ok((_, pdu)) => Some(pdu.event_id().to_owned()),
+					| Err(e) => {
+						warn!("get_room_dag --topo: skipping undecodable topo row: {e}");
+						None
+					},
+				})
+			})
 			.collect()
 			.await
 	} else {
@@ -660,9 +666,9 @@ pub(super) async fn get_remote_dag(
 				async move {
 					// BYPASS signature verification to make get-remote-dag BLAZING fast!
 					// Just generate the ID and canonical JSON without fetching keys over network.
-					let res =
-						conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv);
-					(raw_pdu, res)
+					// raw_pdu itself is dropped here -- the canonical `value` returned below
+					// is what both the PduEvent and the export line are built from.
+					conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv)
 				}
 			})
 			.buffered(500);
@@ -671,7 +677,7 @@ pub(super) async fn get_remote_dag(
 		let mut batch_pdus = Vec::new();
 		let mut batch_event_ids = HashSet::new();
 
-		while let Some((_raw_pdu, validation_res)) = verifications.next().await {
+		while let Some(validation_res) = verifications.next().await {
 			let (event_id, mut value) = match validation_res {
 				| Ok((eid, val)) => (eid, val),
 				| Err(e) => {
