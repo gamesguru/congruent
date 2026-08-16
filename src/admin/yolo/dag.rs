@@ -369,7 +369,7 @@ pub(super) async fn get_remote_dag(
 	extra_servers: Vec<OwnedServerName>,
 	gap_fill: bool,
 	import: bool,
-	_skip_auth: bool,
+	skip_auth: bool,
 	reorder: bool,
 ) -> Result {
 	use futures::StreamExt;
@@ -799,17 +799,48 @@ pub(super) async fn get_remote_dag(
 	))
 	.await?;
 
-	// Pipeline hint
 	if import {
+		self.write_str(&format!("\nImporting {total} PDUs from {display_path}...\n"))
+			.await?;
+		// The crawl above never verified signatures (bypassed for crawl speed),
+		// so importing must also skip verification -- there's nothing more
+		// trustworthy to check against at this point than at crawl time.
+		Box::pin(self.import_pdus(
+			display_path.clone(),
+			Some(room_id.clone()),
+			skip_auth,
+			true,
+			false,
+			Some(room_version.clone()),
+		))
+		.await?;
+
+		if reorder {
+			self.write_str(&format!("Reordering timeline for {room_id}...\n"))
+				.await?;
+			Box::pin(
+				self.services
+					.rooms
+					.timeline
+					.reorder_timeline(&room_id, false, false),
+			)
+			.await?;
+		}
+	} else {
+		// Pipeline hint -- only meaningful when the caller didn't ask us to
+		// run it ourselves.
 		self.write_str(&format!(
 			"\nTo import: `yolo import-pdus {display_path} --skip-sig-verify`\n"
 		))
 		.await?;
-	}
 
-	if reorder {
-		self.write_str(&format!("To reorder: `yolo reorder-timeline {room_id}`\n"))
+		if reorder {
+			self.write_str(
+				"Note: --reorder has no effect without --import (nothing was persisted to \
+				 reorder).\n",
+			)
 			.await?;
+		}
 	}
 
 	Ok(())
