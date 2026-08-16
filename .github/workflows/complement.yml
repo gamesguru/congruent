@@ -231,9 +231,12 @@ jobs:
           # Inject arch, os, and profile into the JSONL file itself.
           # We use a temp file to avoid reading/writing to the same file.
           TEMP_RESULTS=$(mktemp)
+          SORTED_RESULTS=$(mktemp)
           jq -c --arg a "${{ matrix.arch }}" --arg o "${{ matrix.os }}" --arg p "${{ matrix.profile }}" --arg rv "${{ matrix.room_version }}" \
             '. + {arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS" > "$TEMP_RESULTS"
-          mv "$TEMP_RESULTS" "$RESULTS"
+          sort -u "$TEMP_RESULTS" > "$SORTED_RESULTS"
+          mv "$SORTED_RESULTS" "$RESULTS"
+          rm -f "$TEMP_RESULTS"
 
           PASS=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS")
           FAIL=$(jq -s '[.[] | select(.Action == "fail")] | length' "$RESULTS")

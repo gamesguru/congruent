@@ -1312,9 +1312,9 @@ impl Service {
 		let key = (user_id, count);
 		self.db.keychangeid_userid.put_raw(key, user_id);
 
-		// Publish count atomically with Release ordering AFTER all DB writes land
+		// Keep the published watermark monotonic across concurrent calls.
 		self.last_device_key_update_count
-			.store(count, std::sync::atomic::Ordering::Release);
+			.fetch_max(count, std::sync::atomic::Ordering::AcqRel);
 	}
 
 	pub fn mark_device_list_left(&self, user_id: &UserId, left_user: &UserId, count: u64) {
@@ -2076,7 +2076,8 @@ mod tests {
 
 		assert_eq!(
 			serialized_old, serialized_new,
-			"Merging signatures with different key insertion order must serialize byte-identically (sorted map keys)"
+			"Merging signatures with different key insertion order must serialize \
+			 byte-identically (sorted map keys)"
 		);
 	}
 }
