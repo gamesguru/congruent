@@ -5,9 +5,10 @@ use std::{
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Error, Result, debug, debug_warn, err, info,
+	Err, Error, Result, debug, err, info,
 	result::NotFound,
 	utils::{IterStream, stream::WidebandExt},
+	warn,
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -49,8 +50,10 @@ pub(crate) async fn upload_keys_route(
 		if one_time_key
 			.deserialize()
 			.inspect_err(|e| {
-				debug_warn!(
+				warn!(
 					%key_id,
+					%sender_user,
+					%sender_device,
 					?one_time_key,
 					"Invalid one time key JSON submitted by client, skipping: {e}"
 				);
@@ -68,18 +71,33 @@ pub(crate) async fn upload_keys_route(
 
 	if let Some(device_keys) = &body.device_keys {
 		let deser_device_keys = device_keys.deserialize().map_err(|e| {
-			err!(Request(BadJson(debug_warn!(
+			warn!(
+				%sender_user,
+				%sender_device,
 				?device_keys,
 				"Invalid device keys JSON uploaded by client: {e}"
-			))))
+			);
+			err!(Request(BadJson("Invalid device keys JSON uploaded by client")))
 		})?;
 
 		if deser_device_keys.user_id != sender_user {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_user_id = %deser_device_keys.user_id,
+				"User ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"User ID in keys uploaded does not match your own user ID"
 			)));
 		}
 		if deser_device_keys.device_id != sender_device {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_device_id = %deser_device_keys.device_id,
+				"Device ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"Device ID in keys uploaded does not match your own device ID"
 			)));
