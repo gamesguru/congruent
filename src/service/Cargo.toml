@@ -117,6 +117,12 @@ sd-notify.workspace = true
 [dev-dependencies]
 figment = { workspace = true, features = ["toml"] }
 rustls.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "hamt"
+path = "../../benches/hamt.rs"
+harness = false
 
 [lints]
 workspace = true
