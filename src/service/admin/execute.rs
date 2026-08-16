@@ -55,7 +55,6 @@ pub async fn startup_execute(&self) -> Result {
 	if should_shutdown_after_startup_execute(
 		self.services.server.config.admin_console_automatic,
 		commands.len(),
-		smoketest,
 	) {
 		debug_info!("Startup console commands complete. Shutting down now...");
 		self.services
@@ -151,9 +150,8 @@ fn execute_command_error(i: usize, content: &RoomMessageEventContent) -> Result 
 fn should_shutdown_after_startup_execute(
 	admin_console_automatic: bool,
 	command_count: usize,
-	smoketest: bool,
 ) -> bool {
-	smoketest || (admin_console_automatic && command_count > 0)
+	admin_console_automatic && command_count > 0
 }
 
 #[cfg(test)]
@@ -162,21 +160,14 @@ mod tests {
 
 	#[test]
 	fn startup_console_shuts_down_after_execute_commands() {
-		assert!(should_shutdown_after_startup_execute(true, 1, false));
-		assert!(should_shutdown_after_startup_execute(true, 2, false));
+		assert!(should_shutdown_after_startup_execute(true, 1));
+		assert!(should_shutdown_after_startup_execute(true, 2));
 	}
 
 	#[test]
 	fn startup_console_stays_alive_without_execute_commands() {
-		assert!(!should_shutdown_after_startup_execute(true, 0, false));
-		assert!(!should_shutdown_after_startup_execute(false, 0, false));
-		assert!(!should_shutdown_after_startup_execute(false, 3, false));
-	}
-
-	#[test]
-	fn smoketest_always_shuts_down() {
-		assert!(should_shutdown_after_startup_execute(false, 0, true));
-		assert!(should_shutdown_after_startup_execute(true, 0, true));
-		assert!(should_shutdown_after_startup_execute(false, 3, true));
+		assert!(!should_shutdown_after_startup_execute(true, 0));
+		assert!(!should_shutdown_after_startup_execute(false, 0));
+		assert!(!should_shutdown_after_startup_execute(false, 3));
 	}
 }
