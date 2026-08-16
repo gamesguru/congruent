@@ -453,6 +453,10 @@ impl Service {
 	/// `soft_failed`/`rejected` snapshot captured in that pending batch
 	/// silently overwriting the clear once the batch is applied.
 	///
+	/// `MissingAuthEvent` is intentionally preserved here: it means the event
+	/// still lacks a validated auth chain, so promotion must not erase that
+	/// marker just because the reason is retryable in general.
+	///
 	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows but
 	/// does not fully close the TOCTOU window against a `mark_event_rejected`
 	/// landing between the read and the write below; a genuine fix needs a
@@ -463,6 +467,9 @@ impl Service {
 			self.clear_pdu_markers(event_id);
 			return true;
 		};
+		if matches!(RejectionCode::parse(&reason), Some(RejectionCode::MissingAuthEvent)) {
+			return false;
+		}
 		if is_retryable_rejection_reason(&reason) {
 			self.clear_pdu_markers(event_id);
 			true

@@ -10,7 +10,7 @@ use std::{
 
 use conduwuit::{Err, Error, PduEvent, RoomVersion};
 use conduwuit_core::{
-	Result, debug, debug_warn, err, implement, info,
+	Result, SyncMutex, debug, debug_warn, err, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -911,6 +911,35 @@ pub enum PromoteOutlierOutcome {
 	Queued,
 }
 
+struct PendingPromotionGuard<'a> {
+	pending_promotions: &'a SyncMutex<HashSet<OwnedEventId>>,
+	event_id: &'a EventId,
+	armed: bool,
+}
+
+impl<'a> PendingPromotionGuard<'a> {
+	fn new(
+		pending_promotions: &'a SyncMutex<HashSet<OwnedEventId>>,
+		event_id: &'a EventId,
+	) -> Self {
+		Self {
+			pending_promotions,
+			event_id,
+			armed: true,
+		}
+	}
+
+	fn disarm(&mut self) { self.armed = false; }
+}
+
+impl Drop for PendingPromotionGuard<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.pending_promotions.lock().remove(self.event_id);
+		}
+	}
+}
+
 /// Batched variant of [`Self::promote_outlier`]. The caller owns the
 /// `Batch` and is responsible for applying it (typically once per chunk of
 /// events, mirroring [`Self::force_insert_pdu_batch`]) so bulk promotions
@@ -963,6 +992,7 @@ pub async fn promote_outlier_batch<'a>(
 		drop(insert_lock);
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
+	let mut reservation_guard = PendingPromotionGuard::new(&self.pending_promotions, event_id);
 
 	// A concurrent retry may have rejected this event after the caller's
 	// earlier metadata check but before we acquired the insertion lock.
@@ -974,7 +1004,6 @@ pub async fn promote_outlier_batch<'a>(
 			%room_id,
 			"promote_outlier: event was rejected before insert-lock promotion, skipping"
 		);
-		self.pending_promotions.lock().remove(event_id);
 		drop(insert_lock);
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
@@ -1000,6 +1029,7 @@ pub async fn promote_outlier_batch<'a>(
 
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
+	reservation_guard.disarm();
 
 	Ok(PromoteOutlierOutcome::Queued)
 }

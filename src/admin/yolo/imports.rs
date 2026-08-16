@@ -193,6 +193,7 @@ pub(super) async fn import_pdus(
 			// below; finalize each one's rejection/soft-fail markers afterward
 			// via finish_promote_outlier (see that method's doc comment).
 			let mut queued_promotions: Vec<OwnedEventId> = Vec::new();
+			let mut queued_marker_updates: Vec<(OwnedEventId, bool, bool)> = Vec::new();
 
 			for (eid, value, pdu, is_outlier, is_soft_failed, is_rejected) in chunk {
 				let is_outlier = is_outlier || force;
@@ -320,18 +321,8 @@ pub(super) async fn import_pdus(
 				match insert_result {
 					| Ok((eid, true)) => {
 						chunk_inserted = chunk_inserted.saturating_add(1);
-						if is_soft_failed {
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_soft_failed(&eid, "imported as soft-failed");
-						}
-						if is_rejected {
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_rejected(&eid, "imported as rejected")
-								.await;
+						if is_soft_failed || is_rejected {
+							queued_marker_updates.push((eid, is_soft_failed, is_rejected));
 						}
 					},
 					| Ok((_eid, false)) => {
@@ -351,6 +342,21 @@ pub(super) async fn import_pdus(
 					.timeline
 					.finish_promote_outlier(&room_id, eid)
 					.await;
+			}
+			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
+				if is_rejected {
+					self.services
+						.rooms
+						.pdu_metadata
+						.mark_event_rejected(&eid, "imported as rejected")
+						.await;
+				}
+				if is_soft_failed {
+					self.services
+						.rooms
+						.pdu_metadata
+						.mark_event_soft_failed(&eid, "imported as soft-failed");
+				}
 			}
 			info!(
 				"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
