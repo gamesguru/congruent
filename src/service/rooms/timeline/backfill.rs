@@ -216,6 +216,18 @@ pub async fn backfill_if_required(
 	let mut saw_extra_timeline_pdu = false;
 	let mut verify_after_promotion = false;
 	let mut budget = 5_u32;
+	// `backfill_gap_repeat_cache` below (keyed on this same fingerprint) is
+	// meant to short-circuit a repeat of the identical unresolved gap, but was
+	// observed in production logs not doing so: the same gap/fingerprint
+	// repeated 5 times within one call (budget 4->0), each round asking the
+	// same server and getting back the same response that didn't resolve it,
+	// before finally falling through to "budget exhausted". The cache's TTL
+	// (15s) is far longer than that ~3s loop, so expiry isn't why, and the
+	// actual reason wasn't tracked down. Track the fingerprint locally as
+	// well so this call can short-circuit on its own re-entering with the
+	// same unresolved fingerprint, independent of whatever the cache's issue
+	// turns out to be.
+	let mut last_repeat_fingerprint: Option<u64> = None;
 
 	loop {
 		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
@@ -317,10 +329,11 @@ pub async fn backfill_if_required(
 		}
 		let repeat_fingerprint = repeat_hasher.finish();
 
-		if self
-			.backfill_gap_repeat_cache
-			.get(&(room_id.to_owned(), repeat_fingerprint))
-			.is_some()
+		if last_repeat_fingerprint == Some(repeat_fingerprint)
+			|| self
+				.backfill_gap_repeat_cache
+				.get(&(room_id.to_owned(), repeat_fingerprint))
+				.is_some()
 		{
 			debug!(
 				%room_id, %from, %scan_limit_u32, %repeat_fingerprint,
@@ -330,6 +343,7 @@ pub async fn backfill_if_required(
 		}
 		self.backfill_gap_repeat_cache
 			.insert((room_id.to_owned(), repeat_fingerprint), ());
+		last_repeat_fingerprint = Some(repeat_fingerprint);
 
 		if budget == 0 {
 			info!(
