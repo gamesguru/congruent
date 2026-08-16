@@ -330,6 +330,10 @@
 {"Action":"pass","Test":"TestLogout/Can_logout_current_device"}
 {"Action":"pass","Test":"TestLogout/Request_to_logout_with_invalid_an_access_token_is_rejected"}
 {"Action":"pass","Test":"TestLogout/Request_to_logout_without_an_access_token_is_rejected"}
+{"Action":"fail","Test":"TestMessagesPaginationStress"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=3"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=7"}
 {"Action":"skip","Test":"TestMSC3757OwnedState"}
 {"Action":"pass","Test":"TestMSC3967"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync"}
@@ -634,6 +638,7 @@
 {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
 {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin"}
+{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_initially"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_when_left_allowed_room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_with_mangled_join_rules"}
@@ -783,8 +788,8 @@
 {"Action":"pass","Test":"TestSendMessageWithTxn"}
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
-{"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
-{"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
+{"Action":"fail","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
+{"Action":"fail","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
