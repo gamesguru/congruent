@@ -86,14 +86,27 @@ async fn room_summary_response(
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
-	match local_room_summary_response(services, room_id, sender_user)
-		.boxed()
+	// Local state is only trustworthy while we're actually participating in
+	// the room. Once we've left (or never joined), `local_room_summary_response`
+	// still returns `Ok` -- it just reads whatever's left in local storage
+	// (e.g. a stale/zeroed `room_joined_count`) -- so without this gate it
+	// masks the remote-federation fallback below with garbage data instead of
+	// ever reaching it, for exactly the rooms that fallback exists to serve.
+	if services
+		.rooms
+		.state_cache
+		.server_in_room(services.globals.server_name(), room_id)
 		.await
 	{
-		| Ok(response) => return Ok(response),
-		| Err(e) => {
-			debug_warn!("Failed to get local room summary: {e:?}, falling back to remote");
-		},
+		match local_room_summary_response(services, room_id, sender_user)
+			.boxed()
+			.await
+		{
+			| Ok(response) => return Ok(response),
+			| Err(e) => {
+				debug_warn!("Failed to get local room summary: {e:?}, falling back to remote");
+			},
+		}
 	}
 
 	let room =
