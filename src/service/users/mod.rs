@@ -903,6 +903,8 @@ impl Service {
 		let mut prefix = user_id.as_bytes().to_vec();
 		prefix.push(0xFF);
 
+		let mut any_key_changed = false;
+
 		if let Some(master_key) = master_key {
 			let (master_key_key, _) = parse_master_key(user_id, master_key)?;
 			let mut master_key_val: serde_json::Value =
@@ -931,9 +933,18 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize master key: {e}")))
 			})?;
 
-			if old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).is_ok_and(|old_vec| old_vec != new_key_vec)
-			}) {
+			let is_changed = old_key.as_ref().is_none_or(|old| {
+				serde_json::to_vec(old).map_or_else(
+					|e| {
+						warn!(target: "cross_signing", "Failed to serialize stored master key for comparison: {e}");
+						true
+					},
+					|old_vec| old_vec != new_key_vec,
+				)
+			});
+
+			if is_changed {
+				any_key_changed = true;
 				info!(
 					target: "cross_signing",
 					"Storing new master cross-signing key for user {}",
@@ -997,9 +1008,18 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize self-signing key: {e}")))
 			})?;
 
-			if old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).is_ok_and(|old_vec| old_vec != new_key_vec)
-			}) {
+			let is_changed = old_key.as_ref().is_none_or(|old| {
+				serde_json::to_vec(old).map_or_else(
+					|e| {
+						warn!(target: "cross_signing", "Failed to serialize stored self-signing key for comparison: {e}");
+						true
+					},
+					|old_vec| old_vec != new_key_vec,
+				)
+			});
+
+			if is_changed {
+				any_key_changed = true;
 				info!(
 					target: "cross_signing",
 					"Storing new self-signing key for user {}",
@@ -1045,9 +1065,18 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize user-signing key: {e}")))
 			})?;
 
-			if old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).is_ok_and(|old_vec| old_vec != new_key_vec)
-			}) {
+			let is_changed = old_key.as_ref().is_none_or(|old| {
+				serde_json::to_vec(old).map_or_else(
+					|e| {
+						warn!(target: "cross_signing", "Failed to serialize stored user-signing key for comparison: {e}");
+						true
+					},
+					|old_vec| old_vec != new_key_vec,
+				)
+			});
+
+			if is_changed {
+				any_key_changed = true;
 				info!(
 					target: "cross_signing",
 					"Storing new user-signing key for user {}",
@@ -1062,7 +1091,7 @@ impl Service {
 			}
 		}
 
-		if notify {
+		if notify && any_key_changed {
 			self.mark_device_key_update(user_id).await;
 		}
 
@@ -1105,23 +1134,26 @@ impl Service {
 			.entry(sender_id.to_string())
 			.or_insert_with(|| serde_json::Map::new().into());
 
-		signatures
-			.as_object_mut()
-			.ok_or_else(|| {
-				err!(Database(info!("signatures in keyid_key for a user is invalid.")))
-			})?
-			.insert(signature.0, signature.1.into());
+		let sig_map = signatures.as_object_mut().ok_or_else(|| {
+			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
+		})?;
 
-		info!(
-			target: "cross_signing",
-			"User {} signed key {} of user {}",
-			sender_id, key_id, target_id
-		);
+		let prev_sig = sig_map.insert(signature.0.clone(), signature.1.clone().into());
+		let sig_changed =
+			prev_sig.as_ref().and_then(|v| v.as_str()) != Some(signature.1.as_str());
 
-		let key = (target_id, key_id);
-		self.db.keyid_key.put(key, Json(cross_signing_key));
+		if sig_changed {
+			info!(
+				target: "cross_signing",
+				"User {} signed key {} of user {}",
+				sender_id, key_id, target_id
+			);
 
-		self.mark_device_key_update(target_id).await;
+			let key = (target_id, key_id);
+			self.db.keyid_key.put(key, Json(cross_signing_key));
+
+			self.mark_device_key_update(target_id).await;
+		}
 
 		Ok(())
 	}
@@ -1211,8 +1243,6 @@ impl Service {
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
 		let count = self.services.globals.next_count().unwrap();
-		self.last_device_key_update_count
-			.store(count, std::sync::atomic::Ordering::Relaxed);
 
 		tracing::info!(%user_id, "mark_device_key_update called");
 
@@ -1281,6 +1311,10 @@ impl Service {
 
 		let key = (user_id, count);
 		self.db.keychangeid_userid.put_raw(key, user_id);
+
+		// Publish count atomically with Release ordering AFTER all DB writes land
+		self.last_device_key_update_count
+			.store(count, std::sync::atomic::Ordering::Release);
 	}
 
 	pub fn mark_device_list_left(&self, user_id: &UserId, left_user: &UserId, count: u64) {
