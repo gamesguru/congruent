@@ -35,7 +35,7 @@ pub async fn fetch_and_handle_outliers<'a, Pdu, Events>(
 	create_event: Option<&'a Pdu>,
 	room_id: &'a RoomId,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version: &'a ruma::RoomVersionId,
 	explicit_routing_servers: Option<Vec<OwnedServerName>>,
 ) -> Vec<(PduEvent, Option<BTreeMap<String, CanonicalJsonValue>>)>
 where
@@ -292,48 +292,7 @@ where
 											continue;
 										},
 									},
-								| None => {
-									let mut version = None;
-									if let Ok(json) =
-										serde_json::from_str::<serde_json::Value>(res.pdu.get())
-									{
-										if json.get("type").and_then(|t| t.as_str())
-											== Some("m.room.create")
-										{
-											let v = json
-												.get("content")
-												.and_then(|c| c.get("room_version"))
-												.and_then(|v| v.as_str())
-												.unwrap_or("1");
-											version = ruma::RoomVersionId::try_from(v).ok();
-										}
-									}
-									match version {
-										| Some(v) => v,
-										| None =>
-											if let Some(override_v) = room_version_override {
-												override_v.clone()
-											} else {
-												match self
-													.services
-													.state
-													.get_room_version(room_id)
-													.await
-												{
-													| Ok(v) => v,
-													| Err(e) => {
-														warn!(
-															"Unknown room version for \
-															 {room_id}, skipping outlier \
-															 {next_id}: {e}"
-														);
-														back_off(next_id.clone());
-														continue;
-													},
-												}
-											},
-									}
-								},
+								| None => room_version.clone(),
 							};
 							let (calculated_event_id, value) =
 								match gen_event_id_canonical_json(&res.pdu, &room_version_id) {
@@ -440,37 +399,7 @@ where
 							 {successful_server}"
 						);
 
-						let room_version_id = match create_event {
-							| Some(ce) => {
-								match crate::rooms::event_handler::get_room_version_id(ce) {
-									| Ok(v) => v,
-									| Err(_) => {
-										warn!(
-											"Provided create_event for {room_id} has no room \
-											 version! Skipping auth chain for {next_id}"
-										);
-										back_off(next_id.clone());
-										continue;
-									},
-								}
-							},
-							| None =>
-								if let Some(override_v) = room_version_override {
-									override_v.clone()
-								} else {
-									match self.services.state.get_room_version(room_id).await {
-										| Ok(v) => v,
-										| Err(e) => {
-											warn!(
-												"Unknown room version for {room_id}, skipping \
-												 auth chain for {next_id}: {e}"
-											);
-											back_off(next_id.clone());
-											continue;
-										},
-									}
-								},
-						};
+						let room_version_id = room_version.clone();
 
 						for pdu_raw in res.auth_chain {
 							match gen_event_id_canonical_json(&pdu_raw, &room_version_id) {
@@ -589,7 +518,7 @@ where
 				value.clone(),
 				true,
 				skip_sig_verify,
-				room_version_override,
+				room_version,
 				super::AuthRecoveryStage::BeforeStateIds,
 			))
 			.await

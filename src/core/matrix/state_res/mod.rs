@@ -1219,6 +1219,10 @@ where
 
 	trace!(map = ?auth_events.keys().collect::<Vec<_>>(), "fetched auth events");
 
+	// Cache auth check for some event
+	let _auth_check_cache: moka::sync::Cache<OwnedEventId, bool> =
+		moka::sync::Cache::builder().max_capacity(10_000).build();
+
 	let auth_events = &auth_events;
 	let mut resolved_state = unconflicted_state_sets.pop().unwrap_or_default();
 

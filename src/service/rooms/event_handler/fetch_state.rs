@@ -336,7 +336,7 @@ where
 				val,
 				true, // is_outlier
 				true, // skip_sig_verify (already done above)
-				Some(&room_version_id),
+				&room_version_id,
 				super::AuthRecoveryStage::AfterStateIds,
 			))
 			.await

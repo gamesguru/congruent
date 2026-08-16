@@ -324,7 +324,7 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	room_id: &RoomId,
 	event_id: &EventId,
 	value: ruma::CanonicalJsonObject,
-	room_version_id: Option<&ruma::RoomVersionId>,
+	room_version_id: &ruma::RoomVersionId,
 ) -> Result<conduwuit_core::pdu::RawPduId> {
 	use futures::FutureExt;
 
@@ -338,7 +338,14 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	let pdu_id = services
 		.rooms
 		.event_handler
-		.handle_incoming_pdu(origin, room_id, event_id, value, true, room_version_id)
+		.handle_incoming_pdu(
+			origin,
+			room_id,
+			event_id,
+			value,
+			true,
+			room_version_id,
+		)
 		.boxed()
 		.await?
 		.ok_or_else(|| err!(Request(InvalidParam("Could not accept as timeline event."))))?;

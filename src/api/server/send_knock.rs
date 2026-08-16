@@ -42,7 +42,7 @@ pub(crate) async fn create_knock_event_v1_route(
 		&body.room_id,
 		&event_id,
 		value,
-		None,
+		&room_version_id,
 	)
 	.await?;
 

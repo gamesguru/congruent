@@ -17,6 +17,7 @@ pub mod state;
 pub mod state_accessor;
 pub mod state_cache;
 pub mod state_compressor;
+pub mod state_partial;
 pub mod threads;
 pub mod timeline;
 pub mod typing;
@@ -33,6 +34,7 @@ pub struct Service {
 	pub lazy_loading: Arc<lazy_loading::Service>,
 	pub metadata: Arc<metadata::Service>,
 	pub outlier: Arc<outlier::Service>,
+	pub state_partial: Arc<state_partial::Service>,
 	pub pdu_metadata: Arc<pdu_metadata::Service>,
 	pub read_receipt: Arc<read_receipt::Service>,
 	pub search: Arc<search::Service>,

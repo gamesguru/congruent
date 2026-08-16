@@ -20,10 +20,11 @@ RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/test_results.jsonl}"}"
 # after running `cargo build`. Only the debug binary is used.
 COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 
-# Complement tests that are skipped due to flakiness/reliability issues or we don't implement such features and won't for a long time
-# This can be overridden by environment variable
-DEFAULT_SKIPPED_TESTS='TestPartialStateJoin.*'
-SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-"$DEFAULT_SKIPPED_TESTS"}"
+# Complement tests that are skipped due to flakiness/reliability issues or we
+# don't implement such features and won't for a long time.
+# Default to no skips so explicit partial runs actually execute the requested
+# suite. Callers can still set SKIPPED_COMPLEMENT_TESTS if they need a filter.
+SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-""}"
 
 # A regex for tests to run.
 RUN_TESTS="${COMPLEMENT_RUN:-.}"

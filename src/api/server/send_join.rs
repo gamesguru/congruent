@@ -122,7 +122,7 @@ async fn create_join_event(
 		room_id,
 		&event_id,
 		value.clone(),
-		None,
+		&room_version_id,
 	)
 	.await?;
 

@@ -523,6 +523,13 @@ async fn handle_room(
 		.lock(&room_id)
 		.await;
 
+	let room_version_id = services
+		.rooms
+		.state
+		.get_room_version(&room_id)
+		.await
+		.map_err(|e| TransactionError::Transient(e.to_string()))?;
+
 	let room_id = &room_id;
 	let pdu_map: HashMap<OwnedEventId, CanonicalJsonObject> = pdus
 		.into_iter()
@@ -550,12 +557,14 @@ async fn handle_room(
 			.server
 			.check_running()
 			.map_err(|_| TransactionError::ShuttingDown)?;
-		let result = Box::pin(
-			services
-				.rooms
-				.event_handler
-				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
-		)
+		let result = Box::pin(services.rooms.event_handler.handle_incoming_pdu(
+			origin,
+			room_id,
+			&event_id,
+			value,
+			true,
+			&room_version_id,
+		))
 		.await
 		.map(|_| ());
 
@@ -733,7 +742,12 @@ async fn handle_edu_receipt_room_user(
 		.rooms
 		.state_cache
 		.server_in_room(origin, room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(room_id, origin)
 		.await
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%user_id, %room_id, %origin,
@@ -795,7 +809,12 @@ async fn handle_edu_typing(
 		.rooms
 		.state_cache
 		.is_joined(&typing.user_id, &typing.room_id)
+		.await && !services
+		.rooms
+		.state_partial
+		.is_partial_from_server(&typing.room_id, typing.user_id.server_name())
 		.await
+		.unwrap_or(false)
 	{
 		debug_warn!(
 			%typing.user_id, %typing.room_id, %origin,

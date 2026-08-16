@@ -1482,6 +1482,7 @@ pub(super) async fn audit_auth_chain(
 
 	// --fetch: reuse the battle-tested outlier fetch pipeline (32-server EMA
 	// fallback, backoff, full signature validation, rate-limit tracking)
+	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
 
 	let mut out = format!(
 		"Fetching {} missing events via fetch_and_handle_outliers pipeline...\n",
@@ -1502,7 +1503,7 @@ pub(super) async fn audit_auth_chain(
 			None::<&PduEvent>,
 			&room_id,
 			false, // TODO: fetch doesn't skip signature verification currently
-			None,
+			&room_version,
 			if servers.is_empty() { None } else { Some(servers) },
 		)
 		.await;

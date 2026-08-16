@@ -672,6 +672,7 @@ async fn get_remote_pdu_limited(
 		}
 	});
 
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
 	let mut servers = self.get_backfill_servers(room_id, room_mods).await.boxed();
 
 	while let Some(ref backfill_server) = servers.next().await {
@@ -700,7 +701,7 @@ async fn get_remote_pdu_limited(
 				// materialize their predecessor chain into the backfilled
 				// timeline so they keep their historical position instead of
 				// becoming new forward timeline/extremity events.
-				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, None)
+				.handle_incoming_pdu(backfill_server, room_id, event_id, value, false, &room_version_id)
 				.boxed()
 				.await
 			{
@@ -817,7 +818,7 @@ pub async fn backfill_pdu(
 		value.clone(),
 		false,
 		false,
-		Some(&room_version_id),
+		&room_version_id,
 		crate::rooms::event_handler::AuthRecoveryStage::AfterStateIds,
 	))
 	.await

@@ -1366,6 +1366,14 @@
 #
 #allow_local_read_receipts = true
 
+# MSC3902: Faster Joins.
+#
+# Enable this to allow skipping full state resolution of massive
+# lists of offline members from remote servers during joins.
+# This allows handling large federation events with ease.
+#
+#fast_joins = true
+
 # Allow receiving incoming read receipts from remote servers.
 #
 #allow_incoming_read_receipts = true
