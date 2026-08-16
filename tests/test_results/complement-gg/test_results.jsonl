@@ -84,7 +84,7 @@
 {"Action":"pass","Test":"TestContent"}
 {"Action":"pass","Test":"TestContentCSAPIMediaV1"}
 {"Action":"pass","Test":"TestContentMediaV1"}
-{"Action":"pass","Test":"TestCorruptedAuthChain"}
+{"Action":"fail","Test":"TestCorruptedAuthChain"}
 {"Action":"pass","Test":"TestCumulativeJoinLeaveJoinSync"}
 {"Action":"pass","Test":"TestDeactivateAccount"}
 {"Action":"pass","Test":"TestDeactivateAccount/After_deactivating_account,_can't_log_in_with_password"}
@@ -151,11 +151,11 @@
 {"Action":"pass","Test":"TestEventAuth/returns_the_auth_chain_for_the_requested_event"}
 {"Action":"pass","Test":"TestEventRelationships"}
 {"Action":"pass","Test":"TestFederatedClientSpaces"}
-{"Action":"pass","Test":"TestFederatedEventRelationships"}
+{"Action":"fail","Test":"TestFederatedEventRelationships"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}
-{"Action":"pass","Test":"TestFederationRedactSendsWithoutEvent"}
+{"Action":"fail","Test":"TestFederationRedactSendsWithoutEvent"}
 {"Action":"pass","Test":"TestFederationRejectInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite/Parallel"}
@@ -485,7 +485,7 @@
 {"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}
 {"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)"}
 {"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}
-{"Action":"pass","Test":"TestMessagesPaginationStress"}
+{"Action":"fail","Test":"TestMessagesPaginationStress"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/ForwardAndJumpToStart"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/ForwardAndJumpToStart/Backward_from_end"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/ForwardAndJumpToStart/Backward_from_end/limit=1"}
@@ -516,9 +516,9 @@
 {"Action":"pass","Test":"TestMessagesPaginationStress/NoDuplicates/Re-join_with_activity_during_absence/limit=3"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/NoDuplicates/Re-join_with_activity_during_absence/limit=50"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/NoDuplicates/Re-join_with_activity_during_absence/limit=7"}
-{"Action":"pass","Test":"TestMessagesPaginationStress/StaleTokenResume"}
-{"Action":"pass","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=3"}
-{"Action":"pass","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=7"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=3"}
+{"Action":"fail","Test":"TestMessagesPaginationStress/StaleTokenResume/limit=7"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability/limit=1"}
 {"Action":"pass","Test":"TestMessagesPaginationStress/TokenStability/limit=10"}
@@ -532,7 +532,7 @@
 {"Action":"pass","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
-{"Action":"pass","Test":"TestOutboundFederationSend"}
+{"Action":"fail","Test":"TestOutboundFederationSend"}
 {"Action":"pass","Test":"TestPollsLocalPushRules"}
 {"Action":"pass","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}
 {"Action":"pass","Test":"TestPowerLevels"}
@@ -639,7 +639,7 @@
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_with_mangled_join_rules"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_succeed_when_invited"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_succeed_when_joined_to_allowed_room"}
-{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
+{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_fail_initially"}
