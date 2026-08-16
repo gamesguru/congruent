@@ -1139,6 +1139,10 @@ async fn associate_resolved_state(
 			false, // skip_soft_fail: enforce real auth + remote fallback, matching the live path
 			false, // prev_fetch_had_invalid_data: not applicable outside fetch_prev
 			None,  // state_ids_anchor_hint
+			// merge_current_extremities: false -- this is historical data, never fold
+			// in the room's current live tip when this event's own prev_events don't
+			// match it (they never will, for anything actually historical).
+			false,
 		)
 		.await?;
 
