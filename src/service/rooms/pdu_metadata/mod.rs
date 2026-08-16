@@ -332,6 +332,14 @@ impl Service {
 		self.db.mark_event_rejected(event_id, reason);
 	}
 
+	pub fn mark_event_rejected_skip_visibility_check(
+		&self,
+		event_id: &EventId,
+		reason: &str,
+	) {
+		self.db.mark_event_rejected(event_id, reason);
+	}
+
 	pub fn unmark_event_soft_failed(&self, event_id: &EventId) {
 		self.db.unmark_event_soft_failed(event_id);
 	}

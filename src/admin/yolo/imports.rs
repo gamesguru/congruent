@@ -348,8 +348,7 @@ pub(super) async fn import_pdus(
 					self.services
 						.rooms
 						.pdu_metadata
-						.mark_event_rejected(&eid, "imported as rejected")
-						.await;
+						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected");
 				}
 				if is_soft_failed {
 					self.services
