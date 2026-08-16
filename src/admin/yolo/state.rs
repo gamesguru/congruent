@@ -16,10 +16,16 @@ use ruma::{
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
 };
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use super::dag::format_ts;
 use crate::admin_command;
+
+#[derive(Deserialize)]
+struct LegacyEventId {
+	event_id: OwnedEventId,
+}
 
 #[admin_command]
 pub(super) async fn compare_room_state(
@@ -155,13 +161,9 @@ pub(super) async fn compare_room_state(
 			};
 			let legacy_state_event_id =
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
-					serde_json::from_str::<JsonValue>(response.pdu.get())
+					serde_json::from_str::<LegacyEventId>(response.pdu.get())
 						.ok()
-						.and_then(|json| {
-							json.get("event_id")
-								.and_then(|v| v.as_str())
-								.and_then(|event_id| OwnedEventId::try_from(event_id).ok())
-						})
+						.and_then(|parsed| parsed.event_id)
 				} else {
 					None
 				};

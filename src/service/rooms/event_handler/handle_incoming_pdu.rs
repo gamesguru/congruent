@@ -481,8 +481,11 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				))
 				.await
 				{
-					| Ok((_, _, Some(_deeper_anchor), _)) => {},
-					| Ok(_) => {},
+					| Ok(_) => {
+						// The deeper anchor is intentionally ignored here; this
+						// path keeps the incoming event's own direct prev
+						// as the state anchor.
+					},
 					| Err(e) => {
 						warn!(
 							event_id = %event_id,

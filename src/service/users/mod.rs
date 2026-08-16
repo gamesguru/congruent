@@ -933,15 +933,7 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize master key: {e}")))
 			})?;
 
-			let is_changed = old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).map_or_else(
-					|e| {
-						warn!(target: "cross_signing", "Failed to serialize stored master key for comparison: {e}");
-						true
-					},
-					|old_vec| old_vec != new_key_vec,
-				)
-			});
+			let is_changed = old_key.as_ref() != Some(&master_key_val);
 
 			if is_changed {
 				any_key_changed = true;
@@ -1008,15 +1000,7 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize self-signing key: {e}")))
 			})?;
 
-			let is_changed = old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).map_or_else(
-					|e| {
-						warn!(target: "cross_signing", "Failed to serialize stored self-signing key for comparison: {e}");
-						true
-					},
-					|old_vec| old_vec != new_key_vec,
-				)
-			});
+			let is_changed = old_key.as_ref() != Some(&self_signing_key_val);
 
 			if is_changed {
 				any_key_changed = true;
@@ -1065,15 +1049,7 @@ impl Service {
 				err!(Database(debug_error!("Failed to serialize user-signing key: {e}")))
 			})?;
 
-			let is_changed = old_key.as_ref().is_none_or(|old| {
-				serde_json::to_vec(old).map_or_else(
-					|e| {
-						warn!(target: "cross_signing", "Failed to serialize stored user-signing key for comparison: {e}");
-						true
-					},
-					|old_vec| old_vec != new_key_vec,
-				)
-			});
+			let is_changed = old_key.as_ref() != Some(&user_signing_key_val);
 
 			if is_changed {
 				any_key_changed = true;
@@ -1138,22 +1114,22 @@ impl Service {
 			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
 		})?;
 
-		let prev_sig = sig_map.insert(signature.0.clone(), signature.1.clone().into());
-		let sig_changed =
-			prev_sig.as_ref().and_then(|v| v.as_str()) != Some(signature.1.as_str());
-
-		if sig_changed {
-			info!(
-				target: "cross_signing",
-				"User {} signed key {} of user {}",
-				sender_id, key_id, target_id
-			);
-
-			let key = (target_id, key_id);
-			self.db.keyid_key.put(key, Json(cross_signing_key));
-
-			self.mark_device_key_update(target_id).await;
+		if sig_map.get(&signature.0).and_then(|v| v.as_str()) == Some(signature.1.as_str()) {
+			return Ok(());
 		}
+
+		sig_map.insert(signature.0.clone(), signature.1.clone().into());
+
+		info!(
+			target: "cross_signing",
+			"User {} signed key {} of user {}",
+			sender_id, key_id, target_id
+		);
+
+		let key = (target_id, key_id);
+		self.db.keyid_key.put(key, Json(cross_signing_key));
+
+		self.mark_device_key_update(target_id).await;
 
 		Ok(())
 	}
