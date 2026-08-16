@@ -44,19 +44,6 @@ use crate::rooms::{
 /// [`get_remote_pdu_limited`]'s doc comment.
 const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
 
-enum PromotionCleanupDecision {
-	ClearMarkers,
-	PreserveRejection,
-}
-
-fn promotion_cleanup_decision(rejected_during_promotion: bool) -> PromotionCleanupDecision {
-	if rejected_during_promotion {
-		PromotionCleanupDecision::PreserveRejection
-	} else {
-		PromotionCleanupDecision::ClearMarkers
-	}
-}
-
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
 	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
@@ -901,26 +888,47 @@ pub async fn backfill_pdu(
 #[implement(super::Service)]
 pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
 	let mut batch = database::Batch::new();
-	self.promote_outlier_batch(&mut batch, room_id, event_id)
+	let outcome = self
+		.promote_outlier_batch(&mut batch, room_id, event_id)
 		.await?;
-	self.db_apply_batch(batch);
+	if matches!(outcome, PromoteOutlierOutcome::Queued) {
+		self.db_apply_batch(batch);
+		self.finish_promote_outlier(room_id, event_id).await;
+	}
 	Ok(())
+}
+
+/// Whether [`Service::promote_outlier_batch`] queued a write into the
+/// caller's batch, or found nothing to do.
+pub enum PromoteOutlierOutcome {
+	/// Nothing was queued: already in the timeline, already reserved by a
+	/// concurrent/duplicate call, or rejected before promotion began.
+	Skipped,
+	/// A write was queued into `batch`. The caller must apply the batch and
+	/// then call [`Service::finish_promote_outlier`] with the same
+	/// `room_id`/`event_id` to release the reservation and finalize
+	/// rejection markers.
+	Queued,
 }
 
 /// Batched variant of [`Self::promote_outlier`]. The caller owns the
 /// `Batch` and is responsible for applying it (typically once per chunk of
 /// events, mirroring [`Self::force_insert_pdu_batch`]) so bulk promotions
 /// don't fire one DB commit -- and one `/sync` wake -- per event.
+///
+/// On [`PromoteOutlierOutcome::Queued`], the caller must apply `batch` and
+/// then call [`Self::finish_promote_outlier`] -- see that method's docs for
+/// why the two steps can't be collapsed here.
 #[implement(super::Service)]
 pub async fn promote_outlier_batch<'a>(
 	&'a self,
 	batch: &mut database::Batch<'a>,
 	room_id: &RoomId,
 	event_id: &EventId,
-) -> Result<()> {
+) -> Result<PromoteOutlierOutcome> {
 	// Skip if already in timeline
 	if self.non_outlier_pdu_exists(event_id).await {
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
 	let value = self.get_outlier_pdu_json(event_id).await?;
@@ -937,16 +945,23 @@ pub async fn promote_outlier_batch<'a>(
 	// Re-check after acquiring insert lock to prevent TOCTOU races with a
 	// concurrent backfill_pdu/append_pdu/force_insert_pdu inserting the
 	// same event (see docs/development-gg/backfill-append-toctou-race.md).
-	if self.non_outlier_pdu_exists(event_id).await {
+	//
+	// The DB-existence check alone isn't enough here: a batched promotion
+	// queued into another (not-yet-applied) batch won't show up as an
+	// existing row yet, so also consult the pending-reservation set --
+	// see `Service::pending_promotions`'s doc comment.
+	if self.non_outlier_pdu_exists(event_id).await
+		|| !self.pending_promotions.lock().insert(event_id.to_owned())
+	{
 		warn!(
 			target: "backfill_debug",
 			%event_id,
 			%room_id,
-			"promote_outlier: event already in timeline under the insert lock -- \
+			"promote_outlier: event already in timeline or already queued -- \
 			 skipping redundant insert (TOCTOU race caught)"
 		);
 		drop(insert_lock);
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
 	// A concurrent retry may have rejected this event after the caller's
@@ -959,8 +974,9 @@ pub async fn promote_outlier_batch<'a>(
 			%room_id,
 			"promote_outlier: event was rejected before insert-lock promotion, skipping"
 		);
+		self.pending_promotions.lock().remove(event_id);
 		drop(insert_lock);
-		return Ok(());
+		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
 	// Use backfill (negative) PDU count — these are historical events
@@ -978,27 +994,6 @@ pub async fn promote_outlier_batch<'a>(
 		.await;
 	self.associate_current_state(room_id, event_id).await?;
 
-	// A retry can still win the race between the earlier metadata checks and
-	// this insert. The room insert lock keeps the read/clear pair below
-	// synchronized with retry writers that use the same lock, so a rejection
-	// written after the read cannot be erased here.
-	match promotion_cleanup_decision(self.services.pdu_metadata.is_event_rejected(event_id).await)
-	{
-		| PromotionCleanupDecision::PreserveRejection => {
-			warn!(
-				target: "backfill_debug",
-				%event_id,
-				%room_id,
-				"promote_outlier: event was rejected during promotion; leaving rejection in place"
-			);
-		},
-		| PromotionCleanupDecision::ClearMarkers => {
-			// Clear any stale rejection flags now that the event is accepted into
-			// the timeline.
-			self.services.pdu_metadata.clear_pdu_markers(event_id);
-		},
-	}
-
 	drop(insert_lock);
 
 	self.index_pdu_search(shortroomid, &pdu_id, &pdu);
@@ -1006,7 +1001,29 @@ pub async fn promote_outlier_batch<'a>(
 	// Remove from outlier room index
 	self.clear_outlier_flag(event_id);
 
-	Ok(())
+	Ok(PromoteOutlierOutcome::Queued)
+}
+
+/// Completes a [`Self::promote_outlier_batch`] promotion after the caller
+/// has applied its batch: releases the `pending_promotions` reservation and
+/// finalizes rejection/soft-fail markers.
+///
+/// This must run *after* the batch write lands, not before: the queued
+/// write carries a `soft_failed`/`rejected` snapshot taken when the batch
+/// was built, so clearing markers first would just be silently overwritten
+/// back to their stale values once the batch is applied.
+#[implement(super::Service)]
+pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
+	self.pending_promotions.lock().remove(event_id);
+
+	if !self.services.pdu_metadata.finish_promotion(event_id).await {
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event was rejected during promotion; leaving rejection in place"
+		);
+	}
 }
 
 #[implement(super::Service)]
@@ -1186,27 +1203,6 @@ pub async fn force_insert_pdu(
 	self.index_pdu_search(shortroomid, &pdu_id, pdu);
 
 	Ok(pdu_id)
-}
-
-#[cfg(test)]
-mod tests {
-	use super::{PromotionCleanupDecision, promotion_cleanup_decision};
-
-	#[test]
-	fn promotion_cleanup_preserves_concurrent_rejection() {
-		assert!(matches!(
-			promotion_cleanup_decision(true),
-			PromotionCleanupDecision::PreserveRejection
-		));
-	}
-
-	#[test]
-	fn promotion_cleanup_clears_when_no_rejection_raced() {
-		assert!(matches!(
-			promotion_cleanup_decision(false),
-			PromotionCleanupDecision::ClearMarkers
-		));
-	}
 }
 
 #[implement(super::Service)]

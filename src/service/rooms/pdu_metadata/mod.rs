@@ -442,6 +442,35 @@ impl Service {
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
 
+	/// Finalizes an outlier promotion's rejection/soft-fail markers with a
+	/// single read of the current rejection state, then either clears them
+	/// (event is now fully accepted) or leaves them in place (a concurrent
+	/// writer rejected the event for a non-retryable reason in the meantime).
+	///
+	/// Must be called only *after* the promotion's PDU write has already
+	/// landed (e.g. after the caller applies the batch from
+	/// `promote_outlier_batch`) -- calling it before risks a stale
+	/// `soft_failed`/`rejected` snapshot captured in that pending batch
+	/// silently overwriting the clear once the batch is applied.
+	///
+	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows but
+	/// does not fully close the TOCTOU window against a `mark_event_rejected`
+	/// landing between the read and the write below; a genuine fix needs a
+	/// DB-level conditional write, which this store doesn't expose.
+	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
+		let Some(reason) = self.get_rejection_reason(event_id).await else {
+			// Not rejected -- still clear any stale soft-fail marker.
+			self.clear_pdu_markers(event_id);
+			return true;
+		};
+		if is_retryable_rejection_reason(&reason) {
+			self.clear_pdu_markers(event_id);
+			true
+		} else {
+			false
+		}
+	}
+
 	/// MSC2836: record that `child` relates to `parent` via `rel_type`
 	/// (`content.m.relationship`).
 	pub fn msc2836_add_child(&self, parent: &EventId, child: &EventId, rel_type: &str) {

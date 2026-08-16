@@ -1,5 +1,6 @@
 mod append;
 mod backfill;
+pub use backfill::PromoteOutlierOutcome;
 mod backward_extremities;
 mod build;
 mod create;
@@ -131,6 +132,14 @@ pub struct Service {
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
+	/// Reservations for outlier promotions that have been queued into a
+	/// caller-owned batch (see [`Self::promote_outlier_batch`]) but not yet
+	/// committed. `non_outlier_pdu_exists` only sees committed rows, so
+	/// without this, the same event queued twice before either batch is
+	/// applied -- duplicate input in one chunk, or the same event split
+	/// across two concurrently-processed chunks -- would pass the
+	/// already-in-timeline check both times and be promoted twice.
+	pub pending_promotions: SyncMutex<std::collections::HashSet<OwnedEventId>>,
 }
 
 struct Services {
@@ -221,6 +230,7 @@ impl crate::Service for Service {
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
+			pending_promotions: SyncMutex::new(std::collections::HashSet::new()),
 		}))
 	}
 

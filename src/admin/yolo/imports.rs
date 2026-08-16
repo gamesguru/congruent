@@ -189,6 +189,10 @@ pub(super) async fn import_pdus(
 			let mut chunk_rejected: usize = 0;
 			let mut chunk_failed: usize = 0;
 			let mut batch = self.services.rooms.timeline.db_batch();
+			// promote_outlier_batch's writes land only once `batch` is applied
+			// below; finalize each one's rejection/soft-fail markers afterward
+			// via finish_promote_outlier (see that method's doc comment).
+			let mut queued_promotions: Vec<OwnedEventId> = Vec::new();
 
 			for (eid, value, pdu, is_outlier, is_soft_failed, is_rejected) in chunk {
 				let is_outlier = is_outlier || force;
@@ -291,12 +295,22 @@ pub(super) async fn import_pdus(
 							.await?;
 					} else {
 						// Batched like the skip_auth branch above -- one DB commit (and
-						// one /sync wake) per chunk instead of per event.
-						self.services
+						// one /sync wake) per chunk instead of per event. Finalizing
+						// (releasing the reservation, resolving rejection markers)
+						// happens after `batch` is applied below -- see
+						// finish_promote_outlier's doc comment.
+						let outcome = self
+							.services
 							.rooms
 							.timeline
 							.promote_outlier_batch(&mut batch, &room_id, &eid)
 							.await?;
+						if matches!(
+							outcome,
+							conduwuit_service::rooms::timeline::PromoteOutlierOutcome::Queued
+						) {
+							queued_promotions.push(eid.clone());
+						}
 					}
 
 					Ok((eid.clone(), true))
@@ -331,6 +345,13 @@ pub(super) async fn import_pdus(
 			}
 
 			self.services.rooms.timeline.db_apply_batch(batch);
+			for eid in &queued_promotions {
+				self.services
+					.rooms
+					.timeline
+					.finish_promote_outlier(&room_id, eid)
+					.await;
+			}
 			info!(
 				"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
 				 {chunk_failed} failed"
