@@ -2045,4 +2045,38 @@ mod tests {
 
 		assert_eq!(before, after, "Merging identical signatures must be a no-op");
 	}
+
+	#[test]
+	fn merge_signatures_is_idempotent_with_different_key_orders() {
+		let old = json!({
+			"signatures": {
+				"@bob:example.com": {
+					"ed25519:device2": "sig456"
+				},
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let mut new = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				},
+				"@bob:example.com": {
+					"ed25519:device2": "sig456"
+				}
+			}
+		});
+
+		merge_signatures(&mut new, &old);
+		let serialized_old = serde_json::to_vec(&old).unwrap();
+		let serialized_new = serde_json::to_vec(&new).unwrap();
+
+		assert_eq!(
+			serialized_old, serialized_new,
+			"Merging signatures with different key insertion order must serialize byte-identically (sorted map keys)"
+		);
+	}
 }
