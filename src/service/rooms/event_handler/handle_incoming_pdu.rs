@@ -466,7 +466,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				let first_prev = prev_events.next()?.to_owned();
 				prev_events.next().is_none().then_some(first_prev)
 			});
-			let mut state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
+			let state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
 
 			if is_timeline_event
 				&& let Some(pdu) = parsed_pdu.as_ref()
@@ -481,9 +481,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				))
 				.await
 				{
-					| Ok((_, _, Some(deeper_anchor), _)) => {
-						state_ids_anchor = deeper_anchor;
-					},
+					| Ok((_, _, Some(_deeper_anchor), _)) => {},
 					| Ok(_) => {},
 					| Err(e) => {
 						warn!(

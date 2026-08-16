@@ -67,10 +67,9 @@ async fn load_timeline(
 	);
 
 	// `fetch_limit` items are drained via `.take(fetch_limit)` below, then one
-	// more is peeked via `.next()` to determine `limited` -- so the stream only
-	// ever needs to yield `fetch_limit + 1` items. Bounding it to `stream_limit`
-	// here, before `wide_then`, keeps its concurrent per-item DB work
-	// proportional to that instead of `wide_then`'s full concurrency width.
+	// more is peeked via `.next()` to determine `limited` when we did not already
+	// exceed `limit`. Bounding it to `fetch_limit + 1` here, before `wide_then`,
+	// keeps the lookahead intact while still limiting the upstream work window.
 	let fetch_limit = limit.saturating_add(1);
 	let stream_limit = fetch_limit.saturating_add(1);
 

@@ -36,6 +36,7 @@ use crate::rooms::{
 /// *this* event's own auth grant must anchor at its prev_event, not at
 /// itself, or they'll authorize it against state that doesn't yet
 /// reflect what came immediately before it.
+#[cfg(test)]
 fn choose_state_ids_target(
 	incoming_prev_events: &[OwnedEventId],
 	incoming_event_id: &ruma::EventId,
@@ -933,10 +934,7 @@ where
 				"Cannot determine state: prev_event was structurally invalid"
 			)));
 		}
-		let incoming_prev_events: Vec<OwnedEventId> =
-			incoming_pdu.prev_events().map(OwnedEventId::from).collect();
-		let state_lookup_event_id =
-			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id());
+		let state_lookup_event_id = incoming_pdu.event_id().to_owned();
 
 		// Attempt a synchronous /state_ids fetch from the sending server
 		// BEFORE queuing the async DAG healer.

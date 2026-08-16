@@ -171,7 +171,8 @@ pub(super) async fn compare_room_state(
 					&response.pdu,
 					&room_version,
 				) {
-					| Ok((eid, val)) => (eid, val, false),
+					| Ok((eid, val)) =>
+						(legacy_state_event_id.clone().unwrap_or(eid), val, false),
 					| Err(e) => {
 						warn!("compare_room_state: canonicalization failed for {event_id}: {e}");
 						return Ok(None);
@@ -184,12 +185,14 @@ pub(super) async fn compare_room_state(
 					.validate_and_add_event_id(&response.pdu, &room_version)
 					.await
 				{
-					| Ok(r) => (r.0, r.1, false),
+					| Ok((eid, val)) =>
+						(legacy_state_event_id.clone().unwrap_or(eid), val, false),
 					| Err(e) => match conduwuit::matrix::event::gen_event_id_canonical_json(
 						&response.pdu,
 						&room_version,
 					) {
 						| Ok((eid, val)) => {
+							let eid = legacy_state_event_id.clone().unwrap_or(eid);
 							warn!(
 								"compare_room_state: PDU {eid} failed verification, storing as \
 								 rejected outlier: {e}"
@@ -219,7 +222,6 @@ pub(super) async fn compare_room_state(
 					},
 				}
 			};
-			let fetched_event_id = legacy_state_event_id.unwrap_or(fetched_event_id);
 
 			if fetched_event_id != event_id {
 				warn!(
