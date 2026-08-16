@@ -163,7 +163,7 @@ pub(super) async fn compare_room_state(
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
 					serde_json::from_str::<LegacyEventId>(response.pdu.get())
 						.ok()
-						.and_then(|parsed| parsed.event_id)
+						.map(|parsed| parsed.event_id)
 				} else {
 					None
 				};

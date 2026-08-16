@@ -1050,6 +1050,7 @@ dependencies = [
  "regex",
  "ruma",
  "rustls",
+ "serde",
  "serde-saphyr",
  "serde_json",
  "tokio",
