@@ -651,7 +651,10 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
 		RoomId, RoomVersionId,
-		events::room::{create::RoomCreateEventContent, member::{MembershipState, RoomMemberEventContent}},
+		events::room::{
+			create::RoomCreateEventContent,
+			member::{MembershipState, RoomMemberEventContent},
+		},
 	};
 	let (services, _guard) = setup_test_services("demote_torn").await;
 
@@ -664,7 +667,11 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 
 	let server_user = services.globals.server_user.as_ref();
-	services.users.create(server_user, None, None).await.unwrap();
+	services
+		.users
+		.create(server_user, None, None)
+		.await
+		.unwrap();
 
 	services
 		.rooms
