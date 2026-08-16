@@ -259,7 +259,7 @@ where
 
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
-			target: "backfill_debug",
+			target: "timeline_debug",
 			event_id = %pdu.event_id(),
 			%room_id,
 			"append_pdu: event already exists in timeline under the insert lock -- \
@@ -293,11 +293,11 @@ where
 		let pdu_id: RawPduId = PduId { shortroomid, shorteventid: pdu_count }.into();
 
 		// TEMPORARY diagnostic only
-		info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
+		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: about to insert");
 
 		// Write first, then publish the count
 		self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
-		info!(target: "backfill_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
+		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
