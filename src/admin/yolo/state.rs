@@ -12,7 +12,7 @@ use conduwuit::{
 use conduwuit_database::Batch;
 use futures::{StreamExt, pin_mut};
 use ruma::{
-	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId,
+	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
 };
@@ -153,6 +153,15 @@ pub(super) async fn compare_room_state(
 					return Ok(None);
 				},
 			};
+			let legacy_state_event_id = if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2)
+			{
+				serde_json::from_str::<JsonValue>(response.pdu.get())
+					.ok()
+					.and_then(|json| json.get("event_id").and_then(|v| v.as_str()))
+					.and_then(|event_id| OwnedEventId::try_from(event_id).ok())
+			} else {
+				None
+			};
 
 			let (fetched_event_id, value, sig_failed) = if skip_sig_verify {
 				match conduwuit::matrix::event::gen_event_id_canonical_json(
@@ -207,6 +216,7 @@ pub(super) async fn compare_room_state(
 					},
 				}
 			};
+			let fetched_event_id = legacy_state_event_id.unwrap_or(fetched_event_id);
 
 			if fetched_event_id != event_id {
 				warn!(

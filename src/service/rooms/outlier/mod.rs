@@ -263,18 +263,16 @@ fn add_pdu_outlier_batch_impl<'a>(
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
 	let mut existing_outlier_meta = None;
-	if !demote {
-		if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
-				if !meta.is_outlier {
-					info!(
-						%event_id,
-						"add_pdu_outlier: skipping, event already in timeline"
-					);
-					return;
-				}
-				existing_outlier_meta = Some(meta);
+	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
+		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
+			if !demote && !meta.is_outlier {
+				info!(
+					%event_id,
+					"add_pdu_outlier: skipping, event already in timeline"
+				);
+				return;
 			}
+			existing_outlier_meta = Some(meta);
 		}
 	}
 
