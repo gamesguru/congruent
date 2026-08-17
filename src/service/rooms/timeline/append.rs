@@ -256,6 +256,11 @@ where
 		.await;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
+	info!(
+		target: "watermark_debug",
+		%room_id, event_id = %pdu.event_id(),
+		"append_pdu: acquired insert_lock"
+	);
 
 	let existing_pdu = if self.non_outlier_pdu_exists(pdu.event_id()).await {
 		warn!(
@@ -299,6 +304,11 @@ where
 		self.db.append_pdu(&pdu_id, pdu, &pdu_json, pdu_count).await;
 		info!(target: "timeline_debug", event_id = %pdu.event_id(), ?pdu_count, "append_pdu: insert complete");
 
+		info!(
+			target: "watermark_debug",
+			%room_id, event_id = %pdu.event_id(), ?pdu_count,
+			"append_pdu: publishing last_timeline_count_cache"
+		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), pdu_count);
 

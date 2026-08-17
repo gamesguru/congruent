@@ -27,7 +27,7 @@ pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
 /// insert), while still self-locking when called from anywhere else.
 pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
-	Result, Server, SyncMutex, at, err,
+	Result, Server, SyncMutex, at, err, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
@@ -326,9 +326,19 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn last_timeline_count(&self, room_id: &RoomId) -> Result<PduCount> {
 		if let Some(count) = self.last_timeline_count_cache.get(&room_id.to_owned()) {
+			info!(
+				target: "watermark_debug",
+				%room_id, ?count,
+				"last_timeline_count: cache hit"
+			);
 			return Ok(count);
 		}
 		let count = self.db.last_timeline_count(room_id).await?;
+		info!(
+			target: "watermark_debug",
+			%room_id, ?count,
+			"last_timeline_count: cache miss, read from DB"
+		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), count);
 		Ok(count)

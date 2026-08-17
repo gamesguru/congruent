@@ -92,6 +92,13 @@ async fn load_timeline(
 					err!(Database(warn!("Failed to fetch end of room timeline: {}", err)))
 				})?;
 
+			info!(
+				target: "watermark_debug",
+				%room_id, sender = %sender_user, ?last_timeline_count, ?starting_count,
+				is_expanded_timeline,
+				"load_timeline: watermark check"
+			);
+
 			if !is_expanded_timeline && last_timeline_count <= starting_count {
 				// no messages have been sent in this room since `starting_count`
 				info!(
