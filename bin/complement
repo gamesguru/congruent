@@ -217,16 +217,14 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 
     if [ "$RUN_TESTS" != "." ]; then
         # Keep the aggregate file in sync too: update matching tests from the
-        # partial run and add missing ones. De-duplicate by .Test so the newer
-        # result replaces any stale row from an earlier run.
+        # partial run and add missing ones without re-sorting the rest of the
+        # file.
         tmp_main_results="$(mktemp /tmp/complement-main-results.XXXXXX)"
         if [ -s "$MAIN_RESULTS_FILE" ]; then
-            jq -sc '
-                reduce .[] as $row ({}; if ($row.Test? // "") != "" then .[$row.Test] = $row else . end)
-                | to_entries
-                | sort_by(.key)
-                | .[].value
-            ' "$MAIN_RESULTS_FILE" "$RESULTS_FILE" > "$tmp_main_results"
+            python3 "$toplevel/bin/merge_complement_results.py" \
+                "$MAIN_RESULTS_FILE" \
+                "$RESULTS_FILE" \
+                "$tmp_main_results"
         else
             cp "$RESULTS_FILE" "$tmp_main_results"
         fi
