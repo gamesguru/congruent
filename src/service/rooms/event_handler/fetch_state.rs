@@ -132,8 +132,20 @@ where
 			let mut fetch_stream = futures::stream::iter(fetch_futures).buffer_unordered(20);
 			let mut fetched_events: Vec<(OwnedEventId, Box<serde_json::value::RawValue>)> =
 				Vec::new();
-			let mut failed_event = None;
+			let mut failed_ids: Vec<OwnedEventId> = Vec::new();
 
+			// A single unfetchable event (e.g. an old member event whose
+			// origin server never shared it, or a permanently corrupted
+			// branch of the auth chain) must not sink the entire /state_ids
+			// response. Matches Synapse's `_get_state_ids_after_missing_prev_event`,
+			// which treats a partial fetch failure as a warning, not a
+			// blocker: it builds the state map from whatever it *did* manage
+			// to fetch, and lets normal auth-checking reject just the
+			// specific events that end up depending on what's missing.
+			// Aborting the whole ladder here on the first 404 previously
+			// caused this exact PDU's state resolution to nondeterministically
+			// hard-fail depending on unrelated fetch-completion ordering
+			// (see TestCorruptedAuthChain).
 			while let Some(result) = fetch_stream.next().await {
 				match result {
 					| Ok((eid, raw_json)) => {
@@ -141,16 +153,19 @@ where
 					},
 					| Err((eid, e)) => {
 						info!(%server, "fetch_state /event/{eid} failed: {e}");
-						failed_event = Some(e);
-						break;
+						failed_ids.push(eid);
 					},
 				}
 			}
 
-			if let Some(e) = failed_event {
-				pool.record_error(&server);
-				last_err = e;
-				continue;
+			if !failed_ids.is_empty() {
+				warn!(
+					%server,
+					count = failed_ids.len(),
+					missing = ?failed_ids,
+					"fetch_state: failed to fetch some referenced events; proceeding with \
+					 partial state, dependents will be rejected by normal auth checks"
+				);
 			}
 
 			pool.record_success(&server);

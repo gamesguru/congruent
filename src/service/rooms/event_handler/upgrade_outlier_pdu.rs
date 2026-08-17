@@ -186,7 +186,7 @@ where
 	let timer = Instant::now();
 	let room_version_id = get_room_version_id(create_event)?;
 
-	let mut state_at_incoming_event = Box::pin(self.resolve_state_at_incoming_event(
+	let mut state_at_incoming_event = match Box::pin(self.resolve_state_at_incoming_event(
 		&incoming_pdu,
 		create_event,
 		origin,
@@ -197,7 +197,32 @@ where
 		prev_fetch_deeper_anchor.as_ref(),
 		is_forward_extremity,
 	))
-	.await?;
+	.await
+	{
+		| Ok(state) => state,
+		| Err(e) => {
+			let retryable_state_resolution_failure = self
+				.services
+				.pdu_metadata
+				.get_rejection_reason(incoming_pdu.event_id())
+				.await
+				.as_deref()
+				.and_then(RejectionCode::parse)
+				.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent);
+
+			if retryable_state_resolution_failure {
+				info!(
+					target: "state_res_debug",
+					event_id = %incoming_pdu.event_id,
+					"State resolution failed with all prev_events present; leaving event as an outlier \
+					 so the background healer can retry later"
+				);
+				return Ok(None);
+			}
+
+			return Err(e);
+		},
+	};
 
 	let room_version = to_room_version(&room_version_id);
 
