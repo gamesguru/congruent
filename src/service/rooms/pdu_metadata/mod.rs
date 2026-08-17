@@ -330,20 +330,22 @@ impl Service {
 			return;
 		}
 		// An outlier promotion for this event may already be reserved (queued
-		// into a batch, not yet committed). This has to be an atomic
+		// into a batch, not yet committed), or another concurrent rejection
+		// attempt may already be in flight for it. This has to be an atomic
 		// claim-and-write, not a separate check before the write below -- a
-		// preceding `is_promotion_pending` check here left a real window
-		// open: an arbitrary amount of time (a thread preemption, a
-		// concurrent core -- not just an `.await`) can pass between that
-		// check and this write, and `promote_outlier_batch`'s entire
-		// reserve-recheck-queue-apply sequence can complete inside that gap.
+		// preceding plain-read check here left a real window open: an
+		// arbitrary amount of time (a thread preemption, a concurrent core
+		// -- not just an `.await`) can pass between that check and this
+		// write, during which either `promote_outlier_batch`'s entire
+		// reserve-recheck-queue-apply sequence, or another rejection's own
+		// write-then-release, can complete inside the gap.
 		// See `timeline::Service::try_claim_rejection`'s doc comment.
 		if !self.services.timeline.try_claim_rejection(event_id) {
 			conduwuit::warn!(
 				%event_id,
 				%reason,
-				"refusing to reject event with an outlier promotion in flight (already \
-				 passed auth as part of that promotion)"
+				"refusing to reject event: already claimed by an outlier promotion in flight, \
+				 or by another concurrent rejection attempt"
 			);
 			return;
 		}

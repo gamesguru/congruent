@@ -82,12 +82,10 @@ pub(super) async fn rescue_room(
 		.collect()
 		.await;
 
-	let mut timeline_pdus: Vec<OwnedEventId> = Vec::new();
-	if let Some(limit) = timeline_limit {
+	let timeline_pdus: Vec<OwnedEventId> = if let Some(limit) = timeline_limit {
 		self.write_str(&format!("Including last {limit} timeline PDUs for re-processing..."))
 			.await?;
-		timeline_pdus = self
-			.services
+		self.services
 			.rooms
 			.timeline
 			.pdus_rev(&room_id, std::ops::Bound::Unbounded)
@@ -95,10 +93,12 @@ pub(super) async fn rescue_room(
 			.take(limit)
 			.map(|(_, pdu)| pdu.event_id().to_owned())
 			.collect()
-			.await;
+			.await
+	} else {
+		Vec::new()
+	};
 
-		event_ids.extend(timeline_pdus.iter().cloned());
-	}
+	event_ids.extend(timeline_pdus.iter().cloned());
 
 	let mut seen = HashSet::new();
 	event_ids.retain(|event_id| seen.insert(event_id.clone()));

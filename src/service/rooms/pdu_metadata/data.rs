@@ -222,7 +222,11 @@ impl Data {
 		&self,
 		event_id: &EventId,
 	) -> Result<Option<String>> {
-		let metadata_bytes = self.eventid_metadata.get(event_id).await?;
+		let metadata_bytes = match self.eventid_metadata.get(event_id).await {
+			| Ok(bytes) => bytes,
+			| Err(e) if e.is_not_found() => return Ok(None),
+			| Err(e) => return Err(e),
+		};
 		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
 		if meta.rejected && !meta.rejection_reason.is_empty() {

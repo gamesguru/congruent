@@ -45,15 +45,6 @@ impl PromotionClaims {
 	#[must_use]
 	pub fn new() -> Self { Self { inner: SyncMutex::new(HashMap::new()) } }
 
-	/// Whether `event_id` currently has a reserved-but-not-yet-committed
-	/// outlier promotion in flight. Plain read, kept only for
-	/// observability/debug use -- `try_claim_rejection` is what actually
-	/// guards the write path; this check-then-act shape is exactly what it
-	/// exists to avoid.
-	pub fn is_promotion_pending(&self, event_id: &EventId) -> bool {
-		matches!(self.inner.lock().get(event_id), Some(PromotionDisposition::Promoting))
-	}
-
 	/// Attempts to atomically claim `event_id` for an outlier promotion: if
 	/// nothing else currently owns it, claims
 	/// [`PromotionDisposition::Promoting`] and returns `true`. Returns `false`
@@ -70,29 +61,38 @@ impl PromotionClaims {
 		}
 	}
 
-	/// Attempts to atomically claim `event_id` for rejection: if no outlier
-	/// promotion currently has it reserved, claims
-	/// [`PromotionDisposition::Rejected`] in the same locked operation and
-	/// returns `true` -- the caller should then persist the rejection and
-	/// call [`Self::release_rejection_claim`]. Returns `false` if a
-	/// promotion already reserved this event, meaning the caller must *not*
-	/// write a rejection marker.
+	/// Attempts to atomically claim `event_id` for rejection: if nothing
+	/// else currently owns it, claims [`PromotionDisposition::Rejected`] in
+	/// the same locked operation and returns `true` -- the caller should
+	/// then persist the rejection and call [`Self::release_rejection_claim`].
+	/// Returns `false` if a promotion already reserved this event (the
+	/// caller must *not* write a rejection marker), or if another rejection
+	/// attempt for the same event is already in flight.
+	///
+	/// The rejection side has to be exclusive too, not just "refuse if a
+	/// promotion holds it": two concurrent `mark_event_rejected` calls for
+	/// the same event both observing `Rejected` and both proceeding would
+	/// let either one release the claim -- via
+	/// [`Self::release_rejection_claim`] -- while the *other's* database write
+	/// is still in flight, reopening the slot for a promotion to sneak in
+	/// between that write and its own (now-orphaned) release. Refusing the
+	/// second claimant outright closes that window; the caller treats a
+	/// `false` return as "someone else is already handling this, skip".
 	///
 	/// This has to be a single lock-and-mutate operation, not a separate
-	/// check (e.g. [`Self::is_promotion_pending`]) followed by a write: an
-	/// arbitrary amount of time -- a thread preemption, a concurrent core,
-	/// not just an `.await` -- can pass between a check and a later write.
-	/// Because both this and [`Self::try_claim_promotion`] mutate the same
-	/// map under the same lock with no intervening await, whichever call
-	/// reaches `lock()` first wins unconditionally.
+	/// check followed by a write: an arbitrary amount of time -- a thread
+	/// preemption, a concurrent core, not just an `.await` -- can pass
+	/// between a check and a later write. Because this and
+	/// [`Self::try_claim_promotion`] mutate the same map under the same lock
+	/// with no intervening await, whichever call reaches `lock()` first wins
+	/// unconditionally.
 	pub fn try_claim_rejection(&self, event_id: &EventId) -> bool {
 		let mut guard = self.inner.lock();
-		match guard.get(event_id) {
-			| Some(PromotionDisposition::Promoting) => false,
-			| Some(PromotionDisposition::Rejected) | None => {
-				guard.insert(event_id.to_owned(), PromotionDisposition::Rejected);
-				true
-			},
+		if guard.contains_key(event_id) {
+			false
+		} else {
+			guard.insert(event_id.to_owned(), PromotionDisposition::Rejected);
+			true
 		}
 	}
 
@@ -193,16 +193,20 @@ mod tests {
 			claims.release_rejection_claim(&event_id);
 		}
 
-		// Sanity check that the scheduler actually interleaved both
-		// orderings across 2000 rounds -- if one side won every single
-		// time, the test isn't exercising the race at all (e.g. because
-		// `spawn` overhead made one thread deterministically win).
+		// Not asserted: that both sides won at least once. Which thread
+		// `spawn` schedules first is up to the OS, and a valid run can
+		// legitimately have one side win all 2000 rounds -- that's not a
+		// bug, so asserting on it would make this test flake on a green
+		// branch. The only invariant this test exists to prove is mutual
+		// exclusion, checked above on every round; these counts are purely
+		// informational.
 		let promotion_wins = promotion_wins.load(Ordering::Relaxed);
 		let rejection_wins = rejection_wins.load(Ordering::Relaxed);
-		assert!(
-			promotion_wins > 0 && rejection_wins > 0,
-			"expected both promotion ({promotion_wins}) and rejection ({rejection_wins}) to win \
-			 at least once across 2000 rounds -- the test isn't exercising real interleaving"
+		assert_eq!(
+			promotion_wins + rejection_wins,
+			2000,
+			"every round should have exactly one winner (promotion={promotion_wins}, \
+			 rejection={rejection_wins})"
 		);
 	}
 

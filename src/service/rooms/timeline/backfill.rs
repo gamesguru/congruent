@@ -933,16 +933,6 @@ pub async fn promote_outlier(
 	Ok(outcome)
 }
 
-/// Whether `event_id` currently has a reserved-but-not-yet-committed outlier
-/// promotion in flight. Thin delegation to [`PromotionClaims`]; see its doc
-/// comment (and its module's unit tests) for the actual concurrency
-/// invariant, which lives there specifically so it's testable without a
-/// full `Service` fixture.
-#[implement(super::Service)]
-pub fn is_promotion_pending(&self, event_id: &EventId) -> bool {
-	self.pending_promotions.is_promotion_pending(event_id)
-}
-
 /// See [`PromotionClaims::try_claim_promotion`].
 #[implement(super::Service)]
 fn try_claim_promotion(&self, event_id: &EventId) -> bool {
@@ -1111,7 +1101,7 @@ pub async fn promote_outlier_batch<'a>(
 /// Residual TOCTOU: `PduMetadataService::mark_event_rejected` refuses to
 /// reject an event that's either already visible on the timeline, or has an
 /// outlier promotion reserved-but-not-yet-committed for it (see its doc
-/// comment and [`Self::is_promotion_pending`]). Together those two checks
+/// comment and [`Self::try_claim_rejection`]). Together those two checks
 /// cover the entire window from `promote_outlier_batch`'s reservation
 /// (before its in-lock recheck) through this function releasing it -- a
 /// rejection can only land here if it raced the reservation *and* the
@@ -1365,17 +1355,36 @@ pub async fn reindex_timeline_events(
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 	let mut repaired = 0_usize;
 
+	// Fetch every non-outlier event up front. This lets us both build a
+	// same-batch dependency graph and avoid a duplicate lookup in the loop
+	// below.
+	let mut pdus: HashMap<OwnedEventId, (RawPduId, PduEvent)> = HashMap::new();
 	for event_id in event_ids {
 		if !self.non_outlier_pdu_exists(event_id).await {
 			continue;
 		}
-
 		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
 			continue;
 		};
 		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
 			continue;
 		};
+		pdus.insert(event_id.clone(), (pdu_id, pdu));
+	}
+
+	// Depth is recomputed from local prev_events metadata, and that
+	// metadata is only up to date for a prev_event once *this* pass has
+	// already reindexed it. So a parent must always be visited before any
+	// child that names it in `prev_events`, regardless of what order the
+	// caller passed `event_ids` in (heal.rs's --timeline-limit pulls from
+	// `pdus_rev`, which is newest-first; other callers may not be ordered
+	// at all). Topologically sort the batch instead of trusting caller
+	// order. Edges to events outside the batch are left alone -- those
+	// resolve against already-stored metadata, same as before.
+	let ordered = topo_sort_by_prev_events(&pdus);
+
+	for event_id in ordered {
+		let (pdu_id, pdu) = &pdus[&event_id];
 
 		// Recompute topo depth from local prev_events metadata, same as
 		// `heal_room` did. If none of the prev_events have local metadata (a
@@ -1393,16 +1402,74 @@ pub async fn reindex_timeline_events(
 			let new_topo_depth = max_depth.saturating_add(1);
 			let mut batch = database::Batch::new();
 			self.db
-				.reindex_topo_batch(&mut batch, &pdu_id, event_id, new_topo_depth);
+				.reindex_topo_batch(&mut batch, pdu_id, &event_id, new_topo_depth);
 			self.db_apply_batch(batch);
 		}
 
-		self.index_pdu_search(shortroomid, &pdu_id, &pdu);
+		self.index_pdu_search(shortroomid, pdu_id, pdu);
 		repaired = repaired.saturating_add(1);
 	}
 
 	debug!("Reindexed {repaired}/{} already-timeline events in {room_id}", event_ids.len());
 	Ok(repaired)
+}
+
+/// Topologically sorts `pdus` by `prev_events` (parents before children),
+/// restricted to edges within the batch itself. Falls back to appending
+/// any events left over by a cycle (shouldn't happen for a real DAG, but
+/// this is healing already-corrupted rooms) in their original `pdus`
+/// iteration order rather than dropping them.
+fn topo_sort_by_prev_events(
+	pdus: &HashMap<OwnedEventId, (RawPduId, PduEvent)>,
+) -> Vec<OwnedEventId> {
+	use std::collections::VecDeque;
+
+	let mut children: HashMap<&EventId, Vec<&EventId>> = HashMap::new();
+	let mut in_degree: HashMap<&EventId, usize> = pdus.keys().map(|id| (&**id, 0)).collect();
+
+	for (event_id, (_, pdu)) in pdus {
+		for prev_id in pdu.prev_events() {
+			if let Some(count) = in_degree.get_mut(prev_id) {
+				*count = count.saturating_add(1);
+				children.entry(prev_id).or_default().push(event_id);
+			}
+		}
+	}
+
+	let mut queue: VecDeque<&EventId> = in_degree
+		.iter()
+		.filter_map(|(id, count)| (*count == 0).then_some(*id))
+		.collect();
+
+	let mut ordered = Vec::with_capacity(pdus.len());
+	let mut visited: HashSet<&EventId> = HashSet::with_capacity(pdus.len());
+	while let Some(event_id) = queue.pop_front() {
+		if !visited.insert(event_id) {
+			continue;
+		}
+		ordered.push(event_id.to_owned());
+		for child in children.get(event_id).into_iter().flatten() {
+			if let Some(count) = in_degree.get_mut(child) {
+				*count = count.saturating_sub(1);
+				if *count == 0 {
+					queue.push_back(child);
+				}
+			}
+		}
+	}
+
+	if ordered.len() < pdus.len() {
+		// A cycle within the batch (shouldn't happen for a valid DAG, but
+		// this code exists to heal already-corrupted rooms). Append whatever
+		// is left over so nothing is silently dropped.
+		for event_id in pdus.keys() {
+			if !visited.contains(&**event_id) {
+				ordered.push(event_id.clone());
+			}
+		}
+	}
+
+	ordered
 }
 
 /// Force-insert a PDU directly into the timeline, bypassing all auth checks.

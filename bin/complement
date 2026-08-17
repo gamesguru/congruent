@@ -255,6 +255,13 @@ set -e
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 	if [ "$RUN_TESTS" = "." ]; then
+		# A full run spans every package under ./tests/..., and Go's -json
+		# stream identifies tests by name only once we've dropped .Package
+		# (see record_result above) -- so same-named tests in different
+		# packages (e.g. TestSync in tests/csapi and tests/msc4222) land as
+		# two rows here. --dedupe-in-place forces that down to one row per
+		# name, same as the partial-run merge path already does.
+		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE"
 		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE"
 		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"
 		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
