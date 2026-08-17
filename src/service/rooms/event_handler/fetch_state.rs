@@ -375,6 +375,17 @@ where
 		// event can briefly retain a stale rejection marker from before its
 		// promotion and is still valid state — so only skip events that are
 		// rejected *and* not visible to clients (i.e. still outliers).
+		//
+		// When such a rejected outlier *is* the remote server's only value for
+		// a (type, state_key) slot (e.g. a corrupted membership event whose
+		// auth chain can't be resolved), skipping it alone would leave that
+		// slot absent from the returned state map — a hole that later auth
+		// reads see as "not in room". So fill the slot from our local current
+		// state for that key instead. This must not be confused with the
+		// (rejected) live-state-bleed-into-historical-rescues hazard: here the
+		// remote snapshot nominated a *corrupted* event for the key, and we
+		// are substituting the last valid local value, not importing today's
+		// memberships into a past snapshot.
 		if self.services.pdu_metadata.is_event_rejected(&eid).await
 			&& !self
 				.services
@@ -382,6 +393,27 @@ where
 				.is_event_visible_to_clients(&eid)
 				.await
 		{
+			if let Ok(pdu) = self.services.timeline.get_pdu(&eid).await {
+				if let Some(state_key) = pdu.state_key() {
+					let event_type: StateEventType = pdu.kind().to_string().into();
+					if let Ok(room_ssh) = self.services.state.get_room_shortstatehash(room_id).await
+					{
+						if let Ok(local_pdu) = self
+							.services
+							.state_accessor
+							.state_get(room_ssh, &event_type, state_key)
+							.await
+						{
+							let shortstatekey = self
+								.services
+								.short
+								.get_or_create_shortstatekey(&event_type.to_string().into(), state_key)
+								.await;
+							state.insert(shortstatekey, local_pdu.event_id().to_owned());
+						}
+					}
+				}
+			}
 			continue;
 		}
 		// Read from our outlier store or timeline
