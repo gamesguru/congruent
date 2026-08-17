@@ -82,10 +82,11 @@ pub(super) async fn rescue_room(
 		.collect()
 		.await;
 
+	let mut timeline_pdus: Vec<OwnedEventId> = Vec::new();
 	if let Some(limit) = timeline_limit {
 		self.write_str(&format!("Including last {limit} timeline PDUs for re-processing..."))
 			.await?;
-		let timeline_pdus: Vec<OwnedEventId> = self
+		timeline_pdus = self
 			.services
 			.rooms
 			.timeline
@@ -96,7 +97,7 @@ pub(super) async fn rescue_room(
 			.collect()
 			.await;
 
-		event_ids.extend(timeline_pdus);
+		event_ids.extend(timeline_pdus.iter().cloned());
 	}
 
 	let mut seen = HashSet::new();
@@ -127,6 +128,25 @@ pub(super) async fn rescue_room(
 
 	self.write_str(&format!("Promoted {promoted} events in room {room_id}."))
 		.await?;
+
+	if !timeline_pdus.is_empty() {
+		// `promote_outliers_sorted` only promotes outliers, so timeline PDUs
+		// included via --timeline-limit (already non-outlier) were skipped
+		// above. Repair their derived data (topo index, search index) here
+		// instead of silently dropping them.
+		let reindexed = Box::pin(
+			self.services
+				.rooms
+				.timeline
+				.reindex_timeline_events(&room_id, &timeline_pdus),
+		)
+		.await?;
+		self.write_str(&format!(
+			"Reindexed {reindexed}/{} timeline PDUs from --timeline-limit in room {room_id}.",
+			timeline_pdus.len()
+		))
+		.await?;
+	}
 
 	if reorder {
 		self.write_str(&format!("Reordering timeline for {room_id} after rescue..."))

@@ -52,10 +52,11 @@ pub async fn startup_execute(&self) -> Result {
 		tokio::task::yield_now().await;
 	}
 
-	if should_shutdown_after_startup_execute(
-		self.services.server.config.admin_console_automatic,
-		commands.len(),
-	) {
+	if !smoketest
+		&& should_shutdown_after_startup_execute(
+			self.services.server.config.admin_console_automatic,
+			commands.len(),
+		) {
 		debug_info!("Startup console commands complete. Shutting down now...");
 		self.services
 			.server

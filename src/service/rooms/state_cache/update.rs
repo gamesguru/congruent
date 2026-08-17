@@ -478,6 +478,64 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	self.invalidate_server_visibility(user_id, room_id).await;
 }
 
+/// Like `mark_as_left_silent`, but also updates device-list-left markers for
+/// other local users, matching `mark_as_left`'s side effect for that.
+///
+/// Used by production state reconciliation (`force_state_inner`), where a
+/// member disappears from state with no real leave PDU to build a
+/// timestamp-based `preserve_newer_invite` comparison from (see
+/// `mark_as_left_silent`'s docs for why an unconditional invite-preserve is
+/// used instead), but other local users' device lists must still be notified
+/// that this member is gone -- otherwise E2EE device tracking silently goes
+/// stale for every membership removal that flows through state resolution
+/// instead of a real `/leave`.
+///
+/// `prior_members` must be the room's member list *before* this removal is
+/// applied, collected once by the caller (not per-member) to avoid
+/// `O(removed * members)` blowup when reconciling many removals at once.
+#[implement(super::Service)]
+#[tracing::instrument(skip(self, prior_members), level = "debug")]
+pub async fn mark_as_left_reconciled(
+	&self,
+	user_id: &UserId,
+	room_id: &RoomId,
+	prior_members: &[OwnedUserId],
+) {
+	let userroom_id = (user_id, room_id);
+	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+
+	let roomuser_id = (room_id, user_id);
+	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let left_count = self.services.globals.next_count().unwrap();
+	let mut batch = Batch::new();
+
+	// Write left state with no PDU (reconciliation, no actual leave event)
+	self.db.userroomid_leftstate.batch_raw_put(
+		&mut batch,
+		&userroom_id,
+		Json(Option::<Pdu>::None),
+	);
+	self.db
+		.roomuserid_leftcount
+		.batch_raw_put(&mut batch, &roomuser_id, left_count);
+
+	let has_pending_invite = self.invite_state(user_id, room_id).await.is_ok();
+	self.set_other_membership_states_into_batch(
+		&mut batch,
+		&userroom_id,
+		&roomuser_id,
+		room_id,
+		MembershipKind::Left,
+		has_pending_invite,
+	);
+	self.db.userroomid_joined.apply_batch(batch);
+
+	self.invalidate_user_visibility(user_id, room_id).await;
+	self.invalidate_server_visibility(user_id, room_id).await;
+	self.mark_device_list_lefts(user_id, prior_members, left_count)
+		.await;
+}
+
 /// Mark a user as having left a room.
 ///
 /// `leave_pdu` represents the m.room.member event which the user sent to leave

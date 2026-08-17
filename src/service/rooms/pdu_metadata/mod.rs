@@ -451,6 +451,47 @@ impl Service {
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
 
+	/// Like [`Self::take_retry_if_rejection_retryable`], but for callers that
+	/// are about to promote a stored outlier straight into the timeline
+	/// *without* re-running auth (`promote_outlier`/`promote_outlier_batch`
+	/// skip all auth checks on the assumption their input already passed
+	/// them). A single fresh read decides whether it's safe to queue the
+	/// event for promotion:
+	///
+	/// - not currently rejected at all -> safe, returns `true`
+	/// - rejected with [`RejectionCode::MissingAuthEvent`] -> this event's own
+	///   auth chain never finished resolving, so there is no validated verdict
+	///   to trust here; force-promoting it would be an auth bypass, not a
+	///   legitimate retry (see [`Self::is_event_pending_auth_resolution`]'s doc
+	///   comment). Leaves the marker in place and returns `false`.
+	/// - rejected with any other retryable code -> clears the marker (so a
+	///   later `promote_outlier_batch`'s `is_event_rejected` recheck doesn't
+	///   silently skip the write while the caller still counts the event as
+	///   promoted) and returns `true`.
+	/// - rejected with a permanent code -> leaves the marker in place and
+	///   returns `false`.
+	///
+	/// Using a single fresh read (rather than a caller-held stale snapshot)
+	/// matters here specifically because the decision to clear and the
+	/// decision to queue must agree on the *same* rejection state.
+	pub async fn take_retry_if_rejection_retryable_for_promotion(
+		&self,
+		event_id: &EventId,
+	) -> bool {
+		let Some(reason) = self.get_rejection_reason(event_id).await else {
+			return true;
+		};
+		if matches!(RejectionCode::parse(&reason), Some(RejectionCode::MissingAuthEvent)) {
+			return false;
+		}
+		if is_retryable_rejection_reason(&reason) {
+			self.unmark_event_rejected(event_id);
+			true
+		} else {
+			false
+		}
+	}
+
 	/// Finalizes an outlier promotion's rejection/soft-fail markers with a
 	/// single read of the current rejection state, then either clears them
 	/// (event is now fully accepted) or leaves them in place (a concurrent

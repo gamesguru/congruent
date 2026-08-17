@@ -288,6 +288,16 @@ impl Service {
 			"new events done: {new_processed} processed, {new_members} members, {new_skipped} skipped"
 		);
 
+		// Collected once (not per removed member) so marking removed members as
+		// left doesn't turn into O(removed * members) work below.
+		let prior_members: Vec<_> = self
+			.services
+			.state_cache
+			.room_members(room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await;
+
 		pin_mut!(removed_events);
 		while let Some((shortstatekey, shorteventid)) = removed_events.next().await {
 			// Process cache updates using shortstatekey (PDU-free!)
@@ -305,12 +315,14 @@ impl Service {
 						// loop above. Without a replacement, the user is absent from the new
 						// state and must be marked left.
 						//
-						// Use the silent variant here so we do not wipe a just-added invite
-						// when state resolution is transitioning from leave/ban -> invite.
+						// Use the reconciled variant here so we do not wipe a just-added
+						// invite when state resolution is transitioning from leave/ban ->
+						// invite, while still updating other local users' device-list-left
+						// markers (see `mark_as_left_reconciled`'s docs).
 						if !new_state_events.contains_key(&shortstatekey) {
 							self.services
 								.state_cache
-								.mark_as_left_silent(user_id, room_id)
+								.mark_as_left_reconciled(user_id, room_id, &prior_members)
 								.await;
 						}
 					}

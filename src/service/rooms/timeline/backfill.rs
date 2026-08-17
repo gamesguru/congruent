@@ -31,10 +31,7 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::TopoToken;
-use crate::rooms::{
-	pdu_metadata::{RejectionCode, is_retryable_rejection_reason},
-	short::ShortStateKey,
-};
+use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -477,28 +474,31 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		match metadata {
 			| Ok(meta) if meta.rejected => {
 				// Retryable rejections are recovery markers, not permanent
-				// evidence that the event is invalid. Let them back through
-				// promotion after clearing the retryable marker so a later
-				// retry path does not treat the stored outlier as already
-				// settled -- but `promote_outlier` skips all auth checks on
-				// the assumption its input already passed them, so this must
-				// exclude `MissingAuthEvent` specifically: that reason means
-				// *this event's own* auth chain never finished resolving, so
-				// there's no validated auth verdict to trust here at all
-				// (contrast e.g. `StateResolutionFailedWithPrevsPresent`,
-				// which is attached only after this event's own auth check
-				// already succeeded -- see `is_event_pending_auth_resolution`'s
-				// doc comment). Force-promoting an unvalidated event would be
-				// an auth bypass, not a legitimate retry. Leave it rejected;
-				// it can only be safely revalidated by a real
-				// `handle_outlier_pdu` re-run, not by this promotion pass.
-				let pending_auth_resolution = matches!(
-					RejectionCode::parse(&meta.rejection_reason),
-					Some(RejectionCode::MissingAuthEvent)
-				);
+				// evidence that the event is invalid. Route the decision
+				// through `take_retry_if_rejection_retryable_for_promotion`,
+				// which does a *fresh* read of the current rejection reason
+				// and -- unless it's `MissingAuthEvent` (this event's own
+				// auth chain never finished resolving, so there is no
+				// validated verdict to trust; `promote_outlier` skips all
+				// auth checks and force-promoting it would be an auth
+				// bypass, not a legitimate retry -- see
+				// `is_event_pending_auth_resolution`'s doc comment) --
+				// atomically clears the marker before we queue the event.
+				//
+				// The atomicity here matters: `promote_outlier_batch`
+				// re-checks `is_event_rejected` under its insert lock
+				// before writing, so queueing an event whose *current*
+				// marker was never actually cleared makes that recheck
+				// silently skip the write while `promote_outliers_sorted`'s
+				// caller still counts it as promoted -- leaving the event
+				// permanently invisible despite looking successfully
+				// promoted.
 				if meta.is_outlier
-					&& !pending_auth_resolution
-					&& is_retryable_rejection_reason(&meta.rejection_reason)
+					&& self
+						.services
+						.pdu_metadata
+						.take_retry_if_rejection_retryable_for_promotion(&event_id)
+						.await
 				{
 					outlier_state_event_ids.push(event_id);
 				}
@@ -507,13 +507,15 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 			| Ok(_) => continue,
 			| Err(_) => {
 				// No batch metadata to inspect here (the batch lookup itself
-				// failed) -- fall back to the narrower live check so this
-				// path doesn't force-promote an event whose own auth chain
-				// never finished resolving. See the comment above.
-				if self
+				// failed) -- fall back to the same live check-and-clear as
+				// the branch above, so this path neither force-promotes an
+				// event whose own auth chain never finished resolving nor
+				// queues a still (permanently) rejected event without
+				// clearing its marker.
+				if !self
 					.services
 					.pdu_metadata
-					.is_event_pending_auth_resolution(&event_id)
+					.take_retry_if_rejection_retryable_for_promotion(&event_id)
 					.await
 				{
 					continue;
@@ -916,7 +918,11 @@ pub async fn backfill_pdu(
 /// This skips all auth checks — the caller is responsible for ensuring
 /// the event is valid (e.g. it came from a send_join response).
 #[implement(super::Service)]
-pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
+pub async fn promote_outlier(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<PromoteOutlierOutcome> {
 	let mut batch = database::Batch::new();
 	let outcome = self
 		.promote_outlier_batch(&mut batch, room_id, event_id)
@@ -925,7 +931,7 @@ pub async fn promote_outlier(&self, room_id: &RoomId, event_id: &EventId) -> Res
 		self.db_apply_batch(batch);
 		self.finish_promote_outlier(room_id, event_id).await;
 	}
-	Ok(())
+	Ok(outcome)
 }
 
 /// Whether [`Service::promote_outlier_batch`] queued a write into the
@@ -1271,9 +1277,10 @@ pub async fn promote_outliers_sorted(
 			continue;
 		};
 		match self.promote_outlier(room_id, event_id).await {
-			| Ok(()) => {
+			| Ok(PromoteOutlierOutcome::Queued) => {
 				promoted = promoted.saturating_add(1);
 			},
+			| Ok(PromoteOutlierOutcome::Skipped) => {},
 			| Err(e) => {
 				debug!("Could not promote {event_id} to timeline: {e}");
 			},
@@ -1282,6 +1289,71 @@ pub async fn promote_outliers_sorted(
 
 	debug!("Promoted {promoted}/{} outliers in {room_id}", sorted_ids.len());
 	Ok(promoted)
+}
+
+/// Repair derived data (topological index + search index) for events that
+/// are already in the timeline (non-outliers), scoped to an explicit list.
+///
+/// Used by `admin/yolo heal rescue-room --timeline-limit`, which passes a
+/// bounded window of recent timeline PDUs for re-processing. These events
+/// can't go through [`Self::promote_outliers_sorted`] (it's outlier-only and
+/// deliberately skips anything already in the timeline), but the caller
+/// still wants their derived data repaired -- mirroring what the removed
+/// `heal_room` helper did for non-outlier events in its non-outlier branch
+/// (`clear_pdu_markers` + `reindex_topo` + `index_pdu_search`; marker
+/// clearing is handled separately by the caller's own `--force` handling).
+///
+/// Events not already present as timeline (non-outlier) PDUs are silently
+/// skipped -- this function only repairs, it does not promote outliers.
+#[implement(super::Service)]
+pub async fn reindex_timeline_events(
+	&self,
+	room_id: &RoomId,
+	event_ids: &[OwnedEventId],
+) -> Result<usize> {
+	use conduwuit_core::debug;
+
+	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
+	let mut repaired = 0_usize;
+
+	for event_id in event_ids {
+		if !self.non_outlier_pdu_exists(event_id).await {
+			continue;
+		}
+
+		let Ok(pdu_id) = self.get_pdu_id(event_id).await else {
+			continue;
+		};
+		let Ok(pdu) = self.get_pdu_in_room(Some(room_id), event_id).await else {
+			continue;
+		};
+
+		// Recompute topo depth from local prev_events metadata, same as
+		// `heal_room` did. If none of the prev_events have local metadata (a
+		// gap we can't reconstruct from), leave the stored depth alone rather
+		// than writing a wrong one (e.g. depth 1, jamming the event to the
+		// front of the room's topological order).
+		let mut max_depth = None;
+		for prev_id in pdu.prev_events() {
+			if let Ok(meta) = self.get_event_metadata(prev_id).await {
+				max_depth = Some(max_depth.unwrap_or(0).max(meta.deprecated_local_topo_depth));
+			}
+		}
+
+		if let Some(max_depth) = max_depth {
+			let new_topo_depth = max_depth.saturating_add(1);
+			let mut batch = database::Batch::new();
+			self.db
+				.reindex_topo_batch(&mut batch, &pdu_id, event_id, new_topo_depth);
+			self.db_apply_batch(batch);
+		}
+
+		self.index_pdu_search(shortroomid, &pdu_id, &pdu);
+		repaired = repaired.saturating_add(1);
+	}
+
+	debug!("Reindexed {repaired}/{} already-timeline events in {room_id}", event_ids.len());
+	Ok(repaired)
 }
 
 /// Force-insert a PDU directly into the timeline, bypassing all auth checks.

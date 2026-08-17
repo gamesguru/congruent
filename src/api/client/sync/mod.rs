@@ -68,10 +68,18 @@ async fn load_timeline(
 
 	// `fetch_limit` items are drained via `.take(fetch_limit)` below, then one
 	// more is peeked via `.next()` to determine `limited` when we did not already
-	// exceed `limit`. Bounding it to `fetch_limit + 1` here, before `wide_then`,
-	// keeps the lookahead intact while still limiting the upstream work window.
+	// exceed `limit`. That peek only ever matters when `ready_fold` collected
+	// fewer than `fetch_limit` items -- i.e. the upstream stream is already
+	// exhausted -- so it can never actually observe a further item regardless
+	// of how far upstream is bounded; whenever a further item *does* exist,
+	// `ready_fold`'s own `.take(fetch_limit)` already fills `pdus` to
+	// `fetch_limit` (> `limit`), which short-circuits `.next()` away before it
+	// runs. Bounding the upstream to `fetch_limit` (not `fetch_limit + 1`)
+	// keeps `wide_then`'s eager `.buffered(width)` prefetch from doing a whole
+	// extra item's worth of enrichment work (add_membership_to_unsigned +
+	// add_bundled_aggregations_to_pdu) that would just be discarded unused.
 	let fetch_limit = limit.saturating_add(1);
-	let stream_limit = fetch_limit.saturating_add(1);
+	let stream_limit = fetch_limit;
 
 	let mut pdu_stream = match starting_count {
 		| Some(starting_count) => {
