@@ -16,16 +16,10 @@ use ruma::{
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
 };
-use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use super::dag::format_ts;
 use crate::admin_command;
-
-#[derive(Deserialize)]
-struct LegacyEventId {
-	event_id: OwnedEventId,
-}
 
 #[admin_command]
 pub(super) async fn compare_room_state(
@@ -161,9 +155,13 @@ pub(super) async fn compare_room_state(
 			};
 			let legacy_state_event_id =
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
-					serde_json::from_str::<LegacyEventId>(response.pdu.get())
+					serde_json::from_str::<JsonValue>(response.pdu.get())
 						.ok()
-						.map(|parsed| parsed.event_id)
+						.and_then(|json| {
+							json.get("event_id")
+								.and_then(JsonValue::as_str)
+								.map(ToOwned::to_owned)
+						})
 				} else {
 					None
 				};
@@ -173,8 +171,14 @@ pub(super) async fn compare_room_state(
 					&response.pdu,
 					&room_version,
 				) {
-					| Ok((eid, val)) =>
-						(legacy_state_event_id.clone().unwrap_or(eid), val, false),
+					| Ok((eid, val)) => (
+						legacy_state_event_id
+							.as_deref()
+							.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+							.unwrap_or(eid),
+						val,
+						false,
+					),
 					| Err(e) => {
 						warn!("compare_room_state: canonicalization failed for {event_id}: {e}");
 						return Ok(None);
@@ -187,14 +191,23 @@ pub(super) async fn compare_room_state(
 					.validate_and_add_event_id(&response.pdu, &room_version)
 					.await
 				{
-					| Ok((eid, val)) =>
-						(legacy_state_event_id.clone().unwrap_or(eid), val, false),
+					| Ok((eid, val)) => (
+						legacy_state_event_id
+							.as_deref()
+							.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+							.unwrap_or(eid),
+						val,
+						false,
+					),
 					| Err(e) => match conduwuit::matrix::event::gen_event_id_canonical_json(
 						&response.pdu,
 						&room_version,
 					) {
 						| Ok((eid, val)) => {
-							let eid = legacy_state_event_id.clone().unwrap_or(eid);
+							let eid = legacy_state_event_id
+								.as_deref()
+								.and_then(|legacy| OwnedEventId::parse(legacy).ok())
+								.unwrap_or(eid);
 							warn!(
 								"compare_room_state: PDU {eid} failed verification, storing as \
 								 rejected outlier: {e}"

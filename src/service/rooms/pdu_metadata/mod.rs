@@ -3,7 +3,7 @@ mod data;
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use conduwuit::{Result, debug, matrix::PduCount};
+use conduwuit::{Result, debug, matrix::PduCount, warn};
 use futures::{StreamExt, future::try_join};
 use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 use sha2::{Digest, Sha256};
@@ -379,7 +379,11 @@ impl Service {
 	}
 
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
-		self.db.get_rejection_reason(event_id).await
+		self.db
+			.try_get_rejection_reason(event_id)
+			.await
+			.ok()
+			.flatten()
 	}
 
 	/// Returns true if the event is rejected for a reason that should
@@ -494,7 +498,16 @@ impl Service {
 		&self,
 		event_id: &EventId,
 	) -> bool {
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
+		let Some(reason) = (match self.db.try_get_rejection_reason(event_id).await {
+			| Ok(reason) => reason,
+			| Err(e) => {
+				warn!(
+					%event_id,
+					"failed to read rejection state before outlier promotion: {e}"
+				);
+				return false;
+			},
+		}) else {
 			return true;
 		};
 		if matches!(RejectionCode::parse(&reason), Some(RejectionCode::MissingAuthEvent)) {
@@ -534,7 +547,13 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
+		let Some(reason) = (match self.db.try_get_rejection_reason(event_id).await {
+			| Ok(reason) => reason,
+			| Err(e) => {
+				warn!(%event_id, "failed to read rejection state while finalizing promotion: {e}");
+				return false;
+			},
+		}) else {
 			// Not rejected -- still clear any stale soft-fail marker.
 			self.clear_pdu_markers(event_id);
 			return true;

@@ -255,7 +255,7 @@ pub(super) async fn fetch_pdu(
 				&server,
 				&room_id,
 				false,
-				true,
+				false, // historical/admin rescue; do not merge today's forward extremities
 				false,
 				None,
 				// No outer `with_cork_and_flush` on this admin path -- the

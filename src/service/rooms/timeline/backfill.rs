@@ -1070,10 +1070,10 @@ pub async fn promote_outlier_batch<'a>(
 	}
 	.into();
 
+	self.associate_current_state(room_id, event_id).await?;
 	self.db
 		.prepend_backfill_pdu_batch(batch, &pdu_id, event_id, &value, &pdu)
 		.await;
-	self.associate_current_state(room_id, event_id).await?;
 
 	drop(insert_lock);
 

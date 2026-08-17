@@ -1,7 +1,9 @@
 use std::{mem::size_of, sync::Arc};
 
 use conduwuit::{
+	Result,
 	arrayvec::ArrayVec,
+	err,
 	matrix::{Event, PduCount},
 	utils::{
 		ReadyExt,
@@ -216,13 +218,17 @@ impl Data {
 		}
 	}
 
-	pub(super) async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
-		let metadata_bytes = self.eventid_metadata.get(event_id).await.ok()?;
-		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes).ok()?;
+	pub(super) async fn try_get_rejection_reason(
+		&self,
+		event_id: &EventId,
+	) -> Result<Option<String>> {
+		let metadata_bytes = self.eventid_metadata.get(event_id).await?;
+		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
+			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
 		if meta.rejected && !meta.rejection_reason.is_empty() {
-			Some(meta.rejection_reason)
+			Ok(Some(meta.rejection_reason))
 		} else {
-			None
+			Ok(None)
 		}
 	}
 
