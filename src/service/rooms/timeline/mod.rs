@@ -132,14 +132,35 @@ pub struct Service {
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
-	/// Reservations for outlier promotions that have been queued into a
+	/// Claims for outlier promotions that have been queued into a
 	/// caller-owned batch (see [`Self::promote_outlier_batch`]) but not yet
-	/// committed. `non_outlier_pdu_exists` only sees committed rows, so
-	/// without this, the same event queued twice before either batch is
-	/// applied -- duplicate input in one chunk, or the same event split
-	/// across two concurrently-processed chunks -- would pass the
+	/// committed, *and* for rejections that have won the race against a
+	/// promotion attempt (see [`Self::try_claim_rejection`]). Both sides
+	/// mutate this map under the same lock, so a promotion claim and a
+	/// rejection claim for the same event ID can never both succeed --
+	/// whichever calls `lock()` first wins, and the loser observes the
+	/// winner's disposition in that same locked operation instead of a
+	/// separate, racy check-then-act pair.
+	///
+	/// `non_outlier_pdu_exists` only sees committed rows, so without the
+	/// promotion side of this, the same event queued twice before either
+	/// batch is applied -- duplicate input in one chunk, or the same event
+	/// split across two concurrently-processed chunks -- would pass the
 	/// already-in-timeline check both times and be promoted twice.
-	pub pending_promotions: SyncMutex<std::collections::HashSet<OwnedEventId>>,
+	pub pending_promotions:
+		SyncMutex<std::collections::HashMap<OwnedEventId, PromotionDisposition>>,
+}
+
+/// Which disposition currently owns an event ID in
+/// [`Service::pending_promotions`]. See that field's doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionDisposition {
+	/// An outlier promotion has reserved this event: queued into a batch,
+	/// not yet committed.
+	Promoting,
+	/// `mark_event_rejected` won the atomic claim for this event. No
+	/// concurrent promotion may proceed while this entry stands.
+	Rejected,
 }
 
 struct Services {
@@ -230,7 +251,7 @@ impl crate::Service for Service {
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
 			mutex_backfill: RoomMutexMap::new(),
-			pending_promotions: SyncMutex::new(std::collections::HashSet::new()),
+			pending_promotions: SyncMutex::new(std::collections::HashMap::new()),
 		}))
 	}
 

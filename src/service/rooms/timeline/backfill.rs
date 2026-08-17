@@ -1,5 +1,5 @@
 use std::{
-	collections::{HashSet, hash_map::DefaultHasher},
+	collections::{HashMap, HashSet, hash_map::DefaultHasher},
 	hash::{Hash, Hasher},
 	iter::once,
 	sync::{
@@ -30,7 +30,7 @@ use ruma::{
 };
 use serde_json::value::RawValue as RawJsonValue;
 
-use super::TopoToken;
+use super::{PromotionDisposition, TopoToken};
 use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
@@ -947,7 +947,72 @@ pub async fn promote_outlier(
 /// this is ever bypassed).
 #[implement(super::Service)]
 pub fn is_promotion_pending(&self, event_id: &EventId) -> bool {
-	self.pending_promotions.lock().contains(event_id)
+	matches!(
+		self.pending_promotions.lock().get(event_id),
+		Some(PromotionDisposition::Promoting)
+	)
+}
+
+/// Attempts to atomically claim `event_id` for an outlier promotion: if
+/// nothing else currently owns it, claims [`PromotionDisposition::Promoting`]
+/// and returns `true`. Returns `false` if a promotion already claimed it
+/// (duplicate/concurrent promotion attempt) or a rejection claimed it first
+/// (see [`Self::try_claim_rejection`]) -- either way the caller must not
+/// proceed with this promotion.
+#[implement(super::Service)]
+fn try_claim_promotion(&self, event_id: &EventId) -> bool {
+	let mut guard = self.pending_promotions.lock();
+	if guard.contains_key(event_id) {
+		false
+	} else {
+		guard.insert(event_id.to_owned(), PromotionDisposition::Promoting);
+		true
+	}
+}
+
+/// Attempts to atomically claim `event_id` for rejection: if no outlier
+/// promotion currently has it reserved, claims
+/// [`PromotionDisposition::Rejected`] in the same locked operation and
+/// returns `true` -- the caller (`PduMetadataService::mark_event_rejected`)
+/// should then persist the rejection and call
+/// [`Self::release_rejection_claim`]. Returns `false` if a promotion already
+/// reserved this event, meaning the caller must *not* write a rejection
+/// marker.
+///
+/// This has to be a single lock-and-mutate operation, not a separate check
+/// (e.g. [`Self::is_promotion_pending`]) followed by a write: an arbitrary
+/// amount of time -- a thread preemption, a concurrent core, not just an
+/// `.await` -- can pass between a check and a later write, and
+/// `promote_outlier_batch`'s entire reserve-recheck-queue-apply sequence
+/// can complete inside that gap. Because both this and
+/// [`Self::try_claim_promotion`] mutate the same map under the same lock
+/// with no intervening await, whichever call reaches `lock()` first wins
+/// unconditionally, and the loser observes the winner's disposition in that
+/// same locked operation.
+#[implement(super::Service)]
+pub fn try_claim_rejection(&self, event_id: &EventId) -> bool {
+	let mut guard = self.pending_promotions.lock();
+	match guard.get(event_id) {
+		| Some(PromotionDisposition::Promoting) => false,
+		| Some(PromotionDisposition::Rejected) | None => {
+			guard.insert(event_id.to_owned(), PromotionDisposition::Rejected);
+			true
+		},
+	}
+}
+
+/// Releases a rejection claim taken by [`Self::try_claim_rejection`], once
+/// the rejection has been durably written to the rejection-marker store.
+/// Only clears the entry if it's still `Rejected` -- `try_claim_rejection`
+/// never overwrites a live `Promoting` reservation, so finding one here
+/// would mean something upstream is already confused; leave it alone
+/// rather than clobbering it.
+#[implement(super::Service)]
+pub fn release_rejection_claim(&self, event_id: &EventId) {
+	let mut guard = self.pending_promotions.lock();
+	if matches!(guard.get(event_id), Some(PromotionDisposition::Rejected)) {
+		guard.remove(event_id);
+	}
 }
 
 /// Whether [`Service::promote_outlier_batch`] queued a write into the
@@ -964,14 +1029,14 @@ pub enum PromoteOutlierOutcome {
 }
 
 struct PendingPromotionGuard<'a> {
-	pending_promotions: &'a SyncMutex<HashSet<OwnedEventId>>,
+	pending_promotions: &'a SyncMutex<HashMap<OwnedEventId, PromotionDisposition>>,
 	event_id: &'a EventId,
 	armed: bool,
 }
 
 impl<'a> PendingPromotionGuard<'a> {
 	fn new(
-		pending_promotions: &'a SyncMutex<HashSet<OwnedEventId>>,
+		pending_promotions: &'a SyncMutex<HashMap<OwnedEventId, PromotionDisposition>>,
 		event_id: &'a EventId,
 	) -> Self {
 		Self {
@@ -987,7 +1052,10 @@ impl<'a> PendingPromotionGuard<'a> {
 impl Drop for PendingPromotionGuard<'_> {
 	fn drop(&mut self) {
 		if self.armed {
-			self.pending_promotions.lock().remove(self.event_id);
+			let mut guard = self.pending_promotions.lock();
+			if matches!(guard.get(self.event_id), Some(PromotionDisposition::Promoting)) {
+				guard.remove(self.event_id);
+			}
 		}
 	}
 }
@@ -1030,10 +1098,10 @@ pub async fn promote_outlier_batch<'a>(
 	// The DB-existence check alone isn't enough here: a batched promotion
 	// queued into another (not-yet-applied) batch won't show up as an
 	// existing row yet, so also consult the pending-reservation set --
-	// see `Service::pending_promotions`'s doc comment.
-	if self.non_outlier_pdu_exists(event_id).await
-		|| !self.pending_promotions.lock().insert(event_id.to_owned())
-	{
+	// see `Service::pending_promotions`'s doc comment. This also loses to a
+	// rejection that already atomically claimed this event via
+	// `try_claim_rejection` -- see that method's doc comment.
+	if self.non_outlier_pdu_exists(event_id).await || !self.try_claim_promotion(event_id) {
 		warn!(
 			target: "backfill_debug",
 			%event_id,

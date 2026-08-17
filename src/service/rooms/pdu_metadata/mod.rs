@@ -330,13 +330,15 @@ impl Service {
 			return;
 		}
 		// An outlier promotion for this event may already be reserved (queued
-		// into a batch, not yet committed) -- see
-		// `timeline::Service::is_promotion_pending`'s doc comment for why this
-		// has to be checked here too, not just `is_event_visible_to_clients`
-		// above: the reservation exists specifically to cover the gap before
-		// the event becomes visible, which is exactly where that check can't
-		// see it yet.
-		if self.services.timeline.is_promotion_pending(event_id) {
+		// into a batch, not yet committed). This has to be an atomic
+		// claim-and-write, not a separate check before the write below -- a
+		// preceding `is_promotion_pending` check here left a real window
+		// open: an arbitrary amount of time (a thread preemption, a
+		// concurrent core -- not just an `.await`) can pass between that
+		// check and this write, and `promote_outlier_batch`'s entire
+		// reserve-recheck-queue-apply sequence can complete inside that gap.
+		// See `timeline::Service::try_claim_rejection`'s doc comment.
+		if !self.services.timeline.try_claim_rejection(event_id) {
 			conduwuit::warn!(
 				%event_id,
 				%reason,
@@ -346,6 +348,7 @@ impl Service {
 			return;
 		}
 		self.db.mark_event_rejected(event_id, reason);
+		self.services.timeline.release_rejection_claim(event_id);
 	}
 
 	/// Directly marks an event as rejected, bypassing the
