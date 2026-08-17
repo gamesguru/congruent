@@ -231,7 +231,7 @@ where
 
 				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
 					if meta.is_event_rejected(&pdu.event_id).await
-						&& timeline.pdu_exists(&pdu.event_id).await
+						&& timeline.non_outlier_pdu_exists(&pdu.event_id).await
 					{
 						warn!(
 							event_id = %pdu.event_id,
