@@ -217,45 +217,16 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 
     if [ "$RUN_TESTS" != "." ]; then
         # Keep the aggregate file in sync too: update matching tests from the
-        # partial run and add missing ones, while preserving the existing file
-        # order so the diff stays narrow and readable.
+        # partial run and add missing ones. De-duplicate by .Test so the newer
+        # result replaces any stale row from an earlier run.
         tmp_main_results="$(mktemp /tmp/complement-main-results.XXXXXX)"
         if [ -s "$MAIN_RESULTS_FILE" ]; then
-            mapfile -t main_lines < "$MAIN_RESULTS_FILE"
-            mapfile -t main_tests < <(jq -r '.Test // empty' "$MAIN_RESULTS_FILE")
-            mapfile -t patch_lines < "$RESULTS_FILE"
-            mapfile -t patch_tests < <(jq -r '.Test // empty' "$RESULTS_FILE")
-
-            {
-                i=0
-                j=0
-                while [ "$i" -lt "${#main_lines[@]}" ] || [ "$j" -lt "${#patch_lines[@]}" ]; do
-                    if [ "$i" -ge "${#main_lines[@]}" ]; then
-                        printf '%s\n' "${patch_lines[$j]}"
-                        j=$((j + 1))
-                        continue
-                    fi
-                    if [ "$j" -ge "${#patch_lines[@]}" ]; then
-                        printf '%s\n' "${main_lines[$i]}"
-                        i=$((i + 1))
-                        continue
-                    fi
-
-                    main_test="${main_tests[$i]}"
-                    patch_test="${patch_tests[$j]}"
-                    if [ "$main_test" = "$patch_test" ]; then
-                        printf '%s\n' "${patch_lines[$j]}"
-                        i=$((i + 1))
-                        j=$((j + 1))
-                    elif [[ "$main_test" < "$patch_test" ]]; then
-                        printf '%s\n' "${main_lines[$i]}"
-                        i=$((i + 1))
-                    else
-                        printf '%s\n' "${patch_lines[$j]}"
-                        j=$((j + 1))
-                    fi
-                done
-            } > "$tmp_main_results"
+            jq -s '
+                reduce .[] as $row ({}; if ($row.Test? // "") != "" then .[$row.Test] = $row else . end)
+                | to_entries
+                | sort_by(.key)
+                | .[].value
+            ' "$MAIN_RESULTS_FILE" "$RESULTS_FILE" > "$tmp_main_results"
         else
             cp "$RESULTS_FILE" "$tmp_main_results"
         fi
