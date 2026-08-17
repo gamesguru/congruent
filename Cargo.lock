@@ -1183,6 +1183,7 @@ dependencies = [
  "conduwuit_macros",
  "const-str",
  "ctor",
+ "figment",
  "futures",
  "log",
  "minicbor",

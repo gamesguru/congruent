@@ -36,7 +36,7 @@ pub use self::{
 	deserialized::Deserialized,
 	handle::Handle,
 	keyval::{KeyVal, Slice, serialize_key, serialize_val},
-	map::{Batch, Get, Map, Qry, compact},
+	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
 	ser::{Cbor, Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
 };
 pub(crate) use self::{
