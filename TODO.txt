@@ -1,6 +1,47 @@
 ###############################
-Mon 2026/08/17 (verbose analysis transcript removed — condensed in "EventStatus enum + TestCorruptedAuthChain wrap-up" below)
+Mon 2026/08/17
 ###############################
+
+## What the last 50 commits actually added, and the concrete simplifications
+
+Honest framing first: a lot of the +3566 is *defensive machinery that grew to fix the TestCorruptedAuthChain/promotion saga*, and it's now overlapping. The EventStatus refactor was the one reduction; the regression I just fixed shows the cost
+of the tooling density. Here's what I'd simplify, highest leverage first:
+
+### 1. Collapse the two-read fetch_state guard to one read (the `EventStatus` win you already paid for)
+fetch_state.rs:378-383 is now doing two separate DB reads (is_event_rejected and is_event_visible_to_clients) to decide "skip this rejected outlier." But the EventStatus enum already carries both facts together — Rejected(code) is the
+outlier-not-visible state. The clean invariant is **one method that returns whether the event is rejected and not a visible timeline event**, implemented as a single get_status read. That's the "invariant at read time" you originally wanted —
+now that EventStatus makes it impossible for a timeline event to be Rejected, the double-check is redundant.
+
+### 2. Delete `mark_event_rejected_skip_visibility_check` (exactly 1 caller)
+I flagged this earlier; the EventStatus refactor makes it even more obviously redundant. The visibility check exists only because of the async-vs-sync timing in the original mark_event_rejected. With EventStatus mutual-exclusion, a Rejected
+event cannot be timeline-visible, so the "skip visibility check" bypass has the same effect as the guarded path. Unify behind one mark_event_rejected, eliminating the footgun of 44+ call sites needing to know there are two.
+
+### 3. The `pdu_metadata` method surface is now ~18 overlapping predicates
+is_event_soft_failed, is_event_rejected, is_event_accepted, is_event_visible_to_clients, is_event_permanently_rejected, is_event_pending_auth_resolution, get_soft_fail_reason, get_rejection_reason, take_retry_* ×2, finish_promotion,
+clear_pdu_markers, unmark_* ×2... The EventStatus enum means most of these collapse to a single get_status().await? + matches!. Realistically: **one status() accessor + one mark_* + one unmark (clear) covers ~15 of these**, and the distinct
+predicates (permanent-vs-retryable, pending-auth) become methods on EventStatus/RejectionCode instead of Service methods. This is the "kill the flag-madness" payoff you were aiming for.
+
+### 4. `backfill.rs` (+553) and `upgrade_outlier_pdu.rs`/`handle_outlier_pdu.rs` (+~640 combined)
+These ballooned because the promotion/rejection/recovery logic is now interleaved. The PromotionClaims module (+241) + take_retry_*_for_promotion + finish_promotion + mark_event_rejected's atomic claim form a promotion-vs-rejection arbiter
+layer that overlaps PromotionDisposition. With EventStatus making stale-rejected-on-timeline impossible, several of the "recheck under lock / claim / finish" steps become unnecessary — the enum is itself the single source of truth. This is
+the biggest code-volume reduction available, but it's a careful refactor (touches the TOCTOU fixes), so I'd do it last.
+
+### 5. Already-simplified (don't re-touch)
+- timeline/heal.rs deleted (-434) — good, that's done.
+- database/map/recursive_get.rs (+126) — it's a real utility with tests; keep.
+- state_cache/update.rs (+98) — device-list/membership reconciliation; keep unless proven redundant.
+
+## Recommendation
+
+Do #1 and #2 now — they're small, safe, and directly reduce the exactly-the-knob-bloat you've been complaining about, building on the EventStatus foundation you already landed. Then #3 as a focused second pass (collapsing the predicate
+surface — this is where line-count drops most). Leave #4 for a deliberate, separately-tested PR.
+
+Want me to start with #1 + #2 (the two-read guard collapse + deleting mark_event_rejected_skip_visibility_check), since they're the clearest wins with minimal blast radius?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 
 ###############################
 8/6/2026
