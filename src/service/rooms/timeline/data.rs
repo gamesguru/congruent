@@ -496,7 +496,7 @@ impl Data {
 	pub(super) async fn pdu_id_to_depth(&self, pdu_id: &RawPduId) -> Result<u64> {
 		let event_id_bytes = self.room_pducount_eventid.get(pdu_id).await?;
 		let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
-		let meta: rooms::timeline::EventMetadata = bincode::deserialize(&metadata_bytes)
+		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
 		Ok(meta.depth.into())
 	}

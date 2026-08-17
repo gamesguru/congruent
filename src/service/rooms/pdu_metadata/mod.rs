@@ -363,7 +363,11 @@ impl Service {
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		if !self.services.timeline.try_claim_rejection(event_id) {
+			return;
+		}
 		self.db.mark_event_soft_failed(event_id, code);
+		self.services.timeline.release_rejection_claim(event_id);
 	}
 
 	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {

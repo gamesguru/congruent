@@ -193,8 +193,18 @@ pub fn status_from_prior(
 	is_outlier: bool,
 	pdu_rejected: bool,
 ) -> EventStatus {
-	let soft_failed = prior.is_some_and(|m| matches!(m.status, EventStatus::SoftFailed(_)));
-	status_from_bools(is_outlier, soft_failed, pdu_rejected, None, None)
+	if pdu_rejected {
+		EventStatus::Rejected(RejectionCode::Unknown)
+	} else if let Some(code) = prior.and_then(|m| match m.status {
+		| EventStatus::SoftFailed(code) => Some(code),
+		| _ => None,
+	}) {
+		EventStatus::SoftFailed(code)
+	} else if is_outlier {
+		EventStatus::Pending
+	} else {
+		EventStatus::Accepted
+	}
 }
 
 #[cfg(test)]

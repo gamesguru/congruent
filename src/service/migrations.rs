@@ -1591,7 +1591,10 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 				if let Ok(mut meta) =
 					crate::rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 				{
-					if !matches!(meta.status, EventStatus::SoftFailed(_)) {
+					if !matches!(
+						meta.status,
+						EventStatus::SoftFailed(_) | EventStatus::Rejected(_)
+					) {
 						meta.status = EventStatus::SoftFailed(SoftFailCode::Unknown);
 						if let Ok(new_bytes) = bincode::serialize(&meta) {
 							db["eventid_metadata"].batch_put(

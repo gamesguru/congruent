@@ -84,7 +84,7 @@ pub fn stream_keys(&self) -> impl Stream<Item = OwnedEventId> + Send + '_ {
 		.ignore_err()
 		.ready_filter_map(|(key, val)| {
 			let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
-			let meta: rooms::timeline::EventMetadata = bincode::deserialize(val).ok()?;
+			let meta = rooms::timeline::EventMetadata::from_bincode(val).ok()?;
 			meta.is_outlier.then_some(eid)
 		})
 }
