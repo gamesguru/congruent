@@ -10,7 +10,7 @@ use std::{
 
 use conduwuit::{Err, Error, PduEvent, RoomVersion};
 use conduwuit_core::{
-	Result, SyncMutex, debug, debug_warn, err, error, implement, info,
+	Result, debug, debug_warn, err, error, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -30,7 +30,7 @@ use ruma::{
 };
 use serde_json::value::RawValue as RawJsonValue;
 
-use super::{PromotionDisposition, TopoToken};
+use super::{PromotionClaims, TopoToken};
 use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
@@ -229,8 +229,7 @@ pub async fn backfill_if_required(
 	loop {
 		// Phase 1: Collect scanned PDUs into an event map. With `impl DagNode
 		// for Pdu`, rezzy operates directly on PduEvent — no LeanEvent conversion.
-		let mut event_map: std::collections::HashMap<OwnedEventId, PduEvent> =
-			std::collections::HashMap::new();
+		let mut event_map: HashMap<OwnedEventId, PduEvent> = HashMap::new();
 		let mut scanned = 0_usize;
 		let mut pdus = self
 			.topo_pdus_rev(room_id, Some(from))
@@ -935,84 +934,35 @@ pub async fn promote_outlier(
 }
 
 /// Whether `event_id` currently has a reserved-but-not-yet-committed outlier
-/// promotion in flight (see [`Service::pending_promotions`]'s doc comment).
-///
-/// Used by `PduMetadataService::mark_event_rejected` to close the residual
-/// TOCTOU window between [`Self::promote_outlier_batch`]'s in-lock recheck
-/// and its caller applying the batch: without this, a rejection landing in
-/// that window would see the event as neither rejected nor yet visible on
-/// the timeline, and would proceed to mark it rejected -- only for the
-/// already-queued write to land anyway, leaving a rejected-but-visible
-/// event (see `finish_promote_outlier`'s doc comment for what happens if
-/// this is ever bypassed).
+/// promotion in flight. Thin delegation to [`PromotionClaims`]; see its doc
+/// comment (and its module's unit tests) for the actual concurrency
+/// invariant, which lives there specifically so it's testable without a
+/// full `Service` fixture.
 #[implement(super::Service)]
 pub fn is_promotion_pending(&self, event_id: &EventId) -> bool {
-	matches!(
-		self.pending_promotions.lock().get(event_id),
-		Some(PromotionDisposition::Promoting)
-	)
+	self.pending_promotions.is_promotion_pending(event_id)
 }
 
-/// Attempts to atomically claim `event_id` for an outlier promotion: if
-/// nothing else currently owns it, claims [`PromotionDisposition::Promoting`]
-/// and returns `true`. Returns `false` if a promotion already claimed it
-/// (duplicate/concurrent promotion attempt) or a rejection claimed it first
-/// (see [`Self::try_claim_rejection`]) -- either way the caller must not
-/// proceed with this promotion.
+/// See [`PromotionClaims::try_claim_promotion`].
 #[implement(super::Service)]
 fn try_claim_promotion(&self, event_id: &EventId) -> bool {
-	let mut guard = self.pending_promotions.lock();
-	if guard.contains_key(event_id) {
-		false
-	} else {
-		guard.insert(event_id.to_owned(), PromotionDisposition::Promoting);
-		true
-	}
+	self.pending_promotions.try_claim_promotion(event_id)
 }
 
-/// Attempts to atomically claim `event_id` for rejection: if no outlier
-/// promotion currently has it reserved, claims
-/// [`PromotionDisposition::Rejected`] in the same locked operation and
-/// returns `true` -- the caller (`PduMetadataService::mark_event_rejected`)
-/// should then persist the rejection and call
-/// [`Self::release_rejection_claim`]. Returns `false` if a promotion already
-/// reserved this event, meaning the caller must *not* write a rejection
-/// marker.
-///
-/// This has to be a single lock-and-mutate operation, not a separate check
-/// (e.g. [`Self::is_promotion_pending`]) followed by a write: an arbitrary
-/// amount of time -- a thread preemption, a concurrent core, not just an
-/// `.await` -- can pass between a check and a later write, and
-/// `promote_outlier_batch`'s entire reserve-recheck-queue-apply sequence
-/// can complete inside that gap. Because both this and
-/// [`Self::try_claim_promotion`] mutate the same map under the same lock
-/// with no intervening await, whichever call reaches `lock()` first wins
-/// unconditionally, and the loser observes the winner's disposition in that
-/// same locked operation.
+/// See [`PromotionClaims::try_claim_rejection`]. Used by
+/// `PduMetadataService::mark_event_rejected` to close the TOCTOU window
+/// between [`Self::promote_outlier_batch`]'s in-lock recheck and its
+/// caller applying the batch (see `finish_promote_outlier`'s doc comment
+/// for what happens if this is ever bypassed).
 #[implement(super::Service)]
 pub fn try_claim_rejection(&self, event_id: &EventId) -> bool {
-	let mut guard = self.pending_promotions.lock();
-	match guard.get(event_id) {
-		| Some(PromotionDisposition::Promoting) => false,
-		| Some(PromotionDisposition::Rejected) | None => {
-			guard.insert(event_id.to_owned(), PromotionDisposition::Rejected);
-			true
-		},
-	}
+	self.pending_promotions.try_claim_rejection(event_id)
 }
 
-/// Releases a rejection claim taken by [`Self::try_claim_rejection`], once
-/// the rejection has been durably written to the rejection-marker store.
-/// Only clears the entry if it's still `Rejected` -- `try_claim_rejection`
-/// never overwrites a live `Promoting` reservation, so finding one here
-/// would mean something upstream is already confused; leave it alone
-/// rather than clobbering it.
+/// See [`PromotionClaims::release_rejection_claim`].
 #[implement(super::Service)]
 pub fn release_rejection_claim(&self, event_id: &EventId) {
-	let mut guard = self.pending_promotions.lock();
-	if matches!(guard.get(event_id), Some(PromotionDisposition::Rejected)) {
-		guard.remove(event_id);
-	}
+	self.pending_promotions.release_rejection_claim(event_id);
 }
 
 /// Whether [`Service::promote_outlier_batch`] queued a write into the
@@ -1029,16 +979,13 @@ pub enum PromoteOutlierOutcome {
 }
 
 struct PendingPromotionGuard<'a> {
-	pending_promotions: &'a SyncMutex<HashMap<OwnedEventId, PromotionDisposition>>,
+	pending_promotions: &'a PromotionClaims,
 	event_id: &'a EventId,
 	armed: bool,
 }
 
 impl<'a> PendingPromotionGuard<'a> {
-	fn new(
-		pending_promotions: &'a SyncMutex<HashMap<OwnedEventId, PromotionDisposition>>,
-		event_id: &'a EventId,
-	) -> Self {
+	fn new(pending_promotions: &'a PromotionClaims, event_id: &'a EventId) -> Self {
 		Self {
 			pending_promotions,
 			event_id,
@@ -1052,10 +999,8 @@ impl<'a> PendingPromotionGuard<'a> {
 impl Drop for PendingPromotionGuard<'_> {
 	fn drop(&mut self) {
 		if self.armed {
-			let mut guard = self.pending_promotions.lock();
-			if matches!(guard.get(self.event_id), Some(PromotionDisposition::Promoting)) {
-				guard.remove(self.event_id);
-			}
+			self.pending_promotions
+				.release_promotion_claim(self.event_id);
 		}
 	}
 }
@@ -1182,7 +1127,7 @@ pub async fn promote_outlier_batch<'a>(
 /// rather than scroll past in a debug-level log.
 #[implement(super::Service)]
 pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
-	self.pending_promotions.lock().remove(event_id);
+	self.pending_promotions.release_promotion_claim(event_id);
 
 	if !self.services.pdu_metadata.finish_promotion(event_id).await {
 		error!(
@@ -1312,7 +1257,7 @@ pub async fn promote_outliers_sorted(
 	}
 
 	// Build LeanEvent map from outlier PDUs for topo sort
-	let mut events_map: rezzy::HashMap<String, rezzy::LeanEvent> = rezzy::HashMap::new();
+	let mut events_map: HashMap<String, rezzy::LeanEvent> = HashMap::new();
 
 	for event_id in event_ids {
 		// Skip events already in the timeline
@@ -1359,7 +1304,7 @@ pub async fn promote_outliers_sorted(
 			| ver => return Err!(Database("Unsupported room version for topo sort: {ver}")),
 		}
 	};
-	let mut pl_cache = std::collections::HashMap::new();
+	let mut pl_cache = HashMap::new();
 	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
 		&events_map,
 		&events_map, // auth context is the same set
