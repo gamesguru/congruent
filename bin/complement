@@ -271,6 +271,18 @@ else
 	fi
 fi
 
+# Unlike RESULTS_FILE, the log is point-in-time debug output with no
+# historical rows to preserve across runs, so a straight copy (not a
+# merge) is enough. This mirrors the RESULTS_FILE handling above, which
+# the staging refactor added -- LOG_FILE was left staged-only, so
+# MAIN_LOG_FILE (the path CI's "Upload test logs" step and the "Print
+# failing test log excerpts" step both read) never got refreshed and
+# silently stayed empty/stale every run.
+if [ -f "$LOG_FILE" ]; then
+	cp "$LOG_FILE" "$MAIN_LOG_FILE"
+	echo "refreshed $MAIN_LOG_FILE from staged log"
+fi
+
 echo ""
 echo ""
 echo "complement logs saved at $LOG_FILE"
