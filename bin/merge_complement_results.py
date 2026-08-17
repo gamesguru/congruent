@@ -39,7 +39,6 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
 
     main_present = set(main_last_index)
     merged: list[str] = []
-    emitted: set[str] = set()
 
     for index, line in enumerate(main_lines):
         name = test_name(line)
@@ -51,23 +50,80 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
             continue
 
         merged.append(patch_by_test.get(name, line))
-        emitted.add(name)
 
     for name in patch_order:
         if name not in main_present:
             merged.append(patch_by_test[name])
 
-    return merged
+    return sorted(merged, key=lambda line: (test_name(line) == "", test_name(line), line))
+
+
+def sort_jsonl(lines: list[str]) -> list[str]:
+    objs = []
+    for line in lines:
+        if not line.strip():
+            continue
+        objs.append(json.loads(line))
+    objs.sort(key=lambda obj: obj.get("Test", ""))
+    return [json.dumps(obj, separators=(",", ":")) for obj in objs]
+
+
+def dedupe_jsonl(lines: list[str]) -> list[str]:
+    by_test: dict[str, str] = {}
+    order: list[str] = []
+    passthrough: list[str] = []
+
+    for line in lines:
+        name = test_name(line)
+        if not name:
+            passthrough.append(line)
+            continue
+        if name not in by_test:
+            order.append(name)
+        by_test[name] = line
+
+    deduped = passthrough[:]
+    deduped.extend(by_test[name] for name in order)
+    return deduped
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Merge partial Complement JSONL results into the main results file."
     )
-    parser.add_argument("main_results")
-    parser.add_argument("partial_results")
-    parser.add_argument("output")
+    parser.add_argument("main_results", nargs="?")
+    parser.add_argument("partial_results", nargs="?")
+    parser.add_argument("output", nargs="?")
+    parser.add_argument(
+        "--sort-in-place",
+        action="store_true",
+        help="Sort a JSONL results file by .Test and rewrite it in place.",
+    )
+    parser.add_argument(
+        "--dedupe-in-place",
+        action="store_true",
+        help="Collapse duplicate .Test entries in a JSONL results file and rewrite it in place.",
+    )
     args = parser.parse_args()
+
+    if args.sort_in_place:
+        if not args.main_results or args.partial_results or args.output:
+            raise SystemExit("--sort-in-place takes exactly one path argument")
+        path = Path(args.main_results)
+        lines = load_lines(path)
+        path.write_text("\n".join(sort_jsonl(lines)) + "\n")
+        return 0
+
+    if args.dedupe_in_place:
+        if not args.main_results or args.partial_results or args.output:
+            raise SystemExit("--dedupe-in-place takes exactly one path argument")
+        path = Path(args.main_results)
+        lines = load_lines(path)
+        path.write_text("\n".join(dedupe_jsonl(lines)) + "\n")
+        return 0
+
+    if not args.main_results or not args.partial_results or not args.output:
+        raise SystemExit("merge mode requires three positional arguments")
 
     main_path = Path(args.main_results)
     patch_path = Path(args.partial_results)

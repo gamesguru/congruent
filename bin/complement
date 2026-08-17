@@ -137,6 +137,29 @@ echo "\$LOG_FILE: $LOG_FILE"
 echo "\$RUN_TESTS: $RUN_TESTS"
 echo ""
 
+anchor_run_tests() {
+	local pattern="$1"
+	local anchored=()
+	local segment
+
+	IFS='/' read -r -a segments <<<"$pattern"
+	for segment in "${segments[@]}"; do
+		if [[ "$segment" =~ ^\^.*\$$ ]]; then
+			anchored+=("$segment")
+		else
+			anchored+=("^${segment}$")
+		fi
+	done
+
+	(IFS='/'; echo "${anchored[*]}")
+}
+
+if [ "$RUN_TESTS" != "." ]; then
+	RUN_TESTS="$(anchor_run_tests "$RUN_TESTS")"
+	echo "Anchored run regex: $RUN_TESTS"
+	echo ""
+fi
+
 # Restrict partial runs to the package that defines the requested top-level test.
 # `go test ./tests/... -run TestName` still starts every package's TestMain.
 TEST_PACKAGES=(./tests/...)
