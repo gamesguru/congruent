@@ -207,15 +207,9 @@ record_result() {
 	local action="$1"
 	local test_name="$2"
 
-	# Stream straight to the results file as results arrive; no in-memory
-	# aggregation and no full-file rewrite per event.
+	# Stream straight to the staged results file as results arrive; no
+	# in-memory aggregation and no full-file rewrite per event.
 	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
-
-	# Keep the tracked results file updated live so partial runs and fresh starts
-	# still propagate new data as the run progresses.
-	tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-	python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"
-	mv "$tmp_results" "$MAIN_RESULTS_FILE"
 
 	# Keep the live human-readable status stream focused on pass/fail noise.
 	# Skips still land in the JSONL results file and the final summary.
@@ -260,7 +254,16 @@ TEST_EXIT_CODE=$?
 set -e
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
-	echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+	if [ "$RUN_TESTS" = "." ]; then
+		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE"
+		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"
+		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+	else
+		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+		python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"
+		mv "$tmp_results" "$MAIN_RESULTS_FILE"
+		echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+	fi
 else
 	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
 	if [ "$TEST_EXIT_CODE" -eq 0 ]; then
