@@ -279,8 +279,30 @@ jobs:
           logs_path = pathlib.Path(os.environ["LOGS"])
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
 
-          if not results_path.is_file() or not logs_path.is_file() or not summary_path:
-              print("Results/logs file missing, skipping failing test excerpts.")
+          if not summary_path:
+              print("GITHUB_STEP_SUMMARY not set, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not results_path.is_file():
+              # The whole test run crashed before writing anything -- nothing
+              # to excerpt, and nothing wrong with *this* step specifically.
+              print("Results file missing, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not logs_path.is_file():
+              # Results exist but logs don't: that's not "the run produced
+              # nothing", that's the log pipeline being broken (see the
+              # bin/complement staging bug this masked for a while). Surface
+              # it loudly in the summary instead of a line buried in the raw
+              # job log that nobody reads.
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write(
+                      "\n> ⚠️ **Test log file missing** "
+                      f"(`{logs_path}`) even though results were recorded. "
+                      "Failing test log excerpts cannot be shown for this run -- "
+                      "check the Complement runner's log-file handling.\n"
+                  )
+              print(f"Results present but {logs_path} missing; flagged in summary.")
               raise SystemExit(0)
 
           failed = []
