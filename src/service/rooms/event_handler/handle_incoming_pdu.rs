@@ -508,13 +508,27 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// upcoming /state_ids retry there instead, since that's the
 					// point the sending server can actually provide a snapshot
 					// for.
-					| Ok((sorted, fetched, Some(deeper_anchor), invalid)) => {
-						state_ids_anchor = deeper_anchor.clone();
-						prefetched_prev = Some((sorted, fetched, Some(deeper_anchor), invalid));
+					// Only cache when `fetch_prev` actually produced candidates. Its
+					// `Some(deeper_anchor)` case implies candidates were fetched (a
+					// deeper anchor is only derived once a candidate exists), so
+					// `!sorted.is_empty()` is the right gate for both.
+					//
+					// An *empty* `Ok` here is ambiguous: `fetch_prev` returns
+					// `Ok((Vec::new(), HashMap::new(), None, false))` both when every
+					// prev_event was already known/satisfied AND when every
+					// /get_missing_events federation call failed (transient). Caching
+					// either as `prefetched_prev` would make `process_timeline_upgrade`
+					// skip its own `fetch_prev` retry and strand the event without
+					// predecessor repair on the failure path. Leaving it uncached lets
+					// that retry happen: a harmless no-op for the already-satisfied
+					// case, and a genuine second attempt for the failed one.
+					| Ok((sorted, fetched, deeper_anchor, invalid)) if !sorted.is_empty() => {
+						if let Some(anchor) = &deeper_anchor {
+							state_ids_anchor = anchor.clone();
+						}
+						prefetched_prev = Some((sorted, fetched, deeper_anchor, invalid));
 					},
-					| Ok((sorted, fetched, None, invalid)) => {
-						prefetched_prev = Some((sorted, fetched, None, invalid));
-					},
+					| Ok(_) => {},
 					| Err(e) => {
 						warn!(
 							event_id = %event_id,

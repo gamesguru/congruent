@@ -159,10 +159,14 @@ where
 			}
 
 			if !failed_ids.is_empty() {
+				// A large /state_ids response can make `failed_ids` huge; only log a
+				// bounded sample of the offending event IDs (distinct from the total
+				// count) instead of serializing the whole vector into this warn.
+				let failed_sample: Vec<_> = failed_ids.iter().take(10).collect();
 				warn!(
 					%server,
 					count = failed_ids.len(),
-					missing = ?failed_ids,
+					missing = ?failed_sample,
 					"fetch_state: failed to fetch some referenced events; proceeding with \
 					 partial state, dependents will be rejected by normal auth checks"
 				);

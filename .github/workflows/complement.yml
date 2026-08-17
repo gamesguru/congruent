@@ -178,6 +178,7 @@ jobs:
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
 
       - name: Run Complement tests
+        id: complement
         env:
           CONDUWUIT_SENDER_TIMEOUT: 5
           CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
@@ -264,6 +265,13 @@ jobs:
       - name: Print failing test log excerpts
         if: always()
         continue-on-error: true
+        env:
+          # Whether the "Run Complement tests" step actually ran. If a prior
+          # build/setup step failed, it is skipped/cancelled and the tracked
+          # test_results.jsonl left in the tree is stale, not something the
+          # Complement run produced -- so a missing test_logs.jsonl is then
+          # *not* evidence of a broken log pipeline.
+          COMPLEMENT_OUTCOME: ${{ steps.complement.outcome }}
         run: |
           RESULTS="tests/test_results/complement/test_results.jsonl" \
           LOGS="tests/test_results/complement/test_logs.jsonl" \
@@ -278,6 +286,7 @@ jobs:
           results_path = pathlib.Path(os.environ["RESULTS"])
           logs_path = pathlib.Path(os.environ["LOGS"])
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          complement_outcome = os.environ.get("COMPLEMENT_OUTCOME")
 
           if not summary_path:
               print("GITHUB_STEP_SUMMARY not set, skipping failing test excerpts.")
@@ -290,6 +299,18 @@ jobs:
               raise SystemExit(0)
 
           if not logs_path.is_file():
+              # Only flag a broken log pipeline when the Complement step
+              # actually ran (success or failure) and produced these results.
+              # If it was skipped/cancelled because an earlier build or setup
+              # step failed, the checked-in test_results.jsonl is stale and no
+              # Complement run wrote these "results" -- a missing test_logs.jsonl
+              # is then expected and is not a log-pipeline bug.
+              if complement_outcome not in ("success", "failure"):
+                  print(
+                      "Complement step did not run "
+                      f"(outcome={complement_outcome!r}); not flagging missing logs."
+                  )
+                  raise SystemExit(0)
               # Results exist but logs don't: that's not "the run produced
               # nothing", that's the log pipeline being broken (see the
               # bin/complement staging bug this masked for a while). Surface

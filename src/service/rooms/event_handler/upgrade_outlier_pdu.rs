@@ -200,28 +200,16 @@ where
 	.await
 	{
 		| Ok(state) => state,
-		| Err(e) => {
-			let retryable_state_resolution_failure = self
-				.services
-				.pdu_metadata
-				.get_rejection_reason(incoming_pdu.event_id())
-				.await
-				.as_deref()
-				.and_then(RejectionCode::parse)
-				.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent);
-
-			if retryable_state_resolution_failure {
-				info!(
-					target: "state_res_debug",
-					event_id = %incoming_pdu.event_id,
-					"State resolution failed with all prev_events present; leaving event as an outlier \
-					 so the background healer can retry later"
-				);
-				return Ok(None);
-			}
-
-			return Err(e);
+		| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+			info!(
+				target: "state_res_debug",
+				event_id = %incoming_pdu.event_id,
+				"State resolution failed with all prev_events present; leaving event as an outlier \
+				 so the background healer can retry later"
+			);
+			return Ok(None);
 		},
+		| Err(e) => return Err(e),
 	};
 
 	let room_version = to_room_version(&room_version_id);
@@ -560,18 +548,35 @@ where
 						"Fast-forward state hash shift ({} -> {:?}), re-eval state @ incoming",
 						shortstatehash, base_shortstatehash
 					);
-					state_at_incoming_event = Box::pin(self.resolve_state_at_incoming_event(
-						&incoming_pdu,
-						create_event,
-						origin,
-						room_id,
-						&room_version_id,
-						skip_soft_fail,
-						false,
-						prev_fetch_deeper_anchor.as_ref(),
-						true,
-					))
-					.await?;
+					state_at_incoming_event =
+						match Box::pin(self.resolve_state_at_incoming_event(
+							&incoming_pdu,
+							create_event,
+							origin,
+							room_id,
+							&room_version_id,
+							skip_soft_fail,
+							false,
+							prev_fetch_deeper_anchor.as_ref(),
+							true,
+						))
+						.await
+						{
+							| Ok(state) => state,
+							| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+								// Same retryable outcome as the initial resolution
+								// above: treat it as "leave as an outlier", not a
+								// fatal error of this attempt.
+								info!(
+									target: "state_res_debug",
+									event_id = %incoming_pdu.event_id,
+									"State resolution re-check failed with all prev_events present; \
+									 leaving event as an outlier so the background healer can retry later"
+								);
+								return Ok(None);
+							},
+							| Err(e) => return Err(e),
+						};
 				}
 			}
 
@@ -1253,6 +1258,9 @@ where
 						.pdu_metadata
 						.mark_event_rejected(incoming_pdu.event_id(), rejection_reason.as_str())
 						.await;
+					return Err!(StateResolutionWithPrevsPresent(
+						"Cannot determine state: resolution failed even with all prev_events"
+					));
 				}
 			},
 		}
