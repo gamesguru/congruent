@@ -1,6 +1,0 @@
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade"}
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel"}
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_manually_upgraded_room_carries_over_existing_push_rules"}
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel/joining_a_remote_upgraded_room_carries_over_existing_push_rules"}
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel/manually_upgrading_a_room_carries_over_existing_push_rules_for_local_users"}
-{"Action":"pass","Test":"TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users"}

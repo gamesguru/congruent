@@ -1,7 +1,0 @@
-{"Action":"fail","Test":"TestAsyncUpload"}
-{"Action":"fail","Test":"TestAsyncUpload/Cannot_upload_to_a_media_ID_that_has_already_been_uploaded_to"}
-{"Action":"fail","Test":"TestAsyncUpload/Create_media"}
-{"Action":"fail","Test":"TestAsyncUpload/Download_media"}
-{"Action":"fail","Test":"TestAsyncUpload/Download_media_over__matrix/client/v1/media/download"}
-{"Action":"fail","Test":"TestAsyncUpload/Not_yet_uploaded"}
-{"Action":"fail","Test":"TestAsyncUpload/Upload_media"}

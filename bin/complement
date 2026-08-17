@@ -221,7 +221,7 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
         # result replaces any stale row from an earlier run.
         tmp_main_results="$(mktemp /tmp/complement-main-results.XXXXXX)"
         if [ -s "$MAIN_RESULTS_FILE" ]; then
-            jq -s '
+            jq -sc '
                 reduce .[] as $row ({}; if ($row.Test? // "") != "" then .[$row.Test] = $row else . end)
                 | to_entries
                 | sort_by(.key)
