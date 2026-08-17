@@ -31,20 +31,26 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
             patch_order.append(name)
         patch_by_test[name] = line
 
-    main_present = {name for line in main_lines if (name := test_name(line))}
+    main_last_index: dict[str, int] = {}
+    for index, line in enumerate(main_lines):
+        name = test_name(line)
+        if name:
+            main_last_index[name] = index
+
+    main_present = set(main_last_index)
     merged: list[str] = []
     emitted: set[str] = set()
 
-    for line in main_lines:
+    for index, line in enumerate(main_lines):
         name = test_name(line)
-        if not name or name not in patch_by_test:
+        if not name:
             merged.append(line)
             continue
 
-        if name in emitted:
+        if main_last_index.get(name) != index:
             continue
 
-        merged.append(patch_by_test[name])
+        merged.append(patch_by_test.get(name, line))
         emitted.add(name)
 
     for name in patch_order:

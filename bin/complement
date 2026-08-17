@@ -12,7 +12,7 @@ RESULTS_DIR="${RESULTS_DIR:-tests/test_results/complement}"
 # A `.jsonl` file to write test logs to
 LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
 
-# A `.jsonl` file to write test results to
+# A `.jsonl` file to write merged test results to.
 RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/test_results.jsonl}"}"
 
 # The base docker image to use for complement tests
@@ -52,14 +52,6 @@ MAIN_RESULTS_FILE="$RESULTS_FILE"
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$(dirname "$RESULTS_FILE")"
 
-if [ "$RUN_TESTS" != "." ]; then
-	# Use a unique results file for partial runs to avoid clobbering the main one
-	suffix=$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)
-	LOG_FILE="${LOG_FILE%.jsonl}.$suffix.jsonl"
-	RESULTS_FILE="${RESULTS_FILE%.jsonl}.$suffix.jsonl"
-	echo "Partial run detected: results will be saved to $RESULTS_FILE"
-fi
-
 # $COMPLEMENT_SRC needs to be a directory to Complement source code
 if [ ! -d "$COMPLEMENT_SRC" ]; then
 	echo "\$COMPLEMENT_SRC must be a directory/path to Complement source code"
@@ -68,6 +60,24 @@ fi
 
 toplevel="$(git rev-parse --show-toplevel)"
 pushd "$toplevel" >/dev/null
+
+if [ "$RUN_TESTS" = "." ]; then
+	run_suffix="all"
+else
+	run_suffix="$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)"
+	run_suffix="${run_suffix:-all}"
+fi
+run_stamp="$(date +%s%N)"
+STAGING_DIR="$toplevel/.tmp/complement"
+mkdir -p "$STAGING_DIR"
+LOG_FILE="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.jsonl"
+RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
+
+if [ "$RUN_TESTS" != "." ]; then
+	echo "Partial run detected: results will be saved to $RESULTS_FILE"
+else
+	echo "Full run detected: results will be staged in $RESULTS_FILE and merged into $MAIN_RESULTS_FILE"
+fi
 
 # Namespace Complement's generated containers, networks, and localhost/complement
 # blueprint images per branch/worktree. The prefix is stable so local blueprint
@@ -121,7 +131,8 @@ echo ""
 echo "running go test with:"
 echo "\$COMPLEMENT_SRC: $COMPLEMENT_SRC"
 echo "\$COMPLEMENT_BASE_IMAGE: $COMPLEMENT_BASE_IMAGE"
-echo "\$RESULTS_FILE: $RESULTS_FILE"
+echo "\$RESULTS_FILE (staging): $RESULTS_FILE"
+echo "\$MAIN_RESULTS_FILE: $MAIN_RESULTS_FILE"
 echo "\$LOG_FILE: $LOG_FILE"
 echo "\$RUN_TESTS: $RUN_TESTS"
 echo ""
@@ -163,6 +174,12 @@ record_result() {
 	# Stream straight to the results file as results arrive; no in-memory
 	# aggregation and no full-file rewrite per event.
 	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
+
+	# Keep the tracked results file updated live so partial runs and fresh starts
+	# still propagate new data as the run progresses.
+	tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+	python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"
+	mv "$tmp_results" "$MAIN_RESULTS_FILE"
 
 	# Keep the live human-readable status stream focused on pass/fail noise.
 	# Skips still land in the JSONL results file and the final summary.
@@ -207,13 +224,7 @@ TEST_EXIT_CODE=$?
 set -e
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
-	# One cheap sort at the very end for reproducible diffs, rather than
-	# re-sorting/re-writing the whole file after every test.
-	tmp_results="$(mktemp /tmp/complement-results.XXXXXX)"
-	jq -sc 'sort_by(.Test) | .[]' "$RESULTS_FILE" >"$tmp_results"
-	mv "$tmp_results" "$RESULTS_FILE"
-	echo "processed $(wc -l <"$RESULTS_FILE") results into $RESULTS_FILE"
-
+	echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
 else
 	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
 	if [ "$TEST_EXIT_CODE" -eq 0 ]; then
@@ -224,7 +235,8 @@ fi
 echo ""
 echo ""
 echo "complement logs saved at $LOG_FILE"
-echo "complement results saved at $RESULTS_FILE"
+echo "complement results staged at $RESULTS_FILE"
+echo "complement results merged into $MAIN_RESULTS_FILE"
 echo ""
 echo ""
 
