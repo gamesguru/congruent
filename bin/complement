@@ -141,14 +141,27 @@ anchor_run_tests() {
 	local pattern="$1"
 	local anchored=()
 	local segment
+	local idx=0
 
 	IFS='/' read -r -a segments <<<"$pattern"
 	for segment in "${segments[@]}"; do
-		if [[ "$segment" =~ ^\^.*\$$ ]]; then
-			anchored+=("$segment")
+		if [ "$idx" -eq 0 ]; then
+			# Top-level test names should behave like a prefix match so
+			# `TestFoo` also includes `TestFooBar` and `TestFoo/Baz`.
+			if [[ "$segment" =~ ^\^ ]]; then
+				anchored+=("$segment")
+			else
+				anchored+=("^${segment}")
+			fi
 		else
-			anchored+=("^${segment}$")
+			# Nested segments stay exact unless the caller already supplied regex.
+			if [[ "$segment" =~ ^\^.*\$?$ || "$segment" =~ .*[\[\]\(\)\?\+\*\|] ]]; then
+				anchored+=("$segment")
+			else
+				anchored+=("^${segment}$")
+			fi
 		fi
+		idx=$((idx + 1))
 	done
 
 	(IFS='/'; echo "${anchored[*]}")
