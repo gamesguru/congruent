@@ -147,12 +147,18 @@ impl Data {
 			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
 		};
 
-		// Keep the first soft-fail code; don't overwrite an existing typed code.
-		if !matches!(meta.status, EventStatus::SoftFailed(_)) {
-			meta.status = EventStatus::SoftFailed(code);
-			if let Ok(new_bytes) = bincode::serialize(&meta) {
-				self.eventid_metadata.insert(event_id, new_bytes);
-			}
+		// A rejection always wins over a soft-fail (in the pre-`EventStatus`
+		// model `rejected` and `soft_failed` were independent booleans and a
+		// soft-fail never cleared `rejected`). `EventStatus` makes them
+		// mutually-exclusive variants, so preserve a prior rejection here --
+		// otherwise soft-failing a rejected event would silently strip its
+		// `Rejected` verdict and make it look accepted to auth/state-res.
+		if matches!(meta.status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_)) {
+			return;
+		}
+		meta.status = EventStatus::SoftFailed(code);
+		if let Ok(new_bytes) = bincode::serialize(&meta) {
+			self.eventid_metadata.insert(event_id, new_bytes);
 		}
 	}
 
