@@ -151,11 +151,11 @@
 {"Action":"pass","Test":"TestEventAuth/returns_the_auth_chain_for_the_requested_event"}
 {"Action":"pass","Test":"TestEventRelationships"}
 {"Action":"pass","Test":"TestFederatedClientSpaces"}
-{"Action":"fail","Test":"TestFederatedEventRelationships"}
+{"Action":"pass","Test":"TestFederatedEventRelationships"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_claim_remote_one_time_key_using_POST"}
 {"Action":"pass","Test":"TestFederationKeyUploadQuery/Can_query_remote_device_keys_using_POST"}
-{"Action":"fail","Test":"TestFederationRedactSendsWithoutEvent"}
+{"Action":"pass","Test":"TestFederationRedactSendsWithoutEvent"}
 {"Action":"pass","Test":"TestFederationRejectInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite"}
 {"Action":"pass","Test":"TestFederationRoomsInvite/Parallel"}
@@ -536,7 +536,7 @@
 {"Action":"pass","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
-{"Action":"fail","Test":"TestOutboundFederationSend"}
+{"Action":"pass","Test":"TestOutboundFederationSend"}
 {"Action":"pass","Test":"TestPollsLocalPushRules"}
 {"Action":"pass","Test":"TestPollsLocalPushRules/Polls_push_rules_are_correctly_presented_to_the_client"}
 {"Action":"pass","Test":"TestPowerLevels"}
@@ -638,6 +638,7 @@
 {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
 {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin"}
+{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_initially"}
 {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_when_left_allowed_room"}
