@@ -34,11 +34,11 @@ COMPLEMENT_PARALLEL="${COMPLEMENT_PARALLEL:-2}"
 # On Linux, host.docker.internal doesn't work by default.
 # We try to detect the docker0 bridge IP and use it.
 if [[ "$OSTYPE" == "linux-gnu"* ]] && [ -z "${COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT:-}" ]; then
-    BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1 || true)
-    if [ -n "$BRIDGE_IP" ]; then
-        echo "Detected Docker bridge IP: $BRIDGE_IP. Setting COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=$BRIDGE_IP"
-        export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="$BRIDGE_IP"
-    fi
+	BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1 || true)
+	if [ -n "$BRIDGE_IP" ]; then
+		echo "Detected Docker bridge IP: $BRIDGE_IP. Setting COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=$BRIDGE_IP"
+		export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="$BRIDGE_IP"
+	fi
 fi
 
 # Ensure paths are absolute so they don't break when we change directory
@@ -53,34 +53,34 @@ mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$(dirname "$RESULTS_FILE")"
 
 if [ "$RUN_TESTS" != "." ]; then
-    # Use a unique results file for partial runs to avoid clobbering the main one
-    suffix=$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)
-    LOG_FILE="${LOG_FILE%.jsonl}.$suffix.jsonl"
-    RESULTS_FILE="${RESULTS_FILE%.jsonl}.$suffix.jsonl"
-    echo "Partial run detected: results will be saved to $RESULTS_FILE"
+	# Use a unique results file for partial runs to avoid clobbering the main one
+	suffix=$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)
+	LOG_FILE="${LOG_FILE%.jsonl}.$suffix.jsonl"
+	RESULTS_FILE="${RESULTS_FILE%.jsonl}.$suffix.jsonl"
+	echo "Partial run detected: results will be saved to $RESULTS_FILE"
 fi
 
 # $COMPLEMENT_SRC needs to be a directory to Complement source code
 if [ ! -d "$COMPLEMENT_SRC" ]; then
-    echo "\$COMPLEMENT_SRC must be a directory/path to Complement source code"
-    exit 1
+	echo "\$COMPLEMENT_SRC must be a directory/path to Complement source code"
+	exit 1
 fi
 
 toplevel="$(git rev-parse --show-toplevel)"
-pushd "$toplevel" > /dev/null
+pushd "$toplevel" >/dev/null
 
 # Namespace Complement's generated containers, networks, and localhost/complement
 # blueprint images per branch/worktree. The prefix is stable so local blueprint
 # caches remain useful, but different checkouts/branches do not clobber each other.
 if [ -z "${COMPLEMENT_PACKAGE_NAMESPACE_PREFIX:-}" ]; then
-    branch_slug=$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) \
-        | tr '[:upper:]/:@ ' '[:lower:]----' \
-        | tr -cs 'a-z0-9_.-' '-' \
-        | sed 's/^-//;s/-$//' \
-        | cut -c1-48)
-    branch_slug="${branch_slug:-detached}"
-    workspace_hash=$(printf '%s' "$toplevel" | sha1sum | awk '{print substr($1, 1, 8)}')
-    export COMPLEMENT_PACKAGE_NAMESPACE_PREFIX="${branch_slug}_${workspace_hash}"
+	branch_slug=$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) |
+		tr '[:upper:]/:@ ' '[:lower:]----' |
+		tr -cs 'a-z0-9_.-' '-' |
+		sed 's/^-//;s/-$//' |
+		cut -c1-48)
+	branch_slug="${branch_slug:-detached}"
+	workspace_hash=$(printf '%s' "$toplevel" | sha1sum | awk '{print substr($1, 1, 8)}')
+	export COMPLEMENT_PACKAGE_NAMESPACE_PREFIX="${branch_slug}_${workspace_hash}"
 fi
 
 # Mark homeserver containers spawned by this wrapper run so cleanup never
@@ -94,29 +94,28 @@ export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
 
 # Cleanup only Complement containers spawned by this wrapper run.
 cleanup_complement_containers() {
-    local containers container ours=()
-    mapfile -t containers < <(docker ps -aq --filter "name=complement")
+	local containers container ours=()
+	mapfile -t containers < <(docker ps -aq --filter "name=complement")
 
-    for container in "${containers[@]}"; do
-        if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null \
-            | grep -Fxq "COMPLEMENT_WRAPPER_TOKEN=$COMPLEMENT_WRAPPER_TOKEN"; then
-            ours+=("$container")
-        fi
-    done
+	for container in "${containers[@]}"; do
+		if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null |
+			grep -Fxq "COMPLEMENT_WRAPPER_TOKEN=$COMPLEMENT_WRAPPER_TOKEN"; then
+			ours+=("$container")
+		fi
+	done
 
-    if [ "${#ours[@]}" -gt 0 ]; then
-        echo "Cleaning up Complement containers spawned by this run..."
-        printf '%s\n' "${ours[@]}" | xargs -r docker rm -f
-    fi
+	if [ "${#ours[@]}" -gt 0 ]; then
+		echo "Cleaning up Complement containers spawned by this run..."
+		printf '%s\n' "${ours[@]}" | xargs -r docker rm -f
+	fi
 
-    # TODO: perhaps also prune images here?
+	# TODO: perhaps also prune images here?
 }
-
 
 # Ensure result files exist even if tests fail to start
 mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$RESULTS_FILE")"
-: > "$LOG_FILE"
-: > "$RESULTS_FILE"
+: >"$LOG_FILE"
+: >"$RESULTS_FILE"
 
 echo ""
 echo "running go test with:"
@@ -131,45 +130,45 @@ echo ""
 # `go test ./tests/... -run TestName` still starts every package's TestMain.
 TEST_PACKAGES=(./tests/...)
 if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
-    test_name="${BASH_REMATCH[1]}"
-    mapfile -t matched_packages < <(
-        cd "$COMPLEMENT_SRC"
-        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests \
-            | xargs -r -n1 dirname \
-            | sed 's#^#./#' \
-            | sort -u
-    )
-    if [ "${#matched_packages[@]}" -gt 0 ]; then
-        TEST_PACKAGES=("${matched_packages[@]}")
-        echo "Selected test package(s): ${TEST_PACKAGES[*]}"
-    fi
+	test_name="${BASH_REMATCH[1]}"
+	mapfile -t matched_packages < <(
+		cd "$COMPLEMENT_SRC"
+		rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests |
+			xargs -r -n1 dirname |
+			sed 's#^#./#' |
+			sort -u
+	)
+	if [ "${#matched_packages[@]}" -gt 0 ]; then
+		TEST_PACKAGES=("${matched_packages[@]}")
+		echo "Selected test package(s): ${TEST_PACKAGES[*]}"
+	fi
 fi
 
 # Common flags for both test runners
 TEST_FLAGS=(
-    -tags "conduwuit_blacklist"
-    -skip "$SKIPPED_COMPLEMENT_TESTS"
-    -run "$RUN_TESTS"
-    -p "$COMPLEMENT_PARALLEL"
-    -parallel "$COMPLEMENT_PARALLEL"
-    -timeout 1h
-    -count=1
-    "${TEST_PACKAGES[@]}"
+	-tags "conduwuit_blacklist"
+	-skip "$SKIPPED_COMPLEMENT_TESTS"
+	-run "$RUN_TESTS"
+	-p "$COMPLEMENT_PARALLEL"
+	-parallel "$COMPLEMENT_PARALLEL"
+	-timeout 1h
+	-count=1
+	"${TEST_PACKAGES[@]}"
 )
 
 record_result() {
-    local action="$1"
-    local test_name="$2"
+	local action="$1"
+	local test_name="$2"
 
-    # Stream straight to the results file as results arrive; no in-memory
-    # aggregation and no full-file rewrite per event.
-    jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >> "$RESULTS_FILE"
+	# Stream straight to the results file as results arrive; no in-memory
+	# aggregation and no full-file rewrite per event.
+	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
 
-    # Keep the live human-readable status stream focused on pass/fail noise.
-    # Skips still land in the JSONL results file and the final summary.
-    if [ "$action" != "skip" ]; then
-        printf '%s\t%s\n' "$action" "$test_name"
-    fi
+	# Keep the live human-readable status stream focused on pass/fail noise.
+	# Skips still land in the JSONL results file and the final summary.
+	if [ "$action" != "skip" ]; then
+		printf '%s\t%s\n' "$action" "$test_name"
+	fi
 }
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
@@ -177,8 +176,8 @@ EVENTS_FIFO="${EVENTS_FIFO_DIR}/events"
 mkfifo "$EVENTS_FIFO"
 
 cleanup_results_fifo() {
-    rm -rf "$EVENTS_FIFO_DIR"
-    rm -f "$EVENTS_FIFO"
+	rm -rf "$EVENTS_FIFO_DIR"
+	rm -f "$EVENTS_FIFO"
 }
 trap 'cleanup_results_fifo; cleanup_complement_containers' EXIT
 
@@ -187,55 +186,39 @@ TEST_EXIT_CODE=0
 # at the possible expense of test environment pollution.
 set +e
 (
-    set -o pipefail
-    env \
-        -C "$COMPLEMENT_SRC" \
-        COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-        go test -json "${TEST_FLAGS[@]}" \
-        | tee "$LOG_FILE" \
-        | jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
-        > "$EVENTS_FIFO"
+	set -o pipefail
+	env \
+		-C "$COMPLEMENT_SRC" \
+		COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+		go test -json "${TEST_FLAGS[@]}" |
+		tee "$LOG_FILE" |
+		jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
+			>"$EVENTS_FIFO"
 ) &
 PRODUCER_PID=$!
 
 while IFS=$'\t' read -r action test_name; do
-    [ -n "$action" ] || continue
-    record_result "$action" "$test_name"
-done < "$EVENTS_FIFO"
+	[ -n "$action" ] || continue
+	record_result "$action" "$test_name"
+done <"$EVENTS_FIFO"
 
 wait "$PRODUCER_PID"
 TEST_EXIT_CODE=$?
 set -e
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
-    # One cheap sort at the very end for reproducible diffs, rather than
-    # re-sorting/re-writing the whole file after every test.
-    tmp_results="$(mktemp /tmp/complement-results.XXXXXX)"
-    jq -sc 'sort_by(.Test) | .[]' "$RESULTS_FILE" > "$tmp_results"
-    mv "$tmp_results" "$RESULTS_FILE"
-    echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
+	# One cheap sort at the very end for reproducible diffs, rather than
+	# re-sorting/re-writing the whole file after every test.
+	tmp_results="$(mktemp /tmp/complement-results.XXXXXX)"
+	jq -sc 'sort_by(.Test) | .[]' "$RESULTS_FILE" >"$tmp_results"
+	mv "$tmp_results" "$RESULTS_FILE"
+	echo "processed $(wc -l <"$RESULTS_FILE") results into $RESULTS_FILE"
 
-    if [ "$RUN_TESTS" != "." ]; then
-        # Keep the aggregate file in sync too: update matching tests from the
-        # partial run and add missing ones without re-sorting the rest of the
-        # file.
-        tmp_main_results="$(mktemp /tmp/complement-main-results.XXXXXX)"
-        if [ -s "$MAIN_RESULTS_FILE" ]; then
-            python3 "$toplevel/bin/merge_complement_results.py" \
-                "$MAIN_RESULTS_FILE" \
-                "$RESULTS_FILE" \
-                "$tmp_main_results"
-        else
-            cp "$RESULTS_FILE" "$tmp_main_results"
-        fi
-        mv "$tmp_main_results" "$MAIN_RESULTS_FILE"
-        echo "updated aggregate results at $MAIN_RESULTS_FILE"
-    fi
 else
-    echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
-    if [ "$TEST_EXIT_CODE" -eq 0 ]; then
-        TEST_EXIT_CODE=1
-    fi
+	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
+	if [ "$TEST_EXIT_CODE" -eq 0 ]; then
+		TEST_EXIT_CODE=1
+	fi
 fi
 
 echo ""
@@ -246,7 +229,7 @@ echo ""
 echo ""
 
 if [ "$TEST_EXIT_CODE" -ne 0 ]; then
-    exit "$TEST_EXIT_CODE"
+	exit "$TEST_EXIT_CODE"
 fi
 
 exit 0
