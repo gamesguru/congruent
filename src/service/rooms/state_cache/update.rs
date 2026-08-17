@@ -489,18 +489,9 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 /// that this member is gone -- otherwise E2EE device tracking silently goes
 /// stale for every membership removal that flows through state resolution
 /// instead of a real `/leave`.
-///
-/// `prior_members` must be the room's member list *before* this removal is
-/// applied, collected once by the caller (not per-member) to avoid
-/// `O(removed * members)` blowup when reconciling many removals at once.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, prior_members), level = "debug")]
-pub async fn mark_as_left_reconciled(
-	&self,
-	user_id: &UserId,
-	room_id: &RoomId,
-	prior_members: &[OwnedUserId],
-) {
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn mark_as_left_reconciled(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
@@ -532,8 +523,7 @@ pub async fn mark_as_left_reconciled(
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
-	self.mark_device_list_lefts(user_id, prior_members, left_count)
-		.await;
+	left_count
 }
 
 /// Mark a user as having left a room.
@@ -660,6 +650,56 @@ async fn mark_device_list_lefts(
 			self.services
 				.users
 				.mark_device_list_left(user_id, member, count);
+		}
+	}
+}
+
+/// Bulk device-list-left reconciliation for many removed members.
+///
+/// `removed_members` must carry the same per-user count returned by
+/// `mark_as_left_reconciled`, so the resulting left markers preserve the
+/// original ordering semantics while allowing the expensive visibility work
+/// to be batched at the caller.
+#[implement(super::Service)]
+pub async fn mark_device_list_lefts_batch(
+	&self,
+	removed_members: &[(OwnedUserId, u64)],
+	prior_members: &[OwnedUserId],
+	local_prior_members: &[&OwnedUserId],
+) {
+	for (user_id, count) in removed_members {
+		if self.services.globals.user_is_local(user_id) {
+			for member in prior_members {
+				if member == user_id {
+					continue;
+				}
+
+				if self.services.globals.user_is_local(member)
+					&& !self.user_sees_user(member, user_id).await
+				{
+					self.services
+						.users
+						.mark_device_list_left(member, user_id, *count);
+				}
+
+				if !self.user_sees_user(user_id, member).await {
+					self.services
+						.users
+						.mark_device_list_left(user_id, member, *count);
+				}
+			}
+		} else {
+			for &member in local_prior_members {
+				if member == user_id {
+					continue;
+				}
+
+				if !self.user_sees_user(member, user_id).await {
+					self.services
+						.users
+						.mark_device_list_left(member, user_id, *count);
+				}
+			}
 		}
 	}
 }

@@ -17,7 +17,7 @@ use futures::{
 	FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all, pin_mut,
 };
 use ruma::{
-	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
+	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UserId,
 	events::{
 		AnyStrippedStateEvent, StateEventType, TimelineEventType,
 		room::create::RoomCreateEventContent,
@@ -297,6 +297,11 @@ impl Service {
 			.map(ToOwned::to_owned)
 			.collect()
 			.await;
+		let local_prior_members: Vec<&OwnedUserId> = prior_members
+			.iter()
+			.filter(|member| self.services.globals.user_is_local(member))
+			.collect();
+		let mut removed_members: Vec<(OwnedUserId, u64)> = Vec::new();
 
 		pin_mut!(removed_events);
 		while let Some((shortstatekey, shorteventid)) = removed_events.next().await {
@@ -317,13 +322,14 @@ impl Service {
 						//
 						// Use the reconciled variant here so we do not wipe a just-added
 						// invite when state resolution is transitioning from leave/ban ->
-						// invite, while still updating other local users' device-list-left
-						// markers (see `mark_as_left_reconciled`'s docs).
+						// invite.
 						if !new_state_events.contains_key(&shortstatekey) {
-							self.services
+							let left_count = self
+								.services
 								.state_cache
-								.mark_as_left_reconciled(user_id, room_id, &prior_members)
+								.mark_as_left_reconciled(user_id, room_id)
 								.await;
+							removed_members.push((user_id.to_owned(), left_count));
 						}
 					}
 				} else if event_type == StateEventType::SpaceChild {
@@ -363,6 +369,18 @@ impl Service {
 				}
 			}
 		}
+
+		if !removed_members.is_empty() {
+			self.services
+				.state_cache
+				.mark_device_list_lefts_batch(
+					&removed_members,
+					&prior_members,
+					&local_prior_members,
+				)
+				.await;
+		}
+
 		info!(target: "force_state", "removed events done, updating joined count");
 		self.set_room_state(room_id, shortstatehash, state_lock);
 		self.services.state_cache.update_joined_count(room_id).await;
