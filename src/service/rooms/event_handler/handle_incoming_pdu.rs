@@ -23,6 +23,18 @@ use tracing::debug;
 use super::handle_outlier_pdu::AuthRecoveryStage;
 use crate::rooms::timeline::{RawPduId, pdu_fits};
 
+/// [`super::fetch_prev`]'s full return tuple, threaded from the
+/// `MissingAuthEvents` retry path (which fetches this event's own
+/// prev_events just to pick a `/state_ids` anchor) through to
+/// [`process_timeline_upgrade`] so a successful retry doesn't repeat the
+/// exact same federation fetch a second time immediately after.
+type PrefetchedPrev = (
+	Vec<OwnedEventId>,
+	HashMap<OwnedEventId, BTreeMap<String, CanonicalJsonValue>>,
+	Option<OwnedEventId>,
+	bool,
+);
+
 async fn should_rescind_invite(
 	services: &crate::rooms::event_handler::Services,
 	content: &BTreeMap<String, CanonicalJsonValue>,
@@ -258,6 +270,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					&create_event,
 					origin,
 					room_id,
+					None,
 				))
 				.await;
 			}
@@ -389,6 +402,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		.room_state_get(room_id, &StateEventType::RoomCreate, "")
 		.await?);
 
+	// Populated by the `MissingAuthEvents` retry branch below if it already
+	// fetched this event's own prev_events over federation while picking a
+	// `/state_ids` anchor. `process_timeline_upgrade` needs that same fetch
+	// (full prev PDUs, not just an anchor) for a successful retry -- passing
+	// it through here means it doesn't repeat the round-trip.
+	let mut prefetched_prev: Option<PrefetchedPrev> = None;
+
 	let (incoming_pdu, val) = match Box::pin(self.handle_outlier_pdu(
 		origin,
 		Some(create_event),
@@ -488,10 +508,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// upcoming /state_ids retry there instead, since that's the
 					// point the sending server can actually provide a snapshot
 					// for.
-					| Ok((_, _, Some(deeper_anchor), _)) => {
-						state_ids_anchor = deeper_anchor;
+					| Ok((sorted, fetched, Some(deeper_anchor), invalid)) => {
+						state_ids_anchor = deeper_anchor.clone();
+						prefetched_prev = Some((sorted, fetched, Some(deeper_anchor), invalid));
 					},
-					| Ok(_) => {},
+					| Ok((sorted, fetched, None, invalid)) => {
+						prefetched_prev = Some((sorted, fetched, None, invalid));
+					},
 					| Err(e) => {
 						warn!(
 							event_id = %event_id,
@@ -674,8 +697,15 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	// We no longer need an MPSC worker because state resolution lockups (the V2.1
 	// drain trap) are fixed, so this runs blazingly fast without starving EDUs or
 	// OCC storms!
-	Box::pin(self.process_timeline_upgrade(incoming_pdu, val, create_event, origin, room_id))
-		.await
+	Box::pin(self.process_timeline_upgrade(
+		incoming_pdu,
+		val,
+		create_event,
+		origin,
+		room_id,
+		prefetched_prev,
+	))
+	.await
 }
 
 #[implement(super::Service)]
@@ -692,6 +722,11 @@ pub async fn process_timeline_upgrade(
 	create_event: &conduwuit::PduEvent,
 	origin: &ServerName,
 	room_id: &RoomId,
+	// Already-fetched result of `fetch_prev(.., incoming_pdu.prev_events(), ..)`
+	// for this exact event, if the caller's `MissingAuthEvents` retry path
+	// already made that federation call while picking a `/state_ids` anchor.
+	// Reused below instead of repeating the same fetch.
+	prefetched_prev: Option<PrefetchedPrev>,
 ) -> Result<Option<RawPduId>> {
 	let event_id = incoming_pdu.event_id().to_owned();
 
@@ -706,20 +741,25 @@ pub async fn process_timeline_upgrade(
 
 	// Fetch any missing prev events before taking the write cork so remote I/O
 	// does not suppress unrelated WAL flushes across the whole server.
-	// These are timeline events.
+	// These are timeline events. Skipped entirely if the caller already did
+	// this exact fetch (see `prefetched_prev`'s doc comment).
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
 		prev_fetch_deeper_anchor,
 		prev_fetch_had_invalid_data,
-	) = Box::pin(self.fetch_prev(
-		origin,
-		room_id,
-		event_id.as_ref(),
-		incoming_pdu.prev_events(),
-		Some(incoming_pdu.sender().server_name()),
-	))
-	.await?;
+	) = if let Some(prefetched) = prefetched_prev {
+		prefetched
+	} else {
+		Box::pin(self.fetch_prev(
+			origin,
+			room_id,
+			event_id.as_ref(),
+			incoming_pdu.prev_events(),
+			Some(incoming_pdu.sender().server_name()),
+		))
+		.await?
+	};
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 

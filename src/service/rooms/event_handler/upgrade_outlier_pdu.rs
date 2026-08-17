@@ -906,7 +906,18 @@ where
 
 	let mut state_at_event: Option<StateAtEvent> = None;
 
-	if exact_match {
+	// The fast-forward shortcut hands back the room's *live* current state
+	// verbatim (`get_room_shortstatehash(room_id)`), unconditioned on
+	// `exact_match` alone. That's only correct when this event is actually
+	// becoming the room's new live tip (`merge_current_extremities: true`,
+	// see the caller-facing doc comment on that parameter above). For a
+	// historical/admin rescue, `exact_match` can still trip by coincidence
+	// (the rescued event's prev_events happen to equal today's forward
+	// extremities), and taking this shortcut there would hand it today's
+	// live state -- memberships and power levels that didn't exist yet
+	// when the event was originally authored -- instead of resolving
+	// purely from its own prev_events.
+	if exact_match && merge_current_extremities {
 		info!(
 			"Incoming PDU matches current extremities exactly (fast-forward candidate). \
 			 Skipping full state lookup."
