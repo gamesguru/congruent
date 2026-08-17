@@ -369,79 +369,65 @@ where
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
+		// Read from our outlier store or timeline
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+			continue;
+		};
+		let state_key = pdu
+			.state_key()
+			.ok_or_else(|| err!(Database("Found non-state pdu in state events.")))?;
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+
 		// A rejected *outlier* (e.g. missing auth events from a corrupted auth
-		// chain) must never represent resolved room state: `get_pdu` would
-		// still return it from the shared `eventid_pdu` tree. But a timeline
-		// event can briefly retain a stale rejection marker from before its
-		// promotion and is still valid state — so only skip events that are
-		// rejected *and* not visible to clients (i.e. still outliers).
-		//
-		// When such a rejected outlier *is* the remote server's only value for
-		// a (type, state_key) slot (e.g. a corrupted membership event whose
-		// auth chain can't be resolved), skipping it alone would leave that
-		// slot absent from the returned state map — a hole that later auth
-		// reads see as "not in room". So fill the slot from our local current
-		// state for that key instead. This must not be confused with the
-		// (rejected) live-state-bleed-into-historical-rescues hazard: here the
-		// remote snapshot nominated a *corrupted* event for the key, and we
-		// are substituting the last valid local value, not importing today's
-		// memberships into a past snapshot.
-		if self.services.pdu_metadata.is_event_rejected(&eid).await
+		// chain) must never represent resolved room state: it can only be a
+		// remote server's corrupted value for this slot. But a timeline event
+		// can briefly retain a stale rejection marker from before its promotion
+		// and is still valid state. When we do skip a rejected *outlier* that
+		// is the snapshot's only value for this (type, state_key) slot, fill the
+		// slot from our local current state so we don't leave a hole that later
+		// auth reads see as e.g. "not in room". This is not live-state-bleed
+		// into a historical rescue: the remote snapshot nominated a *corrupted*
+		// event for the key, and we substitute the last valid local value.
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
 			&& !self
 				.services
 				.pdu_metadata
 				.is_event_visible_to_clients(&eid)
 				.await
 		{
-			if let Ok(pdu) = self.services.timeline.get_pdu(&eid).await {
-				if let Some(state_key) = pdu.state_key() {
-					let event_type: StateEventType = pdu.kind().to_string().into();
-					if let Ok(room_ssh) = self.services.state.get_room_shortstatehash(room_id).await
-					{
-						if let Ok(local_pdu) = self
-							.services
-							.state_accessor
-							.state_get(room_ssh, &event_type, state_key)
-							.await
-						{
-							let shortstatekey = self
-								.services
-								.short
-								.get_or_create_shortstatekey(&event_type.to_string().into(), state_key)
-								.await;
-							state.insert(shortstatekey, local_pdu.event_id().to_owned());
-						}
-					}
-				}
+			match self.services.state.get_room_shortstatehash(room_id).await {
+				| Ok(room_ssh) => self
+					.services
+					.state_accessor
+					.state_get(room_ssh, &pdu.kind().to_string().into(), state_key)
+					.await
+					.ok()
+					.map(|local_pdu| local_pdu.event_id().to_owned()),
+				| Err(_) => None,
 			}
-			continue;
-		}
-		// Read from our outlier store or timeline
-		let pdu = self.services.timeline.get_pdu(&eid).await;
-		if let Ok(pdu) = pdu {
-			let state_key = pdu
-				.state_key()
-				.ok_or_else(|| err!(Database("Found non-state pdu in state events.")))?;
+			.into_iter()
+			.next()
+			.unwrap_or_else(|| eid.clone())
+		} else {
+			eid.clone()
+		};
 
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
-				.await;
-
-			match state.entry(shortstatekey) {
-				| hash_map::Entry::Vacant(v) => {
-					v.insert(eid.clone());
-				},
-				| hash_map::Entry::Occupied(_) => {
-					return Err!(Database(
-						"State event's type and state_key combination exists multiple times: \
-						 {}, {}",
-						pdu.kind(),
-						state_key
-					));
-				},
-			}
+		match state.entry(shortstatekey) {
+			| hash_map::Entry::Vacant(v) => {
+				v.insert(target_eid);
+			},
+			| hash_map::Entry::Occupied(_) => {
+				return Err!(Database(
+					"State event's type and state_key combination exists multiple times: {}, {}",
+					pdu.kind(),
+					state_key
+				));
+			},
 		}
 	}
 
