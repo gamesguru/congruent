@@ -369,13 +369,15 @@ where
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
-		// A rejected event (e.g. missing auth events from a corrupted auth
-		// chain) is persisted as a rejected outlier, which `get_pdu` will
-		// still return from the shared `eventid_pdu` tree. It can never
-		// legally represent resolved room state, so skip it here before it
-		// pollutes the returned state map and bleeds into later state
-		// resolution (see TestCorruptedAuthChain).
-		if self.services.pdu_metadata.is_event_rejected(&eid).await {
+		// A rejected *outlier* (e.g. missing auth events from a corrupted auth
+		// chain) must never represent resolved room state: `get_pdu` would
+		// still return it from the shared `eventid_pdu` tree. But a timeline
+		// event can briefly retain a stale rejection marker from before its
+		// promotion and is still valid state — so only skip events that are
+		// rejected *and* not visible to clients (i.e. still outliers).
+		if self.services.pdu_metadata.is_event_rejected(&eid).await
+			&& !self.services.pdu_metadata.is_event_visible_to_clients(&eid).await
+		{
 			continue;
 		}
 		// Read from our outlier store or timeline
