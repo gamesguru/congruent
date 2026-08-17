@@ -329,6 +329,22 @@ impl Service {
 			);
 			return;
 		}
+		// An outlier promotion for this event may already be reserved (queued
+		// into a batch, not yet committed) -- see
+		// `timeline::Service::is_promotion_pending`'s doc comment for why this
+		// has to be checked here too, not just `is_event_visible_to_clients`
+		// above: the reservation exists specifically to cover the gap before
+		// the event becomes visible, which is exactly where that check can't
+		// see it yet.
+		if self.services.timeline.is_promotion_pending(event_id) {
+			conduwuit::warn!(
+				%event_id,
+				%reason,
+				"refusing to reject event with an outlier promotion in flight (already \
+				 passed auth as part of that promotion)"
+			);
+			return;
+		}
 		self.db.mark_event_rejected(event_id, reason);
 	}
 
@@ -507,10 +523,16 @@ impl Service {
 	/// still lacks a validated auth chain, so promotion must not erase that
 	/// marker just because the reason is retryable in general.
 	///
-	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows but
-	/// does not fully close the TOCTOU window against a `mark_event_rejected`
-	/// landing between the read and the write below; a genuine fix needs a
-	/// DB-level conditional write, which this store doesn't expose.
+	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows the
+	/// TOCTOU window against a `mark_event_rejected` landing between the
+	/// read and the write below. `mark_event_rejected` also checks
+	/// `timeline::Service::is_promotion_pending` in addition to
+	/// `is_event_visible_to_clients`, so between them they cover the entire
+	/// window from `promote_outlier_batch`'s reservation through
+	/// `finish_promote_outlier` releasing it -- see `mark_event_rejected`'s
+	/// and `finish_promote_outlier`'s (`backfill.rs`) doc comments for what's
+	/// left uncovered (sub-instruction-timing only) and why it's surfaced
+	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
 		let Some(reason) = self.get_rejection_reason(event_id).await else {
 			// Not rejected -- still clear any stale soft-fail marker.

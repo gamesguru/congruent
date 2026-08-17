@@ -10,7 +10,7 @@ use std::{
 
 use conduwuit::{Err, Error, PduEvent, RoomVersion};
 use conduwuit_core::{
-	Result, SyncMutex, debug, debug_warn, err, implement, info,
+	Result, SyncMutex, debug, debug_warn, err, error, implement, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -934,6 +934,22 @@ pub async fn promote_outlier(
 	Ok(outcome)
 }
 
+/// Whether `event_id` currently has a reserved-but-not-yet-committed outlier
+/// promotion in flight (see [`Service::pending_promotions`]'s doc comment).
+///
+/// Used by `PduMetadataService::mark_event_rejected` to close the residual
+/// TOCTOU window between [`Self::promote_outlier_batch`]'s in-lock recheck
+/// and its caller applying the batch: without this, a rejection landing in
+/// that window would see the event as neither rejected nor yet visible on
+/// the timeline, and would proceed to mark it rejected -- only for the
+/// already-queued write to land anyway, leaving a rejected-but-visible
+/// event (see `finish_promote_outlier`'s doc comment for what happens if
+/// this is ever bypassed).
+#[implement(super::Service)]
+pub fn is_promotion_pending(&self, event_id: &EventId) -> bool {
+	self.pending_promotions.lock().contains(event_id)
+}
+
 /// Whether [`Service::promote_outlier_batch`] queued a write into the
 /// caller's batch, or found nothing to do.
 pub enum PromoteOutlierOutcome {
@@ -1078,16 +1094,36 @@ pub async fn promote_outlier_batch<'a>(
 /// write carries a `soft_failed`/`rejected` snapshot taken when the batch
 /// was built, so clearing markers first would just be silently overwritten
 /// back to their stale values once the batch is applied.
+///
+/// Residual TOCTOU: `PduMetadataService::mark_event_rejected` refuses to
+/// reject an event that's either already visible on the timeline, or has an
+/// outlier promotion reserved-but-not-yet-committed for it (see its doc
+/// comment and [`Self::is_promotion_pending`]). Together those two checks
+/// cover the entire window from `promote_outlier_batch`'s reservation
+/// (before its in-lock recheck) through this function releasing it -- a
+/// rejection can only land here if it raced the reservation *and* the
+/// visibility check with sub-instruction timing, which on a real system
+/// means this branch firing is a strong signal something is actually wrong
+/// (e.g. the same event independently judged valid and invalid by two auth
+/// passes) rather than "the expected occasional race". Silently clearing
+/// the marker to paper over that, or evicting the just-landed row (which
+/// would need a safe "remove PDU from timeline" primitive -- search index,
+/// state associations, etc. all need unwinding too -- that doesn't exist
+/// yet), would both be worse than surfacing it. So this stays `error!`
+/// rather than a silent `warn!`: if it ever fires, it should page someone
+/// rather than scroll past in a debug-level log.
 #[implement(super::Service)]
 pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
 	self.pending_promotions.lock().remove(event_id);
 
 	if !self.services.pdu_metadata.finish_promotion(event_id).await {
-		warn!(
+		error!(
 			target: "backfill_debug",
 			%event_id,
 			%room_id,
-			"promote_outlier: event was rejected during promotion; leaving rejection in place"
+			"promote_outlier: event was rejected during promotion; event is now visible on \
+			 the timeline despite a permanent rejection marker (residual TOCTOU, see \
+			 finish_promote_outlier's doc comment) -- needs manual investigation"
 		);
 	}
 }
