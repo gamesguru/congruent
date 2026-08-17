@@ -12,7 +12,13 @@ use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
 use ruma::{CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId};
 
-use crate::{Dep, rooms, rooms::short::ShortRoomId};
+use crate::{
+	Dep, rooms,
+	rooms::{
+		pdu_metadata::{EventStatus, RejectionCode},
+		short::ShortRoomId,
+	},
+};
 
 pub struct Service {
 	db: Data,
@@ -304,23 +310,21 @@ fn add_pdu_outlier_batch_impl<'a>(
 			is_outlier: true,
 			origin_server_ts: parsed_pdu.origin_server_ts().0,
 			depth: parsed_pdu.depth(),
-			soft_failed: existing_outlier_meta
-				.as_ref()
-				.is_some_and(|m| m.soft_failed),
-			rejected: parsed_pdu.rejected()
-				|| existing_outlier_meta.as_ref().is_some_and(|m| m.rejected),
+			status: match existing_outlier_meta.as_ref().map(|m| &m.status) {
+				| Some(EventStatus::Rejected(code)) => EventStatus::Rejected(*code),
+				| Some(EventStatus::SoftFailed(code)) if !parsed_pdu.rejected() =>
+					EventStatus::SoftFailed(*code),
+				| _ =>
+					if parsed_pdu.rejected() {
+						EventStatus::Rejected(RejectionCode::Unknown)
+					} else {
+						EventStatus::Pending
+					},
+			},
 			redacted_by: parsed_pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: None,
 			deprecated_local_topo_depth: 0,
 			pdu_count: None,
-			soft_fail_reason: existing_outlier_meta
-				.as_ref()
-				.map(|m| m.soft_fail_reason.clone())
-				.unwrap_or_default(),
-			rejection_reason: existing_outlier_meta
-				.as_ref()
-				.map(|m| m.rejection_reason.clone())
-				.unwrap_or_default(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.db

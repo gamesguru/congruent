@@ -17,8 +17,10 @@ use ruma::{
 
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::{
-	pdu_metadata::RejectionCode, short::ShortStateHash,
-	state_compressor::HashSetCompressStateEvent, timeline::RawPduId,
+	pdu_metadata::{RejectionCode, SoftFailCode},
+	short::ShortStateHash,
+	state_compressor::HashSetCompressStateEvent,
+	timeline::RawPduId,
 };
 
 /// Picks which event ID to request `/state_ids` at.
@@ -753,10 +755,9 @@ where
 	.await?;
 
 	if soft_fail {
-		self.services.pdu_metadata.mark_event_soft_failed(
-			incoming_pdu.event_id(),
-			"auth check failed against current room state",
-		);
+		self.services
+			.pdu_metadata
+			.mark_event_soft_failed(incoming_pdu.event_id(), SoftFailCode::AuthCheckFailed);
 
 		debug_warn!(
 			elapsed = ?timer.elapsed(),

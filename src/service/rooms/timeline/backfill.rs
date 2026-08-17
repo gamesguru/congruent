@@ -471,7 +471,12 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
 		match metadata {
-			| Ok(meta) if meta.rejected => {
+			| Ok(meta)
+				if matches!(
+					meta.status,
+					crate::rooms::pdu_metadata::EventStatus::Rejected(_)
+				) =>
+			{
 				// Retryable rejections are recovery markers, not permanent
 				// evidence that the event is invalid. Route the decision
 				// through `take_retry_if_rejection_retryable_for_promotion`,

@@ -187,8 +187,11 @@ impl Service {
 						is_outlier: false,
 						origin_server_ts: pdu.origin_server_ts().0,
 						depth: pdu.depth(),
-						soft_failed: false,
-						rejected: pdu.rejected(),
+						status: crate::rooms::timeline::status_from_prior(
+							None,
+							false,
+							pdu.rejected(),
+						),
 						redacted_by: pdu.redacts().map(ToOwned::to_owned),
 						short_state_hash: None,
 						deprecated_local_topo_depth: pdu.depth().into(),
@@ -196,8 +199,6 @@ impl Service {
 							| PduCount::Normal(x) => Some(*x),
 							| PduCount::Backfilled(_) => None,
 						},
-						soft_fail_reason: String::new(),
-						rejection_reason: String::new(),
 					};
 					if let Ok(bytes) = bincode::serialize(&meta) {
 						self.db.store_eventid_metadata(event_id.as_bytes(), bytes);

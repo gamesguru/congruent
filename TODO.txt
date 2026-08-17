@@ -75,7 +75,7 @@ Mon 2026/08/17
    what did you determine from those based on the more recent dialogue, too?
 
    is the current state fallback even correct anymore? did we overcomplicate the rejection flag management? should it just be synchronous and atomic with the outlier flag? you shouldn't have madness with managing timeline events with stale reject
-   ion flags... taht should be cleared simultaneously at the source ideally or be impossible via an invariant at read time? not sure.
+   ion flags... that should be cleared simultaneously at the source ideally or be impossible via an invariant at read time? not sure.
 
    should we do something simpler or more sturdy? what does `../synapse` do in this context? are you able to read that folder and compare their relevant source code paths with ours?
 
@@ -428,3 +428,21 @@ orthogonal to HAMT/LtHash (state storage). Both are worth doing, separately.
 Lean: make both explicit Conduwuit-only (positive guard + comment), not
 double-negative skips / skip-only-the-assertion. That double-negative form is
 exactly the accommodation-hack drift that's been biting.
+
+
+###############################
+Mon 2026/08/17 — EventStatus enum: DONE
+###############################
+
+The EventStatus enum refactor is landed as 359c5d03d3 (17 files, +365/-195):
+EventStatus { Pending, Accepted, Rejected(RejectionCode), SoftFailed(SoftFailCode) }
+replaces the is_outlier/rejected/soft_failed booleans + reason strings, plus a
+typed SoftFailCode. cargo check clean; metadata unit tests 5/5.
+
+Remaining roadmap items (orthogonal to each other, both separate layers):
+1. HAMT/LtHash state-STORAGE simplification — msc4511/augmented-hamt deletes
+   state_compressor (-546 lines) for state_hamt + lthash. msc4500 is an
+   expansion, not a simplification.
+2. Synapse-style staging + background ingestion — the optional step 2 for the
+   ingestion layer (close the remaining sync-vs-async /send race class;
+   EventStatus was step 1 for the rejection-flag part of that layer).

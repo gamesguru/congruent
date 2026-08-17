@@ -275,7 +275,13 @@ impl Service {
 					| Ok(meta) if meta.is_outlier => {
 						outlier_event_ids.insert(short_id);
 					},
-					| Ok(meta) if meta.rejected || meta.soft_failed => {
+					| Ok(meta)
+						if matches!(
+							meta.status,
+							crate::rooms::pdu_metadata::EventStatus::Rejected(_)
+								| crate::rooms::pdu_metadata::EventStatus::SoftFailed(_)
+						) =>
+					{
 						bridge_event_ids.insert(short_id);
 					},
 					| Ok(_) => {

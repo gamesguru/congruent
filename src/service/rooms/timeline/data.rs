@@ -1264,14 +1264,15 @@ impl Data {
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-			rejected: pdu.rejected(),
+			status: rooms::timeline::status_from_prior(
+				existing_metadata.as_ref(),
+				false,
+				pdu.rejected(),
+			),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
 			pdu_count: Some(count.into_unsigned()),
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
@@ -1434,8 +1435,11 @@ impl Data {
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-			rejected: pdu.rejected(),
+			status: rooms::timeline::status_from_prior(
+				existing_metadata.as_ref(),
+				false,
+				pdu.rejected(),
+			),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
@@ -1443,8 +1447,6 @@ impl Data {
 				| PduCount::Normal(x) => Some(x),
 				| PduCount::Backfilled(_) => None,
 			},
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
@@ -1518,8 +1520,11 @@ impl Data {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-				rejected: pdu.rejected(),
+				status: rooms::timeline::status_from_prior(
+					existing_metadata.as_ref(),
+					false,
+					pdu.rejected(),
+				),
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 				deprecated_local_topo_depth: pdu.depth().into(),
@@ -1527,8 +1532,6 @@ impl Data {
 					| PduCount::Normal(x) => Some(x),
 					| PduCount::Backfilled(_) => None,
 				},
-				soft_fail_reason: String::new(),
-				rejection_reason: String::new(),
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 				self.eventid_metadata

@@ -63,7 +63,7 @@ pub(super) async fn manage_rejected(
 			if soft_fail && !is_soft_failed {
 				self.services.rooms.pdu_metadata.mark_event_soft_failed(
 					event_id,
-					"manually soft-failed via admin command manage-rejected",
+					conduwuit_service::rooms::pdu_metadata::SoftFailCode::Manual,
 				);
 			}
 		}

@@ -19,7 +19,7 @@ use crate::{
 	Dep,
 	rooms::{
 		self,
-		pdu_metadata::is_retryable_rejection_reason,
+		pdu_metadata::{EventStatus, RejectionCode, SoftFailCode},
 		short::{ShortEventId, ShortRoomId},
 		timeline::{PduId, PdusIterItem, RawPduId},
 	},
@@ -138,7 +138,7 @@ impl Data {
 		self.referencedevents.qry(&key).await.is_ok()
 	}
 
-	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, reason: &str) {
+	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
 		let mut meta = if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
 			rooms::timeline::EventMetadata::from_bincode(&metadata_bytes).unwrap_or_default()
 		} else {
@@ -147,9 +147,9 @@ impl Data {
 			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
 		};
 
-		if !meta.soft_failed || meta.soft_fail_reason.is_empty() {
-			meta.soft_failed = true;
-			reason.clone_into(&mut meta.soft_fail_reason);
+		// Keep the first soft-fail code; don't overwrite an existing typed code.
+		if !matches!(meta.status, EventStatus::SoftFailed(_)) {
+			meta.status = EventStatus::SoftFailed(code);
 			if let Ok(new_bytes) = bincode::serialize(&meta) {
 				self.eventid_metadata.insert(event_id, new_bytes);
 			}
@@ -157,35 +157,20 @@ impl Data {
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
-		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				return meta.soft_failed;
-			}
-		}
-		false
+		self.get_status(event_id)
+			.await
+			.is_some_and(|status| matches!(status, EventStatus::SoftFailed(_)))
 	}
 
 	pub(super) async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
-		let metadata_bytes = self.eventid_metadata.get(event_id).await.ok()?;
-		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes).ok()?;
-		if meta.soft_failed && !meta.soft_fail_reason.is_empty() {
-			Some(meta.soft_fail_reason)
-		} else {
-			None
+		match self.get_status(event_id).await? {
+			| EventStatus::SoftFailed(code) => Some(code.tag().to_owned()),
+			| _ => None,
 		}
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
-		if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if meta.soft_failed {
-					meta.soft_failed = false;
-					if let Ok(new_bytes) = bincode::serialize(&meta) {
-						self.eventid_metadata.insert(event_id, new_bytes);
-					}
-				}
-			}
-		}
+		self.clear_status_if(event_id, |status| matches!(status, EventStatus::SoftFailed(_)));
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
@@ -197,31 +182,27 @@ impl Data {
 			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
 		};
 
-		let new_reason_retryable = is_retryable_rejection_reason(reason);
-		let existing_reason_retryable = !meta.rejection_reason.is_empty()
-			&& is_retryable_rejection_reason(&meta.rejection_reason);
+		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
 
 		// Keep the first rejection by default, but allow a later *permanent*
 		// rejection to replace an earlier retryable placeholder. That prevents
 		// retryable sentinels like `MissingAuthEvent` from masking the real
 		// reason when an intrinsic validation failure is discovered later in
 		// the same attempt.
-		if !meta.rejected
-			|| meta.rejection_reason.is_empty()
-			|| (existing_reason_retryable && !new_reason_retryable)
-		{
-			meta.rejected = true;
-			reason.clone_into(&mut meta.rejection_reason);
+		let replace = match meta.status {
+			| EventStatus::Rejected(existing) =>
+				existing.is_retryable() && !new_code.is_retryable(),
+			| _ => true,
+		};
+		if replace {
+			meta.status = EventStatus::Rejected(new_code);
 			if let Ok(new_bytes) = bincode::serialize(&meta) {
 				self.eventid_metadata.insert(event_id, new_bytes);
 			}
 		}
 	}
 
-	pub(super) async fn try_get_rejection_reason(
-		&self,
-		event_id: &EventId,
-	) -> Result<Option<String>> {
+	pub(super) async fn try_get_status(&self, event_id: &EventId) -> Result<Option<EventStatus>> {
 		let metadata_bytes = match self.eventid_metadata.get(event_id).await {
 			| Ok(bytes) => bytes,
 			| Err(e) if e.is_not_found() => return Ok(None),
@@ -229,40 +210,41 @@ impl Data {
 		};
 		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
-		if meta.rejected && !meta.rejection_reason.is_empty() {
-			Ok(Some(meta.rejection_reason))
-		} else {
-			Ok(None)
-		}
+		Ok(Some(meta.status))
 	}
 
-	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				return meta.rejected;
-			}
-		}
-		false
+	pub(super) async fn get_status(&self, event_id: &EventId) -> Option<EventStatus> {
+		self.try_get_status(event_id).await.ok().flatten()
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
+		self.clear_status_if(event_id, |status| matches!(status, EventStatus::Rejected(_)));
+	}
+
+	/// Removes any soft-fail or rejection markers applied to the target PDU
+	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
+		self.clear_status_if(event_id, |status| {
+			matches!(status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_))
+		});
+	}
+
+	/// Clears a rejected/soft-failed verdict, reverting the event to `Pending`
+	/// (if still an outlier) or `Accepted` (if it reached the timeline).
+	fn clear_status_if(&self, event_id: &EventId, pred: impl Fn(&EventStatus) -> bool) {
 		if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
 			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if meta.rejected {
-					meta.rejected = false;
-					meta.rejection_reason.clear();
+				if pred(&meta.status) {
+					meta.status = if meta.is_outlier {
+						EventStatus::Pending
+					} else {
+						EventStatus::Accepted
+					};
 					if let Ok(new_bytes) = bincode::serialize(&meta) {
 						self.eventid_metadata.insert(event_id, new_bytes);
 					}
 				}
 			}
 		}
-	}
-
-	/// Removes any soft-fail or rejection markers applied to the target PDU
-	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
-		self.unmark_event_rejected(event_id);
-		self.unmark_event_soft_failed(event_id);
 	}
 
 	/// MSC2836: index `child` as a relationship-child of `parent` with the

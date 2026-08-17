@@ -176,8 +176,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 				writeln!(out, "- **depth**:            {}", meta.depth)?;
 				writeln!(out, "- **short_room_id**:    {}", meta.short_room_id)?;
 				writeln!(out, "- **is_outlier**:       {}", meta.is_outlier)?;
-				writeln!(out, "- **soft_failed**:      {}", meta.soft_failed)?;
-				writeln!(out, "- **rejected**:         {}", meta.rejected)?;
+				writeln!(out, "- **status**:           {:?}", meta.status)?;
 				writeln!(
 					out,
 					"- **redacted_by**:      {}",
@@ -191,12 +190,6 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 					meta.short_state_hash
 						.map_or_else(|| "None".to_owned(), |h| h.to_string())
 				)?;
-				if !meta.soft_fail_reason.is_empty() {
-					writeln!(out, "- **soft_fail_reason**: {}", meta.soft_fail_reason)?;
-				}
-				if !meta.rejection_reason.is_empty() {
-					writeln!(out, "- **rejection_reason**: {}", meta.rejection_reason)?;
-				}
 			},
 			| Err(e) => {
 				use std::fmt::Write;

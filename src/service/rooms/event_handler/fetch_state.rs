@@ -376,7 +376,11 @@ where
 		// promotion and is still valid state — so only skip events that are
 		// rejected *and* not visible to clients (i.e. still outliers).
 		if self.services.pdu_metadata.is_event_rejected(&eid).await
-			&& !self.services.pdu_metadata.is_event_visible_to_clients(&eid).await
+			&& !self
+				.services
+				.pdu_metadata
+				.is_event_visible_to_clients(&eid)
+				.await
 		{
 			continue;
 		}

@@ -744,7 +744,8 @@ impl Service {
 
 			match self.services.timeline.get_event_metadata(&event_id).await {
 				| Ok(metadata)
-					if !metadata.is_outlier && !metadata.rejected && !metadata.soft_failed =>
+					if !metadata.is_outlier
+						&& metadata.status == rooms::pdu_metadata::EventStatus::Accepted =>
 				{
 					eligible.push(event_id);
 				},

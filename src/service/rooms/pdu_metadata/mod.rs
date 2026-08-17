@@ -40,7 +40,7 @@ struct Services {
 /// free-text detail after it), and `is_retryable` is a plain match — so
 /// renaming a detail message, or adding a new call site, can't silently
 /// change retry behavior the way a fresh literal string always could.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RejectionCode {
 	/// Signature verification failed against the origin's keys. Permanent —
 	/// the same bytes will never verify differently.
@@ -103,6 +103,11 @@ pub enum RejectionCode {
 	/// resolution failure, not evidence the event is invalid; a later
 	/// attempt with a fuller state snapshot may succeed.
 	StateResolutionFailedWithPrevsPresent,
+	/// A rejection reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Treated as permanent (not retryable),
+	/// and never written fresh — only produced during `EventMetadata`
+	/// migration of legacy rows.
+	Unknown,
 }
 
 impl RejectionCode {
@@ -126,6 +131,7 @@ impl RejectionCode {
 			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
 			| Self::StateResolutionFailedWithPrevsPresent =>
 				"state_resolution_failed_with_prevs_present",
+			| Self::Unknown => "unknown",
 		}
 	}
 
@@ -178,6 +184,64 @@ impl RejectionCode {
 		.into_iter()
 		.find(|code| code.tag() == tag)
 	}
+}
+
+/// Machine-checkable classification of why an event was soft-failed, in the
+/// same spirit as [`RejectionCode`] — a typed tag persisted via
+/// `mark_event_soft_failed` instead of arbitrary free-text prose, so admin
+/// tooling and future logic match on a stable identifier rather than
+/// substring-matching human wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SoftFailCode {
+	/// The event failed the auth check against the current resolved room
+	/// state during timeline upgrade.
+	AuthCheckFailed,
+	/// The event was imported with a pre-existing soft-fail marker.
+	Imported,
+	/// An operator soft-failed the event via the admin `manage-rejected`
+	/// command.
+	Manual,
+	/// A soft-fail reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Only produced during migration.
+	Unknown,
+}
+
+impl SoftFailCode {
+	#[must_use]
+	pub const fn tag(self) -> &'static str {
+		match self {
+			| Self::AuthCheckFailed => "auth_check_failed",
+			| Self::Imported => "imported",
+			| Self::Manual => "manual",
+			| Self::Unknown => "unknown",
+		}
+	}
+
+	#[must_use]
+	pub fn parse(reason: &str) -> Option<Self> {
+		let tag = reason.split(':').next().unwrap_or(reason).trim();
+		[Self::AuthCheckFailed, Self::Imported, Self::Manual]
+			.into_iter()
+			.find(|code| code.tag() == tag)
+	}
+}
+
+/// The single validation status of an event, replacing the previous
+/// independent `rejected`/`soft_failed` booleans + reason strings. Because the
+/// variants are mutually exclusive, a timeline event can no longer carry a
+/// "stale" rejection marker — `Accepted` and `Rejected` are distinct states.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum EventStatus {
+	/// Outlier not yet validated (or a legacy row whose verdict is unknown).
+	#[default]
+	Pending,
+	/// Validated; auth passed. May still be an accepted outlier awaiting
+	/// promotion, or already in the timeline (distinguished by `is_outlier`).
+	Accepted,
+	/// Rejected with a typed reason. Always an outlier.
+	Rejected(RejectionCode),
+	/// Soft-failed with a typed reason. Always an outlier.
+	SoftFailed(SoftFailCode),
 }
 
 /// Returns true if a persisted rejection reason (from
@@ -298,8 +362,8 @@ impl Service {
 
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn mark_event_soft_failed(&self, event_id: &EventId, reason: &str) {
-		self.db.mark_event_soft_failed(event_id, reason);
+	pub fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		self.db.mark_event_soft_failed(event_id, code);
 	}
 
 	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
@@ -313,7 +377,10 @@ impl Service {
 	}
 
 	pub async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		self.db.is_event_rejected(event_id).await
+		self.db
+			.get_status(event_id)
+			.await
+			.is_some_and(|status| matches!(status, EventStatus::Rejected(_)))
 	}
 
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
@@ -373,7 +440,10 @@ impl Service {
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
 	pub async fn is_event_accepted(&self, event_id: &EventId) -> bool {
-		!self.db.is_event_rejected(event_id).await
+		self.db
+			.get_status(event_id)
+			.await
+			.is_none_or(|status| !matches!(status, EventStatus::Rejected(_)))
 	}
 
 	/// Returns true if the event is in the timeline and should be visible
@@ -384,11 +454,10 @@ impl Service {
 	}
 
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
-		self.db
-			.try_get_rejection_reason(event_id)
-			.await
-			.ok()
-			.flatten()
+		match self.db.get_status(event_id).await? {
+			| EventStatus::Rejected(code) => Some(code.tag().to_owned()),
+			| _ => None,
+		}
 	}
 
 	/// Returns true if the event is rejected for a reason that should
@@ -413,10 +482,10 @@ impl Service {
 		// rejection between the two reads would make this method fall through
 		// to `!retryable == true` on a stale `None` reason, i.e. report a
 		// no-longer-rejected event as *permanently* rejected.
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
-			return false;
-		};
-		!is_retryable_rejection_reason(&reason)
+		matches!(
+			self.db.get_status(event_id).await,
+			Some(EventStatus::Rejected(code)) if !code.is_retryable()
+		)
 	}
 
 	/// Returns true if the event is marked rejected specifically because
@@ -439,11 +508,8 @@ impl Service {
 	/// problem.
 	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> bool {
 		matches!(
-			self.get_rejection_reason(event_id)
-				.await
-				.as_deref()
-				.and_then(RejectionCode::parse),
-			Some(RejectionCode::MissingAuthEvent)
+			self.db.get_status(event_id).await,
+			Some(EventStatus::Rejected(RejectionCode::MissingAuthEvent))
 		)
 	}
 
@@ -464,14 +530,15 @@ impl Service {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
-		let Some(reason) = self.get_rejection_reason(event_id).await else {
+		let Some(EventStatus::Rejected(code)) = self.db.get_status(event_id).await else {
 			return false;
 		};
-		let retryable = is_retryable_rejection_reason(&reason);
-		if retryable {
+		if code.is_retryable() {
 			self.unmark_event_rejected(event_id);
+			true
+		} else {
+			false
 		}
-		retryable
 	}
 
 	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
@@ -503,8 +570,8 @@ impl Service {
 		&self,
 		event_id: &EventId,
 	) -> bool {
-		let Some(reason) = (match self.db.try_get_rejection_reason(event_id).await {
-			| Ok(reason) => reason,
+		let Some(status) = (match self.db.try_get_status(event_id).await {
+			| Ok(status) => status,
 			| Err(e) => {
 				warn!(
 					%event_id,
@@ -515,14 +582,14 @@ impl Service {
 		}) else {
 			return true;
 		};
-		if matches!(RejectionCode::parse(&reason), Some(RejectionCode::MissingAuthEvent)) {
-			return false;
-		}
-		if is_retryable_rejection_reason(&reason) {
-			self.unmark_event_rejected(event_id);
-			true
-		} else {
-			false
+		match status {
+			| EventStatus::Rejected(RejectionCode::MissingAuthEvent) => false,
+			| EventStatus::Rejected(code) if code.is_retryable() => {
+				self.unmark_event_rejected(event_id);
+				true
+			},
+			| EventStatus::Rejected(_) => false,
+			| _ => true,
 		}
 	}
 
@@ -552,25 +619,29 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		let Some(reason) = (match self.db.try_get_rejection_reason(event_id).await {
-			| Ok(reason) => reason,
+		let Some(status) = (match self.db.try_get_status(event_id).await {
+			| Ok(status) => status,
 			| Err(e) => {
 				warn!(%event_id, "failed to read rejection state while finalizing promotion: {e}");
 				return false;
 			},
 		}) else {
-			// Not rejected -- still clear any stale soft-fail marker.
+			// No metadata yet -- nothing to clear.
 			self.clear_pdu_markers(event_id);
 			return true;
 		};
-		if matches!(RejectionCode::parse(&reason), Some(RejectionCode::MissingAuthEvent)) {
-			return false;
-		}
-		if is_retryable_rejection_reason(&reason) {
-			self.clear_pdu_markers(event_id);
-			true
-		} else {
-			false
+		match status {
+			| EventStatus::Rejected(RejectionCode::MissingAuthEvent) => false,
+			| EventStatus::Rejected(code) if code.is_retryable() => {
+				self.clear_pdu_markers(event_id);
+				true
+			},
+			| EventStatus::Rejected(_) => false,
+			| _ => {
+				// Not rejected -- still clear any stale soft-fail marker.
+				self.clear_pdu_markers(event_id);
+				true
+			},
 		}
 	}
 

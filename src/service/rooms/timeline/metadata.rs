@@ -1,14 +1,18 @@
 use conduwuit::matrix::pdu::PduCount;
 use serde::{Deserialize, Serialize};
 
+use crate::rooms::pdu_metadata::{EventStatus, RejectionCode, SoftFailCode};
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EventMetadata {
 	pub short_room_id: u64,
 	pub is_outlier: bool,
 	pub origin_server_ts: ruma::UInt,
 	pub depth: ruma::UInt,
-	pub soft_failed: bool,
-	pub rejected: bool,
+	/// The single validation verdict for this event. Replaces the previous
+	/// independent `soft_failed`/`rejected` booleans + reason strings.
+	#[serde(default)]
+	pub status: EventStatus,
 	pub redacted_by: Option<ruma::OwnedEventId>,
 	pub short_state_hash: Option<u64>,
 	#[serde(default)]
@@ -27,12 +31,30 @@ pub struct EventMetadata {
 	/// encoding.
 	#[serde(default)]
 	pub pdu_count: Option<u64>,
-	/// Reason why this event was soft-failed (empty = no reason stored).
+}
+
+/// Pre-`EventStatus` schema with the 12 fields (including the
+/// `soft_failed`/`rejected` booleans and `soft_fail_reason`/`rejection_reason`
+/// strings) that were in place just before the `EventStatus` enum landed. Used
+/// as a bincode fallback so existing rows migrate transparently.
+#[derive(Deserialize)]
+struct EventMetadataV2 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	soft_failed: bool,
+	rejected: bool,
+	redacted_by: Option<ruma::OwnedEventId>,
+	short_state_hash: Option<u64>,
 	#[serde(default)]
-	pub soft_fail_reason: String,
-	/// Reason why this event was rejected (empty = no reason stored).
+	deprecated_local_topo_depth: u64,
 	#[serde(default)]
-	pub rejection_reason: String,
+	pdu_count: Option<u64>,
+	#[serde(default)]
+	soft_fail_reason: String,
+	#[serde(default)]
+	rejection_reason: String,
 }
 
 /// Pre-v19 schema: only 8 fields. Used as a fallback when bincode
@@ -88,26 +110,91 @@ impl EventMetadata {
 			}
 	}
 
-	/// Deserialize from bincode bytes, falling back to the old 8-field
-	/// schema if the current 12-field layout fails (e.g. pre-migration
-	/// entries written before `local_topological_depth`, `pdu_count`,
-	/// `soft_fail_reason`, and `rejection_reason` were added).
+	/// Deserialize from bincode bytes, falling back through the two previous
+	/// on-disk layouts (the 12-field pre-`EventStatus` schema, then the old
+	/// 8-field schema) when the current 9-field layout fails.
 	pub fn from_bincode(bytes: &[u8]) -> Result<Self, bincode::Error> {
-		bincode::deserialize::<Self>(bytes).or_else(|_| {
-			let old = bincode::deserialize::<EventMetadataV1>(bytes)?;
-			Ok(Self {
-				short_room_id: old.short_room_id,
-				is_outlier: old.is_outlier,
-				origin_server_ts: old.origin_server_ts,
-				depth: old.depth,
-				soft_failed: old.soft_failed,
-				rejected: old.rejected,
-				redacted_by: old.redacted_by,
-				short_state_hash: old.short_state_hash,
-				..Default::default()
-			})
+		if let Ok(meta) = bincode::deserialize::<Self>(bytes) {
+			return Ok(meta);
+		}
+		if let Ok(v2) = bincode::deserialize::<EventMetadataV2>(bytes) {
+			return Ok(Self::from_v2(v2));
+		}
+		let old = bincode::deserialize::<EventMetadataV1>(bytes)?;
+		Ok(Self {
+			short_room_id: old.short_room_id,
+			is_outlier: old.is_outlier,
+			origin_server_ts: old.origin_server_ts,
+			depth: old.depth,
+			status: status_from_bools(old.is_outlier, old.soft_failed, old.rejected, None, None),
+			redacted_by: old.redacted_by,
+			short_state_hash: old.short_state_hash,
+			..Default::default()
 		})
 	}
+
+	fn from_v2(v2: EventMetadataV2) -> Self {
+		Self {
+			short_room_id: v2.short_room_id,
+			is_outlier: v2.is_outlier,
+			origin_server_ts: v2.origin_server_ts,
+			depth: v2.depth,
+			status: status_from_bools(
+				v2.is_outlier,
+				v2.soft_failed,
+				v2.rejected,
+				(!v2.soft_fail_reason.is_empty()).then_some(v2.soft_fail_reason.as_str()),
+				(!v2.rejection_reason.is_empty()).then_some(v2.rejection_reason.as_str()),
+			),
+			redacted_by: v2.redacted_by,
+			short_state_hash: v2.short_state_hash,
+			deprecated_local_topo_depth: v2.deprecated_local_topo_depth,
+			pdu_count: v2.pdu_count,
+		}
+	}
+}
+
+/// Map the pre-`EventStatus` booleans + optional reason strings to a single
+/// `EventStatus`. `rejected` takes precedence over `soft_failed`; a bare
+/// outlier with no markers maps to `Pending` (its verdict is simply unknown
+/// until re-validated), and a timeline event with no markers maps to
+/// `Accepted`.
+#[must_use]
+pub fn status_from_bools(
+	is_outlier: bool,
+	soft_failed: bool,
+	rejected: bool,
+	soft_fail_reason: Option<&str>,
+	rejection_reason: Option<&str>,
+) -> EventStatus {
+	if rejected {
+		let code = rejection_reason
+			.and_then(RejectionCode::parse)
+			.unwrap_or(RejectionCode::Unknown);
+		EventStatus::Rejected(code)
+	} else if soft_failed {
+		let code = soft_fail_reason
+			.and_then(SoftFailCode::parse)
+			.unwrap_or(SoftFailCode::Unknown);
+		EventStatus::SoftFailed(code)
+	} else if is_outlier {
+		EventStatus::Pending
+	} else {
+		EventStatus::Accepted
+	}
+}
+
+/// Build `status` for a freshly-written metadata row: preserve a prior
+/// soft-fail verdict and honour the PDU's own `rejected` flag. Reasons are
+/// deliberately not carried (the legacy write sites always reset them empty).
+#[must_use]
+pub fn status_from_prior(
+	prior: Option<&EventMetadata>,
+	is_outlier: bool,
+	pdu_rejected: bool,
+) -> EventStatus {
+	let soft_failed = prior.is_some_and(|m| matches!(m.status, EventStatus::SoftFailed(_)));
+	status_from_bools(is_outlier, soft_failed, pdu_rejected, None, None)
 }
 
 #[cfg(test)]
