@@ -369,6 +369,15 @@ where
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
+		// A rejected event (e.g. missing auth events from a corrupted auth
+		// chain) is persisted as a rejected outlier, which `get_pdu` will
+		// still return from the shared `eventid_pdu` tree. It can never
+		// legally represent resolved room state, so skip it here before it
+		// pollutes the returned state map and bleeds into later state
+		// resolution (see TestCorruptedAuthChain).
+		if self.services.pdu_metadata.is_event_rejected(&eid).await {
+			continue;
+		}
 		// Read from our outlier store or timeline
 		let pdu = self.services.timeline.get_pdu(&eid).await;
 		if let Ok(pdu) = pdu {
