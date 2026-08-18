@@ -81,6 +81,11 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "eventid_status",
+		val_size_hint: Some(2),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "eventid_pdu",
 		val_size_hint: Some(1520),
 		block_size: 2048,

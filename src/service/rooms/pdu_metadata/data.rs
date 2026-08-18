@@ -29,6 +29,7 @@ pub(super) struct Data {
 	tofrom_relation: Arc<Map>,
 	referencedevents: Arc<Map>,
 	eventid_metadata: Arc<Map>,
+	eventid_status: Arc<Map>,
 	msc2836_children: Arc<Map>,
 	msc2836_reported_children: Arc<Map>,
 	services: Services,
@@ -54,6 +55,7 @@ impl Data {
 			tofrom_relation: db["tofrom_relation"].clone(),
 			referencedevents: db["referencedevents"].clone(),
 			eventid_metadata: db["eventid_metadata"].clone(),
+			eventid_status: db["eventid_status"].clone(),
 			msc2836_children: db["msc2836_children"].clone(),
 			msc2836_reported_children: db["msc2836_reported_children"].clone(),
 			services: Services {
@@ -139,27 +141,7 @@ impl Data {
 	}
 
 	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
-		let mut meta = if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			rooms::timeline::EventMetadata::from_bincode(&metadata_bytes).unwrap_or_default()
-		} else {
-			// New metadata: events reaching this path without existing metadata
-			// are always outliers (not yet in the timeline).
-			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
-		};
-
-		// A rejection always wins over a soft-fail (in the pre-`EventStatus`
-		// model `rejected` and `soft_failed` were independent booleans and a
-		// soft-fail never cleared `rejected`). `EventStatus` makes them
-		// mutually-exclusive variants, so preserve a prior rejection here --
-		// otherwise soft-failing a rejected event would silently strip its
-		// `Rejected` verdict and make it look accepted to auth/state-res.
-		if matches!(meta.status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_)) {
-			return;
-		}
-		meta.status = EventStatus::SoftFailed(code);
-		if let Ok(new_bytes) = bincode::serialize(&meta) {
-			self.eventid_metadata.insert(event_id, new_bytes);
-		}
+		self.eventid_status.put_raw(event_id, [1_u8, code.to_u8()]);
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
@@ -176,39 +158,28 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
-		self.clear_status_if(event_id, |status| matches!(status, EventStatus::SoftFailed(_)));
+		self.eventid_status.remove(event_id);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
-		let mut meta = if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			rooms::timeline::EventMetadata::from_bincode(&metadata_bytes).unwrap_or_default()
-		} else {
-			// New metadata: events reaching this path without existing metadata
-			// are always outliers (not yet in the timeline).
-			rooms::timeline::EventMetadata { is_outlier: true, ..Default::default() }
-		};
-
 		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
-
-		// Keep the first rejection by default, but allow a later *permanent*
-		// rejection to replace an earlier retryable placeholder. That prevents
-		// retryable sentinels like `MissingAuthEvent` from masking the real
-		// reason when an intrinsic validation failure is discovered later in
-		// the same attempt.
-		let replace = match meta.status {
-			| EventStatus::Rejected(existing) =>
-				existing.is_retryable() && !new_code.is_retryable(),
-			| _ => true,
-		};
-		if replace {
-			meta.status = EventStatus::Rejected(new_code);
-			if let Ok(new_bytes) = bincode::serialize(&meta) {
-				self.eventid_metadata.insert(event_id, new_bytes);
-			}
-		}
+		self.eventid_status
+			.put_raw(event_id, [2_u8, new_code.to_u8()]);
 	}
 
 	pub(super) async fn try_get_status(&self, event_id: &EventId) -> Result<Option<EventStatus>> {
+		if let Ok(bytes) = self.eventid_status.get(event_id).await {
+			if bytes.len() >= 2 {
+				match bytes[0] {
+					| 1 =>
+						return Ok(Some(EventStatus::SoftFailed(SoftFailCode::from_u8(bytes[1])))),
+					| 2 =>
+						return Ok(Some(EventStatus::Rejected(RejectionCode::from_u8(bytes[1])))),
+					| _ => {},
+				}
+			}
+		}
+
 		let metadata_bytes = match self.eventid_metadata.get(event_id).await {
 			| Ok(bytes) => bytes,
 			| Err(e) if e.is_not_found() => return Ok(None),
@@ -224,14 +195,12 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
-		self.clear_status_if(event_id, |status| matches!(status, EventStatus::Rejected(_)));
+		self.eventid_status.remove(event_id);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
-		self.clear_status_if(event_id, |status| {
-			matches!(status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_))
-		});
+		self.eventid_status.remove(event_id);
 	}
 
 	/// Clears a rejected/soft-failed verdict, reverting the event to `Pending`

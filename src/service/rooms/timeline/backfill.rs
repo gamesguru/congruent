@@ -944,22 +944,6 @@ fn try_claim_promotion(&self, event_id: &EventId) -> bool {
 	self.pending_promotions.try_claim_promotion(event_id)
 }
 
-/// See [`PromotionClaims::try_claim_rejection`]. Used by
-/// `PduMetadataService::mark_event_rejected` to close the TOCTOU window
-/// between [`Self::promote_outlier_batch`]'s in-lock recheck and its
-/// caller applying the batch (see `finish_promote_outlier`'s doc comment
-/// for what happens if this is ever bypassed).
-#[implement(super::Service)]
-pub fn try_claim_rejection(&self, event_id: &EventId) -> bool {
-	self.pending_promotions.try_claim_rejection(event_id)
-}
-
-/// See [`PromotionClaims::release_rejection_claim`].
-#[implement(super::Service)]
-pub fn release_rejection_claim(&self, event_id: &EventId) {
-	self.pending_promotions.release_rejection_claim(event_id);
-}
-
 /// Whether [`Service::promote_outlier_batch`] queued a write into the
 /// caller's batch, or found nothing to do.
 pub enum PromoteOutlierOutcome {

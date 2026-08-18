@@ -86,33 +86,8 @@ impl PromotionClaims {
 	/// [`Self::try_claim_promotion`] mutate the same map under the same lock
 	/// with no intervening await, whichever call reaches `lock()` first wins
 	/// unconditionally.
-	pub fn try_claim_rejection(&self, event_id: &EventId) -> bool {
-		let mut guard = self.inner.lock();
-		if guard.contains_key(event_id) {
-			false
-		} else {
-			guard.insert(event_id.to_owned(), PromotionDisposition::Rejected);
-			true
-		}
-	}
-
-	/// Releases a rejection claim taken by [`Self::try_claim_rejection`],
-	/// once the rejection has been durably written to the rejection-marker
-	/// store. Only clears the entry if it's still `Rejected` --
-	/// `try_claim_rejection` never overwrites a live `Promoting`
-	/// reservation, so finding one here would mean something upstream is
-	/// already confused; leave it alone rather than clobbering it.
-	pub fn release_rejection_claim(&self, event_id: &EventId) {
-		let mut guard = self.inner.lock();
-		if matches!(guard.get(event_id), Some(PromotionDisposition::Rejected)) {
-			guard.remove(event_id);
-		}
-	}
-
 	/// Releases a promotion claim taken by [`Self::try_claim_promotion`],
-	/// once the promotion is either committed or abandoned. Only clears the
-	/// entry if it's still `Promoting`, for the same defense-in-depth
-	/// reason as [`Self::release_rejection_claim`].
+	/// once the promotion is either committed or abandoned.
 	pub fn release_promotion_claim(&self, event_id: &EventId) {
 		let mut guard = self.inner.lock();
 		if matches!(guard.get(event_id), Some(PromotionDisposition::Promoting)) {
@@ -127,87 +102,22 @@ impl Default for PromotionClaims {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::{
-		Arc,
-		atomic::{AtomicUsize, Ordering},
-	};
+	use std::sync::Arc;
 
 	use ruma::owned_event_id;
 
 	use super::*;
 
-	/// Hammers `try_claim_promotion` and `try_claim_rejection` on the same
-	/// event ID from many threads simultaneously and asserts the two sides
-	/// are never both told they won. This is the actual invariant the
-	/// review was about: not "does it compile", but "can promotion and
-	/// rejection disagree about who owns the event". If the claim map were
-	/// ever reverted to a separate check-then-act pair (what this file
-	/// replaced), this test would flake under `--test-threads` > 1 with a
-	/// double-win.
 	#[test]
-	fn promotion_and_rejection_claims_are_mutually_exclusive() {
+	fn promotion_claims_are_exclusive() {
 		let claims = Arc::new(PromotionClaims::new());
 		let event_id = owned_event_id!("$test_event:example.org");
-		let promotion_wins = Arc::new(AtomicUsize::new(0));
-		let rejection_wins = Arc::new(AtomicUsize::new(0));
 
-		// Run many rounds, each with a fresh claim state, to give the OS
-		// scheduler many chances to interleave the two threads differently
-		// each time -- a single round passing proves nothing about a race.
-		for _ in 0..2000 {
-			let promoter = std::thread::spawn({
-				let claims = Arc::clone(&claims);
-				let event_id = event_id.clone();
-				move || claims.try_claim_promotion(&event_id)
-			});
-			let rejecter = std::thread::spawn({
-				let claims = Arc::clone(&claims);
-				let event_id = event_id.clone();
-				move || claims.try_claim_rejection(&event_id)
-			});
+		assert!(claims.try_claim_promotion(&event_id));
+		assert!(!claims.try_claim_promotion(&event_id));
 
-			let promoted = promoter.join().expect("promoter thread panicked");
-			let rejected = rejecter.join().expect("rejecter thread panicked");
-
-			assert!(
-				!(promoted && rejected),
-				"promotion and rejection both won the claim for the same event -- the exact \
-				 TOCTOU this module exists to close"
-			);
-			assert!(
-				promoted || rejected,
-				"neither side won the claim -- at least one of two concurrent, non-conflicting \
-				 attempts should always succeed"
-			);
-
-			if promoted {
-				promotion_wins.fetch_add(1, Ordering::Relaxed);
-			}
-			if rejected {
-				rejection_wins.fetch_add(1, Ordering::Relaxed);
-			}
-
-			// Clean up whichever side won, using the real release methods,
-			// so the next round starts from a clean slate.
-			claims.release_promotion_claim(&event_id);
-			claims.release_rejection_claim(&event_id);
-		}
-
-		// Not asserted: that both sides won at least once. Which thread
-		// `spawn` schedules first is up to the OS, and a valid run can
-		// legitimately have one side win all 2000 rounds -- that's not a
-		// bug, so asserting on it would make this test flake on a green
-		// branch. The only invariant this test exists to prove is mutual
-		// exclusion, checked above on every round; these counts are purely
-		// informational.
-		let promotion_wins = promotion_wins.load(Ordering::Relaxed);
-		let rejection_wins = rejection_wins.load(Ordering::Relaxed);
-		assert_eq!(
-			promotion_wins + rejection_wins,
-			2000,
-			"every round should have exactly one winner (promotion={promotion_wins}, \
-			 rejection={rejection_wins})"
-		);
+		claims.release_promotion_claim(&event_id);
+		assert!(claims.try_claim_promotion(&event_id));
 	}
 
 	#[test]
@@ -215,27 +125,6 @@ mod tests {
 		let claims = PromotionClaims::new();
 		let event_id = owned_event_id!("$dup:example.org");
 		assert!(claims.try_claim_promotion(&event_id));
-		assert!(!claims.try_claim_promotion(&event_id));
-	}
-
-	#[test]
-	fn rejection_after_promotion_commits_is_refused() {
-		let claims = PromotionClaims::new();
-		let event_id = owned_event_id!("$after_promo:example.org");
-		assert!(claims.try_claim_promotion(&event_id));
-		assert!(!claims.try_claim_rejection(&event_id));
-		claims.release_promotion_claim(&event_id);
-		// Once the promotion's claim is released (as `finish_promote_outlier`
-		// does after its batch is durably applied), a fresh rejection is
-		// free to claim the now-vacant slot.
-		assert!(claims.try_claim_rejection(&event_id));
-	}
-
-	#[test]
-	fn promotion_after_rejection_wins_is_refused() {
-		let claims = PromotionClaims::new();
-		let event_id = owned_event_id!("$after_reject:example.org");
-		assert!(claims.try_claim_rejection(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));
 	}
 }
