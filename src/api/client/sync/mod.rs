@@ -323,6 +323,18 @@ async fn load_timeline(
 		);
 	}
 
+	// If there are no PDUs in this room's sync range, `prev_batch` must be
+	// `None`. Even though a non-limited (empty) window has an obvious "current
+	// position" we could point `prev_batch` at, a set `prev_batch` makes
+	// ruma's `Timeline::is_empty()` return false (it treats the presence of
+	// `prev_batch` as content). That in turn makes `JoinedRoom::is_empty()`
+	// false, so the incremental-sync loop in v3 always re-includes unchanged
+	// rooms like this one on every poll, violating the "unchanged room should
+	// not be in the sync" contract (complement `sync_test.go`). `prev_batch`
+	// only has meaning when there is actually a timeline to paginate, so keep
+	// it as `None` when the range is empty.
+	let prev_batch = if pdus.is_empty() { None } else { prev_batch };
+
 	Ok(TimelinePdus { pdus, prev_batch, limited })
 }
 
