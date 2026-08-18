@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
 use conduwuit::result::LogErr;
 use conduwuit::{
 	Err, Error, Result, Server, debug_warn, err, info, is_equal_to, trace,
-	utils::{self, ReadyExt, stream::TryIgnore},
+	utils::{self, MutexMap, ReadyExt, stream::TryIgnore},
 	warn,
 };
 #[cfg(feature = "ldap")]
@@ -49,6 +49,10 @@ pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
 	services: Services,
 	db: Data,
+	/// Serializes one-time-key claims per (user, device) so concurrent
+	/// `/keys/claim` requests can't double-take the same key, which could
+	/// leave a regular OTK unused and break fallback-key semantics.
+	take_one_time_key_lock: MutexMap<String, ()>,
 }
 
 struct Services {
@@ -141,6 +145,7 @@ impl crate::Service for Service {
 				userid_usersigningkeyid: args.db["userid_usersigningkeyid"].clone(),
 				useridprofilekey_value: args.db["useridprofilekey_value"].clone(),
 			},
+			take_one_time_key_lock: MutexMap::new(),
 		}))
 	}
 
@@ -816,6 +821,15 @@ impl Service {
 
 		let count = self.services.globals.next_count()?.to_be_bytes();
 		self.db.userid_lastonetimekeyupdate.insert(user_id, count);
+
+		// Serialize claims per (user, device): `raw_stream_prefix` below takes
+		// the first matching key and removes it. Concurrent `/keys/claim`
+		// requests for the same device can each see the same first key and
+		// double-removal of one leaves a regular OTK behind — which then gets
+		// handed out on a subsequent fallback claim. Hold the lock across both
+		// the OTK-take and the fallback take so claims are atomic.
+		let claim_key = format!("{user_id}\0{device_id}");
+		let _claim_guard = self.take_one_time_key_lock.lock(&claim_key).await;
 
 		let mut prefix = user_id.as_bytes().to_vec();
 		prefix.push(0xFF);
