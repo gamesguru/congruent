@@ -184,6 +184,19 @@ impl Store {
 	///
 	/// When `dry_run` is true (the default), nothing is deleted; the report
 	/// still reflects exactly which nodes a live run would reclaim.
+	///
+	/// # Correctness: caller-supplied live roots
+	///
+	/// `live_roots` must be the *complete, exhaustive* set of currently
+	/// recorded roots — **every** `shorteventid_roothandle` entry (and the
+	/// current `roomid_roothandle`), not just the room roots a single caller
+	/// happens to hold. Anything reachable from a root you fail to pass here
+	/// is invisible to the reachability walk and will be classified as an
+	/// orphan and deleted even though it is still live. Sweep guarantees it
+	/// never reclaims anything reachable from a *supplied* root; the burden
+	/// is on the caller to supply all of them. A partial root set is a
+	/// silent, persistent data-loss bug — there is no runtime check that
+	/// catches it.
 	pub async fn sweep(
 		&self,
 		live_roots: &[&RootHandle],
@@ -196,7 +209,12 @@ impl Store {
 					// Run the whole sweep off an executor thread: the node walk,
 					// key enumeration and deletes are all blocking RocksDB work,
 					// so holding a worker thread here would stall unrelated tasks.
-					futures::executor::block_on(self.sweep_blocking(live_roots, grace, dry_run))
+					// `sweep_blocking` does Tokio-backed I/O (thread-pool dispatch),
+					// so drive it with the current runtime's handle rather than a
+					// foreign executor; `block_in_place` keeps us on the same
+					// worker thread, so Tokio's context is still current here.
+					tokio::runtime::Handle::current()
+						.block_on(self.sweep_blocking(live_roots, grace, dry_run))
 				});
 			}
 

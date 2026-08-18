@@ -12,8 +12,8 @@ conduwuit::mod_dtor! {}
 mod benches;
 mod cork;
 mod de;
-mod deserialized;
 mod deprecated_maps;
+mod deserialized;
 mod engine;
 mod handle;
 pub mod keyval;
