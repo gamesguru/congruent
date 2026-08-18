@@ -399,7 +399,10 @@ e2ee args=".*":
 
     RESULTS_FILE_STAGING="{{ env_var_or_default("COMPLEMENT_CRYPTO_RESULTS_DIR", "$(git rev-parse --show-toplevel)/tests/test_results/complement-crypto") }}"
     MAIN_RESULTS_FILE="$RESULTS_FILE_STAGING/results.jsonl"
-    run_suffix="$(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)"
+    # Match bin/complement's naming: a full/`.` run is called `all`, otherwise
+    # slugify the requested test pattern (so `.*` doesn't leave a bare `__`).
+    run_suffix="$(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9]/_/g; s/^_*//; s/_*$//; s/__*/_/g' | cut -c 1-32)"
+    if [ -z "$run_suffix" ] || [ "$run_suffix" = "_" ]; then run_suffix="all"; fi
     run_stamp="$(date +%s%N)"
     STAGING_DIR="$(git rev-parse --show-toplevel)/.tmp/complement-crypto"
     mkdir -p "$STAGING_DIR" "$RESULTS_FILE_STAGING"
@@ -416,12 +419,17 @@ e2ee args=".*":
     echo ""
 
     COMPLEMENT_ENABLE_DIRTY_RUNS="${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}"
+    # With `-tags=jssdk` only the JS SDK bindings are compiled in (the rust
+    # binding is not), so the test-client matrix must be all-JS (`jj`) — the
+    # default `jj,jr,rj,rr` would panic on the unregistered `rust` language.
+    COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="${COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX:-jj}"
     set +e
     env \
         -C "$COMPLEMENT_SRC" \
         COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
         COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
         COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
+        COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
         go test -tags jssdk -json \
         -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
         -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
