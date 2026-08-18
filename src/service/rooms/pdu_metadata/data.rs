@@ -30,6 +30,8 @@ pub(super) struct Data {
 	referencedevents: Arc<Map>,
 	eventid_metadata: Arc<Map>,
 	eventid_status: Arc<Map>,
+	eventid_rejections: Arc<Map>,
+	eventid_softfailed: Arc<Map>,
 	msc2836_children: Arc<Map>,
 	msc2836_reported_children: Arc<Map>,
 	services: Services,
@@ -56,6 +58,8 @@ impl Data {
 			referencedevents: db["referencedevents"].clone(),
 			eventid_metadata: db["eventid_metadata"].clone(),
 			eventid_status: db["eventid_status"].clone(),
+			eventid_rejections: db["eventid_rejections"].clone(),
+			eventid_softfailed: db["eventid_softfailed"].clone(),
 			msc2836_children: db["msc2836_children"].clone(),
 			msc2836_reported_children: db["msc2836_reported_children"].clone(),
 			services: Services {
@@ -141,28 +145,24 @@ impl Data {
 	}
 
 	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
-		if let Ok(bytes) = self.eventid_status.get_blocking(event_id) {
-			if bytes.first() == Some(&2_u8) {
-				// A rejection always wins over a soft-fail
-				return;
-			}
-		} else if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if matches!(meta.status, EventStatus::Rejected(_)) {
-					return;
-				}
-			}
-		}
-		self.eventid_status.put_raw(event_id, [1_u8, code.to_u8()]);
+		self.eventid_softfailed.put_raw(event_id, [code.to_u8()]);
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
+		if self.eventid_softfailed.get(event_id).await.is_ok() {
+			return true;
+		}
 		self.get_status(event_id)
 			.await
 			.is_some_and(|status| matches!(status, EventStatus::SoftFailed(_)))
 	}
 
 	pub(super) async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
+		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
+			if let Some(&code_u8) = bytes.first() {
+				return Some(SoftFailCode::from_u8(code_u8).tag().to_owned());
+			}
+		}
 		match self.get_status(event_id).await? {
 			| EventStatus::SoftFailed(code) => Some(code.tag().to_owned()),
 			| _ => None,
@@ -170,25 +170,38 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
+		self.eventid_softfailed.remove(event_id);
 		self.eventid_status.remove(event_id);
 		self.clear_legacy_metadata_status(event_id);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
 		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
-		if let Ok(bytes) = self.eventid_status.get_blocking(event_id) {
-			if bytes.len() >= 2 && bytes[0] == 2 {
-				let existing_code = RejectionCode::from_u8(bytes[1]);
+		if let Ok(bytes) = self.eventid_rejections.get_blocking(event_id) {
+			if let Some(&code_u8) = bytes.first() {
+				let existing_code = RejectionCode::from_u8(code_u8);
 				if !existing_code.is_retryable() && new_code.is_retryable() {
 					return;
 				}
 			}
 		}
-		self.eventid_status
-			.put_raw(event_id, [2_u8, new_code.to_u8()]);
+		self.eventid_rejections
+			.put_raw(event_id, [new_code.to_u8()]);
 	}
 
 	pub(super) async fn try_get_status(&self, event_id: &EventId) -> Result<Option<EventStatus>> {
+		if let Ok(bytes) = self.eventid_rejections.get(event_id).await {
+			if let Some(&code_u8) = bytes.first() {
+				return Ok(Some(EventStatus::Rejected(RejectionCode::from_u8(code_u8))));
+			}
+		}
+
+		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
+			if let Some(&code_u8) = bytes.first() {
+				return Ok(Some(EventStatus::SoftFailed(SoftFailCode::from_u8(code_u8))));
+			}
+		}
+
 		if let Ok(bytes) = self.eventid_status.get(event_id).await {
 			if bytes.len() >= 2 {
 				match bytes[0] {
@@ -216,12 +229,15 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
+		self.eventid_rejections.remove(event_id);
 		self.eventid_status.remove(event_id);
 		self.clear_legacy_metadata_status(event_id);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
+		self.eventid_softfailed.remove(event_id);
+		self.eventid_rejections.remove(event_id);
 		self.eventid_status.remove(event_id);
 		self.clear_legacy_metadata_status(event_id);
 	}

@@ -1086,11 +1086,11 @@ pub async fn promote_outlier_batch<'a>(
 /// back to their stale values once the batch is applied.
 ///
 /// Rejection during promotion: Rejection decisions write directly to flat
-/// atomic single-key storage (`mark_event_rejected`). If a rejection lands before
-/// or during outlier promotion, the rejection status is persisted atomically.
-/// the marker to paper over that, or evicting the just-landed row (which
-/// would need a safe "remove PDU from timeline" primitive -- search index,
-/// state associations, etc. all need unwinding too -- that doesn't exist
+/// atomic single-key storage (`mark_event_rejected`). If a rejection lands
+/// before or during outlier promotion, the rejection status is persisted
+/// atomically. the marker to paper over that, or evicting the just-landed row
+/// (which would need a safe "remove PDU from timeline" primitive -- search
+/// index, state associations, etc. all need unwinding too -- that doesn't exist
 /// yet), would both be worse than surfacing it. So this stays `error!`
 /// rather than a silent `warn!`: if it ever fires, it should page someone
 /// rather than scroll past in a debug-level log.
