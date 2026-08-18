@@ -1022,9 +1022,7 @@ pub async fn promote_outlier_batch<'a>(
 	// The DB-existence check alone isn't enough here: a batched promotion
 	// queued into another (not-yet-applied) batch won't show up as an
 	// existing row yet, so also consult the pending-reservation set --
-	// see `Service::pending_promotions`'s doc comment. This also loses to a
-	// rejection that already atomically claimed this event via
-	// `try_claim_rejection` -- see that method's doc comment.
+	// see `Service::pending_promotions`'s doc comment.
 	if self.non_outlier_pdu_exists(event_id).await || !self.try_claim_promotion(event_id) {
 		warn!(
 			target: "backfill_debug",
@@ -1087,17 +1085,9 @@ pub async fn promote_outlier_batch<'a>(
 /// was built, so clearing markers first would just be silently overwritten
 /// back to their stale values once the batch is applied.
 ///
-/// Residual TOCTOU: `PduMetadataService::mark_event_rejected` refuses to
-/// reject an event that's either already visible on the timeline, or has an
-/// outlier promotion reserved-but-not-yet-committed for it (see its doc
-/// comment and [`Self::try_claim_rejection`]). Together those two checks
-/// cover the entire window from `promote_outlier_batch`'s reservation
-/// (before its in-lock recheck) through this function releasing it -- a
-/// rejection can only land here if it raced the reservation *and* the
-/// visibility check with sub-instruction timing, which on a real system
-/// means this branch firing is a strong signal something is actually wrong
-/// (e.g. the same event independently judged valid and invalid by two auth
-/// passes) rather than "the expected occasional race". Silently clearing
+/// Rejection during promotion: Rejection decisions write directly to flat
+/// atomic single-key storage (`mark_event_rejected`). If a rejection lands before
+/// or during outlier promotion, the rejection status is persisted atomically.
 /// the marker to paper over that, or evicting the just-landed row (which
 /// would need a safe "remove PDU from timeline" primitive -- search index,
 /// state associations, etc. all need unwinding too -- that doesn't exist
