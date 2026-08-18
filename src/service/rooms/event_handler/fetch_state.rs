@@ -369,6 +369,19 @@ where
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
+		// A rejected outlier (e.g. missing auth events from a corrupted auth
+		// chain) must never represent resolved room state. Skip it before state_key
+		// checks or shortstatekey allocations.
+		if self.services.pdu_metadata.is_event_rejected(&eid).await
+			&& !self
+				.services
+				.pdu_metadata
+				.is_event_visible_to_clients(&eid)
+				.await
+		{
+			continue;
+		}
+
 		// Read from our outlier store or timeline
 		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
 			continue;
@@ -383,43 +396,9 @@ where
 			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
 			.await;
 
-		// A rejected *outlier* (e.g. missing auth events from a corrupted auth
-		// chain) must never represent resolved room state: it can only be a
-		// remote server's corrupted value for this slot. But a timeline event
-		// can briefly retain a stale rejection marker from before its promotion
-		// and is still valid state. When we do skip a rejected *outlier* that
-		// is the snapshot's only value for this (type, state_key) slot, fill the
-		// slot from our local current state so we don't leave a hole that later
-		// auth reads see as e.g. "not in room". This is not live-state-bleed
-		// into a historical rescue: the remote snapshot nominated a *corrupted*
-		// event for the key, and we substitute the last valid local value.
-		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
-			&& !self
-				.services
-				.pdu_metadata
-				.is_event_visible_to_clients(&eid)
-				.await
-		{
-			match self.services.state.get_room_shortstatehash(room_id).await {
-				| Ok(room_ssh) => self
-					.services
-					.state_accessor
-					.state_get(room_ssh, &pdu.kind().to_string().into(), state_key)
-					.await
-					.ok()
-					.map(|local_pdu| local_pdu.event_id().to_owned()),
-				| Err(_) => None,
-			}
-			.into_iter()
-			.next()
-			.unwrap_or_else(|| eid.clone())
-		} else {
-			eid.clone()
-		};
-
 		match state.entry(shortstatekey) {
 			| hash_map::Entry::Vacant(v) => {
-				v.insert(target_eid);
+				v.insert(eid);
 			},
 			| hash_map::Entry::Occupied(_) => {
 				return Err!(Database(

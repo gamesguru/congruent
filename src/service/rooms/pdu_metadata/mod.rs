@@ -388,29 +388,6 @@ impl Service {
 	}
 
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
-		// Only protect events that are truly on the timeline (have a PduCount
-		// ordering entry), not outliers. The eventid_pdu table is shared by
-		// both timeline and outlier paths, so pdu_exists would incorrectly
-		// prevent rejection of outliers that were just added.
-		if self.is_event_visible_to_clients(event_id).await {
-			conduwuit::warn!(
-				%event_id,
-				%reason,
-				"refusing to reject timeline event (already passed auth)"
-			);
-			return;
-		}
-		// An outlier promotion for this event may already be reserved (queued
-		// into a batch, not yet committed), or another concurrent rejection
-		// attempt may already be in flight for it. This has to be an atomic
-		// claim-and-write, not a separate check before the write below -- a
-		// preceding plain-read check here left a real window open: an
-		// arbitrary amount of time (a thread preemption, a concurrent core
-		// -- not just an `.await`) can pass between that check and this
-		// write, during which either `promote_outlier_batch`'s entire
-		// reserve-recheck-queue-apply sequence, or another rejection's own
-		// write-then-release, can complete inside the gap.
-		// See `timeline::Service::try_claim_rejection`'s doc comment.
 		if !self.services.timeline.try_claim_rejection(event_id) {
 			conduwuit::warn!(
 				%event_id,
@@ -420,6 +397,17 @@ impl Service {
 			);
 			return;
 		}
+
+		if self.is_event_visible_to_clients(event_id).await {
+			self.services.timeline.release_rejection_claim(event_id);
+			conduwuit::warn!(
+				%event_id,
+				%reason,
+				"refusing to reject timeline event (already passed auth)"
+			);
+			return;
+		}
+
 		self.db.mark_event_rejected(event_id, reason);
 		self.services.timeline.release_rejection_claim(event_id);
 	}
