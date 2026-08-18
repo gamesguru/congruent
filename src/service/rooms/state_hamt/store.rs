@@ -120,7 +120,7 @@ impl Store {
 		batch.insert(
 			&self.node_mtimes,
 			persisted.structural_hash.as_ref(),
-			&unix_millis().to_be_bytes(),
+			unix_millis().to_be_bytes(),
 		);
 	}
 
@@ -259,7 +259,8 @@ impl Store {
 			.map_err(|e| err!(Database(error!("{e}"))))?;
 		}
 
-		let cutoff = unix_millis().saturating_sub(grace.as_millis() as u64);
+		let cutoff =
+			unix_millis().saturating_sub(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX));
 
 		let mut report = SweepReport { dry_run, ..SweepReport::default() };
 
@@ -293,7 +294,7 @@ impl Store {
 				}
 			}
 
-			let bytes = self.db.get_blocking(&hash)?.len() as u64;
+			let bytes = u64::try_from(self.db.get_blocking(&hash)?.len()).unwrap_or(u64::MAX);
 			report.orphaned = report.orphaned.saturating_add(1);
 			report.bytes = report.bytes.saturating_add(bytes);
 
@@ -312,7 +313,7 @@ impl Store {
 		if bytes.is_empty() {
 			return None;
 		}
-		let arr = <[u8; 8]>::try_from(&bytes[..]).ok()?;
+		let arr = <[u8; 8]>::try_from(&*bytes).ok()?;
 		Some(u64::from_be_bytes(arr))
 	}
 
@@ -364,6 +365,6 @@ impl Store {
 fn unix_millis() -> u64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
-		.map(|d| d.as_millis() as u64)
+		.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 		.unwrap_or(0)
 }
