@@ -10,10 +10,9 @@ HAMT‑rooted reads (`rezzy::hamt`), and where the code currently stands.
 | --------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Write / state transition**                                                                              | ✅ Done         | `append_to_state` builds a HAMT root + node and `persist_node_recursive`s nodes + root handle. No code writes `shortstatehash_statediff` anymore; the `state_compressor` service is gone. |
 | **Transition-time "read current state"**                                                                  | ✅ Done         | Inside `append_to_state`, `load_state_map_from_root_handle(root_handle)` traverses the HAMT via `state_hamt.store.get_node` + `visit_entries`, not the legacy delta chain.                |
-| **Public/external reads** (sync, spaces, send_join, context, room_state, resolve_state, member summaries) | ⚠️ Not migrated | Consumers still call `get_room_shortstatehash` → `state_full_shortids` / `load_full_state`, which are **`NotImplemented` stubs**. These hot paths currently error if reached.             |
+| **Public/external reads** (sync, spaces, send_join, context, room_state, resolve_state, member summaries) | ✅ Migrated     | All public consumers obtain a `RootHandle` via `get_room_state_hamt` / timeline root handles and read through the `*_hamt` accessors. The legacy `get_room_shortstatehash`, `state_full_shortids`, and `load_full_state` read paths are gone. |
 
-So this PR fully cut over the _writer_, but the _readers_ that feed sync and
-friends still speak `shortstatehash`.
+So this PR cut over both the _writer_ and the cloud-facing _readers_ to the HAMT
 
 ## The two read models
 
@@ -101,23 +100,25 @@ roomid_roothandle ─ root_handle ─ get_node(structural_hash) ─ root node
   the root hash would be O(1). Flagged as a future optimization in the code
   (`state_accessor/state.rs`).
 
-## What still blocks public consumers (and the work item)
+## Public-consumer status (as of PR #89 head)
 
-The 8 cloud-facing readers still sit on the legacy (now-stubbed) path:
+The cloud-facing readers all resolve a `RootHandle` (via `get_room_state_hamt`
+or a timeline root handle) and read through the `*_hamt` accessors:
 
-- `src/api/client/sync/v5.rs:1850` and `v3/joined.rs:453` (and
-  `v3/joined.rs:954` via `state_full_shortids`) — **sync every room state**.
-- `src/api/client/context.rs:171` — context around an event.
-- `src/api/server/send_join.rs:51` — room state sent to joining servers.
+- `src/api/client/sync/v3/joined.rs:452/961` and `sync/v5.rs:1889` — sync room
+  state via `get_room_state_hamt` / `state_full_shortids_hamt`.
+- `src/api/client/sync/v3/left.rs` — left-room boundary via per-event root
+  handles.
+- `src/api/client/context.rs:172` — context around an event.
+- `src/api/server/send_join.rs:51` and `state.rs`/`state_ids.rs` — room state
+  / event ids sent to joining or querying servers.
 - `src/service/rooms/spaces/mod.rs:243` — space summary.
-- `src/service/rooms/state_accessor/room_state.rs` (4 sites) — state resolution.
-- `src/service/rooms/event_handler/resolve_state.rs:27` — incoming event
-  resolution.
+- `src/service/rooms/state_accessor/room_state.rs` — state resolution.
+- `src/service/rooms/event_handler/resolve_state.rs:27` and
+  `state_at_incoming.rs` — incoming event resolution.
 
-**To land the read cutover** each of these must obtain a `RootHandle` and call
-the `*_hamt` accessors (`get_room_state_hamt`, `load_full_state_hamt`,
-`state_full_shortids_hamt`, `state_is_empty_hamt`), then the legacy
-`get_room_shortstatehash`, `state_full_shortids`, `load_full_state`, and the
-`roomid_shortstatehash` / `shorteventid_shortstatehash` /
-`statehash_shortstatehash` maps can be dropped (they remain only as migration
-inputs in `migrations.rs`).
+The legacy `get_room_shortstatehash`, `state_full_shortids`, and
+`load_full_state` read paths no longer exist on these hot paths; the only
+remaining uses of the `roomid_shortstatehash` /
+`shorteventid_shortstatehash` / `statehash_shortstatehash` maps are as
+migration inputs in `migrations.rs`.

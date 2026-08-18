@@ -334,8 +334,11 @@ where
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	// Resolve this root's short IDs, filter to the requested event_type, and
-	// map each surviving short event id to its full event id. Order is
-	// preserved between the filtered state keys and the event ids.
+	// map each surviving short event id to its full event id. The state-key
+	// and event-id streams are derived from the same underlying `short_ids`
+	// in the same order and are re-zipped *before* filtering by event_type,
+	// so dropping non-matching entries can never misalign a state key with an
+	// unrelated event id.
 	let short_ids = self
 		.state_full_shortids_hamt(root_handle)
 		.ignore_err()
@@ -357,20 +360,19 @@ where
 		.map(IterStream::stream)
 		.flatten_stream();
 
-	let state_keys = self
-		.services
-		.short
-		.multi_get_statekey_from_short(shortstatekeys)
-		.ready_filter_map(Result::ok)
-		.ready_filter_map(move |(event_type_, state_key)| {
-			event_type_.eq(event_type).then_some(state_key)
-		});
-
 	self.services
 		.short
-		.multi_get_eventid_from_short(shorteventids)
-		.zip(state_keys)
-		.ready_filter_map(|(eid, sk)| eid.map(move |eid| (sk, eid)).ok())
+		.multi_get_statekey_from_short(shortstatekeys)
+		.zip(
+			self.services
+				.short
+				.multi_get_eventid_from_short(shorteventids),
+		)
+		.ready_filter_map(move |(key, event_id)| match (key, event_id) {
+			| (Ok((event_type_, state_key)), Ok(event_id)) if event_type_.eq(event_type) =>
+				Some((state_key, event_id)),
+			| _ => None,
+		})
 }
 
 #[implement(super::Service)]

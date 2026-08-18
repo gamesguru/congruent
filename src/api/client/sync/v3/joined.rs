@@ -437,15 +437,18 @@ async fn fetch_roothandles(
 	room_id: &RoomId,
 ) -> Result<RootHandles> {
 	// the room state at the end of this sync range.
-	// next_root_handle(N) finds the first event after N and returns its
-	// pre-state = the correct post-state at count N.
-	// For idle rooms (no events after current_count), it fails and we fall back to
+	// prev_root_handle(N+1) returns the root of the last event strictly
+	// before N+1, i.e. the post-state at count N. Using the root of the
+	// *first* event after N instead would include that event's state change
+	// and leak it past the captured sync boundary.
+	// For idle rooms (no events at or before current_count), it fails and
+	// we fall back to
 	// the global current state since the state hasn't changed.
 	let current_root = async {
 		match services
 			.rooms
 			.timeline
-			.next_root_handle(room_id, PduCount::Normal(current_count))
+			.prev_root_handle(room_id, PduCount::Normal(current_count.saturating_add(1)))
 			.await
 		{
 			| Ok(h) => Ok(h),

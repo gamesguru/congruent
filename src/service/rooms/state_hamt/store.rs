@@ -262,59 +262,71 @@ impl Store {
 		let cutoff =
 			unix_millis().saturating_sub(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX));
 
-		let mut report = SweepReport { dry_run, ..SweepReport::default() };
+		let report = SweepReport { dry_run, ..SweepReport::default() };
 
-		let nodes: Vec<Vec<u8>> = self
+		// Sweep the raw key stream incrementally rather than materializing
+		// every node key into memory at once, keeping only the reachability
+		// set and the running report.
+		let report = self
 			.db
 			.raw_stream()
-			.try_fold(
-				Vec::new(),
-				async |mut acc: Vec<Vec<u8>>, (key, _): database::KeyVal<'_>| {
-					acc.push(key.to_vec());
-					Ok(acc)
-				},
-			)
-			.await?;
+			.try_fold(report, async |mut report, (key, _): database::KeyVal<'_>| {
+				// Keys in `state_hamt_nodes` are 16-byte hashes; any
+				// other key is not a node we manage and is skipped
+				// defensively.
+				let hash = <[u8; 16]>::try_from(key)
+					.map_err(|_| err!(Database(error!("Unexpected key in state_hamt_nodes."))))?;
 
-		for key in nodes {
-			// Keys in `state_hamt_nodes` are 16-byte hashes; any other key is
-			// not a node we manage and is skipped defensively.
-			let hash = <[u8; 16]>::try_from(key.as_slice())
-				.map_err(|_| err!(Database(error!("Unexpected key in state_hamt_nodes."))))?;
-
-			if seen.contains(&hash) {
-				continue;
-			}
-
-			// Grace-window filter: a recent mtime means a write is possibly
-			// still in flight, so ignore this node this round.
-			if let Some(mtime) = self.node_mtime(&hash) {
-				if mtime >= cutoff {
-					continue;
+				if seen.contains(&hash) {
+					return Ok(report);
 				}
-			}
 
-			let bytes = u64::try_from(self.db.get_blocking(&hash)?.len()).unwrap_or(u64::MAX);
-			report.orphaned = report.orphaned.saturating_add(1);
-			report.bytes = report.bytes.saturating_add(bytes);
+				// Grace-window filter: a recent mtime means a write is
+				// possibly still in flight, so ignore this node this
+				// round. Metadata read failures are propagated so the
+				// sweep fails closed rather than deleting a node it
+				// could not verify.
+				if let Some(mtime) = self.node_mtime(&hash)? {
+					if mtime >= cutoff {
+						return Ok(report);
+					}
+				}
 
-			if !dry_run {
-				self.del_node(&hash)?;
-			}
-		}
+				let bytes = u64::try_from(self.db.get_blocking(&hash)?.len()).unwrap_or(u64::MAX);
+				report.orphaned = report.orphaned.saturating_add(1);
+				report.bytes = report.bytes.saturating_add(bytes);
+
+				if !dry_run {
+					self.del_node(&hash)?;
+				}
+
+				Ok(report)
+			})
+			.await?;
 
 		Ok(report)
 	}
 
 	/// Returns the recorded persistence time (unix milliseconds) of a node, if
 	/// any.
-	fn node_mtime(&self, hash: &StructuralHash) -> Option<u64> {
-		let bytes = self.node_mtimes.get_blocking(hash).ok()?;
+	///
+	/// `Ok(None)` means the node predates the mtime column (no recorded mtime
+	/// and no database error). A *missing* key and a genuine database read
+	/// failure are kept distinct so a live sweep fails closed on metadata read
+	/// failures instead of treating them as "no mtime" and deleting a
+	/// recently-persisted node it could not verify.
+	fn node_mtime(&self, hash: &StructuralHash) -> Result<Option<u64>> {
+		let bytes = match self.node_mtimes.get_blocking(hash) {
+			| Ok(bytes) => bytes,
+			| Err(e) if e.is_not_found() => return Ok(None),
+			| Err(e) => return Err(e),
+		};
 		if bytes.is_empty() {
-			return None;
+			return Ok(None);
 		}
-		let arr = <[u8; 8]>::try_from(&*bytes).ok()?;
-		Some(u64::from_be_bytes(arr))
+		let arr = <[u8; 8]>::try_from(&*bytes)
+			.map_err(|_| err!(Database(error!("Malformed mtime for state HAMT node."))))?;
+		Ok(Some(u64::from_be_bytes(arr)))
 	}
 
 	/// Provides a synchronous resolver closure for `isolate_delta` and the

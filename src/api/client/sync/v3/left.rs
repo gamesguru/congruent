@@ -133,21 +133,35 @@ pub(super) async fn load_left_room(
 				"leave PDU should be for the user requesting the sync"
 			);
 
-			// the root handle of the state _immediately before_ the syncing user left
-			// this room. the state represented here _does not_ include
-			// `leave_membership_event`.
+			// `pdu_roothandle` resolves the state *after* a PDU, so the
+			// leave event's own root includes `leave_membership_event`. For the
+			// membership immediately before the user left we walk back one
+			// event to the pre-leave root.
 			let leave_root_handle = services
 				.rooms
 				.state_accessor
 				.pdu_roothandle(&leave_membership_event.event_id)
 				.await?;
 
+			let leave_count = services
+				.rooms
+				.timeline
+				.get_pdu_count(&leave_membership_event.event_id)
+				.await?;
+
+			let before_leave_root_handle = services
+				.rooms
+				.timeline
+				.prev_root_handle(room_id, leave_count)
+				.await
+				.unwrap_or_else(|_| leave_root_handle.clone());
+
 			let prev_membership_event = services
 				.rooms
 				.state_accessor
 				.state_get_in_room_hamt(
 					room_id,
-					&leave_root_handle,
+					&before_leave_root_handle,
 					&StateEventType::RoomMember,
 					leave_state_key.as_str(),
 				)

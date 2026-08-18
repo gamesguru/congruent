@@ -57,14 +57,15 @@ root handles first-class map keys in the same spirit as the old
 `ShortStateHash: u64`. No `Ord` is derived and none is needed; the codebase does
 not order roots.
 
-## Conduwuit-side accessor add (not a rezzy change)
+## Conduwuit-side accessor add (not a rezzy change) — landed
 
 To mirror the legacy `state_contains_type` (used for room summary / heroes in
-sync v3), conduwuit needs a
-`state_contains_type_hamt(room_id, &RootHandle, &StateEventType) -> bool`. This
-is simple to add on the conduwuit side by iterating `state_full_shortids_hamt`
-and testing one state-key of the type, or by a typed visit; it does **not**
-require any rezzy addition.
+sync v3), conduwuit added
+`state_contains_type_hamt(&RoomId, &RootHandle, &StateEventType) -> bool`
+(`src/service/rooms/state_accessor/state.rs`). It iterates
+`state_full_shortids_hamt` and stops at the first state-key of the requested
+type; it requires no rezzy addition. It is already in use by sync v3 room
+summary / heroes (`src/api/client/sync/v3/joined.rs`).
 
 ## Non-goals / deliberately settled
 

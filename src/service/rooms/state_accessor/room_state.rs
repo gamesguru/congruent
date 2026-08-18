@@ -3,6 +3,7 @@ use std::borrow::Borrow;
 use conduwuit::{
 	Pdu, Result, err, implement,
 	matrix::{Event, StateKey},
+	utils::stream::ReadyExt,
 };
 use futures::{Stream, StreamExt, TryFutureExt};
 use ruma::{EventId, RoomId, events::StateEventType};
@@ -135,13 +136,17 @@ pub async fn room_state_keys(
 
 	let full_state = self.load_full_state_hamt(&root_handle).await?;
 
-	let mut state_keys: Vec<String> = Vec::with_capacity(full_state.len());
-	for ssk in full_state.into_keys() {
-		let (ty, key) = self.services.short.get_statekey_from_short(ssk).await?;
-		if &ty == event_type {
-			state_keys.push(key.to_string());
-		}
-	}
+	// Batch-resolve the short state keys through the caching key store rather
+	// than awaiting a database lookup for each entry serially.
+	let shortstatekeys = futures::stream::iter(full_state.into_keys());
+	let state_keys = self
+		.services
+		.short
+		.multi_get_statekey_from_short(shortstatekeys)
+		.ready_filter_map(Result::ok)
+		.ready_filter_map(move |(ty, key)| (ty == *event_type).then_some(key.to_string()))
+		.collect()
+		.await;
 
 	Ok(state_keys)
 }
