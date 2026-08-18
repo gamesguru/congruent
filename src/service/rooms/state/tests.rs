@@ -257,7 +257,7 @@ async fn test_state_equivalence() {
 	]);
 	let actual = services
 		.rooms
-		.state
+		.state_accessor
 		.load_full_state_hamt(&final_root)
 		.await
 		.expect("failed to load HAMT state");

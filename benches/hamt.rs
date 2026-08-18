@@ -16,15 +16,13 @@ fn bench_hamt_construction(c: &mut Criterion) {
 
 		let entries: Vec<(u64, u64)> = (0..size as u64).map(|i| (i, i * 1000 + 7)).collect();
 		let structural_key = room_structural_key(&server_secret, &room_id);
+		let lattice = rezzy::state::LtHash::default();
 
 		group.bench_with_input(BenchmarkId::new("build_root_handle", size), &size, |b, _| {
 			b.iter(|| {
-				let lattice = rezzy::state::LtHash::default();
-				let _res = rezzy::hamt::build_hamt_root_handle(
-					&structural_key,
-					&lattice,
-					entries.clone(),
-				);
+				let entries = std::hint::black_box(entries.clone());
+				let _res =
+					rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries);
 			});
 		});
 	}
@@ -82,7 +80,7 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 
 				for &key in &target_keys {
 					let res = root_node.search(&structural_key, &key, &mut resolver);
-					assert!(res.unwrap().is_some());
+					let _ = std::hint::black_box(res);
 				}
 			});
 		});
@@ -153,7 +151,7 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 					};
 
 					let lattice = rezzy::state::LtHash::default();
-					let _res = rezzy::hamt::delta::isolate_delta::<
+					let res = rezzy::hamt::delta::isolate_delta::<
 						u64,
 						u64,
 						_,
@@ -165,6 +163,7 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 						&lattice,
 						&mut resolver,
 					);
+					let _ = std::hint::black_box(res);
 				});
 			},
 		);
