@@ -25,6 +25,17 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 }
 
+/// RAII guard that always releases the per-event rejection claim on drop,
+/// including when the enclosing async task is cancelled mid-await (e.g. while
+/// `mark_event_rejected` awaits the `is_event_visible_to_clients` check). The
+/// claim must never be left set, or every later rejection/promotion for that
+/// event would be refused until restart.
+struct RejectionClaimGuard<'a>(&'a rooms::timeline::Service, &'a EventId);
+
+impl Drop for RejectionClaimGuard<'_> {
+	fn drop(&mut self) { self.0.release_rejection_claim(self.1); }
+}
+
 /// Machine-checkable classification of why an event was rejected during
 /// outlier/auth processing.
 ///
@@ -363,7 +374,11 @@ impl Service {
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		if !self.services.timeline.try_claim_rejection(event_id) {
+			return;
+		}
 		self.db.mark_event_soft_failed(event_id, code);
+		self.services.timeline.release_rejection_claim(event_id);
 	}
 
 	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
@@ -384,10 +399,35 @@ impl Service {
 	}
 
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
+		if !self.services.timeline.try_claim_rejection(event_id) {
+			conduwuit::warn!(
+				%event_id,
+				%reason,
+				"refusing to reject event: already claimed by an outlier promotion in flight, \
+				 or by another concurrent rejection attempt"
+			);
+			return;
+		}
+
+		let _guard = RejectionClaimGuard(&self.services.timeline, event_id);
+
+		if self.is_event_visible_to_clients(event_id).await {
+			conduwuit::warn!(
+				%event_id,
+				%reason,
+				"refusing to reject timeline event (already passed auth)"
+			);
+			return;
+		}
+
 		self.db.mark_event_rejected(event_id, reason);
 	}
 
-	/// Directly marks an event as rejected, bypassing timeline checks.
+	/// Directly marks an event as rejected, bypassing the
+	/// `is_event_visible_to_clients` async timeline visibility check. Callers
+	/// MUST assert that the target event is a newly imported outlier
+	/// that is guaranteed not to have already passed authentication or been
+	/// exposed on the room timeline.
 	pub fn mark_event_rejected_skip_visibility_check(&self, event_id: &EventId, reason: &str) {
 		self.db.mark_event_rejected(event_id, reason);
 	}
