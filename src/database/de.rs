@@ -288,23 +288,61 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_bool<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-		unhandled!("deserialize bool not implemented")
+	fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+		const BYTES: usize = size_of::<bool>();
+
+		let end = self.pos.saturating_add(BYTES).min(self.buf.len());
+		let bytes: ArrayVec<u8, BYTES> = self.buf[self.pos..end].try_into()?;
+		let bytes = bytes
+			.into_inner()
+			.map_err(|_| Self::Error::SerdeDe("bool buffer underflow".into()))?;
+
+		self.inc_pos(BYTES);
+
+		// Serialized as a single byte: 1 = true, 0 = false.
+		visitor.visit_bool(bytes[0] != 0)
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_i8<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-		unhandled!("deserialize i8 not implemented")
+	fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+		const BYTES: usize = size_of::<i8>();
+
+		let end = self.pos.saturating_add(BYTES).min(self.buf.len());
+		let bytes: ArrayVec<u8, BYTES> = self.buf[self.pos..end].try_into()?;
+		let bytes = bytes
+			.into_inner()
+			.map_err(|_| Self::Error::SerdeDe("i8 buffer underflow".into()))?;
+
+		self.inc_pos(BYTES);
+		visitor.visit_i8(i8::from_be_bytes(bytes))
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_i16<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-		unhandled!("deserialize i16 not implemented")
+	fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+		const BYTES: usize = size_of::<i16>();
+
+		let end = self.pos.saturating_add(BYTES).min(self.buf.len());
+		let bytes: ArrayVec<u8, BYTES> = self.buf[self.pos..end].try_into()?;
+		let bytes = bytes
+			.into_inner()
+			.map_err(|_| Self::Error::SerdeDe("i16 buffer underflow".into()))?;
+
+		self.inc_pos(BYTES);
+		visitor.visit_i16(i16::from_be_bytes(bytes))
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_i32<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-		unhandled!("deserialize i32 not implemented")
+	fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+		const BYTES: usize = size_of::<i32>();
+
+		let end = self.pos.saturating_add(BYTES).min(self.buf.len());
+		let bytes: ArrayVec<u8, BYTES> = self.buf[self.pos..end].try_into()?;
+		let bytes = bytes
+			.into_inner()
+			.map_err(|_| Self::Error::SerdeDe("i32 buffer underflow".into()))?;
+
+		self.inc_pos(BYTES);
+		visitor.visit_i32(i32::from_be_bytes(bytes))
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
