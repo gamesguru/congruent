@@ -435,10 +435,7 @@ impl Service {
 	}
 
 	pub async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		self.db
-			.get_status(event_id)
-			.await
-			.is_some_and(|status| matches!(status, EventStatus::Rejected(_)))
+		self.db.is_event_rejected(event_id).await
 	}
 
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {

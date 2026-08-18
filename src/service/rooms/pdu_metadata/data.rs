@@ -189,6 +189,15 @@ impl Data {
 			.put_raw(event_id, [new_code.to_u8()]);
 	}
 
+	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
+		if self.eventid_rejections.get(event_id).await.is_ok() {
+			return true;
+		}
+		self.get_status(event_id)
+			.await
+			.is_some_and(|status| matches!(status, EventStatus::Rejected(_)))
+	}
+
 	pub(super) async fn try_get_status(&self, event_id: &EventId) -> Result<Option<EventStatus>> {
 		if let Ok(bytes) = self.eventid_rejections.get(event_id).await {
 			if let Some(&code_u8) = bytes.first() {
