@@ -811,6 +811,9 @@ impl Service {
 		device_id: &DeviceId,
 		key_algorithm: &OneTimeKeyAlgorithm,
 	) -> Result<(OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>)> {
+		type ClaimedKey =
+			(Vec<u8>, OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>);
+
 		let count = self.services.globals.next_count()?.to_be_bytes();
 		self.db.userid_lastonetimekeyupdate.insert(user_id, count);
 
@@ -818,39 +821,40 @@ impl Service {
 		prefix.push(0xFF);
 		prefix.extend_from_slice(device_id.as_bytes());
 		prefix.push(0xFF);
-		prefix.push(b'"'); // Annoying quotation mark
-		prefix.extend_from_slice(key_algorithm.as_ref().as_bytes());
-		prefix.push(b':');
 
-		let one_time_key = self
+		// This map stores keys under
+		// `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`. The key algorithm
+		// cannot be matched in the raw byte prefix (the upload_count segment sits
+		// between device_id and the key-id JSON), so stream the whole user+device
+		// scope and filter by algorithm in code.
+		let expected_algo_prefix = format!("{}:", key_algorithm.as_ref());
+
+		let one_time_key: Option<ClaimedKey> = self
 			.db
 			.onetimekeyid_onetimekeys
 			.raw_stream_prefix(&prefix)
 			.ignore_err()
-			.next()
-			.await
-			.map(|(key, val)| {
-				self.db.onetimekeyid_onetimekeys.remove(key);
-
-				let key = key
+			.filter_map(|(key, val)| {
+				let parsed_key: Option<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>> = key
 					.rsplit(|&b| b == 0xFF)
 					.next()
-					.ok_or_else(|| err!(Database("OneTimeKeyId in db is invalid.")))
-					.unwrap();
+					.and_then(|key_json| serde_json::from_slice(key_json).ok());
+				let starts = parsed_key
+					.as_ref()
+					.is_some_and(|pk| pk.to_string().starts_with(&expected_algo_prefix));
+				std::future::ready(if let (Some(parsed_key), true) = (parsed_key, starts) {
+					let val = serde_json::from_slice(val).ok();
+					val.map(|val| (key.to_vec(), parsed_key, val))
+				} else {
+					None
+				})
+			})
+			.next()
+			.await;
 
-				let key = serde_json::from_slice(key)
-					.map_err(|e| err!(Database("OneTimeKeyId in db is invalid. {e}")))
-					.unwrap();
-
-				let val = serde_json::from_slice(val)
-					.map_err(|e| err!(Database("OneTimeKeys in db are invalid. {e}")))
-					.unwrap();
-
-				(key, val)
-			});
-
-		if let Some(result) = one_time_key {
-			return Ok(result);
+		if let Some((key, parsed_key, val)) = one_time_key {
+			self.db.onetimekeyid_onetimekeys.remove(&key);
+			return Ok((parsed_key, val));
 		}
 
 		// No one-time key has been found. Look for a fallback key.
