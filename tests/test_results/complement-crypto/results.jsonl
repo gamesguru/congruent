@@ -22,8 +22,8 @@
 {"Action":"pass","Test":"TestFailedKeysClaimRetries/js"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/js"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
