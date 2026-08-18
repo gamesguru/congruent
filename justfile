@@ -404,8 +404,11 @@ e2ee args=".*":
     run_suffix="$(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9]/_/g; s/^_*//; s/_*$//; s/__*/_/g' | cut -c 1-32)"
     if [ -z "$run_suffix" ] || [ "$run_suffix" = "_" ]; then run_suffix="all"; fi
     run_stamp="$(date +%s%N)"
-    STAGING_DIR="$(git rev-parse --show-toplevel)/.tmp/complement-crypto"
-    mkdir -p "$STAGING_DIR" "$RESULTS_FILE_STAGING"
+    # Centralization: ALL complement-crypto output (raw per-shard logs, merged
+    # logs, staged results, and the tracked results.jsonl ledger) lives under
+    # tests/test_results/complement-crypto. There is no separate .tmp staging dir.
+    STAGING_DIR="$RESULTS_FILE_STAGING"
+    mkdir -p "$STAGING_DIR"
     RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
     LOG_FILE="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.jsonl"
 
@@ -538,6 +541,18 @@ e2ee args=".*":
     else
         echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
         [ "$go_test_exit" -eq 0 ] && go_test_exit=1
+    fi
+
+    # Centralization: expose the SDK/server runtime logs (written by the
+    # complement-crypto TestMain into $COMPLEMENT_SRC/tests/logs) under the results
+    # dir too, so every artifact of a run lives in tests/test_results/complement-crypto.
+    if [ -d "$COMPLEMENT_SRC/tests/logs" ] && [ "$(ls -A "$COMPLEMENT_SRC/tests/logs")" ]; then
+        mkdir -p "$RESULTS_FILE_STAGING/logs"
+        for f in "$COMPLEMENT_SRC/tests/logs"/*; do
+            b="$(basename -- "$f")"
+            ln -sfn "$f" "$RESULTS_FILE_STAGING/logs/$b"
+        done
+        echo "linked complement-crypto runtime logs -> $RESULTS_FILE_STAGING/logs"
     fi
 
     echo ""
