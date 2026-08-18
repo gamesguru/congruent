@@ -84,6 +84,12 @@ RUN apt-get update \
 WORKDIR /usr/src/complement-crypto
 COPY --from=builder /usr/src/complement-crypto .
 
+# `go mod download` in the builder stage populated $GOMODCACHE (default
+# /go/pkg/mod in the golang image), not the source tree. Carried here so the
+# tester runs its `go test` entirely offline, exactly as the builder comment
+# intended.
+COPY --from=builder /go/pkg/mod /go/pkg/mod
+
 # Entrypoint: runs the suite and normalises output into jsonl.
 COPY complement/complement-crypto-entrypoint.sh /usr/local/bin/complement-crypto-entrypoint.sh
 RUN chmod a+x /usr/local/bin/complement-crypto-entrypoint.sh

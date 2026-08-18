@@ -1,5 +1,12 @@
 ---
-name: Complement Tests
+# Unified Integration Tests
+# ---------------------------
+# Consolidates the former complement.yml, complement-crypto.yml and locust.yml
+# into one workflow so the Complement, Complement-Crypto and Locust suites all
+# share a single `dev-quick` amd64 build (the `setup` job) instead of each
+# independently compiling the ~same Rust binary. GitHub Actions `needs:` only
+# works within one workflow file, which is why all suites live here.
+name: Integration Tests
 
 on:
   push:
@@ -14,7 +21,76 @@ env:
   SKIP_CONFIRM: 1
 
 jobs:
+  # -----------------------------------------------------------------------------
+  # Setup: build the shared `dev-quick` amd64 binary once.
+  # -----------------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: "dev-quick"
+      FEATURES: "direct_tls,url_preview"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Export CPU target env vars
+        run: |
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        with:
+          shared-key: ubuntu-24.04-${{ steps.cpu.outputs.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
+
+      # Single dev-quick build shared by Complement (amd64 cells),
+      # Complement-Crypto and Locust. Built with the feature superset
+      # (direct_tls + url_preview) so every consumer can run it.
+      - name: Build continuwuity (dev-quick, shared)
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+
+      - name: Upload shared binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: target/latest/conduwuit
+          retention-days: 7
+          overwrite: true
+
   complement-tests:
+    needs: setup
     # NOTE: to enable GitHub builds/workflows, add a REPOSITORY_VARIABLE
     # i.e., under /settings/variables/actions, C10Y_SOME_ENV_VAR=1
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
@@ -128,7 +204,23 @@ jobs:
           echo "Prebuilt Arch: ${{ matrix.prebuilt_arch }}"
           echo "Detected CPU Target: ${{ steps.cpu.outputs.target }}"
 
-      - name: Build conduwuit for Complement
+      # amd64 cells reuse the shared binary built by `setup`.
+      - name: Download shared binary
+        if: matrix.arch == 'amd64'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        if: matrix.arch == 'amd64'
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      # arm64 cells cannot share an amd64 binary, so they compile here.
+      - name: Build conduwuit for Complement (arm64)
+        if: matrix.arch == 'arm64'
         env:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
@@ -681,3 +773,222 @@ jobs:
               -H "Content-Type: application/json" \
               --data @- || echo "Matrix notify failed (non-fatal)"
           fi
+
+  # -----------------------------------------------------------------------------
+  # Complement-Crypto (E2EE). Shares the binary built by `setup` and runs the
+  # suite against the complement homeserver image (same image `complement-tests`
+  # builds) via `just e2ee`.
+  # -----------------------------------------------------------------------------
+  complement-crypto-tests:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      COMPLEMENT_PARALLEL: 24
+      FEATURES: "direct_tls,url_preview"
+      PROFILE: "dev-quick"
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      # The suite needs the system libs Rust links against (mounts them into the
+      # complement homeserver image), so set up the toolchain/prebuilts even
+      # though we download rather than compile the binary.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold \
+            postgresql-client
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Configure Docker Network Firewall
+        run: |
+          sudo ufw allow in on br-+ comment "(from Complement-Crypto testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Build Complement Docker image
+        run: make complement/docker PROFILE=${{ env.PROFILE }}
+
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
+
+      - name: Run Complement-Crypto tests
+        id: complement-crypto
+        env:
+          COMPLEMENT_CRYPTO_PARALLEL: "3"
+          COMPLEMENT_CRYPTO_TIMEOUT: "45m"
+        run: |
+          # `just e2ee` builds the tester image only if missing, then runs the
+          # suite against the complement homeserver image built above.
+          just e2ee ".*"
+
+      - name: Upload Complement-Crypto results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complement-crypto-results
+          path: |
+            tests/test_results/complement-crypto/results.jsonl
+            tests/test_results/complement-crypto/full_output.jsonl
+          retention-days: 90
+
+  # -----------------------------------------------------------------------------
+  # Locust load test. Also consumes the shared binary; runs the homeserver
+  # directly (no Docker image) and drives matrix-locust against it.
+  # -----------------------------------------------------------------------------
+  locust-test:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: dev-quick
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup prebuilts (RocksDB/Jemalloc)
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      # matrix-locust only works on Python <= 3.12 (see note below).
+      - name: Set up Python 3.12 (required by matrix-locust toolchain)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Start conduwuit server
+        env:
+          CONDUWUIT_PORT: "6167"
+        run: |
+          mkdir -p /tmp/conduwuit-db
+          cat > /tmp/conduwuit.toml <<EOF
+          [global]
+          server_name = "localhost"
+          address = ["127.0.0.1"]
+          port = $CONDUWUIT_PORT
+          database_path = "/tmp/conduwuit-db"
+          allow_registration = true
+          yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+          EOF
+          ./target/latest/conduwuit -c /tmp/conduwuit.toml &
+          echo $! > /tmp/conduwuit.pid
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:$CONDUWUIT_PORT/_matrix/client/versions && break
+            sleep 1
+          done
+
+      # The matrix-locust toolchain (locust==2.17.0 + matrix-nio==0.21.2) is
+      # only compatible with Python <= 3.12: matrix-nio 0.21.2 imports `cgi`
+      # (removed in Python 3.13) and locust 2.17.0 accesses instance-level
+      # `__annotations__` (removed on 3.14), so both crash on newer Pythons.
+      - name: Setup matrix-locust
+        run: |
+          if [ -d "../matrix-locust" ]; then
+            cp -r ../matrix-locust /tmp/matrix-locust
+          else
+            git clone --depth 1 https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+          fi
+          cd /tmp/matrix-locust
+          # `python` is the Python 3.12 set up by actions/setup-python above.
+          python -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests click gevent
+
+      - name: Run Locust load test
+        working-directory: /tmp/matrix-locust
+        run: |
+          mkdir -p data
+          ./venv/bin/python generate_users.py 100
+          ./venv/bin/python generate_rooms.py
+          echo "=== 1. Registering users ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/register
+          echo "=== 2. Creating rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/create_room
+          echo "=== 3. Joining rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/join
+          echo "=== 4. Normal chat load test ==="
+          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://127.0.0.1:6167 --csv data/chat
+
+      - name: Stop conduwuit server
+        if: always()
+        run: |
+          if [ -f /tmp/conduwuit.pid ]; then
+            kill $(cat /tmp/conduwuit.pid) || true
+          fi
+
+      - name: Upload Locust results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: locust-results
+          path: |
+            /tmp/matrix-locust/data/
+            /tmp/matrix-locust/data/*.csv
+            /tmp/matrix-locust/locust*.html
+          retention-days: 30

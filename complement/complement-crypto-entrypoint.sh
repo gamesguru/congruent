@@ -7,7 +7,7 @@
 # continuwuity's `bin/complement` produces for the regular complement suite
 # (results.jsonl + full_output.jsonl), so the same CI result-parsing tooling
 # applies.
-set -uo pipefail
+set -euo pipefail
 
 COMPLEMENT_BASE_IMAGE="${1:-${COMPLEMENT_BASE_IMAGE:?COMPLEMENT_BASE_IMAGE not set}}"
 export COMPLEMENT_BASE_IMAGE
