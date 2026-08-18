@@ -117,13 +117,13 @@ jobs:
           ./venv/bin/python generate_users.py 100
           ./venv/bin/python generate_rooms.py
           echo "=== 1. Registering users ==="
-          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/register || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/register
           echo "=== 2. Creating rooms ==="
-          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/create_room || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/create_room
           echo "=== 3. Joining rooms ==="
-          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/join || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/join
           echo "=== 4. Normal chat load test ==="
-          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://localhost:6167 --csv data/chat || true
+          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://localhost:6167 --csv data/chat
 
       - name: Stop conduwuit server
         if: always()
