@@ -137,7 +137,7 @@ echo "\$LOG_FILE: $LOG_FILE"
 echo "\$RUN_TESTS: $RUN_TESTS"
 echo ""
 
-anchor_run_tests() {
+anchor_one() {
 	local pattern="$1"
 	local anchored=()
 	local segment
@@ -165,6 +165,21 @@ anchor_run_tests() {
 	done
 
 	(IFS='/'; echo "${anchored[*]}")
+}
+
+anchor_run_tests() {
+	local pattern="$1"
+	local alt
+	local -a alts=()
+	local -a out=()
+
+	IFS='|' read -r -a alts <<<"$pattern"
+	for alt in "${alts[@]}"; do
+		out+=("$(anchor_one "$alt")")
+	done
+
+	local IFS='|'
+	echo "${out[*]}"
 }
 
 if [ "$RUN_TESTS" != "." ]; then

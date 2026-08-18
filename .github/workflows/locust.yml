@@ -92,7 +92,7 @@ jobs:
           cd /tmp/matrix-locust
           python3 -m venv venv
           ./venv/bin/pip install --upgrade pip
-          ./venv/bin/pip install locust requests matrix-nio click gevent
+          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests click gevent
 
       - name: Run Locust load test
         working-directory: /tmp/matrix-locust
