@@ -485,9 +485,9 @@ e2ee args=".*":
                 COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
                 COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
                 go test -tags jssdk -json \
-                -timeout "{{ env_var_or_default(\"COMPLEMENT_CRYPTO_TIMEOUT\", \"30m\") }}" \
+                -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
                 -count=1 \
-                -skip "{{ env_var_or_default(\"COMPLEMENT_CRYPTO_SKIP\", \"\") }}" \
+                -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "") }}" \
                 -run "${SHARD_PATTERNS[$s]}" \
                 ./tests |
                 tee -a "$shard_log" |
