@@ -1,0 +1,120 @@
+---
+name: Locust Load Test
+
+on:
+  push:
+    branches: [main, main-upstream]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  SKIP_CONFIRM: 1
+  PROFILE: release-quick
+
+jobs:
+  locust-test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold \
+            python3 \
+            python3-pip \
+            python3-venv
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup prebuilts (RocksDB/Jemalloc)
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Export CPU target env vars
+        run: echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Build conduwuit
+        run: make build PROFILE=${PROFILE}
+
+      - name: Start conduwuit server
+        env:
+          CONDUWUIT_PORT: "6167"
+        run: |
+          mkdir -p /tmp/conduwuit-db
+          cat > /tmp/conduwuit.toml <<EOF
+          [global]
+          server_name = "localhost"
+          address = ["127.0.0.1"]
+          port = $CONDUWUIT_PORT
+          database_path = "/tmp/conduwuit-db"
+          allow_registration = true
+          yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+          EOF
+          ./target/latest/conduwuit -c /tmp/conduwuit.toml &
+          echo $! > /tmp/conduwuit.pid
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:$CONDUWUIT_PORT/_matrix/client/versions && break
+            sleep 1
+          done
+
+      - name: Setup matrix-locust
+        run: |
+          if [ -d "../matrix-locust" ]; then
+            cp -r ../matrix-locust /tmp/matrix-locust
+          else
+            git clone --depth 1 https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+          fi
+          cd /tmp/matrix-locust
+          python3 -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          ./venv/bin/pip install locust requests matrix-nio click gevent
+
+      - name: Run Locust load test
+        working-directory: /tmp/matrix-locust
+        run: |
+          ./venv/bin/python generate_users.py 100
+          ./venv/bin/python generate_rooms.py
+          ./venv/bin/python run.py test-suites/conduit-sqlite-100.json --host http://localhost:6167 || ./venv/bin/python run.py test-suites/conduit-1k.json --host http://localhost:6167
+
+      - name: Stop conduwuit server
+        if: always()
+        run: |
+          if [ -f /tmp/conduwuit.pid ]; then
+            kill $(cat /tmp/conduwuit.pid) || true
+          fi
+
+      - name: Upload Locust results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: locust-results
+          path: |
+            /tmp/matrix-locust/data/
+            /tmp/matrix-locust/locust*.html
+            /tmp/matrix-locust/locust*.csv
+          retention-days: 30

@@ -458,10 +458,7 @@ impl Service {
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
 	pub async fn is_event_accepted(&self, event_id: &EventId) -> bool {
-		self.db
-			.get_status(event_id)
-			.await
-			.is_none_or(|status| !matches!(status, EventStatus::Rejected(_)))
+		self.db.get_rejection_code(event_id).await.is_none()
 	}
 
 	/// Returns true if the event is in the timeline and should be visible
@@ -472,10 +469,10 @@ impl Service {
 	}
 
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
-		match self.db.get_status(event_id).await? {
-			| EventStatus::Rejected(code) => Some(code.tag().to_owned()),
-			| _ => None,
-		}
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.map(|code| code.tag().to_owned())
 	}
 
 	/// Returns true if the event is rejected for a reason that should
@@ -493,17 +490,16 @@ impl Service {
 	/// of a bare `is_event_rejected` check, or a purely transient rejection
 	/// on the dependency permanently poisons every event that depends on it.
 	pub async fn is_event_permanently_rejected(&self, event_id: &EventId) -> bool {
-		// A single read: `get_rejection_reason` already returns `None` for
-		// anything not currently rejected (see its impl in `data.rs`), so a
-		// separate `is_event_rejected` pre-check only opens a TOCTOU window --
-		// a concurrent retry (`take_retry_if_rejection_retryable`) clearing the
-		// rejection between the two reads would make this method fall through
-		// to `!retryable == true` on a stale `None` reason, i.e. report a
-		// no-longer-rejected event as *permanently* rejected.
-		matches!(
-			self.db.get_status(event_id).await,
-			Some(EventStatus::Rejected(code)) if !code.is_retryable()
-		)
+		// A single read: `get_rejection_code` returns `None` for anything not
+		// rejected, and the retryability check is combined with that one read,
+		// so there's no TOCTOU window between an `is_event_rejected` check and a
+		// later reason read (a concurrent `take_retry_if_rejection_retryable`
+		// clearing the rejection can't make us fall through to `!retryable ==
+		// true` on a stale reason).
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.is_some_and(|code| !code.is_retryable())
 	}
 
 	/// Returns true if the event is marked rejected specifically because
@@ -526,8 +522,8 @@ impl Service {
 	/// problem.
 	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> bool {
 		matches!(
-			self.db.get_status(event_id).await,
-			Some(EventStatus::Rejected(RejectionCode::MissingAuthEvent))
+			self.db.get_rejection_code(event_id).await,
+			Some(RejectionCode::MissingAuthEvent)
 		)
 	}
 
@@ -548,7 +544,7 @@ impl Service {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
-		let Some(EventStatus::Rejected(code)) = self.db.get_status(event_id).await else {
+		let Some(code) = self.db.get_rejection_code(event_id).await else {
 			return false;
 		};
 		if code.is_retryable() {
@@ -588,26 +584,16 @@ impl Service {
 		&self,
 		event_id: &EventId,
 	) -> bool {
-		let Some(status) = (match self.db.try_get_status(event_id).await {
-			| Ok(status) => status,
-			| Err(e) => {
-				warn!(
-					%event_id,
-					"failed to read rejection state before outlier promotion: {e}"
-				);
-				return false;
-			},
-		}) else {
+		let Some(code) = self.db.get_rejection_code(event_id).await else {
 			return true;
 		};
-		match status {
-			| EventStatus::Rejected(RejectionCode::MissingAuthEvent) => false,
-			| EventStatus::Rejected(code) if code.is_retryable() => {
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
 				self.unmark_event_rejected(event_id);
 				true
 			},
-			| EventStatus::Rejected(_) => false,
-			| _ => true,
+			| _ => false,
 		}
 	}
 
@@ -637,29 +623,18 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		let Some(status) = (match self.db.try_get_status(event_id).await {
-			| Ok(status) => status,
-			| Err(e) => {
-				warn!(%event_id, "failed to read rejection state while finalizing promotion: {e}");
-				return false;
-			},
-		}) else {
-			// No metadata yet -- nothing to clear.
+		let Some(code) = self.db.get_rejection_code(event_id).await else {
+			// No rejection verdict -- clear any stale markers and accept.
 			self.clear_pdu_markers(event_id);
 			return true;
 		};
-		match status {
-			| EventStatus::Rejected(RejectionCode::MissingAuthEvent) => false,
-			| EventStatus::Rejected(code) if code.is_retryable() => {
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
 				self.clear_pdu_markers(event_id);
 				true
 			},
-			| EventStatus::Rejected(_) => false,
-			| _ => {
-				// Not rejected -- still clear any stale soft-fail marker.
-				self.clear_pdu_markers(event_id);
-				true
-			},
+			| _ => false,
 		}
 	}
 

@@ -1,9 +1,7 @@
 use std::{mem::size_of, sync::Arc};
 
 use conduwuit::{
-	Result,
 	arrayvec::ArrayVec,
-	err,
 	matrix::{Event, PduCount},
 	utils::{
 		ReadyExt,
@@ -149,24 +147,13 @@ impl Data {
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
-		if self.eventid_softfailed.get(event_id).await.is_ok() {
-			return true;
-		}
-		self.get_status(event_id)
-			.await
-			.is_some_and(|status| matches!(status, EventStatus::SoftFailed(_)))
+		self.get_soft_fail_code(event_id).await.is_some()
 	}
 
 	pub(super) async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
-		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
-			if let Some(&code_u8) = bytes.first() {
-				return Some(SoftFailCode::from_u8(code_u8).tag().to_owned());
-			}
-		}
-		match self.get_status(event_id).await? {
-			| EventStatus::SoftFailed(code) => Some(code.tag().to_owned()),
-			| _ => None,
-		}
+		self.get_soft_fail_code(event_id)
+			.await
+			.map(|code| code.tag().to_owned())
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
@@ -190,51 +177,93 @@ impl Data {
 	}
 
 	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		if self.eventid_rejections.get(event_id).await.is_ok() {
-			return true;
-		}
-		self.get_status(event_id)
-			.await
-			.is_some_and(|status| matches!(status, EventStatus::Rejected(_)))
+		self.get_rejection_code(event_id).await.is_some()
 	}
 
-	pub(super) async fn try_get_status(&self, event_id: &EventId) -> Result<Option<EventStatus>> {
+	/// Reads the persisted rejection code for `event_id`, if any, from the
+	/// authoritative `eventid_rejections` store. Falls back to the legacy
+	/// `eventid_status` store and then the legacy `eventid_metadata.status`
+	/// field for rows written before the independent-flat-store refactor.
+	///
+	/// This is a single read so callers that must decide-and-act on the same
+	/// rejection state (e.g. `take_retry_if_rejection_retryable`,
+	/// `finish_promotion`) don't open a TOCTOU window between two reads.
+	pub(super) async fn get_rejection_code(&self, event_id: &EventId) -> Option<RejectionCode> {
 		if let Ok(bytes) = self.eventid_rejections.get(event_id).await {
 			if let Some(&code_u8) = bytes.first() {
-				return Ok(Some(EventStatus::Rejected(RejectionCode::from_u8(code_u8))));
-			}
-		}
-
-		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
-			if let Some(&code_u8) = bytes.first() {
-				return Ok(Some(EventStatus::SoftFailed(SoftFailCode::from_u8(code_u8))));
+				return Some(RejectionCode::from_u8(code_u8));
 			}
 		}
 
 		if let Ok(bytes) = self.eventid_status.get(event_id).await {
+			if bytes.len() >= 2 && bytes[0] == 2 {
+				return Some(RejectionCode::from_u8(bytes[1]));
+			}
+		}
+
+		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
+				if let EventStatus::Rejected(code) = meta.status {
+					return Some(code);
+				}
+			}
+		}
+
+		None
+	}
+
+	/// Reads the persisted soft-fail code for `event_id`, if any, from the
+	/// authoritative `eventid_softfailed` store, with legacy fallbacks matching
+	/// [`Self::get_rejection_code`].
+	pub(super) async fn get_soft_fail_code(&self, event_id: &EventId) -> Option<SoftFailCode> {
+		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
+			if let Some(&code_u8) = bytes.first() {
+				return Some(SoftFailCode::from_u8(code_u8));
+			}
+		}
+
+		if let Ok(bytes) = self.eventid_status.get(event_id).await {
+			if bytes.len() >= 2 && bytes[0] == 1 {
+				return Some(SoftFailCode::from_u8(bytes[1]));
+			}
+		}
+
+		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
+				if let EventStatus::SoftFailed(code) = meta.status {
+					return Some(code);
+				}
+			}
+		}
+
+		None
+	}
+
+	/// Reads the legacy single-slot `EventStatus` (rejection-first) from
+	/// `eventid_status`/`eventid_metadata` only, for the migration that folds
+	/// legacy rows into the independent stores. Returns `None` if the event has
+	/// no persisted verdict in the legacy stores.
+	#[allow(dead_code)]
+	pub(super) async fn get_legacy_status(&self, event_id: &EventId) -> Option<EventStatus> {
+		if let Ok(bytes) = self.eventid_status.get(event_id).await {
 			if bytes.len() >= 2 {
 				match bytes[0] {
-					| 1 =>
-						return Ok(Some(EventStatus::SoftFailed(SoftFailCode::from_u8(bytes[1])))),
-					| 2 =>
-						return Ok(Some(EventStatus::Rejected(RejectionCode::from_u8(bytes[1])))),
+					| 1 => return Some(EventStatus::SoftFailed(SoftFailCode::from_u8(bytes[1]))),
+					| 2 => return Some(EventStatus::Rejected(RejectionCode::from_u8(bytes[1]))),
 					| _ => {},
 				}
 			}
 		}
 
-		let metadata_bytes = match self.eventid_metadata.get(event_id).await {
-			| Ok(bytes) => bytes,
-			| Err(e) if e.is_not_found() => return Ok(None),
-			| Err(e) => return Err(e),
-		};
-		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
-			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
-		Ok(Some(meta.status))
-	}
+		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
+				if !matches!(meta.status, EventStatus::Accepted) {
+					return Some(meta.status);
+				}
+			}
+		}
 
-	pub(super) async fn get_status(&self, event_id: &EventId) -> Option<EventStatus> {
-		self.try_get_status(event_id).await.ok().flatten()
+		None
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
