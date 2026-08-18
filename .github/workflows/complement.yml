@@ -6,7 +6,7 @@
 # share a single `dev-quick` amd64 build (the `setup` job) instead of each
 # independently compiling the ~same Rust binary. GitHub Actions `needs:` only
 # works within one workflow file, which is why all suites live here.
-name: Integration Tests
+name: Complement Tests
 
 on:
   push:
@@ -846,14 +846,29 @@ jobs:
         with:
           tool: just
 
+      # complement-crypto (`go 1.25.0`) runs its `go test` on the runner (host-side,
+      # like `just complement`), so the Go toolchain plus the embedded JS-SDK bundle
+      # and system chromium must be present.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: complement-crypto-src/go.sum
+
+      - name: Build JS SDK bundle (for //go:embed dist)
+        run: |
+          cd complement-crypto-src
+          corepack enable
+          ./rebuild_js_sdk.sh "matrix-js-sdk@develop"
+
       - name: Run Complement-Crypto tests
         id: complement-crypto
         env:
           COMPLEMENT_CRYPTO_PARALLEL: "3"
           COMPLEMENT_CRYPTO_TIMEOUT: "45m"
         run: |
-          # `just e2ee` builds the tester image only if missing, then runs the
-          # suite against the complement homeserver image built above.
+          # `just e2ee` runs complement-crypto's `go test` directly on the runner
+          # against the complement homeserver image built above.
           just e2ee ".*"
 
       - name: Upload Complement-Crypto results
@@ -863,7 +878,7 @@ jobs:
           name: complement-crypto-results
           path: |
             tests/test_results/complement-crypto/results.jsonl
-            tests/test_results/complement-crypto/full_output.jsonl
+            .tmp/complement-crypto/*.jsonl
           retention-days: 90
 
   # -----------------------------------------------------------------------------

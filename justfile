@@ -369,34 +369,87 @@ complement args=".":
 e2ee args=".*":
     #!/usr/bin/env bash
     set -euo pipefail
-    COMPLEMENT_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
-    COMPLEMENT_CRYPTO_IMAGE="continuwuity:complement-crypto-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )-sdk-$( printf '%s' "{{ MATRIX_JS_SDK_SOURCE }}" | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-64 )"
-    RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_CRYPTO_RESULTS_DIR", "tests/test_results/complement-crypto") }}"
-    mkdir -p "$RESULTS_DIR"
-    # Bind-mount the resolved host dir directly: never prepend the working
-    # directory onto an already-absolute COMPLEMENT_CRYPTO_RESULTS_DIR.
-    case "$RESULTS_DIR" in
-        /*) RESULTS_MOUNT="$RESULTS_DIR" ;;
-        *)  RESULTS_MOUNT="$(pwd)/$RESULTS_DIR" ;;
-    esac
-    # The homeserver image must exist (build it first with `make complement/docker`).
-    docker image inspect "$COMPLEMENT_IMAGE" >/dev/null 2>&1 || { echo "ERROR: $COMPLEMENT_IMAGE not present. Build it with: make complement/docker"; exit 1; }
-    # Build the tester image if it is missing (or if MATRIX_JS_SDK_SOURCE changed).
-    docker image inspect "$COMPLEMENT_CRYPTO_IMAGE" >/dev/null 2>&1 || {
-        echo "Building Complement-Crypto tester image: $COMPLEMENT_CRYPTO_IMAGE"
-        DOCKER_CMD='docker build'
-        docker buildx version >/dev/null 2>&1 && DOCKER_CMD='docker buildx build'
-        $DOCKER_CMD --build-arg MATRIX_JS_SDK_SOURCE="{{ MATRIX_JS_SDK_SOURCE }}" --pull=false -t "$COMPLEMENT_CRYPTO_IMAGE" -f ./docker/complement-crypto.Dockerfile --load .
-    }
-    docker run --rm \
-        --network=host \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -v "$RESULTS_MOUNT:/var/lib/complement-crypto" \
-        -e COMPLEMENT_CRYPTO_RUN="{{ args }}" \
-        -e COMPLEMENT_CRYPTO_PARALLEL="{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
-        -e COMPLEMENT_CRYPTO_TIMEOUT="{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
-        "$COMPLEMENT_CRYPTO_IMAGE" \
-        "$COMPLEMENT_IMAGE"
+    # Mirrors the `complement` recipe: run complement-crypto's `go test` directly
+    # on the host (no tester docker image), against the already-built
+    # complement-crypto-src submodule. Results/logs are written as the invoking
+    # user (shane) straight into tests/test_results/complement-crypto.
+    #
+    # Prerequisite: the JS-SDK bundle must be built once into
+    #   complement-crypto-src/internal/api/js/chrome/dist
+    # (`go:embed dist` fails the compile without it). Build it with:
+    #   (cd complement-crypto-src && ./rebuild_js_sdk.sh matrix-js-sdk@{{ MATRIX_JS_SDK_SOURCE }})
+    # or copy it out of an existing tester image:
+    #   c=$(docker create continuwuity:complement-crypto-...); docker cp $c:/usr/src/complement-crypto/internal/api/js/chrome/dist complement-crypto-src/internal/api/js/chrome/dist; docker rm $c
+    COMPLEMENT_SRC="${COMPLEMENT_CRYPTO_SRC:-$(pwd)/complement-crypto-src}"
+    COMPLEMENT_BASE_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
+
+    # Required before go test: the homeserver image, and the JS bundle on disk.
+    docker image inspect "$COMPLEMENT_BASE_IMAGE" >/dev/null 2>&1 || { echo "ERROR: $COMPLEMENT_BASE_IMAGE not present. Build it with: make complement/docker"; exit 1; }
+    if [ ! -f "$COMPLEMENT_SRC/internal/api/js/chrome/dist/index.html" ]; then
+        echo "ERROR: JS SDK bundle missing in $COMPLEMENT_SRC/internal/api/js/chrome/dist."
+        echo "Build it first: (cd $COMPLEMENT_SRC && ./rebuild_js_sdk.sh matrix-js-sdk@{{ MATRIX_JS_SDK_SOURCE }})"
+        exit 1
+    fi
+
+    # Host-mount the run-runtime libraries into the spawned homeservers, exactly
+    # as `just complement` does.
+    HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
+    MOUNTS="{{ PREFIX }}/lib:{{ PREFIX }}/lib:ro"
+    if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
+
+    RESULTS_FILE_STAGING="{{ env_var_or_default("COMPLEMENT_CRYPTO_RESULTS_DIR", "$(git rev-parse --show-toplevel)/tests/test_results/complement-crypto") }}"
+    MAIN_RESULTS_FILE="$RESULTS_FILE_STAGING/results.jsonl"
+    run_suffix="$(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)"
+    run_stamp="$(date +%s%N)"
+    STAGING_DIR="$(git rev-parse --show-toplevel)/.tmp/complement-crypto"
+    mkdir -p "$STAGING_DIR" "$RESULTS_FILE_STAGING"
+    RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
+    LOG_FILE="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.jsonl"
+
+    echo ""
+    echo "running go test with:"
+    echo "\$COMPLEMENT_SRC: $COMPLEMENT_SRC"
+    echo "\$COMPLEMENT_BASE_IMAGE: $COMPLEMENT_BASE_IMAGE"
+    echo "\$RESULTS_FILE (staging): $RESULTS_FILE"
+    echo "\$MAIN_RESULTS_FILE: $MAIN_RESULTS_FILE"
+    echo "\$LOG_FILE: $LOG_FILE"
+    echo ""
+
+    COMPLEMENT_ENABLE_DIRTY_RUNS="${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}"
+    set +e
+    env \
+        -C "$COMPLEMENT_SRC" \
+        COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+        COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+        COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
+        go test -tags jssdk -json \
+        -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
+        -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
+        -count=1 \
+        -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom") }}" \
+        -run "{{ args }}" \
+        ./tests ./tests/js \
+    | tee "$LOG_FILE" \
+    | jq -c 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | {Action, Test, Package, Elapsed}' \
+    | tee "$RESULTS_FILE"
+    go_test_exit=${PIPESTATUS[0]}
+    set -e
+
+    toplevel="$(git rev-parse --show-toplevel)"
+    if [ -s "$RESULTS_FILE" ]; then
+        python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp"
+        mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE"
+        echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+    else
+        echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
+    fi
+
+    echo ""
+    echo "complement results staged at $RESULTS_FILE"
+    echo "complement results merged into $MAIN_RESULTS_FILE"
+    echo ""
+
+    exit "$go_test_exit"
 
 # -----------------------------------------------------------------------------
 # Complement CI

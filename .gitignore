@@ -99,6 +99,7 @@ tests/test_results/complement/test_logs.jsonl
 *.db
 tests/test_results/complement/backups/raw_issues_v11_v12.txt
 tests/test_results/complement-gg/test_results.*.jsonl
+tests/test_results/complement-crypto/
 
 # Node
 node_modules/
