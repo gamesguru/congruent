@@ -286,21 +286,19 @@ async fn inject_state_hash_mismatches(
 /// Compute the "after" digest for a received event by applying its state
 /// delta to the before-state LtHash.
 ///
-/// TODO(MSC00DC/HAMT): not yet implemented — `get_lthash` was on the removed
-/// `state_compressor` service. Reimplement once the HAMT store exposes LtHash
-/// lookup by `shortstatehash`.
+/// TODO(MSC00DC/HAMT): Not implemented. Previous draft returned the HAMT root's
+/// `state_group_id` (an MSC00DC BLAKE2b-256 lattice checksum), but the caller
+/// only uses this value under the `lthash16` algorithm, whose `after` digest is
+/// encoded differently. Comparing an MSC00DC digest against an lthash16 digest
+/// always fails and would falsely flag `state_hash_mismatch`, so we return
+/// `None` to skip the check until the real lthash16 computation (via HAMT
+/// LtHash lookup) is implemented — mirroring `compute_state_hash_for_pdu` on
+/// the outbound side.
 async fn compute_receiver_after_digest(
-	services: &crate::State,
-	event_id: &OwnedEventId,
+	_services: &crate::State,
+	_event_id: &OwnedEventId,
 ) -> Option<String> {
-	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
-	let root_handle = services
-		.rooms
-		.state
-		.get_roothandle(shorteventid)
-		.await
-		.ok()?;
-	Some(hex::encode(root_handle.state_group_id))
+	None
 }
 
 /// Handles a failed federation transaction by sending the error through
