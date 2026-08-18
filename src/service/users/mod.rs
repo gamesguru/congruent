@@ -584,10 +584,18 @@ impl Service {
 
 		let userdeviceid = (user_id, device_id);
 
-		// Remove tokens
-		if let Ok(old_token) = self.db.userdeviceid_token.qry(&userdeviceid).await {
+		// Remove all active tokens for this device
+		if let Ok(tokens) = self
+			.db
+			.userdeviceid_token
+			.qry(&userdeviceid)
+			.await
+			.deserialized::<Vec<String>>()
+		{
+			for token in &tokens {
+				self.db.token_userdeviceid.remove(token);
+			}
 			self.db.userdeviceid_token.del(userdeviceid);
-			self.db.token_userdeviceid.remove(&old_token);
 		}
 
 		// Remove todevice events
@@ -630,7 +638,7 @@ impl Service {
 			.map(|(_, device_id): (Ignore, &DeviceId)| device_id)
 	}
 
-	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<String> {
+	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<Vec<String>> {
 		let key = (user_id, device_id);
 		self.db.userdeviceid_token.qry(&key).await.deserialized()
 	}
@@ -689,15 +697,20 @@ impl Service {
 			)));
 		}
 
-		// Remove old token
-		if let Ok(old_token) = self.db.userdeviceid_token.qry(&key).await {
-			self.db.token_userdeviceid.remove(&old_token);
-			// It will be removed from userdeviceid_token by the insert later
+		// Append the new token to the device's token set, keeping all
+		// previously-issued tokens valid.
+		let mut tokens: Vec<String> = self
+			.db
+			.userdeviceid_token
+			.qry(&key)
+			.await
+			.map(|v| v.deserialized().unwrap_or_default())
+			.unwrap_or_default();
+		if !tokens.as_slice().contains(&token.to_owned()) {
+			tokens.push(token.to_owned());
+			self.db.userdeviceid_token.put(key, Json(&tokens));
+			self.db.token_userdeviceid.raw_put(token, key);
 		}
-
-		// Assign token to user device combination
-		self.db.userdeviceid_token.put_raw(key, token);
-		self.db.token_userdeviceid.raw_put(token, key);
 
 		Ok(())
 	}
