@@ -186,7 +186,23 @@ impl RejectionCode {
 		.find(|code| code.tag() == tag)
 	}
 
-	pub const fn to_u8(self) -> u8 { self as u8 }
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::SignatureVerificationFailed => 0,
+			| Self::InvalidPduFormat => 1,
+			| Self::DependsOnRejectedAuthEvent => 2,
+			| Self::PrevEventsRejected => 3,
+			| Self::MissingAuthEvent => 4,
+			| Self::DuplicateAuthEventKey => 5,
+			| Self::MissingCreateEvent => 6,
+			| Self::AuthCheckFailed => 7,
+			| Self::StructurallyInvalidInGetMissingEvents => 8,
+			| Self::PrevEventUnknownStateIdsFailed => 9,
+			| Self::StateResolutionFailedWithPrevsPresent => 10,
+			| Self::Unknown => 11,
+		}
+	}
 
 	#[must_use]
 	pub fn from_u8(val: u8) -> Self {
@@ -229,7 +245,15 @@ pub enum SoftFailCode {
 }
 
 impl SoftFailCode {
-	pub const fn to_u8(self) -> u8 { self as u8 }
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::AuthCheckFailed => 0,
+			| Self::Imported => 1,
+			| Self::Manual => 2,
+			| Self::Unknown => 3,
+		}
+	}
 
 	#[must_use]
 	pub fn from_u8(val: u8) -> Self {

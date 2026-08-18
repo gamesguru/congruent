@@ -203,25 +203,6 @@ impl Data {
 		self.eventid_status.remove(event_id);
 	}
 
-	/// Clears a rejected/soft-failed verdict, reverting the event to `Pending`
-	/// (if still an outlier) or `Accepted` (if it reached the timeline).
-	fn clear_status_if(&self, event_id: &EventId, pred: impl Fn(&EventStatus) -> bool) {
-		if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if pred(&meta.status) {
-					meta.status = if meta.is_outlier {
-						EventStatus::Pending
-					} else {
-						EventStatus::Accepted
-					};
-					if let Ok(new_bytes) = bincode::serialize(&meta) {
-						self.eventid_metadata.insert(event_id, new_bytes);
-					}
-				}
-			}
-		}
-	}
-
 	/// MSC2836: index `child` as a relationship-child of `parent` with the
 	/// given `rel_type` (from `content.m.relationship`).
 	pub(super) fn msc2836_add_child(&self, parent: &EventId, child: &EventId, rel_type: &str) {
