@@ -330,13 +330,13 @@ pub async fn room_state_get_hamt_legacy(
 		.map(std::sync::Arc::new)
 }
 
-/// Returns a Stream of all the full state for a given RootHandle.
+/// Returns a Stream of all `(shortstatekey, event_id)` for a given RootHandle.
 #[implement(super::Service)]
 #[allow(unused_variables)]
 pub fn state_full_ids_hamt<'a>(
 	&'a self,
-	root_handle: &rezzy::hamt::RootHandle,
-) -> futures::stream::BoxStream<'a, Result<(StateEventType, String, OwnedEventId)>> {
+	root_handle: &'a rezzy::hamt::RootHandle,
+) -> futures::stream::BoxStream<'a, (ShortStateKey, OwnedEventId)> {
 	let structural_hash = root_handle.structural_hash;
 	let short_states_result = (|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
 		let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
@@ -354,18 +354,18 @@ pub fn state_full_ids_hamt<'a>(
 	match short_states_result {
 		| Ok(short_states) => {
 			let stream =
-				futures::stream::iter(short_states).then(move |(ssk, seid)| async move {
-					let (ty, key) = self.services.short.get_statekey_from_short(ssk).await?;
+				futures::stream::iter(short_states).filter_map(move |(ssk, seid)| async move {
 					let event_id = self
 						.services
 						.short
 						.get_eventid_from_short::<OwnedEventId>(seid)
-						.await?;
-					Ok((ty, key.to_string(), event_id))
+						.await
+						.ok()?;
+					Some((ssk, event_id))
 				});
 			stream.boxed()
 		},
-		| Err(e) => futures::stream::once(async move { Err(e) }).boxed(),
+		| Err(_) => futures::stream::empty().boxed(),
 	}
 }
 

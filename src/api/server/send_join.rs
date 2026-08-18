@@ -45,10 +45,10 @@ async fn create_join_event(
 
 	// We need to return the state prior to joining, let's keep a reference to that
 	// here
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
 
@@ -212,7 +212,7 @@ async fn create_join_event(
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
+		.state_full_ids_hamt(&root_handle)
 		.map(at!(1))
 		.collect()
 		.await;

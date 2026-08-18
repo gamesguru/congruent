@@ -38,17 +38,17 @@ pub(crate) async fn get_room_state_ids_route(
 		return Err!(Request(NotFound("This server is not participating in that room.")));
 	}
 
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(&body.event_id)
+		.pdu_roothandle(&body.event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?;
 
 	let pdu_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
+		.state_full_ids_hamt(&root_handle)
 		.map(at!(1))
 		.collect()
 		.await;
