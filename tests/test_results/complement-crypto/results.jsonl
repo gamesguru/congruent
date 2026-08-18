@@ -8,8 +8,8 @@
 {"Action":"pass","Test":"TestCanBackupKeys/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{js_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts"}
-{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
+{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts"}
+{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestDelayedInviteResponse"}
@@ -54,9 +54,9 @@
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
-{"Action":"fail","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails"}
-{"Action":"fail","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/js"}
+{"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails"}
+{"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/js"}
 {"Action":"pass","Test":"TestUnprocessedToDeviceMessagesArentLostOnRestart"}
 {"Action":"pass","Test":"TestUnprocessedToDeviceMessagesArentLostOnRestart/js"}
-{"Action":"pass","Test":"TestVerificationSAS"}
-{"Action":"pass","Test":"TestVerificationSAS/{js_hs1}|{js_hs1}"}
+{"Action":"fail","Test":"TestVerificationSAS"}
+{"Action":"fail","Test":"TestVerificationSAS/{js_hs1}|{js_hs1}"}
