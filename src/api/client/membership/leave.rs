@@ -192,7 +192,17 @@ pub async fn leave_room(
 							Duration::from_secs(15),
 							"Timed out waiting for outbound federation to deliver leave event.",
 						)
-						.await?;
+						.await
+						.inspect_err(|e| {
+							// Leave is already committed locally; a remote server
+							// being offline should not hard-fail the leave request.
+							// (Parallel to the best-effort join-fanout wait.)
+							warn!(
+								"Federation delivery of leave event {event_id} to a remote \
+								 server is pending (will be retried): {e}"
+							);
+						})
+						.ok();
 
 					// `build_and_append_pdu` calls `mark_as_left` internally, so we return early.
 					return Ok(());

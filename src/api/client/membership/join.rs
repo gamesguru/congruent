@@ -1125,6 +1125,11 @@ async fn join_room_by_id_helper_local(
 		.collect::<Vec<_>>()
 		.await;
 
+	// Wait for the join PDU to be delivered over federation, but treat an
+	// unreachable co-member server as best-effort. The local join is already
+	// committed; if a remote server is offline the PDU stays queued and is
+	// retried by the sending worker, so we must not hard-fail the join request
+	// here. (Heals TestNewUserCannotGetKeysForOfflineServer which pauses hs2.)
 	services
 		.sending
 		.wait_for_pdu_servers(
@@ -1133,7 +1138,14 @@ async fn join_room_by_id_helper_local(
 			Duration::from_secs(15),
 			"Timed out waiting for outbound federation to deliver join event.",
 		)
-		.await?;
+		.await
+		.inspect_err(|e| {
+			warn!(
+				"Federation delivery of join event {event_id} to a remote server is pending \
+				 (will be retried): {e}"
+			);
+		})
+		.ok();
 
 	info!("Joined room locally");
 	Ok(())
