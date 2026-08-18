@@ -39,6 +39,15 @@ inputs:
   github_run_id:
     description: "GitHub Actions run ID"
     default: ""
+  crypto_pass_count:
+    description: "Pass count for the complement-crypto suite. When provided, also emits a badge-compcrypto-<branch>.json badge."
+    default: ""
+  crypto_fail_count:
+    description: "Fail count for the complement-crypto suite."
+    default: ""
+  crypto_skip_count:
+    description: "Skip count for the complement-crypto suite."
+    default: ""
 
 outputs:
   upstream_commit:
@@ -67,6 +76,9 @@ runs:
         PROFILE="${{ inputs.profile }}"
         ROOM_VERSION="${{ inputs.room_version }}"
         GITHUB_RUN_ID="${{ inputs.github_run_id }}"
+        CRYPTO_PASS="${{ inputs.crypto_pass_count }}"
+        CRYPTO_FAIL="${{ inputs.crypto_fail_count }}"
+        CRYPTO_SKIP="${{ inputs.crypto_skip_count }}"
 
         # Extract commit hash from version string, fall back to env
         BIN_VER_HASH=$(echo "$VERSION_STRING" | sed -n 's/.*~\([0-9a-f]\{7,\}\).*/\1/p')
@@ -225,6 +237,33 @@ runs:
             color: $color
           }' > "badge-${SAFE_BRANCH}.json"
         git add "badge-${SAFE_BRANCH}.json"
+
+        # Optional complement-crypto badge: emitted only when the caller supplies
+        # crypto counts. Lives under its own per-branch filename so it never
+        # collides with the complement badge on the shared `_metadata/badges`
+        # orphan branch.
+        if [ -n "$CRYPTO_PASS" ] || [ -n "$CRYPTO_FAIL" ] || [ -n "$CRYPTO_SKIP" ]; then
+          [ "$CRYPTO_PASS" = "" ] && CRYPTO_PASS=0
+          [ "$CRYPTO_FAIL" = "" ] && CRYPTO_FAIL=0
+          [ "$CRYPTO_SKIP" = "" ] && CRYPTO_SKIP=0
+          if [ "$CRYPTO_FAIL" -gt 0 ]; then CRYPTO_COLOR="red"
+          elif [ "$CRYPTO_SKIP" -gt 0 ]; then CRYPTO_COLOR="yellow"
+          else CRYPTO_COLOR="green"
+          fi
+          jq -n \
+            --arg pass "$CRYPTO_PASS" \
+            --arg skip "$CRYPTO_SKIP" \
+            --arg fail "$CRYPTO_FAIL" \
+            --arg color "$CRYPTO_COLOR" \
+            --arg provider_name "$PROVIDER" \
+            '{
+              schemaVersion: 1,
+              label: "Complement-Crypto Tests (\($provider_name))",
+              message: "\($pass) pass, \($skip) skip, \($fail) fail",
+              color: $color
+            }' > "badge-compcrypto-${SAFE_BRANCH}.json"
+          git add "badge-compcrypto-${SAFE_BRANCH}.json"
+        fi
 
         # Commit and push, retrying
         git add runs.jsonl runs_data/ 2>/dev/null || true

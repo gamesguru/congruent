@@ -811,7 +811,8 @@ jobs:
             libclang-dev \
             llvm-dev \
             mold \
-            postgresql-client
+            postgresql-client \
+            chromium
 
       - name: Detect best CPU target
         id: cpu
@@ -880,6 +881,39 @@ jobs:
             tests/test_results/complement-crypto/results.jsonl
             .tmp/complement-crypto/*.jsonl
           retention-days: 90
+
+      # Publish a complement-crypto badge (`badge-compcrypto-<branch>.json`) to the
+      # shared `_metadata/badges` orphan branch. Counts come from the merged
+      # results that `just e2ee` wrote; mirror the base-complement ledger call.
+      - name: Update Complement-Crypto badge
+        if: always()
+        continue-on-error: true
+        run: |
+          RESULTS=tests/test_results/complement-crypto/results.jsonl
+          if [ ! -f "$RESULTS" ]; then
+            echo "No complement-crypto results found; skipping badge update."
+            exit 0
+          fi
+          echo "crypto_pass=$(jq -r 'select(.Action=="pass" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_fail=$(jq -r 'select(.Action=="fail" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_skip=$(jq -r 'select(.Action=="skip" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_version=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Run Update Results Ledger (crypto)
+        if: env.crypto_pass != ''
+        continue-on-error: true
+        uses: ./.github/actions/update-results-ledger
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          crypto_pass_count: ${{ env.crypto_pass }}
+          crypto_fail_count: ${{ env.crypto_fail }}
+          crypto_skip_count: ${{ env.crypto_skip }}
+          version_string: ${{ env.crypto_version }}
+          actor: ${{ github.actor }}
+          binary_path: target/latest/conduwuit
+          arch: x86_64
+          os: ubuntu-24.04
+          profile: dev-quick
 
   # -----------------------------------------------------------------------------
   # Locust load test. Also consumes the shared binary; runs the homeserver
