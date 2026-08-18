@@ -61,31 +61,6 @@ impl PromotionClaims {
 		}
 	}
 
-	/// Attempts to atomically claim `event_id` for rejection: if nothing
-	/// else currently owns it, claims [`PromotionDisposition::Rejected`] in
-	/// the same locked operation and returns `true` -- the caller should
-	/// then persist the rejection and call [`Self::release_rejection_claim`].
-	/// Returns `false` if a promotion already reserved this event (the
-	/// caller must *not* write a rejection marker), or if another rejection
-	/// attempt for the same event is already in flight.
-	///
-	/// The rejection side has to be exclusive too, not just "refuse if a
-	/// promotion holds it": two concurrent `mark_event_rejected` calls for
-	/// the same event both observing `Rejected` and both proceeding would
-	/// let either one release the claim -- via
-	/// [`Self::release_rejection_claim`] -- while the *other's* database write
-	/// is still in flight, reopening the slot for a promotion to sneak in
-	/// between that write and its own (now-orphaned) release. Refusing the
-	/// second claimant outright closes that window; the caller treats a
-	/// `false` return as "someone else is already handling this, skip".
-	///
-	/// This has to be a single lock-and-mutate operation, not a separate
-	/// check followed by a write: an arbitrary amount of time -- a thread
-	/// preemption, a concurrent core, not just an `.await` -- can pass
-	/// between a check and a later write. Because this and
-	/// [`Self::try_claim_promotion`] mutate the same map under the same lock
-	/// with no intervening await, whichever call reaches `lock()` first wins
-	/// unconditionally.
 	/// Releases a promotion claim taken by [`Self::try_claim_promotion`],
 	/// once the promotion is either committed or abandoned.
 	pub fn release_promotion_claim(&self, event_id: &EventId) {

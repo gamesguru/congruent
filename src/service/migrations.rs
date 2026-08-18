@@ -1585,38 +1585,27 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 			let mut batch = database::Batch::new();
 			let mut batch_count = 0_usize;
 
-			while let Some(Ok((event_id_bytes, _))) = softfailed_stream.next().await {
-				if let Ok(metadata_bytes) = db["eventid_metadata"].get_blocking(&event_id_bytes) {
-					if let Ok(mut meta) =
-						crate::rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
-					{
-						if !matches!(
-							meta.status,
-							crate::rooms::pdu_metadata::EventStatus::SoftFailed(_)
-								| crate::rooms::pdu_metadata::EventStatus::Rejected(_)
-						) {
-							meta.status = crate::rooms::pdu_metadata::EventStatus::SoftFailed(
-								crate::rooms::pdu_metadata::SoftFailCode::Unknown,
-							);
-							if let Ok(new_bytes) = bincode::serialize(&meta) {
-								db["eventid_metadata"].batch_put(
-									&mut batch,
-									&event_id_bytes,
-									&new_bytes,
-								);
-								batch_count = batch_count.saturating_add(1);
-							}
-						}
-					}
+			while let Some(item) = softfailed_stream.next().await {
+				let (event_id_bytes, _) = item?;
+				let is_already_set = db["eventid_status"]
+					.get_blocking(&event_id_bytes)
+					.is_ok_and(|bytes| !bytes.is_empty());
+
+				if !is_already_set {
+					db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
+						1_u8,
+						crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
+					]);
+					batch_count = batch_count.saturating_add(1);
 				}
 
 				if batch_count >= 1000 {
-					db["eventid_metadata"].apply_batch(batch);
+					db["eventid_status"].apply_batch(batch);
 					batch = database::Batch::new();
 					batch_count = 0;
 				}
 			}
-			db["eventid_metadata"].apply_batch(batch);
+			db["eventid_status"].apply_batch(batch);
 		}
 
 		db.db

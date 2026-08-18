@@ -30,7 +30,7 @@ the biggest code-volume reduction available, but it's a careful refactor (touche
 - timeline/heal.rs deleted (-434) — good, that's done.
 - database/map/recursive_get.rs (+126) — it's a real utility with tests; keep.
 - state_cache/update.rs (+98) — device-list/membership reconciliation; keep unless proven redundant.
-- State Resolution Intake & Fallbacks vs Synapse documented in `docs/development-gg/federation_event_intake.md#state-resolution--intake-fallbacks-synapse-vs-continuwuity-shortstatehash-vs-hamt` (comparing shortstatehash vs HAMT/accumulator).
+- State Resolution Intake & Fallbacks vs Synapse documented in `docs/development-gg/federation_event_intake.md#state-resolution--intake-fallbacks--synapse-vs-continuwuity-shortstatehash-vs-hamt` (comparing shortstatehash vs HAMT/accumulator).
 
 ## Recommendation
 

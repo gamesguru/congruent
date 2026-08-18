@@ -141,6 +141,18 @@ impl Data {
 	}
 
 	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		if let Ok(bytes) = self.eventid_status.get_blocking(event_id) {
+			if bytes.first() == Some(&2_u8) {
+				// A rejection always wins over a soft-fail
+				return;
+			}
+		} else if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
+				if matches!(meta.status, EventStatus::Rejected(_)) {
+					return;
+				}
+			}
+		}
 		self.eventid_status.put_raw(event_id, [1_u8, code.to_u8()]);
 	}
 
@@ -159,10 +171,19 @@ impl Data {
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
 		self.eventid_status.remove(event_id);
+		self.clear_legacy_metadata_status(event_id);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
 		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
+		if let Ok(bytes) = self.eventid_status.get_blocking(event_id) {
+			if bytes.len() >= 2 && bytes[0] == 2 {
+				let existing_code = RejectionCode::from_u8(bytes[1]);
+				if !existing_code.is_retryable() && new_code.is_retryable() {
+					return;
+				}
+			}
+		}
 		self.eventid_status
 			.put_raw(event_id, [2_u8, new_code.to_u8()]);
 	}
@@ -196,11 +217,30 @@ impl Data {
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
 		self.eventid_status.remove(event_id);
+		self.clear_legacy_metadata_status(event_id);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
 		self.eventid_status.remove(event_id);
+		self.clear_legacy_metadata_status(event_id);
+	}
+
+	fn clear_legacy_metadata_status(&self, event_id: &EventId) {
+		if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
+			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
+				if matches!(meta.status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_)) {
+					meta.status = if meta.is_outlier {
+						EventStatus::Pending
+					} else {
+						EventStatus::Accepted
+					};
+					if let Ok(new_bytes) = bincode::serialize(&meta) {
+						self.eventid_metadata.insert(event_id, new_bytes);
+					}
+				}
+			}
+		}
 	}
 
 	/// MSC2836: index `child` as a relationship-child of `parent` with the
