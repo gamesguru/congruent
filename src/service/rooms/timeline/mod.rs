@@ -48,7 +48,7 @@ pub use self::{
 	append::AppendOptions,
 	create::pdu_fits,
 	data::{PdusIterItem, TopoIterItem},
-	metadata::{EventMetadata, status_from_bools, status_from_prior},
+	metadata::EventMetadata,
 	promotion_claims::{PromotionClaims, PromotionDisposition},
 	reachability::LiveReachability,
 	repair_unsigned::update_unsigned_prev_content,

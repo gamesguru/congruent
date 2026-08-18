@@ -25,13 +25,7 @@ use ruma::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::{
-	Services, media,
-	rooms::{
-		pdu_metadata::{EventStatus, SoftFailCode},
-		short::ShortStateHash,
-	},
-};
+use crate::{Services, media, rooms::short::ShortStateHash};
 
 /// The current schema version.
 /// - If database is opened at greater version we reject with error. The
@@ -725,7 +719,13 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				status: crate::rooms::timeline::status_from_prior(None, false, pdu.rejected()),
+				status: if pdu.rejected() {
+					crate::rooms::pdu_metadata::EventStatus::Rejected(
+						crate::rooms::pdu_metadata::RejectionCode::Unknown,
+					)
+				} else {
+					crate::rooms::pdu_metadata::EventStatus::Accepted
+				},
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: None,
 				deprecated_local_topo_depth,
@@ -774,7 +774,13 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					is_outlier: true,
 					origin_server_ts: pdu.origin_server_ts().0,
 					depth: pdu.depth(),
-					status: crate::rooms::timeline::status_from_prior(None, true, pdu.rejected()),
+					status: if pdu.rejected() {
+						crate::rooms::pdu_metadata::EventStatus::Rejected(
+							crate::rooms::pdu_metadata::RejectionCode::Unknown,
+						)
+					} else {
+						crate::rooms::pdu_metadata::EventStatus::Pending
+					},
 					redacted_by: pdu.redacts().map(ToOwned::to_owned),
 					short_state_hash: None,
 					deprecated_local_topo_depth: 0,
@@ -1567,56 +1573,11 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 }
 
 async fn db_lt_19(services: &Services) -> Result<()> {
-	info!("Running v19 migration (migrating softfailedeventids to eventid_metadata)...");
+	info!("Running v19 cleanup migration...");
 	let db = &services.db;
 	let cork = db.cork_and_sync();
 
-	let mut count = 0_usize;
-	let mut migrated = 0_usize;
-
-	// Open softfailedeventids map if it exists
 	if db.db.cf_exists("softfailedeventids") {
-		let softfailedeventids = database::Map::open(&db.db, "softfailedeventids")
-			.map_err(|e| err!("Failed to open softfailedeventids: {e}"))?;
-		let softfailed_stream = softfailedeventids.raw_stream();
-		pin_mut!(softfailed_stream);
-
-		let mut batch = database::Batch::new();
-
-		let mut batch_count = 0_usize;
-
-		while let Some(Ok((event_id_bytes, _))) = softfailed_stream.next().await {
-			count = count.saturating_add(1);
-			if let Ok(metadata_bytes) = db["eventid_metadata"].get_blocking(&event_id_bytes) {
-				if let Ok(mut meta) =
-					crate::rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
-				{
-					if !matches!(
-						meta.status,
-						EventStatus::SoftFailed(_) | EventStatus::Rejected(_)
-					) {
-						meta.status = EventStatus::SoftFailed(SoftFailCode::Unknown);
-						if let Ok(new_bytes) = bincode::serialize(&meta) {
-							db["eventid_metadata"].batch_put(
-								&mut batch,
-								&event_id_bytes,
-								&new_bytes,
-							);
-							migrated = migrated.saturating_add(1);
-							batch_count = batch_count.saturating_add(1);
-						}
-					}
-				}
-			}
-
-			if batch_count >= 1000 {
-				db["eventid_metadata"].apply_batch(batch);
-				batch = database::Batch::new();
-				batch_count = 0;
-			}
-		}
-
-		db["eventid_metadata"].apply_batch(batch);
 		db.db
 			.drop_cf("softfailedeventids")
 			.unwrap_or_else(|e| warn!("Failed to drop softfailedeventids: {e}"));
@@ -1638,7 +1599,7 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 	}
 
 	drop(cork);
-	info!("Migrated {}/{} soft-failed events to eventid_metadata.", migrated, count);
+	info!("v19 cleanup migration completed.");
 
 	services.globals.db.bump_database_version(19);
 	Ok(())
