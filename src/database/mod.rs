@@ -13,6 +13,7 @@ mod benches;
 mod cork;
 mod de;
 mod deserialized;
+mod deprecated_maps;
 mod engine;
 mod handle;
 pub mod keyval;
@@ -54,7 +55,8 @@ impl Database {
 	/// Load an existing database or create a new one.
 	pub async fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
 		let ctx = Context::new(server)?;
-		let db = Engine::open(ctx.clone(), maps::MAPS).await?;
+		let descriptors = maps::descriptors();
+		let db = Engine::open(ctx.clone(), &descriptors).await?;
 		Ok(Arc::new(Self {
 			maps: maps::open(&db)?,
 			db: db.clone(),

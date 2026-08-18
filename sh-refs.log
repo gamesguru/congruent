@@ -6,12 +6,13 @@ src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, a
 src/api/server/send.rs:struct StateHashInfo {
 src/api/server/send.rs:		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
 src/api/server/send.rs:/// lookup by `shortstatehash`.
-src/database/maps.rs:		name: "roomid_shortstatehash",
-src/database/maps.rs:		name: "roomsynctoken_shortstatehash",
-src/database/maps.rs:		name: "shorteventid_shortstatehash",
-src/database/maps.rs:		name: "shortstatehash_lthash",
-src/database/maps.rs:		name: "shortstatehash_statediff",
+src/database/deprecated_maps.rs:		name: "roomid_shortstatehash",
+src/database/deprecated_maps.rs:		name: "roomsynctoken_shortstatehash",
+src/database/deprecated_maps.rs:		name: "shorteventid_shortstatehash",
+src/database/deprecated_maps.rs:		name: "shortstatehash_lthash",
+src/database/deprecated_maps.rs:		name: "shortstatehash_statediff",
 src/service/migrations.rs:use crate::{Services, media, rooms::short::ShortStateHash};
+src/service/migrations.rs:	// Version 21 - drop legacy shortstatehash table data now that v20 has
 src/service/migrations.rs:					// re-fetch it via the `shortstatehash` read chain, which was removed as
 src/service/migrations.rs:	parent: Option<ShortStateHash>,
 src/service/migrations.rs:	shortstatehash: ShortStateHash,
@@ -35,6 +36,15 @@ src/service/migrations.rs:	for (shorteventid, shortstatehash) in short_state_eve
 src/service/migrations.rs:			.entry((room_id, shortstatehash))
 src/service/migrations.rs:	for ((room_id, shortstatehash), shorteventids) in events_by_state {
 src/service/migrations.rs:			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
+src/service/migrations.rs:/// Drop the legacy `shortstatehash` state table data once the HAMT cutover
+src/service/migrations.rs:	info!("Running v21 migration (clearing legacy shortstatehash table data)...");
+src/service/migrations.rs:		"shortstatehash_statediff",
+src/service/migrations.rs:		"roomid_shortstatehash",
+src/service/migrations.rs:		"shorteventid_shortstatehash",
+src/service/migrations.rs:		"shortstatehash_lthash",
+src/service/migrations.rs:		"roomsynctoken_shortstatehash",
+src/service/migrations.rs:		info!(%map_name, ?cleared, "Cleared legacy shortstatehash column");
+src/service/migrations.rs:	info!(?total, "Cleared legacy shortstatehash table data.");
 src/service/rooms/event_handler/state_at_incoming.rs:	trace!("Calculating extremity statehashes...");
 src/service/rooms/event_handler/state_at_incoming.rs:	for (sstatehash, prev_event) in &extremity_roothandles {
 src/service/rooms/event_handler/state_at_incoming.rs:		match self.get_extremity_lthash(sstatehash, prev_event).await {
