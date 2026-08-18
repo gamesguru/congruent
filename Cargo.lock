@@ -4866,8 +4866,8 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 
 [[package]]
 name = "rezzy"
-version = "0.5.2"
-source = "git+https://github.com/gamesguru/rezzy.git?branch=dev#12dfea0d2d4b084595f911aa9fee62a84143d292"
+version = "0.6.0"
+source = "git+https://github.com/gamesguru/rezzy.git?branch=dev#b9f8f154880411d1a318aaa21ce98f095963628c"
 dependencies = [
  "base64 0.22.1",
  "blake2",
@@ -5530,7 +5530,7 @@ checksum = "f83ad47c2f14654528a89495f8d0dbc64173176f8512c7c72386cbe81009f661"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.21.7",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "nohash-hasher",
