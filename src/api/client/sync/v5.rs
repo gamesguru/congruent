@@ -1300,10 +1300,22 @@ where
 				}
 			});
 
+		// Fetch the current HAMT root once and thread it through
+		// `collect_required_state` so its accessors share a single root lookup
+		// instead of re-resolving the room root per accessor. Rooms without
+		// joined state (e.g. pending invites) yield `None` and collect nothing.
+		let current_root_handle = services
+			.rooms
+			.state
+			.get_room_state_hamt(room_id)
+			.await
+			.ok();
+
 		let required_state = collect_required_state(
 			services,
 			sender_user,
 			room_id,
+			current_root_handle,
 			required_state_request,
 			&timeline_pdus,
 		)
@@ -1566,9 +1578,16 @@ async fn collect_required_state(
 	services: &Services,
 	sender_user: &UserId,
 	room_id: &RoomId,
+	current_root_handle: Option<rezzy::hamt::RootHandle>,
 	required_state_request: &RequiredStateSelection,
 	timeline_pdus: &VecDeque<(PduCount, impl Event + Sync)>,
 ) -> Vec<Raw<AnySyncStateEvent>> {
+	// The room has no joined state (e.g. a pending invite); there is nothing to
+	// collect, and the callers above only reach here for rooms in the sync set.
+	let Some(current_root_handle) = current_root_handle else {
+		return Vec::new();
+	};
+
 	let mut required_state = Vec::new();
 	// Shared across selectors purely to avoid emitting duplicate state events;
 	// never used to decide whether an entry is fetched at all, so one
@@ -1592,9 +1611,12 @@ async fn collect_required_state(
 
 			if event_type.to_string() == "*" {
 				let state_key_filter = state_key.as_str();
-				let full_state = services.rooms.state_accessor.room_state_full(room_id);
+				let full_state = services
+					.rooms
+					.state_accessor
+					.state_full_hamt(current_root_handle.clone());
 				pin_mut!(full_state);
-				while let Some(Ok(((state_event_type, full_state_key), event))) =
+				while let Some(((state_event_type, full_state_key), event)) =
 					full_state.next().await
 				{
 					let full_state_key = full_state_key.to_string();
@@ -1621,31 +1643,35 @@ async fn collect_required_state(
 					if *event_type == StateEventType::RoomMember {
 						member_wildcarded = true;
 					}
-					if let Ok(keys) = services
+					let keys: Vec<conduwuit::matrix::StateKey> = services
 						.rooms
 						.state_accessor
-						.room_state_keys(room_id, event_type)
-						.await
-					{
-						for key in keys {
-							if required_state_excludes(
-								&(event_type.clone(), key.clone()),
-								&selector.exclude,
-							) {
-								continue;
-							}
-							if !fetched.insert((event_type.clone(), key.clone())) {
-								continue;
-							}
-							if let Ok(event) = services
-								.rooms
-								.state_accessor
-								.room_state_get(room_id, event_type, &key)
-								.await
-							{
-								required_state.push(Event::into_format(event));
-							}
+						.state_keys_with_ids_hamt::<ruma::OwnedEventId>(
+							current_root_handle.clone(),
+							event_type,
+						)
+						.map(at!(0))
+						.collect()
+						.await;
+					for key in keys {
+						if required_state_excludes(
+							&(event_type.clone(), key.clone()),
+							&selector.exclude,
+						) {
+							continue;
 						}
+						if !fetched.insert((event_type.clone(), key.clone())) {
+							continue;
+						}
+						if let Ok(event) = services
+							.rooms
+							.state_accessor
+							.state_get_in_room_hamt(room_id, &current_root_handle, event_type, &key)
+							.await
+						{
+							required_state.push(Event::into_format(event));
+						}
+					}
 					}
 				},
 				// Handled below via `lazy`; skip the literal "$LAZY" lookup only for member
@@ -1665,7 +1691,7 @@ async fn collect_required_state(
 					if let Ok(event) = services
 						.rooms
 						.state_accessor
-						.room_state_get(room_id, event_type, resolved_key)
+						.state_get_in_room_hamt(room_id, &current_root_handle, event_type, resolved_key)
 						.await
 					{
 						required_state.push(Event::into_format(event));
@@ -1684,7 +1710,7 @@ async fn collect_required_state(
 					if let Ok(event) = services
 						.rooms
 						.state_accessor
-						.room_state_get(room_id, event_type, state_key)
+						.state_get_in_room_hamt(room_id, &current_root_handle, event_type, state_key)
 						.await
 					{
 						required_state.push(Event::into_format(event));
@@ -1713,7 +1739,7 @@ async fn collect_required_state(
 			if let Ok(event) = services
 				.rooms
 				.state_accessor
-				.room_state_get(room_id, &StateEventType::RoomMember, &member)
+				.state_get_in_room_hamt(room_id, &current_root_handle, &StateEventType::RoomMember, &member)
 				.await
 			{
 				required_state.push(Event::into_format(event));
