@@ -21,17 +21,17 @@ pub async fn resolve_state(
 	incomingstate: HashMap<u64, OwnedEventId>,
 ) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
-	let current_sstatehash = self
+	let current_root_handle = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.map_err(|e| err!(Database(error!("No state for {room_id:?}: {e:?}"))))
 		.await?;
 
 	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(current_sstatehash)
+		.state_full_ids_hamt(&current_root_handle)
 		.collect()
 		.await;
 

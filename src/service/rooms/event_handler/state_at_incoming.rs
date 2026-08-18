@@ -13,8 +13,6 @@ use conduwuit::{
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
 
-use crate::rooms::short::ShortStateHash;
-
 // TODO: if we know the prev_events of the incoming event we can avoid the
 #[implement(super::Service)]
 // request and build the state from a known point and resolve if > 1 prev_event
@@ -90,7 +88,7 @@ where
 	Pdu: Event + Send + Sync,
 {
 	trace!("Calculating extremity statehashes...");
-	let Ok(extremity_sstatehashes) = incoming_pdu
+	let Ok(extremity_roothandles) = incoming_pdu
 		.prev_events()
 		.try_stream()
 		.broad_and_then(|prev_eventid| {
@@ -107,8 +105,8 @@ where
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
 				.state_accessor
-				.pdu_shortstatehash(prev_eventid)
-				.map_ok(move |sstatehash| (sstatehash, prev_event))
+				.pdu_roothandle(prev_eventid)
+				.map_ok(move |root_handle| (root_handle, prev_event))
 		})
 		.try_collect::<HashMap<_, _>>()
 		.await
@@ -118,11 +116,11 @@ where
 
 	let mut unique_forks = Vec::new();
 	let mut all_succeeded = true;
-	for (sstatehash, prev_event) in &extremity_sstatehashes {
-		match self.get_extremity_lthash(*sstatehash, prev_event).await {
+	for (sstatehash, prev_event) in &extremity_roothandles {
+		match self.get_extremity_lthash(sstatehash, prev_event).await {
 			| Ok(lthash) =>
 				if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
-					unique_forks.push((lthash, (*sstatehash, prev_event)));
+					unique_forks.push((lthash, (sstatehash.clone(), prev_event)));
 				},
 			| Err(_) => {
 				all_succeeded = false;
@@ -131,12 +129,12 @@ where
 		}
 	}
 
-	if all_succeeded && unique_forks.len() == 1 && extremity_sstatehashes.len() > 1 {
+	if all_succeeded && unique_forks.len() == 1 && extremity_roothandles.len() > 1 {
 		trace!(
 			"LtHash digests match across all {} forks! Bypassing state resolution.",
-			extremity_sstatehashes.len()
+			extremity_roothandles.len()
 		);
-		let (sstatehash, prev_event) = unique_forks[0].1;
+		let (sstatehash, prev_event) = unique_forks[0].1.clone();
 		let Ok((fork_state, _)) = self
 			.state_at_incoming_fork(room_id, sstatehash, prev_event)
 			.await
@@ -161,7 +159,7 @@ where
 
 	trace!("Calculating fork states...");
 	let (fork_states, auth_chain_sets): (Vec<StateMap<_>>, Vec<HashSet<_>>) =
-		extremity_sstatehashes
+		extremity_roothandles
 			.into_iter()
 			.try_stream()
 			.wide_and_then(|(sstatehash, prev_event)| {
@@ -200,7 +198,7 @@ where
 async fn state_at_incoming_fork<Pdu>(
 	&self,
 	room_id: &RoomId,
-	sstatehash: ShortStateHash,
+	root_handle: rezzy::hamt::RootHandle,
 	prev_event: Pdu,
 ) -> Result<(StateMap<OwnedEventId>, HashSet<OwnedEventId>)>
 where
@@ -209,7 +207,7 @@ where
 	let mut leaf_state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(sstatehash)
+		.state_full_ids_hamt(&root_handle)
 		.collect()
 		.await;
 
@@ -250,7 +248,7 @@ where
 #[implement(super::Service)]
 async fn get_extremity_lthash<Pdu>(
 	&self,
-	_sstatehash: u64,
+	_root_handle: &rezzy::hamt::RootHandle,
 	_prev_event: &Pdu,
 ) -> Result<rezzy::LtHash>
 where

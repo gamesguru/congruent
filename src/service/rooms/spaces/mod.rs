@@ -240,11 +240,14 @@ fn get_space_child_events<'a>(
 ) -> impl Stream<Item = PduEvent> + Send + 'a {
 	self.services
 		.state
-		.get_room_shortstatehash(room_id)
-		.map_ok(|current_shortstatehash| {
+		.get_room_state_hamt(room_id)
+		.map_ok(|current_root_handle| {
 			self.services
 				.state_accessor
-				.state_keys_with_ids(current_shortstatehash, &StateEventType::SpaceChild)
+				.state_keys_with_ids_hamt::<OwnedEventId>(
+					current_root_handle,
+					&StateEventType::SpaceChild,
+				)
 				.boxed()
 		})
 		.map(Result::into_iter)
