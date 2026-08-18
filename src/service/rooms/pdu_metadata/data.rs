@@ -219,47 +219,36 @@ impl Data {
 	/// key batch across the database pool), so a caller scanning a large set of
 	/// events (e.g. `recalculate_extremities` iterating the whole room history
 	/// while holding the room state lock) avoids two sequential single-key
-	/// lookups *per event*. (The two store scans run sequentially for `Send`
-	/// reasons explained in the body.)
+	/// lookups *per event*. (The two store scans run concurrently via
+	/// `tokio::join!`; see [`scan_verdicts`] for why each is factored into an
+	/// `Arc<Map>`-taking helper.)
 	pub(super) async fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
 	) -> std::collections::HashSet<OwnedEventId> {
-		use futures::StreamExt;
-
 		if event_ids.is_empty() {
 			return std::collections::HashSet::new();
 		}
 
 		let n = event_ids.len();
-		let key_stream =
-			|| futures::stream::iter(event_ids.iter().map(|id| id.as_bytes().to_vec()));
 
-		// `get_batch` yields `Ok(Handle)` for a present key, an `Err(NotFound)`
-		// for an absent one, and stops the batch on a chunk-level read failure.
+		// `get_batch` is `self: &'a Arc<Self> -> impl Stream + Send + 'a`; its
+		// `Send` holds only for that single non-'static lifetime. Joining two
+		// *inline* `get_batch` expressions (as `futures::join`/`tokio::join!`
+		// naively would) lets the borrow of `&self` escape into
+		// `verdict_flagged_batch`'s scope, so the combined future would have to
+		// be `Send` generically over `'a` to be spawnable at
+		// `monitor::Service::worker` ("implementation of `Send` is not general
+		// enough").
 		//
-		// NOTE: the two scans are run sequentially rather than joined, on
-		// purpose. `get_batch` is declared
-		// `self: &'a Arc<Self> -> impl Stream + Send + 'a`, so its stream is
-		// `Send` only for *one* non-'static lifetime `'a`. `futures::join`
-		// packages both streams into a single future, which must then be `Send`
-		// for every `'a` to be spawnable. That fails ("implementation of `Send`
-		// is not general enough") at `monitor::Service::worker`, which reaches
-		// this via `recalculate_extremities` and is itself spawned (requires
-		// `Send + 'static`). Sequentially awaiting the two calls keeps the
-		// combined future `Send`, at the cost of not overlapping the scans.
-		let rejected = self
-			.eventid_rejections
-			.get_batch::<_, Vec<u8>>(key_stream())
-			.map(|res| res.is_ok())
-			.collect::<Vec<bool>>()
-			.await;
-		let soft_failed = self
-			.eventid_softfailed
-			.get_batch::<_, Vec<u8>>(key_stream())
-			.map(|res| res.is_ok())
-			.collect::<Vec<bool>>()
-			.await;
+		// So each scan is factored into [`scan_verdicts`], which takes an *owned*
+		// `Arc<Map>`: the `'a` borrow arises and is dropped purely inside that fn,
+		// so its future has no `'a` in its signature. Two such futures overlap
+		// cleanly under `tokio::join!` while remaining `Send`.
+		let (rejected, soft_failed) = tokio::join!(
+			scan_verdicts(self.eventid_rejections.clone(), event_ids),
+			scan_verdicts(self.eventid_softfailed.clone(), event_ids),
+		);
 
 		// A `get_batch` chunk failure truncates its stream, so the collected
 		// flag vector can be shorter than `event_ids`. Zipping a shortened
@@ -366,4 +355,21 @@ impl Data {
 		let record = bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok()?;
 		Some((record.counts, record.hash))
 	}
+}
+/// Run one `get_batch` scan, returning a `Vec<bool>` that flags which of
+/// `event_ids` have a row in `tree` (ordered as in `event_ids`).
+///
+/// Takes an *owned* `Arc<Map>` rather than a `&self` borrow so that
+/// `get_batch`'s single non-`'static` `'a` lives and dies inside this
+/// function: the returned future has no lifetime in its signature, which is
+/// what lets two such scans overlap under `tokio::join!` while the combined
+/// future stays `Send` (see `verdict_flagged_batch`).
+async fn scan_verdicts(tree: Arc<Map>, event_ids: &[OwnedEventId]) -> Vec<bool> {
+	use futures::StreamExt;
+
+	let key_stream = || futures::stream::iter(event_ids.iter().map(|id| id.as_bytes().to_vec()));
+	tree.get_batch::<_, Vec<u8>>(key_stream())
+		.map(|res| res.is_ok())
+		.collect::<Vec<bool>>()
+		.await
 }
