@@ -4,7 +4,7 @@ mod v5;
 use std::collections::VecDeque;
 
 use conduwuit::{
-	Event, PduCount, Result, debug_warn, err, info,
+	Event, PduCount, Result, debug_warn, info,
 	matrix::pdu::PduEvent,
 	result::LogErr,
 	utils::stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
@@ -83,33 +83,6 @@ async fn load_timeline(
 
 	let mut pdu_stream = match starting_count {
 		| Some(starting_count) => {
-			let last_timeline_count = services
-				.rooms
-				.timeline
-				.last_timeline_count(room_id)
-				.await
-				.map_err(|err| {
-					err!(Database(warn!("Failed to fetch end of room timeline: {}", err)))
-				})?;
-
-			info!(
-				target: "watermark_debug",
-				%room_id, sender = %sender_user, ?last_timeline_count, ?starting_count,
-				is_expanded_timeline,
-				"load_timeline: watermark check"
-			);
-
-			if !is_expanded_timeline && last_timeline_count <= starting_count {
-				// no messages have been sent in this room since `starting_count`
-				info!(
-					target: "timeline_debug",
-					"load_timeline early return for {}: last_timeline_count={:?} <= \
-					 starting_count={:?} sender={}",
-					room_id, last_timeline_count, starting_count, sender_user
-				);
-				return Ok(TimelinePdus::default());
-			}
-
 			// for incremental sync, stream from the DB all PDUs which were sent after
 			// `starting_count` but before `ending_count`, including `ending_count` but
 			// not `starting_count`. this code is pretty similar to the initial sync
