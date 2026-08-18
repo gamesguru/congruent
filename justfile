@@ -470,6 +470,10 @@ e2ee args=".*":
     : >"$RESULTS_FILE"
     : >"$LOG_FILE"
     shard_pids=()
+    # Each concurrent shard must get its own complement `PackageNamespace` so its
+    # deployed docker network/containers (`complement_<ns>.<blueprint>.hs1`) don't
+    # collide with the other shards' (the namespace is unique per `go test` via
+    # COMPLEMENT_CRYPTO_NAMESPACE, read in complement-crypto-src/tests/main_test.go).
     set +e
     for ((s = 0; s < num_shards; s++)); do
         shard_results="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
@@ -484,6 +488,7 @@ e2ee args=".*":
                 COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
                 COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
                 COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
+                COMPLEMENT_CRYPTO_NAMESPACE="crypto$((s + 1))" \
                 go test -tags jssdk -json \
                 -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
                 -count=1 \
