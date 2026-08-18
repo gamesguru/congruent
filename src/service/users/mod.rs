@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
 use conduwuit::result::LogErr;
 use conduwuit::{
 	Err, Error, Result, Server, debug_warn, err, info, is_equal_to, trace,
-	utils::{self, ReadyExt, stream::TryIgnore, string::Unquoted},
+	utils::{self, ReadyExt, stream::TryIgnore},
 	warn,
 };
 #[cfg(feature = "ldap")]
@@ -907,19 +907,38 @@ impl Service {
 		user_id: &UserId,
 		device_id: &DeviceId,
 	) -> BTreeMap<OneTimeKeyAlgorithm, UInt> {
-		type KeyVal<'a> = ((Ignore, Ignore, &'a Unquoted), Ignore);
-
 		let mut algorithm_counts = BTreeMap::<OneTimeKeyAlgorithm, _>::new();
-		let query = (user_id, device_id);
+
+		// Keys are stored as raw bytes in
+		// `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`. The typed
+		// `stream_prefix` tuple codec cannot parse the upload_count segment that
+		// sits between device_id and the key-id JSON, so stream the whole raw
+		// user+device scope and parse the trailing key-id segment ourselves,
+		// exactly like `take_one_time_key`.
+		let mut prefix = user_id.as_bytes().to_vec();
+		prefix.push(0xFF);
+		prefix.extend_from_slice(device_id.as_bytes());
+		prefix.push(0xFF);
+
 		self.db
 			.onetimekeyid_onetimekeys
-			.stream_prefix(&query)
+			.raw_stream_prefix(&prefix)
 			.ignore_err()
-			.ready_for_each(|((Ignore, Ignore, device_key_id), Ignore): KeyVal<'_>| {
-				let one_time_key_id: &OneTimeKeyId = device_key_id
-					.as_str()
-					.try_into()
-					.expect("Invalid DeviceKeyID in database");
+			.ready_for_each(|(key, _): (&[u8], &[u8])| {
+				let Some(one_time_key_id) =
+					key.rsplit(|&b| b == 0xFF).next().and_then(|key_json| {
+						serde_json::from_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>(
+							key_json,
+						)
+						.ok()
+					})
+				else {
+					tracing::warn!(
+						"count_one_time_keys: skipping unparsable key id for \
+						 {user_id}|{device_id}"
+					);
+					return;
+				};
 
 				let count: &mut UInt = algorithm_counts
 					.entry(one_time_key_id.algorithm())

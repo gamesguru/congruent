@@ -8,8 +8,8 @@
 {"Action":"pass","Test":"TestCanBackupKeys/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{js_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts"}
-{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts"}
+{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestDelayedInviteResponse"}
@@ -22,8 +22,8 @@
 {"Action":"pass","Test":"TestFailedKeysClaimRetries/js"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/js"}
-{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
-{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
+{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
