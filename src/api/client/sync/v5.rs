@@ -1304,12 +1304,7 @@ where
 		// `collect_required_state` so its accessors share a single root lookup
 		// instead of re-resolving the room root per accessor. Rooms without
 		// joined state (e.g. pending invites) yield `None` and collect nothing.
-		let current_root_handle = services
-			.rooms
-			.state
-			.get_room_state_hamt(room_id)
-			.await
-			.ok();
+		let current_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 		let required_state = collect_required_state(
 			services,
@@ -1646,7 +1641,7 @@ async fn collect_required_state(
 					let keys: Vec<conduwuit::matrix::StateKey> = services
 						.rooms
 						.state_accessor
-						.state_keys_with_ids_hamt::<ruma::OwnedEventId>(
+						.state_keys_with_ids_hamt::<OwnedEventId>(
 							current_root_handle.clone(),
 							event_type,
 						)
@@ -1655,23 +1650,27 @@ async fn collect_required_state(
 						.await;
 					for key in keys {
 						if required_state_excludes(
-							&(event_type.clone(), key.clone()),
+							&(event_type.clone(), key.to_string()),
 							&selector.exclude,
 						) {
 							continue;
 						}
-						if !fetched.insert((event_type.clone(), key.clone())) {
+						if !fetched.insert((event_type.clone(), key.to_string())) {
 							continue;
 						}
 						if let Ok(event) = services
 							.rooms
 							.state_accessor
-							.state_get_in_room_hamt(room_id, &current_root_handle, event_type, &key)
+							.state_get_in_room_hamt(
+								room_id,
+								&current_root_handle,
+								event_type,
+								&key,
+							)
 							.await
 						{
 							required_state.push(Event::into_format(event));
 						}
-					}
 					}
 				},
 				// Handled below via `lazy`; skip the literal "$LAZY" lookup only for member
@@ -1691,7 +1690,12 @@ async fn collect_required_state(
 					if let Ok(event) = services
 						.rooms
 						.state_accessor
-						.state_get_in_room_hamt(room_id, &current_root_handle, event_type, resolved_key)
+						.state_get_in_room_hamt(
+							room_id,
+							&current_root_handle,
+							event_type,
+							resolved_key,
+						)
 						.await
 					{
 						required_state.push(Event::into_format(event));
@@ -1710,7 +1714,12 @@ async fn collect_required_state(
 					if let Ok(event) = services
 						.rooms
 						.state_accessor
-						.state_get_in_room_hamt(room_id, &current_root_handle, event_type, state_key)
+						.state_get_in_room_hamt(
+							room_id,
+							&current_root_handle,
+							event_type,
+							state_key,
+						)
 						.await
 					{
 						required_state.push(Event::into_format(event));
@@ -1739,7 +1748,12 @@ async fn collect_required_state(
 			if let Ok(event) = services
 				.rooms
 				.state_accessor
-				.state_get_in_room_hamt(room_id, &current_root_handle, &StateEventType::RoomMember, &member)
+				.state_get_in_room_hamt(
+					room_id,
+					&current_root_handle,
+					&StateEventType::RoomMember,
+					&member,
+				)
 				.await
 			{
 				required_state.push(Event::into_format(event));

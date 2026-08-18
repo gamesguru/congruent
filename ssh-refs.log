@@ -1,129 +1,15 @@
+src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None (idle room),
+src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
+src/api/server/send.rs:/// lookup by `shortstatehash`.
+src/core/config/mod.rs:	#[serde(default = "default_shortstatehash_cache_capacity")]
+src/core/config/mod.rs:	pub shortstatehash_cache_capacity: u32,
+src/core/config/mod.rs:fn default_shortstatehash_cache_capacity() -> u32 {
 src/database/maps.rs:		name: "roomid_shortstatehash",
 src/database/maps.rs:		name: "roomsynctoken_shortstatehash",
 src/database/maps.rs:		name: "shorteventid_shortstatehash",
 src/database/maps.rs:		name: "shortstatehash_lthash",
 src/database/maps.rs:		name: "shortstatehash_statediff",
 src/database/maps.rs:		name: "statehash_shortstatehash",
-src/api/client/context.rs:		.pdu_shortstatehash(state_at)
-src/api/client/context.rs:		.or_else(|_| services.rooms.state.get_room_shortstatehash(room_id))
-src/api/client/context.rs:		.map_ok(|shortstatehash| {
-src/api/client/context.rs:				.state_full_ids(shortstatehash)
-src/core/config/mod.rs:	#[serde(default = "default_shortstatehash_cache_capacity")]
-src/core/config/mod.rs:	pub shortstatehash_cache_capacity: u32,
-src/core/config/mod.rs:fn default_shortstatehash_cache_capacity() -> u32 {
-src/api/server/send.rs:/// lookup by `shortstatehash`.
-src/api/server/send_join.rs:	let shortstatehash = services
-src/api/server/send_join.rs:		.get_room_shortstatehash(room_id)
-src/api/server/send_join.rs:		.state_full_ids(shortstatehash)
-src/api/server/state.rs:	let shortstatehash = services
-src/api/server/state.rs:		.pdu_shortstatehash(&body.event_id)
-src/api/server/state.rs:		.state_full_ids(shortstatehash)
-src/api/server/state_ids.rs:	let shortstatehash = services
-src/api/server/state_ids.rs:		.pdu_shortstatehash(&body.event_id)
-src/api/server/state_ids.rs:		.state_full_ids(shortstatehash)
-src/api/client/sync/v3/left.rs:	let last_sync_end_shortstatehash = match last_sync_end_count {
-src/api/client/sync/v3/left.rs:			.prev_shortstatehash(room_id, PduCount::Normal(last_sync_end_count.saturating_add(1)))
-src/api/client/sync/v3/left.rs:	let (timeline, state_events, leave_shortstatehash) = match leave_membership_event {
-src/api/client/sync/v3/left.rs:			// the shortstatehash of the state _immediately before_ the syncing user left
-src/api/client/sync/v3/left.rs:			let leave_shortstatehash = services
-src/api/client/sync/v3/left.rs:				.pdu_shortstatehash(&leave_membership_event.event_id)
-src/api/client/sync/v3/left.rs:					leave_shortstatehash,
-src/api/client/sync/v3/left.rs:			let last_sync_end_shortstatehash = if last_sync_end_shortstatehash.is_none()
-src/api/client/sync/v3/left.rs:				Some(leave_shortstatehash)
-src/api/client/sync/v3/left.rs:				last_sync_end_shortstatehash
-src/api/client/sync/v3/left.rs:				leave_shortstatehash,
-src/api/client/sync/v3/left.rs:				last_sync_end_shortstatehash,
-src/api/client/sync/v3/left.rs:			(timeline, state_events, Some(leave_shortstatehash))
-src/api/client/sync/v3/left.rs:		if let Some(shortstatehash) = leave_shortstatehash {
-src/api/client/sync/v3/left.rs:				shortstatehash,
-src/api/client/sync/v3/left.rs:	leave_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/left.rs:	last_sync_end_shortstatehash: Option<ShortStateHash>,
-src/api/client/sync/v3/left.rs:	let timeline_start_shortstatehash = async {
-src/api/client/sync/v3/left.rs:			if let Ok(shortstatehash) = services
-src/api/client/sync/v3/left.rs:				.pdu_shortstatehash(&pdu.event_id)
-src/api/client/sync/v3/left.rs:				return shortstatehash;
-src/api/client/sync/v3/left.rs:		// `leave_shortstatehash` as the state to send
-src/api/client/sync/v3/left.rs:		leave_shortstatehash
-src/api/client/sync/v3/left.rs:	let (timeline_start_shortstatehash, lazily_loaded_members) =
-src/api/client/sync/v3/left.rs:		join(timeline_start_shortstatehash, lazily_loaded_members).await;
-src/api/client/sync/v3/left.rs:	let state = match (last_sync_end_count, last_sync_end_shortstatehash) {
-src/api/client/sync/v3/left.rs:		| (Some(last_sync_end_count), Some(last_sync_end_shortstatehash)) => {
-src/api/client/sync/v3/left.rs:			let timeline_end_shortstatehash = services
-src/api/client/sync/v3/left.rs:				.pdu_shortstatehash(leave_membership_event.event_id())
-src/api/client/sync/v3/left.rs:				last_sync_end_shortstatehash,
-src/api/client/sync/v3/left.rs:				timeline_start_shortstatehash,
-src/api/client/sync/v3/left.rs:				timeline_end_shortstatehash,
-src/api/client/sync/v3/left.rs:				timeline_start_shortstatehash,
-src/api/client/sync/v3/mod.rs:				let last_sync_end_shortstatehash = services
-src/api/client/sync/v3/mod.rs:					.prev_shortstatehash(
-src/api/client/sync/v3/mod.rs:				let joined_since_last_sync = match last_sync_end_shortstatehash {
-src/api/client/sync/v3/mod.rs:					| Some(last_sync_end_shortstatehash) => {
-src/api/client/sync/v3/mod.rs:								last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:	let shortstatehashes = fetch_shortstatehashes(services, sync_context, room_id).await?;
-src/api/client/sync/v3/joined.rs:		check_joined_since_last_sync(services, room_id, shortstatehashes, sync_context).await?;
-src/api/client/sync/v3/joined.rs:			shortstatehashes,
-src/api/client/sync/v3/joined.rs:		build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
-src/api/client/sync/v3/joined.rs:			shortstatehashes,
-src/api/client/sync/v3/joined.rs:			shortstatehashes,
-src/api/client/sync/v3/joined.rs:	current_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/joined.rs:	last_sync_end_shortstatehash: Option<ShortStateHash>,
-src/api/client/sync/v3/joined.rs:/// Fetch the current_shortstatehash and last_sync_end_shortstatehash.
-src/api/client/sync/v3/joined.rs:async fn fetch_shortstatehashes(
-src/api/client/sync/v3/joined.rs:	// next_shortstatehash(N) finds the first event after N and returns its
-src/api/client/sync/v3/joined.rs:			.next_shortstatehash(room_id, PduCount::Normal(current_count))
-src/api/client/sync/v3/joined.rs:			| Err(_) => services.rooms.state.get_room_shortstatehash(room_id).await,
-src/api/client/sync/v3/joined.rs:				.prev_shortstatehash(
-src/api/client/sync/v3/joined.rs:	let (current_shortstatehash, next_hash) = try_join(current_hash, next_hash).await?;
-src/api/client/sync/v3/joined.rs:	// the room state as of the end of the last sync. if next_shortstatehash
-src/api/client/sync/v3/joined.rs:	// current_shortstatehash IF the room actually existed at that count.
-src/api/client/sync/v3/joined.rs:	let last_sync_end_shortstatehash = next_hash;
-src/api/client/sync/v3/joined.rs:		"fetch_shortstatehashes: room={room_id} last_count={last_sync_end_count:?} \
-src/api/client/sync/v3/joined.rs:		 current={current_shortstatehash} last_end={last_sync_end_shortstatehash:?}",
-src/api/client/sync/v3/joined.rs:		current_shortstatehash,
-src/api/client/sync/v3/joined.rs:		last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:	shortstatehashes: ShortStateHashes,
-src/api/client/sync/v3/joined.rs:		current_shortstatehash,
-src/api/client/sync/v3/joined.rs:		last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:	} = shortstatehashes;
-src/api/client/sync/v3/joined.rs:	let timeline_start_shortstatehash = async {
-src/api/client/sync/v3/joined.rs:			if let Ok(shortstatehash) = services
-src/api/client/sync/v3/joined.rs:				.pdu_shortstatehash(&pdu.event_id)
-src/api/client/sync/v3/joined.rs:					return Ok::<_, Error>(shortstatehash);
-src/api/client/sync/v3/joined.rs:		Ok::<_, Error>(current_shortstatehash)
-src/api/client/sync/v3/joined.rs:	let (timeline_start_shortstatehash, lazily_loaded_members) =
-src/api/client/sync/v3/joined.rs:		join(timeline_start_shortstatehash, lazily_loaded_members).await;
-src/api/client/sync/v3/joined.rs:	let timeline_start_shortstatehash = timeline_start_shortstatehash?;
-src/api/client/sync/v3/joined.rs:	match (last_sync_end_count, last_sync_end_shortstatehash) {
-src/api/client/sync/v3/joined.rs:		if `last_sync_end_count` is Some (meaning this is an incremental sync), and `last_sync_end_shortstatehash`
-src/api/client/sync/v3/joined.rs:		| (Some(last_sync_end_count), Some(last_sync_end_shortstatehash))
-src/api/client/sync/v3/joined.rs:				last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:				timeline_start_shortstatehash,
-src/api/client/sync/v3/joined.rs:				current_shortstatehash,
-src/api/client/sync/v3/joined.rs:		for the first time ever, because in that case we have no `last_sync_end_shortstatehash` and can't correctly calculate
-src/api/client/sync/v3/joined.rs:				timeline_start_shortstatehash,
-src/api/client/sync/v3/joined.rs:	shortstatehashes: ShortStateHashes,
-src/api/client/sync/v3/joined.rs:	let ShortStateHashes { current_shortstatehash, .. } = shortstatehashes;
-src/api/client/sync/v3/joined.rs:		current_shortstatehash,
-src/api/client/sync/v3/joined.rs:		last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:		current_shortstatehash,
-src/api/client/sync/v3/joined.rs:		// this will be None if `previous_sync_end_shortstatehash` is None.
-src/api/client/sync/v3/joined.rs:			match last_sync_end_shortstatehash {
-src/api/client/sync/v3/joined.rs:				| Some(last_sync_end_shortstatehash) => services
-src/api/client/sync/v3/joined.rs:						last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:				current_shortstatehash,
-src/api/client/sync/v3/joined.rs:					current_shortstatehash,
-src/api/client/sync/v3/joined.rs:				?last_sync_end_shortstatehash,
-src/api/client/sync/v3/joined.rs:	ShortStateHashes { current_shortstatehash, .. }: ShortStateHashes,
-src/api/client/sync/v3/joined.rs:		.state_contains_type(current_shortstatehash, &StateEventType::RoomName);
-src/api/client/sync/v3/joined.rs:		.state_contains_type(current_shortstatehash, &StateEventType::RoomCanonicalAlias);
-src/api/client/sync/v3/joined.rs:		Some(build_heroes(services, room_id, syncing_user, current_shortstatehash).await)
-src/api/client/sync/v3/joined.rs:	current_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/joined.rs:				.state_full_shortids(current_shortstatehash)
-src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None (idle room),
-src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
-src/api/client/membership/members.rs:		let shortstatehash = services
-src/api/client/membership/members.rs:			.pdu_shortstatehash(pdu.event_id())
-src/api/client/membership/members.rs:			.state_full_pdus(shortstatehash)
 src/service/migrations.rs:			async |(mut total, mut fixed, mut shortstatehash_cache): (
 src/service/migrations.rs:					let latest_shortstatehash =
 src/service/migrations.rs:						if let Some(shortstatehash) = shortstatehash_cache.get(room_id) {
@@ -154,18 +40,36 @@ src/service/migrations.rs:	for (shorteventid, shortstatehash) in short_state_eve
 src/service/migrations.rs:			.entry((room_id, shortstatehash))
 src/service/migrations.rs:	for ((room_id, shortstatehash), shorteventids) in events_by_state {
 src/service/migrations.rs:			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
+src/service/rooms/event_handler/resolve_state.rs:		.get_room_shortstatehash(room_id)
+src/service/rooms/event_handler/state_at_incoming.rs:				.pdu_shortstatehash(prev_eventid)
+src/service/rooms/short/mod.rs:	statehash_shortstatehash: Arc<Map>,
+src/service/rooms/short/mod.rs:				statehash_shortstatehash: args.db["statehash_shortstatehash"].clone(),
+src/service/rooms/short/mod.rs:/// Returns (shortstatehash, already_existed)
+src/service/rooms/short/mod.rs:pub async fn get_or_create_shortstatehash(&self, state_hash: &[u8]) -> (ShortStateHash, bool) {
+src/service/rooms/short/mod.rs:	if let Ok(shortstatehash) = self
+src/service/rooms/short/mod.rs:		.statehash_shortstatehash
+src/service/rooms/short/mod.rs:		return (shortstatehash, true);
+src/service/rooms/short/mod.rs:	let shortstatehash = self.services.globals.next_count().unwrap();
+src/service/rooms/short/mod.rs:	debug_assert!(size_of_val(&shortstatehash) == BUFSIZE, "buffer requirement changed");
+src/service/rooms/short/mod.rs:		.statehash_shortstatehash
+src/service/rooms/short/mod.rs:		.raw_aput::<BUFSIZE, _, _>(state_hash, shortstatehash);
+src/service/rooms/short/mod.rs:	(shortstatehash, false)
 src/service/rooms/spaces/mod.rs:		.get_room_shortstatehash(room_id)
 src/service/rooms/spaces/mod.rs:		.map_ok(|current_shortstatehash| {
 src/service/rooms/spaces/mod.rs:				.state_keys_with_ids(current_shortstatehash, &StateEventType::SpaceChild)
-src/service/rooms/state_accessor/server_can.rs:	let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await else {
-src/service/rooms/state_accessor/server_can.rs:			"Unable to visibility check event {} in room {} for server {}: shortstatehash not \
-src/service/rooms/state_accessor/server_can.rs:		.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
-src/service/rooms/state_accessor/server_can.rs:				.any(|member| self.user_was_invited(shortstatehash, member))
-src/service/rooms/state_accessor/server_can.rs:				.any(|member| self.user_was_joined(shortstatehash, member))
-src/service/rooms/state_accessor/user_can.rs:	let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await else {
-src/service/rooms/state_accessor/user_can.rs:		.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
-src/service/rooms/state_accessor/user_can.rs:			self.user_was_invited(shortstatehash, user_id).await
-src/service/rooms/state_accessor/user_can.rs:			self.user_was_joined(shortstatehash, user_id).await
+src/service/rooms/state/mod.rs:	shorteventid_shortstatehash: Arc<Map>,
+src/service/rooms/state/mod.rs:	roomid_shortstatehash: Arc<Map>,
+src/service/rooms/state/mod.rs:				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
+src/service/rooms/state/mod.rs:				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
+src/service/rooms/state/mod.rs:		shortstatehash: u64,
+src/service/rooms/state/mod.rs:			.roomid_shortstatehash
+src/service/rooms/state/mod.rs:			.raw_aput::<BUFSIZE, _, _>(room_id, shortstatehash);
+src/service/rooms/state/mod.rs:	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
+src/service/rooms/state/mod.rs:			.shorteventid_shortstatehash
+src/service/rooms/state/mod.rs:	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
+src/service/rooms/state/mod.rs:			.roomid_shortstatehash
+src/service/rooms/state/mod.rs:		let Ok(shortstatehash) = self.get_room_shortstatehash(room_id).await else {
+src/service/rooms/state/mod.rs:			.state_full_shortids(shortstatehash)
 src/service/rooms/state_accessor/mod.rs:	shorteventid_shortstatehash: Arc<Map>,
 src/service/rooms/state_accessor/mod.rs:				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 src/service/rooms/state_accessor/mod.rs:		shortstatehash: ShortStateHash,
@@ -238,50 +142,5 @@ src/service/rooms/timeline/mod.rs:				self.next_shortstatehash_cache
 src/service/rooms/timeline/mod.rs:	/// Returns the shortstatehash of the room at the event
 src/service/rooms/timeline/mod.rs:	pub async fn get_shortstatehash(
 src/service/rooms/timeline/mod.rs:		self.services.state.get_shortstatehash(shorteventid).await
-src/service/rooms/state/mod.rs:	shorteventid_shortstatehash: Arc<Map>,
-src/service/rooms/state/mod.rs:	roomid_shortstatehash: Arc<Map>,
-src/service/rooms/state/mod.rs:				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
-src/service/rooms/state/mod.rs:				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
-src/service/rooms/state/mod.rs:		shortstatehash: u64,
-src/service/rooms/state/mod.rs:			.roomid_shortstatehash
-src/service/rooms/state/mod.rs:			.raw_aput::<BUFSIZE, _, _>(room_id, shortstatehash);
-src/service/rooms/state/mod.rs:	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
-src/service/rooms/state/mod.rs:			.shorteventid_shortstatehash
-src/service/rooms/state/mod.rs:	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
-src/service/rooms/state/mod.rs:			.roomid_shortstatehash
-src/service/rooms/state/mod.rs:		let Ok(shortstatehash) = self.get_room_shortstatehash(room_id).await else {
-src/service/rooms/state/mod.rs:			.state_full_shortids(shortstatehash)
-src/service/rooms/event_handler/resolve_state.rs:		.get_room_shortstatehash(room_id)
-src/service/rooms/event_handler/state_at_incoming.rs:		.pdu_shortstatehash(prev_event)
-src/service/rooms/event_handler/state_at_incoming.rs:				.pdu_shortstatehash(prev_eventid)
-src/service/rooms/short/mod.rs:	statehash_shortstatehash: Arc<Map>,
-src/service/rooms/short/mod.rs:				statehash_shortstatehash: args.db["statehash_shortstatehash"].clone(),
-src/service/rooms/short/mod.rs:/// Returns (shortstatehash, already_existed)
-src/service/rooms/short/mod.rs:pub async fn get_or_create_shortstatehash(&self, state_hash: &[u8]) -> (ShortStateHash, bool) {
-src/service/rooms/short/mod.rs:	if let Ok(shortstatehash) = self
-src/service/rooms/short/mod.rs:		.statehash_shortstatehash
-src/service/rooms/short/mod.rs:		return (shortstatehash, true);
-src/service/rooms/short/mod.rs:	let shortstatehash = self.services.globals.next_count().unwrap();
-src/service/rooms/short/mod.rs:	debug_assert!(size_of_val(&shortstatehash) == BUFSIZE, "buffer requirement changed");
-src/service/rooms/short/mod.rs:		.statehash_shortstatehash
-src/service/rooms/short/mod.rs:		.raw_aput::<BUFSIZE, _, _>(state_hash, shortstatehash);
-src/service/rooms/short/mod.rs:	(shortstatehash, false)
-src/api/client/sync/v5.rs:		let Ok(current_shortstatehash) =
-src/api/client/sync/v5.rs:			services.rooms.state.get_room_shortstatehash(room_id).await
-src/api/client/sync/v5.rs:		let since_shortstatehash = services
-src/api/client/sync/v5.rs:			.next_shortstatehash(room_id, PduCount::Normal(globalsince))
-src/api/client/sync/v5.rs:			.state_get(current_shortstatehash, &StateEventType::RoomEncryption, "")
-src/api/client/sync/v5.rs:		if let Some(since_shortstatehash) = since_shortstatehash {
-src/api/client/sync/v5.rs:			if since_shortstatehash == current_shortstatehash {
-src/api/client/sync/v5.rs:				.state_get(since_shortstatehash, &StateEventType::RoomEncryption, "")
-src/api/client/sync/v5.rs:					since_shortstatehash,
-src/api/client/sync/v5.rs:					.state_keys_with_ids(current_shortstatehash, &StateEventType::RoomMember)
-src/api/client/sync/v5.rs:					.state_keys_with_ids(since_shortstatehash, &StateEventType::RoomMember)
-src/api/client/sync/v3/state.rs:	fields(current_shortstatehash)
-src/api/client/sync/v3/state.rs:	timeline_start_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/state.rs:		.state_full_ids(timeline_start_shortstatehash)
-src/api/client/sync/v3/state.rs:	last_sync_end_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/state.rs:	timeline_start_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/state.rs:	timeline_end_shortstatehash: ShortStateHash,
-src/api/client/sync/v3/state.rs:								timeline_start_shortstatehash,
-src/api/client/sync/v3/state.rs:				.state_added((last_sync_end_shortstatehash, timeline_end_shortstatehash))
+src/service/rooms/timeline/mod.rs:	/// Note: deliberately uncached for now; the shortstatehash variants below
+src/service/rooms/timeline/mod.rs:	/// Note: deliberately uncached for now; the shortstatehash variants below
