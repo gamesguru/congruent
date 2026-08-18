@@ -423,24 +423,46 @@ e2ee args=".*":
     # binding is not), so the test-client matrix must be all-JS (`jj`) — the
     # default `jj,jr,rj,rr` would panic on the unregistered `rust` language.
     COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="${COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX:-jj}"
+    # Mirror bin/complement's rendering: feed go test -json through a FIFO and
+    # convert each pass/fail/skip event into (a) a clean `pass\tTest` status line
+    # printed live as it finishes, and (b) a compact JSONL record appended to the
+    # staged results file. The raw -json stream is kept in full in the log file.
+    EVENTS_FIFO="${STAGING_DIR}/events.${run_stamp}.fifo"
+    rm -f "$EVENTS_FIFO"
+    mkfifo "$EVENTS_FIFO"
     set +e
-    env \
-        -C "$COMPLEMENT_SRC" \
-        COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-        COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
-        COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
-        COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
-        go test -tags jssdk -json \
-        -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
-        -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
-        -count=1 \
-        -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom") }}" \
-        -run "{{ args }}" \
-        ./tests ./tests/js \
-    | tee "$LOG_FILE" \
-    | jq -c 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | {Action, Test, Package, Elapsed}' \
-    | tee "$RESULTS_FILE"
-    go_test_exit=${PIPESTATUS[0]}
+    (
+        # shellcheck disable=SC2016
+        env \
+            -C "$COMPLEMENT_SRC" \
+            COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+            COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+            COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
+            COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
+            go test -tags jssdk -json \
+            -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
+            -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
+            -count=1 \
+            -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom") }}" \
+            -run "{{ args }}" \
+            ./tests ./tests/js |
+            tee "$LOG_FILE" |
+            jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
+                >"$EVENTS_FIFO"
+    ) &
+    producer_pid=$!
+    : >"$RESULTS_FILE"
+    while IFS=$'\t' read -r action test_name; do
+        [ -n "$action" ] || continue
+        # Append the compact record to the staged results file as it arrives.
+        jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
+        # Keep the live human-readable stream focused on pass/fail noise.
+        if [ "$action" != "skip" ]; then
+            printf '%s\t%s\n' "$action" "$test_name"
+        fi
+    done <"$EVENTS_FIFO"
+    wait "$producer_pid"
+    go_test_exit=$?
     set -e
 
     toplevel="$(git rev-parse --show-toplevel)"
