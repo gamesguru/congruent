@@ -396,65 +396,6 @@ complement/logs: ##H Tail logs for all running and future Complement containers
 	docker events --filter 'event=start' --format '{{.Actor.Attributes.name}}' | grep --line-buffered "^complement_" | xargs -r -I {} sh -c 'echo "--- Tailing {} ---"; docker logs -f {} &' ; wait
 
 
-# Complement-Crypto (E2EE) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# The homeserver-under-test image is the same `complement/docker` image built
-# above; complement-crypto *tester* image carries the test harness and points
-# at it via COMPLEMENT_BASE_IMAGE.
-
-COMPLEMENT_CRYPTO_IMAGE ?= continuwuity:complement-crypto-$(shell (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$$//' | cut -c1-96)
-COMPLEMENT_CRYPTO_RESULTS_DIR ?= tests/test_results/complement-crypto
-MATRIX_JS_SDK_SOURCE ?= develop
-
-.PHONY: complement-crypto/docker
-complement-crypto/docker: ##H Build the Complement-Crypto tester image (JS SDK flavour)
-	@echo "Building Complement-Crypto tester image: $(COMPLEMENT_CRYPTO_IMAGE)..."
-	@set -e; \
-	if docker buildx version >/dev/null 2>&1; then \
-		DOCKER_CMD='docker buildx build'; \
-		DOCKER_LOAD='--load'; \
-	else \
-		DOCKER_CMD='docker build'; \
-		DOCKER_LOAD=''; \
-	fi; \
-	$$DOCKER_CMD \
-		--build-arg MATRIX_JS_SDK_SOURCE=$(MATRIX_JS_SDK_SOURCE) \
-		--build-arg BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) \
-		--pull=false \
-		-t $(COMPLEMENT_CRYPTO_IMAGE) \
-		-f ./docker/complement-crypto.Dockerfile \
-		$$DOCKER_LOAD \
-		.
-
-.PHONY: complement-crypto/run
-complement-crypto/run: complement-crypto/docker ##H Run Complement-Crypto tests against $(COMPLEMENT_IMAGE)
-	@test -n "$(COMPLEMENT_IMAGE)" || { echo "ERROR: COMPLEMENT_IMAGE not set (run `make complement/docker` first)"; exit 1; }
-	@mkdir -p $(COMPLEMENT_CRYPTO_RESULTS_DIR)
-	docker run --rm \
-		--network=host \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-v "$(CURDIR)/$(COMPLEMENT_CRYPTO_RESULTS_DIR):/var/lib/complement-crypto" \
-		-e COMPLEMENT_BASE_IMAGE="$(COMPLEMENT_IMAGE)" \
-		-e COMPLEMENT_CRYPTO_RUN="$(COMPLEMENT_CRYPTO_RUN)" \
-		-e COMPLEMENT_CRYPTO_SKIP="$(COMPLEMENT_CRYPTO_SKIP)" \
-		-e COMPLEMENT_CRYPTO_PARALLEL="$(COMPLEMENT_CRYPTO_PARALLEL)" \
-		-e COMPLEMENT_CRYPTO_TIMEOUT="$(COMPLEMENT_CRYPTO_TIMEOUT)" \
-		$(COMPLEMENT_CRYPTO_IMAGE) \
-		"$(COMPLEMENT_IMAGE)"
-
-.PHONY: complement-crypto/stats
-complement-crypto/stats: ##H Show Complement-Crypto result counts
-	@test -f "$(COMPLEMENT_CRYPTO_RESULTS_DIR)/results.jsonl" || { echo "ERROR: $(COMPLEMENT_CRYPTO_RESULTS_DIR)/results.jsonl does not exist"; exit 1; }
-	@PASS=$$(jq -s '[.[] | select(.Action == "pass")] | length' $(COMPLEMENT_CRYPTO_RESULTS_DIR)/results.jsonl); \
-	FAIL=$$(jq -s '[.[] | select(.Action == "fail")] | length' $(COMPLEMENT_CRYPTO_RESULTS_DIR)/results.jsonl); \
-	SKIP=$$(jq -s '[.[] | select(.Action == "skip")] | length' $(COMPLEMENT_CRYPTO_RESULTS_DIR)/results.jsonl); \
-	echo "=== Complement-Crypto Stats ==="; \
-	echo "✓ Passed:  $$PASS"; \
-	echo "✗ Failed:  $$FAIL"; \
-	echo "○ Skipped: $$SKIP"; \
-	echo "---------------------------"; \
-	echo "Σ Total:   $$((PASS + FAIL + SKIP))"
-
-
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # GitHub CI/build related targets

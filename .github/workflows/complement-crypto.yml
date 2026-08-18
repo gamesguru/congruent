@@ -84,28 +84,20 @@ jobs:
       - name: Build Complement Docker image
         run: make complement/docker PROFILE=${{ env.PROFILE }}
 
-      - name: Build Complement-Crypto tester image
-        run: make complement-crypto/docker
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
 
       - name: Run Complement-Crypto tests
         id: complement-crypto
+        env:
+          COMPLEMENT_CRYPTO_PARALLEL: "3"
+          COMPLEMENT_CRYPTO_TIMEOUT: "45m"
         run: |
-          # The homeserver-under-test is the exact complement image that
-          # `make complement/docker` produced (same tag logic as complement.yml).
-          COMPLEMENT_TAG="continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )"
-          COMPLEMENT_CRYPTO_TAG="continuwuity:complement-crypto-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )"
-          echo "homeserver image: $COMPLEMENT_TAG"
-          echo "crypto tester image: $COMPLEMENT_CRYPTO_TAG"
-          mkdir -p tests/test_results/complement-crypto
-          docker run --rm \
-            --network=host \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$(pwd)/tests/test_results/complement-crypto:/var/lib/complement-crypto" \
-            -e COMPLEMENT_CRYPTO_RUN=".*" \
-            -e COMPLEMENT_CRYPTO_PARALLEL="3" \
-            -e COMPLEMENT_CRYPTO_TIMEOUT="45m" \
-            "$COMPLEMENT_CRYPTO_TAG" \
-            "$COMPLEMENT_TAG"
+          # `just e2ee` builds the tester image only if missing, then runs the
+          # suite against the complement homeserver image built above.
+          just e2ee ".*"
 
       - name: Upload Complement-Crypto results
         if: always()
