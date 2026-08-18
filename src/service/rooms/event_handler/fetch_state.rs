@@ -369,26 +369,45 @@ where
 	let mut state: HashMap<ShortStateKey, OwnedEventId> =
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
+		// Read from our outlier store or timeline
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+			continue;
+		};
+		let Some(state_key) = pdu.state_key() else {
+			if self.services.pdu_metadata.is_event_rejected(&eid).await {
+				continue;
+			}
+			return Err!(Database("Found non-state pdu in state events."));
+		};
+
 		// A rejected outlier (e.g. missing auth events from a corrupted auth
-		// chain) must never represent resolved room state. Skip it before state_key
-		// checks or shortstatekey allocations.
-		if self.services.pdu_metadata.is_event_rejected(&eid).await
+		// chain) must never represent resolved room state. If we have a valid
+		// local prior state event for this slot, use the local event ID;
+		// otherwise skip the slot completely.
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
 			&& !self
 				.services
 				.pdu_metadata
 				.is_event_visible_to_clients(&eid)
 				.await
 		{
-			continue;
-		}
-
-		// Read from our outlier store or timeline
-		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
-			continue;
+			let local_eid = match self.services.state.get_room_shortstatehash(room_id).await {
+				| Ok(room_ssh) => self
+					.services
+					.state_accessor
+					.state_get(room_ssh, &pdu.kind().to_string().into(), state_key)
+					.await
+					.ok()
+					.map(|local_pdu| local_pdu.event_id().to_owned()),
+				| Err(_) => None,
+			};
+			let Some(local_eid) = local_eid else {
+				continue;
+			};
+			local_eid
+		} else {
+			eid
 		};
-		let state_key = pdu
-			.state_key()
-			.ok_or_else(|| err!(Database("Found non-state pdu in state events.")))?;
 
 		let shortstatekey = self
 			.services
@@ -398,7 +417,7 @@ where
 
 		match state.entry(shortstatekey) {
 			| hash_map::Entry::Vacant(v) => {
-				v.insert(eid);
+				v.insert(target_eid);
 			},
 			| hash_map::Entry::Occupied(_) => {
 				return Err!(Database(

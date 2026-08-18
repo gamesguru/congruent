@@ -25,6 +25,17 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 }
 
+/// RAII guard that always releases the per-event rejection claim on drop,
+/// including when the enclosing async task is cancelled mid-await (e.g. while
+/// `mark_event_rejected` awaits the `is_event_visible_to_clients` check). The
+/// claim must never be left set, or every later rejection/promotion for that
+/// event would be refused until restart.
+struct RejectionClaimGuard<'a>(&'a rooms::timeline::Service, &'a EventId);
+
+impl Drop for RejectionClaimGuard<'_> {
+	fn drop(&mut self) { self.0.release_rejection_claim(self.1); }
+}
+
 /// Machine-checkable classification of why an event was rejected during
 /// outlier/auth processing.
 ///
@@ -398,8 +409,9 @@ impl Service {
 			return;
 		}
 
+		let _guard = RejectionClaimGuard(&self.services.timeline, event_id);
+
 		if self.is_event_visible_to_clients(event_id).await {
-			self.services.timeline.release_rejection_claim(event_id);
 			conduwuit::warn!(
 				%event_id,
 				%reason,
@@ -409,7 +421,6 @@ impl Service {
 		}
 
 		self.db.mark_event_rejected(event_id, reason);
-		self.services.timeline.release_rejection_claim(event_id);
 	}
 
 	/// Directly marks an event as rejected, bypassing the

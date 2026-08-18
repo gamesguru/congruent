@@ -1578,6 +1578,47 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 	let cork = db.cork_and_sync();
 
 	if db.db.cf_exists("softfailedeventids") {
+		if let Ok(softfailedeventids) = database::Map::open(&db.db, "softfailedeventids") {
+			let softfailed_stream = softfailedeventids.raw_stream();
+			pin_mut!(softfailed_stream);
+
+			let mut batch = database::Batch::new();
+			let mut batch_count = 0_usize;
+
+			while let Some(Ok((event_id_bytes, _))) = softfailed_stream.next().await {
+				if let Ok(metadata_bytes) = db["eventid_metadata"].get_blocking(&event_id_bytes) {
+					if let Ok(mut meta) =
+						crate::rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
+					{
+						if !matches!(
+							meta.status,
+							crate::rooms::pdu_metadata::EventStatus::SoftFailed(_)
+								| crate::rooms::pdu_metadata::EventStatus::Rejected(_)
+						) {
+							meta.status = crate::rooms::pdu_metadata::EventStatus::SoftFailed(
+								crate::rooms::pdu_metadata::SoftFailCode::Unknown,
+							);
+							if let Ok(new_bytes) = bincode::serialize(&meta) {
+								db["eventid_metadata"].batch_put(
+									&mut batch,
+									&event_id_bytes,
+									&new_bytes,
+								);
+								batch_count = batch_count.saturating_add(1);
+							}
+						}
+					}
+				}
+
+				if batch_count >= 1000 {
+					db["eventid_metadata"].apply_batch(batch);
+					batch = database::Batch::new();
+					batch_count = 0;
+				}
+			}
+			db["eventid_metadata"].apply_batch(batch);
+		}
+
 		db.db
 			.drop_cf("softfailedeventids")
 			.unwrap_or_else(|e| warn!("Failed to drop softfailedeventids: {e}"));
