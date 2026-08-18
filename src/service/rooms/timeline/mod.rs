@@ -407,6 +407,85 @@ impl Service {
 		self.services.state.get_shortstatehash(shorteventid).await
 	}
 
+	/// Returns the HAMT root handle of the room at the event directly following
+	/// the exclusive `after` param. `after` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now; the shortstatehash variants below
+	/// retain the value caches while the sync layer is being cut over.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn next_root_handle(
+		&self,
+		room_id: &RoomId,
+		after: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let after_pdu = PduId { shortroomid, shorteventid: after };
+
+		let next_count = self.db.next_timeline_count(&after_pdu).await?;
+		let next_pdu = PduId { shortroomid, shorteventid: next_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the event directly preceding
+	/// the exclusive `before` param. `before` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now; the shortstatehash variants below
+	/// retain the value caches while the sync layer is being cut over.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn prev_root_handle(
+		&self,
+		room_id: &RoomId,
+		before: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let before_pdu = PduId { shortroomid, shorteventid: before };
+
+		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
+		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the given event count.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn get_root_handle(
+		&self,
+		room_id: &RoomId,
+		count: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let pdu_id = PduId { shortroomid, shorteventid: count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
 	/// Returns the `shorteventid` from the `pdu_id`
 	pub async fn get_shorteventid_from_pdu_id(&self, pdu_id: &PduId) -> Result<ShortEventId> {
 		let event_id = self.get_event_id_from_pdu_id(pdu_id).await?;

@@ -43,19 +43,20 @@ where
 		return Err(err!(Database("prev_event is not in the same room")));
 	}
 
-	let Ok(prev_event_sstatehash) = self
+	let prev_roothandle = self
 		.services
 		.state_accessor
-		.pdu_shortstatehash(prev_event)
-		.await
-	else {
+		.pdu_roothandle(prev_event)
+		.await;
+
+	let Ok(prev_roothandle) = prev_roothandle else {
 		return Ok(None);
 	};
 
 	let mut state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(prev_event_sstatehash)
+		.state_full_ids_hamt(&prev_roothandle)
 		.collect()
 		.await;
 
