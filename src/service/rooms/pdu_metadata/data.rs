@@ -200,6 +200,60 @@ impl Data {
 		bytes.first().map(|&code| SoftFailCode::from_u8(code))
 	}
 
+	/// Returns the subset of `event_ids` that carry a rejection or soft-fail
+	/// marker in the authoritative `eventid_rejections` / `eventid_softfailed`
+	/// stores.
+	///
+	/// Both verdict stores are read through `get_batch` (which amplifies each
+	/// key batch across the database pool), so a caller scanning a large set of
+	/// events (e.g. `recalculate_extremities` iterating the whole room history
+	/// while holding the room state lock) avoids two sequential single-key
+	/// lookups *per event*.
+	pub(super) async fn verdict_flagged_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> std::collections::HashSet<OwnedEventId> {
+		use futures::StreamExt;
+
+		if event_ids.is_empty() {
+			return std::collections::HashSet::new();
+		}
+
+		let key_stream =
+			|| futures::stream::iter(event_ids.iter().map(|id| id.as_bytes().to_vec()));
+
+		// `get_batch` yields `Ok(Handle)` for a present key and an
+		// `Err(NotFound)` for an absent one. Zip results back to the original
+		// event ids.
+		let rejected = self
+			.eventid_rejections
+			.get_batch::<_, Vec<u8>>(key_stream())
+			.map(|res| res.is_ok())
+			.collect::<Vec<bool>>()
+			.await;
+		let soft_failed = self
+			.eventid_softfailed
+			.get_batch::<_, Vec<u8>>(key_stream())
+			.map(|res| res.is_ok())
+			.collect::<Vec<bool>>()
+			.await;
+
+		let mut flagged: std::collections::HashSet<OwnedEventId> =
+			std::collections::HashSet::with_capacity(rejected.len());
+		for (event_id, res) in event_ids.iter().zip(rejected) {
+			if res {
+				flagged.insert(event_id.clone());
+			}
+		}
+		for (event_id, res) in event_ids.iter().zip(soft_failed) {
+			if res {
+				flagged.insert(event_id.clone());
+			}
+		}
+
+		flagged
+	}
+
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
 		self.eventid_rejections.remove(event_id);
 	}

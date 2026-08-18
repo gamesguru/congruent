@@ -420,6 +420,18 @@ impl Service {
 		self.db.is_event_rejected(event_id).await
 	}
 
+	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
+	/// marker. Batch-reads both verdict stores so callers scanning many
+	/// events (e.g. `recalculate_extremities` during monitor sweeps) don't
+	/// issue two sequential single-key lookups per event while holding the
+	/// room lock.
+	pub async fn verdict_flagged_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> std::collections::HashSet<OwnedEventId> {
+		self.db.verdict_flagged_batch(event_ids).await
+	}
+
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
 		self.db.mark_event_rejected(event_id, reason);
 	}

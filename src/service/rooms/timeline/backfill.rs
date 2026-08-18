@@ -518,21 +518,21 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		if !is_outlier {
 			continue;
 		}
+		// A single fresh read (via
+		// `take_retry_if_rejection_retryable_for_promotion`) decides both
+		// whether the event is safe to promote *and* clears any retryable
+		// marker, atomically. Calling it unconditionally avoids the TOCTOU
+		// where a retryable rejection is recorded *after*
+		// `is_event_rejected` returned false here but before
+		// `promote_outlier_batch` re-checks it under its insert lock -- in
+		// that window the old two-read branch would queue the event without
+		// clearing the marker, so promotion would silently skip it.
 		if self
 			.services
 			.pdu_metadata
-			.is_event_rejected(&event_id)
+			.take_retry_if_rejection_retryable_for_promotion(&event_id)
 			.await
 		{
-			if self
-				.services
-				.pdu_metadata
-				.take_retry_if_rejection_retryable_for_promotion(&event_id)
-				.await
-			{
-				outlier_state_event_ids.push(event_id);
-			}
-		} else {
 			outlier_state_event_ids.push(event_id);
 		}
 	}

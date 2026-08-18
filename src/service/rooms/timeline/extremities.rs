@@ -247,6 +247,10 @@ impl Service {
 				.db
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
+			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
+			// verdicts can be batch-read below instead of two sequential single-key
+			// lookups per event.
+			let mut non_outlier_pairs: Vec<(ShortEventId, OwnedEventId)> = Vec::new();
 
 			for (short_id, prevs_res) in short_ids.into_iter().zip(all_prevs.into_iter()) {
 				let prevs = match prevs_res {
@@ -281,16 +285,30 @@ impl Service {
 				};
 				if is_outlier {
 					outlier_event_ids.insert(short_id);
-				} else if self
-					.services
-					.pdu_metadata
-					.is_event_rejected(&event_id)
-					.await || self
-					.services
-					.pdu_metadata
-					.is_event_soft_failed(&event_id)
-					.await
-				{
+				} else {
+					// Defer: the verdict check is batched over the whole chunk
+					// after the inner loop.
+					non_outlier_pairs.push((short_id, event_id));
+				}
+			}
+
+			// Batch-read rejection/soft-fail verdicts for every non-outlier
+			// event in this chunk (a single amplification pass per store, run
+			// in parallel) rather than two sequential single-key lookups per
+			// event -- `recalculate_extremities` sweeps the whole room history
+			// while holding the room state lock, so per-event RocksDB reads here
+			// would substantially lengthen the lock hold.
+			let non_outlier_ids: Vec<OwnedEventId> = non_outlier_pairs
+				.iter()
+				.map(|(_, event_id)| event_id.clone())
+				.collect();
+			let flagged = self
+				.services
+				.pdu_metadata
+				.verdict_flagged_batch(&non_outlier_ids)
+				.await;
+			for (short_id, event_id) in non_outlier_pairs {
+				if flagged.contains(&event_id) {
 					bridge_event_ids.insert(short_id);
 				} else {
 					accepted_event_ids.insert(short_id);

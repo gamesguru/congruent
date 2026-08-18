@@ -672,6 +672,8 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	let eventid_pdu = db["eventid_pdu"].clone();
 	let room_pducount_eventid = db["room_pducount_eventid"].clone();
 	let eventid_metadata = db["eventid_metadata"].clone();
+	let eventid_rejections = db["eventid_rejections"].clone();
+	let eventid_softfailed = db["eventid_softfailed"].clone();
 	let roomid_topologicalorder_pducount = db["roomid_topologicalorder_pducount"].clone();
 
 	let cork = db.cork_and_sync();
@@ -683,6 +685,39 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	let mut timeline_event_ids: std::collections::HashSet<Vec<u8>> =
 		std::collections::HashSet::new();
 	let mut depth_cache: HashMap<Vec<u8>, u64> = HashMap::new();
+
+	// When this migration rewrites an `eventid_metadata` row it may be
+	// clobbering a pre-v21 row that still carries the legacy single-slot
+	// `EventStatus` verdict (v20 layout). `db_lt_21` later folds those verdicts
+	// out of `EventMetadata`, but it runs *after* this SSOT migration on the
+	// same startup, so once we strip the `status` field here there is nothing
+	// left for `db_lt_21` to fold. Preserve any legacy verdict into the
+	// authoritative independent stores *before* overwriting the row.
+	let fold_legacy_status = |event_id_bytes: &[u8]| {
+		let Ok(existing_bytes) = eventid_metadata.get_blocking(event_id_bytes) else {
+			return;
+		};
+		let Ok(legacy) = bincode::deserialize::<EventMetadataV20>(&existing_bytes) else {
+			return;
+		};
+		match &legacy.status {
+			| EventStatusV20::Rejected(code)
+				if eventid_rejections
+					.get_blocking(event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_rejections.insert(event_id_bytes, [code.to_u8()]);
+			},
+			| EventStatusV20::SoftFailed(code)
+				if eventid_softfailed
+					.get_blocking(event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_softfailed.insert(event_id_bytes, [code.to_u8()]);
+			},
+			| _ => {},
+		}
+	};
 
 	// Phase 1: Migrate timeline events from pduid_pdu (pdu_id -> PDU JSON)
 	if let Ok(pduid_pdu) = database::Map::open(&db.db, "pduid_pdu") {
@@ -736,6 +771,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				pdu_count: Some(unsigned_pdu_count),
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
+				fold_legacy_status(event_id_bytes);
 				eventid_metadata.insert(event_id_bytes, metadata_bytes);
 			}
 			if pdu.rejected()
@@ -793,6 +829,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					pdu_count: None,
 				};
 				if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
+					fold_legacy_status(event_id_bytes);
 					eventid_metadata.insert(event_id_bytes, metadata_bytes);
 				}
 				if pdu.rejected()
@@ -1691,6 +1728,10 @@ enum EventStatusV20 {
 async fn db_lt_21(services: &Services) -> Result<()> {
 	info!("Starting v21 migration (fold event status into independent stores)...");
 	let db = &services.db;
+	// Hold the cork for the whole migration so the per-record inserts and
+	// batched flushes below land in a single WAL flush instead of one per
+	// record (prohibitively slow on databases with many legacy verdicts).
+	let cork = db.cork_and_sync();
 
 	let eventid_rejections = db["eventid_rejections"].clone();
 	let eventid_softfailed = db["eventid_softfailed"].clone();
@@ -1700,45 +1741,68 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 	// [2, code] = rejected) into the independent stores, skipping any entry the
 	// independent store already records (fresh writes win).
 	if db.db.cf_exists("eventid_status") {
-		if let Ok(eventid_status) = database::Map::open(&db.db, "eventid_status") {
-			let stream = eventid_status.raw_stream();
-			pin_mut!(stream);
-			while let Some(Ok((event_id_bytes, value))) = stream.next().await {
-				if value.len() < 2 {
-					continue;
-				}
-				match value[0] {
-					| 1 if eventid_softfailed
-						.get_blocking(&event_id_bytes)
-						.is_not_found() =>
-					{
-						eventid_softfailed.insert(&event_id_bytes, [value[1]]);
-					},
-					| 2 if eventid_rejections
-						.get_blocking(&event_id_bytes)
-						.is_not_found() =>
-					{
-						eventid_rejections.insert(&event_id_bytes, [value[1]]);
-					},
-					| _ => {},
-				}
+		let eventid_status = database::Map::open(&db.db, "eventid_status")
+			.map_err(|e| err!("Failed to open legacy eventid_status CF for v21 folding: {e}"))?;
+		let stream = eventid_status.raw_stream();
+		pin_mut!(stream);
+		while let Some(item) = stream.next().await {
+			let (event_id_bytes, value) = item.map_err(|e| {
+				err!("Failed while reading legacy eventid_status during v21 migration: {e}")
+			})?;
+			if value.len() < 2 {
+				continue;
 			}
-			info!("Folded legacy eventid_status records into independent stores.");
-		} else {
-			warn!("eventid_status CF present but could not be opened for folding.");
+			match value[0] {
+				| 1 if eventid_softfailed
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+				{
+					eventid_softfailed.insert(&event_id_bytes, [value[1]]);
+				},
+				| 2 if eventid_rejections
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+				{
+					eventid_rejections.insert(&event_id_bytes, [value[1]]);
+				},
+				| _ => {},
+			}
 		}
+		info!("Folded legacy eventid_status records into independent stores.");
 	}
 
 	// Rewrite every `eventid_metadata` row into the status-less layout, folding
 	// the legacy `status` field into the independent stores as we go. Rows that
-	// don't parse as v20 are left untouched (they're already v21 / status-less).
+	// already parse as v21 are left untouched; anything that parses as neither
+	// v20 nor v21 is a migration error and aborts instead of being skipped.
 	let mut batch = database::Batch::new();
 	let mut batch_count = 0_usize;
 	let metadata_stream = eventid_metadata.raw_stream();
 	pin_mut!(metadata_stream);
-	while let Some(Ok((event_id_bytes, value))) = metadata_stream.next().await {
-		let Ok(legacy) = bincode::deserialize::<EventMetadataV20>(value) else {
-			continue;
+	while let Some(item) = metadata_stream.next().await {
+		let (event_id_bytes, value) = item.map_err(|e| {
+			err!("Failed while scanning eventid_metadata during v21 migration: {e}")
+		})?;
+		let legacy = match bincode::deserialize::<EventMetadataV20>(value) {
+			| Ok(legacy) => legacy,
+			// A row that doesn't parse as the legacy v20 layout is only safe to
+			// leave untouched if it already parses as the new status-less v21
+			// layout (i.e. it was already migrated). Any other failure means the
+			// row is old or corrupt, so abort rather than silently bumping the
+			// schema and hiding the problem.
+			| Err(_)
+				if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value)
+					.is_ok() =>
+			{
+				continue;
+			},
+			| Err(v20_err) => {
+				return Err(err!(
+					"eventid_metadata row ({} bytes) neither parses as v20 nor as v21 during \
+					 v21 migration: {v20_err}",
+					event_id_bytes.len(),
+				));
+			},
 		};
 
 		// Fold the legacy single-slot verdict into the independent stores.
@@ -1787,6 +1851,8 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 	// `eventid_status` stays a live (now-unused) CF: it must remain described
 	// so the `<19` upgrade path (`db_lt_19`) and restart-after-drop consistency
 	// keep working. Its contents were folded out above.
+
+	drop(cork);
 
 	services.globals.db.bump_database_version(21);
 	info!("v21 migration completed.");

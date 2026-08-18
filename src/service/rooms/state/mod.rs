@@ -47,6 +47,7 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_compressor: Dep<rooms::state_compressor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
 }
 
 struct Data {
@@ -73,6 +74,7 @@ impl crate::Service for Service {
 				state_compressor: args
 					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
+				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
@@ -742,27 +744,39 @@ impl Service {
 				continue;
 			}
 
-			match self.services.timeline.get_event_metadata(&event_id).await {
-				// Rejected/soft-failed events are always outliers, so a
-				// non-outlier is by construction accepted (the status verdict
-				// now lives in the independent `eventid_rejections` /
-				// `eventid_softfailed` stores rather than `EventMetadata`).
-				| Ok(metadata) if !metadata.is_outlier => {
-					eligible.push(event_id);
-				},
-				| Ok(_) => {
-					debug!(
-						%room_id, %event_id,
-						"Refusing to persist ineligible (outlier/rejected/soft-failed) \
-						 event as a forward extremity",
-					);
-				},
-				| Err(_) => {
-					debug!(
-						%room_id, %event_id,
-						"Refusing to persist forward extremity with unknown event metadata",
-					);
-				},
+			let Ok(metadata) = self.services.timeline.get_event_metadata(&event_id).await else {
+				debug!(
+				%room_id, %event_id,
+				"Refusing to persist forward extremity with unknown event metadata",
+				);
+				continue;
+			};
+
+			// Only events actually accepted into the timeline may become citable
+			// forward extremities. A non-outlier event is not automatically
+			// acceptable: its rejection/soft-fail verdict now lives in the
+			// independent `eventid_rejections` / `eventid_softfailed` stores
+			// (not `EventMetadata`), and a non-outlier event can carry such a
+			// marker (mirroring the checks `recalculate_extremities` performs).
+			// Admit it only if it is not an outlier, rejected, or soft-failed.
+			let admitted = !metadata.is_outlier
+				&& !self
+					.services
+					.pdu_metadata
+					.is_event_rejected(&event_id)
+					.await && !self
+				.services
+				.pdu_metadata
+				.is_event_soft_failed(&event_id)
+				.await;
+			if admitted {
+				eligible.push(event_id);
+			} else {
+				debug!(
+				%room_id, %event_id,
+				"Refusing to persist ineligible (outlier/rejected/soft-failed) \
+				 event as a forward extremity",
+				);
 			}
 		}
 
