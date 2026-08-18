@@ -33,8 +33,8 @@ pub fn room_state_full<'a>(
 ) -> impl Stream<Item = Result<((StateEventType, StateKey), impl Event)>> + Send + 'a {
 	self.services
 		.state
-		.get_room_shortstatehash(room_id)
-		.map_ok(|shortstatehash| self.state_full(shortstatehash).map(Ok).boxed())
+		.get_room_state_hamt(room_id)
+		.map_ok(|root_handle| self.state_full_hamt(root_handle).map(Ok).boxed())
 		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
 		.try_flatten_stream()
 }
@@ -48,8 +48,8 @@ pub fn room_state_full_pdus<'a>(
 ) -> impl Stream<Item = Result<impl Event>> + Send + 'a {
 	self.services
 		.state
-		.get_room_shortstatehash(room_id)
-		.map_ok(|shortstatehash| self.state_full_pdus(shortstatehash).map(Ok).boxed())
+		.get_room_state_hamt(room_id)
+		.map_ok(|root_handle| self.state_full_pdus_hamt(root_handle).map(Ok).boxed())
 		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
 		.try_flatten_stream()
 }
@@ -68,10 +68,13 @@ where
 	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
+		.await?;
 	self.services
-		.state
-		.get_room_shortstatehash(room_id)
-		.and_then(|shortstatehash| self.state_get_id(shortstatehash, event_type, state_key))
+		.short
+		.get_eventid_from_short(shorteventid)
 		.await
 }
 
@@ -85,12 +88,8 @@ pub async fn room_state_get(
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<Pdu> {
-	self.services
-		.state
-		.get_room_shortstatehash(room_id)
-		.and_then(|shortstatehash| {
-			self.state_get_in_room(Some(room_id), shortstatehash, event_type, state_key)
-		})
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+	self.state_get_in_room_hamt(room_id, &root_handle, event_type, state_key)
 		.await
 }
 
@@ -132,13 +131,17 @@ pub async fn room_state_keys(
 	room_id: &RoomId,
 	event_type: &StateEventType,
 ) -> Result<Vec<String>> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 
-	let state_keys: Vec<String> = self
-		.state_keys(shortstatehash, event_type)
-		.map(|state_key| state_key.to_string())
-		.collect()
-		.await;
+	let full_state = self.load_full_state_hamt(&root_handle).await?;
+
+	let mut state_keys: Vec<String> = Vec::with_capacity(full_state.len());
+	for ssk in full_state.into_keys() {
+		let (ty, key) = self.services.short.get_statekey_from_short(ssk).await?;
+		if &ty == event_type {
+			state_keys.push(key.to_string());
+		}
+	}
 
 	Ok(state_keys)
 }

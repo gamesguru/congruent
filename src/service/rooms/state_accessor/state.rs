@@ -304,6 +304,37 @@ pub fn state_full_ids_hamt<'a>(
 	}
 }
 
+/// Returns a Stream of all the full state PDUs for a given RootHandle.
+#[implement(super::Service)]
+pub fn state_full_pdus_hamt(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = impl Event> + Send + '_ {
+	let short_ids = self
+		.state_full_shortids_hamt(root_handle)
+		.ignore_err()
+		.map(at!(1));
+
+	self.services
+		.short
+		.multi_get_eventid_from_short(short_ids)
+		.ready_filter_map(Result::ok)
+		.broad_filter_map(move |event_id: OwnedEventId| async move {
+			self.services.timeline.get_pdu(&event_id).await.ok()
+		})
+}
+
+/// Returns a Stream of all the full state (type, key, event) for a given
+/// RootHandle.
+#[implement(super::Service)]
+pub fn state_full_hamt(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + '_ {
+	self.state_full_pdus_hamt(root_handle)
+		.ready_filter_map(|pdu| Some(((pdu.kind().clone().into(), pdu.state_key()?.into()), pdu)))
+}
+
 /// Iterates the state_keys for an event_type in the state; current state
 /// event_id included.
 #[implement(super::Service)]
@@ -540,12 +571,12 @@ pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> Result<boo
 }
 
 #[implement(super::Service)]
-pub fn state_full_shortids_hamt<'a>(
-	&'a self,
-	root_handle: &'a rezzy::hamt::RootHandle,
-) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + 'a {
-	self.load_full_state_hamt(root_handle)
-		.map_ok(|full_state| full_state.into_iter().collect::<Vec<_>>())
+pub fn state_full_shortids_hamt(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
+	let load = async move { self.load_full_state_hamt(&root_handle).await };
+	load.map_ok(|full_state| full_state.into_iter().collect::<Vec<_>>())
 		.map_ok(Vec::into_iter)
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
