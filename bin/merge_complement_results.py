@@ -20,6 +20,20 @@ def test_name(line: str) -> str:
         return ""
 
 
+def normalize(line: str) -> str:
+    """Reduce a result record to just its `Action` and `Test` keys.
+
+    The raw `go test -json` stream carries transient fields (e.g. `Package`,
+    `Elapsed`) that are noise in the merged results file and would otherwise
+    churn on every re-run. Keep only the stable, meaningful keys.
+    """
+    try:
+        obj = json.loads(line)
+    except Exception:
+        return line
+    return json.dumps({"Action": obj.get("Action"), "Test": obj.get("Test")}, separators=(",", ":"))
+
+
 def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
     patch_by_test: dict[str, str] = {}
     patch_order: list[str] = []
@@ -38,6 +52,12 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
             main_last_index[name] = index
 
     main_present = set(main_last_index)
+
+    def result_record(line: str) -> str:
+        # Normalize legacy/raw records (which may carry `Package`, `Elapsed`,
+        # etc.) down to just `Action` and `Test`.
+        return normalize(line) if test_name(line) else line
+
     merged: list[str] = []
 
     for index, line in enumerate(main_lines):
@@ -49,11 +69,11 @@ def merge_results(main_lines: list[str], patch_lines: list[str]) -> list[str]:
         if main_last_index.get(name) != index:
             continue
 
-        merged.append(patch_by_test.get(name, line))
+        merged.append(result_record(patch_by_test.get(name, line)))
 
     for name in patch_order:
         if name not in main_present:
-            merged.append(patch_by_test[name])
+            merged.append(result_record(patch_by_test[name]))
 
     return sorted(merged, key=lambda line: (test_name(line) == "", test_name(line), line))
 
