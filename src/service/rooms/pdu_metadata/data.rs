@@ -219,7 +219,8 @@ impl Data {
 	/// key batch across the database pool), so a caller scanning a large set of
 	/// events (e.g. `recalculate_extremities` iterating the whole room history
 	/// while holding the room state lock) avoids two sequential single-key
-	/// lookups *per event*.
+	/// lookups *per event*. (The two store scans run sequentially for `Send`
+	/// reasons explained in the body.)
 	pub(super) async fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
@@ -230,12 +231,23 @@ impl Data {
 			return std::collections::HashSet::new();
 		}
 
+		let n = event_ids.len();
 		let key_stream =
 			|| futures::stream::iter(event_ids.iter().map(|id| id.as_bytes().to_vec()));
 
-		// `get_batch` yields `Ok(Handle)` for a present key and an
-		// `Err(NotFound)` for an absent one. Zip results back to the original
-		// event ids.
+		// `get_batch` yields `Ok(Handle)` for a present key, an `Err(NotFound)`
+		// for an absent one, and stops the batch on a chunk-level read failure.
+		//
+		// NOTE: the two scans are run sequentially rather than joined, on
+		// purpose. `get_batch` is declared
+		// `self: &'a Arc<Self> -> impl Stream + Send + 'a`, so its stream is
+		// `Send` only for *one* non-'static lifetime `'a`. `futures::join`
+		// packages both streams into a single future, which must then be `Send`
+		// for every `'a` to be spawnable. That fails ("implementation of `Send`
+		// is not general enough") at `monitor::Service::worker`, which reaches
+		// this via `recalculate_extremities` and is itself spawned (requires
+		// `Send + 'static`). Sequentially awaiting the two calls keeps the
+		// combined future `Send`, at the cost of not overlapping the scans.
 		let rejected = self
 			.eventid_rejections
 			.get_batch::<_, Vec<u8>>(key_stream())
@@ -249,8 +261,18 @@ impl Data {
 			.collect::<Vec<bool>>()
 			.await;
 
+		// A `get_batch` chunk failure truncates its stream, so the collected
+		// flag vector can be shorter than `event_ids`. Zipping a shortened
+		// vector would silently misassign or drop verdicts. We can't recover
+		// the affected keys, so conservatively flag the whole batch: admitting
+		// an event whose verdict we failed to read is riskier than refusing it
+		// as a forward extremity.
+		if rejected.len() != n || soft_failed.len() != n {
+			return event_ids.iter().cloned().collect();
+		}
+
 		let mut flagged: std::collections::HashSet<OwnedEventId> =
-			std::collections::HashSet::with_capacity(rejected.len());
+			std::collections::HashSet::with_capacity(n);
 		for (event_id, res) in event_ids.iter().zip(rejected) {
 			if res {
 				flagged.insert(event_id.clone());

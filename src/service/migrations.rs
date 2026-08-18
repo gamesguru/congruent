@@ -693,30 +693,42 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	// same startup, so once we strip the `status` field here there is nothing
 	// left for `db_lt_21` to fold. Preserve any legacy verdict into the
 	// authoritative independent stores *before* overwriting the row.
-	let fold_legacy_status = |event_id_bytes: &[u8]| {
-		let Ok(existing_bytes) = eventid_metadata.get_blocking(event_id_bytes) else {
-			return;
+	// Read errors are fatal here: if we cannot verify whether this row still
+	// carries a legacy verdict, aborting the migration (rather than silently
+	// proceeding to overwrite it) is the only way to guarantee the verdict is
+	// not lost. Only `NotFound` means there is genuinely no legacy row to
+	// preserve.
+	let fold_legacy_status = |event_id_bytes: &[u8]| -> Result<()> {
+		let existing_bytes = match eventid_metadata.get_blocking(event_id_bytes) {
+			| Ok(bytes) => bytes,
+			| Err(e) if e.is_not_found() => return Ok(()),
+			| Err(e) => {
+				return Err(err!(
+					"Failed reading eventid_metadata while preserving legacy verdict for event \
+					 {:?}: {e}",
+					event_id_bytes.len(),
+				));
+			},
 		};
 		let Ok(legacy) = bincode::deserialize::<EventMetadataV20>(&existing_bytes) else {
-			return;
+			return Ok(());
 		};
-		match &legacy.status {
-			| EventStatusV20::Rejected(code)
-				if eventid_rejections
-					.get_blocking(event_id_bytes)
-					.is_not_found() =>
+		if let EventStatusV20::Rejected(code) = &legacy.status {
+			if eventid_rejections
+				.get_blocking(event_id_bytes)
+				.is_not_found()
 			{
 				eventid_rejections.insert(event_id_bytes, [code.to_u8()]);
-			},
-			| EventStatusV20::SoftFailed(code)
-				if eventid_softfailed
-					.get_blocking(event_id_bytes)
-					.is_not_found() =>
+			}
+		} else if let EventStatusV20::SoftFailed(code) = &legacy.status {
+			if eventid_softfailed
+				.get_blocking(event_id_bytes)
+				.is_not_found()
 			{
 				eventid_softfailed.insert(event_id_bytes, [code.to_u8()]);
-			},
-			| _ => {},
+			}
 		}
+		Ok(())
 	};
 
 	// Phase 1: Migrate timeline events from pduid_pdu (pdu_id -> PDU JSON)
@@ -771,7 +783,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				pdu_count: Some(unsigned_pdu_count),
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-				fold_legacy_status(event_id_bytes);
+				fold_legacy_status(event_id_bytes)?;
 				eventid_metadata.insert(event_id_bytes, metadata_bytes);
 			}
 			if pdu.rejected()
@@ -829,7 +841,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					pdu_count: None,
 				};
 				if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-					fold_legacy_status(event_id_bytes);
+					fold_legacy_status(event_id_bytes)?;
 					eventid_metadata.insert(event_id_bytes, metadata_bytes);
 				}
 				if pdu.rejected()
@@ -1836,7 +1848,7 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 				return Err(err!(
 					"eventid_metadata row ({} bytes) neither parses as v20 nor as v21 during \
 					 v21 migration: {v20_err}",
-					event_id_bytes.len(),
+					value.len(),
 				));
 			},
 		};
