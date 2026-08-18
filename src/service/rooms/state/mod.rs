@@ -15,6 +15,39 @@ use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
+
+/// A raw `RootHandle` value persisted in `roomid_roothandle` /
+/// `shorteventid_roothandle`: 16-byte structural hash followed by the 32-byte
+/// state-group ID, with no per-field serde separators. The database serde
+/// format cannot represent `[u8; N]` arrays (nested-tuple separator assert and
+/// `deserialize_u8` is unimplemented), so these maps are stored as flat bytes.
+pub(crate) fn root_handle_to_bytes(handle: &rezzy::hamt::RootHandle) -> Vec<u8> {
+	let mut out = Vec::with_capacity(ROOT_HANDLE_LEN);
+	out.extend_from_slice(&handle.structural_hash);
+	out.extend_from_slice(&handle.state_group_id);
+	out
+}
+
+pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHandle> {
+	if bytes.len() < ROOT_HANDLE_LEN {
+		return Err(err!(error!(
+			"RootHandle value too short: expected {ROOT_HANDLE_LEN} bytes, got {}",
+			bytes.len()
+		)));
+	}
+
+	Ok(rezzy::hamt::RootHandle {
+		structural_hash: bytes[0..16]
+			.try_into()
+			.expect("fixed 16-byte structural hash slice"),
+		state_group_id: bytes[16..48]
+			.try_into()
+			.expect("fixed 32-byte state-group ID slice"),
+	})
+}
+
+pub(crate) const ROOT_HANDLE_LEN: usize = 16 + 32;
+
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
@@ -236,11 +269,7 @@ impl Service {
 				.persist_node_recursive_batch(node, &mut batch);
 		}
 
-		let serialized = conduwuit_database::serialize_to_vec((
-			root_handle.structural_hash,
-			root_handle.state_group_id,
-		))
-		.unwrap();
+		let serialized = root_handle_to_bytes(&root_handle);
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
@@ -429,28 +458,15 @@ impl Service {
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
 	) {
-		const BUFSIZE: usize = 49;
-
-		let data = (root_handle.structural_hash, root_handle.state_group_id);
-		self.db
-			.roomid_roothandle
-			.raw_aput::<BUFSIZE, _, _>(room_id, data);
+		let data = root_handle_to_bytes(root_handle);
+		self.db.roomid_roothandle.insert(room_id.as_bytes(), &data);
 	}
 
 	/// Returns the room's current HAMT RootHandle.
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
-		let data: (rezzy::hamt::StructuralHash, rezzy::hamt::StateGroupId) = self
-			.db
-			.roomid_roothandle
-			.get(room_id)
-			.await
-			.deserialized()?;
-
-		Ok(rezzy::hamt::RootHandle {
-			structural_hash: data.0,
-			state_group_id: data.1,
-		})
+		let data = self.db.roomid_roothandle.get(room_id).await?;
+		root_handle_from_bytes(&data)
 	}
 
 	/// Returns the room's version.
@@ -484,11 +500,8 @@ impl Service {
 		&self,
 		shorteventid: ShortEventId,
 	) -> Result<rezzy::hamt::RootHandle> {
-		self.db
-			.shorteventid_roothandle
-			.qry(&shorteventid)
-			.await
-			.deserialized()
+		let data = self.db.shorteventid_roothandle.qry(&shorteventid).await?;
+		root_handle_from_bytes(&data)
 	}
 
 	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {

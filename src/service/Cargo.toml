@@ -16,6 +16,9 @@ crate-type = [
 path = "mod.rs"
 
 [features]
+# Match the `conduwuit` binary default (src/main/Cargo.toml) so the service
+# lib installs a TLS crypto provider for its `setup_test_services` tests.
+default = ["ring"]
 aws_lc_rs = ["rustls/aws_lc_rs"]
 blurhashing = ["dep:blurhash", "dep:image"]
 brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]

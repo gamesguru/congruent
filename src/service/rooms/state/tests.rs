@@ -8,7 +8,6 @@ use conduwuit_core::{
 	log::{Log, LogLevelReloadHandles, capture},
 	matrix::PduEvent,
 };
-use database::Deserialized;
 use figment::providers::Format;
 use ruma::{
 	CanonicalJsonObject, EventId, RoomId, RoomVersionId, UserId, events::StateEventType,
@@ -85,7 +84,7 @@ fn create_dummy_pdu(
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create pdu")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -129,14 +128,13 @@ async fn test_state_round_trip() {
 		.shorteventid_roothandle
 		.get(&shorteventid.to_be_bytes())
 		.await
-		.deserialized::<(rezzy::hamt::StructuralHash, rezzy::hamt::StateGroupId)>()
 		.expect("mapped roothandle should exist");
 
-	assert_eq!(serialized.0, root_handle.structural_hash);
-	assert_eq!(serialized.1, root_handle.state_group_id);
+	let expected = super::root_handle_to_bytes(&root_handle);
+	assert_eq!(&serialized[..], &expected[..]);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -165,7 +163,7 @@ async fn test_force_state() {
 	assert_eq!(retrieved_root.state_group_id, dummy_root.state_group_id);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_state_equivalence() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = owned_room_id!("!test:test.conduwuit.local");
@@ -186,31 +184,21 @@ async fn test_state_equivalence() {
 
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 
-	let (root1, _) = services
+	// Exercise the public state-update path (set_event_state), which persists
+	// the HAMT node, sets the room root, and atomically maps the shortevent ID.
+	let root1 = services
 		.rooms
 		.state
-		.append_to_state(&event1, &room_id, &mutex, None)
+		.set_event_state(&room_id, &event1, &mutex)
 		.await
-		.expect("append 1 failed");
-	services
-		.rooms
-		.state
-		.force_state(&room_id, &root1, &mutex)
-		.await
-		.expect("force_state 1 failed");
+		.expect("set_event_state 1 failed");
 
-	let (root2, _) = services
+	let root2 = services
 		.rooms
 		.state
-		.append_to_state(&event2, &room_id, &mutex, None)
+		.set_event_state(&room_id, &event2, &mutex)
 		.await
-		.expect("append 2 failed");
-	services
-		.rooms
-		.state
-		.force_state(&room_id, &root2, &mutex)
-		.await
-		.expect("force_state 2 failed");
+		.expect("set_event_state 2 failed");
 
 	// In a real equivalence test, we would compare this against a from-scratch
 	// build. For now, we assert that the incremental state contains the expected

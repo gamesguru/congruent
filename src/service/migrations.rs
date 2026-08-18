@@ -991,8 +991,6 @@ async fn legacy_build_root_handle_for_state(
 }
 
 async fn db_lt_20(services: &Services) -> Result<()> {
-	const BUFSIZE: usize = 49;
-
 	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
@@ -1051,11 +1049,10 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 					.store
 					.persist_node_recursive(root_node);
 
-				// Use the same binary tuple encoding as set_room_state_hamt (raw_aput).
-				// Writing JSON here would make get_room_state_hamt unable to read the value.
-				let data = (root_handle.structural_hash, root_handle.state_group_id);
-				services.db["roomid_roothandle"]
-					.raw_aput::<BUFSIZE, _, _>(room_id.as_bytes(), data);
+				// Write the same flat-48-byte encoding used by set_room_state_hamt,
+				// so get_room_state_hamt can read the value back.
+				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
+				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
 			},
 		}
 	}
@@ -1099,11 +1096,7 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 			.store
 			.persist_node_recursive(root_node);
 
-		let serialized = conduwuit_database::serialize_to_vec((
-			root_handle.structural_hash,
-			root_handle.state_group_id,
-		))
-		.unwrap();
+		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
 
 		for shorteventid in shorteventids {
 			batch.insert(
