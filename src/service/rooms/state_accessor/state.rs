@@ -35,6 +35,35 @@ pub async fn user_was_invited(&self, shortstatehash: ShortStateHash, user_id: &U
 	s == MembershipState::Join || s == MembershipState::Invite
 }
 
+/// The user was a joined member at this state (potentially in the past)
+#[implement(super::Service)]
+#[inline]
+pub async fn user_was_joined_hamt(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+) -> bool {
+	self.user_membership_hamt(room_id, root_handle, user_id)
+		.await == MembershipState::Join
+}
+
+/// The user was an invited or joined room member at this state (potentially
+/// in the past)
+#[implement(super::Service)]
+#[inline]
+pub async fn user_was_invited_hamt(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+) -> bool {
+	let s = self
+		.user_membership_hamt(room_id, root_handle, user_id)
+		.await;
+	s == MembershipState::Join || s == MembershipState::Invite
+}
+
 /// Get membership for given user in state
 #[implement(super::Service)]
 pub async fn user_membership(
@@ -45,6 +74,24 @@ pub async fn user_membership(
 	self.state_get_content(shortstatehash, &StateEventType::RoomMember, user_id.as_str())
 		.await
 		.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
+}
+
+/// Get membership for given user in state at a HAMT root.
+#[implement(super::Service)]
+pub async fn user_membership_hamt(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+) -> MembershipState {
+	self.state_get_content_hamt(
+		room_id,
+		root_handle,
+		&StateEventType::RoomMember,
+		user_id.as_str(),
+	)
+	.await
+	.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
 }
 
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
@@ -59,6 +106,24 @@ where
 	T: for<'de> Deserialize<'de>,
 {
 	self.state_get(shortstatehash, event_type, state_key)
+		.await
+		.and_then(|event| event.get_content())
+}
+
+/// Returns a single PDU from `room_id` with key (`event_type`,`state_key`)
+/// at a HAMT root.
+#[implement(super::Service)]
+pub async fn state_get_content_hamt<T>(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<T>
+where
+	T: for<'de> Deserialize<'de>,
+{
+	self.state_get_in_room_hamt(room_id, root_handle, event_type, state_key)
 		.await
 		.and_then(|event| event.get_content())
 }
@@ -623,6 +688,13 @@ pub async fn load_full_state_hamt(
 		})
 		.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
 	Ok(short_states)
+}
+
+/// Returns the HAMT RootHandle for this pdu.
+#[implement(super::Service)]
+pub async fn pdu_roothandle(&self, event_id: &EventId) -> Result<rezzy::hamt::RootHandle> {
+	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
+	self.services.state.get_roothandle(shorteventid).await
 }
 
 /// Returns the state hash for this pdu.
