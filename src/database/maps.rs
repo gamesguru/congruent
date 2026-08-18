@@ -367,6 +367,12 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM
 	},
 	Descriptor {
+		name: "state_hamt_node_mtimes",
+		key_size_hint: Some(16),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "statekey_shortstatekey",
 		cache_disp: CacheDisp::Unique,
 		key_size_hint: Some(1016),

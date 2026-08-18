@@ -239,7 +239,10 @@ features = [
 [workspace.dependencies.futures]
 version = "0.3.31"
 default-features = false
-features = ["std", "async-await"]
+# `executor` is used by `state_hamt::store::Store::sweep` to drive the async
+# key-enumeration/reclaim future synchronously inside `tokio::task::block_in_place`
+# (the store's blocking RocksDB work must not hold a tokio worker thread).
+features = ["std", "async-await", "executor"]
 
 [workspace.dependencies.tokio]
 version = "1.44.2"

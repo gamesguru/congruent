@@ -32,7 +32,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 20;
+pub(crate) const DATABASE_VERSION: u64 = 21;
 
 pub(crate) async fn migrations(services: &Services) -> Result<()> {
 	let users_count = services.users.count().await;
@@ -240,6 +240,18 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_20(services))
 			.await
 			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
+	}
+
+	// Version 21 - drop legacy shortstatehash table data now that v20 has
+	// finished building HAMT roots from it. The legacy state maps are no longer
+	// read at runtime (the HAMT cutover replaced them), and their data was only
+	// needed as migration input. Clearing it here frees the space; the column
+	// families themselves and the legacy migration helpers must stay so that
+	// fresh databases from older schema versions can still run v20.
+	if services.globals.db.database_version().await < 21 {
+		Box::pin(db_lt_21(services))
+			.await
+			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
 	}
 
 	assert_eq!(
@@ -1075,5 +1087,55 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 	batch.commit();
 
 	services.globals.db.bump_database_version(20);
+	Ok(())
+}
+
+/// Drop the legacy `shortstatehash` state table data once the HAMT cutover
+/// (v20) has rebuilt it into HAMT roots.
+///
+/// The legacy state maps were only read as inputs to the v20 migration; at
+/// runtime the state layer now reads HAMT roots exclusively. Their contents are
+/// no longer consulted, so we clear them to reclaim the space. We deliberately
+/// do **not** remove the column families or the legacy accessor helpers: fresh
+/// databases arriving from schema `< 20` still need both the columns and the
+/// helpers to run v20 for the first time.
+///
+/// This runs only after v20 has bumped the schema version to 20, so the data we
+/// clear here is guaranteed to have already been consumed.
+async fn db_lt_21(services: &Services) -> Result<()> {
+	info!("Running v21 migration (clearing legacy shortstatehash table data)...");
+
+	let db = &services.db;
+	let cork = db.cork_and_sync();
+	let mut total = 0_usize;
+
+	for map_name in [
+		"shortstatehash_statediff",
+		"roomid_shortstatehash",
+		"shorteventid_shortstatehash",
+		"shortstatehash_lthash",
+		"roomsynctoken_shortstatehash",
+	] {
+		let map = db[map_name].clone();
+		let cleared = map
+			.raw_stream()
+			.try_fold(
+				0_usize,
+				async |mut count: usize, (key, _): database::KeyVal<'_>| -> Result<usize> {
+					map.remove_raw(key);
+					count = count.saturating_add(1);
+					Ok(count)
+				},
+			)
+			.await?;
+
+		info!(%map_name, ?cleared, "Cleared legacy shortstatehash column");
+		total = total.saturating_add(cleared);
+	}
+
+	drop(cork);
+	info!(?total, "Cleared legacy shortstatehash table data.");
+
+	services.globals.db.bump_database_version(21);
 	Ok(())
 }

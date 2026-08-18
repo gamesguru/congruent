@@ -1,16 +1,37 @@
-use std::sync::Arc;
+use std::{
+	sync::Arc,
+	time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use conduwuit::{Result, err};
 use database::{Batch, Map};
+use futures::TryStreamExt;
 use rezzy::{
 	LtHash,
 	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
 };
 
+/// Report produced by [`Store::sweep`], in either dry-run or live mode.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SweepReport {
+	/// Number of orphaned node hashes that were eligible for reclamation.
+	pub orphaned: usize,
+	/// Sum of the sizes of the orphaned node values, in bytes.
+	pub bytes: u64,
+	/// Whether [`Store::sweep`] was run without actually deleting anything.
+	pub dry_run: bool,
+}
+
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 pub struct Store {
 	/// RocksDB column family containing the densely persisted nodes.
 	db: Arc<Map>,
+
+	/// RocksDB column family tracking the wall-clock persistence time of each
+	/// node, keyed by `StructuralHash`. Used by the orphan sweep's grace window
+	/// to avoid deleting a node that a concurrent writer has just persisted but
+	/// not yet linked into a durable root handle.
+	node_mtimes: Arc<Map>,
 
 	/// Content-addressed cache of parsed HamtNodes in memory.
 	/// Deduplicates subtrees across different room states automatically since
@@ -22,12 +43,12 @@ pub struct Store {
 }
 
 impl Store {
-	pub fn new(db: Arc<Map>) -> Self {
+	pub fn new(db: Arc<Map>, node_mtimes: Arc<Map>) -> Self {
 		// Use a generic capacity for now. In a full production setup, this
 		// could be wired to a config value like other caches.
 		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
 
-		Self { db, node_cache }
+		Self { db, node_mtimes, node_cache }
 	}
 
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
@@ -79,10 +100,15 @@ impl Store {
 		self.node_cache.insert(node.structural_hash, node);
 
 		self.db.insert(&persisted.structural_hash, &bytes);
+		self.node_mtimes
+			.insert(&persisted.structural_hash, unix_millis().to_be_bytes());
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
 	/// cache.
+	///
+	/// The mtime for the node joins the same batch as the node value itself, so
+	/// the grace window and the node's durability are updated atomically.
 	pub fn put_node_batch(&self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'_>) {
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
@@ -91,6 +117,11 @@ impl Store {
 		self.node_cache.insert(node.structural_hash, node);
 
 		batch.insert(&self.db, persisted.structural_hash.as_ref(), bytes.as_slice());
+		batch.insert(
+			&self.node_mtimes,
+			persisted.structural_hash.as_ref(),
+			&unix_millis().to_be_bytes(),
+		);
 	}
 
 	/// Persists a node and all of its resolved children recursively.
@@ -118,7 +149,157 @@ impl Store {
 		self.put_node_batch(node, batch);
 	}
 
-	/// Provides a synchronous resolver closure for `isolate_delta`.
+	/// Physically deletes a node value and its recorded mtime, and evicts it
+	/// from the memory cache.
+	///
+	/// This is the raw delete primitive: it does *not* consult reachability or
+	/// any grace window. Callers are responsible for only deleting nodes that
+	/// are confirmed unreachable (e.g. after [`Store::sweep`]).
+	pub fn del_node(&self, hash: &StructuralHash) -> Result<()> {
+		self.node_cache.invalidate(hash);
+		self.db.remove_raw(hash.as_ref());
+		self.node_mtimes.remove_raw(hash.as_ref());
+		Ok(())
+	}
+
+	/// Sweeps the node store for hashes unreachable from the given live roots,
+	/// optionally deleting them.
+	///
+	/// All recorded roots (`shorteventid_roothandle` per-event handles plus the
+	/// current `roomid_roothandle`) are treated as live and permanently pin
+	/// their reachable trees; sweep never reclaims anything reachable from
+	/// them. It only reclaims nodes that are absent from the union of the live
+	/// roots' reachable sets — i.e. nodes orphaned by an actual deletion.
+	///
+	/// # Correctness: the grace window
+	///
+	/// A concurrent writer can persist a node a moment before linking it into a
+	/// durable root handle. If this sweep snapshots the live roots, walks
+	/// reachability, and then deletes in that order, it would classify that
+	/// just-persisted node as unreachable and delete it out from under the
+	/// in-flight write. To close this race, only nodes whose persistence time
+	/// (see [`Self::put_node`]) predates `now - grace` are considered for
+	/// reclamation. Nodes whose mtime is missing (written before this feature
+	/// landed) are by definition old and treated as eligible.
+	///
+	/// When `dry_run` is true (the default), nothing is deleted; the report
+	/// still reflects exactly which nodes a live run would reclaim.
+	pub async fn sweep(
+		&self,
+		live_roots: &[&RootHandle],
+		grace: Duration,
+		dry_run: bool,
+	) -> Result<SweepReport> {
+		if let Ok(handle) = tokio::runtime::Handle::try_current() {
+			if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
+				return tokio::task::block_in_place(|| {
+					// Run the whole sweep off an executor thread: the node walk,
+					// key enumeration and deletes are all blocking RocksDB work,
+					// so holding a worker thread here would stall unrelated tasks.
+					futures::executor::block_on(self.sweep_blocking(live_roots, grace, dry_run))
+				});
+			}
+
+			return Err(conduwuit::err!(error!(
+				"HAMT operations require a multithreaded Tokio runtime to avoid stalling the \
+				 executor."
+			)));
+		}
+
+		self.sweep_blocking(live_roots, grace, dry_run).await
+	}
+
+	/// Blocking portion of [`Store::sweep`]; performs the reachability walk and
+	/// deletion on the current thread.
+	///
+	/// Enumerates every node hash in `state_hamt_nodes` and deletes the ones
+	/// not reachable from `live_roots`, subject to the grace window. Only
+	/// likely nodes (16-byte keys) are considered; anything else in the column
+	/// family is not a node this store manages.
+	async fn sweep_blocking(
+		&self,
+		live_roots: &[&RootHandle],
+		grace: Duration,
+		dry_run: bool,
+	) -> Result<SweepReport> {
+		let mut resolver = self.get_blocking_resolver();
+
+		// Shared visited set across every root: most of the tree is shared, so
+		// `walk_reachable_node_hashes` only descends into a subtree the first
+		// time its hash is seen.
+		let mut seen: std::collections::BTreeSet<StructuralHash> =
+			std::collections::BTreeSet::new();
+
+		for root in live_roots {
+			let root_node = self.get_node_blocking(&root.structural_hash)?;
+
+			rezzy::hamt::delta::walk_reachable_node_hashes(
+				&root_node,
+				&mut resolver,
+				&mut |hash| seen.insert(hash),
+			)
+			.map_err(|e| err!(Database(error!("{e}"))))?;
+		}
+
+		let cutoff = unix_millis().saturating_sub(grace.as_millis() as u64);
+
+		let mut report = SweepReport { dry_run, ..SweepReport::default() };
+
+		let nodes: Vec<Vec<u8>> = self
+			.db
+			.raw_stream()
+			.try_fold(
+				Vec::new(),
+				async |mut acc: Vec<Vec<u8>>, (key, _): database::KeyVal<'_>| {
+					acc.push(key.to_vec());
+					Ok(acc)
+				},
+			)
+			.await?;
+
+		for key in nodes {
+			// Keys in `state_hamt_nodes` are 16-byte hashes; any other key is
+			// not a node we manage and is skipped defensively.
+			let hash = <[u8; 16]>::try_from(key.as_slice())
+				.map_err(|_| err!(Database(error!("Unexpected key in state_hamt_nodes."))))?;
+
+			if seen.contains(&hash) {
+				continue;
+			}
+
+			// Grace-window filter: a recent mtime means a write is possibly
+			// still in flight, so ignore this node this round.
+			if let Some(mtime) = self.node_mtime(&hash) {
+				if mtime >= cutoff {
+					continue;
+				}
+			}
+
+			let bytes = self.db.get_blocking(&hash)?.len() as u64;
+			report.orphaned = report.orphaned.saturating_add(1);
+			report.bytes = report.bytes.saturating_add(bytes);
+
+			if !dry_run {
+				self.del_node(&hash)?;
+			}
+		}
+
+		Ok(report)
+	}
+
+	/// Returns the recorded persistence time (unix milliseconds) of a node, if
+	/// any.
+	fn node_mtime(&self, hash: &StructuralHash) -> Option<u64> {
+		let bytes = self.node_mtimes.get_blocking(hash).ok()?;
+		if bytes.is_empty() {
+			return None;
+		}
+		let arr = <[u8; 8]>::try_from(&bytes[..]).ok()?;
+		Some(u64::from_be_bytes(arr))
+	}
+
+	/// Provides a synchronous resolver closure for `isolate_delta` and the
+	/// reachability walks.
 	///
 	/// # Important Architecture Note
 	/// `isolate_delta` is synchronous and `#![no_std]` in `rezzy`. However,
@@ -159,4 +340,12 @@ impl Store {
 	pub fn root_handle(&self, structural_hash: StructuralHash, lattice: &LtHash) -> RootHandle {
 		RootHandle::from_lthash(structural_hash, lattice)
 	}
+}
+
+/// Current unix time in milliseconds.
+fn unix_millis() -> u64 {
+	SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|d| d.as_millis() as u64)
+		.unwrap_or(0)
 }

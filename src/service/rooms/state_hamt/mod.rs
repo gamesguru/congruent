@@ -11,9 +11,10 @@ pub struct Service {
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let state_hamt_nodes = args.db["state_hamt_nodes"].clone();
+		let state_hamt_node_mtimes = args.db["state_hamt_node_mtimes"].clone();
 
 		Ok(Arc::new(Self {
-			store: store::Store::new(state_hamt_nodes),
+			store: store::Store::new(state_hamt_nodes, state_hamt_node_mtimes),
 		}))
 	}
 
