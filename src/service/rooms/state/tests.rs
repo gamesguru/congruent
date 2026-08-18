@@ -24,9 +24,10 @@ impl Drop for TempDbGuard {
 }
 
 async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
-	#[cfg(feature = "aws_lc_rs")]
-	let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-	#[cfg(all(feature = "ring", not(feature = "aws_lc_rs")))]
+	// The test server drives HTTP via reqwest, which requires a TLS crypto
+	// provider. `rustls` is a dev-dependency built with the `ring` feature (see
+	// Cargo.toml), so this is unconditional and independent of which provider
+	// the library's optional `ring`/`aws_lc_rs` features select for consumers.
 	let _ = rustls::crypto::ring::default_provider().install_default();
 	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -120,7 +120,12 @@ sd-notify.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["toml"] }
-rustls.workspace = true
+# Tests spawn a reqwest-driven server, which needs a TLS crypto provider
+# installed. `ring` is enabled here (test-only) so the state tests have a
+# deterministic provider regardless of which providers the library's own
+# optional `ring`/`aws_lc_rs` features select. Enabling it on the dev
+# dependency does not leak a provider onto the library's consumers.
+rustls = { workspace = true, features = ["ring"] }
 criterion.workspace = true
 
 [[bench]]
