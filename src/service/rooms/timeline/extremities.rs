@@ -271,26 +271,29 @@ impl Service {
 					continue;
 				};
 
-				match self.db.get_event_metadata(&event_id).await {
-					| Ok(meta) if meta.is_outlier => {
-						outlier_event_ids.insert(short_id);
-					},
-					| Ok(meta)
-						if matches!(
-							meta.status,
-							crate::rooms::pdu_metadata::EventStatus::Rejected(_)
-								| crate::rooms::pdu_metadata::EventStatus::SoftFailed(_)
-						) =>
-					{
-						bridge_event_ids.insert(short_id);
-					},
-					| Ok(_) => {
-						accepted_event_ids.insert(short_id);
-					},
+				let is_outlier = match self.db.get_event_metadata(&event_id).await {
+					| Ok(meta) => meta.is_outlier,
 					| Err(_) => {
 						missing_metadata = missing_metadata.saturating_add(1);
 						accepted_event_ids.insert(short_id);
+						continue;
 					},
+				};
+				if is_outlier {
+					outlier_event_ids.insert(short_id);
+				} else if self
+					.services
+					.pdu_metadata
+					.is_event_rejected(&event_id)
+					.await || self
+					.services
+					.pdu_metadata
+					.is_event_soft_failed(&event_id)
+					.await
+				{
+					bridge_event_ids.insert(short_id);
+				} else {
+					accepted_event_ids.insert(short_id);
 				}
 			}
 		}

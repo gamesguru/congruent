@@ -20,13 +20,7 @@ use ruma::{
 };
 
 use super::{PduId, RawPduId, backward_extremities};
-use crate::{
-	Dep, rooms,
-	rooms::{
-		pdu_metadata::{EventStatus, RejectionCode},
-		short::ShortRoomId,
-	},
-};
+use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
 pub(super) struct Data {
 	eventid_pduid: Arc<Map>,
@@ -1270,16 +1264,6 @@ impl Data {
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			status: if pdu.rejected() {
-				EventStatus::Rejected(RejectionCode::Unknown)
-			} else if let Some(code) = existing_metadata.as_ref().and_then(|m| match m.status {
-				| EventStatus::SoftFailed(c) => Some(c),
-				| _ => None,
-			}) {
-				EventStatus::SoftFailed(code)
-			} else {
-				EventStatus::Accepted
-			},
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
@@ -1446,16 +1430,6 @@ impl Data {
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			status: if pdu.rejected() {
-				EventStatus::Rejected(RejectionCode::Unknown)
-			} else if let Some(code) = existing_metadata.as_ref().and_then(|m| match m.status {
-				| EventStatus::SoftFailed(c) => Some(c),
-				| _ => None,
-			}) {
-				EventStatus::SoftFailed(code)
-			} else {
-				EventStatus::Accepted
-			},
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
@@ -1536,17 +1510,6 @@ impl Data {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				status: if pdu.rejected() {
-					EventStatus::Rejected(RejectionCode::Unknown)
-				} else if let Some(code) =
-					existing_metadata.as_ref().and_then(|m| match m.status {
-						| EventStatus::SoftFailed(c) => Some(c),
-						| _ => None,
-					}) {
-					EventStatus::SoftFailed(code)
-				} else {
-					EventStatus::Accepted
-				},
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 				deprecated_local_topo_depth: pdu.depth().into(),

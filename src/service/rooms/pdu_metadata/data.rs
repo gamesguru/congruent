@@ -17,7 +17,7 @@ use crate::{
 	Dep,
 	rooms::{
 		self,
-		pdu_metadata::{EventStatus, RejectionCode, SoftFailCode},
+		pdu_metadata::{RejectionCode, SoftFailCode},
 		short::{ShortEventId, ShortRoomId},
 		timeline::{PduId, PdusIterItem, RawPduId},
 	},
@@ -26,8 +26,6 @@ use crate::{
 pub(super) struct Data {
 	tofrom_relation: Arc<Map>,
 	referencedevents: Arc<Map>,
-	eventid_metadata: Arc<Map>,
-	eventid_status: Arc<Map>,
 	eventid_rejections: Arc<Map>,
 	eventid_softfailed: Arc<Map>,
 	msc2836_children: Arc<Map>,
@@ -54,8 +52,6 @@ impl Data {
 		Self {
 			tofrom_relation: db["tofrom_relation"].clone(),
 			referencedevents: db["referencedevents"].clone(),
-			eventid_metadata: db["eventid_metadata"].clone(),
-			eventid_status: db["eventid_status"].clone(),
 			eventid_rejections: db["eventid_rejections"].clone(),
 			eventid_softfailed: db["eventid_softfailed"].clone(),
 			msc2836_children: db["msc2836_children"].clone(),
@@ -158,8 +154,6 @@ impl Data {
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
 		self.eventid_softfailed.remove(event_id);
-		self.eventid_status.remove(event_id);
-		self.clear_legacy_metadata_status(event_id);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
@@ -181,120 +175,39 @@ impl Data {
 	}
 
 	/// Reads the persisted rejection code for `event_id`, if any, from the
-	/// authoritative `eventid_rejections` store. Falls back to the legacy
-	/// `eventid_status` store and then the legacy `eventid_metadata.status`
-	/// field for rows written before the independent-flat-store refactor.
+	/// authoritative `eventid_rejections` store. The verdict lives only in
+	/// these independent per-event stores (never in `EventMetadata` anymore);
+	/// older single-slot `eventid_status` / `eventid_metadata.status` rows are
+	/// folded into them once by the v21 migration.
 	///
 	/// This is a single read so callers that must decide-and-act on the same
 	/// rejection state (e.g. `take_retry_if_rejection_retryable`,
 	/// `finish_promotion`) don't open a TOCTOU window between two reads.
 	pub(super) async fn get_rejection_code(&self, event_id: &EventId) -> Option<RejectionCode> {
-		if let Ok(bytes) = self.eventid_rejections.get(event_id).await {
-			if let Some(&code_u8) = bytes.first() {
-				return Some(RejectionCode::from_u8(code_u8));
-			}
-		}
-
-		if let Ok(bytes) = self.eventid_status.get(event_id).await {
-			if bytes.len() >= 2 && bytes[0] == 2 {
-				return Some(RejectionCode::from_u8(bytes[1]));
-			}
-		}
-
-		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if let EventStatus::Rejected(code) = meta.status {
-					return Some(code);
-				}
-			}
-		}
-
-		None
+		let Ok(bytes) = self.eventid_rejections.get(event_id).await else {
+			return None;
+		};
+		bytes.first().map(|&code| RejectionCode::from_u8(code))
 	}
 
 	/// Reads the persisted soft-fail code for `event_id`, if any, from the
-	/// authoritative `eventid_softfailed` store, with legacy fallbacks matching
-	/// [`Self::get_rejection_code`].
+	/// authoritative `eventid_softfailed` store (mirroring
+	/// [`Self::get_rejection_code`]).
 	pub(super) async fn get_soft_fail_code(&self, event_id: &EventId) -> Option<SoftFailCode> {
-		if let Ok(bytes) = self.eventid_softfailed.get(event_id).await {
-			if let Some(&code_u8) = bytes.first() {
-				return Some(SoftFailCode::from_u8(code_u8));
-			}
-		}
-
-		if let Ok(bytes) = self.eventid_status.get(event_id).await {
-			if bytes.len() >= 2 && bytes[0] == 1 {
-				return Some(SoftFailCode::from_u8(bytes[1]));
-			}
-		}
-
-		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if let EventStatus::SoftFailed(code) = meta.status {
-					return Some(code);
-				}
-			}
-		}
-
-		None
-	}
-
-	/// Reads the legacy single-slot `EventStatus` (rejection-first) from
-	/// `eventid_status`/`eventid_metadata` only, for the migration that folds
-	/// legacy rows into the independent stores. Returns `None` if the event has
-	/// no persisted verdict in the legacy stores.
-	#[allow(dead_code)]
-	pub(super) async fn get_legacy_status(&self, event_id: &EventId) -> Option<EventStatus> {
-		if let Ok(bytes) = self.eventid_status.get(event_id).await {
-			if bytes.len() >= 2 {
-				match bytes[0] {
-					| 1 => return Some(EventStatus::SoftFailed(SoftFailCode::from_u8(bytes[1]))),
-					| 2 => return Some(EventStatus::Rejected(RejectionCode::from_u8(bytes[1]))),
-					| _ => {},
-				}
-			}
-		}
-
-		if let Ok(metadata_bytes) = self.eventid_metadata.get(event_id).await {
-			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if !matches!(meta.status, EventStatus::Accepted) {
-					return Some(meta.status);
-				}
-			}
-		}
-
-		None
+		let Ok(bytes) = self.eventid_softfailed.get(event_id).await else {
+			return None;
+		};
+		bytes.first().map(|&code| SoftFailCode::from_u8(code))
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
 		self.eventid_rejections.remove(event_id);
-		self.eventid_status.remove(event_id);
-		self.clear_legacy_metadata_status(event_id);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
 		self.eventid_softfailed.remove(event_id);
 		self.eventid_rejections.remove(event_id);
-		self.eventid_status.remove(event_id);
-		self.clear_legacy_metadata_status(event_id);
-	}
-
-	fn clear_legacy_metadata_status(&self, event_id: &EventId) {
-		if let Ok(metadata_bytes) = self.eventid_metadata.get_blocking(event_id) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) {
-				if matches!(meta.status, EventStatus::Rejected(_) | EventStatus::SoftFailed(_)) {
-					meta.status = if meta.is_outlier {
-						EventStatus::Pending
-					} else {
-						EventStatus::Accepted
-					};
-					if let Ok(new_bytes) = bincode::serialize(&meta) {
-						self.eventid_metadata.insert(event_id, new_bytes);
-					}
-				}
-			}
-		}
 	}
 
 	/// MSC2836: index `child` as a relationship-child of `parent` with the

@@ -13,10 +13,7 @@ use roaring::RoaringTreemap;
 use ruma::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
-use crate::rooms::{
-	pdu_metadata::{EventStatus, RejectionCode},
-	short::ShortEventId,
-};
+use crate::rooms::short::ShortEventId;
 
 /// Statistics returned from `reindex_short`.
 #[derive(Debug, Default)]
@@ -190,11 +187,6 @@ impl Service {
 						is_outlier: false,
 						origin_server_ts: pdu.origin_server_ts().0,
 						depth: pdu.depth(),
-						status: if pdu.rejected() {
-							EventStatus::Rejected(RejectionCode::Unknown)
-						} else {
-							EventStatus::Accepted
-						},
 						redacted_by: pdu.redacts().map(ToOwned::to_owned),
 						short_state_hash: None,
 						deprecated_local_topo_depth: pdu.depth().into(),

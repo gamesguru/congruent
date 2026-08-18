@@ -12,13 +12,7 @@ use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
 use ruma::{CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId};
 
-use crate::{
-	Dep, rooms,
-	rooms::{
-		pdu_metadata::{EventStatus, RejectionCode},
-		short::ShortRoomId,
-	},
-};
+use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
 pub struct Service {
 	db: Data,
@@ -268,7 +262,6 @@ fn add_pdu_outlier_batch_impl<'a>(
 	// and outlier paths. Re-adding a timeline event as an outlier would set
 	// is_outlier=true and zero out deprecated_local_topo_depth, making the event
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
-	let mut existing_outlier_meta = None;
 	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
 		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
 			if !demote && !meta.is_outlier {
@@ -278,7 +271,6 @@ fn add_pdu_outlier_batch_impl<'a>(
 				);
 				return;
 			}
-			existing_outlier_meta = Some(meta);
 		}
 	}
 
@@ -301,26 +293,15 @@ fn add_pdu_outlier_batch_impl<'a>(
 
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
 		// the wire), so a freshly-parsed `parsed_pdu` always reports
-		// `rejected() == false` here. Carry over any rejected/soft-failed
-		// state from an existing outlier entry so this call doesn't clobber
-		// a rejection that mark_event_rejected() just recorded moments ago
-		// (every reject call site adds the outlier immediately afterwards).
+		// `rejected() == false` here. Rejection/soft-fail verdicts live in
+		// the independent `eventid_rejections` / `eventid_softfailed`
+		// stores, which this function never touches, so a rejection recorded
+		// by `mark_event_rejected()` is preserved across the outlier write.
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id,
 			is_outlier: true,
 			origin_server_ts: parsed_pdu.origin_server_ts().0,
 			depth: parsed_pdu.depth(),
-			status: match existing_outlier_meta.as_ref().map(|m| &m.status) {
-				| Some(EventStatus::Rejected(code)) => EventStatus::Rejected(*code),
-				| Some(EventStatus::SoftFailed(code)) if !parsed_pdu.rejected() =>
-					EventStatus::SoftFailed(*code),
-				| _ =>
-					if parsed_pdu.rejected() {
-						EventStatus::Rejected(RejectionCode::Unknown)
-					} else {
-						EventStatus::Pending
-					},
-			},
 			redacted_by: parsed_pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: None,
 			deprecated_local_topo_depth: 0,

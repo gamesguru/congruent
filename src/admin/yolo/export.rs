@@ -118,20 +118,14 @@ pub(super) async fn decorate_pdu_for_export(
 				"__local_topo_depth".to_owned(),
 				JsonValue::from(meta_bytes.deprecated_local_topo_depth),
 			);
-			obj.insert(
-				"__soft_failed".to_owned(),
-				JsonValue::from(matches!(
-					meta_bytes.status,
-					conduwuit_service::rooms::pdu_metadata::EventStatus::SoftFailed(_)
-				)),
-			);
-			obj.insert(
-				"__rejected".to_owned(),
-				JsonValue::from(matches!(
-					meta_bytes.status,
-					conduwuit_service::rooms::pdu_metadata::EventStatus::Rejected(_)
-				)),
-			);
+			let is_soft_failed = ctx
+				.services
+				.rooms
+				.pdu_metadata
+				.is_event_soft_failed(pdu.event_id())
+				.await;
+			obj.insert("__soft_failed".to_owned(), JsonValue::from(is_soft_failed));
+			obj.insert("__rejected".to_owned(), JsonValue::from(is_rejected));
 		}
 
 		// Stream ordering position (what /sync uses to iterate)

@@ -33,7 +33,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 20;
+pub(crate) const DATABASE_VERSION: u64 = 21;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -364,6 +364,17 @@ async fn migrate(services: &Services) -> Result<()> {
 
 	if services.globals.db.database_version().await < 20 {
 		services.globals.db.bump_database_version(20);
+	}
+
+	// v21 - delete the single-slot `EventStatus` model; verdicts live in the
+	// independent `eventid_rejections`/`eventid_softfailed` stores. `db_lt_21`
+	// folds the legacy `eventid_status` CF and any legacy `eventid_metadata.status`
+	// field into those stores and rewrites `eventid_metadata` rows status-less.
+	// (`eventid_status` stays as a live-but-unused CF for upgrade-path safety.)
+	if services.globals.db.database_version().await < 21 {
+		db_lt_21(services)
+			.await
+			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -719,13 +730,6 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				status: if pdu.rejected() {
-					crate::rooms::pdu_metadata::EventStatus::Rejected(
-						crate::rooms::pdu_metadata::RejectionCode::Unknown,
-					)
-				} else {
-					crate::rooms::pdu_metadata::EventStatus::Accepted
-				},
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: None,
 				deprecated_local_topo_depth,
@@ -733,6 +737,15 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 				eventid_metadata.insert(event_id_bytes, metadata_bytes);
+			}
+			if pdu.rejected()
+				&& db["eventid_rejections"]
+					.get_blocking(event_id_bytes)
+					.is_not_found()
+			{
+				db["eventid_rejections"].insert(event_id_bytes, [
+					crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
+				]);
 			}
 
 			// roomid_topologicalorder_pducount
@@ -774,13 +787,6 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					is_outlier: true,
 					origin_server_ts: pdu.origin_server_ts().0,
 					depth: pdu.depth(),
-					status: if pdu.rejected() {
-						crate::rooms::pdu_metadata::EventStatus::Rejected(
-							crate::rooms::pdu_metadata::RejectionCode::Unknown,
-						)
-					} else {
-						crate::rooms::pdu_metadata::EventStatus::Pending
-					},
 					redacted_by: pdu.redacts().map(ToOwned::to_owned),
 					short_state_hash: None,
 					deprecated_local_topo_depth: 0,
@@ -788,6 +794,15 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				};
 				if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 					eventid_metadata.insert(event_id_bytes, metadata_bytes);
+				}
+				if pdu.rejected()
+					&& db["eventid_rejections"]
+						.get_blocking(event_id_bytes)
+						.is_not_found()
+				{
+					db["eventid_rejections"].insert(event_id_bytes, [
+						crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
+					]);
 				}
 			}
 
@@ -1635,6 +1650,149 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 	Ok(())
 }
 
+/// Legacy `EventMetadata` layout (v20) that still carried the single-slot
+/// `status: EventStatus` field, used only to read pre-v21 rows during
+/// `db_lt_21`. Field order replicates the exact on-disk layout of the old
+/// struct so legacy rows deserialize correctly.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EventMetadataV20 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	status: EventStatusV20,
+	redacted_by: Option<ruma::OwnedEventId>,
+	short_state_hash: Option<u64>,
+	#[serde(default)]
+	deprecated_local_topo_depth: u64,
+	#[serde(default)]
+	pdu_count: Option<u64>,
+}
+
+/// Legacy single-slot event verdict (v20), mirroring the deleted `EventStatus`
+/// enum's serde layout. Reuses the still-live `RejectionCode`/`SoftFailCode`
+/// types because their serialized form is unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+enum EventStatusV20 {
+	#[default]
+	Pending,
+	Accepted,
+	Rejected(crate::rooms::pdu_metadata::RejectionCode),
+	SoftFailed(crate::rooms::pdu_metadata::SoftFailCode),
+}
+
+/// v21: delete the single-slot `EventStatus` model. The verdict now lives
+/// entirely in the independent `eventid_rejections` / `eventid_softfailed`
+/// stores, and `EventMetadata` no longer carries a `status` field. This folds
+/// the legacy `eventid_status` CF (2-byte records) and any legacy
+/// `eventid_metadata.status` field into those stores, and rewrites every
+/// `eventid_metadata` row into the status-less layout. The `eventid_status` CF
+/// stays as a live-but-unused map to keep upgrade paths and restarts safe.
+async fn db_lt_21(services: &Services) -> Result<()> {
+	info!("Starting v21 migration (fold event status into independent stores)...");
+	let db = &services.db;
+
+	let eventid_rejections = db["eventid_rejections"].clone();
+	let eventid_softfailed = db["eventid_softfailed"].clone();
+	let eventid_metadata = db["eventid_metadata"].clone();
+
+	// Fold legacy `eventid_status` 2-byte records ([1, code] = soft-fail,
+	// [2, code] = rejected) into the independent stores, skipping any entry the
+	// independent store already records (fresh writes win).
+	if db.db.cf_exists("eventid_status") {
+		if let Ok(eventid_status) = database::Map::open(&db.db, "eventid_status") {
+			let stream = eventid_status.raw_stream();
+			pin_mut!(stream);
+			while let Some(Ok((event_id_bytes, value))) = stream.next().await {
+				if value.len() < 2 {
+					continue;
+				}
+				match value[0] {
+					| 1 if eventid_softfailed
+						.get_blocking(&event_id_bytes)
+						.is_not_found() =>
+					{
+						eventid_softfailed.insert(&event_id_bytes, [value[1]]);
+					},
+					| 2 if eventid_rejections
+						.get_blocking(&event_id_bytes)
+						.is_not_found() =>
+					{
+						eventid_rejections.insert(&event_id_bytes, [value[1]]);
+					},
+					| _ => {},
+				}
+			}
+			info!("Folded legacy eventid_status records into independent stores.");
+		} else {
+			warn!("eventid_status CF present but could not be opened for folding.");
+		}
+	}
+
+	// Rewrite every `eventid_metadata` row into the status-less layout, folding
+	// the legacy `status` field into the independent stores as we go. Rows that
+	// don't parse as v20 are left untouched (they're already v21 / status-less).
+	let mut batch = database::Batch::new();
+	let mut batch_count = 0_usize;
+	let metadata_stream = eventid_metadata.raw_stream();
+	pin_mut!(metadata_stream);
+	while let Some(Ok((event_id_bytes, value))) = metadata_stream.next().await {
+		let Ok(legacy) = bincode::deserialize::<EventMetadataV20>(value) else {
+			continue;
+		};
+
+		// Fold the legacy single-slot verdict into the independent stores.
+		match &legacy.status {
+			| EventStatusV20::Rejected(code)
+				if eventid_rejections
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_rejections.insert(&event_id_bytes, [code.to_u8()]);
+			},
+			| EventStatusV20::SoftFailed(code)
+				if eventid_softfailed
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_softfailed.insert(&event_id_bytes, [code.to_u8()]);
+			},
+			| _ => {},
+		}
+
+		// Re-encode the row without the `status` field.
+		let metadata = crate::rooms::timeline::EventMetadata {
+			short_room_id: legacy.short_room_id,
+			is_outlier: legacy.is_outlier,
+			origin_server_ts: legacy.origin_server_ts,
+			depth: legacy.depth,
+			redacted_by: legacy.redacted_by,
+			short_state_hash: legacy.short_state_hash,
+			deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
+			pdu_count: legacy.pdu_count,
+		};
+		if let Ok(new_bytes) = bincode::serialize(&metadata) {
+			eventid_metadata.batch_put(&mut batch, &event_id_bytes, new_bytes);
+			batch_count = batch_count.saturating_add(1);
+			if batch_count >= 1000 {
+				eventid_metadata.apply_batch(batch);
+				batch = database::Batch::new();
+				batch_count = 0;
+			}
+		}
+	}
+	eventid_metadata.apply_batch(batch);
+	info!("Rewrote eventid_metadata rows in status-less layout.");
+
+	// `eventid_status` stays a live (now-unused) CF: it must remain described
+	// so the `<19` upgrade path (`db_lt_19`) and restart-after-drop consistency
+	// keep working. Its contents were folded out above.
+
+	services.globals.db.bump_database_version(21);
+	info!("v21 migration completed.");
+	Ok(())
+}
+
 const UNIFY_RAW_PDU_ID_MARKER: &[u8] = b"unify_raw_pdu_id_16_byte";
 
 async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
@@ -1769,6 +1927,6 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 20);
+		assert_eq!(DATABASE_VERSION, 21);
 	}
 }

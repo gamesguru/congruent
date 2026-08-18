@@ -1,18 +1,12 @@
 use conduwuit::matrix::pdu::PduCount;
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::pdu_metadata::EventStatus;
-
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EventMetadata {
 	pub short_room_id: u64,
 	pub is_outlier: bool,
 	pub origin_server_ts: ruma::UInt,
 	pub depth: ruma::UInt,
-	/// The single validation verdict for this event. Replaces the previous
-	/// independent `soft_failed`/`rejected` booleans + reason strings.
-	#[serde(default)]
-	pub status: EventStatus,
 	pub redacted_by: Option<ruma::OwnedEventId>,
 	pub short_state_hash: Option<u64>,
 	#[serde(default)]

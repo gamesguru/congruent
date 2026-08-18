@@ -284,24 +284,6 @@ impl SoftFailCode {
 	}
 }
 
-/// The single validation status of an event, replacing the previous
-/// independent `rejected`/`soft_failed` booleans + reason strings. Because the
-/// variants are mutually exclusive, a timeline event can no longer carry a
-/// "stale" rejection marker — `Accepted` and `Rejected` are distinct states.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-pub enum EventStatus {
-	/// Outlier not yet validated (or a legacy row whose verdict is unknown).
-	#[default]
-	Pending,
-	/// Validated; auth passed. May still be an accepted outlier awaiting
-	/// promotion, or already in the timeline (distinguished by `is_outlier`).
-	Accepted,
-	/// Rejected with a typed reason. Always an outlier.
-	Rejected(RejectionCode),
-	/// Soft-failed with a typed reason. Always an outlier.
-	SoftFailed(SoftFailCode),
-}
-
 /// Returns true if a persisted rejection reason (from
 /// `get_rejection_reason`) is worth retrying. See [`RejectionCode`] for the
 /// classification and reasoning; a reason that doesn't parse as one of our

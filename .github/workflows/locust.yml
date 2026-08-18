@@ -12,7 +12,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   SKIP_CONFIRM: 1
-  PROFILE: release-quick
+  PROFILE: dev-quick
 
 jobs:
   locust-test:

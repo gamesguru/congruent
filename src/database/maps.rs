@@ -80,6 +80,11 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		val_size_hint: Some(128),
 		..descriptor::RANDOM_SMALL
 	},
+	// Kept as a live CF: `db_lt_19` and `db_lt_21` write/read it during
+	// upgrade before folding its contents into `eventid_rejections` /
+	// `eventid_softfailed`. No runtime code uses it anymore, and it must stay
+	// described so pre-v21 upgrades can open it (dropping the descriptor would
+	// break the `<19` write path and restart-after-drop consistency).
 	Descriptor {
 		name: "eventid_status",
 		val_size_hint: Some(2),

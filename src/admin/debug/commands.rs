@@ -176,7 +176,8 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 				writeln!(out, "- **depth**:            {}", meta.depth)?;
 				writeln!(out, "- **short_room_id**:    {}", meta.short_room_id)?;
 				writeln!(out, "- **is_outlier**:       {}", meta.is_outlier)?;
-				writeln!(out, "- **status**:           {:?}", meta.status)?;
+				writeln!(out, "- **soft_failed**:      {soft_failed}")?;
+				writeln!(out, "- **rejected**:         {rejected}")?;
 				writeln!(
 					out,
 					"- **redacted_by**:      {}",

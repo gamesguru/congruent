@@ -470,49 +470,12 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 	let mut outlier_state_event_ids = Vec::new();
 	for (pdu, metadata) in state_pdus.into_iter().zip(state_metadata) {
 		let event_id = pdu.event_id().to_owned();
-		match metadata {
-			| Ok(meta)
-				if matches!(
-					meta.status,
-					crate::rooms::pdu_metadata::EventStatus::Rejected(_)
-				) =>
-			{
-				// Retryable rejections are recovery markers, not permanent
-				// evidence that the event is invalid. Route the decision
-				// through `take_retry_if_rejection_retryable_for_promotion`,
-				// which does a *fresh* read of the current rejection reason
-				// and -- unless it's `MissingAuthEvent` (this event's own
-				// auth chain never finished resolving, so there is no
-				// validated verdict to trust; `promote_outlier` skips all
-				// auth checks and force-promoting it would be an auth
-				// bypass, not a legitimate retry -- see
-				// `is_event_pending_auth_resolution`'s doc comment) --
-				// atomically clears the marker before we queue the event.
-				//
-				// The atomicity here matters: `promote_outlier_batch`
-				// re-checks `is_event_rejected` under its insert lock
-				// before writing, so queueing an event whose *current*
-				// marker was never actually cleared makes that recheck
-				// silently skip the write while `promote_outliers_sorted`'s
-				// caller still counts it as promoted -- leaving the event
-				// permanently invisible despite looking successfully
-				// promoted.
-				if meta.is_outlier
-					&& self
-						.services
-						.pdu_metadata
-						.take_retry_if_rejection_retryable_for_promotion(&event_id)
-						.await
-				{
-					outlier_state_event_ids.push(event_id);
-				}
-			},
-			| Ok(meta) if meta.is_outlier => outlier_state_event_ids.push(event_id),
-			| Ok(_) => continue,
+		let is_outlier = match metadata {
+			| Ok(meta) => meta.is_outlier,
 			| Err(_) => {
 				// No batch metadata to inspect here (the batch lookup itself
 				// failed) -- fall back to the same live check-and-clear as
-				// the branch above, so this path neither force-promotes an
+				// the branch below, so this path neither force-promotes an
 				// event whose own auth chain never finished resolving nor
 				// queues a still (permanently) rejected event without
 				// clearing its marker.
@@ -528,7 +491,49 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 					continue;
 				}
 				outlier_state_event_ids.push(event_id);
+				continue;
 			},
+		};
+
+		// Outlier-ness comes from `EventMetadata`; rejection now lives in the
+		// authoritative `eventid_rejections` store. Retryable rejections are
+		// recovery markers, not permanent evidence that the event is invalid.
+		// Route the decision through
+		// `take_retry_if_rejection_retryable_for_promotion`, which does a
+		// *fresh* read of the current rejection reason and -- unless it's
+		// `MissingAuthEvent` (this event's own auth chain never finished
+		// resolving, so there is no validated verdict to trust;
+		// `promote_outlier` skips all auth checks and force-promoting it
+		// would be an auth bypass, not a legitimate retry -- see
+		// `is_event_pending_auth_resolution`'s doc comment) -- atomically
+		// clears the marker before we queue the event.
+		//
+		// The atomicity here matters: `promote_outlier_batch` re-checks
+		// `is_event_rejected` under its insert lock before writing, so
+		// queueing an event whose *current* marker was never actually cleared
+		// makes that recheck silently skip the write while
+		// `promote_outliers_sorted`'s caller still counts it as promoted --
+		// leaving the event permanently invisible despite looking
+		// successfully promoted.
+		if !is_outlier {
+			continue;
+		}
+		if self
+			.services
+			.pdu_metadata
+			.is_event_rejected(&event_id)
+			.await
+		{
+			if self
+				.services
+				.pdu_metadata
+				.take_retry_if_rejection_retryable_for_promotion(&event_id)
+				.await
+			{
+				outlier_state_event_ids.push(event_id);
+			}
+		} else {
+			outlier_state_event_ids.push(event_id);
 		}
 	}
 

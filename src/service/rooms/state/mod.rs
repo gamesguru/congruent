@@ -743,10 +743,11 @@ impl Service {
 			}
 
 			match self.services.timeline.get_event_metadata(&event_id).await {
-				| Ok(metadata)
-					if !metadata.is_outlier
-						&& metadata.status == rooms::pdu_metadata::EventStatus::Accepted =>
-				{
+				// Rejected/soft-failed events are always outliers, so a
+				// non-outlier is by construction accepted (the status verdict
+				// now lives in the independent `eventid_rejections` /
+				// `eventid_softfailed` stores rather than `EventMetadata`).
+				| Ok(metadata) if !metadata.is_outlier => {
 					eligible.push(event_id);
 				},
 				| Ok(_) => {
