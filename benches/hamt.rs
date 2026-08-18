@@ -23,7 +23,7 @@ fn bench_hamt_construction(c: &mut Criterion) {
 				// cheaper than the O(n) Vec clone the timer previously paid) so the
 				// timed work is construction proper, and black_box the result so the
 				// compiler cannot dead-code-eliminate the whole tree build.
-				black_box(rezzy::hamt::build_hamt_root_handle(
+				let _ = black_box(rezzy::hamt::build_hamt_root_handle(
 					&structural_key,
 					&lattice,
 					(0..size as u64).map(|i| (i, i * 1000 + 7)),
@@ -85,7 +85,7 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 
 				for &key in &target_keys {
 					let res = root_node.search(&structural_key, &key, &mut resolver);
-					let _ = std::hint::black_box(res);
+					let _ = black_box(res);
 				}
 			});
 		});
@@ -168,7 +168,7 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 						&lattice,
 						&mut resolver,
 					);
-					let _ = std::hint::black_box(res);
+					let _ = black_box(res);
 				});
 			},
 		);
