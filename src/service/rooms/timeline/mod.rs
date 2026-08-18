@@ -6,25 +6,21 @@ mod data;
 mod helpers;
 mod redact;
 
-use std::{fmt::Write, mem::size_of, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 
 pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId};
 use conduwuit_core::{
-	Result, Server, SyncMutex, at, err,
+	Result, Server, at, err,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
 	},
-	utils::{
-		MutexMap, MutexMapGuard, bytes, future::TryExtExt, math::usize_from_f64,
-		stream::TryIgnore,
-	},
+	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 	warn,
 };
 use futures::{Future, Stream, TryStreamExt, pin_mut};
-use lru_cache::LruCache;
 use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, api::Direction,
 	events::room::encrypted::Relation,
@@ -35,7 +31,7 @@ use self::data::Data;
 pub use self::{create::pdu_fits, data::PdusIterItem};
 use crate::{
 	Dep, account_data, admin, appservice, config, globals, pusher, rooms,
-	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
+	rooms::short::{ShortEventId, ShortRoomId},
 	sending, server_keys, users,
 };
 
@@ -65,8 +61,6 @@ pub struct Service {
 	services: Services,
 	db: Data,
 	pub mutex_insert: RoomMutexMap,
-	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
-	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 }
 
 struct Services {
@@ -102,15 +96,7 @@ pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
-		let config = &args.server.config;
-		let cache_capacity =
-			f64::from(config.shortstatehash_cache_capacity) * config.cache_capacity_modifier;
-		let cache_capacity = usize_from_f64(cache_capacity)?;
-		let per_cache = usize::max(1, cache_capacity / 2);
-
 		Ok(Arc::new(Self {
-			next_shortstatehash_cache: SyncMutex::new(LruCache::new(per_cache)),
-			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(per_cache)),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
@@ -145,30 +131,13 @@ impl crate::Service for Service {
 	}
 
 	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
-		let next_cache_len = self.next_shortstatehash_cache.lock().len();
-		let next_cache_bytes = next_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let next_bytes = bytes::pretty(next_cache_bytes);
-		writeln!(out, "next_shortstatehash_cache: {next_cache_len} ({next_bytes})")?;
-
-		let prev_cache_len = self.prev_shortstatehash_cache.lock().len();
-		let prev_cache_bytes = prev_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let prev_bytes = bytes::pretty(prev_cache_bytes);
-		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
-
 		let mutex_insert = self.mutex_insert.len();
 		writeln!(out, "insert_mutex: {mutex_insert}")?;
 
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {
-		self.next_shortstatehash_cache.lock().clear();
-		self.prev_shortstatehash_cache.lock().clear();
-	}
+	async fn clear_cache(&self) {}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
@@ -286,133 +255,11 @@ impl Service {
 		self.db.get_pdu_json_from_id(pdu_id).await
 	}
 
-	/// Returns the shortstatehash of the room at the event directly preceding
-	/// the exclusive `before` param. `before` does not have to be a valid
-	/// count or in the room.
-	///
-	/// Note: Caching is restricted to `PduCount::Normal` to prevent stale cache
-	/// entries from being served if historical PDUs with backfilled counts are
-	/// subsequently inserted.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn prev_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		before: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.prev_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, before))
-		{
-			return Ok(*hash);
-		}
-
-		let before_pdu = PduId { shortroomid, shorteventid: before };
-
-		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
-		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			if matches!(before, PduCount::Normal(_))
-				&& self.db.pduid_exists(&before_pdu.into()).await
-			{
-				self.prev_shortstatehash_cache
-					.lock()
-					.insert((shortroomid, before), hash);
-			}
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event directly following
-	/// the exclusive `after` param. `after` does not have to be a valid count
-	/// or in the room.
-	///
-	/// Note: Caching is restricted to `PduCount::Normal` to prevent stale cache
-	/// entries from being served if historical PDUs with backfilled counts are
-	/// subsequently inserted.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn next_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		after: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.next_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, after))
-		{
-			return Ok(*hash);
-		}
-
-		let after_pdu = PduId { shortroomid, shorteventid: after };
-
-		let next_count = self.db.next_timeline_count(&after_pdu).await?;
-		let next_pdu = PduId { shortroomid, shorteventid: next_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			if matches!(after, PduCount::Normal(_))
-				&& self.db.pduid_exists(&after_pdu.into()).await
-			{
-				self.next_shortstatehash_cache
-					.lock()
-					.insert((shortroomid, after), hash);
-			}
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn get_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		count: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		let pdu_id = PduId { shortroomid, shorteventid: count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
-
-		self.services.state.get_shortstatehash(shorteventid).await
-	}
-
 	/// Returns the HAMT root handle of the room at the event directly following
 	/// the exclusive `after` param. `after` does not have to be a valid count
 	/// or in the room.
 	///
-	/// Note: deliberately uncached for now; the shortstatehash variants below
-	/// retain the value caches while the sync layer is being cut over.
+	/// Note: deliberately uncached for now.
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn next_root_handle(
 		&self,
@@ -440,8 +287,7 @@ impl Service {
 	/// the exclusive `before` param. `before` does not have to be a valid count
 	/// or in the room.
 	///
-	/// Note: deliberately uncached for now; the shortstatehash variants below
-	/// retain the value caches while the sync layer is being cut over.
+	/// Note: deliberately uncached for now.
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn prev_root_handle(
 		&self,

@@ -736,66 +736,32 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 	let cork = db.cork_and_sync();
 	let userroomid_leftstate = db["userroomid_leftstate"].clone();
 
-	let (total, fixed, _) = userroomid_leftstate
+	let total = userroomid_leftstate
 		.stream()
 		.try_fold(
-			(0_usize, 0_usize, HashMap::<OwnedRoomId, ShortStateHash>::new()),
-			async |(mut total, mut fixed, mut shortstatehash_cache): (
-				usize,
-				usize,
-				HashMap<_, _>,
-			),
-			       ((user_id, room_id), state): KeyVal<'_>|
-			       -> Result<(usize, usize, HashMap<_, _>)> {
+			0_usize,
+			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
 				if state.deserialize().is_err() {
-					let latest_shortstatehash =
-						if let Some(shortstatehash) = shortstatehash_cache.get(room_id) {
-							*shortstatehash
-						} else if let Ok(shortstatehash) =
-							services.rooms.state.get_room_shortstatehash(room_id).await
-						{
-							shortstatehash_cache.insert(room_id.to_owned(), shortstatehash);
-							shortstatehash
-						} else {
-							warn!(%room_id, %user_id, "room has no shortstatehash");
-							return Ok((total, fixed, shortstatehash_cache));
-						};
-
-					let leave_state_event = services
-						.rooms
-						.state_accessor
-						.state_get(
-							latest_shortstatehash,
-							&StateEventType::RoomMember,
-							user_id.as_str(),
-						)
-						.await;
-
-					match leave_state_event {
-						| Ok(leave_state_event) => {
-							userroomid_leftstate.put((user_id, room_id), Json(leave_state_event));
-							fixed = fixed.saturating_add(1);
-						},
-						| Err(_) => {
-							warn!(
-								%room_id,
-								%user_id,
-								"room cached as left has no leave event for user, removing \
-								 cache entry"
-							);
-							userroomid_leftstate.del((user_id, room_id));
-						},
-					}
+					// The cached leave event is corrupted. The legacy repair path used to
+					// re-fetch it via the `shortstatehash` read chain, which was removed as
+					// part of the HAMT cutover, so we just drop the bad entry.
+					warn!(
+						%room_id,
+						%user_id,
+						"room cached as left has a corrupted leave event, removing \
+						 cache entry"
+					);
+					userroomid_leftstate.del((user_id, room_id));
 				}
 
 				total = total.saturating_add(1);
-				Ok((total, fixed, shortstatehash_cache))
+				Ok(total)
 			},
 		)
 		.await?;
 
 	drop(cork);
-	info!(?total, ?fixed, "Fixed entries in `userroomid_leftstate`.");
+	info!(?total, "Verified entries in `userroomid_leftstate`.");
 
 	db["global"].insert(POPULATED_USERROOMID_LEFTSTATE_TABLE_MARKER, []);
 	db.db.sort()?;

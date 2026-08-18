@@ -1,5 +1,10 @@
+src/api/client/membership/join.rs:	let statehashid = services
+src/api/client/membership/join.rs:		.persist_node_recursive(statehashid.1.clone());
+src/api/client/membership/join.rs:				state_root_handle: Some(statehashid.0.clone()),
 src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None (idle room),
 src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
+src/api/server/send.rs:struct StateHashInfo {
+src/api/server/send.rs:		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
 src/api/server/send.rs:/// lookup by `shortstatehash`.
 src/database/maps.rs:		name: "roomid_shortstatehash",
 src/database/maps.rs:		name: "roomsynctoken_shortstatehash",
@@ -31,6 +36,14 @@ src/service/migrations.rs:	for (shorteventid, shortstatehash) in short_state_eve
 src/service/migrations.rs:			.entry((room_id, shortstatehash))
 src/service/migrations.rs:	for ((room_id, shortstatehash), shorteventids) in events_by_state {
 src/service/migrations.rs:			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
+src/service/rooms/event_handler/state_at_incoming.rs:	trace!("Calculating extremity statehashes...");
+src/service/rooms/event_handler/state_at_incoming.rs:	for (sstatehash, prev_event) in &extremity_roothandles {
+src/service/rooms/event_handler/state_at_incoming.rs:		match self.get_extremity_lthash(sstatehash, prev_event).await {
+src/service/rooms/event_handler/state_at_incoming.rs:					unique_forks.push((lthash, (sstatehash.clone(), prev_event)));
+src/service/rooms/event_handler/state_at_incoming.rs:		let (sstatehash, prev_event) = unique_forks[0].1.clone();
+src/service/rooms/event_handler/state_at_incoming.rs:			.state_at_incoming_fork(room_id, sstatehash, prev_event)
+src/service/rooms/event_handler/state_at_incoming.rs:			.wide_and_then(|(sstatehash, prev_event)| {
+src/service/rooms/event_handler/state_at_incoming.rs:				self.state_at_incoming_fork(room_id, sstatehash, prev_event)
 src/service/rooms/short/mod.rs:	statehash_shortstatehash: Arc<Map>,
 src/service/rooms/short/mod.rs:pub type ShortStateHash = ShortId;
 src/service/rooms/short/mod.rs:				statehash_shortstatehash: args.db["statehash_shortstatehash"].clone(),
@@ -48,5 +61,17 @@ src/service/rooms/short/mod.rs:	(shortstatehash, false)
 src/service/rooms/state/mod.rs:	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
 src/service/rooms/state/mod.rs:	roomid_shortstatehash: Arc<Map>,
 src/service/rooms/state/mod.rs:				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
+src/service/rooms/state/mod.rs:	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
+src/service/rooms/state/mod.rs:	/// Generates a new StateHash and associates it with the incoming event.
+src/service/rooms/state/mod.rs:	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
 src/service/rooms/state/mod.rs:	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
 src/service/rooms/state/mod.rs:			.roomid_shortstatehash
+src/service/rooms/timeline/build.rs:	let statehashid = self
+src/service/rooms/timeline/build.rs:	trace!("State hash ID for {room_id}: {statehashid:?}");
+src/service/rooms/timeline/build.rs:		.persist_node_recursive(statehashid.1.clone());
+src/service/rooms/timeline/build.rs:				state_root_handle: Some(statehashid.0.clone()),
+src/service/rooms/timeline/build.rs:			.set_room_state_hamt(&room_id, &statehashid.0, state_lock);
+src/service/sending/sender.rs:struct StateHashInfo {
+src/service/sending/sender.rs:	state_hashes: BTreeMap<OwnedEventId, StateHashInfo>,
+src/service/sending/sender.rs:) -> BTreeMap<OwnedEventId, StateHashInfo> {
+src/service/sending/sender.rs:) -> Option<StateHashInfo> {

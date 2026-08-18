@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write, iter::once, mem::size_of, sync::Arc};
+use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
 
 use async_trait::async_trait;
 use conduwuit::{RoomVersion, debug, matrix::StateKey};
@@ -79,7 +79,6 @@ struct Services {
 }
 
 struct Data {
-	shorteventid_shortstatehash: Arc<Map>,
 	roomid_shortstatehash: Arc<Map>,
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
@@ -104,7 +103,6 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 			},
 			db: Data {
-				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
@@ -433,22 +431,6 @@ impl Service {
 			.collect()
 	}
 
-	/// Set the state hash to a new version, but does not update state_cache.
-	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
-	pub fn set_room_state(
-		&self,
-		room_id: &RoomId,
-		shortstatehash: u64,
-		// Take mutex guard to make sure users get the room state mutex
-		_mutex_lock: &RoomMutexGuard,
-	) {
-		const BUFSIZE: usize = size_of::<u64>();
-
-		self.db
-			.roomid_shortstatehash
-			.raw_aput::<BUFSIZE, _, _>(room_id, shortstatehash);
-	}
-
 	/// Set the state HAMT RootHandle to a new version.
 	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
@@ -486,14 +468,6 @@ impl Service {
 
 		self.services.short.set_room_version(room_id, &version);
 		Ok(version)
-	}
-
-	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
-		self.db
-			.shorteventid_shortstatehash
-			.qry(&shorteventid)
-			.await
-			.deserialized()
 	}
 
 	pub async fn get_roothandle(
@@ -558,7 +532,7 @@ impl Service {
 		content: &serde_json::value::RawValue,
 		room_version: &RoomVersion,
 	) -> Result<StateMap<PduEvent>> {
-		let Ok(shortstatehash) = self.get_room_shortstatehash(room_id).await else {
+		let Ok(root_handle) = self.get_room_state_hamt(room_id).await else {
 			return Ok(HashMap::new());
 		};
 
@@ -582,7 +556,7 @@ impl Service {
 		let (state_keys, event_ids): (Vec<_>, Vec<_>) = self
 			.services
 			.state_accessor
-			.state_full_shortids(shortstatehash)
+			.state_full_shortids_hamt(root_handle)
 			.ready_filter_map(Result::ok)
 			.ready_filter_map(|(shortstatekey, shorteventid)| {
 				sauthevents

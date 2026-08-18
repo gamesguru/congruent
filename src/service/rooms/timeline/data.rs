@@ -229,10 +229,6 @@ impl Data {
 		Ok(extract.event_id)
 	}
 
-	pub(super) async fn pduid_exists(&self, pdu_id: &RawPduId) -> bool {
-		self.pduid_pdu.exists(pdu_id).await.is_ok()
-	}
-
 	/// Returns the pdu as a `BTreeMap<String, CanonicalJsonValue>`.
 	pub(super) async fn get_pdu_json_from_id(
 		&self,

@@ -260,10 +260,6 @@ pub struct Config {
 	pub shortstatekey_cache_capacity: u32,
 
 	/// default: varies by system
-	#[serde(default = "default_shortstatehash_cache_capacity")]
-	pub shortstatehash_cache_capacity: u32,
-
-	/// default: varies by system
 	#[serde(default = "default_statekeyshort_cache_capacity")]
 	pub statekeyshort_cache_capacity: u32,
 
@@ -2754,10 +2750,6 @@ fn default_eventid_pdu_cache_capacity() -> u32 {
 }
 
 fn default_shortstatekey_cache_capacity() -> u32 {
-	parallelism_scaled_u32(10_000).saturating_add(100_000)
-}
-
-fn default_shortstatehash_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
 
