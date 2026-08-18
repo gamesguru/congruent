@@ -443,7 +443,7 @@ e2ee args=".*":
             -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "2") }}" \
             -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
             -count=1 \
-            -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom") }}" \
+            -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "") }}" \
             -run "{{ args }}" \
             ./tests ./tests/js |
             tee "$LOG_FILE" |

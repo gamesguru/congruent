@@ -28,6 +28,8 @@
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
+{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughTime"}
