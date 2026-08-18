@@ -11,7 +11,6 @@ src/database/maps.rs:		name: "roomsynctoken_shortstatehash",
 src/database/maps.rs:		name: "shorteventid_shortstatehash",
 src/database/maps.rs:		name: "shortstatehash_lthash",
 src/database/maps.rs:		name: "shortstatehash_statediff",
-src/database/maps.rs:		name: "statehash_shortstatehash",
 src/service/migrations.rs:use crate::{Services, media, rooms::short::ShortStateHash};
 src/service/migrations.rs:					// re-fetch it via the `shortstatehash` read chain, which was removed as
 src/service/migrations.rs:	parent: Option<ShortStateHash>,
@@ -44,20 +43,7 @@ src/service/rooms/event_handler/state_at_incoming.rs:		let (sstatehash, prev_eve
 src/service/rooms/event_handler/state_at_incoming.rs:			.state_at_incoming_fork(room_id, sstatehash, prev_event)
 src/service/rooms/event_handler/state_at_incoming.rs:			.wide_and_then(|(sstatehash, prev_event)| {
 src/service/rooms/event_handler/state_at_incoming.rs:				self.state_at_incoming_fork(room_id, sstatehash, prev_event)
-src/service/rooms/short/mod.rs:	statehash_shortstatehash: Arc<Map>,
 src/service/rooms/short/mod.rs:pub type ShortStateHash = ShortId;
-src/service/rooms/short/mod.rs:				statehash_shortstatehash: args.db["statehash_shortstatehash"].clone(),
-src/service/rooms/short/mod.rs:/// Returns (shortstatehash, already_existed)
-src/service/rooms/short/mod.rs:pub async fn get_or_create_shortstatehash(&self, state_hash: &[u8]) -> (ShortStateHash, bool) {
-src/service/rooms/short/mod.rs:	const BUFSIZE: usize = size_of::<ShortStateHash>();
-src/service/rooms/short/mod.rs:	if let Ok(shortstatehash) = self
-src/service/rooms/short/mod.rs:		.statehash_shortstatehash
-src/service/rooms/short/mod.rs:		return (shortstatehash, true);
-src/service/rooms/short/mod.rs:	let shortstatehash = self.services.globals.next_count().unwrap();
-src/service/rooms/short/mod.rs:	debug_assert!(size_of_val(&shortstatehash) == BUFSIZE, "buffer requirement changed");
-src/service/rooms/short/mod.rs:		.statehash_shortstatehash
-src/service/rooms/short/mod.rs:		.raw_aput::<BUFSIZE, _, _>(state_hash, shortstatehash);
-src/service/rooms/short/mod.rs:	(shortstatehash, false)
 src/service/rooms/state/mod.rs:	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
 src/service/rooms/state/mod.rs:	roomid_shortstatehash: Arc<Map>,
 src/service/rooms/state/mod.rs:				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),

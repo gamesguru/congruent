@@ -40,7 +40,6 @@ struct Data {
 	shortstatekey_statekey: Arc<Map>,
 	roomid_shortroomid: Arc<Map>,
 	roomid_roomversion: Arc<Map>,
-	statehash_shortstatehash: Arc<Map>,
 }
 
 struct Services {
@@ -91,7 +90,6 @@ impl crate::Service for Service {
 				shortstatekey_statekey: args.db["shortstatekey_statekey"].clone(),
 				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
 				roomid_roomversion: args.db["roomid_roomversion"].clone(),
-				statehash_shortstatehash: args.db["statehash_shortstatehash"].clone(),
 			},
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
@@ -574,31 +572,6 @@ where
 			stream::iter(results.into_iter().map(Option::unwrap))
 		})
 		.flatten()
-}
-
-/// Returns (shortstatehash, already_existed)
-#[implement(Service)]
-pub async fn get_or_create_shortstatehash(&self, state_hash: &[u8]) -> (ShortStateHash, bool) {
-	const BUFSIZE: usize = size_of::<ShortStateHash>();
-
-	if let Ok(shortstatehash) = self
-		.db
-		.statehash_shortstatehash
-		.get(state_hash)
-		.await
-		.deserialized()
-	{
-		return (shortstatehash, true);
-	}
-
-	let shortstatehash = self.services.globals.next_count().unwrap();
-	debug_assert!(size_of_val(&shortstatehash) == BUFSIZE, "buffer requirement changed");
-
-	self.db
-		.statehash_shortstatehash
-		.raw_aput::<BUFSIZE, _, _>(state_hash, shortstatehash);
-
-	(shortstatehash, false)
 }
 
 #[implement(Service)]
