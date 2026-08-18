@@ -10,8 +10,7 @@ use conduwuit_core::{
 };
 use figment::providers::Format;
 use ruma::{
-	CanonicalJsonObject, EventId, RoomId, events::StateEventType,
-	owned_event_id, owned_room_id,
+	CanonicalJsonObject, EventId, RoomId, events::StateEventType, owned_event_id, owned_room_id,
 };
 
 use crate::Services;
