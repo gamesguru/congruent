@@ -6,10 +6,12 @@ the upstream `rezzy` HAMT crate needs to expose.
 ## Summary
 
 The remaining read-path work (sync v3/v5, state-at-incoming, state resolution)
-can be completed with the **current** `rezzy` API. No new rezzy _methods_ are
-required. Exactly **one** small derive change is _worth_ making so that a HAMT
-root can be used directly as a hash-map/hash-set key in fork-dedup logic:
-`derive(..., Hash)` on `rezzy::hamt::RootHandle`.
+can be completed with the current `rezzy` API — no new rezzy methods are
+required, and no pending rezzy changes block the cutover. The one derive change
+identified earlier (making `RootHandle` usable as a map key) has **landed
+upstream**: `rezzy::hamt::RootHandle` now derives `Hash` (see below), so a
+resolved root can be used directly as a hash-map/hash-set key in fork-dedup
+logic without keying on the lossier `structural_hash`.
 
 ## What already exists (no rezzy change needed)
 
@@ -30,44 +32,30 @@ These are all available and in use:
 | `get_room_state_hamt(room_id)`                                                                          | conduwuit `rooms::state` | current room root                                                                           |
 | timeline `prev/next/get_root_handle`                                                                    | conduwuit timeline       | sync per-event root handles                                                                 |
 
-## The one rezzy change worth making
+## The rezzy `RootHandle: Hash` change — landed upstream
 
-`rezzy::hamt::RootHandle` currently derives:
+`rezzy::hamt::RootHandle` now derives (rezzy dev branch, rev `03fb50f`):
 
 ```rust
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
     pub structural_hash: StructuralHash, // [u8; 16]
     pub state_group_id: StateGroupId,    // [u8; 32]
 }
 ```
 
-It is `Eq` and `PartialEq` but **not `Hash`**. Two places in the remaining
-cutover want to key a `HashMap`/`HashSet` by a resolved root:
+It is `Eq`, `PartialEq`, and now `Hash`, so roots can be used directly as
+`HashMap`/`HashSet` keys in the two places the remaining cutover needs:
 
 1. `event_handler/state_at_incoming.rs` — forks are collected via
    `try_collect::<HashMap<_,_>>()` keyed by the per-prev-event state identity
    and deduplicated by digest.
 2. sync-v3/v5 join logic that compares/aggregates per-event roots.
 
-The workaround is to key by `root_handle.structural_hash` (`[u8;16]`, which is
-`Hash`). That is fine but slightly lossy (only the local structural hash, not
-the global `state_group_id`). Deriving `Hash` on `RootHandle` (combining both
-fields) makes root handles first-class map keys in the same spirit as the old
-`ShortStateHash: u64`, with no other API impact.
-
-### Suggested upstream change
-
-```diff
--#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
- pub struct RootHandle {
-     pub structural_hash: StructuralHash,
-     pub state_group_id: StateGroupId,
- }
-```
-
-No ordering/`Ord` is needed; the codebase does not order roots.
+Combining both fields (local `structural_hash` + global `state_group_id`) makes
+root handles first-class map keys in the same spirit as the old
+`ShortStateHash: u64`. No `Ord` is derived and none is needed; the codebase does
+not order roots.
 
 ## Conduwuit-side accessor add (not a rezzy change)
 
