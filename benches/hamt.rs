@@ -14,15 +14,18 @@ fn bench_hamt_construction(c: &mut Criterion) {
 	for &size in &sizes {
 		group.throughput(Throughput::Elements(size as u64));
 
-		let entries: Vec<(u64, u64)> = (0..size as u64).map(|i| (i, i * 1000 + 7)).collect();
 		let structural_key = room_structural_key(&server_secret, &room_id);
 		let lattice = rezzy::state::LtHash::default();
 
 		group.bench_with_input(BenchmarkId::new("build_root_handle", size), &size, |b, _| {
 			b.iter(|| {
-				let entries = std::hint::black_box(entries.clone());
-				let _res =
-					rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries);
+				// Regenerate the entries rather than cloning the full Vec so the timed
+				// work measures tree construction alone, not an O(n) copy.
+				let _res = rezzy::hamt::build_hamt_root_handle(
+					&structural_key,
+					&lattice,
+					(0..size as u64).map(|i| (i, i * 1000 + 7)),
+				);
 			});
 		});
 	}
