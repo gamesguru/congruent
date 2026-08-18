@@ -1846,44 +1846,54 @@ where
 	);
 
 	for room_id in all_joined_rooms {
-		let Ok(current_shortstatehash) =
-			services.rooms.state.get_room_shortstatehash(room_id).await
+		let Ok(current_root_handle) = services.rooms.state.get_room_state_hamt(room_id).await
 		else {
 			error!("Room {room_id} has no state");
 			continue;
 		};
 
-		let since_shortstatehash = services
+		let since_root_handle = services
 			.rooms
 			.timeline
-			.next_shortstatehash(room_id, PduCount::Normal(globalsince))
+			.next_root_handle(room_id, PduCount::Normal(globalsince))
 			.await
 			.ok();
 
 		let encrypted_room = services
 			.rooms
 			.state_accessor
-			.state_get(current_shortstatehash, &StateEventType::RoomEncryption, "")
+			.state_get_in_room_hamt(
+				room_id,
+				&current_root_handle,
+				&StateEventType::RoomEncryption,
+				"",
+			)
 			.await
 			.is_ok();
 
-		if let Some(since_shortstatehash) = since_shortstatehash {
+		if let Some(since_root_handle) = since_root_handle {
 			// Skip if there are only timeline changes
-			if since_shortstatehash == current_shortstatehash {
+			if since_root_handle == current_root_handle {
 				continue;
 			}
 
 			let since_encryption = services
 				.rooms
 				.state_accessor
-				.state_get(since_shortstatehash, &StateEventType::RoomEncryption, "")
+				.state_get_in_room_hamt(
+					room_id,
+					&since_root_handle,
+					&StateEventType::RoomEncryption,
+					"",
+				)
 				.await;
 
 			let since_sender_member: Option<RoomMemberEventContent> = services
 				.rooms
 				.state_accessor
-				.state_get_content(
-					since_shortstatehash,
+				.state_get_content_hamt(
+					room_id,
+					&since_root_handle,
 					&StateEventType::RoomMember,
 					sender_user.as_str(),
 				)
@@ -1900,14 +1910,17 @@ where
 				let current_state_ids: HashMap<_, OwnedEventId> = services
 					.rooms
 					.state_accessor
-					.state_keys_with_ids(current_shortstatehash, &StateEventType::RoomMember)
+					.state_keys_with_ids_hamt(
+						current_root_handle.clone(),
+						&StateEventType::RoomMember,
+					)
 					.collect()
 					.await;
 
 				let since_state_ids: HashMap<_, _> = services
 					.rooms
 					.state_accessor
-					.state_keys_with_ids(since_shortstatehash, &StateEventType::RoomMember)
+					.state_keys_with_ids_hamt(since_root_handle, &StateEventType::RoomMember)
 					.collect()
 					.await;
 

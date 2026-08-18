@@ -163,6 +163,39 @@ pub async fn state_contains_type(
 }
 
 #[implement(super::Service)]
+pub async fn state_contains_type_hamt(
+	&self,
+	_room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+) -> bool {
+	// Short-circuit iterate this root's state keys and test whether any entry
+	// has the requested type. Mirrors the legacy `state_contains_type` (which
+	// iterated `state_keys`); here we stream the root's short IDs, resolve each
+	// to its `(event_type, state_key)`, and stop at the first match.
+	let shortstatekeys = self
+		.state_full_shortids_hamt(root_handle.clone())
+		.ignore_err()
+		.map(at!(0));
+
+	let stream = self
+		.services
+		.short
+		.multi_get_statekey_from_short(shortstatekeys)
+		.ready_filter_map(Result::ok);
+
+	pin_mut!(stream);
+
+	while let Some((event_type_, _)) = stream.next().await {
+		if event_type_.eq(event_type) {
+			return true;
+		}
+	}
+
+	false
+}
+
+#[implement(super::Service)]
 pub async fn state_contains_shortstatekey(
 	&self,
 	shortstatehash: ShortStateHash,
@@ -293,6 +326,30 @@ pub async fn state_get_in_room_hamt(
 	self.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), &event_id)
+		.await
+}
+
+/// Returns a single EventId at the given HAMT root with key
+/// (`event_type`, `state_key`).
+#[implement(super::Service)]
+pub async fn state_get_id_hamt<Id>(
+	&self,
+	room_id: &ruma::RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Id>
+where
+	Id: serde::de::DeserializeOwned + Sized + ToOwned,
+	<Id as ToOwned>::Owned: Borrow<EventId>,
+{
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, root_handle, event_type, state_key)
+		.await?;
+
+	self.services
+		.short
+		.get_eventid_from_short(shorteventid)
 		.await
 }
 
@@ -430,6 +487,58 @@ where
 		.map(Vec::into_iter)
 		.map(IterStream::stream)
 		.flatten_stream();
+
+	self.services
+		.short
+		.multi_get_eventid_from_short(shorteventids)
+		.zip(state_keys)
+		.ready_filter_map(|(eid, sk)| eid.map(move |eid| (sk, eid)).ok())
+}
+
+/// Iterates the state_keys for an event_type at a HAMT root; current state
+/// event_id included.
+#[implement(super::Service)]
+pub fn state_keys_with_ids_hamt<'a, Id>(
+	&'a self,
+	root_handle: rezzy::hamt::RootHandle,
+	event_type: &'a StateEventType,
+) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
+where
+	Id: for<'de> Deserialize<'de> + Send + Sized + ToOwned + 'a,
+	<Id as ToOwned>::Owned: Borrow<EventId>,
+{
+	// Resolve this root's short IDs, filter to the requested event_type, and
+	// map each surviving short event id to its full event id. Order is
+	// preserved between the filtered state keys and the event ids.
+	let short_ids = self
+		.state_full_shortids_hamt(root_handle)
+		.ignore_err()
+		.unzip()
+		.map(|(ssks, sids): (Vec<ShortStateKey>, Vec<ShortEventId>)| (ssks, sids))
+		.shared();
+
+	let shortstatekeys = short_ids
+		.clone()
+		.map(at!(0))
+		.map(Vec::into_iter)
+		.map(IterStream::stream)
+		.flatten_stream();
+
+	let shorteventids = short_ids
+		.clone()
+		.map(at!(1))
+		.map(Vec::into_iter)
+		.map(IterStream::stream)
+		.flatten_stream();
+
+	let state_keys = self
+		.services
+		.short
+		.multi_get_statekey_from_short(shortstatekeys)
+		.ready_filter_map(Result::ok)
+		.ready_filter_map(move |(event_type_, state_key)| {
+			event_type_.eq(event_type).then_some(state_key)
+		});
 
 	self.services
 		.short
@@ -651,14 +760,15 @@ pub fn state_full_shortids_hamt(
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
 pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
-	// A new, completely empty HAMT has a specific structural hash (usually 32 zero
-	// bytes or the hash of an empty string, depending on the lattice). But to be
-	// perfectly safe and consistent, we'll just check if load_full_state_hamt
-	// yields an empty map. Optimizing this to an early exit could be a future
-	// step.
-	self.load_full_state_hamt(root_handle)
-		.await
-		.map(|s| s.is_empty())
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+
+	// O(1) structural check on the root's datamap/nodemap bitmaps, rather than
+	// materializing the full tree to test `.is_empty()`.
+	Ok(root_node.is_empty())
 }
 
 #[implement(super::Service)]

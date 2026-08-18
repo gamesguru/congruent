@@ -539,10 +539,10 @@ pub(crate) async fn build_sync_events(
 		// Collect members of rooms that the syncing user joined since the last sync
 		if let Some(last_sync_end_count) = last_sync_end_count {
 			for room_id in joined_rooms.keys() {
-				let last_sync_end_shortstatehash = services
+				let last_sync_end_root_handle = services
 					.rooms
 					.timeline
-					.prev_shortstatehash(
+					.prev_root_handle(
 						room_id,
 						conduwuit::matrix::pdu::PduCount::Normal(
 							last_sync_end_count.saturating_add(1),
@@ -551,8 +551,8 @@ pub(crate) async fn build_sync_events(
 					.await
 					.ok();
 
-				let joined_since_last_sync = match last_sync_end_shortstatehash {
-					| Some(last_sync_end_shortstatehash) => {
+				let joined_since_last_sync = match last_sync_end_root_handle {
+					| Some(last_sync_end_root_handle) => {
 						use ruma::events::{
 							StateEventType,
 							room::member::{MembershipState, RoomMemberEventContent},
@@ -560,8 +560,9 @@ pub(crate) async fn build_sync_events(
 						let membership = services
 							.rooms
 							.state_accessor
-							.state_get_content::<RoomMemberEventContent>(
-								last_sync_end_shortstatehash,
+							.state_get_content_hamt::<RoomMemberEventContent>(
+								room_id,
+								&last_sync_end_root_handle,
 								&StateEventType::RoomMember,
 								syncing_user.as_str(),
 							)
