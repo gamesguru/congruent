@@ -29,9 +29,9 @@ pub(crate) fn root_handle_to_bytes(handle: &rezzy::hamt::RootHandle) -> Vec<u8> 
 }
 
 pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHandle> {
-	if bytes.len() < ROOT_HANDLE_LEN {
+	if bytes.len() != ROOT_HANDLE_LEN {
 		return Err(err!(error!(
-			"RootHandle value too short: expected {ROOT_HANDLE_LEN} bytes, got {}",
+			"RootHandle value invalid length: expected {ROOT_HANDLE_LEN} bytes, got {}",
 			bytes.len()
 		)));
 	}

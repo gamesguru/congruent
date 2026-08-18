@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, hint::black_box, sync::Arc};
 
 use conduwuit_service::rooms::state_hamt::room_structural_key;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -19,13 +19,15 @@ fn bench_hamt_construction(c: &mut Criterion) {
 
 		group.bench_with_input(BenchmarkId::new("build_root_handle", size), &size, |b, _| {
 			b.iter(|| {
-				// Regenerate the entries rather than cloning the full Vec so the timed
-				// work measures tree construction alone, not an O(n) copy.
-				let _res = rezzy::hamt::build_hamt_root_handle(
+				// Feed a fresh input iterator each iteration (regenerating lazily is
+				// cheaper than the O(n) Vec clone the timer previously paid) so the
+				// timed work is construction proper, and black_box the result so the
+				// compiler cannot dead-code-eliminate the whole tree build.
+				black_box(rezzy::hamt::build_hamt_root_handle(
 					&structural_key,
 					&lattice,
 					(0..size as u64).map(|i| (i, i * 1000 + 7)),
-				);
+				));
 			});
 		});
 	}
