@@ -10,11 +10,11 @@ use conduwuit_core::{
 };
 use figment::providers::Format;
 use ruma::{
-	CanonicalJsonObject, EventId, RoomId, RoomVersionId, UserId, events::StateEventType,
-	owned_event_id, owned_room_id, owned_user_id,
+	CanonicalJsonObject, EventId, RoomId, events::StateEventType,
+	owned_event_id, owned_room_id,
 };
 
-use crate::{Args, Services};
+use crate::Services;
 
 struct TempDbGuard {
 	path: PathBuf,
