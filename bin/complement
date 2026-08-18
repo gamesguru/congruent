@@ -141,25 +141,27 @@ anchor_one() {
 	local pattern="$1"
 	local anchored=()
 	local segment
-	local idx=0
 
 	IFS='/' read -r -a segments <<<"$pattern"
+	local last=$((${#segments[@]} - 1))
+	local idx=0
 	for segment in "${segments[@]}"; do
-		if [ "$idx" -eq 0 ]; then
-			# Top-level test names should behave like a prefix match so
-			# `TestFoo` also includes `TestFooBar` and `TestFoo/Baz`.
-			if [[ "$segment" =~ ^\^ ]]; then
-				anchored+=("$segment")
-			else
-				anchored+=("^${segment}")
-			fi
+		# In the real (slash-joined) test name, every segment except the
+		# last is a *complete* path component terminated by a literal `/`.
+		# So only the last segment -- the one you may have typed a partial
+		# name for -- gets a prefix (^, no $) match: `TestFoo/bar` also
+		# matches `TestFoo/bar/Sub`. Earlier segments must match exactly
+		# (^...$), otherwise a prefix like `^TestSync` also sweeps in
+		# unrelated top-level tests such as `TestSyncFilter` or
+		# `TestSyncLeaveSection` that merely share the substring -- they
+		# aren't part of the `TestSync` hierarchy at all. Segments that
+		# already look like caller-supplied regex are left untouched.
+		if [[ "$segment" =~ ^\^ || "$segment" =~ .*[\[\]\(\)\?\+\*\|\$] ]]; then
+			anchored+=("$segment")
+		elif [ "$idx" -eq "$last" ]; then
+			anchored+=("^${segment}")
 		else
-			# Nested segments stay exact unless the caller already supplied regex.
-			if [[ "$segment" =~ ^\^.*\$?$ || "$segment" =~ .*[\[\]\(\)\?\+\*\|] ]]; then
-				anchored+=("$segment")
-			else
-				anchored+=("^${segment}$")
-			fi
+			anchored+=("^${segment}\$")
 		fi
 		idx=$((idx + 1))
 	done
@@ -167,56 +169,31 @@ anchor_one() {
 	(IFS='/'; echo "${anchored[*]}")
 }
 
-anchor_run_tests() {
-	local pattern="$1"
-	local alt
-	local -a alts=()
-	local -a out=()
-
-	IFS='|' read -r -a alts <<<"$pattern"
-	for alt in "${alts[@]}"; do
-		out+=("$(anchor_one "$alt")")
+# `go test -run` splits its whole argument on unescaped `/` to match subtest
+# hierarchy depth-by-depth; it has no concept of top-level `|` alternation
+# across patterns of differing depth (e.g. `TestA/Sub` vs `TestB/Sub/Sub`
+# joined by one `|` silently loses one side -- go re-splits the combined
+# string on every `/`, not just the ones belonging to the same alternative).
+# So instead of building one `-run` regex, split on top-level `|` ourselves
+# and run `go test` once per alternative, appending results/logs together.
+ALT_PATTERNS=()
+if [ "$RUN_TESTS" = "." ]; then
+	ALT_PATTERNS=(".")
+else
+	IFS='|' read -r -a raw_alts <<<"$RUN_TESTS"
+	for alt in "${raw_alts[@]}"; do
+		ALT_PATTERNS+=("$(anchor_one "$alt")")
 	done
-
-	local IFS='|'
-	echo "${out[*]}"
-}
-
-if [ "$RUN_TESTS" != "." ]; then
-	RUN_TESTS="$(anchor_run_tests "$RUN_TESTS")"
-	echo "Anchored run regex: $RUN_TESTS"
+	if [ "${#ALT_PATTERNS[@]}" -gt 1 ]; then
+		echo "Anchored run regexes (run separately, one go test invocation each):"
+		for alt in "${ALT_PATTERNS[@]}"; do
+			echo "  $alt"
+		done
+	else
+		echo "Anchored run regex: ${ALT_PATTERNS[0]}"
+	fi
 	echo ""
 fi
-
-# Restrict partial runs to the package that defines the requested top-level test.
-# `go test ./tests/... -run TestName` still starts every package's TestMain.
-TEST_PACKAGES=(./tests/...)
-if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
-	test_name="${BASH_REMATCH[1]}"
-	mapfile -t matched_packages < <(
-		cd "$COMPLEMENT_SRC"
-		rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests |
-			xargs -r -n1 dirname |
-			sed 's#^#./#' |
-			sort -u
-	)
-	if [ "${#matched_packages[@]}" -gt 0 ]; then
-		TEST_PACKAGES=("${matched_packages[@]}")
-		echo "Selected test package(s): ${TEST_PACKAGES[*]}"
-	fi
-fi
-
-# Common flags for both test runners
-TEST_FLAGS=(
-	-tags "conduwuit_blacklist"
-	-skip "$SKIPPED_COMPLEMENT_TESTS"
-	-run "$RUN_TESTS"
-	-p "$COMPLEMENT_PARALLEL"
-	-parallel "$COMPLEMENT_PARALLEL"
-	-timeout 1h
-	-count=1
-	"${TEST_PACKAGES[@]}"
-)
 
 record_result() {
 	local action="$1"
@@ -235,38 +212,89 @@ record_result() {
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
 EVENTS_FIFO="${EVENTS_FIFO_DIR}/events"
-mkfifo "$EVENTS_FIFO"
 
 cleanup_results_fifo() {
 	rm -rf "$EVENTS_FIFO_DIR"
-	rm -f "$EVENTS_FIFO"
 }
 trap 'cleanup_results_fifo; cleanup_complement_containers' EXIT
 
+# Runs one anchored `-run` pattern's `go test` invocation, appending its JSON
+# log and pass/fail/skip events onto the shared LOG_FILE/RESULTS_FILE. Returns
+# the `go test` exit code.
+run_one_pattern() {
+	local pattern="$1"
+
+	# Restrict partial runs to the package that defines the requested
+	# top-level test. `go test ./tests/... -run TestName` still starts
+	# every package's TestMain otherwise.
+	local -a packages=(./tests/...)
+	if [[ "$pattern" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
+		local test_name="${BASH_REMATCH[1]}"
+		local -a matched_packages=()
+		mapfile -t matched_packages < <(
+			cd "$COMPLEMENT_SRC"
+			rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests |
+				xargs -r -n1 dirname |
+				sed 's#^#./#' |
+				sort -u
+		)
+		if [ "${#matched_packages[@]}" -gt 0 ]; then
+			packages=("${matched_packages[@]}")
+			echo "Selected test package(s) for $pattern: ${packages[*]}"
+		fi
+	fi
+
+	local -a flags=(
+		-tags "conduwuit_blacklist"
+		-skip "$SKIPPED_COMPLEMENT_TESTS"
+		-run "$pattern"
+		-p "$COMPLEMENT_PARALLEL"
+		-parallel "$COMPLEMENT_PARALLEL"
+		-timeout 1h
+		-count=1
+		"${packages[@]}"
+	)
+
+	rm -f "$EVENTS_FIFO"
+	mkfifo "$EVENTS_FIFO"
+
+	local exit_code=0
+	# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for faster complement,
+	# at the possible expense of test environment pollution.
+	set +e
+	(
+		set -o pipefail
+		env \
+			-C "$COMPLEMENT_SRC" \
+			COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+			go test -json "${flags[@]}" |
+			tee -a "$LOG_FILE" |
+			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
+				>"$EVENTS_FIFO"
+	) &
+	local producer_pid=$!
+
+	while IFS=$'\t' read -r action test_name; do
+		[ -n "$action" ] || continue
+		record_result "$action" "$test_name"
+	done <"$EVENTS_FIFO"
+
+	wait "$producer_pid"
+	exit_code=$?
+	set -e
+	return "$exit_code"
+}
+
 TEST_EXIT_CODE=0
-# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for faster complement,
-# at the possible expense of test environment pollution.
-set +e
-(
-	set -o pipefail
-	env \
-		-C "$COMPLEMENT_SRC" \
-		COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-		go test -json "${TEST_FLAGS[@]}" |
-		tee "$LOG_FILE" |
-		jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
-			>"$EVENTS_FIFO"
-) &
-PRODUCER_PID=$!
-
-while IFS=$'\t' read -r action test_name; do
-	[ -n "$action" ] || continue
-	record_result "$action" "$test_name"
-done <"$EVENTS_FIFO"
-
-wait "$PRODUCER_PID"
-TEST_EXIT_CODE=$?
-set -e
+for pattern in "${ALT_PATTERNS[@]}"; do
+	set +e
+	run_one_pattern "$pattern"
+	pattern_exit=$?
+	set -e
+	if [ "$pattern_exit" -ne 0 ]; then
+		TEST_EXIT_CODE="$pattern_exit"
+	fi
+done
 
 if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 	if [ "$RUN_TESTS" = "." ]; then

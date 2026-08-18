@@ -58,6 +58,16 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show
 
+      # The matrix-locust toolchain (locust==2.17.0 + matrix-nio==0.21.2) is
+      # only compatible with Python <= 3.12: matrix-nio 0.21.2 imports `cgi`
+      # (removed in Python 3.13) and locust 2.17.0 accesses instance-level
+      # `__annotations__` (removed on 3.14), so both crash on newer Pythons.
+      # Pin 3.12 explicitly so the job is independent of the runner's default.
+      - name: Set up Python 3.12 (required by matrix-locust toolchain)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
       - name: Build conduwuit
         run: make build PROFILE=${PROFILE}
 
@@ -90,25 +100,30 @@ jobs:
             git clone --depth 1 https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
           fi
           cd /tmp/matrix-locust
-          python3 -m venv venv
+          # `python` is the Python 3.12 set up by actions/setup-python above.
+          # Building the venv from it (instead of the runner's `python3`)
+          # guarantees the toolchain lands on a supported interpreter.
+          python -m venv venv
           ./venv/bin/pip install --upgrade pip
           ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests click gevent
 
       - name: Run Locust load test
         working-directory: /tmp/matrix-locust
         run: |
-          export PATH="/tmp/matrix-locust/venv/bin:$PATH"
+          # Invoke locust and the generator scripts through the venv's own
+          # interpreter so they don't depend on the bare `locust` binary being
+          # resolvable on PATH (the cause of "locust: command not found").
           mkdir -p data
-          python3 generate_users.py 100
-          python3 generate_rooms.py
+          ./venv/bin/python generate_users.py 100
+          ./venv/bin/python generate_rooms.py
           echo "=== 1. Registering users ==="
-          locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/register || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/register || true
           echo "=== 2. Creating rooms ==="
-          locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/create_room || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/create_room || true
           echo "=== 3. Joining rooms ==="
-          locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/join || true
+          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://localhost:6167 --csv data/join || true
           echo "=== 4. Normal chat load test ==="
-          locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://localhost:6167 --csv data/chat || true
+          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://localhost:6167 --csv data/chat || true
 
       - name: Stop conduwuit server
         if: always()
