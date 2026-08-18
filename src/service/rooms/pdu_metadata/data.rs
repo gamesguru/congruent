@@ -1,6 +1,7 @@
 use std::{mem::size_of, sync::Arc};
 
 use conduwuit::{
+	Result,
 	arrayvec::ArrayVec,
 	matrix::{Event, PduCount},
 	utils::{
@@ -171,7 +172,10 @@ impl Data {
 	}
 
 	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		self.get_rejection_code(event_id).await.is_some()
+		self.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_some()
 	}
 
 	/// Reads the persisted rejection code for `event_id`, if any, from the
@@ -183,11 +187,18 @@ impl Data {
 	/// This is a single read so callers that must decide-and-act on the same
 	/// rejection state (e.g. `take_retry_if_rejection_retryable`,
 	/// `finish_promotion`) don't open a TOCTOU window between two reads.
-	pub(super) async fn get_rejection_code(&self, event_id: &EventId) -> Option<RejectionCode> {
-		let Ok(bytes) = self.eventid_rejections.get(event_id).await else {
-			return None;
-		};
-		bytes.first().map(|&code| RejectionCode::from_u8(code))
+	///
+	/// Returns `Ok(None)` when the event carries no rejection marker and `Err`
+	/// when the read itself fails. Callers that decide-and-act on the result
+	/// (notably the ones that clear a rejection marker) must propagate the
+	/// error rather than treating a failed read as "not rejected", or they
+	/// could clear a marker whose state they never actually observed.
+	pub(super) async fn get_rejection_code(
+		&self,
+		event_id: &EventId,
+	) -> Result<Option<RejectionCode>> {
+		let bytes = self.eventid_rejections.get(event_id).await?;
+		Ok(bytes.first().map(|&code| RejectionCode::from_u8(code)))
 	}
 
 	/// Reads the persisted soft-fail code for `event_id`, if any, from the

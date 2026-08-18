@@ -452,7 +452,11 @@ impl Service {
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
 	pub async fn is_event_accepted(&self, event_id: &EventId) -> bool {
-		self.db.get_rejection_code(event_id).await.is_none()
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_none()
 	}
 
 	/// Returns true if the event is in the timeline and should be visible
@@ -466,6 +470,7 @@ impl Service {
 		self.db
 			.get_rejection_code(event_id)
 			.await
+			.unwrap_or_default()
 			.map(|code| code.tag().to_owned())
 	}
 
@@ -493,6 +498,7 @@ impl Service {
 		self.db
 			.get_rejection_code(event_id)
 			.await
+			.unwrap_or_default()
 			.is_some_and(|code| !code.is_retryable())
 	}
 
@@ -516,7 +522,10 @@ impl Service {
 	/// problem.
 	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> bool {
 		matches!(
-			self.db.get_rejection_code(event_id).await,
+			self.db
+				.get_rejection_code(event_id)
+				.await
+				.unwrap_or_default(),
 			Some(RejectionCode::MissingAuthEvent)
 		)
 	}
@@ -538,7 +547,12 @@ impl Service {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
-		let Some(code) = self.db.get_rejection_code(event_id).await else {
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
 			return false;
 		};
 		if code.is_retryable() {
@@ -578,7 +592,12 @@ impl Service {
 		&self,
 		event_id: &EventId,
 	) -> bool {
-		let Some(code) = self.db.get_rejection_code(event_id).await else {
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
 			return true;
 		};
 		match code {
@@ -617,7 +636,23 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		let Some(code) = self.db.get_rejection_code(event_id).await else {
+		// A read error means the rejection state is *unknown*, not "not
+		// rejected". Clearing the markers (or reporting success) on a failed
+		// read would erase/wrongly-accept a rejection whose state we never
+		// actually observed. Preserve the uncertain state: report failure and
+		// leave every marker in place so the event is not force-promoted
+		// before its true verdict is known.
+		let code = match self.db.get_rejection_code(event_id).await {
+			| Ok(code) => code,
+			| Err(e) => {
+				warn!(
+					%event_id,
+					"Failed to read rejection state while finishing promotion; leaving markers intact: {e}"
+				);
+				return false;
+			},
+		};
+		let Some(code) = code else {
 			// No rejection verdict -- clear any stale markers and accept.
 			self.clear_pdu_markers(event_id);
 			return true;

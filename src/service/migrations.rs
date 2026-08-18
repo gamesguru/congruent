@@ -1639,17 +1639,53 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 
 			while let Some(item) = softfailed_stream.next().await {
 				let (event_id_bytes, _) = item?;
-				let is_already_set = db["eventid_status"]
-					.get_blocking(&event_id_bytes)
-					.is_ok_and(|bytes| !bytes.is_empty());
 
-				if !is_already_set {
-					db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
-						1_u8,
-						crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
-					]);
-					batch_count = batch_count.saturating_add(1);
+				// `eventid_status` already carries a verdict for this event:
+				// leave it alone so the existing (possibly more specific)
+				// verdict is preserved. Only `NotFound` / an empty record is
+				// treated as "absent"; any other read error is a real failure
+				// we must not paper over by synthesizing `Unknown`.
+				let already_has_status = match db["eventid_status"].get_blocking(&event_id_bytes)
+				{
+					| Ok(bytes) => !bytes.is_empty(),
+					| Err(e) if e.is_not_found() => false,
+					| Err(e) => {
+						return Err(err!(
+							"Failed reading eventid_status while folding softfailedeventids: {e}"
+						));
+					},
+				};
+				if already_has_status {
+					continue;
 				}
+
+				// An event can be listed in `softfailedeventids` while a more
+				// specific verdict (Rejected or a typed SoftFailed code) already
+				// lives in its `eventid_metadata.status`. Writing a blanket
+				// SoftFail(Unknown) here would clobber that and, because the v21
+				// fold reads `eventid_status` before `eventid_metadata`, end up
+				// hiding the real verdict. Only synthesize `Unknown` when no
+				// stronger verdict is present; otherwise leave the row alone so
+				// the v21 migration can fold the stored verdict verbatim.
+				let metadata_has_verdict = db["eventid_metadata"]
+					.get_blocking(&event_id_bytes)
+					.ok()
+					.and_then(|bytes| bincode::deserialize::<EventMetadataV20>(&bytes).ok())
+					.is_some_and(|legacy| {
+						!matches!(
+							legacy.status,
+							EventStatusV20::Pending | EventStatusV20::Accepted
+						)
+					});
+				if metadata_has_verdict {
+					continue;
+				}
+
+				db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
+					1_u8,
+					crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
+				]);
+				batch_count = batch_count.saturating_add(1);
 
 				if batch_count >= 1000 {
 					db["eventid_status"].apply_batch(batch);

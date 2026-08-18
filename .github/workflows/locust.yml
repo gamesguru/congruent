@@ -12,6 +12,10 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   SKIP_CONFIRM: 1
+  # `dev-quick` (opt-level 0) is chosen for CI compile speed. The Locust CSV
+  # numbers this workflow uploads are therefore NOT representative of a
+  # production (`release-quick`, opt-level 1) build's latency/throughput; treat
+  # them as smoke-test coverage rather than a regression baseline.
   PROFILE: dev-quick
 
 jobs:
@@ -37,10 +41,7 @@ jobs:
             clang \
             libclang-dev \
             llvm-dev \
-            mold \
-            python3 \
-            python3-pip \
-            python3-venv
+            mold
 
       - name: Detect best CPU target
         id: cpu
@@ -97,7 +98,13 @@ jobs:
           if [ -d "../matrix-locust" ]; then
             cp -r ../matrix-locust /tmp/matrix-locust
           else
-            git clone --depth 1 https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+            # Pin to a specific upstream commit so the load-test setup is
+            # reproducible instead of tracking matrix-locust's moving default
+            # branch.
+            git clone https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+            cd /tmp/matrix-locust
+            git checkout 4efee8d84c65730de23c293c369d577dcf63b2e5
+            cd -
           fi
           cd /tmp/matrix-locust
           # `python` is the Python 3.12 set up by actions/setup-python above.
@@ -105,7 +112,8 @@ jobs:
           # guarantees the toolchain lands on a supported interpreter.
           python -m venv venv
           ./venv/bin/pip install --upgrade pip
-          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests click gevent
+          # Pin the runtime deps so upgrades can't silently change the results.
+          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests==2.34.2 click==8.4.2 gevent==26.8.0
 
       - name: Run Locust load test
         working-directory: /tmp/matrix-locust
