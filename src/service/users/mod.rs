@@ -885,7 +885,18 @@ impl Service {
 				)
 				.await?;
 			}
-			return Ok((fallback_key_id, fallback_key_value));
+
+			// Per spec, a fallback key must be flagged with `"fallback": true`
+			// in the `/keys/claim` response so clients can tell it apart from a
+			// freshly-expiring one-time key. Clients do upload the flag, but we
+			// set it explicitly here to be robust (some SDKs omit it on upload).
+			let mut claim_key = fallback_key_value
+				.deserialize_as::<serde_json::Value>()
+				.unwrap_or_else(|_| serde_json::json!({}));
+			claim_key["fallback"] = serde_json::Value::Bool(true);
+			let claim_key = Raw::from_json(serde_json::value::to_raw_value(&claim_key)?);
+
+			return Ok((fallback_key_id, claim_key));
 		}
 
 		Err(err!(Request(NotFound("No one-time key or fallback key found"))))
