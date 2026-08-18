@@ -423,55 +423,116 @@ e2ee args=".*":
     # binding is not), so the test-client matrix must be all-JS (`jj`) — the
     # default `jj,jr,rj,rr` would panic on the unregistered `rust` language.
     COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="${COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX:-jj}"
-    # Mirror bin/complement's rendering: feed go test -json through a FIFO and
-    # convert each pass/fail/skip event into (a) a clean `pass\tTest` status line
-    # printed live as it finishes, and (b) a compact JSONL record appended to the
-    # staged results file. The raw -json stream is kept in full in the log file.
-    EVENTS_FIFO="${STAGING_DIR}/events.${run_stamp}.fifo"
-    rm -f "$EVENTS_FIFO"
-    mkfifo "$EVENTS_FIFO"
-    set +e
-    (
-        # shellcheck disable=SC2016
-        env \
-            -C "$COMPLEMENT_SRC" \
-            COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-            COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
-            COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
-            COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
-            go test -tags jssdk -json \
-            -parallel "{{ env_var_or_default("COMPLEMENT_CRYPTO_PARALLEL", "4") }}" \
-            -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
-            -count=1 \
-            -skip "{{ env_var_or_default("COMPLEMENT_CRYPTO_SKIP", "") }}" \
-            -run "{{ args }}" \
-            ./tests ./tests/js |
-            tee "$LOG_FILE" |
-            jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
-                >"$EVENTS_FIFO"
-    ) &
-    producer_pid=$!
-    : >"$RESULTS_FILE"
-    while IFS=$'\t' read -r action test_name; do
-        [ -n "$action" ] || continue
-        # Append the compact record to the staged results file as it arrives.
-        jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
-        # Keep the live human-readable stream focused on pass/fail noise.
-        if [ "$action" != "skip" ]; then
-            printf '%s\t%s\n' "$action" "$test_name"
+    # This suite is fundamentally serial: the tests live in a single package and
+    # none of them call t.Parallel(), so go test's `-parallel`/`-p` flags have no
+    # work to overlap within one process. The only real way to run tests in
+    # parallel is to shard them across N *separate* `go test` processes: each
+    # process runs its own TestMain -> its own complement deployment on its own
+    # randomly-mapped host ports (testcontainers allocates free ports), so
+    # concurrent shards don't collide. `-parallel` is ignored; we shard instead.
+    NUM_SHARDS="${COMPLEMENT_CRYPTO_PARALLEL:-4}"
+    if [ -z "$NUM_SHARDS" ] || [ "$NUM_SHARDS" -lt 1 ]; then NUM_SHARDS=1; fi
+
+    # Enumerate the top-level tests once, sorted, so sharding is deterministic.
+    readarray -t ALL_TESTS < <(cd "$COMPLEMENT_SRC" && grep -hoE '^func (Test[A-Za-z0-9_]+)\(' tests/*_test.go | sed -E 's/^func (Test[A-Za-z0-9_]+)\(.*/\1/' | grep -v '^TestMain$' | sort -u)
+
+    # Build the per-shard anchored `-run` regexes. Top-level tests only, anchored
+    # with ^...$ so `TestRoomKeyIsCycledAfterEnoughMessages` doesn't sweep up its
+    # later-in-alpha sibling. Targeted runs (args != `.*`) run as a single shard.
+    SHARD_PATTERNS=()
+    if [ "$run_suffix" = "all" ]; then
+        total=${#ALL_TESTS[@]}
+        if [ "$total" -eq 0 ]; then
+            echo "ERROR: no top-level tests found in $COMPLEMENT_SRC/tests" >&2
+            exit 1
         fi
-    done <"$EVENTS_FIFO"
-    wait "$producer_pid"
-    go_test_exit=$?
+        # ceil so every test is covered even when NUM_SHARDS > total.
+        num_groups=$(( (total + NUM_SHARDS - 1) / NUM_SHARDS ))
+        if [ "$num_groups" -lt 1 ]; then num_groups=1; fi
+        for ((i = 0; i < total; i += num_groups)); do
+            group=("${ALL_TESTS[@]:i:num_groups}")
+            printf -v joined '%s|' "${group[@]}"
+            joined="${joined%|}"
+            SHARD_PATTERNS+=("^(${joined})$")
+        done
+    else
+        SHARD_PATTERNS+=("^($(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9_]/|/g'))$")
+    fi
+    num_shards=${#SHARD_PATTERNS[@]}
+
+    echo "Sharding into $num_shards concurrent go test process(es):"
+    for ((i = 0; i < num_shards; i++)); do
+        echo "  shard $((i + 1))/$num_shards: $COMPLEMENT_SRC/tests -run '${SHARD_PATTERNS[$i]}'"
+    done
+    echo ""
+
+    # One staging results/log file per shard; concatenated at the end.
+    : >"$RESULTS_FILE"
+    : >"$LOG_FILE"
+    shard_pids=()
+    set +e
+    for ((s = 0; s < num_shards; s++)); do
+        shard_results="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        shard_log="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        : >"$shard_results"
+        : >"$shard_log"
+        (
+            # shellcheck disable=SC2016
+            env \
+                -C "$COMPLEMENT_SRC" \
+                COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+                COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+                COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
+                COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX" \
+                go test -tags jssdk -json \
+                -timeout "{{ env_var_or_default(\"COMPLEMENT_CRYPTO_TIMEOUT\", \"30m\") }}" \
+                -count=1 \
+                -skip "{{ env_var_or_default(\"COMPLEMENT_CRYPTO_SKIP\", \"\") }}" \
+                -run "${SHARD_PATTERNS[$s]}" \
+                ./tests |
+                tee -a "$shard_log" |
+                jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' |
+                while IFS=$'\t' read -r action test_name; do
+                    [ -n "$action" ] || continue
+                    jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$shard_results"
+                    if [ "$action" != "skip" ]; then
+                        printf 'shard %d\t%s\t%s\n' "$((s + 1))" "$action" "$test_name"
+                    fi
+                done
+        ) &
+        shard_pids+=($!)
+    done
+
+    # Wait for every shard; preserve the first non-zero exit as the overall code.
+    go_test_exit=0
+    for pid in "${shard_pids[@]}"; do
+        wait "$pid" || [ "$go_test_exit" -ne 0 ] || go_test_exit=$?
+    done
     set -e
+
+    # Combine per-shard staged results and logs into the single aggregate files.
+    for ((s = 0; s < num_shards; s++)); do
+        shard_results="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        shard_log="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        [ -f "$shard_results" ] && cat "$shard_results" >>"$RESULTS_FILE"
+        [ -f "$shard_log" ] && cat "$shard_log" >>"$LOG_FILE"
+    done
 
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
-        python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp"
-        mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE"
-        echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+        if [ "$run_suffix" = "all" ]; then
+            python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE"
+            python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE"
+            cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"
+            echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+        else
+            python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp"
+            mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE"
+            echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+        fi
     else
         echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
+        [ "$go_test_exit" -eq 0 ] && go_test_exit=1
     fi
 
     echo ""
