@@ -7,7 +7,7 @@ use conduwuit::{
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
 use ruma::{
-	EventId, OwnedEventId, UserId,
+	EventId, OwnedEventId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -22,7 +22,7 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 #[inline]
 pub async fn user_was_joined_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	user_id: &UserId,
 ) -> bool {
@@ -36,7 +36,7 @@ pub async fn user_was_joined_hamt(
 #[inline]
 pub async fn user_was_invited_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	user_id: &UserId,
 ) -> bool {
@@ -50,7 +50,7 @@ pub async fn user_was_invited_hamt(
 #[implement(super::Service)]
 pub async fn user_membership_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	user_id: &UserId,
 ) -> MembershipState {
@@ -69,7 +69,7 @@ pub async fn user_membership_hamt(
 #[implement(super::Service)]
 pub async fn state_get_content_hamt<T>(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -85,7 +85,7 @@ where
 #[implement(super::Service)]
 pub async fn state_contains_type_hamt(
 	&self,
-	_room_id: &ruma::RoomId,
+	_room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 ) -> bool {
@@ -118,7 +118,7 @@ pub async fn state_contains_type_hamt(
 #[implement(super::Service)]
 pub async fn state_contains_shortstatekey_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	shortstatekey: ShortStateKey,
 ) -> Result<bool> {
@@ -143,7 +143,7 @@ pub async fn state_contains_shortstatekey_hamt(
 #[implement(super::Service)]
 pub async fn state_get_shortid_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -174,7 +174,7 @@ pub async fn state_get_shortid_hamt(
 #[implement(super::Service)]
 pub async fn state_get_in_room_hamt(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -198,7 +198,7 @@ pub async fn state_get_in_room_hamt(
 #[implement(super::Service)]
 pub async fn state_get_id_hamt<Id>(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -223,7 +223,7 @@ where
 #[allow(unused_variables)]
 pub async fn room_state_get_hamt_legacy(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<std::sync::Arc<conduwuit::PduEvent>> {
@@ -434,4 +434,31 @@ pub async fn load_full_state_hamt(
 pub async fn pdu_roothandle(&self, event_id: &EventId) -> Result<rezzy::hamt::RootHandle> {
 	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
 	self.services.state.get_roothandle(shorteventid).await
+}
+
+/// Returns the HAMT RootHandle for the state *at* this pdu, i.e. the state
+/// immediately before the pdu's own state change was applied (matching the
+/// legacy `pdu_shortstatehash` semantics).
+///
+/// `pdu_roothandle` resolves the state *after* a PDU, which for state events
+/// (e.g. a membership leave) already includes the event's own change, so a
+/// user/server that was joined before it would no longer pass a
+/// `user_was_joined` check. Falls back to the post-event root when the event
+/// has no preceding timeline position (e.g. the first event in a room).
+#[implement(super::Service)]
+pub async fn pdu_roothandle_at_event(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<rezzy::hamt::RootHandle> {
+	let count = self.services.timeline.get_pdu_count(event_id).await?;
+	match self
+		.services
+		.timeline
+		.prev_root_handle(room_id, count)
+		.await
+	{
+		| Ok(root_handle) => Ok(root_handle),
+		| Err(_) => self.pdu_roothandle(event_id).await,
+	}
 }

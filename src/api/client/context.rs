@@ -168,7 +168,7 @@ pub(crate) async fn get_context_route(
 		let root_handle = services
 			.rooms
 			.state_accessor
-			.pdu_roothandle(state_at)
+			.pdu_roothandle_at_event(room_id, state_at)
 			.or_else(|_| services.rooms.state.get_room_state_hamt(room_id))
 			.map_err(|e| err!(Database("State not found: {e}")))
 			.await?;

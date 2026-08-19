@@ -104,7 +104,7 @@ pub async fn user_can_see_event(
 	room_id: &RoomId,
 	event_id: &EventId,
 ) -> bool {
-	let Ok(root_handle) = self.pdu_roothandle(event_id).await else {
+	let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await else {
 		return true;
 	};
 

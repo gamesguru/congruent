@@ -40,7 +40,7 @@ pub(crate) async fn get_room_state_route(
 	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle(&body.event_id)
+		.pdu_roothandle_at_event(&body.room_id, &body.event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("PDU state not found."))))?;
 

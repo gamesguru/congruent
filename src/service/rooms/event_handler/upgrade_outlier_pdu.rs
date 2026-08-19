@@ -258,10 +258,12 @@ where
 		if let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 		{
-			self.services
-				.state
-				.update_caches_for_state_delta_between(room_id, Some(prev_root), new_root)
-				.await?;
+			Box::pin(self.services.state.update_caches_for_state_delta_between(
+				room_id,
+				Some(prev_root),
+				new_root,
+			))
+			.await?;
 		}
 	}
 
