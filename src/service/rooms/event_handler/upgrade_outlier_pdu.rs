@@ -341,10 +341,15 @@ where
 		let extremities = extremities.iter().map(Borrow::borrow);
 		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
 
-		self.services
-			.timeline
-			.append_incoming_pdu(&incoming_pdu, val, extremities, soft_fail, false, append_ctx)
-			.await?;
+		Box::pin(self.services.timeline.append_incoming_pdu(
+			&incoming_pdu,
+			val,
+			extremities,
+			soft_fail,
+			false,
+			append_ctx,
+		))
+		.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
 		self.services
@@ -365,18 +370,15 @@ where
 	let extremities = extremities.iter().map(Borrow::borrow);
 	debug_assert!(extremities.clone().count() > 0, "extremities not empty");
 
-	let pdu_id = self
-		.services
-		.timeline
-		.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities,
-			soft_fail,
-			incoming_pdu.state_key.is_some(),
-			append_ctx,
-		)
-		.await?;
+	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
+		&incoming_pdu,
+		val,
+		extremities,
+		soft_fail,
+		incoming_pdu.state_key.is_some(),
+		append_ctx,
+	))
+	.await?;
 
 	// Event has passed all auth/stateres checks
 	drop(state_lock);
