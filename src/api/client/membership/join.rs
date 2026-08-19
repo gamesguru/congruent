@@ -623,7 +623,6 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
-#[allow(unused_variables, unreachable_code, unused_assignments, unused_mut)]
 #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
@@ -705,7 +704,7 @@ async fn join_room_by_id_helper_remote_process(
 	)
 	.await;
 
-	let mut deduplicated = state;
+	let deduplicated = state;
 	let mut state = HashMap::new();
 	let mut lattice = rezzy::state::LtHash::default();
 	for ((kind, state_key), event_id) in deduplicated {
@@ -790,11 +789,10 @@ async fn join_room_by_id_helper_remote_process(
 		entries.push((shortstatekey, shorteventid));
 	}
 
-	return Err(err!(Request(NotImplemented("TODO(MSC00DC/HAMT): remote join append"))));
-
-	let structural_key = room_id.as_bytes();
+	let structural_key =
+		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
 
 	services
@@ -898,7 +896,7 @@ async fn join_room_by_id_helper_remote_process(
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	let statehashid = services
+	let (state_root_handle, state_node) = services
 		.rooms
 		.state
 		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
@@ -907,7 +905,7 @@ async fn join_room_by_id_helper_remote_process(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(statehashid.1.clone());
+		.persist_node_recursive(state_node);
 
 	info!("Appending new room join event");
 	services
@@ -921,7 +919,7 @@ async fn join_room_by_id_helper_remote_process(
 			service::rooms::timeline::AppendPduContext {
 				state_lock: &state_lock,
 				room_id,
-				state_root_handle: Some(statehashid.0.clone()),
+				state_root_handle: Some(state_root_handle),
 				prev_state_root_handle: previous_root_handle,
 			},
 		)

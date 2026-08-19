@@ -216,10 +216,10 @@ impl Service {
 		Ok(())
 	}
 
-	/// Generates a new RootHandle and associates it with the incoming event.
+	/// Generates a new HAMT RootHandle for the incoming event's state.
 	///
-	/// This adds all current state events (not including the incoming event)
-	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
+	/// Appends the incoming event to the room's current HAMT state (if it is a
+	/// state event) and returns the resulting root handle.
 	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
@@ -281,10 +281,11 @@ impl Service {
 		Ok(root_handle)
 	}
 
-	/// Generates a new StateHash and associates it with the incoming event.
+	/// Appends a state event to the room's HAMT state and returns the new root.
 	///
-	/// This adds all current state events (not including the incoming event)
-	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
+	/// Builds a new HAMT root handle (and its root node) representing the
+	/// room's current state plus the incoming state event. Only state events
+	/// may be appended; non-state events are rejected.
 	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn append_to_state(
 		&self,

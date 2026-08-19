@@ -87,7 +87,7 @@ pub(super) async fn state_at_incoming_resolved<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
-	trace!("Calculating extremity statehashes...");
+	trace!("Calculating extremity root handles...");
 	let Ok(extremity_roothandles) = incoming_pdu
 		.prev_events()
 		.try_stream()
@@ -116,11 +116,11 @@ where
 
 	let mut unique_forks = Vec::new();
 	let mut all_succeeded = true;
-	for (sstatehash, prev_event) in &extremity_roothandles {
-		match self.get_extremity_lthash(sstatehash, prev_event).await {
+	for (root_handle, prev_event) in &extremity_roothandles {
+		match self.get_extremity_lthash(root_handle, prev_event).await {
 			| Ok(lthash) =>
 				if !unique_forks.iter().any(|(hash, _)| *hash == lthash) {
-					unique_forks.push((lthash, (sstatehash.clone(), prev_event)));
+					unique_forks.push((lthash, (root_handle.clone(), prev_event)));
 				},
 			| Err(_) => {
 				all_succeeded = false;
@@ -134,9 +134,9 @@ where
 			"LtHash digests match across all {} forks! Bypassing state resolution.",
 			extremity_roothandles.len()
 		);
-		let (sstatehash, prev_event) = unique_forks[0].1.clone();
+		let (root_handle, prev_event) = unique_forks[0].1.clone();
 		let Ok((fork_state, _)) = self
-			.state_at_incoming_fork(room_id, sstatehash, prev_event)
+			.state_at_incoming_fork(room_id, root_handle, prev_event)
 			.await
 		else {
 			return Ok(None);
@@ -162,8 +162,8 @@ where
 		extremity_roothandles
 			.into_iter()
 			.try_stream()
-			.wide_and_then(|(sstatehash, prev_event)| {
-				self.state_at_incoming_fork(room_id, sstatehash, prev_event)
+			.wide_and_then(|(root_handle, prev_event)| {
+				self.state_at_incoming_fork(room_id, root_handle, prev_event)
 			})
 			.try_collect()
 			.map_ok(Vec::into_iter)

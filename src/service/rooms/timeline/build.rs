@@ -112,18 +112,30 @@ pub async fn build_and_append_pdu(
 
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	trace!("Appending {} state for room {room_id}", pdu.event_id());
-	let statehashid = self
-		.services
-		.state
-		.append_to_state(&pdu, &room_id, state_lock, None)
-		.await?;
-	trace!("State hash ID for {room_id}: {statehashid:?}");
-	self.services
-		.state_hamt
-		.store
-		.persist_node_recursive(statehashid.1.clone());
+	// fail. Only state events mutate the room state; a non-state event must not be
+	// routed through append_to_state, which rejects non-state PDUs.
+	let (state_root_handle, state_node) = if pdu.state_key().is_some() {
+		trace!("Appending {} state for room {room_id}", pdu.event_id());
+		self.services
+			.state
+			.append_to_state(&pdu, &room_id, state_lock, None)
+			.await
+			.map(|(handle, node)| (handle, Some(node)))?
+	} else {
+		// A non-state event does not change the room state, so reuse the current
+		// room root and do not persist any new HAMT node.
+		let root = previous_root_handle
+			.clone()
+			.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
+		(root, None)
+	};
+
+	if let Some(node) = &state_node {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(node.clone());
+	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -137,7 +149,7 @@ pub async fn build_and_append_pdu(
 			crate::rooms::timeline::AppendPduContext {
 				state_lock,
 				room_id: &room_id,
-				state_root_handle: Some(statehashid.0.clone()),
+				state_root_handle: Some(state_root_handle.clone()),
 				prev_state_root_handle: previous_root_handle,
 			},
 		)
@@ -170,7 +182,7 @@ pub async fn build_and_append_pdu(
 	self.services.globals.with_cork_and_flush(|| {
 		self.services
 			.state
-			.set_room_state_hamt(&room_id, &statehashid.0, state_lock);
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
 	});
 
 	let mut servers: HashSet<OwnedServerName> = self

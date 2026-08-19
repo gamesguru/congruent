@@ -1097,7 +1097,7 @@ mod tests {
 
 	#[test]
 	fn test_joined_since_last_sync_idle_room_joined_before() {
-		// If last_sync_end_shortstatehash is None (idle room),
+		// If last_sync_end_count is None (idle room),
 		// membership_during_previous_sync is None. If the user's current membership
 		// is Join, and they joined at count 50, but last sync ended at 100.
 		// Since 50 <= 100, they did NOT join since the last sync.
@@ -1111,7 +1111,7 @@ mod tests {
 
 	#[test]
 	fn test_joined_since_last_sync_idle_room_joined_after() {
-		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
+		// If last_sync_end_count is None, and the user joined at count 150,
 		// and last sync ended at 100. Since 150 > 100, they DID join since the last
 		// sync.
 		assert!(calculate_joined_since_last_sync(
