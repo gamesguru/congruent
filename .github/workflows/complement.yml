@@ -846,7 +846,10 @@ jobs:
         run: |
           cd complement-crypto-src
           corepack enable
-          ./rebuild_js_sdk.sh "matrix-js-sdk@develop"
+          # `matrix-js-sdk@develop` is not a published npm version; the script
+          # feeds its arg straight into `yarn add`, so install the develop
+          # BRANCH via the GitHub URL form (see rebuild_js_sdk.sh --help).
+          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
 
       - name: Run Complement-Crypto tests
         id: complement-crypto
