@@ -119,7 +119,7 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
-	resolved_state_applied: bool,
+	_resolved_state_applied: bool,
 	ctx: AppendPduContext<'a>,
 ) -> Result<RawPduId>
 where
@@ -372,30 +372,6 @@ where
 						}
 					}
 				},
-			}
-		},
-		| TimelineEventType::SpaceChild =>
-			if let Some(_state_key) = pdu.state_key() {
-				self.services
-					.spaces
-					.roomid_spacehierarchy_cache
-					.lock()
-					.await
-					.remove(room_id);
-			},
-		| TimelineEventType::RoomMember if !resolved_state_applied => {
-			if let Some(state_key) = pdu.state_key() {
-				// if the state_key fails
-				let target_user_id =
-					UserId::parse(state_key).expect("This state_key was previously validated");
-
-				// Update our membership info, we do this here incase a user is invited or
-				// knocked and immediately leaves we need the DB to record the invite or
-				// knock event for auth
-				self.services
-					.state_cache
-					.update_membership(room_id, target_user_id, pdu, true)
-					.await?;
 			}
 		},
 		| TimelineEventType::RoomMessage => {

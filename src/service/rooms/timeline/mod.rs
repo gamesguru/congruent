@@ -85,7 +85,6 @@ struct Services {
 	pusher: Dep<pusher::Service>,
 	threads: Dep<rooms::threads::Service>,
 	search: Dep<rooms::search::Service>,
-	spaces: Dep<rooms::spaces::Service>,
 	state_hamt: Dep<rooms::state_hamt::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 }
@@ -120,7 +119,6 @@ impl crate::Service for Service {
 				pusher: args.depend::<pusher::Service>("pusher"),
 				threads: args.depend::<rooms::threads::Service>("rooms::threads"),
 				search: args.depend::<rooms::search::Service>("rooms::search"),
-				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
