@@ -144,7 +144,7 @@ jobs:
           submodules: recursive
 
       - name: Fetch tags and origin/main for comparison
-        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
       - name: Install system dependencies
         run: |
@@ -262,7 +262,7 @@ jobs:
           CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
           COMPLEMENT_SHARE_ENV_PREFIX: PASS_
           PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
-          COMPLEMENT_RESULTS_DIR: tests/test_results/complement
+          COMPLEMENT_RESULTS_DIR: tests/complement
         shell: bash
         run: |
           COMPLEMENT_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
@@ -285,7 +285,7 @@ jobs:
 
       - name: Compare FULL results with baseline
         continue-on-error: true
-        run: git diff --color=always tests/test_results/complement/test_results.jsonl
+        run: git diff --color=always tests/complement/results.jsonl
 
       - name: Upload test logs
         if: always()
@@ -293,15 +293,15 @@ jobs:
         with:
           name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
-            tests/test_results/complement/test_results.jsonl
-            tests/test_results/complement/test_logs.jsonl
+            tests/complement/results.jsonl
+            tests/complement/test_logs.jsonl
           retention-days: 90
 
       - name: Parse Complement results
         id: results
         if: always()
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl"
+          RESULTS="tests/complement/results.jsonl"
           if [ ! -f "$RESULTS" ]; then
             echo "Results file not found, skipping parsing."
             exit 0
@@ -351,8 +351,8 @@ jobs:
           # *not* evidence of a broken log pipeline.
           COMPLEMENT_OUTCOME: ${{ steps.complement.outcome }}
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl" \
-          LOGS="tests/test_results/complement/test_logs.jsonl" \
+          RESULTS="tests/complement/results.jsonl" \
+          LOGS="tests/complement/test_logs.jsonl" \
           python3 - <<'PY'
           import collections
           import html
@@ -542,7 +542,7 @@ jobs:
           database_url: ${{ secrets.C10Y_POSTGRES_URL }}
           setup_tables: false
           rebuild_db: false
-          results_file: tests/test_results/complement/test_results.jsonl
+          results_file: tests/complement/results.jsonl
           run_metadata: >-
             {
               "commit_hash": "${{ github.event.pull_request.head.sha || github.sha }}",
@@ -867,7 +867,7 @@ jobs:
         with:
           name: complement-crypto-results
           path: |
-            tests/test_results/complement-crypto/results.jsonl
+            tests/crypto/results.jsonl
             .tmp/complement-crypto/*.jsonl
           retention-days: 90
 
@@ -878,7 +878,7 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          RESULTS=tests/test_results/complement-crypto/results.jsonl
+          RESULTS=tests/crypto/results.jsonl
           if [ ! -f "$RESULTS" ]; then
             echo "No complement-crypto results found; skipping badge update."
             exit 0

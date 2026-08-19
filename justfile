@@ -611,8 +611,8 @@ ci-complement-stats:
     echo "Overall:   $TOTAL tests"
 
     echo ""
-    echo "Last modified by:"
-    git log -5 --format="%an (%ad) %H" origin/main -- tests/complement/results.jsonl
+    echo "Last modified by (this branch):"
+    git log -5 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
 # -----------------------------------------------------------------------------
 # CI Database Queries

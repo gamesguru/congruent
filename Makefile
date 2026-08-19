@@ -372,8 +372,8 @@ complement/stats: ##H Check local test stats
 	echo "---------------------------"; \
 	echo "Σ Total:   $$TOTAL"; \
 	echo ""; \
-	echo "JSON file (on main) last modified by: "; \
-	git log -1 --format="%an (%ad) %H" origin/main -- tests/complement/results.jsonl
+	echo "JSON file (on this branch) last modified by: "; \
+	git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
 .PHONY: complement/diff
 complement/diff: ##H Diff local results against branch baseline (requires REF=git-ref)
