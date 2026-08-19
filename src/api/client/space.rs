@@ -1,22 +1,17 @@
-use std::{
-	collections::{BTreeSet, VecDeque},
-	str::FromStr,
-};
+use std::{collections::BTreeSet, str::FromStr};
 
 use axum::extract::State;
-use conduwuit::{
-	Err, Result,
-	utils::{future::TryExtExt, stream::IterStream},
-};
+use conduwuit::{Err, Result};
 use conduwuit_service::{
 	Services,
 	rooms::spaces::{
 		PaginationToken, SummaryAccessibility, get_parent_children_via, summary_to_chunk,
 	},
 };
-use futures::{StreamExt, TryFutureExt, future::OptionFuture};
+use futures::future::OptionFuture;
 use ruma::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
+	events::space::child::HierarchySpaceChildEvent, room::RoomType,
 };
 
 use crate::Ruma;
@@ -60,42 +55,41 @@ pub(crate) async fn get_hierarchy_route(
 		limit.try_into().unwrap_or(10),
 		max_depth.try_into().unwrap_or(usize::MAX),
 		body.suggested_only,
-		key.as_ref()
-			.into_iter()
-			.flat_map(|t| t.short_room_ids.iter()),
+		key.as_ref().map_or(0, |t| t.offset),
 	)
 	.await
 }
 
-async fn get_client_hierarchy<'a, ShortRoomIds>(
+async fn get_client_hierarchy(
 	services: &Services,
 	sender_user: &UserId,
 	room_id: &RoomId,
 	limit: usize,
 	max_depth: usize,
 	suggested_only: bool,
-	short_room_ids: ShortRoomIds,
-) -> Result<get_hierarchy::v1::Response>
-where
-	ShortRoomIds: Iterator<Item = &'a u64> + Clone + Send + Sync + 'a,
-{
+	offset: u64,
+) -> Result<get_hierarchy::v1::Response> {
 	type Via = Vec<OwnedServerName>;
-	type Entry = (OwnedRoomId, Via);
-	type Rooms = VecDeque<Entry>;
+	type Entry = (OwnedRoomId, Via, usize);
 
-	let mut queue: Rooms = [(
+	// Depth-first pre-order traversal. The stack holds the rooms still to be
+	// visited, each tagged with its depth in the tree; children are pushed in
+	// reverse so that the first child is processed first.
+	let mut stack: Vec<Entry> = vec![(
 		room_id.to_owned(),
 		room_id
 			.server_name()
 			.map(ToOwned::to_owned)
 			.into_iter()
 			.collect(),
-	)]
-	.into();
+		0,
+	)];
 
 	let mut rooms = Vec::with_capacity(limit);
-	let mut parents = BTreeSet::new();
-	while let Some((current_room, via)) = queue.pop_front() {
+	let mut visited = BTreeSet::new();
+	let mut to_skip = offset;
+
+	while let Some((current_room, via, depth)) = stack.pop() {
 		let summary = services
 			.rooms
 			.spaces
@@ -112,84 +106,63 @@ where
 			| (Some(SummaryAccessibility::Inaccessible), true) => {
 				return Err!(Request(Forbidden("The requested room is inaccessible")));
 			},
-			| (Some(SummaryAccessibility::Accessible(summary)), _) => {
-				let populate = parents.len() >= short_room_ids.clone().count();
+			| (Some(SummaryAccessibility::Accessible(mut summary)), _) => {
+				if !visited.insert(current_room.clone()) {
+					// Skip already-visited rooms (cycle safety).
+					continue;
+				}
 
-				let mut children: Vec<Entry> = get_parent_children_via(&summary, suggested_only)
-					.filter(|(room, _)| !parents.contains(room))
-					.rev()
-					.map(|(key, val)| (key, val.collect()))
-					.collect();
-
-				if populate {
-					rooms.push(summary_to_chunk(summary.clone()));
+				if to_skip > 0 {
+					to_skip = to_skip.saturating_sub(1);
 				} else {
-					children = children
-						.iter()
-						.rev()
-						.stream()
-						.skip_while(|(room, _)| {
-							services
-								.rooms
-								.short
-								.get_shortroomid(room)
-								.map_ok(|short| {
-									Some(&short) != short_room_ids.clone().nth(parents.len())
-								})
-								.unwrap_or_else(|_| false)
-						})
-						.map(Clone::clone)
-						.collect::<Vec<Entry>>()
-						.await
-						.into_iter()
-						.rev()
-						.collect();
+					if suggested_only {
+						// In a `suggested_only` walk the returned children_state
+						// must only carry the suggested links.
+						summary.children_state.retain(|raw| {
+							raw.deserialize_as::<HierarchySpaceChildEvent>()
+								.map(|ce| ce.content.suggested)
+								.unwrap_or(false)
+						});
+					}
+					rooms.push(summary_to_chunk(summary.clone()));
 				}
 
-				if !populate && queue.is_empty() && children.is_empty() {
-					break;
-				}
-
-				parents.insert(current_room.clone());
 				if rooms.len() >= limit {
 					break;
 				}
 
-				if parents.len() > max_depth {
+				// Only rooms of type `m.space` are expanded; a non-space room's
+				// children links are ignored. Rooms deeper than max_depth are
+				// returned but not expanded.
+				let is_space = summary.room_type == Some(RoomType::Space);
+				if !is_space || depth >= max_depth {
 					continue;
 				}
 
-				queue.extend(children);
+				let mut children: Vec<Entry> = get_parent_children_via(&summary, suggested_only)
+					.filter(|(room, _)| !visited.contains(room))
+					.map(|(room, via)| (room, via.collect(), depth.saturating_add(1)))
+					.collect();
+
+				// Push reversed so the first child is processed first.
+				children.reverse();
+				stack.extend(children);
 			},
 		}
 	}
 
-	let next_batch: OptionFuture<_> = queue
-		.pop_front()
-		.map(|(room, _)| async move {
-			parents.insert(room);
-
-			let next_short_room_ids: Vec<_> = parents
-				.iter()
-				.stream()
-				.filter_map(|room_id| services.rooms.short.get_shortroomid(room_id).ok())
-				.collect()
-				.await;
-
-			(next_short_room_ids.iter().ne(short_room_ids) && !next_short_room_ids.is_empty())
-				.then_some(PaginationToken {
-					short_room_ids: next_short_room_ids,
-					limit: limit.try_into().ok()?,
-					max_depth: max_depth.try_into().ok()?,
-					suggested_only,
-				})
-				.as_ref()
-				.map(PaginationToken::to_string)
+	let next_offset = offset.saturating_add(u64::try_from(rooms.len()).unwrap_or(u64::MAX));
+	let next_batch: OptionFuture<_> = (!stack.is_empty())
+		.then_some(async move {
+			PaginationToken {
+				offset: next_offset,
+				limit: limit.try_into().ok().unwrap_or_default(),
+				max_depth: max_depth.try_into().ok().unwrap_or_default(),
+				suggested_only,
+			}
+			.to_string()
 		})
 		.into();
 
-	Ok(get_hierarchy::v1::Response {
-		next_batch: next_batch.await.flatten(),
-		rooms,
-	})
+	Ok(get_hierarchy::v1::Response { next_batch: next_batch.await, rooms })
 }
