@@ -631,6 +631,20 @@ e2ee args=".*":
 
     exit "$go_test_exit"
 
+# Named aliases for common client matrices. They delegate to `e2ee` (single
+# source of truth for the logic); the matrix env var is all they vary. Rust
+# targets still need COMPLEMENT_CRYPTO_RUST_SDK_DIR pointing at a
+# matrix-rust-sdk checkout (see the e2ee prerequisite errors).
+# Usage: just crypto-rs TestNameRegex   (also: crypto-js, crypto-jsrs)
+crypto-js pattern=".*":
+    COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=jj {{ just_executable() }} e2ee "{{ pattern }}"
+
+crypto-rs pattern=".*":
+    COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=rr {{ just_executable() }} e2ee "{{ pattern }}"
+
+crypto-jsrs pattern=".*":
+    COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=jj,jr,rj,rr {{ just_executable() }} e2ee "{{ pattern }}"
+
 # -----------------------------------------------------------------------------
 # Complement CI
 # -----------------------------------------------------------------------------
