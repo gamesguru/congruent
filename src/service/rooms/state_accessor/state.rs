@@ -388,9 +388,22 @@ pub fn state_full_shortids_hamt(
 	&self,
 	root_handle: rezzy::hamt::RootHandle,
 ) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
-	let load = async move { self.load_full_state_hamt(&root_handle).await };
-	load.map_ok(|full_state| full_state.into_iter().collect::<Vec<_>>())
-		.map_ok(Vec::into_iter)
+	let load = async move {
+		let mut entries: Vec<_> = self
+			.load_full_state_hamt(&root_handle)
+			.await?
+			.into_iter()
+			.collect();
+		// The HAMT stores entries keyed by ShortStateKey, whose value is a
+		// global counter assigned in first-seen/creation order. Sorting by it
+		// restores the deterministic creation-order iteration that the legacy
+		// CompressedState (BTreeMap) produced; without this the entries come
+		// back in arbitrary HashMap iteration order, making state-key ordering
+		// (e.g. a space's `children_state`) nondeterministic.
+		entries.sort_unstable_by_key(|(k, _)| *k);
+		Ok(entries)
+	};
+	load.map_ok(Vec::into_iter)
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
 		.boxed()
