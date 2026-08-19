@@ -14,7 +14,7 @@ use database::Json;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
@@ -24,7 +24,10 @@ use ruma::{
 	serde::Raw,
 };
 
-use crate::{Services, media, rooms::short::ShortStateHash};
+use crate::{
+	Services, media,
+	rooms::short::{ShortEventId, ShortStateHash},
+};
 
 /// The current schema version.
 /// - If database is opened at greater version we reject with error. The
@@ -962,6 +965,79 @@ async fn legacy_get_full_state(
 	Ok(full_state)
 }
 
+/// Returns the `shorteventid`s of the state events a legacy statediff added,
+/// i.e. the state events whose *post-event* state is that snapshot. The raw
+/// statediff payload starts with the parent `ShortStateHash`, followed by
+/// 16-byte `(shortstatekey, shorteventid)` entries, first the added set and
+/// then (after an all-zero shortstatekey marker) the removed set. The second
+/// half of each added entry is the event the snapshot's state results from.
+fn legacy_statediff_added_shorteventids(slice: &[u8]) -> Vec<ShortEventId> {
+	const STRIDE: usize = size_of::<ShortStateHash>();
+	let mut added = Vec::new();
+	let mut add_mode = true;
+	let mut i = STRIDE;
+	while let Some(v) = slice.get(i..i.saturating_add(2_usize.saturating_mul(STRIDE))) {
+		if add_mode && v.starts_with(0_u64.to_be_bytes().as_slice()) {
+			add_mode = false;
+			i = i.saturating_add(STRIDE);
+			continue;
+		}
+
+		if add_mode {
+			if let Ok(shorteventid) = v
+				.get(STRIDE..2_usize.saturating_mul(STRIDE))
+				.ok_or(())
+				.and_then(|b| <[u8; 8]>::try_from(b).map_err(|_| ()))
+				.map(u64::from_be_bytes)
+			{
+				added.push(shorteventid);
+			}
+		}
+
+		i = i.saturating_add(2_usize.saturating_mul(STRIDE));
+	}
+
+	added
+}
+
+/// Build the HAMT root for each accumulated post-event snapshot and return the
+/// `(shorteventid, serialized root)` pairs to store in
+/// `shorteventid_roothandle`. A room id is required for the structural key; it
+/// is resolved from the first event of each snapshot group.
+async fn legacy_added_events_roothandles(
+	services: &Services,
+	post_state_events: &HashMap<ShortStateHash, Vec<ShortEventId>>,
+) -> Result<Vec<(ShortEventId, Vec<u8>)>> {
+	let mut out = Vec::new();
+	for (shortstatehash, shorteventids) in post_state_events {
+		let first = shorteventids.first().ok_or(err!(Database(error!(
+			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
+		))))?;
+		let event_id: ruma::OwnedEventId =
+			services.rooms.short.get_eventid_from_short(*first).await?;
+		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
+		let room_id = pdu
+			.room_id_or_hash()
+			.expect("timeline PDU must have a room_id")
+			.clone();
+
+		let (root_handle, root_node) =
+			legacy_build_root_handle_for_state(services, &room_id, *shortstatehash).await?;
+		services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+
+		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
+		for shorteventid in shorteventids {
+			out.push((*shorteventid, serialized.clone()));
+		}
+	}
+
+	Ok(out)
+}
+
 async fn legacy_build_root_handle_for_state(
 	services: &Services,
 	room_id: &RoomId,
@@ -1004,6 +1080,8 @@ async fn legacy_build_root_handle_for_state(
 }
 
 async fn db_lt_20(services: &Services) -> Result<()> {
+	const FLUSH_AFTER_EVENTS: usize = 65_536;
+
 	info!("Running v20 migration (building HAMT roots for existing rooms)...");
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
@@ -1071,47 +1149,56 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 	}
 
 	info!("Backfilling per-event HAMT root handles for existing events...");
-	let short_state_events = services.db["shorteventid_shortstatehash"]
-		.stream::<crate::rooms::short::ShortEventId, ShortStateHash>()
-		.try_collect::<Vec<_>>()
-		.await?;
 
-	let mut events_by_state: HashMap<
-		(OwnedRoomId, ShortStateHash),
-		Vec<crate::rooms::short::ShortEventId>,
-	> = HashMap::new();
-	for (shorteventid, shortstatehash) in short_state_events {
-		let event_id: ruma::OwnedEventId = services
-			.rooms
-			.short
-			.get_eventid_from_short(shorteventid)
-			.await?;
-		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
-		let room_id = pdu
-			.room_id_or_hash()
-			.expect("timeline PDU must have a room_id")
-			.clone();
+	// `shorteventid_shortstatehash` stores each state event's *predecessor*
+	// (pre-event) state, so labeling events with that snapshot's root would
+	// attach the wrong state boundary to `shorteventid_roothandle`. Instead we
+	// invert the legacy statediffs: the snapshot whose `added` set contains a
+	// state event is that event's *post-event* state, which is exactly what
+	// `get_roothandle`/`pdu_roothandle` must return. This also covers the first
+	// state event of each room (present in the first snapshot's `added` even
+	// though it has no predecessor mapping). Snapshots are accumulated and
+	// flushed in bounded batches so the whole history is never held in memory.
+	let mut post_state_events: HashMap<ShortStateHash, Vec<ShortEventId>> = HashMap::new();
+	let mut pending_events = 0_usize;
+	let mut batch = conduwuit_database::Batch::new(&services.db["shorteventid_roothandle"]);
 
-		events_by_state
-			.entry((room_id, shortstatehash))
+	let statediff_map = services.db["shortstatehash_statediff"].clone();
+	let mut diff_stream = statediff_map.raw_stream();
+	while let Some(result) = diff_stream.next().await {
+		let (key, value): database::KeyVal<'_> = result?;
+		let shortstatehash = u64::from_be_bytes(key[..8].try_into().map_err(|_| {
+			err!(Database(error!(
+				"Unexpected key in `shortstatehash_statediff` during v20 backfill."
+			)))
+		})?);
+
+		let added = legacy_statediff_added_shorteventids(value);
+		pending_events = pending_events.saturating_add(added.len());
+		post_state_events
+			.entry(shortstatehash)
 			.or_default()
-			.push(shorteventid);
+			.extend(added);
+
+		if pending_events >= FLUSH_AFTER_EVENTS {
+			for (shorteventid, serialized) in
+				legacy_added_events_roothandles(services, &post_state_events).await?
+			{
+				batch.insert(
+					&services.db["shorteventid_roothandle"],
+					shorteventid.to_be_bytes(),
+					&serialized,
+				);
+			}
+			post_state_events.clear();
+			pending_events = 0;
+		}
 	}
 
-	let mut batch = conduwuit_database::Batch::new(&services.db["shorteventid_roothandle"]);
-	for ((room_id, shortstatehash), shorteventids) in events_by_state {
-		let (root_handle, root_node) =
-			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
-
-		services
-			.rooms
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-
-		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
-
-		for shorteventid in shorteventids {
+	if pending_events > 0 {
+		for (shorteventid, serialized) in
+			legacy_added_events_roothandles(services, &post_state_events).await?
+		{
 			batch.insert(
 				&services.db["shorteventid_roothandle"],
 				shorteventid.to_be_bytes(),
