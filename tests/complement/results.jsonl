@@ -64,8 +64,8 @@
 {"Action":"pass","Test":"TestCannotSendNonLeaveViaSendLeaveV2/knock_event"}
 {"Action":"pass","Test":"TestCannotSendNonLeaveViaSendLeaveV2/non-state_membership_event"}
 {"Action":"pass","Test":"TestCannotSendNonLeaveViaSendLeaveV2/regular_event"}
-{"Action":"fail","Test":"TestChangePassword"}
-{"Action":"fail","Test":"TestChangePassword/After_changing_password,_a_different_session_no_longer_works_by_default"}
+{"Action":"pass","Test":"TestChangePassword"}
+{"Action":"pass","Test":"TestChangePassword/After_changing_password,_a_different_session_no_longer_works_by_default"}
 {"Action":"pass","Test":"TestChangePassword/After_changing_password,_can't_log_in_with_old_password"}
 {"Action":"pass","Test":"TestChangePassword/After_changing_password,_can_log_in_with_new_password"}
 {"Action":"pass","Test":"TestChangePassword/After_changing_password,_different_sessions_can_optionally_be_kept"}
@@ -129,8 +129,8 @@
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
-{"Action":"fail","Test":"TestDeviceManagement"}
-{"Action":"fail","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
+{"Action":"pass","Test":"TestDeviceManagement"}
+{"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
 {"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"}
 {"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}"}
 {"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}_gives_a_404_for_unknown_devices"}
@@ -325,9 +325,9 @@
 {"Action":"pass","Test":"TestLogin/parallel/POST_/login_can_login_as_user"}
 {"Action":"pass","Test":"TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request"}
 {"Action":"pass","Test":"TestLogin/parallel/POST_/login_wrong_password_is_rejected"}
-{"Action":"fail","Test":"TestLogout"}
-{"Action":"fail","Test":"TestLogout/Can_logout_all_devices"}
-{"Action":"fail","Test":"TestLogout/Can_logout_current_device"}
+{"Action":"pass","Test":"TestLogout"}
+{"Action":"pass","Test":"TestLogout/Can_logout_all_devices"}
+{"Action":"pass","Test":"TestLogout/Can_logout_current_device"}
 {"Action":"pass","Test":"TestLogout/Request_to_logout_with_invalid_an_access_token_is_rejected"}
 {"Action":"pass","Test":"TestLogout/Request_to_logout_without_an_access_token_is_rejected"}
 {"Action":"skip","Test":"TestMSC3757OwnedState"}
@@ -853,8 +853,8 @@
 {"Action":"pass","Test":"TestUploadKey/Parallel/Rejects_invalid_device_keys"}
 {"Action":"pass","Test":"TestUploadKey/Parallel/Should_reject_keys_claiming_to_belong_to_a_different_user"}
 {"Action":"pass","Test":"TestUploadKey/Parallel/query_for_user_with_no_keys_returns_empty_key_dict"}
-{"Action":"fail","Test":"TestUploadKeyIdempotency"}
-{"Action":"fail","Test":"TestUploadKeyIdempotencyOverlap"}
+{"Action":"pass","Test":"TestUploadKeyIdempotency"}
+{"Action":"pass","Test":"TestUploadKeyIdempotencyOverlap"}
 {"Action":"pass","Test":"TestUrlPreview"}
 {"Action":"pass","Test":"TestUserAppearsInChangedDeviceListOnJoinOverFederation"}
 {"Action":"pass","Test":"TestVersionStructure"}

@@ -592,16 +592,11 @@ impl Service {
 		let userdeviceid = (user_id, device_id);
 
 		// Remove all active tokens for this device
-		if let Ok(tokens) = self
-			.db
-			.userdeviceid_token
-			.qry(&userdeviceid)
-			.await
-			.deserialized::<Vec<String>>()
-		{
-			for token in &tokens {
-				self.db.token_userdeviceid.remove(token);
-			}
+		let tokens = self.active_tokens(user_id, device_id).await;
+		for token in &tokens {
+			self.db.token_userdeviceid.remove(token);
+		}
+		if !tokens.is_empty() {
 			self.db.userdeviceid_token.del(userdeviceid);
 		}
 
@@ -645,9 +640,24 @@ impl Service {
 			.map(|(_, device_id): (Ignore, &DeviceId)| device_id)
 	}
 
-	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<Vec<String>> {
+	/// Load the set of access tokens currently active for a device. The value
+	/// is stored as a JSON array of token strings (`Json(&tokens)` in
+	/// `set_token`), so it is read back through `serde_json::Value` rather than
+	/// the native binary format, which cannot represent a variable-length
+	/// sequence of strings.
+	async fn active_tokens(&self, user_id: &UserId, device_id: &DeviceId) -> Vec<String> {
 		let key = (user_id, device_id);
-		self.db.userdeviceid_token.qry(&key).await.deserialized()
+		match self.db.userdeviceid_token.qry(&key).await {
+			| Ok(handle) => match handle.deserialized::<serde_json::Value>() {
+				| Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+				| Err(_) => Vec::new(),
+			},
+			| Err(_) => Vec::new(),
+		}
+	}
+
+	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<Vec<String>> {
+		Ok(self.active_tokens(user_id, device_id).await)
 	}
 
 	/// Generate a unique access token that doesn't collide with existing tokens
@@ -706,13 +716,7 @@ impl Service {
 
 		// Append the new token to the device's token set, keeping all
 		// previously-issued tokens valid.
-		let mut tokens: Vec<String> = self
-			.db
-			.userdeviceid_token
-			.qry(&key)
-			.await
-			.map(|v| v.deserialized().unwrap_or_default())
-			.unwrap_or_default();
+		let mut tokens = self.active_tokens(user_id, device_id).await;
 		if !tokens.as_slice().contains(&token.to_owned()) {
 			tokens.push(token.to_owned());
 			self.db.userdeviceid_token.put(key, Json(&tokens));
