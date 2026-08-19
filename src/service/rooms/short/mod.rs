@@ -46,8 +46,6 @@ struct Services {
 	globals: Dep<globals::Service>,
 }
 
-pub type ShortStateHash = ShortId;
-
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let eventidshort_cap = utils::math::usize_from_f64(

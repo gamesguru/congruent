@@ -11,7 +11,7 @@ use conduwuit_core::{
 	},
 	warn,
 };
-use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
+use conduwuit_database::{Ignore, Interfix, Map};
 
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
@@ -60,7 +60,7 @@ use ruma::{
 
 use crate::{
 	Dep, rooms,
-	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
+	rooms::short::{ShortEventId, ShortStateKey},
 };
 
 pub struct Service {
@@ -79,7 +79,6 @@ struct Services {
 }
 
 struct Data {
-	roomid_shortstatehash: Arc<Map>,
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
@@ -103,7 +102,6 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 			},
 			db: Data {
-				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
@@ -477,14 +475,6 @@ impl Service {
 	) -> Result<rezzy::hamt::RootHandle> {
 		let data = self.db.shorteventid_roothandle.qry(&shorteventid).await?;
 		root_handle_from_bytes(&data)
-	}
-
-	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
-		self.db
-			.roomid_shortstatehash
-			.get(room_id)
-			.await
-			.deserialized()
 	}
 
 	pub fn get_forward_extremities<'a>(

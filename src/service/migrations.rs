@@ -10,7 +10,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use database::Json;
+use database::{Deserialized, Json};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{
@@ -26,7 +26,7 @@ use ruma::{
 
 use crate::{
 	Services, media,
-	rooms::short::{ShortEventId, ShortStateHash},
+	rooms::short::{ShortEventId, ShortId as ShortStateHash},
 };
 
 /// The current schema version.
@@ -1086,7 +1086,11 @@ async fn db_lt_20(services: &Services) -> Result<()> {
 
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
-		match services.rooms.state.get_room_shortstatehash(room_id).await {
+		match services.db["roomid_shortstatehash"]
+			.get(room_id)
+			.await
+			.deserialized()
+		{
 			| Err(e) if e.is_not_found() => {
 				// Room has no state yet (e.g. partial join); skip.
 				debug_warn!(
