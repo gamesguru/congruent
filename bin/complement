@@ -7,13 +7,13 @@ set -euo pipefail
 COMPLEMENT_SRC="${COMPLEMENT_SRC:-"$1"}"
 
 # Default results directory
-RESULTS_DIR="${RESULTS_DIR:-tests/test_results/complement}"
+RESULTS_DIR="${RESULTS_DIR:-tests/complement}"
 
 # A `.jsonl` file to write test logs to
 LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
 
 # A `.jsonl` file to write merged test results to.
-RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/test_results.jsonl}"}"
+RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/results.jsonl}"}"
 
 # The base docker image to use for complement tests
 # You can build the default with `docker build -t continuwuity:complement -f ./docker/complement.Dockerfile .`
@@ -304,14 +304,19 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 		# packages (e.g. TestSync in tests/csapi and tests/msc4222) land as
 		# two rows here. --dedupe-in-place forces that down to one row per
 		# name, same as the partial-run merge path already does.
-		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE"
-		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE"
-		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"
+		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
+			|| { echo "MERGE FAILED: dedupe of staged results ($RESULTS_FILE)" >&2; exit 1; }
+		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
+			|| { echo "MERGE FAILED: sort of staged results ($RESULTS_FILE)" >&2; exit 1; }
+		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
+			|| { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
 		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
 	else
 		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-		python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"
-		mv "$tmp_results" "$MAIN_RESULTS_FILE"
+		python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results" \
+			|| { echo "MERGE FAILED: merging staged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+		mv "$tmp_results" "$MAIN_RESULTS_FILE" \
+			|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
 		echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
 	fi
 else

@@ -361,7 +361,7 @@ complement args=".":
     HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
     MOUNTS="{{ PREFIX }}/lib:{{ PREFIX }}/lib:ro"
     if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
-    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement-gg") }}" COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{ args }}" ./bin/complement ./complement-src
+    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/complement") }}" COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{ args }}" ./bin/complement ./complement-src
 
 # Run Complement-Crypto (E2EE) tests (requires complement-crypto-src).
 # Reuses the complement homeserver image; builds the tester image on first use.
@@ -372,7 +372,7 @@ e2ee args=".*":
     # Mirrors the `complement` recipe: run complement-crypto's `go test` directly
     # on the host (no tester docker image), against the already-built
     # complement-crypto-src submodule. Results/logs are written as the invoking
-    # user (shane) straight into tests/test_results/complement-crypto.
+    # user (shane) straight into tests/crypto.
     #
     # Prerequisite: the JS-SDK bundle must be built once into
     #   complement-crypto-src/internal/api/js/chrome/dist
@@ -397,7 +397,7 @@ e2ee args=".*":
     MOUNTS="{{ PREFIX }}/lib:{{ PREFIX }}/lib:ro"
     if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
 
-    RESULTS_FILE_STAGING="{{ env_var_or_default("COMPLEMENT_CRYPTO_RESULTS_DIR", "$(git rev-parse --show-toplevel)/tests/test_results/complement-crypto") }}"
+    RESULTS_FILE_STAGING="{{ env_var_or_default("COMPLEMENT_CRYPTO_RESULTS_DIR", "$(git rev-parse --show-toplevel)/tests/crypto") }}"
     MAIN_RESULTS_FILE="$RESULTS_FILE_STAGING/results.jsonl"
     # Match bin/complement's naming: a full/`.` run is called `all`, otherwise
     # slugify the requested test pattern (so `.*` doesn't leave a bare `__`).
@@ -406,7 +406,7 @@ e2ee args=".*":
     run_stamp="$(date +%s%N)"
     # Centralization: ALL complement-crypto output (raw per-shard logs, merged
     # logs, staged results, and the tracked results.jsonl ledger) lives under
-    # tests/test_results/complement-crypto. There is no separate .tmp staging dir.
+    # tests/crypto. There is no separate .tmp staging dir.
     STAGING_DIR="$RESULTS_FILE_STAGING"
     mkdir -p "$STAGING_DIR"
     RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
@@ -529,13 +529,18 @@ e2ee args=".*":
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
         if [ "$run_suffix" = "all" ]; then
-            python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE"
-            python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE"
-            cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"
+            python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
+                || { echo "MERGE FAILED: dedupe of staged results ($RESULTS_FILE)" >&2; exit 1; }
+            python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
+                || { echo "MERGE FAILED: sort of staged results ($RESULTS_FILE)" >&2; exit 1; }
+            cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
+                || { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
             echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
         else
-            python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp"
-            mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE"
+            python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp" \
+                || { echo "MERGE FAILED: merging staged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+            mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE" \
+                || { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
             echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
         fi
     else
@@ -545,7 +550,7 @@ e2ee args=".*":
 
     # Centralization: expose the SDK/server runtime logs (written by the
     # complement-crypto TestMain into $COMPLEMENT_SRC/tests/logs) under the results
-    # dir too, so every artifact of a run lives in tests/test_results/complement-crypto.
+    # dir too, so every artifact of a run lives in tests/crypto.
     if [ -d "$COMPLEMENT_SRC/tests/logs" ] && [ "$(ls -A "$COMPLEMENT_SRC/tests/logs")" ]; then
         mkdir -p "$RESULTS_FILE_STAGING/logs"
         for f in "$COMPLEMENT_SRC/tests/logs"/*; do
@@ -579,8 +584,8 @@ ci-complement-stats:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement") }}"
-    RESULTS="$RESULTS_DIR/test_results.jsonl"
+    RESULTS_DIR="{{ env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/complement") }}"
+    RESULTS="$RESULTS_DIR/results.jsonl"
     if [ ! -f "$RESULTS" ]; then
         echo "ERROR: $RESULTS does not exist"
         exit 1
@@ -607,7 +612,7 @@ ci-complement-stats:
 
     echo ""
     echo "Last modified by:"
-    git log -5 --format="%an (%ad) %H" origin/main -- tests/test_results/complement-gg/test_results.jsonl
+    git log -5 --format="%an (%ad) %H" origin/main -- tests/complement/results.jsonl
 
 # -----------------------------------------------------------------------------
 # CI Database Queries

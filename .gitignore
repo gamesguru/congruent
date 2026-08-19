@@ -95,11 +95,13 @@ rustc-ice-*
 
 # complement test logs are huge
 complement-src/
-tests/test_results/complement/test_logs.jsonl
+tests/complement/test_logs.*.jsonl
+tests/complement/test_results.*.jsonl
 *.db
-tests/test_results/complement/backups/raw_issues_v11_v12.txt
-tests/test_results/complement-gg/test_results.*.jsonl
-tests/test_results/complement-crypto/
+tests/complement/backups/raw_issues_v11_v12.txt
+# complement-crypto run artifacts (the tracked tests/crypto/results.jsonl ledger is
+# force-added; the rest of the dir is staging/log noise)
+tests/crypto/
 
 # Node
 node_modules/
