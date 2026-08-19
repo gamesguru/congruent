@@ -90,7 +90,6 @@ jobs:
           overwrite: true
 
   complement-tests:
-    needs: setup
     # NOTE: to enable GitHub builds/workflows, add a REPOSITORY_VARIABLE
     # i.e., under /settings/variables/actions, C10Y_SOME_ENV_VAR=1
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
@@ -204,23 +203,10 @@ jobs:
           echo "Prebuilt Arch: ${{ matrix.prebuilt_arch }}"
           echo "Detected CPU Target: ${{ steps.cpu.outputs.target }}"
 
-      # amd64 cells reuse the shared binary built by `setup`.
-      - name: Download shared binary
-        if: matrix.arch == 'amd64'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: conduwuit-dev-quick
-          path: /tmp/shared-bin
-
-      - name: Install shared binary
-        if: matrix.arch == 'amd64'
-        run: |
-          mkdir -p target/latest
-          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
-
-      # arm64 cells cannot share an amd64 binary, so they compile here.
-      - name: Build conduwuit for Complement (arm64)
-        if: matrix.arch == 'arm64'
+      # Every cell builds its own binary on its own runner (as before the
+      # shared-binary consolidation). Each runner's glibc matches its OS
+      # (e.g. ubuntu-22.04 -> glibc 2.35), so the binary always runs there.
+      - name: Build conduwuit for Complement
         env:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
