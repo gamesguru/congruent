@@ -741,6 +741,42 @@ impl Service {
 			)));
 		}
 
+		// `/keys/upload` is idempotent per key ID: re-uploading the same one-time
+		// key for the same user+device must not add a duplicate row, otherwise
+		// overlapping/repeated uploads inflate `one_time_key_counts` (sytest:
+		// "Uploading the same one-time key twice should not error" / Complement
+		// TestUploadKeyIdempotency / TestUploadKeyIdempotencyOverlap). Keys are
+		// stored as `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`, so we
+		// stream the user+device scope and compare the trailing key-id segment.
+		let expected_key_id =
+			serde_json::to_string(one_time_key_key).expect("DeviceKeyId always serializes");
+		let mut key_prefix = user_id.as_bytes().to_vec();
+		key_prefix.push(0xFF);
+		key_prefix.extend_from_slice(device_id.as_bytes());
+		key_prefix.push(0xFF);
+
+		let already_exists = self
+			.db
+			.onetimekeyid_onetimekeys
+			.raw_stream_prefix(&key_prefix)
+			.ignore_err()
+			.filter_map(|(key, _): (&[u8], &[u8])| {
+				let matches = key
+					.rsplit(|&b| b == 0xFF)
+					.next()
+					.is_some_and(|key_json| key_json == expected_key_id.as_bytes());
+				std::future::ready(matches.then_some(()))
+			})
+			.next()
+			.await
+			.is_some();
+
+		// Idempotent re-upload of an identical key ID: return success without
+		// growing the store or bumping the upload counter.
+		if already_exists {
+			return Ok(());
+		}
+
 		let upload_count = self.services.globals.next_count()?.to_be_bytes();
 
 		let mut key = user_id.as_bytes().to_vec();
