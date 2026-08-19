@@ -1,6 +1,5 @@
 src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None (idle room),
 src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
-src/api/server/send.rs:/// lookup by `shortstatehash`.
 src/database/deprecated_maps.rs:		name: "roomid_shortstatehash",
 src/database/deprecated_maps.rs:		name: "roomsynctoken_shortstatehash",
 src/database/deprecated_maps.rs:		name: "shorteventid_shortstatehash",
@@ -8,7 +7,6 @@ src/database/deprecated_maps.rs:		name: "shortstatehash_lthash",
 src/database/deprecated_maps.rs:		name: "shortstatehash_statediff",
 src/service/migrations.rs:use crate::{Services, media, rooms::short::ShortStateHash};
 src/service/migrations.rs:	// Version 21 - drop legacy shortstatehash table data now that v20 has
-src/service/migrations.rs:					// re-fetch it via the `shortstatehash` read chain, which was removed as
 src/service/migrations.rs:	parent: Option<ShortStateHash>,
 src/service/migrations.rs:	shortstatehash: ShortStateHash,
 src/service/migrations.rs:	const STRIDE: usize = size_of::<ShortStateHash>();

@@ -2,7 +2,7 @@ use std::{borrow::Borrow, iter::once};
 
 use axum::extract::State;
 use conduwuit::{Err, Result, at, err, info, utils::IterStream};
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, TryStreamExt};
 use ruma::{OwnedEventId, api::federation::event::get_room_state};
 
 use super::AccessCheck;
@@ -48,9 +48,11 @@ pub(crate) async fn get_room_state_route(
 		.rooms
 		.state_accessor
 		.state_full_ids_hamt(&root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
 		.map(at!(1))
-		.collect()
-		.await;
+		.collect();
 
 	let pdus = state_ids
 		.iter()

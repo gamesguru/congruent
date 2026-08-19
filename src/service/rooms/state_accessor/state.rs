@@ -252,42 +252,26 @@ pub async fn room_state_get_hamt_legacy(
 }
 
 /// Returns a Stream of all `(shortstatekey, event_id)` for a given RootHandle.
+///
+/// Traversal and short-event-id resolution errors are emitted as `Err` items
+/// rather than being swallowed, so a caller that must fail closed can observe
+/// an unavailable/partial state instead of silently receiving incomplete data.
 #[implement(super::Service)]
-#[allow(unused_variables)]
 pub fn state_full_ids_hamt<'a>(
 	&'a self,
 	root_handle: &'a rezzy::hamt::RootHandle,
-) -> futures::stream::BoxStream<'a, (ShortStateKey, OwnedEventId)> {
-	let structural_hash = root_handle.structural_hash;
-	let short_states_result = (|| -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-		let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
-		let mut short_states = Vec::new();
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		root_node
-			.visit_entries(&mut resolver, &mut |&k, &v| {
-				short_states.push((k, v));
-				Ok(())
-			})
-			.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
-		Ok(short_states)
-	})();
-
-	match short_states_result {
-		| Ok(short_states) => {
-			let stream =
-				futures::stream::iter(short_states).filter_map(move |(ssk, seid)| async move {
-					let event_id = self
-						.services
-						.short
-						.get_eventid_from_short::<OwnedEventId>(seid)
-						.await
-						.ok()?;
-					Some((ssk, event_id))
-				});
-			stream.boxed()
-		},
-		| Err(_) => futures::stream::empty().boxed(),
-	}
+) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
+	self.state_full_shortids_hamt(root_handle.clone())
+		.then(move |result| async move {
+			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
+			let event_id = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(seid)
+				.await?;
+			Ok::<_, conduwuit::Error>((ssk, event_id))
+		})
+		.boxed()
 }
 
 /// Returns a Stream of all the full state PDUs for a given RootHandle.

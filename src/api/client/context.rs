@@ -9,7 +9,7 @@ use conduwuit::{
 };
 use conduwuit_service::rooms::{lazy_loading, lazy_loading::Options, short::ShortStateKey};
 use futures::{
-	FutureExt, StreamExt, TryFutureExt,
+	FutureExt, StreamExt, TryFutureExt, TryStreamExt,
 	future::{OptionFuture, join, join3, try_join3},
 };
 use ruma::{OwnedEventId, UserId, api::client::context::get_context, events::StateEventType};
@@ -177,8 +177,8 @@ pub(crate) async fn get_context_route(
 			.rooms
 			.state_accessor
 			.state_full_ids_hamt(&root_handle)
-			.collect()
-			.await;
+			.try_collect()
+			.await?;
 
 		Ok::<_, conduwuit::Error>(ids)
 	};

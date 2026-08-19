@@ -754,16 +754,51 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 			0_usize,
 			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
 				if state.deserialize().is_err() {
-					// The cached leave event is corrupted. The legacy repair path used to
-					// re-fetch it via the `shortstatehash` read chain, which was removed as
-					// part of the HAMT cutover, so we just drop the bad entry.
-					warn!(
-						%room_id,
-						%user_id,
-						"room cached as left has a corrupted leave event, removing \
-						 cache entry"
-					);
-					userroomid_leftstate.del((user_id, room_id));
+					// The cached leave event is corrupted. Try to reconstruct it from
+					// the room's current membership state when a HAMT root is already
+					// available (fresh/migrated rooms with a `roomid_roothandle`
+					// entry). Otherwise the legacy read chain that used to repair this
+					// was removed by the HAMT cutover, so we drop the bad entry — the
+					// leave event remains in the timeline and is recovered at runtime
+					// once the HAMT migration has run.
+					let repaired = match services.rooms.state.get_room_state_hamt(room_id).await {
+						| Ok(root_handle) => services
+							.rooms
+							.state_accessor
+							.state_get_in_room_hamt(
+								room_id,
+								&root_handle,
+								&StateEventType::RoomMember,
+								user_id.as_str(),
+							)
+							.await
+							.ok(),
+						| Err(_) => None,
+					};
+
+					match repaired {
+						| Some(leave)
+							if leave.get_content::<RoomMemberEventContent>().is_ok_and(
+								|content| content.membership == MembershipState::Leave,
+							) =>
+						{
+							userroomid_leftstate.put((user_id, room_id), Json(leave));
+							warn!(
+								%room_id,
+								%user_id,
+								"repaired corrupted cached leave event from room state"
+							);
+						},
+						| _ => {
+							warn!(
+								%room_id,
+								%user_id,
+								"room cached as left has a corrupted leave event, removing \
+								 cache entry"
+							);
+							userroomid_leftstate.del((user_id, room_id));
+						},
+					}
 				}
 
 				total = total.saturating_add(1);

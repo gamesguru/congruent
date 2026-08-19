@@ -213,9 +213,11 @@ async fn create_join_event(
 		.rooms
 		.state_accessor
 		.state_full_ids_hamt(&root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
 		.map(at!(1))
-		.collect()
-		.await;
+		.collect();
 
 	trace!(%omit_members, "Constructing current state");
 	let state = state_ids

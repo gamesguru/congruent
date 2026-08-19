@@ -32,8 +32,8 @@ pub async fn resolve_state(
 		.services
 		.state_accessor
 		.state_full_ids_hamt(&current_root_handle)
-		.collect()
-		.await;
+		.try_collect()
+		.await?;
 
 	trace!("Loading fork states");
 	let forkstates = [currentstate_ids, incomingstate];

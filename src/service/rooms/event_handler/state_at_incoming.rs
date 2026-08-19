@@ -55,8 +55,8 @@ where
 		.services
 		.state_accessor
 		.state_full_ids_hamt(&prev_roothandle)
-		.collect()
-		.await;
+		.try_collect()
+		.await?;
 
 	debug!("Using cached state");
 
@@ -208,8 +208,8 @@ where
 		.services
 		.state_accessor
 		.state_full_ids_hamt(&root_handle)
-		.collect()
-		.await;
+		.try_collect()
+		.await?;
 
 	if let Some(state_key) = prev_event.state_key() {
 		let shortstatekey = self

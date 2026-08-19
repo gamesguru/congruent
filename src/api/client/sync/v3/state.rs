@@ -12,7 +12,7 @@ use conduwuit::{
 	},
 };
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use service::rooms::short::ShortEventId;
@@ -43,8 +43,10 @@ pub(super) async fn build_state_initial(
 		.rooms
 		.state_accessor
 		.state_full_ids_hamt(timeline_start_root_handle)
-		.unzip()
-		.await;
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
+		.unzip();
 
 	trace!("performing initial sync of {} state events", event_ids.len());
 
