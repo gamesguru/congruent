@@ -1,11 +1,15 @@
 {"Action":"pass","Test":"TestAliceBobEncryptionWorks"}
 {"Action":"pass","Test":"TestAliceBobEncryptionWorks/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestAliceBobEncryptionWorks/{js_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestAliceBobEncryptionWorks/{rust_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestAliceBobEncryptionWorks/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestBackupWrongRecoveryKeyFails"}
 {"Action":"pass","Test":"TestBackupWrongRecoveryKeyFails/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestCanBackupKeys"}
 {"Action":"pass","Test":"TestCanBackupKeys/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestCanBackupKeys/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts"}
@@ -33,6 +37,7 @@
 {"Action":"pass","Test":"TestResolveNamespace"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughTime"}
 {"Action":"skip","Test":"TestRoomKeyIsCycledAfterEnoughTime/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnDeviceLogout"}
