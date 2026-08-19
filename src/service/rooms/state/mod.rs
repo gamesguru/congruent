@@ -250,7 +250,7 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 	) -> Result<rezzy::hamt::RootHandle> {
-		self.set_event_state_with_root(room_id, new_pdu, state_lock, None)
+		self.set_event_state_with_root(room_id, new_pdu, state_lock, None, None)
 			.await
 	}
 
@@ -261,6 +261,7 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
+		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
 	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
@@ -300,6 +301,22 @@ impl Service {
 		}
 
 		batch.commit();
+
+		// Update the derived membership/participation caches for the state
+		// transition. `state_root_handle` is the *post*-event root, so the delta
+		// must be computed against `prev_root_handle` (the state before this
+		// event was applied), otherwise the diff is empty and joined members /
+		// their servers are never registered for outbound federation fan-out.
+		if is_state {
+			if let Some(prev_root) = prev_root_handle {
+				self.update_caches_for_state_delta_between(
+					room_id,
+					Some(prev_root),
+					&root_handle,
+				)
+				.await?;
+			}
+		}
 
 		Ok(root_handle)
 	}

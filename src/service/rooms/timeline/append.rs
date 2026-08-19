@@ -151,11 +151,11 @@ where
 			.entry("unsigned".to_owned())
 			.or_insert_with(|| CanonicalJsonValue::Object(BTreeMap::default()))
 		{
-			if let Some(prev_root_handle) = prev_state_root_handle {
+			if let Some(prev_root_handle) = prev_state_root_handle.as_ref() {
 				if let Ok(prev_state) = self
 					.services
 					.state_accessor
-					.state_get_in_room_hamt(room_id, &prev_root_handle, &event_type, state_key)
+					.state_get_in_room_hamt(room_id, prev_root_handle, &event_type, state_key)
 					.await
 				{
 					unsigned.insert(
@@ -211,7 +211,13 @@ where
 
 	self.services
 		.state
-		.set_event_state_with_root(room_id, pdu, state_lock, state_root_handle.as_ref())
+		.set_event_state_with_root(
+			room_id,
+			pdu,
+			state_lock,
+			state_root_handle.as_ref(),
+			prev_state_root_handle.as_ref(),
+		)
 		.await?;
 
 	let receipt_content = BTreeMap::from_iter([(
