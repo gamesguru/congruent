@@ -284,12 +284,6 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 		return true;
 	};
 
-	// Any serialized rooms object makes the response non-empty. Knock-only
-	// responses omit "rooms" entirely, so there is nothing useful to inspect here.
-	if obj.contains_key("rooms") {
-		return false;
-	}
-
 	if obj.contains_key("presence")
 		|| obj.contains_key("account_data")
 		|| obj.contains_key("to_device")
@@ -297,8 +291,8 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 		return false;
 	}
 
-	obj.get("device_lists").is_none_or(|d| {
-		d.as_object().is_none_or(|d| {
+	match obj.get("device_lists") {
+		| Some(serde_json::Value::Object(d)) => {
 			let changed_empty = d
 				.get("changed")
 				.is_none_or(|c| c.as_array().is_none_or(Vec::is_empty));
@@ -307,9 +301,131 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 				.get("left")
 				.is_none_or(|l| l.as_array().is_none_or(Vec::is_empty));
 
-			changed_empty && left_empty
-		})
-	})
+			if !changed_empty || !left_empty {
+				return false;
+			}
+		},
+		// device_lists present but unexpectedly shaped: play it safe and treat
+		// the response as non-empty rather than risking an endless long-poll.
+		| Some(_) => return false,
+		| None => {},
+	}
+
+	// A room is only a real sync delta if it carries timeline/state/account-data/
+	// ephemeral content. A joined room serialized *solely* for a stale
+	// unread-notification count (empty timeline, no state/account-data/ephemeral,
+	// no summary, unchanged next_batch) is NOT a real delta: returning it early
+	// forces the client into a second round-trip to fetch the actual event,
+	// compounding latency and dropping the event out of the live-timeline window
+	// (this is the server-side half of the TestSpoofedEventSenderHandling race).
+	// Treat such rooms as empty and keep the long-poll waiting for the real event.
+	if let Some(rooms) = obj.get("rooms").and_then(|r| r.as_object()) {
+		let joined_has_delta = rooms
+			.get("join")
+			.and_then(|j| j.as_object())
+			.is_some_and(|joins| joins.values().any(joined_room_has_delta));
+
+		let invited_has_delta = rooms
+			.get("invite")
+			.is_some_and(|i| !i.as_object().is_none_or(serde_json::Map::is_empty));
+
+		let knocked_has_delta = rooms
+			.get("knock")
+			.is_some_and(|k| !k.as_object().is_none_or(serde_json::Map::is_empty));
+
+		let left_has_delta = rooms
+			.get("leave")
+			.and_then(|l| l.as_object())
+			.is_some_and(|leaves| leaves.values().any(left_room_has_delta));
+
+		if joined_has_delta || invited_has_delta || knocked_has_delta || left_has_delta {
+			return false;
+		}
+	}
+
+	true
+}
+
+/// A joined room counts as a real sync delta if it carries any content beyond a
+/// bare unread-notification count (and the always-serialized empty timeline).
+fn joined_room_has_delta(room: &serde_json::Value) -> bool {
+	let Some(room) = room.as_object() else {
+		return false;
+	};
+
+	// Timeline events.
+	if let Some(events) = room
+		.get("timeline")
+		.and_then(|t| t.get("events"))
+		.and_then(|e| e.as_array())
+	{
+		if !events.is_empty() {
+			return true;
+		}
+	} else if room.get("timeline").is_some() {
+		// timeline present without events -> unexpected, treat as delta.
+		return true;
+	}
+
+	// Gappy sync (`limited: true`).
+	if room
+		.get("timeline")
+		.and_then(|t| t.get("limited"))
+		.and_then(serde_json::Value::as_bool)
+		.is_some_and(|limited| limited)
+	{
+		return true;
+	}
+
+	// State / account-data / ephemeral events.
+	for key in ["state", "account_data", "ephemeral"] {
+		if let Some(events) = room
+			.get(key)
+			.and_then(|o| o.get("events"))
+			.and_then(|e| e.as_array())
+		{
+			if !events.is_empty() {
+				return true;
+			}
+		} else if room.get(key).is_some() {
+			return true;
+		}
+	}
+
+	// Summary (membership counts etc.).
+	if room
+		.get("summary")
+		.and_then(|s| s.as_object())
+		.is_some_and(|s| !s.is_empty())
+	{
+		return true;
+	}
+
+	false
+}
+
+/// A left room counts as a real sync delta if it carries timeline/state/
+/// account-data content (minus the always-serialized empty timeline).
+fn left_room_has_delta(room: &serde_json::Value) -> bool {
+	let Some(room) = room.as_object() else {
+		return false;
+	};
+
+	for key in ["timeline", "state", "account_data"] {
+		if let Some(events) = room
+			.get(key)
+			.and_then(|o| o.get("events"))
+			.and_then(|e| e.as_array())
+		{
+			if !events.is_empty() {
+				return true;
+			}
+		} else if room.get(key).is_some() {
+			return true;
+		}
+	}
+
+	false
 }
 
 pub(crate) async fn build_sync_events(
