@@ -74,7 +74,7 @@
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_a_different_access_token_are_deleted_on_password_change"}
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_the_same_access_token_are_not_deleted_on_password_change"}
 {"Action":"fail","Test":"TestClientSpacesSummary"}
-{"Action":"pass","Test":"TestClientSpacesSummary/max_depth"}
+{"Action":"fail","Test":"TestClientSpacesSummary/max_depth"}
 {"Action":"fail","Test":"TestClientSpacesSummary/pagination"}
 {"Action":"fail","Test":"TestClientSpacesSummary/query_whole_graph"}
 {"Action":"fail","Test":"TestClientSpacesSummary/redact_link"}
@@ -291,7 +291,7 @@
 {"Action":"fail","Test":"TestLeftRoomFixture"}
 {"Action":"fail","Test":"TestLeftRoomFixture/Can_get_'m.room.name'_state_for_a_departed_room"}
 {"Action":"fail","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/members_for_a_departed_room"}
-{"Action":"fail","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/messages_for_a_departed_room"}
+{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/messages_for_a_departed_room"}
 {"Action":"fail","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/state_for_a_departed_room"}
 {"Action":"pass","Test":"TestLeftRoomFixture/Getting_messages_going_forward_is_limited_for_a_departed_room"}
 {"Action":"pass","Test":"TestLocalPngThumbnail"}
@@ -383,7 +383,7 @@
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms"}
 {"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
 {"Action":"fail","Test":"TestMSC4311FullCreateEventOnStrippedState"}
 {"Action":"fail","Test":"TestMSC4499Key"}
 {"Action":"fail","Test":"TestMSC4499Key/BackoffClearedOnSuccess"}
