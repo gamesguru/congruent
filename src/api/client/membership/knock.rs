@@ -479,23 +479,18 @@ async fn knock_room_helper_local(
 	let current_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Appending room knock event locally");
-	Box::pin(
-		services
-			.rooms
-			.timeline
-			.append_pdu(
-				&parsed_knock_pdu,
-				knock_event,
-				once(parsed_knock_pdu.event_id.borrow()),
-				false,
-				service::rooms::timeline::AppendPduContext {
-					state_lock: &state_lock,
-					room_id,
-					state_root_handle: current_root_handle,
-					prev_state_root_handle: previous_root_handle,
-				},
-			),
-	)
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: current_root_handle,
+			prev_state_root_handle: previous_root_handle,
+		},
+	))
 	.await?;
 
 	Ok(())
@@ -675,23 +670,18 @@ async fn knock_room_helper_remote(
 		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	info!("Appending room knock event locally");
-	Box::pin(
-		services
-			.rooms
-			.timeline
-			.append_pdu(
-				&parsed_knock_pdu,
-				knock_event,
-				once(parsed_knock_pdu.event_id.borrow()),
-				false,
-				service::rooms::timeline::AppendPduContext {
-					state_lock: &state_lock,
-					room_id,
-					state_root_handle: Some(root_handle.clone()),
-					prev_state_root_handle: previous_root_handle,
-				},
-			),
-	)
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(root_handle.clone()),
+			prev_state_root_handle: previous_root_handle,
+		},
+	))
 	.await?;
 
 	info!("Setting final room state for new room");

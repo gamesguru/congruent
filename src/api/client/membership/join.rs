@@ -908,23 +908,18 @@ async fn join_room_by_id_helper_remote_process(
 		.persist_node_recursive(state_node);
 
 	info!("Appending new room join event");
-	Box::pin(
-		services
-			.rooms
-			.timeline
-			.append_pdu(
-				&parsed_join_pdu,
-				join_event,
-				once(parsed_join_pdu.event_id.borrow()),
-				false,
-				service::rooms::timeline::AppendPduContext {
-					state_lock: &state_lock,
-					room_id,
-					state_root_handle: Some(state_root_handle),
-					prev_state_root_handle: previous_root_handle,
-				},
-			),
-	)
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_join_pdu,
+		join_event,
+		once(parsed_join_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: Some(state_root_handle),
+			prev_state_root_handle: previous_root_handle,
+		},
+	))
 	.await?;
 
 	Ok(())
