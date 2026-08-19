@@ -127,40 +127,67 @@ impl Service {
 		new_root_handle: &rezzy::hamt::RootHandle,
 		state_lock: &RoomMutexGuard,
 	) -> Result<()> {
-		let current_root_res = self.get_room_state_hamt(room_id).await;
+		let current_root = self.get_room_state_hamt(room_id).await.ok();
 
-		let old_node = match current_root_res {
-			| Ok(root) => self
+		self.update_caches_for_state_delta_between(
+			room_id,
+			current_root.as_ref(),
+			new_root_handle,
+		)
+		.await?;
+
+		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
+
+		Ok(())
+	}
+
+	/// Computes the HAMT delta between `from_root` (default: empty state) and
+	/// `to_root`, resolves the added/removed PDUs, and updates the derived
+	/// membership and participation caches (`roomserverids` etc.).
+	///
+	/// This is the cache-update half of the legacy `force_state`. It must be
+	/// run whenever the room state transitions to a new root so that joined
+	/// members and their servers are registered for outbound federation
+	/// fan-out. The caller is responsible for committing the new root to the
+	/// room's current-state pointer (via `set_room_state_hamt` /
+	/// `set_event_state_with_root`).
+	#[tracing::instrument(skip_all, level = "debug")]
+	pub async fn update_caches_for_state_delta_between(
+		&self,
+		room_id: &RoomId,
+		from_root: Option<&rezzy::hamt::RootHandle>,
+		to_root: &rezzy::hamt::RootHandle,
+	) -> Result<()> {
+		let old_node = match from_root {
+			| Some(root) => self
 				.services
 				.state_hamt
 				.store
 				.get_node(&root.structural_hash)?,
-			| Err(ref e) if e.is_not_found() => Arc::new(rezzy::hamt::HamtNode {
+			| None => Arc::new(rezzy::hamt::HamtNode {
 				datamap: 0,
 				nodemap: 0,
 				leaves: vec![],
 				children: vec![],
 				structural_hash: rezzy::hamt::StructuralHash::default(),
 			}),
-			| Err(e) => return Err(e),
 		};
-		let new_node =
-			if new_root_handle.structural_hash == rezzy::hamt::StructuralHash::default() {
-				let empty_node = Arc::new(rezzy::hamt::HamtNode {
-					datamap: 0,
-					nodemap: 0,
-					leaves: vec![],
-					children: vec![],
-					structural_hash: rezzy::hamt::StructuralHash::default(),
-				});
-				self.services.state_hamt.store.put_node(empty_node.clone());
-				empty_node
-			} else {
-				self.services
-					.state_hamt
-					.store
-					.get_node(&new_root_handle.structural_hash)?
-			};
+		let new_node = if to_root.structural_hash == rezzy::hamt::StructuralHash::default() {
+			let empty_node = Arc::new(rezzy::hamt::HamtNode {
+				datamap: 0,
+				nodemap: 0,
+				leaves: vec![],
+				children: vec![],
+				structural_hash: rezzy::hamt::StructuralHash::default(),
+			});
+			self.services.state_hamt.store.put_node(empty_node.clone());
+			empty_node
+		} else {
+			self.services
+				.state_hamt
+				.store
+				.get_node(&to_root.structural_hash)?
+		};
 
 		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
 		let lattice = rezzy::state::LtHash::default();
@@ -206,10 +233,8 @@ impl Service {
 
 		self.services
 			.state_cache
-			.update_caches_for_state_delta(room_id, new_root_handle, removed_pdus, added_pdus)
+			.update_caches_for_state_delta(room_id, to_root, removed_pdus, added_pdus)
 			.await?;
-
-		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
 
 		Ok(())
 	}

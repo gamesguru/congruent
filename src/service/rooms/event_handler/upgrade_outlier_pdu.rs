@@ -248,8 +248,21 @@ where
 		);
 
 		debug!("Forcing new room state");
-		// Note: The legacy force_state updated joined counts and caches.
-		// For now we just add HAMT pointer (MSC4511 phase 2 changes).
+		// The legacy force_state updated the joined-member/servers caches
+		// (`roomserverids`) on state transitions. That cache update must be
+		// preserved here, otherwise remote members that join the room are
+		// never registered for outbound federation fan-out and locally-sent
+		// events stop being delivered to their servers.
+		// We only update the derived caches; the HAMT root is committed
+		// separately by set_event_state_with_root in append_pdu.
+		if let (Some(prev_root), Some(new_root)) =
+			(previous_root_handle.as_ref(), new_room_state.as_ref())
+		{
+			self.services
+				.state
+				.update_caches_for_state_delta_between(room_id, Some(prev_root), new_root)
+				.await?;
+		}
 	}
 
 	if !soft_fail {
