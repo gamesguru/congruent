@@ -269,22 +269,6 @@ impl Service {
 			.await;
 
 		let is_state = new_pdu.state_key().is_some();
-
-		// The room state immediately before this event is applied. Used to
-		// compute the HAMT delta for the derived-cache update below, matching
-		// the legacy force_state behaviour of registering joined members and
-		// their servers for outbound federation fan-out.
-		let prev_root_handle = if is_state {
-			// The room may not have a committed state yet (e.g. its first
-			// event); in that case treat it as empty state for the delta.
-			match state_root_handle {
-				| Some(handle) => Some(handle.clone()),
-				| None => self.get_room_state_hamt(room_id).await.ok(),
-			}
-		} else {
-			None
-		};
-
 		let (root_handle, new_node) = if is_state {
 			let (handle, node) = self
 				.append_to_state(new_pdu, room_id, state_lock, state_root_handle)
@@ -316,15 +300,6 @@ impl Service {
 		}
 
 		batch.commit();
-
-		// Update the derived membership/participation caches for the state
-		// transition (only state events change the room state). The new HAMT
-		// node has been persisted by the batch above, so the delta can be
-		// resolved.
-		if let Some(prev_root) = prev_root_handle {
-			self.update_caches_for_state_delta_between(room_id, Some(&prev_root), &root_handle)
-				.await?;
-		}
 
 		Ok(root_handle)
 	}
