@@ -536,6 +536,16 @@ where
 				let target_user_id =
 					UserId::parse(state_key).expect("This state_key was previously validated");
 
+				// Capture whether the target was already joined *before* this event. A
+				// membership event whose membership stays `join` (e.g. a display name or
+				// avatar profile update) must not be treated as a device-list change; that
+				// would spuriously notify other users to rotate their room keys.
+				let was_joined = self
+					.services
+					.state_cache
+					.is_joined(target_user_id, room_id)
+					.await;
+
 				// Update our membership info, we do this here incase a user is invited or
 				// knocked and immediately leaves we need the DB to record the invite or
 				// knock event for auth
@@ -548,7 +558,7 @@ where
 					pdu.get_content::<ruma::events::room::member::RoomMemberEventContent>()
 				{
 					if content.membership == ruma::events::room::member::MembershipState::Join
-						&& self.services.globals.user_is_local(target_user_id)
+						&& !was_joined && self.services.globals.user_is_local(target_user_id)
 					{
 						self.services
 							.users

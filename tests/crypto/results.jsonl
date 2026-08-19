@@ -33,9 +33,9 @@
 {"Action":"fail","Test":"TestClientRetriesSendToDevice/{js_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestDelayedInviteResponse"}
+{"Action":"pass","Test":"TestDelayedInviteResponse"}
 {"Action":"skip","Test":"TestDelayedInviteResponse/js"}
-{"Action":"fail","Test":"TestDelayedInviteResponse/rust"}
+{"Action":"skip","Test":"TestDelayedInviteResponse/rust"}
 {"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
 {"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer/js"}
 {"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer/rust"}
@@ -67,11 +67,11 @@
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestResolveNamespace"}
-{"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughMessages"}
+{"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughTime"}
 {"Action":"skip","Test":"TestRoomKeyIsCycledAfterEnoughTime/{js_hs1}|{js_hs1}"}
 {"Action":"skip","Test":"TestRoomKeyIsCycledAfterEnoughTime/{js_hs1}|{rust_hs1}"}
@@ -87,7 +87,7 @@
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnMemberLeaving/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnMemberLeaving/{rust_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestRoomKeyIsCycledOnMemberLeaving/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycled"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycled"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{js_hs1}|{js_hs1}/on_display_name_change"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{js_hs1}|{js_hs1}/on_new_device_login"}
@@ -97,9 +97,9 @@
 {"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{js_hs1}/on_display_name_change"}
 {"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{js_hs1}/on_new_device_login"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_display_name_change"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_new_device_login"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_display_name_change"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_new_device_login"}
 {"Action":"fail","Test":"TestRoomKeyIsNotCycledOnClientRestart"}
 {"Action":"fail","Test":"TestRoomKeyIsNotCycledOnClientRestart/js"}
 {"Action":"fail","Test":"TestRoomKeyIsNotCycledOnClientRestart/rust"}

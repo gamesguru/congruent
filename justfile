@@ -556,6 +556,7 @@ e2ee args=".*":
                 COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
                 COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$CRYPTO_MATRIX" \
                 COMPLEMENT_CRYPTO_NAMESPACE="crypto$((s + 1))" \
+                ${COMPLEMENT_CRYPTO_MITMDUMP:+COMPLEMENT_CRYPTO_MITMDUMP="$COMPLEMENT_CRYPTO_MITMDUMP"} \
                 go test -tags "$CRYPTO_TAGS" -json \
                 -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
                 -count=1 \

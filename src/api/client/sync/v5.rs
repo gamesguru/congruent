@@ -529,7 +529,9 @@ impl IncomingRequest for CompatSyncRequest {
 		let req = http::Request::from_parts(parts, bytes::Bytes::from_static(b"{}"));
 		let mut parsed = sync_events::v5::Request::try_from_http_request(req, path_args)?;
 
-		parsed.pos = request.pos;
+		if request.pos.is_some() {
+			parsed.pos = request.pos;
+		}
 		parsed.conn_id = request.conn_id;
 		parsed.txn_id = request.txn_id;
 		parsed.timeout = request.timeout;
