@@ -433,7 +433,9 @@
 {"Action":"fail","Test":"TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart"}
 {"Action":"pass","Test":"TestMSC4500State"}
 {"Action":"pass","Test":"TestMSC4500State/Accumulator"}
+{"Action":"pass","Test":"TestMSC4500State/HashMatch"}
 {"Action":"pass","Test":"TestMSC4500State/HashMismatch"}
+{"Action":"pass","Test":"TestMSC4500State/Outbound"}
 {"Action":"pass","Test":"TestMediaConfig"}
 {"Action":"pass","Test":"TestMediaFilenames"}
 {"Action":"pass","Test":"TestMediaFilenames/Parallel"}

@@ -1,5 +1,0 @@
-{"Action":"fail","Test":"TestMSC4500State"}
-{"Action":"pass","Test":"TestMSC4500State/Accumulator"}
-{"Action":"fail","Test":"TestMSC4500State/HashMatch"}
-{"Action":"pass","Test":"TestMSC4500State/HashMismatch"}
-{"Action":"pass","Test":"TestMSC4500State/Outbound"}
