@@ -180,10 +180,10 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 fn bench_lthash(c: &mut Criterion) {
 	let mut group = c.benchmark_group("lthash_state_hashing");
 
-	let element_counts = [100, 1_000, 10_000, 50_000];
+	let element_counts: [u64; 4] = [100, 1_000, 10_000, 50_000];
 
 	for &count in &element_counts {
-		group.throughput(Throughput::Elements(count as u64));
+		group.throughput(Throughput::Elements(count));
 
 		group.bench_with_input(BenchmarkId::new("lthash_checksum", count), &count, |b, _| {
 			let event_id = ruma::owned_event_id!("$bench_event:test.local");
@@ -193,7 +193,7 @@ fn bench_lthash(c: &mut Criterion) {
 					let key_str = i.to_string();
 					hash.insert("m.room.member", &key_str, &event_id);
 				}
-				hash.checksum()
+				hash.digest()
 			});
 		});
 	}
