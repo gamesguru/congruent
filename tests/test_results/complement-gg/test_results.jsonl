@@ -73,11 +73,11 @@
 {"Action":"pass","Test":"TestChangePasswordPushers"}
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_a_different_access_token_are_deleted_on_password_change"}
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_the_same_access_token_are_not_deleted_on_password_change"}
-{"Action":"fail","Test":"TestClientSpacesSummary"}
+{"Action":"pass","Test":"TestClientSpacesSummary"}
 {"Action":"pass","Test":"TestClientSpacesSummary/max_depth"}
-{"Action":"fail","Test":"TestClientSpacesSummary/pagination"}
-{"Action":"fail","Test":"TestClientSpacesSummary/query_whole_graph"}
-{"Action":"fail","Test":"TestClientSpacesSummary/redact_link"}
+{"Action":"pass","Test":"TestClientSpacesSummary/pagination"}
+{"Action":"pass","Test":"TestClientSpacesSummary/query_whole_graph"}
+{"Action":"pass","Test":"TestClientSpacesSummary/redact_link"}
 {"Action":"pass","Test":"TestClientSpacesSummary/suggested_only"}
 {"Action":"fail","Test":"TestClientSpacesSummaryJoinRules"}
 {"Action":"pass","Test":"TestComplementCanCreateValidV12Rooms"}
@@ -831,9 +831,9 @@
 {"Action":"pass","Test":"TestTyping/Typing_can_be_explicitly_stopped"}
 {"Action":"pass","Test":"TestTyping/Typing_events_DO_NOT_include_a_`room_id`_field"}
 {"Action":"pass","Test":"TestTyping/Typing_notification_sent_to_local_room_members"}
-{"Action":"fail","Test":"TestUnknownEndpoints"}
+{"Action":"pass","Test":"TestUnknownEndpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Client-server_endpoints"}
-{"Action":"fail","Test":"TestUnknownEndpoints/Key_endpoints"}
+{"Action":"pass","Test":"TestUnknownEndpoints/Key_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Media_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Server-server_endpoints"}
 {"Action":"pass","Test":"TestUnknownEndpoints/Unknown_prefix"}

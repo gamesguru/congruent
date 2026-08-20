@@ -11,7 +11,7 @@ use conduwuit_service::{
 use futures::{StreamExt, future::OptionFuture};
 use ruma::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
-	events::space::child::HierarchySpaceChildEvent,
+	events::space::child::HierarchySpaceChildEvent, room::RoomType,
 };
 
 use crate::Ruma;
@@ -183,6 +183,12 @@ where
 				}
 
 				if path.len() > max_depth {
+					continue;
+				}
+
+				// Only spaces are expanded; a non-space room's children links are
+				// ignored. Rooms deeper than max_depth are returned but not expanded.
+				if summary.room_type != Some(RoomType::Space) {
 					continue;
 				}
 

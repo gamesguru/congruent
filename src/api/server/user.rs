@@ -119,7 +119,10 @@ pub(crate) async fn query_keys_v2_route(
 	State(_services): State<crate::State>,
 	_body: axum::body::Bytes,
 ) -> Result<axum::Json<serde_json::Value>> {
-	Err(Error::BadRequest(ErrorKind::NotImplemented, "v2 key query is not yet implemented"))
+	Err(Error::BadRequest(
+		ErrorKind::NotImplemented,
+		"v2 key query is not yet implemented",
+	))
 }
 
 /// # `POST /_matrix/federation/v1/user/keys/claim`
