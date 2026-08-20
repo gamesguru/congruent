@@ -224,7 +224,7 @@ async fn inject_state_hash_mismatches(
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
-	let Some(hashes) = obj.get("tk.nutra.msc4500.state_hashes") else { return };
+	let Some(hashes) = obj.get("state_hashes") else { return };
 
 	let Ok(state_hashes) =
 		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
