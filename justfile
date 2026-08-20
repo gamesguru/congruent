@@ -594,19 +594,29 @@ e2ee args=".*":
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
         if [ "$run_suffix" = "all" ]; then
+            # Dedupe/sort are best-effort: if the merge helper fails (e.g. under
+            # heavy load) it must NEVER lose the run's results. Fall back to
+            # copying the raw staged results (pass/fail preserved).
             python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
-                || { echo "MERGE FAILED: dedupe of staged results ($RESULTS_FILE)" >&2; exit 1; }
+                || echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
             python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
-                || { echo "MERGE FAILED: sort of staged results ($RESULTS_FILE)" >&2; exit 1; }
+                || echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
             cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
                 || { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
             echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
         else
-            python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$MAIN_RESULTS_FILE.tmp" \
-                || { echo "MERGE FAILED: merging staged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
-            mv -f "$MAIN_RESULTS_FILE.tmp" "$MAIN_RESULTS_FILE" \
-                || { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
-            echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+            tmp_results="$MAIN_RESULTS_FILE.tmp"
+            if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+                mv -f "$tmp_results" "$MAIN_RESULTS_FILE" \
+                    || { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+                echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+            else
+                # Merge failed (e.g. under load); append the staged results so
+                # the new pass/fail rows are recorded rather than lost.
+                echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+                cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+                rm -f "$tmp_results"
+            fi
         fi
     else
         echo "Warning: $RESULTS_FILE is missing or empty. No results processed."

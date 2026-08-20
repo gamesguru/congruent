@@ -304,20 +304,31 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 		# packages (e.g. TestSync in tests/csapi and tests/msc4222) land as
 		# two rows here. --dedupe-in-place forces that down to one row per
 		# name, same as the partial-run merge path already does.
+		#
+		# Dedupe/sort are best-effort: if the merge helper fails (e.g. under
+		# heavy machine load) that must NEVER lose the run's results. Fall
+		# back to copying the raw staged results (pass/fail preserved) into
+		# MAIN_RESULTS_FILE so the ledger still reflects the run.
 		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
-			|| { echo "MERGE FAILED: dedupe of staged results ($RESULTS_FILE)" >&2; exit 1; }
+			|| echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
 		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
-			|| { echo "MERGE FAILED: sort of staged results ($RESULTS_FILE)" >&2; exit 1; }
+			|| echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
 		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
 			|| { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
 		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
 	else
 		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-		python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results" \
-			|| { echo "MERGE FAILED: merging staged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
-		mv "$tmp_results" "$MAIN_RESULTS_FILE" \
-			|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
-		echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+			mv "$tmp_results" "$MAIN_RESULTS_FILE" \
+				|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+		else
+			# Merge failed (e.g. under load); append the staged results so the
+			# new pass/fail rows are still recorded rather than lost.
+			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+			rm -f "$tmp_results"
+		fi
 	fi
 else
 	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
