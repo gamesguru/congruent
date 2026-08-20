@@ -1,9 +1,11 @@
-use axum::extract::State;
+use axum::{Json, extract::State};
 use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
+use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
+use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::AccessCheck;
 
@@ -12,13 +14,22 @@ pub(crate) struct StateAccumulatorQuery {
 	pub event_id: OwnedEventId,
 }
 
+#[derive(Serialize)]
+pub(crate) struct StateAccumulatorResponse {
+	pub event_id: OwnedEventId,
+	pub algorithm: String,
+	pub lattice: String,
+	pub n_state_events: u64,
+	pub digest: String,
+}
+
 pub(crate) async fn get_state_accumulator_route(
 	State(services): State<crate::State>,
 	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
-) -> Result<String> {
+) -> Result<impl axum::response::IntoResponse> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
@@ -60,9 +71,8 @@ pub(crate) async fn get_state_accumulator_route(
 	let shorteventid = services
 		.rooms
 		.short
-		.get_shorteventid(&query.event_id)
-		.await
-		.map_err(|_| err!(Request(NotFound("Event short ID not found."))))?;
+		.get_or_create_shorteventid(&query.event_id)
+		.await;
 
 	let root_handle = services
 		.rooms
@@ -71,7 +81,35 @@ pub(crate) async fn get_state_accumulator_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("Root handle not found for event."))))?;
 
-	Ok(hex::encode(root_handle.state_group_id))
+	// Build the LtHash lattice over the event's post-event state.
+	let entries: Vec<(String, String, OwnedEventId)> = services
+		.rooms
+		.state_accessor
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let ty = pdu.kind().to_string();
+			let sk = pdu.state_key()?.to_owned();
+			Some((ty, sk, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
+	}
+	let (lattice_b64, digest) = serialize_lthash(&lattice);
+
+	let response = StateAccumulatorResponse {
+		event_id: query.event_id,
+		algorithm: "lthash16".to_owned(),
+		lattice: lattice_b64,
+		n_state_events,
+		digest,
+	};
+
+	Ok(Json(response))
 }
 
 async fn verify_federation_request(

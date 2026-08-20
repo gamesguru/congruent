@@ -283,22 +283,49 @@ async fn inject_state_hash_mismatches(
 	}
 }
 
-/// Compute the "after" digest for a received event by applying its state
-/// delta to the before-state LtHash.
+/// Compute the "after" digest for a received event by building the LtHash
+/// lattice over the event's post-event state (its `shorteventid_roothandle`).
 ///
-/// TODO(MSC00DC/HAMT): Not implemented. Previous draft returned the HAMT root's
-/// `state_group_id` (an MSC00DC BLAKE2b-256 lattice checksum), but the caller
-/// only uses this value under the `lthash16` algorithm, whose `after` digest is
-/// encoded differently. Comparing an MSC00DC digest against an lthash16 digest
-/// always fails and would falsely flag `state_hash_mismatch`, so we return
-/// `None` to skip the check until the real lthash16 computation (via HAMT
-/// LtHash lookup) is implemented — mirroring `compute_state_hash_for_pdu` on
-/// the outbound side.
+/// This replaces the legacy shortstatehash/`get_lthash` accumulator that the
+/// HAMT migration removed. The post-event root already represents the state
+/// after the event is applied, so the lattice is derived directly from it.
 async fn compute_receiver_after_digest(
-	_services: &crate::State,
-	_event_id: &OwnedEventId,
+	services: &crate::State,
+	event_id: &OwnedEventId,
 ) -> Option<String> {
-	None
+	use conduwuit::Event;
+	use futures::StreamExt;
+
+	let shorteventid = services
+		.rooms
+		.short
+		.get_or_create_shorteventid(event_id)
+		.await;
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.ok()?;
+
+	let entries: Vec<(String, String, OwnedEventId)> = services
+		.rooms
+		.state_accessor
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let ty = pdu.kind().to_string();
+			let sk = pdu.state_key()?.to_owned();
+			Some((ty, sk, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
+	}
+
+	Some(conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1)
 }
 
 /// Handles a failed federation transaction by sending the error through
