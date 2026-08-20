@@ -589,8 +589,15 @@ where
 
 			let request =
 				federation::keys::get_keys::v1::Request { device_keys: device_keys_input_fed };
+			// Cap the per-server federation wait so a single unreachable (e.g.
+			// paused/offline) remote server doesn't stall the whole /keys/query
+			// response. Reachable servers answer in milliseconds; an unreachable
+			// one would otherwise block up to the connect timeout (default 10s),
+			// which cascades into client-side send timeouts. The caller is told
+			// about the missing server via `failures` and can retry.
+			let fed_timeout = timeout.min(Duration::from_secs(3));
 			let response = tokio::time::timeout(
-				timeout,
+				fed_timeout,
 				services.sending.send_federation_request(server, request),
 			)
 			.await
@@ -774,7 +781,7 @@ pub(crate) async fn claim_keys_helper(
 				one_time_keys_input_fed.insert(user_id.clone(), keys.clone());
 			}
 			let response = tokio::time::timeout(
-				timeout,
+				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
 					server,
 					federation::keys::claim_keys::v1::Request {

@@ -189,13 +189,14 @@ pub async fn leave_room(
 						.wait_for_pdu_servers(
 							remote_servers,
 							&pdu_id,
-							Duration::from_secs(15),
+							Duration::from_secs(5),
 							"Timed out waiting for outbound federation to deliver leave event.",
 						)
 						.await
 						.inspect_err(|e| {
 							// Leave is already committed locally; a remote server
-							// being offline should not hard-fail the leave request.
+							// being offline should not hard-fail the leave request,
+							// nor stall the whole request on an unreachable server.
 							// (Parallel to the best-effort join-fanout wait.)
 							warn!(
 								"Federation delivery of leave event {event_id} to a remote \
