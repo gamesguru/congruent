@@ -2119,7 +2119,12 @@ where
 	}
 
 	Ok(sync_events::v5::response::E2EE {
-		device_unused_fallback_key_types: None,
+		device_unused_fallback_key_types: Some(
+			services
+				.users
+				.list_unused_fallback_key_types(sender_user, sender_device)
+				.await,
+		),
 
 		device_one_time_keys_count: services
 			.users

@@ -36,9 +36,9 @@
 {"Action":"pass","Test":"TestDelayedInviteResponse"}
 {"Action":"skip","Test":"TestDelayedInviteResponse/js"}
 {"Action":"pass","Test":"TestDelayedInviteResponse/rust"}
-{"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
+{"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
 {"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer/js"}
-{"Action":"fail","Test":"TestExistingSessionCannotGetKeysForOfflineServer/rust"}
+{"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer/rust"}
 {"Action":"pass","Test":"TestFailedDeviceKeyDownloadRetries"}
 {"Action":"pass","Test":"TestFailedDeviceKeyDownloadRetries/js"}
 {"Action":"pass","Test":"TestFailedDeviceKeyDownloadRetries/rust"}
@@ -48,11 +48,11 @@
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries"}
 {"Action":"fail","Test":"TestFailedOneTimeKeyUploadRetries/js"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/rust"}
-{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
+{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
 {"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
 {"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"fail","Test":"TestNewUserCannotGetKeysForOfflineServer/rust"}
