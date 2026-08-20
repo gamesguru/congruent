@@ -198,7 +198,13 @@ impl Service {
 				&new_node,
 				&lattice,
 				&mut resolver,
-			)?;
+			)
+			.map_err(|e| match e {
+				| rezzy::hamt::delta::HamtTraversalError::Resolve(inner) => inner,
+				| rezzy::hamt::delta::HamtTraversalError::MaxDepthExceeded { depth } => {
+					err!(error!("HAMT diff exceeded max depth at {depth}"))
+				},
+			})?;
 
 		// resolve PDUs
 		let mut added_pdus = Vec::with_capacity(added.len());
