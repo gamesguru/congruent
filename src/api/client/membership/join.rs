@@ -806,6 +806,19 @@ async fn join_room_by_id_helper_remote_process(
 		.state
 		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
+	debug!("Registering joined members for new room");
+	// Register the room's joined members/servers (including remote users such as
+	// the room creator) in the participation cache. The legacy `force_state`
+	// path did this from the `added`/`removed` state delta; `set_room_state_hamt`
+	// only advances the HAMT root without touching derived caches, so without
+	// this the remote server would never appear in `roomserverids` and outbound
+	// events would not be fanned out to it.
+	services
+		.rooms
+		.state
+		.update_caches_for_state_delta_between(room_id, None, &root_handle)
+		.await?;
+
 	debug!("Updating joined counts for new room");
 	// Update our membership locally to join state before calculating the joined
 	// counts, so that our server is properly added to the server participation
