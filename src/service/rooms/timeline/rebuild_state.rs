@@ -305,9 +305,8 @@ impl super::Service {
 enum StateUpdateOwned {
 	New {
 		state: rezzy::SharedState<String>,
-		/// Incrementally maintained LtHash from rezzy. Its 32-byte MSC4500 §6
-		/// digest is used as the dedup key to skip the O(N) compression loop
-		/// if the same state has already been seen.
+		/// Incrementally maintained LtHash from rezzy, used as dedup key to
+		/// skip O(N) compression loop if the same state has already been seen.
 		hash: Box<rezzy::LtHash>,
 	},
 	Unchanged {
@@ -438,7 +437,7 @@ impl super::Service {
 				|id, update| {
 					let owned_update = match update {
 						| rezzy::StateUpdate::New { state, hash } =>
-							StateUpdateOwned::New { state, hash: Box::new(*hash) },
+							StateUpdateOwned::New { state, hash: Box::new(hash) },
 						| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
 							StateUpdateOwned::Unchanged {
 								parent_event_id: parent_event_id.clone(),
@@ -466,10 +465,7 @@ impl super::Service {
 			.shortstatehash;
 
 		let mut event_ssh: HashMap<OwnedEventId, u64> = HashMap::new();
-		// Dedup map keyed by the 32-byte MSC4500 §6 LtHash digest (BLAKE2b-256 of
-		// the 2 KiB lattice). 64x smaller keys than storing the raw lattice, with
-		// 256-bit collision resistance.
-		let mut lthash_to_ssh: HashMap<[u8; 32], u64> = HashMap::new();
+		let mut lthash_to_ssh: HashMap<rezzy::LtHash, u64> = HashMap::new();
 		let mut current_shortstatehash = empty_ssh;
 		let mut groups_compressed = 0_usize;
 		let mut groups_deduped = 0_usize;
@@ -547,12 +543,10 @@ impl super::Service {
 					| StateUpdateOwned::New { state, hash } => {
 						n_new = n_new.saturating_add(1);
 
-						// LtHash digest pre-check: skip the entire O(N) compression
-						// loop if we've already seen this exact state. The digest is
-						// 32 bytes (BLAKE2b-256 of the cryptographic lattice) — a
-						// collision is a non-issue.
-						let digest = hash.digest();
-						if let Some(&existing_ssh) = lthash_to_ssh.get(&digest) {
+						// LtHash pre-check: skip the entire O(N) compression loop if
+						// we've already seen this exact state. LtHash is 128 bytes
+						// (cryptographic lattice hash) — collision is a non-issue.
+						if let Some(&existing_ssh) = lthash_to_ssh.get(&hash) {
 							groups_deduped = groups_deduped.saturating_add(1);
 							n_new_deduped = n_new_deduped.saturating_add(1);
 							existing_ssh
@@ -583,7 +577,7 @@ impl super::Service {
 								.save_state_as_root(room_id, Arc::new(compressed))
 								.await?;
 							let ssh = result.shortstatehash;
-							lthash_to_ssh.insert(digest, ssh);
+							lthash_to_ssh.insert(*hash, ssh);
 							groups_compressed = groups_compressed.saturating_add(1);
 							t_save = t_save.saturating_add(ts0.elapsed());
 							ssh
