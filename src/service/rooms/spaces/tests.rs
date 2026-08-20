@@ -102,22 +102,22 @@ fn invalid_pagination_tokens() {
 fn valid_pagination_tokens() {
 	assert_eq!(
 		PaginationToken {
-			short_room_ids: vec![5383, 42934, 283, 423],
+			offset: 5,
 			limit: UInt::from(20_u32),
 			max_depth: UInt::from(1_u32),
 			suggested_only: true
 		},
-		PaginationToken::from_str("5383,42934,283,423_20_1_true").unwrap()
+		PaginationToken::from_str("5_20_1_true").unwrap()
 	);
 
 	assert_eq!(
 		PaginationToken {
-			short_room_ids: vec![740],
+			offset: 0,
 			limit: UInt::from(97_u32),
 			max_depth: UInt::from(10539_u32),
 			suggested_only: false
 		},
-		PaginationToken::from_str("740_97_10539_false").unwrap()
+		PaginationToken::from_str("0_97_10539_false").unwrap()
 	);
 }
 
@@ -125,23 +125,23 @@ fn valid_pagination_tokens() {
 fn pagination_token_to_string() {
 	assert_eq!(
 		PaginationToken {
-			short_room_ids: vec![740],
+			offset: 0,
 			limit: UInt::from(97_u32),
 			max_depth: UInt::from(10539_u32),
 			suggested_only: false
 		}
 		.to_string(),
-		"740_97_10539_false"
+		"0_97_10539_false"
 	);
 
 	assert_eq!(
 		PaginationToken {
-			short_room_ids: vec![9, 34],
+			offset: 9,
 			limit: UInt::from(3_u32),
 			max_depth: UInt::from(1_u32),
 			suggested_only: true
 		}
 		.to_string(),
-		"9,34_3_1_true"
+		"9_3_1_true"
 	);
 }
