@@ -73,11 +73,11 @@
 {"Action":"pass","Test":"TestChangePasswordPushers"}
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_a_different_access_token_are_deleted_on_password_change"}
 {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_the_same_access_token_are_not_deleted_on_password_change"}
-{"Action":"pass","Test":"TestClientSpacesSummary"}
+{"Action":"fail","Test":"TestClientSpacesSummary"}
 {"Action":"pass","Test":"TestClientSpacesSummary/max_depth"}
-{"Action":"pass","Test":"TestClientSpacesSummary/pagination"}
-{"Action":"pass","Test":"TestClientSpacesSummary/query_whole_graph"}
-{"Action":"pass","Test":"TestClientSpacesSummary/redact_link"}
+{"Action":"fail","Test":"TestClientSpacesSummary/pagination"}
+{"Action":"fail","Test":"TestClientSpacesSummary/query_whole_graph"}
+{"Action":"fail","Test":"TestClientSpacesSummary/redact_link"}
 {"Action":"pass","Test":"TestClientSpacesSummary/suggested_only"}
 {"Action":"fail","Test":"TestClientSpacesSummaryJoinRules"}
 {"Action":"pass","Test":"TestComplementCanCreateValidV12Rooms"}
@@ -399,7 +399,7 @@
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms"}
 {"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
 {"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync"}
 {"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_incremental_sliding_sync"}
 {"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_initial_sliding_sync"}
