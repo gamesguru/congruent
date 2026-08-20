@@ -104,7 +104,7 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 			if !self.state_hashes.is_empty() {
 				let state_hashes_val = serde_json::to_value(self.state_hashes)
 					.map_err(ruma::api::error::IntoHttpError::from)?;
-				obj.insert("state_hashes".to_owned(), state_hashes_val);
+				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
 			}
 		}
 
