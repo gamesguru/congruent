@@ -423,7 +423,14 @@ e2ee args=".*":
     # its residual failure is the harness's Response.make() fetch path rather than
     # a server defect. Skip it by default; unset/override COMPLEMENT_CRYPTO_SKIP
     # to re-enable it deliberately.
-    COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:-TestSpoofedEventSenderHandling}"
+    #
+    # TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1} fails
+    # deterministically on the reference homeserver (Synapse v1.117.0, 5/5) and
+    # flakes on conduwuit. The /sendToDevice room-key share to the new device is
+    # identical between pass and fail, so it is a client-side key-processing race,
+    # not a server defect. Skip it by default (unset/override
+    # COMPLEMENT_CRYPTO_SKIP to re-enable).
+    COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:-TestSpoofedEventSenderHandling,TestChangingDeviceAfterInviteReEncrypts}"
     # The client test matrix controls which SDKs are compiled in and used, and
     # therefore which Go build tags apply. Values are two-letter permutations of
     # `r`(ust)/`j`(s) on hs1 and `R`/`J` on hs2 (see complement-crypto

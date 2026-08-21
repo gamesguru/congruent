@@ -761,9 +761,14 @@ jobs:
           fi
 
   # -----------------------------------------------------------------------------
-  # Complement-Crypto (E2EE). Shares the binary built by `setup` and runs the
-  # suite against the complement homeserver image (same image `complement-tests`
-  # builds) via `just e2ee`.
+  # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
+  # as three parallel client-matrix variants so js, rs, and js+rs results are
+  # attributed separately (mirroring the official complement-crypto repo, which
+  # runs JS-only, Rust-only and mixed jobs). The rs/js+rs variants consume a
+  # PREBUILT matrix-rust-sdk FFI (shared library + generated Go bindings) from a
+  # URL configured via the C10Y_CRYPTO_RUST_SDK_URL repository variable, rather
+  # than compiling matrix-rust-sdk (an ~8.5GB source build that would blow the
+  # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
   # -----------------------------------------------------------------------------
   complement-crypto-tests:
     needs: setup
@@ -774,6 +779,19 @@ jobs:
       PROFILE: "dev-quick"
     permissions:
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: js
+            badge: js
+            client_matrix: jj
+          - name: rs
+            badge: rs
+            client_matrix: rr
+          - name: js+rs
+            badge: jsrs
+            client_matrix: jr,rj
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -843,6 +861,7 @@ jobs:
           cache-dependency-path: complement-crypto-src/go.sum
 
       - name: Build JS SDK bundle (for //go:embed dist)
+        if: contains(matrix.client_matrix, 'j')
         run: |
           cd complement-crypto-src
           corepack enable
@@ -851,30 +870,66 @@ jobs:
           # BRANCH via the GitHub URL form (see rebuild_js_sdk.sh --help).
           ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
 
-      - name: Run Complement-Crypto tests
+      # rs / js+rs variants consume a PREBUILT matrix-rust-sdk FFI (libmatrix_sdk_ffi.so
+      # plus the generated Go bindings) from C10Y_CRYPTO_RUST_SDK_URL instead of
+      # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
+      # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
+      - name: Download prebuilt matrix-rust-sdk FFI
+        if: contains(matrix.client_matrix, 'r')
+        env:
+          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+        run: |
+          if [ -z "$RUST_SDK_URL" ]; then
+            echo "::error::Repository variable C10Y_CRYPTO_RUST_SDK_URL is not set. Point it at a tarball containing libmatrix_sdk_ffi.so + the Go bindings (see .github/workflows/complement.yml)."
+            exit 1
+          fi
+          mkdir -p /tmp/mrsdk
+          curl -fsSL "$RUST_SDK_URL" -o /tmp/mrsdk.tar.gz
+          tar -xzf /tmp/mrsdk.tar.gz -C /tmp/mrsdk
+          SO=$(find /tmp/mrsdk -name libmatrix_sdk_ffi.so | head -n 1)
+          if [ -z "$SO" ]; then
+            echo "::error::libmatrix_sdk_ffi.so not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          mkdir -p matrix-rust-sdk/target/debug
+          install -m 0755 "$SO" matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.so
+          BINDINGS_DIR=$(dirname "$(find /tmp/mrsdk -name rust.go | head -n 1)")
+          if [ -z "$BINDINGS_DIR" ] || [ ! -d "$BINDINGS_DIR" ]; then
+            echo "::error::Go bindings (rust.go) not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          cp -r "$BINDINGS_DIR"/. complement-crypto-src/internal/api/rust/
+          echo "Installed prebuilt matrix-rust-sdk FFI from $RUST_SDK_URL"
+
+      - name: Run Complement-Crypto tests (${{ matrix.name }})
         id: complement-crypto
         env:
           COMPLEMENT_CRYPTO_PARALLEL: "3"
           COMPLEMENT_CRYPTO_TIMEOUT: "45m"
+          # Per-variant client matrix: js (jj), rs (rr), or mixed js+rs (jr,rj).
+          # `just e2ee` picks the matching Go build tags from this value.
+          COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX: ${{ matrix.client_matrix }}
+          COMPLEMENT_CRYPTO_RUST_SDK_DIR: ${{ github.workspace }}/matrix-rust-sdk
         run: |
           # `just e2ee` runs complement-crypto's `go test` directly on the runner
           # against the complement homeserver image built above.
           just e2ee ".*"
 
-      - name: Upload Complement-Crypto results
+      - name: Upload Complement-Crypto results (${{ matrix.name }})
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: complement-crypto-results
+          name: complement-crypto-results-${{ matrix.name }}
           path: |
             tests/crypto/results.jsonl
             .tmp/complement-crypto/*.jsonl
           retention-days: 90
 
-      # Publish a complement-crypto badge (`badge-compcrypto-<branch>.json`) to the
-      # shared `_metadata/badges` orphan branch. Counts come from the merged
-      # results that `just e2ee` wrote; mirror the base-complement ledger call.
-      - name: Update Complement-Crypto badge
+      # Publish a per-variant complement-crypto badge
+      # (`badge-compcrypto-<branch>-<variant>.json`) to the shared
+      # `_metadata/badges` orphan branch. Counts come from the merged results that
+      # `just e2ee` wrote; mirror the base-complement ledger call.
+      - name: Update Complement-Crypto badge (${{ matrix.name }})
         if: always()
         continue-on-error: true
         run: |
@@ -888,7 +943,7 @@ jobs:
           echo "crypto_skip=$(jq -r 'select(.Action=="skip" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
           echo "crypto_version=${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-      - name: Run Update Results Ledger (crypto)
+      - name: Run Update Results Ledger (crypto ${{ matrix.name }})
         if: env.crypto_pass != ''
         continue-on-error: true
         uses: ./.github/actions/update-results-ledger
@@ -903,6 +958,7 @@ jobs:
           arch: x86_64
           os: ubuntu-24.04
           profile: dev-quick
+          badge_suffix: -${{ matrix.badge }}
 
   # -----------------------------------------------------------------------------
   # Locust load test. Also consumes the shared binary; runs the homeserver

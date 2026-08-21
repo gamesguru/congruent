@@ -48,6 +48,9 @@ inputs:
   crypto_skip_count:
     description: "Skip count for the complement-crypto suite."
     default: ""
+  badge_suffix:
+    description: "Optional suffix appended to the badge filename (e.g. a client-matrix variant name) so parallel jobs don't overwrite each other's badge."
+    default: ""
 
 outputs:
   upstream_commit:
@@ -79,6 +82,7 @@ runs:
         CRYPTO_PASS="${{ inputs.crypto_pass_count }}"
         CRYPTO_FAIL="${{ inputs.crypto_fail_count }}"
         CRYPTO_SKIP="${{ inputs.crypto_skip_count }}"
+        BADGE_SUFFIX="${{ inputs.badge_suffix }}"
 
         # Extract commit hash from version string, fall back to env
         BIN_VER_HASH=$(echo "$VERSION_STRING" | sed -n 's/.*~\([0-9a-f]\{7,\}\).*/\1/p')
@@ -235,8 +239,8 @@ runs:
             label: "Complement Tests (\($provider_name))",
             message: "\($pass) pass, \($skip) skip, \($fail) fail",
             color: $color
-          }' > "badge-${SAFE_BRANCH}.json"
-        git add "badge-${SAFE_BRANCH}.json"
+          }' > "badge-${SAFE_BRANCH}${BADGE_SUFFIX}.json"
+        git add "badge-${SAFE_BRANCH}${BADGE_SUFFIX}.json"
 
         # Optional complement-crypto badge: emitted only when the caller supplies
         # crypto counts. Lives under its own per-branch filename so it never
@@ -261,8 +265,8 @@ runs:
               label: "Complement-Crypto Tests (\($provider_name))",
               message: "\($pass) pass, \($skip) skip, \($fail) fail",
               color: $color
-            }' > "badge-compcrypto-${SAFE_BRANCH}.json"
-          git add "badge-compcrypto-${SAFE_BRANCH}.json"
+            }' > "badge-compcrypto-${SAFE_BRANCH}${BADGE_SUFFIX}.json"
+          git add "badge-compcrypto-${SAFE_BRANCH}${BADGE_SUFFIX}.json"
         fi
 
         # Commit and push, retrying
