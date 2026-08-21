@@ -1,3 +1,0 @@
-{"Action":"pass","Test":"TestLogin"}
-{"Action":"pass","Test":"TestLogin/parallel"}
-{"Action":"pass","Test":"TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request"}

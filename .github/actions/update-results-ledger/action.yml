@@ -137,7 +137,7 @@ runs:
 
         # Save the full results data uniquely per machine.
         # We inject the commit, arch, and os into EVERY line of the JSONL.
-        RESULTS_FILE="tests/test_results/complement/test_results.jsonl"
+        RESULTS_FILE="tests/complement/results.jsonl"
         if [ -f "$RESULTS_FILE" ]; then
           mkdir -p "$LEDGER_DIR/runs_data"
           SAFE_ARCH=$(echo "$ARCH" | sed 's/[^a-zA-Z0-9._-]/_/g')

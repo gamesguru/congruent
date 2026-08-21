@@ -264,12 +264,12 @@ jobs:
                grep -q "avx512dq" /proc/cpuinfo && \
                grep -q "avx512bw" /proc/cpuinfo && \
                grep -q "avx512vl" /proc/cpuinfo; then
-              ./tests/sanity_check.sh ./target/latest/conduwuit
+              ./tests/bin/sanity_check.sh ./target/latest/conduwuit
             else
               echo "Skipping binary sanity check: CPU does not support all required AVX-512 flags (F, DQ, BW, VL)."
             fi
           else
-            ./tests/sanity_check.sh ./target/latest/conduwuit
+            ./tests/bin/sanity_check.sh ./target/latest/conduwuit
           fi
 
       - name: Package Assets
