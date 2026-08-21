@@ -136,7 +136,7 @@ jobs:
         run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls"
 
       - name: Sanity check binary
-        run: ./tests/sanity_check.sh ./target/latest/conduwuit
+        run: ./tests/bin/sanity_check.sh ./target/latest/conduwuit
 
       - name: Import GPG key
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
