@@ -3,9 +3,13 @@
 use std::fmt::Debug;
 
 use conduwuit::{
+	Error, Server,
 	arrayvec::ArrayVec,
+	config::{Config, Figment},
+	log::{Log, LogLevelReloadHandles, capture},
 	ruma::{EventId, RoomId, UserId, serde::Raw},
 };
+use figment::providers::Format;
 use serde::Serialize;
 
 use crate::{
@@ -544,4 +548,73 @@ fn serde_tuple_option_none_none_none() {
 
 	assert_eq!(None, cc.0);
 	assert_eq!(bb, cc);
+}
+
+struct TempDbGuard {
+	path: std::path::PathBuf,
+}
+
+impl Drop for TempDbGuard {
+	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+}
+
+async fn setup_test_database()
+-> (TempDbGuard, std::sync::Arc<Server>, std::sync::Arc<crate::Database>) {
+	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_transaction_{count}"));
+	let _ = std::fs::remove_dir_all(&db_path);
+
+	let guard = TempDbGuard { path: db_path.clone() };
+	let figment = Figment::new().merge(figment::providers::Toml::string(&format!(
+		r#"
+			server_name = "test.conduwuit.local"
+			database_path = "{}"
+		"#,
+		db_path.to_string_lossy().replace('\\', "/")
+	)));
+
+	let config = Config::new(&figment).expect("failed to parse config");
+	let runtime_handle = tokio::runtime::Handle::current();
+	let server = std::sync::Arc::new(Server::new(config, Some(&runtime_handle), Log {
+		reload: LogLevelReloadHandles::default(),
+		capture: std::sync::Arc::new(capture::State::default()),
+	}));
+
+	let db = crate::Database::open(&server)
+		.await
+		.expect("failed to open database");
+
+	(guard, server, db)
+}
+
+#[tokio::test]
+async fn transaction_batch_does_not_block_the_runtime() {
+	let (_guard, _server, db) = setup_test_database().await;
+	let map = db.get("global").expect("global map should exist").clone();
+
+	let keep_key = b"txn-batch-preserved";
+	let remove_key = b"txn-batch-removed";
+
+	db.transaction(|| {
+		let map = map.clone();
+		async move {
+			map.insert(keep_key, b"kept");
+			map.insert(remove_key, b"removed");
+			map.remove_raw(remove_key);
+			Ok::<(), Error>(())
+		}
+	})
+	.await
+	.expect("transaction should succeed");
+
+	let kept = map
+		.get_blocking(keep_key)
+		.expect("transactional insert should be committed");
+	assert_eq!(kept.as_ref(), b"kept");
+	assert!(
+		map.get_blocking(remove_key).is_err(),
+		"transactional remove should be committed"
+	);
 }

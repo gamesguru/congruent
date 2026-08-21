@@ -201,7 +201,7 @@ where
 
 	let appended_to_txn = crate::transaction::TRANSACTION_BATCH
 		.try_with(|batch| {
-			let mut batch_guard = batch.blocking_lock();
+			let mut batch_guard = batch.lock();
 			let (batch, closures) = &mut *batch_guard;
 			batch.put_cf(&self.cf(), key.as_raw(), val.as_raw());
 

@@ -29,7 +29,7 @@ mod watchers;
 
 use std::{future::Future, ops::Index, sync::Arc};
 
-use conduwuit::{Result, Server, err};
+use conduwuit::{Result, Server, SyncMutex, err};
 
 pub use self::{
 	de::{Ignore, IgnoreAll},
@@ -86,24 +86,26 @@ impl Database {
 		Fut: Future<Output = Result<R>>,
 	{
 		use rocksdb::WriteBatchWithTransaction;
-		use tokio::sync::Mutex;
 
 		let batch =
-			Arc::new(Mutex::new((WriteBatchWithTransaction::<false>::default(), Vec::new())));
+			Arc::new(SyncMutex::new((WriteBatchWithTransaction::<false>::default(), Vec::new())));
 
 		let res = transaction::TRANSACTION_BATCH
 			.scope(batch.clone(), async { f().await })
 			.await?;
 
-		let mut batch_guard = batch.lock().await;
+		let mut batch_guard = batch.lock();
+		let batch = std::mem::take(&mut batch_guard.0);
+		let wake_closures = std::mem::take(&mut batch_guard.1);
+		drop(batch_guard);
+
 		let write_options = map::write_options_default(&self.db);
 		self.db
 			.db
-			.write_opt(&batch_guard.0, &write_options)
+			.write_opt(&batch, &write_options)
 			.or_else(or_else)?;
-		batch_guard.0.clear();
 
-		for wake_closure in batch_guard.1.drain(..) {
+		for wake_closure in wake_closures {
 			wake_closure();
 		}
 

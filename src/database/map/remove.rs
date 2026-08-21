@@ -56,13 +56,13 @@ pub fn remove_raw(&self, key: &[u8]) {
 
 	let appended_to_txn = crate::transaction::TRANSACTION_BATCH
 		.try_with(|batch| {
-			if let Ok(mut batch_guard) = batch.try_lock() {
-				let (batch, _closures) = &mut *batch_guard;
-				batch.delete_cf(&self.cf(), key);
-				true
-			} else {
-				false
-			}
+			let mut batch_guard = batch.lock();
+			let (batch, closures) = &mut *batch_guard;
+			batch.delete_cf(&self.cf(), key);
+			let watchers = self.watchers.clone();
+			let key_owned = key.to_vec();
+			closures.push(Box::new(move || watchers.wake(&key_owned)));
+			true
 		})
 		.unwrap_or(false);
 
@@ -78,7 +78,7 @@ pub fn remove_raw(&self, key: &[u8]) {
 		if !self.db.corked() {
 			self.db.flush().expect("database flush error after remove");
 		}
-	}
 
-	self.watchers.wake(key);
+		self.watchers.wake(key);
+	}
 }
