@@ -32,10 +32,7 @@ impl Data {
 		let counter: &mut u64 = &mut lock;
 
 		#[cfg(debug_assertions)]
-		if database::transaction::TRANSACTION_BATCH
-			.try_with(|_| ())
-			.is_err()
-		{
+		if !Self::in_transaction_batch() {
 			debug_assert!(
 				*counter == Self::stored_count(&self.global).unwrap_or_default(),
 				"counter mismatch"
@@ -56,12 +53,23 @@ impl Data {
 	pub fn current_count(&self) -> u64 {
 		let lock = self.counter.read();
 		let counter: &u64 = &lock;
-		debug_assert!(
-			*counter == Self::stored_count(&self.global).unwrap_or_default(),
-			"counter mismatch"
-		);
+		#[cfg(debug_assertions)]
+		if !Self::in_transaction_batch() {
+			debug_assert!(
+				*counter == Self::stored_count(&self.global).unwrap_or_default(),
+				"counter mismatch"
+			);
+		}
 
 		*counter
+	}
+
+	#[cfg(debug_assertions)]
+	#[inline]
+	fn in_transaction_batch() -> bool {
+		database::transaction::TRANSACTION_BATCH
+			.try_with(|_| ())
+			.is_ok()
 	}
 
 	fn stored_count(global: &Arc<Map>) -> Result<u64> {
