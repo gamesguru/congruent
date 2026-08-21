@@ -27,12 +27,15 @@ impl Data {
 	}
 
 	pub fn next_count_batch(&self, diff: u64) -> Result<u64> {
+		#[cfg(debug_assertions)]
+		let should_assert = !self.db.db.corked() && !Self::in_transaction_batch();
+
 		let _cork = self.db.cork();
 		let mut lock = self.counter.write();
 		let counter: &mut u64 = &mut lock;
 
 		#[cfg(debug_assertions)]
-		if !Self::in_transaction_batch() {
+		if should_assert {
 			debug_assert!(
 				*counter == Self::stored_count(&self.global).unwrap_or_default(),
 				"counter mismatch"
@@ -54,7 +57,7 @@ impl Data {
 		let lock = self.counter.read();
 		let counter: &u64 = &lock;
 		#[cfg(debug_assertions)]
-		if !Self::in_transaction_batch() {
+		if !self.db.db.corked() && !Self::in_transaction_batch() {
 			debug_assert!(
 				*counter == Self::stored_count(&self.global).unwrap_or_default(),
 				"counter mismatch"
