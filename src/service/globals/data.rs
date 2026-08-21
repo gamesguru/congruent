@@ -50,10 +50,11 @@ impl Data {
 		});
 
 		match tx_result {
-			| Ok((start, value)) => {
+			| Ok(Ok((start, value))) => {
 				self.global.insert(COUNTER, value.to_be_bytes());
 				Ok(start)
 			},
+			| Ok(Err(err)) => Err(err),
 			| Err(_) => {
 				let _cork = self.db.cork();
 				let mut lock = self.counter.write();
