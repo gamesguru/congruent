@@ -39,20 +39,21 @@ impl Data {
 			*counter = counter
 				.checked_add(diff)
 				.ok_or_else(|| err!(Database("global counter overflow")))?;
-
-			self.global.insert(COUNTER, counter.to_be_bytes());
+			let value = *counter;
 
 			let committed_counter = Arc::clone(&self.counter);
-			let value = *counter;
 			batch_guard.wake_closures.push(Box::new(move || {
 				*committed_counter.write() = value;
 			}));
 
-			Ok(start)
+			Ok((start, value))
 		});
 
 		match tx_result {
-			| Ok(result) => result,
+			| Ok((start, value)) => {
+				self.global.insert(COUNTER, value.to_be_bytes());
+				Ok(start)
+			},
 			| Err(_) => {
 				let _cork = self.db.cork();
 				let mut lock = self.counter.write();

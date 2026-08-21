@@ -9,8 +9,14 @@ pub struct TransactionContext {
 	pub globals_count: Option<u64>,
 }
 
+impl Default for TransactionContext {
+	#[inline]
+	fn default() -> Self { Self::new() }
+}
+
 impl TransactionContext {
 	#[inline]
+	#[must_use]
 	pub fn new() -> Self {
 		Self {
 			batch: WriteBatchWithTransaction::<false>::default(),
