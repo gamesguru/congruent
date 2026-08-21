@@ -104,42 +104,19 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 						);
 						None
 					} else {
-						match services
+						if services
 							.rooms
-							.timeline
-							.get_remote_pdu(room_id, &fed.event_id)
+							.state_accessor
+							.user_can_see_event(body.sender_user(), room_id, &fed.event_id)
 							.await
 						{
-							| Ok(pdu) => {
-								if services
-									.rooms
-									.state_accessor
-									.user_can_see_event(
-										body.sender_user(),
-										room_id,
-										&pdu.event_id,
-									)
-									.await
-								{
-									Some(get_event_by_timestamp::v1::Response::new(
-										pdu.event_id.clone(),
-										MilliSecondsSinceUnixEpoch(pdu.origin_server_ts),
-									))
-								} else {
-									debug!(
-										event_id = %pdu.event_id,
-										"Federation timestamp result is not visible to requester"
-									);
-									None
-								}
-							},
-							| Err(e) => {
-								warn!(
-									event_id = %fed.event_id,
-									"Failed to fetch federation timestamp result locally: {e}"
-								);
-								None
-							},
+							Some(fed)
+						} else {
+							debug!(
+								event_id = %fed.event_id,
+								"Federation timestamp result is not visible to requester"
+							);
+							None
 						}
 					}
 				} else {
