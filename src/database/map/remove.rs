@@ -57,11 +57,12 @@ pub fn remove_raw(&self, key: &[u8]) {
 	let appended_to_txn = crate::transaction::TRANSACTION_BATCH
 		.try_with(|batch| {
 			let mut batch_guard = batch.lock();
-			let (batch, closures) = &mut *batch_guard;
-			batch.delete_cf(&self.cf(), key);
+			batch_guard.batch.delete_cf(&self.cf(), key);
 			let watchers = self.watchers.clone();
 			let key_owned = key.to_vec();
-			closures.push(Box::new(move || watchers.wake(&key_owned)));
+			batch_guard
+				.wake_closures
+				.push(Box::new(move || watchers.wake(&key_owned)));
 			true
 		})
 		.unwrap_or(false);

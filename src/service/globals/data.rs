@@ -5,7 +5,7 @@ use database::{Database, Deserialized, Map};
 
 pub struct Data {
 	global: Arc<Map>,
-	counter: SyncRwLock<u64>,
+	counter: Arc<SyncRwLock<u64>>,
 	pub(super) db: Arc<Database>,
 }
 
@@ -16,7 +16,9 @@ impl Data {
 		let db = &args.db;
 		Self {
 			global: db["global"].clone(),
-			counter: SyncRwLock::new(Self::stored_count(&db["global"]).unwrap_or_default()),
+			counter: Arc::new(SyncRwLock::new(
+				Self::stored_count(&db["global"]).unwrap_or_default(),
+			)),
 			db: args.db.clone(),
 		}
 	}
@@ -27,33 +29,62 @@ impl Data {
 	}
 
 	pub fn next_count_batch(&self, diff: u64) -> Result<u64> {
-		#[cfg(debug_assertions)]
-		let should_assert = !self.db.db.corked() && !Self::in_transaction_batch();
+		let tx_result = database::transaction::TRANSACTION_BATCH.try_with(|batch| {
+			let mut batch_guard = batch.lock();
+			let counter = batch_guard
+				.globals_count
+				.get_or_insert_with(|| *self.counter.read());
 
-		let _cork = self.db.cork();
-		let mut lock = self.counter.write();
-		let counter: &mut u64 = &mut lock;
+			let start = *counter;
+			*counter = counter
+				.checked_add(diff)
+				.ok_or_else(|| err!(Database("global counter overflow")))?;
 
-		#[cfg(debug_assertions)]
-		if should_assert {
-			debug_assert!(
-				*counter == Self::stored_count(&self.global).unwrap_or_default(),
-				"counter mismatch"
-			);
+			self.global.insert(COUNTER, counter.to_be_bytes());
+
+			let committed_counter = Arc::clone(&self.counter);
+			let value = *counter;
+			batch_guard.wake_closures.push(Box::new(move || {
+				*committed_counter.write() = value;
+			}));
+
+			Ok(start)
+		});
+
+		match tx_result {
+			| Ok(result) => result,
+			| Err(_) => {
+				let _cork = self.db.cork();
+				let mut lock = self.counter.write();
+				let counter: &mut u64 = &mut lock;
+
+				#[cfg(debug_assertions)]
+				debug_assert!(
+					*counter == Self::stored_count(&self.global).unwrap_or_default(),
+					"counter mismatch"
+				);
+
+				let start = *counter;
+				*counter = counter
+					.checked_add(diff)
+					.ok_or_else(|| err!(Database("global counter overflow")))?;
+
+				self.global.insert(COUNTER, counter.to_be_bytes());
+
+				Ok(start)
+			},
 		}
-
-		let start = *counter;
-		*counter = counter
-			.checked_add(diff)
-			.ok_or_else(|| err!(Database("global counter overflow")))?;
-
-		self.global.insert(COUNTER, counter.to_be_bytes());
-
-		Ok(start)
 	}
 
 	#[inline]
 	pub fn current_count(&self) -> u64 {
+		if let Ok(Some(count)) = database::transaction::TRANSACTION_BATCH.try_with(|batch| {
+			let batch_guard = batch.lock();
+			batch_guard.globals_count
+		}) {
+			return count;
+		}
+
 		let lock = self.counter.read();
 		let counter: &u64 = &lock;
 		#[cfg(debug_assertions)]

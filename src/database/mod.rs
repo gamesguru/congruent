@@ -85,18 +85,15 @@ impl Database {
 		F: FnOnce() -> Fut,
 		Fut: Future<Output = Result<R>>,
 	{
-		use rocksdb::WriteBatchWithTransaction;
-
-		let batch =
-			Arc::new(SyncMutex::new((WriteBatchWithTransaction::<false>::default(), Vec::new())));
+		let batch = Arc::new(SyncMutex::new(transaction::TransactionContext::new()));
 
 		let res = transaction::TRANSACTION_BATCH
 			.scope(batch.clone(), async { f().await })
 			.await?;
 
 		let mut batch_guard = batch.lock();
-		let batch = std::mem::take(&mut batch_guard.0);
-		let wake_closures = std::mem::take(&mut batch_guard.1);
+		let batch = std::mem::take(&mut batch_guard.batch);
+		let wake_closures = std::mem::take(&mut batch_guard.wake_closures);
 		drop(batch_guard);
 
 		let write_options = map::write_options_default(&self.db);

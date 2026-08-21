@@ -202,12 +202,15 @@ where
 	let appended_to_txn = crate::transaction::TRANSACTION_BATCH
 		.try_with(|batch| {
 			let mut batch_guard = batch.lock();
-			let (batch, closures) = &mut *batch_guard;
-			batch.put_cf(&self.cf(), key.as_raw(), val.as_raw());
+			batch_guard
+				.batch
+				.put_cf(&self.cf(), key.as_raw(), val.as_raw());
 
 			let watchers = self.watchers.clone();
 			let key_owned = key.as_raw().to_vec();
-			closures.push(Box::new(move || watchers.wake(&key_owned)));
+			batch_guard
+				.wake_closures
+				.push(Box::new(move || watchers.wake(&key_owned)));
 		})
 		.is_ok();
 
