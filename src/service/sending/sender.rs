@@ -65,7 +65,6 @@ enum TransactionStatus {
 #[derive(Clone, Debug, serde::Serialize)]
 struct StateHashInfo {
 	algorithm: String,
-	before: String,
 	after: String,
 }
 
@@ -144,11 +143,10 @@ async fn compute_state_hash_for_pdu(
 	event_id: &OwnedEventId,
 	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
-	let root_handle = services
-		.state_accessor
-		.pdu_roothandle(event_id)
-		.await
-		.ok()?;
+	let Ok(root_handle) = services.state_accessor.pdu_roothandle(event_id).await else {
+		warn!(event_id = %event_id, "failed to resolve outbound state hash root");
+		return None;
+	};
 
 	let mut after = String::with_capacity(64);
 	for b in root_handle.state_group_id {
@@ -157,8 +155,7 @@ async fn compute_state_hash_for_pdu(
 	}
 
 	Some(StateHashInfo {
-		algorithm: "lthash16".to_owned(),
-		before: String::new(),
+		algorithm: "lthash16-v1".to_owned(),
 		after,
 	})
 }

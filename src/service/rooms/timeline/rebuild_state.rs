@@ -86,18 +86,21 @@ impl super::Service {
 			.ok();
 
 		// Phase 1: Stream events and extract metadata + keep state PDUs
-		eprintln!("[rebuild_state] Phase 1: streaming events...");
+		info!("rebuild_state: phase 1 streaming events");
 		let (events_meta, room_version, state_pdus) = self.rebuild_stream_events(room_id).await?;
-		eprintln!("[rebuild_state] Phase 1 done: {} events", events_meta.len());
+		info!(events = events_meta.len(), "rebuild_state: phase 1 done");
 
 		let event_set: HashSet<OwnedEventId> =
 			events_meta.iter().map(|(eid, ..)| eid.clone()).collect();
 
 		// Phase 2b: Pre-compute auth chains bottom-up (iterative DFS)
-		eprintln!("[rebuild_state] Phase 2b: computing auth chains...");
+		info!("rebuild_state: phase 2b computing auth chains");
 		let (eid_to_idx, idx_to_eid, auth_chain_bitmaps) =
 			Self::rebuild_auth_chains(&events_meta);
-		eprintln!("[rebuild_state] Phase 2b done: {} chains", auth_chain_bitmaps.len());
+		info!(
+			chains = auth_chain_bitmaps.len(),
+			"rebuild_state: phase 2b done"
+		);
 
 		let ctx = RebuildCtx {
 			room_version,
@@ -110,17 +113,17 @@ impl super::Service {
 		};
 
 		// Phase 3+4: In-memory state walk with eviction + inline DB writes
-		eprintln!("[rebuild_state] Phase 3+4: walk and write...");
+		info!("rebuild_state: phase 3+4 walk and write");
 		let (event_ssh, current_shortstatehash) =
 			Box::pin(self.rebuild_walk_and_write(room_id, &ctx)).await?;
-		eprintln!("[rebuild_state] Phase 3+4 done: {} SSHs computed", event_ssh.len());
+		info!(sshs = event_ssh.len(), "rebuild_state: phase 3+4 done");
 
 		// Phase 5: Final multi-head extremity merge
-		eprintln!("[rebuild_state] Phase 5: merge extremities...");
+		info!("rebuild_state: phase 5 merge extremities");
 		let current_shortstatehash = self
 			.rebuild_merge_extremities(room_id, &ctx, &event_ssh, current_shortstatehash)
 			.await?;
-		eprintln!("[rebuild_state] Phase 5 done");
+		info!("rebuild_state: phase 5 done");
 
 		// Phase 6: Apply final state
 		let (total_added, total_removed) = self
@@ -141,7 +144,7 @@ impl super::Service {
 			)
 			.await?;
 
-		eprintln!("[rebuild_state] Phase 6 done: state applied");
+		info!("rebuild_state: phase 6 done");
 		Ok(())
 	}
 

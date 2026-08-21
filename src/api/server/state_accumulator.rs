@@ -103,7 +103,7 @@ pub(crate) async fn get_state_accumulator_route(
 
 	let response = StateAccumulatorResponse {
 		event_id: query.event_id,
-		algorithm: "lthash16".to_owned(),
+		algorithm: "lthash16-v1".to_owned(),
 		lattice: lattice_b64,
 		n_state_events,
 		digest,
