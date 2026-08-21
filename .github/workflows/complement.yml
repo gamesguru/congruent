@@ -68,7 +68,7 @@ jobs:
           submodules: recursive
 
       - name: Fetch tags and origin/main for comparison
-        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/complement/results.jsonl
 
       - name: Install system dependencies
         run: |
@@ -194,7 +194,7 @@ jobs:
 
       - name: Compare FULL results with baseline
         continue-on-error: true
-        run: git diff --color=always tests/test_results/complement/test_results.jsonl
+        run: git diff --color=always tests/complement/results.jsonl
 
       - name: Upload test logs
         if: always()
@@ -202,15 +202,15 @@ jobs:
         with:
           name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
-            tests/test_results/complement/test_results.jsonl
-            tests/test_results/complement/test_logs.jsonl
+            tests/complement/results.jsonl
+            tests/complement/test_logs.jsonl
           retention-days: 90
 
       - name: Parse Complement results
         id: results
         if: always()
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl"
+          RESULTS="tests/complement/results.jsonl"
           if [ ! -f "$RESULTS" ]; then
             echo "Results file not found, skipping parsing."
             exit 0
@@ -327,7 +327,7 @@ jobs:
           database_url: ${{ secrets.C10Y_POSTGRES_URL }}
           setup_tables: false
           rebuild_db: false
-          results_file: tests/test_results/complement/test_results.jsonl
+          results_file: tests/complement/results.jsonl
           run_metadata: >-
             {
               "commit_hash": "${{ github.event.pull_request.head.sha || github.sha }}",
