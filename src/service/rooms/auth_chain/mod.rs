@@ -8,7 +8,7 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Result, at, debug, debug_error, implement, trace,
+	Err, Result, at, debug, debug_error, implement, info, trace,
 	utils::{
 		IterStream,
 		stream::{ReadyExt, TryBroadbandExt},
@@ -150,10 +150,10 @@ async fn get_auth_chain_outer(
 
 			let auth_chain = self.get_auth_chain_inner(room_id, event_id).await?;
 			self.cache_auth_chain_vec(vec![shortid], auth_chain.as_slice());
-			debug!(
+			info!(
 				%event_id,
 				elapsed = ?started.elapsed(),
-				"Cache missed event"
+				"Cache missed event - starting recursive auth chain walk"
 			);
 
 			Ok(auth_chain)
@@ -168,10 +168,10 @@ async fn get_auth_chain_outer(
 		.await?;
 
 	self.cache_auth_chain_vec(chunk_key, chunk_cache.as_slice());
-	debug!(
+	info!(
 		chunk_cache_length = ?chunk_cache.len(),
 		elapsed = ?started.elapsed(),
-		"Cache missed chunk",
+		"Cache missed chunk - completed recursive walk",
 	);
 
 	Ok(chunk_cache)

@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc};
 
 use axum::extract::State;
-use axum_client_ip::InsecureClientIp;
+use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug, debug_info, debug_warn, err, info,
 	matrix::{
@@ -47,7 +47,7 @@ use crate::Ruma;
 #[tracing::instrument(skip_all, fields(%client), name = "knock", level = "info")]
 pub(crate) async fn knock_room_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<knock_room::v3::Request>,
 ) -> Result<knock_room::v3::Response> {
 	let sender_user = body.sender_user();
@@ -181,16 +181,6 @@ async fn knock_room_by_id_helper(
 		return Err!(Request(Forbidden("You cannot knock on a room you are already joined in.")));
 	}
 
-	if services
-		.rooms
-		.state_cache
-		.is_knocked(sender_user, room_id)
-		.await
-	{
-		debug_warn!("{sender_user} is already knocked in {room_id}");
-		return Ok(knock_room::v3::Response { room_id: room_id.into() });
-	}
-
 	if let Ok(membership) = services
 		.rooms
 		.state_accessor
@@ -243,7 +233,7 @@ async fn knock_room_by_id_helper(
 			// join_room_by_id_helper We need to release the lock here and let
 			// join_room_by_id_helper acquire it again
 			drop(state_lock);
-			match join_room_by_id_helper(
+			match Box::pin(join_room_by_id_helper(
 				services,
 				sender_user,
 				room_id,
@@ -251,7 +241,7 @@ async fn knock_room_by_id_helper(
 				servers,
 				&None,
 				None,
-			)
+			))
 			.await
 			{
 				| Ok(_) => return Ok(knock_room::v3::Response::new(room_id.to_owned())),
@@ -500,6 +490,7 @@ async fn knock_room_helper_local(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
+			None,
 			&state_lock,
 			room_id,
 		)
@@ -530,6 +521,11 @@ async fn knock_room_helper_remote(
 			"Remote room version {room_version_id} is not supported by conduwuit"
 		));
 	}
+
+	services
+		.rooms
+		.short
+		.set_room_version(room_id, &room_version_id);
 
 	let mut knock_event_stub: CanonicalJsonObject =
 		serde_json::from_str(make_knock_response.event.get()).map_err(|e| {
@@ -676,14 +672,6 @@ async fn knock_room_helper_remote(
 		.append_to_state(&parsed_knock_pdu, room_id)
 		.await?;
 
-	info!("Updating membership locally to knock state with provided stripped state events");
-	// TODO: see TODO on the other call to `update_membership`
-	services
-		.rooms
-		.state_cache
-		.update_membership(room_id, sender_user, &parsed_knock_pdu, false)
-		.await?;
-
 	info!("Appending room knock event locally");
 	services
 		.rooms
@@ -692,6 +680,7 @@ async fn knock_room_helper_remote(
 			&parsed_knock_pdu,
 			knock_event,
 			once(parsed_knock_pdu.event_id.borrow()),
+			None,
 			&state_lock,
 			room_id,
 		)
@@ -704,6 +693,13 @@ async fn knock_room_helper_remote(
 		.rooms
 		.state
 		.set_room_state(room_id, statehash_after_knock, &state_lock);
+
+	info!("Updating membership locally to knock state with provided stripped state events");
+	services.rooms.state_cache.mark_as_knocked(
+		sender_user,
+		room_id,
+		Some(send_knock_response.knock_room_state.clone()),
+	);
 
 	Ok(())
 }

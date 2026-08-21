@@ -23,6 +23,7 @@ pub struct Service {
 	appservice_in_room_cache: AppServiceInRoomCache,
 	services: Services,
 	db: Data,
+	pub rooms_joining: SyncRwLock<std::collections::HashSet<OwnedRoomId>>,
 }
 
 struct Services {
@@ -60,6 +61,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			appservice_in_room_cache: SyncRwLock::new(HashMap::new()),
+			rooms_joining: SyncRwLock::new(std::collections::HashSet::new()),
 			services: Services {
 				account_data: args.depend::<account_data::Service>("account_data"),
 				config: args.depend::<config::Service>("config"),
@@ -162,6 +164,9 @@ pub async fn server_in_room<'a>(&'a self, server: &'a ServerName, room_id: &'a R
 	let key = (server, room_id);
 	self.db.serverroomids.qry(&key).await.is_ok()
 }
+
+#[implement(Service)]
+pub fn is_joining(&self, room_id: &RoomId) -> bool { self.rooms_joining.read().contains(room_id) }
 
 /// Returns an iterator of all rooms a server participates in (as far as we
 /// know).

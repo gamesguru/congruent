@@ -169,6 +169,10 @@ macro_rules! err_lev {
 		$crate::tracing::Level::WARN
 	};
 
+	(info) => {
+		$crate::tracing::Level::INFO
+	};
+
 	(error) => {
 		$crate::tracing::Level::ERROR
 	};

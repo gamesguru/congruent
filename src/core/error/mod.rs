@@ -166,8 +166,9 @@ impl Error {
 		match self {
 			| Self::Federation(origin, error) => format!("Answer from {origin}: {error}"),
 			| Self::FederationTimeout(origin) => format!("Federation timeout for {origin}"),
-			| Self::FederationConnection(origin) =>
-				format!("Federation connection error for {origin}"),
+			| Self::FederationConnection(origin) => {
+				format!("Federation connection error for {origin}")
+			},
 			| Self::Ruma(error) => response::ruma_error_message(error),
 			| _ => format!("{self}"),
 		}

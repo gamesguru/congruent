@@ -1,0 +1,7 @@
+{"Action":"pass","Test":"TestArchivedRoomsHistory"}
+{"Action":"pass","Test":"TestArchivedRoomsHistory/timeline_has_events"}
+{"Action":"pass","Test":"TestArchivedRoomsHistory/timeline_has_events/incremental_sync"}
+{"Action":"pass","Test":"TestArchivedRoomsHistory/timeline_has_events/initial_sync"}
+{"Action":"pass","Test":"TestArchivedRoomsHistory/timeline_is_empty"}
+{"Action":"skip","Test":"TestArchivedRoomsHistory/timeline_is_empty/incremental_sync"}
+{"Action":"pass","Test":"TestArchivedRoomsHistory/timeline_is_empty/initial_sync"}

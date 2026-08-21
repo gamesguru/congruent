@@ -1,11 +1,11 @@
 use std::{
-	collections::{BTreeMap, HashMap, HashSet},
+	collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
 	fmt::Debug,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, AtomicUsize, Ordering},
 	},
-	time::{Duration, Instant},
+	time::{Duration, Instant, SystemTime},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -15,7 +15,7 @@ use conduwuit_core::{
 	result::LogErr,
 	trace,
 	utils::{
-		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
+		ReadyExt, calculate_hash,
 		future::TryExtExt,
 		stream::{BroadbandExt, IterStream, WidebandExt},
 	},
@@ -32,6 +32,7 @@ use ruma::{
 	RoomId, RoomVersionId, ServerName, UInt,
 	api::{
 		appservice::event::push_events::v1::EphemeralData,
+		client::error::{ErrorKind, RetryAfter},
 		federation::transactions::{
 			edu::{
 				DeviceListUpdateContent, Edu, PresenceContent, PresenceUpdate, ReceiptContent,
@@ -42,8 +43,9 @@ use ruma::{
 	},
 	device_id,
 	events::{
-		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType, push_rules::PushRulesEvent,
-		receipt::ReceiptType,
+		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType,
+		push_rules::PushRulesEvent,
+		receipt::{ReceiptThread, ReceiptType},
 	},
 	push,
 	serde::Raw,
@@ -56,8 +58,11 @@ use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::Queue
 #[derive(Debug)]
 enum TransactionStatus {
 	Running,
-	Failed(u32, Instant), // number of times failed, time of last failure
-	Retrying(u32),        // number of times failed
+	Failed {
+		tries: u32,
+		retry_at: Instant,
+	},
+	Retrying(u32), // number of times failed
 }
 
 type SendingError = (Destination, Error);
@@ -73,6 +78,8 @@ const DEQUEUE_LIMIT: usize = 48;
 
 pub const PDU_LIMIT: usize = 50;
 pub const EDU_LIMIT: usize = 100;
+
+static EDU_TXN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl Service {
 	#[tracing::instrument(skip(self), level = "debug")]
@@ -115,15 +122,22 @@ impl Service {
 			.expect("Missing channel for sender worker");
 
 		while !receiver.is_closed() {
-			tokio::select! {
-				Some(response) = futures.next() => {
-					self.handle_response(response, futures, statuses).await;
-				},
-				request = receiver.recv_async() => match request {
-					Ok(request) => self.handle_request(request, futures, statuses).await,
-					Err(_) => return,
-				},
+			let has_space = futures.len() < 128;
+
+			if has_space {
+				tokio::select! {
+					Some(response) = futures.next() => {
+						self.handle_response(response, futures, statuses).await;
+					},
+					request = receiver.recv_async() => match request {
+						Ok(request) => self.handle_request(request, futures, statuses).await,
+						Err(_) => return,
+					},
+				}
+			} else if let Some(response) = futures.next().await {
+				self.handle_response(response, futures, statuses).await;
 			}
+			tokio::task::yield_now().await;
 		}
 	}
 
@@ -136,21 +150,94 @@ impl Service {
 	) {
 		match response {
 			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
-			| Err((dest, e)) => Self::handle_response_err(dest, statuses, &e),
+			| Err((dest, e)) => {
+				if let Some(dest) = self.handle_response_err(dest, statuses, &e) {
+					// The destination definitively rejected this transaction; it will
+					// never accept it as constructed, so drop the PDUs it contained now
+					// rather than leaving them marked active. Since `statuses` no
+					// longer has an entry for `dest` after this, the next transaction
+					// for it won't be treated as a retry (see
+					// `select_events_current`), so a later unrelated flush/EDU send
+					// succeeding would otherwise wipe these out via
+					// `delete_all_active_requests_for` without ever having resent them.
+					self.db.delete_all_active_requests_for(&dest).await;
+				}
+			},
 		}
 	}
 
-	fn handle_response_err(dest: Destination, statuses: &mut CurTransactionStatus, e: &Error) {
+	/// Returns `Some(dest)` if the destination definitively rejected the
+	/// transaction and its active requests must be cleaned up by the caller.
+	fn handle_response_err(
+		&self,
+		dest: Destination,
+		statuses: &mut CurTransactionStatus,
+		e: &Error,
+	) -> Option<Destination> {
 		debug!(dest = ?dest, "{e:?}");
-		statuses.entry(dest).and_modify(|e| {
-			*e = match e {
-				| TransactionStatus::Running => TransactionStatus::Failed(1, Instant::now()),
-				| &mut TransactionStatus::Retrying(ref n) =>
-					TransactionStatus::Failed(n.saturating_add(1), Instant::now()),
-				| TransactionStatus::Failed(..) => {
-					panic!("Request that was not even running failed?!")
-				},
-			}
+		let status = e.status_code();
+		if status.is_client_error() && !matches!(status.as_u16(), 401 | 403 | 404 | 429) {
+			warn!(dest = ?dest, "Destination rejected transaction with {status}, dropping its active PDUs: {e:?}");
+			statuses.remove(&dest);
+			return Some(dest);
+		}
+
+		let mut tries: u32 = 1;
+		statuses
+			.entry(dest.clone())
+			.and_modify(|e| {
+				*e = match e {
+					| TransactionStatus::Running =>
+						TransactionStatus::Failed { tries: 1, retry_at: Instant::now() },
+					| &mut TransactionStatus::Retrying(ref n) => {
+						tries = n.saturating_add(1);
+						TransactionStatus::Failed { tries, retry_at: Instant::now() }
+					},
+					| &mut TransactionStatus::Failed { tries: t, .. } => {
+						tries = t.saturating_add(1);
+						TransactionStatus::Failed { tries, retry_at: Instant::now() }
+					},
+				}
+			})
+			.or_insert_with(|| TransactionStatus::Failed { tries: 1, retry_at: Instant::now() });
+
+		// Schedule a delayed retry so EDU-only destinations (e.g. to-device
+		// messages) are retried after backoff even when no new PDUs arrive.
+		// If the remote gave us an explicit M_LIMIT_EXCEEDED retry_after, honor it
+		// instead of our own exponential backoff.
+		let base = self.server.config.sender_retry_backoff_base;
+		let max = self.server.config.sender_retry_backoff_limit;
+		let delay = Self::retry_delay(tries, e, base, max);
+		let now = Instant::now();
+		let retry_at = now.checked_add(delay).unwrap_or(now);
+
+		if let Some(status) = statuses.get_mut(&dest) {
+			*status = TransactionStatus::Failed { tries, retry_at };
+		}
+
+		self.reschedule_flush(dest, delay);
+		None
+	}
+
+	/// Schedule a Flush for `dest` after `delay`.
+	/// This keeps EDU-only destinations alive through backoff periods.
+	fn reschedule_flush(&self, dest: Destination, delay: Duration) {
+		let sender = self
+			.channels
+			.get(self.shard_id(&dest))
+			.expect("channel")
+			.0
+			.clone();
+
+		self.server.runtime().spawn(async move {
+			tokio::time::sleep(delay).await;
+			sender
+				.send(Msg {
+					dest,
+					event: SendingEvent::Flush,
+					queue_id: Vec::new(),
+				})
+				.ok();
 		});
 	}
 
@@ -177,8 +264,18 @@ impl Service {
 			self.db.mark_as_active(new_events.iter());
 
 			let new_events_vec = new_events.into_iter().map(at!(1)).collect();
-			futures.push(self.send_events(dest.clone(), new_events_vec));
+			futures.push(self.send_events(dest.clone(), new_events_vec, None));
 		} else {
+			if let Destination::Federation(server_name) = dest {
+				if let Ok(since_upper) = self.services.globals.current_count() {
+					let since = self.db.get_latest_educount(server_name).await;
+					if since < since_upper {
+						statuses.remove(dest);
+						self.reschedule_flush(dest.clone(), Duration::from_millis(0));
+						return;
+					}
+				}
+			}
 			statuses.remove(dest);
 		}
 	}
@@ -192,9 +289,9 @@ impl Service {
 		statuses: &mut CurTransactionStatus,
 	) {
 		let iv = vec![(msg.queue_id, msg.event)];
-		if let Ok(Some(events)) = self.select_events(&msg.dest, iv, statuses).await {
+		if let Ok(Some((events, edu_count))) = self.select_events(&msg.dest, iv, statuses).await {
 			if !events.is_empty() {
-				futures.push(self.send_events(msg.dest, events));
+				futures.push(self.send_events(msg.dest, events, edu_count));
 			} else {
 				statuses.remove(&msg.dest);
 			}
@@ -265,7 +362,7 @@ impl Service {
 		for (dest, events) in txns {
 			if self.server.config.startup_netburst && !events.is_empty() {
 				statuses.insert(dest.clone(), TransactionStatus::Running);
-				futures.push(self.send_events(dest.clone(), events));
+				futures.push(self.send_events(dest.clone(), events, None));
 			}
 		}
 	}
@@ -284,8 +381,8 @@ impl Service {
 		dest: &Destination,
 		new_events: Vec<QueueItem>, // Events we want to send: event and full key
 		statuses: &mut CurTransactionStatus,
-	) -> Result<Option<Vec<SendingEvent>>> {
-		let (allow, retry) = self.select_events_current(dest, statuses)?;
+	) -> Result<Option<(Vec<SendingEvent>, Option<u64>)>> {
+		let (allow, retry) = Self::select_events_current(dest, statuses);
 
 		// Nothing can be done for this remote, bail out.
 		if !allow {
@@ -302,7 +399,9 @@ impl Service {
 				.ready_for_each(|(_, e)| events.push(e))
 				.await;
 
-			return Ok(Some(events));
+			if !events.is_empty() {
+				return Ok(Some((events, None)));
+			}
 		}
 
 		// Compose the next transaction
@@ -314,6 +413,7 @@ impl Service {
 			}
 		}
 
+		let mut edu_count = None;
 		// Add EDU's into the transaction
 		if let Destination::Federation(server_name) = dest {
 			if let Ok((select_edus, last_count)) = self.select_edus(server_name).await {
@@ -321,29 +421,23 @@ impl Service {
 				let select_edus = select_edus.into_iter().map(SendingEvent::Edu);
 
 				events.extend(select_edus);
-				self.db.set_latest_educount(server_name, last_count);
+				edu_count = Some(last_count);
 			}
 		}
 
-		Ok(Some(events))
+		Ok(Some((events, edu_count)))
 	}
 
 	fn select_events_current(
-		&self,
 		dest: &Destination,
 		statuses: &mut CurTransactionStatus,
-	) -> Result<(bool, bool)> {
+	) -> (bool, bool) {
 		let (mut allow, mut retry) = (true, false);
 		statuses
 			.entry(dest.clone()) // TODO: can we avoid cloning?
 			.and_modify(|e| match e {
-				TransactionStatus::Failed(tries, time) => {
-					// Fail if a request has failed recently (exponential backoff)
-					let min = self.server.config.sender_timeout;
-					let max = self.server.config.sender_retry_backoff_limit;
-					if continue_exponential_backoff_secs(min, max, time.elapsed(), *tries)
-						&& !matches!(dest, Destination::Appservice(_))
-					{
+				TransactionStatus::Failed { tries, retry_at } => {
+					if Instant::now() < *retry_at && !matches!(dest, Destination::Appservice(_)) {
 						allow = false;
 					} else {
 						retry = true;
@@ -356,7 +450,20 @@ impl Service {
 			})
 			.or_insert(TransactionStatus::Running);
 
-		Ok((allow, retry))
+		(allow, retry)
+	}
+
+	fn retry_delay(tries: u32, e: &Error, base: u64, max: u64) -> Duration {
+		retry_after_delay(e).unwrap_or_else(|| {
+			Duration::from_secs(
+				base.saturating_mul(
+					1_u64
+						.checked_shl(tries.saturating_sub(1))
+						.unwrap_or(u64::MAX),
+				)
+				.min(max),
+			)
+		})
 	}
 
 	#[tracing::instrument(
@@ -412,7 +519,16 @@ impl Service {
 		events.extend(presence);
 		events.extend(receipts);
 
-		Ok((events, max_edu_count.load(Ordering::Acquire)))
+		let last_count = if events.is_empty() {
+			// We scanned the full window and found nothing relevant for this server.
+			// Advance to the upper bound so empty catch-up transactions do not loop
+			// forever against the global count.
+			since_upper
+		} else {
+			max_edu_count.load(Ordering::Acquire)
+		};
+
+		Ok((events, last_count))
 	}
 
 	/// Look for device changes
@@ -434,6 +550,10 @@ impl Service {
 		pin_mut!(server_rooms);
 		let mut device_list_changes = HashSet::<OwnedUserId>::new();
 		while let Some(room_id) = server_rooms.next().await {
+			info!(
+				target: "device_list_debug",
+				%room_id, "Checking room for device list changes"
+			);
 			let keys_changed = self
 				.services
 				.users
@@ -442,6 +562,7 @@ impl Service {
 
 			pin_mut!(keys_changed);
 			while let Some((user_id, count)) = keys_changed.next().await {
+				info!(%user_id, %count, %room_id, "Detected device list change");
 				if count > since.1 {
 					break;
 				}
@@ -489,22 +610,25 @@ impl Service {
 		since: (u64, u64),
 		max_edu_count: &AtomicU64,
 	) -> Option<EduBuf> {
-		let mut num = 0;
+		let num = Arc::new(AtomicUsize::new(0));
 		let receipts: BTreeMap<OwnedRoomId, ReceiptMap> = self
 			.services
 			.state_cache
 			.server_rooms(server_name)
 			.map(ToOwned::to_owned)
-			.broad_filter_map(|room_id| async move {
-				let receipt_map = self
-					.select_edus_receipts_room(&room_id, since, max_edu_count, &mut num)
-					.await;
+			.broad_filter_map(|room_id| {
+				let num = Arc::clone(&num);
+				async move {
+					let receipt_map = self
+						.select_edus_receipts_room(&room_id, since, max_edu_count, &num)
+						.await;
 
-				receipt_map
-					.read
-					.is_empty()
-					.eq(&false)
-					.then_some((room_id, receipt_map))
+					receipt_map
+						.read
+						.is_empty()
+						.eq(&false)
+						.then_some((room_id, receipt_map))
+				}
 			})
 			.collect()
 			.await;
@@ -523,13 +647,17 @@ impl Service {
 	}
 
 	/// Look for read receipts in this room
-	#[tracing::instrument(name = "receipts", level = "trace", skip(self, since, max_edu_count))]
+	#[tracing::instrument(
+		name = "receipts",
+		level = "trace",
+		skip(self, since, max_edu_count, num)
+	)]
 	async fn select_edus_receipts_room(
 		&self,
 		room_id: &RoomId,
 		since: (u64, u64),
 		max_edu_count: &AtomicU64,
-		num: &mut usize,
+		num: &AtomicUsize,
 	) -> ReceiptMap {
 		let receipts = self
 			.services
@@ -537,8 +665,11 @@ impl Service {
 			.readreceipts_since(room_id, Some(since.0));
 
 		pin_mut!(receipts);
-		let mut read = BTreeMap::<OwnedUserId, ReceiptData>::new();
+		let mut collected = Vec::new();
 		while let Some((user_id, count, read_receipt)) = receipts.next().await {
+			if num.load(Ordering::Relaxed) >= SELECT_RECEIPT_LIMIT {
+				break;
+			}
 			if count > since.1 {
 				break;
 			}
@@ -548,43 +679,10 @@ impl Service {
 				continue;
 			}
 
-			let Ok(event) = serde_json::from_str(read_receipt.json().get()) else {
-				error!(%user_id, %count, ?read_receipt, "Invalid edu event in read_receipts.");
-				continue;
-			};
-
-			let AnySyncEphemeralRoomEvent::Receipt(r) = event else {
-				error!(%user_id, %count, ?event, "Invalid event type in read_receipts");
-				continue;
-			};
-
-			let (event_id, mut receipt) = r
-				.content
-				.0
-				.into_iter()
-				.next()
-				.expect("we only use one event per read receipt");
-
-			let receipt = receipt
-				.remove(&ReceiptType::Read)
-				.expect("our read receipts always set this")
-				.remove(&user_id)
-				.expect("our read receipts always have the user here");
-
-			let receipt_data = ReceiptData {
-				data: receipt,
-				event_ids: vec![event_id.clone()],
-			};
-
-			if read.insert(user_id, receipt_data).is_none() {
-				*num = num.saturating_add(1);
-				if *num >= SELECT_RECEIPT_LIMIT {
-					break;
-				}
-			}
+			collected.push((user_id, count, read_receipt.json().get().to_owned()));
 		}
 
-		ReceiptMap { read }
+		build_receipt_map(collected, since, SELECT_RECEIPT_LIMIT, num)
 	}
 
 	/// Look for presence
@@ -669,11 +767,20 @@ impl Service {
 		Some(buf)
 	}
 
-	fn send_events(&self, dest: Destination, events: Vec<SendingEvent>) -> SendingFuture<'_> {
-		debug_assert!(!events.is_empty(), "sending empty transaction");
+	fn send_events(
+		&self,
+		dest: Destination,
+		events: Vec<SendingEvent>,
+		edu_count: Option<u64>,
+	) -> SendingFuture<'_> {
+		debug_assert!(
+			!events.is_empty() || matches!(dest, Destination::Federation(_)),
+			"sending empty transaction"
+		);
 		match dest {
-			| Destination::Federation(server) =>
-				self.send_events_dest_federation(server, events).boxed(),
+			| Destination::Federation(server) => self
+				.send_events_dest_federation(server, events, edu_count)
+				.boxed(),
 			| Destination::Appservice(id) => self.send_events_dest_appservice(id, events).boxed(),
 			| Destination::Push(user_id, pushkey) =>
 				self.send_events_dest_push(user_id, pushkey, events).boxed(),
@@ -840,6 +947,7 @@ impl Service {
 		&self,
 		server: OwnedServerName,
 		events: Vec<SendingEvent>,
+		edu_count: Option<u64>,
 	) -> SendingResult {
 		let pdus: Vec<_> = events
 			.iter()
@@ -864,6 +972,9 @@ impl Service {
 			.collect();
 
 		if pdus.is_empty() && edus.is_empty() {
+			if let Some(count) = edu_count {
+				self.db.set_latest_educount(&server, count);
+			}
 			return Ok(Destination::Federation(server));
 		}
 
@@ -902,12 +1013,23 @@ impl Service {
 			.fetch_add(pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
-		let preimage = pdus
-			.iter()
-			.map(|raw| raw.get().as_bytes())
-			.chain(edus.iter().map(|raw| raw.json().get().as_bytes()));
+		let counter_bytes;
+		let preimage: Vec<&[u8]> = if pdus.is_empty() {
+			let counter = EDU_TXN_COUNTER.fetch_add(1, Ordering::Relaxed);
+			counter_bytes = counter.to_be_bytes();
+			pdus.iter()
+				.map(|raw| raw.get().as_bytes())
+				.chain(edus.iter().map(|raw| raw.json().get().as_bytes()))
+				.chain(std::iter::once(&counter_bytes[..]))
+				.collect()
+		} else {
+			pdus.iter()
+				.map(|raw| raw.get().as_bytes())
+				.chain(edus.iter().map(|raw| raw.json().get().as_bytes()))
+				.collect()
+		};
 
-		let txn_hash = calculate_hash(preimage);
+		let txn_hash = calculate_hash(preimage.into_iter());
 		let txn_id = &*URL_SAFE_NO_PAD.encode(txn_hash);
 		let request = send_transaction_message::v1::Request {
 			transaction_id: txn_id.into(),
@@ -940,7 +1062,12 @@ impl Service {
 				self.stats.outgoing_errors.fetch_add(1, Ordering::Relaxed);
 				Err((Destination::Federation(server), error))
 			},
-			| Ok(_) => Ok(Destination::Federation(server)),
+			| Ok(_) => {
+				if let Some(count) = edu_count {
+					self.db.set_latest_educount(&server, count);
+				}
+				Ok(Destination::Federation(server))
+			},
 		}
 	}
 
@@ -980,5 +1107,258 @@ impl Service {
 		// .expect("Raw::from_value always works")
 
 		to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
+	}
+}
+
+/// Extracts the server-provided retry delay from an M_LIMIT_EXCEEDED
+/// response, if present, so we back off at least as long as the remote asked
+/// rather than only our own exponential schedule.
+fn retry_after_delay(e: &Error) -> Option<Duration> {
+	let Error::Federation(_, fed_err) = e else {
+		return None;
+	};
+
+	let ErrorKind::LimitExceeded { retry_after: Some(retry_after) } = fed_err.error_kind()?
+	else {
+		return None;
+	};
+
+	match retry_after {
+		| RetryAfter::Delay(d) => Some(*d),
+		| RetryAfter::DateTime(t) => t.duration_since(SystemTime::now()).ok(),
+	}
+}
+
+/// Merges collected read receipts for a room into the map sent in a federation
+/// EDU, keeping at most one `ReceiptData` per user.
+///
+/// A user can have both an unthreaded and a threaded receipt pending in the
+/// same window; the federation wire format (`ReceiptMap.read`) only carries
+/// one `ReceiptData` per user, so on a clash we prefer the unthreaded receipt
+/// (matching the local `/sync` merge in `rooms::read_receipt::pack_receipts`)
+/// rather than letting whichever receipt was collected last silently win.
+fn build_receipt_map(
+	receipts: Vec<(OwnedUserId, u64, String)>,
+	since: (u64, u64),
+	limit: usize,
+	num: &AtomicUsize,
+) -> ReceiptMap {
+	let mut read = BTreeMap::<OwnedUserId, ReceiptData>::new();
+
+	for (user_id, count, read_receipt_json) in receipts {
+		if count > since.1 {
+			break;
+		}
+
+		let Ok(event) = serde_json::from_str(&read_receipt_json) else {
+			error!(%user_id, %count, %read_receipt_json, "Invalid edu event in read_receipts.");
+			continue;
+		};
+
+		let AnySyncEphemeralRoomEvent::Receipt(r) = event else {
+			error!(%user_id, %count, ?event, "Invalid event type in read_receipts");
+			continue;
+		};
+
+		let (event_id, mut receipt) = r
+			.content
+			.0
+			.into_iter()
+			.next()
+			.expect("we only use one event per read receipt");
+
+		let Some(mut users) = receipt.remove(&ReceiptType::Read) else {
+			continue;
+		};
+		let Some(receipt) = users.remove(&user_id) else {
+			continue;
+		};
+
+		let is_unthreaded = matches!(receipt.thread, ReceiptThread::Unthreaded);
+		let receipt_data = ReceiptData {
+			data: receipt,
+			event_ids: vec![event_id.clone()],
+		};
+
+		match read.entry(user_id) {
+			| Entry::Vacant(e) => {
+				if num
+					.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+						(n < limit).then_some(n.saturating_add(1))
+					})
+					.is_err()
+				{
+					break;
+				}
+				e.insert(receipt_data);
+			},
+			| Entry::Occupied(mut e) =>
+				if is_unthreaded {
+					e.insert(receipt_data);
+				},
+		}
+	}
+
+	ReceiptMap { read }
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::atomic::AtomicUsize;
+
+	use ruma::user_id;
+
+	use super::*;
+
+	#[test]
+	fn test_build_receipt_map_under_limit() {
+		let mut receipts = Vec::new();
+		let user_id = user_id!("@alice:example.com").to_owned();
+		let json = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 12345
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id, 15, json.to_string()));
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		let map = build_receipt_map(receipts, since, 100, &num);
+
+		assert_eq!(map.read.len(), 1);
+		assert_eq!(num.load(Ordering::Relaxed), 1);
+	}
+
+	#[test]
+	fn test_build_receipt_map_over_limit() {
+		let mut receipts = Vec::new();
+		for i in 1..=5 {
+			let user_id_str = format!("@user{i}:example.com");
+			let user_id = <OwnedUserId as TryFrom<&str>>::try_from(user_id_str.as_str()).unwrap();
+			let json = serde_json::json!({
+				"type": "m.receipt",
+				"content": {
+					"$event1": {
+						"m.read": {
+							&user_id_str: {
+								"ts": 12345
+							}
+						}
+					}
+				}
+			});
+			receipts.push((user_id, 10 + u64::try_from(i).unwrap(), json.to_string()));
+		}
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		// Limit to 3!
+		let map = build_receipt_map(receipts, since, 3, &num);
+
+		assert_eq!(map.read.len(), 3);
+		assert_eq!(num.load(Ordering::Relaxed), 3);
+	}
+
+	#[test]
+	fn test_build_receipt_map_unthreaded_precedence() {
+		let mut receipts = Vec::new();
+		let user_id = user_id!("@alice:example.com").to_owned();
+
+		// 1. Threaded receipt
+		let json_threaded = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"thread_id": "$thread1",
+							"ts": 10000
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 11, json_threaded.to_string()));
+
+		// 2. Unthreaded receipt
+		let json_unthreaded = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 12345
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 12, json_unthreaded.to_string()));
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		let map = build_receipt_map(receipts, since, 100, &num);
+
+		assert_eq!(map.read.len(), 1);
+		assert_eq!(num.load(Ordering::Relaxed), 1);
+
+		let data = &map.read[&user_id];
+		assert!(matches!(data.data.thread, ReceiptThread::Unthreaded));
+		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+	}
+
+	#[test]
+	fn test_build_receipt_map_threaded_does_not_overwrite() {
+		let mut receipts = Vec::new();
+		let user_id = user_id!("@alice:example.com").to_owned();
+
+		// 1. Unthreaded receipt
+		let json_unthreaded = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 12345
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 11, json_unthreaded.to_string()));
+
+		// 2. Threaded receipt
+		let json_threaded = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"thread_id": "$thread1",
+							"ts": 10000
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 12, json_threaded.to_string()));
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		let map = build_receipt_map(receipts, since, 100, &num);
+
+		assert_eq!(map.read.len(), 1);
+		assert_eq!(num.load(Ordering::Relaxed), 1);
+
+		let data = &map.read[&user_id];
+		assert!(matches!(data.data.thread, ReceiptThread::Unthreaded));
+		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
 	}
 }

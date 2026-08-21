@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
+use std::{collections::HashMap, fmt::Write, iter::once, mem::size_of, sync::Arc};
 
 use async_trait::async_trait;
 use conduwuit::{RoomVersion, debug};
@@ -367,12 +367,28 @@ impl Service {
 	/// Returns the room's version.
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
-		self.services
+		if let Ok(version) = self.services.short.get_room_version(room_id).await {
+			return Ok(version);
+		}
+
+		let version = self
+			.services
 			.state_accessor
 			.room_state_get_content(room_id, &StateEventType::RoomCreate, "")
 			.await
 			.map(|content: RoomCreateEventContent| content.room_version)
-			.map_err(|e| err!(Request(NotFound("No create event found: {e:?}"))))
+			.map_err(|e| err!(Request(NotFound("No create event found: {e:?}"))))?;
+
+		self.services.short.set_room_version(room_id, &version);
+		Ok(version)
+	}
+
+	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
+		self.db
+			.shorteventid_shortstatehash
+			.qry(&shorteventid)
+			.await
+			.deserialized()
 	}
 
 	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {

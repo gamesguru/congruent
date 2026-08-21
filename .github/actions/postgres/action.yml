@@ -18,6 +18,12 @@ inputs:
   rebuild_db:
     description: "Whether to run a full historical rebuild (import_history.sh)"
     default: "false"
+  results_file:
+    description: "Path to local test_results.jsonl for direct ingest"
+    default: ""
+  run_metadata:
+    description: "JSON object with run metadata: {commit_hash, branch, arch, os, profile, room_version, version_string, features, pass, fail, skip}"
+    default: ""
 
 runs:
   using: "composite"
@@ -39,7 +45,19 @@ runs:
       run: |
         cat "${{ github.action_path }}/tables.sql" | ssh -C -o StrictHostKeyChecking=no "${{ inputs.ssh_target }}" "psql -U git c10y"
 
-    - name: Bulk Sync History
+    - name: Direct Ingest
+      if: inputs.results_file != '' && inputs.run_metadata != ''
+      shell: bash
+      env:
+        SSH_TARGET: ${{ inputs.ssh_target }}
+        RESULTS_FILE: ${{ inputs.results_file }}
+        RUN_META: ${{ inputs.run_metadata }}
+      run: |
+        "${{ github.action_path }}/sync_recent.sh" --direct "$RESULTS_FILE" "$RUN_META"
+
+    - name: Bulk Sync History (backup)
+      if: always()
+      continue-on-error: true
       shell: bash
       env:
         DATABASE_URL: ${{ inputs.database_url }}

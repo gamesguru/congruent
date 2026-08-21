@@ -184,7 +184,10 @@ mod url_and_opengraph_parsing_tests {
 		let html = HTML::from_string(wikipedia.to_string(), None).expect("failed to parse HTML");
 
 		let img = html.opengraph.images.first().expect("no og:image found");
-		assert_eq!(img.url, "https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg");
+		assert_eq!(
+			img.url,
+			"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
+		);
 		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("955"));
 		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1200"));
 	}
@@ -204,7 +207,10 @@ mod url_and_opengraph_parsing_tests {
 		let html = HTML::from_string(youtube.to_string(), None).expect("failed to parse HTML");
 
 		let img = html.opengraph.images.first().expect("no og:image found");
-		assert_eq!(img.url, "https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo");
+		assert_eq!(
+			img.url,
+			"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
+		);
 		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("1000"));
 		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1000"));
 

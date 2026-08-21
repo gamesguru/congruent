@@ -9,14 +9,17 @@ use std::str::FromStr;
 use axum::{
 	Router,
 	response::{IntoResponse, Redirect},
-	routing::{any, get, post},
+	routing::{any, get, post, put},
 };
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
 use http::{Uri, uri};
 
 use self::handler::RouterExt;
-pub(super) use self::{args::Args as Ruma, response::RumaResponse};
+pub(super) use self::{
+	args::{Args as Ruma, authenticate_user},
+	response::RumaResponse,
+};
 use crate::{admin, client, server};
 
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
@@ -56,6 +59,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_pushrule_actions_route)
 		.ruma_route(&client::delete_pushrule_route)
 		.ruma_route(&client::get_room_event_route)
+		.ruma_route(&client::get_room_event_by_timestamp_route)
 		.ruma_route(&client::get_room_aliases_route)
 		.ruma_route(&client::get_filter_route)
 		.ruma_route(&client::create_filter_route)
@@ -118,10 +122,26 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
 		.ruma_route(&client::get_protocols_route)
-		.route("/_matrix/client/unstable/thirdparty/protocols",
-			get(client::get_protocols_route_unstable))
-		.ruma_route(&client::send_message_event_route)
-		.ruma_route(&client::send_state_event_for_key_route)
+		.route(
+			"/_matrix/client/unstable/thirdparty/protocols",
+			get(client::get_protocols_route_unstable),
+		)
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/send/{event_type}/{txn_id}",
+			put(client::send_message_event_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/send/{event_type}/{txn_id}",
+			put(client::send_message_event_route),
+		)
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/state/{event_type}/{state_key}",
+			put(client::send_state_event_for_key_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/state/{event_type}/{state_key}",
+			put(client::send_state_event_for_key_route),
+		)
 		.ruma_route(&client::get_state_events_route)
 		.ruma_route(&client::get_state_events_for_key_route)
 		// Ruma doesn't have support for multiple paths for a single endpoint yet, and these routes
@@ -149,7 +169,12 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		)
 		.route("/_matrix/client/r0/sync", get(client::sync_events_route))
 		.route("/_matrix/client/v3/sync", get(client::sync_events_route))
-		.ruma_route(&client::sync_events_v5_route)
+		.route("/_matrix/client/v4/sync", post(client::sync_events_v5_route))
+		.route("/_matrix/client/v5/sync", post(client::sync_events_v5_route))
+		.route(
+			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+			post(client::sync_events_unstable_msc3575_route),
+		)
 		.ruma_route(&client::get_context_route)
 		.ruma_route(&client::get_message_events_route)
 		.ruma_route(&client::search_events_route)
@@ -186,6 +211,22 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::delete_dehydrated_device_route)
 		.ruma_route(&client::get_dehydrated_device_route)
 		.ruma_route(&client::get_dehydrated_events_route)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events",
+			get(client::get_all_delayed_events_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}",
+			get(client::get_delayed_event_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}",
+			post(client::update_delayed_event_without_action_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/{action}",
+			post(client::update_delayed_event_route),
+		)
 		.ruma_route(&client::get_tags_route)
 		.ruma_route(&client::update_tag_route)
 		.ruma_route(&client::delete_tag_route)
@@ -251,6 +292,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::claim_keys_route)
 			.ruma_route(&server::get_openid_userinfo_route)
 			.ruma_route(&server::get_hierarchy_route)
+			.ruma_route(&server::get_event_by_timestamp_route)
 			.ruma_route(&server::well_known_server)
 			.ruma_route(&server::get_content_route)
 			.ruma_route(&server::get_content_thumbnail_route)

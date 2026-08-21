@@ -275,6 +275,10 @@ pub(super) async fn build_state_incremental<'a>(
 		.collect::<Vec<_>>()
 		.await;
 
-	trace!(?state_diff_pdus, "collected state PDUs for incremental sync");
+	trace!(
+		target: "conduwuit::api::client::sync",
+		?state_diff_pdus,
+		"collected state PDUs for incremental sync"
+	);
 	Ok(state_diff_pdus)
 }

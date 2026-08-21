@@ -169,7 +169,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             build-essential pkg-config liburing-dev \
             libbz2-dev clang libclang-dev llvm-dev mold

@@ -260,6 +260,10 @@ pub struct Config {
 	pub shortstatekey_cache_capacity: u32,
 
 	/// default: varies by system
+	#[serde(default = "default_shortstatehash_cache_capacity")]
+	pub shortstatehash_cache_capacity: u32,
+
+	/// default: varies by system
 	#[serde(default = "default_statekeyshort_cache_capacity")]
 	pub statekeyshort_cache_capacity: u32,
 
@@ -312,6 +316,13 @@ pub struct Config {
 	/// default: 259200
 	#[serde(default = "default_dns_min_ttl_nxdomain")]
 	pub dns_min_ttl_nxdomain: u64,
+
+	/// The minimum amount of time to cache DNS lookups for server names in
+	/// federation. This is separate from hickory_resolver's internal caching.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_dns_cache_override_expire")]
+	pub dns_cache_override_expire: u64,
 
 	/// Number of DNS nameserver retries after a timeout or error.
 	///
@@ -523,6 +534,14 @@ pub struct Config {
 	/// default: 180
 	#[serde(default = "default_sender_idle_timeout")]
 	pub sender_idle_timeout: u64,
+
+	/// Federation sender transaction retry backoff base (seconds). This is
+	/// the minimum delay before the first retry after a failed transaction.
+	/// Subsequent retries use exponential backoff: base × 2^(tries-1).
+	///
+	/// default: 5
+	#[serde(default = "default_sender_retry_backoff_base")]
+	pub sender_retry_backoff_base: u64,
 
 	/// Federation sender transaction retry backoff limit (seconds).
 	///
@@ -2347,6 +2366,18 @@ pub struct LdapConfig {
 	#[serde(default)]
 	pub uri: Option<Url>,
 
+	/// StartTLS for LDAP connections.
+	///
+	/// default: false
+	#[serde(default)]
+	pub use_starttls: bool,
+
+	/// Skip TLS certificate verification, possibly dangerous.
+	///
+	/// default: false
+	#[serde(default)]
+	pub disable_tls_verification: bool,
+
 	/// Root of the searches.
 	///
 	/// example: "ou=users,dc=example,dc=org"
@@ -2505,7 +2536,7 @@ pub struct DraupnirConfig {
 	pub secret: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global.experimental_features",
@@ -2519,6 +2550,20 @@ pub struct ExperimentalConfig {
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
+
+	/// MSC3030: timestamp to event
+	#[serde(default = "true_fn")]
+	pub msc3030_enabled: bool,
+}
+
+impl Default for ExperimentalConfig {
+	fn default() -> Self {
+		Self {
+			msc3266_enabled: false,
+			msc4222_enabled: false,
+			msc3030_enabled: true,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2555,6 +2600,9 @@ pub struct SmtpConfig {
 	/// Whether to require that users provide an email address when they
 	/// register.
 	///
+	/// If either this option or `require_email_for_token_registration` are set,
+	/// users will not be allowed to remove their email address.
+	///
 	/// default: false
 	#[serde(default)]
 	pub require_email_for_registration: bool,
@@ -2584,7 +2632,6 @@ const DEPRECATED_KEYS: &[&str] = &[
 	"well_known_support_role",
 	"well_known_support_email",
 	"well_known_support_mxid",
-	"registration_token_file",
 	"well_known.rtc_focus_server_urls",
 ];
 
@@ -2698,6 +2745,10 @@ fn default_shortstatekey_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
 
+fn default_shortstatehash_cache_capacity() -> u32 {
+	parallelism_scaled_u32(10_000).saturating_add(100_000)
+}
+
 fn default_statekeyshort_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
@@ -2715,6 +2766,8 @@ fn default_dns_cache_entries() -> u32 { 32768 }
 fn default_dns_min_ttl() -> u64 { 60 * 180 }
 
 fn default_dns_min_ttl_nxdomain() -> u64 { 60 * 60 * 24 * 3 }
+
+fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }
 
 fn default_dns_attempts() -> u16 { 10 }
 
@@ -2753,6 +2806,8 @@ fn default_federation_idle_per_host() -> u16 { 1 }
 fn default_sender_timeout() -> u64 { 180 }
 
 fn default_sender_idle_timeout() -> u64 { 180 }
+
+fn default_sender_retry_backoff_base() -> u64 { 5 }
 
 fn default_sender_retry_backoff_limit() -> u64 { 86400 }
 

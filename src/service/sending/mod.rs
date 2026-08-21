@@ -200,6 +200,24 @@ impl Service {
 		self.send_pdu_servers(servers, pdu_id).await
 	}
 
+	#[tracing::instrument(skip(self, room_id, pdu_id, except), level = "debug")]
+	pub async fn send_pdu_room_except(
+		&self,
+		room_id: &RoomId,
+		pdu_id: &RawPduId,
+		except: &ServerName,
+	) -> Result {
+		let servers = self
+			.services
+			.state_cache
+			.room_servers(room_id)
+			.ready_filter(|server_name| {
+				!self.services.globals.server_is_ours(server_name) && *server_name != except
+			});
+
+		self.send_pdu_servers(servers, pdu_id).await
+	}
+
 	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result
 	where

@@ -61,6 +61,18 @@ pub fn run_with_args(args: &Args) -> Result<()> {
 	// Spawn deadlock detection thread
 	deadlock::spawn();
 
+	// Because we're not using rustls default-tls, we have to initialise a TLS
+	// provider
+	#[cfg(feature = "aws_lc_rs")]
+	rustls::crypto::aws_lc_rs::default_provider()
+		.install_default()
+		.expect("failed to initialise ring rustls crypto provider");
+
+	#[cfg(all(feature = "ring", not(feature = "aws_lc_rs")))]
+	rustls::crypto::ring::default_provider()
+		.install_default()
+		.expect("failed to initialise ring rustls crypto provider");
+
 	let runtime = runtime::new(args)?;
 	let server = Server::new(args, Some(runtime.handle()))?;
 
@@ -90,12 +102,14 @@ async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
 	extern crate conduwuit_router as router;
 
 	match router::start(&server.server).await {
-		| Ok(services) => server.services.lock().await.insert(services),
+		| Ok(services) => {
+			let _ = server.services.lock().await.insert(services);
+		},
 		| Err(error) => {
 			error!("Critical error starting server: {error}");
 			return Err(error);
 		},
-	};
+	}
 
 	if let Err(error) = router::run(
 		server

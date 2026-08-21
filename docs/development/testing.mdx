@@ -5,10 +5,16 @@
 Have a look at [Complement's repository][complement] for an explanation of what
 it is.
 
+Complement is included as a git submodule in this repository at `complement-src`. To initialize it, run:
+
+```bash
+git submodule update --init --recursive
+```
+
 To test against Complement, with Nix (or [Lix](https://lix.systems) and
 [direnv installed and set up][direnv] (run `direnv allow` after setting up the hook), you can:
 
-* Run `./bin/complement "$COMPLEMENT_SRC"` to build a Complement image, run
+* Run `./bin/complement ./complement-src` to build a Complement image, run
 the tests, and output the logs and results to the specified paths. This will also output the OCI image
 at `result`
 * Run `nix build .#complement` from the root of the repository to just build a
@@ -25,6 +31,18 @@ If you're on macOS and need to build an image, run `nix build .#linux-complement
 
 We have a Complement fork as some tests have needed to be fixed. This can be found
 at [continuwuation/complement](https://forgejo.ellis.link/continuwuation/complement)
+
+### Troubleshooting
+
+#### Firewall (UFW)
+If you are running Complement locally and encounter cascading failures in federation tests (e.g. `TestInboundFederationProfile`, `TestOutboundFederationSend`) with errors about failing to fetch signing keys from `172.17.0.1` (the Docker gateway), your firewall may be blocking the containers from talking back to the host.
+
+You can allow this traffic on the Docker bridge interfaces. Since UFW does not support glob matching (`br-+`) for interface names, you must specify the exact interface (e.g. `docker0` or a specific `br-<id>`). Find the interface name by running `ip link` or `ifconfig`, then add the rule:
+
+```bash
+# Replace `docker0` with your specific docker bridge interface
+sudo ufw allow in on docker0 comment "Allow traffic from custom Docker networks for Complement"
+```
 
 [ci-workflows]:
 https://forgejo.ellis.link/continuwuation/continuwuity/actions/?workflow=ci.yml&actor=0&status=1

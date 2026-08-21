@@ -6,11 +6,14 @@ set -euo pipefail
 # The root path where complement is available.
 COMPLEMENT_SRC="${COMPLEMENT_SRC:-"$1"}"
 
+# Default results directory
+RESULTS_DIR="${COMPLEMENT_RESULTS_DIR:-"${RESULTS_DIR:-tests/test_results/complement}"}"
+
 # A `.jsonl` file to write test logs to
-LOG_FILE="${2:-"${LOG_FILE:-tests/test_results/complement/test_logs.jsonl}"}"
+LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
 
 # A `.jsonl` file to write test results to
-RESULTS_FILE="${3:-"${RESULTS_FILE:-tests/test_results/complement/test_results.jsonl}"}"
+RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/test_results.jsonl}"}"
 
 # The base docker image to use for complement tests
 # You can build the default with `docker build -t continuwuity:complement -f ./docker/complement.Dockerfile .`
@@ -31,7 +34,7 @@ COMPLEMENT_PARALLEL="${COMPLEMENT_PARALLEL:-2}"
 # On Linux, host.docker.internal doesn't work by default.
 # We try to detect the docker0 bridge IP and use it.
 if [[ "$OSTYPE" == "linux-gnu"* ]] && [ -z "${COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT:-}" ]; then
-    BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1)
+    BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1 || true)
     if [ -n "$BRIDGE_IP" ]; then
         echo "Detected Docker bridge IP: $BRIDGE_IP. Setting COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=$BRIDGE_IP"
         export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="$BRIDGE_IP"
@@ -42,6 +45,10 @@ fi
 COMPLEMENT_SRC="$(realpath -m "$COMPLEMENT_SRC")"
 LOG_FILE="$(realpath -m "$LOG_FILE")"
 RESULTS_FILE="$(realpath -m "$RESULTS_FILE")"
+
+# Ensure parent directories exist
+mkdir -p "$(dirname "$LOG_FILE")"
+mkdir -p "$(dirname "$RESULTS_FILE")"
 
 if [ "$RUN_TESTS" != "." ]; then
     # Use a unique results file for partial runs to avoid clobbering the main one
@@ -98,6 +105,24 @@ else
     echo "gotestsum installed: false"
 fi
 
+# Restrict partial runs to the package that defines the requested top-level test.
+# `go test ./tests/... -run TestName` still starts every package's TestMain.
+TEST_PACKAGES=(./tests/...)
+if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
+    test_name="${BASH_REMATCH[1]}"
+    mapfile -t matched_packages < <(
+        cd "$COMPLEMENT_SRC"
+        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}\\(" tests \
+            | xargs -r -n1 dirname \
+            | sed 's#^#./#' \
+            | sort -u
+    )
+    if [ "${#matched_packages[@]}" -gt 0 ]; then
+        TEST_PACKAGES=("${matched_packages[@]}")
+        echo "Selected test package(s): ${TEST_PACKAGES[*]}"
+    fi
+fi
+
 # Common flags for both test runners
 TEST_FLAGS=(
     -tags "conduwuit_blacklist"
@@ -107,7 +132,7 @@ TEST_FLAGS=(
     -parallel "$COMPLEMENT_PARALLEL"
     -timeout 1h
     -count=1
-    ./tests/...
+    "${TEST_PACKAGES[@]}"
 )
 
 # It's okay (likely, even) that `go test` exits nonzero
@@ -129,7 +154,7 @@ else
         COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
         go test -json "${TEST_FLAGS[@]}" | tee "$LOG_FILE" || true)
 fi
-
+set -o pipefail
 # Post-process the results into an easy-to-compare format, sorted by Test name for reproducible results
 # This ensures we have a consistent results file for the CI parser.
 if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
@@ -153,3 +178,5 @@ echo "complement logs saved at $LOG_FILE"
 echo "complement results saved at $RESULTS_FILE"
 echo ""
 echo ""
+
+exit 0

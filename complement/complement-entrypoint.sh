@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export COMPLEMENT_TEST=1
 set -xe
 # If we have no $SERVER_NAME set, abort
 if [ -z "$SERVER_NAME" ]; then

@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::extract::State;
-use axum_client_ip::InsecureClientIp;
+use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, Result, debug, debug_warn, err, error,
 	result::LogErr,
@@ -15,6 +15,7 @@ use conduwuit::{
 		IterStream, ReadyExt, millis_since_unix_epoch,
 		stream::{BroadbandExt, TryBroadbandExt, automatic_width},
 	},
+	warn,
 };
 use conduwuit_service::{
 	Services,
@@ -25,7 +26,7 @@ use http::StatusCode;
 use itertools::Itertools;
 use ruma::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
-	RoomId, ServerName, UserId,
+	RoomId, ServerName, UInt, UserId,
 	api::{
 		client::error::{ErrorKind, ErrorKind::LimitExceeded},
 		federation::transactions::{
@@ -41,7 +42,6 @@ use ruma::{
 	int,
 	serde::Raw,
 	to_device::DeviceIdOrAllDevices,
-	uint,
 };
 use service::transactions::{
 	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
@@ -59,7 +59,7 @@ type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
 /// Push EDUs and PDUs to this server.
 pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
-	InsecureClientIp(client): InsecureClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
 ) -> Result<send_transaction_message::v1::Response> {
 	if body.origin() != body.body.origin {
@@ -152,7 +152,7 @@ async fn process_inbound_transaction(
 		.iter()
 		.stream()
 		.broad_then(|pdu| services.rooms.event_handler.parse_incoming_pdu(pdu))
-		.inspect_err(|e| debug_warn!("Could not parse PDU: {e}"))
+		.inspect_err(|e| warn!("Could not parse incoming PDU: {e}"))
 		.ready_filter_map(Result::ok);
 
 	let edus = body
@@ -280,30 +280,60 @@ async fn build_local_dag(
 	pdu_map: &HashMap<OwnedEventId, CanonicalJsonObject>,
 ) -> Result<Vec<OwnedEventId>> {
 	debug_assert!(pdu_map.len() >= 2, "needless call to build_local_dag with less than 2 PDUs");
-	let mut dag: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
+	let mut dag: HashMap<OwnedEventId, HashSet<OwnedEventId>> =
+		HashMap::with_capacity(pdu_map.len());
+	let mut id_origin_ts: HashMap<OwnedEventId, _> = HashMap::with_capacity(pdu_map.len());
 
 	for (event_id, value) in pdu_map {
+		// We already checked that these properties are correct in parse_incoming_pdu,
+		// so it's safe to unwrap here.
+		// We also filter to remove any prev_events that are not in this pdu_map, as we
+		// need to have at least one event with zero out degrees for the lexico-topo
+		// sort below. If there are multiple events with omitted prevs, they will be
+		// ordered by timestamp, then event ID. At that point though, it's unlikely to
+		// matter.
 		let prev_events = value
 			.get("prev_events")
-			.expect("pdu must have prev_events")
+			.unwrap()
 			.as_array()
-			.expect("prev_events must be an array")
+			.unwrap()
 			.iter()
-			.map(|v| {
-				OwnedEventId::parse(v.as_str().expect("prev_events values must be strings"))
-					.expect("prev_events must be valid event IDs")
-			})
-			.collect::<HashSet<OwnedEventId>>();
+			.map(|v| OwnedEventId::parse(v.as_str().unwrap()).unwrap())
+			.filter(|id| pdu_map.contains_key(id))
+			.collect();
 
 		dag.insert(event_id.clone(), prev_events);
+		let origin_server_ts = value
+			.get("origin_server_ts")
+			.and_then(ruma::CanonicalJsonValue::as_integer)
+			.unwrap_or_default();
+		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
-	lexicographical_topological_sort(&dag, &|_| async {
+
+	debug!(count = dag.len(), "Sorting incoming events with partial graph");
+	lexicographical_topological_sort(&dag, &async |node_id| {
 		// Note: we don't bother fetching power levels because that would massively slow
 		// this function down. This is a best-effort attempt to order events correctly
 		// for processing, however ultimately that should be the sender's job.
-		Ok((int!(0), MilliSecondsSinceUnixEpoch(uint!(0))))
+		let ts = id_origin_ts
+			.get(&node_id)
+			.copied()
+			.unwrap_or_else(|| int!(0))
+			.to_string()
+			.parse::<u64>()
+			.ok()
+			.and_then(UInt::new)
+			.unwrap_or_default();
+		Ok((int!(0), MilliSecondsSinceUnixEpoch(ts)))
 	})
 	.await
+	.inspect(|sorted| {
+		debug_assert_eq!(
+			sorted.len(),
+			pdu_map.len(),
+			"Sorted graph was not the same size as the input graph"
+		);
+	})
 	.map_err(|e| err!("failed to resolve local graph: {e}"))
 }
 
@@ -641,6 +671,13 @@ async fn handle_edu_direct_to_device(
 	messages
 		.into_iter()
 		.stream()
+		.broad_filter_map(|(target_user_id, map)| async move {
+			services
+				.users
+				.is_active_local(&target_user_id)
+				.await
+				.then_some((target_user_id, map))
+		})
 		.for_each_concurrent(automatic_width(), |(target_user_id, map)| {
 			handle_edu_direct_to_device_user(services, target_user_id, sender, &ev_type, map)
 		})

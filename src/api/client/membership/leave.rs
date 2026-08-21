@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{
 	Err, Pdu, Result, debug_info, debug_warn, err,
 	matrix::{event::gen_event_id, pdu::PduBuilder},
-	utils::{self, FutureBoolExt, future::ReadyEqExt},
+	utils::{self, FutureBoolExt},
 	warn,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
@@ -85,18 +85,6 @@ pub async fn leave_room(
 	let is_banned = services.rooms.metadata.is_banned(room_id);
 	let is_disabled = services.rooms.metadata.is_disabled(room_id);
 
-	let dont_have_room = services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), room_id)
-		.eq(&false);
-
-	let not_knocked = services
-		.rooms
-		.state_cache
-		.is_knocked(user_id, room_id)
-		.eq(&false);
-
 	pin_mut!(is_banned, is_disabled);
 
 	/*
@@ -116,83 +104,126 @@ pub async fn leave_room(
 		// case 1: the room is banned/disabled. we don't want to federate with another
 		// server to leave, so we can't create an outlier PDU.
 		None
-	} else if dont_have_room.and(not_knocked).await {
-		// case 2: ask a remote server to assist us with leaving
-		// we always mark the room as left locally, regardless of if the federated leave
-		// failed
-
-		remote_leave_room(services, user_id, room_id, reason.clone(), HashSet::new())
-			.await
-			.inspect_err(|err| {
-				warn!(%user_id, "Failed to leave room {room_id} remotely: {err}");
-			})
-			.ok()
 	} else {
-		// case 3: we can leave by sending a PDU.
+		// Take the room lock before deciding between local and remote leave handling so
+		// we don't route based on a stale participation snapshot.
 		let state_lock = services.rooms.state.mutex.lock(room_id).await;
-
-		let user_member_event_content = services
+		let dont_have_room = services
 			.rooms
-			.state_accessor
-			.room_state_get_content::<RoomMemberEventContent>(
-				room_id,
-				&StateEventType::RoomMember,
-				user_id.as_str(),
-			)
+			.state_cache
+			.server_in_room(services.globals.server_name(), room_id)
+			.await
+			.eq(&false);
+		let is_invited = services
+			.rooms
+			.state_cache
+			.is_invited(user_id, room_id)
 			.await;
+		let not_knocked = services
+			.rooms
+			.state_cache
+			.is_knocked(user_id, room_id)
+			.await
+			.eq(&false);
 
-		match user_member_event_content {
-			| Ok(content) => {
-				services
-					.rooms
-					.timeline
-					.build_and_append_pdu(
-						PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-							membership: MembershipState::Leave,
-							reason,
-							join_authorized_via_users_server: None,
-							is_direct: None,
-							..content
-						}),
-						user_id,
-						Some(room_id),
-						&state_lock,
-					)
-					.await?;
+		if dont_have_room && not_knocked {
+			// case 2: ask a remote server to assist us with leaving
+			// we always mark the room as left locally, regardless of if the federated leave
+			// failed
 
-				// `build_and_append_pdu` calls `mark_as_left` internally, so we return early.
-				return Ok(());
-			},
-			| Err(_) => {
-				// an exception to case 3 is if the user isn't even in the room they're trying
-				// to leave. this can happen if the client's caching is wrong.
-				debug_warn!(
-					"Trying to leave a room you are not a member of, marking room as left \
-					 locally."
-				);
+			drop(state_lock);
+			remote_leave_room(services, user_id, room_id, reason.clone(), HashSet::new())
+				.await
+				.inspect_err(|err| {
+					warn!(%user_id, "Failed to leave room {room_id} remotely: {err}");
+				})
+				.ok()
+		} else {
+			// case 3: we can leave by sending a PDU.
 
-				// return the existing leave state, if one exists. `mark_as_left` will then
-				// update the `roomuserid_leftcount` table, making the leave come down sync
-				// again.
-				services
-					.rooms
-					.state_cache
-					.left_state(user_id, room_id)
-					.await
-					.inspect_err(|err| {
-						// `left_state` may return an Err if the user _is_ in the room they're
-						// trying to leave, but the membership cache is incorrect and
-						// they're cached as being joined. In this situation
-						// we save a `None` to the `roomuserid_leftcount` table, which generates
-						// and sends a dummy leave to the client.
-						warn!(
-							?err,
-							"Trying to leave room not cached as leave, sending dummy leave \
-							 event to client"
+			let user_member_event_content = services
+				.rooms
+				.state_accessor
+				.room_state_get_content::<RoomMemberEventContent>(
+					room_id,
+					&StateEventType::RoomMember,
+					user_id.as_str(),
+				)
+				.await;
+
+			match user_member_event_content {
+				| Ok(content) => {
+					services
+						.rooms
+						.timeline
+						.build_and_append_pdu(
+							PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
+								membership: MembershipState::Leave,
+								reason,
+								join_authorized_via_users_server: None,
+								is_direct: None,
+								..content
+							}),
+							user_id,
+							Some(room_id),
+							&state_lock,
+						)
+						.await?;
+
+					// `build_and_append_pdu` calls `mark_as_left` internally, so we return early.
+					return Ok(());
+				},
+				| Err(_) => {
+					// A participating server can see an invite or knock before that membership
+					// lands in resolved room state. In that window, we still need to federate
+					// the rejection instead of fabricating a local-only leave.
+					if !dont_have_room && (is_invited || !not_knocked) {
+						drop(state_lock);
+						remote_leave_room(
+							services,
+							user_id,
+							room_id,
+							reason.clone(),
+							HashSet::new(),
+						)
+						.await
+						.inspect_err(|err| {
+							warn!(%user_id, "Failed to leave room {room_id} remotely: {err}");
+						})
+						.ok()
+					} else {
+						// an exception to case 3 is if the user isn't even in the room they're
+						// trying to leave. this can happen if the client's caching is wrong.
+						debug_warn!(
+							"Trying to leave a room you are not a member of, marking room as \
+							 left locally."
 						);
-					})
-					.unwrap_or_default()
-			},
+
+						// return the existing leave state, if one exists. `mark_as_left` will
+						// then update the `roomuserid_leftcount` table, making the leave
+						// come down sync again.
+						services
+							.rooms
+							.state_cache
+							.left_state(user_id, room_id)
+							.await
+							.inspect_err(|err| {
+								// `left_state` may return an Err if the user _is_ in the room
+								// they're trying to leave, but the membership cache is
+								// incorrect and they're cached as being joined. In this
+								// situation we save a `None` to the
+								// `roomuserid_leftcount` table, which generates and sends
+								// a dummy leave to the client.
+								warn!(
+									?err,
+									"Trying to leave room not cached as leave, sending dummy \
+									 leave event to client"
+								);
+							})
+							.unwrap_or_default()
+					}
+				},
+			}
 		}
 	};
 

@@ -268,7 +268,10 @@ async fn create_join_event(
 		.boxed()
 		.await?;
 	info!(fast_join = %omit_members, "Sending join event to other servers");
-	services.sending.send_pdu_room(room_id, &pdu_id).await?;
+	services
+		.sending
+		.send_pdu_room_except(room_id, &pdu_id, origin)
+		.await?;
 	debug!("Finished sending join event");
 	let servers_in_room: Option<Vec<_>> = if !omit_members {
 		None

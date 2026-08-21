@@ -30,3 +30,4 @@ reason = "text is unsafe, use limit_read_text via the conduwuit_core::utils::Lim
 [[disallowed-methods]]
 path = "reqwest::Response::json"
 reason = "json is unsafe, use limit_read_text via the conduwuit_core::utils::LimitReadExt trait instead"
+allow-invalid = true

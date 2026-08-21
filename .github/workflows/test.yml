@@ -17,7 +17,7 @@ jobs:
   clippy-checks:
     # NOTE: to enable GitHub builds/workflows, add a REPOSITORY_VARIABLE
     # i.e., under /settings/variables/actions, C10Y_SOME_ENV_VAR=1
-    if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_PR_CHECKS_CLIPPY_CHECKS != ''
+    # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_PR_CHECKS_CLIPPY_CHECKS != ''
     runs-on: ubuntu-24.04
     env:
       PROFILE: dev-quick
@@ -28,13 +28,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
+          submodules: true
 
       - name: Fetch tags and origin/main for comparison
         run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             build-essential \
             pkg-config \

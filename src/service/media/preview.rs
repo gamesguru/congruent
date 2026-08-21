@@ -7,10 +7,10 @@
 
 use std::time::SystemTime;
 
-#[cfg(feature = "url_preview")]
-use conduwuit::utils::response::LimitReadExt;
 use conduwuit::{Err, Result, debug, err, info};
 use conduwuit_core::implement;
+#[cfg(feature = "url_preview")]
+use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
 #[cfg(feature = "url_preview")]
 use ruma::OwnedMxcUri;
@@ -523,7 +523,7 @@ pub fn url_preview_allowed(&self, url: &Url) -> bool {
 							 url_preview_domain_explicit_denylist (check 1/3)",
 							&root_domain
 						);
-						return true;
+						return false;
 					}
 
 					if allowlist_domain_explicit.contains(&root_domain.to_owned()) {

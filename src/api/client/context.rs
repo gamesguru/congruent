@@ -219,14 +219,14 @@ pub(crate) async fn get_context_route(
 		start: events_before
 			.last()
 			.map(at!(0))
-			.or(Some(base_count))
+			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Backward)))
 			.as_ref()
 			.map(ToString::to_string),
 
 		end: events_after
 			.last()
 			.map(at!(0))
-			.or(Some(base_count))
+			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Forward)))
 			.as_ref()
 			.map(ToString::to_string),
 

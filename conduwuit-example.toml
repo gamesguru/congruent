@@ -196,6 +196,10 @@
 
 # This item is undocumented. Please contribute documentation for it.
 #
+#shortstatehash_cache_capacity = varies by system
+
+# This item is undocumented. Please contribute documentation for it.
+#
 #statekeyshort_cache_capacity = varies by system
 
 # This item is undocumented. Please contribute documentation for it.
@@ -241,6 +245,11 @@
 # Defaults to 3 days as these are *very rarely* false negatives.
 #
 #dns_min_ttl_nxdomain = 259200
+
+# The minimum amount of time to cache DNS lookups for server names in
+# federation. This is separate from hickory_resolver's internal caching.
+#
+#dns_cache_override_expire = 21600 (6 hours)
 
 # Number of DNS nameserver retries after a timeout or error.
 #
@@ -411,6 +420,12 @@
 # Federation sender idle connection pool timeout (seconds).
 #
 #sender_idle_timeout = 180
+
+# Federation sender transaction retry backoff base (seconds). This is
+# the minimum delay before the first retry after a failed transaction.
+# Subsequent retries use exponential backoff: base × 2^(tries-1).
+#
+#sender_retry_backoff_base = 5
 
 # Federation sender transaction retry backoff limit (seconds).
 #
@@ -1983,6 +1998,14 @@
 #
 #uri = ""
 
+# StartTLS for LDAP connections.
+#
+#use_starttls = false
+
+# Skip TLS certificate verification, possibly dangerous.
+#
+#disable_tls_verification = false
+
 # Root of the searches.
 #
 # example: "ou=users,dc=example,dc=org"
@@ -2100,6 +2123,10 @@
 #
 #msc4222_enabled = false
 
+# MSC3030: timestamp to event
+#
+#msc3030_enabled = true
+
 #[global.smtp]
 
 # A `smtp://`` URI which will be used to connect to a mail server.
@@ -2130,6 +2157,9 @@
 
 # Whether to require that users provide an email address when they
 # register.
+#
+# If either this option or `require_email_for_token_registration` are set,
+# users will not be allowed to remove their email address.
 #
 #require_email_for_registration = false
 

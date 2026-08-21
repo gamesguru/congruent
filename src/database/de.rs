@@ -1,3 +1,5 @@
+use std::mem::size_of;
+
 use conduwuit::{
 	Error, Result, arrayvec::ArrayVec, checked, debug::DebugInspect, err, utils::string,
 };
@@ -394,8 +396,8 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
-		unhandled!("deserialize Unit not implemented")
+	fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+		visitor.visit_unit()
 	}
 
 	// this only used for $serde_json::private::RawValue at this time; see MapAccess

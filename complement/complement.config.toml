@@ -16,8 +16,8 @@ allow_outgoing_presence = true
 allow_local_presence = true
 allow_registration = true
 database_path = "/var/lib/continuwuity"
-# By default we use warn, only for failures/debugging verbose (Forge UI can't handle 75 MB+ of logs)
-log = "warn"
+# By default we use info/warn, only for failures/debugging verbose
+log = "info"
 # log = "trace,h2=debug,hyper=debug,conduwuit_database=warn,conduwuit_service::manager=info,conduwuit_api::router=error,conduwuit_router=error,tower_http=error"
 port = [8008, 8448]
 default_room_version = "12"
@@ -54,9 +54,15 @@ well_known_conn_timeout = 60
 well_known_timeout = 60
 federation_idle_timeout = 300
 sender_timeout = 300
+sender_retry_backoff_base = 1
 sender_idle_timeout = 300
-sender_retry_backoff_limit = 300
+sender_retry_backoff_limit = 2
+dns_cache_entries = 0
+ip_lookup_strategy = 1
 force_disable_first_run_mode = true
+dns_min_ttl_nxdomain = 0
+dns_cache_override_expire = 1
+dns_min_ttl = 0
 
 [global.tls]
 dual_protocol = true
@@ -64,3 +70,4 @@ dual_protocol = true
 [global.experimental_features]
 msc3266_enabled = true
 msc4222_enabled = true
+presence_idle_debounce_ms = 0

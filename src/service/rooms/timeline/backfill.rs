@@ -50,7 +50,8 @@ pub async fn backfill_if_required(&self, room_id: &RoomId, from: PduCount) -> Re
 		.expect("Room is not empty");
 
 	if first_pdu.0 < from {
-		// No backfill required, there are still events between them
+		// No backfill required; there are still events between our earliest
+		// locally stored event and the requested pagination point.
 		debug!("No backfill required in room {room_id}, {:?} < {from}", first_pdu.0);
 		return Ok(());
 	}

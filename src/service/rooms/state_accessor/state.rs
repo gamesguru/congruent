@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
 
 use conduwuit::{
 	Result, at, err, implement,
@@ -379,6 +379,15 @@ pub fn state_full_shortids(
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
 		.boxed()
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
+	self.load_full_state(shortstatehash)
+		.await
+		.map(|s| s.is_empty())
+		.unwrap_or(true)
 }
 
 #[implement(super::Service)]

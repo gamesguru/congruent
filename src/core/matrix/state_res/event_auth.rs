@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 use futures::{
 	Future,
@@ -331,8 +331,7 @@ where
 	// If the create event content has the field m.federate set to false and the
 	// sender domain of the event does not match the sender domain of the create
 	// event, reject.
-	if !room_version.room_ids_as_hashes
-		&& !room_create_content.federate
+	if !room_create_content.federate
 		&& room_create_event.sender().server_name() != incoming_event.sender().server_name()
 	{
 		warn!(
@@ -552,19 +551,11 @@ where
 	// If type is m.room.power_levels
 	if *incoming_event.event_type() == TimelineEventType::RoomPowerLevels {
 		debug!("starting m.room.power_levels check");
-		let mut creators = BTreeSet::new();
-		if room_version.explicitly_privilege_room_creators {
-			creators.insert(create_event.sender().to_owned());
-			for creator in room_create_content.additional_creators.iter().flatten() {
-				creators.insert(creator.deserialize()?);
-			}
-		}
 		match check_power_levels(
 			room_version,
 			incoming_event,
 			power_levels_event.as_ref(),
 			sender_power_level,
-			&creators,
 		) {
 			| Some(required_pwr_lvl) =>
 				if !required_pwr_lvl {
@@ -698,18 +689,22 @@ where
 		from_json_str::<GetThirdPartyInvite>(content.get())?.third_party_invite;
 
 	let sender_membership = match &sender_membership_event {
-		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())?.membership,
+		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())
+			.map(|m| m.membership)
+			.unwrap_or(MembershipState::Leave),
 		| None => MembershipState::Leave,
 	};
 	let sender_is_joined = sender_membership == MembershipState::Join;
 
 	let target_user_current_membership = match &target_user_membership_event {
-		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())?.membership,
+		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())
+			.map(|m| m.membership)
+			.unwrap_or(MembershipState::Leave),
 		| None => MembershipState::Leave,
 	};
 
 	let power_levels: RoomPowerLevelsEventContent = match &power_levels_event {
-		| Some(ev) => from_json_str(ev.content().get())?,
+		| Some(ev) => from_json_str(ev.content().get()).unwrap_or_default(),
 		| None => RoomPowerLevelsEventContent::default(),
 	};
 
@@ -745,7 +740,9 @@ where
 	trace!(?creators, "creators for room");
 
 	let join_rules = if let Some(jr) = &join_rules_event {
-		from_json_str::<RoomJoinRulesEventContent>(jr.content().get())?.join_rule
+		from_json_str::<RoomJoinRulesEventContent>(jr.content().get())
+			.map(|c| c.join_rule)
+			.unwrap_or(JoinRule::Invite)
 	} else {
 		JoinRule::Invite
 	};
@@ -821,7 +818,7 @@ where
 
 			let prev_event_is_create_event = prev_events
 				.next()
-				.is_some_and(|event_id| event_id.borrow() == create_room.event_id().borrow());
+				.is_some_and(|event_id| event_id == create_room.event_id());
 			let no_more_prev_events = prev_events.next().is_none();
 
 			if prev_event_is_create_event && no_more_prev_events {
@@ -1240,7 +1237,6 @@ fn check_power_levels(
 	power_event: &impl Event,
 	previous_power_event: Option<&impl Event>,
 	user_level: Int,
-	creators: &BTreeSet<OwnedUserId>,
 ) -> Option<bool> {
 	match power_event.state_key() {
 		| Some("") => {},
@@ -1306,17 +1302,7 @@ fn check_power_levels(
 	for user in user_levels_to_check {
 		let old_level = old_state.users.get(user);
 		let new_level = new_state.users.get(user);
-		if new_level.is_some() && creators.contains(user) {
-			if new_level != Some(&Int::MAX) {
-				warn!(
-					"creators cannot appear in the users list of m.room.power_levels with a \
-					 non-privileged power level"
-				);
-				return Some(false); // cannot alter creator power level
-			}
-			trace!("ignoring creator in users list with privileged power level");
-			continue;
-		}
+
 		if old_level.is_some() && new_level.is_some() && old_level == new_level {
 			continue;
 		}

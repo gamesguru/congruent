@@ -135,7 +135,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 			}
 
 			if let Some(room_server_name) = room.server_name() {
-				match join_room_by_id_helper(
+				match Box::pin(join_room_by_id_helper(
 					self.services,
 					&user_id,
 					&room_id,
@@ -146,7 +146,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 					],
 					&None,
 					None,
-				)
+				))
 				.await
 				{
 					| Ok(_response) => {
@@ -553,7 +553,7 @@ pub(super) async fn force_join_list_of_local_users(
 	let mut successful_joins: usize = 0;
 
 	for user_id in user_ids {
-		match join_room_by_id_helper(
+		match Box::pin(join_room_by_id_helper(
 			self.services,
 			&user_id,
 			&room_id,
@@ -561,7 +561,7 @@ pub(super) async fn force_join_list_of_local_users(
 			&servers,
 			&None,
 			None,
-		)
+		))
 		.await
 		{
 			| Ok(_res) => {
@@ -639,7 +639,7 @@ pub(super) async fn force_join_all_local_users(
 		.collect::<Vec<_>>()
 		.await
 	{
-		match join_room_by_id_helper(
+		match Box::pin(join_room_by_id_helper(
 			self.services,
 			user_id,
 			&room_id,
@@ -647,7 +647,7 @@ pub(super) async fn force_join_all_local_users(
 			&servers,
 			&None,
 			None,
-		)
+		))
 		.await
 		{
 			| Ok(_res) => {
@@ -685,8 +685,16 @@ pub(super) async fn force_join_room(
 		self.services.globals.user_is_local(&user_id),
 		"Parsed user_id must be a local user"
 	);
-	join_room_by_id_helper(self.services, &user_id, &room_id, None, &servers, &None, None)
-		.await?;
+	Box::pin(join_room_by_id_helper(
+		self.services,
+		&user_id,
+		&room_id,
+		None,
+		&servers,
+		&None,
+		None,
+	))
+	.await?;
 
 	self.write_str(&format!("{user_id} has been joined to {room_id}.",))
 		.await

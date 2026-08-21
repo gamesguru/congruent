@@ -34,6 +34,8 @@ use crate::{Dep, rooms, rooms::short::ShortStateHash};
 pub struct Service {
 	services: Services,
 	db: Data,
+	pub encrypted_rooms_cache:
+		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
 }
 
 struct Services {
@@ -63,6 +65,7 @@ impl crate::Service for Service {
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 			},
+			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}
 
@@ -159,9 +162,22 @@ impl Service {
 	}
 
 	pub async fn is_encrypted_room(&self, room_id: &RoomId) -> bool {
-		self.room_state_get(room_id, &StateEventType::RoomEncryption, "")
+		if self.encrypted_rooms_cache.read().contains(room_id) {
+			return true;
+		}
+
+		let encrypted = self
+			.room_state_get(room_id, &StateEventType::RoomEncryption, "")
 			.await
-			.is_ok()
+			.is_ok();
+
+		if encrypted {
+			self.encrypted_rooms_cache
+				.write()
+				.insert(room_id.to_owned());
+		}
+
+		encrypted
 	}
 
 	pub async fn state_get(

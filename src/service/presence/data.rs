@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
 use conduwuit::{
 	Result, debug_warn, utils,

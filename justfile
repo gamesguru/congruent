@@ -360,7 +360,7 @@ complement args=".":
     HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
     MOUNTS="{{PREFIX}}/lib:{{PREFIX}}/lib:ro"
     if [ -n "$HOST_LIBS" ]; then MOUNTS="$MOUNTS;$HOST_LIBS"; fi
-    env COMPLEMENT_BASE_IMAGE="continuwuity:complement" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{args}}" ./bin/complement ./complement-src
+    env COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 COMPLEMENT_BASE_IMAGE="continuwuity:complement" COMPLEMENT_HOST_MOUNTS="$MOUNTS" COMPLEMENT_RUN="{{args}}" RESULTS_DIR="{{env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement")}}" ./bin/complement ./complement-src
 
 # -----------------------------------------------------------------------------
 # Complement CI
@@ -390,7 +390,8 @@ ci-complement-stats:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    RESULTS="tests/test_results/complement/test_results.jsonl"
+    RESULTS_DIR="{{env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement-gg")}}"
+    RESULTS="$RESULTS_DIR/test_results.jsonl"
     if [ ! -f "$RESULTS" ]; then
         echo "ERROR: $RESULTS does not exist"
         exit 1
@@ -417,7 +418,7 @@ ci-complement-stats:
 
     echo ""
     echo "Last modified by:"
-    git log -5 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+    git log -5 --format="%an (%ad) %H" origin/main -- tests/test_results/complement-gg/test_results.jsonl
 
 # -----------------------------------------------------------------------------
 # CI Database Queries
