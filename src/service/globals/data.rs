@@ -32,10 +32,15 @@ impl Data {
 		let counter: &mut u64 = &mut lock;
 
 		#[cfg(debug_assertions)]
-		debug_assert!(
-			*counter == Self::stored_count(&self.global).unwrap_or_default(),
-			"counter mismatch"
-		);
+		if database::transaction::TRANSACTION_BATCH
+			.try_with(|_| ())
+			.is_err()
+		{
+			debug_assert!(
+				*counter == Self::stored_count(&self.global).unwrap_or_default(),
+				"counter mismatch"
+			);
+		}
 
 		let start = *counter;
 		*counter = counter

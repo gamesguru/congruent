@@ -4,8 +4,8 @@ use conduwuit_service::Services;
 use ruma::{
 	RoomId, UserId,
 	api::client::config::{
-		get_global_account_data, get_room_account_data, set_global_account_data,
-		set_room_account_data,
+		delete_global_account_data, delete_room_account_data, get_global_account_data,
+		get_room_account_data, set_global_account_data, set_room_account_data,
 	},
 	events::{
 		AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent,
@@ -66,6 +66,48 @@ pub(crate) async fn set_room_account_data_route(
 	.await?;
 
 	Ok(set_room_account_data::v3::Response {})
+}
+
+/// # `DELETE /_matrix/client/r0/user/{userId}/account_data/{type}`
+///
+/// Deletes some account data for the sender user.
+pub(crate) async fn delete_global_account_data_route(
+	State(services): State<crate::State>,
+	body: Ruma<delete_global_account_data::unstable::Request>,
+) -> Result<delete_global_account_data::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	if sender_user != body.user_id && body.appservice_info.is_none() {
+		return Err!(Request(Forbidden("You cannot delete account data of other users.")));
+	}
+
+	services
+		.account_data
+		.delete(None, &body.user_id, &body.event_type.to_string())
+		.await?;
+
+	Ok(delete_global_account_data::unstable::Response {})
+}
+
+/// # `DELETE /_matrix/client/r0/user/{userId}/rooms/{roomId}/account_data/{type}`
+///
+/// Deletes some room account data for the sender user.
+pub(crate) async fn delete_room_account_data_route(
+	State(services): State<crate::State>,
+	body: Ruma<delete_room_account_data::unstable::Request>,
+) -> Result<delete_room_account_data::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	if sender_user != body.user_id && body.appservice_info.is_none() {
+		return Err!(Request(Forbidden("You cannot delete account data of other users.")));
+	}
+
+	services
+		.account_data
+		.delete(Some(&body.room_id), &body.user_id, &body.event_type.to_string())
+		.await?;
+
+	Ok(delete_room_account_data::unstable::Response {})
 }
 
 /// # `GET /_matrix/client/r0/user/{userId}/account_data/{type}`
