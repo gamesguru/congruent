@@ -105,7 +105,9 @@ impl super::Service {
 		Ok(CachedDest {
 			dest: actual_dest,
 			host: host.uri_string(),
-			expire: CachedDest::default_expire(),
+			expire: CachedDest::default_expire(
+				self.services.server.config.dns_cache_override_expire,
+			),
 		})
 	}
 
@@ -301,7 +303,9 @@ impl super::Service {
 				self.cache.set_override(untername, &CachedOverride {
 					ips: override_ip.into_iter().take(MAX_IPS).collect(),
 					port,
-					expire: CachedOverride::default_expire(),
+					expire: CachedOverride::default_expire(
+						self.services.server.config.dns_cache_override_expire,
+					),
 					overriding: (hostname != untername)
 						.then_some(hostname.into())
 						.inspect(|_| debug_info!("{untername:?} overridden by {hostname:?}")),

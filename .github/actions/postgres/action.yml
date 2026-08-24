@@ -53,61 +53,7 @@ runs:
         RESULTS_FILE: ${{ inputs.results_file }}
         RUN_META: ${{ inputs.run_metadata }}
       run: |
-        COMMIT=$(echo "$RUN_META" | jq -r '.commit_hash')
-        BRANCH=$(echo "$RUN_META" | jq -r '.branch // ""')
-        ARCH=$(echo "$RUN_META" | jq -r '.arch // ""')
-        OS=$(echo "$RUN_META" | jq -r '.os // ""')
-        PROFILE=$(echo "$RUN_META" | jq -r '.profile // ""')
-        ROOM_VERSION=$(echo "$RUN_META" | jq -r '.room_version // ""')
-        VERSION=$(echo "$RUN_META" | jq -r '.version_string // ""')
-        FEATURES=$(echo "$RUN_META" | jq -r '.features // ""')
-        PASS=$(echo "$RUN_META" | jq -r '.pass // 0')
-        FAIL=$(echo "$RUN_META" | jq -r '.fail // 0')
-        SKIP=$(echo "$RUN_META" | jq -r '.skip // 0')
-        RUN_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-        if [ -z "$COMMIT" ] || [ ! -f "$RESULTS_FILE" ]; then
-          echo "⚠ Direct ingest skipped: missing commit_hash or results_file"
-          exit 1
-        fi
-
-        echo "-> Direct ingest for $COMMIT ($ARCH/$OS/v$ROOM_VERSION)..."
-        (
-          cat <<SQL
-        INSERT INTO runs (run_date, commit_hash, branch, arch, os, profile, n_pass, n_skip, n_fail, room_version, features, version_string)
-        VALUES ('${RUN_DATE}'::timestamptz, '${COMMIT}', '${BRANCH}', '${ARCH}', '${OS}', '${PROFILE}', ${PASS}, ${SKIP}, ${FAIL}, '${ROOM_VERSION}', '${FEATURES}', '${VERSION}')
-        ON CONFLICT (commit_hash, run_date, arch, os, profile, room_version) DO NOTHING;
-        SQL
-
-          echo "CREATE TEMP TABLE t (j jsonb);"
-          echo "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
-          jq -c --arg c "$COMMIT" --arg a "$ARCH" --arg o "$OS" --arg p "$PROFILE" --arg rv "$ROOM_VERSION" \
-            '. + {commit: $c, arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS_FILE"
-          echo "\."
-
-          cat <<SQL
-        SELECT pg_advisory_lock(42);
-        INSERT INTO run_details (run_id, test_name, status)
-        SELECT DISTINCT ON (r.id, (t.j->>'Test')) r.id, (t.j->>'Test'), (t.j->>'Action')
-        FROM t JOIN runs r ON r.commit_hash = (t.j->>'commit')
-          AND r.arch IS NOT DISTINCT FROM (NULLIF((t.j->>'arch'), ''))
-          AND r.os IS NOT DISTINCT FROM (NULLIF((t.j->>'os'), ''))
-          AND r.profile IS NOT DISTINCT FROM (NULLIF((t.j->>'profile'), ''))
-          AND r.room_version IS NOT DISTINCT FROM (NULLIF((t.j->>'room_version'), ''))
-        WHERE (t.j->>'Action') IN ('pass', 'fail', 'skip')
-        ON CONFLICT (run_id, test_name) DO UPDATE SET status = EXCLUDED.status;
-        SQL
-
-          # Incremental ever_passed UPSERT (shared SQL file, scoped to this run only)
-          sed -e "s/{commit}/${COMMIT}/g" \
-              -e "s/{arch}/${ARCH}/g" \
-              -e "s/{os}/${OS}/g" \
-              -e "s/{profile}/${PROFILE}/g" \
-              -e "s/{room_version}/${ROOM_VERSION}/g" \
-              "${{ github.action_path }}/upsert_ever_passed.sql"
-          echo "SELECT pg_advisory_unlock(42);"
-        ) | ssh -C -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "$SSH_TARGET" "psql -U git c10y"
-        echo "✓ Direct ingest complete."
+        "${{ github.action_path }}/sync_recent.sh" --direct "$RESULTS_FILE" "$RUN_META"
 
     - name: Bulk Sync History (backup)
       if: always()

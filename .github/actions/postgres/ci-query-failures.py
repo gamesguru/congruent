@@ -12,6 +12,11 @@ import subprocess
 import sys
 import time
 
+
+def sql_quote(value):
+    """Escape a value for safe embedding inside a single-quoted SQL string literal."""
+    return value.replace("'", "''")
+
 args_str = " ".join(sys.argv[1:])
 
 # Get the local machine's timezone offset (e.g. "-04:00") to send to Postgres over SSH
@@ -59,6 +64,9 @@ if new_passes_match:
         new_passes = False
     args_str = args_str.replace(new_passes_match.group(0), "")
 
+super_mode = bool(re.search(r"(^|\s)--super(\s|$)", args_str))
+args_str = re.sub(r"(^|\s)--super(\s|$)", " ", args_str).strip()
+
 # Extract order (it takes whatever is left if it starts with order=)
 order_match = re.search(
     r"order=(.+?)(?:$| like=| limit=| new_passes=)", args_str + " ", re.IGNORECASE
@@ -71,17 +79,59 @@ if new_passes:
 else:
     columns_tail = "new_failures_list"
 
-if baseline:
-    # A specific commit/branch was requested as the baseline
-    baseline_run_filter = f"(b.commit_hash LIKE '{baseline}%' OR b.version_string LIKE '%{baseline}%' OR b.branch LIKE '%{baseline}%' OR b.id::text = '{baseline}')"
+if super_mode:
+    super_columns = "run_total,\n    detail_n_pass,\n    detail_n_fail,\n    detail_n_skip,\n    baseline_run_id,\n    baseline_n_pass,\n    baseline_n_fail,\n    baseline_n_skip,"
 else:
-    # Default to recent main/upstream
+    super_columns = ""
+
+# baseline/like_str are real *values* from argv, so they're escaped with sql_quote() and
+# embedded directly as SQL string literals below. Only *which fixed SQL fragment* to use is
+# chosen here, never raw unescaped text.
+if baseline:
+    baseline_val = sql_quote(baseline)
+    baseline_run_filter = (
+        f"(b.commit_hash LIKE '{baseline_val}%' "
+        f"OR b.version_string LIKE '%{baseline_val}%' "
+        f"OR b.branch LIKE '%{baseline_val}%' "
+        f"OR b.id::text = '{baseline_val}')"
+    )
+else:
+    # Default to recent main/upstream. No user input involved, plain literal is fine.
     baseline_run_filter = "(b.branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream') OR b.version_string LIKE '%main%')"
 
 if like_str == "all":
     like_filter = ""
 else:
-    like_filter = f"AND version_string LIKE '%{like_str}%'"
+    like_filter = f"AND version_string LIKE '%{sql_quote(like_str)}%'"
+
+# order becomes raw ORDER BY text (column identifiers/direction), which cannot be bound as a
+# parameter -- SQL has no placeholder for identifiers. Allowlist it instead of escaping it.
+_ORDER_COLUMNS = {
+    "run_date",
+    "commit_hash",
+    "branch",
+    "version_string",
+    "arch",
+    "os",
+    "profile",
+    "room_version",
+    "n_pass",
+    "n_skip",
+    "n_fail",
+    "id",
+}
+_ORDER_TOKEN_RE = re.compile(
+    r"^\s*(?:{cols})(?:\s+(?:ASC|DESC))?(?:\s*,\s*(?:{cols})(?:\s+(?:ASC|DESC))?)*\s*$".format(
+        cols="|".join(_ORDER_COLUMNS)
+    ),
+    re.IGNORECASE,
+)
+if not _ORDER_TOKEN_RE.match(order):
+    print(f"⚠ Ignoring invalid order clause {order!r}; falling back to default.")
+    order = "run_date DESC, n_pass DESC"
+
+if not re.fullmatch(r"[0-9]+", limit):
+    limit = "15"
 
 sql_file_path = os.path.join(os.path.dirname(__file__), "queries.sql")
 with open(sql_file_path, "r") as f:
@@ -94,6 +144,7 @@ query = base_query_template.format(
     order=order,
     limit=limit,
     like_filter=like_filter,
+    super_columns=super_columns,
 )
 
 print(f"\nExecuting Query:\n{query}\n")

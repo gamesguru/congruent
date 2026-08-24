@@ -65,7 +65,7 @@ pub struct CommandInput {
 }
 
 /// Where a command is being invoked from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvocationSource {
 	/// The server's private admin room
 	AdminRoom,

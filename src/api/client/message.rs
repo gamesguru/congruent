@@ -134,7 +134,7 @@ pub(crate) async fn get_message_events_route(
 			.boxed(),
 	};
 
-	let events: Vec<_> = it
+	let mut events: Vec<_> = it
 		.ready_take_while(|(count, _)| Some(*count) != to)
 		.ready_filter_map(|item| event_filter(item, filter))
 		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
@@ -154,6 +154,37 @@ pub(crate) async fn get_message_events_route(
 		})
 		.collect()
 		.await;
+
+	// Capture the DB sequence boundary token BEFORE topological sort changes
+	// the order. This must be the outermost PduCount from the original query.
+	let next_token = events.last().map(at!(0));
+
+	if !events.is_empty() {
+		let mut event_to_count = std::collections::HashMap::new();
+		let events_to_sort: Vec<_> = events
+			.into_iter()
+			.map(|(count, pdu)| {
+				event_to_count.insert(pdu.event_id.clone(), count);
+				pdu
+			})
+			.collect();
+
+		let sorted_events = conduwuit::matrix::dag::sort_topologically(events_to_sort);
+
+		events = sorted_events
+			.into_iter()
+			.map(|pdu| {
+				let count = event_to_count
+					.remove(&pdu.event_id)
+					.expect("event count exists");
+				(count, pdu)
+			})
+			.collect();
+
+		if matches!(body.dir, Direction::Backward) {
+			events.reverse();
+		}
+	}
 
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
@@ -190,8 +221,6 @@ pub(crate) async fn get_message_events_route(
 		})
 		.collect()
 		.await;
-
-	let next_token = events.last().map(at!(0));
 
 	let chunk = events
 		.into_iter()

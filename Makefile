@@ -142,6 +142,7 @@ _confirm:
 .PHONY: format
 format: ##H Run pre-commit hooks/formatters
 	pre-commit run --all-files
+	-pg_format -i -L .github/actions/postgres/*.sql
 #	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \

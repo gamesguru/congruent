@@ -3,6 +3,7 @@ mod backfill;
 mod build;
 mod create;
 mod data;
+mod helpers;
 mod redact;
 
 use std::{fmt::Write, mem::size_of, sync::Arc};
@@ -24,7 +25,7 @@ use conduwuit_core::{
 use futures::{Future, Stream, TryStreamExt, pin_mut};
 use lru_cache::LruCache;
 use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, api::Direction,
 	events::room::encrypted::Relation,
 };
 use serde::Deserialize;
@@ -32,7 +33,7 @@ use serde::Deserialize;
 use self::data::Data;
 pub use self::{create::pdu_fits, data::PdusIterItem};
 use crate::{
-	Dep, account_data, admin, appservice, globals, pusher, rooms,
+	Dep, account_data, admin, appservice, config, globals, pusher, rooms,
 	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
 	sending, server_keys, users,
 };
@@ -73,6 +74,8 @@ struct Services {
 	appservice: Dep<appservice::Service>,
 	admin: Dep<admin::Service>,
 	alias: Dep<rooms::alias::Service>,
+	config: Dep<config::Service>,
+	directory: Dep<rooms::directory::Service>,
 	globals: Dep<globals::Service>,
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
@@ -112,6 +115,8 @@ impl crate::Service for Service {
 				appservice: args.depend::<appservice::Service>("appservice"),
 				admin: args.depend::<admin::Service>("admin"),
 				alias: args.depend::<rooms::alias::Service>("rooms::alias"),
+				config: args.depend::<config::Service>("config"),
+				directory: args.depend::<rooms::directory::Service>("rooms::directory"),
 				globals: args.depend::<globals::Service>("globals"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
@@ -459,5 +464,22 @@ impl Service {
 		from: Option<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
 		self.db.pdus(room_id, from.unwrap_or_else(PduCount::min))
+	}
+
+	/// Returns a stream of PDUs starting from the nearest event to the given
+	/// timestamp, walking in the given direction.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub fn pdus_by_timestamp<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		timestamp: u64,
+		dir: Direction,
+	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
+		self.db.pdus_by_timestamp(room_id, timestamp, dir)
+	}
+
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn backfill_timestamp_index(&self, room_id: &RoomId) -> Result {
+		self.db.backfill_timestamp_index(room_id).await
 	}
 }

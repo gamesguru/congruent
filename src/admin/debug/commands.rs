@@ -18,7 +18,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use lettre::message::Mailbox;
 use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
@@ -876,6 +876,39 @@ pub(super) async fn trim_memory(&self) -> Result {
 	conduwuit::alloc::trim(None)?;
 
 	writeln!(self, "done").await
+}
+
+#[admin_command]
+pub(super) async fn purge_outliers(&self) -> Result {
+	self.services.rooms.outlier.clear_outliers().await;
+	write!(self, "Successfully cleared all outlier PDUs.").await
+}
+
+#[admin_command]
+pub(super) async fn backfill_timestamp_index(&self, room: Option<OwnedRoomId>) -> Result {
+	if let Some(room_id) = room {
+		self.services
+			.rooms
+			.timeline
+			.backfill_timestamp_index(&room_id)
+			.await?;
+		let out = format!("Successfully backfilled timestamp index for {room_id}.");
+		self.write_str(&out).await
+	} else {
+		let mut count: u64 = 0;
+		let rooms = self.services.rooms.metadata.iter_ids();
+		pin_mut!(rooms);
+		while let Some(room_id) = rooms.next().await {
+			self.services
+				.rooms
+				.timeline
+				.backfill_timestamp_index(room_id)
+				.await?;
+			count = count.saturating_add(1);
+		}
+		let out = format!("Successfully backfilled timestamp index for {count} rooms.");
+		self.write_str(&out).await
+	}
 }
 
 #[admin_command]

@@ -48,6 +48,53 @@ impl crate::Service for Service {
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
+		// In Complement tests, dynamically register appservices placed in
+		// `/complement/appservice/`
+		if std::path::Path::new("/complement/appservice").is_dir() {
+			match tokio::fs::read_dir("/complement/appservice").await {
+				| Err(e) => {
+					conduwuit::error!(
+						"Failed to read appservice directory /complement/appservice: {e:?}"
+					);
+				},
+				| Ok(mut entries) =>
+					while let Ok(Some(entry)) = entries.next_entry().await {
+						let path = entry.path();
+						if path
+							.extension()
+							.is_some_and(|ext| ext == "yaml" || ext == "yml")
+						{
+							match tokio::fs::read_to_string(&path).await {
+								| Err(e) => {
+									conduwuit::error!(
+										"Failed to read appservice file {path:?}: {e:?}"
+									);
+								},
+								| Ok(content) => {
+									match serde_saphyr::from_str::<Registration>(&content) {
+										| Err(e) => {
+											conduwuit::error!(
+												"Failed to parse appservice YAML from {path:?}: \
+												 {e:?}"
+											);
+										},
+										| Ok(registration) => {
+											self.db
+												.id_appserviceregistrations
+												.insert(&registration.id, &content);
+											conduwuit::info!(
+												"Auto-registered appservice {} from {path:?}",
+												registration.id
+											);
+										},
+									}
+								},
+							}
+						}
+					},
+			}
+		}
+
 		// First, collect all appservices to check for token conflicts
 		let appservices: Vec<(String, Registration)> = self.iter_db_ids().try_collect().await?;
 

@@ -4,13 +4,11 @@ use std::{
 	time::Duration,
 };
 
-use conduwuit::{
-	debug, debug_error, debug_warn, error, implement, info, result::FlatOk, trace, warn,
-};
+use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, warn};
 use futures::{StreamExt, stream::FuturesUnordered};
 use ruma::{
-	CanonicalJsonObject, OwnedServerName, OwnedServerSigningKeyId, ServerName,
-	ServerSigningKeyId, api::federation::discovery::ServerSigningKeys, serde::Raw,
+	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
+	api::federation::discovery::ServerSigningKeys,
 };
 use serde_json::value::RawValue as RawJsonValue;
 use tokio::time::{Instant, timeout_at};
@@ -27,12 +25,15 @@ where
 	type Batch = BTreeMap<OwnedServerName, BTreeSet<OwnedServerSigningKeyId>>;
 	type Signatures = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, String>>;
 
+	#[derive(serde::Deserialize)]
+	struct EventSignatures {
+		signatures: Option<Signatures>,
+	}
+
 	let mut batch = Batch::new();
 	events
-		.cloned()
-		.map(Raw::<CanonicalJsonObject>::from_json)
-		.map(|event| event.get_field::<Signatures>("signatures"))
-		.filter_map(FlatOk::flat_ok)
+		.filter_map(|event| serde_json::from_str::<EventSignatures>(event.get()).ok())
+		.filter_map(|event| event.signatures)
 		.flat_map(IntoIterator::into_iter)
 		.for_each(|(server, sigs)| {
 			batch.entry(server).or_default().extend(sigs.into_keys());

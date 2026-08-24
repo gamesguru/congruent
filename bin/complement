@@ -105,6 +105,24 @@ else
     echo "gotestsum installed: false"
 fi
 
+# Restrict partial runs to the package that defines the requested top-level test.
+# `go test ./tests/... -run TestName` still starts every package's TestMain.
+TEST_PACKAGES=(./tests/...)
+if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
+    test_name="${BASH_REMATCH[1]}"
+    mapfile -t matched_packages < <(
+        cd "$COMPLEMENT_SRC"
+        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}\\(" tests \
+            | xargs -r -n1 dirname \
+            | sed 's#^#./#' \
+            | sort -u
+    )
+    if [ "${#matched_packages[@]}" -gt 0 ]; then
+        TEST_PACKAGES=("${matched_packages[@]}")
+        echo "Selected test package(s): ${TEST_PACKAGES[*]}"
+    fi
+fi
+
 # Common flags for both test runners
 TEST_FLAGS=(
     -tags "conduwuit_blacklist"
@@ -114,7 +132,7 @@ TEST_FLAGS=(
     -parallel "$COMPLEMENT_PARALLEL"
     -timeout 1h
     -count=1
-    ./tests/...
+    "${TEST_PACKAGES[@]}"
 )
 
 # It's okay (likely, even) that `go test` exits nonzero

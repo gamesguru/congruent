@@ -227,7 +227,7 @@ pub(super) async fn load_left_room(
 		Vec::new()
 	};
 
-	let TimelinePdus { pdus, limited } = timeline;
+	let TimelinePdus { pdus, limited, prev_batch } = timeline;
 
 	// filter out ignored events from the timeline
 	let raw_timeline_pdus: Vec<PduEvent> = pdus
@@ -302,7 +302,7 @@ pub(super) async fn load_left_room(
 			account_data: RoomAccountData { events: Vec::new() },
 			timeline: Timeline {
 				limited,
-				prev_batch: Some(current_count.to_string()),
+				prev_batch: prev_batch.map(|c| c.to_string()),
 				events: raw_timeline_pdus
 					.into_iter()
 					.map(Event::into_format)
@@ -366,6 +366,7 @@ async fn build_left_state_and_timeline(
 		Some(timeline_start_count),
 		Some(timeline_end_count),
 		timeline_limit,
+		false,
 	)
 	.await?;
 
@@ -387,6 +388,7 @@ async fn build_left_state_and_timeline(
 
 	let timeline = TimelinePdus {
 		pdus: filtered_pdus,
+		prev_batch: raw_timeline.prev_batch,
 		limited: raw_timeline.limited,
 	};
 

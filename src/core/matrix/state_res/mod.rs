@@ -770,16 +770,17 @@ where
 			)
 		};
 
-		let auth_result = auth_check(
-			room_version,
-			&event,
-			current_third_party,
-			fetch_state,
-			&fetch_state(&StateEventType::RoomCreate, "")
-				.await
-				.expect("create event must exist"),
-		)
-		.await;
+		let Some(create_event) = fetch_state(&StateEventType::RoomCreate, "").await else {
+			warn!(
+				event_id = event.event_id().as_str(),
+				"event failed auth check: missing create event"
+			);
+			continue;
+		};
+
+		let auth_result =
+			auth_check(room_version, &event, current_third_party, fetch_state, &create_event)
+				.await;
 
 		match auth_result {
 			| Ok(true) => {

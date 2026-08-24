@@ -128,8 +128,9 @@ impl CachedDest {
 	pub fn valid(&self) -> bool { self.expire > SystemTime::now() }
 
 	#[must_use]
-	pub(crate) fn default_expire() -> SystemTime {
-		rand::time_from_now_secs(60 * 60 * 18..60 * 60 * 36)
+	pub(crate) fn default_expire(expire_secs: u64) -> SystemTime {
+		let start = expire_secs.clamp(1, u64::MAX / 2);
+		rand::time_from_now_secs(start..start.saturating_mul(2))
 	}
 
 	#[inline]
@@ -148,9 +149,13 @@ impl CachedOverride {
 	pub fn valid(&self) -> bool { self.expire > SystemTime::now() }
 
 	#[must_use]
-	pub(crate) fn default_expire() -> SystemTime {
-		rand::time_from_now_secs(60 * 60 * 6..60 * 60 * 12)
+	pub(crate) fn default_expire(expire_secs: u64) -> SystemTime {
+		rand::time_from_now_secs(expire_secs..expire_secs.saturating_mul(2).max(1))
 	}
+
+	#[inline]
+	#[must_use]
+	pub fn is_overriding(&self) -> bool { self.overriding.is_some() }
 
 	#[inline]
 	#[must_use]

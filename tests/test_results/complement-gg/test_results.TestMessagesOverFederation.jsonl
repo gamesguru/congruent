@@ -1,0 +1,6 @@
+{"Action":"pass","Test":"TestMessagesOverFederation"}
+{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)"}
+{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_greater_than_the_number_of_messages_backfilled_(in_Synapse,_100)"}
+{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}
+{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)"}
+{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}

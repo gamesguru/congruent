@@ -1,0 +1,4 @@
+{"Action":"pass","Test":"TestToDeviceMessagesOverFederation"}
+{"Action":"pass","Test":"TestToDeviceMessagesOverFederation/good_connectivity"}
+{"Action":"pass","Test":"TestToDeviceMessagesOverFederation/interrupted_connectivity"}
+{"Action":"pass","Test":"TestToDeviceMessagesOverFederation/stopped_server"}

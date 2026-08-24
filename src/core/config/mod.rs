@@ -317,6 +317,13 @@ pub struct Config {
 	#[serde(default = "default_dns_min_ttl_nxdomain")]
 	pub dns_min_ttl_nxdomain: u64,
 
+	/// The minimum amount of time to cache DNS lookups for server names in
+	/// federation. This is separate from hickory_resolver's internal caching.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_dns_cache_override_expire")]
+	pub dns_cache_override_expire: u64,
+
 	/// Number of DNS nameserver retries after a timeout or error.
 	///
 	/// default: 10
@@ -527,6 +534,14 @@ pub struct Config {
 	/// default: 180
 	#[serde(default = "default_sender_idle_timeout")]
 	pub sender_idle_timeout: u64,
+
+	/// Federation sender transaction retry backoff base (seconds). This is
+	/// the minimum delay before the first retry after a failed transaction.
+	/// Subsequent retries use exponential backoff: base × 2^(tries-1).
+	///
+	/// default: 5
+	#[serde(default = "default_sender_retry_backoff_base")]
+	pub sender_retry_backoff_base: u64,
 
 	/// Federation sender transaction retry backoff limit (seconds).
 	///
@@ -2521,7 +2536,7 @@ pub struct DraupnirConfig {
 	pub secret: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global.experimental_features",
@@ -2535,6 +2550,20 @@ pub struct ExperimentalConfig {
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
+
+	/// MSC3030: timestamp to event
+	#[serde(default = "true_fn")]
+	pub msc3030_enabled: bool,
+}
+
+impl Default for ExperimentalConfig {
+	fn default() -> Self {
+		Self {
+			msc3266_enabled: false,
+			msc4222_enabled: false,
+			msc3030_enabled: true,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2738,6 +2767,8 @@ fn default_dns_min_ttl() -> u64 { 60 * 180 }
 
 fn default_dns_min_ttl_nxdomain() -> u64 { 60 * 60 * 24 * 3 }
 
+fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }
+
 fn default_dns_attempts() -> u16 { 10 }
 
 fn default_dns_timeout() -> u64 { 10 }
@@ -2775,6 +2806,8 @@ fn default_federation_idle_per_host() -> u16 { 1 }
 fn default_sender_timeout() -> u64 { 180 }
 
 fn default_sender_idle_timeout() -> u64 { 180 }
+
+fn default_sender_retry_backoff_base() -> u64 { 5 }
 
 fn default_sender_retry_backoff_limit() -> u64 { 86400 }
 
