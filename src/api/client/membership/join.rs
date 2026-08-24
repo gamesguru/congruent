@@ -856,11 +856,14 @@ async fn join_room_by_id_helper_remote_process(
 					);
 					continue;
 				}
-				if let Err(e) = services
-					.rooms
-					.event_handler
-					.handle_incoming_pdu(&remote_server, room_id, &parsed_event_id, value, true)
-					.await
+				if let Err(e) = Box::pin(services.rooms.event_handler.handle_incoming_pdu(
+					&remote_server,
+					room_id,
+					&parsed_event_id,
+					value,
+					true,
+				))
+				.await
 				{
 					warn!("Failed to handle extremity {event_id}: {e}");
 				}
