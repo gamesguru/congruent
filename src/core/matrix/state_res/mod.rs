@@ -749,7 +749,19 @@ where
 			})
 			.ready_for_each(|(key, event)| {
 				//TODO: synapse checks "rejected_reason" is None here
-				auth_state.insert(key.to_owned(), event);
+				// For V2.1 (MSC4297) and V2.2 (MSC4242 state DAGs), auth checks
+				// must run against the state as it was when the event was created,
+				// so the event's own `auth_events` take precedence over the
+				// resolved state. A join made while the room was public must not
+				// be re-validated against a later invite rule. The resolved state
+				// only fills in auth types the event does not already provide.
+				// V2/V2.0 keep the previous behaviour where the resolved state
+				// overrides the event's own auth events.
+				if room_version.state_res < StateResolutionVersion::V2_1
+					|| !auth_state.contains_key(key)
+				{
+					auth_state.insert(key.to_owned(), event);
+				}
 			})
 			.await;
 		trace!(map = ?auth_state.keys().collect::<Vec<_>>(), event_id = event.event_id().as_str(), "auth state for event");
