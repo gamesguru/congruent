@@ -431,7 +431,7 @@ impl super::Service {
 				|id, update| {
 					let owned_update = match update {
 						| rezzy::StateUpdate::New { state, hash } =>
-							StateUpdateOwned::New { state, hash: Box::new(hash) },
+							StateUpdateOwned::New { state, hash: Box::new(*hash) },
 						| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
 							StateUpdateOwned::Unchanged {
 								parent_event_id: parent_event_id.clone(),
@@ -664,10 +664,7 @@ impl super::Service {
 			}
 		}
 
-		let mut unconflicted: std::collections::BTreeMap<
-			(rezzy::basespec::event_types::EventType, String),
-			String,
-		> = std::collections::BTreeMap::new();
+		let mut unconflicted: rezzy::SharedState = rezzy::SharedState::new();
 		let mut conflicted_keys: HashSet<(String, String)> = HashSet::new();
 
 		for (key, ids) in &key_to_ids {
@@ -829,8 +826,8 @@ impl super::Service {
 		let rezzy_start = Instant::now();
 		let mut pl_cache = HashMap::new();
 		let resolved_lean = rezzy::resolve_iterative_sort(
-			unconflicted.into(),
-			conflicted_events,
+			&unconflicted,
+			&conflicted_events,
 			&auth_context,
 			version,
 			&mut pl_cache,

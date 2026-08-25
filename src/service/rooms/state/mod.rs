@@ -920,13 +920,14 @@ impl Service {
 			| conduwuit_core::matrix::state_res::StateResolutionVersion::V2_2 | _ =>
 				rezzy::StateResVersion::V2_2,
 		};
+		let room_version_id = self.get_room_version(room_id).await?;
 		let auth_types_raw = rezzy::auth::auth_types_for_event(
 			&kind.to_string(),
 			sender.as_str(),
 			state_key,
 			&content_val,
-			// MSC4291 (v12+): auth_events must NOT reference m.room.create
 			version,
+			room_version_id.as_str(),
 		);
 		let auth_types: Vec<(StateEventType, conduwuit_core::matrix::StateKey)> = auth_types_raw
 			.into_iter()
