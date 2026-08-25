@@ -117,7 +117,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          apt-get update -y
+          apt-get update -y || true
           # Build dependencies for rocksdb
           apt-get install -y liburing-dev clang
 

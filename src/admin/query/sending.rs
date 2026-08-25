@@ -84,63 +84,14 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 			user_id,
 			push_key,
 		} => {
-			if appservice_id.is_none()
-				&& server_name.is_none()
-				&& user_id.is_none()
-				&& push_key.is_none()
-			{
-				return Err!(
-					"An appservice ID, server name, or a user ID with push key must be \
-					 specified via arguments. See --help for more details.",
-				);
-			}
+			let destination = get_destination(appservice_id, server_name, user_id, push_key)?;
 			let timer = tokio::time::Instant::now();
-			let results = match (appservice_id, server_name, user_id, push_key) {
-				| (Some(appservice_id), None, None, None) => {
-					if appservice_id.is_empty() {
-						return Err!(
-							"An appservice ID, server name, or a user ID with push key must be \
-							 specified via arguments. See --help for more details.",
-						);
-					}
-
-					services
-						.sending
-						.db
-						.queued_requests(&Destination::Appservice(appservice_id))
-				},
-				| (None, Some(server_name), None, None) => services
-					.sending
-					.db
-					.queued_requests(&Destination::Federation(server_name)),
-				| (None, None, Some(user_id), Some(push_key)) => {
-					if push_key.is_empty() {
-						return Err!(
-							"An appservice ID, server name, or a user ID with push key must be \
-							 specified via arguments. See --help for more details.",
-						);
-					}
-
-					services
-						.sending
-						.db
-						.queued_requests(&Destination::Push(user_id, push_key))
-				},
-				| (Some(_), Some(_), Some(_), Some(_)) => {
-					return Err!(
-						"An appservice ID, server name, or a user ID with push key must be \
-						 specified via arguments. Not all of them See --help for more details.",
-					);
-				},
-				| _ => {
-					return Err!(
-						"An appservice ID, server name, or a user ID with push key must be \
-						 specified via arguments. See --help for more details.",
-					);
-				},
-			};
-
-			let queued_requests = results.collect::<Vec<_>>().await;
+			let queued_requests = services
+				.sending
+				.db
+				.queued_requests(&destination)
+				.collect::<Vec<_>>()
+				.await;
 			let query_time = timer.elapsed();
 
 			context
@@ -155,64 +106,14 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 			user_id,
 			push_key,
 		} => {
-			if appservice_id.is_none()
-				&& server_name.is_none()
-				&& user_id.is_none()
-				&& push_key.is_none()
-			{
-				return Err!(
-					"An appservice ID, server name, or a user ID with push key must be \
-					 specified via arguments. See --help for more details.",
-				);
-			}
-
+			let destination = get_destination(appservice_id, server_name, user_id, push_key)?;
 			let timer = tokio::time::Instant::now();
-			let results = match (appservice_id, server_name, user_id, push_key) {
-				| (Some(appservice_id), None, None, None) => {
-					if appservice_id.is_empty() {
-						return Err!(
-							"An appservice ID, server name, or a user ID with push key must be \
-							 specified via arguments. See --help for more details.",
-						);
-					}
-
-					services
-						.sending
-						.db
-						.active_requests_for(&Destination::Appservice(appservice_id))
-				},
-				| (None, Some(server_name), None, None) => services
-					.sending
-					.db
-					.active_requests_for(&Destination::Federation(server_name)),
-				| (None, None, Some(user_id), Some(push_key)) => {
-					if push_key.is_empty() {
-						return Err!(
-							"An appservice ID, server name, or a user ID with push key must be \
-							 specified via arguments. See --help for more details.",
-						);
-					}
-
-					services
-						.sending
-						.db
-						.active_requests_for(&Destination::Push(user_id, push_key))
-				},
-				| (Some(_), Some(_), Some(_), Some(_)) => {
-					return Err!(
-						"An appservice ID, server name, or a user ID with push key must be \
-						 specified via arguments. Not all of them See --help for more details.",
-					);
-				},
-				| _ => {
-					return Err!(
-						"An appservice ID, server name, or a user ID with push key must be \
-						 specified via arguments. See --help for more details.",
-					);
-				},
-			};
-
-			let active_requests = results.collect::<Vec<_>>().await;
+			let active_requests = services
+				.sending
+				.db
+				.active_requests_for(&destination)
+				.collect::<Vec<_>>()
+				.await;
 			let query_time = timer.elapsed();
 
 			context
@@ -232,5 +133,50 @@ pub(super) async fn process(subcommand: SendingCommand, context: &Context<'_>) -
 				))
 				.await
 		},
+	}
+}
+
+fn get_destination(
+	appservice_id: Option<String>,
+	server_name: Option<OwnedServerName>,
+	user_id: Option<OwnedUserId>,
+	push_key: Option<String>,
+) -> Result<Destination> {
+	if appservice_id.is_none() && server_name.is_none() && user_id.is_none() && push_key.is_none()
+	{
+		return Err!(
+			"An appservice ID, server name, or a user ID with push key must be specified via \
+			 arguments. See --help for more details.",
+		);
+	}
+
+	match (appservice_id, server_name, user_id, push_key) {
+		| (Some(appservice_id), None, None, None) => {
+			if appservice_id.is_empty() {
+				return Err!(
+					"An appservice ID, server name, or a user ID with push key must be \
+					 specified via arguments. See --help for more details.",
+				);
+			}
+			Ok(Destination::Appservice(appservice_id))
+		},
+		| (None, Some(server_name), None, None) => Ok(Destination::Federation(server_name)),
+		| (None, None, Some(user_id), Some(push_key)) => {
+			if push_key.is_empty() {
+				return Err!(
+					"An appservice ID, server name, or a user ID with push key must be \
+					 specified via arguments. See --help for more details.",
+				);
+			}
+			Ok(Destination::Push(user_id, push_key))
+		},
+		| (Some(_), Some(_), Some(_), Some(_)) => Err!(
+			"An appservice ID, server name, or a user ID with push key must be specified via \
+			 arguments. Not all of them See --help for more details.",
+		),
+		| _ => Err!(
+			"An appservice ID, server name, or a user ID with push key must be specified via \
+			 arguments. See --help for more details.",
+		),
 	}
 }

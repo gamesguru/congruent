@@ -149,4 +149,20 @@ impl Server {
 
 	#[inline]
 	pub fn is_ours(&self, name: &str) -> bool { name == self.config.server_name }
+
+	/// Returns a concurrency limit scaled to the number of Tokio worker
+	/// threads. Use this instead of hardcoded constants for federation
+	/// fan-out, fetch parallelism, etc. so that small boxes (2 cores)
+	/// automatically get lower limits while large boxes still saturate.
+	///
+	/// `multiplier` controls how aggressive the scaling is:
+	///   - `1` = one task per worker (conservative)
+	///   - `2` = two tasks per worker (default for I/O-bound federation)
+	#[inline]
+	pub fn concurrency_scaled(&self, multiplier: usize) -> usize {
+		let workers = self.config.worker_threads.unwrap_or_else(|| {
+			std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
+		});
+		workers.saturating_mul(multiplier).max(2)
+	}
 }

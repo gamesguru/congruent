@@ -21,3 +21,4 @@ Admin commands allow server administrators to manage the server from within thei
 - [`!admin check`](check/): Commands for checking integrity
 - [`!admin debug`](debug/): Commands for debugging things
 - [`!admin query`](query/): Low-level queries for database getters and iterators
+- [`!admin yolo`](yolo/): Advanced diagnostic and audit commands

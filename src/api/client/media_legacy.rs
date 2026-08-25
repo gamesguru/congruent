@@ -2,20 +2,92 @@
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{
-	Err, Result, debug_info, err,
-	utils::{content_disposition::make_content_disposition, math::ruma_from_usize},
-};
+use conduwuit::{Err, Result, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
 use ruma::{
 	Mxc,
 	api::client::media::{
-		create_content, get_content, get_content_as_filename, get_content_thumbnail,
-		get_media_config, get_media_preview,
+		create_content, create_content_async, create_mxc_uri, get_content,
+		get_content_as_filename, get_content_thumbnail, get_media_config, get_media_preview,
 	},
 };
 
 use crate::{Ruma, RumaResponse, client::create_content_route};
+
+/// # `POST /_matrix/media/v1/create`
+///
+/// Reserve an MXC URI for asynchronous upload.
+pub(crate) async fn create_mxc_uri_route(
+	State(services): State<crate::State>,
+	body: Ruma<create_mxc_uri::v1::Request>,
+) -> Result<create_mxc_uri::v1::Response> {
+	let user = body.sender_user();
+	if services.users.is_suspended(user).await? {
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+	}
+
+	let ref mxc = Mxc {
+		server_name: services.globals.server_name(),
+		media_id: &conduwuit::utils::random_string(conduwuit_service::media::MXC_LENGTH),
+	};
+
+	services.media.create_async(mxc, Some(user))?;
+
+	Ok(create_mxc_uri::v1::Response::new(mxc.to_string().into()))
+}
+
+/// # `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}`
+///
+/// Upload media into a previously reserved MXC URI.
+pub(crate) async fn create_content_async_route(
+	State(services): State<crate::State>,
+	ClientIp(client): ClientIp,
+	body: Ruma<create_content_async::v3::Request>,
+) -> Result<create_content_async::v3::Response> {
+	let user = body.sender_user();
+	if services.users.is_suspended(user).await? {
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+	}
+
+	if body.server_name != *services.globals.server_name() {
+		return Err!(Request(NotFound("Cannot upload to a remote media repository.")));
+	}
+
+	let filename = body.filename.as_deref();
+	let content_type = body.content_type.as_deref();
+	let content_disposition = conduwuit::utils::content_disposition::make_content_disposition(
+		None,
+		content_type,
+		filename,
+	);
+	let ref mxc = Mxc {
+		server_name: &body.server_name,
+		media_id: &body.media_id,
+	};
+
+	match services
+		.media
+		.create_async_upload(
+			mxc,
+			Some(user),
+			Some(&content_disposition),
+			content_type,
+			&body.file,
+		)
+		.await
+	{
+		| Ok(()) => {},
+		| Err(e)
+			if matches!(e.kind(), ruma::api::client::error::ErrorKind::CannotOverwriteMedia) =>
+			return Err(e),
+		| Err(e) => {
+			conduwuit::debug_error!(%client, %mxc, "Failed async media upload: {e}");
+			return Err!(Request(Unknown("Failed async media upload.")));
+		},
+	}
+
+	Ok(create_content_async::v3::Response {})
+}
 
 /// # `GET /_matrix/media/v3/config`
 ///
@@ -140,63 +212,48 @@ pub(crate) async fn get_content_legacy_route(
 		media_id: &body.media_id,
 	};
 
-	match services.media.get(&mxc).await? {
-		| Some(FileMeta {
-			content,
-			content_type,
-			content_disposition,
-		}) => {
-			let content_disposition = make_content_disposition(
-				content_disposition.as_ref(),
-				content_type.as_deref(),
-				None,
-			);
-
-			Ok(get_content::v3::Response {
-				file: content.expect("entire file contents"),
-				content_type: content_type.map(Into::into),
-				content_disposition: Some(content_disposition),
-				cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-				cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-			})
-		},
-		| _ =>
-			if !services.globals.server_is_ours(&body.server_name) && body.allow_remote {
-				debug_info!(%mxc, "Fetching remote media via authenticated federation fallback");
-				services.media.check_legacy_freeze()?;
-				let FileMeta {
-					content,
-					content_type,
-					content_disposition,
-				} = services
-					.media
-					.fetch_remote_content(&mxc, None, None, body.timeout_ms)
-					.await
-					.map_err(|e| {
-						err!(Request(NotFound(debug_warn!(%mxc, "Fetching media failed: {e:?}"))))
-					})?;
-
-				let content_disposition = make_content_disposition(
-					content_disposition.as_ref(),
-					content_type.as_deref(),
-					None,
-				);
-
-				let Some(file) = content else {
-					return Err!(Request(NotFound("Media not found.")));
-				};
-
-				Ok(get_content::v3::Response {
-					file,
-					content_type: content_type.map(Into::into),
-					content_disposition: Some(content_disposition),
-					cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-					cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-				})
-			} else {
-				Err!(Request(NotFound("Media not found.")))
+	let FileMeta {
+		content,
+		content_type,
+		content_disposition,
+	} = match super::media::fetch_file(
+		&services,
+		&mxc,
+		None,
+		body.timeout_ms,
+		None,
+		body.allow_remote,
+	)
+	.await
+	{
+		| Ok(meta) => meta,
+		| Err(conduwuit::Error::Io(e)) => match e.kind() {
+			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
+			| std::io::ErrorKind::PermissionDenied => {
+				conduwuit::error!("Permission denied when trying to read file: {e:?}");
+				return Err!(Request(Unknown("Unknown error when fetching file.")));
 			},
-	}
+			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
+		},
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
+			return Err(e),
+		| Err(e) => {
+			conduwuit::debug_warn!(%mxc, "Fetching media failed: {e:?}");
+			return Err!(Request(NotFound("Media not found.")));
+		},
+	};
+
+	let Some(file) = content else {
+		return Err!(Request(NotFound("Media not found.")));
+	};
+
+	Ok(get_content::v3::Response {
+		file,
+		content_type: content_type.map(Into::into),
+		content_disposition,
+		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
+		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
+	})
 }
 
 /// # `GET /_matrix/media/v1/download/{serverName}/{mediaId}`
@@ -241,63 +298,50 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 		media_id: &body.media_id,
 	};
 
-	match services.media.get(&mxc).await? {
-		| Some(FileMeta {
-			content,
-			content_type,
-			content_disposition,
-		}) => {
-			let content_disposition = make_content_disposition(
-				content_disposition.as_ref(),
-				content_type.as_deref(),
-				Some(&body.filename),
-			);
+	let filename = (!body.filename.is_empty()).then_some(body.filename.as_str());
 
-			Ok(get_content_as_filename::v3::Response {
-				file: content.expect("entire file contents"),
-				content_type: content_type.map(Into::into),
-				content_disposition: Some(content_disposition),
-				cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-				cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-			})
-		},
-		| _ =>
-			if !services.globals.server_is_ours(&body.server_name) && body.allow_remote {
-				debug_info!(%mxc, "Fetching remote media via authenticated federation fallback");
-				services.media.check_legacy_freeze()?;
-				let FileMeta {
-					content,
-					content_type,
-					content_disposition,
-				} = services
-					.media
-					.fetch_remote_content(&mxc, None, None, body.timeout_ms)
-					.await
-					.map_err(|e| {
-						err!(Request(NotFound(debug_warn!(%mxc, "Fetching media failed: {e:?}"))))
-					})?;
-
-				let content_disposition = make_content_disposition(
-					content_disposition.as_ref(),
-					content_type.as_deref(),
-					Some(&body.filename),
-				);
-
-				let Some(file) = content else {
-					return Err!(Request(NotFound("Media not found.")));
-				};
-
-				Ok(get_content_as_filename::v3::Response {
-					file,
-					content_type: content_type.map(Into::into),
-					content_disposition: Some(content_disposition),
-					cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-					cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-				})
-			} else {
-				Err!(Request(NotFound("Media not found.")))
+	let FileMeta {
+		content,
+		content_type,
+		content_disposition,
+	} = match super::media::fetch_file(
+		&services,
+		&mxc,
+		None,
+		body.timeout_ms,
+		filename,
+		body.allow_remote,
+	)
+	.await
+	{
+		| Ok(meta) => meta,
+		| Err(conduwuit::Error::Io(e)) => match e.kind() {
+			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
+			| std::io::ErrorKind::PermissionDenied => {
+				conduwuit::error!("Permission denied when trying to read file: {e:?}");
+				return Err!(Request(Unknown("Unknown error when fetching file.")));
 			},
-	}
+			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
+		},
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
+			return Err(e),
+		| Err(e) => {
+			conduwuit::debug_warn!(%mxc, "Fetching media failed: {e:?}");
+			return Err!(Request(NotFound("Media not found.")));
+		},
+	};
+
+	let Some(file) = content else {
+		return Err!(Request(NotFound("Media not found.")));
+	};
+
+	Ok(get_content_as_filename::v3::Response {
+		file,
+		content_type: content_type.map(Into::into),
+		content_disposition,
+		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
+		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
+	})
 }
 
 /// # `GET /_matrix/media/v1/download/{serverName}/{mediaId}/{fileName}`
@@ -342,63 +386,47 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 	};
 
 	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
-	match services.media.get_thumbnail(&mxc, &dim).await? {
-		| Some(FileMeta {
-			content,
-			content_type,
-			content_disposition,
-		}) => {
-			let content_disposition = make_content_disposition(
-				content_disposition.as_ref(),
-				content_type.as_deref(),
-				None,
-			);
 
-			Ok(get_content_thumbnail::v3::Response {
-				file: content.expect("entire file contents"),
-				content_type: content_type.map(Into::into),
-				cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-				cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-				content_disposition: Some(content_disposition),
-			})
-		},
-		| _ =>
-			if !services.globals.server_is_ours(&body.server_name) && body.allow_remote {
-				debug_info!(%mxc, "Fetching remote thumbnail via authenticated federation fallback");
-				services.media.check_legacy_freeze()?;
-				let FileMeta {
-					content,
-					content_type,
-					content_disposition,
-				} = services
-					.media
-					.fetch_remote_thumbnail(&mxc, None, None, body.timeout_ms, &dim)
-					.await
-					.map_err(|e| {
-						err!(Request(NotFound(debug_warn!(%mxc, "Fetching media failed: {e:?}"))))
-					})?;
-
-				let content_disposition = make_content_disposition(
-					content_disposition.as_ref(),
-					content_type.as_deref(),
-					None,
-				);
-
-				let Some(file) = content else {
-					return Err!(Request(NotFound("Media not found.")));
-				};
-
-				Ok(get_content_thumbnail::v3::Response {
-					file,
-					content_type: content_type.map(Into::into),
-					cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
-					cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
-					content_disposition: Some(content_disposition),
-				})
-			} else {
-				Err!(Request(NotFound("Media not found.")))
+	let FileMeta {
+		content,
+		content_type,
+		content_disposition,
+	} = match super::media::fetch_thumbnail(
+		&services,
+		&mxc,
+		None,
+		body.timeout_ms,
+		&dim,
+		body.allow_remote,
+	)
+	.await
+	{
+		| Ok(meta) => meta,
+		| Err(conduwuit::Error::Io(e)) => match e.kind() {
+			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
+			| std::io::ErrorKind::PermissionDenied => {
+				conduwuit::error!("Permission denied when trying to read file: {e:?}");
+				return Err!(Request(Unknown("Unknown error when fetching file.")));
 			},
-	}
+			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
+		},
+		| Err(e) => {
+			conduwuit::info!(target: "media:thumbnail", %mxc, "Fetching thumbnail failed: {e:?}");
+			return Err!(Request(NotFound("Media not found.")));
+		},
+	};
+
+	let Some(file) = content else {
+		return Err!(Request(NotFound("Media not found.")));
+	};
+
+	Ok(get_content_thumbnail::v3::Response {
+		file,
+		content_type: content_type.map(Into::into),
+		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
+		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
+		content_disposition,
+	})
 }
 
 /// # `GET /_matrix/media/v1/thumbnail/{serverName}/{mediaId}`

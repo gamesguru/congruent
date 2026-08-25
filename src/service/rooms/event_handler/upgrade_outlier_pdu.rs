@@ -1,27 +1,99 @@
-use std::{borrow::Borrow, collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+	borrow::Borrow,
+	collections::{BTreeMap, HashMap},
+	sync::Arc,
+	time::Instant,
+};
 
 use conduwuit::{
-	Err, Result, debug, debug_info, err, implement, info, is_equal_to,
-	matrix::{Event, EventTypeExt, PduEvent, StateKey, state_res},
-	trace,
-	utils::stream::{BroadbandExt, ReadyExt},
-	warn,
+	Err, Result, debug, debug_info, debug_warn, implement, info,
+	matrix::{Event, PduEvent, StateKey, state_res},
+	trace, warn,
 };
-use futures::{FutureExt, StreamExt, future::ready};
-use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
+use futures::{FutureExt, StreamExt};
+use ruma::{
+	CanonicalJsonValue, OwnedEventId, RoomId, RoomVersionId, ServerName, events::StateEventType,
+};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::{state_compressor::CompressedState, timeline::RawPduId};
+use crate::rooms::{
+	pdu_metadata::{RejectionCode, SoftFailCode},
+	short::ShortStateHash,
+	state_compressor::HashSetCompressStateEvent,
+	timeline::RawPduId,
+};
 
+/// Picks which event ID to request `/state_ids` at.
+///
+/// Per the federation API, `/state_ids?event_id=X` returns the room's state
+/// *prior to* X -- the state X itself was authorized against, not
+/// including any change X makes. So the choice here matters: if the
+/// incoming event has exactly one `prev_event`, we can ask for state
+/// *at that prev_event* and get back the precise pre-state the incoming
+/// event needs to be authorized against. If X is itself a state event
+/// (e.g. a membership change), requesting `/state_ids` at X (the `_`
+/// fallback below, used when there's a fork or multiple prevs to resolve
+/// via state res instead) would omit X's own contribution -- fine for
+/// state resolution, since that's the point, but callers evaluating
+/// *this* event's own auth grant must anchor at its prev_event, not at
+/// itself, or they'll authorize it against state that doesn't yet
+/// reflect what came immediately before it.
+fn choose_state_ids_target(
+	incoming_prev_events: &[OwnedEventId],
+	incoming_event_id: &ruma::EventId,
+) -> OwnedEventId {
+	match incoming_prev_events {
+		| [only_prev] => only_prev.to_owned(),
+		| _ => incoming_event_id.to_owned(),
+	}
+}
+
+enum ClaimedAuthEventResolution {
+	PresentState(Box<PduEvent>),
+	PresentNonState,
+}
+
+fn classify_claimed_auth_event(pdu: PduEvent) -> ClaimedAuthEventResolution {
+	if pdu.state_key.is_some() {
+		ClaimedAuthEventResolution::PresentState(Box::new(pdu))
+	} else {
+		ClaimedAuthEventResolution::PresentNonState
+	}
+}
+
+/// Upgrade an outlier PDU to a full timeline event.
+///
+/// Performs auth checks, state resolution, soft-fail evaluation, and finally
+/// appends the PDU to the room timeline.  The function is deliberately kept
+/// thin; the heavy lifting is delegated to the helpers below so that each
+/// async state-machine stays within the stack-frame budget.
 #[implement(super::Service)]
-pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	&self,
 	incoming_pdu: PduEvent,
 	val: BTreeMap<String, CanonicalJsonValue>,
 	create_event: &Pdu,
 	origin: &ServerName,
 	room_id: &RoomId,
-	is_timeline_event: bool,
+	// Non-spec-compliant admin override to force-accept events.
+	skip_soft_fail: bool,
+	is_forward_extremity: bool,
+	// True if this event's own /get_missing_events call (in fetch_prev) came
+	// back with a structurally-invalid event for one of its prev_events. Lets
+	// resolve_state_at_incoming_event skip a doomed /state_ids fetch instead of
+	// hitting federation for state at an event we already know is unusable.
+	prev_fetch_had_invalid_data: bool,
+	// Deepest still-unresolved prev_event discovered while fetching this
+	// event's own prevs. This is used by the prev-fetch retry path, not for
+	// the authoritative state association computed here.
+	prev_fetch_deeper_anchor: Option<OwnedEventId>,
+	// True when the caller already holds a `with_cork_and_flush` boundary
+	// (the federation prev-event/incoming-event paths). Callers that invoke
+	// this directly with no outer flush boundary (admin rescue commands)
+	// must pass `false` so the timeline insert below flushes itself instead
+	// of silently relying on some later, unrelated write to flush it.
+	inside_flush_boundary: bool,
 ) -> Result<Option<RawPduId>>
 where
 	Pdu: Event + Send + Sync,
@@ -36,91 +108,115 @@ where
 		return Ok(Some(pduid));
 	}
 
-	if self
-		.services
-		.pdu_metadata
-		.is_event_soft_failed(incoming_pdu.event_id())
-		.await
-	{
-		return Err!(Request(InvalidParam("Event has been soft failed")));
+	let (rejected, soft_failed_early) = tokio::join!(
+		self.services
+			.pdu_metadata
+			.is_event_rejected(incoming_pdu.event_id()),
+		self.services
+			.pdu_metadata
+			.is_event_soft_failed(incoming_pdu.event_id())
+	);
+	let retryable_missing_auth_rejection = rejected
+		&& !skip_soft_fail
+		&& self
+			.services
+			.pdu_metadata
+			.get_rejection_reason(incoming_pdu.event_id())
+			.await
+			.is_some_and(|reason| {
+				crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
+			});
+
+	if rejected && !skip_soft_fail && !retryable_missing_auth_rejection {
+		return Err!(Request(Forbidden("Event has been rejected")));
+	} else if soft_failed_early && !skip_soft_fail {
+		// Return Ok(None) so the remote server stops endlessly retrying
+		info!("Event was previously soft-failed; acknowledging receipt");
+		return Ok(None);
 	}
 
-	debug!(
+	// If we reject/soft-fail/are missing auth events, the event is also rejected.
+	if !skip_soft_fail {
+		for aid in incoming_pdu.auth_events() {
+			let exists = self.services.timeline.pdu_exists(aid).await;
+			if !exists {
+				// An absent auth event is a resolution failure, not evidence
+				// it was ever rejected -- classify it with the retryable
+				// `MissingAuthEvent` (mirrors handle_outlier_pdu's own
+				// classification for the same situation), not the
+				// deliberately-permanent `DependsOnRejectedAuthEvent`.
+				// Conflating the two would permanently poison this event even
+				// though a later successful backfill/state fetch could supply
+				// `aid` and let a fresh attempt reach a different, correct
+				// verdict.
+				info!(
+					"Rejecting incoming event {} which depends on missing auth event {aid}",
+					incoming_pdu.event_id()
+				);
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						&RejectionCode::MissingAuthEvent.with_detail(aid),
+					)
+					.await;
+				return Err!(Request(Forbidden("Event depends on missing auth event {aid}")));
+			}
+
+			let accepted = self.services.pdu_metadata.is_event_accepted(aid).await;
+			if !accepted {
+				info!(
+					"Rejecting incoming event {} which depends on rejected auth event {aid}",
+					incoming_pdu.event_id()
+				);
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
+					)
+					.await;
+				return Err!(Request(Forbidden("Event depends on rejected auth event {aid}")));
+			}
+		}
+	}
+
+	info!(
 		event_id = %incoming_pdu.event_id,
 		"Upgrading PDU from outlier to timeline"
 	);
 	let timer = Instant::now();
 	let room_version_id = get_room_version_id(create_event)?;
 
-	// 10. Fetch missing state and auth chain events by calling /state_ids at
-	//     backwards extremities doing all the checks in this list starting at 1.
-	//     These are not timeline events.
-
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Resolving state at event"
-	);
-	let mut state_at_incoming_event = if incoming_pdu.prev_events().count() == 1 {
-		self.state_at_incoming_degree_one(&incoming_pdu, room_id)
-			.await?
-	} else {
-		self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
-			.await?
+	let mut state_at_incoming_event = match Box::pin(self.resolve_state_at_incoming_event(
+		&incoming_pdu,
+		create_event,
+		origin,
+		room_id,
+		&room_version_id,
+		skip_soft_fail,
+		prev_fetch_had_invalid_data,
+		prev_fetch_deeper_anchor.as_ref(),
+		is_forward_extremity,
+	))
+	.await
+	{
+		| Ok(state) => state,
+		| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+			info!(
+				target: "state_res_debug",
+				event_id = %incoming_pdu.event_id,
+				"State resolution failed with all prev_events present; leaving event as an outlier \
+				 so the background healer can retry later"
+			);
+			return Ok(None);
+		},
+		| Err(e) => return Err(e),
 	};
-
-	if state_at_incoming_event.is_none() {
-		state_at_incoming_event = self
-			.fetch_state(origin, create_event, room_id, incoming_pdu.event_id())
-			.await?;
-	}
-
-	let state_at_incoming_event =
-		state_at_incoming_event.expect("we always set this to some above");
 
 	let room_version = to_room_version(&room_version_id);
 
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Performing auth check to upgrade"
-	);
-	// 11. Check the auth of the event passes based on the state of the event
-	let state_fetch_state = &state_at_incoming_event;
-	let state_fetch = |k: StateEventType, s: StateKey| async move {
-		let shortstatekey = self.services.short.get_shortstatekey(&k, &s).await.ok()?;
-
-		let event_id = state_fetch_state.get(&shortstatekey)?;
-		self.services.timeline.get_pdu(event_id).await.ok()
-	};
-
-	debug!(
-		event_id = %incoming_pdu.event_id,
-		"Running initial auth check"
-	);
-	let auth_check = state_res::event_auth::auth_check(
-		&room_version,
-		&incoming_pdu,
-		None, // TODO: third party invite
-		|ty, sk| state_fetch(ty.clone(), sk.into()),
-		create_event.as_pdu(),
-	)
-	.await
-	.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
-
-	if !auth_check {
-		return Err!(Request(Forbidden("Event has failed auth check with state at the event.")));
-	}
-
-	// 13. Use state resolution to find new room state
-
-	// We start looking at current room state now, so lets lock the room
-	trace!(
-		room_id = %room_id,
-		"Locking the room"
-	);
-	let state_lock = self.services.state.mutex.lock(room_id).await;
-
-	// Re-check if the PDU was added to the timeline while we were waiting for the
-	// lock
+	// Re-check if the PDU was added to the timeline while we were waiting
 	if let Ok(pduid) = self
 		.services
 		.timeline
@@ -130,12 +226,80 @@ where
 		return Ok(Some(pduid));
 	}
 
-	let mut soft_fail = if is_timeline_event {
-		debug!(
-			event_id = %incoming_pdu.event_id,
-			"Gathering auth events"
-		);
-		let auth_events = self
+	debug!(event_id = %incoming_pdu.event_id, "Gathering explicitly claimed auth events");
+	let mut auth_events = HashMap::new();
+	let mut missing_auth_events = false;
+	let mut missing_auth_event_ids = Vec::new();
+
+	for event_id in incoming_pdu.auth_events() {
+		// A bare `is_event_rejected` would also hard-cascade on an auth event
+		// that's only retryably rejected (e.g. its own `MissingAuthEvent`
+		// resolution never finished) -- permanently poisoning `incoming_pdu`
+		// with `DependsOnRejectedAuthEvent` for a dependency that might still
+		// resolve later. Use the narrower permanent check; a retryable
+		// rejection here just falls through to the `get_pdu` lookup below,
+		// which fails and sets `missing_auth_events`, same as a genuinely
+		// missing auth event.
+		let is_rejected = self
+			.services
+			.pdu_metadata
+			.is_event_permanently_rejected(event_id)
+			.await;
+		if is_rejected && !skip_soft_fail {
+			warn!(
+				event_id = %incoming_pdu.event_id,
+				auth_event_id = %event_id,
+				"Event rejected because auth_event is rejected"
+			);
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(event_id),
+				)
+				.await;
+			return Err!(Request(Forbidden(
+				"Event authorisation fails because it references a rejected auth_event"
+			)));
+		}
+
+		if let Ok(pdu) = self.services.timeline.get_pdu(event_id).await {
+			match classify_claimed_auth_event(pdu) {
+				| ClaimedAuthEventResolution::PresentState(pdu) => {
+					let key = StateEventType::from(pdu.kind().clone());
+					let state_key = pdu
+						.state_key
+						.clone()
+						.expect("state event classification guarantees a state_key");
+					auth_events.insert((key, state_key), *pdu);
+				},
+				| ClaimedAuthEventResolution::PresentNonState => {
+					warn!(
+						event_id = %incoming_pdu.event_id,
+						auth_event_id = %event_id,
+						"Claimed auth event exists locally but is not a state event"
+					);
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(
+							incoming_pdu.event_id(),
+							RejectionCode::InvalidPduFormat.tag(),
+						)
+						.await;
+					return Err!(Request(Forbidden(
+						"Event authorisation fails because it references a non-state auth event"
+					)));
+				},
+			}
+		} else {
+			missing_auth_events = true;
+			missing_auth_event_ids.push(OwnedEventId::from(event_id));
+		}
+	}
+
+	if missing_auth_events {
+		debug!(event_id = %incoming_pdu.event_id, "Missing claimed auth events locally. Falling back to state-based auth events");
+		if let Ok(state_auth_events) = self
 			.services
 			.state
 			.get_auth_events(
@@ -146,132 +310,154 @@ where
 				incoming_pdu.content(),
 				&room_version,
 			)
-			.await?;
-
-		let state_fetch = |k: &StateEventType, s: &str| {
-			let key = k.with_state_key(s);
-			ready(auth_events.get(&key).map(ToOwned::to_owned))
-		};
-
-		debug!(
-			event_id = %incoming_pdu.event_id,
-			"Running auth check with claimed state auth"
-		);
-		let auth_check = state_res::event_auth::auth_check(
-			&room_version,
-			&incoming_pdu,
-			None, // third-party invite
-			state_fetch,
-			create_event.as_pdu(),
-		)
-		.await
-		.map_err(|e| err!(Request(Forbidden("Auth check failed: {e:?}"))))?;
-
-		// Soft fail check before doing state res
-		debug!(
-			event_id = %incoming_pdu.event_id,
-			"Performing soft-fail check"
-		);
-		match (auth_check, incoming_pdu.redacts_id(&room_version_id)) {
-			| (false, _) => true,
-			| (true, None) => false,
-			| (true, Some(redact_id)) =>
-				!self
-					.services
-					.state_accessor
-					.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
-					.await?,
+			.await
+		{
+			for ((k, s), pdu) in state_auth_events {
+				auth_events.entry((k, s)).or_insert(pdu);
+			}
 		}
-	} else {
-		false
-	};
-
-	// Now we calculate the set of extremities this room has after the incoming
-	// event has been applied. We start with the previous extremities (aka leaves)
-	trace!("Calculating extremities");
-	let mut extremities: Vec<_> = self
-		.services
-		.state
-		.get_forward_extremities(room_id)
-		.map(ToOwned::to_owned)
-		.ready_filter(|event_id| {
-			// Remove any that are referenced by this incoming event's prev_events
-			!incoming_pdu.prev_events().any(is_equal_to!(event_id))
-		})
-		.broad_filter_map(|event_id| async move {
-			// Only keep those extremities were not referenced yet
-			self.services
-				.pdu_metadata
-				.is_event_referenced(room_id, &event_id)
-				.await
-				.eq(&false)
-				.then_some(event_id)
-		})
-		.collect()
-		.await;
-	extremities.push(incoming_pdu.event_id().to_owned());
-
-	// MSC4242: Update State DAG extremities for incoming state events
-	if incoming_pdu.state_key().is_some() && incoming_pdu.prev_state_events().is_some() {
-		self.services
-			.state
-			.update_state_extremities_for_event(room_id, &incoming_pdu, &state_lock)
-			.await;
 	}
 
-	debug!(
-		"Retained {} extremities checked against {} prev_events",
-		extremities.len(),
-		incoming_pdu.prev_events().count()
+	let unresolved_missing_auth_events: Vec<OwnedEventId> = missing_auth_event_ids
+		.into_iter()
+		.filter(|missing_id| !auth_events.values().any(|pdu| pdu.event_id() == missing_id))
+		.collect();
+
+	if !unresolved_missing_auth_events.is_empty() {
+		let primary_missing = unresolved_missing_auth_events[0].clone();
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(
+				incoming_pdu.event_id(),
+				&RejectionCode::MissingAuthEvent.with_detail(primary_missing),
+			)
+			.await;
+		return Err!(MissingAuthEvents(unresolved_missing_auth_events));
+	}
+
+	let state_provider =
+		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events)
+			.with_create_event(Some(create_event));
+
+	// Check the auth of the event passes based on the claimed auth_events
+	debug!(event_id = %incoming_pdu.event_id, "Running auth check with claimed state auth");
+	let auth_check_claimed = crate::rooms::auth_adapter::rezzy_auth_check(
+		&incoming_pdu,
+		&state_provider,
+		crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
 	);
 
-	let state_ids_compressed: Arc<CompressedState> = self
-		.services
-		.state_compressor
-		.compress_state_events(
-			state_at_incoming_event
-				.iter()
-				.map(|(ssk, eid)| (ssk, eid.borrow())),
-		)
-		.collect()
-		.map(Arc::new)
+	if !auth_check_claimed {
+		if skip_soft_fail {
+			warn!(
+				event_id = %incoming_pdu.event_id,
+				"Event failed auth check against claimed auth_events, but skip_soft_fail is set — continuing"
+			);
+		} else {
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					RejectionCode::AuthCheckFailed.tag(),
+				)
+				.await;
+
+			return Err!(Request(Forbidden(
+				"Event authorisation fails based on its auth_events"
+			)));
+		}
+	}
+
+	// Check auth of event passes based on its state (soft-fail check)
+	debug!(event_id = %incoming_pdu.event_id, "Running initial auth check against state-at-event");
+	let srv = crate::rooms::auth_adapter::to_state_res_version(&room_version_id);
+	let content = incoming_pdu.get_content_as_value();
+	let auth_types = rezzy::auth::auth_types_for_event(
+		&incoming_pdu.kind.to_string(),
+		incoming_pdu.sender().as_str(),
+		incoming_pdu.state_key(),
+		&content,
+		srv,
+	);
+
+	let mut state_auth_events = HashMap::new();
+	for (ty, sk) in &auth_types {
+		let state_ty: StateEventType = ty.as_str().into();
+		let state_key = StateKey::from(sk.as_str());
+		let pdu_opt: Option<PduEvent> = async {
+			match &state_at_incoming_event {
+				| StateAtEvent::Resolved(state) => {
+					let shortstatekey = self
+						.services
+						.short
+						.get_shortstatekey(&state_ty, &state_key)
+						.await
+						.ok()?;
+					let event_id = state.get(&shortstatekey)?;
+					self.services.timeline.get_pdu(event_id).await.ok()
+				},
+				| StateAtEvent::Compressed(compressed) =>
+					self.find_pdu_in_compressed_state(&state_ty, &state_key, compressed)
+						.await,
+				| StateAtEvent::FastForward(shortstatehash) => {
+					let shorteventid = self
+						.services
+						.state_accessor
+						.state_get_shortid(*shortstatehash, &state_ty, &state_key)
+						.await
+						.ok()?;
+					let event_id = self
+						.services
+						.short
+						.get_eventid_from_short::<OwnedEventId>(shorteventid)
+						.await
+						.ok()?;
+					self.services.timeline.get_pdu(&event_id).await.ok()
+				},
+			}
+		}
 		.await;
 
-	let resolved_state = if let Some(state_key) = incoming_pdu.state_key() {
-		debug!("Event is a state-event. Deriving new room state");
+		if let Some(pdu) = pdu_opt {
+			state_auth_events.insert((state_ty, state_key), pdu);
+		}
+	}
+	let state_at_provider =
+		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&state_auth_events)
+			.with_create_event(Some(create_event));
+	let auth_check_state =
+		crate::rooms::auth_adapter::rezzy_auth_check(&incoming_pdu, &state_at_provider, srv);
 
-		// We also add state after incoming event to the fork states
-		let mut state_after = state_at_incoming_event.clone();
-		let shortstatekey = self
-			.services
-			.short
-			.get_or_create_shortstatekey(&incoming_pdu.kind().to_string().into(), state_key)
-			.await;
+	if !auth_check_state {
+		if skip_soft_fail {
+			warn!(
+				event_id = %incoming_pdu.event_id,
+				"Event failed auth check against state at event, but skip_soft_fail is set — continuing"
+			);
+		} else {
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					RejectionCode::AuthCheckFailed.tag(),
+				)
+				.await;
 
-		let event_id = incoming_pdu.event_id();
-		state_after.insert(shortstatekey, event_id.to_owned());
+			return Err!(Request(Forbidden("Event authorisation fails based on state at event")));
+		}
+	}
 
-		let new_room_state = self
-			.resolve_state(room_id, &room_version_id, state_after)
-			.await?;
+	// NOTE: soft_fail is evaluated INSIDE the OCC loop (below) against the
+	// committed current state to avoid a TOCTOU race. If the current state
+	// changes between the initial check and the commit, a banned user's
+	// message could slip through.
+	let mut soft_fail = false;
 
-		// Set the new room state to the resolved state
-		debug!("Forcing new room state");
-		let resolved_state = self
-			.services
-			.state_compressor
-			.save_state(room_id, new_room_state)
-			.await?;
-
-		Some(resolved_state)
-	} else {
-		None
-	};
-
+	// Finalize soft_fail before any state processing: check policy server
+	// and redaction status so we can skip expensive state resolution for
+	// events that will be rejected.
 	if !soft_fail {
-		// Don't call the below checks on events that have already soft-failed, there's
-		// no reason to re-calculate that.
-		// 14-pre. If the event is not a state event, ask the policy server about it
+		// If the event is not a state event, ask the policy server about it
 		if incoming_pdu.state_key.is_none() {
 			debug!(event_id = %incoming_pdu.event_id, "Checking policy server for event");
 			match self
@@ -299,97 +485,1078 @@ where
 			}
 		}
 
-		// Additionally, if this is a redaction for a soft-failed event, we soft-fail it
-		// also.
-
-		// TODO: this is supposed to hide redactions from policy servers, however, for
-		// full efficacy it also needs to hide redactions for unknown events. This
-		// needs to be investigated at a later time.
+		// Additionally, if this is a redaction for a soft-failed event, we
+		// soft-fail it also.
 		if let Some(redact_id) = incoming_pdu.redacts_id(&room_version_id) {
 			debug!(
 				redact_id = %redact_id,
-				"Checking if redaction is for a soft-failed event"
+				"Checking if redaction is for a soft-failed or rejected event"
 			);
-			if self
+			if !self
 				.services
 				.pdu_metadata
-				.is_event_soft_failed(&redact_id)
+				.is_event_accepted(&redact_id)
 				.await
 			{
 				warn!(
 					redact_id = %redact_id,
-					"Redaction is for a soft-failed event, soft failing the redaction"
+					"Redaction targets a non-accepted event, soft failing"
 				);
 				soft_fail = true;
 			}
 		}
 	}
 
-	// 14. Check if the event passes auth based on the "current state" of the room,
-	//     if not soft fail it
-	if soft_fail {
-		info!(
-			event_id = %incoming_pdu.event_id,
-			"Soft failing event"
-		);
-		// assert!(extremities.is_empty(), "soft_fail extremities empty");
-		let extremities = extremities.iter().map(Borrow::borrow);
-		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
+	// --- Phase 2: state event handling (extracted to reduce frame) ---
+	//
+	// Derive new room state for all incoming state events, including
+	// soft-failed ones. State resolution merges forks deterministically —
+	// a soft-failed event may carry state from a fork we haven't seen,
+	// and feeding it into resolve_state heals local drift.
+	//
+	// OCC (Optimistic Concurrency Control): We compute the state delta
+	// WITHOUT holding the room lock, then acquire the lock and verify the
+	// base state hash hasn't changed. If it has, we DROP the lock and
+	// retry. This avoids holding the exclusive mutex during CPU-bound
+	// state resolution.
+	let state_delta_opt;
+	let state_lock;
+	let state_ids_compressed;
 
-		self.services
-			.timeline
-			.append_incoming_pdu(
-				&incoming_pdu,
-				val,
-				extremities,
-				state_ids_compressed,
-				None,
-				soft_fail,
-				&state_lock,
-				room_id,
-			)
+	if !is_forward_extremity {
+		state_delta_opt = None;
+		// Compute the compressed state association WITHOUT the lock. For
+		// StateAtEvent::Resolved this can be thousands of short-ID lookups;
+		// none of it depends on the room's committed current state, so it
+		// must not happen while state_lock is held (see below).
+		state_ids_compressed = self
+			.compress_state_at_event(&state_at_incoming_event)
 			.await?;
+		// Dummy lock to satisfy lifetimes since we aren't mutating state
+		state_lock = self.services.state.mutex.lock(room_id).await;
+	} else {
+		loop {
+			// Capture base state hash BEFORE the unlocked computation
+			let base_shortstatehash = self
+				.services
+				.state
+				.get_room_shortstatehash(room_id)
+				.await
+				.ok();
 
-		// Soft fail, we keep the event as an outlier but don't add it to the timeline
-		self.services
-			.pdu_metadata
-			.mark_event_soft_failed(incoming_pdu.event_id());
+			if let StateAtEvent::FastForward(shortstatehash) = &state_at_incoming_event {
+				if Some(*shortstatehash) != base_shortstatehash {
+					info!(
+						"Fast-forward state hash shift ({} -> {:?}), re-eval state @ incoming",
+						shortstatehash, base_shortstatehash
+					);
+					state_at_incoming_event =
+						match Box::pin(self.resolve_state_at_incoming_event(
+							&incoming_pdu,
+							create_event,
+							origin,
+							room_id,
+							&room_version_id,
+							skip_soft_fail,
+							false,
+							prev_fetch_deeper_anchor.as_ref(),
+							true,
+						))
+						.await
+						{
+							| Ok(state) => state,
+							| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+								// Same retryable outcome as the initial resolution
+								// above: treat it as "leave as an outlier", not a
+								// fatal error of this attempt.
+								info!(
+									target: "state_res_debug",
+									event_id = %incoming_pdu.event_id,
+									"State resolution re-check failed with all prev_events present; \
+									 leaving event as an outlier so the background healer can retry later"
+								);
+								return Ok(None);
+							},
+							| Err(e) => return Err(e),
+						};
+				}
+			}
 
-		warn!(
-			event_id = %incoming_pdu.event_id,
-			"Event was soft failed"
-		);
-		return Err!(Request(InvalidParam("Event has been soft failed")));
+			// Heavy computation WITHOUT the lock
+			let delta = self
+				.calculate_state_delta(
+					&incoming_pdu,
+					state_at_incoming_event.clone(),
+					room_id,
+					&room_version_id,
+				)
+				.await?;
+
+			// Also compute the compressed state association WITHOUT the
+			// lock. For StateAtEvent::Resolved this can be thousands of
+			// short-ID lookups; state_at_incoming_event is fully finalized
+			// by this point in the iteration (any fast-forward re-eval
+			// above already happened before we get here), so recomputing
+			// it here -- once per retry, matching that iteration's state --
+			// is correct and keeps the expensive work out of the critical
+			// section below.
+			let compressed_this_iter = self
+				.compress_state_at_event(&state_at_incoming_event)
+				.await?;
+
+			// Acquire lock for the commit phase
+			trace!(room_id = %room_id, "Locking the room");
+			let lock = self.services.state.mutex.lock(room_id).await;
+
+			// Re-check if the PDU was already added while we were unlocked
+			if let Ok(pduid) = self
+				.services
+				.timeline
+				.get_pdu_id(incoming_pdu.event_id())
+				.await
+			{
+				return Ok(Some(pduid));
+			}
+
+			// OCC verification: has the base state shifted?
+			let current_shortstatehash = self
+				.services
+				.state
+				.get_room_shortstatehash(room_id)
+				.await
+				.ok();
+
+			if base_shortstatehash == current_shortstatehash {
+				// State is consistent — evaluate soft_fail against the
+				// COMMITTED current state while holding the lock. This
+				// closes the TOCTOU race: the state we check against is
+				// exactly the state that will be live when we append.
+				if !skip_soft_fail {
+					// Check redaction permissions
+					if let Some(redact_id) = incoming_pdu.redacts_id(&room_version_id) {
+						if !self
+							.services
+							.state_accessor
+							.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
+							.await?
+						{
+							soft_fail = true;
+						}
+					}
+
+					// Auth against current room state (the critical check)
+					if !soft_fail {
+						let auth_check_current = Box::pin(self.check_current_state_auth(
+							room_id,
+							&room_version,
+							&incoming_pdu,
+						))
+						.await
+						.unwrap_or(false);
+
+						if !auth_check_current {
+							warn!(
+								event_id = %incoming_pdu.event_id,
+								"Event passed auth against state-at-event, but FAILED auth \
+								against the committed current room state. Soft-failing event."
+							);
+							soft_fail = true;
+						}
+					}
+				}
+
+				// CRITICAL: If soft-failed, discard the state delta. Without
+				// this, a banned user's state event (e.g. room name change,
+				// power level edit) would be applied via force_state below —
+				// modifying the room's active state — even though the event
+				// is correctly withheld from the timeline.
+				//
+				// DAG integrity is preserved because append_incoming_pdu
+				// still calls set_event_state using state_ids_compressed
+				// after soft_fail is fully decided.
+				if soft_fail {
+					state_delta_opt = None;
+				} else {
+					state_delta_opt = delta;
+				}
+				state_ids_compressed = compressed_this_iter;
+				state_lock = lock;
+				break;
+			}
+
+			// State changed — drop the lock and retry so we don't block the room
+			info!(
+				%room_id,
+				?base_shortstatehash,
+				?current_shortstatehash,
+				"Room state changed during unlocked state-res, dropping lock and retrying"
+			);
+			drop(lock);
+		}
 	}
 
-	// Now that the event has passed all auth it is added into the timeline.
-	// We use the `state_at_event` instead of `state_after` so we accurately
-	// represent the state for this event.
+	// Apply the state delta (still holding state_lock from the successful break)
 	trace!("Appending pdu to timeline");
-	let extremities = extremities.iter().map(Borrow::borrow);
-	debug_assert!(extremities.clone().count() > 0, "extremities not empty");
-
-	let pdu_id = self
-		.services
-		.timeline
-		.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities,
-			state_ids_compressed,
-			resolved_state,
-			soft_fail,
-			&state_lock,
+	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = state_delta_opt {
+		Box::pin(self.services.state.force_state(
 			room_id,
-		)
+			shortstatehash,
+			added,
+			removed,
+			&state_lock,
+		))
 		.await?;
+	}
+
+	let current_extremities: Vec<OwnedEventId> = self
+		.services
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+
+	let prev_events: Vec<&ruma::EventId> = incoming_pdu.prev_events().collect();
+	let room_id_owned = room_id.to_owned();
+	let is_referenced = |event_id: &ruma::EventId| {
+		let eid = event_id.to_owned();
+		let rid = room_id_owned.clone();
+		async move {
+			self.services
+				.pdu_metadata
+				.is_event_referenced(&rid, &eid)
+				.await
+		}
+	};
+
+	let extremities = super::extremities::calculate_forward_extremities(
+		current_extremities,
+		incoming_pdu.event_id(),
+		&prev_events,
+		soft_fail,
+		is_referenced,
+		is_forward_extremity,
+	)
+	.await;
+
+	// Recovered federation history is still new to this homeserver, so it
+	// must stay in the sync-visible live stream. Use the normal append path
+	// here; only explicit `/backfill` pagination inserts use backfilled counts.
+	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
+		&incoming_pdu,
+		val,
+		extremities.into_iter(),
+		state_ids_compressed,
+		None,
+		soft_fail,
+		inside_flush_boundary,
+		&state_lock,
+		room_id,
+	))
+	.await?;
+
+	if soft_fail {
+		self.services
+			.pdu_metadata
+			.mark_event_soft_failed(incoming_pdu.event_id(), SoftFailCode::AuthCheckFailed);
+
+		debug_warn!(
+			elapsed = ?timer.elapsed(),
+			"Event has been soft-failed",
+		);
+	} else {
+		debug_info!(
+			elapsed = ?timer.elapsed(),
+			"Accepted",
+		);
+	}
 
 	// Event has passed all auth/stateres checks
 	drop(state_lock);
-	debug_info!(
-		elapsed = ?timer.elapsed(),
-		"Accepted",
-	);
 
 	Ok(pdu_id)
+}
+
+#[derive(Clone)]
+pub(crate) enum StateAtEvent {
+	Resolved(HashMap<u64, OwnedEventId>),
+	Compressed(Arc<crate::rooms::state_compressor::CompressedState>),
+	FastForward(ShortStateHash),
+}
+
+/// Build the compressed state association for `state_at_event`. For
+/// `StateAtEvent::Resolved` this can perform thousands of short-ID lookups,
+/// so callers must invoke this *before* acquiring `state.mutex` for the
+/// room -- never while holding it, or every other writer in the room blocks
+/// for the full duration of the compression.
+#[implement(super::Service)]
+pub(crate) async fn compress_state_at_event(
+	&self,
+	state_at_event: &StateAtEvent,
+) -> Result<Arc<crate::rooms::state_compressor::CompressedState>> {
+	Ok(match state_at_event {
+		| StateAtEvent::FastForward(shortstatehash) => self
+			.services
+			.state_compressor
+			.load_shortstatehash_info(*shortstatehash)
+			.await?
+			.pop()
+			.expect("top frame must have full_state")
+			.full_state
+			.expect("must have full_state")
+			, // This is Arc<CompressedState>
+		| StateAtEvent::Compressed(compressed) => compressed.clone(),
+		| StateAtEvent::Resolved(state) =>
+			self.services
+				.state_compressor
+				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
+				.collect()
+				.map(Arc::new)
+				.await,
+	})
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+async fn check_current_state_auth(
+	&self,
+	room_id: &RoomId,
+	_room_version: &state_res::RoomVersion,
+	incoming_pdu: &PduEvent,
+) -> Result<bool> {
+	let room_version_id = self.services.state.get_room_version(room_id).await?;
+	let srv = crate::rooms::auth_adapter::to_state_res_version(&room_version_id);
+	let content = incoming_pdu.get_content_as_value();
+	let mut auth_types = rezzy::auth::auth_types_for_event(
+		&incoming_pdu.kind.to_string(),
+		incoming_pdu.sender().as_str(),
+		incoming_pdu.state_key(),
+		&content,
+		srv,
+	);
+
+	// Always include create event — rezzy's check_auth uses it for the
+	// is_creator fallback when no membership event exists for the sender.
+	if !auth_types.iter().any(|(ty, _)| ty == "m.room.create") {
+		auth_types.push(("m.room.create".to_owned(), String::new()));
+	}
+
+	let mut auth_state = HashMap::new();
+	for (ty, sk) in &auth_types {
+		let state_ty: StateEventType = ty.as_str().into();
+		if let Ok(pdu) = self
+			.services
+			.state_accessor
+			.room_state_get(room_id, &state_ty, sk)
+			.await
+		{
+			auth_state.insert((state_ty, StateKey::from(sk.as_str())), pdu);
+		}
+	}
+
+	let state_provider = crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_state);
+	Ok(crate::rooms::auth_adapter::rezzy_auth_check(incoming_pdu, &state_provider, srv))
+}
+
+/// Find the state-at-event for an incoming PDU. If the PDU is a fast-forward
+/// candidate we bypass full state resolution. If we are unable to resolve state
+/// (e.g. auth chain fetch fails or soft-fail is active) then the room's current
+/// room state is used as a best-effort fallback to avoid wiping state.
+#[implement(super::Service)]
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub(crate) async fn resolve_state_at_incoming_event<Pdu>(
+	&self,
+	incoming_pdu: &PduEvent,
+	create_event: &Pdu,
+	origin: &ServerName,
+	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
+	skip_soft_fail: bool,
+	prev_fetch_had_invalid_data: bool,
+	state_ids_anchor_hint: Option<&OwnedEventId>,
+	// Whether a detected DAG fork (incoming prev_events != current forward
+	// extremities) should fold the room's *current* forward extremities into
+	// the resolution. This is correct -- required, even -- when the incoming
+	// event is about to become the room's new live tip (`is_forward_extremity:
+	// true` in `upgrade_outlier_to_timeline_pdu`): the room's new state after
+	// accepting a fork must account for every live branch, not just the one
+	// this event descends from.
+	//
+	// It is WRONG for backfilled historical events: their prev_events not
+	// matching today's forward extremities is not a real fork needing
+	// reconciliation, it's simply because they predate today's tip by
+	// definition. Merging in current_extremities there would contaminate a
+	// historical state snapshot with state that, chronologically, didn't
+	// exist yet. Backfill callers must pass `false` and resolve purely from
+	// the event's own prev_events.
+	merge_current_extremities: bool,
+) -> Result<StateAtEvent>
+where
+	Pdu: Event + Send + Sync,
+{
+	// Fetch missing state and auth chain events by calling /state_ids at
+	// backwards extremities doing all the checks in this list starting at 1.
+	// These are not timeline events.
+	let current_extremities: Vec<OwnedEventId> = self
+		.services
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+
+	let prev_events: Vec<_> = incoming_pdu.prev_events().map(ToOwned::to_owned).collect();
+	let exact_match = !current_extremities.is_empty()
+		&& prev_events.len() == current_extremities.len()
+		&& current_extremities.iter().all(|e| prev_events.contains(e));
+	let is_dag_fork = !exact_match;
+
+	let mut state_at_event: Option<StateAtEvent> = None;
+
+	// The fast-forward shortcut hands back the room's *live* current state
+	// verbatim (`get_room_shortstatehash(room_id)`), unconditioned on
+	// `exact_match` alone. That's only correct when this event is actually
+	// becoming the room's new live tip (`merge_current_extremities: true`,
+	// see the caller-facing doc comment on that parameter above). For a
+	// historical/admin rescue, `exact_match` can still trip by coincidence
+	// (the rescued event's prev_events happen to equal today's forward
+	// extremities), and taking this shortcut there would hand it today's
+	// live state -- memberships and power levels that didn't exist yet
+	// when the event was originally authored -- instead of resolving
+	// purely from its own prev_events.
+	if exact_match && merge_current_extremities {
+		info!(
+			"Incoming PDU matches current extremities exactly (fast-forward candidate). \
+			 Skipping full state lookup."
+		);
+		if let Ok(current_shortstatehash) =
+			self.services.state.get_room_shortstatehash(room_id).await
+		{
+			if current_shortstatehash != 0 {
+				return Ok(StateAtEvent::FastForward(current_shortstatehash));
+			}
+		}
+	}
+	if state_at_event.is_none() {
+		info!(
+			"State is none. Resolving state for incoming PDU (prev_events count: {})",
+			incoming_pdu.prev_events().count()
+		);
+
+		// When the incoming event creates a DAG fork (its prev_events don't
+		// match the current forward extremities), we MUST resolve state across
+		// both the incoming event's prev_events AND the current forward
+		// extremities. Without this, state resolution uses only the fork's
+		// state — which may lack memberships that exist in the current state
+		// (e.g., a user who joined on the other fork). `force_state` would
+		// then apply the fork's state as a delta, removing those memberships.
+		//
+		// This matches Synapse's `compute_event_context()` which resolves
+		// state groups across all prev_events (including current extremities
+		// that aren't in the incoming event's prev_events).
+		let resolved_state = if is_dag_fork && merge_current_extremities {
+			// Collect all events we need to resolve across: the incoming
+			// event's prev_events PLUS the current forward extremities.
+			let mut all_extremities: Vec<OwnedEventId> = prev_events.clone();
+			for ext in &current_extremities {
+				if !all_extremities.contains(ext) {
+					all_extremities.push(ext.clone());
+				}
+			}
+
+			info!(
+				event_id = %incoming_pdu.event_id(),
+				n_prev = prev_events.len(),
+				n_extremities = current_extremities.len(),
+				n_total = all_extremities.len(),
+				"DAG fork detected: resolving state across prev_events + current extremities"
+			);
+
+			self.resolve_extremities(
+				all_extremities.iter().map(AsRef::as_ref),
+				room_id,
+				room_version_id,
+				None,
+			)
+			.await?
+		} else if incoming_pdu.prev_events().count() == 1 {
+			self.state_at_incoming_degree_one(incoming_pdu, room_id)
+				.await?
+		} else {
+			self.state_at_incoming_resolved(incoming_pdu, room_id, room_version_id, None)
+				.await?
+		};
+		if let Some(compressed) = resolved_state {
+			state_at_event = Some(StateAtEvent::Compressed(compressed));
+		}
+		info!("State resolution completed for incoming PDU");
+	}
+
+	if state_at_event.is_none() && !skip_soft_fail {
+		// Local state is unavailable — prev_events are not yet in DB or their
+		// state hashes have not been computed.
+		//
+		let all_prevs_unknown = futures::stream::iter(incoming_pdu.prev_events())
+			.all(|prev_id| async move {
+				self.services.timeline.get_pdu_id(prev_id).await.is_err()
+					&& self
+						.services
+						.outlier
+						.get_pdu_outlier(prev_id)
+						.await
+						.is_err()
+			})
+			.await;
+
+		if prev_fetch_had_invalid_data && all_prevs_unknown {
+			// This event's own fetch_prev call just tried /get_missing_events
+			// and got back a structurally-invalid event for (one of) its
+			// prev_events. That data can't be made valid by asking again via a
+			// different federation endpoint, so skip the /state_ids attempt
+			// below entirely and reject now.
+			info!(
+				event_id = %incoming_pdu.event_id,
+				"Rejecting event: prev_event was structurally invalid in get_missing_events response"
+			);
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(
+					incoming_pdu.event_id(),
+					RejectionCode::StructurallyInvalidInGetMissingEvents.tag(),
+				)
+				.await;
+			return Err!(Request(Forbidden(
+				"Cannot determine state: prev_event was structurally invalid"
+			)));
+		}
+		let incoming_prev_events: Vec<OwnedEventId> =
+			incoming_pdu.prev_events().map(OwnedEventId::from).collect();
+		let state_lookup_event_id = if incoming_prev_events.len() > 1 {
+			choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id())
+		} else {
+			state_ids_anchor_hint.cloned().unwrap_or_else(|| {
+				choose_state_ids_target(&incoming_prev_events, incoming_pdu.event_id())
+			})
+		};
+
+		// Attempt a synchronous /state_ids fetch from the sending server
+		// BEFORE queuing the async DAG healer.
+		//
+		// The healer fires asynchronously (after a delay), which races with
+		// the sending server's lifetime: in Complement tests the fake
+		// federation server shuts down when the test times out, so the
+		// healer's /state_ids calls always arrive too late and "all servers
+		// failed". Fetching inline here gives us a shot while the sender
+		// is still alive.
+		debug!(
+			event_id = %incoming_pdu.event_id,
+			%origin,
+			"local state unavailable; attempting synchronous /state_ids fetch"
+		);
+		// Lift the enclosing write-phase cork for the duration of this
+		// /state_ids round-trip (and any fallback fetches below): this
+		// function runs inside `with_cork_and_flush` for both the
+		// incoming event and every prev-event repair, and holding that
+		// cork across federation I/O would suppress unrelated WAL
+		// flushes across the whole server for as long as the remote
+		// takes to answer.
+		match self
+			.services
+			.timeline
+			.without_cork(|| {
+				Box::pin(self.fetch_state(
+					origin,
+					create_event,
+					room_id,
+					&state_lookup_event_id,
+					false,
+				))
+			})
+			.await
+		{
+			| Ok(Some(fetched_state)) => {
+				info!(
+					target: "state_res_debug",
+					event_id = %incoming_pdu.event_id,
+					n_state = fetched_state.len(),
+					"fetched state via /state_ids; proceeding with auth check"
+				);
+				state_at_event = Some(StateAtEvent::Resolved(fetched_state));
+			},
+			| Ok(None) | Err(_) => {
+				// If any predecessor is still completely unknown — not in
+				// the timeline and not even persisted as an outlier — we
+				// still do not know the event's real state-at-event. A
+				// mixed known/unknown predecessor set is not safe to
+				// authorize against current room state either: the unknown
+				// edge could still anchor the event to a different auth
+				// context.
+				let unknown_prev_ids: Vec<_> = futures::stream::iter(incoming_pdu.prev_events())
+					.filter_map(|prev_id| async move {
+						(self.services.timeline.get_pdu_id(prev_id).await.is_err()
+							&& self
+								.services
+								.outlier
+								.get_pdu_outlier(prev_id)
+								.await
+								.is_err())
+						.then(|| prev_id.to_owned())
+					})
+					.collect()
+					.await;
+
+				let any_prev_still_unknown = !unknown_prev_ids.is_empty();
+
+				if any_prev_still_unknown {
+					// Last resort before rejecting: make a single,
+					// non-recursive attempt to materialize each prev_event
+					// via GET /event/{id}. /state_ids just failed, so we
+					// have no state snapshot — but a server that doesn't
+					// serve /state_ids may still serve individual events.
+					// Without this, a prev_event we were never sent (e.g.
+					// its own /send was rejected for an unrelated reason,
+					// like a signature we can't verify) leaves us with no
+					// cryptographic or structural facts about it, and the
+					// only options are: reject the child outright, or
+					// evaluate it against synthetic/current state — the
+					// latter is the DAG-takeover hazard Synapse's
+					// `on_receive_pdu` rejects for (a forged
+					// single-extremity event judged against today's power
+					// levels instead of its claimed ancestry).
+					//
+					// Fetched events go through the same signature/hash
+					// checks and auth-event resolution as any other
+					// outlier (`handle_outlier_pdu`) and are persisted as
+					// accepted or rejected accordingly. We do NOT chase
+					// their own prev_events — this is a single hop per
+					// prev_event, bounded by prev_events().count()
+					// (already capped at 20 in parse_incoming_pdu), fired
+					// concurrently, not a backfill.
+					// Same reasoning as the /state_ids fetch above: these
+					// single-hop /event fetches and the handle_outlier_pdu
+					// calls below them (which may themselves fall back to
+					// /event_auth) are remote I/O and must not hold the
+					// enclosing cork. Lift it once around the whole
+					// concurrent fan-out rather than per-task: `without_cork`
+					// only ever releases one *held* cork at a time (it can't
+					// safely release more without risking the shared
+					// refcount underflowing), so wrapping each of the up-to-4
+					// concurrent tasks individually would leave all but one
+					// of them running corked anyway.
+					self.services
+						.timeline
+						.without_cork(|| {
+							futures::stream::iter(unknown_prev_ids.iter()).for_each_concurrent(
+								4,
+								|prev_id| async move {
+									debug!(
+										event_id = %incoming_pdu.event_id,
+										%prev_id,
+										%origin,
+										"prev_event still unknown after /state_ids failure; \
+										 attempting single-hop /event fetch"
+									);
+									let Ok(res) = self
+											.services
+											.sending
+											.send_federation_request(
+												origin,
+												ruma::api::federation::event::get_event::v1::Request::new(
+													prev_id.clone(),
+													None,
+												),
+											)
+											.await
+										else {
+											return;
+										};
+									let Ok((fetched_id, val)) =
+										conduwuit::matrix::event::gen_event_id_canonical_json(
+											&res.pdu,
+											room_version_id,
+										)
+									else {
+										return;
+									};
+									if fetched_id != **prev_id {
+										return;
+									}
+
+									// Verified and persisted as an outlier
+									// (accepted or rejected) by handle_outlier_pdu;
+									// the Result doesn't matter here — either way,
+									// the prev_event is now "known" below.
+									drop(
+										Box::pin(self.handle_outlier_pdu(
+											origin,
+											Some(create_event),
+											&fetched_id,
+											room_id,
+											val,
+											false,
+											false,
+											Some(room_version_id),
+											super::AuthRecoveryStage::AfterStateIds,
+										))
+										.await,
+									);
+								},
+							)
+						})
+						.await;
+
+					// Require EVERY prev_event to now be known (in the timeline or
+					// stored as an outlier) before it's safe to continue with the
+					// auth check below. A single-hop /event fetch above is fired
+					// concurrently for each still-unknown prev_event, and a
+					// partial result — some prevs fetched, others still genuinely
+					// unknown — must still be rejected: authorizing against an
+					// incomplete ancestry would be the DAG-takeover hazard this
+					// whole fallback exists to avoid.
+					let any_prev_still_unknown =
+						futures::stream::iter(incoming_pdu.prev_events())
+							.any(|prev_id| async move {
+								self.services.timeline.get_pdu_id(prev_id).await.is_err()
+									&& self
+										.services
+										.outlier
+										.get_pdu_outlier(prev_id)
+										.await
+										.is_err()
+							})
+							.await;
+
+					if any_prev_still_unknown {
+						info!(
+							event_id = %incoming_pdu.event_id,
+							"Rejecting event: at least one prev_event still unknown after \
+							 /state_ids and /event fetches failed"
+						);
+						self.services
+							.pdu_metadata
+							.mark_event_rejected(
+								incoming_pdu.event_id(),
+								RejectionCode::PrevEventUnknownStateIdsFailed.tag(),
+							)
+							.await;
+						return Err!(Request(Forbidden(
+							"Cannot determine state: prev_events remain unknown after \
+							 /state_ids fetch failed"
+						)));
+					}
+
+					// All prev_events exist but we still couldn't recover a
+					// resolvable state snapshot. We do not authorize against the
+					// current room state here; that would turn a missing ancestry
+					// problem into a fail-open historical authorization bug.
+					info!(
+						target: "state_res_debug",
+						event_id = %incoming_pdu.event_id,
+						"fetch_state failed but prev_events present; state remains unresolved"
+					);
+					let rejection_reason = RejectionCode::StateResolutionFailedWithPrevsPresent
+						.with_detail("state resolution failed");
+					self.services
+						.pdu_metadata
+						.mark_event_rejected(incoming_pdu.event_id(), rejection_reason.as_str())
+						.await;
+					return Err!(StateResolutionWithPrevsPresent(
+						"Cannot determine state: resolution failed even with all prev_events"
+					));
+				}
+			},
+		}
+	}
+
+	if state_at_event.is_none() {
+		return Err!(Request(Forbidden("Cannot determine state: state resolution failed")));
+	}
+
+	Ok(state_at_event.unwrap())
+}
+
+/// For state events: build the new post-event state, run state resolution
+/// against the current room state, and return the state delta for application.
+///
+/// Extracted from `upgrade_outlier_to_timeline_pdu` to give `save_state`
+/// its own async state-machine frame and allow Optimistic Concurrency Control
+/// (running without a lock).
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+async fn calculate_state_delta(
+	&self,
+	incoming_pdu: &PduEvent,
+	state_at_incoming_event: StateAtEvent,
+	room_id: &RoomId,
+	room_version_id: &RoomVersionId,
+) -> Result<Option<HashSetCompressStateEvent>> {
+	let current_shortstatehash = self
+		.services
+		.state
+		.get_room_shortstatehash(room_id)
+		.await
+		.ok();
+
+	if incoming_pdu.state_key().is_none() {
+		// Just a normal message, state hasn't diverged: fast path out.
+		let state_at_hash = match &state_at_incoming_event {
+			| StateAtEvent::FastForward(ssh) => Some(*ssh),
+			| StateAtEvent::Compressed(_) | StateAtEvent::Resolved(_) => None, /* We have to
+			                                                                    * compress to
+			                                                                    * get the hash */
+		};
+
+		if let Some(ssh) = state_at_hash {
+			if Some(ssh) == current_shortstatehash {
+				return Ok(None);
+			}
+		}
+	} else {
+		info!("Event is a state-event. Deriving new room state");
+	}
+
+	let new_room_state = match state_at_incoming_event {
+		| StateAtEvent::FastForward(shortstatehash) => {
+			info!("Fast-forward state update, skipping state resolution and map expansion");
+			let mut current_state_compressed = self
+				.services
+				.state_compressor
+				.load_shortstatehash_info(shortstatehash)
+				.await?
+				.pop()
+				.expect("must have frame")
+				.full_state
+				.expect("must have full_state")
+				.as_ref()
+				.clone();
+
+			if let Some(state_key) = incoming_pdu.state_key() {
+				let shortstatekey = self
+					.services
+					.short
+					.get_or_create_shortstatekey(
+						&incoming_pdu.kind().to_string().into(),
+						state_key,
+					)
+					.await;
+
+				let shorteventid = self
+					.services
+					.short
+					.get_or_create_shorteventid(incoming_pdu.event_id())
+					.await;
+
+				if let Ok(old_shorteventid) = self
+					.services
+					.state_accessor
+					.state_get_shortid(
+						shortstatehash,
+						&incoming_pdu.kind().to_string().into(),
+						state_key,
+					)
+					.await
+				{
+					let old_compressed = crate::rooms::state_compressor::compress_state_event(
+						shortstatekey,
+						old_shorteventid,
+					);
+					current_state_compressed.remove(&old_compressed);
+				}
+
+				let new_compressed = crate::rooms::state_compressor::compress_state_event(
+					shortstatekey,
+					shorteventid,
+				);
+				current_state_compressed.insert(new_compressed);
+			}
+
+			Arc::new(current_state_compressed)
+		},
+		| StateAtEvent::Compressed(state_after) => {
+			let mut state_after = state_after.clone();
+			if let Some(state_key) = incoming_pdu.state_key() {
+				let shortstatekey = self
+					.services
+					.short
+					.get_or_create_shortstatekey(
+						&incoming_pdu.kind().to_string().into(),
+						state_key,
+					)
+					.await;
+				let shorteventid = self
+					.services
+					.short
+					.get_or_create_shorteventid(incoming_pdu.event_id())
+					.await;
+
+				let state_after_mut: &mut std::collections::BTreeSet<[u8; 16]> =
+					Arc::make_mut(&mut state_after);
+				let old_compressed = state_after_mut
+					.iter()
+					.find(|bytes| bytes.starts_with(&shortstatekey.to_be_bytes()))
+					.copied();
+				if let Some(old) = old_compressed {
+					state_after_mut.remove(&old);
+				}
+				state_after_mut.insert(crate::rooms::state_compressor::compress_state_event(
+					shortstatekey,
+					shorteventid,
+				));
+			}
+			state_after
+		},
+		| StateAtEvent::Resolved(state_after) => {
+			let mut state_after = state_after.clone();
+			if let Some(state_key) = incoming_pdu.state_key() {
+				let shortstatekey = self
+					.services
+					.short
+					.get_or_create_shortstatekey(
+						&incoming_pdu.kind().to_string().into(),
+						state_key,
+					)
+					.await;
+
+				let event_id = incoming_pdu.event_id();
+				state_after.insert(shortstatekey, event_id.to_owned());
+			}
+
+			let t = Instant::now();
+			info!(
+				event_id = %incoming_pdu.event_id(),
+				%room_id,
+				"state_res: starting resolve_state for incoming state event"
+			);
+			let result = self
+				.resolve_state(room_id, room_version_id, state_after)
+				.await?;
+			info!(
+				event_id = %incoming_pdu.event_id(),
+				%room_id,
+				elapsed = ?t.elapsed(),
+				"state_res: resolve_state complete"
+			);
+
+			result
+		},
+	};
+
+	// Save the resolved state delta into the database (safe to do concurrently)
+	debug!("Compressing new room state");
+	let state_delta = self
+		.services
+		.state_compressor
+		.save_state(room_id, new_room_state)
+		.await?;
+
+	// If the state delta is empty (no added/removed events), we can fast-path out
+	// without taking the room state lock and churning caches, UNLESS the state hash
+	// shifted (i.e., if we resolved from multiple parents to an existing hash).
+	if state_delta.added.is_empty()
+		&& state_delta.removed.is_empty()
+		&& Some(state_delta.shortstatehash) == current_shortstatehash
+	{
+		return Ok(None);
+	}
+
+	Ok(Some(state_delta))
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::BTreeMap;
+
+	use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, event_id, room_id};
+
+	use super::{
+		ClaimedAuthEventResolution, choose_state_ids_target, classify_claimed_auth_event,
+	};
+
+	fn make_test_pdu(
+		event_id: &ruma::EventId,
+		room_id: &ruma::RoomId,
+		event_type: &str,
+		state_key: Option<&str>,
+	) -> conduwuit::PduEvent {
+		let mut json = CanonicalJsonObject::new();
+		json.insert(
+			"event_id".to_owned(),
+			CanonicalJsonValue::String(event_id.as_str().to_owned()),
+		);
+		json.insert(
+			"room_id".to_owned(),
+			CanonicalJsonValue::String(room_id.as_str().to_owned()),
+		);
+		json.insert("type".to_owned(), CanonicalJsonValue::String(event_type.to_owned()));
+		json.insert("sender".to_owned(), CanonicalJsonValue::String("@user:test".to_owned()));
+		json.insert("origin_server_ts".to_owned(), CanonicalJsonValue::Integer(1.into()));
+		json.insert("depth".to_owned(), CanonicalJsonValue::Integer(1.into()));
+		json.insert("auth_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
+		json.insert("prev_events".to_owned(), CanonicalJsonValue::Array(Vec::new()));
+		json.insert("content".to_owned(), CanonicalJsonValue::Object(BTreeMap::new()));
+		let mut hashes = BTreeMap::new();
+		hashes.insert("sha256".to_owned(), CanonicalJsonValue::String(String::new()));
+		json.insert("hashes".to_owned(), CanonicalJsonValue::Object(hashes));
+		json.insert("signatures".to_owned(), CanonicalJsonValue::Object(BTreeMap::new()));
+		if let Some(state_key) = state_key {
+			json.insert("state_key".to_owned(), CanonicalJsonValue::String(state_key.to_owned()));
+		}
+
+		conduwuit::PduEvent::from_id_val(event_id, json, Some(room_id))
+			.expect("test PDU should parse")
+	}
+
+	#[test]
+	fn state_ids_target_uses_single_prev() {
+		let incoming_event_id = event_id!("$send:test");
+		let prev = event_id!("$state:test");
+		let prevs = vec![prev.to_owned()];
+
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
+
+		assert_eq!(target, prev.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_uses_incoming_event_when_no_prevs() {
+		let incoming_event_id = event_id!("$send:test");
+		let prevs: Vec<OwnedEventId> = Vec::new();
+
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
+
+		assert_eq!(target, incoming_event_id.to_owned());
+	}
+
+	#[test]
+	fn state_ids_target_uses_incoming_event_when_multiple_prevs() {
+		let incoming_event_id = event_id!("$send:test");
+		let prevs = vec![event_id!("$a:test").to_owned(), event_id!("$b:test").to_owned()];
+
+		let target = choose_state_ids_target(&prevs, incoming_event_id);
+
+		assert_eq!(target, incoming_event_id.to_owned());
+	}
+
+	#[test]
+	fn claimed_auth_event_resolution_distinguishes_non_state_from_missing() {
+		let room_id = room_id!("!room:test");
+		let event_id = event_id!("$msg:test");
+		let pdu = make_test_pdu(event_id, room_id, "m.room.message", None);
+
+		assert!(matches!(
+			classify_claimed_auth_event(pdu),
+			ClaimedAuthEventResolution::PresentNonState
+		));
+	}
+
+	#[test]
+	fn claimed_auth_event_resolution_accepts_state_events() {
+		let room_id = room_id!("!room:test");
+		let event_id = event_id!("$state:test");
+		let pdu = make_test_pdu(event_id, room_id, "m.room.member", Some(""));
+
+		assert!(matches!(
+			classify_claimed_auth_event(pdu),
+			ClaimedAuthEventResolution::PresentState(_)
+		));
+	}
 }

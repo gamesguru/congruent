@@ -57,7 +57,7 @@ pub(crate) async fn send_event_to_device_route(
 
 				services
 					.sending
-					.send_edu_server(target_user_id.server_name(), buf)?;
+					.send_reliable_edu_server(target_user_id.server_name(), buf)?;
 
 				continue;
 			}

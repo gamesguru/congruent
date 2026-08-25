@@ -21,6 +21,7 @@ pub(crate) mod room;
 pub(crate) mod server;
 pub(crate) mod token;
 pub(crate) mod user;
+pub(crate) mod yolo;
 
 extern crate conduwuit_api as api;
 extern crate conduwuit_core as conduwuit;

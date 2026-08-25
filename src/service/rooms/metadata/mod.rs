@@ -16,7 +16,7 @@ struct Data {
 	disabledroomids: Arc<Map>,
 	bannedroomids: Arc<Map>,
 	roomid_shortroomid: Arc<Map>,
-	pduid_pdu: Arc<Map>,
+	room_pducount_eventid: Arc<Map>,
 }
 
 struct Services {
@@ -30,7 +30,7 @@ impl crate::Service for Service {
 				disabledroomids: args.db["disabledroomids"].clone(),
 				bannedroomids: args.db["bannedroomids"].clone(),
 				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
-				pduid_pdu: args.db["pduid_pdu"].clone(),
+				room_pducount_eventid: args.db["room_pducount_eventid"].clone(),
 			},
 			services: Services {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
@@ -49,7 +49,7 @@ pub async fn exists(&self, room_id: &RoomId) -> bool {
 
 	// Look for PDUs in that room.
 	self.db
-		.pduid_pdu
+		.room_pducount_eventid
 		.keys_prefix_raw(&prefix)
 		.ignore_err()
 		.next()
@@ -97,4 +97,11 @@ pub async fn is_disabled(&self, room_id: &RoomId) -> bool {
 #[inline]
 pub async fn is_banned(&self, room_id: &RoomId) -> bool {
 	self.db.bannedroomids.get(room_id).await.is_ok()
+}
+
+#[implement(Service)]
+pub fn remove_room_raw(&self, room_id: &RoomId) {
+	self.db.roomid_shortroomid.remove(room_id);
+	self.db.disabledroomids.remove(room_id);
+	self.db.bannedroomids.remove(room_id);
 }

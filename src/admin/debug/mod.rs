@@ -36,6 +36,10 @@ pub enum DebugCommand {
 	GetPdu {
 		/// An event ID (a $ followed by the base64 reference hash)
 		event_id: OwnedEventId,
+
+		/// Also print deserialized eventid_metadata (short IDs, flags, SSH)
+		#[arg(short, long)]
+		verbose: bool,
 	},
 
 	/// Retrieve and print a PDU by PduId from the Continuwuity database
@@ -152,28 +156,47 @@ pub enum DebugCommand {
 		room_id: OwnedRoomId,
 	},
 
-	/// Forcefully replaces the room state of our local copy of the specified
-	///   room, with the copy (auth chain and room state events) the specified
-	///   remote server says.
+	/// Forcefully re-resolve and set room state.
 	///
-	/// A common desire for room deletion is to simply "reset" our copy of the
-	/// room. While this admin command is not a replacement for that, if you
-	/// know you have split/broken room state and you know another server in the
-	/// room that has the best/working room state, this command can let you use
-	/// their room state. Such example is your server saying users are in a
-	/// room, but other servers are saying they're not in the room in question.
-	///
-	/// This command will get the latest PDU in the room we know about, and
-	/// request the room state at that point in time via
-	/// `/_matrix/federation/v1/state/{roomId}`.
-	ForceSetRoomStateFromServer {
+	/// When called without servers, rebuilds state from the local DAG
+	/// and reconciles the membership cache. When one or more servers are
+	/// provided, fetches state from each via federation and merges all
+	/// PDUs before running state resolution.
+	#[clap(alias = "force-set-room-state-from-server")]
+	ForceSetState {
 		/// The impacted room ID
 		room_id: OwnedRoomId,
-		/// The server we will use to query the room state for
-		server_name: OwnedServerName,
+		/// Servers to query room state from. If omitted, rebuilds from
+		/// the local DAG without federation. Multiple servers will be
+		/// merged before resolution.
+		server_names: Vec<OwnedServerName>,
 		/// The event ID of the latest known PDU in the room. Will be found
 		/// automatically if not provided.
+		#[arg(short, long)]
 		event_id: Option<OwnedEventId>,
+		/// Skip signature verification AND use absolute override (shorthand
+		/// for --skip-sig-verify --absolute)
+		#[arg(short, long)]
+		overwrite: bool,
+		/// Skip signature verification on incoming PDUs
+		#[arg(long)]
+		skip_sig_verify: bool,
+		/// Use remote state exclusively without merging with local state
+		#[arg(long)]
+		absolute: bool,
+		/// Dump the raw federation state response to a JSON file
+		#[arg(long)]
+		output: Option<String>,
+		/// Load state from a previously dumped JSON file instead of federation
+		#[arg(long)]
+		input: Option<String>,
+		/// Show what would change without modifying state
+		#[arg(long)]
+		dry_run: bool,
+		/// Skip per-member membership cache rebuild (fast path for bulk
+		/// healing)
+		#[arg(long, hide = true, default_value_t = false)]
+		skip_membership_rebuild: bool,
 	},
 
 	/// Runs a server name through Continuwuity's true destination resolution
@@ -212,6 +235,9 @@ pub enum DebugCommand {
 
 		#[arg(short, long, alias("column"))]
 		map: Option<String>,
+
+		#[arg(short, long)]
+		verbose: bool,
 	},
 
 	/// Trim memory usage
@@ -225,17 +251,12 @@ pub enum DebugCommand {
 		level: Option<i32>,
 	},
 
-	/// Purge outlier PDUs from the database
-	PurgeOutliers,
-
-	/// Backfill the timestamp index for MSC3030
-	BackfillTimestampIndex {
-		/// Room ID to backfill (otherwise all rooms)
-		room: Option<OwnedRoomId>,
-	},
-
 	/// Send a test email to the invoking admin's email address
 	SendTestEmail,
+
+	/// Scans timeline and outlier PDUs in the database and injects missing
+	/// event_id fields.
+	FixPduEventIds,
 
 	/// Developer test stubs
 	#[command(subcommand)]

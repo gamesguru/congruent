@@ -299,6 +299,7 @@ mod tests {
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
+			rejected: false,
 		}
 	}
 
@@ -464,6 +465,7 @@ mod tests {
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
+			rejected: false,
 		}
 	}
 

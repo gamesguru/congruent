@@ -7,8 +7,8 @@
 
 use std::sync::OnceLock;
 
-static BRANDING: &str = "guwitty";
-static WEBSITE: &str = "https://nutra.tk";
+static BRANDING: &str = "Congruent";
+static WEBSITE: &str = "https://github.com";
 static SEMANTIC: &str = env!("CARGO_PKG_VERSION");
 
 static VERSION: OnceLock<String> = OnceLock::new();

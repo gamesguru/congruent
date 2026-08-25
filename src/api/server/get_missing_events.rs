@@ -85,7 +85,11 @@ pub(crate) async fn get_missing_events_route(
 		if !services
 			.rooms
 			.state_accessor
-			.server_can_see_event(body.origin(), &body.room_id, pdu.event_id())
+			.server_can_see_event(
+				body.origin().to_owned(),
+				body.room_id.clone(),
+				pdu.event_id().to_owned(),
+			)
 			.await
 		{
 			debug!(%next_event_id, origin = %body.origin(), "redacting event origin cannot see");

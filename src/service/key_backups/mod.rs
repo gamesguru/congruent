@@ -187,7 +187,7 @@ pub async fn get_etag(&self, user_id: &UserId, version: &str) -> String {
 		.await
 		.deserialized::<u64>()
 		.as_ref()
-		.map(ToString::to_string)
+		.map(|etag| format!("{etag}"))
 		.expect("Backup has no etag.")
 }
 

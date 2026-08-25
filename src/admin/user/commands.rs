@@ -41,7 +41,7 @@ pub(super) async fn list_users(&self) -> Result {
 		.services
 		.users
 		.list_local_users()
-		.map(ToString::to_string)
+		.map(|id| format!("{id}"))
 		.collect()
 		.await;
 
@@ -135,7 +135,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 			}
 
 			if let Some(room_server_name) = room.server_name() {
-				match Box::pin(join_room_by_id_helper(
+				match join_room_by_id_helper(
 					self.services,
 					&user_id,
 					&room_id,
@@ -146,7 +146,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 					],
 					&None,
 					None,
-				))
+				)
 				.await
 				{
 					| Ok(_response) => {
@@ -455,7 +455,7 @@ pub(super) async fn list_joined_rooms(&self, user_id: String) -> Result {
 		.collect::<Vec<_>>()
 		.join("\n");
 
-	self.write_str(&format!("Rooms {user_id} Joined ({}):\n```\n{body}\n```", rooms.len(),))
+	self.write_str(&format!("Rooms {user_id} Joined ({}):\n```\n{body}\n```", rooms.len()))
 		.await
 }
 
@@ -553,7 +553,7 @@ pub(super) async fn force_join_list_of_local_users(
 	let mut successful_joins: usize = 0;
 
 	for user_id in user_ids {
-		match Box::pin(join_room_by_id_helper(
+		match join_room_by_id_helper(
 			self.services,
 			&user_id,
 			&room_id,
@@ -561,7 +561,7 @@ pub(super) async fn force_join_list_of_local_users(
 			&servers,
 			&None,
 			None,
-		))
+		)
 		.await
 		{
 			| Ok(_res) => {
@@ -639,7 +639,7 @@ pub(super) async fn force_join_all_local_users(
 		.collect::<Vec<_>>()
 		.await
 	{
-		match Box::pin(join_room_by_id_helper(
+		match join_room_by_id_helper(
 			self.services,
 			user_id,
 			&room_id,
@@ -647,7 +647,7 @@ pub(super) async fn force_join_all_local_users(
 			&servers,
 			&None,
 			None,
-		))
+		)
 		.await
 		{
 			| Ok(_res) => {
@@ -672,31 +672,26 @@ pub(super) async fn force_join_room(
 	&self,
 	user_id: String,
 	room_id: OwnedRoomOrAliasId,
+	mut server: Vec<OwnedServerName>,
 ) -> Result {
 	let user_id = parse_local_user_id(self.services, &user_id)?;
-	let (room_id, servers) = self
+	let (room_id, mut servers) = self
 		.services
 		.rooms
 		.alias
 		.resolve_with_servers(&room_id, None)
 		.await?;
 
+	servers.append(&mut server);
+
 	assert!(
 		self.services.globals.user_is_local(&user_id),
 		"Parsed user_id must be a local user"
 	);
-	Box::pin(join_room_by_id_helper(
-		self.services,
-		&user_id,
-		&room_id,
-		None,
-		&servers,
-		&None,
-		None,
-	))
-	.await?;
+	join_room_by_id_helper(self.services, &user_id, &room_id, None, &servers, &None, None)
+		.await?;
 
-	self.write_str(&format!("{user_id} has been joined to {room_id}.",))
+	self.write_str(&format!("{user_id} has been joined to {room_id}."))
 		.await
 }
 
@@ -724,11 +719,32 @@ pub(super) async fn force_leave_room(
 		return Err!("{user_id} is not joined in the room");
 	}
 
-	leave_room(self.services, &user_id, &room_id, None)
+	match leave_room(self.services, &user_id, &room_id, None)
 		.boxed()
-		.await?;
+		.await
+	{
+		| Ok(()) => {},
+		| Err(e) => {
+			// leave_room failed (likely zombie room with no state from a failed join).
+			// Fall back to directly clearing the membership cache.
+			warn!(
+				"leave_room failed for {user_id} in {room_id}: {e}. Falling back to direct \
+				 membership removal."
+			);
+			self.services
+				.rooms
+				.state_cache
+				.mark_as_left(&user_id, &room_id, None)
+				.await;
+			self.services
+				.rooms
+				.state_cache
+				.update_joined_count(&room_id)
+				.await;
+		},
+	}
 
-	self.write_str(&format!("{user_id} has left {room_id}.",))
+	self.write_str(&format!("{user_id} has left {room_id}."))
 		.await
 }
 
@@ -801,7 +817,7 @@ pub(super) async fn make_user_admin(&self, user_id: String) -> Result {
 		.boxed()
 		.await?;
 
-	self.write_str(&format!("{user_id} has been granted admin privileges.",))
+	self.write_str(&format!("{user_id} has been granted admin privileges."))
 		.await
 }
 
@@ -984,9 +1000,21 @@ pub(super) async fn force_leave_remote_room(
 	for server in vias_raw {
 		vias.insert(server);
 	}
-	remote_leave_room(self.services, &user_id, &room_id, None, vias)
+	let leave_pdu = remote_leave_room(self.services, &user_id, &room_id, None, vias)
 		.boxed()
 		.await?;
+
+	self.services
+		.rooms
+		.state_cache
+		.mark_as_left(&user_id, &room_id, Some(leave_pdu))
+		.await;
+
+	self.services
+		.rooms
+		.state_cache
+		.update_joined_count(&room_id)
+		.await;
 
 	self.write_str(&format!("{user_id} successfully left {room_id} via remote server."))
 		.await
@@ -1214,4 +1242,28 @@ pub(super) async fn reset_push_rules(&self, user_id: String) -> Result {
 	recreate_push_rules_and_return(self.services, &user_id).await?;
 	self.write_str("Reset user's push rules to the server default.")
 		.await
+}
+
+#[admin_command]
+pub(super) async fn bump_device_lists(&self, user_id: String) -> Result {
+	if user_id.eq_ignore_ascii_case("all") {
+		let users: Vec<_> = self.services.users.list_local_users().collect().await;
+		let count = users.len();
+		for user in users {
+			self.services.users.mark_device_key_update(user).await;
+		}
+		self.write_str(&format!("Bumped device list updates for all {count} local users."))
+			.await
+	} else {
+		let user_id = parse_local_user_id(self.services, &user_id)?;
+		if !self.services.users.is_active(&user_id).await {
+			return Err!("User is not active.");
+		}
+		self.services.users.mark_device_key_update(&user_id).await;
+		self.write_str(
+			"Bumped device list updates for user, they will be rebroadcasted over federation \
+			 shortly.",
+		)
+		.await
+	}
 }

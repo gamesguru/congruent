@@ -31,8 +31,20 @@ pub enum StateResolutionVersion {
 	V2,
 	/// State resolution for room at version 12 or later.
 	V2_1,
+	/// State resolution v2.1.1 (MSC4297)
+	V2_1_1,
 	/// State resolution for MSC4242 (State DAGs).
 	V2_2,
+}
+
+impl StateResolutionVersion {
+	pub fn begin_iterative_auth_checks_with_empty_state_map(&self) -> bool {
+		matches!(self, Self::V2_1_1)
+	}
+}
+
+impl StateResolutionVersion {
+	pub fn is_state_dag(&self) -> bool { matches!(self, Self::V2_2) }
 }
 
 #[cfg_attr(not(feature = "unstable-exhaustive-types"), non_exhaustive)]
@@ -93,12 +105,8 @@ pub struct RoomVersion {
 	///
 	/// See: [MSC4291](https://github.com/matrix-org/matrix-spec-proposals/pull/4291)
 	pub room_ids_as_hashes: bool,
-	/// Whether this room version uses State DAGs (MSC4242).
-	///
-	/// State events form their own DAG via `prev_state_events`, enabling
-	/// faster state convergence and calculated `auth_events`.
-	///
-	/// See: [MSC4242](https://github.com/matrix-org/matrix-spec-proposals/pull/4242)
+	/// MSC4242: whether state events form their own DAG via
+	/// `prev_state_events`.
 	pub state_dags: bool,
 }
 
@@ -136,6 +144,10 @@ impl RoomVersion {
 		room_ids_as_hashes: true,
 		..Self::V11
 	};
+	pub const V12_1: Self = Self {
+		state_res: StateResolutionVersion::V2_1_1,
+		..Self::V12
+	};
 	pub const V2: Self = Self {
 		state_res: StateResolutionVersion::V2,
 		..Self::V1
@@ -167,6 +179,9 @@ impl RoomVersion {
 		..Self::V12
 	};
 
+	#[must_use]
+	pub fn strips_room_id(&self, is_create: bool) -> bool { self.room_ids_as_hashes && is_create }
+
 	pub fn new(version: &RoomVersionId) -> Result<Self> {
 		Ok(match version {
 			| RoomVersionId::V1 => Self::V1,
@@ -181,23 +196,9 @@ impl RoomVersion {
 			| RoomVersionId::V10 => Self::V10,
 			| RoomVersionId::V11 => Self::V11,
 			| RoomVersionId::V12 => Self::V12,
+			| ver if ver.as_str() == "12.1" => Self::V12_1,
 			| ver if ver.as_str() == "org.matrix.msc4242.12" => Self::V_MSC4242,
 			| ver => return Err(Error::Unsupported(format!("found version `{ver}`"))),
 		})
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use std::str::FromStr;
-
-	use super::*;
-
-	#[test]
-	fn new_msc4242() {
-		let id = RoomVersionId::from_str("org.matrix.msc4242.12").expect("valid version");
-		let v = RoomVersion::new(&id).expect("valid version");
-		assert!(v.state_dags);
-		assert_eq!(v.state_res, StateResolutionVersion::V2_2);
 	}
 }

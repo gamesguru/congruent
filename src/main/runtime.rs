@@ -22,7 +22,7 @@ const WORKER_NAME: &str = "conduwuit:worker";
 const WORKER_MIN: usize = 2;
 const WORKER_KEEPALIVE: u64 = 36;
 const MAX_BLOCKING_THREADS: usize = 1024;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(10000);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 const DISABLE_MUZZY_THRESHOLD: usize = 4;
 
@@ -30,7 +30,10 @@ static WORKER_AFFINITY: OnceLock<bool> = OnceLock::new();
 static GC_ON_PARK: OnceLock<Option<bool>> = OnceLock::new();
 static GC_MUZZY: OnceLock<Option<bool>> = OnceLock::new();
 
-pub(super) fn new(args: &Args) -> Result<tokio::runtime::Runtime> {
+pub(super) fn new(
+	args: &Args,
+	config: &conduwuit_core::config::Config,
+) -> Result<tokio::runtime::Runtime> {
 	WORKER_AFFINITY
 		.set(args.worker_affinity)
 		.expect("set WORKER_AFFINITY from program argument");
@@ -44,6 +47,11 @@ pub(super) fn new(args: &Args) -> Result<tokio::runtime::Runtime> {
 		.expect("set GC_MUZZY from program argument");
 
 	let mut builder = Builder::new_multi_thread();
+
+	if let Some(worker_threads) = config.worker_threads {
+		builder.worker_threads(worker_threads);
+	}
+
 	builder
 		.enable_io()
 		.enable_time()

@@ -83,6 +83,16 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Reserves an MXC URI for asynchronous upload.
+	pub fn create_async(&self, mxc: &Mxc<'_>, user: Option<&UserId>) -> Result<()> {
+		self.db
+			.create_file_metadata(mxc, user, &Dim::default(), None, None)
+			.map(|_| ())
+			.map_err(|e| {
+				err!(Database(error!("Failed to reserve media metadata for MXC {mxc}: {e}")))
+			})
+	}
+
 	/// Uploads a file.
 	pub async fn create(
 		&self,
@@ -111,6 +121,36 @@ impl Service {
 		})?;
 
 		Ok(())
+	}
+
+	/// Fills a previously reserved MXC URI with content.
+	pub async fn create_async_upload(
+		&self,
+		mxc: &Mxc<'_>,
+		user: Option<&UserId>,
+		content_disposition: Option<&ContentDisposition>,
+		content_type: Option<&str>,
+		file: &[u8],
+	) -> Result<()> {
+		let existing = self
+			.db
+			.search_file_metadata(mxc, &Dim::default())
+			.await
+			.ok();
+
+		if let Some(metadata) = existing {
+			let path = self.get_media_file(&metadata.key);
+			if fs::metadata(&path).await.is_ok() {
+				return Err!(Request(CannotOverwriteMedia(
+					"Media has already been uploaded to this MXC URI."
+				)));
+			}
+
+			self.db.delete_file_metadata_key(&metadata.key);
+		}
+
+		self.create(mxc, user, content_disposition, content_type, file)
+			.await
 	}
 
 	/// Deletes a file in the database and from the media directory via an MXC
@@ -173,9 +213,13 @@ impl Service {
 			| Ok(Metadata { content_disposition, content_type, key }) => {
 				let mut content = Vec::with_capacity(8192);
 				let path = self.get_media_file(&key);
-				BufReader::new(fs::File::open(path).await?)
-					.read_to_end(&mut content)
-					.await?;
+				let file = match fs::File::open(path).await {
+					| Ok(file) => file,
+					| Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
+						return Err!(Request(NotYetUploaded("Media has not been uploaded yet."))),
+					| Err(e) => return Err!(Io(e)),
+				};
+				BufReader::new(file).read_to_end(&mut content).await?;
 
 				Ok(Some(FileMeta {
 					content: Some(content),

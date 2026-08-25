@@ -1,4 +1,4 @@
-use std::{fmt::Write, mem::take, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
+use std::{fmt::Write, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
 
 use clap::{CommandFactory, Parser};
 use conduwuit::{
@@ -13,6 +13,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
+use regex::Regex;
 use ruma::{
 	EventId,
 	events::{
@@ -29,25 +30,27 @@ use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 use crate::{admin, admin::AdminCommand, context::Context};
 
+type ParsedCommand<'a> = (AdminCommand, Vec<String>, Vec<&'a str>);
+
 #[must_use]
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
-#[must_use]
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
-	Box::pin(handle_command(services, command))
+	Box::pin(async move { handle_command(services, command).await })
 }
 
 #[tracing::instrument(skip_all, name = "admin", level = "info")]
 async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
-	AssertUnwindSafe(Box::pin(process_command(services, &command)))
+	let reply_id = command.reply_id.clone();
+	AssertUnwindSafe(Box::pin(process_command(services, command)))
 		.catch_unwind()
 		.await
 		.map_err(Error::from_panic)
-		.unwrap_or_else(|error| handle_panic(&error, &command))
+		.unwrap_or_else(|error| handle_panic(&error, reply_id.as_deref()))
 }
 
-async fn process_command(services: Arc<Services>, input: &CommandInput) -> ProcessorResult {
-	let (command, args, body) = match parse(&services, input) {
+async fn process_command(services: Arc<Services>, input: CommandInput) -> ProcessorResult {
+	let (command, args, body) = match parse(&services, &input) {
 		| Err(error) => return Err(error),
 		| Ok(parsed) => parsed,
 	};
@@ -56,7 +59,7 @@ async fn process_command(services: Arc<Services>, input: &CommandInput) -> Proce
 		services: &services,
 		body: &body,
 		timer: SystemTime::now(),
-		reply_id: input.reply_id.as_deref(),
+		_reply_id: input.reply_id.as_deref(),
 		sender: input.sender.as_deref(),
 		output: BufWriter::new(Vec::new()).into(),
 		source: input.source,
@@ -64,36 +67,51 @@ async fn process_command(services: Arc<Services>, input: &CommandInput) -> Proce
 
 	let (result, mut logs) = process(&context, command, &args).await;
 
-	let output = &mut context.output.lock().await;
+	let mut output = context.output.into_inner();
 	output.flush().await.expect("final flush of output stream");
 
 	let output =
-		String::from_utf8(take(output.get_mut())).expect("invalid utf8 in command output stream");
+		String::from_utf8(output.into_inner()).expect("invalid utf8 in command output stream");
+
+	// Wrap command output in code blocks if it's not already markdown
+	let output = if !output.is_empty() && !looks_like_markdown(&output) {
+		format!("```\n{output}\n```")
+	} else {
+		output
+	};
 
 	match result {
-		| Ok(()) if logs.is_empty() =>
-			Ok(Some(reply(RoomMessageEventContent::notice_markdown(output), context.reply_id))),
+		| Ok(()) if logs.is_empty() => Ok(Some(reply(
+			RoomMessageEventContent::notice_markdown(output),
+			input.reply_id.as_deref(),
+		))),
 
 		| Ok(()) => {
 			logs.write_str(output.as_str()).expect("output buffer");
-			Ok(Some(reply(RoomMessageEventContent::notice_markdown(logs), context.reply_id)))
+			Ok(Some(reply(
+				RoomMessageEventContent::notice_markdown(logs),
+				input.reply_id.as_deref(),
+			)))
 		},
 		| Err(error) => {
 			write!(&mut logs, "Command failed with error:\n```\n{error:#?}\n```")
 				.expect("output buffer");
 
-			Err(reply(RoomMessageEventContent::notice_markdown(logs), context.reply_id))
+			Err(Box::new(reply(
+				RoomMessageEventContent::notice_markdown(logs),
+				input.reply_id.as_deref(),
+			)))
 		},
 	}
 }
 
-#[allow(clippy::result_large_err)]
-fn handle_panic(error: &Error, command: &CommandInput) -> ProcessorResult {
-	let link = "Please submit a [bug report](https://forgejo.ellis.link/continuwuation/continuwuity/issues/new). 🥺";
+fn handle_panic(error: &Error, reply_id: Option<&EventId>) -> ProcessorResult {
+	let link =
+		"Please submit a [bug report](https://github.com/gamesguru/continuwuity/issues/new). 🥺";
 	let msg = format!("Panic occurred while processing command:\n```\n{error:#?}\n```\n{link}");
 	let content = RoomMessageEventContent::notice_markdown(msg);
 	error!("Panic while processing command: {error:?}");
-	Err(reply(content, command.reply_id.as_deref()))
+	Err(Box::new(reply(content, reply_id)))
 }
 
 /// Parse and process a message from the admin room
@@ -120,7 +138,8 @@ async fn process(
 	// Prepend the logs only if any were captured
 	let logs = logs.lock();
 	if logs.lines().count() > 2 {
-		writeln!(&mut output, "{logs}").expect("failed to format logs to command output");
+		writeln!(&mut output, "```\n{logs}\n```")
+			.expect("failed to format logs to command output");
 	}
 	drop(logs);
 
@@ -161,11 +180,10 @@ fn capture_create(context: &Context<'_>) -> (Arc<Capture>, Arc<SyncMutex<String>
 }
 
 /// Parse chat messages from the admin room into an AdminCommand object
-#[allow(clippy::result_large_err)]
 fn parse<'a>(
 	services: &Arc<Services>,
 	input: &'a CommandInput,
-) -> Result<(AdminCommand, Vec<String>, Vec<&'a str>), CommandOutput> {
+) -> Result<ParsedCommand<'a>, Box<CommandOutput>> {
 	let lines = input.command.lines().filter(|line| !line.trim().is_empty());
 	let command_line = lines.clone().next().expect("command missing first line");
 	let body = lines.skip(1).collect();
@@ -175,7 +193,10 @@ fn parse<'a>(
 			let message = error
 				.to_string()
 				.replace("server.name", services.globals.server_name().as_str());
-			Err(reply(RoomMessageEventContent::notice_plain(message), input.reply_id.as_deref()))
+			Err(Box::new(reply(
+				RoomMessageEventContent::notice_plain(message),
+				input.reply_id.as_deref(),
+			)))
 		},
 	}
 }
@@ -305,4 +326,30 @@ fn reply(
 	});
 
 	content
+}
+
+/// Heuristic: output that already contains markdown formatting should not be
+/// wrapped in code blocks.
+fn looks_like_markdown(s: &str) -> bool {
+	static BOLD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+	static LINK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+	let trimmed = s.trim_start();
+	trimmed.starts_with('#')
+		|| trimmed.starts_with('>')
+		|| trimmed.starts_with("- ")
+		|| trimmed.starts_with("* ")
+		|| s.contains("```")
+		|| BOLD_RE
+			.get_or_init(|| {
+				Regex::new(r"(^|[^\w])\*\*[^\s][\s\S]*?[^\s]\*\*([^\w]|$)")
+					.expect("valid bold regex")
+			})
+			.is_match(s)
+		|| LINK_RE
+			.get_or_init(|| {
+				Regex::new(r"\[[^\]\n]+\]\([^()\s]+\)").expect("valid markdown link regex")
+			})
+			.is_match(s)
+		|| s.lines().any(|line| line.trim_start().starts_with('|'))
 }

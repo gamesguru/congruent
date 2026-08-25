@@ -39,4 +39,18 @@ pub enum FederationCommand {
 	RemoteUserInRooms {
 		user_id: OwnedUserId,
 	},
+
+	/// Show the outbound sending queue with per-destination event counts.
+	/// Optionally filter to a single server. Use --clear to drop queued events.
+	SendingQueue {
+		server: Option<OwnedServerName>,
+
+		/// Clear the queued events for the specified server
+		#[arg(long)]
+		clear: bool,
+
+		/// Required with --clear when no server is specified
+		#[arg(long)]
+		all: bool,
+	},
 }

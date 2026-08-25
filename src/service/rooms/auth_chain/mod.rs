@@ -1,21 +1,17 @@
 mod data;
 
-use std::{
-	collections::{BTreeSet, HashSet, VecDeque},
-	fmt::Debug,
-	sync::Arc,
-	time::Instant,
-};
+use std::{collections::HashSet, fmt::Debug, sync::Arc, time::Instant};
 
 use conduwuit::{
-	Err, Result, at, debug, debug_error, implement, info, trace,
+	Err, Result, debug, implement, info, trace,
 	utils::{
-		IterStream,
+		IterStream, MutexMap,
 		stream::{ReadyExt, TryBroadbandExt},
 	},
-	validated, warn,
+	warn,
 };
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use roaring::RoaringTreemap;
 use ruma::{EventId, OwnedEventId, RoomId};
 
 use self::data::Data;
@@ -24,14 +20,13 @@ use crate::{Dep, rooms, rooms::short::ShortEventId};
 pub struct Service {
 	services: Services,
 	db: Data,
+	mutex_fetch: MutexMap<OwnedEventId, ()>,
 }
 
 struct Services {
 	short: Dep<rooms::short::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 }
-
-type Bucket<'a> = BTreeSet<(u64, &'a EventId)>;
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
@@ -41,6 +36,7 @@ impl crate::Service for Service {
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
 			db: Data::new(&args),
+			mutex_fetch: MutexMap::new(),
 		}))
 	}
 
@@ -67,7 +63,7 @@ where
 }
 
 #[implement(Service)]
-#[tracing::instrument(name = "auth_chain", level = "debug", skip_all)]
+#[tracing::instrument(name = "auth_chain", level = "debug", skip_all, fields(room_id = %room_id))]
 pub async fn get_auth_chain<'a, I>(
 	&'a self,
 	room_id: &RoomId,
@@ -76,45 +72,69 @@ pub async fn get_auth_chain<'a, I>(
 where
 	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
 {
-	const NUM_BUCKETS: usize = 50; //TODO: change possible w/o disrupting db?
-	const BUCKET: Bucket<'_> = BTreeSet::new();
-
 	let started = Instant::now();
-	let mut starting_ids = self
+	let starting_ids: Vec<(ShortEventId, &EventId)> = self
 		.services
 		.short
 		.multi_get_or_create_shorteventid(starting_events.clone())
-		.zip(starting_events.clone().stream())
-		.boxed();
-
-	let mut buckets = [BUCKET; NUM_BUCKETS];
-	while let Some((short, starting_event)) = starting_ids.next().await {
-		let bucket: usize = short.try_into()?;
-		let bucket: usize = validated!(bucket % NUM_BUCKETS);
-		buckets[bucket].insert((short, starting_event));
-	}
+		.zip(starting_events.stream())
+		.collect()
+		.await;
 
 	debug!(
-		starting_events = ?starting_events.count(),
+		starting_events = ?starting_ids.len(),
 		elapsed = ?started.elapsed(),
 		"start",
 	);
 
-	let full_auth_chain: Vec<ShortEventId> = buckets
+	let mut full_auth_chain = RoaringTreemap::new();
+	let mut uncached = Vec::new();
+
+	// Parallel check for starting events already in cache
+	let cache_checks = starting_ids
 		.into_iter()
-		.try_stream()
-		.broad_and_then(|chunk| self.get_auth_chain_outer(room_id, started, chunk))
-		.try_collect()
-		.map_ok(|auth_chain: Vec<_>| auth_chain.into_iter().flatten().collect())
-		.map_ok(|mut full_auth_chain: Vec<_>| {
-			full_auth_chain.sort_unstable();
-			full_auth_chain.dedup();
-			full_auth_chain
+		.try_stream::<conduwuit::Error>()
+		.broad_and_then(|(shortid, event_id)| async move {
+			let res = self.get_cached_eventid_authchain(&[shortid]).await;
+			Ok((shortid, event_id, res))
 		})
-		.boxed()
+		.try_collect::<Vec<_>>()
 		.await?;
 
-	debug!(
+	for (shortid, event_id, cache_res) in cache_checks {
+		if let Ok(cached) = cache_res {
+			full_auth_chain |= cached.as_ref();
+			full_auth_chain.insert(shortid);
+		} else {
+			uncached.push((shortid, event_id));
+		}
+	}
+
+	// Sequential walk for uncached starting events
+	for (shortid, event_id) in uncached {
+		let _guard = self.mutex_fetch.lock(event_id).await;
+
+		// Re-check cache under lock in case a concurrent walk populated it
+		if let Ok(cached) = self.get_cached_eventid_authchain(&[shortid]).await {
+			full_auth_chain |= cached.as_ref();
+			full_auth_chain.insert(shortid);
+			continue;
+		}
+
+		let (auth_chain, is_complete) = self
+			.get_auth_chain_inner(room_id, event_id, shortid)
+			.await?;
+		if is_complete {
+			self.cache_auth_chain_bitmap(vec![shortid], &auth_chain);
+		}
+
+		full_auth_chain |= &auth_chain;
+		full_auth_chain.insert(shortid);
+	}
+
+	let full_auth_chain: Vec<ShortEventId> = full_auth_chain.iter().collect();
+
+	info!(
 		chain_length = ?full_auth_chain.len(),
 		elapsed = ?started.elapsed(),
 		"done",
@@ -124,57 +144,82 @@ where
 }
 
 #[implement(Service)]
-async fn get_auth_chain_outer(
-	&self,
+#[tracing::instrument(name = "auth_chain_bitmap", level = "debug", skip_all, fields(room_id = %room_id))]
+pub async fn get_auth_chain_bitmap<'a, I>(
+	&'a self,
 	room_id: &RoomId,
-	started: Instant,
-	chunk: Bucket<'_>,
-) -> Result<Vec<ShortEventId>> {
-	let chunk_key: Vec<ShortEventId> = chunk.iter().map(at!(0)).collect();
+	starting_events: I,
+) -> Result<RoaringTreemap>
+where
+	I: Iterator<Item = &'a EventId> + Clone + Debug + ExactSizeIterator + Send + 'a,
+{
+	let started = Instant::now();
+	let starting_ids: Vec<(ShortEventId, &EventId)> = self
+		.services
+		.short
+		.multi_get_or_create_shorteventid(starting_events.clone())
+		.zip(starting_events.stream())
+		.collect()
+		.await;
 
-	if chunk_key.is_empty() {
-		return Ok(Vec::new());
-	}
+	debug!(
+		starting_events = ?starting_ids.len(),
+		elapsed = ?started.elapsed(),
+		"start",
+	);
 
-	if let Ok(cached) = self.get_cached_eventid_authchain(&chunk_key).await {
-		return Ok(cached.to_vec());
-	}
+	let mut full_auth_chain = RoaringTreemap::new();
+	let mut uncached = Vec::new();
 
-	let chunk_cache: Vec<_> = chunk
+	// Parallel check for starting events already in cache
+	let cache_checks = starting_ids
 		.into_iter()
 		.try_stream::<conduwuit::Error>()
 		.broad_and_then(|(shortid, event_id)| async move {
-			if let Ok(cached) = self.get_cached_eventid_authchain(&[shortid]).await {
-				return Ok(cached.to_vec());
-			}
-
-			let auth_chain = self.get_auth_chain_inner(room_id, event_id).await?;
-			self.cache_auth_chain_vec(vec![shortid], auth_chain.as_slice());
-			info!(
-				%event_id,
-				elapsed = ?started.elapsed(),
-				"Cache missed event - starting recursive auth chain walk"
-			);
-
-			Ok(auth_chain)
+			let res = self.get_cached_eventid_authchain(&[shortid]).await;
+			Ok((shortid, event_id, res))
 		})
-		.try_collect()
-		.map_ok(|chunk_cache: Vec<_>| chunk_cache.into_iter().flatten().collect())
-		.map_ok(|mut chunk_cache: Vec<_>| {
-			chunk_cache.sort_unstable();
-			chunk_cache.dedup();
-			chunk_cache
-		})
+		.try_collect::<Vec<_>>()
 		.await?;
 
-	self.cache_auth_chain_vec(chunk_key, chunk_cache.as_slice());
+	for (shortid, event_id, cache_res) in cache_checks {
+		if let Ok(cached) = cache_res {
+			full_auth_chain |= cached.as_ref();
+			full_auth_chain.insert(shortid);
+		} else {
+			uncached.push((shortid, event_id));
+		}
+	}
+
+	// Sequential walk for uncached starting events
+	for (shortid, event_id) in uncached {
+		let _guard = self.mutex_fetch.lock(event_id).await;
+
+		// Re-check cache under lock in case a concurrent walk populated it
+		if let Ok(cached) = self.get_cached_eventid_authchain(&[shortid]).await {
+			full_auth_chain |= cached.as_ref();
+			full_auth_chain.insert(shortid);
+			continue;
+		}
+
+		let (auth_chain, is_complete) = self
+			.get_auth_chain_inner(room_id, event_id, shortid)
+			.await?;
+		if is_complete {
+			self.cache_auth_chain_bitmap(vec![shortid], &auth_chain);
+		}
+
+		full_auth_chain |= &auth_chain;
+		full_auth_chain.insert(shortid);
+	}
+
 	info!(
-		chunk_cache_length = ?chunk_cache.len(),
+		chain_length = ?full_auth_chain.len(),
 		elapsed = ?started.elapsed(),
-		"Cache missed chunk - completed recursive walk",
+		"done",
 	);
 
-	Ok(chunk_cache)
+	Ok(full_auth_chain)
 }
 
 #[implement(Service)]
@@ -183,74 +228,161 @@ async fn get_auth_chain_inner(
 	&self,
 	room_id: &RoomId,
 	event_id: &EventId,
-) -> Result<Vec<ShortEventId>> {
-	let mut todo: VecDeque<_> = [event_id.to_owned()].into();
-	let mut found = HashSet::new();
+	shortid: ShortEventId,
+) -> Result<(RoaringTreemap, bool)> {
+	let mut todo = vec![(shortid, event_id.to_owned())];
+	let mut found = RoaringTreemap::new();
+	let mut is_complete = true;
 
-	while let Some(event_id) = todo.pop_front() {
-		trace!(%event_id, "processing auth event");
+	let started = Instant::now();
+	let mut last_progress = Instant::now();
 
-		match self
+	while !todo.is_empty() {
+		if last_progress.elapsed().as_secs() >= 30 {
+			info!(%room_id, found = found.len(), queue = todo.len(), elapsed = ?started.elapsed(), "auth_chain walk in progress");
+			last_progress = Instant::now();
+		}
+
+		let current_batch = std::mem::take(&mut todo);
+		let (short_ids, event_ids): (Vec<_>, Vec<_>) = current_batch.into_iter().unzip();
+
+		let mut next_short_ids = Vec::new();
+		let mut missing_events = Vec::new();
+
+		let batch_results: Vec<_> = self
 			.services
 			.timeline
-			.get_pdu_in_room(Some(room_id), &event_id)
-			.await
-		{
-			| Err(e) => {
-				debug_error!(%event_id, ?e, "Could not find pdu mentioned in auth events");
-			},
-			| Ok(pdu) => {
-				if let Some(claimed_room_id) = pdu.room_id.clone() {
-					if claimed_room_id != *room_id {
-						return Err!(Request(Forbidden(error!(
-							%event_id,
-							%room_id,
-							wrong_room_id = ?pdu.room_id.unwrap(),
-							"auth event for incorrect room"
-						))));
-					}
-				}
+			.multi_get_shortauthevents(futures::stream::iter(short_ids.clone()))
+			.collect()
+			.await;
 
-				for auth_event in &pdu.auth_events {
-					let sauthevent = self
-						.services
+		for (idx, (res, _short_id)) in batch_results
+			.into_iter()
+			.zip(short_ids.into_iter())
+			.enumerate()
+		{
+			match res {
+				| Ok(auth_shorts) =>
+					for auth_short in auth_shorts {
+						if found.insert(auth_short) {
+							if let Ok(cached) =
+								self.get_cached_eventid_authchain(&[auth_short]).await
+							{
+								found |= cached.as_ref();
+							} else {
+								next_short_ids.push(auth_short);
+							}
+						}
+					},
+				| Err(_) => {
+					missing_events.push(event_ids[idx].clone());
+				},
+			}
+		}
+
+		if !next_short_ids.is_empty() {
+			let resolved_events: Vec<_> = futures::stream::iter(next_short_ids.clone())
+				.zip(
+					self.services
 						.short
-						.get_or_create_shorteventid(auth_event)
+						.multi_get_eventid_from_short::<OwnedEventId, _>(futures::stream::iter(
+							next_short_ids,
+						)),
+				)
+				.collect()
+				.await;
+
+			for (auth_short, res) in resolved_events {
+				if let Ok(auth_event_id) = res {
+					todo.push((auth_short, auth_event_id));
+				} else {
+					is_complete = false;
+				}
+			}
+		}
+
+		if !missing_events.is_empty() {
+			let results: Vec<_> = missing_events
+				.into_iter()
+				.try_stream::<conduwuit::Error>()
+				.broad_and_then(|missing_event_id| async move {
+					trace!(%missing_event_id, "processing legacy auth event");
+
+					let pdu_result = self
+						.services
+						.timeline
+						.get_pdu_in_room(Some(room_id), &missing_event_id)
 						.await;
 
-					if found.insert(sauthevent) {
-						trace!(%event_id, ?auth_event, "adding auth event to processing queue");
+					Ok((missing_event_id, pdu_result))
+				})
+				.try_collect()
+				.await?;
 
-						todo.push_back(auth_event.clone());
+			let mut new_auth_events = HashSet::new();
+			for (missing_event_id, pdu_result) in results {
+				match pdu_result {
+					| Err(e) => {
+						info!(%missing_event_id, ?e, "Could not find pdu mentioned in auth events; marking chain as incomplete");
+						is_complete = false;
+					},
+					| Ok(pdu) => {
+						if let Some(claimed_room_id) = pdu.room_id.clone() {
+							if claimed_room_id != *room_id {
+								return Err!(Request(Forbidden(error!(
+									%missing_event_id,
+									%room_id,
+									wrong_room_id = ?pdu.room_id.unwrap(),
+									"auth event for incorrect room"
+								))));
+							}
+						}
+
+						for auth_event in &pdu.auth_events {
+							new_auth_events.insert(auth_event.clone());
+						}
+					},
+				}
+			}
+
+			let new_auth_events: Vec<_> = new_auth_events.into_iter().collect();
+			if new_auth_events.is_empty() {
+				continue;
+			}
+
+			let mut legacy_short_ids = self
+				.services
+				.short
+				.multi_get_or_create_shorteventid(new_auth_events.iter().map(|id| &**id))
+				.zip(futures::stream::iter(new_auth_events.clone()))
+				.boxed();
+
+			while let Some((sauthevent, auth_event)) = legacy_short_ids.next().await {
+				if found.insert(sauthevent) {
+					if let Ok(cached) = self.get_cached_eventid_authchain(&[sauthevent]).await {
+						found |= cached.as_ref();
+					} else {
+						trace!(?auth_event, "adding legacy auth event to processing queue");
+						todo.push((sauthevent, auth_event));
 					}
 				}
-			},
+			}
 		}
 	}
 
-	Ok(found.into_iter().collect())
+	Ok((found, is_complete))
 }
 
 #[implement(Service)]
 #[inline]
-pub async fn get_cached_eventid_authchain(&self, key: &[u64]) -> Result<Arc<[ShortEventId]>> {
+pub async fn get_cached_eventid_authchain(&self, key: &[u64]) -> Result<Arc<RoaringTreemap>> {
 	self.db.get_cached_eventid_authchain(key).await
 }
 
 #[implement(Service)]
 #[tracing::instrument(skip_all, level = "debug")]
-pub fn cache_auth_chain(&self, key: Vec<u64>, auth_chain: &HashSet<ShortEventId>) {
-	let val: Arc<[ShortEventId]> = auth_chain.iter().copied().collect();
-
-	self.db.cache_auth_chain(key, val);
-}
-
-#[implement(Service)]
-#[tracing::instrument(skip_all, level = "debug")]
-pub fn cache_auth_chain_vec(&self, key: Vec<u64>, auth_chain: &[ShortEventId]) {
-	let val: Arc<[ShortEventId]> = auth_chain.iter().copied().collect();
-
-	self.db.cache_auth_chain(key, val);
+pub fn cache_auth_chain_bitmap(&self, key: Vec<u64>, auth_chain: &RoaringTreemap) {
+	self.db.cache_auth_chain(key, Arc::new(auth_chain.clone()));
 }
 
 #[implement(Service)]
@@ -262,3 +394,6 @@ pub fn get_cache_usage(&self) -> (usize, usize) {
 
 #[implement(Service)]
 pub fn clear_cache(&self) { self.db.auth_chain_cache.lock().clear(); }
+
+#[implement(Service)]
+pub async fn clear_db_cache(&self) { self.db.clear_db_cache().await; }

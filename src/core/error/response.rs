@@ -16,7 +16,7 @@ impl axum::response::IntoResponse for Error {
 	fn into_response(self) -> axum::response::Response {
 		let status = self.status_code();
 		if status == StatusCode::INTERNAL_SERVER_ERROR {
-			error!(
+			crate::warn!(
 				error = %self,
 				error_debug = ?self,
 				kind = ?self.kind(),
@@ -93,6 +93,12 @@ pub(super) fn bad_request_code(kind: &ErrorKind) -> StatusCode {
 		// 404
 		| NotFound | NotImplemented | FeatureDisabled | SenderIgnored { .. } =>
 			StatusCode::NOT_FOUND,
+
+		// 409
+		| CannotOverwriteMedia => StatusCode::CONFLICT,
+
+		// 504
+		| NotYetUploaded => StatusCode::GATEWAY_TIMEOUT,
 
 		// 403
 		| GuestAccessForbidden

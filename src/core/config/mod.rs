@@ -19,7 +19,7 @@ pub use figment::{Figment, value::Value as FigmentValue};
 use lettre::message::Mailbox;
 use regex::RegexSet;
 use ruma::{
-	OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
+	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
 use serde::{Deserialize, Serialize, de::IgnoredAny};
@@ -32,7 +32,7 @@ use crate::{Result, err, error::Error, utils::sys};
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global",
@@ -203,6 +203,11 @@ pub struct Config {
 	)]
 	pub cache_capacity_modifier: f64,
 
+	/// Override the tokio worker_thread count.
+	///
+	/// default: varies by system
+	pub worker_threads: Option<usize>,
+
 	/// Set this to any float value in megabytes for continuwuity to tell the
 	/// database engine that this much memory is available for database read
 	/// caches.
@@ -239,6 +244,9 @@ pub struct Config {
 	#[serde(default = "default_pdu_cache_capacity")]
 	pub pdu_cache_capacity: u32,
 
+	#[serde(default = "default_leanevent_cache_capacity")]
+	pub leanevent_cache_capacity: u32,
+
 	/// default: varies by system
 	#[serde(default = "default_auth_chain_cache_capacity")]
 	pub auth_chain_cache_capacity: u32,
@@ -246,6 +254,14 @@ pub struct Config {
 	/// default: varies by system
 	#[serde(default = "default_shorteventid_cache_capacity")]
 	pub shorteventid_cache_capacity: u32,
+
+	/// default: varies by system
+	#[serde(default = "default_shorteventid_shortprevevents_cache_capacity")]
+	pub shorteventid_shortprevevents_cache_capacity: u32,
+
+	/// default: varies by system
+	#[serde(default = "default_shorteventid_shortauthevents_cache_capacity")]
+	pub shorteventid_shortauthevents_cache_capacity: u32,
 
 	/// default: varies by system
 	#[serde(default = "default_eventidshort_cache_capacity")]
@@ -278,6 +294,12 @@ pub struct Config {
 	/// default: varies by system
 	#[serde(default = "default_roomid_spacehierarchy_cache_capacity")]
 	pub roomid_spacehierarchy_cache_capacity: u32,
+
+	/// Maximum entries stored in the presence RAM cache.
+	///
+	/// default: varies by system
+	#[serde(default = "default_presence_cache_capacity")]
+	pub presence_cache_capacity: u32,
 
 	/// Maximum entries stored in DNS memory-cache. The size of an entry may
 	/// vary so please take care if raising this value excessively. Only
@@ -360,6 +382,16 @@ pub struct Config {
 	#[serde(default)]
 	pub query_over_tcp_only: bool,
 
+	/// Enable DNS 0x20 case randomization for cache-poisoning protection.
+	/// This randomizes the case of query names (e.g. `example.com` becomes
+	/// `eXaMpLe.CoM`) as a defense against DNS cache-poisoning attacks.
+	///
+	/// Some nameservers do not properly handle mixed-case queries and will
+	/// return ServFail, breaking federation with those servers entirely.
+	/// This is disabled by default for maximum compatibility.
+	#[serde(default)]
+	pub dns_case_randomization: bool,
+
 	/// DNS A/AAAA record lookup strategy
 	///
 	/// Takes a number of one of the following options:
@@ -405,6 +437,33 @@ pub struct Config {
 	/// default: 150
 	#[serde(default = "default_max_concurrent_inbound_transactions")]
 	pub max_concurrent_inbound_transactions: usize,
+
+	/// Max concurrent global outbound requests. Limits how many outbound
+	/// federation HTTP connections can be in-flight simultaneously. Too high
+	/// and dead/slow servers consume all permits, starving live connections.
+	///
+	/// default: 128
+	#[serde(default = "default_max_concurrent_outbound_requests")]
+	pub max_concurrent_outbound_requests: usize,
+
+	/// How many concurrent incoming federation transactions the server is
+	/// willing to accept from a single domain.
+	///
+	/// default: 10
+	#[serde(default = "default_max_concurrent_inbound_transactions_per_origin")]
+	pub max_concurrent_inbound_transactions_per_origin: usize,
+
+	/// The maximum number of forward extremities (DAG tips) to maintain for a
+	/// room. Matrix recommends a cap of 10. Synapse uses 10. Conduwuit
+	/// previously used 50. Lowering this value strictly caps how wide the DAG
+	/// can fracture before the server forces it to collapse by aggressively
+	/// shedding older branches.
+	///
+	/// Setting this to -1 disables the limit entirely (infinite extremities).
+	///
+	/// default: 10
+	#[serde(default = "default_max_forward_extremities")]
+	pub max_forward_extremities: isize,
 
 	/// Maximum age (in seconds) for cached federation transaction responses.
 	/// Entries older than this will be removed during cleanup.
@@ -492,6 +551,46 @@ pub struct Config {
 	#[serde(default = "default_federation_timeout")]
 	pub federation_timeout: u64,
 
+	/// Maximum time (seconds) to process a single incoming federation PDU.
+	/// This includes auth chain pre-fetching, outlier resolution, and state
+	/// resolution. If exceeded, the PDU is soft-failed and a per-room circuit
+	/// breaker is tripped.
+	///
+	/// default: 600
+	#[serde(default = "default_pdu_receive_timeout")]
+	pub pdu_receive_timeout: u64,
+
+	/// Timeout in seconds to try fetching missing prev_events over federation.
+	///
+	/// default: 30
+	#[serde(default = "default_fetch_prev_timeout")]
+	pub fetch_prev_timeout: u64,
+
+	/// Maximum number of room member servers to try when fetching missing
+	/// federation events (auth chains, outliers). These are tried after the
+	/// origin server and trusted_servers.
+	///
+	/// default: 25
+	#[serde(default = "default_federation_fallback_room_servers")]
+	pub federation_fallback_room_servers: usize,
+
+	/// Federation presence interval (seconds).
+	/// This is used to aggressively load-shed large incoming loops of presence
+	/// updates and batch outgoing presence changes.
+	///
+	/// default: 5
+	#[serde(default = "default_federation_presence_interval_s")]
+	pub federation_presence_interval_s: u64,
+
+	/// Timeout for fetching server signing keys from other homeservers
+	/// (seconds). You may want to lower this in test environments, but in
+	/// production, giving slower federation origins some time to respond is
+	/// beneficial.
+	///
+	/// default: 45
+	#[serde(default = "default_server_key_fetch_timeout")]
+	pub server_key_fetch_timeout: u64,
+
 	/// MSC4284 Policy server request timeout (seconds). Generally policy
 	/// servers should respond near instantly, however may slow down under
 	/// load. If a policy server doesn't respond in a short amount of time, the
@@ -548,6 +647,15 @@ pub struct Config {
 	/// default: 86400
 	#[serde(default = "default_sender_retry_backoff_limit")]
 	pub sender_retry_backoff_limit: u64,
+
+	/// Maximum number of retry attempts for a failed federation destination
+	/// before its queued events are dropped. This prevents infinite retry
+	/// loops for permanently unreachable or broken servers. Set to 0 to
+	/// disable the limit (retry forever).
+	///
+	/// default: 32
+	#[serde(default = "default_sender_retry_max_attempts")]
+	pub sender_retry_max_attempts: u32,
 
 	/// Appservice URL request connection timeout. Defaults to 35 seconds as
 	/// generally appservices are hosted within the same network.
@@ -704,6 +812,21 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub allow_federation: bool,
 
+	/// Enable or disable the startup forward-fill sweep that queries remote
+	/// servers to fetch missed events during server downtime. Disabling this
+	/// speeds up startup but relies entirely on periodic sweeps or DAG healing.
+	#[serde(default)]
+	pub allow_startup_forwardfill: bool,
+
+	/// How often the periodic forward-fill sweep runs, in seconds.
+	/// The periodic sweep scans for completely idle rooms (no activity for > 12
+	/// hours) and tries to fetch any events missed while the room was quiet.
+	/// Set to 0 to completely disable the periodic sweep.
+	///
+	/// default: 14400 (4 hours)
+	#[serde(default = "default_forwardfill_sweep_interval_secs")]
+	pub forwardfill_sweep_interval_secs: u64,
+
 	/// Allows federation requests to be made to itself
 	///
 	/// This isn't intended and is very likely a bug if federation requests are
@@ -770,6 +893,16 @@ pub struct Config {
 	/// This is inherently false if `allow_federation` is disabled
 	#[serde(default = "true_fn", alias = "allow_profile_lookup_federation_requests")]
 	pub allow_inbound_profile_lookup_federation_requests: bool,
+
+	/// Bypasses the room's history visibility rules for local users on your
+	/// server. If true, any local user joined to a room will be able to search
+	/// and view the full history of the room (assuming the server has the
+	/// PDUs), regardless of the room's m.room.history_visibility setting.
+	///
+	/// This is technically a Matrix spec violation, but provided as an admin
+	/// override.
+	#[serde(default)]
+	pub allow_local_users_to_bypass_history_visibility: bool,
 
 	/// Allow standard users to create rooms. Appservices and admins are always
 	/// allowed to create rooms
@@ -920,6 +1053,24 @@ pub struct Config {
 	/// unless you know exactly what you are doing.
 	#[serde(default)]
 	pub only_query_trusted_key_servers: bool,
+
+	/// Enable strict enforcement of MSC4499 server signing key caching and
+	/// First Seen Wins key-ID uniqueness. When false (observation mode),
+	/// collisions and malformed historical claims are logged at WARN/ERROR
+	/// but do not hard-reject the incoming key payload.
+	///
+	/// default: true
+	#[serde(default = "true_fn")]
+	pub msc4499_strict_caching: bool,
+
+	/// Backoff duration in seconds after a failed federation key fetch.
+	/// During backoff, the server will not re-attempt key fetches for the
+	/// failing origin. MSC4499 recommends 60 seconds. Reduce for faster
+	/// complement testing.
+	///
+	/// default: 60
+	#[serde(default = "default_msc4499_backoff_secs")]
+	pub msc4499_backoff_secs: u64,
 
 	/// Maximum number of keys to request in each trusted server batch query.
 	///
@@ -1394,6 +1545,14 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub allow_local_presence: bool,
 
+	/// The duration in milliseconds for the Synapse-style presence debounce.
+	/// If greater than 0, any idle client claims of Offline will be ignored
+	/// if the user was Online within this time window.
+	///
+	/// default: 60000 (60 seconds)
+	#[serde(default = "default_presence_idle_debounce_ms")]
+	pub presence_idle_debounce_ms: u64,
+
 	/// Allow incoming federated presence updates.
 	///
 	/// This option enables processing inbound presence updates from other
@@ -1768,6 +1927,16 @@ pub struct Config {
 	#[serde(default)]
 	pub url_preview_domain_explicit_denylist: Vec<String>,
 
+	/// A list of specific Event IDs (e.g. `$bad_event_id`) that are known to
+	/// have corrupted signatures or missing server keys, but should be globally
+	/// accepted by the server without signature verification. Useful for
+	/// bypassing unresolvable DAG holes without manually running `yolo
+	/// fetch-pdu --skip-auth`.
+	///
+	/// default: []
+	#[serde(default = "Vec::new")]
+	pub bypassed_signature_events: Vec<OwnedEventId>,
+
 	/// Vector list of URLs allowed to send requests to for URL previews.
 	///
 	/// Note that this is a *contains* match, not an explicit match. Putting
@@ -1809,9 +1978,19 @@ pub struct Config {
 	#[serde(default)]
 	pub url_preview_check_root_domain: bool,
 
-	/// User agent that is used specifically when fetching url previews.
+	/// User agent that the server uses for federation and client requests.
+	/// You can use templates like $PROJECT_NAME, $PROJECT_VERSION,
+	/// $PROJECT_VERSION_FULL.
 	///
-	/// default: "guwitty/<version>"
+	/// default: "$PROJECT_NAME/$PROJECT_VERSION_FULL"
+	#[serde(default = "default_user_agent")]
+	pub user_agent: String,
+
+	/// User agent that is used specifically when fetching url previews.
+	/// You can use templates like $PROJECT_NAME, $PROJECT_VERSION,
+	/// $PROJECT_VERSION_FULL.
+	///
+	/// default: "$PROJECT_NAME/$PROJECT_VERSION_FULL (embedbot; facebookexternalhit/1.1; +https://github.com)"
 	pub url_preview_user_agent: Option<String>,
 
 	/// Determines whether audio and video files will be downloaded for URL
@@ -2547,13 +2726,13 @@ pub struct ExperimentalConfig {
 	#[serde(default)]
 	pub msc3266_enabled: bool,
 
+	/// MSC3030: Jump to date
+	#[serde(default = "true_fn")]
+	pub msc3030_enabled: bool,
+
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
-
-	/// MSC3030: timestamp to event
-	#[serde(default = "true_fn")]
-	pub msc3030_enabled: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2643,11 +2822,22 @@ impl Config {
 			Env::var("CONDUWUIT_CONFIG"),
 			Env::var("CONTINUWUITY_CONFIG"),
 		];
+		let mut runtime_paths = Vec::new();
+		for path in paths {
+			let mut p = path.clone();
+			p.set_file_name("conduwuit-runtime.toml");
+			runtime_paths.push(p);
+		}
+		if runtime_paths.is_empty() {
+			runtime_paths.push(PathBuf::from("conduwuit-runtime.toml"));
+		}
+
 		let mut config = envs
 			.into_iter()
 			.flatten()
 			.map(Toml::file)
 			.chain(paths.iter().cloned().map(Toml::file))
+			.chain(runtime_paths.iter().cloned().map(Toml::file))
 			.fold(Figment::new(), |config, file| config.merge(file.nested()))
 			.merge(Env::prefixed("CONDUIT_").global().split("__"))
 			.merge(Env::prefixed("CONDUWUIT_").global().split("__"))
@@ -2660,9 +2850,29 @@ impl Config {
 
 	/// Finalize config
 	pub fn new(raw_config: &Figment) -> Result<Self> {
-		let config = raw_config
+		let mut config = raw_config
 			.extract::<Self>()
 			.map_err(|e| err!("There was a problem with your configuration file: {e}"))?;
+
+		// Evaluate user-agent templates
+		let replace_template = |s: &str| {
+			s.replace("$PROJECT_NAME", crate::info::version::name())
+				.replace("$PROJECT_VERSION_FULL", crate::info::version::version_ua())
+				.replace("$PROJECT_VERSION", env!("CARGO_PKG_VERSION"))
+		};
+
+		config.user_agent = replace_template(&config.user_agent);
+
+		if let Some(ua) = config.url_preview_user_agent.as_mut() {
+			*ua = replace_template(ua);
+		} else {
+			// If not specified, default to media-specific user agent suffix for URL
+			// previews
+			config.url_preview_user_agent = Some(format!(
+				"{} (embedbot; facebookexternalhit/1.1; +https://github.com)",
+				config.user_agent
+			));
+		}
 
 		// don't start if we're listening on both UNIX sockets and TCP at same time
 		check::is_dual_listening(raw_config)?;
@@ -2701,6 +2911,16 @@ impl Config {
 	}
 
 	pub fn check(&self) -> Result<(), Error> { check(self) }
+
+	/// Returns an iterator over config keys that appeared in the user's
+	/// config file but are not known to this version of continuwuity.
+	/// These are either deprecated, misspelled, or from a newer version.
+	pub fn unknown_config_keys(&self) -> impl Iterator<Item = &str> {
+		self.catchall
+			.keys()
+			.filter(|key| key.as_str() != "config")
+			.map(String::as_str)
+	}
 }
 
 fn true_fn() -> bool { true }
@@ -2723,6 +2943,10 @@ fn default_db_cache_capacity_mb() -> f64 { 128.0 + parallelism_scaled_f64(64.0) 
 
 fn default_pdu_cache_capacity() -> u32 { parallelism_scaled_u32(10_000).saturating_add(100_000) }
 
+fn default_leanevent_cache_capacity() -> u32 {
+	parallelism_scaled_u32(10_000).saturating_add(50_000)
+}
+
 fn default_cache_capacity_modifier() -> f64 { 1.0 }
 
 fn default_auth_chain_cache_capacity() -> u32 {
@@ -2731,6 +2955,14 @@ fn default_auth_chain_cache_capacity() -> u32 {
 
 fn default_shorteventid_cache_capacity() -> u32 {
 	parallelism_scaled_u32(50_000).saturating_add(100_000)
+}
+
+fn default_shorteventid_shortprevevents_cache_capacity() -> u32 {
+	parallelism_scaled_u32(50_000).saturating_add(350_000)
+}
+
+fn default_shorteventid_shortauthevents_cache_capacity() -> u32 {
+	parallelism_scaled_u32(50_000).saturating_add(225_000)
 }
 
 fn default_eventidshort_cache_capacity() -> u32 {
@@ -2760,6 +2992,10 @@ fn default_servernameevent_data_cache_capacity() -> u32 {
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
 
 fn default_roomid_spacehierarchy_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
+
+fn default_presence_cache_capacity() -> u32 {
+	parallelism_scaled_u32(8_192).saturating_add(8_192)
+}
 
 fn default_dns_cache_entries() -> u32 { 32768 }
 
@@ -2797,6 +3033,14 @@ fn default_federation_conn_timeout() -> u64 { 10 }
 
 fn default_federation_timeout() -> u64 { 60 }
 
+fn default_pdu_receive_timeout() -> u64 { 600 }
+
+fn default_fetch_prev_timeout() -> u64 { 30 }
+
+fn default_federation_fallback_room_servers() -> usize { 25 }
+
+fn default_federation_presence_interval_s() -> u64 { 5 }
+
 fn default_policy_server_request_timeout() -> u64 { 10 }
 
 fn default_federation_idle_timeout() -> u64 { 25 }
@@ -2807,9 +3051,13 @@ fn default_sender_timeout() -> u64 { 180 }
 
 fn default_sender_idle_timeout() -> u64 { 180 }
 
+fn default_server_key_fetch_timeout() -> u64 { 45 }
+
 fn default_sender_retry_backoff_base() -> u64 { 5 }
 
 fn default_sender_retry_backoff_limit() -> u64 { 86400 }
+
+fn default_sender_retry_max_attempts() -> u32 { 32 }
 
 fn default_appservice_timeout() -> u64 { 35 }
 
@@ -2821,11 +3069,19 @@ fn default_pusher_timeout() -> u64 { 60 }
 
 fn default_pusher_idle_timeout() -> u64 { 15 }
 
-fn default_max_fetch_prev_events() -> u16 { 192_u16 }
+fn default_max_fetch_prev_events() -> u16 { 1024_u16 }
 
 fn default_max_concurrent_inbound_transactions() -> usize { 150 }
 
+fn default_max_concurrent_inbound_transactions_per_origin() -> usize { 10 }
+
+fn default_max_concurrent_outbound_requests() -> usize { 128 }
+
+fn default_max_forward_extremities() -> isize { 10 }
+
 fn default_transaction_id_cache_max_age_secs() -> u64 { 60 * 60 * 2 }
+
+fn default_forwardfill_sweep_interval_secs() -> u64 { 60 * 60 * 4 }
 
 fn default_transaction_id_cache_max_entries() -> usize { 8192 }
 
@@ -2856,7 +3112,7 @@ fn default_trusted_servers() -> Vec<OwnedServerName> {
 pub fn default_log() -> String {
 	cfg!(debug_assertions)
 		.then_some("debug")
-		.unwrap_or("info")
+		.unwrap_or("info,memory_serve=warn")
 		.to_owned()
 }
 
@@ -2958,6 +3214,8 @@ fn default_new_user_displayname_suffix() -> String { "🏳️‍⚧️".to_owned
 
 fn default_sentry_endpoint() -> Option<Url> { None }
 
+fn default_user_agent() -> String { "$PROJECT_NAME/$PROJECT_VERSION_FULL".to_owned() }
+
 fn default_sentry_traces_sample_rate() -> f32 { 0.15 }
 
 fn default_sentry_filter() -> String { "info".to_owned() }
@@ -2984,6 +3242,8 @@ fn parallelism_scaled_u32(val: u32) -> u32 {
 fn parallelism_scaled(val: usize) -> usize { val.saturating_mul(sys::available_parallelism()) }
 
 fn default_trusted_server_batch_size() -> usize { 256 }
+
+fn default_msc4499_backoff_secs() -> u64 { 60 }
 
 fn default_db_pool_workers() -> usize {
 	sys::available_parallelism()
@@ -3026,3 +3286,5 @@ fn default_ldap_search_filter() -> String { "(objectClass=*)".to_owned() }
 fn default_ldap_uid_attribute() -> String { String::from("uid") }
 
 fn default_ldap_name_attribute() -> String { String::from("givenName") }
+
+fn default_presence_idle_debounce_ms() -> u64 { 60000 }
