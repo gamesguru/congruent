@@ -590,6 +590,7 @@ fn resolve_via_rezzy(
 			depth: u64::from(pdu.depth),
 			rejected: false,
 			soft_fail: false,
+			..Default::default()
 		}
 	};
 
@@ -631,8 +632,8 @@ fn resolve_via_rezzy(
 
 	let mut pl_cache = HashMap::new();
 	let resolved_lean = rezzy::resolve_iterative_sort(
-		unconflicted,
-		conflicted_events,
+		&unconflicted,
+		&conflicted_events,
 		&auth_context,
 		version,
 		&mut pl_cache,

@@ -212,17 +212,18 @@ pub async fn verify_event_at(
 	room_version: Option<&RoomVersionId>,
 	context: &'static str,
 ) -> Result<Verified> {
-	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
+	let room_version = room_version.unwrap_or(&self.services.server.config.default_room_version);
+	let ruma_version = super::ruma_signatures_version(room_version);
 
 	// Per spec, only the origin server's signature is required.
 	// Relay/policy servers (e.g. asgard.chat) may add extra signatures
 	// that we don't have keys for, causing spurious verification failures.
 	// Strip non-origin signatures before verification.
-	let event = isolate_origin_signatures(event, room_version);
+	let event = isolate_origin_signatures(event, &ruma_version);
 
-	let keys = self.get_event_keys(&event, room_version).await?;
+	let keys = self.get_event_keys(&event, &ruma_version).await?;
 
-	let result = ruma::signatures::verify_event(&keys, &event, room_version);
+	let result = ruma::signatures::verify_event(&keys, &event, &ruma_version);
 	if let Err(ref e) = result {
 		let event_id = event
 			.get("event_id")
@@ -255,8 +256,9 @@ pub async fn verify_json(
 	event: &CanonicalJsonObject,
 	room_version: Option<&RoomVersionId>,
 ) -> Result {
-	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
-	let keys = self.get_event_keys(event, room_version).await?;
+	let room_version = room_version.unwrap_or(&self.services.server.config.default_room_version);
+	let ruma_version = super::ruma_signatures_version(room_version);
+	let keys = self.get_event_keys(event, &ruma_version).await?;
 	ruma::signatures::verify_json(&keys, event.clone()).map_err(Into::into)
 }
 

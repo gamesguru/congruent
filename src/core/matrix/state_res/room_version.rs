@@ -38,12 +38,12 @@ pub enum StateResolutionVersion {
 }
 
 impl StateResolutionVersion {
+	#[must_use]
 	pub fn begin_iterative_auth_checks_with_empty_state_map(&self) -> bool {
 		matches!(self, Self::V2_1_1)
 	}
-}
 
-impl StateResolutionVersion {
+	#[must_use]
 	pub fn is_state_dag(&self) -> bool { matches!(self, Self::V2_2) }
 }
 
