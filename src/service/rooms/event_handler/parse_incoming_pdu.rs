@@ -90,13 +90,11 @@ pub fn validate_pdu(&self, pdu: &CanonicalJsonObject, room_version: &RoomVersion
 		if pdu.contains_key("auth_events") {
 			return Err!(Request(BadJson("PDU must not contain auth_events")));
 		}
-		if pdu.contains_key("state_key") {
+		if pdu.contains_key("prev_state_events") {
 			let prev_state_events = expect_event_id_array(pdu, "prev_state_events")?;
 			if prev_state_events.len() > 20 {
 				return Err!(Request(BadJson("PDU has too many prev state events")));
 			}
-		} else if pdu.contains_key("prev_state_events") {
-			return Err!(Request(BadJson("Timeline events must not contain prev_state_events")));
 		}
 	} else {
 		// `auth_events` and `prev_events` must be an array of event IDs

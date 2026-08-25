@@ -97,7 +97,7 @@ pub(crate) async fn get_missing_events_route(
 		}
 
 		let mut prev_events: Vec<OwnedEventId> =
-			if room_version.state_dags && pdu.state_key().is_some() {
+			if room_version.state_dags && pdu.prev_state_events().is_some() {
 				pdu.prev_state_events()
 					.map_or(Vec::new(), |i| i.map(ToOwned::to_owned).collect())
 			} else {

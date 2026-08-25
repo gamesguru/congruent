@@ -10,7 +10,11 @@
 
 use std::collections::HashMap;
 
-use conduwuit_core::matrix::{Event, PduEvent, state_key::StateKey, state_res::RoomVersion};
+use conduwuit_core::matrix::{
+	Event, PduEvent,
+	state_key::StateKey,
+	state_res::{RoomVersion, StateResolutionVersion},
+};
 use rezzy::{LeanEvent, StateResVersion, auth::StateProvider};
 use ruma::{RoomVersionId, events::StateEventType};
 
@@ -26,14 +30,12 @@ use ruma::{RoomVersionId, events::StateEventType};
 pub fn to_state_res_version(room_version_id: &RoomVersionId) -> StateResVersion {
 	let rv = RoomVersion::new(room_version_id).expect("unsupported room version");
 
-	if rv.state_res == RoomVersion::V1.state_res {
-		StateResVersion::V1
-	} else if rv.state_res == RoomVersion::V12_1.state_res {
-		StateResVersion::V2_1_1
-	} else if rv.state_res == RoomVersion::V12.state_res {
-		StateResVersion::V2_1
-	} else {
-		StateResVersion::V2
+	match rv.state_res {
+		| StateResolutionVersion::V1 => StateResVersion::V1,
+		| StateResolutionVersion::V2 => StateResVersion::V2,
+		| StateResolutionVersion::V2_1 => StateResVersion::V2_1,
+		| StateResolutionVersion::V2_1_1 => StateResVersion::V2_1_1,
+		| StateResolutionVersion::V2_2 | _ => StateResVersion::V2_2,
 	}
 }
 

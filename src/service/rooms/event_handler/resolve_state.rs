@@ -174,13 +174,7 @@ where
 		.collect();
 
 	// Map room version early
-	let version = match room_version.as_str() {
-		| "1" => rezzy::StateResVersion::V1,
-		| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
-			rezzy::StateResVersion::V2,
-		| "12" => rezzy::StateResVersion::V2_1,
-		| _ => rezzy::StateResVersion::V2_1_1,
-	};
+	let version = crate::rooms::auth_adapter::to_state_res_version(room_version);
 
 	struct LocalArenaProvider<'a, F> {
 		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,

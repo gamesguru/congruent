@@ -28,6 +28,9 @@ pub fn hash_and_sign_event(
 		if rv.room_ids_as_hashes && is_create_event {
 			object.remove("room_id");
 		}
+		if rv.state_dags {
+			object.remove("auth_events");
+		}
 	}
 
 	let server_name = self.services.globals.server_name().as_str();

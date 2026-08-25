@@ -258,7 +258,7 @@ pub async fn create_event(
 		),
 		kind: event_type,
 		content,
-		prev_state_events: if room_version.state_dags && state_key.is_some() {
+		prev_state_events: if room_version.state_dags {
 			// MSC4242: populate with state DAG forward extremities
 			let extremities: Vec<OwnedEventId> = match room_id {
 				| Some(room_id) =>
@@ -420,6 +420,11 @@ pub fn hash_sign_and_finalize(
 		err!(Request(BadJson(warn!("Failed to convert PDU to canonical JSON: {e}"))))
 	})?;
 	pdu_json.remove("event_id");
+	if let Ok(rv) = RoomVersion::new(room_version_id) {
+		if rv.state_dags {
+			pdu_json.remove("auth_events");
+		}
+	}
 
 	// Sign
 	if let Err(e) = self

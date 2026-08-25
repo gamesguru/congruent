@@ -1269,15 +1269,7 @@ pub async fn promote_outliers_sorted(
 		.find(|ev| ev.event_type == "m.room.create");
 
 	// Topo sort: ancestors first (create → PL → joins → messages)
-	let state_res_version = {
-		use ruma::RoomVersionId::*;
-		match room_version {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 | V11 =>
-				rezzy::StateResVersion::V2,
-			| V12 => rezzy::StateResVersion::V2_1,
-			| ver => return Err!(Database("Unsupported room version for topo sort: {ver}")),
-		}
-	};
+	let state_res_version = crate::rooms::auth_adapter::to_state_res_version(room_version);
 	let mut pl_cache = HashMap::new();
 	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
 		&events_map,

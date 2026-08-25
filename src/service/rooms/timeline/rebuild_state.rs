@@ -401,13 +401,7 @@ impl super::Service {
 		);
 
 		// ── Map room version to StateResVersion ──
-		let version = match ctx.room_version.as_str() {
-			| "1" => rezzy::StateResVersion::V1,
-			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
-				rezzy::StateResVersion::V2,
-			| "12" => rezzy::StateResVersion::V2_1,
-			| _ => rezzy::StateResVersion::V2_1_1,
-		};
+		let version = rooms::auth_adapter::to_state_res_version(&ctx.room_version);
 
 		// ── Compute state at all events via rezzy streaming ──
 		let batch_start = Instant::now();
@@ -714,13 +708,7 @@ impl super::Service {
 		);
 
 		// 2. Map room version early — needed to decide auth chain diff vs subgraph
-		let version = match ctx.room_version.as_str() {
-			| "1" => rezzy::StateResVersion::V1,
-			| "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" =>
-				rezzy::StateResVersion::V2,
-			| "12" => rezzy::StateResVersion::V2_1,
-			| _ => rezzy::StateResVersion::V2_1_1,
-		};
+		let version = rooms::auth_adapter::to_state_res_version(&ctx.room_version);
 		let is_v2_1_plus = matches!(
 			version,
 			rezzy::StateResVersion::V2_1

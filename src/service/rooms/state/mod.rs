@@ -908,13 +908,17 @@ impl Service {
 
 		let content_val: serde_json::Value =
 			serde_json::from_str(content.get()).unwrap_or(serde_json::Value::Null);
-		// For auth_types_for_event, V2 vs V2_1+ is the only distinction
-		// (whether `m.room.create` is included). V2_1_1 and V2_2 behave the same.
-		let version = if room_version.room_ids_as_hashes {
-			rezzy::StateResVersion::V2_1
-		} else {
-			// TODO: what about StateRes V1? V1 rooms?
-			rezzy::StateResVersion::V2
+		let version = match room_version.state_res {
+			| conduwuit_core::matrix::state_res::StateResolutionVersion::V1 =>
+				rezzy::StateResVersion::V1,
+			| conduwuit_core::matrix::state_res::StateResolutionVersion::V2 =>
+				rezzy::StateResVersion::V2,
+			| conduwuit_core::matrix::state_res::StateResolutionVersion::V2_1 =>
+				rezzy::StateResVersion::V2_1,
+			| conduwuit_core::matrix::state_res::StateResolutionVersion::V2_1_1 =>
+				rezzy::StateResVersion::V2_1_1,
+			| conduwuit_core::matrix::state_res::StateResolutionVersion::V2_2 | _ =>
+				rezzy::StateResVersion::V2_2,
 		};
 		let auth_types_raw = rezzy::auth::auth_types_for_event(
 			&kind.to_string(),

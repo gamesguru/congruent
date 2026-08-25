@@ -39,12 +39,11 @@ use self::power_levels::PowerLevelsContentFields;
 pub use self::{
 	error::Error,
 	event_auth::{auth_check, auth_types_for_event},
-	room_version::RoomVersion,
+	room_version::{RoomVersion, StateResolutionVersion},
 };
 use crate::{
 	debug, debug_error, info,
 	matrix::{Event, StateKey},
-	state_res::room_version::StateResolutionVersion,
 	trace,
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryWidebandExt, WidebandExt},
 	warn,

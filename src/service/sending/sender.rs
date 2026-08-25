@@ -1354,9 +1354,18 @@ impl Service {
 			.and_then(|val| RoomId::parse(val.as_str()?).ok())
 		{
 			match self.services.state.get_room_version(room_id).await {
-				| Ok(room_version_id) => match room_version_id {
-					| RoomVersionId::V1 | RoomVersionId::V2 => {},
-					| _ => _ = pdu_json.remove("event_id"),
+				| Ok(room_version_id) => {
+					match room_version_id {
+						| RoomVersionId::V1 | RoomVersionId::V2 => {},
+						| _ => _ = pdu_json.remove("event_id"),
+					}
+					if let Ok(rv) =
+						conduwuit::matrix::state_res::RoomVersion::new(&room_version_id)
+					{
+						if rv.state_dags {
+							pdu_json.remove("auth_events");
+						}
+					}
 				},
 				| Err(_) => _ = pdu_json.remove("event_id"),
 			}
