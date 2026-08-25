@@ -281,7 +281,12 @@ run_one_pattern() {
 
 	wait "$producer_pid"
 	exit_code=$?
-	set -e
+
+	# NOTE: must NOT `set -e` before returning here. `run_one_pattern` is
+	# invoked under `set +e` so the caller can capture `$?`. If go test failed
+	# (non-zero exit, e.g. real test failures), `set -e; return "$exit_code"`
+	# would make errexit fire on the `return` and kill the whole script before
+	# the results-merge block below runs -- silently losing the staged results.
 	return "$exit_code"
 }
 
