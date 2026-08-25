@@ -135,6 +135,54 @@ async fn create_join_event(
 		.collect()
 		.await;
 
+	let room_version = conduwuit::RoomVersion::new(&room_version_id)?;
+	if room_version.state_dags {
+		// MSC4242: Send the entire state DAG for the room in `state_dag`.
+		// `state`, `auth_chain`, and `servers_in_room` are omitted.
+		let mut state_dag_events = Vec::new();
+		let mut queue: std::collections::VecDeque<OwnedEventId> = state_ids.into_iter().collect();
+		let mut seen: std::collections::HashSet<OwnedEventId> = std::collections::HashSet::new();
+
+		while let Some(next_id) = queue.pop_front() {
+			if !seen.insert(next_id.clone()) {
+				continue;
+			}
+			let Ok(pdu) = services.rooms.timeline.get_pdu(&next_id).await else {
+				continue;
+			};
+			if services
+				.rooms
+				.pdu_metadata
+				.is_event_rejected(&next_id)
+				.await
+			{
+				continue;
+			}
+			if let Some(prev_states) = pdu.prev_state_events() {
+				for prev_id in prev_states {
+					queue.push_back(prev_id.to_owned());
+				}
+			}
+			if let Ok(pdu_json) = services.rooms.timeline.get_pdu_json(&next_id).await {
+				let fed_event = services
+					.sending
+					.convert_to_outgoing_federation_event(pdu_json)
+					.await;
+				state_dag_events.push(fed_event);
+			}
+		}
+
+		info!(count = state_dag_events.len(), "Returning MSC4242 state_dag for send_join");
+		return Ok(create_join_event::v2::RoomState {
+			auth_chain: Vec::new(),
+			state: Vec::new(),
+			state_dag: Some(state_dag_events),
+			event: to_raw_value(&CanonicalJsonValue::Object(value)).ok(),
+			members_omitted: false,
+			servers_in_room: None,
+		});
+	}
+
 	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
 	// membership events must still be included in a partial-state response so
 	// the joining server can compute a display name before it finishes
@@ -192,7 +240,7 @@ async fn create_join_event(
 		.collect()
 		.await;
 
-	let state = retained_state_ids
+	let state: Vec<Box<RawJsonValue>> = retained_state_ids
 		.iter()
 		.try_stream()
 		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
@@ -259,6 +307,7 @@ async fn create_join_event(
 	Ok(create_join_event::v2::RoomState {
 		auth_chain,
 		state,
+		state_dag: None,
 		event: to_raw_value(&CanonicalJsonValue::Object(value)).ok(),
 		members_omitted: omit_members,
 		servers_in_room,

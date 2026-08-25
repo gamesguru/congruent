@@ -601,47 +601,56 @@ where
 		}
 	}
 
-	// The original create event must be in the auth events for v11 and below.
-	// The create event itself has an empty auth_events array (it's the DAG root).
-	// For v12+, create is not required in auth_events.
-	if pdu_event.kind != TimelineEventType::RoomCreate
-		&& !to_room_version(&room_version_id).room_ids_as_hashes
-		&& !auth_events_by_key.contains_key(&(StateEventType::RoomCreate, String::new().into()))
-	{
-		self.services
-			.pdu_metadata
-			.mark_event_rejected(event_id, RejectionCode::MissingCreateEvent.tag())
-			.await;
-		self.services
-			.outlier
-			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-			.await;
-		return Err!(Request(InvalidParam(
-			"Incoming event missing m.room.create in auth events"
-		)));
-	}
+	// MSC4242 (state DAGs): events carry `prev_state_events` instead of
+	// `auth_events`, so there is nothing to auth-check here against claimed
+	// auth events. Authorisation is evaluated against state-at-event (resolved
+	// from the state DAG) downstream in `upgrade_outlier_to_timeline_pdu`.
+	if to_room_version(&room_version_id).state_dags {
+		trace!("State DAG room: skipping claimed auth_events validation for {event_id}");
+	} else {
+		// The original create event must be in the auth events for v11 and below.
+		// The create event itself has an empty auth_events array (it's the DAG root).
+		// For v12+, create is not required in auth_events.
+		if pdu_event.kind != TimelineEventType::RoomCreate
+			&& !to_room_version(&room_version_id).room_ids_as_hashes
+			&& !auth_events_by_key
+				.contains_key(&(StateEventType::RoomCreate, String::new().into()))
+		{
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(event_id, RejectionCode::MissingCreateEvent.tag())
+				.await;
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
+			return Err!(Request(InvalidParam(
+				"Incoming event missing m.room.create in auth events"
+			)));
+		}
 
-	let state_provider =
-		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events_by_key)
-			.with_create_event(create_event);
-	let auth_check = crate::rooms::auth_adapter::rezzy_auth_check(
-		&pdu_event,
-		&state_provider,
-		crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
-	);
+		let state_provider =
+			crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events_by_key)
+				.with_create_event(create_event);
+		let auth_check = crate::rooms::auth_adapter::rezzy_auth_check(
+			&pdu_event,
+			&state_provider,
+			crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+		);
 
-	if !auth_check {
-		self.services
-			.pdu_metadata
-			.mark_event_rejected(event_id, RejectionCode::AuthCheckFailed.tag())
-			.await;
-		self.services
-			.outlier
-			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
-			.await;
-		return Err!(Request(Forbidden(
-			"Event authorisation fails based on event's claimed auth events"
-		)));
+		if !auth_check {
+			self.services
+				.pdu_metadata
+				.mark_event_rejected(event_id, RejectionCode::AuthCheckFailed.tag())
+				.await;
+			self.services
+				.outlier
+				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
+				.await;
+			return Err!(Request(Forbidden(
+				"Event authorisation fails based on event's claimed auth events"
+			)));
+		}
 	}
 
 	trace!("Validation successful.");

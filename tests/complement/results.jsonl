@@ -376,7 +376,7 @@
 {"Action":"pass","Test":"TestMSC4186SlidingSync/UnknownPos"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/FederationSimple"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/FederationSimple"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsFaultyEvents"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsFillingStateDAGFails"}

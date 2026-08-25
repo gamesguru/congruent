@@ -226,145 +226,177 @@ where
 		return Ok(Some(pduid));
 	}
 
-	debug!(event_id = %incoming_pdu.event_id, "Gathering explicitly claimed auth events");
-	let mut auth_events = HashMap::new();
-	let mut missing_auth_events = false;
-	let mut missing_auth_event_ids = Vec::new();
+	if !room_version.state_dags {
+		debug!(event_id = %incoming_pdu.event_id, "Gathering explicitly claimed auth events");
+		let mut auth_events = HashMap::new();
+		let mut missing_auth_events = false;
+		let mut missing_auth_event_ids = Vec::new();
 
-	for event_id in incoming_pdu.auth_events() {
-		// A bare `is_event_rejected` would also hard-cascade on an auth event
-		// that's only retryably rejected (e.g. its own `MissingAuthEvent`
-		// resolution never finished) -- permanently poisoning `incoming_pdu`
-		// with `DependsOnRejectedAuthEvent` for a dependency that might still
-		// resolve later. Use the narrower permanent check; a retryable
-		// rejection here just falls through to the `get_pdu` lookup below,
-		// which fails and sets `missing_auth_events`, same as a genuinely
-		// missing auth event.
-		let is_rejected = self
-			.services
-			.pdu_metadata
-			.is_event_permanently_rejected(event_id)
-			.await;
-		if is_rejected && !skip_soft_fail {
-			warn!(
-				event_id = %incoming_pdu.event_id,
-				auth_event_id = %event_id,
-				"Event rejected because auth_event is rejected"
-			);
+		for event_id in incoming_pdu.auth_events() {
+			// A bare `is_event_rejected` would also hard-cascade on an auth event
+			// that's only retryably rejected (e.g. its own `MissingAuthEvent`
+			// resolution never finished) -- permanently poisoning `incoming_pdu`
+			// with `DependsOnRejectedAuthEvent` for a dependency that might still
+			// resolve later. Use the narrower permanent check; a retryable
+			// rejection here just falls through to the `get_pdu` lookup below,
+			// which fails and sets `missing_auth_events`, same as a genuinely
+			// missing auth event.
+			let is_rejected = self
+				.services
+				.pdu_metadata
+				.is_event_permanently_rejected(event_id)
+				.await;
+			if is_rejected && !skip_soft_fail {
+				warn!(
+					event_id = %incoming_pdu.event_id,
+					auth_event_id = %event_id,
+					"Event rejected because auth_event is rejected"
+				);
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(event_id),
+					)
+					.await;
+				return Err!(Request(Forbidden(
+					"Event authorisation fails because it references a rejected auth_event"
+				)));
+			}
+
+			if let Ok(pdu) = self.services.timeline.get_pdu(event_id).await {
+				match classify_claimed_auth_event(pdu) {
+					| ClaimedAuthEventResolution::PresentState(pdu) => {
+						let key = StateEventType::from(pdu.kind().clone());
+						let state_key = pdu
+							.state_key
+							.clone()
+							.expect("state event classification guarantees a state_key");
+						auth_events.insert((key, state_key), *pdu);
+					},
+					| ClaimedAuthEventResolution::PresentNonState => {
+						warn!(
+							event_id = %incoming_pdu.event_id,
+							auth_event_id = %event_id,
+							"Claimed auth event exists locally but is not a state event"
+						);
+						self.services
+							.pdu_metadata
+							.mark_event_rejected(
+								incoming_pdu.event_id(),
+								RejectionCode::InvalidPduFormat.tag(),
+							)
+							.await;
+						return Err!(Request(Forbidden(
+							"Event authorisation fails because it references a non-state auth \
+							 event"
+						)));
+					},
+				}
+			} else {
+				missing_auth_events = true;
+				missing_auth_event_ids.push(OwnedEventId::from(event_id));
+			}
+		}
+
+		if missing_auth_events {
+			debug!(event_id = %incoming_pdu.event_id, "Missing claimed auth events locally. Falling back to state-based auth events");
+			if let Ok(state_auth_events) = self
+				.services
+				.state
+				.get_auth_events(
+					room_id,
+					incoming_pdu.kind(),
+					incoming_pdu.sender(),
+					incoming_pdu.state_key(),
+					incoming_pdu.content(),
+					&room_version,
+				)
+				.await
+			{
+				for ((k, s), pdu) in state_auth_events {
+					auth_events.entry((k, s)).or_insert(pdu);
+				}
+			}
+		}
+
+		let unresolved_missing_auth_events: Vec<OwnedEventId> = missing_auth_event_ids
+			.into_iter()
+			.filter(|missing_id| !auth_events.values().any(|pdu| pdu.event_id() == missing_id))
+			.collect();
+
+		if !unresolved_missing_auth_events.is_empty() {
+			let primary_missing = unresolved_missing_auth_events[0].clone();
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(
 					incoming_pdu.event_id(),
-					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(event_id),
+					&RejectionCode::MissingAuthEvent.with_detail(primary_missing),
 				)
 				.await;
-			return Err!(Request(Forbidden(
-				"Event authorisation fails because it references a rejected auth_event"
-			)));
+			return Err!(MissingAuthEvents(unresolved_missing_auth_events));
 		}
 
-		if let Ok(pdu) = self.services.timeline.get_pdu(event_id).await {
-			match classify_claimed_auth_event(pdu) {
-				| ClaimedAuthEventResolution::PresentState(pdu) => {
-					let key = StateEventType::from(pdu.kind().clone());
-					let state_key = pdu
-						.state_key
-						.clone()
-						.expect("state event classification guarantees a state_key");
-					auth_events.insert((key, state_key), *pdu);
-				},
-				| ClaimedAuthEventResolution::PresentNonState => {
+		let state_provider =
+			crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events)
+				.with_create_event(Some(create_event));
+
+		// Check the auth of the event passes based on the claimed auth_events
+		debug!(event_id = %incoming_pdu.event_id, "Running auth check with claimed state auth");
+		let auth_check_claimed = crate::rooms::auth_adapter::rezzy_auth_check(
+			&incoming_pdu,
+			&state_provider,
+			crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+		);
+
+		if !auth_check_claimed {
+			if skip_soft_fail {
+				warn!(
+					event_id = %incoming_pdu.event_id,
+					"Event failed auth check against claimed auth_events, but skip_soft_fail is set — continuing"
+				);
+			} else {
+				self.services
+					.pdu_metadata
+					.mark_event_rejected(
+						incoming_pdu.event_id(),
+						RejectionCode::AuthCheckFailed.tag(),
+					)
+					.await;
+
+				return Err!(Request(Forbidden(
+					"Event authorisation fails based on its auth_events"
+				)));
+			}
+		}
+	} else {
+		// MSC4242 (state DAGs): Validate prev_state_events
+		if let Some(prev_states) = incoming_pdu.prev_state_events() {
+			for prev_state_id in prev_states {
+				let is_rejected = self
+					.services
+					.pdu_metadata
+					.is_event_permanently_rejected(prev_state_id)
+					.await;
+				if is_rejected && !skip_soft_fail {
 					warn!(
 						event_id = %incoming_pdu.event_id,
-						auth_event_id = %event_id,
-						"Claimed auth event exists locally but is not a state event"
+						%prev_state_id,
+						"Event rejected because prev_state_event is rejected"
 					);
 					self.services
 						.pdu_metadata
 						.mark_event_rejected(
 							incoming_pdu.event_id(),
-							RejectionCode::InvalidPduFormat.tag(),
+							&RejectionCode::DependsOnRejectedAuthEvent.with_detail(prev_state_id),
 						)
 						.await;
 					return Err!(Request(Forbidden(
-						"Event authorisation fails because it references a non-state auth event"
+						"Event authorisation fails because it references a rejected \
+						 prev_state_event"
 					)));
-				},
+				}
 			}
-		} else {
-			missing_auth_events = true;
-			missing_auth_event_ids.push(OwnedEventId::from(event_id));
-		}
-	}
-
-	if missing_auth_events {
-		debug!(event_id = %incoming_pdu.event_id, "Missing claimed auth events locally. Falling back to state-based auth events");
-		if let Ok(state_auth_events) = self
-			.services
-			.state
-			.get_auth_events(
-				room_id,
-				incoming_pdu.kind(),
-				incoming_pdu.sender(),
-				incoming_pdu.state_key(),
-				incoming_pdu.content(),
-				&room_version,
-			)
-			.await
-		{
-			for ((k, s), pdu) in state_auth_events {
-				auth_events.entry((k, s)).or_insert(pdu);
-			}
-		}
-	}
-
-	let unresolved_missing_auth_events: Vec<OwnedEventId> = missing_auth_event_ids
-		.into_iter()
-		.filter(|missing_id| !auth_events.values().any(|pdu| pdu.event_id() == missing_id))
-		.collect();
-
-	if !unresolved_missing_auth_events.is_empty() {
-		let primary_missing = unresolved_missing_auth_events[0].clone();
-		self.services
-			.pdu_metadata
-			.mark_event_rejected(
-				incoming_pdu.event_id(),
-				&RejectionCode::MissingAuthEvent.with_detail(primary_missing),
-			)
-			.await;
-		return Err!(MissingAuthEvents(unresolved_missing_auth_events));
-	}
-
-	let state_provider =
-		crate::rooms::auth_adapter::PduStateProvider::from_ruma_map(&auth_events)
-			.with_create_event(Some(create_event));
-
-	// Check the auth of the event passes based on the claimed auth_events
-	debug!(event_id = %incoming_pdu.event_id, "Running auth check with claimed state auth");
-	let auth_check_claimed = crate::rooms::auth_adapter::rezzy_auth_check(
-		&incoming_pdu,
-		&state_provider,
-		crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
-	);
-
-	if !auth_check_claimed {
-		if skip_soft_fail {
-			warn!(
-				event_id = %incoming_pdu.event_id,
-				"Event failed auth check against claimed auth_events, but skip_soft_fail is set — continuing"
-			);
-		} else {
-			self.services
-				.pdu_metadata
-				.mark_event_rejected(
-					incoming_pdu.event_id(),
-					RejectionCode::AuthCheckFailed.tag(),
-				)
-				.await;
-
-			return Err!(Request(Forbidden(
-				"Event authorisation fails based on its auth_events"
-			)));
 		}
 	}
 

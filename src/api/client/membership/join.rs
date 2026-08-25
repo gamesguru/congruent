@@ -591,13 +591,25 @@ async fn join_room_by_id_helper_remote_process(
 			.map_err(|e| err!(BadServerResponse("Invalid join event PDU: {e:?}")))?,
 	);
 
+	let is_state_dags =
+		conduwuit::RoomVersion::new(&room_version_id).is_ok_and(|rv| rv.state_dags);
+	if is_state_dags && send_join_response.room_state.state_dag.is_none() {
+		return Err!(Request(BadJson(warn!(
+			"Server {remote_server} sent send_join response missing required state_dag field"
+		))));
+	}
+
 	info!("Acquiring server signing keys for response events");
 	let resp_events = &send_join_response.room_state;
-	let resp_state = &resp_events.state;
-	let resp_auth = &resp_events.auth_chain;
+	let (state_events, auth_chain_events) = if is_state_dags {
+		(resp_events.state_dag.clone().unwrap_or_default(), Vec::new())
+	} else {
+		(resp_events.state.clone(), resp_events.auth_chain.clone())
+	};
+
 	services
 		.server_keys
-		.acquire_events_pubkeys(resp_auth.iter().chain(resp_state.iter()))
+		.acquire_events_pubkeys(state_events.iter().chain(auth_chain_events.iter()))
 		.boxed()
 		.await;
 
@@ -606,7 +618,7 @@ async fn join_room_by_id_helper_remote_process(
 	let mut outlier_event_ids: Vec<ruma::OwnedEventId> = Vec::new();
 	let state = services
 		.server_keys
-		.concurrent_validate_and_add_events(send_join_response.room_state.state, &room_version_id)
+		.concurrent_validate_and_add_events(state_events, &room_version_id)
 		.filter_map(|res| async {
 			match res {
 				| Ok(val) => Some(val),
@@ -676,51 +688,50 @@ async fn join_room_by_id_helper_remote_process(
 
 	drop(cork);
 
-	info!("Going through send_join response auth_chain");
-	let cork = services.db.cork_and_flush();
-	let auth_eids: Vec<ruma::OwnedEventId> = services
-		.server_keys
-		.concurrent_validate_and_add_events(
-			send_join_response.room_state.auth_chain,
-			&room_version_id,
-		)
-		.filter_map(|res| async {
-			match res {
-				| Ok(val) => Some(val),
-				| Err(e) => {
-					info!("Could not validate send_join response auth_chain event: {e:?}");
-					None
-				},
-			}
-		})
-		.fold(Vec::new(), |mut eids, (event_id, value)| async move {
-			if PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).is_err() {
-				info!("Invalid PDU in send_join auth_chain: {event_id}: {value:#?}");
-				return eids;
-			}
-			if !pdu_fits(&mut value.clone()) {
-				warn!(
-					"dropping incoming PDU {event_id} in room {room_id} from room join \
-					 auth_chain because it exceeds 65535 bytes or is otherwise too large."
-				);
-				return eids;
-			}
-			trace!(%event_id, "Adding PDU as an outlier from send_join auth_chain");
-			services
-				.rooms
-				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id))
-				.await;
-			services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
-			eids.push(event_id);
-			eids
-		})
-		.boxed()
-		.await;
+	if !auth_chain_events.is_empty() {
+		info!("Going through send_join response auth_chain");
+		let cork = services.db.cork_and_flush();
+		let auth_eids: Vec<ruma::OwnedEventId> = services
+			.server_keys
+			.concurrent_validate_and_add_events(auth_chain_events, &room_version_id)
+			.filter_map(|res| async {
+				match res {
+					| Ok(val) => Some(val),
+					| Err(e) => {
+						info!("Could not validate send_join response auth_chain event: {e:?}");
+						None
+					},
+				}
+			})
+			.fold(Vec::new(), |mut eids, (event_id, value)| async move {
+				if PduEvent::from_id_val(&event_id, value.clone(), Some(room_id)).is_err() {
+					info!("Invalid PDU in send_join auth_chain: {event_id}: {value:#?}");
+					return eids;
+				}
+				if !pdu_fits(&mut value.clone()) {
+					warn!(
+						"dropping incoming PDU {event_id} in room {room_id} from room join \
+						 auth_chain because it exceeds 65535 bytes or is otherwise too large."
+					);
+					return eids;
+				}
+				trace!(%event_id, "Adding PDU as an outlier from send_join auth_chain");
+				services
+					.rooms
+					.outlier
+					.add_pdu_outlier(&event_id, &value, Some(room_id))
+					.await;
+				services.rooms.pdu_metadata.clear_pdu_markers(&event_id);
+				eids.push(event_id);
+				eids
+			})
+			.boxed()
+			.await;
 
-	outlier_event_ids.extend(auth_eids);
+		outlier_event_ids.extend(auth_eids);
 
-	drop(cork);
+		drop(cork);
+	}
 
 	debug!("Running send_join auth check");
 	// Build auth state from the send_join response state for rezzy
