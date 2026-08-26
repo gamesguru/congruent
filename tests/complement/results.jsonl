@@ -378,8 +378,8 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01A"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01B"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01C"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01D"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01C"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01D"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/FederationSimple"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs/GME02A"}
@@ -401,7 +401,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsOutbound/GME01B-Outbound:_can_walk_forked_graphs"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/Graph"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/OnSendJoinSJ04"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/OnSendJoinSJ04/Concurrent_state_events_which_aren't_part_of_the_current_state_are_sent_in_/send_join_responses"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/OnSendJoinSJ04/Concurrent_state_events_which_aren't_part_of_the_current_state_are_sent_in_/send_join_responses"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/OnSendJoinSJ04/Malformed_events_are_not_sent_in_/send_join_responses"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/OnSendJoinSJ04/Rejected_events_are_not_sent_in_/send_join_responses"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE00TemporaryNetworkErrorIsOkay"}

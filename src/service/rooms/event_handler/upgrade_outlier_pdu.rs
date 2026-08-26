@@ -188,7 +188,11 @@ where
 	let timer = Instant::now();
 	let room_version_id = get_room_version_id(create_event)?;
 
-	let mut state_at_incoming_event = match Box::pin(self.resolve_state_at_incoming_event(
+	// State-at-event is historical: it is derived only from this event's own
+	// prev_events.  Current forward extremities may contain concurrent state
+	// (for example, a ban on another branch) and must not be allowed to
+	// retroactively affect the event's hard auth check.
+	let state_at_incoming_event = match Box::pin(self.resolve_state_at_incoming_event(
 		&incoming_pdu,
 		create_event,
 		origin,
@@ -197,7 +201,7 @@ where
 		skip_soft_fail,
 		prev_fetch_had_invalid_data,
 		prev_fetch_deeper_anchor.as_ref(),
-		is_forward_extremity,
+		false,
 	))
 	.await
 	{
@@ -555,6 +559,39 @@ where
 	let state_delta_opt;
 	let state_lock;
 	let state_ids_compressed;
+	// Room-update state is deliberately separate from state-at-event.  A live
+	// fork must be reconciled with all current extremities when computing the
+	// new room state, but that merged state is never valid input to the
+	// historical auth check above or to the event's stored state association.
+	let mut state_for_room_update = if is_forward_extremity {
+		match Box::pin(self.resolve_state_at_incoming_event(
+			&incoming_pdu,
+			create_event,
+			origin,
+			room_id,
+			&room_version_id,
+			skip_soft_fail,
+			false,
+			prev_fetch_deeper_anchor.as_ref(),
+			true,
+		))
+		.await
+		{
+			| Ok(state) => state,
+			| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+				info!(
+					target: "state_res_debug",
+					event_id = %incoming_pdu.event_id,
+					"Room-update state resolution failed with all prev_events present; \
+					 leaving event as an outlier so the background healer can retry later"
+				);
+				return Ok(None);
+			},
+			| Err(e) => return Err(e),
+		}
+	} else {
+		state_at_incoming_event.clone()
+	};
 
 	if !is_forward_extremity {
 		state_delta_opt = None;
@@ -577,41 +614,40 @@ where
 				.await
 				.ok();
 
-			if let StateAtEvent::FastForward(shortstatehash) = &state_at_incoming_event {
+			if let StateAtEvent::FastForward(shortstatehash) = &state_for_room_update {
 				if Some(*shortstatehash) != base_shortstatehash {
 					info!(
 						"Fast-forward state hash shift ({} -> {:?}), re-eval state @ incoming",
 						shortstatehash, base_shortstatehash
 					);
-					state_at_incoming_event =
-						match Box::pin(self.resolve_state_at_incoming_event(
-							&incoming_pdu,
-							create_event,
-							origin,
-							room_id,
-							&room_version_id,
-							skip_soft_fail,
-							false,
-							prev_fetch_deeper_anchor.as_ref(),
-							true,
-						))
-						.await
-						{
-							| Ok(state) => state,
-							| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
-								// Same retryable outcome as the initial resolution
-								// above: treat it as "leave as an outlier", not a
-								// fatal error of this attempt.
-								info!(
-									target: "state_res_debug",
-									event_id = %incoming_pdu.event_id,
-									"State resolution re-check failed with all prev_events present; \
-									 leaving event as an outlier so the background healer can retry later"
-								);
-								return Ok(None);
-							},
-							| Err(e) => return Err(e),
-						};
+					state_for_room_update = match Box::pin(self.resolve_state_at_incoming_event(
+						&incoming_pdu,
+						create_event,
+						origin,
+						room_id,
+						&room_version_id,
+						skip_soft_fail,
+						false,
+						prev_fetch_deeper_anchor.as_ref(),
+						true,
+					))
+					.await
+					{
+						| Ok(state) => state,
+						| Err(conduwuit::Error::StateResolutionWithPrevsPresent(_)) => {
+							// Same retryable outcome as the initial resolution
+							// above: treat it as "leave as an outlier", not a
+							// fatal error of this attempt.
+							info!(
+								target: "state_res_debug",
+								event_id = %incoming_pdu.event_id,
+								"State resolution re-check failed with all prev_events present; \
+								 leaving event as an outlier so the background healer can retry later"
+							);
+							return Ok(None);
+						},
+						| Err(e) => return Err(e),
+					};
 				}
 			}
 
@@ -619,20 +655,15 @@ where
 			let delta = self
 				.calculate_state_delta(
 					&incoming_pdu,
-					state_at_incoming_event.clone(),
+					state_for_room_update.clone(),
 					room_id,
 					&room_version_id,
 				)
 				.await?;
 
 			// Also compute the compressed state association WITHOUT the
-			// lock. For StateAtEvent::Resolved this can be thousands of
-			// short-ID lookups; state_at_incoming_event is fully finalized
-			// by this point in the iteration (any fast-forward re-eval
-			// above already happened before we get here), so recomputing
-			// it here -- once per retry, matching that iteration's state --
-			// is correct and keeps the expensive work out of the critical
-			// section below.
+			// Persist the historical state-at-event association, not the
+			// live-extremity merge used to calculate the room update.
 			let compressed_this_iter = self
 				.compress_state_at_event(&state_at_incoming_event)
 				.await?;
