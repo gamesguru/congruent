@@ -481,10 +481,15 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// events are unresolvable via the normal backfill path.
 			let parsed_pdu =
 				conduwuit::PduEvent::from_id_val(event_id, value.clone(), Some(room_id)).ok();
+			let room_version_id = self.services.state.get_room_version(room_id).await?;
+			let room_version_features = conduwuit::RoomVersion::new(&room_version_id)?;
 			let direct_prev = parsed_pdu.as_ref().and_then(|pdu| {
-				let mut prev_events = pdu.prev_events();
-				let first_prev = prev_events.next()?.to_owned();
-				prev_events.next().is_none().then_some(first_prev)
+				let prev_events: Vec<_> = if room_version_features.state_dags {
+					pdu.prev_state_events().into_iter().flatten().collect()
+				} else {
+					pdu.prev_events().collect()
+				};
+				(prev_events.len() == 1).then(|| prev_events[0].to_owned())
 			});
 			let mut state_ids_anchor = direct_prev.clone().unwrap_or_else(|| event_id.to_owned());
 
@@ -496,7 +501,15 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					origin,
 					room_id,
 					event_id,
-					pdu.prev_events(),
+					if room_version_features.state_dags {
+						pdu.prev_state_events()
+							.into_iter()
+							.flatten()
+							.collect::<Vec<_>>()
+							.into_iter()
+					} else {
+						pdu.prev_events().collect::<Vec<_>>().into_iter()
+					},
 					Some(pdu.sender().server_name()),
 				))
 				.await
@@ -769,7 +782,16 @@ pub async fn process_timeline_upgrade(
 			origin,
 			room_id,
 			event_id.as_ref(),
-			incoming_pdu.prev_events(),
+			if conduwuit::RoomVersion::new(&room_version_id)?.state_dags {
+				incoming_pdu
+					.prev_state_events()
+					.into_iter()
+					.flatten()
+					.collect::<Vec<_>>()
+					.into_iter()
+			} else {
+				incoming_pdu.prev_events().collect::<Vec<_>>().into_iter()
+			},
 			Some(incoming_pdu.sender().server_name()),
 		))
 		.await?

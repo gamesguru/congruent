@@ -4,7 +4,7 @@ use std::{
 };
 
 use conduwuit::{
-	Error, Event, PduEvent, Result, implement, info,
+	Error, Event, PduEvent, Result, RoomVersion, implement, info,
 	utils::stream::{BroadbandExt, IterStream},
 	warn,
 };
@@ -92,12 +92,21 @@ where
 		)
 		.await;
 
-	let earliest: Vec<OwnedEventId> = self
-		.services
-		.state
-		.get_forward_extremities(room_id)
-		.collect()
-		.await;
+	let room_version = self.services.state.get_room_version(room_id).await?;
+	let earliest: Vec<OwnedEventId> = if RoomVersion::new(&room_version)?.state_dags {
+		self.services
+			.state
+			.get_state_forward_extremities(room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await
+	} else {
+		self.services
+			.state
+			.get_forward_extremities(room_id)
+			.collect()
+			.await
+	};
 
 	let server_fanout = self
 		.services
