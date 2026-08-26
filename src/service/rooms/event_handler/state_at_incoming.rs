@@ -58,19 +58,11 @@ pub async fn find_pdu_in_compressed_state(
 // request and build the state from a known point and resolve if > 1 prev_event
 #[implement(super::Service)]
 #[tracing::instrument(name = "state", level = "debug", skip_all)]
-pub(super) async fn state_at_incoming_degree_one<Pdu>(
+pub(super) async fn state_at_incoming_degree_one(
 	&self,
-	incoming_pdu: &Pdu,
+	prev_event: &EventId,
 	room_id: &RoomId,
-) -> Result<Option<std::sync::Arc<crate::rooms::state_compressor::CompressedState>>>
-where
-	Pdu: Event + Send + Sync,
-{
-	let prev_event = incoming_pdu
-		.prev_events()
-		.next()
-		.expect("at least one prev_event");
-
+) -> Result<Option<std::sync::Arc<crate::rooms::state_compressor::CompressedState>>> {
 	// Not found locally is a legitimate, common case -- e.g. the prev_event was
 	// never delivered to us (a prior transaction was rejected, we joined the
 	// room after it, etc.), not a database malfunction. Fall through to the
