@@ -299,6 +299,10 @@ fn to_lean(pdu: &PduEvent) -> rezzy::LeanEvent {
 		.unwrap_or(0);
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
+		room_id: pdu
+			.room_id
+			.as_ref()
+			.map(|id| rezzy::RoomId::new(id.as_str())),
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(ToString::to_string),
 		power_level,
@@ -306,6 +310,13 @@ fn to_lean(pdu: &PduEvent) -> rezzy::LeanEvent {
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
+		prev_state_events: pdu
+			.prev_state_events
+			.as_deref()
+			.unwrap_or_default()
+			.iter()
+			.map(ToString::to_string)
+			.collect(),
 		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
 		depth: u64::from(pdu.depth),
 		rejected: false,
@@ -430,11 +441,12 @@ fn resolve_via_rezzy(
 
 	let version = to_rezzy_version(room_version);
 	let resolved_lean = rezzy::resolve_iterative_sort(
-		unconflicted,
-		conflicted_events,
+		&unconflicted,
+		&conflicted_events,
 		&auth_context,
 		version,
 		&mut pl_cache,
+		&String::new(),
 	);
 
 	// Convert back to Ruma StateMap

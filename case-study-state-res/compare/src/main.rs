@@ -637,6 +637,7 @@ fn resolve_via_rezzy(
 		&auth_context,
 		version,
 		&mut pl_cache,
+		&String::new(),
 	);
 
 	// Convert back to StateMap

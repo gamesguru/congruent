@@ -444,6 +444,7 @@ impl super::Service {
 						abort = true;
 					}
 				},
+				&String::new(),
 			);
 			if !completed {
 				warn!("compute_state_at_streaming_optimized detected cycle; results incomplete");
@@ -831,6 +832,7 @@ impl super::Service {
 			&auth_context,
 			version,
 			&mut pl_cache,
+			&String::new(),
 		);
 		eprintln!(
 			"[resolve_fork] rezzy::resolve_iterative_sort took {:?}",
