@@ -37,6 +37,9 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 	}
 
 	Ok(rezzy::hamt::RootHandle {
+		codec_version: rezzy::hamt::HAMT_CODEC_VERSION_V1,
+		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION_V1,
+		routing_params: [0; 4],
 		structural_hash: bytes[0..16]
 			.try_into()
 			.expect("fixed 16-byte structural hash slice"),
@@ -82,6 +85,7 @@ struct Data {
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
+	state_hamt_root_lattices: Arc<Map>,
 }
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
@@ -105,6 +109,7 @@ impl crate::Service for Service {
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
+				state_hamt_root_lattices: args.db["state_hamt_root_lattices"].clone(),
 			},
 		}))
 	}
@@ -351,6 +356,86 @@ impl Service {
 			.get_or_create_shortstatekey(&event_type, state_key)
 			.await;
 
+		let base = match state_root_handle {
+			| Some(root) => Some(root.clone()),
+			| None => self.get_room_state_hamt(room_id).await.ok(),
+		};
+		if let Some(base) = base {
+			if let Ok(raw) = self
+				.db
+				.state_hamt_root_lattices
+				.get(&base.structural_hash)
+				.await
+			{
+				if raw.len() == 2048 {
+					let mut lattice = rezzy::state::LtHash::default();
+					for (v, b) in lattice.0.iter_mut().zip(raw.chunks_exact(2)) {
+						*v = u16::from_le_bytes([b[0], b[1]]);
+					}
+					let old = self
+						.services
+						.state_hamt
+						.store
+						.get_node(&base.structural_hash)?;
+					let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+					let value = self
+						.services
+						.short
+						.get_or_create_shorteventid(new_pdu.event_id())
+						.await;
+					let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
+						&old,
+						&rooms::state_hamt::room_structural_key(
+							&self.services.globals.server_secret,
+							room_id,
+						),
+						new_shortstatekey,
+						Some(value),
+						&mut resolver,
+					)
+					.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
+					if let Some(old) = displaced {
+						let old_id = self
+							.services
+							.short
+							.get_eventid_from_short::<OwnedEventId>(old)
+							.await?;
+						lattice.replace(
+							&event_type.to_string(),
+							state_key,
+							old_id.as_str(),
+							new_pdu.event_id().as_str(),
+						);
+					} else {
+						lattice.insert(
+							&event_type.to_string(),
+							state_key,
+							new_pdu.event_id().as_str(),
+						);
+					}
+					for (hash, bytes) in created {
+						self.services
+							.state_hamt
+							.store
+							.put_encoded_node(hash, &bytes);
+					}
+					let handle = self
+						.services
+						.state_hamt
+						.store
+						.root_handle(new_node.structural_hash, &lattice);
+					let mut encoded = Vec::with_capacity(2048);
+					for v in lattice.0 {
+						encoded.extend_from_slice(&v.to_le_bytes());
+					}
+					self.db
+						.state_hamt_root_lattices
+						.insert(&handle.structural_hash, &encoded);
+					return Ok((handle, new_node));
+				}
+			}
+		}
+
 		let mut current: HashMap<ShortStateKey, OwnedEventId> =
 			if let Some(root_handle) = state_root_handle {
 				self.load_state_map_from_root_handle(root_handle, new_shortstatekey)
@@ -403,6 +488,13 @@ impl Service {
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
+		let mut encoded_lattice = Vec::with_capacity(2048);
+		for value in lattice.0 {
+			encoded_lattice.extend_from_slice(&value.to_le_bytes());
+		}
+		self.db
+			.state_hamt_root_lattices
+			.insert(&root_handle.structural_hash, &encoded_lattice);
 
 		Ok((root_handle, root_node))
 	}

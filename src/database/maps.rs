@@ -352,6 +352,12 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM
 	},
 	Descriptor {
+		name: "state_hamt_root_lattices",
+		key_size_hint: Some(16),
+		val_size_hint: Some(2048),
+		..descriptor::RANDOM
+	},
+	Descriptor {
 		name: "state_hamt_node_mtimes",
 		key_size_hint: Some(16),
 		val_size_hint: Some(8),

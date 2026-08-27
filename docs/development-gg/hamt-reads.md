@@ -6,11 +6,11 @@ HAMT‑rooted reads (`rezzy::hamt`), and where the code currently stands.
 
 ## Migration status (as of PR #89)
 
-| Layer                                                                                                     | Status          | Notes                                                                                                                                                                                     |
-| --------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Write / state transition**                                                                              | ✅ Done         | `append_to_state` builds a HAMT root + node and `persist_node_recursive`s nodes + root handle. No code writes `shortstatehash_statediff` anymore; the `state_compressor` service is gone. |
-| **Transition-time "read current state"**                                                                  | ✅ Done         | Inside `append_to_state`, `load_state_map_from_root_handle(root_handle)` traverses the HAMT via `state_hamt.store.get_node` + `visit_entries`, not the legacy delta chain.                |
-| **Public/external reads** (sync, spaces, send_join, context, room_state, resolve_state, member summaries) | ✅ Migrated     | All public consumers obtain a `RootHandle` via `get_room_state_hamt` / timeline root handles and read through the `*_hamt` accessors. The legacy `get_room_shortstatehash`, `state_full_shortids`, and `load_full_state` read paths are gone. |
+| Layer                                                                                                     | Status      | Notes                                                                                                                                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Write / state transition**                                                                              | ✅ Done     | `append_to_state` builds a HAMT root + node and `persist_node_recursive`s nodes + root handle. No code writes `shortstatehash_statediff` anymore; the `state_compressor` service is gone.                                                     |
+| **Transition-time "read current state"**                                                                  | ✅ Done     | Inside `append_to_state`, `load_state_map_from_root_handle(root_handle)` traverses the HAMT via `state_hamt.store.get_node` + `visit_entries`, not the legacy delta chain.                                                                    |
+| **Public/external reads** (sync, spaces, send_join, context, room_state, resolve_state, member summaries) | ✅ Migrated | All public consumers obtain a `RootHandle` via `get_room_state_hamt` / timeline root handles and read through the `*_hamt` accessors. The legacy `get_room_shortstatehash`, `state_full_shortids`, and `load_full_state` read paths are gone. |
 
 So this PR cut over both the _writer_ and the cloud-facing _readers_ to the HAMT
 
@@ -122,3 +122,42 @@ The legacy `get_room_shortstatehash`, `state_full_shortids`, and
 remaining uses of the `roomid_shortstatehash` /
 `shorteventid_shortstatehash` / `statehash_shortstatehash` maps are as
 migration inputs in `migrations.rs`.
+
+## Retained lattice reachability
+
+Incremental HAMT updates require the complete 2048-byte `LtHash`, not merely
+the 32-byte `state_group_id` digest. The digest cannot be expanded back into a
+lattice, so roots that may be used as incremental-update bases must retain
+their lattice metadata.
+
+The lattice is metadata for a root, not part of the HAMT node graph. Its
+reachability is therefore governed by the same root ownership rules as the
+root handle:
+
+- retain it while the root is referenced by `roomid_roothandle` or
+  `shorteventid_roothandle`;
+- retain it for any other durable historical root reference introduced by a
+  future feature;
+- delete it only after the corresponding root reference is removed and no
+  live root can use it as an incremental base;
+- if lattice metadata is missing (legacy data, pruning, or repair), fall back
+  to a full rebuild and regenerate the lattice before publishing the new root.
+
+Deleting an unreferenced lattice is safe: it cannot invalidate an already
+published root or its HAMT nodes. It only removes the O(log₃₂ S) update
+optimization for a future update based on that root. A lattice must never be
+used as a liveness signal for HAMT nodes; node reachability is still determined
+by walking every supplied live root through `state_hamt_nodes`.
+
+The current implementation persists lattices by structural root hash. A GC
+follow-up must enumerate all durable root handles, derive the live structural
+hash set, and sweep lattice records outside that set using the same grace
+period used for HAMT nodes. Until that sweep exists, lattice metadata is
+retained conservatively.
+
+### TODO
+
+- Add an authoritative maintenance entry point that enumerates every live
+  room and event root, then sweeps both HAMT nodes and lattice metadata from
+  the same complete root set. Do not enable standalone lattice deletion until
+  that caller and its dry-run tests exist.

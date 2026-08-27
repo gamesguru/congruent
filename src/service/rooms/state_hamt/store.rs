@@ -124,6 +124,11 @@ impl Store {
 		);
 	}
 
+	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) {
+		self.db.insert(&hash, bytes);
+		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+	}
+
 	/// Persists a node and all of its resolved children recursively.
 	pub fn persist_node_recursive(&self, node: Arc<HamtNode<u64, u64>>) {
 		for child in &node.children {
