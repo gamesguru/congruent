@@ -1,4 +1,5 @@
 #![type_length_limit = "16384"] //TODO: reduce me
+#![recursion_limit = "256"] //TODO: reduce me
 #![allow(clippy::toplevel_ref_arg)]
 
 extern crate conduwuit_core as conduwuit;
