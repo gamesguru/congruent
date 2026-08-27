@@ -383,7 +383,6 @@ pub async fn join_room_by_id_helper(
 			state_lock,
 			json_body,
 		)
-		.boxed()
 		.await?;
 	} else {
 		// Ask a remote server if we are not participating in this room
