@@ -157,10 +157,10 @@ impl crate::Service for Service {
 				typing: args.depend::<rooms::typing::Service>("rooms::typing"),
 			},
 			connections: Cache::builder()
-				.time_to_idle(Duration::from_secs(12 * 60 * 60))
+				.time_to_idle(Duration::from_hours(12))
 				.build(),
 			snake_connections: Cache::builder()
-				.time_to_idle(Duration::from_secs(12 * 60 * 60))
+				.time_to_idle(Duration::from_hours(12))
 				.build(),
 		}))
 	}

@@ -690,16 +690,14 @@ where
 
 	let sender_membership = match &sender_membership_event {
 		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())
-			.map(|m| m.membership)
-			.unwrap_or(MembershipState::Leave),
+			.map_or(MembershipState::Leave, |m| m.membership),
 		| None => MembershipState::Leave,
 	};
 	let sender_is_joined = sender_membership == MembershipState::Join;
 
 	let target_user_current_membership = match &target_user_membership_event {
 		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())
-			.map(|m| m.membership)
-			.unwrap_or(MembershipState::Leave),
+			.map_or(MembershipState::Leave, |m| m.membership),
 		| None => MembershipState::Leave,
 	};
 
@@ -741,8 +739,7 @@ where
 
 	let join_rules = if let Some(jr) = &join_rules_event {
 		from_json_str::<RoomJoinRulesEventContent>(jr.content().get())
-			.map(|c| c.join_rule)
-			.unwrap_or(JoinRule::Invite)
+			.map_or(JoinRule::Invite, |c| c.join_rule)
 	} else {
 		JoinRule::Invite
 	};
@@ -996,8 +993,8 @@ where
 					} else {
 						let allow = sender_creator
 							|| sender_power
-								.filter(|&p| p >= &power_levels.invite)
-								.is_some();
+								.as_ref()
+								.is_some_and(|&p| p >= &power_levels.invite);
 						if !allow {
 							warn!(
 								%sender,
@@ -1022,7 +1019,10 @@ where
 		},
 		| MembershipState::Leave => {
 			let can_unban = if target_user_current_membership == MembershipState::Ban {
-				sender_creator || sender_power.filter(|&p| p >= &power_levels.ban).is_some()
+				sender_creator
+					|| sender_power
+						.as_ref()
+						.is_some_and(|&p| p >= &power_levels.ban)
 			} else {
 				true
 			};
@@ -1033,7 +1033,10 @@ where
 				if sender_creator {
 					// sender is a creator
 					true
-				} else if sender_power.filter(|&p| p >= &power_levels.kick).is_none() {
+				} else if sender_power
+					.as_ref()
+					.is_none_or(|&p| p < &power_levels.kick)
+				{
 					// sender lacks kick power level
 					false
 				} else if let Some(sp) = sender_power {
@@ -1121,7 +1124,9 @@ where
 				false
 			} else {
 				let allow = sender_creator
-					|| (sender_power.filter(|&p| p >= &power_levels.ban).is_some()
+					|| (sender_power
+						.as_ref()
+						.is_some_and(|&p| p >= &power_levels.ban)
 						&& target_power < sender_power);
 				if !allow {
 					warn!(

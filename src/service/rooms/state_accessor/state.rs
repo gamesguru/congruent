@@ -386,8 +386,7 @@ pub fn state_full_shortids(
 pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
 	self.load_full_state(shortstatehash)
 		.await
-		.map(|s| s.is_empty())
-		.unwrap_or(true)
+		.map_or(true, |s| s.is_empty())
 }
 
 #[implement(super::Service)]

@@ -103,21 +103,19 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 							"Skipping federation timestamp result because local result is closer"
 						);
 						None
+					} else if services
+						.rooms
+						.state_accessor
+						.user_can_see_event(body.sender_user(), room_id, &fed.event_id)
+						.await
+					{
+						Some(fed)
 					} else {
-						if services
-							.rooms
-							.state_accessor
-							.user_can_see_event(body.sender_user(), room_id, &fed.event_id)
-							.await
-						{
-							Some(fed)
-						} else {
-							debug!(
-								event_id = %fed.event_id,
-								"Federation timestamp result is not visible to requester"
-							);
-							None
-						}
+						debug!(
+							event_id = %fed.event_id,
+							"Federation timestamp result is not visible to requester"
+						);
+						None
 					}
 				} else {
 					None

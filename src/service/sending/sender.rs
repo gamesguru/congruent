@@ -1183,7 +1183,7 @@ fn build_receipt_map(
 		match read.entry(user_id) {
 			| Entry::Vacant(e) => {
 				if num
-					.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+					.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
 						(n < limit).then_some(n.saturating_add(1))
 					})
 					.is_err()
