@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
@@ -111,8 +113,7 @@ pub(crate) async fn get_message_events_route(
 		services
 			.rooms
 			.timeline
-			.backfill_if_required(room_id, from)
-			.boxed()
+				.backfill_if_required(room_id, from)
 			.await
 			.log_err()
 			.ok();
@@ -370,21 +371,23 @@ where
 }
 
 #[inline]
-pub(crate) async fn visibility_filter(
-	services: &Services,
+pub(crate) fn visibility_filter<'a>(
+	services: &'a Services,
 	item: PdusIterItem,
-	user_id: &UserId,
-) -> Option<PdusIterItem> {
-	let (_, pdu) = &item;
+	user_id: &'a UserId,
+) -> Pin<Box<dyn Future<Output = Option<PdusIterItem>> + Send + 'a>> {
+	Box::pin(async move {
+		let (_, pdu) = &item;
 
-	let room_id = pdu.room_id_or_hash()?;
+		let room_id = pdu.room_id_or_hash()?;
 
-	services
-		.rooms
-		.state_accessor
-		.user_can_see_event(user_id, &room_id, pdu.event_id())
-		.await
-		.then_some(item)
+		services
+			.rooms
+			.state_accessor
+			.user_can_see_event(user_id, &room_id, pdu.event_id())
+			.await
+			.then_some(item)
+	})
 }
 
 #[inline]

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, future::Future, pin::Pin};
 
 use axum::extract::State;
 use conduwuit::{
@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::{self, FutureBoolExt},
 	warn,
 };
-use futures::{FutureExt, StreamExt, pin_mut};
+use futures::{StreamExt, pin_mut};
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerName, RoomId, RoomVersionId, UserId,
 	api::{
@@ -34,7 +34,6 @@ pub(crate) async fn leave_room_route(
 	body: Ruma<leave_room::v3::Request>,
 ) -> Result<leave_room::v3::Response> {
 	leave_room(&services, body.sender_user(), &body.room_id, body.reason.clone())
-		.boxed()
 		.await
 		.map(|()| leave_room::v3::Response::new())
 }
@@ -68,7 +67,7 @@ pub async fn leave_all_rooms(services: &Services, user_id: &UserId) {
 
 	for room_id in all_rooms {
 		// ignore errors
-		if let Err(e) = leave_room(services, user_id, &room_id, None).boxed().await {
+		if let Err(e) = leave_room(services, user_id, &room_id, None).await {
 			warn!(%user_id, "Failed to leave {room_id} remotely: {e}");
 		}
 
@@ -76,12 +75,13 @@ pub async fn leave_all_rooms(services: &Services, user_id: &UserId) {
 	}
 }
 
-pub async fn leave_room(
-	services: &Services,
-	user_id: &UserId,
-	room_id: &RoomId,
+pub fn leave_room<'a>(
+	services: &'a Services,
+	user_id: &'a UserId,
+	room_id: &'a RoomId,
 	reason: Option<String>,
-) -> Result {
+) -> Pin<Box<dyn Future<Output = Result> + Send + 'a>> {
+	Box::pin(async move {
 	let is_banned = services.rooms.metadata.is_banned(room_id);
 	let is_disabled = services.rooms.metadata.is_disabled(room_id);
 
@@ -240,6 +240,7 @@ pub async fn leave_room(
 		.await;
 
 	Ok(())
+})
 }
 
 pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
