@@ -31,7 +31,7 @@ jobs:
           submodules: true
 
       - name: Fetch tags and origin/main for comparison
-        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement-gg/test_results.jsonl
 
       - name: Install system dependencies
         run: |
