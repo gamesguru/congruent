@@ -370,8 +370,8 @@ impl Service {
 			{
 				if raw.len() == 2048 {
 					let mut lattice = rezzy::state::LtHash::default();
-					for (v, b) in lattice.0.iter_mut().zip(raw.chunks_exact(2)) {
-						*v = u16::from_le_bytes([b[0], b[1]]);
+					for (v, b) in lattice.0.iter_mut().zip(raw.as_chunks::<2>().0.iter()) {
+						*v = u16::from_le_bytes(*b);
 					}
 					let old = self
 						.services
