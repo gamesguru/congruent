@@ -145,7 +145,7 @@ where
 						latest_events: latest_events.clone(),
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
-						state_dag,
+						state_dag: false,
 					};
 					let res = tokio::time::timeout_at(
 						deadline,

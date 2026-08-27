@@ -380,7 +380,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01B"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01C"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01D"}
-{"Action":"pass","Test":"TestMSC4242StateDAGs/FederationSimple"}
+{"Action":"fail","Test":"TestMSC4242StateDAGs/FederationSimple"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs/GME02A"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs/GME02B"}
@@ -408,7 +408,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE00TemporaryNetworkErrorIsOkay/C_&_D_are_message_events"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE00TemporaryNetworkErrorIsOkay/all_events_are_state_events"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE01DeOutlieredStateIsCorrect"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/STATE02OldStateChangesBetweenEvents"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/STATE02OldStateChangesBetweenEvents"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE04MismatchedPrevStateEventsVsPrevEvents"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendJoinMalformedResponseSJ00"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendJoinSJ01Inbound"}
@@ -418,7 +418,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00A"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00B"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00C"}
-{"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00D"}
+{"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00D"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00E"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00F"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00H"}
