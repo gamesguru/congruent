@@ -8,7 +8,7 @@ fn bench_hamt_construction(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hamt_construction");
 
 	let sizes = [10, 100, 1_000, 10_000, 50_000];
-	let server_secret = [7u8; 32];
+	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 
 	for &size in &sizes {
@@ -39,7 +39,7 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hamt_point_lookups");
 
 	let sizes = [10, 100, 1_000, 10_000, 50_000];
-	let server_secret = [7u8; 32];
+	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
@@ -69,7 +69,7 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 		}
 		collect_nodes(root_node.clone(), &mut node_map);
 
-		let target_keys = [0u64, (size / 2) as u64, (size - 1) as u64];
+		let target_keys = [0_u64, (size / 2) as u64, (size - 1) as u64];
 
 		group.bench_with_input(BenchmarkId::new("point_lookup_search", size), &size, |b, _| {
 			b.iter(|| {
@@ -99,7 +99,7 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 
 	let base_size = 50_000;
 	let delta_sizes = [1, 10, 100, 1_000];
-	let server_secret = [7u8; 32];
+	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 

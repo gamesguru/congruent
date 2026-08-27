@@ -199,7 +199,7 @@ impl Service {
 				.text_to_file(message_content.body())
 				.await
 				.expect("failed to create text file");
-			let size_u64: u64 = message_content.body().len().try_into().map_or(0, |n| n);
+			let size_u64: u64 = message_content.body().len().try_into().unwrap_or(0);
 			let metadata = FileInfo {
 				mimetype: Some("text/markdown".to_owned()),
 				size: Some(UInt::new_saturating(size_u64)),

@@ -110,7 +110,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId) -> Result {
 			} else {
 				"PDU found in our database"
 			};
-			write!(self, "{msg}\n```json\n{text}\n```",)
+			write!(self, "{msg}\n```json\n{text}\n```")
 		},
 	}
 	.await

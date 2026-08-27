@@ -160,10 +160,9 @@ impl Service {
 				.account_data
 				.get_global(recipient_user, GlobalAccountDataEventType::InvitePermissionConfig)
 				.await
-				.map(|config: InvitePermissionConfigEvent| {
+				.map_or(FilterLevel::Allow, |config: InvitePermissionConfigEvent| {
 					config.content.user_filter_level(sender_user)
 				})
-				.unwrap_or(FilterLevel::Allow)
 		};
 
 		info!(%sender_user, %recipient_user, ?level, "invite_filter_level");

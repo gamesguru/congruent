@@ -143,8 +143,7 @@ where
 						// must only carry the suggested links.
 						summary.children_state.retain(|raw| {
 							raw.deserialize_as::<HierarchySpaceChildEvent>()
-								.map(|ce| ce.content.suggested)
-								.unwrap_or(false)
+								.is_ok_and(|ce| ce.content.suggested)
 						});
 					}
 					rooms.push(summary_to_chunk(summary.clone()));
