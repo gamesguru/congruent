@@ -291,6 +291,7 @@ mod tests {
 			content: to_raw_value(&json!({"msgtype": "m.text", "body": "test"})).unwrap(),
 			state_key: None,
 			prev_events: vec![],
+			prev_state_events: None,
 			depth: UInt::from(1_u32),
 			auth_events: vec![],
 			redacts: None,
@@ -298,6 +299,7 @@ mod tests {
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
+			rejected: false,
 		}
 	}
 
@@ -455,6 +457,7 @@ mod tests {
 			content: to_raw_value(&content).unwrap(),
 			state_key: state_key.map(Into::into),
 			prev_events: vec![],
+			prev_state_events: None,
 			depth: UInt::from(1_u32),
 			auth_events: vec![],
 			redacts: None,
@@ -462,6 +465,7 @@ mod tests {
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
+			rejected: false,
 		}
 	}
 

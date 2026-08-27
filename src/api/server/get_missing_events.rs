@@ -1,7 +1,9 @@
 use std::collections::{HashSet, VecDeque};
 
 use axum::extract::State;
-use conduwuit::{Err, Event, Result, debug, info, trace, utils::to_canonical_object, warn};
+use conduwuit::{
+	Err, Event, Result, RoomVersion, debug, err, info, trace, utils::to_canonical_object, warn,
+};
 use ruma::{OwnedEventId, api::federation::event::get_missing_events};
 use serde_json::{json, value::RawValue};
 
@@ -44,7 +46,11 @@ pub(crate) async fn get_missing_events_route(
 		"Serving get_missing_events request"
 	);
 
-	let room_version = services.rooms.state.get_room_version(&body.room_id).await?;
+	let room_version_id = services.rooms.state.get_room_version(&body.room_id).await?;
+	let room_version = RoomVersion::new(&room_version_id).map_err(|e| {
+		warn!("Unsupported room version {room_version_id}: {e:?}");
+		err!(Request(UnsupportedRoomVersion("Unsupported room version")))
+	})?;
 
 	let mut queue: VecDeque<OwnedEventId> = VecDeque::from(body.latest_events.clone());
 	let mut results: Vec<(OwnedEventId, Vec<OwnedEventId>, ruma::UInt, Box<RawValue>)> =
@@ -79,19 +85,34 @@ pub(crate) async fn get_missing_events_route(
 		if !services
 			.rooms
 			.state_accessor
-			.server_can_see_event(body.origin(), &body.room_id, pdu.event_id())
+			.server_can_see_event(
+				body.origin().to_owned(),
+				body.room_id.clone(),
+				pdu.event_id().to_owned(),
+			)
 			.await
 		{
 			debug!(%next_event_id, origin = %body.origin(), "redacting event origin cannot see");
-			pdu.redact(&room_version, json!({}))?;
+			pdu.redact(&room_version_id, json!({}))?;
 		}
+
+		let mut prev_events: Vec<OwnedEventId> =
+			if room_version.state_dags && pdu.prev_state_events().is_some() {
+				pdu.prev_state_events()
+					.map_or(Vec::new(), |i| i.map(ToOwned::to_owned).collect())
+			} else {
+				pdu.prev_events().map(ToOwned::to_owned).collect()
+			};
+		// MSC4242: make /get_missing_events deterministic
+		prev_events.sort();
 
 		trace!(
 			%next_event_id,
-			prev_events = ?pdu.prev_events().collect::<Vec<_>>(),
+			?prev_events,
 			"adding event to results and queueing prev events"
 		);
-		queue.extend(pdu.prev_events.clone());
+
+		queue.extend(prev_events);
 		seen.insert(next_event_id.clone());
 		if body.latest_events.contains(&next_event_id) {
 			continue; // Don't include latest_events in results,

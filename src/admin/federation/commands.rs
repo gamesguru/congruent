@@ -30,15 +30,36 @@ pub(super) async fn incoming_federation(&self) -> Result {
 			.federation_handletime
 			.read();
 
+		let active_txns = self.services.transactions.txn_active_keys();
+
 		let mut msg = format!(
 			"Handling {} incoming PDUs across {} active transactions:\n",
 			map.len(),
-			self.services.transactions.txn_active_handle_count()
+			active_txns.len()
 		);
-		for (r, (e, i)) in map.iter() {
-			let elapsed = i.elapsed();
-			writeln!(msg, "{} {}: {}m{}s", r, e, elapsed.as_secs() / 60, elapsed.as_secs() % 60)?;
+
+		if !map.is_empty() {
+			writeln!(msg, "PDUs being handled:")?;
+			for (r, (e, i)) in map.iter() {
+				let elapsed = i.elapsed();
+				writeln!(
+					msg,
+					"  {} {}: {}m{}s",
+					r,
+					e,
+					elapsed.as_secs() / 60,
+					elapsed.as_secs() % 60
+				)?;
+			}
 		}
+
+		if !active_txns.is_empty() {
+			writeln!(msg, "\nActive Transactions:")?;
+			for (origin, txn_id) in active_txns {
+				writeln!(msg, "  {origin} {txn_id}")?;
+			}
+		}
+
 		msg
 	};
 
@@ -129,6 +150,68 @@ pub(super) async fn remote_user_in_rooms(&self, user_id: OwnedUserId) -> Result 
 		.collect::<Vec<_>>()
 		.join("\n");
 
-	self.write_str(&format!("Rooms {user_id} shares with us ({num}):\n```\n{body}\n```",))
+	self.write_str(&format!("Rooms {user_id} shares with us ({num}):\n```\n{body}\n```"))
 		.await
+}
+
+#[admin_command]
+pub(super) async fn sending_queue(
+	&self,
+	server: Option<OwnedServerName>,
+	clear: bool,
+	all: bool,
+) -> Result {
+	self.bail_restricted()?;
+
+	if clear {
+		if let Some(ref server) = server {
+			self.services.sending.clear_destination_queue(server).await;
+			return self
+				.write_str(&format!("Cleared sending queue for {server}"))
+				.await;
+		}
+		if !all {
+			return Err!(Request(InvalidParam(
+				"Use --all to clear the entire sending queue, or specify a server."
+			)));
+		}
+		self.services.sending.clear_all_federation_queues().await;
+		return self
+			.write_str("Cleared sending queue for all destinations")
+			.await;
+	}
+
+	let destinations = self.services.sending.queued_destinations().await;
+	let destinations: Vec<_> = destinations
+		.into_iter()
+		.filter(|(dest, ..)| server.as_ref().is_none_or(|filter| dest == filter.as_str()))
+		.collect();
+
+	if destinations.is_empty() {
+		return match server {
+			| Some(server) =>
+				self.write_str(&format!("Sending queue is empty for {server}."))
+					.await,
+			| None => self.write_str("Sending queue is empty.").await,
+		};
+	}
+
+	let mut out = String::from("Outbound Sending Queue:\n```\n");
+	let mut total_queued = 0_usize;
+	let mut total_active = 0_usize;
+
+	for (dest, queued, active) in &destinations {
+		total_queued = total_queued.saturating_add(*queued);
+		total_active = total_active.saturating_add(*active);
+		writeln!(out, "{dest:50}  queued={queued:>6}  active={active:>4}")?;
+	}
+
+	writeln!(out, "```")?;
+	writeln!(
+		out,
+		"**Total:** {total_queued} queued, {total_active} active across {} destinations",
+		destinations.len()
+	)?;
+
+	self.write_str(&out).await
 }

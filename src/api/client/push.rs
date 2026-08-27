@@ -23,6 +23,50 @@ use ruma::{
 
 use crate::Ruma;
 
+fn normalize_poll_push_rules(ruleset: Ruleset) -> Result<Ruleset> {
+	let mut value = serde_json::to_value(ruleset)?;
+	for kind in ["override", "underride"] {
+		let Some(rules) = value
+			.get_mut(kind)
+			.and_then(serde_json::Value::as_array_mut)
+		else {
+			continue;
+		};
+		for rule in rules {
+			if !rule
+				.get("rule_id")
+				.and_then(serde_json::Value::as_str)
+				.is_some_and(|id| id.starts_with(".org.matrix.msc3930."))
+			{
+				continue;
+			}
+			let Some(conditions) = rule
+				.get_mut("conditions")
+				.and_then(serde_json::Value::as_array_mut)
+			else {
+				continue;
+			};
+			for condition in conditions {
+				if condition.get("kind").and_then(serde_json::Value::as_str)
+					== Some("event_property_is")
+					&& condition.get("key").and_then(serde_json::Value::as_str) == Some("type")
+				{
+					let Some(pattern) = condition.get("value").cloned() else { continue };
+					if pattern.is_string() {
+						condition["kind"] = serde_json::Value::String("event_match".to_owned());
+						condition["pattern"] = pattern;
+						condition
+							.as_object_mut()
+							.expect("condition is an object")
+							.remove("value");
+					}
+				}
+			}
+		}
+	}
+	Ok(serde_json::from_value(value)?)
+}
+
 /// # `GET /_matrix/client/r0/pushrules/`
 ///
 /// Retrieves the push rules event for this user.
@@ -31,6 +75,7 @@ pub(crate) async fn get_pushrules_all_route(
 	body: Ruma<get_pushrules_all::v3::Request>,
 ) -> Result<get_pushrules_all::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let Some(content_value) = services
 		.account_data
@@ -51,6 +96,7 @@ pub(crate) async fn get_pushrules_all_route(
 		})?;
 
 	let mut global_ruleset = account_data_content.global;
+	global_ruleset = normalize_poll_push_rules(global_ruleset)?;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	// and update the stored server default push rules
@@ -104,6 +150,7 @@ pub(crate) async fn get_pushrules_global_route(
 	body: Ruma<get_pushrules_global_scope::v3::Request>,
 ) -> Result<get_pushrules_global_scope::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let Some(content_value) = services
 		.account_data
@@ -193,6 +240,7 @@ pub(crate) async fn get_pushrule_route(
 	body: Ruma<get_pushrule::v3::Request>,
 ) -> Result<get_pushrule::v3::Response> {
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -209,11 +257,9 @@ pub(crate) async fn get_pushrule_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("PushRules event not found."))))?;
 
-	let rule = event
-		.content
-		.global
-		.get(body.kind.clone(), &body.rule_id)
-		.map(Into::into);
+	let mut global = event.content.global;
+	global = normalize_poll_push_rules(global)?;
+	let rule = global.get(body.kind.clone(), &body.rule_id).map(Into::into);
 
 	if let Some(rule) = rule {
 		Ok(get_pushrule::v3::Response { rule })
@@ -230,6 +276,7 @@ pub(crate) async fn set_pushrule_route(
 	body: Ruma<set_pushrule::v3::Request>,
 ) -> Result<set_pushrule::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 	let body = &body.body;
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -286,6 +333,7 @@ pub(crate) async fn get_pushrule_actions_route(
 	body: Ruma<get_pushrule_actions::v3::Request>,
 ) -> Result<get_pushrule_actions::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -320,6 +368,7 @@ pub(crate) async fn set_pushrule_actions_route(
 	body: Ruma<set_pushrule_actions::v3::Request>,
 ) -> Result<set_pushrule_actions::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -353,6 +402,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 	body: Ruma<get_pushrule_enabled::v3::Request>,
 ) -> Result<get_pushrule_enabled::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	#[allow(deprecated)]
@@ -387,6 +437,7 @@ pub(crate) async fn set_pushrule_enabled_route(
 	body: Ruma<set_pushrule_enabled::v3::Request>,
 ) -> Result<set_pushrule_enabled::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data
@@ -420,6 +471,7 @@ pub(crate) async fn delete_pushrule_route(
 	body: Ruma<delete_pushrule::v3::Request>,
 ) -> Result<delete_pushrule::v3::Response> {
 	let sender_user = body.sender_user();
+	let _push_rules_lock = services.account_data.push_rules_lock(sender_user).await;
 
 	let mut account_data: PushRulesEvent = services
 		.account_data

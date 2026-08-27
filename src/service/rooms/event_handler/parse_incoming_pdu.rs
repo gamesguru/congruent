@@ -3,7 +3,6 @@ use std::str::FromStr;
 use conduwuit::{
 	Err, Event, Result, err, implement,
 	matrix::event::{gen_event_id, gen_event_id_canonical_json},
-	warn,
 };
 use itertools::Itertools;
 use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomVersionId};
@@ -76,16 +75,35 @@ fn expect_event_id_array(value: &CanonicalJsonObject, field: &str) -> Result<Vec
 /// ranges. Other servers do some additional things like checking depth range,
 /// but serde will do that later when converting the object to a PduEvent.
 #[implement(super::Service)]
-pub fn validate_pdu(&self, pdu: &CanonicalJsonObject) -> Result {
+pub fn validate_pdu(&self, pdu: &CanonicalJsonObject, room_version: &RoomVersionId) -> Result {
 	// Since v3:
 	// `event_id` should not be present on the PDU.
 	// NOTE: The above is ignored since technically it's still allowed to be
 	// included, but should be ignored instead.
-	// `auth_events` and `prev_events` must be an array of event IDs
-	let auth_events = expect_event_id_array(pdu, "auth_events")?;
-	if auth_events.len() > 10 {
-		return Err!(Request(BadJson("PDU has too many auth events")));
+
+	let room_features = conduwuit::RoomVersion::new(room_version).map_err(|e| {
+		conduwuit::warn!("Unsupported room version: {e:?}");
+		err!(Request(UnsupportedRoomVersion("Unsupported room version")))
+	})?;
+
+	if room_features.state_dags {
+		if pdu.contains_key("auth_events") {
+			return Err!(Request(BadJson("PDU must not contain auth_events")));
+		}
+		if pdu.contains_key("prev_state_events") {
+			let prev_state_events = expect_event_id_array(pdu, "prev_state_events")?;
+			if prev_state_events.len() > 20 {
+				return Err!(Request(BadJson("PDU has too many prev state events")));
+			}
+		}
+	} else {
+		// `auth_events` and `prev_events` must be an array of event IDs
+		let auth_events = expect_event_id_array(pdu, "auth_events")?;
+		if auth_events.len() > 10 {
+			return Err!(Request(BadJson("PDU has too many auth events")));
+		}
 	}
+
 	let prev_events = expect_event_id_array(pdu, "prev_events")?;
 	if prev_events.len() > 20 {
 		return Err!(Request(BadJson("PDU has too many prev events")));
@@ -107,18 +125,35 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		| Ok(room_id) => room_id,
 		| Err(_) => {
 			// V12 non-create event without room_id
-			// Try to find it from auth_events, but do not allow untrusted input to
-			// trigger an unbounded number of sequential DB lookups.
-			let auth_events = value
-				.get("auth_events")
-				.and_then(|v| v.as_array())
-				.ok_or_else(|| err!(Request(InvalidParam("Missing room_id in PDU"))))?;
+			// Try to find it from prev_events, prev_state_events, or auth_events, but do
+			// not allow untrusted input to trigger an unbounded number of sequential DB
+			// lookups.
+			let mut fallback_events = Vec::new();
+
+			if let Some(prev) = value.get("prev_events").and_then(|v| v.as_array()) {
+				fallback_events.extend(prev);
+			}
+			if let Some(prev_state) = value.get("prev_state_events").and_then(|v| v.as_array()) {
+				fallback_events.extend(prev_state);
+			}
+			if let Some(auth) = value.get("auth_events").and_then(|v| v.as_array()) {
+				fallback_events.extend(auth);
+			}
+
+			if fallback_events.is_empty() {
+				return Err!(Request(InvalidParam(
+					"Missing room_id in PDU and no fallback events found"
+				)));
+			}
 
 			let mut found_room_id = None;
-			for auth_event_id in auth_events.iter().take(MAX_AUTH_EVENTS_ROOM_ID_FALLBACK) {
-				if let Some(auth_event_id) = auth_event_id.as_str() {
-					if let Ok(auth_event_id) = OwnedEventId::parse(auth_event_id) {
-						if let Ok(pdu) = self.services.timeline.get_pdu(&auth_event_id).await {
+			for event_id in fallback_events
+				.iter()
+				.take(MAX_AUTH_EVENTS_ROOM_ID_FALLBACK)
+			{
+				if let Some(event_id) = event_id.as_str() {
+					if let Ok(event_id) = OwnedEventId::parse(event_id) {
+						if let Ok(pdu) = self.services.timeline.get_pdu(&event_id).await {
 							if let Some(room_id) = pdu.room_id_or_hash() {
 								found_room_id = Some(room_id);
 								break;
@@ -137,26 +172,13 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		.state
 		.get_room_version(&room_id)
 		.await
-		.unwrap_or_else(|e| {
-			let fallback = self.fallback_room_version(&value);
-			warn!(
-				%room_id, ?fallback, "Unknown room version ({e:?}). Guessing room version based on PDU structure.",
-			);
-			fallback
-		});
+		.unwrap_or(RoomVersionId::V1);
 	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|e| {
-		err!(Request(InvalidParam("Could not convert event to canonical json: {e}")))
+		err!(Request(InvalidParam(warn!(
+			"Could not convert event to canonical json: {e}. Raw PDU: {}",
+			pdu.get()
+		))))
 	})?;
-	self.validate_pdu(&value)?;
+	self.validate_pdu(&value, &room_version_id)?;
 	Ok((room_id, event_id, value))
-}
-
-#[implement(super::Service)]
-fn fallback_room_version(&self, value: &CanonicalJsonObject) -> RoomVersionId {
-	warn!("fallback_room_version keys: {:?}", value.keys().collect::<Vec<_>>());
-	if value.contains_key("hashes") {
-		self.services.server.config.default_room_version.clone()
-	} else {
-		RoomVersionId::V1
-	}
 }

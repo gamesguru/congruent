@@ -112,7 +112,7 @@ pub(crate) async fn get_content_thumbnail_route(
 		content,
 		content_type,
 		content_disposition,
-	} = match fetch_thumbnail(&services, &mxc, Some(user), body.timeout_ms, &dim).await {
+	} = match fetch_thumbnail(&services, &mxc, Some(user), body.timeout_ms, &dim, true).await {
 		| Ok(meta) => meta,
 		| Err(conduwuit::Error::Io(e)) => match e.kind() {
 			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
@@ -123,7 +123,7 @@ pub(crate) async fn get_content_thumbnail_route(
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
 		| Err(e) => {
-			debug_warn!(%mxc, "Fetching thumbnail failed: {e:?}");
+			conduwuit::info!(target: "media:thumbnail", %mxc, "Fetching thumbnail failed: {e:?}");
 			return Err!(Request(NotFound("Media not found.")));
 		},
 	};
@@ -166,7 +166,7 @@ pub(crate) async fn get_content_route(
 		content,
 		content_type,
 		content_disposition,
-	} = match fetch_file(&services, &mxc, Some(user), body.timeout_ms, None).await {
+	} = match fetch_file(&services, &mxc, Some(user), body.timeout_ms, None, true).await {
 		| Ok(meta) => meta,
 		| Err(conduwuit::Error::Io(e)) => match e.kind() {
 			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
@@ -176,6 +176,8 @@ pub(crate) async fn get_content_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
+			return Err(e),
 		| Err(e) => {
 			debug_warn!(%mxc, "Fetching media failed: {e:?}");
 			return Err!(Request(NotFound("Media not found.")));
@@ -222,7 +224,7 @@ pub(crate) async fn get_content_as_filename_route(
 		content,
 		content_type,
 		content_disposition,
-	} = match fetch_file(&services, &mxc, Some(user), body.timeout_ms, filename).await {
+	} = match fetch_file(&services, &mxc, Some(user), body.timeout_ms, filename, true).await {
 		| Ok(meta) => meta,
 		| Err(conduwuit::Error::Io(e)) => match e.kind() {
 			| std::io::ErrorKind::NotFound => return Err!(Request(NotFound("Media not found."))),
@@ -232,6 +234,8 @@ pub(crate) async fn get_content_as_filename_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
+			return Err(e),
 		| Err(e) => {
 			debug_warn!(%mxc, "Fetching media failed: {e:?}");
 			return Err!(Request(NotFound("Media not found.")));
@@ -299,18 +303,19 @@ pub(crate) async fn get_media_preview_route(
 		})
 }
 
-async fn fetch_thumbnail(
+pub(super) async fn fetch_thumbnail(
 	services: &Services,
 	mxc: &Mxc<'_>,
 	user: Option<&UserId>,
 	timeout_ms: Duration,
 	dim: &Dim,
+	allow_remote: bool,
 ) -> Result<FileMeta> {
 	let FileMeta {
 		content,
 		content_type,
 		content_disposition,
-	} = fetch_thumbnail_meta(services, mxc, user, timeout_ms, dim).await?;
+	} = fetch_thumbnail_meta(services, mxc, user, timeout_ms, dim, allow_remote).await?;
 
 	let content_disposition = Some(make_content_disposition(
 		content_disposition.as_ref(),
@@ -325,18 +330,19 @@ async fn fetch_thumbnail(
 	})
 }
 
-async fn fetch_file(
+pub(super) async fn fetch_file(
 	services: &Services,
 	mxc: &Mxc<'_>,
 	user: Option<&UserId>,
 	timeout_ms: Duration,
 	filename: Option<&str>,
+	allow_remote: bool,
 ) -> Result<FileMeta> {
 	let FileMeta {
 		content,
 		content_type,
 		content_disposition,
-	} = fetch_file_meta(services, mxc, user, timeout_ms).await?;
+	} = fetch_file_meta(services, mxc, user, timeout_ms, allow_remote).await?;
 
 	let content_disposition = Some(make_content_disposition(
 		content_disposition.as_ref(),
@@ -357,6 +363,7 @@ async fn fetch_thumbnail_meta(
 	user: Option<&UserId>,
 	timeout_ms: Duration,
 	dim: &Dim,
+	allow_remote: bool,
 ) -> Result<FileMeta> {
 	if let Some(filemeta) = services.media.get_thumbnail(mxc, dim).await? {
 		return Ok(filemeta);
@@ -364,6 +371,14 @@ async fn fetch_thumbnail_meta(
 
 	if services.globals.server_is_ours(mxc.server_name) {
 		return Err!(Request(NotFound("Local thumbnail not found.")));
+	}
+
+	if !allow_remote {
+		return Err!(Request(NotFound("Remote thumbnail fetch disabled.")));
+	}
+
+	if user.is_none() {
+		services.media.check_legacy_freeze()?;
 	}
 
 	services
@@ -377,6 +392,7 @@ async fn fetch_file_meta(
 	mxc: &Mxc<'_>,
 	user: Option<&UserId>,
 	timeout_ms: Duration,
+	allow_remote: bool,
 ) -> Result<FileMeta> {
 	if let Some(filemeta) = services.media.get(mxc).await? {
 		return Ok(filemeta);
@@ -384,6 +400,14 @@ async fn fetch_file_meta(
 
 	if services.globals.server_is_ours(mxc.server_name) {
 		return Err!(Request(NotFound("Local media not found.")));
+	}
+
+	if !allow_remote {
+		return Err!(Request(NotFound("Remote media fetch disabled.")));
+	}
+
+	if user.is_none() {
+		services.media.check_legacy_freeze()?;
 	}
 
 	services

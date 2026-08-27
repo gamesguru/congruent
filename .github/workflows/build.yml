@@ -166,6 +166,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
+          submodules: recursive
 
       - name: Install system dependencies
         run: |

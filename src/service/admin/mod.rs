@@ -100,7 +100,7 @@ pub type ProcessorFuture = Pin<Box<dyn Future<Output = ProcessorResult> + Send>>
 /// events which have digested any prior errors. The wrapping preserves whether
 /// the command failed without interpreting the text. Ok(None) outputs are
 /// dropped to produce no response.
-pub type ProcessorResult = Result<Option<CommandOutput>, CommandOutput>;
+pub type ProcessorResult = Result<Option<CommandOutput>, Box<CommandOutput>>;
 
 /// Alias for the output structure.
 pub type CommandOutput = RoomMessageEventContent;
@@ -199,7 +199,7 @@ impl Service {
 				.text_to_file(message_content.body())
 				.await
 				.expect("failed to create text file");
-			let size_u64: u64 = message_content.body().len().try_into().map_or(0, |n| n);
+			let size_u64: u64 = message_content.body().len().try_into().unwrap_or(0);
 			let metadata = FileInfo {
 				mimetype: Some("text/markdown".to_owned()),
 				size: Some(UInt::new_saturating(size_u64)),
@@ -354,14 +354,18 @@ impl Service {
 		}
 
 		#[cfg(feature = "console")]
-		self.console.handle_signal(sig).await;
+		self.console.handle_signal(sig);
 	}
 
 	async fn handle_command(&self, command: CommandInput) {
 		match self.process_command(command).await {
 			| Ok(None) => debug!("Command successful with no response"),
-			| Ok(Some(output)) | Err(output) => self
+			| Ok(Some(output)) => self
 				.handle_response(output)
+				.await
+				.unwrap_or_else(default_log),
+			| Err(output) => self
+				.handle_response(*output)
 				.await
 				.unwrap_or_else(default_log),
 		}
@@ -370,10 +374,10 @@ impl Service {
 	async fn process_command(&self, command: CommandInput) -> ProcessorResult {
 		let handle_guard = self.handle.read().await;
 		let Some(handle) = handle_guard.as_ref() else {
-			return Err(CommandOutput::text_plain(
+			return Err(Box::new(CommandOutput::text_plain(
 				"Admin command handler is not yet loaded. The server may still be booting or \
 				 the admin module failed to load.",
-			));
+			)));
 		};
 
 		let services = self
@@ -469,13 +473,16 @@ impl Service {
 			return Ok(());
 		};
 
-		let response_sender = if self.is_admin_room(pdu.room_id().unwrap()).await {
+		let Some(room_id) = pdu.room_id_or_hash() else {
+			return Ok(());
+		};
+		let response_sender = if self.is_admin_room(&room_id).await {
 			&self.services.globals.server_user
 		} else {
 			pdu.sender()
 		};
 
-		self.respond_to_room(content, pdu.room_id().unwrap(), response_sender)
+		self.respond_to_room(content, &room_id, response_sender)
 			.boxed()
 			.await
 	}
@@ -489,16 +496,13 @@ impl Service {
 		assert!(self.user_is_admin(user_id).await, "sender is not admin");
 
 		let state_lock = self.services.state.mutex.lock(room_id).await;
-		if let Err(e) = self
-			.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::timeline(&self.text_or_file(content).await),
-				user_id,
-				Some(room_id),
-				&state_lock,
-			)
-			.await
+		if let Err(e) = Box::pin(self.services.timeline.build_and_append_pdu(
+			PduBuilder::timeline(&self.text_or_file(content).await),
+			user_id,
+			Some(room_id),
+			&state_lock,
+		))
+		.await
 		{
 			self.handle_response_error(e, room_id, user_id, &state_lock)
 				.boxed()
@@ -522,15 +526,13 @@ impl Service {
 			 may have finished successfully, but we could not return the output."
 		));
 
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::timeline(&content),
-				user_id,
-				Some(room_id),
-				state_lock,
-			)
-			.await?;
+		Box::pin(self.services.timeline.build_and_append_pdu(
+			PduBuilder::timeline(&content),
+			user_id,
+			Some(room_id),
+			state_lock,
+		))
+		.await?;
 
 		Ok(())
 	}

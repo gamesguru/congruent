@@ -47,6 +47,7 @@ pub(crate) enum Cmd {
 pub(crate) struct Get {
 	pub(crate) map: Arc<Map>,
 	pub(crate) key: BatchQuery<'static>,
+	pub(crate) nocache: bool,
 	pub(crate) res: Option<ResultSender<BatchResult<'static>>>,
 }
 
@@ -416,7 +417,11 @@ fn handle_get(mut cmd: Get) {
 	// Perform the actual database query. We reuse our database::Map interface but
 	// limited to the blocking calls, rather than creating another surface directly
 	// with rocksdb here.
-	let result = cmd.map.get_blocking(&cmd.key[0]);
+	let result = if cmd.nocache {
+		cmd.map.get_blocking_nocache(&cmd.key[0])
+	} else {
+		cmd.map.get_blocking(&cmd.key[0])
+	};
 
 	// Send the result back to the submitter.
 	let chan_result = chan.send(into_send_get([result].into()));

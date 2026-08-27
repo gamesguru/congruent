@@ -24,7 +24,7 @@ fi
 SQL_FILE="$(dirname "$0")/tables.sql"
 if [ -f "$SQL_FILE" ]; then
 	echo "✓ Applying fresh schema from $SQL_FILE..."
-	psql "$DB_TARGET" -c "DROP TABLE IF EXISTS run_details, runs, ever_passed CASCADE;" >/dev/null
+	psql "$DB_TARGET" -f "$(dirname "$0")/reset.sql" >/dev/null
 	psql "$DB_TARGET" -f "$SQL_FILE" >/dev/null
 fi
 
@@ -38,19 +38,22 @@ source "$(dirname "$0")/sync_recent.sh"
 echo "✓ Starting bulk historical JSON import into '$DB_TARGET'..."
 
 # 1. Bulk Ingest Run Summaries
-echo "→ Ingesting run summaries..."
+echo "-> Ingesting run summaries..."
 psql "$DB_TARGET" <<EOF
 BEGIN;
 SET LOCAL synchronous_commit = OFF;
 CREATE TEMP TABLE b (j jsonb);
 \copy b FROM '$LEDGER_DIR/runs.jsonl' csv quote e'\x01' delimiter e'\x02';
 
-INSERT INTO runs (run_date, commit_hash, upstream_commit, branch, author_name, actor, provider, arch, os, version_string, features, profile, binary_sha256, n_pass, n_skip, n_fail, room_version)
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS github_run_id bigint;
+
+INSERT INTO runs (run_date, commit_hash, upstream_commit, branch, author_name, actor, provider, arch, os, version_string, features, profile, binary_sha256, n_pass, n_skip, n_fail, room_version, github_run_id)
 SELECT
     (j->>'run_date')::timestamptz, (j->>'commit_hash'), (j->>'upstream_commit'), (j->>'branch'),
     (j->>'author_name'), (j->>'actor'), (j->>'provider'), NULLIF(j->>'arch', ''), NULLIF(j->>'os', ''),
     (j->>'version_string'), COALESCE(regexp_replace(btrim(j->>'features', ' ,'), '[,\s]+', ' ', 'g'), ''), NULLIF(j->>'profile', ''), (j->>'binary_sha256'),
-    (j->'passed_count')::int, (j->'skipped_count')::int, (j->'failed_count')::int, COALESCE(NULLIF(j->>'room_version', ''), '11')
+    (j->'passed_count')::int, (j->'skipped_count')::int, (j->'failed_count')::int, COALESCE(NULLIF(j->>'room_version', ''), '11'),
+    NULLIF(j->>'github_run_id', '')::bigint
 FROM b
 ON CONFLICT (commit_hash, arch, os, profile, room_version, features) DO NOTHING;
 COMMIT;
@@ -59,6 +62,9 @@ EOF
 # 2. Bulk Ingest Test Details (Injecting metadata from summaries / filenames)
 echo "→ Consolidating and ingesting test details..."
 (
+	echo "CREATE TEMP TABLE t (j jsonb);"
+	printf '%s\n' "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+
 	jq -r --arg sep "$MANIFEST_SEP" '[.commit_hash, (.arch // ""), (.os // ""), (.profile // ""), ((.room_version // "") | if length == 0 then "11" else . end), ((.features // "") | gsub("[,\\s]+"; " ") | gsub("^ | $"; ""))] | join($sep)' \
 		"$LEDGER_DIR/runs.jsonl" |
 	while IFS="$MANIFEST_SEP" read -r COMMIT ARCH OS PROFILE ROOM_VERSION FEATURES; do
@@ -86,6 +92,47 @@ echo "→ Consolidating and ingesting test details..."
              room_version: (if ((.room_version // "") | length) > 0 then .room_version else $rv end),
              features: (if ((.features // "") | length) > 0 then (.features | gsub("[,\\s]+"; " ") | gsub("^ | $"; "")) else $f end)}' "$FILE"
 	done
-) | ingest_details
+	echo "\."
+	echo "INSERT INTO run_details (run_id, test_name, status)
+        SELECT DISTINCT ON (r.id, (t.j->>'Test')) r.id, (t.j->>'Test'), (t.j->>'Action')
+        FROM t
+        JOIN runs r ON r.commit_hash = (t.j->>'commit')
+                   AND r.arch IS NOT DISTINCT FROM (NULLIF((t.j->>'arch'),''))
+                   AND r.os IS NOT DISTINCT FROM (NULLIF((t.j->>'os'),''))
+                   AND r.profile IS NOT DISTINCT FROM (NULLIF((t.j->>'profile'),''))
+                   AND r.room_version IS NOT DISTINCT FROM COALESCE(NULLIF((t.j->>'room_version'), ''), '11')
+        WHERE (t.j->>'Action') IN ('pass', 'fail', 'skip')
+        ORDER BY r.id, (t.j->>'Test'), (t.j->>'Action') ASC
+        ON CONFLICT (run_id, test_name) DO UPDATE SET status = EXCLUDED.status;"
+) | psql "$DB_TARGET"
+
+echo "-> Populating ever_passed table (incremental UPSERT)..."
+psql "$DB_TARGET" <<'UPSERT_EOF'
+INSERT INTO ever_passed (test_name, rv, last_passed, last_commit, last_branch, branches)
+SELECT
+    rd.test_name,
+    COALESCE(r.room_version, '11'),
+    MAX(r.run_date)::date::text,
+    (ARRAY_AGG(r.commit_hash ORDER BY r.run_date DESC))[1],
+    (ARRAY_AGG(r.branch ORDER BY r.run_date DESC))[1],
+    ARRAY_AGG(DISTINCT r.branch) FILTER (WHERE r.branch IS NOT NULL)
+FROM run_details rd
+JOIN runs r ON rd.run_id = r.id
+WHERE rd.status = 'pass'
+GROUP BY rd.test_name, COALESCE(r.room_version, '11')
+ON CONFLICT (test_name, rv) DO UPDATE SET
+    last_passed = GREATEST(ever_passed.last_passed, EXCLUDED.last_passed),
+    last_commit = CASE
+        WHEN EXCLUDED.last_passed > COALESCE(ever_passed.last_passed, '')
+        THEN EXCLUDED.last_commit ELSE ever_passed.last_commit END,
+    last_branch = CASE
+        WHEN EXCLUDED.last_passed > COALESCE(ever_passed.last_passed, '')
+        THEN EXCLUDED.last_branch ELSE ever_passed.last_branch END,
+    branches = (
+        SELECT ARRAY_AGG(DISTINCT b ORDER BY b)
+        FROM UNNEST(ever_passed.branches || EXCLUDED.branches) AS b
+        WHERE b IS NOT NULL
+    );
+UPSERT_EOF
 [ -n "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
 echo "✓ Bulk import complete."

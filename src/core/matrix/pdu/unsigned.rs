@@ -19,6 +19,27 @@ pub fn set_unsigned(&mut self, user_id: Option<&ruma::UserId>) {
 	self.add_age().log_err().ok();
 }
 
+/// Set the `membership` key in `unsigned` to tell the client what the
+/// requesting user's membership was at the time of this event.
+/// Per spec §11.20.1.1, this SHOULD be included on events in `/sync`,
+/// `/messages`, `/context`, and `/event`.
+#[implement(Pdu)]
+pub fn set_membership(&mut self, membership: &str) -> Result {
+	use BTreeMap as Map;
+
+	let mut unsigned: Map<&str, Box<RawJsonValue>> = self
+		.unsigned
+		.as_deref()
+		.map(RawJsonValue::get)
+		.map_or_else(|| Ok(Map::new()), serde_json::from_str)
+		.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?;
+
+	unsigned.insert("membership", to_raw_value(membership)?);
+	self.unsigned = Some(to_raw_value(&unsigned)?);
+
+	Ok(())
+}
+
 #[implement(Pdu)]
 pub fn remove_transaction_id(&mut self) -> Result {
 	use BTreeMap as Map;

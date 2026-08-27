@@ -20,8 +20,11 @@ repos:
         - id: check-json
         - id: check-toml
         - id: end-of-file-fixer
+          exclude: '\.(diff|patch)$'
         - id: trailing-whitespace
+          exclude: '\.(diff|patch)$'
         - id: mixed-line-ending
+          exclude: '\.(diff|patch)$'
         - id: check-merge-conflict
         - id: check-added-large-files
 

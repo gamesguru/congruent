@@ -10,10 +10,11 @@ use std::{
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Result, at, extract_variant, info,
+	Result, at, extract_variant,
+	matrix::pdu::PduCount,
 	utils::{
 		ReadyExt, TryFutureExtExt,
-		stream::{BroadbandExt, Tools, WidebandExt},
+		stream::{Tools, WidebandExt},
 	},
 	warn,
 };
@@ -23,7 +24,7 @@ use futures::{
 	future::{OptionFuture, join3, join4},
 };
 use ruma::{
-	DeviceId, OwnedUserId, RoomId, UserId,
+	DeviceId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
 		OutgoingResponse,
 		client::{
@@ -46,7 +47,7 @@ use ruma::{
 };
 use service::rooms::lazy_loading::{self, MemberSet, Options as _};
 
-use super::{load_timeline, shares_a_room};
+use super::load_timeline;
 use crate::{
 	Ruma, RumaResponse,
 	client::{
@@ -58,9 +59,10 @@ use crate::{
 /// The default maximum number of events to return in the `timeline` key of
 /// joined and left rooms. If the number of events sent since the last sync
 /// exceeds this number, the `timeline` will be `limited`.
-const DEFAULT_TIMELINE_LIMIT: usize = 30;
+const DEFAULT_TIMELINE_LIMIT: usize = 10;
 
 /// A collection of updates to users' device lists, used for E2EE.
+#[derive(Clone)]
 struct DeviceListUpdates {
 	changed: HashSet<OwnedUserId>,
 	left: HashSet<OwnedUserId>,
@@ -193,7 +195,9 @@ pub(crate) async fn sync_events_route(
 	let (sender_user, sender_device) = body.sender();
 
 	// Presence update
-	if services.config.allow_local_presence {
+	if services.config.allow_local_presence
+		&& body.body.set_presence != ruma::presence::PresenceState::Offline
+	{
 		services
 			.presence
 			.ping_presence(sender_user, &body.body.set_presence)
@@ -236,19 +240,41 @@ pub(crate) async fn sync_events_route(
 		return Ok(axum::Json(response).into_response());
 	}
 
-	// Hang until new info arrives, or the client's timeout expires
+	// Hang until new info arrives, or the client's timeout expires. A single
+	// wake can be spurious -- a write to a watched prefix that produces no
+	// visible sync delta (count bumps, an invite-sender write, expired
+	// typing) -- so loop rather than treating one wake as authoritative and
+	// returning an empty 200. Each iteration re-arms the watcher *before*
+	// rebuilding, matching the arm-before-read ordering above; re-arming
+	// after the build would reopen the TOCTOU fixed in c8f9083c9.
 	if let Some(timeout) = body.body.timeout {
 		if timeout > Duration::from_secs(0) {
-			_ = tokio::time::timeout(timeout, watcher).await;
-			// Retry returning data
+			let Some(deadline) = timer.checked_add(timeout) else {
+				log_time(&response);
+				return Ok(axum::Json(response).into_response());
+			};
+			let mut watcher = watcher;
+			while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
+			{
+				if tokio::time::timeout(remaining, watcher).await.is_err() {
+					break;
+				}
+
+				watcher = services.sync.setup_watch(sender_user, sender_device).await;
+				let response = build_sync_events(&services, &body, use_state_after).await?;
+				if !is_sync_response_empty(&response) {
+					log_time(&response);
+					return Ok(axum::Json(response).into_response());
+				}
+			}
+
+			// Deadline hit without ever producing a non-empty response.
 			let response = build_sync_events(&services, &body, use_state_after).await?;
 			log_time(&response);
 			return Ok(axum::Json(response).into_response());
 		}
 	}
 
-	// Retry returning data
-	let response = build_sync_events(&services, &body, use_state_after).await?;
 	log_time(&response);
 	Ok(axum::Json(response).into_response())
 }
@@ -258,13 +284,148 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 		return true;
 	};
 
-	let rooms_empty = obj.get("rooms").is_none();
-	let presence_empty = obj.get("presence").is_none();
-	let account_data_empty = obj.get("account_data").is_none();
-	let to_device_empty = obj.get("to_device").is_none();
-	let device_lists_empty = obj.get("device_lists").is_none();
+	if obj.contains_key("presence")
+		|| obj.contains_key("account_data")
+		|| obj.contains_key("to_device")
+	{
+		return false;
+	}
 
-	rooms_empty && presence_empty && account_data_empty && to_device_empty && device_lists_empty
+	match obj.get("device_lists") {
+		| Some(serde_json::Value::Object(d)) => {
+			let changed_empty = d
+				.get("changed")
+				.is_none_or(|c| c.as_array().is_none_or(Vec::is_empty));
+
+			let left_empty = d
+				.get("left")
+				.is_none_or(|l| l.as_array().is_none_or(Vec::is_empty));
+
+			if !changed_empty || !left_empty {
+				return false;
+			}
+		},
+		// device_lists present but unexpectedly shaped: play it safe and treat
+		// the response as non-empty rather than risking an endless long-poll.
+		| Some(_) => return false,
+		| None => {},
+	}
+
+	// A room is only a real sync delta if it carries timeline/state/account-data/
+	// ephemeral content. A joined room serialized *solely* for a stale
+	// unread-notification count (empty timeline, no state/account-data/ephemeral,
+	// no summary, unchanged next_batch) is NOT a real delta: returning it early
+	// forces the client into a second round-trip to fetch the actual event,
+	// compounding latency and dropping the event out of the live-timeline window
+	// (this is the server-side half of the TestSpoofedEventSenderHandling race).
+	// Treat such rooms as empty and keep the long-poll waiting for the real event.
+	if let Some(rooms) = obj.get("rooms").and_then(|r| r.as_object()) {
+		let joined_has_delta = rooms
+			.get("join")
+			.and_then(|j| j.as_object())
+			.is_some_and(|joins| joins.values().any(joined_room_has_delta));
+
+		let invited_has_delta = rooms
+			.get("invite")
+			.is_some_and(|i| !i.as_object().is_none_or(serde_json::Map::is_empty));
+
+		let knocked_has_delta = rooms
+			.get("knock")
+			.is_some_and(|k| !k.as_object().is_none_or(serde_json::Map::is_empty));
+
+		let left_has_delta = rooms
+			.get("leave")
+			.and_then(|l| l.as_object())
+			.is_some_and(|leaves| leaves.values().any(left_room_has_delta));
+
+		if joined_has_delta || invited_has_delta || knocked_has_delta || left_has_delta {
+			return false;
+		}
+	}
+
+	true
+}
+
+/// A joined room counts as a real sync delta if it carries any content beyond a
+/// bare unread-notification count (and the always-serialized empty timeline).
+fn joined_room_has_delta(room: &serde_json::Value) -> bool {
+	let Some(room) = room.as_object() else {
+		return false;
+	};
+
+	// Timeline events.
+	if let Some(events) = room
+		.get("timeline")
+		.and_then(|t| t.get("events"))
+		.and_then(|e| e.as_array())
+	{
+		if !events.is_empty() {
+			return true;
+		}
+	} else if room.get("timeline").is_some() {
+		// timeline present without events -> unexpected, treat as delta.
+		return true;
+	}
+
+	// Gappy sync (`limited: true`).
+	if room
+		.get("timeline")
+		.and_then(|t| t.get("limited"))
+		.and_then(serde_json::Value::as_bool)
+		.is_some_and(|limited| limited)
+	{
+		return true;
+	}
+
+	// State / account-data / ephemeral events.
+	for key in ["state", "account_data", "ephemeral"] {
+		if let Some(events) = room
+			.get(key)
+			.and_then(|o| o.get("events"))
+			.and_then(|e| e.as_array())
+		{
+			if !events.is_empty() {
+				return true;
+			}
+		} else if room.get(key).is_some() {
+			return true;
+		}
+	}
+
+	// Summary (membership counts etc.).
+	if room
+		.get("summary")
+		.and_then(|s| s.as_object())
+		.is_some_and(|s| !s.is_empty())
+	{
+		return true;
+	}
+
+	false
+}
+
+/// A left room counts as a real sync delta if it carries timeline/state/
+/// account-data content (minus the always-serialized empty timeline).
+fn left_room_has_delta(room: &serde_json::Value) -> bool {
+	let Some(room) = room.as_object() else {
+		return false;
+	};
+
+	for key in ["timeline", "state", "account_data"] {
+		if let Some(events) = room
+			.get(key)
+			.and_then(|o| o.get("events"))
+			.and_then(|e| e.as_array())
+		{
+			if !events.is_empty() {
+				return true;
+			}
+		} else if room.get(key).is_some() {
+			return true;
+		}
+	}
+
+	false
 }
 
 pub(crate) async fn build_sync_events(
@@ -317,12 +478,13 @@ pub(crate) async fn build_sync_events(
 		use_state_after,
 	};
 
+	let is_initial_sync = last_sync_end_count.is_none();
 	let joined_rooms = services
 		.rooms
 		.state_cache
 		.rooms_joined(syncing_user)
 		.map(ToOwned::to_owned)
-		.broad_filter_map(|room_id| async {
+		.map(|room_id| async move {
 			let joined_room = load_joined_room(services, context, room_id.clone()).await;
 
 			match joined_room {
@@ -333,17 +495,28 @@ pub(crate) async fn build_sync_events(
 				},
 			}
 		})
+		.buffer_unordered(10)
+		.filter_map(std::future::ready)
 		.ready_fold(
 			(BTreeMap::new(), BTreeMap::new(), DeviceListUpdates::new()),
 			|(mut joined_rooms, mut joined_state_after, mut all_updates),
 			 (room_id, joined_room, state_after, updates)| {
 				all_updates.merge(updates);
 
-				if !joined_room.is_empty() || context.last_sync_end_count.is_none() {
+				// During initial sync, include every joined room so the client
+				// is aware of all rooms. During incremental sync, skip rooms
+				// with no updates to reduce response size.
+				if is_initial_sync || !joined_room.is_empty() {
 					joined_rooms.insert(room_id.clone(), joined_room);
 					if !state_after.is_empty() {
 						joined_state_after.insert(room_id, state_after);
 					}
+				} else {
+					conduwuit::info!(
+						target: "timeline_debug",
+						"incremental sync skipping empty room {} for {}",
+						room_id, context.syncing_user
+					);
 				}
 
 				(joined_rooms, joined_state_after, all_updates)
@@ -354,7 +527,7 @@ pub(crate) async fn build_sync_events(
 		.rooms
 		.state_cache
 		.rooms_left(syncing_user)
-		.broad_filter_map(|(room_id, leave_pdu)| async {
+		.map(|(room_id, leave_pdu)| async move {
 			let left_room =
 				Box::pin(load_left_room(services, context, room_id.clone(), leave_pdu)).await;
 
@@ -367,6 +540,8 @@ pub(crate) async fn build_sync_events(
 				},
 			}
 		})
+		.buffer_unordered(10)
+		.filter_map(std::future::ready)
 		.fold(
 			(BTreeMap::new(), BTreeMap::new()),
 			|(mut left_rooms, mut left_state_after), (room_id, left_room, state_after)| async move {
@@ -382,7 +557,7 @@ pub(crate) async fn build_sync_events(
 		.rooms
 		.state_cache
 		.rooms_invited(syncing_user)
-		.wide_filter_map(async |(room_id, invite_state)| {
+		.wide_filter_map(|(room_id, invite_state)| async move {
 			if is_ignored_invite(services, syncing_user, &room_id).await {
 				None
 			} else {
@@ -394,16 +569,53 @@ pub(crate) async fn build_sync_events(
 				.rooms
 				.state_cache
 				.get_invite_count(&room_id, syncing_user)
-				.await
-				.ok();
+				.await;
+			let invite_count = match invite_count {
+				| Ok(invite_count) => Some(invite_count),
+				| Err(err) => {
+					warn!(
+						target: "sync_invite_debug",
+						%room_id,
+						%syncing_user,
+						?err,
+						"invite state present with no invite count"
+					);
+					None
+				},
+			};
 
 			// only sync this invite if it was sent after the last /sync call
-			if last_sync_end_count < invite_count {
+			let include_invite = match (last_sync_end_count, invite_count) {
+				| (None, _) | (_, None) => true,
+				| (Some(last_sync_end_count), Some(invite_count)) =>
+					last_sync_end_count < invite_count,
+			};
+
+			if include_invite {
+				conduwuit::info!(
+					target: "sync_invite_debug",
+					%room_id,
+					%syncing_user,
+					?invite_count,
+					?last_sync_end_count,
+					current_count,
+					"including room in invite section"
+				);
 				let invited_room = InvitedRoom {
 					invite_state: InviteState { events: invite_state },
 				};
 
 				invited_rooms.insert(room_id, invited_room);
+			} else {
+				conduwuit::info!(
+					target: "sync_invite_debug",
+					%room_id,
+					%syncing_user,
+					?invite_count,
+					?last_sync_end_count,
+					current_count,
+					"skipping room from invite section (invite already seen in an earlier sync)"
+				);
 			}
 			invited_rooms
 		});
@@ -417,14 +629,35 @@ pub(crate) async fn build_sync_events(
 				.rooms
 				.state_cache
 				.get_knock_count(&room_id, syncing_user)
-				.await
-				.ok();
+				.await;
+			let knock_count = match knock_count {
+				| Ok(knock_count) => Some(knock_count),
+				| Err(err) => {
+					warn!(
+						target: "knock_debug",
+						%room_id,
+						%syncing_user,
+						?err,
+						"knock state present with no knock count"
+					);
+					None
+				},
+			};
 
-			warn!(%room_id, ?knock_count, ?last_sync_end_count, "Sync check knocked room");
+			tracing::info!(
+				target: "knock_debug",
+				"get_knock_count for room_id={} user_id={} returned {:?} last_sync_end_count={:?}",
+				room_id, syncing_user, knock_count, last_sync_end_count
+			);
 
 			// only sync this knock if it was sent after the last /sync call
-			if last_sync_end_count < knock_count {
-				warn!(%room_id, "Sync including knocked room in response!");
+			let include_knock = match (last_sync_end_count, knock_count) {
+				| (None, _) | (_, None) => true,
+				| (Some(last_sync_end_count), Some(knock_count)) =>
+					last_sync_end_count < knock_count,
+			};
+
+			if include_knock {
 				let knocked_room = KnockedRoom {
 					knock_state: KnockState { events: knock_state },
 				};
@@ -437,18 +670,33 @@ pub(crate) async fn build_sync_events(
 	let (joined_rooms, left_rooms, invited_rooms, knocked_rooms) =
 		join4(joined_rooms, left_rooms, invited_rooms, knocked_rooms).await;
 
-	let (joined_rooms, joined_state_after, device_list_updates) = joined_rooms;
+	let (joined_rooms, joined_state_after, mut device_list_updates) = joined_rooms;
 	let (left_rooms, left_state_after) = left_rooms;
 
-	for (room_id, room) in &joined_rooms {
-		info!(
-			target: "sync_debug",
-			%room_id, "Sync joined room timeline: {:?}", room.timeline.events.iter().map(|ev| ev.json().get()).collect::<Vec<_>>()
-		);
-		info!(
-			target: "sync_debug",
-			%room_id, "Sync joined room state: {:?}", room.state.events.iter().map(|ev| ev.json().get()).collect::<Vec<_>>()
-		);
+	for room_id in joined_rooms.keys() {
+		if invited_rooms.contains_key(room_id) {
+			conduwuit::warn!(
+				target: "sync_invite_debug",
+				%room_id,
+				%syncing_user,
+				?last_sync_end_count,
+				current_count,
+				"room appears in both joined and invite sync sections"
+			);
+		}
+	}
+
+	for room_id in left_rooms.keys() {
+		if invited_rooms.contains_key(room_id) {
+			conduwuit::warn!(
+				target: "sync_invite_debug",
+				%room_id,
+				%syncing_user,
+				?last_sync_end_count,
+				current_count,
+				"room appears in both left and invite sync sections"
+			);
+		}
 	}
 
 	let presence_updates: OptionFuture<_> = services
@@ -467,7 +715,7 @@ pub(crate) async fn build_sync_events(
 	// Look for device list updates of this account
 	let keys_changed = services
 		.users
-		.keys_changed(syncing_user, last_sync_end_count, Some(current_count))
+		.keys_changed(syncing_user, last_sync_end_count, None)
 		.map(ToOwned::to_owned)
 		.collect::<HashSet<_>>();
 
@@ -485,6 +733,9 @@ pub(crate) async fn build_sync_events(
 	let device_one_time_keys_count = services
 		.users
 		.count_one_time_keys(syncing_user, syncing_device);
+	let unused_fallback_key_types = services
+		.users
+		.list_unused_fallback_key_types(syncing_user, syncing_device);
 
 	// Remove all to-device events the device received *last time*
 	let remove_to_device_events =
@@ -499,135 +750,48 @@ pub(crate) async fn build_sync_events(
 
 	let (ephemeral, device_one_time_keys_count, keys_changed) = top;
 	let ((), to_device_events, presence_updates) = ephemeral;
-	let mut device_list_updates: DeviceLists = device_list_updates.into();
+	let unused_fallback_key_types = unused_fallback_key_types.await;
 	device_list_updates.changed.extend(keys_changed);
 
-	// For rooms the user has left, add members to device_lists.left if the
-	// syncing user no longer shares any other room with them. This is needed
-	// because build_device_list_updates only runs for joined rooms and would
-	// never see the user's own leave event.
 	if last_sync_end_count.is_some() {
-		let mut left_candidates: HashSet<OwnedUserId> = HashSet::new();
-		for room_id in left_rooms.keys() {
-			let members: Vec<OwnedUserId> = services
-				.rooms
-				.state_cache
-				.room_members(room_id)
+		device_list_updates.left.extend(
+			services
+				.users
+				.device_list_left(syncing_user, last_sync_end_count, Some(current_count))
+				.map(|(user_id, _)| user_id)
 				.map(ToOwned::to_owned)
-				.collect()
-				.await;
-
-			left_candidates.extend(members.into_iter().filter(|member| {
-				member != syncing_user && !device_list_updates.left.contains(member)
-			}));
-		}
-
-		let newly_left: Vec<OwnedUserId> = futures::stream::iter(left_candidates)
-			.broad_filter_map(|member| async move {
-				(!shares_a_room(services, syncing_user, &member, None).await).then_some(member)
-			})
-			.collect()
-			.await;
-
-		device_list_updates.left.extend(newly_left);
+				.collect::<Vec<_>>()
+				.await,
+		);
 	}
+
+	// A leave and subsequent visibility-restoring update (for example, an invite
+	// arriving before the next /sync response is built) can otherwise surface as
+	// both `left` and `changed` for the same user in one response. Prefer the
+	// current visibility-restoring state and suppress the stale `left`.
+	let changed_users = device_list_updates.changed.iter().collect::<HashSet<_>>();
+	device_list_updates
+		.left
+		.retain(|user_id| !changed_users.contains(user_id));
 
 	let mut presence_updates = presence_updates.unwrap_or_default();
 	if services.config.allow_local_presence {
-		let mut extra_presence_users = HashSet::new();
-
-		// Collect members of rooms that the syncing user joined since the last sync
-		if let Some(last_sync_end_count) = last_sync_end_count {
-			for room_id in joined_rooms.keys() {
-				let last_sync_end_shortstatehash = services
-					.rooms
-					.timeline
-					.prev_shortstatehash(
-						room_id,
-						conduwuit::matrix::pdu::PduCount::Normal(
-							last_sync_end_count.saturating_add(1),
-						),
-					)
-					.await
-					.ok();
-
-				let joined_since_last_sync = match last_sync_end_shortstatehash {
-					| Some(last_sync_end_shortstatehash) => {
-						use ruma::events::{
-							StateEventType,
-							room::member::{MembershipState, RoomMemberEventContent},
-						};
-						let membership = services
-							.rooms
-							.state_accessor
-							.state_get_content::<RoomMemberEventContent>(
-								last_sync_end_shortstatehash,
-								&StateEventType::RoomMember,
-								syncing_user.as_str(),
-							)
-							.await
-							.ok();
-						membership
-							.as_ref()
-							.is_none_or(|content| content.membership != MembershipState::Join)
-					},
-					| None => true,
-				};
-
-				if joined_since_last_sync {
-					use futures::StreamExt;
-					let mut members = services.rooms.state_cache.room_members(room_id);
-					while let Some(member_id) = members.next().await {
-						extra_presence_users.insert(member_id.to_owned());
-					}
-				}
-			}
-		}
-
-		// Collect users who joined any room in the timeline of this sync
-		for joined_room in joined_rooms.values() {
-			for event in &joined_room.timeline.events {
-				#[derive(serde::Deserialize)]
-				struct MemberEventHelper {
-					#[serde(rename = "type")]
-					event_type: String,
-					content: Option<MemberContentHelper>,
-					state_key: Option<String>,
-				}
-
-				#[derive(serde::Deserialize)]
-				struct MemberContentHelper {
-					membership: String,
-				}
-
-				if let Ok(helper) = event.deserialize_as::<MemberEventHelper>() {
-					if helper.event_type == "m.room.member" {
-						if let Some(content) = helper.content {
-							if content.membership == "join" {
-								if let Some(state_key) = helper.state_key {
-									if let Ok(user_id) = UserId::parse(&state_key) {
-										extra_presence_users.insert(user_id.to_owned());
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for user_id in extra_presence_users {
-			if user_id != syncing_user {
-				if let std::collections::hash_map::Entry::Vacant(e) =
-					presence_updates.entry(user_id)
-				{
-					if let Ok(presence_event) = services.presence.get_presence(e.key()).await {
-						e.insert(presence_event.content);
-					}
-				}
-			}
-		}
+		collect_member_presence(
+			services,
+			syncing_user,
+			last_sync_end_count,
+			&joined_rooms,
+			&mut presence_updates,
+		)
+		.await;
 	}
+
+	let device_lists_json = (!device_list_updates.is_empty()).then(|| {
+		serde_json::json!({
+			"changed": device_list_updates.changed.iter().collect::<Vec<_>>(),
+			"left": device_list_updates.left.iter().collect::<Vec<_>>(),
+		})
+	});
 
 	let ruma_response = sync_events::v3::Response {
 		next_batch: current_count.to_string(),
@@ -635,7 +799,7 @@ pub(crate) async fn build_sync_events(
 			leave: left_rooms,
 			join: joined_rooms,
 			invite: invited_rooms,
-			knock: knocked_rooms,
+			knock: knocked_rooms.clone(),
 		},
 		presence: Presence {
 			events: presence_updates
@@ -647,9 +811,9 @@ pub(crate) async fn build_sync_events(
 		},
 		account_data: GlobalAccountData { events: account_data },
 		to_device: ToDevice { events: to_device_events },
-		device_lists: device_list_updates,
+		device_lists: device_list_updates.into(),
 		device_one_time_keys_count,
-		device_unused_fallback_key_types: None,
+		device_unused_fallback_key_types: Some(unused_fallback_key_types),
 	};
 
 	let mut val: serde_json::Value = serde_json::from_slice(
@@ -660,13 +824,10 @@ pub(crate) async fn build_sync_events(
 	)
 	.expect("ruma response is valid JSON");
 
-	info!(
-		target: "sync_debug",
-		"SYNC val JSON: {:?}", serde_json::to_string(&val).unwrap()
-	);
-
-	// Manually insert state_after data for MSC4222
+	// Manually insert state_after data for MSC4222 and inject missing ephemeral
+	// objects
 	if let Some(join) = val.get_mut("rooms").and_then(|r| r.get_mut("join")) {
+		// inject state_after
 		for (room_id, state_after) in joined_state_after {
 			if let Some(room) = join.get_mut(room_id.as_str()) {
 				let state_after_obj = serde_json::json!({ "events": state_after });
@@ -676,6 +837,18 @@ pub(crate) async fn build_sync_events(
 				room.as_object_mut()
 					.unwrap()
 					.insert("org.matrix.msc4222.state_after".to_owned(), state_after_obj);
+			}
+		}
+
+		// inject missing ephemeral to satisfy complement
+		for (_room_id, room_val) in join.as_object_mut().unwrap() {
+			let room = room_val.as_object_mut().unwrap();
+			if !room.contains_key("ephemeral") {
+				room.insert("ephemeral".to_owned(), serde_json::json!({ "events": [] }));
+			}
+
+			if is_initial_sync && !room.contains_key("account_data") {
+				room.insert("account_data".to_owned(), serde_json::json!({ "events": [] }));
 			}
 		}
 	}
@@ -694,7 +867,162 @@ pub(crate) async fn build_sync_events(
 		}
 	}
 
+	// ruma's Rooms::is_empty() ignores knock, so when only knocked rooms exist the
+	// entire "rooms" key is omitted from the serialized output. Manually inject it
+	// so clients receive rooms.knock and the sync token advances.
+	if !knocked_rooms.is_empty() && val.get("rooms").is_none_or(|r| r.get("knock").is_none()) {
+		if let Ok(knock_val) = serde_json::to_value(&knocked_rooms) {
+			let rooms_obj = val.as_object_mut().and_then(|o| {
+				o.entry("rooms")
+					.or_insert_with(|| serde_json::json!({}))
+					.as_object_mut()
+			});
+			if let Some(rooms) = rooms_obj {
+				rooms.insert("knock".to_owned(), knock_val);
+			}
+		}
+	}
+
+	// Ruma may omit non-empty device_lists during serialization in some edge
+	// cases. Re-inject the computed payload so /sync cannot lose a one-shot
+	// device-list update between internal assembly and the final JSON body.
+	if let Some(device_lists_json) = device_lists_json {
+		tracing::info!(
+			changed = device_lists_json
+				.get("changed")
+				.and_then(|v| v.as_array())
+				.map_or(0, Vec::len),
+			left = device_lists_json
+				.get("left")
+				.and_then(|v| v.as_array())
+				.map_or(0, Vec::len),
+			"sync response device_lists"
+		);
+
+		if let Some(obj) = val.as_object_mut() {
+			obj.insert("device_lists".to_owned(), device_lists_json);
+		}
+	}
+
 	Ok(val)
+}
+
+/// Collect presence updates for users relevant to the current sync window.
+///
+/// This gathers presence for:
+/// 1. Members of rooms the syncing user has newly joined since their last sync
+/// 2. Users who joined any room in the current sync's timeline
+///
+/// Presence is only fetched for users not already in `presence_updates` and
+/// excludes the syncing user themselves.
+#[tracing::instrument(name = "member_presence", level = "debug", skip_all)]
+async fn collect_member_presence(
+	services: &Services,
+	syncing_user: &UserId,
+	last_sync_end_count: Option<u64>,
+	joined_rooms: &BTreeMap<OwnedRoomId, sync_events::v3::JoinedRoom>,
+	presence_updates: &mut PresenceUpdates,
+) {
+	use ruma::events::{
+		StateEventType,
+		room::member::{MembershipState, RoomMemberEventContent},
+	};
+
+	let mut extra_users = HashSet::new();
+
+	// Phase 1: Collect users from rooms the syncing user newly joined
+	if let Some(last_sync_end_count) = last_sync_end_count {
+		for room_id in joined_rooms.keys() {
+			let shortstatehash = services
+				.rooms
+				.timeline
+				.next_shortstatehash(room_id, PduCount::Normal(last_sync_end_count))
+				.await
+				.ok();
+
+			let was_joined = match shortstatehash {
+				| Some(ssh) => services
+					.rooms
+					.state_accessor
+					.state_get_content::<RoomMemberEventContent>(
+						ssh,
+						&StateEventType::RoomMember,
+						syncing_user.as_str(),
+					)
+					.await
+					.is_ok_and(|c| c.membership == MembershipState::Join),
+				| None => false,
+			};
+
+			if !was_joined {
+				services
+					.rooms
+					.state_cache
+					.room_members(room_id)
+					.map(ToOwned::to_owned)
+					.ready_for_each(|uid| {
+						extra_users.insert(uid);
+					})
+					.await;
+			}
+		}
+	}
+
+	// Phase 2: Collect users whose join events appear in the timeline
+	for joined_room in joined_rooms.values() {
+		collect_timeline_join_users(&joined_room.timeline.events, &mut extra_users);
+	}
+
+	// Phase 3: Fetch presence for collected users (skip self and already-known)
+	for user_id in extra_users {
+		if user_id != syncing_user {
+			if let std::collections::hash_map::Entry::Vacant(e) = presence_updates.entry(user_id)
+			{
+				if let Ok(presence_event) = services.presence.get_presence(e.key()).await {
+					e.insert(presence_event.content);
+				}
+			}
+		}
+	}
+}
+
+/// Extract user IDs from join membership events in a list of timeline events.
+///
+/// This is a pure function (no I/O) for testability: given raw timeline events,
+/// it parses each one looking for `m.room.member` events with `membership:
+/// "join"` and collects the `state_key` (the user who joined).
+fn collect_timeline_join_users(
+	events: &[Raw<ruma::events::AnySyncTimelineEvent>],
+	users: &mut HashSet<OwnedUserId>,
+) {
+	#[derive(serde::Deserialize)]
+	struct MemberHelper {
+		#[serde(rename = "type")]
+		event_type: String,
+		content: Option<MemberContent>,
+		state_key: Option<String>,
+	}
+
+	#[derive(serde::Deserialize)]
+	struct MemberContent {
+		membership: String,
+	}
+
+	for event in events {
+		if let Ok(helper) = event.deserialize_as::<MemberHelper>() {
+			if helper.event_type == "m.room.member" {
+				if let Some(content) = helper.content {
+					if content.membership == "join" {
+						if let Some(ref state_key) = helper.state_key {
+							if let Ok(user_id) = UserId::parse(state_key) {
+								users.insert(user_id.to_owned());
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 #[tracing::instrument(name = "presence", level = "debug", skip_all)]
@@ -749,7 +1077,7 @@ async fn prepare_lazily_loaded_members(
 
 	// filter the input members through `retain_lazy_members`, which
 	// contains the actual lazy loading logic.
-	let lazily_loaded_members =
+	let mut lazily_loaded_members =
 		OptionFuture::from(sync_context.lazy_loading_enabled().then(|| {
 			services
 				.rooms
@@ -757,6 +1085,13 @@ async fn prepare_lazily_loaded_members(
 				.retain_lazy_members(timeline_members.collect(), lazy_loading_context)
 		}))
 		.await;
+
+	// Matrix spec requires that the syncing user's own membership event is always
+	// included in the state, even if it otherwise would not be included due to
+	// lazy-loading!
+	if let Some(members) = &mut lazily_loaded_members {
+		members.insert(sync_context.syncing_user.into());
+	}
 
 	lazily_loaded_members
 }

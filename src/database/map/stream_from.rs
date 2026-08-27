@@ -1,10 +1,8 @@
 use std::{convert::AsRef, fmt::Debug, sync::Arc};
 
 use conduwuit::{Result, implement};
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use rocksdb::Direction;
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::task;
 
 use crate::{
 	keyval::{KeyVal, result_deserialize, serialize_key},
@@ -75,34 +73,14 @@ pub fn raw_stream_from<P>(
 where
 	P: AsRef<[u8]> + ?Sized + Debug,
 {
-	use crate::pool::Seek;
-
-	let opts = super::iter_options_default(&self.db);
-	let state = stream::State::new(self, opts);
-	if is_cached(self, from) {
-		let state = state.init_fwd(from.as_ref().into());
-		return task::consume_budget()
-			.map(move |()| stream::Items::<'_>::from(state))
-			.into_stream()
-			.flatten()
-			.boxed();
-	}
-
-	let seek = Seek {
-		map: self.clone(),
-		dir: Direction::Forward,
-		key: Some(from.as_ref().into()),
-		state: crate::pool::into_send_seek(state),
-		res: None,
-	};
-
-	self.db
-		.pool
-		.execute_iter(seek)
-		.ok_into::<stream::Items<'_>>()
-		.into_stream()
-		.try_flatten()
-		.boxed()
+	super::macros::stream_boilerplate!(
+		map = self,
+		is_cached = is_cached(self, from),
+		init = init_fwd,
+		key = Some(from.as_ref()),
+		dir = rocksdb::Direction::Forward,
+		stream_type = Items
+	)
 }
 
 #[tracing::instrument(

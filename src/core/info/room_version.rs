@@ -1,6 +1,6 @@
 //! Room version support
 
-use std::iter::once;
+use std::{iter::once, str::FromStr};
 
 use ruma::{RoomVersionId, api::client::discovery::get_capabilities::RoomVersionStability};
 
@@ -8,6 +8,7 @@ use crate::{at, is_equal_to};
 
 /// Supported and stable room versions
 pub const STABLE_ROOM_VERSIONS: &[RoomVersionId] = &[
+	RoomVersionId::V2,
 	RoomVersionId::V6,
 	RoomVersionId::V7,
 	RoomVersionId::V8,
@@ -51,7 +52,11 @@ pub fn available_room_versions() -> impl Iterator<Item = RoomVersion> {
 	let unstable_room_versions = UNSTABLE_ROOM_VERSIONS
 		.iter()
 		.cloned()
-		.zip(once(RoomVersionStability::Unstable).cycle());
+		.zip(once(RoomVersionStability::Unstable).cycle())
+		.chain(
+			once(RoomVersionId::from_str("org.matrix.msc4242.12").expect("valid version"))
+				.zip(once(RoomVersionStability::Unstable).cycle()),
+		);
 
 	STABLE_ROOM_VERSIONS
 		.iter()

@@ -1,16 +1,16 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Error, Result, at, debug_warn,
+	Err, Error, PduEvent, Result, at, debug_warn, info,
 	matrix::{
 		event::{Event, Matches},
-		pdu::PduCount,
+		pdu::{PduCount, TopoToken},
 	},
 	ref_at,
 	utils::{
 		IterStream, ReadyExt,
 		result::LogErr,
-		stream::{BroadbandExt, TryIgnore, WidebandExt},
+		stream::{BroadbandExt, TryIgnore},
 	},
 };
 use conduwuit_service::{
@@ -18,10 +18,10 @@ use conduwuit_service::{
 	rooms::{
 		lazy_loading,
 		lazy_loading::{MemberSet, Options},
-		timeline::PdusIterItem,
+		timeline::TopoIterItem,
 	},
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, future::OptionFuture, pin_mut};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture, pin_mut};
 use ruma::{
 	DeviceId, RoomId, UserId,
 	api::{
@@ -37,6 +37,7 @@ use ruma::{
 };
 use tracing::warn;
 
+use super::sync::add_membership_to_unsigned;
 use crate::Ruma;
 
 /// list of safe and common non-state events to ignore if the user is ignored
@@ -89,17 +90,44 @@ pub(crate) async fn get_message_events_route(
 		return Err!(Request(Forbidden("Room does not exist to this server")));
 	}
 
-	let from: PduCount = body
+	// Check access before parsing pagination tokens — an unauthorized user
+	// should get 403 Forbidden, not a parse error from a stale token.
+	// Per Matrix spec, /messages is accessible to current AND former members.
+	// The per-event visibility_filter handles fine-grained history_visibility
+	// checks; this gate only verifies the user has/had membership.
+	//
+	// A former member who has forgotten the room (POST /forget) loses access
+	// even though is_left() still returns true -- forgetting no longer
+	// deletes the leave record (see state_cache::forget()'s doc comment), so
+	// it must be checked explicitly here rather than inferred from is_left().
+	if !services
+		.rooms
+		.state_cache
+		.can_access_history(sender_user, room_id)
+		.await
+	{
+		return Err!(Request(Forbidden("You don't have permission to view this room.")));
+	}
+
+	let from: TopoToken = body
 		.from
 		.as_deref()
 		.map(str::parse)
 		.transpose()?
 		.unwrap_or_else(|| match body.dir {
-			| Direction::Forward => PduCount::min(),
-			| Direction::Backward => PduCount::max(),
+			| Direction::Forward => TopoToken { depth: 0, pdu_count: PduCount::min() },
+			| Direction::Backward => TopoToken {
+				depth: u64::MAX,
+				pdu_count: PduCount::max(),
+			},
 		});
+	let from = if matches!(body.dir, Direction::Backward) {
+		normalize_backward_from_token(&services, room_id, from).await?
+	} else {
+		from
+	};
 
-	let to: Option<PduCount> = body.to.as_deref().map(str::parse).transpose()?;
+	let to: Option<TopoToken> = body.to.as_deref().map(str::parse).transpose()?;
 
 	let limit: usize = body
 		.limit
@@ -107,11 +135,25 @@ pub(crate) async fn get_message_events_route(
 		.unwrap_or(LIMIT_DEFAULT)
 		.min(LIMIT_MAX);
 
+	if limit == 0 {
+		return Ok(get_message_events::v3::Response {
+			start: from.to_string(),
+			end: None,
+			chunk: Vec::new(),
+			state: Vec::new(),
+		});
+	}
+
+	info!(
+		"/messages: room={room_id} dir={:?} from={from} to={to:?} limit={limit}",
+		body.dir
+	);
+
 	if matches!(body.dir, Direction::Backward) {
 		services
 			.rooms
 			.timeline
-			.backfill_if_required(room_id, from)
+			.backfill_if_required(room_id, from, limit)
 			.boxed()
 			.await
 			.log_err()
@@ -122,67 +164,101 @@ pub(crate) async fn get_message_events_route(
 		| Direction::Forward => services
 			.rooms
 			.timeline
-			.pdus(room_id, Some(from))
+			.topo_pdus(room_id, Some(from))
 			.ignore_err()
 			.boxed(),
 
 		| Direction::Backward => services
 			.rooms
 			.timeline
-			.pdus_rev(room_id, Some(from))
+			.topo_pdus_rev(room_id, Some(from))
 			.ignore_err()
 			.boxed(),
 	};
 
-	let mut events: Vec<_> = it
-		.ready_take_while(|(count, _)| Some(*count) != to)
-		.ready_filter_map(|item| event_filter(item, filter))
-		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
-		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
-		.take(limit)
-		.then(async |mut pdu| {
-			pdu.1.set_unsigned(Some(sender_user));
-			if let Err(e) = services
-				.rooms
-				.pdu_metadata
-				.add_bundled_aggregations_to_pdu(sender_user, &mut pdu.1)
-				.await
-			{
-				debug_warn!("Failed to add bundled aggregations: {e}");
-			}
-			pdu
-		})
-		.collect()
-		.await;
+	let mut events = Vec::with_capacity(limit);
+	let mut next_token = None;
+	let mut exhausted = true;
+	let mut consumed = 0_usize;
+	let mut filtered_event = 0_usize;
+	let mut filtered_ignored = 0_usize;
+	let mut filtered_visibility = 0_usize;
+	let mut skipped_boundary = false;
 
-	// Capture the DB sequence boundary token BEFORE topological sort changes
-	// the order. This must be the outermost PduCount from the original query.
-	let next_token = events.last().map(at!(0));
+	let mut stream = it;
+	while let Some(item) = stream.next().await {
+		let (token, pdu) = item;
+		consumed = consumed.saturating_add(1);
 
-	if !events.is_empty() {
-		let mut event_to_count = std::collections::HashMap::new();
-		let events_to_sort: Vec<_> = events
-			.into_iter()
-			.map(|(count, pdu)| {
-				event_to_count.insert(pdu.event_id.clone(), count);
-				pdu
-			})
-			.collect();
+		info!(
+			target: "pagination_debug",
+			%token, event_id = %pdu.event_id(), event_type = %pdu.kind(),
+			"/messages: raw item consumed from topo stream"
+		);
 
-		let sorted_events = conduwuit::matrix::dag::sort_topologically(events_to_sort);
+		if matches!(body.dir, Direction::Backward)
+			&& !skipped_boundary
+			&& token == from
+			&& Some(token) != to
+		{
+			skipped_boundary = true;
+			info!(
+				target: "pagination_debug",
+				%token, event_id = %pdu.event_id(),
+				"/messages: skipped exact backward boundary to avoid overlap"
+			);
+			continue;
+		}
 
-		events = sorted_events
-			.into_iter()
-			.map(|pdu| {
-				let count = event_to_count
-					.remove(&pdu.event_id)
-					.expect("event count exists");
-				(count, pdu)
-			})
-			.collect();
+		if Some(token) == to {
+			break;
+		}
 
-		if matches!(body.dir, Direction::Backward) {
-			events.reverse();
+		next_token = Some(token);
+
+		let event_id_for_trace = pdu.event_id().to_owned();
+		let Some(item) = event_filter((token, pdu), filter) else {
+			filtered_event = filtered_event.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by event_filter (RoomEventFilter)"
+			);
+			continue;
+		};
+
+		let Some(item) = ignored_filter(&services, item, sender_user).await else {
+			filtered_ignored = filtered_ignored.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by ignored_filter"
+			);
+			continue;
+		};
+
+		let Some(mut item) = visibility_filter(&services, item, sender_user).await else {
+			filtered_visibility = filtered_visibility.saturating_add(1);
+			info!(
+				target: "pagination_debug", %token, event_id = %event_id_for_trace,
+				"/messages: DROPPED by visibility_filter (user_can_see_event)"
+			);
+			continue;
+		};
+
+		item.1.set_unsigned(Some(sender_user));
+		add_membership_to_unsigned(&services, sender_user, &mut item.1).await;
+		if let Err(e) = services
+			.rooms
+			.pdu_metadata
+			.add_bundled_aggregations_to_pdu(sender_user, &mut item.1)
+			.await
+		{
+			debug_warn!("Failed to add bundled aggregations: {e}");
+		}
+		events.push(item);
+
+		if events.len() == limit {
+			exhausted = false;
+			break;
 		}
 	}
 
@@ -200,7 +276,7 @@ pub(crate) async fn get_message_events_route(
 			}
 		}),
 		room_id,
-		token: Some(from.into_unsigned()),
+		token: Some(from.pdu_count.into_unsigned()),
 		options: Some(&filter.lazy_load_options),
 	};
 
@@ -222,18 +298,85 @@ pub(crate) async fn get_message_events_route(
 		.collect()
 		.await;
 
+	// Return the raw cursor of the oldest event we actually consumed, not the
+	// last visible event. That keeps pagination moving even when filters skip an
+	// entire page. Keep the final non-empty backward token as a resumable
+	// "room start" cursor for forward replay; only suppress the token once we
+	// have actually exhausted the iterator *and* have no events to return.
+	let next_token = if exhausted && events.is_empty() {
+		None
+	} else {
+		next_token
+	};
+
 	let chunk = events
 		.into_iter()
 		.map(at!(1))
 		.map(Event::into_format)
 		.collect();
 
-	Ok(get_message_events::v3::Response {
+	let resp = get_message_events::v3::Response {
 		start: from.to_string(),
-		end: next_token.as_ref().map(PduCount::to_string),
+		end: next_token.as_ref().map(|t| format!("{t}")),
 		chunk,
 		state,
-	})
+	};
+
+	info!(
+		"/messages: room={room_id} returning {} events, start={}, end={:?}, consumed={}, \
+		 filtered_event={}, filtered_ignored={}, filtered_visibility={}",
+		resp.chunk.len(),
+		resp.start,
+		resp.end,
+		consumed,
+		filtered_event,
+		filtered_ignored,
+		filtered_visibility
+	);
+
+	Ok(resp)
+}
+
+async fn normalize_backward_from_token(
+	services: &Services,
+	room_id: &RoomId,
+	from: TopoToken,
+) -> Result<TopoToken> {
+	let last_timeline_count = services.rooms.timeline.last_timeline_count(room_id).await?;
+	if from.pdu_count <= last_timeline_count {
+		return Ok(from);
+	}
+
+	let stream = services.rooms.timeline.topo_pdus_rev(room_id, None);
+	pin_mut!(stream);
+	let latest = stream.try_next().await?.map(at!(0)).unwrap_or(from);
+
+	// `topo_pdus_rev` treats its `until` token as an exclusive boundary --
+	// "the caller already consumed this position, don't repeat it" -- which is
+	// correct for a real resume token (one returned to a client as `end`) but
+	// wrong here: the caller hasn't seen anything yet, they just asked for the
+	// newest messages without supplying a `from`. Returning `latest` verbatim
+	// would make the boundary filter (`key >= token_topo_key`, keyed primarily
+	// on depth) exclude the newest event's own key, silently dropping it from
+	// every from-less backward pagination. Keep the real `pdu_count` (still
+	// needed by `backfill_if_required` and lazy-loading below), but clamp
+	// `depth` to u64::MAX so the boundary sorts after every real event's key
+	// and excludes nothing.
+	let normalized = TopoToken {
+		depth: u64::MAX,
+		pdu_count: latest.pdu_count,
+	};
+
+	info!(
+		target: "pagination_debug",
+		%room_id,
+		requested_from = %from,
+		normalized_from = %normalized,
+		?last_timeline_count,
+		"/messages: clamped backward pagination token to latest known timeline position",
+	);
+
+	Ok(normalized)
 }
 
 pub(crate) async fn lazy_loading_witness<'a, I>(
@@ -242,19 +385,17 @@ pub(crate) async fn lazy_loading_witness<'a, I>(
 	events: I,
 ) -> MemberSet
 where
-	I: Iterator<Item = &'a PdusIterItem> + Clone + Send,
+	I: Iterator<Item = &'a TopoIterItem> + Clone + Send,
 {
 	let oldest = events
 		.clone()
-		.map(|(count, _)| count)
-		.copied()
+		.map(|(token, _)| token.pdu_count)
 		.min()
 		.unwrap_or_else(PduCount::max);
 
 	let newest = events
 		.clone()
-		.map(|(count, _)| count)
-		.copied()
+		.map(|(token, _)| token.pdu_count)
 		.max()
 		.unwrap_or_else(PduCount::max);
 
@@ -299,11 +440,11 @@ async fn get_member_event(
 }
 
 #[inline]
-pub(crate) async fn ignored_filter(
+pub(crate) async fn ignored_filter<T: Send>(
 	services: &Services,
-	item: PdusIterItem,
+	item: (T, PduEvent),
 	user_id: &UserId,
-) -> Option<PdusIterItem> {
+) -> Option<(T, PduEvent)> {
 	let (_, ref pdu) = item;
 
 	is_ignored_pdu(services, pdu, user_id)
@@ -370,11 +511,11 @@ where
 }
 
 #[inline]
-pub(crate) async fn visibility_filter(
+pub(crate) async fn visibility_filter<T: Send>(
 	services: &Services,
-	item: PdusIterItem,
+	item: (T, PduEvent),
 	user_id: &UserId,
-) -> Option<PdusIterItem> {
+) -> Option<(T, PduEvent)> {
 	let (_, pdu) = &item;
 
 	let room_id = pdu.room_id_or_hash()?;
@@ -388,7 +529,10 @@ pub(crate) async fn visibility_filter(
 }
 
 #[inline]
-pub(crate) fn event_filter(item: PdusIterItem, filter: &RoomEventFilter) -> Option<PdusIterItem> {
+pub(crate) fn event_filter<T: Send>(
+	item: (T, PduEvent),
+	filter: &RoomEventFilter,
+) -> Option<(T, PduEvent)> {
 	let (_, pdu) = &item;
 	filter.matches(pdu).then_some(item)
 }

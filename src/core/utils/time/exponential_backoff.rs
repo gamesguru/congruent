@@ -23,10 +23,7 @@ pub fn continue_exponential_backoff(
 	elapsed: Duration,
 	tries: u32,
 ) -> bool {
-	let mult = 1_u32
-		.checked_shl(tries.saturating_sub(1))
-		.unwrap_or(u32::MAX);
-	let min = min.saturating_mul(mult);
+	let min = min.saturating_mul(1_u32.checked_shl(tries).unwrap_or(u32::MAX));
 	let min = cmp::min(min, max);
 	elapsed < min
 }

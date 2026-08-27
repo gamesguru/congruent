@@ -50,7 +50,7 @@ use ruma::{
 	uint,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::share_encrypted_room;
 use crate::{
@@ -60,7 +60,7 @@ use crate::{
 	},
 };
 
-type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, &'a sync_events::v5::Request);
+type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, u64, &'a sync_events::v5::Request);
 type TodoRooms = BTreeMap<OwnedRoomId, (RequiredStateSelection, usize, u64)>;
 type KnownRooms = BTreeMap<String, BTreeMap<OwnedRoomId, u64>>;
 type RoomExtras = BTreeMap<OwnedRoomId, RoomExtra>;
@@ -442,6 +442,7 @@ pub(crate) struct CompatSyncRequest {
 	list_filters: BTreeMap<String, CompatListFilters>,
 	required_state_excludes: CompatRequiredStateExcludes,
 	set_presence: PresenceState,
+	thread_subscriptions_enabled: bool,
 }
 
 impl IncomingRequest for CompatSyncRequest {
@@ -460,6 +461,17 @@ impl IncomingRequest for CompatSyncRequest {
 	{
 		let (parts, body) = req.into_parts();
 		let body = body.as_ref();
+		let thread_subscriptions_enabled = serde_json::from_slice::<Value>(body)
+			.ok()
+			.and_then(|body| {
+				body.get("extensions")
+					.and_then(|extensions| {
+						extensions.get("io.element.msc4308.thread_subscriptions")
+					})
+					.and_then(|extension| extension.get("enabled"))
+					.and_then(Value::as_bool)
+			})
+			.unwrap_or(false);
 		let (request, list_filters, required_state_excludes, set_presence) = if body.is_empty() {
 			(
 				sync_events::v5::Request::default(),
@@ -517,7 +529,9 @@ impl IncomingRequest for CompatSyncRequest {
 		let req = http::Request::from_parts(parts, bytes::Bytes::from_static(b"{}"));
 		let mut parsed = sync_events::v5::Request::try_from_http_request(req, path_args)?;
 
-		parsed.pos = request.pos;
+		if request.pos.is_some() {
+			parsed.pos = request.pos;
+		}
 		parsed.conn_id = request.conn_id;
 		parsed.txn_id = request.txn_id;
 		parsed.timeout = request.timeout;
@@ -530,6 +544,7 @@ impl IncomingRequest for CompatSyncRequest {
 			list_filters,
 			required_state_excludes,
 			set_presence,
+			thread_subscriptions_enabled,
 		})
 	}
 }
@@ -595,6 +610,7 @@ async fn sync_events_v5_route_inner(
 		mut list_filters,
 		mut required_state_excludes,
 		set_presence,
+		thread_subscriptions_enabled,
 	} = body.body;
 
 	if endpoint.enforces_stable_limits() && request.lists.len() > 100 {
@@ -687,23 +703,40 @@ async fn sync_events_v5_route_inner(
 	if waits_for_updates {
 		if response.rooms.is_empty() && response.extensions.is_empty() {
 			if let Some(timeout) = request.timeout {
-				// Hang until new info arrives, or the client's timeout expires.
-				_ = tokio::time::timeout(timeout, watcher).await;
+				// Hang until new info arrives, or the client's timeout expires. A
+				// single wake can be spurious -- a write to a watched prefix that
+				// produces no visible delta here -- so loop rather than treating
+				// one wake as authoritative, matching the v3 sync fix. Re-arm the
+				// watcher before each rebuild, not after, to keep the
+				// arm-before-read ordering that avoids the TOCTOU fixed in
+				// c8f9083c9.
+				if let Some(deadline) = std::time::Instant::now().checked_add(timeout) {
+					let mut watcher = watcher;
+					while let Some(remaining) =
+						deadline.checked_duration_since(std::time::Instant::now())
+					{
+						if tokio::time::timeout(remaining, watcher).await.is_err() {
+							break;
+						}
+
+						watcher = services.sync.setup_watch(sender_user, sender_device).await;
+						let (r, re) = build_sync_events_v5(services, &context).await?;
+						response = r;
+						// Read after the loop (or on the next iteration's break check);
+						// clippy can't see across the loop boundary that this is used.
+						#[allow(unused_assignments)]
+						(room_extras = re);
+						if !response.rooms.is_empty() || !response.extensions.is_empty() {
+							break;
+						}
+					}
+				}
 			}
 		}
 
 		// Rebuild the response after waking up to avoid returning advanced tokens
 		// without their associated events. The probe above intentionally did not
 		// update sticky room state because no response had been delivered yet.
-		for _ in 0..5 {
-			let (retry_response, _) = build_sync_events_v5(services, &context).await?;
-			if retry_response.rooms.is_empty() || response_has_timeline_events(&retry_response) {
-				break;
-			}
-
-			tokio::time::sleep(Duration::from_millis(20)).await;
-		}
-
 		context.persist_cache = true;
 		(response, room_extras) = build_sync_events_v5(services, &context).await?;
 	}
@@ -719,7 +752,17 @@ async fn sync_events_v5_route_inner(
 			.sync
 			.update_snake_sync_pos(&snake_key, response.pos.parse().unwrap_or(globalsince));
 	}
-	sync_events_v5_json_response(response, room_extras)
+	sync_events_v5_json_response(
+		response,
+		room_extras,
+		collect_thread_subscriptions_extension(
+			services,
+			sender_user,
+			globalsince,
+			thread_subscriptions_enabled,
+		)
+		.await?,
+	)
 }
 
 async fn build_sync_events_v5(
@@ -799,7 +842,7 @@ async fn build_sync_events_v5(
 
 	let mut todo_rooms: TodoRooms = BTreeMap::new();
 
-	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, body);
+	let sync_info: SyncInfo<'_> = (sender_user, sender_device, globalsince, next_batch, body);
 
 	let account_data = collect_account_data(services, sync_info).map(Ok);
 
@@ -894,16 +937,9 @@ async fn build_sync_events_v5(
 	Ok((response, room_extras))
 }
 
-fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
-	response
-		.rooms
-		.values()
-		.any(|room| !room.timeline.is_empty())
-}
-
 async fn fetch_subscriptions(
 	services: &Services,
-	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	known_rooms: &KnownRooms,
 	required_state_excludes: Option<&CompatRequiredStateExcludes>,
@@ -924,7 +960,7 @@ async fn fetch_subscriptions(
 		}
 
 		let todo_room = todo_rooms
-			.entry(room_id.clone())
+			.entry(room_id.to_owned())
 			.or_insert_with(|| (RequiredStateSelection::default(), 0_usize, u64::MAX));
 
 		let limit: usize = usize_from_ruma(room.timeline_limit).min(100);
@@ -933,11 +969,13 @@ async fn fetch_subscriptions(
 			.and_then(|excludes| excludes.room_subscriptions.get(room_id))
 			.into_iter()
 			.flatten()
-			.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+			.cloned()
+			.map(|(ty, sk)| (ty, sk.as_str().into()));
 		todo_room.0.push(
 			room.required_state
 				.iter()
-				.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+				.cloned()
+				.map(|(ty, sk)| (ty, sk.as_str().into())),
 			excludes,
 		);
 		todo_room.1 = todo_room.1.max(limit);
@@ -949,7 +987,7 @@ async fn fetch_subscriptions(
 				.copied()
 				.unwrap_or(0),
 		);
-		known_subscription_rooms.insert(room_id.clone());
+		known_subscription_rooms.insert(room_id.to_owned());
 	}
 	// where this went (protomsc says it was removed)
 	//for r in body.unsubscribe_rooms {
@@ -971,7 +1009,7 @@ async fn fetch_subscriptions(
 #[allow(clippy::too_many_arguments)]
 async fn handle_lists<'a, Rooms, AllRooms>(
 	services: &Services,
-	(sender_user, sender_device, _, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 	all_invited_rooms: Rooms,
 	all_joined_rooms: Rooms,
@@ -1083,12 +1121,14 @@ where
 					.and_then(|excludes| excludes.lists.get(list_id))
 					.into_iter()
 					.flatten()
-					.map(|(ty, sk)| (ty.clone(), sk.as_str().into()));
+					.cloned()
+					.map(|(ty, sk)| (ty, sk.as_str().into()));
 				todo_room.0.push(
 					list.room_details
 						.required_state
 						.iter()
-						.map(|(ty, sk)| (ty.clone(), sk.as_str().into())),
+						.cloned()
+						.map(|(ty, sk)| (ty, sk.as_str().into())),
 					excludes,
 				);
 
@@ -1376,6 +1416,31 @@ where
 		} else {
 			None
 		};
+		let thread_counts = services
+			.rooms
+			.user
+			.thread_notification_counts(sender_user, room_id)
+			.await;
+		let thread_total_notifications = thread_counts
+			.values()
+			.map(|(notifications, _)| *notifications)
+			.fold(0_u64, u64::saturating_add);
+		let thread_total_highlights = thread_counts
+			.values()
+			.map(|(_, highlights)| *highlights)
+			.fold(0_u64, u64::saturating_add);
+		let notification_count = services
+			.rooms
+			.user
+			.notification_count(sender_user, room_id)
+			.await
+			.saturating_add(thread_total_notifications);
+		let highlight_count = services
+			.rooms
+			.user
+			.highlight_count(sender_user, room_id)
+			.await
+			.saturating_add(thread_total_highlights);
 
 		rooms.insert(room_id.clone(), sync_events::v5::response::Room {
 			name: if include_stable_room_fields {
@@ -1396,20 +1461,12 @@ where
 			invite_state,
 			unread_notifications: UnreadNotificationsCount {
 				highlight_count: Some(
-					services
-						.rooms
-						.user
-						.highlight_count(sender_user, room_id)
-						.await
+					highlight_count
 						.try_into()
 						.expect("notification count can't go that high"),
 				),
 				notification_count: Some(
-					services
-						.rooms
-						.user
-						.notification_count(sender_user, room_id)
-						.await
+					notification_count
 						.try_into()
 						.expect("notification count can't go that high"),
 				),
@@ -1469,11 +1526,22 @@ fn effective_timeline_limit(
 fn sync_events_v5_json_response(
 	response: sync_events::v5::Response,
 	room_extras: RoomExtras,
+	thread_subscriptions_extension: Option<Value>,
 ) -> Result<axum::response::Response> {
 	let response = response
 		.try_into_http_response::<BytesMut>()
 		.map_err(|e| err!(Database("failed to serialize sync v5 response: {e}")))?;
 	let mut value = serde_json::from_slice::<Value>(response.body())?;
+	if let Some(thread_subscriptions) = thread_subscriptions_extension {
+		value
+			.as_object_mut()
+			.expect("sync response is a JSON object")
+			.entry("extensions")
+			.or_insert_with(|| Value::Object(Map::default()))
+			.as_object_mut()
+			.expect("sync response extensions is a JSON object")
+			.insert("io.element.msc4308.thread_subscriptions".to_owned(), thread_subscriptions);
+	}
 	let Some(rooms) = value.get_mut("rooms").and_then(Value::as_object_mut) else {
 		return Ok(Json(value).into_response());
 	};
@@ -1509,6 +1577,47 @@ fn sync_events_v5_json_response(
 	}
 
 	Ok(Json(value).into_response())
+}
+
+async fn collect_thread_subscriptions_extension(
+	services: &Services,
+	sender_user: &UserId,
+	globalsince: u64,
+	enabled: bool,
+) -> Result<Option<Value>> {
+	if !enabled {
+		return Ok(None);
+	}
+
+	let subscribed = services
+		.rooms
+		.threads
+		.subscriptions_since(sender_user, globalsince)
+		.await
+		.into_iter()
+		.map(|(room_id, subscriptions)| {
+			let subscriptions = subscriptions
+				.into_iter()
+				.map(|(thread_id, subscription)| {
+					(
+						thread_id.to_string(),
+						json!({
+							"automatic": subscription.automatic,
+							"bump_stamp": subscription.bump_stamp,
+						}),
+					)
+				})
+				.collect::<Map<_, _>>();
+
+			(room_id.to_string(), Value::Object(subscriptions))
+		})
+		.collect::<Map<_, _>>();
+
+	if subscribed.is_empty() {
+		return Ok(Some(json!({})));
+	}
+
+	Ok(Some(json!({ "subscribed": subscribed })))
 }
 
 fn membership_state_to_str(membership: &MembershipState) -> &str {
@@ -1781,7 +1890,13 @@ async fn collect_typing_events(
 
 async fn collect_account_data(
 	services: &Services,
-	(sender_user, _, globalsince, body): (&UserId, &DeviceId, u64, &sync_events::v5::Request),
+	(sender_user, _, globalsince, current_count, body): (
+		&UserId,
+		&DeviceId,
+		u64,
+		u64,
+		&sync_events::v5::Request,
+	),
 ) -> sync_events::v5::response::AccountData {
 	let mut account_data = sync_events::v5::response::AccountData {
 		global: Vec::new(),
@@ -1794,7 +1909,7 @@ async fn collect_account_data(
 
 	account_data.global = services
 		.account_data
-		.changes_since(None, sender_user, Some(globalsince), None)
+		.changes_since(None, sender_user, Some(globalsince), Some(current_count))
 		.ready_filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Global))
 		.collect()
 		.await;
@@ -1805,7 +1920,12 @@ async fn collect_account_data(
 				room.clone(),
 				services
 					.account_data
-					.changes_since(Some(room), sender_user, Some(globalsince), None)
+					.changes_since(
+						Some(room),
+						sender_user,
+						Some(globalsince),
+						Some(current_count),
+					)
 					.ready_filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Room))
 					.collect()
 					.await,
@@ -1818,9 +1938,10 @@ async fn collect_account_data(
 
 async fn collect_e2ee<'a, Rooms>(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): (
+	(sender_user, sender_device, globalsince, _, body): (
 		&UserId,
 		&DeviceId,
+		u64,
 		u64,
 		&sync_events::v5::Request,
 	),
@@ -1998,7 +2119,12 @@ where
 	}
 
 	Ok(sync_events::v5::response::E2EE {
-		device_unused_fallback_key_types: None,
+		device_unused_fallback_key_types: Some(
+			services
+				.users
+				.list_unused_fallback_key_types(sender_user, sender_device)
+				.await,
+		),
 
 		device_one_time_keys_count: services
 			.users
@@ -2014,7 +2140,7 @@ where
 
 async fn collect_to_device(
 	services: &Services,
-	(sender_user, sender_device, globalsince, body): SyncInfo<'_>,
+	(sender_user, sender_device, globalsince, _, body): SyncInfo<'_>,
 	next_batch: u64,
 ) -> Option<sync_events::v5::response::ToDevice> {
 	if !body.extensions.to_device.enabled.unwrap_or(false) {
