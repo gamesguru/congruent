@@ -10,7 +10,7 @@ COMPLEMENT_SRC="${COMPLEMENT_SRC:-"$1"}"
 RESULTS_DIR="${RESULTS_DIR:-tests/complement}"
 
 # A `.jsonl` file to write test logs to
-LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
+LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/logs.jsonl}"}"
 
 # A `.jsonl` file to write merged test results to.
 RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/results.jsonl}"}"
@@ -70,7 +70,7 @@ fi
 run_stamp="$(date +%s%N)"
 STAGING_DIR="$toplevel/.tmp/complement"
 mkdir -p "$STAGING_DIR"
-LOG_FILE="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.jsonl"
+LOG_FILE="$STAGING_DIR/logs.${run_suffix}.${run_stamp}.jsonl"
 RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
 
 if [ "$RUN_TESTS" != "." ]; then

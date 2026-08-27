@@ -294,7 +294,7 @@ jobs:
           name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
             tests/complement/results.jsonl
-            tests/complement/test_logs.jsonl
+            tests/complement/logs.jsonl
           retention-days: 90
 
       - name: Parse Complement results
@@ -347,12 +347,12 @@ jobs:
           # Whether the "Run Complement tests" step actually ran. If a prior
           # build/setup step failed, it is skipped/cancelled and the tracked
           # test_results.jsonl left in the tree is stale, not something the
-          # Complement run produced -- so a missing test_logs.jsonl is then
+          # Complement run produced -- so a missing logs.jsonl is then
           # *not* evidence of a broken log pipeline.
           COMPLEMENT_OUTCOME: ${{ steps.complement.outcome }}
         run: |
           RESULTS="tests/complement/results.jsonl" \
-          LOGS="tests/complement/test_logs.jsonl" \
+          LOGS="tests/complement/logs.jsonl" \
           python3 - <<'PY'
           import collections
           import html
@@ -381,7 +381,7 @@ jobs:
               # actually ran (success or failure) and produced these results.
               # If it was skipped/cancelled because an earlier build or setup
               # step failed, the checked-in test_results.jsonl is stale and no
-              # Complement run wrote these "results" -- a missing test_logs.jsonl
+              # Complement run wrote these "results" -- a missing logs.jsonl
               # is then expected and is not a log-pipeline bug.
               if complement_outcome not in ("success", "failure"):
                   print(

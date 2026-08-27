@@ -406,7 +406,7 @@ e2ee args=".*":
     STAGING_DIR="$RESULTS_FILE_STAGING"
     mkdir -p "$STAGING_DIR"
     RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
-    LOG_FILE="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.jsonl"
+    LOG_FILE="$STAGING_DIR/logs.${run_suffix}.${run_stamp}.jsonl"
 
     echo ""
     echo "running go test with:"
@@ -551,7 +551,7 @@ e2ee args=".*":
     set +e
     for ((s = 0; s < num_shards; s++)); do
         shard_results="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
-        shard_log="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        shard_log="$STAGING_DIR/logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
         : >"$shard_results"
         : >"$shard_log"
         (
@@ -591,7 +591,7 @@ e2ee args=".*":
     # Combine per-shard staged results and logs into the single aggregate files.
     for ((s = 0; s < num_shards; s++)); do
         shard_results="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
-        shard_log="$STAGING_DIR/test_logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
+        shard_log="$STAGING_DIR/logs.${run_suffix}.${run_stamp}.s$((s + 1)).jsonl"
         [ -f "$shard_results" ] && cat "$shard_results" >>"$RESULTS_FILE"
         [ -f "$shard_log" ] && cat "$shard_log" >>"$LOG_FILE"
     done
