@@ -3,6 +3,7 @@ use std::{mem, ops::Deref};
 use axum::{body::Body, extract::FromRequest};
 use bytes::{BufMut, Bytes, BytesMut};
 use conduwuit::{Error, Result, debug, debug_warn, err, trace};
+use futures::future::BoxFuture;
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, ServerName, UserId, api::IncomingRequest,
@@ -40,16 +41,18 @@ pub(crate) struct Args<T> {
 	pub(crate) delay: Option<std::time::Duration>,
 }
 
-pub(crate) async fn authenticate_user(
+pub(crate) fn authenticate_user<'a>(
 	request: hyper::Request<Body>,
-	services: &State,
-	metadata: &ruma::api::Metadata,
-) -> Result<OwnedUserId> {
-	let mut request = request::from(services, request).await?;
-	let json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
-	let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
-	auth.sender_user
-		.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
+	services: &'a State,
+	metadata: &'a ruma::api::Metadata,
+) -> BoxFuture<'a, Result<OwnedUserId>> {
+	Box::pin(async move {
+		let mut request = request::from(services, request).await?;
+		let json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
+		let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
+		auth.sender_user
+			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
+	})
 }
 
 impl<T> Args<T>
