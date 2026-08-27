@@ -407,12 +407,20 @@ pub async fn update_caches_for_state_delta(
 					.remove(room_id);
 			},
 			| ruma::events::TimelineEventType::RoomMember => {
-				// For removed memberships that have NO corresponding added event in the delta,
-				// we must ensure they are marked as left.
-				// (If they are replaced, the added_events loop will overwrite them correctly).
-				let target_user_id =
-					UserId::parse(pdu.state_key().expect("Member event has state_key"))
-						.expect("Valid UserId");
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
+
+				// For removed memberships that have no corresponding added event in the delta,
+				// mark the user as left. Replacements are handled by `added_events`.
 
 				match self
 					.services
@@ -460,9 +468,17 @@ pub async fn update_caches_for_state_delta(
 					.remove(room_id);
 			},
 			| ruma::events::TimelineEventType::RoomMember => {
-				let target_user_id =
-					UserId::parse(pdu.state_key().expect("Member event has state_key"))
-						.expect("Valid UserId");
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
 
 				self.update_membership(room_id, target_user_id, &pdu, false)
 					.await?;

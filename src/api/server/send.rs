@@ -301,11 +301,7 @@ async fn compute_receiver_after_digest(
 	use conduwuit::Event;
 	use futures::StreamExt;
 
-	let shorteventid = services
-		.rooms
-		.short
-		.get_or_create_shorteventid(event_id)
-		.await;
+	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
 	let root_handle = services
 		.rooms
 		.state

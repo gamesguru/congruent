@@ -64,12 +64,14 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Returns the current room name.
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
 			.map(|c: RoomNameEventContent| c.name)
 	}
 
+	/// Returns the current room avatar event content, when present.
 	pub async fn get_avatar(&self, room_id: &RoomId) -> JsOption<RoomAvatarEventContent> {
 		let content = self
 			.room_state_get_content(room_id, &StateEventType::RoomAvatar, "")
@@ -79,6 +81,7 @@ impl Service {
 		JsOption::from_option(content)
 	}
 
+	/// Returns the current membership state content for a user.
 	pub async fn get_member(
 		&self,
 		room_id: &RoomId,
@@ -129,6 +132,7 @@ impl Service {
 			.map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule)
 	}
 
+	/// Returns the room type declared by its create event.
 	pub async fn get_room_type(&self, room_id: &RoomId) -> Result<RoomType> {
 		self.room_state_get_content(room_id, &StateEventType::RoomCreate, "")
 			.await
@@ -150,6 +154,7 @@ impl Service {
 			.map(|content: RoomEncryptionEventContent| content.algorithm)
 	}
 
+	/// Tests whether the room has encryption state, caching positive results.
 	pub async fn is_encrypted_room(&self, room_id: &RoomId) -> bool {
 		if self.encrypted_rooms_cache.read().contains(room_id) {
 			return true;

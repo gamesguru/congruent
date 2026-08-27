@@ -83,6 +83,7 @@ where
 }
 
 #[implement(super::Service)]
+/// Tests whether a HAMT root contains any state event of `event_type`.
 pub async fn state_contains_type_hamt(
 	&self,
 	_room_id: &RoomId,
@@ -116,6 +117,7 @@ pub async fn state_contains_type_hamt(
 }
 
 #[implement(super::Service)]
+/// Tests whether a HAMT root contains `shortstatekey`.
 pub async fn state_contains_shortstatekey_hamt(
 	&self,
 	room_id: &RoomId,
@@ -142,6 +144,7 @@ pub async fn state_contains_shortstatekey_hamt(
 }
 
 #[implement(super::Service)]
+/// Resolves the short event ID for a state key at a HAMT root.
 pub async fn state_get_shortid_hamt(
 	&self,
 	room_id: &RoomId,
@@ -173,6 +176,7 @@ pub async fn state_get_shortid_hamt(
 }
 
 #[implement(super::Service)]
+/// Resolves a state PDU from a HAMT root.
 pub async fn state_get_in_room_hamt(
 	&self,
 	room_id: &RoomId,
@@ -362,6 +366,7 @@ where
 
 #[implement(super::Service)]
 #[inline]
+/// Returns entries present in the first root and absent from the second.
 pub async fn state_removed_hamt(
 	&self,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
@@ -371,6 +376,7 @@ pub async fn state_removed_hamt(
 }
 
 #[implement(super::Service)]
+/// Returns entries present in the second root and absent from the first.
 pub async fn state_added_hamt(
 	&self,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
@@ -385,6 +391,7 @@ pub async fn state_added_hamt(
 }
 
 #[implement(super::Service)]
+/// Streams every short state-key and short event-ID pair in a HAMT root.
 pub fn state_full_shortids_hamt(
 	&self,
 	root_handle: rezzy::hamt::RootHandle,
@@ -412,6 +419,7 @@ pub fn state_full_shortids_hamt(
 
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
+/// Tests whether a HAMT root has no entries.
 pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	let root_node = self
 		.services
@@ -426,6 +434,7 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
+/// Materializes all state entries stored beneath a HAMT root.
 pub async fn load_full_state_hamt(
 	&self,
 	root_handle: &rezzy::hamt::RootHandle,
@@ -473,6 +482,7 @@ pub async fn pdu_roothandle_at_event(
 		.await
 	{
 		| Ok(root_handle) => Ok(root_handle),
-		| Err(_) => self.pdu_roothandle(event_id).await,
+		| Err(e) if e.is_not_found() => self.pdu_roothandle(event_id).await,
+		| Err(e) => Err(e),
 	}
 }

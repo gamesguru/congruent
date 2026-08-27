@@ -43,6 +43,7 @@ pub struct Store {
 }
 
 impl Store {
+	/// Creates a HAMT node store backed by the node and mtime maps.
 	pub fn new(db: Arc<Map>, node_mtimes: Arc<Map>) -> Self {
 		// Use a generic capacity for now. In a full production setup, this
 		// could be wired to a config value like other caches.
@@ -51,6 +52,7 @@ impl Store {
 		Self { db, node_mtimes, node_cache }
 	}
 
+	/// Resolves a node while avoiding blocking a single-threaded Tokio runtime.
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
 		if let Ok(handle) = tokio::runtime::Handle::try_current() {
 			if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
@@ -99,9 +101,9 @@ impl Store {
 		// Cache it immediately so concurrent reads can hit memory
 		self.node_cache.insert(node.structural_hash, node);
 
-		self.db.insert(&persisted.structural_hash, &bytes);
 		self.node_mtimes
 			.insert(&persisted.structural_hash, unix_millis().to_be_bytes());
+		self.db.insert(&persisted.structural_hash, &bytes);
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
@@ -124,9 +126,10 @@ impl Store {
 		);
 	}
 
+	/// Stores an already-encoded node and records its persistence time.
 	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) {
-		self.db.insert(&hash, bytes);
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+		self.db.insert(&hash, bytes);
 	}
 
 	/// Persists a node and all of its resolved children recursively.
@@ -279,8 +282,9 @@ impl Store {
 				// Keys in `state_hamt_nodes` are 16-byte hashes; any
 				// other key is not a node we manage and is skipped
 				// defensively.
-				let hash = <[u8; 16]>::try_from(key)
-					.map_err(|_| err!(Database(error!("Unexpected key in state_hamt_nodes."))))?;
+				let Ok(hash) = <[u8; 16]>::try_from(key) else {
+					return Ok(report);
+				};
 
 				if seen.contains(&hash) {
 					return Ok(report);

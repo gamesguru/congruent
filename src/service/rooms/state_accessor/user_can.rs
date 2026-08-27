@@ -105,7 +105,7 @@ pub async fn user_can_see_event(
 	event_id: &EventId,
 ) -> bool {
 	let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await else {
-		return true;
+		return self.services.state_cache.is_joined(user_id, room_id).await;
 	};
 
 	let currently_member = self.services.state_cache.is_joined(user_id, room_id).await;

@@ -287,9 +287,10 @@ impl Service {
 				.await?;
 			(handle, Some(node))
 		} else {
-			let root = state_root_handle
-				.cloned()
-				.unwrap_or(self.get_room_state_hamt(room_id).await?);
+			let root = match state_root_handle {
+				| Some(root) => root.clone(),
+				| None => self.get_room_state_hamt(room_id).await?,
+			};
 			(root, None)
 		};
 
