@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
@@ -297,8 +299,7 @@ pub(crate) async fn deactivate_route(
 		.collect()
 		.await;
 
-	Box::pin(full_user_deactivate(&services, sender_user, &all_joined_rooms))
-		.await?;
+	full_user_deactivate(&services, sender_user, &all_joined_rooms).await?;
 
 	info!("User {sender_user} deactivated their account.");
 
@@ -339,11 +340,12 @@ pub(crate) async fn check_registration_token_validity(
 /// - Removing avatar URL and blurhash
 /// - Removing all profile data
 /// - Leaving all rooms (and forgets all of them)
-pub async fn full_user_deactivate(
-	services: &Services,
-	user_id: &UserId,
-	all_joined_rooms: &[OwnedRoomId],
-) -> Result<()> {
+pub fn full_user_deactivate<'a>(
+	services: &'a Services,
+	user_id: &'a UserId,
+	all_joined_rooms: &'a [OwnedRoomId],
+) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+	Box::pin(async move {
 	services.users.deactivate_account(user_id).await.ok();
 
 	if services.globals.user_is_local(user_id) {
@@ -430,4 +432,5 @@ pub async fn full_user_deactivate(
 	}
 
 	Ok(())
+})
 }

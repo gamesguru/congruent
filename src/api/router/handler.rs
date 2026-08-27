@@ -11,7 +11,7 @@ use ruma::api::IncomingRequest;
 
 use super::{Ruma, RumaResponse, State};
 
-pub(in super::super) trait RumaHandler<T> {
+pub(in super::super) trait RumaHandler<T>: 'static {
 	fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State>;
 	fn add_routes(&'static self, router: Router<State>) -> Router<State>;
 }

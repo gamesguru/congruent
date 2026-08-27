@@ -12,7 +12,7 @@ use std::net::IpAddr;
 
 use axum::extract::State;
 use conduwuit::{Err, Result, warn};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use ruma::{
 	CanonicalJsonObject, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
@@ -109,9 +109,7 @@ pub(crate) async fn banned_room_check(
 					.collect()
 					.await;
 
-				full_user_deactivate(services, user_id, &all_joined_rooms)
-					.boxed()
-					.await?;
+				full_user_deactivate(services, user_id, &all_joined_rooms).await?;
 			}
 			return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 		}
@@ -149,9 +147,7 @@ pub(crate) async fn banned_room_check(
 					.collect()
 					.await;
 
-				full_user_deactivate(services, user_id, &all_joined_rooms)
-					.boxed()
-					.await?;
+				full_user_deactivate(services, user_id, &all_joined_rooms).await?;
 			}
 
 			return Err!(Request(Forbidden("This remote server is banned on this homeserver.")));

@@ -124,7 +124,6 @@ pub(crate) async fn join_room_by_id_route(
 		&body.appservice_info,
 		body.json_body.as_ref(),
 	)
-	.boxed()
 	.await
 }
 

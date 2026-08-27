@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
@@ -5,7 +7,6 @@ use conduwuit::{
 	matrix::{event::gen_event_id_canonical_json, pdu::PduBuilder},
 	warn,
 };
-use futures::FutureExt;
 use ruma::{
 	RoomId, UserId,
 	api::{client::membership::invite_user, federation::membership::create_invite},
@@ -81,9 +82,8 @@ pub(crate) async fn invite_user_route(
 				&body.room_id,
 				body.reason.clone(),
 				false,
-			)
-			.boxed()
-			.await?;
+				)
+				.await?;
 
 			Ok(invite_user::v3::Response {})
 		},
@@ -93,14 +93,15 @@ pub(crate) async fn invite_user_route(
 	}
 }
 
-pub(crate) async fn invite_helper(
-	services: &Services,
-	sender_user: &UserId,
-	recipient_user: &UserId,
-	room_id: &RoomId,
+pub(crate) fn invite_helper<'a>(
+	services: &'a Services,
+	sender_user: &'a UserId,
+	recipient_user: &'a UserId,
+	room_id: &'a RoomId,
 	reason: Option<String>,
 	is_direct: bool,
-) -> Result {
+) -> Pin<Box<dyn Future<Output = Result> + Send + 'a>> {
+	Box::pin(async move {
 	if !services.users.is_admin(sender_user).await && services.config.block_non_admin_invites {
 		info!(
 			"User {sender_user} is not an admin and attempted to send an invite to room \
@@ -187,12 +188,14 @@ pub(crate) async fn invite_helper(
 			))));
 		}
 
-		let pdu_id = services
-			.rooms
-			.event_handler
-			.handle_incoming_pdu(recipient_user.server_name(), room_id, &event_id, value, true)
-			.boxed()
-			.await?
+		let pdu_id = Box::pin(services.rooms.event_handler.handle_incoming_pdu(
+			recipient_user.server_name(),
+			room_id,
+			&event_id,
+			value,
+			true,
+		))
+		.await?
 			.ok_or_else(|| {
 				err!(Request(InvalidParam("Could not accept incoming PDU as timeline event.")))
 			})?;
@@ -236,4 +239,5 @@ pub(crate) async fn invite_helper(
 	drop(state_lock);
 
 	Ok(())
+})
 }
