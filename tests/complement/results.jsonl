@@ -409,7 +409,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE00TemporaryNetworkErrorIsOkay/all_events_are_state_events"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/STATE01DeOutlieredStateIsCorrect"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/STATE02OldStateChangesBetweenEvents"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/STATE04MismatchedPrevStateEventsVsPrevEvents"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/STATE04MismatchedPrevStateEventsVsPrevEvents"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendJoinMalformedResponseSJ00"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendJoinSJ01Inbound"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/SendJoinSJ01Outbound"}

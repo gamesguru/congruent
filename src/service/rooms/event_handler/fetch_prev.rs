@@ -93,7 +93,8 @@ where
 		.await;
 
 	let room_version = self.services.state.get_room_version(room_id).await?;
-	let earliest: Vec<OwnedEventId> = if RoomVersion::new(&room_version)?.state_dags {
+	let state_dag = RoomVersion::new(&room_version)?.state_dags;
+	let earliest: Vec<OwnedEventId> = if state_dag {
 		self.services
 			.state
 			.get_state_forward_extremities(room_id)
@@ -144,6 +145,7 @@ where
 						latest_events: latest_events.clone(),
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
+						state_dag,
 					};
 					let res = tokio::time::timeout_at(
 						deadline,

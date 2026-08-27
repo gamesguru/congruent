@@ -1640,6 +1640,7 @@ pub(super) async fn fetch_missing_events(
 					latest_events: current_targets.clone(),
 					limit: 100_u32.into(),
 					min_depth: 0_u32.into(),
+					state_dag: false,
 				})
 				.await;
 
