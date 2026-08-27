@@ -374,7 +374,7 @@ pub async fn join_room_by_id_helper(
 	}
 
 	if server_in_room {
-		join_room_by_id_helper_local(
+		Box::pin(join_room_by_id_helper_local(
 			services,
 			sender_user,
 			room_id,
@@ -382,7 +382,7 @@ pub async fn join_room_by_id_helper(
 			servers,
 			state_lock,
 			json_body,
-		)
+		))
 		.await?;
 	} else {
 		// Ask a remote server if we are not participating in this room
