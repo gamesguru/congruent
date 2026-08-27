@@ -94,8 +94,6 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 				let fed_result =
 					federation_query(&services, origin_server, room_id, ts, dir).await;
 
-				// Fetch the federation result locally before checking visibility.
-				// `user_can_see_event` is permissive when local event state is missing.
 				let fed_result = if let Some(fed) = fed_result {
 					if !federation_can_win(ts, dir, local_result.as_ref(), &fed) {
 						debug!(
@@ -103,19 +101,44 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 							"Skipping federation timestamp result because local result is closer"
 						);
 						None
-					} else if services
-						.rooms
-						.state_accessor
-						.user_can_see_event(body.sender_user(), room_id, &fed.event_id)
-						.await
-					{
-						Some(fed)
 					} else {
-						debug!(
-							event_id = %fed.event_id,
-							"Federation timestamp result is not visible to requester"
-						);
-						None
+						match services
+							.rooms
+							.timeline
+							.get_remote_pdu(room_id, &fed.event_id)
+							.await
+						{
+							| Ok(pdu) => {
+								if services
+									.rooms
+									.state_accessor
+									.user_can_see_event(
+										body.sender_user(),
+										room_id,
+										&pdu.event_id,
+									)
+									.await
+								{
+									Some(get_event_by_timestamp::v1::Response::new(
+										pdu.event_id.clone(),
+										MilliSecondsSinceUnixEpoch(pdu.origin_server_ts),
+									))
+								} else {
+									debug!(
+										event_id = %pdu.event_id,
+										"Federation timestamp result is not visible to requester"
+									);
+									None
+								}
+							},
+							| Err(e) => {
+								warn!(
+									event_id = %fed.event_id,
+									"Failed to fetch federation timestamp result locally: {e}"
+								);
+								None
+							},
+						}
 					}
 				} else {
 					None
