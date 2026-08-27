@@ -346,91 +346,91 @@ pub fn full_user_deactivate<'a>(
 	all_joined_rooms: &'a [OwnedRoomId],
 ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
 	Box::pin(async move {
-	services.users.deactivate_account(user_id).await.ok();
+		services.users.deactivate_account(user_id).await.ok();
 
-	if services.globals.user_is_local(user_id) {
-		let _ = services
-			.threepid
-			.disassociate_localpart_email(user_id.localpart())
-			.await;
-	}
-
-	services
-		.users
-		.all_profile_keys(user_id)
-		.ready_for_each(|(profile_key, _)| {
-			services.users.set_profile_key(user_id, &profile_key, None);
-		})
-		.await;
-
-	services
-		.pusher
-		.get_pushkeys(user_id)
-		.for_each(async |pushkey| {
-			services.pusher.delete_pusher(user_id, pushkey).await;
-		})
-		.await;
-
-	// TODO: Rescind all user invites
-
-	let mut pdu_queue: Vec<(PduBuilder, &OwnedRoomId)> = Vec::new();
-
-	for room_id in all_joined_rooms {
-		let room_power_levels = services
-			.rooms
-			.state_accessor
-			.room_state_get_content::<RoomPowerLevelsEventContent>(
-				room_id,
-				&StateEventType::RoomPowerLevels,
-				"",
-			)
-			.await
-			.ok();
-
-		let user_can_demote_self =
-			room_power_levels
-				.as_ref()
-				.is_some_and(|power_levels_content| {
-					RoomPowerLevels::from(power_levels_content.clone())
-						.user_can_change_user_power_level(user_id, user_id)
-				}) || services
-				.rooms
-				.state_accessor
-				.room_state_get(room_id, &StateEventType::RoomCreate, "")
-				.await
-				.is_ok_and(|event| event.sender() == user_id);
-
-		if user_can_demote_self {
-			let mut power_levels_content = room_power_levels.unwrap_or_default();
-			power_levels_content.users.remove(user_id);
-			let pl_evt = PduBuilder::state(String::new(), &power_levels_content);
-			pdu_queue.push((pl_evt, room_id));
+		if services.globals.user_is_local(user_id) {
+			let _ = services
+				.threepid
+				.disassociate_localpart_email(user_id.localpart())
+				.await;
 		}
 
-		// Leave the room
-		pdu_queue.push((
-			PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-				avatar_url: None,
-				blurhash: None,
-				membership: MembershipState::Leave,
-				displayname: None,
-				join_authorized_via_users_server: None,
-				reason: None,
-				is_direct: None,
-				third_party_invite: None,
-				redact_events: None,
-			}),
-			room_id,
-		));
+		services
+			.users
+			.all_profile_keys(user_id)
+			.ready_for_each(|(profile_key, _)| {
+				services.users.set_profile_key(user_id, &profile_key, None);
+			})
+			.await;
 
-		// TODO: Redact all messages sent by the user in the room
-	}
+		services
+			.pusher
+			.get_pushkeys(user_id)
+			.for_each(async |pushkey| {
+				services.pusher.delete_pusher(user_id, pushkey).await;
+			})
+			.await;
 
-	Box::pin(super::update_all_rooms(services, pdu_queue, user_id)).await;
-	for room_id in all_joined_rooms {
-		services.rooms.state_cache.forget(room_id, user_id);
-	}
+		// TODO: Rescind all user invites
 
-	Ok(())
-})
+		let mut pdu_queue: Vec<(PduBuilder, &OwnedRoomId)> = Vec::new();
+
+		for room_id in all_joined_rooms {
+			let room_power_levels = services
+				.rooms
+				.state_accessor
+				.room_state_get_content::<RoomPowerLevelsEventContent>(
+					room_id,
+					&StateEventType::RoomPowerLevels,
+					"",
+				)
+				.await
+				.ok();
+
+			let user_can_demote_self =
+				room_power_levels
+					.as_ref()
+					.is_some_and(|power_levels_content| {
+						RoomPowerLevels::from(power_levels_content.clone())
+							.user_can_change_user_power_level(user_id, user_id)
+					}) || services
+					.rooms
+					.state_accessor
+					.room_state_get(room_id, &StateEventType::RoomCreate, "")
+					.await
+					.is_ok_and(|event| event.sender() == user_id);
+
+			if user_can_demote_self {
+				let mut power_levels_content = room_power_levels.unwrap_or_default();
+				power_levels_content.users.remove(user_id);
+				let pl_evt = PduBuilder::state(String::new(), &power_levels_content);
+				pdu_queue.push((pl_evt, room_id));
+			}
+
+			// Leave the room
+			pdu_queue.push((
+				PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
+					avatar_url: None,
+					blurhash: None,
+					membership: MembershipState::Leave,
+					displayname: None,
+					join_authorized_via_users_server: None,
+					reason: None,
+					is_direct: None,
+					third_party_invite: None,
+					redact_events: None,
+				}),
+				room_id,
+			));
+
+			// TODO: Redact all messages sent by the user in the room
+		}
+
+		Box::pin(super::update_all_rooms(services, pdu_queue, user_id)).await;
+		for room_id in all_joined_rooms {
+			services.rooms.state_cache.forget(room_id, user_id);
+		}
+
+		Ok(())
+	})
 }

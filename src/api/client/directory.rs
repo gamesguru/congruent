@@ -407,64 +407,81 @@ fn public_rooms_chunk<'a>(
 	room_id: OwnedRoomId,
 ) -> Pin<Box<dyn Future<Output = PublicRoomsChunk> + Send + 'a>> {
 	Box::pin(async move {
-	let name = Box::pin(async { services.rooms.state_accessor.get_name(&room_id).await.ok() });
+		let name =
+			Box::pin(async { services.rooms.state_accessor.get_name(&room_id).await.ok() });
 
-	let room_type = Box::pin(async { services.rooms.state_accessor.get_room_type(&room_id).await.ok() });
+		let room_type = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_room_type(&room_id)
+				.await
+				.ok()
+		});
 
-	let canonical_alias = Box::pin(async {
-		services
-			.rooms
-			.state_accessor
-			.get_canonical_alias(&room_id)
-			.await
-			.ok()
-	});
+		let canonical_alias = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_canonical_alias(&room_id)
+				.await
+				.ok()
+		});
 
-	let avatar_url = Box::pin(services.rooms.state_accessor.get_avatar(&room_id));
+		let avatar_url = Box::pin(services.rooms.state_accessor.get_avatar(&room_id));
 
-	let topic = Box::pin(async { services.rooms.state_accessor.get_room_topic(&room_id).await.ok() });
+		let topic = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_room_topic(&room_id)
+				.await
+				.ok()
+		});
 
-	let world_readable = Box::pin(services.rooms.state_accessor.is_world_readable(&room_id));
+		let world_readable = Box::pin(services.rooms.state_accessor.is_world_readable(&room_id));
 
-	let join_rule = Box::pin(services
-		.rooms
-		.state_accessor
-		.room_state_get_content(&room_id, &StateEventType::RoomJoinRules, "")
-		.map_ok(|c: RoomJoinRulesEventContent| match c.join_rule {
-			| JoinRule::Public => PublicRoomJoinRule::Public,
-			| JoinRule::Knock => "knock".into(),
-			| JoinRule::KnockRestricted(_) => "knock_restricted".into(),
-			| _ => "invite".into(),
-		}));
+		let join_rule = Box::pin(
+			services
+				.rooms
+				.state_accessor
+				.room_state_get_content(&room_id, &StateEventType::RoomJoinRules, "")
+				.map_ok(|c: RoomJoinRulesEventContent| match c.join_rule {
+					| JoinRule::Public => PublicRoomJoinRule::Public,
+					| JoinRule::Knock => "knock".into(),
+					| JoinRule::KnockRestricted(_) => "knock_restricted".into(),
+					| _ => "invite".into(),
+				}),
+		);
 
-	let guest_can_join = Box::pin(services.rooms.state_accessor.guest_can_join(&room_id));
+		let guest_can_join = Box::pin(services.rooms.state_accessor.guest_can_join(&room_id));
 
-	let num_joined_members = Box::pin(services.rooms.state_cache.room_joined_count(&room_id));
+		let num_joined_members = Box::pin(services.rooms.state_cache.room_joined_count(&room_id));
 
-	let (
-		(avatar_url, canonical_alias, guest_can_join, join_rule, name),
-		(num_joined_members, room_type, topic, world_readable),
-	) = Box::pin(join(
-		join5(avatar_url, canonical_alias, guest_can_join, join_rule, name),
-		join4(num_joined_members, room_type, topic, world_readable),
-	))
-	.await;
+		let (
+			(avatar_url, canonical_alias, guest_can_join, join_rule, name),
+			(num_joined_members, room_type, topic, world_readable),
+		) = Box::pin(join(
+			join5(avatar_url, canonical_alias, guest_can_join, join_rule, name),
+			join4(num_joined_members, room_type, topic, world_readable),
+		))
+		.await;
 
-	PublicRoomsChunk {
-		avatar_url: avatar_url.into_option().unwrap_or_default().url,
-		canonical_alias,
-		guest_can_join,
-		join_rule: join_rule.unwrap_or(PublicRoomJoinRule::Public),
-		name,
-		num_joined_members: num_joined_members
-			.map(TryInto::try_into)
-			.map(Result::ok)
-			.flat_ok()
-			.unwrap_or_else(|| uint!(0)),
-		room_id,
-		room_type,
-		topic,
-		world_readable,
-	}
+		PublicRoomsChunk {
+			avatar_url: avatar_url.into_option().unwrap_or_default().url,
+			canonical_alias,
+			guest_can_join,
+			join_rule: join_rule.unwrap_or(PublicRoomJoinRule::Public),
+			name,
+			num_joined_members: num_joined_members
+				.map(TryInto::try_into)
+				.map(Result::ok)
+				.flat_ok()
+				.unwrap_or_else(|| uint!(0)),
+			room_id,
+			room_type,
+			topic,
+			world_readable,
+		}
 	})
 }

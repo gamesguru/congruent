@@ -1,4 +1,6 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc};
+use std::{
+	borrow::Borrow, collections::HashMap, future::Future, iter::once, pin::Pin, sync::Arc,
+};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
@@ -253,7 +255,6 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 		appservice_info,
 		json_body.as_ref(),
 	)
-	.boxed()
 	.await?;
 
 	Ok(join_room_by_id_or_alias::v3::Response { room_id: join_room_response.room_id })
@@ -268,135 +269,140 @@ impl Drop for JoinGuard<'_> {
 	fn drop(&mut self) { self.state_cache.rooms_joining.write().remove(self.room_id); }
 }
 
-pub async fn join_room_by_id_helper(
-	services: &Services,
-	sender_user: &UserId,
-	room_id: &RoomId,
+pub fn join_room_by_id_helper<'a>(
+	services: &'a Services,
+	sender_user: &'a UserId,
+	room_id: &'a RoomId,
 	reason: Option<String>,
-	servers: &[OwnedServerName],
-	appservice_info: &Option<RegistrationInfo>,
-	json_body: Option<&CanonicalJsonValue>,
-) -> Result<join_room_by_id::v3::Response> {
-	services
-		.rooms
-		.state_cache
-		.rooms_joining
-		.write()
-		.insert(room_id.to_owned());
-	let _join_guard = JoinGuard {
-		state_cache: &services.rooms.state_cache,
-		room_id,
-	};
-
-	let state_lock = services.rooms.state.mutex.lock(room_id).await;
-
-	let user_is_guest = services
-		.users
-		.is_deactivated(sender_user)
-		.await
-		.unwrap_or(false)
-		&& appservice_info.is_none();
-
-	if user_is_guest && !services.rooms.state_accessor.guest_can_join(room_id).await {
-		return Err!(Request(Forbidden("Guests are not allowed to join this room")));
-	}
-
-	if services
-		.rooms
-		.state_cache
-		.is_joined(sender_user, room_id)
-		.await
-	{
-		debug_warn!("{sender_user} is already joined in {room_id}");
-		return Ok(join_room_by_id::v3::Response { room_id: room_id.into() });
-	}
-
-	if let Err(e) = services
-		.antispam
-		.user_may_join_room(
-			sender_user.to_owned(),
-			room_id.to_owned(),
-			services
-				.rooms
-				.state_cache
-				.is_invited(sender_user, room_id)
-				.await,
-		)
-		.await
-	{
-		warn!("Antispam prevented user {} from joining room {}: {}", sender_user, room_id, e);
-		return Err!(Request(Forbidden("You are not allowed to join this room.")));
-	}
-
-	let server_in_room = services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), room_id)
-		.await;
-
-	// Only check our known membership if we're already in the room.
-	// See: https://forgejo.ellis.link/continuwuation/continuwuity/issues/855
-	let membership = if server_in_room {
+	servers: &'a [OwnedServerName],
+	appservice_info: &'a Option<RegistrationInfo>,
+	json_body: Option<&'a CanonicalJsonValue>,
+) -> Pin<Box<dyn Future<Output = Result<join_room_by_id::v3::Response>> + Send + 'a>> {
+	Box::pin(async move {
 		services
 			.rooms
-			.state_accessor
-			.get_member(room_id, sender_user)
+			.state_cache
+			.rooms_joining
+			.write()
+			.insert(room_id.to_owned());
+		let _join_guard = JoinGuard {
+			state_cache: &services.rooms.state_cache,
+			room_id,
+		};
+
+		let state_lock = services.rooms.state.mutex.lock(room_id).await;
+
+		let user_is_guest = services
+			.users
+			.is_deactivated(sender_user)
 			.await
-	} else {
-		debug!("Ignoring local state for join {room_id}, we aren't in the room yet.");
-		Ok(RoomMemberEventContent::new(MembershipState::Leave))
-	};
-	if let Ok(m) = membership {
-		if m.membership == MembershipState::Ban {
-			debug_warn!("{sender_user} is banned from {room_id} but attempted to join");
-			// TODO: return reason
-			return Err!(Request(Forbidden("You are banned from the room.")));
+			.unwrap_or(false)
+			&& appservice_info.is_none();
+
+		if user_is_guest && !services.rooms.state_accessor.guest_can_join(room_id).await {
+			return Err!(Request(Forbidden("Guests are not allowed to join this room")));
 		}
-	}
 
-	if !server_in_room && servers.is_empty() {
-		return Err!(Request(NotFound(
-			"No servers were provided to assist in joining the room remotely, and we are not \
-			 already participating in the room."
-		)));
-	}
+		if services
+			.rooms
+			.state_cache
+			.is_joined(sender_user, room_id)
+			.await
+		{
+			debug_warn!("{sender_user} is already joined in {room_id}");
+			return Ok(join_room_by_id::v3::Response { room_id: room_id.into() });
+		}
 
-	if services.antispam.check_all_joins() {
 		if let Err(e) = services
 			.antispam
-			.meowlnir_accept_make_join(room_id.to_owned(), sender_user.to_owned())
+			.user_may_join_room(
+				sender_user.to_owned(),
+				room_id.to_owned(),
+				services
+					.rooms
+					.state_cache
+					.is_invited(sender_user, room_id)
+					.await,
+			)
 			.await
 		{
 			warn!("Antispam prevented user {} from joining room {}: {}", sender_user, room_id, e);
-			return Err!(Request(Forbidden("Antispam rejected join request.")));
+			return Err!(Request(Forbidden("You are not allowed to join this room.")));
 		}
-	}
 
-	if server_in_room {
-		Box::pin(join_room_by_id_helper_local(
-			services,
-			sender_user,
-			room_id,
-			reason,
-			servers,
-			state_lock,
-			json_body,
-		))
-		.await?;
-	} else {
-		// Ask a remote server if we are not participating in this room
-		Box::pin(join_room_by_id_helper_remote(
-			services,
-			sender_user,
-			room_id,
-			reason,
-			servers,
-			state_lock,
-			json_body,
-		))
-		.await?;
-	}
-	Ok(join_room_by_id::v3::Response::new(room_id.to_owned()))
+		let server_in_room = services
+			.rooms
+			.state_cache
+			.server_in_room(services.globals.server_name(), room_id)
+			.await;
+
+		// Only check our known membership if we're already in the room.
+		// See: https://forgejo.ellis.link/continuwuation/continuwuity/issues/855
+		let membership = if server_in_room {
+			services
+				.rooms
+				.state_accessor
+				.get_member(room_id, sender_user)
+				.await
+		} else {
+			debug!("Ignoring local state for join {room_id}, we aren't in the room yet.");
+			Ok(RoomMemberEventContent::new(MembershipState::Leave))
+		};
+		if let Ok(m) = membership {
+			if m.membership == MembershipState::Ban {
+				debug_warn!("{sender_user} is banned from {room_id} but attempted to join");
+				// TODO: return reason
+				return Err!(Request(Forbidden("You are banned from the room.")));
+			}
+		}
+
+		if !server_in_room && servers.is_empty() {
+			return Err!(Request(NotFound(
+				"No servers were provided to assist in joining the room remotely, and we are \
+				 not already participating in the room."
+			)));
+		}
+
+		if services.antispam.check_all_joins() {
+			if let Err(e) = services
+				.antispam
+				.meowlnir_accept_make_join(room_id.to_owned(), sender_user.to_owned())
+				.await
+			{
+				warn!(
+					"Antispam prevented user {} from joining room {}: {}",
+					sender_user, room_id, e
+				);
+				return Err!(Request(Forbidden("Antispam rejected join request.")));
+			}
+		}
+
+		if server_in_room {
+			Box::pin(join_room_by_id_helper_local(
+				services,
+				sender_user,
+				room_id,
+				reason,
+				servers,
+				state_lock,
+				json_body,
+			))
+			.await?;
+		} else {
+			// Ask a remote server if we are not participating in this room
+			Box::pin(join_room_by_id_helper_remote(
+				services,
+				sender_user,
+				room_id,
+				reason,
+				servers,
+				state_lock,
+				json_body,
+			))
+			.await?;
+		}
+		Ok(join_room_by_id::v3::Response::new(room_id.to_owned()))
+	})
 }
 
 #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote", level = "info")]
