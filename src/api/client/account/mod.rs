@@ -6,7 +6,7 @@ use conduwuit::{
 	utils::{ReadyExt, stream::BroadbandExt},
 };
 use conduwuit_service::Services;
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use lettre::{Address, message::Mailbox};
 use ruma::{
 	OwnedRoomId, OwnedUserId, UserId,
@@ -297,8 +297,7 @@ pub(crate) async fn deactivate_route(
 		.collect()
 		.await;
 
-	full_user_deactivate(&services, sender_user, &all_joined_rooms)
-		.boxed()
+	Box::pin(full_user_deactivate(&services, sender_user, &all_joined_rooms))
 		.await?;
 
 	info!("User {sender_user} deactivated their account.");
@@ -425,9 +424,7 @@ pub async fn full_user_deactivate(
 		// TODO: Redact all messages sent by the user in the room
 	}
 
-	super::update_all_rooms(services, pdu_queue, user_id)
-		.boxed()
-		.await;
+	Box::pin(super::update_all_rooms(services, pdu_queue, user_id)).await;
 	for room_id in all_joined_rooms {
 		services.rooms.state_cache.forget(room_id, user_id);
 	}

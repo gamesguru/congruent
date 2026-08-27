@@ -66,7 +66,6 @@ pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 }
 
 /// Async initializations
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 	debug!("Starting...");
 

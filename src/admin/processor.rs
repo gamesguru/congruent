@@ -32,18 +32,19 @@ use crate::{admin, admin::AdminCommand, context::Context};
 #[must_use]
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
-#[must_use]
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
-	Box::pin(handle_command(services, command))
+	handle_command(services, command)
 }
 
 #[tracing::instrument(skip_all, name = "admin", level = "info")]
-async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
-	AssertUnwindSafe(Box::pin(process_command(services, &command)))
-		.catch_unwind()
-		.await
-		.map_err(Error::from_panic)
-		.unwrap_or_else(|error| handle_panic(&error, &command))
+fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
+	Box::pin(async move {
+		AssertUnwindSafe(process_command(services, &command))
+			.catch_unwind()
+			.await
+			.map_err(Error::from_panic)
+			.unwrap_or_else(|error| handle_panic(&error, &command))
+	})
 }
 
 async fn process_command(services: Arc<Services>, input: &CommandInput) -> ProcessorResult {
