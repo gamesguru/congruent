@@ -461,7 +461,6 @@ async fn join_room_by_id_helper_remote(
 		pdu: services
 			.sending
 			.convert_to_outgoing_federation_event(join_event.clone())
-			.boxed()
 			.await,
 	};
 
