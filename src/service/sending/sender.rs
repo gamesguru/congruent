@@ -65,7 +65,7 @@ enum TransactionStatus {
 	Retrying(u32), // number of times failed
 }
 
-type SendingError = (Destination, Error);
+type SendingError = (Destination, Box<Error>);
 type SendingResult = Result<Destination, SendingError>;
 type SendingFuture<'a> = BoxFuture<'a, SendingResult>;
 type SendingFutures<'a> = FuturesUnordered<SendingFuture<'a>>;
@@ -803,7 +803,7 @@ impl Service {
 		let Some(appservice) = self.services.appservice.get_registration(&id).await else {
 			return Err((
 				Destination::Appservice(id.clone()),
-				err!(Database(warn!(?id, "Missing appservice registration"))),
+				Box::new(err!(Database(warn!(?id, "Missing appservice registration")))),
 			));
 		};
 
@@ -860,7 +860,7 @@ impl Service {
 			.await
 		{
 			| Ok(_) => Ok(Destination::Appservice(id)),
-			| Err(e) => Err((Destination::Appservice(id), e)),
+			| Err(e) => Err((Destination::Appservice(id), Box::new(e))),
 		}
 	}
 
@@ -881,7 +881,7 @@ impl Service {
 		let Ok(pusher) = self.services.pusher.get_pusher(&user_id, &pushkey).await else {
 			return Err((
 				Destination::Push(user_id.clone(), pushkey.clone()),
-				err!(Database(error!(%user_id, ?pushkey, "Missing pusher"))),
+				Box::new(err!(Database(error!(%user_id, ?pushkey, "Missing pusher")))),
 			));
 		};
 
@@ -937,7 +937,7 @@ impl Service {
 				.pusher
 				.send_push_notice(&user_id, unread, &pusher, rules_for_user, &pdu)
 				.await
-				.map_err(|e| (Destination::Push(user_id.clone(), pushkey.clone()), e));
+				.map_err(|e| (Destination::Push(user_id.clone(), pushkey.clone()), Box::new(e)));
 		}
 
 		Ok(Destination::Push(user_id, pushkey))
@@ -1060,7 +1060,7 @@ impl Service {
 		match result {
 			| Err(error) => {
 				self.stats.outgoing_errors.fetch_add(1, Ordering::Relaxed);
-				Err((Destination::Federation(server), error))
+				Err((Destination::Federation(server), Box::new(error)))
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {

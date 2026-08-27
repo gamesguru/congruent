@@ -14,6 +14,7 @@ pub enum TesterCommand {
 #[rustfmt::skip]
 #[admin_command]
 async fn panic(&self) -> Result {
+	std::future::ready(()).await;
 
 	panic!("panicked")
 }
@@ -21,6 +22,7 @@ async fn panic(&self) -> Result {
 #[rustfmt::skip]
 #[admin_command]
 async fn failure(&self) -> Result {
+	std::future::ready(()).await;
 
 	Err!("failed")
 }
