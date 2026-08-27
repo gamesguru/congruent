@@ -37,6 +37,8 @@ pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> Proces
 	Box::pin(handle_command(services, command))
 }
 
+type ParsedCommand<'a> = Result<(AdminCommand, Vec<String>, Vec<&'a str>), Box<CommandOutput>>;
+
 #[tracing::instrument(skip_all, name = "admin", level = "info")]
 async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
 	AssertUnwindSafe(Box::pin(process_command(services, &command)))
@@ -82,18 +84,20 @@ async fn process_command(services: Arc<Services>, input: &CommandInput) -> Proce
 			write!(&mut logs, "Command failed with error:\n```\n{error:#?}\n```")
 				.expect("output buffer");
 
-			Err(reply(RoomMessageEventContent::notice_markdown(logs), context.reply_id))
+			Err(Box::new(reply(
+				RoomMessageEventContent::notice_markdown(logs),
+				context.reply_id,
+			)))
 		},
 	}
 }
 
-#[allow(clippy::result_large_err)]
 fn handle_panic(error: &Error, command: &CommandInput) -> ProcessorResult {
 	let link = "Please submit a [bug report](https://forgejo.ellis.link/continuwuation/continuwuity/issues/new). 🥺";
 	let msg = format!("Panic occurred while processing command:\n```\n{error:#?}\n```\n{link}");
 	let content = RoomMessageEventContent::notice_markdown(msg);
 	error!("Panic while processing command: {error:?}");
-	Err(reply(content, command.reply_id.as_deref()))
+	Err(Box::new(reply(content, command.reply_id.as_deref())))
 }
 
 /// Parse and process a message from the admin room
@@ -161,11 +165,7 @@ fn capture_create(context: &Context<'_>) -> (Arc<Capture>, Arc<SyncMutex<String>
 }
 
 /// Parse chat messages from the admin room into an AdminCommand object
-#[allow(clippy::result_large_err)]
-fn parse<'a>(
-	services: &Arc<Services>,
-	input: &'a CommandInput,
-) -> Result<(AdminCommand, Vec<String>, Vec<&'a str>), CommandOutput> {
+fn parse<'a>(services: &Arc<Services>, input: &'a CommandInput) -> ParsedCommand<'a> {
 	let lines = input.command.lines().filter(|line| !line.trim().is_empty());
 	let command_line = lines.clone().next().expect("command missing first line");
 	let body = lines.skip(1).collect();
@@ -175,7 +175,10 @@ fn parse<'a>(
 			let message = error
 				.to_string()
 				.replace("server.name", services.globals.server_name().as_str());
-			Err(reply(RoomMessageEventContent::notice_plain(message), input.reply_id.as_deref()))
+			Err(Box::new(reply(
+				RoomMessageEventContent::notice_plain(message),
+				input.reply_id.as_deref(),
+			)))
 		},
 	}
 }

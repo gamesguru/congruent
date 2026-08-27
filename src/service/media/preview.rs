@@ -50,7 +50,8 @@ pub struct UrlPreviewData {
 #[implement(Service)]
 pub async fn remove_url_preview(&self, url: &str) -> Result<()> {
 	// TODO: also remove the downloaded image
-	self.db.remove_url_preview(url)
+	let result = self.db.remove_url_preview(url);
+	std::future::ready(result).await
 }
 
 #[implement(Service)]
@@ -68,7 +69,8 @@ pub async fn set_url_preview(&self, url: &str, data: &UrlPreviewData) -> Result<
 		image_dimensions = ?data.image_width.zip(data.image_height),
 		"URL preview successfully generated",
 	);
-	self.db.set_url_preview(url, data, now)
+	let result = self.db.set_url_preview(url, data, now);
+	std::future::ready(result).await
 }
 
 #[implement(Service)]
@@ -338,6 +340,7 @@ pub async fn download_image(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -348,6 +351,7 @@ pub async fn download_video(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -358,12 +362,14 @@ pub async fn download_audio(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
 #[cfg(not(feature = "url_preview"))]
 #[implement(Service)]
 pub async fn download_media(&self, _url: &str) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -435,6 +441,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 #[cfg(not(feature = "url_preview"))]
 #[implement(Service)]
 async fn download_html(&self, _url: &str) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 

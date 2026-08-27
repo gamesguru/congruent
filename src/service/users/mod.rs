@@ -1128,6 +1128,7 @@ impl Service {
 		let key = (user_id, device_id);
 		self.db.userdeviceid_metadata.put(key, Json(device));
 
+		std::future::ready(()).await;
 		Ok(())
 	}
 
@@ -1354,6 +1355,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn search_ldap(&self, _user_id: &UserId) -> Result<Vec<(String, Option<bool>)>> {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 
@@ -1466,6 +1468,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn auth_ldap(&self, _user_dn: &str, _password: &str) -> Result {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 

@@ -254,6 +254,7 @@ async fn get_extremity_lthash<Pdu>(
 where
 	Pdu: Event + Send + Sync,
 {
+	std::future::ready(()).await;
 	// TODO(MSC00DC/HAMT): re-implement LtHash retrieval from HAMT store.
 	Err(err!(Request(NotImplemented(
 		"LtHash retrieval from HAMT store is not yet implemented"

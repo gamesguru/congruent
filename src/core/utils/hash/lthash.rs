@@ -82,7 +82,9 @@ mod tests {
 	const EXPECTED_DIGEST: &str =
 		"5ef0ce69ffde6f004921d360a19bcde51a94c359645de5fac4d66690fa51eabd";
 
-	fn golden_lthash() -> LtHash { LtHash(core::array::from_fn(|i| i as u16)) }
+	fn golden_lthash() -> LtHash {
+		LtHash(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
+	}
 
 	#[test]
 	fn lthash_round_trip_and_serialize_golden_vector() {

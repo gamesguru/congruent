@@ -100,7 +100,7 @@ pub type ProcessorFuture = Pin<Box<dyn Future<Output = ProcessorResult> + Send>>
 /// events which have digested any prior errors. The wrapping preserves whether
 /// the command failed without interpreting the text. Ok(None) outputs are
 /// dropped to produce no response.
-pub type ProcessorResult = Result<Option<CommandOutput>, CommandOutput>;
+pub type ProcessorResult = Result<Option<CommandOutput>, Box<CommandOutput>>;
 
 /// Alias for the output structure.
 pub type CommandOutput = RoomMessageEventContent;
@@ -360,8 +360,12 @@ impl Service {
 	async fn handle_command(&self, command: CommandInput) {
 		match self.process_command(command).await {
 			| Ok(None) => debug!("Command successful with no response"),
-			| Ok(Some(output)) | Err(output) => self
+			| Ok(Some(output)) => self
 				.handle_response(output)
+				.await
+				.unwrap_or_else(default_log),
+			| Err(output) => self
+				.handle_response(*output)
 				.await
 				.unwrap_or_else(default_log),
 		}
@@ -370,10 +374,10 @@ impl Service {
 	async fn process_command(&self, command: CommandInput) -> ProcessorResult {
 		let handle_guard = self.handle.read().await;
 		let Some(handle) = handle_guard.as_ref() else {
-			return Err(CommandOutput::text_plain(
+			return Err(Box::new(CommandOutput::text_plain(
 				"Admin command handler is not yet loaded. The server may still be booting or \
 				 the admin module failed to load.",
-			));
+			)));
 		};
 
 		let services = self

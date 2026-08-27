@@ -15,6 +15,8 @@ use ruma::{
 
 use crate::Services;
 
+static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 struct TempDbGuard {
 	path: PathBuf,
 }
@@ -29,7 +31,6 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	// Cargo.toml), so this is unconditional and independent of which provider
 	// the library's optional `ring`/`aws_lc_rs` features select for consumers.
 	let _ = rustls::crypto::ring::default_provider().install_default();
-	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_state_test_db_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
@@ -71,8 +72,11 @@ fn create_dummy_pdu(
 	);
 	json.insert("type".into(), ruma::CanonicalJsonValue::String(event_type.to_owned()));
 	json.insert("state_key".into(), ruma::CanonicalJsonValue::String(state_key.to_owned()));
-	json.insert("content".into(), ruma::CanonicalJsonValue::Object(Default::default()));
-	json.insert("origin_server_ts".into(), ruma::CanonicalJsonValue::Integer(123456789.into()));
+	json.insert(
+		"content".into(),
+		ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
+	);
+	json.insert("origin_server_ts".into(), ruma::CanonicalJsonValue::Integer(123_456_789.into()));
 	json.insert("depth".into(), ruma::CanonicalJsonValue::Integer(1.into()));
 	json.insert("prev_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
 	json.insert("auth_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));

@@ -4,15 +4,27 @@ use conduwuit_service::rooms::state_hamt::room_structural_key;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ruma::owned_room_id;
 
+type Node = rezzy::hamt::HamtNode<u64, u64>;
+type NodeMap = HashMap<rezzy::hamt::StructuralHash, Arc<Node>>;
+
+fn collect_nodes(node: &Arc<Node>, map: &mut NodeMap) {
+	map.insert(node.structural_hash, Arc::clone(node));
+	for child in &node.children {
+		if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+			collect_nodes(child_node, map);
+		}
+	}
+}
+
 fn bench_hamt_construction(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hamt_construction");
 
-	let sizes = [10, 100, 1_000, 10_000, 50_000];
+	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 
 	for &size in &sizes {
-		group.throughput(Throughput::Elements(size as u64));
+		group.throughput(Throughput::Elements(size));
 
 		let structural_key = room_structural_key(&server_secret, &room_id);
 		let lattice = rezzy::state::LtHash::default();
@@ -26,7 +38,7 @@ fn bench_hamt_construction(c: &mut Criterion) {
 				let _ = black_box(rezzy::hamt::build_hamt_root_handle(
 					&structural_key,
 					&lattice,
-					(0..size as u64).map(|i| (i, i * 1000 + 7)),
+					(0..size).map(|i| (i, i.saturating_mul(1_000).saturating_add(7))),
 				));
 			});
 		});
@@ -38,38 +50,25 @@ fn bench_hamt_construction(c: &mut Criterion) {
 fn bench_hamt_point_lookups(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hamt_point_lookups");
 
-	let sizes = [10, 100, 1_000, 10_000, 50_000];
+	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	for &size in &sizes {
-		let entries: Vec<(u64, u64)> = (0..size as u64).map(|i| (i, i * 1000 + 7)).collect();
+		let entries: Vec<(u64, u64)> = (0..size)
+			.map(|i| (i, i.saturating_mul(1_000).saturating_add(7)))
+			.collect();
 		let lattice = rezzy::state::LtHash::default();
 
 		let (_root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.expect("failed to build benchmark HAMT tree");
 
-		let mut node_map: HashMap<
-			rezzy::hamt::StructuralHash,
-			Arc<rezzy::hamt::HamtNode<u64, u64>>,
-		> = HashMap::new();
+		let mut node_map = NodeMap::new();
+		collect_nodes(&root_node, &mut node_map);
 
-		fn collect_nodes(
-			node: Arc<rezzy::hamt::HamtNode<u64, u64>>,
-			map: &mut HashMap<rezzy::hamt::StructuralHash, Arc<rezzy::hamt::HamtNode<u64, u64>>>,
-		) {
-			map.insert(node.structural_hash, node.clone());
-			for child in &node.children {
-				if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-					collect_nodes(child_node.clone(), map);
-				}
-			}
-		}
-		collect_nodes(root_node.clone(), &mut node_map);
-
-		let target_keys = [0_u64, (size / 2) as u64, (size - 1) as u64];
+		let target_keys = [0_u64, size / 2, size.saturating_sub(1)];
 
 		group.bench_with_input(BenchmarkId::new("point_lookup_search", size), &size, |b, _| {
 			b.iter(|| {
@@ -97,14 +96,15 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 fn bench_hamt_delta_isolation(c: &mut Criterion) {
 	let mut group = c.benchmark_group("hamt_delta_isolation");
 
-	let base_size = 50_000;
+	let base_size: u64 = 50_000;
 	let delta_sizes = [1, 10, 100, 1_000];
 	let server_secret = [7_u8; 32];
 	let room_id = owned_room_id!("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
-	let base_entries: Vec<(u64, u64)> =
-		(0..base_size as u64).map(|i| (i, i * 1000 + 7)).collect();
+	let base_entries: Vec<(u64, u64)> = (0..base_size)
+		.map(|i| (i, i.saturating_mul(1_000).saturating_add(7)))
+		.collect();
 	let base_lattice = rezzy::state::LtHash::default();
 
 	let (_base_root_handle, base_root_node) =
@@ -113,32 +113,17 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 
 	for &delta_count in &delta_sizes {
 		let mut new_entries = base_entries.clone();
-		for i in 0..delta_count {
-			new_entries[i] = (i as u64, 999_999);
+		for (i, entry) in new_entries.iter_mut().enumerate().take(delta_count) {
+			*entry = (u64::try_from(i).expect("benchmark index fits in u64"), 999_999);
 		}
 
 		let (_new_root_handle, new_root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &base_lattice, new_entries)
 				.expect("failed to build new HAMT tree");
 
-		let mut combined_nodes: HashMap<
-			rezzy::hamt::StructuralHash,
-			Arc<rezzy::hamt::HamtNode<u64, u64>>,
-		> = HashMap::new();
-
-		fn collect_nodes(
-			node: Arc<rezzy::hamt::HamtNode<u64, u64>>,
-			map: &mut HashMap<rezzy::hamt::StructuralHash, Arc<rezzy::hamt::HamtNode<u64, u64>>>,
-		) {
-			map.insert(node.structural_hash, node.clone());
-			for child in &node.children {
-				if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-					collect_nodes(child_node.clone(), map);
-				}
-			}
-		}
-		collect_nodes(base_root_node.clone(), &mut combined_nodes);
-		collect_nodes(new_root_node.clone(), &mut combined_nodes);
+		let mut combined_nodes = NodeMap::new();
+		collect_nodes(&base_root_node, &mut combined_nodes);
+		collect_nodes(&new_root_node, &mut combined_nodes);
 
 		group.bench_with_input(
 			BenchmarkId::new("isolate_delta", delta_count),

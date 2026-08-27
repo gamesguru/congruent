@@ -122,6 +122,7 @@ pub async fn state_contains_shortstatekey_hamt(
 	root_handle: &rezzy::hamt::RootHandle,
 	shortstatekey: ShortStateKey,
 ) -> Result<bool> {
+	std::future::ready(()).await;
 	let structural_key = crate::rooms::state_hamt::room_structural_key(
 		&self.services.globals.server_secret,
 		room_id,
