@@ -417,8 +417,8 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00A"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00B"}
-{"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00C"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00D"}
+{"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00C"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00D"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00E"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00F"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00H"}

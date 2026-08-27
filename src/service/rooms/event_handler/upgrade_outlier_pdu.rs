@@ -1080,7 +1080,7 @@ where
 		info!("State resolution completed for incoming PDU");
 	}
 
-	if state_at_event.is_none() && !skip_soft_fail {
+	if state_at_event.is_none() && !skip_soft_fail && !room_version.state_dags {
 		// Local state is unavailable — prev_events are not yet in DB or their
 		// state hashes have not been computed.
 		//
