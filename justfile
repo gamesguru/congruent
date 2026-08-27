@@ -571,13 +571,11 @@ e2ee args=".*":
                 -run "${SHARD_PATTERNS[$s]}" \
                 ./tests |
                 tee -a "$shard_log" |
-                jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' |
-                while IFS=$'\t' read -r action test_name; do
+                jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | (.Elapsed // 0) as $elapsed | [.Action, .Test, (if $elapsed == 0 then "0s" else (((($elapsed * 100) | round) / 100) | tostring) + "s" end)] | @tsv' |
+                while IFS=$'\t' read -r action test_name elapsed; do
                     [ -n "$action" ] || continue
                     jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$shard_results"
-                    if [ "$action" != "skip" ]; then
-                        printf 'shard %d\t%s\t%s\n' "$((s + 1))" "$action" "$test_name"
-                    fi
+                    printf 'shard %d\t%s\t%s %s\n' "$((s + 1))" "${action^^}" "$test_name" "$elapsed"
                 done
         ) &
         shard_pids+=($!)

@@ -198,16 +198,13 @@ fi
 record_result() {
 	local action="$1"
 	local test_name="$2"
+	local elapsed="$3"
 
 	# Stream straight to the staged results file as results arrive; no
 	# in-memory aggregation and no full-file rewrite per event.
 	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
 
-	# Keep the live human-readable status stream focused on pass/fail noise.
-	# Skips still land in the JSONL results file and the final summary.
-	if [ "$action" != "skip" ]; then
-		printf '%s\t%s\n' "$action" "$test_name"
-	fi
+	printf '%s\t%s %s\n' "${action^^}" "$test_name" "$elapsed"
 }
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
@@ -269,14 +266,14 @@ run_one_pattern() {
 			COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
 			go test -json "${flags[@]}" |
 			tee -a "$LOG_FILE" |
-			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | [.Action, .Test] | @tsv' \
+			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | (.Elapsed // 0) as $elapsed | [.Action, .Test, (if $elapsed == 0 then "0s" else (((($elapsed * 100) | round) / 100) | tostring) + "s" end)] | @tsv' \
 				>"$EVENTS_FIFO"
 	) &
 	local producer_pid=$!
 
-	while IFS=$'\t' read -r action test_name; do
+	while IFS=$'\t' read -r action test_name elapsed; do
 		[ -n "$action" ] || continue
-		record_result "$action" "$test_name"
+		record_result "$action" "$test_name" "$elapsed"
 	done <"$EVENTS_FIFO"
 
 	wait "$producer_pid"
