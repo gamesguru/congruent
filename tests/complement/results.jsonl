@@ -380,7 +380,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01B"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01C"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/BanEvasion/SEND01D"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/FederationSimple"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/FederationSimple"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs/GME02A"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/GetMissingEventsBadInputs/GME02B"}
@@ -417,7 +417,7 @@
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00A"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00B"}
-{"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00C"}
+{"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00C"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00D"}
 {"Action":"fail","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00E"}
 {"Action":"pass","Test":"TestMSC4242StateDAGs/SendingFaultyEventDoesntBrickRoom/SEND00F"}
