@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use conduwuit::{Err, Result, SyncMutex, err, utils::math::usize_from_f64};
+use conduwuit::{Result, SyncMutex, err, utils::math::usize_from_f64};
 use database::Map;
 use lru_cache::LruCache;
 use roaring::RoaringTreemap;
@@ -25,24 +25,22 @@ impl Data {
 
 	pub(super) async fn get_cached_eventid_authchain(
 		&self,
-		key: &[u64],
+		shortroomid: u64,
+		shorteventid: u64,
 	) -> Result<Arc<RoaringTreemap>> {
-		debug_assert!(!key.is_empty(), "auth_chain key must not be empty");
+		let key = [shortroomid, shorteventid];
 
 		// Check RAM cache
-		if let Some(result) = self.auth_chain_cache.lock().get_mut(key) {
+		if let Some(result) = self.auth_chain_cache.lock().get_mut(key.as_slice()) {
 			return Ok(Arc::clone(result));
 		}
 
-		// We only save auth chains for single events in the db
-		if key.len() != 1 {
-			return Err!(Request(NotFound("auth_chain not cached")));
-		}
-
-		// Check database (stored as serialized `RoaringTreemap`)
+		// Key by room first so a room's closures occupy a contiguous key range.
+		// Stored as a serialized `RoaringTreemap`.
+		let key_bytes = pack_key(shortroomid, shorteventid);
 		let raw = self
 			.shorteventid_authchain
-			.qry(&key[0])
+			.qry(&key_bytes)
 			.await
 			.map_err(|_| err!(Request(NotFound("auth_chain not found"))))?;
 
@@ -60,31 +58,55 @@ impl Data {
 		// Cache in RAM
 		self.auth_chain_cache
 			.lock()
-			.insert(vec![key[0]], Arc::clone(&chain));
+			.insert(key.to_vec(), Arc::clone(&chain));
 
 		Ok(chain)
 	}
 
-	pub(super) fn cache_auth_chain(&self, key: Vec<u64>, auth_chain: Arc<RoaringTreemap>) {
-		debug_assert!(!key.is_empty(), "auth_chain key must not be empty");
+	pub(super) fn cache_auth_chain(
+		&self,
+		shortroomid: u64,
+		shorteventid: u64,
+		auth_chain: Arc<RoaringTreemap>,
+	) {
+		let key = [shortroomid, shorteventid];
+		let key_bytes = pack_key(shortroomid, shorteventid);
+		let mut val = Vec::new();
+		auth_chain
+			.serialize_into(&mut val)
+			.expect("RoaringTreemap serialization cannot fail into Vec");
 
-		// Only persist single events in db
-		if key.len() == 1 {
-			let key_bytes = key[0].to_be_bytes();
-			let mut val = Vec::new();
-			auth_chain
-				.serialize_into(&mut val)
-				.expect("RoaringTreemap serialization cannot fail into Vec");
-
-			self.shorteventid_authchain.insert(&key_bytes, &val);
-		}
+		self.shorteventid_authchain.insert(&key_bytes, &val);
 
 		// Cache in RAM
-		self.auth_chain_cache.lock().insert(key, auth_chain);
+		self.auth_chain_cache
+			.lock()
+			.insert(key.to_vec(), auth_chain);
 	}
 
 	pub(super) async fn clear_db_cache(&self) {
 		self.auth_chain_cache.lock().clear();
 		self.shorteventid_authchain.clear().await;
+	}
+}
+
+/// Packs the storage key as `[shortroomid: 8B][shorteventid: 8B]`.
+fn pack_key(shortroomid: u64, shorteventid: u64) -> [u8; 16] {
+	let mut key = [0_u8; 16];
+	key[..8].copy_from_slice(&shortroomid.to_be_bytes());
+	key[8..].copy_from_slice(&shorteventid.to_be_bytes());
+	key
+}
+
+#[cfg(test)]
+mod tests {
+	use super::pack_key;
+
+	#[test]
+	fn auth_chain_keys_are_room_prefixed_big_endian() {
+		assert_eq!(pack_key(0x0102_0304_0506_0708, 0x1112_1314_1516_1718), [
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
+			0x17, 0x18,
+		]);
 	}
 }

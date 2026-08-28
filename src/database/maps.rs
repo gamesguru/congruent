@@ -418,7 +418,7 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "shorteventid_authchain",
 		cache_disp: CacheDisp::Unique,
-		key_size_hint: Some(8),
+		key_size_hint: Some(16),
 		..descriptor::SEQUENTIAL
 	},
 	Descriptor {

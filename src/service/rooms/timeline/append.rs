@@ -366,7 +366,7 @@ where
 
 		self.services
 			.auth_chain
-			.cache_auth_chain_bitmap(vec![short_event_id], &bm);
+			.cache_auth_chain_bitmap(shortroomid, short_event_id, &bm);
 	}
 
 	let receipt_content = BTreeMap::from_iter([(

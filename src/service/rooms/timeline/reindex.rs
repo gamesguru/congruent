@@ -270,7 +270,7 @@ impl Service {
 				|| self
 					.services
 					.auth_chain
-					.get_cached_eventid_authchain(&[short_eid])
+					.get_cached_eventid_authchain(shortroomid, short_eid)
 					.await
 					.is_err()
 			{
@@ -284,15 +284,17 @@ impl Service {
 				}
 
 				let chain_arc = Arc::new(full_chain);
-				self.services
-					.auth_chain
-					.cache_auth_chain_bitmap(vec![short_eid], &chain_arc);
+				self.services.auth_chain.cache_auth_chain_bitmap(
+					shortroomid,
+					short_eid,
+					&chain_arc,
+				);
 				auth_chain_cache.insert(short_eid, chain_arc);
 				stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
 			} else if let Ok(existing) = self
 				.services
 				.auth_chain
-				.get_cached_eventid_authchain(&[short_eid])
+				.get_cached_eventid_authchain(shortroomid, short_eid)
 				.await
 			{
 				// Populate local cache for descendants
