@@ -64,19 +64,29 @@ where
 		event_id = %incoming_pdu.event_id,
 		"Resolving state at event"
 	);
-	let mut state_at_incoming_event = if incoming_pdu.prev_events().count() == 1 {
-		self.state_at_incoming_degree_one(&incoming_pdu, room_id)
-			.await?
-	} else {
-		self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
-			.await?
-	};
+	// Lift the enclosing flush boundary around state resolution and fetch_state
+	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
+	// unrelated WAL flushes across the whole server.
+	let state_at_incoming_event = self
+		.services
+		.timeline
+		.without_cork(|| async {
+			let state = if incoming_pdu.prev_events().count() == 1 {
+				self.state_at_incoming_degree_one(&incoming_pdu, room_id)
+					.await?
+			} else {
+				self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
+					.await?
+			};
 
-	if state_at_incoming_event.is_none() {
-		state_at_incoming_event = self
-			.fetch_state(origin, create_event, room_id, incoming_pdu.event_id())
-			.await?;
-	}
+			if state.is_none() {
+				self.fetch_state(origin, create_event, room_id, incoming_pdu.event_id())
+					.await
+			} else {
+				Ok(state)
+			}
+		})
+		.await?;
 
 	let state_at_incoming_event =
 		state_at_incoming_event.expect("we always set this to some above");
@@ -273,13 +283,14 @@ where
 		// 14-pre. If the event is not a state event, ask the policy server about it
 		if incoming_pdu.state_key.is_none() {
 			debug!(event_id = %incoming_pdu.event_id, "Checking policy server for event");
+			// Lift the cork around the policy server round-trip.
+			let mut pdu_object = incoming_pdu.to_canonical_object();
 			match self
-				.ask_policy_server(
-					&incoming_pdu,
-					&mut incoming_pdu.to_canonical_object(),
-					room_id,
-					true,
-				)
+				.services
+				.timeline
+				.without_cork(|| {
+					self.ask_policy_server(&incoming_pdu, &mut pdu_object, room_id, true)
+				})
 				.await
 			{
 				| Ok(false) => {

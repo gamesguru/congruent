@@ -36,6 +36,7 @@ pub struct Engine {
 	pub(crate) ctx: Arc<Context>,
 	pub(crate) checksums: bool,
 	corks: AtomicU32,
+	lifts: AtomicU32,
 }
 
 pub(crate) type Db = DBWithThreadMode<MultiThreaded>;
@@ -100,7 +101,22 @@ impl Engine {
 	pub(crate) fn uncork(&self) { self.corks.fetch_sub(1, Ordering::Relaxed); }
 
 	#[inline]
-	pub fn corked(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
+	pub(crate) fn lift(&self) { self.lifts.fetch_add(1, Ordering::Relaxed); }
+
+	#[inline]
+	pub(crate) fn unlift(&self) { self.lifts.fetch_sub(1, Ordering::Relaxed); }
+
+	/// Whether any corks are currently held (regardless of lifts).
+	#[inline]
+	pub(crate) fn has_corks(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
+
+	/// Whether the effective cork count exceeds active lifts (heuristic,
+	/// best-effort). This is used by `corked()` callers that want to know
+	/// whether writes should be deferred.
+	#[inline]
+	pub fn corked(&self) -> bool {
+		self.corks.load(Ordering::Relaxed) > self.lifts.load(Ordering::Relaxed)
+	}
 
 	/// Query for database property by null-terminated name which is expected to
 	/// have a result with an integer representation. This is intended for

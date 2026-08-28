@@ -604,7 +604,8 @@ RocksDB's default `ReadOptions` read from the latest memtable + SST state,
 but there's a window where the memtable write from thread A may not be fully
 visible to thread B's read iterator.
 
-This manifests as the **TestSyncTimelineGap flakiness** in Complement tests:
+This previously manifested as the **TestSyncTimelineGap flakiness** in Complement
+tests (now fixed via wider cork scope):
 the test waits for the "End" event to appear in sync, which means the
 transaction handler has completed, but some prev events may not yet be visible
 in the `/sync` read path.
@@ -653,6 +654,13 @@ be visible in the same read snapshot.
 writes for a room are coalesced into one write batch and flushed before the
 transaction signals completion. This would not provide true snapshot isolation
 but would reduce the race window significantly.
+
+> **Implemented.** The wider-cork approach was adopted via
+> `timeline::with_cork_and_flush()` wrapping the write phase of
+> `handle_incoming_pdu`. Federation I/O within the corked section (e.g.
+> `/state_ids`, policy server checks) is lifted via `without_cork()` to
+> avoid suppressing unrelated WAL flushes. See the "TestSyncTimelineGap
+> Flakiness" section under Known Issues for details.
 
 ---
 
@@ -705,20 +713,27 @@ sanitized before being included in the response.
 
 ## Known Issues
 
-### TestSyncTimelineGap Flakiness
+### TestSyncTimelineGap Flakiness (Fixed)
 
-The Complement `TestSyncTimelineGap` test is flaky due to the write-visibility
+The Complement `TestSyncTimelineGap` test was flaky due to the write-visibility
 race described above. The test creates 50 events without sending them, then sends
 one "End" event via federation. The server resolves the gap via `/get_missing_events`
 (which returns only the last 10 events), then the test checks sync for a `limited`
 flag.
 
-The flakiness occurs because:
+The flakiness occurred because:
 
 1. The `/get_missing_events` handler returns only 10 events
 2. Additional events may or may not be resolved via `/event/{eventId}` calls
 3. With a sync filter `limit: 20`, total events hover right at the boundary
-4. The per-PDU cork scoping means writes may not all be visible at sync time
+4. The per-PDU cork scoping meant writes were not all visible at sync time
+
+**Fix:** The entire write phase of `handle_incoming_pdu` (prev-event repairs +
+incoming event upgrade) is now wrapped in `timeline::with_cork_and_flush()`.
+This coalesces all timeline writes into a single RocksDB WAL flush. Federation
+I/O within the corked section (`/state_ids`, policy server checks) is lifted
+via `timeline::without_cork()` so unrelated WAL flushes are not suppressed.
+See `handle_incoming_pdu.rs` and `upgrade_outlier_pdu.rs` for the implementation.
 
 ### PduCount Ordering
 
