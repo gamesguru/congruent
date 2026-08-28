@@ -153,8 +153,8 @@ pub(crate) async fn get_message_events_route(
 			}
 			pdu
 		})
-		.collect()
-		.await;
+			.collect()
+			.await;
 
 	// Capture the DB sequence boundary token BEFORE topological sort changes
 	// the order. This must be the outermost PduCount from the original query.
@@ -217,9 +217,10 @@ pub(crate) async fn get_message_events_route(
 		.map(IterStream::stream)
 		.into_stream()
 		.flatten()
-		.broad_filter_map(|user_id| async move {
+		.broad_filter_map(|user_id: ruma::OwnedUserId| async move {
 			get_member_event(&services, room_id, &user_id).await
 		})
+		.boxed()
 		.collect()
 		.await;
 
@@ -285,18 +286,20 @@ where
 		.await
 }
 
-async fn get_member_event(
-	services: &Services,
-	room_id: &RoomId,
-	user_id: &UserId,
-) -> Option<Raw<AnyStateEvent>> {
-	services
-		.rooms
-		.state_accessor
-		.room_state_get(room_id, &StateEventType::RoomMember, user_id.as_str())
-		.map_ok(Event::into_format)
-		.await
-		.ok()
+fn get_member_event<'a>(
+	services: &'a Services,
+	room_id: &'a RoomId,
+	user_id: &'a UserId,
+) -> Pin<Box<dyn Future<Output = Option<Raw<AnyStateEvent>>> + Send + 'a>> {
+	Box::pin(async move {
+		services
+			.rooms
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomMember, user_id.as_str())
+			.map_ok(Event::into_format)
+			.await
+			.ok()
+	})
 }
 
 #[inline]

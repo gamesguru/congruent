@@ -123,8 +123,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_public_rooms_filtered_route)
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
-		.ruma_route(&client::get_protocols_route);
-	let mut router = router
+		.ruma_route(&client::get_protocols_route)
 		.route(
 			"/_matrix/client/unstable/thirdparty/protocols",
 			get(client::get_protocols_route_unstable),
@@ -177,10 +176,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.route(
 			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
 			post(client::sync_events_unstable_msc3575_route),
-		);
-	let mut router = router
-		.ruma_route(&client::get_context_route);
-	let mut router = router
+		)
+		.ruma_route(&client::get_context_route)
 		.ruma_route(&client::get_message_events_route)
 		.ruma_route(&client::search_events_route)
 		.ruma_route(&client::turn_server_route)
@@ -215,8 +212,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::put_dehydrated_device_route)
 		.ruma_route(&client::delete_dehydrated_device_route)
 		.ruma_route(&client::get_dehydrated_device_route)
-		.ruma_route(&client::get_dehydrated_events_route);
-	let mut router = router
+		.ruma_route(&client::get_dehydrated_events_route)
 		.route(
 			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events",
 			get(client::get_all_delayed_events_route),

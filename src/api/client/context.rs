@@ -1,5 +1,4 @@
 use axum::extract::State;
-use std::{future::Future, pin::Pin};
 use conduwuit::{
 	Err, Event, Result, at, debug_warn, err, ref_at,
 	utils::{
@@ -32,15 +31,8 @@ const LIMIT_DEFAULT: usize = 10;
 ///
 /// - Only works if the user is joined (TODO: always allow, but only show events
 ///   if the user was joined, depending on history_visibility)
-pub(crate) fn get_context_route(
+pub(crate) async fn get_context_route(
 	State(services): State<crate::State>,
-	body: Ruma<get_context::v3::Request>,
-) -> Pin<Box<dyn Future<Output = Result<get_context::v3::Response>> + Send>> {
-	Box::pin(get_context_route_inner(services, body))
-}
-
-async fn get_context_route_inner(
-	services: crate::State,
 	body: Ruma<get_context::v3::Request>,
 ) -> Result<get_context::v3::Response> {
 	let sender = body.sender();
