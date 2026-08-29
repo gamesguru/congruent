@@ -66,8 +66,8 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show && rustup component add clippy rustfmt
 
-      - name: Install nightly toolchain (for fmt + llvm-cov)
-        run: rustup toolchain install nightly --component rustfmt --component clippy --component llvm-tools-preview
+      - name: Install pinned nightly toolchain (for fmt + llvm-cov)
+        run: rustup toolchain install nightly-2026-08-27 --component rustfmt --component clippy --component llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -94,9 +94,9 @@ jobs:
       - name: Code Coverage
         continue-on-error: true
         run: |
-          cargo +nightly llvm-cov --lib --all-features \
+          cargo +nightly-2026-08-27 llvm-cov --lib --all-features \
             --codecov --output-path coverage.json
-          cargo +nightly llvm-cov --lib --all-features \
+          cargo +nightly-2026-08-27 llvm-cov --lib --all-features \
             --html --output-dir .coverage
 
       - name: Upload Test Results

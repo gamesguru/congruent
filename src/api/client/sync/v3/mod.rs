@@ -393,15 +393,10 @@ fn joined_room_has_delta(room: &serde_json::Value) -> bool {
 	}
 
 	// Summary (membership counts etc.).
-	if room
+	room
 		.get("summary")
 		.and_then(|s| s.as_object())
 		.is_some_and(|s| !s.is_empty())
-	{
-		return true;
-	}
-
-	false
 }
 
 /// A left room counts as a real sync delta if it carries timeline/state/

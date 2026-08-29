@@ -50,9 +50,9 @@ doctor: ##H Output version info for required tools
 	@echo "See rust-toolchain.toml for authoritative versions."
 	cargo --version
 	rustup --version
-	cargo +nightly fmt --version
+	cargo +nightly-2026-08-27 fmt --version
 	cargo fmt --version
-	cargo +nightly clippy --version
+	cargo +nightly-2026-08-27 clippy --version
 	cargo clippy --version
 	pre-commit --version
 	pkg-config --version
@@ -187,7 +187,7 @@ cov:    ##H Run tests with llvm-cov coverage (text summary)
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo +nightly llvm-cov --lib --all-features \
+		cargo +nightly-2026-08-27 llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			$(CARGO_SCOPE)
 
@@ -200,7 +200,7 @@ cov/html:       ##H Run tests with llvm-cov and open HTML report
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo +nightly llvm-cov --lib --all-features \
+		cargo +nightly-2026-08-27 llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			--html --open \
 			$(CARGO_SCOPE)
