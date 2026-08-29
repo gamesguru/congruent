@@ -393,8 +393,7 @@ fn joined_room_has_delta(room: &serde_json::Value) -> bool {
 	}
 
 	// Summary (membership counts etc.).
-	room
-		.get("summary")
+	room.get("summary")
 		.and_then(|s| s.as_object())
 		.is_some_and(|s| !s.is_empty())
 }

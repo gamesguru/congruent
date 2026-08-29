@@ -36,10 +36,7 @@ type ParsedCommand<'a> = (AdminCommand, Vec<String>, Vec<&'a str>);
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
-	// Keep the dyn-future coercion outside the async body. Nightly's MIR
-	// validator currently miscompiles the equivalent `async move` wrapper.
-	let future: ProcessorFuture = Box::pin(handle_command(services, command));
-	future
+	Box::pin(async move { handle_command(services, command).await })
 }
 
 #[tracing::instrument(skip_all, name = "admin", level = "info")]
