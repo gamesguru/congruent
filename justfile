@@ -490,12 +490,17 @@ e2ee args=".*":
     # For rust clients, the cgo LDFLAGS (see uniffi.toml) pull
     # libmatrix_sdk_ffi from `target/debug` of the rust-sdk checkout, so that
     # directory must be on LIBRARY_PATH (link) and LD_LIBRARY_PATH (runtime).
-    if [ -n "${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}" ]; then
-        RUST_LIBDIR="$(realpath "$COMPLEMENT_CRYPTO_RUST_SDK_DIR/target/debug")"
-        LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$RUST_LIBDIR"
-        LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$RUST_LIBDIR"
-        export LIBRARY_PATH LD_LIBRARY_PATH
-    fi
+    # Gated on the matrix (not just the env var being set) because CI sets
+    # COMPLEMENT_CRYPTO_RUST_SDK_DIR unconditionally but only populates
+    # target/debug when the resolved matrix actually references r/R.
+    case "$CRYPTO_MATRIX" in
+        *[rR]*)
+            RUST_LIBDIR="$(realpath "$COMPLEMENT_CRYPTO_RUST_SDK_DIR/target/debug")"
+            LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$RUST_LIBDIR"
+            LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$RUST_LIBDIR"
+            export LIBRARY_PATH LD_LIBRARY_PATH
+            ;;
+    esac
 
     # This suite is fundamentally serial: the tests live in a single package and
     # none of them call t.Parallel(), so go test's `-parallel`/`-p` flags have no
