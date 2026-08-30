@@ -110,8 +110,8 @@
 {"Action":"fail","Test":"TestSpoofedEventSenderHandling/js"}
 {"Action":"fail","Test":"TestSpoofedEventSenderHandling/js/SpoofedMXIDSenderGivesRedShield"}
 {"Action":"fail","Test":"TestSpoofedEventSenderHandling/js/SpoofedPlaintextSenderGivesUTD"}
-{"Action":"fail","Test":"TestSpoofedEventSenderHandling/rust"}
-{"Action":"fail","Test":"TestSpoofedEventSenderHandling/rust/SpoofedMXIDSenderGivesRedShield"}
+{"Action":"pass","Test":"TestSpoofedEventSenderHandling/rust"}
+{"Action":"pass","Test":"TestSpoofedEventSenderHandling/rust/SpoofedMXIDSenderGivesRedShield"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/rust"}
