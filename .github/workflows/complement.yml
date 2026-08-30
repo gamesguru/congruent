@@ -922,7 +922,8 @@ jobs:
           name: complement-crypto-results-${{ matrix.name }}
           path: |
             tests/crypto/results.jsonl
-            .tmp/complement-crypto/*.jsonl
+            tests/crypto/test_results.*.jsonl
+            tests/crypto/logs.*.jsonl
           retention-days: 90
 
       # Publish a per-variant complement-crypto badge

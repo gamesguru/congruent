@@ -418,19 +418,14 @@ e2ee args=".*":
     echo ""
 
     COMPLEMENT_ENABLE_DIRTY_RUNS="${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}"
-    # TestSpoofedEventSenderHandling is a MitM-rewrite scaffold, not part of what
-    # the reference homeserver (Synapse) runs, and the fresh-run evidence showed
-    # its residual failure is the harness's Response.make() fetch path rather than
-    # a server defect. Skip it by default; unset/override COMPLEMENT_CRYPTO_SKIP
-    # to re-enable it deliberately.
-    #
-    # TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1} fails
-    # deterministically on the reference homeserver (Synapse v1.117.0, 5/5) and
-    # flakes on conduwuit. The /sendToDevice room-key share to the new device is
-    # identical between pass and fail, so it is a client-side key-processing race,
-    # not a server defect. Skip it by default (unset/override
-    # COMPLEMENT_CRYPTO_SKIP to re-enable).
-    COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:-TestSpoofedEventSenderHandling,TestChangingDeviceAfterInviteReEncrypts}"
+    # Keep exclusions opt-in: every security and interoperability test runs by
+    # default. Users can still pass a Go regular expression when diagnosing an
+    # independently-known flaky upstream test.
+    COMPLEMENT_CRYPTO_SKIP="${COMPLEMENT_CRYPTO_SKIP:-}"
+    GO_TEST_SKIP_ARGS=()
+    if [ -n "$COMPLEMENT_CRYPTO_SKIP" ]; then
+        GO_TEST_SKIP_ARGS=(-skip "$COMPLEMENT_CRYPTO_SKIP")
+    fi
     # The client test matrix controls which SDKs are compiled in and used, and
     # therefore which Go build tags apply. Values are two-letter permutations of
     # `r`(ust)/`j`(s) on hs1 and `R`/`J` on hs2 (see complement-crypto
@@ -572,7 +567,7 @@ e2ee args=".*":
                 go test -tags "$CRYPTO_TAGS" -json \
                 -timeout "{{ env_var_or_default("COMPLEMENT_CRYPTO_TIMEOUT", "30m") }}" \
                 -count=1 \
-                -skip "$COMPLEMENT_CRYPTO_SKIP" \
+                "${GO_TEST_SKIP_ARGS[@]}" \
                 -run "${SHARD_PATTERNS[$s]}" \
                 ./tests |
                 tee -a "$shard_log" |

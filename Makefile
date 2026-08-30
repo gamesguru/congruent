@@ -50,9 +50,8 @@ doctor: ##H Output version info for required tools
 	@echo "See rust-toolchain.toml for authoritative versions."
 	cargo --version
 	rustup --version
-	cargo +nightly-2026-08-20 fmt --version
+	cargo +nightly fmt --version
 	cargo fmt --version
-	cargo +nightly-2026-08-20 clippy --version
 	cargo clippy --version
 	pre-commit --version
 	pkg-config --version
