@@ -49,8 +49,8 @@
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/js"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/rust"}
 {"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
-{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer"}
