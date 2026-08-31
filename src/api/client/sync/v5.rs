@@ -2140,23 +2140,38 @@ where
 
 async fn collect_to_device(
 	services: &Services,
-	(sender_user, sender_device, globalsince, _, body): SyncInfo<'_>,
+	(sender_user, sender_device, _, _, body): SyncInfo<'_>,
 	next_batch: u64,
 ) -> Option<sync_events::v5::response::ToDevice> {
 	if !body.extensions.to_device.enabled.unwrap_or(false) {
 		return None;
 	}
 
-	services
-		.users
-		.remove_to_device_events(sender_user, sender_device, globalsince)
-		.await;
+	// The to-device extension has its own `since` cursor (MSC3885), independent of
+	// the room-list `globalsince`. Using `globalsince` here is wrong: the room-list
+	// position can advance (from unrelated room/state activity) faster than this
+	// client has actually consumed a given to-device event, causing it to be
+	// deleted before it's ever returned. Only prune what the client has actually
+	// acknowledged via its own to-device `since`, and only once it has sent one.
+	let client_to_device_since = body
+		.extensions
+		.to_device
+		.since
+		.as_deref()
+		.and_then(|since| since.parse::<u64>().ok());
+
+	if let Some(since) = client_to_device_since {
+		services
+			.users
+			.remove_to_device_events(sender_user, sender_device, since)
+			.await;
+	}
 
 	Some(sync_events::v5::response::ToDevice {
 		next_batch: next_batch.to_string(),
 		events: services
 			.users
-			.get_to_device_events(sender_user, sender_device, None, Some(next_batch))
+			.get_to_device_events(sender_user, sender_device, client_to_device_since, Some(next_batch))
 			.map(at!(1))
 			.collect()
 			.await,

@@ -23,10 +23,10 @@
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestCanDecryptMessagesAfterInviteButBeforeJoin/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts"}
-{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts"}
+{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{js_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestChangingDeviceAfterInviteReEncrypts/{rust_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestChangingDeviceAfterInviteReEncrypts/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{js_hs1}|{js_hs1}"}
