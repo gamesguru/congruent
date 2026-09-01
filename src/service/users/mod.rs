@@ -1614,7 +1614,15 @@ impl Service {
 	{
 		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
 
-		let until = until.into().unwrap_or(u64::MAX);
+		// `until: None` means the caller has no acknowledged position for this device
+		// (e.g. an initial /sync with no `since`) - nothing has been consumed yet, so
+		// nothing should be pruned. Previously this defaulted to u64::MAX, which wiped
+		// out the device's *entire* to-device queue unconditionally - including events
+		// a different, still-catching-up connection for the same device (e.g. a
+		// concurrent sliding-sync session) had not yet received.
+		let Some(until) = until.into() else {
+			return;
+		};
 		let from = (user_id, device_id, 0);
 
 		self.db

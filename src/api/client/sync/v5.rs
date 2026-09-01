@@ -2171,7 +2171,12 @@ async fn collect_to_device(
 		next_batch: next_batch.to_string(),
 		events: services
 			.users
-			.get_to_device_events(sender_user, sender_device, client_to_device_since, Some(next_batch))
+			.get_to_device_events(
+				sender_user,
+				sender_device,
+				client_to_device_since,
+				Some(next_batch),
+			)
 			.map(at!(1))
 			.collect()
 			.await,
