@@ -17,7 +17,7 @@ use conduwuit_database::{Ignore, Interfix, Map};
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 
 /// A raw `RootHandle` value persisted in `roomid_roothandle` /
-/// `shorteventid_roothandle`: 16-byte structural hash followed by the 32-byte
+/// `shorteventid_roothandle`: 32-byte structural hash followed by the 32-byte
 /// state-group ID, with no per-field serde separators. The database serde
 /// format cannot represent `[u8; N]` arrays (nested-tuple separator assert and
 /// `deserialize_u8` is unimplemented), so these maps are stored as flat bytes.
@@ -40,16 +40,18 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 		codec_version: rezzy::hamt::HAMT_CODEC_VERSION_V1,
 		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION_V1,
 		routing_params: [0; 4],
-		structural_hash: bytes[0..16]
+		structural_hash: bytes[0..STRUCTURAL_HASH_LEN]
 			.try_into()
-			.expect("fixed 16-byte structural hash slice"),
-		state_group_id: bytes[16..48]
+			.expect("fixed 32-byte structural hash slice"),
+		state_group_id: bytes[STRUCTURAL_HASH_LEN..ROOT_HANDLE_LEN]
 			.try_into()
 			.expect("fixed 32-byte state-group ID slice"),
 	})
 }
 
-pub(crate) const ROOT_HANDLE_LEN: usize = 16 + 32;
+const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
+pub(crate) const ROOT_HANDLE_LEN: usize =
+	STRUCTURAL_HASH_LEN + size_of::<rezzy::hamt::StateGroupId>();
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{

@@ -82,11 +82,36 @@ impl Store {
 			return Err(err!(Database(error!("State HAMT node not found in database."))));
 		}
 
-		let persisted = PersistedInternalNode::<u64, u64>::decode_v1(&bytes)
+		let persisted = PersistedInternalNode::<u64, u64>::decode_v1_unverified(&bytes)
 			.map_err(|e| err!(Database(error!("{e}"))))?;
 
-		let node =
-			Arc::new(HamtNode::try_from(persisted).map_err(|e| err!(Database(error!("{e}"))))?);
+		if (persisted.datamap & persisted.nodemap) != 0 {
+			return Err(err!(Database(error!(
+				"PersistedInternalNode datamap and nodemap overlap"
+			))));
+		}
+		if persisted.leaves.len() != persisted.datamap.count_ones() as usize {
+			return Err(err!(Database(error!(
+				"PersistedInternalNode leaf count does not match datamap"
+			))));
+		}
+		if persisted.child_hashes.len() != persisted.nodemap.count_ones() as usize {
+			return Err(err!(Database(error!(
+				"PersistedInternalNode child count does not match nodemap"
+			))));
+		}
+
+		let node = Arc::new(HamtNode {
+			datamap: persisted.datamap,
+			nodemap: persisted.nodemap,
+			leaves: persisted.leaves,
+			children: persisted
+				.child_hashes
+				.into_iter()
+				.map(rezzy::hamt::NodeRef::Lazy)
+				.collect(),
+			structural_hash: *hash,
+		});
 
 		self.node_cache.insert(*hash, node.clone());
 
@@ -97,13 +122,13 @@ impl Store {
 	pub fn put_node(&self, node: Arc<HamtNode<u64, u64>>) {
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
+		let hash = node.structural_hash;
 
 		// Cache it immediately so concurrent reads can hit memory
-		self.node_cache.insert(node.structural_hash, node);
+		self.node_cache.insert(hash, node);
 
-		self.node_mtimes
-			.insert(&persisted.structural_hash, unix_millis().to_be_bytes());
-		self.db.insert(&persisted.structural_hash, &bytes);
+		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+		self.db.insert(&hash, &bytes);
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
@@ -114,16 +139,13 @@ impl Store {
 	pub fn put_node_batch(&self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'_>) {
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
+		let hash = node.structural_hash;
 
 		// Cache it immediately so concurrent reads can hit memory
-		self.node_cache.insert(node.structural_hash, node);
+		self.node_cache.insert(hash, node);
 
-		batch.insert(&self.db, persisted.structural_hash.as_ref(), bytes.as_slice());
-		batch.insert(
-			&self.node_mtimes,
-			persisted.structural_hash.as_ref(),
-			unix_millis().to_be_bytes(),
-		);
+		batch.insert(&self.db, hash.as_ref(), bytes.as_slice());
+		batch.insert(&self.node_mtimes, hash.as_ref(), unix_millis().to_be_bytes());
 	}
 
 	/// Stores an already-encoded node and records its persistence time.
@@ -240,7 +262,7 @@ impl Store {
 	///
 	/// Enumerates every node hash in `state_hamt_nodes` and deletes the ones
 	/// not reachable from `live_roots`, subject to the grace window. Only
-	/// likely nodes (16-byte keys) are considered; anything else in the column
+	/// likely nodes (32-byte keys) are considered; anything else in the column
 	/// family is not a node this store manages.
 	async fn sweep_blocking(
 		&self,
@@ -279,10 +301,10 @@ impl Store {
 			.db
 			.raw_stream()
 			.try_fold(report, async |mut report, (key, _): database::KeyVal<'_>| {
-				// Keys in `state_hamt_nodes` are 16-byte hashes; any
+				// Keys in `state_hamt_nodes` are 32-byte hashes; any
 				// other key is not a node we manage and is skipped
 				// defensively.
-				let Ok(hash) = <[u8; 16]>::try_from(key) else {
+				let Ok(hash) = StructuralHash::try_from(key) else {
 					return Ok(report);
 				};
 

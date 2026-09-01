@@ -19,7 +19,7 @@ These are all available and in use:
 
 | Primitive                                                                                               | Location                 | Used for                                                                                    |
 | ------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
-| `RootHandle` (`structural_hash: [u8;16]`, `state_group_id: [u8;32]`)                                    | rezzy                    | resolved-root identity                                                                      |
+| `RootHandle` (`structural_hash: [u8;32]`, `state_group_id: [u8;32]`)                                    | rezzy                    | resolved-root identity                                                                      |
 | `store.get_node(&structural_hash)`                                                                      | rezzy store              | traversal root                                                                              |
 | `root_node.search(&structural_key, &shortstatekey, ...)`                                                | rezzy                    | point lookup                                                                                |
 | `root_node.visit_entries(...)`                                                                          | rezzy                    | full-state materialization                                                                  |
@@ -39,7 +39,7 @@ These are all available and in use:
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RootHandle {
-    pub structural_hash: StructuralHash, // [u8; 16]
+    pub structural_hash: StructuralHash, // [u8; 32]
     pub state_group_id: StateGroupId,    // [u8; 32]
 }
 ```
