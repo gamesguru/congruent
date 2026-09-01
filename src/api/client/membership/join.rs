@@ -1008,11 +1008,13 @@ async fn join_room_by_id_helper_local(
 	};
 
 	// Try normal join first
-	let Err(error) = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(builder, sender_user, Some(room_id), &state_lock)
-		.await
+	let Err(error) = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		builder,
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await
 	else {
 		info!("Joined room locally");
 		return Ok(());

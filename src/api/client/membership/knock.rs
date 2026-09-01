@@ -347,16 +347,13 @@ async fn knock_room_helper_local(
 	};
 
 	// Try normal knock first
-	let Err(error) = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(sender_user.to_string(), &content),
-			sender_user,
-			Some(room_id),
-			&state_lock,
-		)
-		.await
+	let Err(error) = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(sender_user.to_string(), &content),
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await
 	else {
 		return Ok(());
 	};

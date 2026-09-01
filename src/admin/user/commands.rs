@@ -772,17 +772,13 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 	let mut power_levels_content = room_power_levels.unwrap_or_default();
 	power_levels_content.users.remove(&user_id);
 
-	let event_id = self
-		.services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &power_levels_content),
-			&user_id,
-			Some(&room_id),
-			&state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(String::new(), &power_levels_content),
+		&user_id,
+		Some(&room_id),
+		&state_lock,
+	))
+	.await?;
 
 	self.write_str(&format!(
 		"User {user_id} demoted themselves to the room default power level in {room_id} - \
@@ -934,22 +930,19 @@ pub(super) async fn redact_event(&self, event_id: OwnedEventId) -> Result {
 	let redaction_event_id = {
 		let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
-		self.services
-			.rooms
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder {
+		Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+			PduBuilder {
+				redacts: Some(event.event_id().to_owned()),
+				..PduBuilder::timeline(&RoomRedactionEventContent {
 					redacts: Some(event.event_id().to_owned()),
-					..PduBuilder::timeline(&RoomRedactionEventContent {
-						redacts: Some(event.event_id().to_owned()),
-						reason: Some(reason),
-					})
-				},
-				event.sender(),
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?
+					reason: Some(reason),
+				})
+			},
+			event.sender(),
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?
 	};
 
 	self.write_str(&format!(

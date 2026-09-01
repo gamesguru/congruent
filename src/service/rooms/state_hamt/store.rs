@@ -90,12 +90,15 @@ impl Store {
 				"PersistedInternalNode datamap and nodemap overlap"
 			))));
 		}
-		if persisted.leaves.len() != persisted.datamap.count_ones() as usize {
+		if persisted.leaves.len() != usize::try_from(persisted.datamap.count_ones()).unwrap_or(0)
+		{
 			return Err(err!(Database(error!(
 				"PersistedInternalNode leaf count does not match datamap"
 			))));
 		}
-		if persisted.child_hashes.len() != persisted.nodemap.count_ones() as usize {
+		if persisted.child_hashes.len()
+			!= usize::try_from(persisted.nodemap.count_ones()).unwrap_or(0)
+		{
 			return Err(err!(Database(error!(
 				"PersistedInternalNode child count does not match nodemap"
 			))));

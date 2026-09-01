@@ -33,26 +33,23 @@ pub(crate) async fn ban_user_route(
 		.await
 		.unwrap_or_else(|_| RoomMemberEventContent::new(MembershipState::Ban));
 
-	services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(body.user_id.to_string(), &RoomMemberEventContent {
-				membership: MembershipState::Ban,
-				reason: body.reason.clone(),
-				displayname: None, // display name may be offensive
-				avatar_url: None,  // avatar may be offensive
-				is_direct: None,
-				join_authorized_via_users_server: None,
-				third_party_invite: None,
-				redact_events: body.redact_events,
-				..current_member_content
-			}),
-			sender_user,
-			Some(&body.room_id),
-			&state_lock,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(body.user_id.to_string(), &RoomMemberEventContent {
+			membership: MembershipState::Ban,
+			reason: body.reason.clone(),
+			displayname: None, // display name may be offensive
+			avatar_url: None,  // avatar may be offensive
+			is_direct: None,
+			join_authorized_via_users_server: None,
+			third_party_invite: None,
+			redact_events: body.redact_events,
+			..current_member_content
+		}),
+		sender_user,
+		Some(&body.room_id),
+		&state_lock,
+	))
+	.await?;
 
 	drop(state_lock);
 
