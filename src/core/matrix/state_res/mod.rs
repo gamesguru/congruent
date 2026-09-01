@@ -18,7 +18,10 @@ use std::{
 	hash::{BuildHasher, Hash},
 };
 
-use futures::{Future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future};
+use futures::{
+	Future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future,
+	stream::FuturesUnordered,
+};
 use ruma::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomVersionId,
 	events::{
@@ -36,11 +39,11 @@ pub use self::{
 	room_version::RoomVersion,
 };
 use crate::{
-	debug, debug_error, err,
+	debug, debug_error, info,
 	matrix::{Event, StateKey},
 	state_res::room_version::StateResolutionVersion,
 	trace,
-	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryBroadbandExt, WidebandExt},
+	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryWidebandExt, WidebandExt},
 	warn,
 };
 
@@ -91,7 +94,7 @@ where
 	Sets: IntoIterator<IntoIter = SetIter> + Send,
 	SetIter: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
 	Hasher: BuildHasher + Send + Sync,
-	Pdu: Event + Clone + Send + Sync,
+	Pdu: Event + Clone + Send + Sync + rezzy::DagNode,
 	for<'b> &'b Pdu: Event + Send,
 {
 	use RoomVersionId::*;
@@ -116,7 +119,7 @@ where
 	trace!(map = ?conflicting, "conflicting events");
 	let (conflicted_state_subgraph, initial_state) =
 		if stateres_version == StateResolutionVersion::V2_1 {
-			let csg = calculate_conflicted_subgraph(&conflicting, event_fetch)
+			let (csg, _missing) = calculate_conflicted_subgraph(&conflicting, event_fetch)
 				.await
 				.ok_or_else(|| {
 					Error::InvalidPdu("Failed to calculate conflicted subgraph".to_owned())
@@ -147,7 +150,7 @@ where
 
 	// Get only the control events with a state_key: "" or ban/kick event (sender !=
 	// state_key)
-	let control_events: Vec<_> = all_conflicted
+	let mut control_events: Vec<_> = all_conflicted
 		.iter()
 		.stream()
 		.wide_filter_map(async |id| {
@@ -157,6 +160,7 @@ where
 		})
 		.collect()
 		.await;
+	control_events.sort();
 
 	// Sort the control events based on power_level/clock/event_id and
 	// outgoing/incoming edges
@@ -188,11 +192,12 @@ where
 
 	// This removes the control events that passed auth and more importantly those
 	// that failed auth
-	let events_to_resolve: Vec<_> = all_conflicted
+	let mut events_to_resolve: Vec<_> = all_conflicted
 		.iter()
 		.filter(|&id| !deduped_power_ev.contains(id))
 		.cloned()
 		.collect();
+	events_to_resolve.sort();
 
 	debug!(count = events_to_resolve.len(), "events left to resolve");
 	trace!(list = ?events_to_resolve, "events left to resolve");
@@ -274,60 +279,103 @@ where
 }
 
 /// Calculate the conflicted subgraph
-async fn calculate_conflicted_subgraph<F, Fut, E>(
+pub(crate) async fn calculate_conflicted_subgraph<F, Fut, E>(
 	conflicted: &StateMap<Vec<OwnedEventId>>,
 	fetch_event: &F,
-) -> Option<HashSet<OwnedEventId>>
+) -> Option<(HashSet<OwnedEventId>, Vec<OwnedEventId>)>
 where
 	F: Fn(OwnedEventId) -> Fut + Sync,
 	Fut: Future<Output = Option<E>> + Send,
-	E: Event + Send + Sync,
+	E: Event + Send + Sync + rezzy::DagNode,
 {
 	let conflicted_events: HashSet<_> = conflicted.values().flatten().cloned().collect();
-	let mut subgraph: HashSet<OwnedEventId> = HashSet::new();
-	let mut stack: Vec<Vec<OwnedEventId>> =
-		vec![conflicted_events.iter().cloned().collect::<Vec<_>>()];
-	let mut path: Vec<OwnedEventId> = Vec::new();
-	let mut seen: HashSet<OwnedEventId> = HashSet::new();
-	let next_event = |stack: &mut Vec<Vec<_>>, path: &mut Vec<_>| {
-		while stack.last().is_some_and(Vec::is_empty) {
-			stack.pop();
-			path.pop();
-		}
-		stack.last_mut().and_then(Vec::pop)
+
+	// FAST CONCURRENT DEPTH DISCOVERY
+	let depths: Vec<_> = conflicted_events
+		.iter()
+		.stream()
+		.broad_filter_map(async |id| {
+			let evt = fetch_event(id.clone()).await?;
+			Some(evt.depth())
+		})
+		.collect()
+		.await;
+
+	let min_depth = depths.into_iter().min().unwrap_or(u64::MAX);
+
+	let mut backwards_reachable: HashSet<OwnedEventId> = HashSet::new();
+	let mut missing = Vec::new();
+	let mut children_map: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
+
+	// Concurrent work-stealing BFS: instead of waiting for each layer to
+	// complete before starting the next (which serializes on layer boundaries
+	// and caused 3+ minute stalls on 47k-event rooms), we use
+	// FuturesUnordered as a work queue. Each completed fetch immediately
+	// enqueues its prev_events for fetching, maximizing DB I/O concurrency
+	// across the full DAG traversal.
+	let make_fetch = |id: OwnedEventId| {
+		let fut = fetch_event(id.clone());
+		async move { (id, fut.await) }
 	};
-	while let Some(event_id) = next_event(&mut stack, &mut path) {
-		path.push(event_id.clone());
-		if subgraph.contains(&event_id) {
-			if path.len() > 1 {
-				subgraph.extend(path.iter().cloned());
+
+	let mut work: FuturesUnordered<_> = conflicted_events
+		.iter()
+		.filter(|id| backwards_reachable.insert((*id).clone()))
+		.map(|id| make_fetch(id.clone()))
+		.collect();
+
+	while let Some((event_id, evt_opt)) = work.next().await {
+		if let Some(evt) = evt_opt {
+			if evt.depth() < min_depth {
+				continue; // Cut off traversal if we go deeper than the conflicted set
 			}
-			path.pop();
-			continue;
+
+			for prev in Event::prev_events(&evt) {
+				let prev_owned = prev.to_owned();
+				// Store reverse edges for the forwards BFS
+				children_map
+					.entry(prev_owned.clone())
+					.or_default()
+					.push(event_id.clone());
+
+				// Immediately enqueue unseen prev_events for fetching
+				if backwards_reachable.insert(prev_owned.clone()) {
+					work.push(make_fetch(prev_owned));
+				}
+			}
+		} else {
+			missing.push(event_id);
 		}
-		if conflicted_events.contains(&event_id) && path.len() > 1 {
-			subgraph.extend(path.iter().cloned());
-		}
-		if seen.contains(&event_id) {
-			path.pop();
-			continue;
-		}
-		trace!(event_id = event_id.as_str(), "fetching event for its auth events");
-		let evt = fetch_event(event_id.clone()).await;
-		if evt.is_none() {
-			err!("could not fetch event {} to calculate conflicted subgraph", event_id);
-			path.pop();
-			continue;
-		}
-		stack.push(
-			evt.expect("checked")
-				.auth_events()
-				.map(ToOwned::to_owned)
-				.collect(),
-		);
-		seen.insert(event_id);
 	}
-	Some(subgraph)
+
+	// Forwards BFS (finds descendants from the seeds)
+	let mut forwards_reachable = HashSet::new();
+	let mut f_queue: std::collections::VecDeque<OwnedEventId> =
+		conflicted_events.iter().cloned().collect();
+
+	while let Some(event_id) = f_queue.pop_front() {
+		if !forwards_reachable.insert(event_id.clone()) {
+			continue;
+		}
+		if let Some(children) = children_map.get(&event_id) {
+			f_queue.extend(children.iter().cloned());
+		}
+	}
+
+	// Subgraph is the linear intersection of paths
+	let subgraph: HashSet<OwnedEventId> = backwards_reachable
+		.into_iter()
+		.filter(|id| forwards_reachable.contains(id))
+		.collect();
+
+	if !missing.is_empty() {
+		info!(
+			n_missing = missing.len(),
+			n_subgraph = subgraph.len(),
+			"conflicted subgraph has missing prev_events (DAG holes)"
+		);
+	}
+	Some((subgraph, missing))
 }
 
 /// Returns a Vec of deduped EventIds that appear in some chains but not others.
@@ -646,7 +694,7 @@ where
 
 	let events_to_check: Vec<_> = events_to_check
 		.map(Result::Ok)
-		.broad_and_then(async |event_id| {
+		.wide_and_then(async |event_id| {
 			fetch_event(event_id.to_owned())
 				.await
 				.ok_or_else(|| Error::NotFound(format!("Failed to find {event_id}")))
