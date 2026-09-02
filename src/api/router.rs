@@ -66,6 +66,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::create_openid_token_route)
 		.ruma_route(&client::set_global_account_data_route)
 		.ruma_route(&client::set_room_account_data_route)
+		.ruma_route(&client::delete_global_account_data_route)
+		.ruma_route(&client::delete_room_account_data_route)
 		.ruma_route(&client::get_global_account_data_route)
 		.ruma_route(&client::get_room_account_data_route)
 		.ruma_route(&client::set_displayname_route)
@@ -226,7 +228,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.route(
 			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/{action}",
 			post(client::update_delayed_event_route),
-		)
+		);
+	let mut router = router
 		.ruma_route(&client::get_tags_route)
 		.ruma_route(&client::update_tag_route)
 		.ruma_route(&client::delete_tag_route)

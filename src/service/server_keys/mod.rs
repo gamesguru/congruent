@@ -171,11 +171,10 @@ pub async fn verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
 	let mut keys = self
 		.signing_keys_for(origin)
 		.await
-		.map(|keys| merge_old_keys(keys).verify_keys)
-		.unwrap_or(BTreeMap::new());
+		.map_or(BTreeMap::new(), |keys| merge_old_keys(keys).verify_keys);
 
 	if self.services.globals.server_is_ours(origin) {
-		keys.extend(self.verify_keys.clone().into_iter());
+		keys.extend(self.verify_keys.clone());
 	}
 
 	keys

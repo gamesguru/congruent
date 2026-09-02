@@ -1,11 +1,10 @@
-use std::iter::once;
+use std::{future::Future, iter::once, pin::Pin};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, RoomVersion, err, info,
 	utils::{
-		TryFutureExtExt,
 		math::Expected,
 		result::FlatOk,
 		stream::{ReadyExt, WidebandExt},
@@ -13,7 +12,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{
-	FutureExt, StreamExt, TryFutureExt,
+	StreamExt, TryFutureExt,
 	future::{join, join4, join5},
 };
 use ruma::{
@@ -320,7 +319,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 		.collect()
 		.await;
 
-	all_rooms.sort_by(|l, r| r.num_joined_members.cmp(&l.num_joined_members));
+	all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
 	let total_room_count_estimate = UInt::try_from(all_rooms.len())
 		.unwrap_or_else(|_| uint!(0))
@@ -403,62 +402,86 @@ async fn user_can_publish_room(
 	}
 }
 
-async fn public_rooms_chunk(services: &Services, room_id: OwnedRoomId) -> PublicRoomsChunk {
-	let name = services.rooms.state_accessor.get_name(&room_id).ok();
+fn public_rooms_chunk<'a>(
+	services: &'a Services,
+	room_id: OwnedRoomId,
+) -> Pin<Box<dyn Future<Output = PublicRoomsChunk> + Send + 'a>> {
+	Box::pin(async move {
+		let name =
+			Box::pin(async { services.rooms.state_accessor.get_name(&room_id).await.ok() });
 
-	let room_type = services.rooms.state_accessor.get_room_type(&room_id).ok();
-
-	let canonical_alias = services
-		.rooms
-		.state_accessor
-		.get_canonical_alias(&room_id)
-		.ok();
-
-	let avatar_url = services.rooms.state_accessor.get_avatar(&room_id);
-
-	let topic = services.rooms.state_accessor.get_room_topic(&room_id).ok();
-
-	let world_readable = services.rooms.state_accessor.is_world_readable(&room_id);
-
-	let join_rule = services
-		.rooms
-		.state_accessor
-		.room_state_get_content(&room_id, &StateEventType::RoomJoinRules, "")
-		.map_ok(|c: RoomJoinRulesEventContent| match c.join_rule {
-			| JoinRule::Public => PublicRoomJoinRule::Public,
-			| JoinRule::Knock => "knock".into(),
-			| JoinRule::KnockRestricted(_) => "knock_restricted".into(),
-			| _ => "invite".into(),
+		let room_type = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_room_type(&room_id)
+				.await
+				.ok()
 		});
 
-	let guest_can_join = services.rooms.state_accessor.guest_can_join(&room_id);
+		let canonical_alias = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_canonical_alias(&room_id)
+				.await
+				.ok()
+		});
 
-	let num_joined_members = services.rooms.state_cache.room_joined_count(&room_id);
+		let avatar_url = Box::pin(services.rooms.state_accessor.get_avatar(&room_id));
 
-	let (
-		(avatar_url, canonical_alias, guest_can_join, join_rule, name),
-		(num_joined_members, room_type, topic, world_readable),
-	) = join(
-		join5(avatar_url, canonical_alias, guest_can_join, join_rule, name),
-		join4(num_joined_members, room_type, topic, world_readable),
-	)
-	.boxed()
-	.await;
+		let topic = Box::pin(async {
+			services
+				.rooms
+				.state_accessor
+				.get_room_topic(&room_id)
+				.await
+				.ok()
+		});
 
-	PublicRoomsChunk {
-		avatar_url: avatar_url.into_option().unwrap_or_default().url,
-		canonical_alias,
-		guest_can_join,
-		join_rule: join_rule.unwrap_or(PublicRoomJoinRule::Public),
-		name,
-		num_joined_members: num_joined_members
-			.map(TryInto::try_into)
-			.map(Result::ok)
-			.flat_ok()
-			.unwrap_or_else(|| uint!(0)),
-		room_id,
-		room_type,
-		topic,
-		world_readable,
-	}
+		let world_readable = Box::pin(services.rooms.state_accessor.is_world_readable(&room_id));
+
+		let join_rule = Box::pin(
+			services
+				.rooms
+				.state_accessor
+				.room_state_get_content(&room_id, &StateEventType::RoomJoinRules, "")
+				.map_ok(|c: RoomJoinRulesEventContent| match c.join_rule {
+					| JoinRule::Public => PublicRoomJoinRule::Public,
+					| JoinRule::Knock => "knock".into(),
+					| JoinRule::KnockRestricted(_) => "knock_restricted".into(),
+					| _ => "invite".into(),
+				}),
+		);
+
+		let guest_can_join = Box::pin(services.rooms.state_accessor.guest_can_join(&room_id));
+
+		let num_joined_members = Box::pin(services.rooms.state_cache.room_joined_count(&room_id));
+
+		let (
+			(avatar_url, canonical_alias, guest_can_join, join_rule, name),
+			(num_joined_members, room_type, topic, world_readable),
+		) = Box::pin(join(
+			join5(avatar_url, canonical_alias, guest_can_join, join_rule, name),
+			join4(num_joined_members, room_type, topic, world_readable),
+		))
+		.await;
+
+		PublicRoomsChunk {
+			avatar_url: avatar_url.into_option().unwrap_or_default().url,
+			canonical_alias,
+			guest_can_join,
+			join_rule: join_rule.unwrap_or(PublicRoomJoinRule::Public),
+			name,
+			num_joined_members: num_joined_members
+				.map(TryInto::try_into)
+				.map(Result::ok)
+				.flat_ok()
+				.unwrap_or_else(|| uint!(0)),
+			room_id,
+			room_type,
+			topic,
+			world_readable,
+		}
+	})
 }

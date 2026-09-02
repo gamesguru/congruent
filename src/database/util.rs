@@ -51,6 +51,12 @@ pub(crate) fn map_err(e: rocksdb::Error) -> conduwuit::Error {
 	std::io::Error::new(kind, string).into()
 }
 
+pub(crate) trait RawRef: AsRef<[u8]> {
+	fn as_raw(&self) -> &[u8] { self.as_ref() }
+}
+
+impl<T: AsRef<[u8]> + ?Sized> RawRef for T {}
+
 fn io_error_kind(e: &ErrorKind) -> std::io::ErrorKind {
 	use std::io;
 

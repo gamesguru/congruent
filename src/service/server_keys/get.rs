@@ -63,7 +63,6 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn get_verify_key(
 	&self,
 	origin: &ServerName,

@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{
 		IterStream,
 		future::TryExtExt,
-		stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
+		stream::{BroadbandExt, ReadyExt, TryIgnore},
 	},
 };
 use conduwuit_service::rooms::{lazy_loading, lazy_loading::Options, short::ShortStateKey};
@@ -108,8 +108,8 @@ pub(crate) async fn get_context_route(
 			pdu
 		})
 		.ready_filter_map(|item| event_filter(item, filter))
-		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
-		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
+		.filter_map(|item| ignored_filter(&services, item, sender_user))
+		.filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
 		.collect();
 
@@ -131,13 +131,13 @@ pub(crate) async fn get_context_route(
 			pdu
 		})
 		.ready_filter_map(|item| event_filter(item, filter))
-		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
-		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
+		.filter_map(|item| ignored_filter(&services, item, sender_user))
+		.filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
 		.collect();
 
 	let (base_event, events_before, events_after): (_, Vec<_>, Vec<_>) =
-		join3(base_event, events_before, events_after).boxed().await;
+		Box::pin(join3(base_event, events_before, events_after)).await;
 
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,

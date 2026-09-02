@@ -32,23 +32,24 @@ use crate::{admin, admin::AdminCommand, context::Context};
 #[must_use]
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
-#[must_use]
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
-	Box::pin(handle_command(services, command))
+	handle_command(services, command)
 }
 
 #[tracing::instrument(skip_all, name = "admin", level = "info")]
-async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
-	AssertUnwindSafe(Box::pin(process_command(services, &command)))
-		.catch_unwind()
-		.await
-		.map_err(Error::from_panic)
-		.unwrap_or_else(|error| handle_panic(&error, &command))
+fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
+	Box::pin(async move {
+		AssertUnwindSafe(process_command(services, &command))
+			.catch_unwind()
+			.await
+			.map_err(Error::from_panic)
+			.unwrap_or_else(|error| handle_panic(&error, &command))
+	})
 }
 
 async fn process_command(services: Arc<Services>, input: &CommandInput) -> ProcessorResult {
 	let (command, args, body) = match parse(&services, input) {
-		| Err(error) => return Err(error),
+		| Err(error) => return Err(Box::new(error)),
 		| Ok(parsed) => parsed,
 	};
 
@@ -82,18 +83,20 @@ async fn process_command(services: Arc<Services>, input: &CommandInput) -> Proce
 			write!(&mut logs, "Command failed with error:\n```\n{error:#?}\n```")
 				.expect("output buffer");
 
-			Err(reply(RoomMessageEventContent::notice_markdown(logs), context.reply_id))
+			Err(Box::new(reply(
+				RoomMessageEventContent::notice_markdown(logs),
+				context.reply_id,
+			)))
 		},
 	}
 }
 
-#[allow(clippy::result_large_err)]
 fn handle_panic(error: &Error, command: &CommandInput) -> ProcessorResult {
 	let link = "Please submit a [bug report](https://forgejo.ellis.link/continuwuation/continuwuity/issues/new). 🥺";
 	let msg = format!("Panic occurred while processing command:\n```\n{error:#?}\n```\n{link}");
 	let content = RoomMessageEventContent::notice_markdown(msg);
 	error!("Panic while processing command: {error:?}");
-	Err(reply(content, command.reply_id.as_deref()))
+	Err(Box::new(reply(content, command.reply_id.as_deref())))
 }
 
 /// Parse and process a message from the admin room

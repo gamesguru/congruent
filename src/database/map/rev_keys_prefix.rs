@@ -4,7 +4,10 @@ use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt, TryStreamExt, future};
 use serde::{Deserialize, Serialize};
 
-use crate::keyval::{Key, result_deserialize_key, serialize_key};
+use crate::{
+	keyval::{Key, result_deserialize_key, serialize_key},
+	util::RawRef,
+};
 
 #[implement(super::Map)]
 pub fn rev_keys_prefix<'a, K, P>(
@@ -55,5 +58,5 @@ where
 	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
 {
 	self.rev_raw_keys_from(prefix)
-		.try_take_while(|k: &Key<'_>| future::ok(k.starts_with(prefix.as_ref())))
+		.try_take_while(|k: &Key<'_>| future::ok(k.starts_with(prefix.as_raw())))
 }

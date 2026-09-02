@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
@@ -111,8 +113,7 @@ pub(crate) async fn get_message_events_route(
 		services
 			.rooms
 			.timeline
-			.backfill_if_required(room_id, from)
-			.boxed()
+				.backfill_if_required(room_id, from)
 			.await
 			.log_err()
 			.ok();
@@ -152,8 +153,8 @@ pub(crate) async fn get_message_events_route(
 			}
 			pdu
 		})
-		.collect()
-		.await;
+			.collect()
+			.await;
 
 	// Capture the DB sequence boundary token BEFORE topological sort changes
 	// the order. This must be the outermost PduCount from the original query.
@@ -216,9 +217,10 @@ pub(crate) async fn get_message_events_route(
 		.map(IterStream::stream)
 		.into_stream()
 		.flatten()
-		.broad_filter_map(|user_id| async move {
+		.broad_filter_map(|user_id: ruma::OwnedUserId| async move {
 			get_member_event(&services, room_id, &user_id).await
 		})
+		.boxed()
 		.collect()
 		.await;
 
@@ -284,18 +286,20 @@ where
 		.await
 }
 
-async fn get_member_event(
-	services: &Services,
-	room_id: &RoomId,
-	user_id: &UserId,
-) -> Option<Raw<AnyStateEvent>> {
-	services
-		.rooms
-		.state_accessor
-		.room_state_get(room_id, &StateEventType::RoomMember, user_id.as_str())
-		.map_ok(Event::into_format)
-		.await
-		.ok()
+fn get_member_event<'a>(
+	services: &'a Services,
+	room_id: &'a RoomId,
+	user_id: &'a UserId,
+) -> Pin<Box<dyn Future<Output = Option<Raw<AnyStateEvent>>> + Send + 'a>> {
+	Box::pin(async move {
+		services
+			.rooms
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomMember, user_id.as_str())
+			.map_ok(Event::into_format)
+			.await
+			.ok()
+	})
 }
 
 #[inline]
@@ -370,21 +374,23 @@ where
 }
 
 #[inline]
-pub(crate) async fn visibility_filter(
-	services: &Services,
+pub(crate) fn visibility_filter<'a>(
+	services: &'a Services,
 	item: PdusIterItem,
-	user_id: &UserId,
-) -> Option<PdusIterItem> {
-	let (_, pdu) = &item;
+	user_id: &'a UserId,
+) -> Pin<Box<dyn Future<Output = Option<PdusIterItem>> + Send + 'a>> {
+	Box::pin(async move {
+		let (_, pdu) = &item;
 
-	let room_id = pdu.room_id_or_hash()?;
+		let room_id = pdu.room_id_or_hash()?;
 
-	services
-		.rooms
-		.state_accessor
-		.user_can_see_event(user_id, &room_id, pdu.event_id())
-		.await
-		.then_some(item)
+		services
+			.rooms
+			.state_accessor
+			.user_can_see_event(user_id, &room_id, pdu.event_id())
+			.await
+			.then_some(item)
+	})
 }
 
 #[inline]

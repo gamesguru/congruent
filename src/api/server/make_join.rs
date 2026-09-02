@@ -167,20 +167,21 @@ pub(crate) async fn select_authorising_user(
 	user_id: &UserId,
 	state_lock: &RoomMutexGuard,
 ) -> Result<OwnedUserId> {
-	let auth_user = services
-		.rooms
-		.state_cache
-		.local_users_in_room(room_id)
-		.filter(|user| {
-			services
-				.rooms
-				.state_accessor
-				.user_can_invite(room_id, user, user_id, state_lock)
-		})
-		.boxed()
-		.next()
-		.await
-		.map(ToOwned::to_owned);
+	let mut local_users = services.rooms.state_cache.local_users_in_room(room_id);
+	let auth_user = loop {
+		let Some(user) = local_users.next().await else {
+			break None;
+		};
+
+		if services
+			.rooms
+			.state_accessor
+			.user_can_invite(room_id, user, user_id, state_lock)
+			.await
+		{
+			break Some(user.to_owned());
+		}
+	};
 
 	match auth_user {
 		| Some(auth_user) => Ok(auth_user),

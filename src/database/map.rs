@@ -86,6 +86,7 @@ impl Map {
 	pub fn property(&self, name: &str) -> Result<String> { self.db.property(&self.cf(), name) }
 
 	#[inline]
+	#[must_use]
 	pub fn name(&self) -> &str { self.name }
 
 	#[inline]

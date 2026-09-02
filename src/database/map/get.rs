@@ -7,7 +7,7 @@ use tokio::task;
 
 use crate::{
 	Handle,
-	util::{is_incomplete, map_err, or_else},
+	util::{RawRef, is_incomplete, map_err, or_else},
 };
 
 /// Fetch a value from the database into cache, returning a reference-handle
@@ -33,7 +33,7 @@ where
 	debug_assert!(matches!(cached, Ok(None)), "expected status Incomplete");
 	let cmd = Get {
 		map: self.clone(),
-		key: [key.as_ref().into()].into(),
+		key: [key.as_raw().into()].into(),
 		res: None,
 	};
 

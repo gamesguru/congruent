@@ -9,6 +9,7 @@ use super::rev_stream_from::is_cached;
 use crate::{
 	keyval::{Key, result_deserialize_key, serialize_key},
 	stream,
+	util::RawRef,
 };
 
 #[implement(super::Map)]
@@ -64,13 +65,13 @@ where
 	let opts = super::iter_options_default(&self.db);
 	let state = stream::State::new(self, opts);
 	if is_cached(self, from) {
-		return stream::KeysRev::<'_>::from(state.init_rev(from.as_ref().into())).boxed();
+		return stream::KeysRev::<'_>::from(state.init_rev(from.as_raw().into())).boxed();
 	}
 
 	let seek = Seek {
 		map: self.clone(),
 		dir: Direction::Reverse,
-		key: Some(from.as_ref().into()),
+		key: Some(from.as_raw().into()),
 		state: crate::pool::into_send_seek(state),
 		res: None,
 	};

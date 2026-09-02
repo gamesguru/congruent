@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::{
 	keyval::{KeyBuf, ValBuf},
 	ser,
-	util::or_else,
+	util::{RawRef, or_else},
 };
 
 /// Insert Key/Value
@@ -198,17 +198,34 @@ where
 	V: AsRef<[u8]>,
 {
 	let write_options = &self.write_options;
-	self.db
-		.db
-		.put_cf_opt(&self.cf(), key, val, write_options)
-		.or_else(or_else)
-		.expect("database insert error");
 
-	if !self.db.corked() {
-		self.db.flush().expect("database flush error");
+	let appended_to_txn = crate::transaction::TRANSACTION_BATCH
+		.try_with(|batch| {
+			let mut batch_guard = batch.lock();
+			batch_guard
+				.batch
+				.put_cf(&self.cf(), key.as_raw(), val.as_raw());
+
+			let watchers = self.watchers.clone();
+			let key_owned = key.as_raw().to_vec();
+			batch_guard
+				.wake_closures
+				.push(Box::new(move || watchers.wake(&key_owned)));
+		})
+		.is_ok();
+
+	if !appended_to_txn {
+		self.db
+			.db
+			.put_cf_opt(&self.cf(), key, val, write_options)
+			.or_else(or_else)
+			.expect("database insert error");
+
+		if !self.db.corked() {
+			self.db.flush().expect("database flush error");
+		}
+		self.watchers.wake(key.as_raw());
 	}
-
-	self.watchers.wake(key.as_ref());
 }
 
 #[implement(super::Map)]
@@ -221,7 +238,7 @@ where
 {
 	let mut batch = WriteBatchWithTransaction::<false>::default();
 	for (key, val) in iter {
-		batch.put_cf(&self.cf(), key.as_ref(), val.as_ref());
+		batch.put_cf(&self.cf(), key.as_raw(), val.as_raw());
 	}
 
 	let write_options = &self.write_options;

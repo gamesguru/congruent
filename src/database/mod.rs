@@ -23,12 +23,13 @@ mod ser;
 mod stream;
 #[cfg(test)]
 mod tests;
+pub mod transaction;
 pub(crate) mod util;
 mod watchers;
 
-use std::{ops::Index, sync::Arc};
+use std::{future::Future, ops::Index, sync::Arc};
 
-use conduwuit::{Result, Server, err};
+use conduwuit::{Result, Server, SyncMutex, err};
 
 pub use self::{
 	de::{Ignore, IgnoreAll},
@@ -76,6 +77,37 @@ impl Database {
 
 	#[inline]
 	pub fn keys(&self) -> impl Iterator<Item = &MapsKey> + Send + '_ { self.maps.keys() }
+
+	/// Executes a block of database operations within an atomic transaction.
+	/// Automatically commits the operations to the database upon completion.
+	pub async fn transaction<F, Fut, R>(&self, f: F) -> Result<R>
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = Result<R>>,
+	{
+		let batch = Arc::new(SyncMutex::new(transaction::TransactionContext::new()));
+
+		let res = transaction::TRANSACTION_BATCH
+			.scope(batch.clone(), async { f().await })
+			.await?;
+
+		let mut batch_guard = batch.lock();
+		let batch = std::mem::take(&mut batch_guard.batch);
+		let wake_closures = std::mem::take(&mut batch_guard.wake_closures);
+		drop(batch_guard);
+
+		let write_options = map::write_options_default(&self.db);
+		self.db
+			.db
+			.write_opt(&batch, &write_options)
+			.or_else(or_else)?;
+
+		for wake_closure in wake_closures {
+			wake_closure();
+		}
+
+		Ok(res)
+	}
 }
 
 impl Index<&str> for Database {

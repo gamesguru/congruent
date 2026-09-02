@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::{
 	Err, Result, err, implement,
-	utils::{ReadyExt, result::LogErr, stream::TryIgnore},
+	utils::{ReadyExt, stream::TryIgnore},
 };
 use database::{Deserialized, Handle, Ignore, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
@@ -202,15 +202,26 @@ pub fn changes_since<'a>(
 		.ready_take_while(move |((room_id_, user_id_, count, _), _): &(Key<'_>, _)| {
 			room_id == *room_id_ && user_id == *user_id_ && to.is_none_or(|to| *count <= to)
 		})
-		.map(move |(_, v)| {
+		.filter_map(move |(_, v)| async move {
+			let data: serde_json::Value = match serde_json::from_slice(v) {
+				| Ok(data) => data,
+				| Err(_) => return None,
+			};
+
+			if data
+				.get("content")
+				.and_then(serde_json::Value::as_object)
+				.is_some_and(serde_json::Map::is_empty)
+			{
+				return None;
+			}
+
 			match room_id {
-				| Some(_) => serde_json::from_slice::<Raw<AnyRoomAccountDataEvent>>(v)
+				| Some(_) => serde_json::from_value::<Raw<AnyRoomAccountDataEvent>>(data)
 					.map(AnyRawAccountDataEvent::Room),
-				| None => serde_json::from_slice::<Raw<AnyGlobalAccountDataEvent>>(v)
+				| None => serde_json::from_value::<Raw<AnyGlobalAccountDataEvent>>(data)
 					.map(AnyRawAccountDataEvent::Global),
 			}
-			.map_err(|e| err!(Database("Database contains invalid account data: {e}")))
-			.log_err()
+			.ok()
 		})
-		.ignore_err()
 }

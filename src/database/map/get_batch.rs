@@ -11,7 +11,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use rocksdb::{DBPinnableSlice, ReadOptions};
 
 use super::get::handle_from;
-use crate::Handle;
+use crate::{Handle, util::RawRef};
 
 pub trait Get<'a, K, S>
 where
@@ -50,7 +50,7 @@ where
 		.widen_then(automatic_width(), |chunk| {
 			self.db.pool.execute_get(Get {
 				map: self.clone(),
-				key: chunk.iter().map(AsRef::as_ref).map(Into::into).collect(),
+				key: chunk.iter().map(K::as_raw).map(Into::into).collect(),
 				res: None,
 			})
 		})

@@ -4,7 +4,10 @@ use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt, TryStreamExt, future};
 use serde::{Deserialize, Serialize};
 
-use crate::keyval::{KeyVal, result_deserialize, serialize_key};
+use crate::{
+	keyval::{KeyVal, result_deserialize, serialize_key},
+	util::RawRef,
+};
 
 /// Iterate key-value entries in the map where the key matches a prefix.
 ///
@@ -73,5 +76,5 @@ where
 	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
 {
 	self.rev_raw_stream_from(prefix)
-		.try_take_while(|(k, _): &KeyVal<'_>| future::ok(k.starts_with(prefix.as_ref())))
+		.try_take_while(|(k, _): &KeyVal<'_>| future::ok(k.starts_with(prefix.as_raw())))
 }

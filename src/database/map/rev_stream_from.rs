@@ -9,7 +9,7 @@ use tokio::task;
 use crate::{
 	keyval::{KeyVal, result_deserialize, serialize_key},
 	stream,
-	util::is_incomplete,
+	util::{RawRef, is_incomplete},
 };
 
 /// Iterate key-value entries in the map starting from upper-bound.
@@ -83,7 +83,7 @@ where
 	let opts = super::iter_options_default(&self.db);
 	let state = stream::State::new(self, opts);
 	if is_cached(self, from) {
-		let state = state.init_rev(from.as_ref().into());
+		let state = state.init_rev(from.as_raw().into());
 		return task::consume_budget()
 			.map(move |()| stream::ItemsRev::<'_>::from(state))
 			.into_stream()
@@ -94,7 +94,7 @@ where
 	let seek = Seek {
 		map: self.clone(),
 		dir: Direction::Reverse,
-		key: Some(from.as_ref().into()),
+		key: Some(from.as_raw().into()),
 		state: crate::pool::into_send_seek(state),
 		res: None,
 	};
@@ -120,7 +120,7 @@ where
 {
 	let cache_opts = super::cache_iter_options_default(&map.db);
 	let cache_status = stream::State::new(map, cache_opts)
-		.init_rev(from.as_ref().into())
+		.init_rev(from.as_raw().into())
 		.status();
 
 	!matches!(cache_status, Some(e) if is_incomplete(&e))

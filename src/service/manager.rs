@@ -120,6 +120,7 @@ impl Manager {
 		_workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,
 	) -> Result<()> {
+		std::future::ready(()).await;
 		debug!("service {:?} worker finished", service.name());
 		Ok(())
 	}
@@ -155,6 +156,7 @@ impl Manager {
 		workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,
 	) -> Result<()> {
+		std::future::ready(()).await;
 		if !self.server.running() {
 			return Err!(
 				"Service {:?} worker not starting during server shutdown.",

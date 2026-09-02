@@ -8,7 +8,7 @@ use conduwuit::{
 	warn,
 };
 use conduwuit_service::Services;
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
 use ruma::{
@@ -377,7 +377,6 @@ pub(crate) async fn register_route(
 					&body.appservice_info,
 					None,
 				)
-				.boxed()
 				.await
 				{
 					| Err(e) => {
