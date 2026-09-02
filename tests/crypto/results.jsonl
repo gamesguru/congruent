@@ -33,8 +33,8 @@
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{rust_hs1}"}
-{"Action":"pass","Test":"TestDelayedInviteResponse"}
-{"Action":"skip","Test":"TestDelayedInviteResponse/js"}
+{"Action":"fail","Test":"TestDelayedInviteResponse"}
+{"Action":"fail","Test":"TestDelayedInviteResponse/js"}
 {"Action":"pass","Test":"TestDelayedInviteResponse/rust"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer/js"}
@@ -112,9 +112,9 @@
 {"Action":"pass","Test":"TestSpoofedEventSenderHandling/js/SpoofedPlaintextSenderGivesUTD"}
 {"Action":"pass","Test":"TestSpoofedEventSenderHandling/rust"}
 {"Action":"pass","Test":"TestSpoofedEventSenderHandling/rust/SpoofedMXIDSenderGivesRedShield"}
-{"Action":"fail","Test":"TestToDeviceMessagesAreBatched"}
+{"Action":"pass","Test":"TestToDeviceMessagesAreBatched"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
-{"Action":"fail","Test":"TestToDeviceMessagesAreBatched/rust"}
+{"Action":"pass","Test":"TestToDeviceMessagesAreBatched/rust"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
 {"Action":"skip","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
