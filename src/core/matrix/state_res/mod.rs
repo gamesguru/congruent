@@ -79,18 +79,15 @@ type Result<T, E = Error> = crate::Result<T, E>;
 //#[tracing::instrument(level = "debug", skip(state_sets, auth_chain_sets,
 //#[tracing::instrument(level event_fetch))]
 #[allow(clippy::cognitive_complexity)]
-pub async fn resolve<'a, Pdu, Sets, SetIter, Hasher, Fetch, FetchFut, Exists, ExistsFut>(
+pub async fn resolve<'a, Pdu, Sets, SetIter, Hasher, Fetch, FetchFut>(
 	room_version: &RoomVersionId,
 	state_sets: Sets,
 	auth_chain_sets: &'a [HashSet<OwnedEventId, Hasher>],
 	event_fetch: &Fetch,
-	event_exists: &Exists,
 ) -> Result<StateMap<OwnedEventId>>
 where
 	Fetch: Fn(OwnedEventId) -> FetchFut + Sync,
 	FetchFut: Future<Output = Option<Pdu>> + Send,
-	Exists: Fn(OwnedEventId) -> ExistsFut + Sync,
-	ExistsFut: Future<Output = bool> + Send,
 	Sets: IntoIterator<IntoIter = SetIter> + Send,
 	SetIter: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
 	Hasher: BuildHasher + Send + Sync,
@@ -134,11 +131,28 @@ where
 	// `all_conflicted` contains unique items
 	// synapse says `full_set = {eid for eid in full_conflicted_set if eid in
 	// event_map}`
-	// Hydra: Also consider the conflicted state subgraph
-	let all_conflicted: HashSet<_> = get_auth_chain_diff(auth_chain_sets)
+	// V2.1: skip auth_chain_diff — start from empty set, only the conflicted
+	// state values and their auth-chain subgraph are relevant.
+	// V2: include the auth_chain_diff (symmetric difference of per-fork auth
+	// chains) which captures events that differ in the auth structure between
+	// forks, even when the state values are identical.
+	let auth_diff_stream = if stateres_version == StateResolutionVersion::V2_1 {
+		futures::stream::empty().boxed()
+	} else {
+		get_auth_chain_diff(auth_chain_sets).boxed()
+	};
+
+	let all_conflicted: HashSet<_> = auth_diff_stream
 		.chain(conflicting.into_values().flatten().stream())
-		.broad_filter_map(async |id| event_exists(id.clone()).await.then_some(id))
 		.chain(conflicted_state_subgraph.into_iter().stream())
+		// Filter out non-existent events and non-state events in a single
+		// fetch. The conflicted subgraph can include events reachable via
+		// auth chains which are not state events and must not participate
+		// in iterative_auth_check.
+		.broad_filter_map(async |id| {
+			let ev = event_fetch(id.clone()).await?;
+			ev.state_key().is_some().then_some(id)
+		})
 		.collect()
 		.await;
 
@@ -278,7 +292,19 @@ where
 	(unconflicted_state, conflicted_state)
 }
 
-/// Calculate the conflicted subgraph
+/// Calculate the conflicted subgraph via auth chain reachability.
+///
+/// Per Synapse/rezzy, the conflicted subgraph is the intersection of
+/// backwards-forwards reachability through the **auth chain** graph (not the
+/// DAG / prev_events graph). Events reachable only via prev_events (which
+/// include non-state timeline events) must not participate.
+///
+/// Algorithm (matches Synapse `_get_auth_chain_difference_using_cover_index_txn`):
+///   - Backwards BFS: from each conflicted event, walk auth_events to find
+///     all events that are ancestors in the auth chain.
+///   - Forwards BFS: from each conflicted event, walk reverse-auth edges
+///     (events that cite it as an auth_event) to find all descendants.
+///   - Subgraph = backwards ∩ forwards.
 pub(crate) async fn calculate_conflicted_subgraph<F, Fut, E>(
 	conflicted: &StateMap<Vec<OwnedEventId>>,
 	fetch_event: &F,
@@ -286,38 +312,21 @@ pub(crate) async fn calculate_conflicted_subgraph<F, Fut, E>(
 where
 	F: Fn(OwnedEventId) -> Fut + Sync,
 	Fut: Future<Output = Option<E>> + Send,
-	E: Event + Send + Sync + rezzy::DagNode,
+	E: Event + Send + Sync,
 {
 	let conflicted_events: HashSet<_> = conflicted.values().flatten().cloned().collect();
 
-	// FAST CONCURRENT DEPTH DISCOVERY
-	let depths: Vec<_> = conflicted_events
-		.iter()
-		.stream()
-		.broad_filter_map(async |id| {
-			let evt = fetch_event(id.clone()).await?;
-			Some(evt.depth())
-		})
-		.collect()
-		.await;
-
-	let min_depth = depths.into_iter().min().unwrap_or(u64::MAX);
-
 	let mut backwards_reachable: HashSet<OwnedEventId> = HashSet::new();
 	let mut missing = Vec::new();
+	// Reverse auth edges: auth_event -> list of events that reference it
 	let mut children_map: HashMap<OwnedEventId, Vec<OwnedEventId>> = HashMap::new();
 
-	// Concurrent work-stealing BFS: instead of waiting for each layer to
-	// complete before starting the next (which serializes on layer boundaries
-	// and caused 3+ minute stalls on 47k-event rooms), we use
-	// FuturesUnordered as a work queue. Each completed fetch immediately
-	// enqueues its prev_events for fetching, maximizing DB I/O concurrency
-	// across the full DAG traversal.
 	let make_fetch = |id: OwnedEventId| {
 		let fut = fetch_event(id.clone());
 		async move { (id, fut.await) }
 	};
 
+	// Backwards BFS: walk auth_events from each conflicted event
 	let mut work: FuturesUnordered<_> = conflicted_events
 		.iter()
 		.filter(|id| backwards_reachable.insert((*id).clone()))
@@ -326,21 +335,17 @@ where
 
 	while let Some((event_id, evt_opt)) = work.next().await {
 		if let Some(evt) = evt_opt {
-			if evt.depth() < min_depth {
-				continue; // Cut off traversal if we go deeper than the conflicted set
-			}
-
-			for prev in Event::prev_events(&evt) {
-				let prev_owned = prev.to_owned();
+			for auth_id in evt.auth_events() {
+				let auth_owned = auth_id.to_owned();
 				// Store reverse edges for the forwards BFS
 				children_map
-					.entry(prev_owned.clone())
+					.entry(auth_owned.clone())
 					.or_default()
 					.push(event_id.clone());
 
-				// Immediately enqueue unseen prev_events for fetching
-				if backwards_reachable.insert(prev_owned.clone()) {
-					work.push(make_fetch(prev_owned));
+				// Immediately enqueue unseen auth_events for fetching
+				if backwards_reachable.insert(auth_owned.clone()) {
+					work.push(make_fetch(auth_owned));
 				}
 			}
 		} else {
@@ -348,7 +353,7 @@ where
 		}
 	}
 
-	// Forwards BFS (finds descendants from the seeds)
+	// Forwards BFS: walk reverse-auth edges from conflicted events
 	let mut forwards_reachable = HashSet::new();
 	let mut f_queue: std::collections::VecDeque<OwnedEventId> =
 		conflicted_events.iter().cloned().collect();
@@ -362,7 +367,7 @@ where
 		}
 	}
 
-	// Subgraph is the linear intersection of paths
+	// Subgraph is the intersection of backwards and forwards reachability
 	let subgraph: HashSet<OwnedEventId> = backwards_reachable
 		.into_iter()
 		.filter(|id| forwards_reachable.contains(id))
@@ -372,7 +377,7 @@ where
 		info!(
 			n_missing = missing.len(),
 			n_subgraph = subgraph.len(),
-			"conflicted subgraph has missing prev_events (DAG holes)"
+			"conflicted subgraph has missing auth_events (DAG holes)"
 		);
 	}
 	Some((subgraph, missing))
@@ -734,9 +739,13 @@ where
 	let mut resolved_state = unconflicted_state;
 	for event in events_to_check {
 		trace!(event_id = event.event_id().as_str(), "checking event");
-		let state_key = event
-			.state_key()
-			.ok_or_else(|| Error::InvalidPdu("State event had no state key".to_owned()))?;
+		let Some(state_key) = event.state_key() else {
+			trace!(
+				event_id = event.event_id().as_str(),
+				"skipping non-state event in iterative auth check"
+			);
+			continue;
+		};
 
 		let auth_types = auth_types_for_event(
 			event.event_type(),
@@ -1524,9 +1533,7 @@ mod tests {
 			.collect();
 
 		let resolved =
-			match super::resolve(&RoomVersionId::V2, &state_sets, &auth_chain, &fetcher, &exists)
-				.await
-			{
+			match super::resolve(&RoomVersionId::V2, &state_sets, &auth_chain, &fetcher).await {
 				| Ok(state) => state,
 				| Err(e) => panic!("{e}"),
 			};
@@ -1637,9 +1644,7 @@ mod tests {
 		let fetcher = |id: OwnedEventId| ready(ev_map.get(&id).cloned());
 		let exists = |id: OwnedEventId| ready(ev_map.get(&id).is_some());
 		let resolved =
-			match super::resolve(&RoomVersionId::V6, &state_sets, &auth_chain, &fetcher, &exists)
-				.await
-			{
+			match super::resolve(&RoomVersionId::V6, &state_sets, &auth_chain, &fetcher).await {
 				| Ok(state) => state,
 				| Err(e) => panic!("{e}"),
 			};
@@ -1852,7 +1857,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn v2_1_conflicted_subgraph_uses_prev_events() {
+	async fn v2_1_conflicted_subgraph_uses_auth_chains() {
 		use futures::future::ready;
 
 		let init = INITIAL_EVENTS();
@@ -1874,14 +1879,17 @@ mod tests {
 			.await
 			.expect("subgraph calculation must succeed");
 
-		// MB has prev_events = ["START"], IME has prev_events = ["IMC"]
+		// MB and IME are conflicted seeds — must be in the subgraph
 		assert!(subgraph.contains(&event_id("MB")), "must contain MB");
 		assert!(subgraph.contains(&event_id("IME")), "must contain IME");
 
-		// IPOWER is only reachable via auth_events, never via prev_events.
+		// IPOWER is backwards-reachable via auth chains (MB->PB->IPOWER,
+		// IME->PA->IPOWER) but NOT forwards-reachable (no conflicted event
+		// has IPOWER as a descendant in the auth chain graph), so the
+		// intersection excludes it.
 		assert!(
 			!subgraph.contains(&event_id("IPOWER")),
-			"must NOT contain IPOWER (auth chain only, not prev_events)"
+			"must NOT contain IPOWER (backwards-reachable but not forwards-reachable)"
 		);
 	}
 
@@ -2058,10 +2066,9 @@ mod tests {
 		let fetcher = |id: OwnedEventId| ready(ev_map.get(&id).cloned());
 		let exists = |id: OwnedEventId| ready(ev_map.get(&id).is_some());
 
-		let resolved =
-			super::resolve(&RoomVersionId::V12, &state_sets, &auth_chain, &fetcher, &exists)
-				.await
-				.expect("v2.1 resolution should succeed");
+		let resolved = super::resolve(&RoomVersionId::V12, &state_sets, &auth_chain, &fetcher)
+			.await
+			.expect("v2.1 resolution should succeed");
 
 		// PL3 must win over PL1 — resolution must pick the latest power levels
 		let pl_key = (StateEventType::RoomPowerLevels, "".into());

@@ -121,8 +121,7 @@ where
 	StateSets: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
 {
 	let event_fetch = |event_id| self.event_fetch(Some(room_id), event_id);
-	let event_exists = |event_id| self.event_exists(event_id);
-	state_res::resolve(room_version, state_sets, auth_chain_sets, &event_fetch, &event_exists)
+	state_res::resolve(room_version, state_sets, auth_chain_sets, &event_fetch)
 		.map_err(|e| err!(error!("State resolution failed: {e:?}")))
 		.await
 }

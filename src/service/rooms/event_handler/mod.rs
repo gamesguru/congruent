@@ -88,10 +88,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	async fn event_exists(&self, event_id: OwnedEventId) -> bool {
-		self.services.timeline.pdu_exists(&event_id).await
-	}
-
 	async fn event_fetch(
 		&self,
 		room_id: Option<&RoomId>,
