@@ -66,9 +66,6 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show && rustup component add clippy rustfmt
 
-      - name: Install floating nightly toolchain (for pre-commit's cargo +nightly fmt)
-        run: rustup toolchain install nightly --component rustfmt
-
       - name: Install pinned nightly toolchain (for fmt + llvm-cov)
         run: rustup toolchain install nightly-2026-08-20 --component rustfmt --component clippy --component llvm-tools-preview
 

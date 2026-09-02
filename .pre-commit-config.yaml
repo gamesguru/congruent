@@ -45,7 +45,12 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo +nightly fmt --
+        # Pinned to the same nightly as rust-toolchain.toml's `channel` (rustfmt
+        # isn't covered by that file's toolchain pin - see its own comment) so
+        # `cargo fmt` can't silently drift to whatever "nightly" resolves to
+        # today and reformat the whole tree with a different rustfmt version's
+        # comment-wrapping rules. Bump this in lockstep with rust-toolchain.toml.
+        entry: sh -c 'RUSTUP_TOOLCHAIN=nightly-2026-08-20 cargo fmt --'
         language: system
         types: [rust]
         pass_filenames: false
