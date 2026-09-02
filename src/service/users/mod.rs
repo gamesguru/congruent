@@ -1570,6 +1570,11 @@ impl Service {
 
 		let count = self.services.globals.next_count().unwrap();
 
+		trace!(
+			%sender, %target_user_id, %target_device_id, count, event_type,
+			"add_to_device_event",
+		);
+
 		let key = (target_user_id, target_device_id, count);
 		self.db.todeviceid_events.put(
 			key,

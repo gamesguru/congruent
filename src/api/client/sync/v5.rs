@@ -2167,19 +2167,27 @@ async fn collect_to_device(
 			.await;
 	}
 
+	let events: Vec<_> = services
+		.users
+		.get_to_device_events(
+			sender_user,
+			sender_device,
+			client_to_device_since,
+			Some(next_batch),
+		)
+		.map(at!(1))
+		.collect()
+		.await;
+
+	trace!(
+		%sender_user, %sender_device, ?client_to_device_since, next_batch,
+		count = events.len(),
+		"collect_to_device",
+	);
+
 	Some(sync_events::v5::response::ToDevice {
 		next_batch: next_batch.to_string(),
-		events: services
-			.users
-			.get_to_device_events(
-				sender_user,
-				sender_device,
-				client_to_device_since,
-				Some(next_batch),
-			)
-			.map(at!(1))
-			.collect()
-			.await,
+		events,
 	})
 }
 
