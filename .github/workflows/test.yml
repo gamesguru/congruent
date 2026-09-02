@@ -72,6 +72,8 @@ jobs:
       - name: Debug checks
         run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars doctor cpu-info
       - name: Format
+        env:
+          RUSTUP_TOOLCHAIN: nightly
         run: make format
 
       - name: Test
