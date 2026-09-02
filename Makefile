@@ -4,6 +4,17 @@ SHELL=/bin/bash
 # [CONFIG] Suppresses annoying "make[1]: Entering directory" messages
 MAKEFLAGS += --no-print-directory
 
+# [CONFIG] Force the toolchain pinned in rust-toolchain.toml's `channel`,
+# unconditionally overriding any `RUSTUP_TOOLCHAIN` a caller's shell happens
+# to have exported (a bad or misspelled one - e.g. missing the `nightly-`
+# prefix - otherwise breaks every `cargo`/`rustc` invocation below with a
+# confusing error, or silently points them at the wrong compiler). `:=` (not
+# `?=`) is required: Make auto-imports already-exported shell variables as if
+# they were `?=`-defined, so a plain `?=` would keep a bad inherited value
+# instead of replacing it. Bump this in lockstep with rust-toolchain.toml.
+RUSTUP_TOOLCHAIN := nightly-2026-08-20
+export RUSTUP_TOOLCHAIN
+
 # [CONFIG] source .env if it exists
 ifneq (,$(wildcard ./.env))
 	include .env
