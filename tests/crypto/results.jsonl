@@ -63,9 +63,9 @@
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
+{"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestResolveNamespace"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{js_hs1}"}
