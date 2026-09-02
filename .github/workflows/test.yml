@@ -64,7 +64,7 @@ jobs:
         run: rustup show && rustup component add clippy rustfmt
 
       - name: Install nightly rustfmt
-        run: rustup toolchain install nightly-2026-08-27 --component rustfmt --component clippy && rustup default nightly-2026-08-27
+        run: rustup toolchain install nightly-2026-08-27 --component rustfmt --component clippy && rustup default nightly-2026-08-27 && rustup component add rustfmt --toolchain nightly
 
       - name: Install pre-commit
         run: pip install pre-commit
