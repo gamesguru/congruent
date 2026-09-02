@@ -1056,6 +1056,9 @@ where
 			};
 			if sender == target_user {
 				// self-leave
+				// let allow = target_user_current_membership == MembershipState::Join
+				// 	|| target_user_current_membership == MembershipState::Invite
+				// 	|| target_user_current_membership == MembershipState::Knock;
 				let allow = matches!(
 					target_user_current_membership,
 					MembershipState::Join | MembershipState::Invite | MembershipState::Knock
