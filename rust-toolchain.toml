@@ -10,7 +10,7 @@
 
 [toolchain]
 profile = "minimal"
-channel = "nightly"
+channel = "nightly-2026-08-27"
 components = [
     # For rust-analyzer
     "rust-src",

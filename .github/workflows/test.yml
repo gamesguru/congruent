@@ -64,7 +64,7 @@ jobs:
         run: rustup show && rustup component add clippy rustfmt
 
       - name: Install nightly rustfmt
-        run: rustup toolchain install nightly --component rustfmt --component clippy && rustup default nightly
+        run: rustup toolchain install nightly-2026-08-27 --component rustfmt --component clippy && rustup default nightly-2026-08-27
 
       - name: Install pre-commit
         run: pip install pre-commit
@@ -73,7 +73,7 @@ jobs:
         run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars doctor cpu-info
       - name: Format
         env:
-          RUSTUP_TOOLCHAIN: nightly
+          RUSTUP_TOOLCHAIN: nightly-2026-08-27
         run: make format
 
       - name: Test
