@@ -497,6 +497,24 @@ e2ee args=".*":
             ;;
     esac
 
+    # Multiprocess tests (client restart/SIGKILL scenarios) need a standalone
+    # cmd/rpc binary; without COMPLEMENT_CRYPTO_RPC_BINARY set they silently
+    # SKIP instead of running (internal/cc/test_context.go). Build it
+    # automatically whenever rust is in the matrix, rather than requiring
+    # every caller to remember a separate build step and env var - rebuild
+    # only when missing or older than its sources, so this is a no-op on a
+    # repeat run.
+    case "$CRYPTO_MATRIX" in
+        *[rR]*)
+            RPC_BIN="$COMPLEMENT_SRC/rpc"
+            if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
+                echo "Building complement-crypto's cmd/rpc binary (multiprocess tests)..."
+                (cd "$COMPLEMENT_SRC" && go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
+            fi
+            export COMPLEMENT_CRYPTO_RPC_BINARY="$RPC_BIN"
+            ;;
+    esac
+
     # This suite is fundamentally serial: the tests live in a single package and
     # none of them call t.Parallel(), so go test's `-parallel`/`-p` flags have no
     # work to overlap within one process. The only real way to run tests in
