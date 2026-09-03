@@ -35,7 +35,7 @@
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{rust_hs1}"}
 {"Action":"fail","Test":"TestDelayedInviteResponse"}
 {"Action":"fail","Test":"TestDelayedInviteResponse/js"}
-{"Action":"fail","Test":"TestDelayedInviteResponse/rust"}
+{"Action":"pass","Test":"TestDelayedInviteResponse/rust"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer/rust"}
@@ -48,11 +48,11 @@
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/js"}
 {"Action":"pass","Test":"TestFailedOneTimeKeyUploadRetries/rust"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut"}
 {"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{js_hs1}|{rust_hs1}"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{rust_hs1}"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{js_hs1}"}
+{"Action":"fail","Test":"TestFallbackKeyIsUsedIfOneTimeKeysRunOut/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/rust"}
@@ -115,8 +115,8 @@
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/rust"}
-{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder"}
-{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
+{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder"}
+{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/js"}
