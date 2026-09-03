@@ -7,7 +7,7 @@ use conduwuit::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, OwnedUserId, RoomId, RoomVersionId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedUserId, RoomId, RoomVersionId,
 	api::client::{error::ErrorKind, room::upgrade_room},
 	events::{
 		StateEventType, TimelineEventType,
@@ -96,7 +96,8 @@ pub(crate) async fn upgrade_room_route(
 		.boxed()
 		.await;
 
-	if let Err(_e) = tombstone_test_result {
+	if let Err(e) = tombstone_test_result {
+		conduwuit::error!("TOMBSTONE UPGRADE REJECTED: {:?}", e);
 		return Err!(Request(Forbidden("User does not have permission to upgrade this room.")));
 	}
 
@@ -149,12 +150,16 @@ pub(crate) async fn upgrade_room_route(
 	let state_lock = services.rooms.state.mutex.lock(replacement_room_tmp).await;
 
 	// Get the old room creation event
-	let mut create_event_content: CanonicalJsonObject = services
+	let old_create_event = services
 		.rooms
 		.state_accessor
-		.room_state_get_content(&body.room_id, &StateEventType::RoomCreate, "")
+		.room_state_get(&body.room_id, &StateEventType::RoomCreate, "")
 		.await
 		.map_err(|_| err!(Database("Found room without m.room.create event.")))?;
+
+	let mut create_event_content: CanonicalJsonObject =
+		serde_json::from_str(old_create_event.content().get())
+			.map_err(|_| err!(Database("Found room with invalid m.room.create event.")))?;
 
 	// Use the m.room.tombstone event as the predecessor
 	let predecessor = Some(ruma::events::room::create::PreviousRoom::new(
@@ -162,7 +167,21 @@ pub(crate) async fn upgrade_room_route(
 		tombstone_event_id,
 	));
 
-	let additional_creators = create_event_content.get("additional_creators").cloned();
+	// Extract additional_creators from the raw JSON body (not in typed Ruma
+	// Request)
+	let additional_creators: Vec<OwnedUserId> = match &body.json_body {
+		| Some(CanonicalJsonValue::Object(obj)) => match obj.get("additional_creators") {
+			| Some(CanonicalJsonValue::Array(arr)) => arr
+				.iter()
+				.filter_map(|v| match v {
+					| CanonicalJsonValue::String(s) => OwnedUserId::try_from(s.as_str()).ok(),
+					| _ => None,
+				})
+				.collect(),
+			| _ => Vec::new(),
+		},
+		| _ => Vec::new(),
+	};
 
 	// Send a m.room.create event containing a predecessor field and the applicable
 	// room_version
@@ -187,10 +206,18 @@ pub(crate) async fn upgrade_room_route(
 	}
 
 	if room_features.explicitly_privilege_room_creators {
-		if let Some(additional_creators) = additional_creators.as_ref() {
-			create_event_content
-				.insert("additional_creators".into(), additional_creators.clone());
+		if !additional_creators.is_empty() {
+			let additional = additional_creators
+				.iter()
+				.map(|u| CanonicalJsonValue::String(u.to_string()))
+				.collect::<Vec<_>>();
+			let additional_json = CanonicalJsonValue::Array(additional);
+			create_event_content.insert("additional_creators".into(), additional_json);
+		} else {
+			create_event_content.remove("additional_creators");
 		}
+	} else {
+		create_event_content.remove("additional_creators");
 	}
 
 	create_event_content.insert(
@@ -307,16 +334,8 @@ pub(crate) async fn upgrade_room_route(
 					})?;
 
 				power_levels_event_content.users.remove(sender_user);
-				if let Some(additional_creators) = additional_creators.as_ref() {
-					if let Some(additional_creators) = additional_creators.as_array() {
-						for creator in additional_creators {
-							if let Some(creator) = creator.as_str() {
-								if let Ok(creator) = OwnedUserId::parse(creator) {
-									power_levels_event_content.users.remove(&creator);
-								}
-							}
-						}
-					}
+				for creator in &additional_creators {
+					power_levels_event_content.users.remove(creator);
 				}
 
 				event_content = to_raw_value(&power_levels_event_content)

@@ -34,8 +34,6 @@ use crate::{Dep, rooms, rooms::short::ShortStateHash};
 pub struct Service {
 	services: Services,
 	db: Data,
-	pub encrypted_rooms_cache:
-		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
 }
 
 struct Services {
@@ -44,6 +42,7 @@ struct Services {
 	state_compressor: Dep<rooms::state_compressor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	globals: Dep<crate::globals::Service>,
 }
 
 struct Data {
@@ -61,11 +60,11 @@ impl crate::Service for Service {
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_compressor: args
 					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				globals: args.depend::<crate::globals::Service>("globals"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
 			},
-			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}
 
@@ -73,6 +72,19 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Returns the rezzy [`StateResVersion`] for a room, using the
+	/// cached 3-tier lookup (memory → DB → create event fallback).
+	pub async fn get_state_res_version(
+		&self,
+		room_id: &RoomId,
+	) -> Result<rezzy::StateResVersion> {
+		self.services
+			.state
+			.get_room_version(room_id)
+			.await
+			.map(|v| rooms::auth_adapter::to_state_res_version(&v))
+	}
+
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
@@ -101,18 +113,16 @@ impl Service {
 	pub async fn is_world_readable(&self, room_id: &RoomId) -> bool {
 		self.room_state_get_content(room_id, &StateEventType::RoomHistoryVisibility, "")
 			.await
-			.map(|c: RoomHistoryVisibilityEventContent| {
+			.is_ok_and(|c: RoomHistoryVisibilityEventContent| {
 				c.history_visibility == HistoryVisibility::WorldReadable
 			})
-			.unwrap_or(false)
 	}
 
 	/// Checks if guests are able to join a given room
 	pub async fn guest_can_join(&self, room_id: &RoomId) -> bool {
 		self.room_state_get_content(room_id, &StateEventType::RoomGuestAccess, "")
 			.await
-			.map(|c: RoomGuestAccessEventContent| c.guest_access == GuestAccess::CanJoin)
-			.unwrap_or(false)
+			.is_ok_and(|c: RoomGuestAccessEventContent| c.guest_access == GuestAccess::CanJoin)
 	}
 
 	/// Gets the primary alias from canonical alias event
@@ -162,22 +172,9 @@ impl Service {
 	}
 
 	pub async fn is_encrypted_room(&self, room_id: &RoomId) -> bool {
-		if self.encrypted_rooms_cache.read().contains(room_id) {
-			return true;
-		}
-
-		let encrypted = self
-			.room_state_get(room_id, &StateEventType::RoomEncryption, "")
+		self.room_state_get(room_id, &StateEventType::RoomEncryption, "")
 			.await
-			.is_ok();
-
-		if encrypted {
-			self.encrypted_rooms_cache
-				.write()
-				.insert(room_id.to_owned());
-		}
-
-		encrypted
+			.is_ok()
 	}
 
 	pub async fn state_get(

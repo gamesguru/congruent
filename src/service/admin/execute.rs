@@ -15,7 +15,7 @@ pub(super) async fn console_auto_start(&self) {
 		if self.services.server.config.admin_console_automatic {
 			// Allow more of the startup sequence to execute before spawning
 			tokio::task::yield_now().await;
-			self.console.start().await;
+			self.console.start();
 		}
 	}
 }
@@ -50,6 +50,19 @@ pub async fn startup_execute(&self) -> Result {
 		}
 
 		tokio::task::yield_now().await;
+	}
+
+	if !smoketest
+		&& should_shutdown_after_startup_execute(
+			self.services.server.config.admin_console_automatic,
+			commands.len(),
+		) {
+		debug_info!("Startup console commands complete. Shutting down now...");
+		self.services
+			.server
+			.shutdown()
+			.inspect_err(error::inspect_log)
+			.expect("Error shutting down after startup console commands");
 	}
 
 	// The smoketest functionality is placed here for now and simply initiates
@@ -132,4 +145,30 @@ fn execute_command_output(i: usize, content: &RoomMessageEventContent) -> Result
 #[implement(super::Service)]
 fn execute_command_error(i: usize, content: &RoomMessageEventContent) -> Result {
 	Err!(error!("Execute command #{i} failed:\n{:#}", content.body()))
+}
+
+#[must_use]
+fn should_shutdown_after_startup_execute(
+	admin_console_automatic: bool,
+	command_count: usize,
+) -> bool {
+	admin_console_automatic && command_count > 0
+}
+
+#[cfg(test)]
+mod tests {
+	use super::should_shutdown_after_startup_execute;
+
+	#[test]
+	fn startup_console_shuts_down_after_execute_commands() {
+		assert!(should_shutdown_after_startup_execute(true, 1));
+		assert!(should_shutdown_after_startup_execute(true, 2));
+	}
+
+	#[test]
+	fn startup_console_stays_alive_without_execute_commands() {
+		assert!(!should_shutdown_after_startup_execute(true, 0));
+		assert!(!should_shutdown_after_startup_execute(false, 0));
+		assert!(!should_shutdown_after_startup_execute(false, 3));
+	}
 }

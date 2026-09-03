@@ -12,7 +12,7 @@ pub(super) fn open(db: &Arc<Engine>, name: &str) -> Arc<ColumnFamily> {
 	// SAFETY: Column family handles out of RocksDB are basic pointers and can
 	// be invalidated: 1. when the database closes. 2. when the column is dropped or
 	// closed. rust_rocksdb wraps this for us by storing handles in their own
-	// `RwLock<BTreeMap>` map and returning an Arc<BoundColumnFamily<'_>>` to
+	// `RwLock<BTreeMap>` map and returning an `Arc<BoundColumnFamily<'_>>` to
 	// provide expected safety. Similarly in "single-threaded mode" we would
 	// receive `&'_ ColumnFamily`.
 	//

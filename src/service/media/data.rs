@@ -52,6 +52,8 @@ impl Data {
 		Ok(key.to_vec())
 	}
 
+	pub(super) fn delete_file_metadata_key(&self, key: &[u8]) { self.mediaid_file.remove(key); }
+
 	pub(super) async fn delete_file_mxc(&self, mxc: &Mxc<'_>) {
 		debug!("MXC URI: {mxc}");
 
@@ -229,6 +231,20 @@ impl Data {
 		);
 		value.push(0xFF);
 		value.extend_from_slice(&data.audio_size.unwrap_or(0).to_be_bytes());
+		value.push(0xFF);
+		value.extend_from_slice(
+			data.og_type
+				.as_ref()
+				.map(String::as_bytes)
+				.unwrap_or_default(),
+		);
+		value.push(0xFF);
+		value.extend_from_slice(
+			data.og_url
+				.as_ref()
+				.map(String::as_bytes)
+				.unwrap_or_default(),
+		);
 
 		self.url_previews.insert(url.as_bytes(), &value);
 
@@ -331,10 +347,26 @@ impl Data {
 			| Some(0) => None,
 			| x => x,
 		};
+		let og_type = match values
+			.next()
+			.and_then(|b| String::from_utf8(b.to_vec()).ok())
+		{
+			| Some(s) if s.is_empty() => None,
+			| x => x,
+		};
+		let og_url = match values
+			.next()
+			.and_then(|b| String::from_utf8(b.to_vec()).ok())
+		{
+			| Some(s) if s.is_empty() => None,
+			| x => x,
+		};
 
 		Ok(UrlPreviewData {
 			title,
 			description,
+			og_type,
+			og_url,
 			image,
 			image_size,
 			image_width,

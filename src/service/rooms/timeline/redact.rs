@@ -45,11 +45,16 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
-	pdu.redact(&room_version, reason.to_value())?;
+	let redacted_because = reason
+		.to_format::<ruma::serde::Raw<ruma::events::AnyTimelineEvent>>()
+		.deserialize_as::<serde_json::Value>()
+		.unwrap_or_else(|_| reason.to_value());
+
+	pdu.redact(&room_version, redacted_because)?;
 
 	let obj = utils::to_canonical_object(&pdu).map_err(|e| {
 		err!(Database(error!(%event_id, ?e, "Failed to convert PDU to canonical JSON")))
 	})?;
 
-	self.replace_pdu(&pdu_id, &obj).await
+	self.replace_pdu(&pdu_id, &obj, event_id).await
 }

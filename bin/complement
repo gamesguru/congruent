@@ -7,13 +7,13 @@ set -euo pipefail
 COMPLEMENT_SRC="${COMPLEMENT_SRC:-"$1"}"
 
 # Default results directory
-RESULTS_DIR="${COMPLEMENT_RESULTS_DIR:-"${RESULTS_DIR:-tests/test_results/complement}"}"
+RESULTS_DIR="${RESULTS_DIR:-tests/complement}"
 
 # A `.jsonl` file to write test logs to
-LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
+LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/logs.jsonl}"}"
 
-# A `.jsonl` file to write test results to
-RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/test_results.jsonl}"}"
+# A `.jsonl` file to write merged test results to.
+RESULTS_FILE="${3:-"${RESULTS_FILE:-$RESULTS_DIR/results.jsonl}"}"
 
 # The base docker image to use for complement tests
 # You can build the default with `docker build -t continuwuity:complement -f ./docker/complement.Dockerfile .`
@@ -22,7 +22,7 @@ COMPLEMENT_BASE_IMAGE="${COMPLEMENT_BASE_IMAGE:-continuwuity:complement}"
 
 # Complement tests that are skipped due to flakiness/reliability issues or we don't implement such features and won't for a long time
 # This can be overridden by environment variable
-DEFAULT_SKIPPED_TESTS='TestPartialStateJoin.*|TestRoomDeleteAlias/Parallel/Regular_users_can_add_and_delete_aliases_when_m.*|TestRoomDeleteAlias/Parallel/Can_delete_canonical_alias|TestUnbanViaInvite.*|TestRoomState/Parallel/GET_/publicRooms_lists.*|TestRoomDeleteAlias/Parallel/Users_with_sufficient_power-level_can_delete_other.*'
+DEFAULT_SKIPPED_TESTS='TestPartialStateJoin.*'
 SKIPPED_COMPLEMENT_TESTS="${SKIPPED_COMPLEMENT_TESTS:-"$DEFAULT_SKIPPED_TESTS"}"
 
 # A regex for tests to run.
@@ -34,149 +34,328 @@ COMPLEMENT_PARALLEL="${COMPLEMENT_PARALLEL:-2}"
 # On Linux, host.docker.internal doesn't work by default.
 # We try to detect the docker0 bridge IP and use it.
 if [[ "$OSTYPE" == "linux-gnu"* ]] && [ -z "${COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT:-}" ]; then
-    BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1 || true)
-    if [ -n "$BRIDGE_IP" ]; then
-        echo "Detected Docker bridge IP: $BRIDGE_IP. Setting COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=$BRIDGE_IP"
-        export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="$BRIDGE_IP"
-    fi
+	BRIDGE_IP=$(ip addr show docker0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d/ -f1 | head -n1 || true)
+	if [ -n "$BRIDGE_IP" ]; then
+		echo "Detected Docker bridge IP: $BRIDGE_IP. Setting COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=$BRIDGE_IP"
+		export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="$BRIDGE_IP"
+	fi
 fi
 
 # Ensure paths are absolute so they don't break when we change directory
 COMPLEMENT_SRC="$(realpath -m "$COMPLEMENT_SRC")"
 LOG_FILE="$(realpath -m "$LOG_FILE")"
 RESULTS_FILE="$(realpath -m "$RESULTS_FILE")"
+MAIN_LOG_FILE="$LOG_FILE"
+MAIN_RESULTS_FILE="$RESULTS_FILE"
 
 # Ensure parent directories exist
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$(dirname "$RESULTS_FILE")"
 
-if [ "$RUN_TESTS" != "." ]; then
-    # Use a unique results file for partial runs to avoid clobbering the main one
-    suffix=$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)
-    LOG_FILE="${LOG_FILE%.jsonl}.$suffix.jsonl"
-    RESULTS_FILE="${RESULTS_FILE%.jsonl}.$suffix.jsonl"
-    echo "Partial run detected: results will be saved to $RESULTS_FILE"
-fi
-
 # $COMPLEMENT_SRC needs to be a directory to Complement source code
 if [ ! -d "$COMPLEMENT_SRC" ]; then
-    echo "\$COMPLEMENT_SRC must be a directory/path to Complement source code"
-    exit 1
+	echo "\$COMPLEMENT_SRC must be a directory/path to Complement source code"
+	exit 1
 fi
 
 toplevel="$(git rev-parse --show-toplevel)"
-pushd "$toplevel" > /dev/null
+pushd "$toplevel" >/dev/null
 
-# Cleanup leftover Complement containers and images
+if [ "$RUN_TESTS" = "." ]; then
+	run_suffix="all"
+else
+	run_suffix="$(echo "$RUN_TESTS" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c 1-32)"
+	run_suffix="${run_suffix:-all}"
+fi
+run_stamp="$(date +%s%N)"
+STAGING_DIR="$toplevel/.tmp/complement"
+mkdir -p "$STAGING_DIR"
+LOG_FILE="$STAGING_DIR/logs.${run_suffix}.${run_stamp}.jsonl"
+RESULTS_FILE="$STAGING_DIR/test_results.${run_suffix}.${run_stamp}.jsonl"
+
+if [ "$RUN_TESTS" != "." ]; then
+	echo "Partial run detected: results will be saved to $RESULTS_FILE"
+else
+	echo "Full run detected: results will be staged in $RESULTS_FILE and merged into $MAIN_RESULTS_FILE"
+fi
+
+# Namespace Complement's generated containers, networks, and localhost/complement
+# blueprint images per branch/worktree. The prefix is stable so local blueprint
+# caches remain useful, but different checkouts/branches do not clobber each other.
+if [ -z "${COMPLEMENT_PACKAGE_NAMESPACE_PREFIX:-}" ]; then
+	branch_slug=$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) |
+		tr '[:upper:]/:@ ' '[:lower:]----' |
+		tr -cs 'a-z0-9_.-' '-' |
+		sed 's/^-//;s/-$//' |
+		cut -c1-48)
+	branch_slug="${branch_slug:-detached}"
+	workspace_hash=$(printf '%s' "$toplevel" | sha1sum | awk '{print substr($1, 1, 8)}')
+	export COMPLEMENT_PACKAGE_NAMESPACE_PREFIX="${branch_slug}_${workspace_hash}"
+fi
+
+# Mark homeserver containers spawned by this wrapper run so cleanup never
+# guesses based on timing or broad complement_ container names.
+COMPLEMENT_WRAPPER_TOKEN="${COMPLEMENT_WRAPPER_TOKEN:-"complement-$$-$(date +%s%N)"}"
+COMPLEMENT_WRAPPER_ENV_PREFIX="${COMPLEMENT_SHARE_ENV_PREFIX:-COMPLEMENT_WRAPPER_}"
+COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_TOKEN"
+printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
+export "$COMPLEMENT_WRAPPER_ENV_NAME"
+export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
+
+# Cleanup only Complement containers spawned by this wrapper run.
 cleanup_complement_containers() {
-    local containers
-    containers=$(docker ps -a --filter "name=complement_" -q)
-    if [ -n "$containers" ]; then
-        echo "Cleaning up leftover Complement containers..."
-        echo "$containers" | xargs -r docker rm -f
-    fi
+	local containers container ours=()
+	mapfile -t containers < <(docker ps -aq --filter "name=complement")
 
-    # TODO: perhaps also prune images here?
+	for container in "${containers[@]}"; do
+		if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null |
+			grep -Fxq "COMPLEMENT_WRAPPER_TOKEN=$COMPLEMENT_WRAPPER_TOKEN"; then
+			ours+=("$container")
+		fi
+	done
+
+	if [ "${#ours[@]}" -gt 0 ]; then
+		echo "Cleaning up Complement containers spawned by this run..."
+		printf '%s\n' "${ours[@]}" | xargs -r docker rm -f
+	fi
+
+	# TODO: perhaps also prune images here?
 }
-trap cleanup_complement_containers EXIT
-
 
 # Ensure result files exist even if tests fail to start
 mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$RESULTS_FILE")"
-touch "$LOG_FILE"
-touch "$RESULTS_FILE"
+: >"$LOG_FILE"
+: >"$RESULTS_FILE"
 
 echo ""
 echo "running go test with:"
 echo "\$COMPLEMENT_SRC: $COMPLEMENT_SRC"
 echo "\$COMPLEMENT_BASE_IMAGE: $COMPLEMENT_BASE_IMAGE"
-echo "\$RESULTS_FILE: $RESULTS_FILE"
+echo "\$RESULTS_FILE (staging): $RESULTS_FILE"
+echo "\$MAIN_RESULTS_FILE: $MAIN_RESULTS_FILE"
 echo "\$LOG_FILE: $LOG_FILE"
 echo "\$RUN_TESTS: $RUN_TESTS"
 echo ""
 
-# Determine the test runner and output handling
-HAS_GOTESTSUM=false
-if command -v gotestsum >/dev/null 2>&1; then
-    HAS_GOTESTSUM=true
-    echo "gotestsum installed: true"
-    gotestsum --version
+anchor_one() {
+	local pattern="$1"
+	local anchored=()
+	local segment
+
+	IFS='/' read -r -a segments <<<"$pattern"
+	local last=$((${#segments[@]} - 1))
+	local idx=0
+	for segment in "${segments[@]}"; do
+		# In the real (slash-joined) test name, every segment except the
+		# last is a *complete* path component terminated by a literal `/`.
+		# So only the last segment -- the one you may have typed a partial
+		# name for -- gets a prefix (^, no $) match: `TestFoo/bar` also
+		# matches `TestFoo/bar/Sub`. Earlier segments must match exactly
+		# (^...$), otherwise a prefix like `^TestSync` also sweeps in
+		# unrelated top-level tests such as `TestSyncFilter` or
+		# `TestSyncLeaveSection` that merely share the substring -- they
+		# aren't part of the `TestSync` hierarchy at all. Segments that
+		# already look like caller-supplied regex are left untouched.
+		if [[ "$segment" =~ ^\^ || "$segment" =~ .*[\[\]\(\)\?\+\*\|\$] ]]; then
+			anchored+=("$segment")
+		elif [ "$idx" -eq "$last" ]; then
+			anchored+=("^${segment}")
+		else
+			anchored+=("^${segment}\$")
+		fi
+		idx=$((idx + 1))
+	done
+
+	(IFS='/'; echo "${anchored[*]}")
+}
+
+# `go test -run` splits its whole argument on unescaped `/` to match subtest
+# hierarchy depth-by-depth; it has no concept of top-level `|` alternation
+# across patterns of differing depth (e.g. `TestA/Sub` vs `TestB/Sub/Sub`
+# joined by one `|` silently loses one side -- go re-splits the combined
+# string on every `/`, not just the ones belonging to the same alternative).
+# So instead of building one `-run` regex, split on top-level `|` ourselves
+# and run `go test` once per alternative, appending results/logs together.
+ALT_PATTERNS=()
+if [ "$RUN_TESTS" = "." ]; then
+	ALT_PATTERNS=(".")
 else
-    echo "gotestsum installed: false"
+	IFS='|' read -r -a raw_alts <<<"$RUN_TESTS"
+	for alt in "${raw_alts[@]}"; do
+		ALT_PATTERNS+=("$(anchor_one "$alt")")
+	done
+	if [ "${#ALT_PATTERNS[@]}" -gt 1 ]; then
+		echo "Anchored run regexes (run separately, one go test invocation each):"
+		for alt in "${ALT_PATTERNS[@]}"; do
+			echo "  $alt"
+		done
+	else
+		echo "Anchored run regex: ${ALT_PATTERNS[0]}"
+	fi
+	echo ""
 fi
 
-# Restrict partial runs to the package that defines the requested top-level test.
-# `go test ./tests/... -run TestName` still starts every package's TestMain.
-TEST_PACKAGES=(./tests/...)
-if [[ "$RUN_TESTS" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
-    test_name="${BASH_REMATCH[1]}"
-    mapfile -t matched_packages < <(
-        cd "$COMPLEMENT_SRC"
-        rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}\\(" tests \
-            | xargs -r -n1 dirname \
-            | sed 's#^#./#' \
-            | sort -u
-    )
-    if [ "${#matched_packages[@]}" -gt 0 ]; then
-        TEST_PACKAGES=("${matched_packages[@]}")
-        echo "Selected test package(s): ${TEST_PACKAGES[*]}"
-    fi
+record_result() {
+	local action="$1"
+	local test_name="$2"
+	local elapsed="$3"
+
+	# Stream straight to the staged results file as results arrive; no
+	# in-memory aggregation and no full-file rewrite per event.
+	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
+
+	printf '%s\t%s %s\n' "${action^^}" "$test_name" "$elapsed"
+}
+
+EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
+EVENTS_FIFO="${EVENTS_FIFO_DIR}/events"
+
+cleanup_results_fifo() {
+	rm -rf "$EVENTS_FIFO_DIR"
+}
+trap 'cleanup_results_fifo; cleanup_complement_containers' EXIT
+
+# Runs one anchored `-run` pattern's `go test` invocation, appending its JSON
+# log and pass/fail/skip events onto the shared LOG_FILE/RESULTS_FILE. Returns
+# the `go test` exit code.
+run_one_pattern() {
+	local pattern="$1"
+
+	# Restrict partial runs to the package that defines the requested
+	# top-level test. `go test ./tests/... -run TestName` still starts
+	# every package's TestMain otherwise.
+	local -a packages=(./tests/...)
+	if [[ "$pattern" =~ ^\^?(Test[[:alnum:]_]+)(/.*)?\$?$ ]]; then
+		local test_name="${BASH_REMATCH[1]}"
+		local -a matched_packages=()
+		mapfile -t matched_packages < <(
+			cd "$COMPLEMENT_SRC"
+			rg -l --glob '*_test.go' "^func[[:space:]]+${test_name}" tests |
+				xargs -r -n1 dirname |
+				sed 's#^#./#' |
+				sort -u
+		)
+		if [ "${#matched_packages[@]}" -gt 0 ]; then
+			packages=("${matched_packages[@]}")
+			echo "Selected test package(s) for $pattern: ${packages[*]}"
+		fi
+	fi
+
+	local -a flags=(
+		-tags "conduwuit_blacklist"
+		-skip "$SKIPPED_COMPLEMENT_TESTS"
+		-run "$pattern"
+		-p "$COMPLEMENT_PARALLEL"
+		-parallel "$COMPLEMENT_PARALLEL"
+		-timeout 1h
+		-count=1
+		"${packages[@]}"
+	)
+
+	rm -f "$EVENTS_FIFO"
+	mkfifo "$EVENTS_FIFO"
+
+	local exit_code=0
+	# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for faster complement,
+	# at the possible expense of test environment pollution.
+	set +e
+	(
+		set -o pipefail
+		env \
+			-C "$COMPLEMENT_SRC" \
+			COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+			go test -json "${flags[@]}" |
+			tee -a "$LOG_FILE" |
+			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | (.Elapsed // 0) as $elapsed | [.Action, .Test, (if $elapsed == 0 then "0s" else (((($elapsed * 100) | round) / 100) | tostring) + "s" end)] | @tsv' \
+				>"$EVENTS_FIFO"
+	) &
+	local producer_pid=$!
+
+	while IFS=$'\t' read -r action test_name elapsed; do
+		[ -n "$action" ] || continue
+		record_result "$action" "$test_name" "$elapsed"
+	done <"$EVENTS_FIFO"
+
+	wait "$producer_pid"
+	exit_code=$?
+	set -e
+	return "$exit_code"
+}
+
+TEST_EXIT_CODE=0
+for pattern in "${ALT_PATTERNS[@]}"; do
+	set +e
+	run_one_pattern "$pattern"
+	pattern_exit=$?
+	set -e
+	if [ "$pattern_exit" -ne 0 ]; then
+		TEST_EXIT_CODE="$pattern_exit"
+	fi
+done
+
+if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
+	if [ "$RUN_TESTS" = "." ]; then
+		# A full run spans every package under ./tests/..., and Go's -json
+		# stream identifies tests by name only once we've dropped .Package
+		# (see record_result above) -- so same-named tests in different
+		# packages (e.g. TestSync in tests/csapi and tests/msc4222) land as
+		# two rows here. --dedupe-in-place forces that down to one row per
+		# name, same as the partial-run merge path already does.
+		#
+		# Dedupe/sort are best-effort: if the merge helper fails (e.g. under
+		# heavy machine load) that must NEVER lose the run's results. Fall
+		# back to copying the raw staged results (pass/fail preserved) into
+		# MAIN_RESULTS_FILE so the ledger still reflects the run.
+		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
+			|| echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
+		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
+			|| echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
+		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
+			|| { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
+		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+	else
+		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+			mv "$tmp_results" "$MAIN_RESULTS_FILE" \
+				|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+		else
+			# Merge failed (e.g. under load); append the staged results so the
+			# new pass/fail rows are still recorded rather than lost.
+			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+			rm -f "$tmp_results"
+		fi
+	fi
+else
+	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
+	if [ "$TEST_EXIT_CODE" -eq 0 ]; then
+		TEST_EXIT_CODE=1
+	fi
 fi
 
-# Common flags for both test runners
-TEST_FLAGS=(
-    -tags "conduwuit_blacklist"
-    -skip "$SKIPPED_COMPLEMENT_TESTS"
-    -run "$RUN_TESTS"
-    -p "$COMPLEMENT_PARALLEL"
-    -parallel "$COMPLEMENT_PARALLEL"
-    -timeout 1h
-    -count=1
-    "${TEST_PACKAGES[@]}"
-)
-
-# It's okay (likely, even) that `go test` exits nonzero
-# `COMPLEMENT_ENABLE_DIRTY_RUNS=1`  reuses the same complement container for faster complement, at the possible expense of test environment pollution
-set +o pipefail
-if [ "$HAS_GOTESTSUM" = true ]; then
-    # gotestsum writes full JSON logs
-    # We ignore the exit code because we post-process the logs even on failure.
-    (env \
-        -C "$COMPLEMENT_SRC" \
-        COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-        gotestsum --format pkgname --hide-summary=output \
-            --jsonfile "$LOG_FILE" \
-            -- "${TEST_FLAGS[@]}" || true)
-else
-    # We ignore the exit code because we post-process the logs even on failure.
-    (env \
-        -C "$COMPLEMENT_SRC" \
-        COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-        go test -json "${TEST_FLAGS[@]}" | tee "$LOG_FILE" || true)
+# Unlike RESULTS_FILE, the log is point-in-time debug output with no
+# historical rows to preserve across runs, so a straight copy (not a
+# merge) is enough. This mirrors the RESULTS_FILE handling above, which
+# the staging refactor added -- LOG_FILE was left staged-only, so
+# MAIN_LOG_FILE (the path CI's "Upload test logs" step and the "Print
+# failing test log excerpts" step both read) never got refreshed and
+# silently stayed empty/stale every run.
+if [ -f "$LOG_FILE" ]; then
+	cp "$LOG_FILE" "$MAIN_LOG_FILE"
+	echo "refreshed $MAIN_LOG_FILE from staged log"
 fi
-set -o pipefail
-# Post-process the results into an easy-to-compare format, sorted by Test name for reproducible results
-# This ensures we have a consistent results file for the CI parser.
-if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-    # Aggregate by test name and pick the last action for each
-    jq -s -c '
-        [ .[] | select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) ]
-        | sort_by(.Test)
-        | unique_by(.Test)
-        | .[]
-        | {Action: .Action, Test: .Test}
-    ' < "$LOG_FILE" > "$RESULTS_FILE"
-    echo "processed $(wc -l < "$RESULTS_FILE") results into $RESULTS_FILE"
-else
-    echo "Warning: $LOG_FILE is missing or empty. No results processed."
-fi
-set -o pipefail
 
 echo ""
 echo ""
 echo "complement logs saved at $LOG_FILE"
-echo "complement results saved at $RESULTS_FILE"
+echo "complement results staged at $RESULTS_FILE"
+echo "complement results merged into $MAIN_RESULTS_FILE"
 echo ""
 echo ""
+
+if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+	exit "$TEST_EXIT_CODE"
+fi
 
 exit 0

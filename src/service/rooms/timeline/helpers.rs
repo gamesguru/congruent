@@ -80,7 +80,7 @@ async fn allowed_to_send_message_event(
 
 	// Forbid m.room.encrypted if encryption is disabled
 	if MessageLikeEventType::RoomEncrypted == *event_type
-		&& !self.services.config.allow_encryption
+		&& !self.services.server.config.allow_encryption
 	{
 		return Err!(Request(Forbidden("Encryption has been disabled")));
 	}
@@ -205,7 +205,7 @@ async fn allowed_to_send_state_event(
 		},
 		| StateEventType::RoomEncryption =>
 		// Forbid m.room.encryption if encryption is disabled
-			if !self.services.config.allow_encryption {
+			if !self.services.server.config.allow_encryption {
 				return Err!(Request(Forbidden("Encryption is disabled on this homeserver.")));
 			},
 		| StateEventType::RoomJoinRules => {

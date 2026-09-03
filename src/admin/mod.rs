@@ -1,4 +1,4 @@
-#![recursion_limit = "192"]
+#![recursion_limit = "384"]
 #![allow(clippy::wildcard_imports)]
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::too_many_arguments)]
@@ -21,6 +21,7 @@ pub(crate) mod room;
 pub(crate) mod server;
 pub(crate) mod token;
 pub(crate) mod user;
+pub(crate) mod yolo;
 
 extern crate conduwuit_api as api;
 extern crate conduwuit_core as conduwuit;

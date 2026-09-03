@@ -1,3 +1,15 @@
 [submodule "complement-src"]
 	path = complement-src
 	url = https://github.com/gamesguru/complement
+[submodule "ruma-upstream"]
+	path = ruma-upstream
+	url = https://github.com/ruma/ruma.git
+[submodule "ruwuma"]
+	path = ruwuma
+	url = https://github.com/wombat-foundation/ruwuma.git
+[submodule "spec"]
+	path = spec
+	url = https://github.com/wombat-foundation/matrix-spec.git
+[submodule "complement-crypto-src"]
+	path = complement-crypto-src
+	url = https://github.com/wombat-foundation/complement-crypto

@@ -1,4 +1,4 @@
-use std::{mem::size_of, sync::Arc};
+use std::sync::Arc;
 
 use conduwuit::{
 	Result, debug_warn, utils,
@@ -6,6 +6,7 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::Stream;
+use moka::sync::Cache;
 use ruma::{UInt, UserId, events::presence::PresenceEvent, presence::PresenceState};
 
 use super::Presence;
@@ -14,6 +15,7 @@ use crate::{Dep, globals, users};
 pub(crate) struct Data {
 	presenceid_presence: Arc<Map>,
 	userid_presenceid: Arc<Map>,
+	presence_cache: Cache<ruma::OwnedUserId, Arc<(u64, Presence)>>,
 	services: Services,
 }
 
@@ -25,9 +27,19 @@ struct Services {
 impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
+
+		let cache_capacity = utils::math::usize_from_f64(
+			f64::from(args.server.config.presence_cache_capacity)
+				* args.server.config.cache_capacity_modifier,
+		)
+		.expect("valid cache size")
+		.try_into()
+		.unwrap_or(args.server.config.presence_cache_capacity);
+
 		Self {
 			presenceid_presence: db["presenceid_presence"].clone(),
 			userid_presenceid: db["userid_presenceid"].clone(),
+			presence_cache: Cache::builder().max_capacity(cache_capacity.into()).build(),
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
 				users: args.depend::<users::Service>("users"),
@@ -35,7 +47,11 @@ impl Data {
 		}
 	}
 
-	pub(super) async fn get_presence(&self, user_id: &UserId) -> Result<(u64, PresenceEvent)> {
+	pub(super) async fn get_presence_raw(&self, user_id: &UserId) -> Result<(u64, Presence)> {
+		if let Some(cached) = self.presence_cache.get(&user_id.to_owned()) {
+			return Ok((*cached).clone());
+		}
+
 		let count = self
 			.userid_presenceid
 			.get(user_id)
@@ -44,12 +60,21 @@ impl Data {
 
 		let key = presenceid_key(count, user_id);
 		let bytes = self.presenceid_presence.get(&key).await?;
-		let event = Presence::from_json_bytes(&bytes)?
-			.to_presence_event(user_id, &self.services.users)
-			.await;
+		let presence = Presence::from_json_bytes(&bytes)?;
 
-		Ok((count, event))
+		self.presence_cache
+			.insert(user_id.to_owned(), Arc::new((count, presence.clone())));
+
+		Ok((count, presence))
 	}
+
+	pub(super) async fn get_presence(&self, user_id: &UserId) -> Result<(u64, PresenceEvent)> {
+		let raw = self.get_presence_raw(user_id).await?;
+		let event = raw.1.to_presence_event(user_id, &self.services.users).await;
+		Ok((raw.0, event))
+	}
+
+	pub(super) fn clear_cache(&self) { self.presence_cache.invalidate_all(); }
 
 	pub(super) async fn set_presence(
 		&self,
@@ -59,21 +84,16 @@ impl Data {
 		last_active_ago: Option<UInt>,
 		status_msg: Option<String>,
 	) -> Result<()> {
-		let last_presence = self.get_presence(user_id).await;
+		let last_presence = self.get_presence_raw(user_id).await;
 		let state_changed = match last_presence {
 			| Err(_) => true,
-			| Ok(ref presence) => presence.1.content.presence != *presence_state,
+			| Ok(ref presence) => presence.1.state != *presence_state,
 		};
 
 		let status_msg_changed = match last_presence {
 			| Err(_) => true,
 			| Ok(ref last_presence) => {
-				let old_msg = last_presence
-					.1
-					.content
-					.status_msg
-					.clone()
-					.unwrap_or_default();
+				let old_msg = last_presence.1.status_msg.clone().unwrap_or_default();
 
 				let new_msg = status_msg.clone().unwrap_or_default();
 
@@ -84,8 +104,7 @@ impl Data {
 		let now = utils::millis_since_unix_epoch();
 		let last_last_active_ts = match last_presence {
 			| Err(_) => 0,
-			| Ok((_, ref presence)) =>
-				now.saturating_sub(presence.content.last_active_ago.unwrap_or_default().into()),
+			| Ok((_, ref presence)) => presence.last_active_ts,
 		};
 
 		let last_active_ts = match last_active_ago {
@@ -118,8 +137,11 @@ impl Data {
 		let count = self.services.globals.next_count()?;
 		let key = presenceid_key(count, user_id);
 
-		self.presenceid_presence.raw_put(key, Json(presence));
+		self.presenceid_presence.raw_put(key, Json(&presence));
 		self.userid_presenceid.raw_put(user_id, count);
+
+		self.presence_cache
+			.insert(user_id.to_owned(), Arc::new((count, presence)));
 
 		if let Ok((last_count, _)) = last_presence {
 			let key = presenceid_key(last_count, user_id);
@@ -129,56 +151,15 @@ impl Data {
 		Ok(())
 	}
 
-	pub(super) async fn set_presence_silent(
-		&self,
-		user_id: &UserId,
-		presence_state: &PresenceState,
-		currently_active: Option<bool>,
-		last_active_ago: Option<UInt>,
-		status_msg: Option<String>,
-	) -> Result<()> {
-		let last_presence = self.get_presence(user_id).await;
-		let now = utils::millis_since_unix_epoch();
-		let last_active_ts = match last_active_ago {
-			| None => now,
-			| Some(last_active_ago) => now.saturating_sub(last_active_ago.into()),
-		};
-
-		let status_msg = if status_msg.as_ref().is_some_and(String::is_empty) {
-			None
-		} else {
-			status_msg
-		};
-
-		let presence = Presence::new(
-			presence_state.to_owned(),
-			currently_active.unwrap_or(false),
-			last_active_ts,
-			status_msg,
-		);
-
-		// MAGIC: Keep the existing channel count to completely mask this update from
-		// the federation sender and sync streams, totally eliminating startup DoS
-		// bursts
-		let (count, is_new) = match last_presence {
-			| Ok((last_count, _)) => (last_count, false),
-			| Err(_) => (self.services.globals.next_count()?, true),
-		};
-
+	pub(super) fn set_offline_fast(&self, user_id: &UserId, count: u64, presence: Presence) {
 		let key = presenceid_key(count, user_id);
-
-		// Overwrite the existing DB key silently
-		self.presenceid_presence.raw_put(key, Json(presence));
-
-		// Only write to userid_presenceid if we actually generated a new count.
-		if is_new {
-			self.userid_presenceid.raw_put(user_id, count);
-		}
-
-		Ok(())
+		self.presenceid_presence.raw_put(key, Json(&presence));
+		self.presence_cache
+			.insert(user_id.to_owned(), Arc::new((count, presence)));
 	}
 
 	pub(super) async fn remove_presence(&self, user_id: &UserId) {
+		self.presence_cache.invalidate(&user_id.to_owned());
 		let Ok(count) = self
 			.userid_presenceid
 			.get(user_id)
@@ -199,7 +180,7 @@ impl Data {
 		since: u64,
 	) -> impl Stream<Item = (&UserId, u64, &[u8])> + Send + '_ {
 		self.presenceid_presence
-			.raw_stream()
+			.raw_stream_from(&(since.saturating_add(1)).to_be_bytes())
 			.ignore_err()
 			.ready_filter_map(move |(key, presence)| {
 				let (count, user_id) = presenceid_parse(key).ok()?;

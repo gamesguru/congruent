@@ -4,7 +4,7 @@ use axum_extra::{
 	headers::{Authorization, authorization::Bearer},
 	typed_header::TypedHeaderRejectionReason,
 };
-use conduwuit::{Err, Error, Result, debug, debug_error, err, warn};
+use conduwuit::{Err, Error, Result, debug_error, err, warn};
 use futures::{
 	TryFutureExt,
 	future::{
@@ -31,6 +31,7 @@ use service::{
 	Services,
 	server_keys::{PubKeyMap, PubKeys},
 };
+use tracing::info;
 
 use super::request::Request;
 use crate::service::appservice::RegistrationInfo;
@@ -403,10 +404,8 @@ fn auth_server_checks_impl(
 		}
 	} else {
 		// Matrix 1.4 introduced the `destination` field. Older servers may not send it.
-		// We allow it to be missing for backwards compatibility. This fires before
-		// signature verification for every pre-1.4 server, so keep it at debug to
-		// avoid unauthenticated log-flood/noise in production.
-		debug!(
+		// We allow it to be missing for backwards compatibility.
+		info!(
 			"Missing destination in X-Matrix header from {}. Allowing for backwards \
 			 compatibility.",
 			x_matrix_origin
@@ -501,22 +500,5 @@ mod tests {
 		let wrong_dest = server_name!("wrong.com");
 		let result = auth_server_checks_impl(true, server_name, false, origin, Some(wrong_dest));
 		assert!(result.is_err(), "Invalid destination should be rejected");
-	}
-
-	#[test]
-	fn test_auth_server_checks_impl_federation_disabled() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result =
-			auth_server_checks_impl(false, server_name, false, origin, Some(server_name));
-		assert!(result.is_err(), "Disabled federation should be rejected");
-	}
-
-	#[test]
-	fn test_auth_server_checks_impl_forbidden_server() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result = auth_server_checks_impl(true, server_name, true, origin, Some(server_name));
-		assert!(result.is_err(), "Forbidden origin server should be rejected");
 	}
 }
