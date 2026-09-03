@@ -104,14 +104,14 @@ pub async fn user_can_see_event(
 	room_id: &RoomId,
 	event_id: &EventId,
 ) -> bool {
-	let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await else {
-		return true;
+	let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await else {
+		return self.services.state_cache.is_joined(user_id, room_id).await;
 	};
 
 	let currently_member = self.services.state_cache.is_joined(user_id, room_id).await;
 
 	let history_visibility = self
-		.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
+		.state_get_content_hamt(room_id, &root_handle, &StateEventType::RoomHistoryVisibility, "")
 		.await
 		.map_or(HistoryVisibility::Shared, |c: RoomHistoryVisibilityEventContent| {
 			c.history_visibility
@@ -120,11 +120,13 @@ pub async fn user_can_see_event(
 	match history_visibility {
 		| HistoryVisibility::Invited => {
 			// Allow if any member on requesting server was AT LEAST invited, else deny
-			self.user_was_invited(shortstatehash, user_id).await
+			self.user_was_invited_hamt(room_id, &root_handle, user_id)
+				.await
 		},
 		| HistoryVisibility::Joined => {
 			// Allow if any member on requested server was joined, else deny
-			self.user_was_joined(shortstatehash, user_id).await
+			self.user_was_joined_hamt(room_id, &root_handle, user_id)
+				.await
 		},
 		| HistoryVisibility::WorldReadable => true,
 		| HistoryVisibility::Shared | _ => currently_member,

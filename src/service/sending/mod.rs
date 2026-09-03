@@ -48,7 +48,6 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	user: Dep<rooms::user::Service>,
 	users: Dep<users::Service>,
 	presence: Dep<presence::Service>,
@@ -96,8 +95,6 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				user: args.depend::<rooms::user::Service>("rooms::user"),
 				users: args.depend::<users::Service>("users"),
 				presence: args.depend::<presence::Service>("presence"),
@@ -365,29 +362,19 @@ impl Service {
 		user_id: Option<&UserId>,
 		push_key: Option<&str>,
 	) -> Result {
-		match (appservice_id, user_id, push_key) {
-			| (None, Some(user_id), Some(push_key)) => {
-				self.db
-					.delete_all_requests_for(&Destination::Push(
-						user_id.to_owned(),
-						push_key.to_owned(),
-					))
-					.await;
-
-				Ok(())
-			},
-			| (Some(appservice_id), None, None) => {
-				self.db
-					.delete_all_requests_for(&Destination::Appservice(appservice_id.to_owned()))
-					.await;
-
-				Ok(())
-			},
+		let destination = match (appservice_id, user_id, push_key) {
+			| (None, Some(user_id), Some(push_key)) =>
+				Destination::Push(user_id.to_owned(), push_key.to_owned()),
+			| (Some(appservice_id), None, None) =>
+				Destination::Appservice(appservice_id.to_owned()),
 			| _ => {
 				debug_warn!("cleanup_events called with too many or too few arguments");
-				Ok(())
+				return Ok(());
 			},
-		}
+		};
+
+		self.db.delete_all_requests_for(&destination).await;
+		Ok(())
 	}
 
 	fn dispatch(&self, msg: Msg) -> Result {

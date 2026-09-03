@@ -18,6 +18,7 @@ pub struct Service {
 	pub server_user: OwnedUserId,
 	pub admin_alias: OwnedRoomAliasId,
 	pub turn_secret: String,
+	pub server_secret: [u8; 32],
 }
 
 type RateLimitState = (Instant, u32); // Time if last failed try, number of failed tries
@@ -40,11 +41,31 @@ impl crate::Service for Service {
 			},
 		);
 
+		let mut server_secret = [0_u8; 32];
+		match args.db["global"].get_blocking(b"server_secret") {
+			| Ok(secret) =>
+				if secret.len() == 32 {
+					server_secret.copy_from_slice(&secret);
+				} else {
+					return Err(conduwuit_core::err!(Database(
+						"server_secret in database has invalid length {} (expected 32); \
+						 database may be corrupt",
+						secret.len()
+					)));
+				},
+			| Err(e) if e.is_not_found() => {
+				use rand::Rng;
+				rand::rng().fill_bytes(&mut server_secret);
+				args.db["global"].insert(b"server_secret", server_secret);
+			},
+			| Err(e) => return Err(e),
+		}
+
 		Ok(Arc::new(Self {
 			db,
 			server: args.server.clone(),
 			bad_event_ratelimiter: Arc::new(SyncRwLock::new(HashMap::new())),
-			admin_alias: OwnedRoomAliasId::try_from(format!("#admins:{}", &args.server.name))
+			admin_alias: OwnedRoomAliasId::try_from(format!("#admins:{}", args.server.name))
 				.expect("#admins:server_name is valid alias name"),
 			server_user: UserId::parse_with_server_name(
 				String::from("conduit"),
@@ -52,6 +73,7 @@ impl crate::Service for Service {
 			)
 			.expect("@conduit:server_name is valid"),
 			turn_secret,
+			server_secret,
 		}))
 	}
 
@@ -85,6 +107,15 @@ impl Service {
 
 	#[inline]
 	pub fn current_count(&self) -> Result<u64> { Ok(self.db.current_count()) }
+
+	#[inline]
+	pub fn with_cork_and_flush<R, F>(&self, f: F) -> R
+	where
+		F: FnOnce() -> R,
+	{
+		let _cork = self.db.db.cork_and_flush();
+		f()
+	}
 
 	#[inline]
 	pub fn server_name(&self) -> &ServerName { self.server.name.as_ref() }

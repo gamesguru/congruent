@@ -1,9 +1,9 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, iter::once};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug, debug_info, debug_warn, err, info,
+	Err, Result, debug_info, debug_warn, err, info,
 	matrix::{
 		event::gen_event_id,
 		pdu::{PduBuilder, PduEvent},
@@ -30,13 +30,7 @@ use ruma::{
 		},
 	},
 };
-use service::{
-	Services,
-	rooms::{
-		state::RoomMutexGuard,
-		state_compressor::{CompressedState, HashSetCompressStateEvent},
-	},
-};
+use service::{Services, rooms::state::RoomMutexGuard};
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
 use crate::Ruma;
@@ -353,16 +347,13 @@ async fn knock_room_helper_local(
 	};
 
 	// Try normal knock first
-	let Err(error) = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(sender_user.to_string(), &content),
-			sender_user,
-			Some(room_id),
-			&state_lock,
-		)
-		.await
+	let Err(error) = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(sender_user.to_string(), &content),
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await
 	else {
 		return Ok(());
 	};
@@ -470,6 +461,7 @@ async fn knock_room_helper_local(
 	let parsed_knock_pdu =
 		PduEvent::from_id_val(&event_id, knock_event.clone(), Some(room_id))
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Updating membership locally to knock state with provided stripped state events");
 	// TODO: this call does not appear to do anything because `update_membership`
@@ -481,24 +473,27 @@ async fn knock_room_helper_local(
 		.state_cache
 		.update_membership(room_id, sender_user, &parsed_knock_pdu, false)
 		.await?;
+	let current_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Appending room knock event locally");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_knock_pdu,
-			knock_event,
-			once(parsed_knock_pdu.event_id.borrow()),
-			None,
-			&state_lock,
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
 			room_id,
-		)
-		.await?;
+			state_root_handle: current_root_handle,
+			prev_state_root_handle: previous_root_handle,
+		},
+	))
+	.await?;
 
 	Ok(())
 }
 
+#[allow(unused_variables, unreachable_code, unused_assignments, unused_mut)]
 async fn knock_room_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -599,6 +594,7 @@ async fn knock_room_helper_remote(
 	let parsed_knock_pdu =
 		PduEvent::from_id_val(&event_id, knock_event.clone(), Some(room_id))
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	info!("Going through send_knock response knock state events");
 	let state = send_knock_response
@@ -608,6 +604,7 @@ async fn knock_room_helper_remote(
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
+	let mut lattice = rezzy::state::LtHash::default();
 
 	for event in state {
 		let Some(state_key) = event.get("state_key") else {
@@ -637,64 +634,57 @@ async fn knock_room_helper_remote(
 			.await;
 
 		services.rooms.outlier.add_pdu_outlier(&event_id, &event);
+		lattice.insert(event_type.to_string().as_str(), state_key.as_str(), event_id.as_str());
 		state_map.insert(shortstatekey, event_id.clone());
 	}
 
-	info!("Compressing state from send_knock");
-	let compressed: CompressedState = services
-		.rooms
-		.state_compressor
-		.compress_state_events(state_map.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.await;
-
-	debug!("Saving compressed state");
-	let HashSetCompressStateEvent {
-		shortstatehash: statehash_before_knock,
-		added,
-		removed,
-	} = Box::pin(
-		services
+	let mut entries = Vec::with_capacity(state_map.len());
+	for (&shortstatekey, event_id) in &state_map {
+		let shorteventid = services
 			.rooms
-			.state_compressor
-			.save_state(room_id, Arc::new(compressed)),
-	)
-	.await?;
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+	}
 
-	debug!("Forcing state for new room");
+	return Err(err!(Request(NotImplemented("TODO(MSC00DC/HAMT): remote knock append"))));
+
+	let structural_key = room_id.as_bytes();
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
+
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
+
 	services
 		.rooms
 		.state
-		.force_state(room_id, statehash_before_knock, added, removed, &state_lock)
-		.await?;
-
-	let statehash_after_knock = services
-		.rooms
-		.state
-		.append_to_state(&parsed_knock_pdu, room_id)
-		.await?;
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	info!("Appending room knock event locally");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_knock_pdu,
-			knock_event,
-			once(parsed_knock_pdu.event_id.borrow()),
-			None,
-			&state_lock,
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_knock_pdu,
+		knock_event,
+		once(parsed_knock_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
 			room_id,
-		)
-		.await?;
+			state_root_handle: Some(root_handle.clone()),
+			prev_state_root_handle: previous_root_handle,
+		},
+	))
+	.await?;
 
 	info!("Setting final room state for new room");
 	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	services
-		.rooms
-		.state
-		.set_room_state(room_id, statehash_after_knock, &state_lock);
+	// in time where events in the current room state do not exist — pointer already
+	// updated via set_room_state_hamt above.
 
 	info!("Updating membership locally to knock state with provided stripped state events");
 	services.rooms.state_cache.mark_as_knocked(

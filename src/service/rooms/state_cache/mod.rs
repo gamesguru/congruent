@@ -34,6 +34,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	users: Dep<users::Service>,
+	spaces: Dep<rooms::spaces::Service>,
 }
 
 struct Data {
@@ -71,6 +72,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				users: args.depend::<users::Service>("users"),
+				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 			},
 			db: Data {
 				roomid_invitedcount: args.db["roomid_invitedcount"].clone(),

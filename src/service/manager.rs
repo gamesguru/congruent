@@ -67,7 +67,7 @@ impl Manager {
 
 		info!("Starting service workers...");
 		for service in services {
-			self.start_worker(&mut workers, &service).await?;
+			self.start_worker(&mut workers, &service)?;
 		}
 
 		Ok(())
@@ -110,13 +110,12 @@ impl Manager {
 	) -> Result<()> {
 		let (service, result) = result;
 		match result {
-			| Ok(()) => self.handle_finished(workers, &service).await,
+			| Ok(()) => Self::handle_finished(workers, &service),
 			| Err(error) => self.handle_error(workers, &service, error).await,
 		}
 	}
 
-	async fn handle_finished(
-		&self,
+	fn handle_finished(
 		_workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,
 	) -> Result<()> {
@@ -146,11 +145,11 @@ impl Manager {
 		warn!("service {name:?} worker restarting after {} delay", time::pretty(delay));
 		sleep(delay).await;
 
-		self.start_worker(workers, service).await
+		self.start_worker(workers, service)
 	}
 
 	/// Start the worker in a task for the service.
-	async fn start_worker(
+	fn start_worker(
 		&self,
 		workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,

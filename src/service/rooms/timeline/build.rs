@@ -108,12 +108,34 @@ pub async fn build_and_append_pdu(
 			.await;
 	}
 
+	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
+
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	trace!("Appending {} state for room {room_id}", pdu.event_id());
-	let statehashid = self.services.state.append_to_state(&pdu, &room_id).await?;
-	trace!("State hash ID for {room_id}: {statehashid:?}");
+	// fail. Only state events mutate the room state; a non-state event must not be
+	// routed through append_to_state, which rejects non-state PDUs.
+	let (state_root_handle, state_node) = if pdu.state_key().is_some() {
+		trace!("Appending {} state for room {room_id}", pdu.event_id());
+		self.services
+			.state
+			.append_to_state(&pdu, &room_id, state_lock, None)
+			.await
+			.map(|(handle, node)| (handle, Some(node)))?
+	} else {
+		// A non-state event does not change the room state, so reuse the current
+		// room root and do not persist any new HAMT node.
+		let root = previous_root_handle
+			.clone()
+			.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
+		(root, None)
+	};
+
+	if let Some(node) = &state_node {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(node.clone());
+	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -123,9 +145,13 @@ pub async fn build_and_append_pdu(
 			// Since this PDU references all pdu_leaves we can update the leaves
 			// of the room
 			once(pdu.event_id()),
-			None,
-			state_lock,
-			&room_id,
+			*pdu.kind() != TimelineEventType::RoomMember,
+			crate::rooms::timeline::AppendPduContext {
+				state_lock,
+				room_id: &room_id,
+				state_root_handle: Some(state_root_handle.clone()),
+				prev_state_root_handle: previous_root_handle,
+			},
 		)
 		.boxed()
 		.await?;
@@ -153,9 +179,11 @@ pub async fn build_and_append_pdu(
 	// We set the room state after inserting the pdu, so that we never have a moment
 	// in time where events in the current room state do not exist
 	trace!("Setting room state for room {room_id}");
-	self.services
-		.state
-		.set_room_state(&room_id, statehashid, state_lock);
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
+	});
 
 	let mut servers: HashSet<OwnedServerName> = self
 		.services

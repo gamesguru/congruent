@@ -1,18 +1,13 @@
-use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
+use std::borrow::Borrow;
 
 use conduwuit::{
-	Result, at, err, implement,
+	Pdu, Result, at, err, implement,
 	matrix::{Event, StateKey},
-	pair_of,
-	utils::{
-		result::FlatOk,
-		stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
-	},
+	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
 };
-use database::Deserialized;
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
 use ruma::{
-	EventId, OwnedEventId, UserId,
+	EventId, OwnedEventId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -20,132 +15,140 @@ use ruma::{
 };
 use serde::Deserialize;
 
-use crate::rooms::{
-	short::{ShortEventId, ShortStateHash, ShortStateKey},
-	state_compressor::{CompressedState, compress_state_event, parse_compressed_state_event},
-};
+use crate::rooms::short::{ShortEventId, ShortStateKey};
 
 /// The user was a joined member at this state (potentially in the past)
 #[implement(super::Service)]
 #[inline]
-pub async fn user_was_joined(&self, shortstatehash: ShortStateHash, user_id: &UserId) -> bool {
-	self.user_membership(shortstatehash, user_id).await == MembershipState::Join
+pub async fn user_was_joined_hamt(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+) -> bool {
+	self.user_membership_hamt(room_id, root_handle, user_id)
+		.await == MembershipState::Join
 }
 
 /// The user was an invited or joined room member at this state (potentially
 /// in the past)
 #[implement(super::Service)]
 #[inline]
-pub async fn user_was_invited(&self, shortstatehash: ShortStateHash, user_id: &UserId) -> bool {
-	let s = self.user_membership(shortstatehash, user_id).await;
+pub async fn user_was_invited_hamt(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	user_id: &UserId,
+) -> bool {
+	let s = self
+		.user_membership_hamt(room_id, root_handle, user_id)
+		.await;
 	s == MembershipState::Join || s == MembershipState::Invite
 }
 
-/// Get membership for given user in state
+/// Get membership for given user in state at a HAMT root.
 #[implement(super::Service)]
-pub async fn user_membership(
+pub async fn user_membership_hamt(
 	&self,
-	shortstatehash: ShortStateHash,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
 	user_id: &UserId,
 ) -> MembershipState {
-	self.state_get_content(shortstatehash, &StateEventType::RoomMember, user_id.as_str())
-		.await
-		.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
+	self.state_get_content_hamt(
+		room_id,
+		root_handle,
+		&StateEventType::RoomMember,
+		user_id.as_str(),
+	)
+	.await
+	.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
 }
 
-/// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
+/// Returns a single PDU from `room_id` with key (`event_type`,`state_key`)
+/// at a HAMT root.
 #[implement(super::Service)]
-pub async fn state_get_content<T>(
+pub async fn state_get_content_hamt<T>(
 	&self,
-	shortstatehash: ShortStateHash,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<T>
 where
 	T: for<'de> Deserialize<'de>,
 {
-	self.state_get(shortstatehash, event_type, state_key)
+	self.state_get_in_room_hamt(room_id, root_handle, event_type, state_key)
 		.await
 		.and_then(|event| event.get_content())
 }
 
 #[implement(super::Service)]
-pub async fn state_contains(
+/// Tests whether a HAMT root contains any state event of `event_type`.
+pub async fn state_contains_type_hamt(
 	&self,
-	shortstatehash: ShortStateHash,
+	_room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
-	state_key: &str,
 ) -> bool {
-	let Ok(shortstatekey) = self
+	// Short-circuit iterate this root's state keys and test whether any entry
+	// has the requested type. Mirrors the legacy `state_contains_type` (which
+	// iterated `state_keys`); here we stream the root's short IDs, resolve each
+	// to its `(event_type, state_key)`, and stop at the first match.
+	let shortstatekeys = self
+		.state_full_shortids_hamt(root_handle.clone())
+		.ignore_err()
+		.map(at!(0));
+
+	let stream = self
 		.services
 		.short
-		.get_shortstatekey(event_type, state_key)
-		.await
-	else {
-		return false;
-	};
+		.multi_get_statekey_from_short(shortstatekeys)
+		.ready_filter_map(Result::ok);
 
-	self.state_contains_shortstatekey(shortstatehash, shortstatekey)
-		.await
+	pin_mut!(stream);
+
+	while let Some((event_type_, _)) = stream.next().await {
+		if event_type_.eq(event_type) {
+			return true;
+		}
+	}
+
+	false
 }
 
 #[implement(super::Service)]
-pub async fn state_contains_type(
+/// Tests whether a HAMT root contains `shortstatekey`.
+pub async fn state_contains_shortstatekey_hamt(
 	&self,
-	shortstatehash: ShortStateHash,
-	event_type: &StateEventType,
-) -> bool {
-	let state_keys = self.state_keys(shortstatehash, event_type);
-
-	pin_mut!(state_keys);
-	state_keys.next().await.is_some()
-}
-
-#[implement(super::Service)]
-pub async fn state_contains_shortstatekey(
-	&self,
-	shortstatehash: ShortStateHash,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
 	shortstatekey: ShortStateKey,
-) -> bool {
-	let start = compress_state_event(shortstatekey, 0);
-	let end = compress_state_event(shortstatekey, u64::MAX);
+) -> Result<bool> {
+	std::future::ready(()).await;
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
 
-	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| full_state.range(start..=end).next().copied())
-		.await
-		.flat_ok()
-		.is_some()
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let res = root_node
+		.search(&structural_key, &shortstatekey, &mut resolver)
+		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
+
+	Ok(res.is_some())
 }
 
-/// Returns a single EventId from `room_id` with key (`event_type`,
-/// `state_key`).
 #[implement(super::Service)]
-pub async fn state_get_id<Id>(
+/// Resolves the short event ID for a state key at a HAMT root.
+pub async fn state_get_shortid_hamt(
 	&self,
-	shortstatehash: ShortStateHash,
-	event_type: &StateEventType,
-	state_key: &str,
-) -> Result<Id>
-where
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
-	<Id as ToOwned>::Owned: Borrow<EventId>,
-{
-	let shorteventid = self
-		.state_get_shortid(shortstatehash, event_type, state_key)
-		.await?;
-
-	self.services
-		.short
-		.get_eventid_from_short(shorteventid)
-		.await
-}
-
-/// Returns a single EventId from `room_id` with key (`event_type`,
-/// `state_key`).
-#[implement(super::Service)]
-pub async fn state_get_shortid(
-	&self,
-	shortstatehash: ShortStateHash,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> Result<ShortEventId> {
@@ -155,163 +158,135 @@ pub async fn state_get_shortid(
 		.get_shortstatekey(event_type, state_key)
 		.await?;
 
-	let start = compress_state_event(shortstatekey, 0);
-	let end = compress_state_event(shortstatekey, u64::MAX);
-	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| {
-			full_state
-				.range(start..=end)
-				.next()
-				.copied()
-				.map(parse_compressed_state_event)
-				.map(at!(1))
-				.ok_or(err!(Request(NotFound("Not found in room state"))))
-		})
-		.await?
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	root_node
+		.search(&structural_key, &shortstatekey, &mut resolver)
+		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?
+		.ok_or_else(|| err!(Request(NotFound("Not found in room state"))))
 }
 
-/// Iterates the state_keys for an event_type in the state; current state
-/// event_id included.
 #[implement(super::Service)]
-pub fn state_keys_with_ids<'a, Id>(
-	&'a self,
-	shortstatehash: ShortStateHash,
-	event_type: &'a StateEventType,
-) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
+/// Resolves a state PDU from a HAMT root.
+pub async fn state_get_in_room_hamt(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Pdu> {
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, root_handle, event_type, state_key)
+		.await?;
+	let event_id: OwnedEventId = self
+		.services
+		.short
+		.get_eventid_from_short(shorteventid)
+		.await?;
+	self.services
+		.timeline
+		.get_pdu_in_room(Some(room_id), &event_id)
+		.await
+}
+
+/// Returns a single EventId at the given HAMT root with key
+/// (`event_type`, `state_key`).
+#[implement(super::Service)]
+pub async fn state_get_id_hamt<Id>(
+	&self,
+	room_id: &RoomId,
+	root_handle: &rezzy::hamt::RootHandle,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<Id>
 where
-	Id: for<'de> Deserialize<'de> + Send + Sized + ToOwned + 'a,
+	Id: serde::de::DeserializeOwned + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
-	let state_keys_with_short_ids = self
-		.state_keys_with_shortids(shortstatehash, event_type)
-		.unzip()
-		.map(|(ssks, sids): (Vec<StateKey>, Vec<u64>)| (ssks, sids))
-		.shared();
-
-	let state_keys = state_keys_with_short_ids
-		.clone()
-		.map(at!(0))
-		.map(Vec::into_iter)
-		.map(IterStream::stream)
-		.flatten_stream();
-
-	let shorteventids = state_keys_with_short_ids
-		.map(at!(1))
-		.map(Vec::into_iter)
-		.map(IterStream::stream)
-		.flatten_stream();
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, root_handle, event_type, state_key)
+		.await?;
 
 	self.services
 		.short
-		.multi_get_eventid_from_short(shorteventids)
-		.zip(state_keys)
-		.ready_filter_map(|(eid, sk)| eid.map(move |eid| (sk, eid)).ok())
+		.get_eventid_from_short(shorteventid)
+		.await
 }
 
-/// Iterates the state_keys for an event_type in the state; current state
-/// event_id included.
+/// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
 #[implement(super::Service)]
-pub fn state_keys_with_shortids<'a>(
+#[tracing::instrument(skip(self), level = "debug")]
+#[allow(unused_variables)]
+pub async fn room_state_get_hamt_legacy(
+	&self,
+	room_id: &RoomId,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> Result<std::sync::Arc<conduwuit::PduEvent>> {
+	let shortstatekey = self
+		.services
+		.short
+		.get_shortstatekey(event_type, state_key)
+		.await?;
+
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
+
+	let shorteventid = self
+		.state_get_shortid_hamt(room_id, &root_handle, event_type, state_key)
+		.await?;
+
+	let event_id = self
+		.services
+		.short
+		.get_eventid_from_short::<OwnedEventId>(shorteventid)
+		.await?;
+	self.services
+		.timeline
+		.get_pdu(&event_id)
+		.await
+		.map(std::sync::Arc::new)
+}
+
+/// Returns a Stream of all `(shortstatekey, event_id)` for a given RootHandle.
+///
+/// Traversal and short-event-id resolution errors are emitted as `Err` items
+/// rather than being swallowed, so a caller that must fail closed can observe
+/// an unavailable/partial state instead of silently receiving incomplete data.
+#[implement(super::Service)]
+pub fn state_full_ids_hamt<'a>(
 	&'a self,
-	shortstatehash: ShortStateHash,
-	event_type: &'a StateEventType,
-) -> impl Stream<Item = (StateKey, ShortEventId)> + Send + 'a {
-	let short_ids = self
-		.state_full_shortids(shortstatehash)
-		.ignore_err()
-		.unzip()
-		.map(|(ssks, sids): (Vec<u64>, Vec<u64>)| (ssks, sids))
+	root_handle: &'a rezzy::hamt::RootHandle,
+) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
+	self.state_full_shortids_hamt(root_handle.clone())
+		.then(move |result| async move {
+			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
+			let event_id = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(seid)
+				.await?;
+			Ok::<_, conduwuit::Error>((ssk, event_id))
+		})
 		.boxed()
-		.shared();
-
-	let shortstatekeys = short_ids
-		.clone()
-		.map(at!(0))
-		.map(Vec::into_iter)
-		.map(IterStream::stream)
-		.flatten_stream();
-
-	let shorteventids = short_ids
-		.map(at!(1))
-		.map(Vec::into_iter)
-		.map(IterStream::stream)
-		.flatten_stream();
-
-	self.services
-		.short
-		.multi_get_statekey_from_short(shortstatekeys)
-		.zip(shorteventids)
-		.ready_filter_map(|(res, id)| res.map(|res| (res, id)).ok())
-		.ready_filter_map(move |((event_type_, state_key), event_id)| {
-			event_type_.eq(event_type).then_some((state_key, event_id))
-		})
 }
 
-/// Iterates the state_keys for an event_type in the state
+/// Returns a Stream of all the full state PDUs for a given RootHandle.
 #[implement(super::Service)]
-pub fn state_keys<'a>(
-	&'a self,
-	shortstatehash: ShortStateHash,
-	event_type: &'a StateEventType,
-) -> impl Stream<Item = StateKey> + Send + 'a {
-	let short_ids = self
-		.state_full_shortids(shortstatehash)
-		.ignore_err()
-		.map(at!(0));
-
-	self.services
-		.short
-		.multi_get_statekey_from_short(short_ids)
-		.ready_filter_map(Result::ok)
-		.ready_filter_map(move |(event_type_, state_key)| {
-			event_type_.eq(event_type).then_some(state_key)
-		})
-}
-
-/// Returns the state events removed between the interval (present in .0 but
-/// not in .1)
-#[implement(super::Service)]
-#[inline]
-pub async fn state_removed(
+pub fn state_full_pdus_hamt(
 	&self,
-	shortstatehash: pair_of!(ShortStateHash),
-) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	self.state_added((shortstatehash.1, shortstatehash.0)).await
-}
-
-/// Returns the state events added between the interval (present in .1 but
-/// not in .0)
-#[implement(super::Service)]
-pub async fn state_added(
-	&self,
-	shortstatehash: pair_of!(ShortStateHash),
-) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	let full_state_a = self.load_full_state(shortstatehash.0).await?;
-	let full_state_b = self.load_full_state(shortstatehash.1).await?;
-
-	Ok(full_state_b
-		.difference(&full_state_a)
-		.copied()
-		.map(parse_compressed_state_event)
-		.collect())
-}
-
-#[implement(super::Service)]
-pub fn state_full(
-	&self,
-	shortstatehash: ShortStateHash,
-) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + '_ {
-	self.state_full_pdus(shortstatehash)
-		.ready_filter_map(|pdu| Some(((pdu.kind().clone().into(), pdu.state_key()?.into()), pdu)))
-}
-
-#[implement(super::Service)]
-pub fn state_full_pdus(
-	&self,
-	shortstatehash: ShortStateHash,
+	root_handle: rezzy::hamt::RootHandle,
 ) -> impl Stream<Item = impl Event> + Send + '_ {
 	let short_ids = self
-		.state_full_shortids(shortstatehash)
+		.state_full_shortids_hamt(root_handle)
 		.ignore_err()
 		.map(at!(1));
 
@@ -324,31 +299,51 @@ pub fn state_full_pdus(
 		})
 }
 
-/// Builds a StateMap by iterating over all keys that start
-/// with state_hash, this gives the full state for the given state_hash.
+/// Returns a Stream of all the full state (type, key, event) for a given
+/// RootHandle.
 #[implement(super::Service)]
-pub fn state_full_ids<'a, Id>(
+pub fn state_full_hamt(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + '_ {
+	self.state_full_pdus_hamt(root_handle)
+		.ready_filter_map(|pdu| Some(((pdu.kind().clone().into(), pdu.state_key()?.into()), pdu)))
+}
+
+/// Iterates the state_keys for an event_type at a HAMT root; current state
+/// event_id included.
+#[implement(super::Service)]
+pub fn state_keys_with_ids_hamt<'a, Id>(
 	&'a self,
-	shortstatehash: ShortStateHash,
-) -> impl Stream<Item = (ShortStateKey, Id)> + Send + 'a
+	root_handle: rezzy::hamt::RootHandle,
+	event_type: &'a StateEventType,
+) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
 where
 	Id: for<'de> Deserialize<'de> + Send + Sized + ToOwned + 'a,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
-	let shortids = self
-		.state_full_shortids(shortstatehash)
+	// Resolve this root's short IDs, filter to the requested event_type, and
+	// map each surviving short event id to its full event id. The state-key
+	// and event-id streams are derived from the same underlying `short_ids`
+	// in the same order and are re-zipped *before* filtering by event_type,
+	// so dropping non-matching entries can never misalign a state key with an
+	// unrelated event id.
+	let short_ids = self
+		.state_full_shortids_hamt(root_handle)
 		.ignore_err()
 		.unzip()
+		.map(|(ssks, sids): (Vec<ShortStateKey>, Vec<ShortEventId>)| (ssks, sids))
 		.shared();
 
-	let shortstatekeys = shortids
+	let shortstatekeys = short_ids
 		.clone()
 		.map(at!(0))
 		.map(Vec::into_iter)
 		.map(IterStream::stream)
 		.flatten_stream();
 
-	let shorteventids = shortids
+	let shorteventids = short_ids
+		.clone()
 		.map(at!(1))
 		.map(Vec::into_iter)
 		.map(IterStream::stream)
@@ -356,26 +351,67 @@ where
 
 	self.services
 		.short
-		.multi_get_eventid_from_short(shorteventids)
-		.zip(shortstatekeys)
-		.ready_filter_map(|(event_id, shortstatekey)| Some((shortstatekey, event_id.ok()?)))
+		.multi_get_statekey_from_short(shortstatekeys)
+		.zip(
+			self.services
+				.short
+				.multi_get_eventid_from_short(shorteventids),
+		)
+		.ready_filter_map(move |(key, event_id)| match (key, event_id) {
+			| (Ok((event_type_, state_key)), Ok(event_id)) if event_type_.eq(event_type) =>
+				Some((state_key, event_id)),
+			| _ => None,
+		})
 }
 
 #[implement(super::Service)]
-pub fn state_full_shortids(
+#[inline]
+/// Returns entries present in the first root and absent from the second.
+pub async fn state_removed_hamt(
 	&self,
-	shortstatehash: ShortStateHash,
+	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
+) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+	self.state_added_hamt((root_handles.1, root_handles.0))
+		.await
+}
+
+#[implement(super::Service)]
+/// Returns entries present in the second root and absent from the first.
+pub async fn state_added_hamt(
+	&self,
+	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
+) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
+	let full_state_a = self.load_full_state_hamt(root_handles.0).await?;
+	let full_state_b = self.load_full_state_hamt(root_handles.1).await?;
+
+	Ok(full_state_b
+		.into_iter()
+		.filter(|(k, v)| full_state_a.get(k) != Some(v))
+		.collect())
+}
+
+#[implement(super::Service)]
+/// Streams every short state-key and short event-ID pair in a HAMT root.
+pub fn state_full_shortids_hamt(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
 ) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
-	self.load_full_state(shortstatehash)
-		.map_ok(|full_state| {
-			full_state
-				.deref()
-				.iter()
-				.copied()
-				.map(parse_compressed_state_event)
-				.collect()
-		})
-		.map_ok(Vec::into_iter)
+	let load = async move {
+		let mut entries: Vec<_> = self
+			.load_full_state_hamt(&root_handle)
+			.await?
+			.into_iter()
+			.collect();
+		// The HAMT stores entries keyed by ShortStateKey, whose value is a
+		// global counter assigned in first-seen/creation order. Sorting by it
+		// restores the deterministic creation-order iteration that the legacy
+		// CompressedState (BTreeMap) produced; without this the entries come
+		// back in arbitrary HashMap iteration order, making state-key ordering
+		// (e.g. a space's `children_state`) nondeterministic.
+		entries.sort_unstable_by_key(|(k, _)| *k);
+		Ok(entries)
+	};
+	load.map_ok(Vec::into_iter)
 		.map_ok(IterStream::try_stream)
 		.try_flatten_stream()
 		.boxed()
@@ -383,37 +419,70 @@ pub fn state_full_shortids(
 
 #[implement(super::Service)]
 #[tracing::instrument(skip(self), level = "debug")]
-pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
-	self.load_full_state(shortstatehash)
-		.await
-		.map(|s| s.is_empty())
-		.unwrap_or(true)
+/// Tests whether a HAMT root has no entries.
+pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
+	let root_node = self
+		.services
+		.state_hamt
+		.store
+		.get_node(&root_handle.structural_hash)?;
+
+	// O(1) structural check on the root's datamap/nodemap bitmaps, rather than
+	// materializing the full tree to test `.is_empty()`.
+	Ok(root_node.is_empty())
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "load", level = "debug", skip(self))]
-async fn load_full_state(&self, shortstatehash: ShortStateHash) -> Result<Arc<CompressedState>> {
-	self.services
-		.state_compressor
-		.load_shortstatehash_info(shortstatehash)
-		.map_err(|e| err!(Database("Missing state IDs: {e}")))
-		.map_ok(|vec| vec.last().expect("at least one layer").full_state.clone())
-		.await
-}
-
-/// Returns the state hash for this pdu.
-#[implement(super::Service)]
-pub async fn pdu_shortstatehash(&self, event_id: &EventId) -> Result<ShortStateHash> {
-	const BUFSIZE: usize = size_of::<ShortEventId>();
-
-	self.services
-		.short
-		.get_shorteventid(event_id)
-		.and_then(|shorteventid| {
-			self.db
-				.shorteventid_shortstatehash
-				.aqry::<BUFSIZE, _>(&shorteventid)
+#[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
+/// Materializes all state entries stored beneath a HAMT root.
+pub async fn load_full_state_hamt(
+	&self,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
+	let structural_hash = root_handle.structural_hash;
+	let root_node = self.services.state_hamt.store.get_node(&structural_hash)?;
+	let mut short_states = std::collections::HashMap::new();
+	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	root_node
+		.visit_entries(&mut resolver, &mut |&k, &v| {
+			short_states.insert(k, v);
+			Ok(())
 		})
+		.map_err(|e| err!(error!("HAMT visit failed: {e:?}")))?;
+	Ok(short_states)
+}
+
+/// Returns the HAMT RootHandle for this pdu.
+#[implement(super::Service)]
+pub async fn pdu_roothandle(&self, event_id: &EventId) -> Result<rezzy::hamt::RootHandle> {
+	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
+	self.services.state.get_roothandle(shorteventid).await
+}
+
+/// Returns the HAMT RootHandle for the state *at* this pdu, i.e. the state
+/// immediately before the pdu's own state change was applied (matching the
+/// legacy `pdu_shortstatehash` semantics).
+///
+/// `pdu_roothandle` resolves the state *after* a PDU, which for state events
+/// (e.g. a membership leave) already includes the event's own change, so a
+/// user/server that was joined before it would no longer pass a
+/// `user_was_joined` check. Falls back to the post-event root when the event
+/// has no preceding timeline position (e.g. the first event in a room).
+#[implement(super::Service)]
+pub async fn pdu_roothandle_at_event(
+	&self,
+	room_id: &RoomId,
+	event_id: &EventId,
+) -> Result<rezzy::hamt::RootHandle> {
+	let count = self.services.timeline.get_pdu_count(event_id).await?;
+	match self
+		.services
+		.timeline
+		.prev_root_handle(room_id, count)
 		.await
-		.deserialized()
+	{
+		| Ok(root_handle) => Ok(root_handle),
+		| Err(e) if e.is_not_found() => self.pdu_roothandle(event_id).await,
+		| Err(e) => Err(e),
+	}
 }

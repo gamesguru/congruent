@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{Result, Server, SyncMutex, debug, utils::math::usize_from_f64};
-use rocksdb::{Cache, Env, LruCacheOptions};
+use rocksdb::{Cache, LruCacheOptions};
 
-use crate::{or_else, pool::Pool};
+use super::env::Env as SharedEnv;
+use crate::pool::Pool;
 
 /// Some components are constructed prior to opening the database and must
 /// outlive the database. These can also be shared between database instances
@@ -13,7 +14,7 @@ pub(crate) struct Context {
 	pub(crate) pool: Arc<Pool>,
 	pub(crate) col_cache: SyncMutex<BTreeMap<String, Cache>>,
 	pub(crate) row_cache: SyncMutex<Cache>,
-	pub(crate) env: SyncMutex<Env>,
+	pub(crate) env: Arc<SharedEnv>,
 	pub(crate) server: Arc<Server>,
 }
 
@@ -39,21 +40,13 @@ impl Context {
 		let col_cache = Cache::new_lru_cache_opts(&col_cache_opts);
 		let col_cache: BTreeMap<_, _> = [("Shared".to_owned(), col_cache)].into();
 
-		let mut env = Env::new().or_else(or_else)?;
-
-		if config.rocksdb_compaction_prio_idle {
-			env.lower_thread_pool_cpu_priority();
-		}
-
-		if config.rocksdb_compaction_ioprio_idle {
-			env.lower_thread_pool_io_priority();
-		}
+		let env = SharedEnv::acquire(server)?;
 
 		Ok(Arc::new(Self {
 			pool: Pool::new(server)?,
 			col_cache: col_cache.into(),
 			row_cache: row_cache.into(),
-			env: env.into(),
+			env,
 			server: server.clone(),
 		}))
 	}
@@ -62,18 +55,11 @@ impl Context {
 impl Drop for Context {
 	#[cold]
 	fn drop(&mut self) {
+		// Background-thread shutdown for the shared rocksdb environment is
+		// deferred to `env::Env`'s drop, which runs only when the last context
+		// holding a reference goes away. Joining here would block on thread
+		// pools still in use by other live databases in this process.
 		debug!("Closing frontend pool");
 		self.pool.close();
-
-		let mut env = self.env.lock();
-
-		debug!("Shutting down background threads");
-		env.set_high_priority_background_threads(0);
-		env.set_low_priority_background_threads(0);
-		env.set_bottom_priority_background_threads(0);
-		env.set_background_threads(0);
-
-		debug!("Joining background threads...");
-		env.join_all_threads();
 	}
 }

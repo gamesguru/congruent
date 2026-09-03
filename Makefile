@@ -148,6 +148,19 @@ format: ##H Run pre-commit hooks/formatters
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		cargo fix $(CARGO_SCOPE) $(CARGO_FLAGS) --features default --allow-dirty --allow-no-vcs
 
+.PHONY: check
+check:   ##H Run cargo check
+	@echo "Lint code? PROFILE='$(PROFILE)'"
+	@$(MAKE) _confirm
+	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
+		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
+		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
+		AWS_LC_SYS_LDFLAGS="-L$(PREFIX)/lib -lssl -lcrypto" \
+		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
+		AWS_LC_RS_NO_BUNDLE=1 \
+		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
+		cargo check
+
 .PHONY: lint
 lint:   ##H Lint code
 	@echo "Lint code? PROFILE='$(PROFILE)'"

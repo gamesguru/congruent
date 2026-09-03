@@ -93,6 +93,7 @@ rezzy.workspace = true
 serde_html_form.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+hex = "0.4"
 sha1.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -1,4 +1,4 @@
-use std::{cmp, collections::HashMap, future::ready};
+use std::{cmp, collections::HashMap, future::ready, sync::Arc};
 
 use conduwuit::{
 	Err, Event, Pdu, Result, debug, debug_info, debug_warn, err, error, info,
@@ -10,11 +10,11 @@ use conduwuit::{
 	},
 	warn,
 };
-use database::Json;
-use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
+use database::{Deserialized, Json};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
@@ -24,7 +24,10 @@ use ruma::{
 	serde::Raw,
 };
 
-use crate::{Services, media, rooms::short::ShortStateHash};
+use crate::{
+	Services, media,
+	rooms::short::{ShortEventId, ShortId as ShortStateHash},
+};
 
 /// The current schema version.
 /// - If database is opened at greater version we reject with error. The
@@ -32,7 +35,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 19;
+pub(crate) const DATABASE_VERSION: u64 = 21;
 
 pub(crate) async fn migrations(services: &Services) -> Result<()> {
 	let users_count = services.users.count().await;
@@ -233,6 +236,25 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_19(services))
 			.await
 			.map_err(|e| err!("Failed to run v19 migrations: {e}"))?;
+	}
+
+	// Version 20 - build HAMT roots for existing rooms
+	if services.globals.db.database_version().await < 20 {
+		Box::pin(db_lt_20(services))
+			.await
+			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
+	}
+
+	// Version 21 - drop legacy shortstatehash table data now that v20 has
+	// finished building HAMT roots from it. The legacy state maps are no longer
+	// read at runtime (the HAMT cutover replaced them), and their data was only
+	// needed as migration input. Clearing it here frees the space; the column
+	// families themselves and the legacy migration helpers must stay so that
+	// fresh databases from older schema versions can still run v20.
+	if services.globals.db.database_version().await < 21 {
+		Box::pin(db_lt_21(services))
+			.await
+			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
 	}
 
 	assert_eq!(
@@ -729,51 +751,52 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 	let cork = db.cork_and_sync();
 	let userroomid_leftstate = db["userroomid_leftstate"].clone();
 
-	let (total, fixed, _) = userroomid_leftstate
+	let total = userroomid_leftstate
 		.stream()
 		.try_fold(
-			(0_usize, 0_usize, HashMap::<OwnedRoomId, ShortStateHash>::new()),
-			async |(mut total, mut fixed, mut shortstatehash_cache): (
-				usize,
-				usize,
-				HashMap<_, _>,
-			),
-			       ((user_id, room_id), state): KeyVal<'_>|
-			       -> Result<(usize, usize, HashMap<_, _>)> {
+			0_usize,
+			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
 				if state.deserialize().is_err() {
-					let latest_shortstatehash =
-						if let Some(shortstatehash) = shortstatehash_cache.get(room_id) {
-							*shortstatehash
-						} else if let Ok(shortstatehash) =
-							services.rooms.state.get_room_shortstatehash(room_id).await
+					// The cached leave event is corrupted. Try to reconstruct it from
+					// the room's current membership state when a HAMT root is already
+					// available (fresh/migrated rooms with a `roomid_roothandle`
+					// entry). Otherwise the legacy read chain that used to repair this
+					// was removed by the HAMT cutover, so we drop the bad entry — the
+					// leave event remains in the timeline and is recovered at runtime
+					// once the HAMT migration has run.
+					let repaired = match services.rooms.state.get_room_state_hamt(room_id).await {
+						| Ok(root_handle) => services
+							.rooms
+							.state_accessor
+							.state_get_in_room_hamt(
+								room_id,
+								&root_handle,
+								&StateEventType::RoomMember,
+								user_id.as_str(),
+							)
+							.await
+							.ok(),
+						| Err(_) => None,
+					};
+
+					match repaired {
+						| Some(leave)
+							if leave.get_content::<RoomMemberEventContent>().is_ok_and(
+								|content| content.membership == MembershipState::Leave,
+							) =>
 						{
-							shortstatehash_cache.insert(room_id.to_owned(), shortstatehash);
-							shortstatehash
-						} else {
-							warn!(%room_id, %user_id, "room has no shortstatehash");
-							return Ok((total, fixed, shortstatehash_cache));
-						};
-
-					let leave_state_event = services
-						.rooms
-						.state_accessor
-						.state_get(
-							latest_shortstatehash,
-							&StateEventType::RoomMember,
-							user_id.as_str(),
-						)
-						.await;
-
-					match leave_state_event {
-						| Ok(leave_state_event) => {
-							userroomid_leftstate.put((user_id, room_id), Json(leave_state_event));
-							fixed = fixed.saturating_add(1);
-						},
-						| Err(_) => {
+							userroomid_leftstate.put((user_id, room_id), Json(leave));
 							warn!(
 								%room_id,
 								%user_id,
-								"room cached as left has no leave event for user, removing \
+								"repaired corrupted cached leave event from room state"
+							);
+						},
+						| _ => {
+							warn!(
+								%room_id,
+								%user_id,
+								"room cached as left has a corrupted leave event, removing \
 								 cache entry"
 							);
 							userroomid_leftstate.del((user_id, room_id));
@@ -782,13 +805,13 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 				}
 
 				total = total.saturating_add(1);
-				Ok((total, fixed, shortstatehash_cache))
+				Ok(total)
 			},
 		)
 		.await?;
 
 	drop(cork);
-	info!(?total, ?fixed, "Fixed entries in `userroomid_leftstate`.");
+	info!(?total, "Verified entries in `userroomid_leftstate`.");
 
 	db["global"].insert(POPULATED_USERROOMID_LEFTSTATE_TABLE_MARKER, []);
 	db.db.sort()?;
@@ -850,52 +873,395 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 }
 
 async fn db_lt_19(services: &Services) -> Result<()> {
-	info!("Running v19 migration (populating LtHash state accumulators)...");
-	let db = &services.db;
-	let mut cork = db.cork_and_sync();
+	// TODO: re-implement this.
+	info!("Running v19 migration (skipping LtHash population during HAMT migration)...");
+	services.db["global"].insert(b"lthash_population_skipped_v19", []);
 
-	let shortstatehash_statediff = db["shortstatehash_statediff"].clone();
-	let shortstatehash_lthash = db["shortstatehash_lthash"].clone();
+	services.globals.db.bump_database_version(19);
+	Ok(())
+}
 
-	let mut count = 0_usize;
-	let mut migrated = 0_usize;
+#[derive(Clone)]
+struct StateDiff {
+	parent: Option<ShortStateHash>,
+	added: Arc<std::collections::HashSet<[u8; 16]>>,
+	removed: Arc<std::collections::HashSet<[u8; 16]>>,
+}
 
-	let stream = shortstatehash_statediff.raw_stream();
-	pin_mut!(stream);
+async fn legacy_get_statediff(
+	services: &Services,
+	shortstatehash: ShortStateHash,
+) -> Result<StateDiff> {
+	const STRIDE: usize = size_of::<ShortStateHash>();
 
-	while let Some(result) = stream.next().await {
-		let (ssh_bytes, _) =
-			result.map_err(|e| err!(Database("v19 migration stream error: {e}")))?;
-		count = count.saturating_add(1);
+	let value = services.db["shortstatehash_statediff"]
+		.get(&shortstatehash.to_be_bytes())
+		.await
+		.map_err(|e| err!(Database("Failed to find StateDiff: {e}")))?;
 
-		let needs_compute = match shortstatehash_lthash.get(&ssh_bytes).await {
-			| Ok(_) => false,
-			| Err(e) if e.is_not_found() => true,
-			| Err(e) =>
-				return Err!(Database("v19 migration failed reading shortstatehash_lthash: {e}")),
-		};
-		if needs_compute {
-			let ssh = conduwuit::utils::u64_from_bytes(ssh_bytes)
-				.map_err(|e| err!(Database("bad shortstatehash: {e}")))?;
+	let slice: &[u8] = &value;
 
-			let diff = services.rooms.state_compressor.get_statediff(ssh).await?;
-			services
-				.rooms
-				.state_compressor
-				.update_lthash(ssh, diff.parent, &diff.added, &diff.removed)
-				.await?;
+	if slice.len() < STRIDE {
+		return Err(err!(Database(
+			"Truncated legacy state-diff record for shortstatehash {shortstatehash}: length {} \
+			 is less than minimum stride {STRIDE}",
+			slice.len()
+		)));
+	}
 
-			migrated = migrated.saturating_add(1);
-			if migrated.is_multiple_of(1000) {
-				info!("LtHash population: processed {}/{} state groups...", migrated, count);
-				drop(cork);
-				cork = db.cork_and_sync();
-			}
+	let parent = conduwuit::utils::u64_from_bytes(&slice[0..8])
+		.ok()
+		.filter(|parent| *parent != 0);
+
+	let mut add_mode = true;
+	let mut added = std::collections::HashSet::new();
+	let mut removed = std::collections::HashSet::new();
+
+	let mut i = STRIDE;
+	while let Some(v) = slice.get(i..i.saturating_add(2_usize.saturating_mul(STRIDE))) {
+		if add_mode && v.starts_with(0_u64.to_be_bytes().as_slice()) {
+			add_mode = false;
+			i = i.saturating_add(STRIDE);
+			continue;
+		}
+
+		if add_mode {
+			added.insert(v.try_into().unwrap());
+		} else {
+			removed.insert(v.try_into().unwrap());
+		}
+		i = i.saturating_add(2_usize.saturating_mul(STRIDE));
+	}
+
+	Ok(StateDiff {
+		parent,
+		added: Arc::new(added),
+		removed: Arc::new(removed),
+	})
+}
+
+async fn legacy_get_full_state(
+	services: &Services,
+	shortstatehash: ShortStateHash,
+) -> Result<std::collections::HashSet<[u8; 16]>> {
+	let mut stack = Vec::new();
+	let mut curr = Some(shortstatehash);
+	while let Some(hash) = curr {
+		let diff = legacy_get_statediff(services, hash).await?;
+		stack.push(diff.clone());
+		curr = diff.parent;
+	}
+
+	let mut full_state = std::collections::HashSet::new();
+	for diff in stack.into_iter().rev() {
+		for add in diff.added.iter() {
+			full_state.insert(*add);
+		}
+		for rm in diff.removed.iter() {
+			full_state.remove(rm);
 		}
 	}
 
-	info!("LtHash population complete. Migrated {}/{} state groups.", migrated, count);
+	Ok(full_state)
+}
 
-	services.globals.db.bump_database_version(19);
+/// Returns the `shorteventid`s of the state events a legacy statediff added,
+/// i.e. the state events whose *post-event* state is that snapshot. The raw
+/// statediff payload starts with the parent `ShortStateHash`, followed by
+/// 16-byte `(shortstatekey, shorteventid)` entries, first the added set and
+/// then (after an all-zero shortstatekey marker) the removed set. The second
+/// half of each added entry is the event the snapshot's state results from.
+fn legacy_statediff_added_shorteventids(slice: &[u8]) -> Vec<ShortEventId> {
+	const STRIDE: usize = size_of::<ShortStateHash>();
+	let mut added = Vec::new();
+	let mut add_mode = true;
+	let mut i = STRIDE;
+	while let Some(v) = slice.get(i..i.saturating_add(2_usize.saturating_mul(STRIDE))) {
+		if add_mode && v.starts_with(0_u64.to_be_bytes().as_slice()) {
+			add_mode = false;
+			i = i.saturating_add(STRIDE);
+			continue;
+		}
+
+		if add_mode {
+			if let Ok(shorteventid) = v
+				.get(STRIDE..2_usize.saturating_mul(STRIDE))
+				.ok_or(())
+				.and_then(|b| <[u8; 8]>::try_from(b).map_err(|_| ()))
+				.map(u64::from_be_bytes)
+			{
+				added.push(shorteventid);
+			}
+		}
+
+		i = i.saturating_add(2_usize.saturating_mul(STRIDE));
+	}
+
+	added
+}
+
+/// Build the HAMT root for each accumulated post-event snapshot and return the
+/// `(shorteventid, serialized root)` pairs to store in
+/// `shorteventid_roothandle`. A room id is required for the structural key; it
+/// is resolved from the first event of each snapshot group.
+async fn legacy_added_events_roothandles(
+	services: &Services,
+	post_state_events: &HashMap<ShortStateHash, Vec<ShortEventId>>,
+) -> Result<Vec<(ShortEventId, Vec<u8>)>> {
+	let mut out = Vec::new();
+	for (shortstatehash, shorteventids) in post_state_events {
+		let first = shorteventids.first().ok_or(err!(Database(error!(
+			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
+		))))?;
+		let event_id: ruma::OwnedEventId =
+			services.rooms.short.get_eventid_from_short(*first).await?;
+		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
+		let room_id = pdu
+			.room_id_or_hash()
+			.expect("timeline PDU must have a room_id")
+			.clone();
+
+		let (root_handle, root_node) =
+			legacy_build_root_handle_for_state(services, &room_id, *shortstatehash).await?;
+		services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+
+		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
+		for shorteventid in shorteventids {
+			out.push((*shorteventid, serialized.clone()));
+		}
+	}
+
+	Ok(out)
+}
+
+async fn legacy_build_root_handle_for_state(
+	services: &Services,
+	room_id: &RoomId,
+	shortstatehash: ShortStateHash,
+) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
+	let full_state = legacy_get_full_state(services, shortstatehash).await?;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(full_state.len());
+
+	for state_event in full_state {
+		let shortstatekey = conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
+		let shorteventid = conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
+
+		let (ty, sk) = services
+			.rooms
+			.short
+			.get_statekey_from_short(shortstatekey)
+			.await?;
+		let event_id: ruma::OwnedEventId = services
+			.rooms
+			.short
+			.get_eventid_from_short(shorteventid)
+			.await?;
+
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries).map_err(|e| {
+			err!(error!(
+				"Failed to build HAMT root for room {room_id} and state {shortstatehash}: {e:?}"
+			))
+		})?;
+
+	Ok((root_handle, root_node))
+}
+
+async fn db_lt_20(services: &Services) -> Result<()> {
+	const FLUSH_AFTER_EVENTS: usize = 65_536;
+
+	info!("Running v20 migration (building HAMT roots for existing rooms)...");
+
+	let mut room_stream = services.rooms.metadata.iter_ids();
+	while let Some(room_id) = room_stream.next().await {
+		match services.db["roomid_shortstatehash"]
+			.get(room_id)
+			.await
+			.deserialized()
+		{
+			| Err(e) if e.is_not_found() => {
+				// Room has no state yet (e.g. partial join); skip.
+				debug_warn!(
+					"Skipping room {room_id} in v20 migration: no shortstatehash (room may be \
+					 incomplete)"
+				);
+				continue;
+			},
+			| Err(e) => return Err(e),
+			| Ok(shortstatehash) => {
+				let full_state = legacy_get_full_state(services, shortstatehash).await?;
+
+				let mut lattice = rezzy::state::LtHash::default();
+				let mut entries = Vec::with_capacity(full_state.len());
+
+				for state_event in full_state {
+					let shortstatekey =
+						conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
+					let shorteventid =
+						conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
+
+					let (ty, sk) = services
+						.rooms
+						.short
+						.get_statekey_from_short(shortstatekey)
+						.await?;
+					let event_id: ruma::OwnedEventId = services
+						.rooms
+						.short
+						.get_eventid_from_short(shorteventid)
+						.await?;
+
+					lattice.insert(ty.to_string().as_str(), sk.as_str(), event_id.as_str());
+					entries.push((shortstatekey, shorteventid));
+				}
+
+				let structural_key = crate::rooms::state_hamt::room_structural_key(
+					&services.globals.server_secret,
+					room_id,
+				);
+
+				let (root_handle, root_node) =
+					rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+						.map_err(|e| {
+							err!(error!("Failed to build HAMT root for room {room_id}: {e:?}"))
+						})?;
+
+				services
+					.rooms
+					.state_hamt
+					.store
+					.persist_node_recursive(root_node);
+
+				// Write the same flat-48-byte encoding used by set_room_state_hamt,
+				// so get_room_state_hamt can read the value back.
+				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
+				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
+			},
+		}
+	}
+
+	info!("Backfilling per-event HAMT root handles for existing events...");
+
+	// `shorteventid_shortstatehash` stores each state event's *predecessor*
+	// (pre-event) state, so labeling events with that snapshot's root would
+	// attach the wrong state boundary to `shorteventid_roothandle`. Instead we
+	// invert the legacy statediffs: the snapshot whose `added` set contains a
+	// state event is that event's *post-event* state, which is exactly what
+	// `get_roothandle`/`pdu_roothandle` must return. This also covers the first
+	// state event of each room (present in the first snapshot's `added` even
+	// though it has no predecessor mapping). Snapshots are accumulated and
+	// flushed in bounded batches so the whole history is never held in memory.
+	let mut post_state_events: HashMap<ShortStateHash, Vec<ShortEventId>> = HashMap::new();
+	let mut pending_events = 0_usize;
+	let mut batch = conduwuit_database::Batch::new(&services.db["shorteventid_roothandle"]);
+
+	let statediff_map = services.db["shortstatehash_statediff"].clone();
+	let mut diff_stream = statediff_map.raw_stream();
+	while let Some(result) = diff_stream.next().await {
+		let (key, value): database::KeyVal<'_> = result?;
+		let shortstatehash = u64::from_be_bytes(key[..8].try_into().map_err(|_| {
+			err!(Database(error!(
+				"Unexpected key in `shortstatehash_statediff` during v20 backfill."
+			)))
+		})?);
+
+		let added = legacy_statediff_added_shorteventids(value);
+		pending_events = pending_events.saturating_add(added.len());
+		post_state_events
+			.entry(shortstatehash)
+			.or_default()
+			.extend(added);
+
+		if pending_events >= FLUSH_AFTER_EVENTS {
+			for (shorteventid, serialized) in
+				legacy_added_events_roothandles(services, &post_state_events).await?
+			{
+				batch.insert(
+					&services.db["shorteventid_roothandle"],
+					shorteventid.to_be_bytes(),
+					&serialized,
+				);
+			}
+			post_state_events.clear();
+			pending_events = 0;
+		}
+	}
+
+	if pending_events > 0 {
+		for (shorteventid, serialized) in
+			legacy_added_events_roothandles(services, &post_state_events).await?
+		{
+			batch.insert(
+				&services.db["shorteventid_roothandle"],
+				shorteventid.to_be_bytes(),
+				&serialized,
+			);
+		}
+	}
+	batch.commit();
+
+	services.globals.db.bump_database_version(20);
+	Ok(())
+}
+
+/// Drop the legacy `shortstatehash` state table data once the HAMT cutover
+/// (v20) has rebuilt it into HAMT roots.
+///
+/// The legacy state maps were only read as inputs to the v20 migration; at
+/// runtime the state layer now reads HAMT roots exclusively. Their contents are
+/// no longer consulted, so we clear them to reclaim the space. We deliberately
+/// do **not** remove the column families or the legacy accessor helpers: fresh
+/// databases arriving from schema `< 20` still need both the columns and the
+/// helpers to run v20 for the first time.
+///
+/// This runs only after v20 has bumped the schema version to 20, so the data we
+/// clear here is guaranteed to have already been consumed.
+async fn db_lt_21(services: &Services) -> Result<()> {
+	info!("Running v21 migration (clearing legacy shortstatehash table data)...");
+
+	let db = &services.db;
+	let cork = db.cork_and_sync();
+	let mut total = 0_usize;
+
+	for map_name in [
+		"shortstatehash_statediff",
+		"roomid_shortstatehash",
+		"shorteventid_shortstatehash",
+		"shortstatehash_lthash",
+		"roomsynctoken_shortstatehash",
+	] {
+		let map = db[map_name].clone();
+		let cleared = map
+			.raw_stream()
+			.try_fold(
+				0_usize,
+				async |mut count: usize, (key, _): database::KeyVal<'_>| -> Result<usize> {
+					map.remove_raw(key);
+					count = count.saturating_add(1);
+					Ok(count)
+				},
+			)
+			.await?;
+
+		info!(%map_name, ?cleared, "Cleared legacy shortstatehash column");
+		total = total.saturating_add(cleared);
+	}
+
+	drop(cork);
+	info!(?total, "Cleared legacy shortstatehash table data.");
+
+	services.globals.db.bump_database_version(21);
 	Ok(())
 }

@@ -1,4 +1,5 @@
 #![type_length_limit = "32768"] //TODO: reduce me
+#![recursion_limit = "256"] //TODO: reduce me
 
 mod layers;
 mod request;

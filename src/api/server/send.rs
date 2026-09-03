@@ -38,10 +38,7 @@ use ruma::{
 			send_transaction_message,
 		},
 	},
-	events::{
-		StateEventType,
-		receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
-	},
+	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
 	serde::Raw,
 	to_device::DeviceIdOrAllDevices,
@@ -227,7 +224,12 @@ async fn inject_state_hash_mismatches(
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
-	let Some(hashes) = obj.get("tk.nutra.msc4500.state_hashes") else { return };
+	let Some(hashes) = obj
+		.get("state_hashes")
+		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
+	else {
+		return;
+	};
 
 	let Ok(state_hashes) =
 		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
@@ -252,7 +254,7 @@ async fn inject_state_hash_mismatches(
 			);
 			continue;
 		};
-		if algo != "lthash16" {
+		if algo != "lthash16-v1" {
 			info!(
 				target: "state_hashes",
 				event_id = ?event_id,
@@ -278,7 +280,7 @@ async fn inject_state_hash_mismatches(
 			pdu_res.insert(
 				"state_hash_mismatch".to_owned(),
 				serde_json::json!({
-					"algorithm": "lthash16",
+					"algorithm": "lthash16-v1",
 					"digest": after_digest
 				}),
 			);
@@ -286,51 +288,45 @@ async fn inject_state_hash_mismatches(
 	}
 }
 
-/// Compute the "after" digest for a received event by applying its state
-/// delta to the before-state LtHash.  `pdu_shortstatehash` returns the state
-/// snapshot *before* the event, so for state events we must remove the
-/// previous event at (type, state_key) and insert the new one.
+/// Compute the "after" digest for a received event by building the LtHash
+/// lattice over the event's post-event state (its `shorteventid_roothandle`).
+///
+/// This replaces the legacy shortstatehash/`get_lthash` accumulator that the
+/// HAMT migration removed. The post-event root already represents the state
+/// after the event is applied, so the lattice is derived directly from it.
 async fn compute_receiver_after_digest(
 	services: &crate::State,
 	event_id: &OwnedEventId,
 ) -> Option<String> {
-	let sstatehash = services
+	use conduwuit::Event;
+	use futures::StreamExt;
+
+	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.ok()?;
+
+	let entries: Vec<(String, String, OwnedEventId)> = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(event_id)
-		.await
-		.ok()?;
-	let lthash_before = services
-		.rooms
-		.state_compressor
-		.get_lthash(sstatehash)
-		.await
-		.ok()?;
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let ty = pdu.kind().to_string();
+			let sk = pdu.state_key()?.to_owned();
+			Some((ty, sk, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
 
-	// Check if this is a state event that modifies the hash
-	let pdu = services.rooms.timeline.get_pdu(event_id).await.ok()?;
-	if let Some(state_key) = &pdu.state_key {
-		let ev_type = StateEventType::from(pdu.kind.to_string().as_str());
-		let ev_type_str = pdu.kind.to_string();
-		let mut lthash_after = lthash_before;
-
-		// Remove old event at this (type, state_key) if one exists
-		if let Ok(old_event_id) = services
-			.rooms
-			.state_accessor
-			.state_get_id::<OwnedEventId>(sstatehash, &ev_type, state_key)
-			.await
-		{
-			lthash_after.remove(&ev_type_str, state_key, &old_event_id);
-		}
-
-		// Insert the new event
-		lthash_after.insert(&ev_type_str, state_key, event_id);
-		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_after).1)
-	} else {
-		// Non-state event: after == before
-		Some(conduwuit::utils::hash::lthash::serialize_lthash(&lthash_before).1)
+	let mut lattice = rezzy::state::LtHash::default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
 	}
+
+	Some(conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1)
 }
 
 /// Handles a failed federation transaction by sending the error through

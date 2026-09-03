@@ -40,7 +40,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	server: Arc<Server>,
 }
@@ -67,8 +67,7 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				server: args.server.clone(),
 			},
@@ -89,10 +88,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	async fn event_exists(&self, event_id: OwnedEventId) -> bool {
-		self.services.timeline.pdu_exists(&event_id).await
-	}
-
 	async fn event_fetch(
 		&self,
 		room_id: Option<&RoomId>,

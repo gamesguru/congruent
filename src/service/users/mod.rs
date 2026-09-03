@@ -160,10 +160,9 @@ impl Service {
 				.account_data
 				.get_global(recipient_user, GlobalAccountDataEventType::InvitePermissionConfig)
 				.await
-				.map(|config: InvitePermissionConfigEvent| {
+				.map_or(FilterLevel::Allow, |config: InvitePermissionConfigEvent| {
 					config.content.user_filter_level(sender_user)
 				})
-				.unwrap_or(FilterLevel::Allow)
 		};
 
 		info!(%sender_user, %recipient_user, ?level, "invite_filter_level");
@@ -1129,6 +1128,7 @@ impl Service {
 		let key = (user_id, device_id);
 		self.db.userdeviceid_metadata.put(key, Json(device));
 
+		std::future::ready(()).await;
 		Ok(())
 	}
 
@@ -1355,6 +1355,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn search_ldap(&self, _user_id: &UserId) -> Result<Vec<(String, Option<bool>)>> {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 
@@ -1467,6 +1468,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn auth_ldap(&self, _user_dn: &str, _password: &str) -> Result {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 
