@@ -116,8 +116,8 @@
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/rust"}
 {"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder"}
-{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
-{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
+{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
+{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/rust"}
