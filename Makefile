@@ -295,7 +295,7 @@ COMPLEMENT_BASE_IMAGE ?= ubuntu:latest
 complement/build: ##H Build conduwuit w direct_tls
 	@echo "Building conduwuit binary with direct_tls feature for Complement..."
 	@$(MAKE) _confirm
-	$(MAKE) build PROFILE=$(PROFILE) CARGO_FLAGS="--config Cargo.custom.toml --profile $(PROFILE) --features direct_tls"
+	$(MAKE) build PROFILE=$(PROFILE) CARGO_FLAGS="--timings --config Cargo.custom.toml --profile $(PROFILE) --features direct_tls"
 
 .PHONY: complement/docker
 complement/docker: ##H Build docker image from existing binary
