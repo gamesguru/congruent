@@ -309,6 +309,7 @@ where
 				incoming_pdu.state_key(),
 				incoming_pdu.content(),
 				&room_version,
+				&room_version_id,
 			)
 			.await
 		{
@@ -378,6 +379,7 @@ where
 		incoming_pdu.state_key(),
 		&content,
 		srv,
+		room_version_id.as_str(),
 	);
 
 	let mut state_auth_events = HashMap::new();
@@ -832,6 +834,7 @@ async fn check_current_state_auth(
 		incoming_pdu.state_key(),
 		&content,
 		srv,
+		room_version_id.as_str(),
 	);
 
 	// Always include create event — rezzy's check_auth uses it for the

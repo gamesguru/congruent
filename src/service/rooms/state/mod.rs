@@ -811,6 +811,7 @@ impl Service {
 	}
 
 	/// This fetches auth events from the current state.
+	#[allow(clippy::too_many_arguments)]
 	#[tracing::instrument(skip(self, content, room_version), level = "trace")]
 	pub async fn get_auth_events(
 		&self,
@@ -820,6 +821,7 @@ impl Service {
 		state_key: Option<&str>,
 		content: &serde_json::value::RawValue,
 		room_version: &RoomVersion,
+		room_version_id: &RoomVersionId,
 	) -> Result<StateMap<PduEvent>> {
 		let Ok(shortstatehash) = self.get_room_shortstatehash(room_id).await else {
 			return Ok(HashMap::new());
@@ -842,6 +844,7 @@ impl Service {
 			&content_val,
 			// MSC4291 (v12+): auth_events must NOT reference m.room.create
 			version,
+			room_version_id.as_str(),
 		);
 		let auth_types: Vec<(StateEventType, conduwuit_core::matrix::StateKey)> = auth_types_raw
 			.into_iter()

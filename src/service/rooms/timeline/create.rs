@@ -152,6 +152,7 @@ pub async fn create_event(
 						state_key.as_deref(),
 						&content,
 						&room_version,
+						&room_version_id,
 					)
 					.await?,
 			| None => HashMap::new(),
@@ -188,6 +189,9 @@ pub async fn create_event(
 					state_key.as_deref(),
 					&content_val,
 					crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+					// The actual room version string; rezzy gates the
+					// restricted-join auth rule on it being v8+.
+					room_version_id.as_str(),
 				);
 
 				let mut new_auth_events = HashMap::new();

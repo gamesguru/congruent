@@ -429,6 +429,8 @@ impl super::Service {
 		let lean_events_moved = lean_events;
 		tokio::task::spawn_blocking(move || {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
+			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
+			let empty_key = String::new();
 			let mut abort = false;
 			let completed = rezzy::compute_state_at_streaming_optimized(
 				&target_refs,
@@ -437,7 +439,7 @@ impl super::Service {
 				|id, update| {
 					let owned_update = match update {
 						| rezzy::StateUpdate::New { state, hash } =>
-							StateUpdateOwned::New { state, hash: Box::new(hash) },
+							StateUpdateOwned::New { state, hash: Box::new(*hash) },
 						| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
 							StateUpdateOwned::Unchanged {
 								parent_event_id: parent_event_id.clone(),
@@ -450,6 +452,7 @@ impl super::Service {
 						abort = true;
 					}
 				},
+				&empty_key,
 			);
 			if !completed {
 				warn!("compute_state_at_streaming_optimized detected cycle; results incomplete");
@@ -840,12 +843,16 @@ impl super::Service {
 		);
 		let rezzy_start = Instant::now();
 		let mut pl_cache = HashMap::new();
+		// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
+		let empty_key = String::new();
+		let unconflicted_state: rezzy::state::at::SharedState = (&unconflicted).into();
 		let resolved_lean = rezzy::resolve_iterative_sort(
-			unconflicted.into(),
-			conflicted_events,
+			&unconflicted_state,
+			&conflicted_events,
 			&auth_context,
 			version,
 			&mut pl_cache,
+			&empty_key,
 		);
 		eprintln!(
 			"[resolve_fork] rezzy::resolve_iterative_sort took {:?}",
