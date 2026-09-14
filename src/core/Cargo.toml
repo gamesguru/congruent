@@ -78,7 +78,6 @@ futures.workspace = true
 http-body-util.workspace = true
 http.workspace = true
 ipaddress.workspace = true
-itertools.workspace = true
 libc.workspace = true
 libloading.workspace = true
 libloading.optional = true
@@ -132,3 +131,6 @@ maplit.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["serde_regex"]

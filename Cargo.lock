@@ -1034,7 +1034,6 @@ dependencies = [
 name = "conduwuit_api"
 version = "0.5.10"
 dependencies = [
- "async-trait",
  "axum",
  "axum-client-ip",
  "axum-extra",
@@ -1050,7 +1049,6 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
- "ipaddress",
  "itertools 0.14.0",
  "lettre",
  "log",
@@ -1101,7 +1099,6 @@ dependencies = [
  "http-body-util",
  "hyper-util",
  "ipaddress",
- "itertools 0.14.0",
  "lettre",
  "libc",
  "libloading 0.9.0",
@@ -1163,7 +1160,6 @@ dependencies = [
 name = "conduwuit_macros"
 version = "0.5.10"
 dependencies = [
- "cargo_toml",
  "itertools 0.14.0",
  "proc-macro2",
  "quote",
@@ -1262,22 +1258,17 @@ name = "conduwuit_web"
 version = "0.5.10"
 dependencies = [
  "askama",
- "async-trait",
  "axum",
- "axum-extra",
  "base64 0.22.1",
  "conduwuit_build_metadata",
  "conduwuit_core",
  "conduwuit_service",
- "futures",
  "memory-serve",
- "rand 0.10.1",
  "ruma",
  "serde",
  "thiserror 2.0.18",
  "tower-http",
  "tower-sec-fetch",
- "tracing",
  "validator",
 ]
 
@@ -7061,7 +7052,6 @@ dependencies = [
  "askama",
  "cargo_metadata",
  "clap",
- "conduwuit",
  "conduwuit_admin",
 ]
 

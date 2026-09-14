@@ -14,11 +14,10 @@ path = "mod.rs"
 proc-macro = true
 
 [dependencies]
-syn.workspace = true
+syn = { workspace = true, features = ["parsing", "printing", "clone-impls", "proc-macro"] }
 quote.workspace = true
 proc-macro2.workspace = true
 itertools.workspace = true
-cargo_toml.workspace = true
 
 [lints]
 workspace = true

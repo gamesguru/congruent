@@ -68,3 +68,6 @@ tracing.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["const-str", "ctor", "log"]

@@ -265,6 +265,9 @@ hardened_malloc-rs.optional = true
 [lints]
 workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["aws-lc-rs", "conduwuit-api", "conduwuit-database", "const-str", "ctor", "reqwest", "sentry", "sentry-tower", "sentry-tracing", "tokio-metrics"]
+
 [[bin]]
 name = "conduwuit"
 path = "main.rs"
