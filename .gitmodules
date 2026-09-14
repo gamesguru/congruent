@@ -13,3 +13,6 @@
 [submodule "complement-crypto-src"]
 	path = complement-crypto-src
 	url = https://github.com/wombat-foundation/complement-crypto
+[submodule "mtx-slipstream"]
+	path = mtx-slipstream
+	url = https://github.com/Wombat-Foundation/mtx-slipstream.git

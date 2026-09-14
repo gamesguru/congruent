@@ -176,8 +176,9 @@ pub(crate) async fn get_content_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
-			return Err(e),
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+			return Err(e);
+		},
 		| Err(e) => {
 			debug_warn!(%mxc, "Fetching media failed: {e:?}");
 			return Err!(Request(NotFound("Media not found.")));
@@ -234,8 +235,9 @@ pub(crate) async fn get_content_as_filename_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) =>
-			return Err(e),
+		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+			return Err(e);
+		},
 		| Err(e) => {
 			debug_warn!(%mxc, "Fetching media failed: {e:?}");
 			return Err!(Request(NotFound("Media not found.")));

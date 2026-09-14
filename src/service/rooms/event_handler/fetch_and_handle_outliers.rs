@@ -310,7 +310,7 @@ where
 									}
 									match version {
 										| Some(v) => v,
-										| None =>
+										| None => {
 											if let Some(override_v) = room_version_override {
 												override_v.clone()
 											} else {
@@ -331,7 +331,8 @@ where
 														continue;
 													},
 												}
-											},
+											}
+										},
 									}
 								},
 							};
@@ -597,7 +598,7 @@ where
 				| Ok((pdu, json)) => {
 					processed_pdus.insert(next_id.clone(), (pdu, Some(json)));
 				},
-				| Err(e) =>
+				| Err(e) => {
 					if let conduwuit::Error::MissingAuthEvents(missing) = &e {
 						if auth_chain_fetched.insert(next_id.clone()) {
 							debug_info!(
@@ -695,7 +696,8 @@ where
 					} else {
 						warn!(target: "auth_chain", "Permanently backing off event {next_id} after general failure: {e:?}");
 						back_off(next_id);
-					},
+					}
+				},
 			}
 		}
 

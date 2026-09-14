@@ -215,8 +215,9 @@ impl Service {
 				let path = self.get_media_file(&key);
 				let file = match fs::File::open(path).await {
 					| Ok(file) => file,
-					| Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
-						return Err!(Request(NotYetUploaded("Media has not been uploaded yet."))),
+					| Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+						return Err!(Request(NotYetUploaded("Media has not been uploaded yet.")));
+					},
 					| Err(e) => return Err!(Io(e)),
 				};
 				BufReader::new(file).read_to_end(&mut content).await?;

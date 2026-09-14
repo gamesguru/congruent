@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["case-study-state-res/compare", "src/*", "xtask/"]
 default-members = ["src/*"]
-exclude = ["ruwuma", "ruma-upstream"]
+exclude = ["ruwuma", "ruma-upstream", "mtx-slipstream"]
 
 [workspace.package]
 authors = ["Continuwuity Team and contributors <team@continuwuity.org>"]
@@ -167,6 +167,11 @@ features = ["rc"]
 version = "1.0.140"
 default-features = false
 features = ["raw_value"]
+
+[workspace.dependencies.simd-json]
+version = "0.18"
+default-features = false
+features = ["serde_impl"]
 
 # Used for appservice registration files
 [workspace.dependencies.serde-saphyr]
@@ -638,6 +643,11 @@ ruma = { path = "ruwuma/crates/ruma" }
 #
 # Our crates
 #
+
+[workspace.dependencies.mtx-slipstream]
+package = "mtx-slipstream"
+path = "mtx-slipstream"
+default-features = false
 
 [workspace.dependencies.conduwuit-router]
 package = "conduwuit_router"
