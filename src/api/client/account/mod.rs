@@ -175,8 +175,8 @@ pub(crate) async fn change_password_route(
 					.get_pusher_device(&pushkey)
 					.await
 					.ok()
-					.filter(|pusher_device| pusher_device != body.sender_device())
-					.is_some()
+					.as_ref()
+					.is_some_and(|pusher_device| pusher_device != body.sender_device())
 					.then_some(pushkey)
 			})
 			.for_each(async |pushkey| {
@@ -190,7 +190,7 @@ pub(crate) async fn change_password_route(
 	if services.server.config.admin_room_notices {
 		services
 			.admin
-			.notice(&format!("User {} changed their password.", &sender_user))
+			.notice(&format!("User {sender_user} changed their password."))
 			.await;
 	}
 

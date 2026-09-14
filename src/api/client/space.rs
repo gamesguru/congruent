@@ -1,22 +1,17 @@
-use std::{
-	collections::{BTreeSet, VecDeque},
-	str::FromStr,
-};
+use std::{collections::BTreeSet, str::FromStr};
 
 use axum::extract::State;
-use conduwuit::{
-	Err, Result,
-	utils::{future::TryExtExt, stream::IterStream},
-};
+use conduwuit::{Err, Result, utils::stream::IterStream};
 use conduwuit_service::{
 	Services,
 	rooms::spaces::{
 		PaginationToken, SummaryAccessibility, get_parent_children_via, summary_to_chunk,
 	},
 };
-use futures::{StreamExt, TryFutureExt, future::OptionFuture};
+use futures::{StreamExt, future::OptionFuture};
 use ruma::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
+	events::space::child::HierarchySpaceChildEvent, room::RoomType,
 };
 
 use crate::Ruma;
@@ -80,8 +75,8 @@ where
 	ShortRoomIds: Iterator<Item = &'a u64> + Clone + Send + Sync + 'a,
 {
 	type Via = Vec<OwnedServerName>;
-	type Entry = (OwnedRoomId, Via);
-	type Rooms = VecDeque<Entry>;
+	type Entry = (OwnedRoomId, Via, usize, bool);
+	type Rooms = std::collections::VecDeque<Entry>;
 
 	let mut queue: Rooms = [(
 		room_id.to_owned(),
@@ -90,12 +85,26 @@ where
 			.map(ToOwned::to_owned)
 			.into_iter()
 			.collect(),
+		0,
+		true,
 	)]
 	.into();
 
 	let mut rooms = Vec::with_capacity(limit);
-	let mut parents = BTreeSet::new();
-	while let Some((current_room, via)) = queue.pop_front() {
+
+	let mut path = Vec::new();
+	let mut visited = BTreeSet::new();
+
+	while let Some((current_room, via, depth, on_token_path)) = queue.pop_back() {
+		if !visited.insert(current_room.clone()) {
+			continue;
+		}
+
+		if rooms.len() >= limit {
+			queue.push_back((current_room, via, depth, on_token_path));
+			break;
+		}
+
 		let summary = services
 			.rooms
 			.spaces
@@ -104,58 +113,81 @@ where
 
 		match (summary, current_room == room_id) {
 			| (None | Some(SummaryAccessibility::Inaccessible), false) => {
-				// Just ignore other unavailable rooms
+				conduwuit::info!(
+					room_id = %current_room,
+					"spaces: ignoring unavailable room in hierarchy (inaccessible or missing summary)"
+				);
 			},
 			| (None, true) => {
+				conduwuit::info!(room_id = %current_room, "spaces: requested root room was not found");
 				return Err!(Request(Forbidden("The requested room was not found")));
 			},
 			| (Some(SummaryAccessibility::Inaccessible), true) => {
+				conduwuit::info!(room_id = %current_room, "spaces: requested root room is inaccessible");
 				return Err!(Request(Forbidden("The requested room is inaccessible")));
 			},
-			| (Some(SummaryAccessibility::Accessible(summary)), _) => {
-				let populate = parents.len() >= short_room_ids.clone().count();
+			| (Some(SummaryAccessibility::Accessible(mut summary)), _) => {
+				path.truncate(depth);
+				path.push(current_room.clone());
+
+				let populate = !on_token_path || path.len() > short_room_ids.clone().count();
 
 				let mut children: Vec<Entry> = get_parent_children_via(&summary, suggested_only)
-					.filter(|(room, _)| !parents.contains(room))
 					.rev()
-					.map(|(key, val)| (key, val.collect()))
+					.map(|(key, val)| (key, val.collect(), depth.saturating_add(1), false))
 					.collect();
 
 				if populate {
+					if suggested_only {
+						// In a `suggested_only` walk the returned children_state
+						// must only carry the suggested links.
+						summary.children_state.retain(|raw| {
+							raw.deserialize_as::<HierarchySpaceChildEvent>()
+								.is_ok_and(|ce| ce.content.suggested)
+						});
+					}
 					rooms.push(summary_to_chunk(summary.clone()));
 				} else {
-					children = children
-						.iter()
-						.rev()
-						.stream()
-						.skip_while(|(room, _)| {
-							services
-								.rooms
-								.short
-								.get_shortroomid(room)
-								.map_ok(|short| {
-									Some(&short) != short_room_ids.clone().nth(parents.len())
-								})
-								.unwrap_or_else(|_| false)
-						})
-						.map(Clone::clone)
-						.collect::<Vec<Entry>>()
-						.await
-						.into_iter()
-						.rev()
-						.collect();
+					let mut s_ids = short_room_ids.clone();
+					let target = s_ids.nth(depth);
+					children = {
+						let mut valid = vec![];
+						let mut reached_target = false;
+						for (room, via, child_depth, _) in children.iter().rev() {
+							if !reached_target {
+								if let Ok(short) =
+									services.rooms.short.get_shortroomid(room).await
+								{
+									if Some(&short) == target {
+										reached_target = true;
+										valid.push((
+											room.clone(),
+											via.clone(),
+											*child_depth,
+											true,
+										));
+									}
+								}
+							} else {
+								valid.push((room.clone(), via.clone(), *child_depth, false));
+							}
+						}
+						valid.reverse();
+						valid
+					};
 				}
 
 				if !populate && queue.is_empty() && children.is_empty() {
 					break;
 				}
 
-				parents.insert(current_room.clone());
-				if rooms.len() >= limit {
-					break;
+				if path.len() > max_depth {
+					continue;
 				}
 
-				if parents.len() > max_depth {
+				// Only spaces are expanded; a non-space room's children links are
+				// ignored. Rooms deeper than max_depth are returned but not expanded.
+				if summary.room_type != Some(RoomType::Space) {
 					continue;
 				}
 
@@ -165,26 +197,36 @@ where
 	}
 
 	let next_batch: OptionFuture<_> = queue
-		.pop_front()
-		.map(|(room, _)| async move {
-			parents.insert(room);
+		.pop_back()
+		.map(|(room, _, depth, _)| {
+			let mut path = path.clone();
+			async move {
+				path.truncate(depth);
+				path.push(room);
 
-			let next_short_room_ids: Vec<_> = parents
-				.iter()
-				.stream()
-				.filter_map(|room_id| services.rooms.short.get_shortroomid(room_id).ok())
-				.collect()
-				.await;
+				let next_short_room_ids: Vec<u64> = path
+					.iter()
+					.stream()
+					.filter_map(|room_id| async move {
+						services.rooms.short.get_shortroomid(room_id).await.ok()
+					})
+					.collect()
+					.await;
 
-			(next_short_room_ids.iter().ne(short_room_ids) && !next_short_room_ids.is_empty())
-				.then_some(PaginationToken {
-					short_room_ids: next_short_room_ids,
-					limit: limit.try_into().ok()?,
-					max_depth: max_depth.try_into().ok()?,
-					suggested_only,
-				})
-				.as_ref()
-				.map(PaginationToken::to_string)
+				// Exclude root from token
+				let next_short_room_ids: Vec<_> =
+					next_short_room_ids.into_iter().skip(1).collect();
+
+				(!next_short_room_ids.is_empty())
+					.then_some(PaginationToken {
+						short_room_ids: next_short_room_ids,
+						limit: limit.try_into().ok()?,
+						max_depth: max_depth.try_into().ok()?,
+						suggested_only,
+					})
+					.as_ref()
+					.map(|t| format!("{t}"))
+			}
 		})
 		.into();
 

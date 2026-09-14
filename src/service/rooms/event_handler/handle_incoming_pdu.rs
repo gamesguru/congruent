@@ -263,63 +263,69 @@ pub async fn handle_incoming_pdu<'a>(
 		"Handling previous events"
 	);
 
-	sorted_prev_events
-		.iter()
-		.try_stream()
-		.map_ok(AsRef::as_ref)
-		.try_for_each(|prev_id| {
-			self.handle_prev_pdu(
-				origin,
-				event_id,
-				room_id,
-				eventid_info.remove(prev_id),
-				create_event,
-				first_ts_in_room,
-				prev_id,
-			)
-			.inspect_err(move |e| {
-				warn!("Prev {prev_id} failed: {e}");
-				match self
-					.services
-					.globals
-					.bad_event_ratelimiter
+	// Keep the entire write phase inside one flush boundary so prev-event
+	// repairs and the incoming event become visible together to /sync.
+	self.services
+		.timeline
+		.with_cork_and_flush(|| async move {
+			sorted_prev_events
+				.iter()
+				.try_stream()
+				.map_ok(AsRef::as_ref)
+				.try_for_each(|prev_id| {
+					self.handle_prev_pdu(
+						origin,
+						event_id,
+						room_id,
+						eventid_info.remove(prev_id),
+						create_event,
+						first_ts_in_room,
+						prev_id,
+					)
+					.inspect_err(move |e| {
+						warn!("Prev {prev_id} failed: {e}");
+						match self
+							.services
+							.globals
+							.bad_event_ratelimiter
+							.write()
+							.entry(prev_id.into())
+						{
+							| hash_map::Entry::Vacant(e) => {
+								e.insert((Instant::now(), 1));
+							},
+							| hash_map::Entry::Occupied(mut e) => {
+								let tries = e.get().1.saturating_add(1);
+								*e.get_mut() = (Instant::now(), tries);
+							},
+						}
+					})
+					.map(|_| self.services.server.check_running())
+				})
+				.boxed()
+				.await?;
+
+			// Done with prev events, now handling the incoming event
+			let start_time = Instant::now();
+			self.federation_handletime
+				.write()
+				.insert(room_id.into(), (event_id.to_owned(), start_time));
+
+			defer! {{
+				self.federation_handletime
 					.write()
-					.entry(prev_id.into())
-				{
-					| hash_map::Entry::Vacant(e) => {
-						e.insert((Instant::now(), 1));
-					},
-					| hash_map::Entry::Occupied(mut e) => {
-						let tries = e.get().1.saturating_add(1);
-						*e.get_mut() = (Instant::now(), tries);
-					},
-				}
-			})
-			.map(|_| self.services.server.check_running())
+					.remove(room_id);
+			}};
+
+			Box::pin(self.upgrade_outlier_to_timeline_pdu(
+				incoming_pdu,
+				val,
+				create_event,
+				origin,
+				room_id,
+				is_timeline_event,
+			))
+			.await
 		})
-		.boxed()
-		.await?;
-
-	// Done with prev events, now handling the incoming event
-	let start_time = Instant::now();
-	self.federation_handletime
-		.write()
-		.insert(room_id.into(), (event_id.to_owned(), start_time));
-
-	defer! {{
-		self.federation_handletime
-			.write()
-			.remove(room_id);
-	}};
-
-	self.upgrade_outlier_to_timeline_pdu(
-		incoming_pdu,
-		val,
-		create_event,
-		origin,
-		room_id,
-		is_timeline_event,
-	)
-	.boxed()
-	.await
+		.await
 }

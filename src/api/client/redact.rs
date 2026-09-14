@@ -30,22 +30,19 @@ pub(crate) async fn redact_event_route(
 
 	let state_lock = services.rooms.state.mutex.lock(&body.room_id).await;
 
-	let event_id = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder {
+	let event_id = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder {
+			redacts: Some(body.event_id.clone()),
+			..PduBuilder::timeline(&RoomRedactionEventContent {
 				redacts: Some(body.event_id.clone()),
-				..PduBuilder::timeline(&RoomRedactionEventContent {
-					redacts: Some(body.event_id.clone()),
-					reason: body.reason.clone(),
-				})
-			},
-			sender_user,
-			Some(&body.room_id),
-			&state_lock,
-		)
-		.await?;
+				reason: body.reason.clone(),
+			})
+		},
+		sender_user,
+		Some(&body.room_id),
+		&state_lock,
+	))
+	.await?;
 
 	drop(state_lock);
 

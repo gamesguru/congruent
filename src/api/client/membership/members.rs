@@ -58,10 +58,10 @@ pub(crate) async fn get_member_events_route(
 			return Err!(Request(NotFound("Point in time not found in timeline.")));
 		};
 
-		let shortstatehash = services
+		let root_handle = services
 			.rooms
 			.state_accessor
-			.pdu_shortstatehash(pdu.event_id())
+			.pdu_roothandle(pdu.event_id())
 			.await?;
 
 		// Collect into Vec<Pdu> to avoid HRTB/opaque-type conflicts with
@@ -69,7 +69,7 @@ pub(crate) async fn get_member_events_route(
 		let all_pdus: Vec<Pdu> = services
 			.rooms
 			.state_accessor
-			.state_full_pdus(shortstatehash)
+			.state_full_pdus_hamt(root_handle)
 			.map(Event::into_pdu)
 			.collect()
 			.await;

@@ -1,17 +1,21 @@
-use std::{borrow::Borrow, collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+	borrow::Borrow,
+	collections::{BTreeMap, HashMap},
+	time::Instant,
+};
 
 use conduwuit::{
 	Err, Result, debug, debug_info, err, implement, info, is_equal_to,
 	matrix::{Event, EventTypeExt, PduEvent, StateKey, state_res},
 	trace,
-	utils::stream::{BroadbandExt, ReadyExt},
+	utils::stream::{BroadbandExt, IterStream, ReadyExt},
 	warn,
 };
-use futures::{FutureExt, StreamExt, future::ready};
-use ruma::{CanonicalJsonValue, RoomId, ServerName, events::StateEventType};
+use futures::{StreamExt, future::ready};
+use ruma::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
-use crate::rooms::{state_compressor::CompressedState, timeline::RawPduId};
+use crate::rooms::timeline::RawPduId;
 
 #[implement(super::Service)]
 pub(super) async fn upgrade_outlier_to_timeline_pdu<Pdu>(
@@ -60,19 +64,29 @@ where
 		event_id = %incoming_pdu.event_id,
 		"Resolving state at event"
 	);
-	let mut state_at_incoming_event = if incoming_pdu.prev_events().count() == 1 {
-		self.state_at_incoming_degree_one(&incoming_pdu, room_id)
-			.await?
-	} else {
-		self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
-			.await?
-	};
+	// Lift the enclosing flush boundary around state resolution and fetch_state
+	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
+	// unrelated WAL flushes across the whole server.
+	let state_at_incoming_event = self
+		.services
+		.timeline
+		.without_cork(|| async {
+			let state = if incoming_pdu.prev_events().count() == 1 {
+				self.state_at_incoming_degree_one(&incoming_pdu, room_id)
+					.await?
+			} else {
+				self.state_at_incoming_resolved(&incoming_pdu, room_id, &room_version_id)
+					.await?
+			};
 
-	if state_at_incoming_event.is_none() {
-		state_at_incoming_event = self
-			.fetch_state(origin, create_event, room_id, incoming_pdu.event_id())
-			.await?;
-	}
+			if state.is_none() {
+				self.fetch_state(origin, create_event, room_id, incoming_pdu.event_id())
+					.await
+			} else {
+				Ok(state)
+			}
+		})
+		.await?;
 
 	let state_at_incoming_event =
 		state_at_incoming_event.expect("we always set this to some above");
@@ -217,22 +231,13 @@ where
 		incoming_pdu.prev_events().count()
 	);
 
-	let state_ids_compressed: Arc<CompressedState> = self
-		.services
-		.state_compressor
-		.compress_state_events(
-			state_at_incoming_event
-				.iter()
-				.map(|(ssk, eid)| (ssk, eid.borrow())),
-		)
-		.collect()
-		.map(Arc::new)
-		.await;
+	let mut new_room_state: Option<rezzy::hamt::RootHandle> = None;
+	let mut previous_root_handle: Option<rezzy::hamt::RootHandle> = None;
 
-	let resolved_state = if let Some(state_key) = incoming_pdu.state_key() {
+	if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
-		// We also add state after incoming event to the fork states
+		// We also add state after incoming event to the fork states.
 		let mut state_after = state_at_incoming_event.clone();
 		let shortstatekey = self
 			.services
@@ -243,23 +248,34 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
-		let new_room_state = self
-			.resolve_state(room_id, &room_version_id, state_after)
-			.await?;
+		previous_root_handle = Some(
+			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+				.await?,
+		);
+		new_room_state = Some(
+			self.resolve_state(room_id, &room_version_id, state_after)
+				.await?,
+		);
 
-		// Set the new room state to the resolved state
 		debug!("Forcing new room state");
-		let resolved_state = Box::pin(
-			self.services
-				.state_compressor
-				.save_state(room_id, new_room_state),
-		)
-		.await?;
-
-		Some(resolved_state)
-	} else {
-		None
-	};
+		// The legacy force_state updated the joined-member/servers caches
+		// (`roomserverids`) on state transitions. That cache update must be
+		// preserved here, otherwise remote members that join the room are
+		// never registered for outbound federation fan-out and locally-sent
+		// events stop being delivered to their servers.
+		// We only update the derived caches; the HAMT root is committed
+		// separately by set_event_state_with_root in append_pdu.
+		if let (Some(prev_root), Some(new_root)) =
+			(previous_root_handle.as_ref(), new_room_state.as_ref())
+		{
+			Box::pin(self.services.state.update_caches_for_state_delta_between(
+				room_id,
+				Some(prev_root),
+				new_root,
+			))
+			.await?;
+		}
+	}
 
 	if !soft_fail {
 		// Don't call the below checks on events that have already soft-failed, there's
@@ -267,13 +283,14 @@ where
 		// 14-pre. If the event is not a state event, ask the policy server about it
 		if incoming_pdu.state_key.is_none() {
 			debug!(event_id = %incoming_pdu.event_id, "Checking policy server for event");
+			// Lift the cork around the policy server round-trip.
+			let mut pdu_object = incoming_pdu.to_canonical_object();
 			match self
-				.ask_policy_server(
-					&incoming_pdu,
-					&mut incoming_pdu.to_canonical_object(),
-					room_id,
-					true,
-				)
+				.services
+				.timeline
+				.without_cork(|| {
+					self.ask_policy_server(&incoming_pdu, &mut pdu_object, room_id, true)
+				})
 				.await
 			{
 				| Ok(false) => {
@@ -320,28 +337,30 @@ where
 
 	// 14. Check if the event passes auth based on the "current state" of the room,
 	//     if not soft fail it
+	let append_ctx = crate::rooms::timeline::AppendPduContext {
+		state_lock: &state_lock,
+		room_id,
+		state_root_handle: new_room_state.clone(),
+		prev_state_root_handle: previous_root_handle.clone(),
+	};
+
 	if soft_fail {
 		info!(
 			event_id = %incoming_pdu.event_id,
 			"Soft failing event"
 		);
-		// assert!(extremities.is_empty(), "soft_fail extremities empty");
 		let extremities = extremities.iter().map(Borrow::borrow);
 		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
 
-		self.services
-			.timeline
-			.append_incoming_pdu(
-				&incoming_pdu,
-				val,
-				extremities,
-				state_ids_compressed,
-				None,
-				soft_fail,
-				&state_lock,
-				room_id,
-			)
-			.await?;
+		Box::pin(self.services.timeline.append_incoming_pdu(
+			&incoming_pdu,
+			val,
+			extremities,
+			soft_fail,
+			false,
+			append_ctx,
+		))
+		.await?;
 
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
 		self.services
@@ -362,20 +381,15 @@ where
 	let extremities = extremities.iter().map(Borrow::borrow);
 	debug_assert!(extremities.clone().count() > 0, "extremities not empty");
 
-	let pdu_id = self
-		.services
-		.timeline
-		.append_incoming_pdu(
-			&incoming_pdu,
-			val,
-			extremities,
-			state_ids_compressed,
-			resolved_state,
-			soft_fail,
-			&state_lock,
-			room_id,
-		)
-		.await?;
+	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
+		&incoming_pdu,
+		val,
+		extremities,
+		soft_fail,
+		incoming_pdu.state_key.is_some(),
+		append_ctx,
+	))
+	.await?;
 
 	// Event has passed all auth/stateres checks
 	drop(state_lock);
@@ -385,4 +399,68 @@ where
 	);
 
 	Ok(pdu_id)
+}
+
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+async fn state_map_to_root_handle(
+	&self,
+	room_id: &RoomId,
+	short_state: &HashMap<u64, OwnedEventId>,
+) -> Result<rezzy::hamt::RootHandle> {
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(short_state.len());
+	let mut short_state_keys = Vec::with_capacity(short_state.len());
+	let mut event_ids = Vec::with_capacity(short_state.len());
+
+	for (&shortstatekey, event_id) in short_state {
+		short_state_keys.push(shortstatekey);
+		event_ids.push(event_id.clone());
+	}
+
+	let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
+		.services
+		.short
+		.multi_get_statekey_from_short(short_state_keys.iter().copied().stream())
+		.collect()
+		.await;
+
+	for ((shortstatekey, event_id), key_result) in short_state_keys
+		.into_iter()
+		.zip(event_ids.into_iter())
+		.zip(string_keys.into_iter())
+	{
+		let event_id = event_id.as_ref();
+		let shorteventid = self
+			.services
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+
+		if let Ok((event_type, state_key)) = key_result {
+			lattice.insert(
+				event_type.to_string().as_str(),
+				state_key.as_str(),
+				event_id.as_str(),
+			);
+		}
+	}
+
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
+
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
+
+	Ok(root_handle)
 }

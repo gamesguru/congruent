@@ -164,22 +164,24 @@ pub(crate) async fn get_context_route(
 		.map(ref_at!(1))
 		.map_or_else(|| body.event_id.as_ref(), |pdu| pdu.event_id.as_ref());
 
-	let state_ids = services
-		.rooms
-		.state_accessor
-		.pdu_shortstatehash(state_at)
-		.or_else(|_| services.rooms.state.get_room_shortstatehash(room_id))
-		.map_ok(|shortstatehash| {
-			services
-				.rooms
-				.state_accessor
-				.state_full_ids(shortstatehash)
-				.map(Ok)
-		})
-		.map_err(|e| err!(Database("State not found: {e}")))
-		.try_flatten_stream()
-		.try_collect()
-		.boxed();
+	let state_ids = async {
+		let root_handle = services
+			.rooms
+			.state_accessor
+			.pdu_roothandle_at_event(room_id, state_at)
+			.or_else(|_| services.rooms.state.get_room_state_hamt(room_id))
+			.map_err(|e| err!(Database("State not found: {e}")))
+			.await?;
+
+		let ids: Vec<(ShortStateKey, OwnedEventId)> = services
+			.rooms
+			.state_accessor
+			.state_full_ids_hamt(&root_handle)
+			.try_collect()
+			.await?;
+
+		Ok::<_, conduwuit::Error>(ids)
+	};
 
 	let (lazy_loading_witnessed, state_ids) = join(lazy_loading_witnessed, state_ids).await;
 

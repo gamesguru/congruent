@@ -40,7 +40,7 @@ use ruma::{
 	},
 	device_id,
 	events::{
-		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType, StateEventType,
+		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType,
 		push_rules::PushRulesEvent,
 		receipt::{ReceiptThread, ReceiptType},
 	},
@@ -65,7 +65,6 @@ enum TransactionStatus {
 #[derive(Clone, Debug, serde::Serialize)]
 struct StateHashInfo {
 	algorithm: String,
-	before: String,
 	after: String,
 }
 
@@ -122,8 +121,6 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 	}
 }
 
-pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
-
 async fn compute_outbound_state_hashes(
 	services: &super::Services,
 	pdus: &[(OwnedEventId, CanonicalJsonObject)],
@@ -144,48 +141,26 @@ async fn compute_outbound_state_hashes(
 async fn compute_state_hash_for_pdu(
 	services: &super::Services,
 	event_id: &OwnedEventId,
-	value: &CanonicalJsonObject,
+	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
-	let sstatehash_before = services
-		.state_accessor
-		.pdu_shortstatehash(event_id)
-		.await
-		.ok()?;
-	let lthash_before = services
-		.state_compressor
-		.get_lthash(sstatehash_before)
-		.await
-		.ok()?;
-	let before_digest = serialize_lthash(&lthash_before).1;
+	let Ok(root_handle) = services.state_accessor.pdu_roothandle(event_id).await else {
+		warn!(event_id = %event_id, "failed to resolve outbound state hash root");
+		return None;
+	};
 
-	let mut after_digest = before_digest.clone();
-
-	if let Some(state_key) = value.get("state_key").and_then(|k| k.as_str()) {
-		if let Some(ev_type_str) = value.get("type").and_then(|t| t.as_str()) {
-			let ev_type = StateEventType::from(ev_type_str);
-			let mut lthash_after = lthash_before;
-
-			if let Ok(old_event_id) = services
-				.state_accessor
-				.state_get_id::<OwnedEventId>(sstatehash_before, &ev_type, state_key)
-				.await
-			{
-				lthash_after.remove(ev_type_str, state_key, &old_event_id);
-			}
-
-			lthash_after.insert(ev_type_str, state_key, event_id);
-			after_digest = serialize_lthash(&lthash_after).1;
-		}
+	let mut after = String::with_capacity(64);
+	for b in root_handle.state_group_id {
+		use std::fmt::Write;
+		let _ = write!(&mut after, "{b:02x}");
 	}
 
 	Some(StateHashInfo {
-		algorithm: "lthash16".to_owned(),
-		before: before_digest,
-		after: after_digest,
+		algorithm: "lthash16-v1".to_owned(),
+		after,
 	})
 }
 
-type SendingError = (Destination, Error);
+type SendingError = Box<(Destination, Error)>;
 type SendingResult = Result<Destination, SendingError>;
 type SendingFuture<'a> = BoxFuture<'a, SendingResult>;
 type SendingFutures<'a> = FuturesUnordered<SendingFuture<'a>>;
@@ -270,7 +245,8 @@ impl Service {
 	) {
 		match response {
 			| Ok(dest) => self.handle_response_ok(&dest, futures, statuses).await,
-			| Err((dest, e)) => {
+			| Err(error) => {
+				let (dest, e) = *error;
 				if let Some(dest) = self.handle_response_err(dest, statuses, &e) {
 					// The destination definitively rejected this transaction; it will
 					// never accept it as constructed, so drop the PDUs it contained now
@@ -921,10 +897,10 @@ impl Service {
 		events: Vec<SendingEvent>,
 	) -> SendingResult {
 		let Some(appservice) = self.services.appservice.get_registration(&id).await else {
-			return Err((
+			return Err(Box::new((
 				Destination::Appservice(id.clone()),
 				err!(Database(warn!(?id, "Missing appservice registration"))),
-			));
+			)));
 		};
 
 		let mut pdu_jsons = Vec::with_capacity(
@@ -980,7 +956,7 @@ impl Service {
 			.await
 		{
 			| Ok(_) => Ok(Destination::Appservice(id)),
-			| Err(e) => Err((Destination::Appservice(id), e)),
+			| Err(e) => Err(Box::new((Destination::Appservice(id), e))),
 		}
 	}
 
@@ -999,10 +975,10 @@ impl Service {
 		events: Vec<SendingEvent>,
 	) -> SendingResult {
 		let Ok(pusher) = self.services.pusher.get_pusher(&user_id, &pushkey).await else {
-			return Err((
+			return Err(Box::new((
 				Destination::Push(user_id.clone(), pushkey.clone()),
 				err!(Database(error!(%user_id, ?pushkey, "Missing pusher"))),
-			));
+			)));
 		};
 
 		let mut pdus = Vec::with_capacity(
@@ -1057,7 +1033,7 @@ impl Service {
 				.pusher
 				.send_push_notice(&user_id, unread, &pusher, rules_for_user, &pdu)
 				.await
-				.map_err(|e| (Destination::Push(user_id.clone(), pushkey.clone()), e));
+				.map_err(|e| Box::new((Destination::Push(user_id.clone(), pushkey.clone()), e)));
 		}
 
 		Ok(Destination::Push(user_id, pushkey))
@@ -1199,7 +1175,7 @@ impl Service {
 		match result {
 			| Err(error) => {
 				self.stats.outgoing_errors.fetch_add(1, Ordering::Relaxed);
-				Err((Destination::Federation(server), error))
+				Err(Box::new((Destination::Federation(server), error)))
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {
@@ -1322,7 +1298,7 @@ fn build_receipt_map(
 		match read.entry(user_id) {
 			| Entry::Vacant(e) => {
 				if num
-					.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+					.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
 						(n < limit).then_some(n.saturating_add(1))
 					})
 					.is_err()

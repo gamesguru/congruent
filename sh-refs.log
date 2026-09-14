@@ -1,0 +1,71 @@
+src/api/client/membership/join.rs:	let statehashid = services
+src/api/client/membership/join.rs:		.persist_node_recursive(statehashid.1.clone());
+src/api/client/membership/join.rs:				state_root_handle: Some(statehashid.0.clone()),
+src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None (idle room),
+src/api/client/sync/v3/joined.rs:		// If last_sync_end_shortstatehash is None, and the user joined at count 150,
+src/api/server/send.rs:struct StateHashInfo {
+src/api/server/send.rs:		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
+src/database/deprecated_maps.rs:		name: "roomid_shortstatehash",
+src/database/deprecated_maps.rs:		name: "roomsynctoken_shortstatehash",
+src/database/deprecated_maps.rs:		name: "shorteventid_shortstatehash",
+src/database/deprecated_maps.rs:		name: "shortstatehash_lthash",
+src/database/deprecated_maps.rs:		name: "shortstatehash_statediff",
+src/service/migrations.rs:use crate::{Services, media, rooms::short::ShortStateHash};
+src/service/migrations.rs:	// Version 21 - drop legacy shortstatehash table data now that v20 has
+src/service/migrations.rs:	parent: Option<ShortStateHash>,
+src/service/migrations.rs:	shortstatehash: ShortStateHash,
+src/service/migrations.rs:	const STRIDE: usize = size_of::<ShortStateHash>();
+src/service/migrations.rs:	let value = services.db["shortstatehash_statediff"]
+src/service/migrations.rs:		.get(&shortstatehash.to_be_bytes())
+src/service/migrations.rs:			"Truncated legacy state-diff record for shortstatehash {shortstatehash}: length {} \
+src/service/migrations.rs:	shortstatehash: ShortStateHash,
+src/service/migrations.rs:	let mut curr = Some(shortstatehash);
+src/service/migrations.rs:	shortstatehash: ShortStateHash,
+src/service/migrations.rs:	let full_state = legacy_get_full_state(services, shortstatehash).await?;
+src/service/migrations.rs:				"Failed to build HAMT root for room {room_id} and state {shortstatehash}: {e:?}"
+src/service/migrations.rs:		match services.rooms.state.get_room_shortstatehash(room_id).await {
+src/service/migrations.rs:					"Skipping room {room_id} in v20 migration: no shortstatehash (room may be \
+src/service/migrations.rs:			| Ok(shortstatehash) => {
+src/service/migrations.rs:				let full_state = legacy_get_full_state(services, shortstatehash).await?;
+src/service/migrations.rs:	let short_state_events = services.db["shorteventid_shortstatehash"]
+src/service/migrations.rs:		.stream::<crate::rooms::short::ShortEventId, ShortStateHash>()
+src/service/migrations.rs:		(OwnedRoomId, ShortStateHash),
+src/service/migrations.rs:	for (shorteventid, shortstatehash) in short_state_events {
+src/service/migrations.rs:			.entry((room_id, shortstatehash))
+src/service/migrations.rs:	for ((room_id, shortstatehash), shorteventids) in events_by_state {
+src/service/migrations.rs:			legacy_build_root_handle_for_state(services, &room_id, shortstatehash).await?;
+src/service/migrations.rs:/// Drop the legacy `shortstatehash` state table data once the HAMT cutover
+src/service/migrations.rs:	info!("Running v21 migration (clearing legacy shortstatehash table data)...");
+src/service/migrations.rs:		"shortstatehash_statediff",
+src/service/migrations.rs:		"roomid_shortstatehash",
+src/service/migrations.rs:		"shorteventid_shortstatehash",
+src/service/migrations.rs:		"shortstatehash_lthash",
+src/service/migrations.rs:		"roomsynctoken_shortstatehash",
+src/service/migrations.rs:		info!(%map_name, ?cleared, "Cleared legacy shortstatehash column");
+src/service/migrations.rs:	info!(?total, "Cleared legacy shortstatehash table data.");
+src/service/rooms/event_handler/state_at_incoming.rs:	trace!("Calculating extremity statehashes...");
+src/service/rooms/event_handler/state_at_incoming.rs:	for (sstatehash, prev_event) in &extremity_roothandles {
+src/service/rooms/event_handler/state_at_incoming.rs:		match self.get_extremity_lthash(sstatehash, prev_event).await {
+src/service/rooms/event_handler/state_at_incoming.rs:					unique_forks.push((lthash, (sstatehash.clone(), prev_event)));
+src/service/rooms/event_handler/state_at_incoming.rs:		let (sstatehash, prev_event) = unique_forks[0].1.clone();
+src/service/rooms/event_handler/state_at_incoming.rs:			.state_at_incoming_fork(room_id, sstatehash, prev_event)
+src/service/rooms/event_handler/state_at_incoming.rs:			.wide_and_then(|(sstatehash, prev_event)| {
+src/service/rooms/event_handler/state_at_incoming.rs:				self.state_at_incoming_fork(room_id, sstatehash, prev_event)
+src/service/rooms/short/mod.rs:pub type ShortStateHash = ShortId;
+src/service/rooms/state/mod.rs:	rooms::short::{ShortEventId, ShortStateHash, ShortStateKey},
+src/service/rooms/state/mod.rs:	roomid_shortstatehash: Arc<Map>,
+src/service/rooms/state/mod.rs:				roomid_shortstatehash: args.db["roomid_shortstatehash"].clone(),
+src/service/rooms/state/mod.rs:	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
+src/service/rooms/state/mod.rs:	/// Generates a new StateHash and associates it with the incoming event.
+src/service/rooms/state/mod.rs:	/// to `stateid_pduid` and adds the incoming event to `eventid_statehash`.
+src/service/rooms/state/mod.rs:	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
+src/service/rooms/state/mod.rs:			.roomid_shortstatehash
+src/service/rooms/timeline/build.rs:	let statehashid = self
+src/service/rooms/timeline/build.rs:	trace!("State hash ID for {room_id}: {statehashid:?}");
+src/service/rooms/timeline/build.rs:		.persist_node_recursive(statehashid.1.clone());
+src/service/rooms/timeline/build.rs:				state_root_handle: Some(statehashid.0.clone()),
+src/service/rooms/timeline/build.rs:			.set_room_state_hamt(&room_id, &statehashid.0, state_lock);
+src/service/sending/sender.rs:struct StateHashInfo {
+src/service/sending/sender.rs:	state_hashes: BTreeMap<OwnedEventId, StateHashInfo>,
+src/service/sending/sender.rs:) -> BTreeMap<OwnedEventId, StateHashInfo> {
+src/service/sending/sender.rs:) -> Option<StateHashInfo> {

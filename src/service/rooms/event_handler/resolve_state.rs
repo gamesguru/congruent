@@ -1,7 +1,6 @@
 use std::{
 	borrow::Borrow,
 	collections::{HashMap, HashSet},
-	sync::Arc,
 };
 
 use conduwuit::{
@@ -13,34 +12,32 @@ use conduwuit::{
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
 
-use crate::rooms::state_compressor::CompressedState;
-
 #[implement(super::Service)]
 #[tracing::instrument(name = "resolve", level = "debug", skip_all)]
 pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
-	incoming_state: HashMap<u64, OwnedEventId>,
-) -> Result<Arc<CompressedState>> {
+	incomingstate: HashMap<u64, OwnedEventId>,
+) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
-	let current_sstatehash = self
+	let current_root_handle = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.map_err(|e| err!(Database(error!("No state for {room_id:?}: {e:?}"))))
 		.await?;
 
-	let current_state_ids: HashMap<_, _> = self
+	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(current_sstatehash)
-		.collect()
-		.await;
+		.state_full_ids_hamt(&current_root_handle)
+		.try_collect()
+		.await?;
 
 	trace!("Loading fork states");
-	let fork_states = [current_state_ids, incoming_state];
-	let auth_chain_sets = fork_states
+	let forkstates = [currentstate_ids, incomingstate];
+	let auth_chain_sets = forkstates
 		.iter()
 		.try_stream()
 		.wide_and_then(|state| {
@@ -51,52 +48,64 @@ pub async fn resolve_state(
 		})
 		.try_collect::<Vec<HashSet<OwnedEventId>>>();
 
-	let fork_states = fork_states
+	let forkstates = forkstates
 		.iter()
 		.stream()
-		.wide_then(|fork_state| {
-			let shortstatekeys = fork_state.keys().copied().stream();
-			let event_ids = fork_state.values().cloned().stream();
+		.wide_then(|forkstate| {
+			let shortstatekeys = forkstate.keys().copied().stream();
+			let event_ids = forkstate.values().cloned().stream();
 			self.services
 				.short
 				.multi_get_statekey_from_short(shortstatekeys)
 				.zip(event_ids)
-				.ready_filter_map(|(ty_sk, id)| Some((ty_sk.ok()?, id)))
+				.ready_filter_map(|(ty_sk, id): (Result<_>, _)| Some((ty_sk.ok()?, id)))
 				.collect()
 		})
 		.map(Ok::<_, Error>)
 		.try_collect::<Vec<StateMap<OwnedEventId>>>();
 
-	let (fork_states, auth_chain_sets) = try_join(fork_states, auth_chain_sets).await?;
+	let (forkstates, auth_chain_sets): (Vec<StateMap<OwnedEventId>>, Vec<HashSet<OwnedEventId>>) =
+		try_join(forkstates, auth_chain_sets).await?;
 
 	trace!("Resolving state");
-	let state = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), &auth_chain_sets)
+	let state: StateMap<OwnedEventId> = self
+		.state_resolution(room_id, room_version_id, forkstates.iter(), &auth_chain_sets)
 		.boxed()
 		.await?;
 
 	trace!("State resolution done.");
-	let state_events: Vec<_> = state
-		.iter()
-		.stream()
-		.wide_then(|((event_type, state_key), event_id)| {
-			self.services
-				.short
-				.get_or_create_shortstatekey(event_type, state_key)
-				.map(move |shortstatekey| (shortstatekey, event_id))
-		})
-		.collect()
-		.await;
 
-	trace!("Compressing state...");
-	let new_room_state: CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_events.iter().map(|(ssk, eid)| (ssk, (*eid).borrow())))
-		.collect()
-		.await;
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(state.len());
 
-	Ok(Arc::new(new_room_state))
+	for ((ty, sk), id) in &state {
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(ty, sk)
+			.await;
+		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
+
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
+
+	Ok(root_handle)
 }
 
 #[implement(super::Service)]
@@ -112,8 +121,7 @@ where
 	StateSets: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
 {
 	let event_fetch = |event_id| self.event_fetch(Some(room_id), event_id);
-	let event_exists = |event_id| self.event_exists(event_id);
-	state_res::resolve(room_version, state_sets, auth_chain_sets, &event_fetch, &event_exists)
+	state_res::resolve(room_version, state_sets, auth_chain_sets, &event_fetch)
 		.map_err(|e| err!(error!("State resolution failed: {e:?}")))
 		.await
 }

@@ -5,7 +5,7 @@ on:
   push:
     branches: [main, main-upstream]
   pull_request:
-    branches: [main]
+    branches: '**'
   workflow_dispatch:
 
 env:

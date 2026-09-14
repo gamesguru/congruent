@@ -686,7 +686,7 @@ mod tests {
 			thread: ReceiptThread::Thread("$root:example.com".try_into().unwrap()),
 		};
 
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, threaded)];
+		let mut new_receipts = vec![(event_id, ReceiptType::Read, threaded)];
 		let _existing = make_empty_receipt_event();
 
 		// Simulate what readreceipt_update does: identify threaded receipts
@@ -725,7 +725,7 @@ mod tests {
 			thread: ReceiptThread::Unthreaded,
 		};
 
-		let mut new_receipts = vec![(event_id.clone(), ReceiptType::Read, unthreaded)];
+		let mut new_receipts = vec![(event_id, ReceiptType::Read, unthreaded)];
 
 		let synthetics: Vec<_> = new_receipts
 			.iter()

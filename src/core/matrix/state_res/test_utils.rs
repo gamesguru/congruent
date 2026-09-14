@@ -134,8 +134,7 @@ pub(crate) async fn do_check(
 			let fetch = |id: OwnedEventId| ready(event_map.get(&id).cloned());
 			let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
 			let resolved =
-				super::resolve(&RoomVersionId::V6, state_sets, &auth_chain_sets, &fetch, &exists)
-					.await;
+				super::resolve(&RoomVersionId::V6, state_sets, &auth_chain_sets, &fetch).await;
 
 			match resolved {
 				| Ok(state) => state,

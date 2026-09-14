@@ -1,7 +1,4 @@
-use std::{
-	collections::{BTreeMap, HashSet},
-	sync::Arc,
-};
+use std::collections::{BTreeMap, HashSet};
 
 use conduwuit::trace;
 use conduwuit_core::{
@@ -28,10 +25,14 @@ use ruma::{
 };
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
-use crate::{
-	appservice::NamespaceRegex,
-	rooms::state_compressor::{CompressedState, HashSetCompressStateEvent},
-};
+use crate::appservice::NamespaceRegex;
+
+pub struct AppendPduContext<'a> {
+	pub state_lock: &'a RoomMutexGuard,
+	pub room_id: &'a ruma::RoomId,
+	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
+	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
+}
 
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
@@ -43,22 +44,22 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
-	state_ids_compressed: Arc<CompressedState>,
-	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
+	resolved_state_applied: bool,
+	ctx: AppendPduContext<'a>,
 ) -> Result<Option<RawPduId>>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
-	// We append to state before appending the pdu, so we don't have a moment in
-	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	self.services
-		.state
-		.set_event_state(&pdu.event_id, room_id, state_ids_compressed)
-		.await?;
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
+	// We defer state association until after soft-fail checks to avoid persisting
+	// HAMT nodes and mappings for rejected/soft-failed events.
 
 	if soft_fail {
 		self.services
@@ -74,7 +75,12 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state, state_lock, room_id)
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, AppendPduContext {
+			state_lock,
+			room_id,
+			state_root_handle,
+			prev_state_root_handle,
+		})
 		.await?;
 
 	// Process admin commands for federation events
@@ -113,13 +119,19 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
-	resolved_state: Option<HashSetCompressStateEvent>,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
+	resolved_state_applied: bool,
+	ctx: AppendPduContext<'a>,
 ) -> Result<RawPduId>
 where
 	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
 	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
 	let cork = self.db.db.cork_and_flush();
 
@@ -134,20 +146,16 @@ where
 	// but state events need to have previous content in the unsigned field, so
 	// clients can easily interpret things like membership changes
 	if let Some(state_key) = pdu.state_key() {
+		let event_type: StateEventType = pdu.kind().to_string().into();
 		if let CanonicalJsonValue::Object(unsigned) = pdu_json
 			.entry("unsigned".to_owned())
 			.or_insert_with(|| CanonicalJsonValue::Object(BTreeMap::default()))
 		{
-			if let Ok(shortstatehash) = self
-				.services
-				.state_accessor
-				.pdu_shortstatehash(pdu.event_id())
-				.await
-			{
+			if let Some(prev_root_handle) = prev_state_root_handle.as_ref() {
 				if let Ok(prev_state) = self
 					.services
 					.state_accessor
-					.state_get(shortstatehash, &pdu.kind().to_string().into(), state_key)
+					.state_get_in_room_hamt(room_id, prev_root_handle, &event_type, state_key)
 					.await
 				{
 					unsigned.insert(
@@ -201,13 +209,16 @@ where
 	self.db.append_pdu(&pdu_id, pdu, &pdu_json, count2).await;
 	drop(cork);
 
-	let resolved_state_applied = resolved_state.is_some();
-	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
-		self.services
-			.state
-			.force_state(room_id, shortstatehash, added, removed, state_lock)
-			.await?;
-	}
+	self.services
+		.state
+		.set_event_state_with_root(
+			room_id,
+			pdu,
+			state_lock,
+			state_root_handle.as_ref(),
+			prev_state_root_handle.as_ref(),
+		)
+		.await?;
 
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
@@ -235,12 +246,21 @@ where
 	drop(insert_lock);
 
 	// See if the event matches any known pushers via power level
-	let power_levels: RoomPowerLevelsEventContent = self
-		.services
-		.state_accessor
-		.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
-		.await
-		.unwrap_or_default();
+	let power_levels: RoomPowerLevelsEventContent = match state_root_handle {
+		| Some(root_handle) => self
+			.services
+			.state_accessor
+			.state_get_in_room_hamt(room_id, &root_handle, &StateEventType::RoomPowerLevels, "")
+			.await
+			.and_then(|pdu| pdu.get_content())
+			.unwrap_or_default(),
+		| None => self
+			.services
+			.state_accessor
+			.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
+			.await
+			.unwrap_or_default(),
+	};
 
 	let mut push_target: HashSet<_> = self
 			.services

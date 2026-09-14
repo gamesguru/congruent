@@ -229,10 +229,6 @@ impl Data {
 		Ok(extract.event_id)
 	}
 
-	pub(super) async fn pduid_exists(&self, pdu_id: &RawPduId) -> bool {
-		self.pduid_pdu.exists(pdu_id).await.is_ok()
-	}
-
 	/// Returns the pdu as a `BTreeMap<String, CanonicalJsonValue>`.
 	pub(super) async fn get_pdu_json_from_id(
 		&self,
@@ -721,9 +717,9 @@ mod tests {
 	async fn test_pdus_by_timestamp_wild_jitter_staircase() -> Result<()> {
 		// Create 1000 events where the time generally goes up but sometimes jumps back
 		let timeline = (0..1000_u64).map(|i| {
-			let i_signed = i as i64;
+			let i_signed = i64::try_from(i).expect("test index fits in i64");
 			let ts = i_signed * 10 + (i_signed % 11) * 5 - (i_signed % 13) * 7;
-			(ts.max(0) as u64, i)
+			(u64::try_from(ts.max(0)).expect("test timestamp is non-negative"), i)
 		});
 
 		// Set sorts like RocksDB, luckily

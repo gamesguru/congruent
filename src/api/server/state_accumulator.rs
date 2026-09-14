@@ -1,7 +1,9 @@
-use axum::extract::State;
+use axum::{Json, extract::State};
 use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
+use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
+use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +30,6 @@ pub(crate) async fn get_state_accumulator_route(
 	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
 ) -> Result<impl axum::response::IntoResponse> {
-	use futures::StreamExt;
-
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)
@@ -68,37 +68,48 @@ pub(crate) async fn get_state_accumulator_route(
 		return Err!(Request(NotFound("Event does not belong to the requested room.")));
 	}
 
-	let shortstatehash = services
+	let shorteventid = services
 		.rooms
-		.state_accessor
-		.pdu_shortstatehash(&query.event_id)
-		.await
-		.map_err(|_| err!(Request(NotFound("Event not found or has no state."))))?;
-
-	let lthash = services
-		.rooms
-		.state_compressor
-		.get_lthash(shortstatehash)
-		.await?;
-
-	let (lattice, digest) = serialize_lthash(&lthash);
-
-	let n_state_events = services
-		.rooms
-		.state_accessor
-		.state_full_shortids(shortstatehash)
-		.count()
+		.short
+		.get_or_create_shorteventid(&query.event_id)
 		.await;
+
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.map_err(|_| err!(Request(NotFound("Root handle not found for event."))))?;
+
+	// Build the LtHash lattice over the event's post-event state.
+	let entries: Vec<(String, String, OwnedEventId)> = services
+		.rooms
+		.state_accessor
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let ty = pdu.kind().to_string();
+			let sk = pdu.state_key()?.to_owned();
+			Some((ty, sk, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
+	}
+	let (lattice_b64, digest) = serialize_lthash(&lattice);
 
 	let response = StateAccumulatorResponse {
 		event_id: query.event_id,
-		algorithm: "lthash16".to_owned(),
-		lattice,
-		n_state_events: n_state_events.try_into().unwrap_or_default(),
+		algorithm: "lthash16-v1".to_owned(),
+		lattice: lattice_b64,
+		n_state_events,
 		digest,
 	};
 
-	Ok(axum::Json(response))
+	Ok(Json(response))
 }
 
 async fn verify_federation_request(
@@ -161,16 +172,15 @@ async fn verify_federation_request(
 	Ok(())
 }
 
-pub(crate) use conduwuit::utils::hash::lthash::serialize_lthash;
-
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use conduwuit_core::utils::hash::lthash::serialize_lthash;
+	use ruma::OwnedEventId;
 
 	#[test]
 	fn test_serialize_empty_lthash() {
 		let empty_lthash = rezzy::LtHash::ZERO;
-		let (lattice, digest) = serialize_lthash(&empty_lthash);
+		let (lattice, digest): (String, String) = serialize_lthash(&empty_lthash);
 
 		// The lattice for an empty LtHash is 2048 null bytes.
 		// 2048 bytes of 0s encoded in base64url without padding:
@@ -185,7 +195,7 @@ mod tests {
 		assert!(
 			digest
 				.chars()
-				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 		);
 	}
 
@@ -198,7 +208,7 @@ mod tests {
 		lthash.insert("m.room.name", "", &event_id1);
 		lthash.insert("m.room.topic", "", &event_id2);
 
-		let (lattice, digest) = serialize_lthash(&lthash);
+		let (lattice, digest): (String, String) = serialize_lthash(&lthash);
 
 		// Lattice must remain exactly 2731 base64url-encoded characters long (2048
 		// bytes without padding)
@@ -209,12 +219,12 @@ mod tests {
 		assert!(
 			digest
 				.chars()
-				.all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 		);
 
 		// The digest and lattice should no longer be the empty one
 		let empty_lthash = rezzy::LtHash::ZERO;
-		let (empty_lattice, empty_digest) = serialize_lthash(&empty_lthash);
+		let (empty_lattice, empty_digest): (String, String) = serialize_lthash(&empty_lthash);
 		assert_ne!(lattice, empty_lattice);
 		assert_ne!(digest, empty_digest);
 	}

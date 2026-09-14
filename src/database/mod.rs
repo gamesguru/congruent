@@ -12,6 +12,7 @@ conduwuit::mod_dtor! {}
 mod benches;
 mod cork;
 mod de;
+mod deprecated_maps;
 mod deserialized;
 mod engine;
 mod handle;
@@ -54,7 +55,8 @@ impl Database {
 	/// Load an existing database or create a new one.
 	pub async fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
 		let ctx = Context::new(server)?;
-		let db = Engine::open(ctx.clone(), maps::MAPS).await?;
+		let descriptors = maps::descriptors();
+		let db = Engine::open(ctx.clone(), &descriptors).await?;
 		Ok(Arc::new(Self {
 			maps: maps::open(&db)?,
 			db: db.clone(),
@@ -87,3 +89,5 @@ impl Index<&str> for Database {
 			.expect("column in database does not exist")
 	}
 }
+pub mod batch;
+pub use self::batch::Batch;

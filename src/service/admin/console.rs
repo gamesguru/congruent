@@ -213,7 +213,8 @@ impl Console {
 					};
 
 					let output_body = match result {
-						| Ok(Some(ref content)) | Err(ref content) => content.body(),
+						| Ok(Some(ref content)) => content.body(),
+						| Err(ref content) => content.body(),
 						| Ok(None) => "",
 					};
 

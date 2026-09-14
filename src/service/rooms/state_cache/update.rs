@@ -371,3 +371,127 @@ pub async fn mark_as_invited(
 
 	Ok(())
 }
+
+/// Update caches based on a state replacement (delta between old and new
+/// state).
+///
+/// This is used when `force_state` replaces the room state entirely. We must
+/// update the derived caches to reflect the new state.
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn update_caches_for_state_delta(
+	&self,
+	room_id: &RoomId,
+	new_root_handle: &rezzy::hamt::RootHandle,
+	removed_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+	added_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+) -> Result<()> {
+	let mut memberships_changed = false;
+
+	// 1. Invalidate derived caches for removed events.
+	for pdu in removed_events {
+		match pdu.kind() {
+			| ruma::events::TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomMember => {
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
+
+				// For removed memberships that have no corresponding added event in the delta,
+				// mark the user as left. Replacements are handled by `added_events`.
+
+				match self
+					.services
+					.state_accessor
+					.room_state_get_hamt_at_root(
+						room_id,
+						new_root_handle,
+						&StateEventType::RoomMember,
+						target_user_id.as_str(),
+					)
+					.await
+				{
+					| Ok(_) => {
+						// The user has a member event in the new state,
+						// added_events will handle it.
+					},
+					| Err(e) if e.is_not_found() => {
+						// The user has no member event in the new state at all.
+						self.mark_as_left(target_user_id, room_id, None).await;
+						memberships_changed = true;
+					},
+					| Err(e) => return Err(e),
+				}
+			},
+			| _ => {},
+		}
+	}
+
+	// 2. Process added/changed events normally
+	for pdu in added_events {
+		match pdu.kind() {
+			| ruma::events::TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
+					.remove(room_id);
+			},
+			| ruma::events::TimelineEventType::RoomMember => {
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
+
+				self.update_membership(room_id, target_user_id, &pdu, false)
+					.await?;
+				memberships_changed = true;
+			},
+			| _ => {},
+		}
+	}
+
+	// 3. Recompute derived aggregate caches if needed
+	if memberships_changed {
+		self.update_joined_count(room_id).await;
+	}
+
+	Ok(())
+}

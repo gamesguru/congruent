@@ -77,7 +77,6 @@ fn resolution_shallow_auth_chain(c: &mut test::Bencher) {
 			state_sets.into_iter(),
 			&auth_chain_sets,
 			&fetch,
-			&exists,
 		)
 		.await
 		{
@@ -150,7 +149,6 @@ fn resolve_deeper_event_set(c: &mut test::Bencher) {
 			state_sets.into_iter(),
 			&auth_chain_sets,
 			&fetch,
-			&exists,
 		)
 		.await
 		{

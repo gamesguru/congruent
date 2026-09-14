@@ -409,11 +409,13 @@ pub async fn update_all_rooms(
 ) {
 	for (pdu_builder, room_id) in all_joined_rooms {
 		let state_lock = services.rooms.state.mutex.lock(room_id).await;
-		if let Err(e) = services
-			.rooms
-			.timeline
-			.build_and_append_pdu(pdu_builder, user_id, Some(room_id), &state_lock)
-			.await
+		if let Err(e) = Box::pin(services.rooms.timeline.build_and_append_pdu(
+			pdu_builder,
+			user_id,
+			Some(room_id),
+			&state_lock,
+		))
+		.await
 		{
 			warn!(%user_id, %room_id, "Failed to update/send new profile join membership update in room: {e}");
 		}

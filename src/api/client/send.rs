@@ -257,7 +257,7 @@ mod tests {
 
 		match parse_cached_send_txn_response(&cached, true)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$event:example.com")
+				assert_eq!(parsed.as_str(), "$event:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}
@@ -286,7 +286,7 @@ mod tests {
 
 		match parse_cached_send_txn_response(b"$legacy:example.com", false)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$legacy:example.com")
+				assert_eq!(parsed.as_str(), "$legacy:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}
@@ -298,7 +298,7 @@ mod tests {
 	fn cached_send_txn_response_prefers_legacy_event_id_in_delay_branch() -> Result<()> {
 		match parse_cached_send_txn_response(b"$legacy:example.com", true)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$legacy:example.com")
+				assert_eq!(parsed.as_str(), "$legacy:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}

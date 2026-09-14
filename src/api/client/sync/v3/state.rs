@@ -11,11 +11,8 @@ use conduwuit::{
 		stream::{BroadbandExt, TryIgnore},
 	},
 };
-use conduwuit_service::{
-	Services,
-	rooms::{lazy_loading::MemberSet, short::ShortStateHash},
-};
-use futures::{FutureExt, StreamExt};
+use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
 use ruma::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use service::rooms::short::ShortEventId;
@@ -32,22 +29,24 @@ use crate::client::TimelinePdus;
 	name = "initial",
 	level = "trace",
 	skip_all,
-	fields(current_shortstatehash)
+	fields(timeline_start_root_handle)
 )]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_state_initial(
 	services: &Services,
 	sender_user: &UserId,
-	timeline_start_shortstatehash: ShortStateHash,
+	timeline_start_root_handle: &rezzy::hamt::RootHandle,
 	lazily_loaded_members: Option<&MemberSet>,
 ) -> Result<Vec<PduEvent>> {
 	// load the keys and event IDs of the state events at the start of the timeline
 	let (shortstatekeys, event_ids): (Vec<_>, Vec<_>) = services
 		.rooms
 		.state_accessor
-		.state_full_ids(timeline_start_shortstatehash)
-		.unzip()
-		.await;
+		.state_full_ids_hamt(timeline_start_root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
+		.unzip();
 
 	trace!("performing initial sync of {} state events", event_ids.len());
 
@@ -94,9 +93,9 @@ pub(super) async fn build_state_incremental<'a>(
 	sender_user: &'a UserId,
 	room_id: &RoomId,
 	last_sync_end_count: PduCount,
-	last_sync_end_shortstatehash: ShortStateHash,
-	timeline_start_shortstatehash: ShortStateHash,
-	timeline_end_shortstatehash: ShortStateHash,
+	last_sync_end_root_handle: &rezzy::hamt::RootHandle,
+	timeline_start_root_handle: &rezzy::hamt::RootHandle,
+	timeline_end_root_handle: &rezzy::hamt::RootHandle,
 	timeline: &TimelinePdus,
 	lazily_loaded_members: Option<&'a MemberSet>,
 ) -> Result<Vec<PduEvent>> {
@@ -178,8 +177,9 @@ pub(super) async fn build_state_incremental<'a>(
 						services
 							.rooms
 							.state_accessor
-							.state_get(
-								timeline_start_shortstatehash,
+							.state_get_in_room_hamt(
+								room_id,
+								timeline_start_root_handle,
 								&StateEventType::RoomMember,
 								user_id.as_str(),
 							)
@@ -249,7 +249,7 @@ pub(super) async fn build_state_incremental<'a>(
 			services
 				.rooms
 				.state_accessor
-				.state_added((last_sync_end_shortstatehash, timeline_end_shortstatehash))
+				.state_added_hamt((last_sync_end_root_handle, timeline_end_root_handle))
 				.await?
 				.stream()
 				.ready_filter_map(|(_, shorteventid)| {

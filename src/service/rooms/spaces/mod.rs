@@ -240,12 +240,25 @@ fn get_space_child_events<'a>(
 ) -> impl Stream<Item = PduEvent> + Send + 'a {
 	self.services
 		.state
-		.get_room_shortstatehash(room_id)
-		.map_ok(|current_shortstatehash| {
+		.get_room_state_hamt(room_id)
+		.or_else(|_| async {
+			// Fall back to the latest timeline event's root handle when the
+			// room has no `roomid_roothandle` entry (e.g. partial-join rooms
+			// skipped by the state migration), so space children are not
+			// silently dropped for rooms whose state is HAMT-backed.
+			let latest = self.services.timeline.latest_pdu_in_room(room_id).await?;
 			self.services
 				.state_accessor
-				.state_keys_with_ids(current_shortstatehash, &StateEventType::SpaceChild)
-				.boxed()
+				.pdu_roothandle(latest.event_id())
+				.await
+		})
+		.map_ok(|current_root_handle| {
+			self.services
+				.state_accessor
+				.state_keys_with_ids_hamt::<OwnedEventId>(
+					current_root_handle,
+					&StateEventType::SpaceChild,
+				)
 		})
 		.map(Result::into_iter)
 		.map(IterStream::stream)
@@ -295,7 +308,7 @@ pub async fn get_summary_and_children_client(
 		return Ok(Some(response));
 	}
 
-	self.get_summary_and_children_federation(current_room, suggested_only, user_id, via)
+	Box::pin(self.get_summary_and_children_federation(current_room, suggested_only, user_id, via))
 		.await
 }
 

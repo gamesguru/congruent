@@ -23,8 +23,8 @@ pub fn lthash_from_bytes(bytes: &[u8]) -> Option<LtHash> {
 		return None;
 	}
 	let mut arr = [0_u16; 1024];
-	for (i, chunk) in bytes.chunks_exact(2).enumerate() {
-		arr[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+	for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
+		arr[i] = u16::from_le_bytes(*chunk);
 	}
 	Some(LtHash(arr))
 }
@@ -36,7 +36,7 @@ pub fn serialize_lthash(lthash: &LtHash) -> (String, String) {
 	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
 
 	let mut digest = String::with_capacity(64);
-	for b in lthash.checksum() {
+	for b in lthash.digest() {
 		use std::fmt::Write;
 		let _ = write!(&mut digest, "{b:02x}");
 	}
@@ -82,7 +82,9 @@ mod tests {
 	const EXPECTED_DIGEST: &str =
 		"5ef0ce69ffde6f004921d360a19bcde51a94c359645de5fac4d66690fa51eabd";
 
-	fn golden_lthash() -> LtHash { LtHash(core::array::from_fn(|i| i as u16)) }
+	fn golden_lthash() -> LtHash {
+		LtHash(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
+	}
 
 	#[test]
 	fn lthash_round_trip_and_serialize_golden_vector() {
