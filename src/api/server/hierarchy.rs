@@ -26,7 +26,7 @@ pub(crate) async fn get_hierarchy_route(
 	if !services
 		.rooms
 		.state_cache
-		.server_in_room(services.globals.server_name(), &body.room_id)
+		.server_is_participant(services.globals.server_name(), &body.room_id)
 		.await
 	{
 		info!(
@@ -35,6 +35,13 @@ pub(crate) async fn get_hierarchy_route(
 		);
 		return Err!(Request(NotFound("This server is not participating in that room.")));
 	}
+
+	info!(
+		origin = body.origin().as_str(),
+		room_id = %body.room_id,
+		suggested_only = body.suggested_only,
+		"Serving hierarchy request"
+	);
 
 	let room_id = &body.room_id;
 	let suggested_only = body.suggested_only;
@@ -54,6 +61,7 @@ pub(crate) async fn get_hierarchy_route(
 		| Some(SummaryAccessibility::Accessible(room)) => {
 			let (children, inaccessible_children) =
 				get_parent_children_via(&room, suggested_only)
+					.into_iter()
 					.stream()
 					.broad_filter_map(|(child, _via)| async move {
 						match services
@@ -63,9 +71,10 @@ pub(crate) async fn get_hierarchy_route(
 							.await
 							.ok()?
 						{
-							| None => None,
-
-							| Some(SummaryAccessibility::Inaccessible) =>
+							// Room not known locally or inaccessible — report as
+							// inaccessible so the querying server can try the child's
+							// resident server.
+							| None | Some(SummaryAccessibility::Inaccessible) =>
 								Some((None, Some(child))),
 
 							| Some(SummaryAccessibility::Accessible(summary)) =>

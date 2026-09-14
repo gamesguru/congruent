@@ -2,7 +2,7 @@ mod commands;
 
 use clap::Subcommand;
 use conduwuit::Result;
-use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId};
+use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName};
 
 use crate::admin_command_dispatch;
 
@@ -170,6 +170,8 @@ pub enum UserCommand {
 	ForceJoinRoom {
 		user_id: String,
 		room_id: OwnedRoomOrAliasId,
+		#[arg(short, long)]
+		server: Vec<OwnedServerName>,
 	},
 
 	/// Manually leave a local user from a room.
@@ -261,6 +263,14 @@ pub enum UserCommand {
 	/// Resets the push-rules (notification settings) of the target user to the
 	/// server defaults.
 	ResetPushRules {
+		user_id: String,
+	},
+
+	/// Force rebroadcasts user's device list updates to participating servers.
+	///
+	/// This is useful if a device list update was missed by other servers.
+	/// Can accept `all` to rebroadcast for all local users.
+	BumpDeviceLists {
 		user_id: String,
 	},
 }

@@ -1,5 +1,5 @@
 use conduwuit::{Err, Result};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
 
 use crate::{PAGE_SIZE, admin_command, get_room_info};
@@ -85,10 +85,110 @@ pub(super) async fn exists(&self, room_id: OwnedRoomId) -> Result {
 }
 
 #[admin_command]
-pub(super) async fn purge_sync_tokens(&self, _room: OwnedRoomOrAliasId) -> Result {
-	self.write_str(
-		"The server is running the stateless sync model. Database-backed sync tokens have been \
-		 dropped, so no tokens remain to be purged.",
-	)
+pub(super) async fn bump(
+	&self,
+	room_id: Option<OwnedRoomId>,
+	all: bool,
+	skip: Vec<OwnedRoomId>,
+) -> Result {
+	self.bail_restricted()?;
+
+	if all {
+		let skip_set: std::collections::HashSet<&ruma::RoomId> =
+			skip.iter().map(AsRef::as_ref).collect();
+		let ours = self.services.globals.server_name();
+		let rooms = self.services.rooms.state_cache.server_rooms(ours);
+		let mut room_stream = rooms.boxed();
+		let mut thumper = 0_usize;
+		let mut skipped = 0_usize;
+
+		while let Some(room_id) = room_stream.next().await {
+			if skip_set.contains(room_id) {
+				skipped = skipped.saturating_add(1);
+				continue;
+			}
+
+			if self
+				.services
+				.rooms
+				.state_cache
+				.active_local_users_in_room(room_id)
+				.boxed()
+				.next()
+				.await
+				.is_some()
+			{
+				self.services
+					.rooms
+					.monitor
+					.check_room(room_id, 0)
+					.boxed()
+					.await?;
+				thumper = thumper.saturating_add(1);
+			}
+		}
+
+		return self
+			.write_str(&format!(
+				"Successfully triggered sync for {thumper} rooms (skipped {skipped})."
+			))
+			.await;
+	}
+
+	let Some(room_id) = room_id else {
+		return Err!("Missing room_id or --all flag.");
+	};
+
+	if !self
+		.services
+		.rooms
+		.state_cache
+		.server_is_participant(&self.services.server.name, &room_id)
+		.await
+	{
+		return Err!("We are not participating in the room / we don't know about the room ID.");
+	}
+
+	if self
+		.services
+		.rooms
+		.state_cache
+		.active_local_users_in_room(&room_id)
+		.boxed()
+		.next()
+		.await
+		.is_none()
+	{
+		return Err!("No local users in room {room_id} - cannot bump");
+	}
+
+	self.services
+		.rooms
+		.monitor
+		.check_room(&room_id, 0)
+		.boxed()
+		.await?;
+
+	self.write_str(&format!("Successfully triggered sync for room {room_id}"))
+		.await
+}
+
+#[admin_command]
+pub(super) async fn purge_sync_tokens(&self, room: OwnedRoomOrAliasId) -> Result {
+	// Resolve the room ID from the room or alias ID
+	let room_id = self.services.rooms.alias.resolve(&room).await?;
+
+	// Delete all tokens for this room using the service method
+	let deleted_count = self
+		.services
+		.rooms
+		.user
+		.delete_room_tokens(&room_id)
+		.await?;
+
+	self.write_str(&format!(
+		"Successfully deleted {deleted_count} sync tokens for room {}",
+		room_id.as_str()
+	))
 	.await
 }

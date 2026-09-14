@@ -1,15 +1,32 @@
-use axum::extract::State;
+use axum::{
+	Json,
+	body::{Body, to_bytes},
+	extract::{Path, State},
+	response::{IntoResponse, Response},
+};
 use conduwuit::{
-	Result, at, debug_warn,
+	Err, Result, at, debug_warn,
 	matrix::{
 		Event,
 		pdu::{PduCount, PduEvent},
 	},
 };
 use futures::StreamExt;
-use ruma::{api::client::threads::get_threads, uint};
+use http::StatusCode;
+use ruma::{
+	OwnedEventId, OwnedRoomId,
+	api::{IncomingRequest, client::threads::get_threads},
+	uint,
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
 
-use crate::Ruma;
+use crate::{Ruma, router::authenticate_user};
+
+#[derive(Deserialize)]
+struct ThreadSubscriptionBody {
+	automatic: Option<OwnedEventId>,
+}
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/threads`
 pub(crate) async fn get_threads_route(
@@ -65,7 +82,7 @@ pub(crate) async fn get_threads_route(
 			.filter(|_| threads.len() >= limit)
 			.map(at!(0))
 			.as_ref()
-			.map(ToString::to_string),
+			.map(|c| format!("{c}")),
 
 		chunk: threads
 			.into_iter()
@@ -73,4 +90,149 @@ pub(crate) async fn get_threads_route(
 			.map(Event::into_format)
 			.collect(),
 	})
+}
+
+pub(crate) async fn put_thread_subscription_msc4306_route(
+	State(services): State<crate::State>,
+	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	request: hyper::Request<Body>,
+) -> Result<Response> {
+	let (parts, body) = request.into_parts();
+	let body = to_bytes(body, services.server.config.max_request_size)
+		.await
+		.unwrap_or_default();
+	let request = hyper::Request::from_parts(parts, Body::empty());
+	let sender_user =
+		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+	let body = serde_json::from_slice::<ThreadSubscriptionBody>(&body)
+		.unwrap_or(ThreadSubscriptionBody { automatic: None });
+
+	if !services
+		.rooms
+		.threads
+		.thread_root_exists(&room_id, &thread_id)
+		.await
+	{
+		return Err!(Request(NotFound("Thread not found.")));
+	}
+
+	let automatic = if let Some(cause_event_id) = body.automatic.as_ref() {
+		if services
+			.rooms
+			.threads
+			.get_thread_id_for_event(cause_event_id)
+			.await
+			.as_deref()
+			!= Some(&thread_id)
+		{
+			return Ok(msc4306_error(
+				StatusCode::BAD_REQUEST,
+				"IO.ELEMENT.MSC4306.M_NOT_IN_THREAD",
+				"Automatic subscription cause event is not in the requested thread.",
+			));
+		}
+
+		if let Some(previous) = services
+			.rooms
+			.threads
+			.get_subscription(&sender_user, &room_id, &thread_id)
+			.await
+		{
+			let cause_count = services
+				.rooms
+				.threads
+				.thread_event_count(cause_event_id)
+				.await?
+				.into_unsigned();
+			if !previous.subscribed && previous.last_unsubscribed >= cause_count {
+				return Ok(msc4306_error(
+					StatusCode::CONFLICT,
+					"IO.ELEMENT.MSC4306.M_CONFLICTING_UNSUBSCRIPTION",
+					"Automatic subscription conflicts with a later unsubscribe.",
+				));
+			}
+		}
+
+		true
+	} else {
+		false
+	};
+
+	services
+		.rooms
+		.threads
+		.put_subscription(&sender_user, &room_id, &thread_id, automatic)
+		.await?;
+
+	Ok(Json(json!({})).into_response())
+}
+
+pub(crate) async fn get_thread_subscription_msc4306_route(
+	State(services): State<crate::State>,
+	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	request: hyper::Request<Body>,
+) -> Result<Response> {
+	let sender_user =
+		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+
+	if !services
+		.rooms
+		.threads
+		.thread_root_exists(&room_id, &thread_id)
+		.await
+	{
+		return Err!(Request(NotFound("Thread not found.")));
+	}
+
+	let Some(subscription) = services
+		.rooms
+		.threads
+		.get_subscription(&sender_user, &room_id, &thread_id)
+		.await
+		.filter(|subscription| subscription.subscribed)
+	else {
+		return Err!(Request(NotFound("Thread subscription not found.")));
+	};
+
+	Ok(Json(json!({ "automatic": subscription.automatic })).into_response())
+}
+
+pub(crate) async fn delete_thread_subscription_msc4306_route(
+	State(services): State<crate::State>,
+	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	request: hyper::Request<Body>,
+) -> Result<Response> {
+	let sender_user =
+		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+
+	if !services
+		.rooms
+		.threads
+		.thread_root_exists(&room_id, &thread_id)
+		.await
+	{
+		return Err!(Request(NotFound("Thread not found.")));
+	}
+
+	services
+		.rooms
+		.threads
+		.delete_subscription(&sender_user, &room_id, &thread_id)?;
+
+	Ok(Json(json!({})).into_response())
+}
+
+fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
+	(
+		status,
+		Json(Value::Object(
+			[
+				("errcode".to_owned(), Value::String(errcode.to_owned())),
+				("error".to_owned(), Value::String(error.to_owned())),
+			]
+			.into_iter()
+			.collect(),
+		)),
+	)
+		.into_response()
 }

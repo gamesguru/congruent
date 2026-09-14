@@ -10,7 +10,7 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Error, Result, SyncRwLock, debug_warn,
+	Error, Result, SyncRwLock, debug_warn, info,
 	utils::{MutexMap, MutexMapGuard},
 	warn,
 };
@@ -36,12 +36,17 @@ pub enum TransactionError {
 	/// Server is shutting down - the sender should retry the entire
 	/// transaction.
 	ShuttingDown,
+
+	/// A transient error occurred during transaction processing.
+	/// The entire transaction should be retried.
+	Transient(String),
 }
 
 impl fmt::Display for TransactionError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			| Self::ShuttingDown => write!(f, "Server is shutting down"),
+			| Self::Transient(s) => write!(f, "Transient error: {s}"),
 		}
 	}
 }
@@ -90,6 +95,7 @@ pub struct Service {
 	services: Services,
 	db: Data,
 	client_txn_mutex: MutexMap<Vec<u8>, ()>,
+	room_txn_mutex: MutexMap<Vec<u8>, ()>,
 	federation_txn_state: Arc<SyncRwLock<HashMap<TxnKey, TxnState>>>,
 	last_cleanup: AtomicU64,
 }
@@ -113,6 +119,7 @@ impl crate::Service for Service {
 				userdevicetxnid_response: args.db["userdevicetxnid_response"].clone(),
 			},
 			client_txn_mutex: MutexMap::new(),
+			room_txn_mutex: MutexMap::new(),
 			federation_txn_state: Arc::new(SyncRwLock::new(HashMap::new())),
 			last_cleanup: AtomicU64::new(0),
 		}))
@@ -138,27 +145,15 @@ impl Service {
 			.count()
 	}
 
-	fn client_txn_key(
-		user_id: &UserId,
-		device_id: Option<&DeviceId>,
-		txn_id: &TransactionId,
-	) -> Vec<u8> {
-		let mut key = user_id.as_bytes().to_vec();
-		key.push(0xFF);
-		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
-		key.push(0xFF);
-		key.extend_from_slice(txn_id.as_bytes());
-		key
-	}
-
-	pub async fn lock_client_txn(
-		&self,
-		user_id: &UserId,
-		device_id: Option<&DeviceId>,
-		txn_id: &TransactionId,
-	) -> MutexMapGuard<Vec<u8>, ()> {
-		let key = Self::client_txn_key(user_id, device_id, txn_id);
-		self.client_txn_mutex.lock(key.as_slice()).await
+	/// Returns keys of currently active (in-progress) transactions.
+	#[must_use]
+	pub fn txn_active_keys(&self) -> Vec<TxnKey> {
+		let state = self.federation_txn_state.read();
+		state
+			.iter()
+			.filter(|(_, v)| matches!(v, TxnState::Active(_)))
+			.map(|(k, _)| k.clone())
+			.collect()
 	}
 
 	pub fn add_client_txnid(
@@ -168,7 +163,30 @@ impl Service {
 		txn_id: &TransactionId,
 		data: &[u8],
 	) {
-		let key = Self::client_txn_key(user_id, device_id, txn_id);
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		self.db.userdevicetxnid_response.insert(&key, data);
+	}
+
+	pub fn add_room_txnid(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+		data: &[u8],
+	) {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(room_id.as_bytes());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
 
 		self.db.userdevicetxnid_response.insert(&key, data);
 	}
@@ -181,6 +199,50 @@ impl Service {
 	) -> Result<Handle<'_>> {
 		let key = (user_id, device_id, txn_id);
 		self.db.userdevicetxnid_response.qry(&key).await
+	}
+
+	pub async fn get_room_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+	) -> Result<Handle<'_>> {
+		let key = (user_id, device_id, room_id, txn_id);
+		self.db.userdevicetxnid_response.qry(&key).await
+	}
+
+	pub async fn lock_client_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		txn_id: &TransactionId,
+	) -> Option<MutexMapGuard<Vec<u8>, ()>> {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		Some(self.client_txn_mutex.lock(key.as_slice()).await)
+	}
+
+	pub async fn lock_room_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+	) -> Option<MutexMapGuard<Vec<u8>, ()>> {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(room_id.as_bytes());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		Some(self.room_txn_mutex.lock(key.as_slice()).await)
 	}
 
 	/// Atomically gets a cached response, joins an active transaction, or
@@ -199,14 +261,23 @@ impl Service {
 		}
 
 		// Check if another transaction from this origin is already running
-		let has_active_from_origin = state
+		let active_from_origin = state
 			.iter()
-			.any(|(k, v)| k.0 == key.0 && matches!(v, TxnState::Active(_)));
+			.filter(|(k, v)| k.0 == key.0 && matches!(v, TxnState::Active(_)))
+			.count();
 
-		if has_active_from_origin {
-			debug_warn!(
+		if active_from_origin
+			>= self
+				.services
+				.config
+				.max_concurrent_inbound_transactions_per_origin
+		{
+			info!(
+				target: "txns_debug",
 				origin = ?key.0,
-				"Got concurrent transaction request from an origin with an active transaction"
+				active = active_from_origin,
+				max = self.services.config.max_concurrent_inbound_transactions_per_origin,
+				"Got concurrent transaction request from an origin exceeding its limit"
 			);
 			return Err(Error::BadRequest(
 				LimitExceeded { retry_after: None },
@@ -340,7 +411,7 @@ impl Service {
 					| TxnState::Active(_) => None,
 				})
 				.collect();
-			cached_entries.sort_by(|a, b| a.1.cmp(&b.1));
+			cached_entries.sort_by_key(|a| a.1);
 
 			// Remove the oldest cached entries to get under the limit
 			for (key, _) in cached_entries.into_iter().take(excess) {

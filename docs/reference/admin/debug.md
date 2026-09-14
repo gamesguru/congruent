@@ -86,13 +86,11 @@ Prints the very first PDU in the specified room (typically m.room.create)
 
 Prints the latest ("last") PDU in the specified room (typically a message)
 
-## `!admin debug force-set-room-state-from-server`
+## `!admin debug force-set-state`
 
-Forcefully replaces the room state of our local copy of the specified room, with the copy (auth chain and room state events) the specified remote server says.
+Forcefully re-resolve and set room state.
 
-A common desire for room deletion is to simply "reset" our copy of the room. While this admin command is not a replacement for that, if you know you have split/broken room state and you know another server in the room that has the best/working room state, this command can let you use their room state. Such example is your server saying users are in a room, but other servers are saying they're not in the room in question.
-
-This command will get the latest PDU in the room we know about, and request the room state at that point in time via `/_matrix/federation/v1/state/{roomId}`.
+When called without servers, rebuilds state from the local DAG and reconciles the membership cache. When one or more servers are provided, fetches state from each via federation and merges all PDUs before running state resolution.
 
 ## `!admin debug resolve-true-destination`
 
@@ -133,6 +131,10 @@ List database files
 ## `!admin debug send-test-email`
 
 Send a test email to the invoking admin's email address
+
+## `!admin debug fix-pdu-event-ids`
+
+Scans timeline and outlier PDUs in the database and injects missing event_id fields
 
 ## `!admin debug tester`
 

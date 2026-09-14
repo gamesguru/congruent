@@ -55,7 +55,7 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 			TraceLayer::new_for_http()
 				.make_span_with(tracing_span::<_>)
 				.on_failure(DefaultOnFailure::new().level(Level::ERROR))
-				.on_request(DefaultOnRequest::new().level(Level::TRACE))
+				.on_request(DefaultOnRequest::new().level(Level::DEBUG))
 				.on_response(DefaultOnResponse::new().level(Level::DEBUG)),
 		)
 		.layer(axum::middleware::from_fn_with_state(Arc::clone(services), request::handle))
@@ -163,7 +163,7 @@ fn cors_layer(_server: &Server) -> CorsLayer {
 		.allow_origin(cors::Any)
 		.allow_methods(METHODS)
 		.allow_headers(headers)
-		.max_age(Duration::from_secs(86400))
+		.max_age(Duration::from_hours(24))
 }
 
 fn body_limit_layer(server: &Server) -> DefaultBodyLimit {

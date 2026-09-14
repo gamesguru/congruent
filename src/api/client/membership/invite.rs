@@ -121,12 +121,25 @@ pub(crate) async fn invite_helper(
 		return Err!(Request(Forbidden("Invite blocked by antispam service.")));
 	}
 
+	if !services
+		.rooms
+		.state_cache
+		.is_joined(sender_user, room_id)
+		.await
+	{
+		return Err!(Request(Forbidden(
+			"You must be joined in the room you are trying to invite from."
+		)));
+	}
+
 	if !services.globals.user_is_local(recipient_user) {
 		let (pdu, pdu_json, invite_room_state) = {
 			let state_lock = services.rooms.state.mutex.lock(room_id).await;
 
 			let content = RoomMemberEventContent {
+				displayname: services.users.displayname(recipient_user).await.ok(),
 				avatar_url: services.users.avatar_url(recipient_user).await.ok(),
+				blurhash: services.users.blurhash(recipient_user).await.ok(),
 				is_direct: Some(is_direct),
 				reason,
 				..RoomMemberEventContent::new(MembershipState::Invite)
@@ -190,7 +203,14 @@ pub(crate) async fn invite_helper(
 		let pdu_id = services
 			.rooms
 			.event_handler
-			.handle_incoming_pdu(recipient_user.server_name(), room_id, &event_id, value, true)
+			.handle_incoming_pdu(
+				recipient_user.server_name(),
+				room_id,
+				&event_id,
+				value,
+				true,
+				None,
+			)
 			.boxed()
 			.await?
 			.ok_or_else(|| {
@@ -198,17 +218,6 @@ pub(crate) async fn invite_helper(
 			})?;
 
 		return services.sending.send_pdu_room(room_id, &pdu_id).await;
-	}
-
-	if !services
-		.rooms
-		.state_cache
-		.is_joined(sender_user, room_id)
-		.await
-	{
-		return Err!(Request(Forbidden(
-			"You must be joined in the room you are trying to invite from."
-		)));
 	}
 
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;

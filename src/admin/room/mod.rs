@@ -61,7 +61,21 @@ pub enum RoomCommand {
 		room_id: OwnedRoomId,
 	},
 
-	/// - Delete all sync tokens for a room
+	/// Forcefully trigger federation sync/catchup in a room. Useful for
+	/// recovering a specific stale room immediately.
+	Bump {
+		room_id: Option<OwnedRoomId>,
+
+		/// Thump all stagnant federated rooms.
+		#[arg(long)]
+		all: bool,
+
+		/// Skip specific rooms (for excluding problematic rooms).
+		#[arg(long)]
+		skip: Vec<OwnedRoomId>,
+	},
+
+	/// Delete all sync tokens for a room
 	PurgeSyncTokens {
 		/// Room ID or alias to purge sync tokens for
 		#[arg(value_parser)]

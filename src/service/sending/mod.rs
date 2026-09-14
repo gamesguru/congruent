@@ -15,13 +15,13 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Result, Server, debug, debug_warn, err, error,
+	Result, Server, debug, debug_warn, err, error, info,
 	smallvec::SmallVec,
 	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
 	warn,
 };
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{RoomId, ServerName, UserId, api::OutgoingRequest};
+use ruma::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
 use tokio::{task, task::JoinSet};
 
 use self::data::Data;
@@ -40,6 +40,14 @@ pub struct Service {
 	server: Arc<Server>,
 	services: Services,
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
+	pub(super) semaphore: Arc<tokio::sync::Semaphore>,
+	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Monotonic counter for outgoing federation transaction IDs, seeded from
+	/// the current unix-ms timestamp at startup and incremented per
+	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
+	/// Seeding from wall-clock time rather than starting at 0 keeps IDs
+	/// unique across restarts without needing to persist the counter.
+	pub(super) next_txn_id: std::sync::atomic::AtomicU64,
 }
 
 struct Services {
@@ -86,6 +94,10 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
+			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
+			next_txn_id: std::sync::atomic::AtomicU64::new(
+				ruma::MilliSecondsSinceUnixEpoch::now().get().into(),
+			),
 			server: args.server.clone(),
 			services: Services {
 				client: args.depend::<client::Service>("client"),
@@ -103,6 +115,9 @@ impl crate::Service for Service {
 				federation: args.depend::<federation::Service>("federation"),
 			},
 			channels: (0..num_senders).map(|_| loole::unbounded()).collect(),
+			semaphore: Arc::new(tokio::sync::Semaphore::new(
+				args.server.config.max_concurrent_outbound_requests,
+			)),
 		}))
 	}
 
@@ -129,8 +144,16 @@ impl crate::Service for Service {
 		let stats_self = self.clone();
 		let stats_task = self.server.runtime().spawn(async move {
 			loop {
-				tokio::time::sleep(Duration::from_secs(300)).await;
+				tokio::time::sleep(Duration::from_mins(5)).await;
 				stats_self.stats.report_and_reset();
+				stats_self.server.metrics.sending_queue_total.store(
+					stats_self
+						.channels
+						.iter()
+						.map(|(s, _)| u64::try_from(s.len()).expect("failed conversion"))
+						.sum(),
+					std::sync::atomic::Ordering::Relaxed,
+				);
 			}
 		});
 
@@ -197,29 +220,19 @@ impl Service {
 			.room_servers(room_id)
 			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
 
-		self.send_pdu_servers(servers, pdu_id).await
-	}
+		let num_servers = self.send_pdu_servers(servers, pdu_id).await?;
 
-	#[tracing::instrument(skip(self, room_id, pdu_id, except), level = "debug")]
-	pub async fn send_pdu_room_except(
-		&self,
-		room_id: &RoomId,
-		pdu_id: &RawPduId,
-		except: &ServerName,
-	) -> Result {
-		let servers = self
-			.services
-			.state_cache
-			.room_servers(room_id)
-			.ready_filter(|server_name| {
-				!self.services.globals.server_is_ours(server_name) && *server_name != except
-			});
+		if num_servers > 100 {
+			warn!("Broadcasting PDU in {room_id} to {num_servers} servers");
+		} else if num_servers > 0 {
+			info!("Broadcasting PDU in {room_id} to {num_servers} servers");
+		}
 
-		self.send_pdu_servers(servers, pdu_id).await
+		Ok(())
 	}
 
 	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
-	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result
+	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
 		S: Stream<Item = &'a ServerName> + Send + 'a,
 	{
@@ -230,6 +243,7 @@ impl Service {
 			.collect::<Vec<_>>()
 			.await;
 
+		let num_servers = requests.len();
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
@@ -237,15 +251,32 @@ impl Service {
 			self.dispatch(Msg { dest, event, queue_id })?;
 		}
 
-		Ok(())
+		Ok(num_servers)
 	}
 
 	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
+		if self.server_is_dead(server) {
+			return Ok(());
+		}
+
 		let dest = Destination::Federation(server.to_owned());
 		let event = SendingEvent::Edu(serialized);
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(once((&event, &dest)));
+		self.dispatch(Msg {
+			dest,
+			event,
+			queue_id: keys.into_iter().next().expect("request queue key"),
+		})
+	}
+
+	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
+	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
+		let dest = Destination::Federation(server.to_owned());
+		let event = SendingEvent::Edu(serialized);
+		let _cork = self.db.db.cork();
+		let keys = self.db.queue_reliable_requests(once((&event, &dest)));
 		self.dispatch(Msg {
 			dest,
 			event,
@@ -279,6 +310,12 @@ impl Service {
 			.collect::<Vec<_>>()
 			.await;
 
+		let num_servers = requests.len();
+		info!(
+			target: "federation_debug",
+			"Fanning out EDU to {num_servers} servers (edu_size={})", serialized.len()
+		);
+
 		let _cork = self.db.db.cork();
 		let keys = self.db.queue_requests(requests.iter().map(|(o, e)| (e, o)));
 
@@ -298,6 +335,61 @@ impl Service {
 			.ready_filter(|server_name| !self.services.globals.server_is_ours(server_name));
 
 		self.flush_servers(servers).await
+	}
+
+	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
+	pub async fn wait_for_pdu_servers(
+		&self,
+		servers: Vec<OwnedServerName>,
+		pdu_id: &RawPduId,
+		timeout: Duration,
+		timeout_message: &'static str,
+	) -> Result<()> {
+		if servers.is_empty() {
+			return Ok(());
+		}
+
+		let keys: Vec<(Vec<u8>, bool)> = servers
+			.iter()
+			.map(|server| {
+				let mut key = Destination::Federation(server.clone()).get_prefix();
+				key.extend_from_slice(pdu_id.as_ref());
+				(key, false)
+			})
+			.collect();
+
+		let started_at = tokio::time::Instant::now();
+		let mut keys = keys;
+		loop {
+			let mut pending = Vec::new();
+			for (key, attempted) in &mut keys {
+				let is_current = self.db.servercurrentevent_data.contains(key).await;
+				*attempted |= is_current;
+
+				if is_current || (!*attempted && self.db.servernameevent_data.contains(key).await)
+				{
+					pending.push(key.clone());
+				}
+			}
+
+			if pending.is_empty() {
+				return Ok(());
+			}
+
+			let remaining = timeout.saturating_sub(started_at.elapsed());
+			if remaining.is_zero() {
+				return Err(err!(Request(Unknown("{timeout_message}"))));
+			}
+
+			let mut watchers = futures::stream::FuturesUnordered::new();
+			for key in &pending {
+				watchers.push(self.db.servernameevent_data.watch_prefix(key));
+				watchers.push(self.db.servercurrentevent_data.watch_prefix(key));
+			}
+
+			let wait = remaining.min(Duration::from_secs(1));
+			let _ = tokio::time::timeout(wait, watchers.next()).await;
+		}
 	}
 
 	#[tracing::instrument(skip(self, servers), level = "debug")]
@@ -329,7 +421,8 @@ impl Service {
 	where
 		T: OutgoingRequest + Debug + Send,
 	{
-		self.services.federation.execute(dest, request).await
+		self.send_federation_request_on(&self.services.client.federation, dest, request)
+			.await
 	}
 
 	/// Like send_federation_request() but with a very large timeout
@@ -342,9 +435,31 @@ impl Service {
 	where
 		T: OutgoingRequest + Debug + Send,
 	{
+		self.send_federation_request_on(&self.services.client.synapse, dest, request)
+			.await
+	}
+
+	/// Sends a request to a federation server on a specific client
+	#[inline]
+	pub async fn send_federation_request_on<T>(
+		&self,
+		client: &reqwest::Client,
+		dest: &ServerName,
+		request: T,
+	) -> Result<T::IncomingResponse>
+	where
+		T: OutgoingRequest + Debug + Send,
+	{
+		let _permit = self
+			.semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.expect("Semaphore should not be closed");
+
 		self.services
 			.federation
-			.execute_synapse(dest, request)
+			.execute_on(client, dest, request)
 			.await
 	}
 
@@ -359,29 +474,20 @@ impl Service {
 		user_id: Option<&UserId>,
 		push_key: Option<&str>,
 	) -> Result {
-		match (appservice_id, user_id, push_key) {
-			| (None, Some(user_id), Some(push_key)) => {
-				self.db
-					.delete_all_requests_for(&Destination::Push(
-						user_id.to_owned(),
-						push_key.to_owned(),
-					))
-					.await;
-
-				Ok(())
-			},
-			| (Some(appservice_id), None, None) => {
-				self.db
-					.delete_all_requests_for(&Destination::Appservice(appservice_id.to_owned()))
-					.await;
-
-				Ok(())
-			},
+		let destination = match (appservice_id, user_id, push_key) {
+			| (None, Some(user_id), Some(push_key)) =>
+				Destination::Push(user_id.to_owned(), push_key.to_owned()),
+			| (Some(appservice_id), None, None) =>
+				Destination::Appservice(appservice_id.to_owned()),
 			| _ => {
 				debug_warn!("cleanup_events called with too many or too few arguments");
-				Ok(())
+				return Ok(());
 			},
-		}
+		};
+
+		self.db.delete_all_requests_for(&destination).await;
+
+		Ok(())
 	}
 
 	fn dispatch(&self, msg: Msg) -> Result {
@@ -411,6 +517,95 @@ impl Service {
 		let chans = self.channels.len().max(1);
 		hash.overflowing_rem(chans).0
 	}
+
+	/// Returns a list of (destination_display, queued_count, active_count) for
+	/// all destinations that have pending outbound events.
+	pub async fn queued_destinations(&self) -> Vec<(String, usize, usize)> {
+		use std::collections::BTreeMap;
+
+		let mut queued: BTreeMap<String, usize> = BTreeMap::new();
+		let mut active: BTreeMap<String, usize> = BTreeMap::new();
+
+		// Count queued (pending) items
+		let mut stream = self.db.servernameevent_data.raw_keys().boxed();
+		while let Some(Ok(key)) = stream.next().await {
+			let dest_name = key
+				.split(|&b| b == 0xFF)
+				.next()
+				.and_then(|b| std::str::from_utf8(b).ok())
+				.unwrap_or("<unknown>")
+				.to_owned();
+			let count = queued.entry(dest_name).or_default();
+			*count = count.saturating_add(1);
+		}
+
+		// Count active (in-flight) items
+		let mut stream = self.db.servercurrentevent_data.raw_keys().boxed();
+		while let Some(Ok(key)) = stream.next().await {
+			let dest_name = key
+				.split(|&b| b == 0xFF)
+				.next()
+				.and_then(|b| std::str::from_utf8(b).ok())
+				.unwrap_or("<unknown>")
+				.to_owned();
+			let count = active.entry(dest_name).or_default();
+			*count = count.saturating_add(1);
+		}
+
+		// Merge keys
+		let mut all_keys: std::collections::BTreeSet<String> = queued.keys().cloned().collect();
+		all_keys.extend(active.keys().cloned());
+
+		all_keys
+			.into_iter()
+			.map(|k| {
+				let q = queued.get(&k).copied().unwrap_or(0);
+				let a = active.get(&k).copied().unwrap_or(0);
+				(k, q, a)
+			})
+			.collect()
+	}
+
+	/// Clear all queued and active requests for a specific federation server.
+	pub async fn clear_destination_queue(&self, server: &ServerName) {
+		let dest = Destination::Federation(server.to_owned());
+		self.db.delete_all_requests_for(&dest).await;
+		self.db.delete_all_active_requests_for(&dest).await;
+	}
+
+	/// Clear all queued and active requests for ALL federation destinations.
+	pub async fn clear_all_federation_queues(&self) {
+		// Walk the queued table and delete everything
+		let keys: Vec<Vec<u8>> = self
+			.db
+			.servernameevent_data
+			.raw_keys()
+			.boxed()
+			.filter_map(|r| async { r.ok().map(<[u8]>::to_vec) })
+			.collect()
+			.await;
+		for key in &keys {
+			self.db.servernameevent_data.remove(key);
+		}
+
+		// Walk the active table and delete everything
+		let keys: Vec<Vec<u8>> = self
+			.db
+			.servercurrentevent_data
+			.raw_keys()
+			.boxed()
+			.filter_map(|r| async { r.ok().map(<[u8]>::to_vec) })
+			.collect()
+			.await;
+		for key in &keys {
+			self.db.servercurrentevent_data.remove(key);
+		}
+	}
+
+	#[inline]
+	pub fn server_is_dead(&self, server: &ServerName) -> bool {
+		self.dead_servers.read().unwrap().contains(server)
+	}
 }
 
 fn num_senders(args: &crate::Args<'_>) -> usize {
@@ -430,5 +625,5 @@ fn num_senders(args: &crate::Args<'_>) -> usize {
 	args.server
 		.config
 		.sender_workers
-		.clamp(MIN_SENDERS, max_senders)
+		.clamp(MIN_SENDERS, max_senders.max(MIN_SENDERS))
 }

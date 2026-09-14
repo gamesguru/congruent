@@ -12,9 +12,21 @@ Time elapsed since startup
 
 Show configuration values
 
+## `!admin server config-diff`
+
+Show non-default config values and keys missing from your config file (useful for detecting drift after upgrades)
+
 ## `!admin server reload-config`
 
 Reload configuration values
+
+## `!admin server set-config`
+
+Set a configuration key dynamically
+
+## `!admin server unset-config`
+
+Unset a dynamically configured key
 
 ## `!admin server memory-usage`
 
@@ -55,3 +67,7 @@ List features built into the server
 ## `!admin server build-info`
 
 Build information
+
+## `!admin server diagnostics`
+
+Print server diagnostics and metrics

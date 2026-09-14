@@ -1,4 +1,4 @@
-use std::{mem::size_of, sync::Arc};
+use std::sync::Arc;
 
 use conduwuit::{
 	PduCount, PduEvent, Result,
@@ -82,9 +82,13 @@ pub fn index_pdu(&self, shortroomid: ShortRoomId, pdu_id: &RawPduId, message_bod
 		})
 		.collect::<Vec<_>>();
 
-	self.db
-		.tokenids
-		.insert_batch(batch.iter().map(|k| (k.as_slice(), &[])));
+	let mut db_batch = database::Batch::new();
+	for key in &batch {
+		self.db
+			.tokenids
+			.batch_put(&mut db_batch, key.as_slice(), []);
+	}
+	self.db.tokenids.apply_batch(db_batch);
 }
 
 #[implement(Service)]
@@ -125,9 +129,10 @@ pub async fn search_pdus<'a>(
 		.ready_filter(|pdu| !pdu.is_redacted())
 		.ready_filter(move |pdu| filter.matches(pdu))
 		.wide_filter_map(move |pdu| async move {
+			let room_id = pdu.room_id_or_hash()?;
 			self.services
 				.state_accessor
-				.user_can_see_event(query.user_id?, pdu.room_id().unwrap(), pdu.event_id())
+				.user_can_see_event(query.user_id?, &room_id, pdu.event_id())
 				.await
 				.then_some(pdu)
 		})

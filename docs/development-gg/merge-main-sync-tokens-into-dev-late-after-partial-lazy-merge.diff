@@ -1,0 +1,2152 @@
+diff --cc .github/actions/postgres/action.yml
+index 7b7bd4b9e,8b6940226..000000000
+--- a/.github/actions/postgres/action.yml
++++ b/.github/actions/postgres/action.yml
+@@@ -71,7 -71,7 +71,11 @@@ runs
+            exit 1
+          fi
+  
+++<<<<<<< HEAD
+ +        echo "-> Direct ingest for $COMMIT ($ARCH/$OS/v$ROOM_VERSION)..."
+++=======
++         echo "→ Direct ingest for $COMMIT ($ARCH/$OS/v$ROOM_VERSION)..."
+++>>>>>>> origin/main
+          (
+            cat <<SQL
+          INSERT INTO runs (run_date, commit_hash, branch, arch, os, profile, n_pass, n_skip, n_fail, room_version, features, version_string)
+@@@ -96,19 -96,10 +100,26 @@@
+          WHERE (t.j->>'Action') IN ('pass', 'fail', 'skip')
+          ON CONFLICT (run_id, test_name) DO UPDATE SET status = EXCLUDED.status;
+          SQL
+++<<<<<<< HEAD
+ +
+ +          # Incremental ever_passed UPSERT (shared SQL file, scoped to this run only)
+ +          sed -e "s/{commit}/${COMMIT}/g" \
+ +              -e "s/{arch}/${ARCH}/g" \
+ +              -e "s/{os}/${OS}/g" \
+ +              -e "s/{profile}/${PROFILE}/g" \
+ +              -e "s/{room_version}/${ROOM_VERSION}/g" \
+ +              "${{ github.action_path }}/upsert_ever_passed.sql"
+ +        ) | ssh -C -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "$SSH_TARGET" "psql -U git c10y"
+ +        echo "✓ Direct ingest complete."
+ +
+ +    - name: Bulk Sync History (backup)
+ +      if: always()
+++=======
++         ) | ssh -C -o StrictHostKeyChecking=no "$SSH_TARGET" "psql -U git c10y"
++         echo "✓ Direct ingest complete."
++ 
++     - name: Bulk Sync History (backup)
+++>>>>>>> origin/main
+        continue-on-error: true
+        shell: bash
+        env:
+diff --cc .github/actions/postgres/import_history.sh
+index bb12a317c,4f03ed8c0..000000000
+--- a/.github/actions/postgres/import_history.sh
++++ b/.github/actions/postgres/import_history.sh
+@@@ -24,7 -24,7 +24,11 @@@ f
+  SQL_FILE="$(dirname "$0")/tables.sql"
+  if [ -f "$SQL_FILE" ]; then
+  	echo "✓ Applying fresh schema from $SQL_FILE..."
+++<<<<<<< HEAD
+ +	psql "$DB_TARGET" -c "DROP MATERIALIZED VIEW IF EXISTS mv_ever_passed CASCADE; DROP TABLE IF EXISTS run_details CASCADE; DROP TABLE IF EXISTS runs CASCADE; DROP TABLE IF EXISTS master_baseline CASCADE; DROP TABLE IF EXISTS ever_passed CASCADE;" >/dev/null
+++=======
++ 	psql "$DB_TARGET" -c "DROP TABLE IF EXISTS run_details CASCADE; DROP TABLE IF EXISTS runs CASCADE; DROP TABLE IF EXISTS master_baseline CASCADE;" >/dev/null
+++>>>>>>> origin/main
+  	psql "$DB_TARGET" -f "$SQL_FILE" >/dev/null
+  fi
+  
+@@@ -47,10 -47,10 +51,14 @@@ ON CONFLICT (commit_hash, run_date, arc
+  EOF
+  
+  # 2. Bulk Ingest Test Details (Injecting metadata from filenames)
+ -echo "→ Consolidating and ingesting test details..."
+ +echo "-> Consolidating and ingesting test details..."
+  (
+  	echo "CREATE TEMP TABLE t (j jsonb);"
+++<<<<<<< HEAD
+ +	printf '%s\n' "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++=======
++ 	echo "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++>>>>>>> origin/main
+  	for f in "$LEDGER_DIR/runs_data"/*.jsonl; do
+  		[ -f "$f" ] || continue
+  		BASENAME=$(basename "$f" .jsonl)
+diff --cc .github/actions/postgres/sync_recent.sh
+index a120289c4,623ca180b..000000000
+--- a/.github/actions/postgres/sync_recent.sh
++++ b/.github/actions/postgres/sync_recent.sh
+@@@ -18,7 -18,7 +18,11 @@@ git fetch origin "$TARGET_BRANCH" --dep
+  echo "→ Streaming last $LIMIT run summaries..."
+  (
+  	echo "CREATE TEMP TABLE b (j jsonb);"
+++<<<<<<< HEAD
+ +	printf '%s\n' "\copy b FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++=======
++ 	echo "\copy b FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++>>>>>>> origin/main
+  	git show "FETCH_HEAD:runs.jsonl" | tail -n "$LIMIT"
+  	echo "\."
+  	echo "INSERT INTO runs (run_date, commit_hash, upstream_commit, branch, author_name, actor, provider, arch, os, version_string, features, profile, binary_sha256, n_pass, n_skip, n_fail, room_version)
+@@@ -34,7 -34,7 +38,11 @@@
+  echo "→ Streaming last $LIMIT run details (incremental files)..."
+  (
+  	echo "CREATE TEMP TABLE t (j jsonb);"
+++<<<<<<< HEAD
+ +	printf '%s\n' "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++=======
++ 	echo "\copy t FROM STDIN csv quote e'\x01' delimiter e'\x02';"
+++>>>>>>> origin/main
+  
+  	# Pre-cache the file list from the tree for fast existence checks
+  	ALL_FILES=$(git ls-tree -r FETCH_HEAD:runs_data --name-only || true)
+@@@ -48,10 -48,10 +56,17 @@@
+  		PROFILE=$(echo "$run_json" | jq -r '.profile // ""')
+  		ROOM_VERSION=$(echo "$run_json" | jq -r '.room_version // ""')
+  
+++<<<<<<< HEAD
+ +		SAFE_ARCH=${ARCH//[!a-zA-Z0-9._-]/_}
+ +		SAFE_OS=${OS//[!a-zA-Z0-9._-]/_}
+ +		SAFE_PROFILE=${PROFILE//[!a-zA-Z0-9._-]/_}
+ +		SAFE_ROOM_VERSION=${ROOM_VERSION//[!a-zA-Z0-9._-]/_}
+++=======
++ 		SAFE_ARCH=$(echo "$ARCH" | sed 's/[^a-zA-Z0-9._-]/_/g')
++ 		SAFE_OS=$(echo "$OS" | sed 's/[^a-zA-Z0-9._-]/_/g')
++ 		SAFE_PROFILE=$(echo "$PROFILE" | sed 's/[^a-zA-Z0-9._-]/_/g')
++ 		SAFE_ROOM_VERSION=$(echo "$ROOM_VERSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+++>>>>>>> origin/main
+  
+  		BASENAME="${COMMIT}-${SAFE_ARCH}-${SAFE_OS}-${SAFE_PROFILE}-${SAFE_ROOM_VERSION}.jsonl"
+  		FILENAME="runs_data/${BASENAME}"
+@@@ -74,34 -74,7 +89,39 @@@
+            AND r.profile IS NOT DISTINCT FROM (NULLIF((t.j->>'profile'), ''))
+            AND r.room_version IS NOT DISTINCT FROM (NULLIF((t.j->>'room_version'), ''))
+          WHERE (t.j->>'Action') IN ('pass', 'fail', 'skip')
+++<<<<<<< HEAD
+ +        ON CONFLICT (run_id, test_name) DO UPDATE SET status = EXCLUDED.status;
+ +
+ +        INSERT INTO ever_passed (test_name, rv, last_passed, last_commit, last_branch, branches)
+ +        SELECT
+ +            rd.test_name,
+ +            COALESCE(r.room_version, '11'),
+ +            MAX(r.run_date)::date::text,
+ +            (ARRAY_AGG(r.commit_hash ORDER BY r.run_date DESC))[1],
+ +            (ARRAY_AGG(r.branch ORDER BY r.run_date DESC))[1],
+ +            ARRAY_AGG(DISTINCT r.branch) FILTER (WHERE r.branch IS NOT NULL)
+ +        FROM run_details rd
+ +        JOIN runs r ON rd.run_id = r.id
+ +        WHERE rd.status = 'pass'
+ +        GROUP BY rd.test_name, COALESCE(r.room_version, '11')
+ +        ON CONFLICT (test_name, rv) DO UPDATE SET
+ +            last_passed = GREATEST(ever_passed.last_passed, EXCLUDED.last_passed),
+ +            last_commit = CASE
+ +                WHEN EXCLUDED.last_passed > COALESCE(ever_passed.last_passed, '')
+ +                THEN EXCLUDED.last_commit ELSE ever_passed.last_commit END,
+ +            last_branch = CASE
+ +                WHEN EXCLUDED.last_passed > COALESCE(ever_passed.last_passed, '')
+ +                THEN EXCLUDED.last_branch ELSE ever_passed.last_branch END,
+ +            branches = (
+ +                SELECT ARRAY_AGG(DISTINCT b ORDER BY b)
+ +                FROM UNNEST(ever_passed.branches || EXCLUDED.branches) AS b
+ +                WHERE b IS NOT NULL
+ +            );
+ +"
+ +) | ssh -C -o StrictHostKeyChecking=no -o ServerAliveInterval=30 "$SSH_TARGET" "psql -U git c10y"
+++=======
++         ON CONFLICT (run_id, test_name) DO UPDATE SET status = EXCLUDED.status;"
++ ) | ssh -C -o StrictHostKeyChecking=no "$SSH_TARGET" "psql -U git c10y"
+++>>>>>>> origin/main
+  
+  echo "✓ Incremental sync of last $LIMIT runs complete."
+diff --cc Cargo.lock
+index faa7d0351,b30001336..000000000
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@@ -1084,7 -1052,7 +1084,11 @@@ dependencies = 
+   "sha1 0.11.0",
+   "tokio",
+   "tracing",
+++<<<<<<< HEAD
+ + "xxhash-rust",
+++=======
++  "url",
+++>>>>>>> origin/main
+  ]
+  
+  [[package]]
+diff --cc Makefile
+index 84b76d52f,4dc864301..000000000
+--- a/Makefile
++++ b/Makefile
+@@@ -158,9 -158,7 +158,13 @@@ lint:   ##H Lint cod
+  		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
+  		AWS_LC_RS_NO_BUNDLE=1 \
+  		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
+++<<<<<<< HEAD
+ +		CC=gcc \
+ +		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
+ +		cargo +nightly clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
+++=======
++ 		cargo clippy $(CARGO_SCOPE) --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
+++>>>>>>> origin/main
+  
+  .PHONY: test
+  test:   ##H Run tests
+diff --cc bin/complement
+index 145f43743,628507591..000000000
+--- a/bin/complement
++++ b/bin/complement
+@@@ -7,7 -7,7 +7,11 @@@ set -euo pipefai
+  COMPLEMENT_SRC="${COMPLEMENT_SRC:-"$1"}"
+  
+  # Default results directory
+++<<<<<<< HEAD
+ +RESULTS_DIR="${RESULTS_DIR:-tests/test_results/complement}"
+++=======
++ RESULTS_DIR="${COMPLEMENT_RESULTS_DIR:-"${RESULTS_DIR:-tests/test_results/complement}"}"
+++>>>>>>> origin/main
+  
+  # A `.jsonl` file to write test logs to
+  LOG_FILE="${2:-"${LOG_FILE:-$RESULTS_DIR/test_logs.jsonl}"}"
+diff --cc docs/reference/admin/rooms.md
+index 5e07f7196,8eaf7a0e4..000000000
+--- a/docs/reference/admin/rooms.md
++++ b/docs/reference/admin/rooms.md
+@@@ -82,6 -82,6 +82,12 @@@ List rooms that are publishe
+  
+  Check if we know about a room
+  
+++<<<<<<< HEAD
+ +## `!admin rooms bump`
+ +
+ +Forcefully trigger federation sync/catchup in a room. Useful for recovering a specific stale room immediately
+++=======
++ ## `!admin rooms purge-sync-tokens`
++ 
++ - Delete all sync tokens for a room
+++>>>>>>> origin/main
+diff --cc justfile
+index 65489b164,f6473dcd0..000000000
+--- a/justfile
++++ b/justfile
+@@@ -391,8 -390,7 +391,12 @@@ ci-complement-stats
+      #!/usr/bin/env bash
+      set -euo pipefail
+  
+++<<<<<<< HEAD
+ +    RESULTS_DIR="{{env_var_or_default("COMPLEMENT_RESULTS_DIR", "tests/test_results/complement")}}"
+ +    RESULTS="$RESULTS_DIR/test_results.jsonl"
+++=======
++     RESULTS="tests/test_results/complement-gg/test_results.jsonl"
+++>>>>>>> origin/main
+      if [ ! -f "$RESULTS" ]; then
+          echo "ERROR: $RESULTS does not exist"
+          exit 1
+diff --cc src/admin/room/commands.rs
+index 3ae5825a2,aa445f4b1..000000000
+--- a/src/admin/room/commands.rs
++++ b/src/admin/room/commands.rs
+@@@ -1,6 -1,6 +1,11 @@@
+  use conduwuit::{Err, Result};
+++<<<<<<< HEAD
+ +use futures::{FutureExt, StreamExt};
+ +use ruma::OwnedRoomId;
+++=======
++ use futures::StreamExt;
++ use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+++>>>>>>> origin/main
+  
+  use crate::{PAGE_SIZE, admin_command, get_room_info};
+  
+@@@ -85,90 -85,10 +90,99 @@@ pub(super) async fn exists(&self, room_
+  }
+  
+  #[admin_command]
+++<<<<<<< HEAD
+ +pub(super) async fn bump(
+ +	&self,
+ +	room_id: Option<OwnedRoomId>,
+ +	all: bool,
+ +	skip: Vec<OwnedRoomId>,
+ +) -> Result {
+ +	self.bail_restricted()?;
+ +
+ +	if all {
+ +		let skip_set: std::collections::HashSet<&ruma::RoomId> =
+ +			skip.iter().map(AsRef::as_ref).collect();
+ +		let ours = self.services.globals.server_name();
+ +		let rooms = self.services.rooms.state_cache.server_rooms(ours);
+ +		let mut room_stream = rooms.boxed();
+ +		let mut thumper = 0_usize;
+ +		let mut skipped = 0_usize;
+ +
+ +		while let Some(room_id) = room_stream.next().await {
+ +			if skip_set.contains(room_id) {
+ +				skipped = skipped.saturating_add(1);
+ +				continue;
+ +			}
+ +
+ +			if self
+ +				.services
+ +				.rooms
+ +				.state_cache
+ +				.active_local_users_in_room(room_id)
+ +				.boxed()
+ +				.next()
+ +				.await
+ +				.is_some()
+ +			{
+ +				self.services
+ +					.rooms
+ +					.monitor
+ +					.check_room(room_id, 0)
+ +					.boxed()
+ +					.await?;
+ +				thumper = thumper.saturating_add(1);
+ +			}
+ +		}
+ +
+ +		return self
+ +			.write_str(&format!(
+ +				"Successfully triggered sync for {thumper} rooms (skipped {skipped})."
+ +			))
+ +			.await;
+ +	}
+ +
+ +	let Some(room_id) = room_id else {
+ +		return Err!("Missing room_id or --all flag.");
+ +	};
+ +
+ +	if !self
+ +		.services
+ +		.rooms
+ +		.state_cache
+ +		.server_is_participant(&self.services.server.name, &room_id)
+ +		.await
+ +	{
+ +		return Err!("We are not participating in the room / we don't know about the room ID.");
+ +	}
+ +
+ +	if self
+ +		.services
+ +		.rooms
+ +		.state_cache
+ +		.active_local_users_in_room(&room_id)
+ +		.boxed()
+ +		.next()
+ +		.await
+ +		.is_none()
+ +	{
+ +		return Err!("No local users in room {room_id} - cannot bump");
+ +	}
+ +
+ +	self.services
+ +		.rooms
+ +		.monitor
+ +		.check_room(&room_id, 0)
+ +		.boxed()
+ +		.await?;
+ +
+ +	self.write_str(&format!("Successfully triggered sync for room {room_id}"))
+ +		.await
+++=======
++ pub(super) async fn purge_sync_tokens(&self, _room: OwnedRoomOrAliasId) -> Result {
++ 	self.write_str(
++ 		"The server is running the stateless sync model. Database-backed sync tokens have been \
++ 		 dropped, so no tokens remain to be purged.",
++ 	)
++ 	.await
+++>>>>>>> origin/main
+  }
+diff --cc src/admin/room/mod.rs
+index 4b35e7e6a,fa8d31659..000000000
+--- a/src/admin/room/mod.rs
++++ b/src/admin/room/mod.rs
+@@@ -61,17 -61,10 +61,25 @@@ pub enum RoomCommand 
+  		room_id: OwnedRoomId,
+  	},
+  
+++<<<<<<< HEAD
+ +	/// Forcefully trigger federation sync/catchup in a room. Useful for
+ +	/// recovering a specific stale room immediately.
+ +	Bump {
+ +		room_id: Option<OwnedRoomId>,
+ +
+ +		/// Thump all stagnant federated rooms.
+ +		#[arg(long)]
+ +		all: bool,
+ +
+ +		/// Skip specific rooms (for excluding problematic rooms).
+ +		#[arg(long)]
+ +		skip: Vec<OwnedRoomId>,
+++=======
++ 	/// - Delete all sync tokens for a room
++ 	PurgeSyncTokens {
++ 		/// Room ID or alias to purge sync tokens for
++ 		#[arg(value_parser)]
++ 		room: OwnedRoomOrAliasId,
+++>>>>>>> origin/main
+  	},
+  }
+diff --cc src/api/Cargo.toml
+index 14f129d58,df67271c8..000000000
+--- a/src/api/Cargo.toml
++++ b/src/api/Cargo.toml
+@@@ -95,7 -95,7 +95,11 @@@ serde.workspace = tru
+  sha1.workspace = true
+  tokio.workspace = true
+  tracing.workspace = true
+++<<<<<<< HEAD
+ +xxhash-rust.workspace = true
+++=======
++ url.workspace = true
+++>>>>>>> origin/main
+  
+  [lints]
+  workspace = true
+diff --cc src/api/client/membership/join.rs
+index 0655f400c,458274d41..000000000
+--- a/src/api/client/membership/join.rs
++++ b/src/api/client/membership/join.rs
+@@@ -435,7 -439,18 +459,22 @@@ async fn join_room_by_id_helper_remote
+  			)))
+  		})?;
+  
+++<<<<<<< HEAD
+ +	drop(make_join_response);
+++=======
++ 	let remote_latest_events: Vec<ruma::OwnedEventId> = join_event_stub
++ 		.get("prev_events")
++ 		.and_then(|v| v.as_array())
++ 		.map(|arr| {
++ 			arr.iter()
++ 				.filter_map(|v| {
++ 					v.as_str()
++ 						.and_then(|s| <&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned))
++ 				})
++ 				.collect()
++ 		})
++ 		.unwrap_or_default();
+++>>>>>>> origin/main
+  
+  	let join_authorized_via_users_server = if !matches!(
+  		room_version_id,
+@@@ -599,14 -610,40 +638,43 @@@
+  		.rooms
+  		.short
+  		.get_or_create_shortroomid(room_id)
+ +		.boxed()
+  		.await;
+  
++ 	join_room_by_id_helper_remote_process(
++ 		services,
++ 		sender_user,
++ 		room_id,
++ 		room_version_id,
++ 		remote_server,
++ 		join_event,
++ 		event_id,
++ 		state_lock,
++ 		send_join_response,
++ 		remote_latest_events,
++ 	)
++ 	.await
++ }
++ 
++ #[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
++ #[allow(clippy::too_many_arguments)]
++ async fn join_room_by_id_helper_remote_process(
++ 	services: &Services,
++ 	sender_user: &UserId,
++ 	room_id: &RoomId,
++ 	room_version_id: RoomVersionId,
++ 	remote_server: OwnedServerName,
++ 	join_event: CanonicalJsonObject,
++ 	event_id: ruma::OwnedEventId,
++ 	state_lock: RoomMutexGuard,
++ 	send_join_response: federation::membership::create_join_event::v2::Response,
++ 	remote_latest_events: Vec<ruma::OwnedEventId>,
++ ) -> Result {
+  	info!("Parsing join event");
+ -	let parsed_join_pdu = PduEvent::from_id_val(&event_id, join_event.clone(), Some(room_id))
+ -		.map_err(|e| err!(BadServerResponse("Invalid join event PDU: {e:?}")))?;
+ +	let parsed_join_pdu = Box::new(
+ +		PduEvent::from_id_val(&event_id, join_event.clone(), Some(room_id))
+ +			.map_err(|e| err!(BadServerResponse("Invalid join event PDU: {e:?}")))?,
+ +	);
+  
+  	info!("Acquiring server signing keys for response events");
+  	let resp_events = &send_join_response.room_state;
+@@@ -771,27 -773,25 +839,39 @@@
+  	} = services
+  		.rooms
+  		.state_compressor
+ -		.save_state(room_id, Arc::new(compressed))
+ +		.save_state_as_root(room_id, Arc::new(compressed))
+ +		.boxed()
+  		.await?;
+  
+ -	debug!("Forcing state for new room");
+ +	info!("Forcing state for new room (shortstatehash={statehash_before_join})");
+ +	Box::pin(services.rooms.state.force_state(
+ +		room_id,
+ +		statehash_before_join,
+ +		added,
+ +		removed,
+ +		&state_lock,
+ +	))
+ +	.await?;
+ +
+++<<<<<<< HEAD
+ +	info!("Updating joined counts for new room");
+  	services
+  		.rooms
+ -		.state
+ -		.force_state(room_id, statehash_before_join, added, removed, &state_lock)
+ -		.await?;
+ -
+ +		.state_cache
+ +		.update_joined_count(room_id)
+ +		.boxed()
+ +		.await;
+++=======
++ 	debug!("Updating joined counts for new room");
++ 	// Update our membership locally to join state before calculating the joined
++ 	// counts, so that our server is properly added to the server participation
++ 	// cache.
++ 	services
++ 		.rooms
++ 		.state_cache
++ 		.update_membership(room_id, sender_user, &parsed_join_pdu, true)
++ 		.await?;
+++>>>>>>> origin/main
+  
+  	// We append to state before appending the pdu, so we don't have a moment in
+  	// time with the pdu without it's state. This is okay because append_pdu can't
+@@@ -826,7 -823,64 +906,68 @@@
+  		.state
+  		.set_room_state(room_id, statehash_after_join, &state_lock);
+  
+++<<<<<<< HEAD
+ +	drop(state_lock);
+++=======
++ 	if !remote_latest_events.is_empty() {
++ 		let target_server = remote_server.clone();
++ 		let room_id = room_id.to_owned();
++ 		let timeline = services.rooms.timeline.clone();
++ 		let sending = services.sending.clone();
++ 		let event_handler = services.rooms.event_handler.clone();
++ 
++ 		services.server.runtime().spawn(Box::pin(async move {
++ 			let mut missing_latest = Vec::new();
++ 			for event_id in remote_latest_events {
++ 				if !timeline.pdu_exists(&event_id).await {
++ 					missing_latest.push(event_id);
++ 				}
++ 			}
++ 			if missing_latest.is_empty() {
++ 				return;
++ 			}
++ 			info!(
++ 				"Forward-filling {} missing extremities from {} after joining room {}",
++ 				missing_latest.len(),
++ 				target_server,
++ 				room_id
++ 			);
++ 			for event_id in missing_latest {
++ 				let request = federation::event::get_event::v1::Request {
++ 					event_id: event_id.clone(),
++ 					include_unredacted_content: Some(false),
++ 				};
++ 				let response = match sending
++ 					.send_federation_request(&target_server, request)
++ 					.await
++ 				{
++ 					| Ok(r) => r,
++ 					| Err(e) => {
++ 						warn!("Failed to fetch missing extremity {event_id}: {e}");
++ 						continue;
++ 					},
++ 				};
++ 				let (parsed_room_id, parsed_event_id, value) =
++ 					match event_handler.parse_incoming_pdu(&response.pdu).await {
++ 						| Ok(v) => v,
++ 						| Err(e) => {
++ 							warn!("Failed to parse extremity {event_id}: {e}");
++ 							continue;
++ 						},
++ 					};
++ 				if parsed_room_id != room_id {
++ 					continue;
++ 				}
++ 				if let Err(e) = event_handler
++ 					.handle_incoming_pdu(&target_server, &room_id, &parsed_event_id, value, true)
++ 					.await
++ 				{
++ 					warn!("Failed to handle extremity {event_id}: {e}");
++ 				}
++ 			}
++ 		}));
++ 	}
+++>>>>>>> origin/main
+  
+  	Ok(())
+  }
+diff --cc src/api/client/sync/mod.rs
+index 19a6e1dbf,44e437e19..000000000
+--- a/src/api/client/sync/mod.rs
++++ b/src/api/client/sync/mod.rs
+@@@ -4,14 -4,13 +4,19 @@@ mod v5
+  use std::collections::VecDeque;
+  
+  use conduwuit::{
+ -	Event, PduCount, Result, debug_warn, err,
+ +	Event, PduCount, Result, debug_warn, err, info,
+  	matrix::pdu::PduEvent,
+++<<<<<<< HEAD
+ +	ref_at,
+ +	utils::stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
+ +	warn,
+++=======
++ 	trace,
++ 	utils::stream::{BroadbandExt, ReadyExt, TryIgnore},
+++>>>>>>> origin/main
+  };
+  use conduwuit_service::Services;
+ -use futures::StreamExt;
+ +use futures::{StreamExt, TryStreamExt};
+  use ruma::{
+  	OwnedUserId, RoomId, UserId,
+  	events::TimelineEventType::{
+diff --cc src/api/client/sync/v3/joined.rs
+index 806c79de5,7ce0a5e24..000000000
+--- a/src/api/client/sync/v3/joined.rs
++++ b/src/api/client/sync/v3/joined.rs
+@@@ -316,75 -316,66 +336,124 @@@ async fn build_state_and_timeline
+  			sync_context,
+  			room_id,
+  			shortstatehashes,
++ 			&timeline,
+  			&state_events,
+ +			&timeline,
+  			joined_since_last_sync,
+  		),
+  	)
+  	.await?;
+  
+++<<<<<<< HEAD
+ +	// note: we always indicate a limited timeline if the syncing user just joined
+ +	// the room or this is an initial sync, to indicate to the client that it
+ +	// should request backfill (and to copy Synapse's behavior). for federated
+ +	// room joins, the `timeline` will usually only include the syncing user's
+ +	// join event. However, if the room actually has ZERO timeline events (e.g.,
+ +	// a space), forcing `limited: true` causes clients to fail repeatedly to
+ +	// backfill.
+ +	let is_initial_sync = sync_context.last_sync_end_count.is_none();
+ +	let limited = if timeline.pdus.is_empty() {
+ +		if joined_since_last_sync || is_initial_sync {
+ +			let is_space = services
+ +				.rooms
+ +				.state_accessor
+ +				.get_room_type(room_id)
+ +				.await
+ +				.is_ok_and(|room_type| room_type == ruma::room::RoomType::Space);
+++=======
++ 	let user_has_join_event_in_sync = timeline
++ 		.pdus
++ 		.iter()
++ 		.map(|(_, pdu)| pdu)
++ 		.chain(state_events.iter())
++ 		.filter(|event| {
++ 			event.kind == RoomMember
++ 				&& event.state_key.as_deref() == Some(sync_context.syncing_user.as_str())
++ 		})
++ 		.any(|event| {
++ 			event
++ 				.get_content()
++ 				.is_ok_and(|c: RoomMemberEventContent| c.membership == MembershipState::Join)
++ 		});
++ 
++ 	// note: we usually indicate a limited timeline if the syncing user just joined
++ 	// the room to trigger backfill (Synapse behavior). However, if the room
++ 	// actually has ZERO timeline events (e.g., a space), forcing `limited: true`
++ 	// causes clients to fail repeatedly to backfill.
++ 	let is_space = services
++ 		.rooms
++ 		.state_accessor
++ 		.get_room_type(room_id)
++ 		.await
++ 		.is_ok_and(|room_type| room_type == ruma::room::RoomType::Space);
++ 
++ 	let limited = if timeline.pdus.is_empty() {
++ 		timeline.limited || ((joined_since_last_sync || user_has_join_event_in_sync) && !is_space)
++ 	} else {
++ 		timeline.limited || joined_since_last_sync || user_has_join_event_in_sync
++ 	};
++ 
++ 	// the token which may be passed to the messages endpoint to backfill room
++ 	// history. If the timeline is empty, fallback to the start of this sync window
++ 	// to ensure clients always have a valid topological pagination token.
++ 	let prev_batch = timeline.pdus.front().map(at!(0)).or_else(|| {
++ 		limited
++ 			.then_some(())
++ 			.and(sync_context.last_sync_end_count)
++ 			.map(PduCount::Normal)
++ 	});
+++>>>>>>> origin/main
+ +
+ +			timeline.limited || !is_space
+ +		} else {
+ +			timeline.limited
+ +		}
+ +	} else {
+ +		timeline.limited || joined_since_last_sync || is_initial_sync
+ +	};
+  
+ -	// filter out ignored events from the timeline and convert the PDUs into Ruma's
+ -	// AnySyncTimelineEvent type
+ +	// the token which may be passed to the messages endpoint to backfill room
+ +	// history. If the timeline is empty, fallback to the start of this sync window
+ +	// to ensure clients always have a valid topological pagination token.
+ +	let prev_batch = timeline.pdus.front().map(at!(0)).or_else(|| {
+ +		limited
+ +			.then_some(())
+ +			.and(sync_context.last_sync_end_count)
+ +			.map(PduCount::Normal)
+ +	});
+ +
+ +	// filter out ignored events from the timeline, apply the sync filter's
+ +	// type restrictions, and convert the PDUs into Ruma's AnySyncTimelineEvent
+ +	let timeline_types = &sync_context.filter.room.timeline.types;
+ +	let timeline_not_types = &sync_context.filter.room.timeline.not_types;
+  	let filtered_timeline = timeline
+  		.pdus
+  		.into_iter()
+ +		.filter(|(_, pdu)| {
+ +			let event_type = pdu.kind.to_string();
+ +
+ +			// if not_types is set, exclude matching types
+ +			if timeline_not_types
+ +				.iter()
+ +				.any(|t| t == "*" || t == &event_type)
+ +			{
+ +				return false;
+ +			}
+ +
+ +			// if types is set, only include matching types
+ +			if let Some(types) = timeline_types {
+ +				return types.iter().any(|t| t == "*" || t == &event_type);
+ +			}
+ +
+ +			true
+ +		})
+  		.stream()
+  		.wide_filter_map(|item| ignored_filter(services, item, sync_context.syncing_user))
++ 		.ready_filter(|(_, pdu)| {
++ 			use conduwuit::matrix::event::Matches;
++ 			(&sync_context.filter.room.timeline).matches(pdu)
++ 		})
+  		.map(at!(1))
+  		.map(Event::into_format)
+  		.collect::<Vec<_>>()
+@@@ -880,94 -962,64 +1042,143 @@@ async fn build_device_list_updates
+  		..
+  	}: SyncContext<'_>,
+  	room_id: &RoomId,
+++<<<<<<< HEAD
+ +	ShortStateHashes { current_shortstatehash, .. }: ShortStateHashes,
+ +	state_events: &[PduEvent],
+ +	timeline: &TimelinePdus,
+ +	joined_since_last_sync: bool,
+ +) -> Result<DeviceListUpdates> {
+ +	// initial syncs don't include device updates
+ +	if last_sync_end_count.is_none() {
+ +		return Ok(DeviceListUpdates::new());
+ +	}
+ +
+ +	let is_encrypted_room = services
+ +		.rooms
+ +		.state_accessor
+ +		.state_get(current_shortstatehash, &StateEventType::RoomEncryption, "")
+ +		.is_ok()
+ +		.await;
+++=======
++ 	ShortStateHashes { .. }: ShortStateHashes,
++ 	timeline: &TimelinePdus,
++ 	state_events: &[PduEvent],
++ 	_joined_since_last_sync: bool,
++ ) -> Result<DeviceListUpdates> {
++ 	// initial syncs don't include device updates, so return early
++ 	if last_sync_end_count.is_none() {
++ 		return Ok(DeviceListUpdates::new());
++ 	}
+++>>>>>>> origin/main
+  
+  	let mut device_list_updates = DeviceListUpdates::new();
+  
+ -	// add users with changed keys to the `changed` list
+ -	services
+ -		.users
+ -		.room_keys_changed(room_id, last_sync_end_count, Some(current_count))
+ -		.map(at!(0))
+ -		.map(ToOwned::to_owned)
+ -		.ready_for_each(|user_id| {
+ -			device_list_updates.changed.insert(user_id);
+ -		})
+ -		.await;
+ +	// E2EE-specific: track key changes and joins only for encrypted rooms
+ +	if is_encrypted_room {
+ +		// add users with changed keys to the `changed` list
+ +		services
+ +			.users
+ +			.room_keys_changed(room_id, last_sync_end_count, Some(current_count))
+ +			.map(at!(0))
+ +			.map(ToOwned::to_owned)
+ +			.ready_for_each(|user_id| {
+ +				device_list_updates.changed.insert(user_id);
+ +			})
+ +			.await;
+ +
+++<<<<<<< HEAD
+ +		if joined_since_last_sync {
+ +			services
+ +				.rooms
+ +				.state_cache
+ +				.room_members(room_id)
+ +				.ready_for_each(|user_id| {
+ +					if user_id != syncing_user {
+ +						device_list_updates.changed.insert(user_id.to_owned());
+ +					}
+ +				})
+ +				.await;
+ +		}
+ +	}
+ +
+ +	// Track membership changes for device_lists.changed (joins in encrypted
+ +	// rooms) and device_lists.left (leaves from any room when the user no
+ +	// longer shares any encrypted room with us).
+ +	let events = state_events
+ +		.iter()
+ +		.chain(timeline.pdus.iter().map(|(_, pdu)| pdu));
+ +	for state_event in events {
+ +		if state_event.kind == RoomMember {
+ +			let Some(content): Option<RoomMemberEventContent> = state_event.get_content().ok()
+ +			else {
+ +				continue;
+ +			};
+  
+ +			let Some(user_id): Option<OwnedUserId> = state_event
+ +				.state_key
+ +				.as_ref()
+ +				.and_then(|key| key.as_str().try_into().ok())
+ +			else {
+ +				continue;
+ +			};
+++=======
++ 	// add users who now share encrypted rooms to `changed` and
++ 	// users who no longer share encrypted rooms to `left`
++ 	let mem_events = timeline
++ 		.pdus
++ 		.iter()
++ 		.map(|(_, pdu)| pdu)
++ 		.chain(state_events.iter())
++ 		.filter(|event| event.kind == RoomMember);
+  
+- 			{
+- 				use MembershipState::*;
++ 	for state_event in mem_events {
++ 		let Some(content): Option<RoomMemberEventContent> = state_event.get_content().ok() else {
++ 			continue;
++ 		};
+++>>>>>>> origin/main
++ 
++ 		let Some(user_id): Option<OwnedUserId> = state_event
++ 			.state_key
++ 			.as_ref()
++ 			.and_then(|key| key.parse().ok())
++ 		else {
++ 			continue;
++ 		};
+  
+++<<<<<<< HEAD
+ +				match content.membership {
+ +					| Join if is_encrypted_room => {
+ +						// User joined this encrypted room — track their
+ +						// device list.
+ +						device_list_updates.changed.insert(user_id);
+ +					},
+ +					| Leave | Ban => {
+ +						// User left/was kicked/banned from this room.
+ +						// Add to `left` if they don't share any OTHER
+ +						// encrypted rooms with the syncing user.
+ +						let shares_other =
+ +							share_encrypted_room(services, syncing_user, &user_id, Some(room_id))
+ +								.await;
+ +
+ +						if !shares_other {
+ +							device_list_updates.left.insert(user_id);
+ +						}
+ +					},
+++=======
++ 		{
++ 			use MembershipState::*;
++ 
++ 			if matches!(content.membership, Leave | Join) {
++ 				let shares_room =
++ 					shares_a_room(services, syncing_user, &user_id, Some(room_id)).await;
++ 				match content.membership {
++ 					| Leave if !shares_room => {
++ 						device_list_updates.left.insert(user_id);
++ 					},
++ 					| Join => {
++ 						device_list_updates.changed.insert(user_id);
++ 					},
+++>>>>>>> origin/main
+  					| _ => (),
+  				}
+  			}
+diff --cc src/api/client/sync/v3/left.rs
+index 3bce94e1b,03ea47643..000000000
+--- a/src/api/client/sync/v3/left.rs
++++ b/src/api/client/sync/v3/left.rs
+@@@ -1,8 -1,8 +1,12 @@@
+  use conduwuit::{
+ -	Event, PduEvent, Result, debug_warn,
+ -	pdu::EventHash,
+ +	Event, PduCount, PduEvent, Result, debug_warn,
+ +	matrix::{event::Matches, pdu::EventHash},
+  	trace,
+++<<<<<<< HEAD
+ +	utils::{self, IterStream, ReadyExt as _, future::ReadyEqExt, stream::WidebandExt as _},
+++=======
++ 	utils::{self, IterStream, ReadyExt, future::ReadyEqExt, stream::WidebandExt as _},
+++>>>>>>> origin/main
+  };
+  use futures::{StreamExt, future::join};
+  use ruma::{
+@@@ -223,24 -204,7 +229,28 @@@ pub(super) async fn load_left_room
+  
+  	let TimelinePdus { pdus, limited } = timeline;
+  
+++<<<<<<< HEAD
+ +	let mut stream = pdus
+ +		.into_iter()
+ +		.stream()
+ +		// filter out ignored events from the timeline
+ +		.wide_filter_map(|item| ignored_filter(services, item, syncing_user))
+ +		.ready_filter(|(_, pdu): &(PduCount, PduEvent)| {
+ +			let matches = (&filter.room.timeline).matches(pdu);
+ +			tracing::info!(
+ +				"Checking timeline event {} of type {}: filter.types = {:?}, matches = {}",
+ +				pdu.event_id,
+ +				pdu.event_type(),
+ +				filter.room.timeline.types,
+ +				matches
+ +			);
+ +			matches
+ +		});
+ +
+ +	while let Some((_, pdu)) = stream.next().await {
+++=======
++ 	for (_, pdu) in pdus {
+++>>>>>>> origin/main
+  		if pdu.event_type() == &TimelineEventType::RoomMember
+  			&& pdu.state_key() == Some(syncing_user.as_str())
+  		{
+diff --cc src/api/client/sync/v3/mod.rs
+index d3410c474,e92550b41..000000000
+--- a/src/api/client/sync/v3/mod.rs
++++ b/src/api/client/sync/v3/mod.rs
+@@@ -185,9 -187,9 +187,10 @@@ type PresenceUpdates = HashMap<OwnedUse
+  pub(crate) async fn sync_events_route(
+  	State(services): State<crate::State>,
+  	ClientIp(client_ip): ClientIp,
++ 	axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
+  	body: Ruma<sync_events::v3::Request>,
+  ) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
+ +	let timer = std::time::Instant::now();
+  	let (sender_user, sender_device) = body.sender();
+  
+  	// Presence update
+@@@ -209,20 -209,18 +212,34 @@@
+  	// Setup watchers, so if there's no response, we can wait for them
+  	let watcher = services.sync.watch(sender_user, sender_device);
+  
+++<<<<<<< HEAD
+ +	let log_time = |response: &serde_json::Value| {
+ +		if !is_sync_response_empty(response) && timer.elapsed().as_millis() > 1000 {
+ +			// log syncs if they took > 1s
+ +			conduwuit::info!(
+ +				"Large sync for {} completed in {:.2} s",
+ +				sender_user,
+ +				timer.elapsed().as_secs_f64()
+ +			);
+ +		}
+ +	};
+ +
+ +	let response = build_sync_events(&services, &body).await?;
+++=======
++ 	let mut use_state_after = false;
++ 	if let Some(q) = raw_query.as_deref() {
++ 		for (key, value) in url::form_urlencoded::parse(q.as_bytes()) {
++ 			if key == "use_state_after" && value == "true" {
++ 				use_state_after = true;
++ 				break;
++ 			}
++ 		}
++ 	}
++ 
++ 	let response = build_sync_events(&services, &body, use_state_after).await?;
+++>>>>>>> origin/main
+  	if body.body.since.is_none() || body.body.full_state || !is_sync_response_empty(&response) {
+ +		log_time(&response);
+  		return Ok(axum::Json(response).into_response());
+  	}
+  
+@@@ -233,8 -231,7 +250,12 @@@
+  	_ = tokio::time::timeout(duration, watcher).await;
+  
+  	// Retry returning data
+++<<<<<<< HEAD
+ +	let response = build_sync_events(&services, &body).await?;
+ +	log_time(&response);
+++=======
++ 	let response = build_sync_events(&services, &body, use_state_after).await?;
+++>>>>>>> origin/main
+  	Ok(axum::Json(response).into_response())
+  }
+  
+diff --cc src/service/media/tests.rs
+index 035daca6e,40af7bfaa..000000000
+--- a/src/service/media/tests.rs
++++ b/src/service/media/tests.rs
+@@@ -188,8 -188,8 +188,13 @@@ mod url_and_opengraph_parsing_tests 
+  			img.url,
+  			"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
+  		);
+++<<<<<<< HEAD
+ +		assert_eq!(img.properties.get("width").map(String::as_str), Some("955"));
+ +		assert_eq!(img.properties.get("height").map(String::as_str), Some("1200"));
+++=======
++ 		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("955"));
++ 		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1200"));
+++>>>>>>> origin/main
+  	}
+  
+  	#[test]
+@@@ -211,11 -211,11 +216,16 @@@
+  			img.url,
+  			"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
+  		);
+++<<<<<<< HEAD
+ +		assert_eq!(img.properties.get("width").map(String::as_str), Some("1000"));
+ +		assert_eq!(img.properties.get("height").map(String::as_str), Some("1000"));
+++=======
++ 		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("1000"));
++ 		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1000"));
+++>>>>>>> origin/main
+  
+  		// Assert no og:video element since it wasn't defined
+ -		assert!(html.opengraph.videos.first().is_none());
+ +		assert!(html.opengraph.videos.is_empty());
+  	}
+  
+  	#[test]
+diff --cc src/service/rooms/read_receipt/mod.rs
+index 78b8fc3b6,545a54e03..000000000
+--- a/src/service/rooms/read_receipt/mod.rs
++++ b/src/service/rooms/read_receipt/mod.rs
+@@@ -139,12 -146,7 +139,16 @@@ fn aggregate_receipts<I>
+  where
+  	I: Iterator<Item = Raw<AnySyncEphemeralRoomEvent>>,
+  {
+++<<<<<<< HEAD
+ +	let mut json: BTreeMap<OwnedEventId, BTreeMap<_, BTreeMap<OwnedUserId, _>>> = BTreeMap::new();
+ +	let mut user_locations: BTreeMap<
+ +		(OwnedUserId, ruma::events::receipt::ReceiptType, Option<String>),
+ +		OwnedEventId,
+ +	> = BTreeMap::new();
+ +
+++=======
++ 	let mut json: BTreeMap<OwnedEventId, Receipts> = BTreeMap::new();
+++>>>>>>> origin/main
+  	for value in receipts {
+  		let receipt = serde_json::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
+  			value.json().get(),
+@@@ -152,67 -154,23 +156,86 @@@
+  		match receipt {
+  			| Ok(value) => {
+  				for (event_id, new_receipts) in value.content {
+++<<<<<<< HEAD
+ +					for (receipt_type, new_users) in new_receipts {
+ +						for (user_id, new_receipt) in new_users {
+++=======
++ 					let existing_receipts = json.entry(event_id).or_default();
++ 					for (receipt_type, new_users) in new_receipts {
++ 						let existing_users = existing_receipts.entry(receipt_type).or_default();
++ 						for (user_id, new_receipt) in new_users {
++ 							// Prefer unthreaded receipts if there's a clash
+++>>>>>>> origin/main
+  							let is_unthreaded = matches!(
+  								new_receipt.thread,
+  								ruma::events::receipt::ReceiptThread::Unthreaded
+  							);
+++<<<<<<< HEAD
+ +
+ +							let location_key = (
+ +								user_id.clone(),
+ +								receipt_type.clone(),
+ +								new_receipt.thread.as_str().map(ToOwned::to_owned),
+ +							);
+ +
+ +							// If we previously saw a receipt for this user/type/thread on a
+ +							// DIFFERENT event, remove it! Since we iterate
+ +							// chronologically, the current receipt is newer.
+ +							if let Some(old_event_id) = user_locations.get(&location_key) {
+ +								if old_event_id != &event_id {
+ +									let old_eid = old_event_id.clone();
+ +									let remove_event = if let Some(old_event_receipts) =
+ +										json.get_mut(&old_eid)
+ +									{
+ +										let remove_type = if let Some(old_users) =
+ +											old_event_receipts.get_mut(&receipt_type)
+ +										{
+ +											old_users.remove(&user_id);
+ +											old_users.is_empty()
+ +										} else {
+ +											false
+ +										};
+ +										if remove_type {
+ +											old_event_receipts.remove(&receipt_type);
+ +										}
+ +										old_event_receipts.is_empty()
+ +									} else {
+ +										false
+ +									};
+ +									if remove_event {
+ +										json.remove(&old_eid);
+ +									}
+ +								}
+ +							}
+ +
+ +							user_locations.insert(location_key, event_id.clone());
+ +
+ +							let event_receipts =
+ +								json.entry(event_id.clone()).or_insert_with(BTreeMap::new);
+ +							let users = event_receipts
+ +								.entry(receipt_type.clone())
+ +								.or_insert_with(BTreeMap::new);
+ +
+ +							// MSC4102: "When a server is combining receipts into an EDU, if there
+ +							// are multiple receipts for the same (user, event, receipt
+ +							// type), always choose the receipt which is unthreaded (has no
+ +							// thread_id) when aggregating..."
+ +							if let std::collections::btree_map::Entry::Vacant(e) =
+ +								users.entry(user_id.clone())
+ +							{
+ +								e.insert(new_receipt);
+ +							} else if is_unthreaded {
+ +								users.insert(user_id, new_receipt);
+++=======
++ 							match existing_users.entry(user_id) {
++ 								| std::collections::btree_map::Entry::Vacant(e) => {
++ 									e.insert(new_receipt);
++ 								},
++ 								| std::collections::btree_map::Entry::Occupied(mut e) =>
++ 									if is_unthreaded {
++ 										e.insert(new_receipt);
++ 									},
+++>>>>>>> origin/main
+  							}
+  						}
+  					}
+diff --cc src/service/rooms/short/mod.rs
+index fb1099268,c0381138d..000000000
+--- a/src/service/rooms/short/mod.rs
++++ b/src/service/rooms/short/mod.rs
+@@@ -548,205 -294,12 +555,216 @@@ wher
+  	})
+  }
+  
+++<<<<<<< HEAD
+ +#[cfg(test)]
+ +mod tests {
+ +	use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+ +
+ +	use conduwuit::{
+ +		Server,
+ +		config::Config,
+ +		log::{Log, LogLevelReloadHandles, capture},
+ +		matrix::StateKey,
+ +	};
+ +	use database::Database;
+ +	use figment::providers::Format;
+ +	use futures::stream::{self, StreamExt};
+ +	use ruma::{OwnedEventId, event_id, events::StateEventType};
+ +
+ +	use super::*;
+ +	use crate::Service as _;
+ +
+ +	struct TempDbGuard {
+ +		path: PathBuf,
+ +	}
+ +
+ +	impl Drop for TempDbGuard {
+ +		fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+ +	}
+ +
+ +	async fn setup_test_service()
+ +	-> (TempDbGuard, Arc<globals::Service>, Arc<Service>, Arc<crate::service::Map>) {
+ +		static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 =
+ +			std::sync::atomic::AtomicU64::new(0);
+ +		let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+ +		let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{count}"));
+ +		let _ = std::fs::remove_dir_all(&db_path); // ensure it's clean
+ +
+ +		let guard = TempDbGuard { path: db_path.clone() };
+ +
+ +		let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+ +			r#"
+ +				server_name = "test.conduwuit.local"
+ +				database_path = "{}"
+ +				"#,
+ +			db_path.to_string_lossy().replace('\\', "/")
+ +		)));
+ +
+ +		let config = Config::new(&figment).expect("failed to parse config");
+ +		let server = Arc::new(Server::new(config, None, Log {
+ +			reload: LogLevelReloadHandles::default(),
+ +			capture: Arc::new(capture::State::default()),
+ +		}));
+ +
+ +		let db = Database::open(&server)
+ +			.await
+ +			.expect("failed to open database");
+ +		let service_map = Arc::new(conduwuit::SyncRwLock::new(BTreeMap::new()));
+ +
+ +		let globals_service = globals::Service::build(crate::Args {
+ +			db: &db,
+ +			server: &server,
+ +			service: &service_map,
+ +		})
+ +		.expect("failed to build globals service");
+ +
+ +		let globals_service_dyn: Arc<dyn crate::Service> = globals_service.clone();
+ +		let globals_any_dyn: Arc<dyn std::any::Any + Send + Sync> = globals_service.clone();
+ +		service_map.write().insert(
+ +			"globals".to_owned(),
+ +			(Arc::downgrade(&globals_service_dyn), Arc::downgrade(&globals_any_dyn)),
+ +		);
+ +
+ +		let short_service = Service::build(crate::Args {
+ +			db: &db,
+ +			server: &server,
+ +			service: &service_map,
+ +		})
+ +		.expect("failed to build short service");
+ +
+ +		(guard, globals_service, short_service, service_map)
+ +	}
+ +
+ +	#[tokio::test]
+ +	async fn test_shorteventid_caching() {
+ +		let (_guard, _globals, service, _map) = setup_test_service().await;
+ +		let event_id = event_id!("$abc:test.conduwuit.local");
+ +
+ +		// Initial lookup should result in cache miss and query DB (or allocate new
+ +		// since not in DB) Since it doesn't exist in DB, get_shorteventid returns
+ +		// Err, but get_or_create resolves/creates it
+ +		let short_id1 = service.get_or_create_shorteventid(event_id).await;
+ +
+ +		// Cache should now contain the mappings
+ +		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+ +		assert_eq!(service.shorteventid_eventid_cache.get(&short_id1), Some(event_id.to_owned()));
+ +
+ +		// Clear cache and retrieve via get_shorteventid to verify DB storage
+ +		service.eventid_shorteventid_cache.invalidate_all();
+ +		service.shorteventid_eventid_cache.invalidate_all();
+ +		service.eventid_shorteventid_cache.run_pending_tasks();
+ +		service.shorteventid_eventid_cache.run_pending_tasks();
+ +		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), None);
+ +
+ +		let short_id2 = service.get_shorteventid(event_id).await.unwrap();
+ +		assert_eq!(short_id1, short_id2);
+ +
+ +		// Cache should be repopulated after DB hit
+ +		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+ +
+ +		// Test retrieve event_id from short_id
+ +		let retrieved: OwnedEventId = service.get_eventid_from_short(short_id1).await.unwrap();
+ +		assert_eq!(retrieved, event_id.to_owned());
+ +	}
+ +
+ +	#[tokio::test]
+ +	async fn test_shortstatekey_caching() {
+ +		let (_guard, _globals, service, _map) = setup_test_service().await;
+ +		let event_type = StateEventType::RoomName;
+ +		let state_key = "";
+ +
+ +		// Initial get should fail
+ +		service
+ +			.get_shortstatekey(&event_type, state_key)
+ +			.await
+ +			.unwrap_err();
+ +
+ +		// Create/get state key
+ +		let short_key1 = service
+ +			.get_or_create_shortstatekey(&event_type, state_key)
+ +			.await;
+ +
+ +		// Cache should contain mappings
+ +		let cache_key = (event_type.clone(), StateKey::from(state_key));
+ +		assert_eq!(service.statekey_shortstatekey_cache.get(&cache_key), Some(short_key1));
+ +		assert_eq!(
+ +			service.shortstatekey_statekey_cache.get(&short_key1),
+ +			Some(cache_key.clone())
+ +		);
+ +
+ +		// Invalidate and check DB persistence
+ +		service.statekey_shortstatekey_cache.invalidate_all();
+ +		service.shortstatekey_statekey_cache.invalidate_all();
+ +		service.statekey_shortstatekey_cache.run_pending_tasks();
+ +		service.shortstatekey_statekey_cache.run_pending_tasks();
+ +
+ +		let short_key2 = service
+ +			.get_shortstatekey(&event_type, state_key)
+ +			.await
+ +			.unwrap();
+ +		assert_eq!(short_key1, short_key2);
+ +
+ +		// Cache should be repopulated
+ +		assert_eq!(service.statekey_shortstatekey_cache.get(&cache_key), Some(short_key1));
+ +
+ +		// Retrieve original key from short state key
+ +		let (ret_type, ret_key) = service.get_statekey_from_short(short_key1).await.unwrap();
+ +		assert_eq!(ret_type, event_type);
+ +		assert_eq!(ret_key.as_str(), state_key);
+ +	}
+ +
+ +	#[tokio::test]
+ +	async fn test_multi_lookups() {
+ +		let (_guard, _globals, service, _map) = setup_test_service().await;
+ +
+ +		let event1 = event_id!("$event1:test.conduwuit.local");
+ +		let event2 = event_id!("$event2:test.conduwuit.local");
+ +
+ +		// Multi create/get
+ +		let stream = service.multi_get_or_create_shorteventid(vec![event1, event2].into_iter());
+ +		let mut stream = std::pin::pin!(stream);
+ +		let short1 = stream.next().await.unwrap();
+ +		let short2 = stream.next().await.unwrap();
+ +		assert!(stream.next().await.is_none());
+ +
+ +		// Check caches
+ +		assert_eq!(service.eventid_shorteventid_cache.get(&event1.to_owned()), Some(short1));
+ +		assert_eq!(service.eventid_shorteventid_cache.get(&event2.to_owned()), Some(short2));
+ +
+ +		// Retrieve batch from short ids
+ +		let short_stream = stream::iter(vec![short1, short2]);
+ +		let event_stream = service.multi_get_eventid_from_short::<OwnedEventId, _>(short_stream);
+ +		let mut event_stream = std::pin::pin!(event_stream);
+ +		assert_eq!(event_stream.next().await.unwrap().unwrap(), event1.to_owned());
+ +		assert_eq!(event_stream.next().await.unwrap().unwrap(), event2.to_owned());
+ +		assert!(event_stream.next().await.is_none());
+ +
+ +		// Test state keys batch lookup
+ +		let type1 = StateEventType::RoomTopic;
+ +		let type2 = StateEventType::RoomAvatar;
+ +		let sk1 = service.get_or_create_shortstatekey(&type1, "key1").await;
+ +		let sk2 = service.get_or_create_shortstatekey(&type2, "key2").await;
+ +
+ +		let statekey_stream = stream::iter(vec![sk1, sk2]);
+ +		let state_result_stream = service.multi_get_statekey_from_short(statekey_stream);
+ +		let mut state_result_stream = std::pin::pin!(state_result_stream);
+ +		let res1 = state_result_stream.next().await.unwrap().unwrap();
+ +		let res2 = state_result_stream.next().await.unwrap().unwrap();
+ +
+ +		assert_eq!(res1.0, type1);
+ +		assert_eq!(res1.1.as_str(), "key1");
+ +		assert_eq!(res2.0, type2);
+ +		assert_eq!(res2.1.as_str(), "key2");
+ +		assert!(state_result_stream.next().await.is_none());
+ +	}
+++=======
++ #[implement(Service)]
++ pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
++ 	self.db.roomid_roomversion.get(room_id).await.deserialized()
++ }
++ 
++ #[implement(Service)]
++ pub fn set_room_version(&self, room_id: &RoomId, version: &RoomVersionId) {
++ 	self.db.roomid_roomversion.insert(room_id, version);
+++>>>>>>> origin/main
+  }
+diff --cc src/service/rooms/state/mod.rs
+index 05ba35afb,0a8da9416..000000000
+--- a/src/service/rooms/state/mod.rs
++++ b/src/service/rooms/state/mod.rs
+@@@ -1,9 -1,9 +1,9 @@@
+- use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
++ use std::{collections::HashMap, fmt::Write, iter::once, mem::size_of, sync::Arc};
+  
+  use async_trait::async_trait;
+ -use conduwuit::{RoomVersion, debug};
+ +use conduwuit::{RoomVersion, debug, info};
+  use conduwuit_core::{
+ -	Event, PduEvent, Result, err,
+ +	Event, PduEvent, Result,
+  	result::FlatOk,
+  	state_res::{self, StateMap},
+  	utils::{
+@@@ -598,6 -377,18 +603,21 @@@ impl Service 
+  			.room_state_get_content(room_id, &StateEventType::RoomCreate, "")
+  			.await
+  			.map(|content: RoomCreateEventContent| content.room_version)
+++<<<<<<< HEAD
+++=======
++ 			.map_err(|e| err!(Request(NotFound("No create event found: {e:?}"))))?;
++ 
++ 		self.services.short.set_room_version(room_id, &version);
++ 		Ok(version)
++ 	}
++ 
++ 	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
++ 		self.db
++ 			.shorteventid_shortstatehash
++ 			.qry(&shorteventid)
++ 			.await
++ 			.deserialized()
+++>>>>>>> origin/main
+  	}
+  
+  	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
+diff --cc src/service/rooms/state_cache/mod.rs
+index 8d3c2b489,750d1c129..000000000
+--- a/src/service/rooms/state_cache/mod.rs
++++ b/src/service/rooms/state_cache/mod.rs
+@@@ -22,10 -21,9 +22,11 @@@ use crate::{Dep, account_data, appservi
+  
+  pub struct Service {
+  	appservice_in_room_cache: AppServiceInRoomCache,
+ +	server_visibility_cache: Cache<(OwnedServerName, OwnedUserId), bool>,
+ +	user_visibility_cache: Cache<(OwnedUserId, OwnedUserId), bool>,
+  	services: Services,
+  	db: Data,
++ 	pub rooms_joining: SyncRwLock<std::collections::HashSet<OwnedRoomId>>,
+  }
+  
+  struct Services {
+@@@ -63,35 -61,7 +64,39 @@@ impl crate::Service for Service 
+  	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
+  		Ok(Arc::new(Self {
+  			appservice_in_room_cache: SyncRwLock::new(HashMap::new()),
+++<<<<<<< HEAD
+ +			// Ugly way to build the cache with a dynamic capacity
+ +			server_visibility_cache: Cache::builder()
+ +				.max_capacity(
+ +					conduwuit::utils::math::usize_from_f64(
+ +						25_000.0
+ +							* args
+ +								.depend::<config::Service>("config")
+ +								.cache_capacity_modifier,
+ +					)
+ +					.unwrap_or(25_000)
+ +					.try_into()
+ +					.unwrap_or(25_000),
+ +				)
+ +				.time_to_live(std::time::Duration::from_mins(5))
+ +				.build(),
+ +			user_visibility_cache: Cache::builder()
+ +				.max_capacity(
+ +					conduwuit::utils::math::usize_from_f64(
+ +						25_000.0
+ +							* args
+ +								.depend::<config::Service>("config")
+ +								.cache_capacity_modifier,
+ +					)
+ +					.unwrap_or(25_000)
+ +					.try_into()
+ +					.unwrap_or(25_000),
+ +				)
+ +				.time_to_live(std::time::Duration::from_mins(5))
+ +				.build(),
+++=======
++ 			rooms_joining: SyncRwLock::new(std::collections::HashSet::new()),
+++>>>>>>> origin/main
+  			services: Services {
+  				account_data: args.depend::<account_data::Service>("account_data"),
+  				config: args.depend::<config::Service>("config"),
+@@@ -195,24 -165,8 +200,29 @@@ pub async fn server_in_room<'a>(&'a sel
+  	self.db.serverroomids.qry(&key).await.is_ok()
+  }
+  
+++<<<<<<< HEAD
+ +/// Returns true if the server is participating in the room (joined, invited, or
+ +/// knocked).
+ +#[implement(Service)]
+ +#[tracing::instrument(skip(self), level = "trace")]
+ +pub async fn server_is_participant<'a>(
+ +	&'a self,
+ +	server: &'a ServerName,
+ +	room_id: &'a RoomId,
+ +) -> bool {
+ +	if self.server_in_room(server, room_id).await {
+ +		return true;
+ +	}
+ +
+ +	self.room_members_invited(room_id)
+ +		.chain(self.room_members_knocked(room_id))
+ +		.ready_any(|user| user.server_name() == server)
+ +		.await
+ +}
+++=======
++ #[implement(Service)]
++ pub fn is_joining(&self, room_id: &RoomId) -> bool { self.rooms_joining.read().contains(room_id) }
+++>>>>>>> origin/main
+  
+  /// Returns an iterator of all rooms a server participates in (as far as we
+  /// know).
+diff --cc src/service/rooms/timeline/data.rs
+index 276d6ed3d,7a0005d09..000000000
+--- a/src/service/rooms/timeline/data.rs
++++ b/src/service/rooms/timeline/data.rs
+@@@ -1030,83 -421,7 +1110,87 @@@ impl Data 
+  			.await
+  			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+  
+++<<<<<<< HEAD
+ +		let pdu_id = PduId { shortroomid, shorteventid };
+ +
+ +		Ok(pdu_id.into())
+++=======
++ 		Ok(Self::pdu_count_to_id(shortroomid, shorteventid, dir))
+++>>>>>>> origin/main
+ +	}
+ +
+ +	async fn seek_topo_key(
+ +		&self,
+ +		room_id: &RoomId,
+ +		token: PduCount,
+ +		current: &RawPduId,
+ +		dir: Direction,
+ +	) -> Result<Vec<u8>> {
+ +		use futures::StreamExt;
+ +
+ +		if token == PduCount::max() {
+ +			Ok(Self::topo_pducount_key(current, u64::MAX))
+ +		} else if token == PduCount::min() {
+ +			Ok(Self::topo_pducount_key(current, 0))
+ +		} else {
+ +			let token_pdu_id = self.count_to_id(room_id, token, dir).await?;
+ +			if let Ok(mut key) = self.pdu_id_to_topo_key(&token_pdu_id).await {
+ +				key[16..24].copy_from_slice(&current.shorteventid());
+ +				return Ok(key);
+ +			}
+ +
+ +			// Fallback: find the nearest existing event in the requested direction
+ +			let prefix = current.shortroomid();
+ +
+ +			let nearest_pdu_id = if dir == Direction::Forward {
+ +				let mut stream = Box::pin(
+ +					self.room_pducount_eventid
+ +						.raw_stream_from(&token_pdu_id)
+ +						.ready_try_take_while(|(k, _)| Ok(k.starts_with(&prefix))),
+ +				);
+ +				stream
+ +					.next()
+ +					.await
+ +					.map(|res| res.map(|(k, _)| RawPduId::from(k)))
+ +			} else {
+ +				let mut stream = Box::pin(
+ +					self.room_pducount_eventid
+ +						.rev_raw_stream_from(&token_pdu_id)
+ +						.ready_try_take_while(|(k, _)| Ok(k.starts_with(&prefix))),
+ +				);
+ +				stream
+ +					.next()
+ +					.await
+ +					.map(|res| res.map(|(k, _)| RawPduId::from(k)))
+ +			};
+ +
+ +			if let Some(Ok(nearest_id)) = nearest_pdu_id {
+ +				let mut key = self.pdu_id_to_topo_key(&nearest_id).await?;
+ +				key[16..24].copy_from_slice(&current.shorteventid());
+ +				Ok(key)
+ +			} else if dir == Direction::Forward {
+ +				Ok(Self::topo_pducount_key(current, u64::MAX))
+ +			} else {
+ +				Ok(Self::topo_pducount_key(current, 0))
+ +			}
+ +		}
+ +	}
+ +
+ +	fn parse_topo_stream<'a>(
+ +		&'a self,
+ +		stream: impl Stream<Item = Result<KeyVal<'a>>> + Send + 'a,
+ +		prefix: Vec<u8>,
+ +	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
+ +		stream
+ +			.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
+ +			// Clone raw bytes to owned before async resolve to avoid
+ +			// RocksDB cursor invalidation through try_buffered
+ +			.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
+ +			.and_then(move |(topo_key, event_id_bytes)| async move {
+ +				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
+ +				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
+ +				Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))
+ +			})
+  	}
+  }
+  
+diff --cc src/service/rooms/timeline/mod.rs
+index e66f2a257,eed3d517b..000000000
+--- a/src/service/rooms/timeline/mod.rs
++++ b/src/service/rooms/timeline/mod.rs
+@@@ -3,39 -3,38 +3,58 @@@ mod backfill
+  mod build;
+  mod create;
+  mod data;
+ +mod heal;
+ +mod metadata;
+  mod redact;
+++<<<<<<< HEAD
+ +mod repair_unsigned;
+ +use std::{fmt::Write, sync::Arc};
+++=======
++ 
++ use std::{fmt::Write, mem::size_of, sync::Arc};
+++>>>>>>> origin/main
+  
+  use async_trait::async_trait;
+ -pub use conduwuit_core::matrix::pdu::{PduId, RawPduId};
+ +pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId};
+  use conduwuit_core::{
+++<<<<<<< HEAD
+ +	Result, Server, at, err, info,
+++=======
++ 	Result, Server, SyncMutex, at, err,
+++>>>>>>> origin/main
+  	matrix::{
+  		event::Event,
+  		pdu::{PduCount, PduEvent},
+  	},
+- 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
++ 	utils::{
++ 		MutexMap, MutexMapGuard, bytes, future::TryExtExt, math::usize_from_f64,
++ 		stream::TryIgnore,
++ 	},
+  	warn,
+  };
+++<<<<<<< HEAD
+ +use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
+++=======
++ use futures::{Future, Stream, TryStreamExt, pin_mut};
++ use lru_cache::LruCache;
+++>>>>>>> origin/main
+  use ruma::{
+  	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId,
+ -	events::room::encrypted::Relation,
+ +	events::{TimelineEventType, room::encrypted::Relation},
+  };
+  use serde::Deserialize;
+  
+  use self::data::Data;
+ -pub use self::{create::pdu_fits, data::PdusIterItem};
+ +pub use self::{
+ +	create::pdu_fits,
+ +	data::PdusIterItem,
+ +	heal::{HealOptions, HealResult},
+ +	metadata::EventMetadata,
+ +};
+  use crate::{
+- 	Dep, account_data, admin, appservice, globals, pusher, rooms, sending, server_keys, users,
++ 	Dep, account_data, admin, appservice, globals, pusher, rooms,
++ 	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
++ 	sending, server_keys, users,
+  };
+  
+  // Update Relationships
+@@@ -64,7 -63,8 +83,12 @@@ pub struct Service 
+  	services: Services,
+  	db: Data,
+  	pub mutex_insert: RoomMutexMap,
+++<<<<<<< HEAD
+ +	pub mutex_fetch: MutexMap<OwnedEventId, ()>,
+++=======
++ 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
++ 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
+++>>>>>>> origin/main
+  }
+  
+  struct Services {
+@@@ -137,10 -137,22 +169,24 @@@ impl crate::Service for Service 
+  	}
+  
+  	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
++ 		let next_cache_len = self.next_shortstatehash_cache.lock().len();
++ 		let next_cache_bytes = next_cache_len.saturating_mul(
++ 			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
++ 		);
++ 		let next_bytes = bytes::pretty(next_cache_bytes);
++ 		writeln!(out, "next_shortstatehash_cache: {next_cache_len} ({next_bytes})")?;
++ 
++ 		let prev_cache_len = self.prev_shortstatehash_cache.lock().len();
++ 		let prev_cache_bytes = prev_cache_len.saturating_mul(
++ 			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
++ 		);
++ 		let prev_bytes = bytes::pretty(prev_cache_bytes);
++ 		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
++ 
+  		let mutex_insert = self.mutex_insert.len();
+  		writeln!(out, "insert_mutex: {mutex_insert}")?;
+ +		let mutex_fetch = self.mutex_fetch.len();
+ +		writeln!(out, "fetch_mutex: {mutex_fetch}")?;
+  
+  		Ok(())
+  	}
+diff --cc src/service/rooms/user/mod.rs
+index 308fd0f7c,433a39b1e..000000000
+--- a/src/service/rooms/user/mod.rs
++++ b/src/service/rooms/user/mod.rs
+@@@ -28,12 -25,9 +25,15 @@@ impl crate::Service for Service 
+  	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
+  		Ok(Arc::new(Self {
+  			db: Data {
+- 				db: args.db.clone(),
+  				userroomid_notificationcount: args.db["userroomid_notificationcount"].clone(),
+  				userroomid_highlightcount: args.db["userroomid_highlightcount"].clone(),
+++<<<<<<< HEAD
+ +				roomuserid_lastnotificationread: args.db["roomuserid_lastnotificationread"]
+ +					.clone(),
+ +				roomsynctoken_shortstatehash: args.db["roomsynctoken_shortstatehash"].clone(),
+++=======
++ 				roomuserid_lastnotificationread: args.db["userroomid_highlightcount"].clone(),
+++>>>>>>> origin/main
+  			},
+  
+  			services: Services {
+@@@ -91,37 -84,3 +90,40 @@@ pub async fn last_notification_read(&se
+  		.deserialized()
+  		.unwrap_or(0)
+  }
+++<<<<<<< HEAD
+ +
+ +#[implement(Service)]
+ +pub async fn associate_token_shortstatehash(
+ +	&self,
+ +	room_id: &RoomId,
+ +	token: u64,
+ +	shortstatehash: ShortStateHash,
+ +) {
+ +	let Ok(shortroomid) = self.services.short.get_shortroomid(room_id).await else {
+ +		return;
+ +	};
+ +
+ +	let _cork = self.db.db.cork();
+ +	let key: &[u64] = &[shortroomid, token];
+ +	self.db
+ +		.roomsynctoken_shortstatehash
+ +		.put(key, shortstatehash);
+ +}
+ +
+ +#[implement(Service)]
+ +pub async fn get_token_shortstatehash(
+ +	&self,
+ +	room_id: &RoomId,
+ +	token: u64,
+ +) -> Result<ShortStateHash> {
+ +	let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+ +
+ +	let key: &[u64] = &[shortroomid, token];
+ +	self.db
+ +		.roomsynctoken_shortstatehash
+ +		.qry(key)
+ +		.await
+ +		.deserialized()
+ +}
+++=======
+++>>>>>>> origin/main
+diff --cc src/service/sending/sender.rs
+index 5b04df5bb,e2dc8aaab..000000000
+--- a/src/service/sending/sender.rs
++++ b/src/service/sending/sender.rs
+@@@ -52,13 -55,17 +52,22 @@@ use super::{Destination, EduBuf, EduVec
+  
+  #[derive(Debug)]
+  enum TransactionStatus {
+- 	Running,
++ 	Running {
++ 		pending_flush: bool,
++ 	},
+  	Failed(u32, Instant), // number of times failed, time of last failure
+++<<<<<<< HEAD
+ +	Retrying(u32),        // number of times failed
+ +	Cooldown(Instant),
+++=======
++ 	Retrying {
++ 		tries: u32,
++ 		pending_flush: bool,
++ 	},
+++>>>>>>> origin/main
+  }
+  
+ -type SendingError = (Destination, Error);
+ +type SendingError = Box<(Destination, Error)>;
+  type SendingResult = Result<Destination, SendingError>;
+  type SendingFuture<'a> = BoxFuture<'a, SendingResult>;
+  type SendingFutures<'a> = FuturesUnordered<SendingFuture<'a>>;
+@@@ -152,34 -147,21 +163,52 @@@ impl Service 
+  		}
+  	}
+  
+++<<<<<<< HEAD
+ +	fn handle_response_err(
+ +		&self,
+ +		dest: Destination,
+ +		statuses: &mut CurTransactionStatus,
+ +		e: &Error,
+ +	) {
+ +		if e.status_code() == http::StatusCode::TOO_MANY_REQUESTS {
+ +			tracing::info!(dest = ?dest, "{e:?}");
+ +		} else {
+ +			tracing::info!(target: "federation_debug", dest = ?dest, "{e:?}");
+ +		}
+ +
+ +		let mut tries = 1_u32;
+ +		statuses.entry(dest.clone()).and_modify(|e| {
+ +			*e = match e {
+ +				| TransactionStatus::Running => TransactionStatus::Failed(1, Instant::now()),
+ +				| &mut TransactionStatus::Retrying(ref n) => {
+ +					tries = n.saturating_add(1);
+ +					TransactionStatus::Failed(tries, Instant::now())
+ +				},
+ +				| TransactionStatus::Failed(n, _) => {
+ +					tries = n.saturating_add(1);
+ +					tracing::info!(dest = ?dest, tries = tries, "Request failed while already marked as failed");
+ +					TransactionStatus::Failed(tries, Instant::now())
+ +				},
+ +				| TransactionStatus::Cooldown(_) => {
+ +					tracing::info!(dest = ?dest, "Request failed while in cooldown");
+ +					TransactionStatus::Failed(1, Instant::now())
+++=======
++ 	fn handle_response_err(dest: Destination, statuses: &mut CurTransactionStatus, e: &Error) {
++ 		debug!(dest = ?dest, "{e:?}");
++ 		if e.status_code().is_client_error() {
++ 			statuses.remove(&dest);
++ 			return;
++ 		}
++ 
++ 		statuses.entry(dest).and_modify(|e| {
++ 			*e = match e {
++ 				| TransactionStatus::Running { .. } =>
++ 					TransactionStatus::Failed(1, Instant::now()),
++ 				| &mut TransactionStatus::Retrying { tries, .. } =>
++ 					TransactionStatus::Failed(tries.saturating_add(1), Instant::now()),
++ 				| TransactionStatus::Failed(..) => {
++ 					panic!("Request that was not even running failed?!")
+++>>>>>>> origin/main
+  				},
+  			}
+  		});
+@@@ -271,59 -177,66 +300,121 @@@
+  		let _cork = self.db.db.cork();
+  		self.db.delete_all_active_requests_for(dest).await;
+  
+++<<<<<<< HEAD
+ +		let mut has_pdu = false;
+ +		let mut new_events = Vec::new();
+ +
+ +		let mut stream = self.db.queued_requests(dest).take(DEQUEUE_LIMIT);
+ +		while let Some((k, e)) = stream.next().await {
+ +			if matches!(e, SendingEvent::Pdu(_)) {
+ +				has_pdu = true;
+ +			}
+ +			new_events.push((k, e));
+++=======
++ 		let pending_flush = matches!(
++ 			statuses.get(dest),
++ 			Some(
++ 				&TransactionStatus::Running { pending_flush: true }
++ 					| &TransactionStatus::Retrying { pending_flush: true, .. },
++ 			)
++ 		);
++ 
++ 		// Find events that have been added since starting the last request
++ 		let new_events = self
++ 			.db
++ 			.queued_requests(dest)
++ 			.take(DEQUEUE_LIMIT)
++ 			.collect::<Vec<_>>()
++ 			.await;
++ 
++ 		// Insert any pdus we found
++ 		if !new_events.is_empty() {
++ 			statuses.insert(dest.clone(), TransactionStatus::Running { pending_flush: false });
++ 			self.db.mark_as_active(new_events.iter());
++ 
++ 			let mut new_events_vec: Vec<SendingEvent> =
++ 				new_events.into_iter().map(at!(1)).collect();
++ 
++ 			if pending_flush {
++ 				if let Destination::Federation(server_name) = dest {
++ 					if let Ok((select_edus, last_count)) = self.select_edus(server_name).await {
++ 						debug_assert!(select_edus.len() <= EDU_LIMIT, "exceeded edus limit");
++ 						let select_edus = select_edus.into_iter().map(SendingEvent::Edu);
++ 						new_events_vec.extend(select_edus);
++ 						self.db.set_latest_educount(server_name, last_count);
++ 					}
++ 				}
++ 			}
++ 
++ 			futures.push(self.send_events(dest.clone(), new_events_vec));
++ 		} else if pending_flush {
++ 			if let Destination::Federation(server_name) = dest {
++ 				if let Ok((select_edus, last_count)) = self.select_edus(server_name).await {
++ 					if !select_edus.is_empty() {
++ 						statuses.insert(dest.clone(), TransactionStatus::Running {
++ 							pending_flush: false,
++ 						});
++ 						debug_assert!(select_edus.len() <= EDU_LIMIT, "exceeded edus limit");
++ 						let select_edus_vec: Vec<SendingEvent> =
++ 							select_edus.into_iter().map(SendingEvent::Edu).collect();
++ 						self.db.set_latest_educount(server_name, last_count);
++ 						futures.push(self.send_events(dest.clone(), select_edus_vec));
++ 					} else {
++ 						statuses.remove(dest);
++ 					}
++ 				} else {
++ 					statuses.remove(dest);
++ 				}
++ 			} else {
++ 				statuses.remove(dest);
++ 			}
++ 		} else {
++ 			statuses.remove(dest);
+++>>>>>>> origin/main
+ +		}
+ +
+ +		let remaining_limit = DEQUEUE_LIMIT.saturating_sub(new_events.len());
+ +		if remaining_limit > 0 {
+ +			let mut reliable_stream =
+ +				self.db.queued_reliable_requests(dest).take(remaining_limit);
+ +			while let Some((k, e)) = reliable_stream.next().await {
+ +				new_events.push((k, e));
+ +			}
+ +		}
+ +
+ +		if !new_events.is_empty() && has_pdu {
+ +			// Immediately send the critical PDUs without trailing cooldown!
+ +			self.db.mark_as_active(new_events.iter());
+ +			let new_events_vec = new_events.into_iter().map(|(_, e)| e).collect();
+ +			statuses.insert(dest.clone(), TransactionStatus::Running);
+ +			futures.push(self.send_events(dest.clone(), new_events_vec, None));
+ +			return;
+  		}
+ +
+ +		if new_events.is_empty() {
+ +			statuses.remove(dest);
+ +			return;
+ +		}
+ +
+ +		statuses.insert(dest.clone(), TransactionStatus::Cooldown(Instant::now()));
+ +
+ +		let dest_clone = dest.clone();
+ +		let sender = self
+ +			.channels
+ +			.get(self.shard_id(dest))
+ +			.expect("channel")
+ +			.0
+ +			.clone();
+ +		self.server.runtime().spawn(async move {
+ +			tokio::time::sleep(Duration::from_millis(1500)).await;
+ +			sender
+ +				.send(Msg {
+ +					dest: dest_clone,
+ +					event: SendingEvent::Flush,
+ +					queue_id: Vec::new(),
+ +				})
+ +				.ok();
+ +		});
+  	}
+  
+  	#[allow(clippy::needless_pass_by_ref_mut)]
+@@@ -460,55 -316,13 +551,63 @@@
+  			}
+  		}
+  
+++<<<<<<< HEAD
+ +		if let Some(old_dest) = current_dest.take() {
+ +			if self.server.config.startup_netburst && !current_events.is_empty() {
+ +				info!(
+ +					"startup_netburst[{id}]: resuming {} events for {:?}",
+ +					current_events.len(),
+ +					old_dest
+ +				);
+ +				statuses.insert(old_dest.clone(), TransactionStatus::Running);
+ +				futures.push(self.send_events(
+ +					old_dest,
+ +					std::mem::take(&mut current_events),
+ +					None,
+ +				));
+ +			}
+ +		}
+ +
+ +		// Process orphaned queued requests
+ +		if self.server.config.startup_netburst {
+ +			let mut queued_dests = HashSet::new();
+ +			let mut queued = self.db.queued_request_destinations().boxed();
+ +			while let Some(dest) = queued.next().await {
+ +				if self.shard_id(&dest) == id {
+ +					queued_dests.insert(dest);
+ +				}
+ +			}
+ +			let mut reliable_queued = self.db.queued_reliable_request_destinations().boxed();
+ +			while let Some(dest) = reliable_queued.next().await {
+ +				if self.shard_id(&dest) == id {
+ +					queued_dests.insert(dest);
+ +				}
+ +			}
+ +
+ +			if !queued_dests.is_empty() {
+ +				info!(
+ +					"startup_netburst[{id}]: flushing {} orphaned queued destinations",
+ +					queued_dests.len()
+ +				);
+ +				let sender = self.channels.get(id).expect("channel").0.clone();
+ +				for dest in queued_dests {
+ +					sender
+ +						.send(Msg {
+ +							dest,
+ +							event: SendingEvent::Flush,
+ +							queue_id: Vec::new(),
+ +						})
+ +						.ok();
+ +				}
+ +			} else {
+ +				info!("startup_netburst[{id}]: no orphaned queued destinations");
+++=======
++ 		for (dest, events) in txns {
++ 			if self.server.config.startup_netburst && !events.is_empty() {
++ 				statuses
++ 					.insert(dest.clone(), TransactionStatus::Running { pending_flush: false });
++ 				futures.push(self.send_events(dest.clone(), events));
+++>>>>>>> origin/main
+  			}
+  		}
+  	}
+@@@ -603,21 -404,16 +702,23 @@@
+  						allow = false;
+  					} else {
+  						retry = true;
+- 						*e = TransactionStatus::Retrying(*tries);
++ 						*e = TransactionStatus::Retrying { tries: *tries, pending_flush: false };
+  					}
+  				},
+- 				TransactionStatus::Running | TransactionStatus::Retrying(_) => {
++ 				TransactionStatus::Running { pending_flush }
++ 				| TransactionStatus::Retrying { pending_flush, .. } => {
++ 					*pending_flush = true;
+  					allow = false; // already running
+  				},
+ +				TransactionStatus::Cooldown(time) => {
+ +					if !has_pdu && time.elapsed() < Duration::from_millis(1500) {
+ +						allow = false;
+ +					} else {
+ +						*e = TransactionStatus::Running;
+ +					}
+ +				},
+  			})
+- 			.or_insert(TransactionStatus::Running);
++ 			.or_insert(TransactionStatus::Running { pending_flush: false });
+  
+  		Ok((allow, retry))
+  	}
+@@@ -714,8 -491,9 +815,9 @@@
+  		let server_rooms = self.services.state_cache.server_rooms(server_name);
+  
+  		pin_mut!(server_rooms);
+ -		let mut device_list_changes = HashSet::<OwnedUserId>::new();
+ +		let mut all_changes = BTreeMap::<u64, HashSet<OwnedUserId>>::new();
+  		while let Some(room_id) = server_rooms.next().await {
++ 			info!(%room_id, "Checking room for device list changes");
+  			let keys_changed = self
+  				.services
+  				.users
+diff --cc src/service/users/mod.rs
+index fb3e4c585,371d2c3d6..000000000
+--- a/src/service/users/mod.rs
++++ b/src/service/users/mod.rs
+@@@ -1276,6 -1110,9 +1277,12 @@@ impl Service 
+  	) -> Result<()> {
+  		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
+  		self.update_device_metadata_no_increment(user_id, device_id, device)
+++<<<<<<< HEAD
+++=======
++ 			.await?;
++ 		self.mark_device_key_update(user_id).await;
++ 		Ok(())
+++>>>>>>> origin/main
+  	}
+  
+  	// Updates device metadata without incrementing the device list version.
+diff --cc tests/test_results/complement-gg/test_results.TestInboundFederationRejectsEven.jsonl
+index 56b61ecfe,21cdc68e6..000000000
+--- a/tests/test_results/complement-gg/test_results.TestInboundFederationRejectsEven.jsonl
++++ b/tests/test_results/complement-gg/test_results.TestInboundFederationRejectsEven.jsonl
+@@@ -1,4 -1,1 +1,7 @@@
+  {"Action":"fail","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents"}
+++<<<<<<< HEAD
+ +{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/Outlier_should_be_rejected"}
+ +{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/sent_event_1_should_be_rejected"}
+ +{"Action":"pass","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents/sent_event_2_should_be_rejected"}
+++=======
+++>>>>>>> origin/main
+diff --cc tests/test_results/complement-gg/test_results.TestRoomReceipts.jsonl
+index 16eeb4ff4,49134b6f2..000000000
+--- a/tests/test_results/complement-gg/test_results.TestRoomReceipts.jsonl
++++ b/tests/test_results/complement-gg/test_results.TestRoomReceipts.jsonl
+@@@ -1,3 -1,2 +1,6 @@@
+  {"Action":"pass","Test":"TestRoomReceipts"}
+  {"Action":"pass","Test":"TestRoomReceipts/Receipts_DO_NOT_include_a_`room_id`_field"}
+++<<<<<<< HEAD
+ +{"Action":"pass","Test":"TestRoomReceipts/Receipts_cannot_be_moved_backwards"}
+++=======
+++>>>>>>> origin/main
+diff --cc tests/test_results/complement-gg/test_results.TestSync.jsonl
+index bb5d1425e,316ebc955..000000000
+--- a/tests/test_results/complement-gg/test_results.TestSync.jsonl
++++ b/tests/test_results/complement-gg/test_results.TestSync.jsonl
+@@@ -1,16 -1,16 +1,32 @@@
+++<<<<<<< HEAD
+ +{"Action":"fail","Test":"TestSync"}
+ +{"Action":"fail","Test":"TestSync/parallel"}
+ +{"Action":"fail","Test":"TestSync/parallel/Can_sync_a_joined_room"}
+ +{"Action":"fail","Test":"TestSync/parallel/Device_list_tracking"}
+ +{"Action":"fail","Test":"TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled"}
+ +{"Action":"fail","Test":"TestSync/parallel/Full_state_sync_includes_joined_rooms"}
+ +{"Action":"fail","Test":"TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync"}
+ +{"Action":"pass","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline"}
+ +{"Action":"pass","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline"}
+ +{"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync"}
+ +{"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync"}
+ +{"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync"}
+ +{"Action":"fail","Test":"TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event"}
+++=======
++ {"Action":"pass","Test":"TestSync"}
++ {"Action":"pass","Test":"TestSync/parallel"}
++ {"Action":"pass","Test":"TestSync/parallel/Can_sync_a_joined_room"}
++ {"Action":"pass","Test":"TestSync/parallel/Device_list_tracking"}
++ {"Action":"pass","Test":"TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled"}
++ {"Action":"pass","Test":"TestSync/parallel/Full_state_sync_includes_joined_rooms"}
++ {"Action":"pass","Test":"TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync"}
++ {"Action":"pass","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline"}
++ {"Action":"pass","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline"}
++ {"Action":"pass","Test":"TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync"}
++ {"Action":"pass","Test":"TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync"}
++ {"Action":"pass","Test":"TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync"}
++ {"Action":"pass","Test":"TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event"}
+++>>>>>>> origin/main
+  {"Action":"pass","Test":"TestSyncFilter"}
+  {"Action":"pass","Test":"TestSyncFilter/Can_create_filter"}
+  {"Action":"pass","Test":"TestSyncFilter/Can_download_filter"}

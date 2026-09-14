@@ -26,18 +26,12 @@ pub(crate) async fn get_event_authorization_route(
 	.check()
 	.await?;
 
-	if !services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), &body.room_id)
-		.await
-	{
-		info!(
-			origin = body.origin().as_str(),
-			"Refusing to serve state for room we aren't participating in"
-		);
-		return Err!(Request(NotFound("This server is not participating in that room.")));
-	}
+	info!(
+		origin = body.origin().as_str(),
+		room_id = %body.room_id,
+		event_id = %body.event_id,
+		"Serving event_auth request"
+	);
 
 	let event = services
 		.rooms
@@ -55,6 +49,7 @@ pub(crate) async fn get_event_authorization_route(
 		.auth_chain
 		.event_ids_iter(&body.room_id, once(body.event_id.borrow()))
 		.ready_filter_map(Result::ok)
+		.ready_filter(|id| id != &body.event_id)
 		.filter_map(|id| async move { services.rooms.timeline.get_pdu_json(&id).await.ok() })
 		.then(|pdu| services.sending.convert_to_outgoing_federation_event(pdu))
 		.collect()

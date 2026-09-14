@@ -1,13 +1,13 @@
 # Federation Event Intake Path
 
-> ⚠️ **WARNING: Production-Safety Alert**
-> This implementation of the federation event intake path is not production-ready.
-> It is known to cause timeline jumps and gaps. Proceed with extreme caution.
+> ⚠️ **WARNING: Production-Safety Alert** This implementation of the federation
+> event intake path is not production-ready. It is known to cause timeline jumps
+> and gaps. Proceed with extreme caution.
 
-This document traces the full lifecycle of an incoming federation transaction, from
-the initial `PUT /send/{txnId}` through prev-event resolution and RocksDB persistence.
-It also documents known write-visibility races and their implications for sync
-correctness.
+This document traces the full lifecycle of an incoming federation transaction,
+from the initial `PUT /send/{txnId}` through prev-event resolution and RocksDB
+persistence. It also documents known write-visibility races and their
+implications for sync correctness.
 
 ## High-Level Architecture
 
@@ -208,8 +208,9 @@ match services.transactions.get_or_start_federation_txn(txn_key.clone())? {
 }
 ```
 
-The `wait_for_result` function uses `tokio::time::timeout(Duration::from_secs(50), ...)`
-and returns HTTP 429 `LimitExceeded` if the transaction takes too long.
+The `wait_for_result` function uses
+`tokio::time::timeout(Duration::from_secs(50), ...)` and returns HTTP 429
+`LimitExceeded` if the transaction takes too long.
 
 ### 2. PDU Parsing & Grouping
 
@@ -232,7 +233,8 @@ together.
 
 **File:** `src/api/server/send.rs:340`
 
-Each room is processed under a federation mutex to prevent concurrent modification:
+Each room is processed under a federation mutex to prevent concurrent
+modification:
 
 ```rust
 let _room_lock = services.rooms.event_handler.mutex_federation.lock(&room_id).await;
@@ -259,7 +261,8 @@ for event_id in sorted_event_ids {
 
 **File:** `src/service/rooms/event_handler/handle_incoming_pdu.rs:118`
 
-This implements the Matrix federation event processing algorithm (spec steps 1-14):
+This implements the Matrix federation event processing algorithm (spec steps
+1-14):
 
 1. **Skip if known** — return early if `get_pdu_id(event_id)` succeeds
 2. **Size check** — drop PDUs exceeding 65535 bytes
@@ -600,14 +603,14 @@ sequenceDiagram
 
 The `watch::Sender::send()` provides a happens-before relationship for the
 channel message, but **not** for RocksDB reads on the receiving thread.
-RocksDB's default `ReadOptions` read from the latest memtable + SST state,
-but there's a window where the memtable write from thread A may not be fully
-visible to thread B's read iterator.
+RocksDB's default `ReadOptions` read from the latest memtable + SST state, but
+there's a window where the memtable write from thread A may not be fully visible
+to thread B's read iterator.
 
-This manifests as the **TestSyncTimelineGap flakiness** in Complement tests:
-the test waits for the "End" event to appear in sync, which means the
-transaction handler has completed, but some prev events may not yet be visible
-in the `/sync` read path.
+This manifests as the **TestSyncTimelineGap flakiness** in Complement tests: the
+test waits for the "End" event to appear in sync, which means the transaction
+handler has completed, but some prev events may not yet be visible in the
+`/sync` read path.
 
 ### Potential Fix: RocksDB Transactions
 
@@ -633,11 +636,11 @@ sequenceDiagram
     Sync-->>Sync: Correct limited flag
 ```
 
-A `TransactionDB` or `OptimisticTransactionDB` with `WriteBatchWithIndex`
-would address this:
+A `TransactionDB` or `OptimisticTransactionDB` with `WriteBatchWithIndex` would
+address this:
 
-1. **Atomic batch writes** — All events from a single federation transaction
-   are written in one `WriteBatch`, atomically visible to readers.
+1. **Atomic batch writes** — All events from a single federation transaction are
+   written in one `WriteBatch`, atomically visible to readers.
 2. **Read-your-writes** — Pending writes are visible to reads within the same
    transaction context.
 3. **Snapshot isolation** — `/sync` reads get a consistent snapshot that either
@@ -645,8 +648,8 @@ would address this:
 
 The scope of the transaction would wrap `handle_room()` — all PDUs for one room
 in one federation transaction would be committed atomically. This ensures that
-when the "End" event is visible, all backfilled prev events are guaranteed to
-be visible in the same read snapshot.
+when the "End" event is visible, all backfilled prev events are guaranteed to be
+visible in the same read snapshot.
 
 **Alternative: Wider cork scope** — A simpler fix would be to create a single
 `cork_and_flush()` around the entire `handle_room()` loop, ensuring all PDU
@@ -692,8 +695,8 @@ Backoff parameters: `MIN_DURATION = 5 minutes`, `MAX_DURATION = 24 hours`.
 ### Transaction-Level Errors
 
 If `handle()` returns an error (e.g., server shutting down), the transaction is
-removed from the active set (allowing retry) and the error is sent to all waiters
-via the watch channel.
+removed from the active set (allowing retry) and the error is sent to all
+waiters via the watch channel.
 
 ### Per-PDU Results
 
@@ -708,10 +711,10 @@ sanitized before being included in the response.
 ### TestSyncTimelineGap Flakiness
 
 The Complement `TestSyncTimelineGap` test is flaky due to the write-visibility
-race described above. The test creates 50 events without sending them, then sends
-one "End" event via federation. The server resolves the gap via `/get_missing_events`
-(which returns only the last 10 events), then the test checks sync for a `limited`
-flag.
+race described above. The test creates 50 events without sending them, then
+sends one "End" event via federation. The server resolves the gap via
+`/get_missing_events` (which returns only the last 10 events), then the test
+checks sync for a `limited` flag.
 
 The flakiness occurs because:
 
@@ -723,7 +726,58 @@ The flakiness occurs because:
 ### PduCount Ordering
 
 Prev events resolved from federation all receive `PduCount::Normal` values
-(monotonically increasing). This means they appear **after** the sync token
-in chronological ordering, even though they logically occurred before the
-incoming event. This is correct for the sync timeline (they are "new" to this
-server), but can cause confusion when reasoning about event ordering.
+(monotonically increasing). This means they appear **after** the sync token in
+chronological ordering, even though they logically occurred before the incoming
+event. This is correct for the sync timeline (they are "new" to this server),
+but can cause confusion when reasoning about event ordering.
+
+---
+
+## State Resolution & Intake Fallbacks: Synapse vs. Continuwuity (`shortstatehash`) vs. HAMT
+
+### 1. Storage Layer & Resolver Coupling
+
+- **Synapse:** `resolve_events_v2` is a pure in-memory function taking event
+  graphs and state sets. State resolution has zero disk/database hash
+  dependencies.
+- **Continuwuity (Current):** Tied to `shortstatehash` disk lookups in RocksDB.
+  State resolution requires indexed shortstatehashes to map state key tuples.
+- **Future (HAMT / Accumulator):** Feature branches
+  (`guru/feat/msc4511/augmented-hamt` & `guru/feat/msc4500/state-accumulator`)
+  replace `shortstatehash` with copy-on-write state trees. This decouples
+  `resolve_state` from `shortstatehash` disk hashes, restoring pure in-memory
+  state resolution semantics.
+
+### 2. Ingestion Divergence & `fetch_state` Fallbacks
+
+- **Synapse:** If an incoming state event in a `/state_ids` fetch is rejected,
+  Synapse simply excludes it from the state sets provided as input to state
+  resolution. It does not perform state patching.
+- **Continuwuity (Current):** Because `shortstatehash` forces `fetch_state` to
+  act as a terminal state-builder, `fetch_state` performs explicit local state
+  substitution for rejected outliers (replacing a rejected outlier with the
+  valid local state for that `(event_type, state_key)` if available). This is a
+  custom continuwuity fallback that Synapse does not have.
+- **Future (HAMT / Accumulator):** Once HAMT lands, state resolution becomes
+  pure/in-memory, eliminating the `shortstatehash` hard-fail constraint.
+  However, input state sets provided to state resolution must still include
+  necessary member/state events (or fallbacks) so the resolver can evaluate
+  valid membership.
+
+### 3. Metadata Models & `EventStatus` Trade-offs
+
+- **Synapse Model:** Uses independent stores (a dedicated rejections table + an
+  independent `soft_failed` boolean column). Writes are single-line atomic
+  inserts/updates with no Read-Modify-Write (RMW) cycle.
+- **Continuwuity `EventStatus` Enum:** Aligns with the proposal in
+  `Gemini-_16.md` (a mutually-exclusive enum `Pending`, `Accepted`,
+  `SoftFailed`, `Rejected`), **NOT with Synapse**.
+- **RMW & Migration Trade-offs:** While `EventStatus` prevents contradictory
+  state representations (e.g. `rejected = true` AND `soft_failed = true`),
+  storing it inside `eventid_metadata` introduced Read-Modify-Write (RMW) races
+  (requiring concurrency claim locks / RAII `Guard`s) and DB schema migration
+  complexity (`db_lt_19`).
+- **Cancellation Safety:** Tokio tasks can be cancelled across `.await` points
+  (timeouts, dropped HTTP connections). Per-event rejection claim locks must be
+  released via RAII `Drop` guards (`RejectionClaimGuard`) to prevent claim leaks
+  regardless of storage engine.

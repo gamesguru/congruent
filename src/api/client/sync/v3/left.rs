@@ -77,14 +77,22 @@ pub(super) async fn load_left_room(
 		return Ok(None);
 	}
 
-	// return early if:
-	// - this is an initial sync and the room filter doesn't include leaves, or
-	// - this is an incremental sync, and we've already synced the leave, and the
-	//   room filter doesn't include leaves
-	if last_sync_end_count.is_none_or(|last_sync_end_count| last_sync_end_count >= left_count)
-		&& !filter.room.include_leave
-	{
-		return Ok(None);
+	let is_forgotten = services
+		.rooms
+		.state_cache
+		.is_forgotten(syncing_user, room_id)
+		.await;
+
+	match last_sync_end_count {
+		| None =>
+			if is_forgotten || !filter.room.include_leave {
+				return Ok(None);
+			},
+		| Some(last_sync_end_count) => {
+			if last_sync_end_count >= left_count && !filter.room.include_leave {
+				return Ok(None);
+			}
+		},
 	}
 
 	if let Some(ref leave_membership_event) = leave_membership_event {
@@ -487,5 +495,6 @@ fn create_dummy_leave_event(
 		redacts: None,
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
+		rejected: false,
 	}
 }

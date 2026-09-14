@@ -9,7 +9,7 @@ use conduwuit::{
 	},
 	trace,
 	utils::{
-		BoolExt, IterStream, ReadyExt, TryFutureExtExt,
+		IterStream, ReadyExt, TryFutureExtExt,
 		math::ruma_from_u64,
 		stream::{TryIgnore, WidebandExt},
 	},
@@ -21,7 +21,7 @@ use futures::{
 	future::{join, join3, join4, try_join, try_join3},
 };
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
@@ -79,6 +79,7 @@ pub(super) async fn load_joined_room(
 			timeline,
 			summary,
 			notification_counts,
+			unread_thread_notifications,
 			device_list_updates,
 		},
 	) = try_join3(
@@ -107,7 +108,7 @@ pub(super) async fn load_joined_room(
 			events: state_events.into_iter().map(Event::into_format).collect(),
 		},
 		ephemeral,
-		unread_thread_notifications: BTreeMap::new(),
+		unread_thread_notifications,
 	};
 
 	let state_after = state_after
@@ -163,8 +164,16 @@ async fn build_ephemeral(
 				.user_is_ignored(&read_user, syncing_user)
 				.await;
 
-			// filter out read receipts for ignored users
-			is_ignored.or_some(edu)
+			if is_ignored {
+				None
+			} else {
+				let mut json: serde_json::Value = serde_json::from_str(edu.json().get()).ok()?;
+				if let Some(obj) = json.as_object_mut() {
+					obj.remove("room_id");
+				}
+				let raw = serde_json::value::to_raw_value(&json).ok()?;
+				Some(Raw::from_json(raw))
+			}
 		})
 		.collect::<Vec<_>>()
 		.boxed();
@@ -228,8 +237,8 @@ async fn build_ephemeral(
 				// update the marker if it's changed since the last sync
 				last_privateread_update > last_sync_end_count
 			},
-			// always update the marker on an initial sync
-			| None => true,
+			// omit the marker on an initial sync
+			| None => false,
 		};
 
 		if should_send_private_read {
@@ -263,6 +272,7 @@ struct StateAndTimeline {
 	timeline: Timeline,
 	summary: Option<RoomSummary>,
 	notification_counts: Option<UnreadNotificationsCount>,
+	unread_thread_notifications: BTreeMap<OwnedEventId, UnreadNotificationsCount>,
 	device_list_updates: DeviceListUpdates,
 }
 
@@ -289,19 +299,20 @@ async fn build_state_and_timeline(
 	let timeline =
 		build_timeline(services, sync_context, room_id, joined_since_last_sync).await?;
 
-	let (state_events, state_after, notification_counts) = try_join3(
-		build_state_events(
-			services,
-			sync_context,
-			room_id,
-			shortstatehashes,
-			&timeline,
-			joined_since_last_sync,
-		),
-		build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
-		build_notification_counts(services, sync_context, room_id, &timeline),
-	)
-	.await?;
+	let (state_events, state_after, (notification_counts, unread_thread_notifications)) =
+		try_join3(
+			build_state_events(
+				services,
+				sync_context,
+				room_id,
+				shortstatehashes,
+				&timeline,
+				joined_since_last_sync,
+			),
+			build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
+			build_notification_counts(services, sync_context, room_id, &timeline),
+		)
+		.await?;
 
 	debug!(
 		%room_id,
@@ -310,6 +321,13 @@ async fn build_state_and_timeline(
 		state_len = state_events.len(),
 		"build_state_and_timeline: results"
 	);
+
+	// the timeline should always include at least one PDU if the syncing user
+	// joined since the last sync, that being the syncing user's join event. if
+	// it's empty something is wrong.
+	if joined_since_last_sync && timeline.pdus.is_empty() {
+		warn!(%room_id, "timeline for newly joined room is empty");
+	}
 
 	let (summary, device_list_updates) = try_join(
 		build_room_summary(
@@ -336,7 +354,7 @@ async fn build_state_and_timeline(
 	let TimelinePdus {
 		pdus,
 		limited: timeline_limited,
-		prev_batch,
+		prev_batch: timeline_prev_batch,
 	} = timeline;
 
 	let user_has_join_event_in_sync = pdus
@@ -371,14 +389,12 @@ async fn build_state_and_timeline(
 	};
 
 	// the token which may be passed to the messages endpoint to backfill room
-	// history. If the timeline is empty, fallback to the start of this sync window
-	// to ensure clients always have a valid topological pagination token.
-	let prev_batch = prev_batch.map(|c| c.to_string()).or_else(|| {
-		limited
-			.then_some(())
-			.and(sync_context.last_sync_end_count)
-			.map(|c| PduCount::Normal(c).to_string())
-	});
+	// history. load_timeline() already computes this correctly: strictly
+	// before the oldest event when genuinely truncated, or the current sync
+	// position when nothing was left out (see its comment for the Synapse
+	// reference behavior this matches). Recomputing it here independently is
+	// exactly how this drifted out of sync with that logic before.
+	let prev_batch = timeline_prev_batch.map(|c| c.to_string());
 
 	// filter out ignored events from the timeline and convert the PDUs into Ruma's
 	// AnySyncTimelineEvent type
@@ -417,6 +433,7 @@ async fn build_state_and_timeline(
 		},
 		summary,
 		notification_counts,
+		unread_thread_notifications,
 		device_list_updates,
 	})
 }
@@ -457,13 +474,10 @@ async fn fetch_shortstatehashes(
 	// the room state as of the end of the last sync.
 	let next_hash = async {
 		let hash = match last_sync_end_count {
-			| Some(last_sync_end_count) => services
+			| Some(count) => services
 				.rooms
 				.timeline
-				.prev_shortstatehash(
-					room_id,
-					PduCount::Normal(last_sync_end_count.saturating_add(1)),
-				)
+				.next_shortstatehash(room_id, PduCount::Normal(count))
 				.await
 				.ok(),
 			| None => None,
@@ -474,10 +488,10 @@ async fn fetch_shortstatehashes(
 	let (current_shortstatehash, next_hash) = try_join(current_hash, next_hash).await?;
 
 	// the room state as of the end of the last sync. if next_shortstatehash
-	// returned None (no events after last_sync_end_count), we fall back to
-	// current_shortstatehash IF the room actually existed at that count.
-	// if the room is brand new to this sync stream, we keep it as None so
-	// that we correctly trigger an initial state sync.
+	// returned None (because the room doesn't exist or an error occurred),
+	// we keep it as None so that we correctly trigger an initial state sync.
+	// note: next_shortstatehash correctly falls back to current_shortstatehash
+	// if there are no events after the count.
 	let last_sync_end_shortstatehash = next_hash;
 
 	trace!(
@@ -671,66 +685,135 @@ async fn build_state_after(
 #[tracing::instrument(level = "debug", skip_all)]
 async fn build_notification_counts(
 	services: &Services,
-	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
+	SyncContext {
+		syncing_user,
+		last_sync_end_count,
+		current_count,
+		filter,
+		..
+	}: SyncContext<'_>,
 	room_id: &RoomId,
-	timeline: &TimelinePdus,
-) -> Result<Option<UnreadNotificationsCount>> {
-	// determine whether to actually update the notification counts
-	let should_send_notification_counts = async {
-		// if we're going to sync some timeline events, the notification count has
-		// definitely changed to include them
-		if !timeline.pdus.is_empty() {
-			return true;
-		}
-
-		// if this is an initial sync, we need to send notification counts because the
-		// client doesn't know what they are yet
-		let Some(last_sync_end_count) = last_sync_end_count else {
-			return true;
-		};
-
+	_timeline: &TimelinePdus,
+) -> Result<(
+	Option<UnreadNotificationsCount>,
+	BTreeMap<OwnedEventId, UnreadNotificationsCount>,
+)> {
+	// Counts must be computed on every poll, not just ones where the timeline
+	// advanced: ruma's `JoinedRoom::is_empty()` treats an absent/default
+	// `unread_notifications` as "no unread notifications," and the outer sync
+	// loop omits any room for which `is_empty()` is true on an incremental
+	// sync. Gating this on "did anything change this poll" made a room's
+	// unread counts -- and the room itself -- vanish from `rooms.join` on the
+	// very next poll after they first appeared, even though the counts were
+	// still nonzero (see TestThreadedReceipts, which polls repeatedly with no
+	// intervening activity and expects the counts to still be there each
+	// time). Synapse computes these unconditionally for the same reason
+	// (`unread_notifs_for_room_id` in `handlers/sync.py`); match that instead
+	// of trying to skip the read.
+	//
+	// `send_notification_resets` is a separate, narrower concern: whether the
+	// user's read cursor (or a thread's) just advanced into the window since
+	// the last sync, in which case an explicit `Some(0)` must be sent so the
+	// client observes the transition to zero rather than the field silently
+	// disappearing.
+	let send_notification_resets = if let Some(last_sync_end_count) = last_sync_end_count {
 		let last_notification_read = services
 			.rooms
 			.user
 			.last_notification_read(syncing_user, room_id)
 			.await;
+		let thread_last_notification_reads = services
+			.rooms
+			.user
+			.thread_last_notification_reads(syncing_user, room_id)
+			.await;
 
-		// if the syncing user has read the events we sent during the last sync, we need
-		// to send a new notification count on this sync.
-		if last_notification_read > last_sync_end_count {
-			return true;
-		}
-
-		// otherwise, nothing's changed.
+		last_notification_read > last_sync_end_count && last_notification_read <= current_count
+			|| thread_last_notification_reads
+				.values()
+				.any(|count| *count > last_sync_end_count && *count <= current_count)
+	} else {
 		false
 	};
 
-	if should_send_notification_counts.await {
-		let (notification_count, highlight_count) = join(
-			services
-				.rooms
-				.user
-				.notification_count(syncing_user, room_id)
-				.map(TryInto::try_into)
-				.unwrap_or(uint!(0)),
-			services
-				.rooms
-				.user
-				.highlight_count(syncing_user, room_id)
-				.map(TryInto::try_into)
-				.unwrap_or(uint!(0)),
-		)
-		.await;
+	let want_thread_unread = filter.room.timeline.unread_thread_notifications;
+	let (notification_count, highlight_count, thread_counts) = join3(
+		services
+			.rooms
+			.user
+			.notification_count(syncing_user, room_id)
+			.map(TryInto::try_into)
+			.unwrap_or(uint!(0)),
+		services
+			.rooms
+			.user
+			.highlight_count(syncing_user, room_id)
+			.map(TryInto::try_into)
+			.unwrap_or(uint!(0)),
+		services
+			.rooms
+			.user
+			.thread_notification_counts(syncing_user, room_id),
+	)
+	.await;
 
-		trace!(%notification_count, %highlight_count, "syncing new notification counts");
+	let thread_total_notifications = thread_counts
+		.values()
+		.map(|(notifications, _)| *notifications)
+		.fold(0_u64, u64::saturating_add);
+	let thread_total_highlights = thread_counts
+		.values()
+		.map(|(_, highlights)| *highlights)
+		.fold(0_u64, u64::saturating_add);
 
-		Ok(Some(UnreadNotificationsCount {
-			notification_count: Some(notification_count),
-			highlight_count: Some(highlight_count),
-		}))
+	let merge_total = |count: UInt, total: u64| {
+		if want_thread_unread {
+			count
+		} else {
+			count.saturating_add(UInt::try_from(total).unwrap_or_default())
+		}
+	};
+
+	let send_notification_count_filter =
+		|count: &UInt| *count != uint!(0) || send_notification_resets;
+	let notification_count = merge_total(notification_count, thread_total_notifications);
+	let highlight_count = merge_total(highlight_count, thread_total_highlights);
+
+	let unread_notifications = UnreadNotificationsCount {
+		notification_count: if send_notification_count_filter(&notification_count) {
+			Some(notification_count)
+		} else {
+			None
+		},
+		highlight_count: if send_notification_count_filter(&highlight_count) {
+			Some(highlight_count)
+		} else {
+			None
+		},
+	};
+
+	let unread_thread_notifications = if want_thread_unread {
+		thread_counts
+			.into_iter()
+			.map(|(root, (notifications, highlights))| {
+				(root, UnreadNotificationsCount {
+					notification_count: UInt::try_from(notifications).ok(),
+					highlight_count: UInt::try_from(highlights).ok(),
+				})
+			})
+			.collect()
 	} else {
-		Ok(None)
-	}
+		BTreeMap::new()
+	};
+
+	trace!(
+		%notification_count,
+		%highlight_count,
+		threads = unread_thread_notifications.len(),
+		"syncing new notification counts"
+	);
+
+	Ok((Some(unread_notifications), unread_thread_notifications))
 }
 
 /// Check if the syncing user joined the room since their last incremental sync.
@@ -803,7 +886,7 @@ async fn check_joined_since_last_sync(
 			if let Ok(event_id) = services
 				.rooms
 				.state_accessor
-				.state_get_id::<ruma::OwnedEventId>(
+				.state_get_id::<OwnedEventId>(
 					current_shortstatehash,
 					&StateEventType::RoomMember,
 					syncing_user.as_str(),
@@ -982,17 +1065,12 @@ async fn build_heroes(
 #[tracing::instrument(level = "debug", skip_all)]
 async fn build_device_list_updates(
 	services: &Services,
-	SyncContext {
-		syncing_user,
-		last_sync_end_count,
-		current_count,
-		..
-	}: SyncContext<'_>,
+	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
 	room_id: &RoomId,
 	ShortStateHashes { .. }: ShortStateHashes,
 	timeline: &TimelinePdus,
 	state_events: &[PduEvent],
-	_joined_since_last_sync: bool,
+	joined_since_last_sync: bool,
 ) -> Result<DeviceListUpdates> {
 	// initial syncs don't include device updates, so return early
 	if last_sync_end_count.is_none() {
@@ -1001,16 +1079,38 @@ async fn build_device_list_updates(
 
 	let mut device_list_updates = DeviceListUpdates::new();
 
+	if joined_since_last_sync {
+		services
+			.rooms
+			.state_cache
+			.room_members(room_id)
+			.ready_for_each(|user_id| {
+				device_list_updates.changed.insert(user_id.to_owned());
+			})
+			.await;
+	}
+
 	// add users with changed keys to the `changed` list
-	services
+	let room_key_changes = services
 		.users
-		.room_keys_changed(room_id, last_sync_end_count, Some(current_count))
+		.room_keys_changed(room_id, last_sync_end_count, None)
 		.map(at!(0))
 		.map(ToOwned::to_owned)
-		.ready_for_each(|user_id| {
-			device_list_updates.changed.insert(user_id);
-		})
+		.collect::<Vec<_>>()
 		.await;
+
+	if !room_key_changes.is_empty() {
+		trace!(
+			%room_id,
+			syncing_user = %syncing_user,
+			changed_user_count = room_key_changes.len(),
+			"build_device_list_updates: room key changes"
+		);
+	}
+
+	for user_id in room_key_changes {
+		device_list_updates.changed.insert(user_id);
+	}
 
 	// add users who now share encrypted rooms to `changed` and
 	// users who no longer share encrypted rooms to `left`

@@ -261,7 +261,7 @@ pub(super) async fn delete_past_remote_media(
 		)
 		.await?;
 
-	self.write_str(&format!("Deleted {deleted_count} total files.",))
+	self.write_str(&format!("Deleted {deleted_count} total files."))
 		.await
 }
 
@@ -271,7 +271,7 @@ pub(super) async fn delete_all_from_user(&self, username: String) -> Result {
 
 	let deleted_count = self.services.media.delete_from_user(&user_id).await?;
 
-	self.write_str(&format!("Deleted {deleted_count} total files.",))
+	self.write_str(&format!("Deleted {deleted_count} total files."))
 		.await
 }
 
@@ -330,7 +330,7 @@ pub(super) async fn delete_all_from_server(
 		}
 	}
 
-	self.write_str(&format!("Deleted {deleted_count} total files.",))
+	self.write_str(&format!("Deleted {deleted_count} total files."))
 		.await
 }
 
@@ -401,7 +401,7 @@ pub(super) async fn delete_url_preview(&self, url: Option<String>, all: bool) ->
 
 	let url = url.expect("clap enforces url is required unless --all");
 
-	self.services.media.remove_url_preview(&url).await?;
+	self.services.media.remove_url_preview(&url)?;
 
 	self.write_str(&format!("Deleted cached URL preview for: {url}"))
 		.await

@@ -26,9 +26,7 @@ pub(crate) async fn kick_user_route(
 		.get_member(&body.room_id, &body.user_id)
 		.await
 	else {
-		// copy synapse's behaviour of returning 200 without any change to the state
-		// instead of erroring on left users
-		return Ok(kick_user::v3::Response::new());
+		return Err!(Request(Forbidden("Cannot kick a user who is not in the room.")));
 	};
 
 	if !matches!(

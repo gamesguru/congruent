@@ -116,6 +116,6 @@ pub(crate) async fn get_dehydrated_events_route(
 
 	Ok(get_events::Response {
 		events,
-		next_batch: next_batch.as_ref().map(ToString::to_string),
+		next_batch: next_batch.as_ref().map(|n| format!("{n}")),
 	})
 }

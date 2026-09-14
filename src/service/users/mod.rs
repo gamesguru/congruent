@@ -8,23 +8,24 @@ use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
 use conduwuit::result::LogErr;
 use conduwuit::{
 	Err, Error, Result, Server, debug_warn, err, info, is_equal_to, trace,
-	utils::{self, ReadyExt, stream::TryIgnore, string::Unquoted},
+	utils::{self, MutexMap, ReadyExt, stream::TryIgnore},
+	warn,
 };
 #[cfg(feature = "ldap")]
-use conduwuit_core::{debug, error};
+use conduwuit_core::error;
 use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use ruma::{
-	DeviceId, KeyId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId,
-	OneTimeKeyName, OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedUserId, RoomId, UInt, UserId,
+	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
+	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
 	encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
 	events::{
 		AnyToDeviceEvent, GlobalAccountDataEventType,
 		ignored_user_list::IgnoredUserListEvent,
-		invite_permission_config::{FilterLevel, InvitePermissionConfigEvent},
+		invite_permission_config::{FilterLevel, InvitePermissionConfigEventContent},
 	},
 	serde::Raw,
 	uint,
@@ -45,8 +46,13 @@ pub struct UserSuspension {
 }
 
 pub struct Service {
+	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
 	services: Services,
 	db: Data,
+	/// Serializes one-time-key claims per (user, device) so concurrent
+	/// `/keys/claim` requests can't double-take the same key, which could
+	/// leave a regular OTK unused and break fallback-key semantics.
+	take_one_time_key_lock: MutexMap<String, ()>,
 }
 
 struct Services {
@@ -55,13 +61,16 @@ struct Services {
 	admin: Dep<admin::Service>,
 	appservice: Dep<appservice::Service>,
 	globals: Dep<globals::Service>,
+	sending: Dep<crate::sending::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 }
 
 struct Data {
+	deviceleftid_userid: Arc<Map>,
 	keychangeid_userid: Arc<Map>,
 	keyid_key: Arc<Map>,
 	onetimekeyid_onetimekeys: Arc<Map>,
+	fallbackkeyid_fallbackkey: Arc<Map>,
 	openidtoken_expiresatuserid: Arc<Map>,
 	logintoken_expiresatuserid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
@@ -75,6 +84,7 @@ struct Data {
 	userid_devicelistversion: Arc<Map>,
 	userid_displayname: Arc<Map>,
 	userid_lastonetimekeyupdate: Arc<Map>,
+	userid_lastremotedeviceliststreamid: Arc<Map>,
 	userid_masterkeyid: Arc<Map>,
 	userid_origin: Arc<Map>,
 	userid_password: Arc<Map>,
@@ -88,19 +98,27 @@ struct Data {
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
+		let current_count = args
+			.depend::<globals::Service>("globals")
+			.current_count()
+			.unwrap_or(0);
 		Ok(Arc::new(Self {
+			last_device_key_update_count: std::sync::atomic::AtomicU64::new(current_count),
 			services: Services {
 				server: args.server.clone(),
 				account_data: args.depend::<account_data::Service>("account_data"),
 				admin: args.depend::<admin::Service>("admin"),
 				appservice: args.depend::<appservice::Service>("appservice"),
 				globals: args.depend::<globals::Service>("globals"),
+				sending: args.depend::<crate::sending::Service>("sending"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 			},
 			db: Data {
+				deviceleftid_userid: args.db["deviceleftid_userid"].clone(),
 				keychangeid_userid: args.db["keychangeid_userid"].clone(),
 				keyid_key: args.db["keyid_key"].clone(),
 				onetimekeyid_onetimekeys: args.db["onetimekeyid_onetimekeys"].clone(),
+				fallbackkeyid_fallbackkey: args.db["fallbackkeyid_fallbackkey"].clone(),
 				openidtoken_expiresatuserid: args.db["openidtoken_expiresatuserid"].clone(),
 				logintoken_expiresatuserid: args.db["logintoken_expiresatuserid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
@@ -114,6 +132,9 @@ impl crate::Service for Service {
 				userid_devicelistversion: args.db["userid_devicelistversion"].clone(),
 				userid_displayname: args.db["userid_displayname"].clone(),
 				userid_lastonetimekeyupdate: args.db["userid_lastonetimekeyupdate"].clone(),
+				userid_lastremotedeviceliststreamid: args.db
+					["userid_lastremotedeviceliststreamid"]
+					.clone(),
 				userid_masterkeyid: args.db["userid_masterkeyid"].clone(),
 				userid_origin: args.db["userid_origin"].clone(),
 				userid_password: args.db["userid_password"].clone(),
@@ -124,6 +145,7 @@ impl crate::Service for Service {
 				userid_usersigningkeyid: args.db["userid_usersigningkeyid"].clone(),
 				useridprofilekey_value: args.db["useridprofilekey_value"].clone(),
 			},
+			take_one_time_key_lock: MutexMap::new(),
 		}))
 	}
 
@@ -147,6 +169,24 @@ impl Service {
 			})
 	}
 
+	fn glob_match(glob: &str, target: &str) -> bool {
+		let mut regex_str = String::with_capacity(glob.len().saturating_mul(2).saturating_add(2));
+		regex_str.push('^');
+		for c in glob.chars() {
+			match c {
+				| '*' => regex_str.push_str(".*"),
+				| '?' => regex_str.push('.'),
+				| '.' | '+' | '(' | ')' | '|' | '^' | '$' | '[' | ']' | '{' | '}' | '\\' => {
+					regex_str.push('\\');
+					regex_str.push(c);
+				},
+				| _ => regex_str.push(c),
+			}
+		}
+		regex_str.push('$');
+		regex::Regex::new(&regex_str).is_ok_and(|re| re.is_match(target))
+	}
+
 	/// Returns the recipient's filter level for an invite from the sender.
 	pub async fn invite_filter_level(
 		&self,
@@ -156,14 +196,72 @@ impl Service {
 		let level = if self.user_is_ignored(sender_user, recipient_user).await {
 			FilterLevel::Ignore
 		} else {
-			self.services
-				.account_data
-				.get_global(recipient_user, GlobalAccountDataEventType::InvitePermissionConfig)
-				.await
-				.map(|config: InvitePermissionConfigEvent| {
-					config.content.user_filter_level(sender_user)
-				})
-				.unwrap_or(FilterLevel::Allow)
+			let mut config_content = None;
+			for kind in
+				["m.invite_permission_config", "org.matrix.msc4155.invite_permission_config"]
+			{
+				if let Ok(raw) = self
+					.services
+					.account_data
+					.get_raw(None, recipient_user, kind)
+					.await
+				{
+					if let Ok(mut json) = raw.deserialized::<serde_json::Value>() {
+						if let Some(content_val) = json.get_mut("content") {
+							// MSC4155: Will ignore null fields
+							if let Some(obj) = content_val.as_object_mut() {
+								obj.retain(|_, v| !v.is_null());
+							}
+
+							if let Ok(parsed) = serde_json::from_value::<
+								InvitePermissionConfigEventContent,
+							>(content_val.clone())
+							{
+								config_content = Some(parsed);
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			if let Some(content) = config_content {
+				let mut level = content.user_filter_level(sender_user);
+				if content.enabled {
+					let blocked_user = content
+						.blocked_users
+						.iter()
+						.any(|a| Self::glob_match(a, sender_user.as_str()));
+					let blocked_server = content
+						.blocked_servers
+						.iter()
+						.any(|a| Self::glob_match(a, sender_user.server_name().as_str()));
+					let allowed_user = content
+						.allowed_users
+						.iter()
+						.any(|a| Self::glob_match(a, sender_user.as_str()));
+					let allowed_server = content
+						.allowed_servers
+						.iter()
+						.any(|a| Self::glob_match(a, sender_user.server_name().as_str()));
+
+					if allowed_user {
+						level = FilterLevel::Allow;
+					} else if blocked_user {
+						level = FilterLevel::Block;
+					} else if allowed_server {
+						level = FilterLevel::Allow;
+					} else if blocked_server
+						|| !content.allowed_users.is_empty()
+						|| !content.allowed_servers.is_empty()
+					{
+						level = FilterLevel::Block;
+					}
+				}
+				level
+			} else {
+				FilterLevel::Allow
+			}
 		};
 
 		info!(%sender_user, %recipient_user, ?level, "invite_filter_level");
@@ -493,10 +591,13 @@ impl Service {
 
 		let userdeviceid = (user_id, device_id);
 
-		// Remove tokens
-		if let Ok(old_token) = self.db.userdeviceid_token.qry(&userdeviceid).await {
+		// Remove all active tokens for this device
+		let tokens = self.active_tokens(user_id, device_id).await;
+		for token in &tokens {
+			self.db.token_userdeviceid.remove(token);
+		}
+		if !tokens.is_empty() {
 			self.db.userdeviceid_token.del(userdeviceid);
-			self.db.token_userdeviceid.remove(&old_token);
 		}
 
 		// Remove todevice events
@@ -539,9 +640,24 @@ impl Service {
 			.map(|(_, device_id): (Ignore, &DeviceId)| device_id)
 	}
 
-	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<String> {
+	/// Load the set of access tokens currently active for a device. The value
+	/// is stored as a JSON array of token strings (`Json(&tokens)` in
+	/// `set_token`), so it is read back through `serde_json::Value` rather than
+	/// the native binary format, which cannot represent a variable-length
+	/// sequence of strings.
+	async fn active_tokens(&self, user_id: &UserId, device_id: &DeviceId) -> Vec<String> {
 		let key = (user_id, device_id);
-		self.db.userdeviceid_token.qry(&key).await.deserialized()
+		match self.db.userdeviceid_token.qry(&key).await {
+			| Ok(handle) => match handle.deserialized::<serde_json::Value>() {
+				| Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+				| Err(_) => Vec::new(),
+			},
+			| Err(_) => Vec::new(),
+		}
+	}
+
+	pub async fn get_token(&self, user_id: &UserId, device_id: &DeviceId) -> Result<Vec<String>> {
+		Ok(self.active_tokens(user_id, device_id).await)
 	}
 
 	/// Generate a unique access token that doesn't collide with existing tokens
@@ -598,15 +714,14 @@ impl Service {
 			)));
 		}
 
-		// Remove old token
-		if let Ok(old_token) = self.db.userdeviceid_token.qry(&key).await {
-			self.db.token_userdeviceid.remove(&old_token);
-			// It will be removed from userdeviceid_token by the insert later
+		// Append the new token to the device's token set, keeping all
+		// previously-issued tokens valid.
+		let mut tokens = self.active_tokens(user_id, device_id).await;
+		if !tokens.as_slice().contains(&token.to_owned()) {
+			tokens.push(token.to_owned());
+			self.db.userdeviceid_token.put(key, Json(&tokens));
+			self.db.token_userdeviceid.raw_put(token, key);
 		}
-
-		// Assign token to user device combination
-		self.db.userdeviceid_token.put_raw(key, token);
-		self.db.token_userdeviceid.raw_put(token, key);
 
 		Ok(())
 	}
@@ -615,7 +730,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		device_id: &DeviceId,
-		one_time_key_key: &KeyId<OneTimeKeyAlgorithm, OneTimeKeyName>,
+		one_time_key_key: &OneTimeKeyId,
 		one_time_key_value: &Raw<OneTimeKey>,
 	) -> Result {
 		// All devices have metadata
@@ -630,9 +745,49 @@ impl Service {
 			)));
 		}
 
+		// `/keys/upload` is idempotent per key ID: re-uploading the same one-time
+		// key for the same user+device must not add a duplicate row, otherwise
+		// overlapping/repeated uploads inflate `one_time_key_counts` (sytest:
+		// "Uploading the same one-time key twice should not error" / Complement
+		// TestUploadKeyIdempotency / TestUploadKeyIdempotencyOverlap). Keys are
+		// stored as `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`, so we
+		// stream the user+device scope and compare the trailing key-id segment.
+		let expected_key_id =
+			serde_json::to_string(one_time_key_key).expect("DeviceKeyId always serializes");
+		let mut key_prefix = user_id.as_bytes().to_vec();
+		key_prefix.push(0xFF);
+		key_prefix.extend_from_slice(device_id.as_bytes());
+		key_prefix.push(0xFF);
+
+		let already_exists = self
+			.db
+			.onetimekeyid_onetimekeys
+			.raw_stream_prefix(&key_prefix)
+			.ignore_err()
+			.filter_map(|(key, _): (&[u8], &[u8])| {
+				let matches = key
+					.rsplit(|&b| b == 0xFF)
+					.next()
+					.is_some_and(|key_json| key_json == expected_key_id.as_bytes());
+				std::future::ready(matches.then_some(()))
+			})
+			.next()
+			.await
+			.is_some();
+
+		// Idempotent re-upload of an identical key ID: return success without
+		// growing the store or bumping the upload counter.
+		if already_exists {
+			return Ok(());
+		}
+
+		let upload_count = self.services.globals.next_count()?.to_be_bytes();
+
 		let mut key = user_id.as_bytes().to_vec();
 		key.push(0xFF);
 		key.extend_from_slice(device_id.as_bytes());
+		key.push(0xFF);
+		key.extend_from_slice(&upload_count);
 		key.push(0xFF);
 		// TODO: Use DeviceKeyId::to_string when it's available (and update everything,
 		// because there are no wrapping quotation marks anymore)
@@ -646,8 +801,42 @@ impl Service {
 			.onetimekeyid_onetimekeys
 			.raw_put(key, Json(one_time_key_value));
 
-		let count = self.services.globals.next_count().unwrap();
-		self.db.userid_lastonetimekeyupdate.raw_put(user_id, count);
+		self.db
+			.userid_lastonetimekeyupdate
+			.raw_put(user_id, upload_count);
+
+		Ok(())
+	}
+
+	/// Save a fallback key for the given user, device, and algorithm
+	/// This key will replace an existing fallback key
+	pub async fn add_fallback_key(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		fallback_key_id: &OneTimeKeyId,
+		fallback_key: &Raw<OneTimeKey>,
+		used: bool,
+	) -> Result {
+		// All devices have metadata
+		// Only existing devices should be able to call this, but we shouldn't assert
+		// either...
+		let key = (user_id, device_id);
+		if self.db.userdeviceid_metadata.qry(&key).await.is_err() {
+			return Err!(Database(error!(
+				%user_id,
+				%device_id,
+				"User does not exist or device has no metadata."
+			)));
+		}
+
+		// There is one fallback key slot per user, per device, per algorithm
+		// Therefore we use this as the DB key for this column
+		let db_key = (user_id, device_id, fallback_key_id.algorithm());
+
+		self.db
+			.fallbackkeyid_fallbackkey
+			.put(db_key, (used, fallback_key_id.as_str(), Json(fallback_key)));
 
 		Ok(())
 	}
@@ -667,45 +856,104 @@ impl Service {
 		device_id: &DeviceId,
 		key_algorithm: &OneTimeKeyAlgorithm,
 	) -> Result<(OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>)> {
+		type ClaimedKey =
+			(Vec<u8>, OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>, Raw<OneTimeKey>);
+
 		let count = self.services.globals.next_count()?.to_be_bytes();
 		self.db.userid_lastonetimekeyupdate.insert(user_id, count);
+
+		// Serialize claims per (user, device): `raw_stream_prefix` below takes
+		// the first matching key and removes it. Concurrent `/keys/claim`
+		// requests for the same device can each see the same first key and
+		// double-removal of one leaves a regular OTK behind — which then gets
+		// handed out on a subsequent fallback claim. Hold the lock across both
+		// the OTK-take and the fallback take so claims are atomic.
+		let claim_key = format!("{user_id}\0{device_id}");
+		let _claim_guard = self.take_one_time_key_lock.lock(&claim_key).await;
 
 		let mut prefix = user_id.as_bytes().to_vec();
 		prefix.push(0xFF);
 		prefix.extend_from_slice(device_id.as_bytes());
 		prefix.push(0xFF);
-		prefix.push(b'"'); // Annoying quotation mark
-		prefix.extend_from_slice(key_algorithm.as_ref().as_bytes());
-		prefix.push(b':');
 
-		let one_time_key = self
+		// This map stores keys under
+		// `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`. The key algorithm
+		// cannot be matched in the raw byte prefix (the upload_count segment sits
+		// between device_id and the key-id JSON), so stream the whole user+device
+		// scope and filter by algorithm in code.
+		let expected_algo_prefix = format!("{}:", key_algorithm.as_ref());
+
+		let one_time_key: Option<ClaimedKey> = self
 			.db
 			.onetimekeyid_onetimekeys
 			.raw_stream_prefix(&prefix)
 			.ignore_err()
-			.map(|(key, val)| {
-				self.db.onetimekeyid_onetimekeys.remove(key);
-
-				let key = key
+			.filter_map(|(key, val)| {
+				let parsed_key: Option<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>> = key
 					.rsplit(|&b| b == 0xFF)
 					.next()
-					.ok_or_else(|| err!(Database("OneTimeKeyId in db is invalid.")))
-					.unwrap();
-
-				let key = serde_json::from_slice(key)
-					.map_err(|e| err!(Database("OneTimeKeyId in db is invalid. {e}")))
-					.unwrap();
-
-				let val = serde_json::from_slice(val)
-					.map_err(|e| err!(Database("OneTimeKeys in db are invalid. {e}")))
-					.unwrap();
-
-				(key, val)
+					.and_then(|key_json| serde_json::from_slice(key_json).ok());
+				let starts = parsed_key
+					.as_ref()
+					.is_some_and(|pk| pk.to_string().starts_with(&expected_algo_prefix));
+				std::future::ready(if let (Some(parsed_key), true) = (parsed_key, starts) {
+					let val = serde_json::from_slice(val).ok();
+					val.map(|val| (key.to_vec(), parsed_key, val))
+				} else {
+					None
+				})
 			})
 			.next()
 			.await;
 
-		one_time_key.ok_or_else(|| err!(Request(NotFound("No one-time-key found"))))
+		if let Some((key, parsed_key, val)) = one_time_key {
+			self.db.onetimekeyid_onetimekeys.remove(&key);
+			return Ok((parsed_key, val));
+		}
+
+		// No one-time key has been found. Look for a fallback key.
+
+		let db_key = (user_id, device_id, key_algorithm);
+
+		let fallback_key = self
+			.db
+			.fallbackkeyid_fallbackkey
+			.qry(&db_key)
+			.await
+			.ok()
+			.and_then(|handle| {
+				handle
+					.deserialized::<(bool, OwnedOneTimeKeyId, Raw<OneTimeKey>)>()
+					.ok()
+			});
+
+		if let Some((used, fallback_key_id, fallback_key_value)) = fallback_key {
+			if !used {
+				// write the key to the database again to mark it as used
+				self.add_fallback_key(
+					user_id,
+					device_id,
+					&fallback_key_id,
+					&fallback_key_value,
+					true,
+				)
+				.await?;
+			}
+
+			// Per spec, a fallback key must be flagged with `"fallback": true`
+			// in the `/keys/claim` response so clients can tell it apart from a
+			// freshly-expiring one-time key. Clients do upload the flag, but we
+			// set it explicitly here to be robust (some SDKs omit it on upload).
+			let mut claim_key = fallback_key_value
+				.deserialize_as::<serde_json::Value>()
+				.unwrap_or_else(|_| serde_json::json!({}));
+			claim_key["fallback"] = serde_json::Value::Bool(true);
+			let claim_key = Raw::from_json(serde_json::value::to_raw_value(&claim_key)?);
+
+			return Ok((fallback_key_id, claim_key));
+		}
+
+		Err(err!(Request(NotFound("No one-time key or fallback key found"))))
 	}
 
 	pub async fn count_one_time_keys(
@@ -713,19 +961,38 @@ impl Service {
 		user_id: &UserId,
 		device_id: &DeviceId,
 	) -> BTreeMap<OneTimeKeyAlgorithm, UInt> {
-		type KeyVal<'a> = ((Ignore, Ignore, &'a Unquoted), Ignore);
-
 		let mut algorithm_counts = BTreeMap::<OneTimeKeyAlgorithm, _>::new();
-		let query = (user_id, device_id);
+
+		// Keys are stored as raw bytes in
+		// `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`. The typed
+		// `stream_prefix` tuple codec cannot parse the upload_count segment that
+		// sits between device_id and the key-id JSON, so stream the whole raw
+		// user+device scope and parse the trailing key-id segment ourselves,
+		// exactly like `take_one_time_key`.
+		let mut prefix = user_id.as_bytes().to_vec();
+		prefix.push(0xFF);
+		prefix.extend_from_slice(device_id.as_bytes());
+		prefix.push(0xFF);
+
 		self.db
 			.onetimekeyid_onetimekeys
-			.stream_prefix(&query)
+			.raw_stream_prefix(&prefix)
 			.ignore_err()
-			.ready_for_each(|((Ignore, Ignore, device_key_id), Ignore): KeyVal<'_>| {
-				let one_time_key_id: &OneTimeKeyId = device_key_id
-					.as_str()
-					.try_into()
-					.expect("Invalid DeviceKeyID in database");
+			.ready_for_each(|(key, _): (&[u8], &[u8])| {
+				let Some(one_time_key_id) =
+					key.rsplit(|&b| b == 0xFF).next().and_then(|key_json| {
+						serde_json::from_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>(
+							key_json,
+						)
+						.ok()
+					})
+				else {
+					tracing::warn!(
+						"count_one_time_keys: skipping unparsable key id for \
+						 {user_id}|{device_id}"
+					);
+					return;
+				};
 
 				let count: &mut UInt = algorithm_counts
 					.entry(one_time_key_id.algorithm())
@@ -736,6 +1003,34 @@ impl Service {
 			.await;
 
 		algorithm_counts
+	}
+
+	pub async fn list_unused_fallback_key_types(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+	) -> Vec<OneTimeKeyAlgorithm> {
+		type KeyVal = ((String, String, OneTimeKeyAlgorithm), (bool, String, Ignore));
+
+		let mut query = user_id.as_bytes().to_vec();
+		query.push(0xFF);
+		query.extend_from_slice(device_id.as_bytes());
+		query.push(0xFF);
+
+		let mut unused_algorithms = Vec::new();
+
+		self.db
+			.fallbackkeyid_fallbackkey
+			.stream_prefix(&query)
+			.ignore_err()
+			.ready_for_each(|((_, _, fallback_key_algorithm), (used, ..)): KeyVal| {
+				if !used {
+					unused_algorithms.push(fallback_key_algorithm);
+				}
+			})
+			.await;
+
+		unused_algorithms
 	}
 
 	pub async fn add_device_keys(
@@ -750,6 +1045,36 @@ impl Service {
 		self.mark_device_key_update(user_id).await;
 	}
 
+	pub async fn cache_remote_device_keys(
+		&self,
+		user_id: &UserId,
+		device_id: &DeviceId,
+		device_keys: &Raw<DeviceKeys>,
+	) {
+		let key = (user_id, device_id);
+		self.db.keyid_key.put(key, Json(device_keys));
+	}
+
+	pub async fn remove_remote_device_keys(&self, user_id: &UserId, device_id: &DeviceId) {
+		let key = (user_id, device_id);
+		self.db.keyid_key.del(key);
+	}
+
+	pub async fn remote_device_list_stream_id(&self, user_id: &UserId) -> u64 {
+		self.db
+			.userid_lastremotedeviceliststreamid
+			.get(user_id)
+			.await
+			.deserialized()
+			.unwrap_or(0)
+	}
+
+	pub fn set_remote_device_list_stream_id(&self, user_id: &UserId, stream_id: u64) {
+		self.db
+			.userid_lastremotedeviceliststreamid
+			.put(user_id, Json(stream_id));
+	}
+
 	pub async fn add_cross_signing_keys(
 		&self,
 		user_id: &UserId,
@@ -762,8 +1087,13 @@ impl Service {
 		let mut prefix = user_id.as_bytes().to_vec();
 		prefix.push(0xFF);
 
+		let mut any_key_changed = false;
+
 		if let Some(master_key) = master_key {
 			let (master_key_key, _) = parse_master_key(user_id, master_key)?;
+			let mut master_key_val: serde_json::Value =
+				serde_json::from_str(master_key.json().get())
+					.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
 
 			info!(
 				target: "cross_signing",
@@ -771,24 +1101,53 @@ impl Service {
 				user_id
 			);
 
-			self.db
+			let old_key = self
+				.db
 				.keyid_key
-				.insert(&master_key_key, master_key.json().get().as_bytes());
+				.get(&master_key_key)
+				.await
+				.ok()
+				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
 
-			self.db
-				.userid_masterkeyid
-				.insert(user_id.as_bytes(), &master_key_key);
+			if let Some(ref old_key) = old_key {
+				merge_signatures(&mut master_key_val, old_key);
+			}
+
+			let new_key_vec = serde_json::to_vec(&master_key_val).map_err(|e| {
+				err!(Database(debug_error!("Failed to serialize master key: {e}")))
+			})?;
+
+			let is_changed = old_key.as_ref() != Some(&master_key_val);
+
+			if is_changed {
+				any_key_changed = true;
+				info!(
+					target: "cross_signing",
+					"Storing new master cross-signing key for user {}",
+					user_id
+				);
+
+				self.db.keyid_key.insert(&master_key_key, new_key_vec);
+
+				self.db
+					.userid_masterkeyid
+					.insert(user_id.as_bytes(), &master_key_key);
+			}
 		}
 
 		// Self-signing key
 		if let Some(self_signing_key) = self_signing_key {
-			let mut self_signing_key_ids = self_signing_key
-				.deserialize()
-				.map_err(|e| err!(Request(InvalidParam("Invalid self signing key: {e:?}"))))?
-				.keys
-				.into_values();
+			let mut self_signing_key_val: serde_json::Value =
+				serde_json::from_str(self_signing_key.json().get()).map_err(|e| {
+					err!(Database(debug_error!("Invalid self-signing key JSON: {e}")))
+				})?;
 
-			let self_signing_key_id = self_signing_key_ids.next().ok_or(Error::BadRequest(
+			let self_signing_key_obj = self_signing_key
+				.deserialize()
+				.map_err(|e| err!(Request(InvalidParam("Invalid self signing key: {e:?}"))))?;
+
+			let mut self_signing_key_ids = self_signing_key_obj.keys.values();
+			let self_signing_key_pub = self_signing_key_ids.next().ok_or(Error::BadRequest(
 				ErrorKind::InvalidParam,
 				"Self signing key contained no key.",
 			))?;
@@ -801,7 +1160,7 @@ impl Service {
 			}
 
 			let mut self_signing_key_key = prefix.clone();
-			self_signing_key_key.extend_from_slice(self_signing_key_id.as_bytes());
+			self_signing_key_key.extend_from_slice(self_signing_key_pub.as_bytes());
 
 			info!(
 				target: "cross_signing",
@@ -809,18 +1168,47 @@ impl Service {
 				user_id
 			);
 
-			self.db
+			let old_key = self
+				.db
 				.keyid_key
-				.insert(&self_signing_key_key, self_signing_key.json().get().as_bytes());
+				.get(&self_signing_key_key)
+				.await
+				.ok()
+				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
 
-			self.db
-				.userid_selfsigningkeyid
-				.insert(user_id.as_bytes(), &self_signing_key_key);
+			if let Some(ref old_key) = old_key {
+				merge_signatures(&mut self_signing_key_val, old_key);
+			}
+
+			let new_key_vec = serde_json::to_vec(&self_signing_key_val).map_err(|e| {
+				err!(Database(debug_error!("Failed to serialize self-signing key: {e}")))
+			})?;
+
+			let is_changed = old_key.as_ref() != Some(&self_signing_key_val);
+
+			if is_changed {
+				any_key_changed = true;
+				info!(
+					target: "cross_signing",
+					"Storing new self-signing key for user {}",
+					user_id
+				);
+
+				self.db.keyid_key.insert(&self_signing_key_key, new_key_vec);
+
+				self.db
+					.userid_selfsigningkeyid
+					.insert(user_id.as_bytes(), &self_signing_key_key);
+			}
 		}
 
 		if let Some(user_signing_key) = user_signing_key {
-			let user_signing_key_id = parse_user_signing_key(user_signing_key)?;
+			let mut user_signing_key_val: serde_json::Value =
+				serde_json::from_str(user_signing_key.json().get()).map_err(|e| {
+					err!(Database(debug_error!("Invalid user-signing key JSON: {e}")))
+				})?;
 
+			let user_signing_key_id = parse_user_signing_key(user_signing_key)?;
 			let user_signing_key_key = (user_id, &user_signing_key_id);
 
 			info!(
@@ -829,16 +1217,41 @@ impl Service {
 				user_id
 			);
 
-			self.db
+			let old_key = self
+				.db
 				.keyid_key
-				.put_raw(user_signing_key_key, user_signing_key.json().get().as_bytes());
+				.qry(&user_signing_key_key)
+				.await
+				.ok()
+				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
 
-			self.db
-				.userid_usersigningkeyid
-				.raw_put(user_id, user_signing_key_key);
+			if let Some(ref old_key) = old_key {
+				merge_signatures(&mut user_signing_key_val, old_key);
+			}
+
+			let new_key_vec = serde_json::to_vec(&user_signing_key_val).map_err(|e| {
+				err!(Database(debug_error!("Failed to serialize user-signing key: {e}")))
+			})?;
+
+			let is_changed = old_key.as_ref() != Some(&user_signing_key_val);
+
+			if is_changed {
+				any_key_changed = true;
+				info!(
+					target: "cross_signing",
+					"Storing new user-signing key for user {}",
+					user_id
+				);
+
+				self.db.keyid_key.put_raw(user_signing_key_key, new_key_vec);
+
+				self.db
+					.userid_usersigningkeyid
+					.raw_put(user_id, user_signing_key_key);
+			}
 		}
 
-		if notify {
+		if notify && any_key_changed {
 			self.mark_device_key_update(user_id).await;
 		}
 
@@ -881,12 +1294,21 @@ impl Service {
 			.entry(sender_id.to_string())
 			.or_insert_with(|| serde_json::Map::new().into());
 
-		signatures
-			.as_object_mut()
-			.ok_or_else(|| {
-				err!(Database(info!("signatures in keyid_key for a user is invalid.")))
-			})?
-			.insert(signature.0, signature.1.into());
+		let sig_map = signatures.as_object_mut().ok_or_else(|| {
+			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
+		})?;
+
+		if sig_map.get(&signature.0).and_then(|v| v.as_str()) == Some(signature.1.as_str()) {
+			return Ok(());
+		}
+
+		sig_map.insert(signature.0.clone(), signature.1.clone().into());
+
+		info!(
+			target: "cross_signing",
+			"User {} signed key {} of user {}",
+			sender_id, key_id, target_id
+		);
 
 		let key = (target_id, key_id);
 		self.db.keyid_key.put(key, Json(cross_signing_key));
@@ -897,14 +1319,62 @@ impl Service {
 	}
 
 	#[inline]
+	pub fn device_list_left<'a>(
+		&'a self,
+		user_id: &'a UserId,
+		from: Option<u64>,
+		to: Option<u64>,
+	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
+		type KeyVal<'a> = ((&'a UserId, u64, &'a UserId), Ignore);
+
+		let from = from.map_or(0, |from| from.saturating_add(1));
+		let to = to.unwrap_or(u64::MAX);
+		let from_key = (user_id, from);
+
+		self.db
+			.deviceleftid_userid
+			.stream_from(&from_key)
+			.ready_take_while(Result::is_ok)
+			.ignore_err()
+			.ready_take_while(move |((user_id_, count, _), _): &KeyVal<'_>| {
+				user_id == *user_id_ && *count <= to
+			})
+			.map(move |((_, count, left_user), _): KeyVal<'_>| (left_user, count))
+	}
+
+	#[inline]
 	pub fn keys_changed<'a>(
 		&'a self,
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = &'a UserId> + Send + 'a {
-		self.keys_changed_user_or_room(user_id.as_str(), from, to)
+		self.user_keys_changed(user_id, from, to)
 			.map(|(user_id, ..)| user_id)
+	}
+
+	#[inline]
+	pub fn user_keys_changed<'a>(
+		&'a self,
+		user_id: &'a UserId,
+		from: Option<u64>,
+		to: Option<u64>,
+	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
+		type KeyVal<'a> = ((&'a UserId, u64), &'a UserId);
+
+		let from = from.map_or(0, |from| from.saturating_add(1));
+		let to = to.unwrap_or(u64::MAX);
+		let from_key = (user_id, from);
+
+		self.db
+			.keychangeid_userid
+			.stream_from(&from_key)
+			.ready_take_while(Result::is_ok)
+			.ignore_err()
+			.ready_take_while(move |((user_id_, count), _): &KeyVal<'_>| {
+				user_id == *user_id_ && *count <= to
+			})
+			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
 
 	#[inline]
@@ -914,45 +1384,102 @@ impl Service {
 		from: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		self.keys_changed_user_or_room(room_id.as_str(), from, to)
-	}
+		type KeyVal<'a> = ((&'a RoomId, u64), &'a UserId);
 
-	fn keys_changed_user_or_room<'a>(
-		&'a self,
-		user_or_room_id: &'a str,
-		from: Option<u64>,
-		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a str, u64), &'a UserId);
-
-		let from = from.unwrap_or(0);
+		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
-		let start = (user_or_room_id, from.saturating_add(1));
+		let from_key = (room_id, from);
+
 		self.db
 			.keychangeid_userid
-			.stream_from(&start)
+			.stream_from(&from_key)
+			.ready_take_while(Result::is_ok)
 			.ignore_err()
-			.ready_take_while(move |((prefix, count), _): &KeyVal<'_>| {
-				*prefix == user_or_room_id && *count <= to
+			.ready_take_while(move |((room_id_, count), _): &KeyVal<'_>| {
+				room_id == *room_id_ && *count <= to
 			})
-			.map(|((_, count), user_id): KeyVal<'_>| (user_id, count))
+			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
 		let count = self.services.globals.next_count().unwrap();
-		info!(%user_id, %count, "Marking device key update");
 
-		self.services
+		tracing::info!(%user_id, "mark_device_key_update called");
+
+		let mut joined_rooms = self
+			.services
 			.state_cache
 			.rooms_joined(user_id)
-			.ready_for_each(|room_id| {
-				let key = (room_id, count);
-				self.db.keychangeid_userid.put_raw(key, user_id);
-			})
+			.map(ToOwned::to_owned)
+			.collect::<Vec<_>>()
 			.await;
+
+		if joined_rooms.is_empty() && !self.services.globals.user_is_local(user_id) {
+			let mut server_rooms = self
+				.services
+				.state_cache
+				.server_rooms(user_id.server_name())
+				.map(ToOwned::to_owned)
+				.collect::<Vec<_>>()
+				.await;
+
+			while let Some(room_id) = server_rooms.pop() {
+				let is_member = self
+					.services
+					.state_cache
+					.room_members(&room_id)
+					.any(|member_id| async move { member_id == user_id })
+					.await;
+
+				if is_member {
+					joined_rooms.push(room_id);
+				}
+			}
+
+			if !joined_rooms.is_empty() {
+				tracing::warn!(
+					%user_id,
+					rooms = joined_rooms.len(),
+					"Recovered remote device-key update rooms via server-room fallback"
+				);
+			}
+		}
+
+		for room_id in joined_rooms {
+			// TODO: replace these ad hoc fanout writes with a single typed
+			// "device-key change projection" helper shared by the write path and the
+			// /sync readers so key layout drift cannot silently break updates.
+			let key = (&room_id, count);
+			self.db.keychangeid_userid.put_raw(key, user_id);
+
+			self.services
+				.state_cache
+				.local_users_in_room(&room_id)
+				.ready_for_each(|local_user_id| {
+					let key = (local_user_id, count);
+					self.db.keychangeid_userid.put_raw(key, user_id);
+				})
+				.await;
+
+			tracing::info!(%user_id, %room_id, "Flushing room for device key update");
+
+			let sending = self.services.sending.clone();
+			self.services.server.runtime().spawn(async move {
+				let _ = sending.flush_room(&room_id).await;
+			});
+		}
 
 		let key = (user_id, count);
 		self.db.keychangeid_userid.put_raw(key, user_id);
+
+		// Keep the published watermark monotonic across concurrent calls.
+		self.last_device_key_update_count
+			.fetch_max(count, std::sync::atomic::Ordering::AcqRel);
+	}
+
+	pub fn mark_device_list_left(&self, user_id: &UserId, left_user: &UserId, count: u64) {
+		let key = (user_id, count, left_user);
+		self.db.deviceleftid_userid.put_raw(key, []);
 	}
 
 	pub async fn get_device_keys<'a>(
@@ -1043,6 +1570,11 @@ impl Service {
 
 		let count = self.services.globals.next_count().unwrap();
 
+		trace!(
+			%sender, %target_user_id, %target_device_id, count, event_type,
+			"add_to_device_event",
+		);
+
 		let key = (target_user_id, target_device_id, count);
 		self.db.todeviceid_events.put(
 			key,
@@ -1087,16 +1619,25 @@ impl Service {
 	{
 		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
 
-		let until = until.into().unwrap_or(u64::MAX);
-		let from = (user_id, device_id, until);
+		// `until: None` means the caller has no acknowledged position for this device
+		// (e.g. an initial /sync with no `since`) - nothing has been consumed yet, so
+		// nothing should be pruned. Previously this defaulted to u64::MAX, which wiped
+		// out the device's *entire* to-device queue unconditionally - including events
+		// a different, still-catching-up connection for the same device (e.g. a
+		// concurrent sliding-sync session) had not yet received.
+		let Some(until) = until.into() else {
+			return;
+		};
+		let from = (user_id, device_id, 0);
+
 		self.db
 			.todeviceid_events
-			.rev_keys_from(&from)
+			.stream_from(&from)
 			.ignore_err()
-			.ready_take_while(move |(user_id_, device_id_, _): &Key<'_>| {
-				user_id == *user_id_ && device_id == *device_id_
+			.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
+				user_id == *user_id_ && device_id == *device_id_ && *count <= until
 			})
-			.ready_for_each(|key: Key<'_>| {
+			.ready_for_each(|(key, _): (Key<'_>, serde_json::Value)| {
 				self.db.todeviceid_events.del(key);
 			})
 			.await;
@@ -1110,8 +1651,7 @@ impl Service {
 		device: &Device,
 	) -> Result<()> {
 		increment(&self.db.userid_devicelistversion, user_id.as_bytes());
-		self.update_device_metadata_no_increment(user_id, device_id, device)
-			.await?;
+		self.update_device_metadata_no_increment(user_id, device_id, device)?;
 		self.mark_device_key_update(user_id).await;
 		Ok(())
 	}
@@ -1120,7 +1660,7 @@ impl Service {
 	// This is namely used for updating the last_seen_ip and last_seen_ts values,
 	// as those do not need a device list version bump due to them not being
 	// relevant to other consumers.
-	pub async fn update_device_metadata_no_increment(
+	pub fn update_device_metadata_no_increment(
 		&self,
 		user_id: &UserId,
 		device_id: &DeviceId,
@@ -1151,7 +1691,6 @@ impl Service {
 				device.last_seen_ts = Some(now);
 
 				self.update_device_metadata_no_increment(user_id, device_id, &device)
-					.await
 					.ok();
 			}
 		}
@@ -1360,6 +1899,8 @@ impl Service {
 
 	#[cfg(feature = "ldap")]
 	pub async fn search_ldap(&self, user_id: &UserId) -> Result<Vec<(String, Option<bool>)>> {
+		use crate::conduwuit::debug;
+
 		let localpart = user_id.localpart().to_owned();
 		let lowercased_localpart = localpart.to_lowercase();
 
@@ -1472,6 +2013,8 @@ impl Service {
 
 	#[cfg(feature = "ldap")]
 	pub async fn auth_ldap(&self, user_dn: &str, password: &str) -> Result {
+		use conduwuit::debug;
+
 		let config = &self.services.server.config.ldap;
 		let uri = config
 			.uri
@@ -1550,6 +2093,57 @@ pub fn parse_user_signing_key(user_signing_key: &Raw<CrossSigningKey>) -> Result
 	Ok(user_signing_key_id)
 }
 
+pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
+	// Normalize null/missing signatures in the new key to an empty object
+	// so old signatures can be merged in. Some servers (e.g. matrix.org)
+	// send signatures: `null` rather than `{}` which would cause
+	// as_object_mut() to return None, skipping/clobbering the merge.
+	if let Some(obj) = new.as_object_mut() {
+		match obj.get("signatures") {
+			| Some(v) if !v.is_object() => {
+				obj.insert("signatures".to_owned(), json!({}));
+			},
+			| None => {
+				obj.insert("signatures".to_owned(), json!({}));
+			},
+			| _ => {},
+		}
+	}
+
+	if let (Some(new_sigs), Some(old_sigs)) = (
+		new.get_mut("signatures").and_then(|v| v.as_object_mut()),
+		old.get("signatures").and_then(|v| v.as_object()),
+	) {
+		for (user, sigs) in old_sigs {
+			if let Some(sigs) = sigs.as_object() {
+				let Some(new_user_sigs) = new_sigs
+					.entry(user.clone())
+					.or_insert_with(|| json!({}))
+					.as_object_mut()
+				else {
+					warn!(
+						target: "cross_signing",
+						"Signatures for user {} in cross-signing key are not a JSON object. Skipping merge.",
+						user
+					);
+					continue;
+				};
+
+				for (key, val) in sigs {
+					if !new_user_sigs.contains_key(key) {
+						info!(
+							target: "cross_signing",
+							"Merging existing signature for user {} key {}",
+							user, key
+						);
+						new_user_sigs.insert(key.clone(), val.clone());
+					}
+				}
+			}
+		}
+	}
+}
+
 /// Ensure that a user only sees signatures from themselves and the target user
 fn clean_signatures<F>(
 	mut cross_signing_key: serde_json::Value,
@@ -1592,4 +2186,71 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 	let old = db.get_blocking(key);
 	let new = utils::increment(old.ok().as_deref());
 	db.insert(key, new);
+}
+
+#[cfg(test)]
+mod tests {
+	use serde_json::json;
+
+	use super::merge_signatures;
+
+	#[test]
+	fn merge_signatures_is_idempotent() {
+		let old = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let mut new = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let before = serde_json::to_vec(&new).unwrap();
+		merge_signatures(&mut new, &old);
+		let after = serde_json::to_vec(&new).unwrap();
+
+		assert_eq!(before, after, "Merging identical signatures must be a no-op");
+	}
+
+	#[test]
+	fn merge_signatures_is_idempotent_with_different_key_orders() {
+		let old = json!({
+			"signatures": {
+				"@bob:example.com": {
+					"ed25519:device2": "sig456"
+				},
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				}
+			}
+		});
+
+		let mut new = json!({
+			"signatures": {
+				"@alice:example.com": {
+					"ed25519:device1": "sig123"
+				},
+				"@bob:example.com": {
+					"ed25519:device2": "sig456"
+				}
+			}
+		});
+
+		merge_signatures(&mut new, &old);
+		let serialized_old = serde_json::to_vec(&old).unwrap();
+		let serialized_new = serde_json::to_vec(&new).unwrap();
+
+		assert_eq!(
+			serialized_old, serialized_new,
+			"Merging signatures with different key insertion order must serialize \
+			 byte-identically (sorted map keys)"
+		);
+	}
 }

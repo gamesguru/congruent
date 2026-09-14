@@ -1,4 +1,4 @@
-use conduwuit_core::{Config, Result, error::Error};
+use conduwuit_core::{Config, Result, console_history::ConsoleHistory, error::Error};
 use rustyline_async::{Readline, ReadlineEvent};
 use tokio::{
 	io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -38,13 +38,13 @@ pub(crate) fn run(args: &Args) -> Result<()> {
 			Error::Err(format!("Failed to initialize tokio runtime: {e}").into())
 		})?;
 
-	runtime.block_on(async_run(&config))
+	runtime.block_on(async_run(&config, &args.execute))
 }
 
-async fn async_run(config: &Config) -> Result<()> {
+async fn async_run(config: &Config, execute: &[String]) -> Result<()> {
 	let socket_path = config.database_path.join("console.sock");
 
-	let mut stream = match UnixStream::connect(&socket_path).await {
+	let stream = match UnixStream::connect(&socket_path).await {
 		| Ok(s) => s,
 		| Err(e) => {
 			eprintln!("Failed to connect to console socket at {}: {e}", socket_path.display());
@@ -56,12 +56,74 @@ async fn async_run(config: &Config) -> Result<()> {
 	// We don't have a conduwuit instance here, so we can't use
 	// `conduwuit_core::Log`, we don't have any logs anyway!
 
+	// Headless mode: skip readline and send the supplied commands directly
+	// over the console socket.
+	if !execute.is_empty() {
+		return run_execute_mode(stream, execute).await;
+	}
+
 	println!("Connected to conduwuit admin console at {}", socket_path.display());
 	println!("Type \"help\" for help, ^D or `Quit` to exit.");
 
+	run_interactive_mode(socket_path, stream).await
+}
+
+async fn run_execute_mode(mut stream: UnixStream, execute: &[String]) -> Result<()> {
 	let mut stream_reader = BufReader::new(&mut stream);
 	let mut response_buf = Vec::new();
-	let mut history = std::collections::VecDeque::<String>::new();
+
+	for command in execute {
+		let trimmed = command.trim();
+		if trimmed.is_empty() {
+			continue;
+		}
+
+		if trimmed.eq_ignore_ascii_case("quit") {
+			break;
+		}
+
+		if let Err(_e) = stream_reader.get_mut().write_all(command.as_bytes()).await {
+			println!("Failed to write to socket");
+			break;
+		}
+		if let Err(_e) = stream_reader.get_mut().write_all(b"\n").await {
+			println!("Failed to write to socket");
+			break;
+		}
+
+		response_buf.clear();
+		match stream_reader.read_until(b'\0', &mut response_buf).await {
+			| Ok(0) => {
+				println!("Server disconnected.");
+				break;
+			},
+			| Ok(_) => {
+				if response_buf.ends_with(b"\0") {
+					response_buf.pop();
+				}
+				let response_str = String::from_utf8_lossy(&response_buf);
+				if !response_str.is_empty() {
+					let formatted = conduwuit_service::admin::console::format(&response_str);
+					print!("{formatted}");
+				}
+			},
+			| Err(_e) => {
+				println!("Failed to read from socket");
+				break;
+			},
+		}
+	}
+
+	Ok(())
+}
+
+async fn run_interactive_mode(
+	socket_path: std::path::PathBuf,
+	mut stream: UnixStream,
+) -> Result<()> {
+	let mut stream_reader = BufReader::new(&mut stream);
+	let mut response_buf = Vec::new();
+	let mut history = ConsoleHistory::new();
 
 	loop {
 		let (mut readline, writer) = Readline::new("uwu> ".to_owned()).map_err(|e| {
@@ -70,7 +132,7 @@ async fn async_run(config: &Config) -> Result<()> {
 		})?;
 
 		readline.set_tab_completer(conduwuit_admin::complete);
-		for line in &history {
+		for line in history.iter() {
 			_ = readline.add_history_entry(line.clone());
 		}
 
@@ -94,10 +156,7 @@ async fn async_run(config: &Config) -> Result<()> {
 					break;
 				}
 
-				if history.len() >= 50 {
-					history.pop_front();
-				}
-				history.push_back(line.clone());
+				history.add(&line);
 
 				// Send line to server
 				if let Err(_e) = stream_reader.get_mut().write_all(line.as_bytes()).await {
@@ -117,8 +176,8 @@ async fn async_run(config: &Config) -> Result<()> {
 					res = stream_reader.read_until(b'\0', &mut response_buf) => {
 						match res {
 							| Ok(0) => {
-									println!("Server disconnected.");
-									break;
+								println!("Server disconnected.");
+								break;
 							},
 							| Ok(_) => {
 								if response_buf.ends_with(b"\0") {
@@ -133,7 +192,7 @@ async fn async_run(config: &Config) -> Result<()> {
 							| Err(_e) => {
 								println!("Failed to read from socket");
 								break;
-						}
+							}
 						}
 					},
 					_ = tokio::signal::ctrl_c() => {

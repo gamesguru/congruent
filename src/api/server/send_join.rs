@@ -4,21 +4,16 @@ use std::{borrow::Borrow, time::Instant, vec};
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Event, Result, at, debug, err, info,
-	matrix::event::gen_event_id_canonical_json,
-	trace,
+	Err, Event, Result, at, debug, err, info, trace,
 	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
 	warn,
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use ruma::{
-	CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, ServerName,
+	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
-	events::{
-		StateEventType,
-		room::member::{MembershipState, RoomMemberEventContent},
-	},
+	events::room::{join_rules::JoinRule, member::MembershipState},
 };
 use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
@@ -33,14 +28,14 @@ async fn create_join_event(
 	pdu: &RawJsonValue,
 	omit_members: bool,
 ) -> Result<create_join_event::v2::RoomState> {
-	if !services.rooms.metadata.exists(room_id).await {
-		return Err!(Request(NotFound("Room is unknown to this server.")));
-	}
-	// ACL check origin server
-	services
-		.rooms
-		.event_handler
-		.acl_check(origin, room_id)
+	let (event_id, mut value, content, room_version_id, _sender, state_key) =
+		super::utils::verify_send_membership(
+			services,
+			origin,
+			room_id,
+			pdu,
+			MembershipState::Join,
+		)
 		.await?;
 
 	// We need to return the state prior to joining, let's keep a reference to that
@@ -52,94 +47,17 @@ async fn create_join_event(
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
 
-	// We do not add the event_id field to the pdu here because of signature and
-	// hashes checks
-	trace!("Getting room version");
-	let room_version_id = services.rooms.state.get_room_version(room_id).await?;
-
-	trace!("Generating event ID and converting to canonical json");
-	let Ok((event_id, mut value)) = gen_event_id_canonical_json(pdu, &room_version_id) else {
-		// Event could not be converted to canonical json
-		return Err!(Request(BadJson("Could not convert event to canonical json.")));
-	};
-
-	let event_room_id: OwnedRoomId = if let Some(room_id_val) = value.get("room_id") {
-		serde_json::from_value(room_id_val.clone().into()).map_err(|e| {
-			err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}"))))
-		})?
-	} else if services
+	// `servers_in_room` must reflect the servers active in the room BEFORE this
+	// join, so snapshot it now — `handle_and_send_incoming_pdu` below persists
+	// the join and would otherwise make the joining server show up in its own
+	// "before" list.
+	let servers_in_room_before_join: Vec<String> = services
 		.rooms
-		.state
-		.get_room_version(room_id)
-		.await
-		.is_ok_and(|v| {
-			conduwuit::matrix::state_res::RoomVersion::new(&v).is_ok_and(|v| v.room_ids_as_hashes)
-		}) {
-		room_id.to_owned()
-	} else {
-		return Err!(Request(BadJson("Event missing room_id property.")));
-	};
-
-	if event_room_id != room_id {
-		return Err!(Request(BadJson("Event room_id does not match request path room ID.")));
-	}
-
-	let event_type: StateEventType = serde_json::from_value(
-		value
-			.get("type")
-			.ok_or_else(|| err!(Request(BadJson("Event missing type property."))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("Event has invalid state event type: {e}")))))?;
-
-	if event_type != StateEventType::RoomMember {
-		return Err!(Request(BadJson(
-			"Not allowed to send non-membership state event to join endpoint."
-		)));
-	}
-
-	let content: RoomMemberEventContent = serde_json::from_value(
-		value
-			.get("content")
-			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
-
-	if content.membership != MembershipState::Join {
-		return Err!(Request(BadJson(
-			"Not allowed to send a non-join membership event to join endpoint."
-		)));
-	}
-
-	let sender: OwnedUserId = serde_json::from_value(
-		value
-			.get("sender")
-			.ok_or_else(|| err!(Request(BadJson("Event missing sender property."))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("sender property is not a valid user ID: {e}")))))?;
-
-	// check if origin server is trying to send for another server
-	if sender.server_name() != origin {
-		return Err!(Request(Forbidden("Not allowed to join on behalf of another server.")));
-	}
-
-	let state_key: OwnedUserId = serde_json::from_value(
-		value
-			.get("state_key")
-			.ok_or_else(|| err!(Request(BadJson("Event missing state_key property."))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("State key is not a valid user ID: {e}")))))?;
-
-	if state_key != sender {
-		return Err!(Request(BadJson("State key does not match sender user.")));
-	}
+		.state_cache
+		.room_servers(room_id)
+		.map(|sn| sn.as_str().to_owned())
+		.collect()
+		.await;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {
 		use ruma::RoomVersionId::*;
@@ -170,13 +88,14 @@ async fn create_join_event(
 			)));
 		}
 
-		if !super::user_can_perform_restricted_join(
+		if super::user_can_perform_restricted_join(
 			services,
 			&state_key,
 			room_id,
 			&room_version_id,
 		)
 		.await?
+		.is_none()
 		{
 			return Err!(Request(UnableToAuthorizeJoin(
 				"Joining user did not pass restricted room's rules."
@@ -189,25 +108,24 @@ async fn create_join_event(
 			.map_err(|e| {
 				err!(Request(InvalidParam(warn!("Failed to sign send_join event: {e}"))))
 			})?;
+	} else {
+		// Guard for restricted/knock_restricted rooms: when the join event
+		// lacks join_authorized_via_users_server the user must be invited or
+		// already joined.  Without this, handle_and_send_incoming_pdu would soft-fail
+		// the event but send_join would still return success.
+		guard_restricted_join_without_auth(services, &state_key, room_id).await?;
 	}
 
-	let mutex_lock = services
-		.rooms
-		.event_handler
-		.mutex_federation
-		.lock(room_id)
-		.await;
+	super::utils::handle_and_send_incoming_pdu(
+		services,
+		origin,
+		room_id,
+		&event_id,
+		value.clone(),
+		None,
+	)
+	.await?;
 
-	trace!("Acquired send_join mutex, persisting join event");
-	let pdu_id = services
-		.rooms
-		.event_handler
-		.handle_incoming_pdu(sender.server_name(), room_id, &event_id, value.clone(), true)
-		.boxed()
-		.await?
-		.ok_or_else(|| err!(Request(InvalidParam("Could not accept as timeline event."))))?;
-
-	drop(mutex_lock);
 	trace!("Fetching current state IDs");
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
@@ -217,27 +135,66 @@ async fn create_join_event(
 		.collect()
 		.await;
 
+	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
+	// membership events must still be included in a partial-state response so
+	// the joining server can compute a display name before it finishes
+	// lazily-loading full state. Only applies when the room has neither
+	// `m.room.name` nor `m.room.canonical_alias` — otherwise the client uses
+	// those instead and doesn't need heroes at all.
+	let heroes = if omit_members {
+		let (has_name, has_canonical_alias) = tokio::join!(
+			services
+				.rooms
+				.state_accessor
+				.state_contains_type(shortstatehash, &ruma::events::StateEventType::RoomName),
+			services.rooms.state_accessor.state_contains_type(
+				shortstatehash,
+				&ruma::events::StateEventType::RoomCanonicalAlias
+			),
+		);
+		if has_name || has_canonical_alias {
+			std::collections::HashSet::new()
+		} else {
+			build_partial_state_heroes(services, room_id).await
+		}
+	} else {
+		std::collections::HashSet::new()
+	};
+
 	trace!(%omit_members, "Constructing current state");
-	let state = state_ids
+	let retained_state_ids: Vec<OwnedEventId> = state_ids
 		.iter()
-		.try_stream()
-		.broad_filter_map(|event_id| async move {
-			if omit_members {
-				if let Ok(e) = event_id.as_ref() {
-					let pdu = services
-						.rooms
-						.timeline
-						.get_pdu_in_room(Some(room_id), e)
-						.await;
-					if pdu.is_ok_and(|p| p.kind().to_cow_str() == "m.room.member") {
-						trace!("omitting member event {e:?} from returned state");
-						// skip members
-						return None;
+		.try_stream::<conduwuit::Error>()
+		.broad_filter_map(|event_id| {
+			let heroes = &heroes;
+			async move {
+				if omit_members {
+					if let Ok(e) = event_id.as_ref() {
+						let pdu = services
+							.rooms
+							.timeline
+							.get_pdu_in_room(Some(room_id), e)
+							.await;
+						if let Ok(p) = pdu {
+							if p.kind().to_cow_str() == "m.room.member"
+								&& !p.state_key().is_some_and(|sk| heroes.contains(sk))
+							{
+								trace!("omitting member event {e:?} from returned state");
+								// skip members, except heroes
+								return None;
+							}
+						}
 					}
 				}
+				event_id.ok().cloned()
 			}
-			Some(event_id)
 		})
+		.collect()
+		.await;
+
+	let state = retained_state_ids
+		.iter()
+		.try_stream()
 		.broad_and_then(|event_id| services.rooms.timeline.get_pdu_json(event_id))
 		.broad_and_then(|pdu| {
 			services
@@ -249,12 +206,27 @@ async fn create_join_event(
 		.boxed()
 		.await?;
 
+	// Per MSC3706: "Any events returned within `state` can be omitted from
+	// `auth_chain`." Without this, events we already kept in `state` above
+	// (all state when not omitting members, or heroes' membership events
+	// when we are) would be sent twice.
+	let retained_state_id_set: std::collections::HashSet<&EventId> =
+		retained_state_ids.iter().map(Borrow::borrow).collect();
 	let starting_events = state_ids.iter().map(Borrow::borrow);
 	trace!("Constructing auth chain");
 	let auth_chain = services
 		.rooms
 		.auth_chain
 		.event_ids_iter(room_id, starting_events)
+		.broad_filter_map(|event_id| {
+			let retained_state_id_set = &retained_state_id_set;
+			async move {
+				match event_id {
+					| Ok(event_id) if retained_state_id_set.contains(&*event_id) => None,
+					| other => Some(other),
+				}
+			}
+		})
 		.broad_and_then(|event_id| async move {
 			services.rooms.timeline.get_pdu_json(&event_id).await
 		})
@@ -267,23 +239,12 @@ async fn create_join_event(
 		.try_collect()
 		.boxed()
 		.await?;
-	info!(fast_join = %omit_members, "Sending join event to other servers");
-	services
-		.sending
-		.send_pdu_room_except(room_id, &pdu_id, origin)
-		.await?;
+	info!(%omit_members, "Join event accepted; outbound federation queued");
 	debug!("Finished sending join event");
 	let servers_in_room: Option<Vec<_>> = if !omit_members {
 		None
 	} else {
-		trace!("Fetching list of servers in room");
-		let servers: Vec<String> = services
-			.rooms
-			.state_cache
-			.room_servers(room_id)
-			.map(|sn| sn.as_str().to_owned())
-			.collect()
-			.await;
+		let servers = servers_in_room_before_join;
 		// If there's no servers, just add us
 		let servers = if servers.is_empty() {
 			warn!("Failed to find any servers, adding our own server name as a last resort");
@@ -304,6 +265,33 @@ async fn create_join_event(
 	})
 }
 
+/// Determine the room's "heroes" (mirrors the sync `/sync` summary
+/// calculation, minus the syncing-user exclusion which doesn't apply here)
+/// so their membership events can be kept in a partial-state `send_join`
+/// response even though other membership events are omitted.
+async fn build_partial_state_heroes(
+	services: &Services,
+	room_id: &RoomId,
+) -> std::collections::HashSet<String> {
+	const MAX_HERO_COUNT: usize = 5;
+
+	services
+		.rooms
+		.state_cache
+		.room_members(room_id)
+		.map(|user_id| user_id.as_str().to_owned())
+		.chain(
+			services
+				.rooms
+				.state_cache
+				.room_members_invited(room_id)
+				.map(|user_id| user_id.as_str().to_owned()),
+		)
+		.take(MAX_HERO_COUNT)
+		.collect()
+		.await
+}
+
 /// # `PUT /_matrix/federation/v1/send_join/{roomId}/{eventId}`
 ///
 /// Submits a signed join event.
@@ -311,33 +299,6 @@ pub(crate) async fn create_join_event_v1_route(
 	State(services): State<crate::State>,
 	body: Ruma<create_join_event::v1::Request>,
 ) -> Result<create_join_event::v1::Response> {
-	if services
-		.moderation
-		.is_remote_server_forbidden(body.origin())
-	{
-		warn!(
-			"Server {} tried joining room ID {} through us who has a server name that is \
-			 globally forbidden. Rejecting.",
-			body.origin(),
-			&body.room_id,
-		);
-		return Err!(Request(Forbidden("Server is banned on this homeserver.")));
-	}
-
-	if let Some(server) = body.room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
-			warn!(
-				"Server {} tried joining room ID {} through us which has a server name that is \
-				 globally forbidden. Rejecting.",
-				body.origin(),
-				&body.room_id,
-			);
-			return Err!(Request(Forbidden(warn!(
-				"Room ID server name {server} is banned on this homeserver."
-			))));
-		}
-	}
-
 	let now = Instant::now();
 	let room_state = create_join_event(&services, body.origin(), &body.room_id, &body.pdu, false)
 		.boxed()
@@ -364,27 +325,6 @@ pub(crate) async fn create_join_event_v2_route(
 	State(services): State<crate::State>,
 	body: Ruma<create_join_event::v2::Request>,
 ) -> Result<create_join_event::v2::Response> {
-	if services
-		.moderation
-		.is_remote_server_forbidden(body.origin())
-	{
-		return Err!(Request(Forbidden("Server is banned on this homeserver.")));
-	}
-
-	if let Some(server) = body.room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
-			warn!(
-				"Server {} tried joining room ID {} through us which has a server name that is \
-				 globally forbidden. Rejecting.",
-				body.origin(),
-				&body.room_id,
-			);
-			return Err!(Request(Forbidden(warn!(
-				"Room ID server name {server} is banned on this homeserver."
-			))));
-		}
-	}
-
 	let now = Instant::now();
 	let room_state =
 		create_join_event(&services, body.origin(), &body.room_id, &body.pdu, body.omit_members)
@@ -398,4 +338,40 @@ pub(crate) async fn create_join_event_v2_route(
 	);
 
 	Ok(create_join_event::v2::Response { room_state })
+}
+
+/// Reject a join to a restricted/knock_restricted room when the event lacks
+/// `join_authorized_via_users_server` and the user is neither invited nor
+/// already joined.
+async fn guard_restricted_join_without_auth(
+	services: &Services,
+	joining_user: &UserId,
+	room_id: &RoomId,
+) -> Result<()> {
+	let join_rules = services.rooms.state_accessor.get_join_rules(room_id).await;
+
+	if !matches!(join_rules, JoinRule::Restricted(_) | JoinRule::KnockRestricted(_)) {
+		return Ok(());
+	}
+
+	let is_invited = services
+		.rooms
+		.state_cache
+		.is_invited(joining_user, room_id)
+		.await;
+
+	let is_joined = services
+		.rooms
+		.state_cache
+		.is_joined(joining_user, room_id)
+		.await;
+
+	if !is_invited && !is_joined {
+		return Err!(Request(Forbidden(
+			"Restricted room requires join_authorized_via_users_server, an invite, or existing \
+			 membership."
+		)));
+	}
+
+	Ok(())
 }

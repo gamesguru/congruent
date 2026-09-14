@@ -46,18 +46,26 @@ async fn destinations_cache(&self, server_name: Option<OwnedServerName>) -> Resu
 	writeln!(self, "| Server Name | Destination | Hostname | Expires |").await?;
 	writeln!(self, "| ----------- | ----------- | -------- | ------- |").await?;
 
-	let mut destinations = self.services.resolver.cache.destinations().boxed();
-
-	while let Some((name, CachedDest { dest, host, expire })) = destinations.next().await {
-		if let Some(server_name) = server_name.as_ref() {
-			if name != server_name {
-				continue;
-			}
+	if let Some(server_name) = server_name.as_ref() {
+		if let Ok(CachedDest { dest, host, expire }) = self
+			.services
+			.resolver
+			.cache
+			.get_destination(server_name)
+			.await
+		{
+			let expire = time::format(expire, "%+");
+			self.write_str(&format!("| {server_name} | {dest} | {host} | {expire} |\n"))
+				.await?;
 		}
+	} else {
+		let mut destinations = self.services.resolver.cache.destinations().boxed();
 
-		let expire = time::format(expire, "%+");
-		self.write_str(&format!("| {name} | {dest} | {host} | {expire} |\n"))
-			.await?;
+		while let Some((name, CachedDest { dest, host, expire })) = destinations.next().await {
+			let expire = time::format(expire, "%+");
+			self.write_str(&format!("| {name} | {dest} | {host} | {expire} |\n"))
+				.await?;
+		}
 	}
 
 	Ok(())
@@ -70,20 +78,28 @@ async fn overrides_cache(&self, server_name: Option<String>) -> Result {
 	writeln!(self, "| Server Name | IP  | Port | Expires | Overriding |").await?;
 	writeln!(self, "| ----------- | --- | ----:| ------- | ---------- |").await?;
 
-	let mut overrides = self.services.resolver.cache.overrides().boxed();
-
-	while let Some((name, CachedOverride { ips, port, expire, overriding })) =
-		overrides.next().await
-	{
-		if let Some(server_name) = server_name.as_ref() {
-			if name != server_name {
-				continue;
-			}
-		}
-
-		let expire = time::format(expire, "%+");
-		self.write_str(&format!("| {name} | {ips:?} | {port} | {expire} | {overriding:?} |\n"))
+	if let Some(server_name) = server_name.as_ref() {
+		if let Ok(CachedOverride { ips, port, expire, overriding }) =
+			self.services.resolver.cache.get_override(server_name).await
+		{
+			let expire = time::format(expire, "%+");
+			self.write_str(&format!(
+				"| {server_name} | {ips:?} | {port} | {expire} | {overriding:?} |\n"
+			))
 			.await?;
+		}
+	} else {
+		let mut overrides = self.services.resolver.cache.overrides().boxed();
+
+		while let Some((name, CachedOverride { ips, port, expire, overriding })) =
+			overrides.next().await
+		{
+			let expire = time::format(expire, "%+");
+			self.write_str(&format!(
+				"| {name} | {ips:?} | {port} | {expire} | {overriding:?} |\n"
+			))
+			.await?;
+		}
 	}
 
 	Ok(())

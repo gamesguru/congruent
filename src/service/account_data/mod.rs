@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::{
 	Err, Result, err, implement,
-	utils::{ReadyExt, result::LogErr, stream::TryIgnore},
+	utils::{MutexMap, ReadyExt, result::LogErr, stream::TryIgnore},
 };
 use database::{Deserialized, Handle, Ignore, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
@@ -15,12 +15,14 @@ use ruma::{
 	serde::Raw,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{Dep, globals};
 
 pub struct Service {
 	services: Services,
 	db: Data,
+	push_rules_mutex: MutexMap<Vec<u8>, ()>,
 }
 
 struct Data {
@@ -42,10 +44,23 @@ impl crate::Service for Service {
 				roomuserdataid_accountdata: args.db["roomuserdataid_accountdata"].clone(),
 				roomusertype_roomuserdataid: args.db["roomusertype_roomuserdataid"].clone(),
 			},
+			push_rules_mutex: MutexMap::new(),
 		}))
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+impl Service {
+	fn push_rules_lock_key(user_id: &UserId) -> Vec<u8> { user_id.as_str().as_bytes().to_vec() }
+
+	pub async fn push_rules_lock(
+		&self,
+		user_id: &UserId,
+	) -> conduwuit::utils::mutex_map::Guard<Vec<u8>, ()> {
+		let key = Self::push_rules_lock_key(user_id);
+		self.push_rules_mutex.lock(key.as_slice()).await
+	}
 }
 
 /// Places one event in the account data of the user and removes the
@@ -57,7 +72,7 @@ pub async fn update(
 	room_id: Option<&RoomId>,
 	user_id: &UserId,
 	event_type: RoomAccountDataEventType,
-	data: &serde_json::Value,
+	data: &Value,
 ) -> Result<()> {
 	if data.get("type").is_none() || data.get("content").is_none() {
 		return Err!(Request(InvalidParam("Account data doesn't have all required fields.")));
@@ -166,12 +181,12 @@ pub async fn get_raw(
 		.await?;
 
 	// MSC3890: Treat empty content as deleted/not found
-	let data: serde_json::Value = serde_json::from_slice(&handle)
+	let data: Value = serde_json::from_slice(&handle)
 		.map_err(|e| err!(Database("Invalid account data in database: {e}")))?;
 
 	if data
 		.get("content")
-		.and_then(serde_json::Value::as_object)
+		.and_then(Value::as_object)
 		.is_some_and(serde_json::Map::is_empty)
 	{
 		return Err!(Request(NotFound("Data not found (tombstoned).")));
@@ -202,6 +217,9 @@ pub fn changes_since<'a>(
 		.ready_take_while(move |((room_id_, user_id_, count, _), _): &(Key<'_>, _)| {
 			room_id == *room_id_ && user_id == *user_id_ && to.is_none_or(|to| *count <= to)
 		})
+		.ready_filter(move |(_, v): &(Key<'_>, &[u8])| {
+			since.is_some() || !is_account_data_tombstone(v)
+		})
 		.map(move |(_, v)| {
 			match room_id {
 				| Some(_) => serde_json::from_slice::<Raw<AnyRoomAccountDataEvent>>(v)
@@ -213,4 +231,15 @@ pub fn changes_since<'a>(
 			.log_err()
 		})
 		.ignore_err()
+}
+
+fn is_account_data_tombstone(data: &[u8]) -> bool {
+	serde_json::from_slice::<Value>(data)
+		.ok()
+		.and_then(|data| {
+			data.get("content")
+				.and_then(Value::as_object)
+				.map(serde_json::Map::is_empty)
+		})
+		.unwrap_or(false)
 }

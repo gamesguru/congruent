@@ -27,3 +27,7 @@ Respecting homeservers put this file here for listing administration, moderation
 ## `!admin federation remote-user-in-rooms`
 
 Lists all the rooms we share/track with the specified *remote* user
+
+## `!admin federation sending-queue`
+
+Show the outbound sending queue with per-destination event counts. Optionally filter to a single server. Use --clear to drop queued events

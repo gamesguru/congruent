@@ -22,7 +22,7 @@ pub enum EventFormatVersion {
 	V3,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(not(feature = "unstable-exhaustive-types"), non_exhaustive)]
 pub enum StateResolutionVersion {
 	/// State resolution for rooms at version 1.
@@ -31,6 +31,14 @@ pub enum StateResolutionVersion {
 	V2,
 	/// State resolution for room at version 12 or later.
 	V2_1,
+	/// State resolution v2.1.1 (MSC4297)
+	V2_1_1,
+}
+
+impl StateResolutionVersion {
+	pub fn begin_iterative_auth_checks_with_empty_state_map(&self) -> bool {
+		matches!(self, Self::V2_1_1)
+	}
 }
 
 #[cfg_attr(not(feature = "unstable-exhaustive-types"), non_exhaustive)]
@@ -121,9 +129,14 @@ impl RoomVersion {
 		..Self::V10
 	};
 	pub const V12: Self = Self {
+		state_res: StateResolutionVersion::V2_1,
 		explicitly_privilege_room_creators: true,
 		room_ids_as_hashes: true,
 		..Self::V11
+	};
+	pub const V12_1: Self = Self {
+		state_res: StateResolutionVersion::V2_1_1,
+		..Self::V12
 	};
 	pub const V2: Self = Self {
 		state_res: StateResolutionVersion::V2,
@@ -149,6 +162,9 @@ impl RoomVersion {
 	pub const V8: Self = Self { restricted_join_rules: true, ..Self::V7 };
 	pub const V9: Self = Self::V8;
 
+	#[must_use]
+	pub fn strips_room_id(&self, is_create: bool) -> bool { self.room_ids_as_hashes && is_create }
+
 	pub fn new(version: &RoomVersionId) -> Result<Self> {
 		Ok(match version {
 			| RoomVersionId::V1 => Self::V1,
@@ -163,6 +179,7 @@ impl RoomVersion {
 			| RoomVersionId::V10 => Self::V10,
 			| RoomVersionId::V11 => Self::V11,
 			| RoomVersionId::V12 => Self::V12,
+			| ver if ver.as_str() == "12.1" => Self::V12_1,
 			| ver => return Err(Error::Unsupported(format!("found version `{ver}`"))),
 		})
 	}

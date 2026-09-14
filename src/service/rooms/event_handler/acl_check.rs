@@ -1,4 +1,4 @@
-use conduwuit::{Err, Result, debug, implement, trace, warn};
+use conduwuit::{Err, Result, debug, implement, info, warn};
 use ruma::{
 	RoomId, ServerName,
 	events::{StateEventType, room::server_acl::RoomServerAclEventContent},
@@ -14,11 +14,21 @@ pub async fn acl_check(&self, server_name: &ServerName, room_id: &RoomId) -> Res
 		.room_state_get_content(room_id, &StateEventType::RoomServerAcl, "")
 		.await
 		.map(|c: RoomServerAclEventContent| c)
-		.inspect(|acl| trace!(%room_id, "ACL content found: {acl:?}"))
-		.inspect_err(|e| trace!(%room_id, "No ACL content found: {e:?}"))
 	else {
+		info!(
+			target: "acl_debug",
+			%room_id, %server_name, "acl_check: No ACL content found in state, allowing."
+		);
 		return Ok(());
 	};
+
+	debug!(
+		target: "acl_debug",
+		%room_id, %server_name,
+		allow = ?acl_event_content.allow,
+		deny = ?acl_event_content.deny,
+		"acl_check: Evaluated ACL content from state"
+	);
 
 	if acl_event_content.allow.is_empty() {
 		warn!(%room_id, "Ignoring broken ACL event (allow key is empty)");
@@ -33,7 +43,10 @@ pub async fn acl_check(&self, server_name: &ServerName, room_id: &RoomId) -> Res
 	}
 
 	if acl_event_content.is_allowed(server_name) {
-		trace!("server {server_name} is allowed by ACL");
+		debug!(
+			"ACL ALLOWED: server_name={}, room_id={}, acl_content={:?}",
+			server_name, room_id, acl_event_content
+		);
 		Ok(())
 	} else {
 		debug!("Server {server_name} was denied by room ACL in {room_id}");

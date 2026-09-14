@@ -23,5 +23,15 @@
         "type": "file",
         "name": "hot_reload",
         "label": "Hot Reloading"
+    },
+    {
+        "type": "file",
+        "name": "debugging",
+        "label": "Debugging"
+    },
+    {
+        "type": "file",
+        "name": "ldb-dag-repair",
+        "label": "DAG Repair (ldb)"
     }
 ]

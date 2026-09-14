@@ -1,6 +1,6 @@
 use std::{collections::HashSet, iter::once};
 
-use conduwuit::trace;
+use conduwuit::{debug, info, trace};
 use conduwuit_core::{
 	Err, Result, err, implement,
 	matrix::{event::Event, pdu::PduBuilder},
@@ -18,7 +18,7 @@ use ruma::{
 	},
 };
 
-use super::{ExtractBody, RoomMutexGuard};
+use super::{AppendOptions, ExtractBody, RoomMutexGuard};
 
 /// Creates a new persisted data unit and adds it to a room. This function
 /// takes a roomid_mutex_state, meaning that only this function is able to
@@ -122,8 +122,9 @@ pub async fn build_and_append_pdu(
 			pdu_json,
 			// Since this PDU references all pdu_leaves we can update the leaves
 			// of the room
-			once(pdu.event_id()),
-			None,
+			once(pdu.event_id().to_owned()),
+			AppendOptions { resolved_state: None, soft_fail: false },
+			false,
 			state_lock,
 			&room_id,
 		)
@@ -167,13 +168,39 @@ pub async fn build_and_append_pdu(
 
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
+	//
+	// This block's tracing is `debug!`, not `info!`: it runs unconditionally on
+	// every locally-created PDU (not just RoomMember ones), and `?servers`
+	// formats the whole destination set. At `info!` it would run at full cost
+	// on every send in the default log config (`info,memory_serve=warn` in
+	// release builds, `debug` in dev builds) -- `debug!` keeps it opt-in via
+	// the `membership_destination_debug` target (e.g.
+	// `RUST_LOG=membership_destination_debug=debug`) without paying that cost
+	// by default.
+	debug!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), kind = ?pdu.kind(), state_key = ?pdu.state_key,
+		room_servers_count = servers.len(),
+		"build_and_append_pdu: pre-special-case servers"
+	);
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key_uid) = &pdu
 			.state_key
 			.as_ref()
 			.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 		{
+			debug!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), %state_key_uid,
+				"build_and_append_pdu: inserting affected user's server as destination"
+			);
 			servers.insert(state_key_uid.server_name().to_owned());
+		} else {
+			debug!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), state_key = ?pdu.state_key,
+				"build_and_append_pdu: RoomMember event but state_key didn't parse as a UserId"
+			);
 		}
 	}
 
@@ -181,11 +208,28 @@ pub async fn build_and_append_pdu(
 	// room_servers() and/or the if statement above
 	servers.remove(self.services.globals.server_name());
 
+	debug!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), final_servers = ?servers,
+		"build_and_append_pdu: final destination set"
+	);
 	trace!("Sending PDU {} to {} servers", pdu.event_id(), servers.len());
-	self.services
+	let num_sent = self
+		.services
 		.sending
 		.send_pdu_servers(servers.iter().map(AsRef::as_ref).stream(), &pdu_id)
 		.await?;
+
+	if num_sent > 0 {
+		let _span = tracing::info_span!(
+			"broadcast",
+			event_id = %pdu.event_id(),
+			%room_id,
+			servers = num_sent,
+		)
+		.entered();
+		info!("Sending to federation");
+	}
 
 	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
 	Ok(pdu.event_id().to_owned())

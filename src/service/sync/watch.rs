@@ -24,8 +24,9 @@ pub async fn setup_watch<'a>(
 	// TODO: only send for user they share a room with
 	futures.push(self.db.todeviceid_events.watch_prefix(&userdeviceid_prefix));
 
-	futures.push(self.db.userroomid_joined.watch_prefix(&userid_prefix));
 	futures.push(self.db.userroomid_invitestate.watch_prefix(&userid_prefix));
+	futures.push(self.db.userroomid_joined.watch_prefix(&userid_prefix));
+	futures.push(self.db.userroomid_knockedstate.watch_prefix(&userid_prefix));
 	futures.push(self.db.userroomid_leftstate.watch_prefix(&userid_prefix));
 	futures.push(
 		self.db
@@ -91,8 +92,8 @@ pub async fn setup_watch<'a>(
 		);
 
 		// PDUs
-		let short_roomid_bytes = short_roomid.to_be_bytes().to_vec();
-		futures.push(self.db.pduid_pdu.watch_prefix(&short_roomid_bytes));
+		let short_roomid = short_roomid.to_be_bytes().to_vec();
+		futures.push(self.db.room_pducount_eventid.watch_prefix(&short_roomid));
 
 		futures.push(
 			self.db
@@ -112,6 +113,7 @@ pub async fn setup_watch<'a>(
 
 	// More key changes (used when user is not joined to any rooms)
 	futures.push(self.db.keychangeid_userid.watch_prefix(&userid_prefix));
+	futures.push(self.db.deviceleftid_userid.watch_prefix(&userid_prefix));
 
 	// One time keys
 	futures.push(

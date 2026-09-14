@@ -46,3 +46,10 @@ pub fn remove_raw(&self, key: &[u8]) {
 
 	self.watchers.wake(key);
 }
+
+#[implement(super::Map)]
+#[inline]
+pub fn remove_from_batch(&self, batch: &mut rocksdb::WriteBatch, key: &[u8]) {
+	batch.delete_cf(&self.cf(), key);
+	self.watchers.wake(key);
+}

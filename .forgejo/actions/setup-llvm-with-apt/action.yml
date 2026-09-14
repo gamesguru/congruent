@@ -113,7 +113,7 @@ runs:
         # Update APT if LLVM was cached (installer script already does apt-get update)
         if [[ "${{ steps.llvm-setup.outputs.needs-install }}" != "true" ]]; then
           echo "::group::📦 Running apt-get update (LLVM cached, extra packages needed)"
-          sudo apt-get update
+          sudo apt-get update || true
           echo "::endgroup::"
         fi
         echo "::group::📦 Installing additional packages"

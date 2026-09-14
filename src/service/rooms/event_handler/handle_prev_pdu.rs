@@ -2,10 +2,12 @@ use std::{collections::BTreeMap, time::Instant};
 
 use conduwuit::{
 	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
-	utils::continue_exponential_backoff_secs,
+	utils::continue_exponential_backoff_secs, warn,
 };
 use ruma::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
 use tracing::debug;
+
+use crate::rooms::pdu_metadata::RejectionCode;
 
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
@@ -50,19 +52,84 @@ where
 		if continue_exponential_backoff_secs(MIN_DURATION, MAX_DURATION, time.elapsed(), *tries) {
 			debug!(
 				?tries,
-				duration = ?time.elapsed(),
-				"Backing off from prev_event"
+			duration = ?time.elapsed(),
+			"Backing off from prev_event"
 			);
 			return Ok(());
 		}
 	}
 
-	let Some((pdu, json)) = eventid_info else {
-		return Ok(());
+	let (pdu, json) = match eventid_info {
+		| Some(eventid_info) => eventid_info,
+		| None => {
+			// `fetch_prev` only returns entries for prev_events it actually went
+			// and fetched -- it pre-filters anything `pdu_exists` already knows
+			// about (see its `still_needed` filter), and that check matches
+			// *outliers* too, not just timeline events. So `None` here doesn't
+			// mean "already handled", it can also mean "already known, but only
+			// ever stored as an outlier" -- e.g. pulled in earlier purely to
+			// satisfy some other event's auth chain. Left alone, that event
+			// stays permanently invisible to `/messages`: nothing else in this
+			// call tree will ever revisit it. Recover the stored outlier and
+			// promote it ourselves; `upgrade_outlier_to_timeline_pdu` already
+			// no-ops if it turns out to be a timeline event after all.
+			if self.services.timeline.non_outlier_pdu_exists(prev_id).await {
+				return Ok(());
+			}
+			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
+				// Read-only check here: whether we go on to actually retry is
+				// still gated by the further early-returns below (outlier JSON
+				// missing, unparsable, or too old), and we must not clear the
+				// rejection marker unless we're actually about to hand the event
+				// to `upgrade_outlier_to_timeline_pdu` for reprocessing. Clearing
+				// it here and then bailing out below would leave the event
+				// looking "accepted" (`is_event_accepted` is just
+				// `!is_event_rejected`) to every other caller without ever having
+				// re-evaluated it.
+				let retry_worthy = self
+					.services
+					.pdu_metadata
+					.get_rejection_reason(prev_id)
+					.await
+					.is_some_and(|reason| {
+						crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
+					});
+				if !retry_worthy {
+					return Ok(());
+				}
+			}
+			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id).await else {
+				return Ok(());
+			};
+			let Ok(pdu) = PduEvent::from_id_val(prev_id, json.clone(), Some(room_id)) else {
+				warn!("Stored outlier {prev_id} failed to parse back into a PduEvent");
+				return Ok(());
+			};
+			(pdu, json)
+		},
 	};
 
 	// Skip old events
 	if pdu.origin_server_ts() < first_ts_in_room {
+		return Ok(());
+	}
+
+	// If this prev_event already failed state resolution with all of its
+	// predecessors present, don't immediately re-enter the same recovery
+	// ladder here. Leaving it as a retryable outlier is enough for later
+	// explicit retries, but promoting it synchronously as a dependency just
+	// replays the same half-resolved anchor choice that produced the
+	// failure in the first place.
+	if self
+		.services
+		.pdu_metadata
+		.get_rejection_reason(prev_id)
+		.await
+		.as_deref()
+		.and_then(RejectionCode::parse)
+		.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent)
+	{
+		debug!(?prev_id, "Skipping immediate prev-event retry after state-resolution failure");
 		return Ok(());
 	}
 
@@ -72,12 +139,16 @@ where
 		.insert(room_id.into(), ((*prev_id).to_owned(), start_time));
 
 	defer! {{
-		self.federation_handletime
-			.write()
-			.remove(room_id);
+		if self.services.server.running() {
+			self.federation_handletime
+				.write()
+				.remove(room_id);
+		}
 	}};
 
 	// Keep the large upgrade future out of handle_prev_pdu's own future.
+	// Called from within handle_incoming_pdu's `with_cork_and_flush`, so the
+	// timeline insert below must not flush on its own.
 	Box::pin(self.upgrade_outlier_to_timeline_pdu(
 		pdu,
 		json,
@@ -85,6 +156,10 @@ where
 		origin,
 		room_id,
 		false,
+		false,
+		false,
+		None,
+		true,
 	))
 	.await?;
 

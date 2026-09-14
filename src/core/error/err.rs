@@ -176,6 +176,18 @@ macro_rules! err_lev {
 	(error) => {
 		$crate::tracing::Level::ERROR
 	};
+
+	(info) => {
+		$crate::tracing::Level::INFO
+	};
+
+	(debug) => {
+		$crate::tracing::Level::DEBUG
+	};
+
+	(trace) => {
+		$crate::tracing::Level::TRACE
+	};
 }
 
 use std::{fmt, fmt::Write};

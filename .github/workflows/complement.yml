@@ -1,4 +1,11 @@
 ---
+# Unified Integration Tests
+# ---------------------------
+# Consolidates the former complement.yml, complement-crypto.yml and locust.yml
+# into one workflow so the Complement, Complement-Crypto and Locust suites all
+# share a single `dev-quick` amd64 build (the `setup` job) instead of each
+# independently compiling the ~same Rust binary. GitHub Actions `needs:` only
+# works within one workflow file, which is why all suites live here.
 name: Complement Tests
 
 on:
@@ -14,13 +21,82 @@ env:
   SKIP_CONFIRM: 1
 
 jobs:
+  # -----------------------------------------------------------------------------
+  # Setup: build the shared `dev-quick` amd64 binary once.
+  # -----------------------------------------------------------------------------
+  setup:
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: "dev-quick"
+      FEATURES: "direct_tls,url_preview"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Export CPU target env vars
+        run: |
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        with:
+          shared-key: ubuntu-24.04-${{ steps.cpu.outputs.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
+
+      # Single dev-quick build shared by Complement (amd64 cells),
+      # Complement-Crypto and Locust. Built with the feature superset
+      # (direct_tls + url_preview) so every consumer can run it.
+      - name: Build continuwuity (dev-quick, shared)
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+
+      - name: Upload shared binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: target/latest/conduwuit
+          retention-days: 7
+          overwrite: true
+
   complement-tests:
     # NOTE: to enable GitHub builds/workflows, add a REPOSITORY_VARIABLE
     # i.e., under /settings/variables/actions, C10Y_SOME_ENV_VAR=1
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
-      FEATURES: "direct_tls"
+      COMPLEMENT_PARALLEL: 24
+      FEATURES: "direct_tls,url_preview"
 
     strategy:
       fail-fast: false
@@ -28,29 +104,29 @@ jobs:
         include:
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-22.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
 
     # For writing/updating PR comments on running test totals (# pass/fail/skip)
@@ -68,7 +144,7 @@ jobs:
           submodules: recursive
 
       - name: Fetch tags and origin/main for comparison
-        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
       - name: Install system dependencies
         run: |
@@ -127,13 +203,16 @@ jobs:
           echo "Prebuilt Arch: ${{ matrix.prebuilt_arch }}"
           echo "Detected CPU Target: ${{ steps.cpu.outputs.target }}"
 
+      # Every cell builds its own binary on its own runner (as before the
+      # shared-binary consolidation). Each runner's glibc matches its OS
+      # (e.g. ubuntu-22.04 -> glibc 2.35), so the binary always runs there.
       - name: Build conduwuit for Complement
         env:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
           JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.jemalloc_lg_page || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.target_cpu != '' && format('-C target-cpu={0}', matrix.target_cpu) || '' }}
-        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls"
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls,url_preview"
 
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
@@ -172,21 +251,33 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: complement-src/go.sum
 
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
-
       - name: Configure Docker Network Firewall
         run: |
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
 
       - name: Run Complement tests
+        id: complement
         env:
           CONDUWUIT_SENDER_TIMEOUT: 5
           CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
           COMPLEMENT_SHARE_ENV_PREFIX: PASS_
           PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
+          COMPLEMENT_RESULTS_DIR: tests/complement
+        shell: bash
         run: |
-          make complement/run COMPLEMENT_DIR=./complement-src
+          COMPLEMENT_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
+          HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
+          MOUNTS="/usr/local/lib:/usr/local/lib:ro"
+          if [ -n "$HOST_LIBS" ]; then
+            MOUNTS="$MOUNTS;$HOST_LIBS"
+          fi
+          env \
+            COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 \
+            RESULTS_DIR="${COMPLEMENT_RESULTS_DIR}" \
+            COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" \
+            COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+            COMPLEMENT_RUN="." \
+            ./bin/complement ./complement-src
 
       - name: Compare results with baseline
         continue-on-error: true
@@ -194,7 +285,7 @@ jobs:
 
       - name: Compare FULL results with baseline
         continue-on-error: true
-        run: git diff --color=always tests/test_results/complement/test_results.jsonl
+        run: git diff --color=always tests/complement/results.jsonl
 
       - name: Upload test logs
         if: always()
@@ -202,15 +293,15 @@ jobs:
         with:
           name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
-            tests/test_results/complement/test_results.jsonl
-            tests/test_results/complement/test_logs.jsonl
+            tests/complement/results.jsonl
+            tests/complement/logs.jsonl
           retention-days: 90
 
       - name: Parse Complement results
         id: results
         if: always()
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl"
+          RESULTS="tests/complement/results.jsonl"
           if [ ! -f "$RESULTS" ]; then
             echo "Results file not found, skipping parsing."
             exit 0
@@ -219,16 +310,20 @@ jobs:
           # Inject arch, os, and profile into the JSONL file itself.
           # We use a temp file to avoid reading/writing to the same file.
           TEMP_RESULTS=$(mktemp)
+          SORTED_RESULTS=$(mktemp)
           jq -c --arg a "${{ matrix.arch }}" --arg o "${{ matrix.os }}" --arg p "${{ matrix.profile }}" --arg rv "${{ matrix.room_version }}" \
             '. + {arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS" > "$TEMP_RESULTS"
-          mv "$TEMP_RESULTS" "$RESULTS"
+          sort -u "$TEMP_RESULTS" > "$SORTED_RESULTS"
+          mv "$SORTED_RESULTS" "$RESULTS"
+          rm -f "$TEMP_RESULTS"
 
           PASS=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS")
           FAIL=$(jq -s '[.[] | select(.Action == "fail")] | length' "$RESULTS")
           SKIP=$(jq -s '[.[] | select(.Action == "skip")] | length' "$RESULTS")
           TOTAL=$((PASS + FAIL + SKIP))
           FAILED_TESTS=$(jq -r 'select(.Action == "fail") | .Test' "$RESULTS" \
-            | sort -u)
+            | sort -u \
+            | head -n 5)
 
           echo "pass=$PASS" | tee -a "$GITHUB_OUTPUT"
           echo "fail=$FAIL" | tee -a "$GITHUB_OUTPUT"
@@ -244,7 +339,127 @@ jobs:
           echo "| ✓ Pass | $PASS |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ✗ Fail | $FAIL |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ⌒ Skip | $SKIP |" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "| **Total** | **$TOTAL** |" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Print failing test log excerpts
+        if: always()
+        continue-on-error: true
+        env:
+          # Whether the "Run Complement tests" step actually ran. If a prior
+          # build/setup step failed, it is skipped/cancelled and the tracked
+          # test_results.jsonl left in the tree is stale, not something the
+          # Complement run produced -- so a missing logs.jsonl is then
+          # *not* evidence of a broken log pipeline.
+          COMPLEMENT_OUTCOME: ${{ steps.complement.outcome }}
+        run: |
+          RESULTS="tests/complement/results.jsonl" \
+          LOGS="tests/complement/logs.jsonl" \
+          python3 - <<'PY'
+          import collections
+          import html
+          import json
+          import os
+          import re
+          import pathlib
+
+          results_path = pathlib.Path(os.environ["RESULTS"])
+          logs_path = pathlib.Path(os.environ["LOGS"])
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          complement_outcome = os.environ.get("COMPLEMENT_OUTCOME")
+
+          if not summary_path:
+              print("GITHUB_STEP_SUMMARY not set, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not results_path.is_file():
+              # The whole test run crashed before writing anything -- nothing
+              # to excerpt, and nothing wrong with *this* step specifically.
+              print("Results file missing, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not logs_path.is_file():
+              # Only flag a broken log pipeline when the Complement step
+              # actually ran (success or failure) and produced these results.
+              # If it was skipped/cancelled because an earlier build or setup
+              # step failed, the checked-in test_results.jsonl is stale and no
+              # Complement run wrote these "results" -- a missing logs.jsonl
+              # is then expected and is not a log-pipeline bug.
+              if complement_outcome not in ("success", "failure"):
+                  print(
+                      "Complement step did not run "
+                      f"(outcome={complement_outcome!r}); not flagging missing logs."
+                  )
+                  raise SystemExit(0)
+              # Results exist but logs don't: that's not "the run produced
+              # nothing", that's the log pipeline being broken (see the
+              # bin/complement staging bug this masked for a while). Surface
+              # it loudly in the summary instead of a line buried in the raw
+              # job log that nobody reads.
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write(
+                      "\n> ⚠️ **Test log file missing** "
+                      f"(`{logs_path}`) even though results were recorded. "
+                      "Failing test log excerpts cannot be shown for this run -- "
+                      "check the Complement runner's log-file handling.\n"
+                  )
+              print(f"Results present but {logs_path} missing; flagged in summary.")
+              raise SystemExit(0)
+
+          failed = []
+          seen = set()
+          with results_path.open("r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if row.get("Action") == "fail":
+                      test = row.get("Test")
+                      if test and test not in seen:
+                          seen.add(test)
+                          failed.append(test)
+                  if len(failed) >= 5:
+                      break
+
+          if not failed:
+              print("No failing tests to print.")
+              raise SystemExit(0)
+
+          failed_set = set(failed)
+          excerpts = {test: collections.deque(maxlen=80) for test in failed}
+          with logs_path.open("r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  test = row.get("Test")
+                  if test not in failed_set:
+                      continue
+                  output = row.get("Output")
+                  if output:
+                      for out_line in output.rstrip("\n").splitlines():
+                          excerpts[test].append(out_line)
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write("\n### Failing Test Log Excerpts\n")
+              for test in failed:
+                  summary.write(f"\n<details><summary>{html.escape(test)}</summary>\n\n")
+                  max_backticks = 0
+                  for out_line in excerpts[test]:
+                      for match in re.finditer(r"`+", out_line):
+                          max_backticks = max(max_backticks, len(match.group(0)))
+                  fence = "`" * max(3, max_backticks + 1)
+                  summary.write(f"{fence}text\n")
+                  for out_line in excerpts[test]:
+                      summary.write(out_line + "\n")
+                  summary.write(f"{fence}\n</details>\n")
+          PY
 
       - name: Get conduwuit version
         id: version
@@ -327,7 +542,7 @@ jobs:
           database_url: ${{ secrets.C10Y_POSTGRES_URL }}
           setup_tables: false
           rebuild_db: false
-          results_file: tests/test_results/complement/test_results.jsonl
+          results_file: tests/complement/results.jsonl
           run_metadata: >-
             {
               "commit_hash": "${{ github.event.pull_request.head.sha || github.sha }}",
@@ -356,8 +571,8 @@ jobs:
           fi
           python3 .github/actions/postgres/ci-query-failures.py
 
-      - name: Get newly failing tests
-        id: new_failures
+      - name: Get failing tests
+        id: failures
         if: always()
         continue-on-error: true
         env:
@@ -374,7 +589,7 @@ jobs:
           ROOM_VERSION="${{ matrix.room_version }}"
           FEATURES="${{ env.FEATURES }}"
 
-          # Fetch the newly failing and passing tests for this specific run.
+          # Fetch the failing tests for this specific run.
           # Keep this query branch-local instead of depending on v_run_regressions,
           # because that shared view may be managed by another branch.
           COMMON_CTES="
@@ -390,78 +605,25 @@ jobs:
                 AND EXISTS (SELECT 1 FROM run_details rd WHERE rd.run_id = r.id)
               ORDER BY r.run_date DESC, r.id DESC
               LIMIT 1
-            ),
-            baseline_selection AS (
-              SELECT DISTINCT ON (arch, os)
-                id,
-                os
-              FROM runs
-              WHERE (branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
-                OR version_string LIKE '%main%')
-              ORDER BY
-                arch,
-                os,
-                run_date DESC,
-                id DESC
-            ),
-            baseline_status AS (
-              SELECT
-                bsel.os,
-                rd.test_name,
-                bool_or(rd.status = 'pass') AS any_pass,
-                bool_or(rd.status = 'skip') AS any_skip
-              FROM baseline_selection bsel
-              JOIN run_details rd ON rd.run_id = bsel.id
-              GROUP BY
-                bsel.os,
-                rd.test_name
             )"
-          NEW_FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
+          FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
             SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
             FROM current_run r
             JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
             WHERE rd.status = 'fail'
-              AND bs.test_name IS NOT NULL
-              AND (bs.any_pass OR bs.any_skip);" | sed 's/\\n/\n/g')
-          NEW_PASSES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
-            SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
-            FROM current_run r
-            JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
-            WHERE rd.status = 'pass'
-              AND bs.test_name IS NOT NULL
-              AND NOT bs.any_pass;" | sed 's/\\n/\n/g')
-
-
-          echo "new_failures<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_FAILURES" | tee -a "$GITHUB_OUTPUT"
+          " | sed 's/\\n/\n/g')
+          echo "failures<<EOF" | tee -a "$GITHUB_OUTPUT"
+          echo "$FAILURES" | tee -a "$GITHUB_OUTPUT"
           echo "EOF" | tee -a "$GITHUB_OUTPUT"
 
-          echo "new_passes<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_PASSES" | tee -a "$GITHUB_OUTPUT"
-          echo "EOF" | tee -a "$GITHUB_OUTPUT"
-
-          # Count non-empty lines of new failures
-          NEW_FAILURES_COUNT=$(echo "$NEW_FAILURES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_FAILURES_COUNT" -gt 0 ]; then
+          # Count non-empty lines of failures
+          FAILURES_COUNT=$(echo "$FAILURES" | grep -c '[^[:space:]]' || true)
+          if [ "$FAILURES_COUNT" -gt 0 ]; then
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Failed Tests ($NEW_FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Failed Tests ($FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Count non-empty lines of new passes
-          NEW_PASSES_COUNT=$(echo "$NEW_PASSES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_PASSES_COUNT" -gt 0 ]; then
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Passed Tests ($NEW_PASSES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_PASSES" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "$FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
@@ -470,8 +632,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         env:
-          FAILED_TESTS: ${{ steps.new_failures.outputs.new_failures }}
-          PASSED_TESTS: ${{ steps.new_failures.outputs.new_passes }}
+          FAILED_TESTS: ${{ steps.failures.outputs.failures }}
         with:
           script: |
             const pass = ${{ steps.results.outputs.pass || 0 }};
@@ -482,16 +643,11 @@ jobs:
             const os = '${{ matrix.os }}';
             const roomVersion = '${{ matrix.room_version }}';
             const failedTestsRaw = process.env.FAILED_TESTS || '';
-            const passedTestsRaw = process.env.PASSED_TESTS || '';
 
-            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0);
-            let failedContent = 'No newly failing tests recorded.';
-            if (lines.length > 0) {
-              const list = lines.join('\n');
-              failedContent = '```\n' + list + '\n```';
-            }
-
-            const passedLines = passedTestsRaw.trim().split('\n').filter(l => l.length > 0);
+            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0).slice(0, 5);
+            const failedContent = lines.length > 0
+              ? '```\n' + lines.join('\n') + '\n```'
+              : 'No failures recorded.';
 
             const currentRunLines = [
               `## Complement Test Results (${arch} ${os} v${roomVersion})`,
@@ -503,26 +659,13 @@ jobs:
               `| ✓ Pass | ${pass} |`,
               `| ✗ Fail | ${fail} |`,
               `| ⌒ Skip | ${skip} |`,
-              `| **Total** | **${total}** |`,
               '',
-              `<details><summary>Newly Failed Tests (${lines.length})</summary>`,
+              `<details><summary>Failed Tests (${fail})</summary>`,
               '',
               failedContent,
               '',
               '</details>',
             ];
-
-            if (passedLines.length > 0) {
-              const passedContent = '```\n' + passedLines.join('\n') + '\n```';
-              currentRunLines.push(
-                '',
-                `<details><summary>Newly Passed Tests (${passedLines.length})</summary>`,
-                '',
-                passedContent,
-                '',
-                '</details>'
-              );
-            }
 
             let currentRun = currentRunLines.join('\n');
 
@@ -594,7 +737,7 @@ jobs:
         run: |
           ARCH="${{ matrix.arch }}"
           OS="${{ matrix.os }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "${RESULTS_OUTCOME}" = "success" ]; then
@@ -616,3 +759,347 @@ jobs:
               -H "Content-Type: application/json" \
               --data @- || echo "Matrix notify failed (non-fatal)"
           fi
+
+  # -----------------------------------------------------------------------------
+  # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
+  # as three parallel client-matrix variants so js, rs, and js+rs results are
+  # attributed separately (mirroring the official complement-crypto repo, which
+  # runs JS-only, Rust-only and mixed jobs). The rs/js+rs variants consume a
+  # PREBUILT matrix-rust-sdk FFI (shared library + generated Go bindings) from a
+  # URL configured via the C10Y_CRYPTO_RUST_SDK_URL repository variable, rather
+  # than compiling matrix-rust-sdk (an ~8.5GB source build that would blow the
+  # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
+  # -----------------------------------------------------------------------------
+  complement-crypto-tests:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      COMPLEMENT_PARALLEL: 24
+      FEATURES: "direct_tls,url_preview"
+      PROFILE: "dev-quick"
+    permissions:
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: js
+            badge: js
+            client_matrix: jj
+          - name: rs
+            badge: rs
+            client_matrix: rr
+          - name: js+rs
+            badge: jsrs
+            client_matrix: jr,rj
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      # The suite needs the system libs Rust links against (mounts them into the
+      # complement homeserver image), so set up the toolchain/prebuilts even
+      # though we download rather than compile the binary.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold \
+            postgresql-client \
+            chromium
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Configure Docker Network Firewall
+        run: |
+          sudo ufw allow in on br-+ comment "(from Complement-Crypto testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Build Complement Docker image
+        run: make complement/docker PROFILE=${{ env.PROFILE }}
+
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
+
+      # complement-crypto (`go 1.25.0`) runs its `go test` on the runner (host-side,
+      # like `just complement`), so the Go toolchain plus the embedded JS-SDK bundle
+      # and system chromium must be present.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: complement-crypto-src/go.sum
+
+      - name: Build JS SDK bundle (for //go:embed dist)
+        if: contains(matrix.client_matrix, 'j')
+        run: |
+          cd complement-crypto-src
+          corepack enable
+          # `matrix-js-sdk@develop` is not a published npm version; the script
+          # feeds its arg straight into `yarn add`, so install the develop
+          # BRANCH via the GitHub URL form (see rebuild_js_sdk.sh --help).
+          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
+
+      # rs / js+rs variants consume a PREBUILT matrix-rust-sdk FFI (libmatrix_sdk_ffi.so
+      # plus the generated Go bindings) from C10Y_CRYPTO_RUST_SDK_URL instead of
+      # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
+      # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
+      - name: Download prebuilt matrix-rust-sdk FFI
+        if: contains(matrix.client_matrix, 'r')
+        env:
+          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+        run: |
+          if [ -z "$RUST_SDK_URL" ]; then
+            echo "::error::Repository variable C10Y_CRYPTO_RUST_SDK_URL is not set. Point it at a tarball containing libmatrix_sdk_ffi.so + the Go bindings (see .github/workflows/complement.yml)."
+            exit 1
+          fi
+          mkdir -p /tmp/mrsdk
+          curl -fsSL "$RUST_SDK_URL" -o /tmp/mrsdk.tar.gz
+          tar -xzf /tmp/mrsdk.tar.gz -C /tmp/mrsdk
+          SO=$(find /tmp/mrsdk -name libmatrix_sdk_ffi.so | head -n 1)
+          if [ -z "$SO" ]; then
+            echo "::error::libmatrix_sdk_ffi.so not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          mkdir -p matrix-rust-sdk/target/debug
+          install -m 0755 "$SO" matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.so
+          BINDINGS_DIR=$(dirname "$(find /tmp/mrsdk -name rust.go | head -n 1)")
+          if [ -z "$BINDINGS_DIR" ] || [ ! -d "$BINDINGS_DIR" ]; then
+            echo "::error::Go bindings (rust.go) not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          cp -r "$BINDINGS_DIR"/. complement-crypto-src/internal/api/rust/
+          echo "Installed prebuilt matrix-rust-sdk FFI from $RUST_SDK_URL"
+
+      - name: Run Complement-Crypto tests (${{ matrix.name }})
+        id: complement-crypto
+        env:
+          COMPLEMENT_CRYPTO_PARALLEL: "3"
+          COMPLEMENT_CRYPTO_TIMEOUT: "45m"
+          # Per-variant client matrix: js (jj), rs (rr), or mixed js+rs (jr,rj).
+          # `just e2ee` picks the matching Go build tags from this value.
+          COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX: ${{ matrix.client_matrix }}
+          COMPLEMENT_CRYPTO_RUST_SDK_DIR: ${{ github.workspace }}/matrix-rust-sdk
+        run: |
+          # `just e2ee` runs complement-crypto's `go test` directly on the runner
+          # against the complement homeserver image built above.
+          just e2ee ".*"
+
+      - name: Upload Complement-Crypto results (${{ matrix.name }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complement-crypto-results-${{ matrix.name }}
+          path: |
+            tests/crypto/results.jsonl
+            tests/crypto/test_results.*.jsonl
+            tests/crypto/logs.*.jsonl
+          retention-days: 90
+
+      # Publish a per-variant complement-crypto badge
+      # (`badge-compcrypto-<branch>-<variant>.json`) to the shared
+      # `_metadata/badges` orphan branch. Counts come from the merged results that
+      # `just e2ee` wrote; mirror the base-complement ledger call.
+      - name: Update Complement-Crypto badge (${{ matrix.name }})
+        if: always()
+        continue-on-error: true
+        run: |
+          RESULTS=tests/crypto/results.jsonl
+          if [ ! -f "$RESULTS" ]; then
+            echo "No complement-crypto results found; skipping badge update."
+            exit 0
+          fi
+          echo "crypto_pass=$(jq -r 'select(.Action=="pass" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_fail=$(jq -r 'select(.Action=="fail" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_skip=$(jq -r 'select(.Action=="skip" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_version=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Run Update Results Ledger (crypto ${{ matrix.name }})
+        if: env.crypto_pass != ''
+        continue-on-error: true
+        uses: ./.github/actions/update-results-ledger
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          crypto_pass_count: ${{ env.crypto_pass }}
+          crypto_fail_count: ${{ env.crypto_fail }}
+          crypto_skip_count: ${{ env.crypto_skip }}
+          version_string: ${{ env.crypto_version }}
+          actor: ${{ github.actor }}
+          binary_path: target/latest/conduwuit
+          arch: x86_64
+          os: ubuntu-24.04
+          profile: dev-quick
+          badge_suffix: -${{ matrix.badge }}
+
+  # -----------------------------------------------------------------------------
+  # Locust load test. Also consumes the shared binary; runs the homeserver
+  # directly (no Docker image) and drives matrix-locust against it.
+  # -----------------------------------------------------------------------------
+  locust-test:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: dev-quick
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup prebuilts (RocksDB/Jemalloc)
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      # matrix-locust only works on Python <= 3.12 (see note below).
+      - name: Set up Python 3.12 (required by matrix-locust toolchain)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Start conduwuit server
+        env:
+          CONDUWUIT_PORT: "6167"
+        run: |
+          mkdir -p /tmp/conduwuit-db
+          cat > /tmp/conduwuit.toml <<EOF
+          [global]
+          server_name = "localhost"
+          address = ["127.0.0.1"]
+          port = $CONDUWUIT_PORT
+          database_path = "/tmp/conduwuit-db"
+          allow_registration = true
+          yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+          EOF
+          ./target/latest/conduwuit -c /tmp/conduwuit.toml &
+          echo $! > /tmp/conduwuit.pid
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:$CONDUWUIT_PORT/_matrix/client/versions && break
+            sleep 1
+          done
+
+      # The matrix-locust toolchain (locust==2.17.0 + matrix-nio==0.21.2) is
+      # only compatible with Python <= 3.12: matrix-nio 0.21.2 imports `cgi`
+      # (removed in Python 3.13) and locust 2.17.0 accesses instance-level
+      # `__annotations__` (removed on 3.14), so both crash on newer Pythons.
+      - name: Setup matrix-locust
+        run: |
+          if [ -d "../matrix-locust" ]; then
+            cp -r ../matrix-locust /tmp/matrix-locust
+          else
+            # Pin to a specific upstream commit so the load-test setup is
+            # reproducible instead of tracking matrix-locust's moving default
+            # branch.
+            git clone https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+            cd /tmp/matrix-locust
+            git checkout 4efee8d84c65730de23c293c369d577dcf63b2e5
+            cd -
+          fi
+          cd /tmp/matrix-locust
+          # generate_users.py (no --domains) emits empty-domain usernames ending
+          # in ":" (e.g. "user.000001:"). matrix-locust's set_user() then rewrites
+          # the --host to "http://matrix.<domain>" = "http://matrix.", which cannot
+          # resolve, so every /register fails with "[Errno -3] Temporary failure
+          # in name resolution". Emit a bare localpart when there is no domain so
+          # set_user() keeps the user-supplied --host (http://127.0.0.1:6167).
+          sed -i 's/        username = "user\.{:06d}:{}"\.format(i, host)/        username = "user.{:06d}".format(i) + (":" + host if host else "")/' generate_users.py
+          # `python` is the Python 3.12 set up by actions/setup-python above.
+          # Building the venv from it (instead of the runner's `python3`)
+          # guarantees the toolchain lands on a supported interpreter.
+          python -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          # Pin the runtime deps so upgrades can't silently change the results.
+          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests==2.34.2 click==8.4.2 gevent==26.8.0
+
+      - name: Run Locust load test
+        working-directory: /tmp/matrix-locust
+        run: |
+          mkdir -p data
+          ./venv/bin/python generate_users.py 100
+          ./venv/bin/python generate_rooms.py
+          echo "=== 1. Registering users ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/register
+          echo "=== 2. Creating rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/create_room
+          echo "=== 3. Joining rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/join
+          echo "=== 4. Normal chat load test ==="
+          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://127.0.0.1:6167 --csv data/chat
+
+      - name: Stop conduwuit server
+        if: always()
+        run: |
+          if [ -f /tmp/conduwuit.pid ]; then
+            kill $(cat /tmp/conduwuit.pid) || true
+          fi
+
+      - name: Upload Locust results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: locust-results
+          path: |
+            /tmp/matrix-locust/data/
+            /tmp/matrix-locust/data/*.csv
+            /tmp/matrix-locust/locust*.html
+          retention-days: 30

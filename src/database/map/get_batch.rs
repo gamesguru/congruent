@@ -20,6 +20,10 @@ where
 	K: AsRef<[u8]> + Send + Sync + 'a,
 {
 	fn get(self, map: &'a Arc<super::Map>) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a;
+	fn get_nocache(
+		self,
+		map: &'a Arc<super::Map>,
+	) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a;
 }
 
 impl<'a, K, S> Get<'a, K, S> for S
@@ -32,13 +36,46 @@ where
 	fn get(self, map: &'a Arc<super::Map>) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a {
 		map.get_batch(self)
 	}
+
+	#[inline]
+	fn get_nocache(
+		self,
+		map: &'a Arc<super::Map>,
+	) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a {
+		map.get_batch_nocache(self)
+	}
 }
 
 #[implement(super::Map)]
 #[tracing::instrument(skip(self, keys), level = "trace")]
-pub(crate) fn get_batch<'a, S, K>(
+pub fn get_batch<'a, S, K>(
 	self: &'a Arc<Self>,
 	keys: S,
+) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
+where
+	S: Stream<Item = K> + Send + 'a,
+	K: AsRef<[u8]> + Send + Sync + 'a,
+{
+	get_batch_inner(self, keys, false)
+}
+
+#[implement(super::Map)]
+#[tracing::instrument(skip(self, keys), level = "trace")]
+pub fn get_batch_nocache<'a, S, K>(
+	self: &'a Arc<Self>,
+	keys: S,
+) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
+where
+	S: Stream<Item = K> + Send + 'a,
+	K: AsRef<[u8]> + Send + Sync + 'a,
+{
+	get_batch_inner(self, keys, true)
+}
+
+fn get_batch_inner<'a, S, K>(
+	map: &'a Arc<super::Map>,
+	keys: S,
+	nocache: bool,
 ) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
 where
 	S: Stream<Item = K> + Send + 'a,
@@ -47,10 +84,11 @@ where
 	use crate::pool::Get;
 
 	keys.ready_chunks(automatic_amplification())
-		.widen_then(automatic_width(), |chunk| {
-			self.db.pool.execute_get(Get {
-				map: self.clone(),
+		.widen_then(automatic_width(), move |chunk| {
+			map.db.pool.execute_get(Get {
+				map: map.clone(),
 				key: chunk.iter().map(AsRef::as_ref).map(Into::into).collect(),
+				nocache,
 				res: None,
 			})
 		})
@@ -60,7 +98,7 @@ where
 
 #[implement(super::Map)]
 #[tracing::instrument(name = "batch_blocking", level = "trace", skip_all)]
-pub(crate) fn get_batch_blocking<'a, I, K>(
+pub fn get_batch_blocking<'a, I, K>(
 	&self,
 	keys: I,
 ) -> impl Iterator<Item = Result<Handle<'_>>> + Send + use<'_, I, K>

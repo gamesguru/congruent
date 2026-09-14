@@ -201,7 +201,7 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 					.serialize(&mut Serializer::new(&mut Writer::new(&mut *self.out)))
 					.map_err(|e| Self::Error::SerdeSer(e.to_string().into()))
 			},
-			| _ => unhandled!("Unrecognized serialization Newtype {name:?}"),
+			| _ => value.serialize(self),
 		}
 	}
 
@@ -283,9 +283,7 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 
 	fn serialize_u8(self, v: u8) -> Result<Self::Ok> { self.write(&[v]) }
 
-	fn serialize_bool(self, _v: bool) -> Result<Self::Ok> {
-		unhandled!("serialize bool not implemented")
-	}
+	fn serialize_bool(self, v: bool) -> Result<Self::Ok> { self.write(&[u8::from(v)]) }
 
 	fn serialize_unit(self) -> Result<Self::Ok> { Ok(()) }
 }
