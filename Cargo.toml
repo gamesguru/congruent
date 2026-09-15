@@ -145,6 +145,7 @@ version = "2.1.2"
 version = "0.13.2"
 default-features = false
 features = [
+	"form",
     "rustls-no-provider",
     "socks",
     "hickory-dns",
@@ -780,8 +781,8 @@ inherits = "dev"
 [profile.dev.package.'*']
 inherits = "dev"
 debug = 'limited'
-codegen-units = 1
-opt-level = 'z'
+codegen-units = 16
+opt-level = 0
 #rustflags = [
 #	'--cfg', 'conduwuit_mods',
 #	'-Ztls-model=global-dynamic',

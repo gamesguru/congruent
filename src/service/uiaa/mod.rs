@@ -57,6 +57,11 @@ struct UiaaSession {
 	identity: Identity,
 }
 
+#[derive(serde::Deserialize)]
+struct RecaptchaResponse {
+	success: bool,
+}
+
 /// Information about the authenticated user's identity.
 ///
 /// A field of this struct will only be Some if the user completed
@@ -435,7 +440,7 @@ impl Service {
 					});
 				};
 
-				match recaptcha_verify::verify_v3(private_site_key, response, None).await {
+				match verify_recaptcha(private_site_key, response).await {
 					| Ok(()) => Ok(AuthType::ReCaptcha),
 					| Err(e) => {
 						error!("ReCaptcha verification failed: {e:?}");
@@ -474,5 +479,23 @@ impl Service {
 			}),
 		}
 		.map(|auth_type| (auth_type, identity))
+	}
+}
+
+async fn verify_recaptcha(secret: &str, response: &str) -> Result<()> {
+	const VERIFY_URL: &str = "https://www.google.com/recaptcha/api/siteverify";
+
+	let body = reqwest::Client::new()
+		.post(VERIFY_URL)
+		.form(&[("secret", secret), ("response", response)])
+		.send()
+		.await?
+		.text()
+		.await?;
+
+	if serde_json::from_str::<RecaptchaResponse>(&body)?.success {
+		Ok(())
+	} else {
+		Err!(Request(Forbidden("reCAPTCHA verification failed")))
 	}
 }
