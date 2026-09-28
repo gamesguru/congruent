@@ -12,7 +12,7 @@ MAKEFLAGS += --no-print-directory
 # `?=`) is required: Make auto-imports already-exported shell variables as if
 # they were `?=`-defined, so a plain `?=` would keep a bad inherited value
 # instead of replacing it. Bump this in lockstep with rust-toolchain.toml.
-RUSTUP_TOOLCHAIN := nightly-2026-08-20
+RUSTUP_TOOLCHAIN ?= 1.98.1
 export RUSTUP_TOOLCHAIN
 
 # [CONFIG] source .env if it exists
@@ -197,7 +197,7 @@ cov:    ##H Run tests with llvm-cov coverage (text summary)
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
+		cargo llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			$(CARGO_SCOPE)
 
@@ -210,7 +210,7 @@ cov/html:       ##H Run tests with llvm-cov and open HTML report
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
+		cargo llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			--html --open \
 			$(CARGO_SCOPE)
