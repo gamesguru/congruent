@@ -385,15 +385,24 @@ async fn migrate(services: &Services) -> Result<()> {
 		));
 	}
 
-	// Validate schema fingerprint (trust-on-first-use for upgrades)
+	// Validate schema fingerprint. A fingerprint from an older schema is expected
+	// to differ because the schema version is part of the hash. Only retain the
+	// hard-fail behavior for databases that were already current when opened;
+	// successful versioned migrations are the compatibility boundary for upgrades.
 	let expected = compute_schema_fingerprint();
 	if let Some(stored) = services.globals.db.schema_fingerprint().await {
 		if stored != expected {
-			return Err!(Database(
-				"Schema fingerprint mismatch! This database was created by a different build \
-				 with incompatible column families. Expected {expected:x?}, found {stored:x?}. \
-				 Do NOT continue — data corruption will occur.",
-			));
+			if db_version >= DATABASE_VERSION {
+				return Err!(Database(
+					"Schema fingerprint mismatch! This database was created by a different \
+					 build with incompatible column families. Expected {expected:x?}, found \
+					 {stored:x?}. Do NOT continue — data corruption will occur.",
+				));
+			}
+			warn!(
+				"Replacing schema fingerprint from database version {db_version} after \
+				 successful migration to {DATABASE_VERSION}"
+			);
 		}
 	}
 	services.globals.db.set_schema_fingerprint(&expected);
@@ -896,7 +905,7 @@ const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v4
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
 async fn populate_topological_index(services: &Services) -> Result<()> {
-	const BATCH_SIZE: usize = 1000;
+	const BATCH_SIZE: usize = 10_000;
 
 	info!("Starting migration to populate roomid_topologicalorder_pducount...");
 	let db = &services.db;
@@ -904,21 +913,29 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 	let eventid_metadata = db["eventid_metadata"].clone();
 
 	let roomid_topologicalorder_pducount = db["roomid_topologicalorder_pducount"].clone();
+	let cork = db.cork_and_sync();
 
 	// First, completely clear the old broken index (the byte encoding has changed).
 	let clear_stream = roomid_topologicalorder_pducount.raw_stream();
 	pin_mut!(clear_stream);
 	let mut cleared: usize = 0;
+	let mut clear_batch = database::Batch::new();
 	while let Some(Ok((key, _))) = clear_stream.next().await {
-		roomid_topologicalorder_pducount.remove(&key);
+		roomid_topologicalorder_pducount.batch_delete(&mut clear_batch, &key);
 		cleared = cleared.saturating_add(1);
+		if cleared.is_multiple_of(BATCH_SIZE) {
+			roomid_topologicalorder_pducount.apply_batch(clear_batch);
+			clear_batch = database::Batch::new();
+		}
 	}
+	roomid_topologicalorder_pducount.apply_batch(clear_batch);
 	info!("Cleared {cleared} old entries from topological index to prepare for rebuild.");
 
 	let stream = room_pducount_eventid.raw_stream();
 	pin_mut!(stream);
 	let mut total_migrated: usize = 0;
 	let mut batch_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+	let mut write_batch = database::Batch::new();
 
 	loop {
 		// Collect a batch of entries from the stream
@@ -975,21 +992,39 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			topo_key.extend_from_slice(&shortroomid);
 			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
-			roomid_topologicalorder_pducount.put(&topo_key, batch_entries[i].1.clone());
 			meta.deprecated_local_topo_depth = global_depth;
 			if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-				eventid_metadata.put(batch_entries[i].1.as_slice(), metadata_bytes);
+				roomid_topologicalorder_pducount.batch_put(
+					&mut write_batch,
+					&topo_key,
+					batch_entries[i].1.as_slice(),
+				);
+				eventid_metadata.batch_put(
+					&mut write_batch,
+					batch_entries[i].1.as_slice(),
+					metadata_bytes,
+				);
+			} else {
+				roomid_topologicalorder_pducount.batch_put(
+					&mut write_batch,
+					&topo_key,
+					batch_entries[i].1.as_slice(),
+				);
 			}
 
 			total_migrated = total_migrated.saturating_add(1);
-			if total_migrated.is_multiple_of(10000) {
+			if total_migrated.is_multiple_of(BATCH_SIZE) {
+				roomid_topologicalorder_pducount.apply_batch(write_batch);
+				write_batch = database::Batch::new();
 				info!("Migrated {} events to topological index...", total_migrated);
 			}
 		}
 	}
+	roomid_topologicalorder_pducount.apply_batch(write_batch);
 
 	info!("Successfully populated topological index for {total_migrated} events!");
 	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
+	drop(cork);
 	db.db.sort()?;
 	Ok(())
 }
@@ -1882,16 +1917,20 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 				| Err(v19_err) => match bincode::deserialize::<EventMetadataV18>(value) {
 					| Ok(legacy) => LegacyEventMetadata::V18(legacy),
 					| Err(v18_err) => {
-					// A row that doesn't parse as either legacy layout is only safe
-					// to leave untouched if it already parses as v21.
-					if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value).is_ok() {
-						continue;
-					}
-					return Err(err!(
-						"eventid_metadata row ({} bytes) parses as neither v20 nor v19 nor v18 nor v21 during v21 migration: v20={v20_err}; v19={v19_err}; v18={v18_err}",
-						value.len(),
-					));
-					}
+						// A row that doesn't parse as either legacy layout is only safe
+						// to leave untouched if it already parses as v21.
+						if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value)
+							.is_ok()
+						{
+							continue;
+						}
+						return Err(err!(
+							"eventid_metadata row ({} bytes) parses as neither v20 nor v19 nor \
+							 v18 nor v21 during v21 migration: v20={v20_err}; v19={v19_err}; \
+							 v18={v18_err}",
+							value.len(),
+						));
+					},
 				},
 			},
 		};
@@ -1908,8 +1947,12 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 					deprecated_local_topo_depth: 0,
 					pdu_count: None,
 				},
-				legacy.rejected.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
-				legacy.soft_failed.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
+				legacy
+					.rejected
+					.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
+				legacy
+					.soft_failed
+					.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
 			),
 			| LegacyEventMetadata::V20(legacy) => {
 				let verdict = match legacy.status {
@@ -1943,18 +1986,26 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 					deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
 					pdu_count: legacy.pdu_count,
 				},
-				legacy.rejected.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
-				legacy.soft_failed.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
+				legacy
+					.rejected
+					.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
+				legacy
+					.soft_failed
+					.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
 			),
 		};
 
 		if let Some(code) = rejection
-			&& eventid_rejections.get_blocking(&event_id_bytes).is_not_found()
+			&& eventid_rejections
+				.get_blocking(&event_id_bytes)
+				.is_not_found()
 		{
 			eventid_rejections.insert(&event_id_bytes, [code]);
 		}
 		if let Some(code) = soft_failed
-			&& eventid_softfailed.get_blocking(&event_id_bytes).is_not_found()
+			&& eventid_softfailed
+				.get_blocking(&event_id_bytes)
+				.is_not_found()
 		{
 			eventid_softfailed.insert(&event_id_bytes, [code]);
 		}
