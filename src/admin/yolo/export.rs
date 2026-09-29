@@ -118,8 +118,14 @@ pub(super) async fn decorate_pdu_for_export(
 				"__local_topo_depth".to_owned(),
 				JsonValue::from(meta_bytes.deprecated_local_topo_depth),
 			);
-			obj.insert("__soft_failed".to_owned(), JsonValue::from(meta_bytes.soft_failed));
-			obj.insert("__rejected".to_owned(), JsonValue::from(meta_bytes.rejected));
+			let is_soft_failed = ctx
+				.services
+				.rooms
+				.pdu_metadata
+				.is_event_soft_failed(pdu.event_id())
+				.await;
+			obj.insert("__soft_failed".to_owned(), JsonValue::from(is_soft_failed));
+			obj.insert("__rejected".to_owned(), JsonValue::from(is_rejected));
 		}
 
 		// Stream ordering position (what /sync uses to iterate)
@@ -178,7 +184,7 @@ impl DagExportStats {
 					self.state_events = self.state_events.saturating_add(1);
 					self.last_is_state_event = true;
 					self.last_event_type = Some(pdu.kind().clone());
-					self.last_state_key = pdu.state_key.as_ref().map(ToString::to_string);
+					self.last_state_key = pdu.state_key.as_ref().map(|k| format!("{k}"));
 				} else {
 					self.last_is_state_event = false;
 				}

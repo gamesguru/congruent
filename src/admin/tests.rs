@@ -309,22 +309,52 @@ fn strip_v12_create_removes() {
 
 struct TempDbGuard {
 	path: std::path::PathBuf,
+	services: Option<std::sync::Arc<service::Services>>,
+	_serial: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Drop for TempDbGuard {
-	fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.path); }
+	fn drop(&mut self) {
+		if let Some(services) = self.services.take() {
+			let _ = std::thread::Builder::new()
+				.name("admin-test-shutdown".into())
+				.spawn(move || {
+					if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+						.enable_all()
+						.build()
+					{
+						runtime.block_on(async move {
+							services.stop().await;
+							drop(services);
+						});
+					}
+				})
+				.and_then(|thread| {
+					thread
+						.join()
+						.map_err(|_| std::io::Error::other("admin test shutdown thread panicked"))
+				});
+		}
+
+		let _ = std::fs::remove_dir_all(&self.path);
+	}
 }
 
 async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>, TempDbGuard) {
 	use figment::providers::Format;
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
+	static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+		std::sync::OnceLock::new();
 	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let serial = TEST_SERIAL
+		.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+		.clone()
+		.lock_owned()
+		.await;
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{prefix}_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
-
-	let guard = TempDbGuard { path: db_path.clone() };
 
 	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
 		r#"
@@ -361,10 +391,16 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 	// Boot admin module context references
 	crate::init(&services.admin).await;
 
+	let guard = TempDbGuard {
+		path: db_path,
+		services: Some(std::sync::Arc::clone(&services)),
+		_serial: serial,
+	};
+
 	(services, guard)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_audit_membership_drift() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -382,7 +418,6 @@ async fn test_yolo_audit_membership_drift() {
 		.short
 		.get_or_create_shortroomid(&room_id)
 		.await;
-
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 
 	// Create bot user
@@ -458,7 +493,6 @@ async fn test_yolo_audit_membership_drift() {
 		)
 		.await
 		.unwrap();
-
 	drop(state_lock);
 
 	// Assert cache is currently consistent
@@ -596,7 +630,179 @@ async fn test_yolo_audit_membership_drift() {
 	);
 }
 
-#[tokio::test]
+/// Regression test for the demote-timeline-to-outlier "torn state" bug used
+/// by `yolo audit-membership --clean`'s divergence repair: an event ends up
+/// with `is_outlier: false` (stale) but no timeline pointers/state hash --
+/// neither a normal timeline event nor a real outlier.
+///
+/// Root cause: `add_pdu_outlier_batch`'s "already in timeline" guard does a
+/// live, synchronous `eventid_metadata` read. Queuing both
+/// `remove_timeline_pointers_batch` and `add_pdu_outlier_batch` into one
+/// `Batch` and applying it once meant the guard's read never saw the
+/// removal -- it read the pre-removal metadata, concluded the event was
+/// "already in timeline", and silently skipped writing the outlier copy,
+/// while the removal half of the batch went through regardless.
+///
+/// This exercises the two calls exactly as `yolo/state.rs`'s clean-repair
+/// path now does: the removal applied and committed *before*
+/// `add_pdu_outlier_batch` runs, so its guard sees accurate state.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
+	use conduwuit::pdu::PduBuilder;
+	use ruma::{
+		RoomId, RoomVersionId,
+		events::room::{
+			create::RoomCreateEventContent,
+			member::{MembershipState, RoomMemberEventContent},
+		},
+	};
+	let (services, _guard) = setup_test_services("demote_torn").await;
+
+	let room_id = RoomId::new(services.globals.server_name());
+	let _short_id = services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+
+	let server_user = services.globals.server_user.as_ref();
+	services
+		.users
+		.create(server_user, None, None)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomCreateEventContent {
+				federate: true,
+				predecessor: None,
+				room_version: RoomVersionId::V11,
+				..RoomCreateEventContent::new_v11()
+			}),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(server_user),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	use ruma::events::room::{
+		join_rules::{JoinRule, RoomJoinRulesEventContent},
+		power_levels::RoomPowerLevelsEventContent,
+	};
+	let mut power_levels = RoomPowerLevelsEventContent::new();
+	power_levels
+		.users
+		.insert(server_user.to_owned(), ruma::int!(100));
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &power_levels),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomJoinRulesEventContent::new(JoinRule::Public)),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	let user_id = ruma::user_id!("@torn:test.conduwuit.local");
+	services.users.create(user_id, None, None).await.unwrap();
+	let event_id = services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(user_id.as_str()),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			user_id,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	// Precondition: a normal, fully-appended timeline event.
+	let meta_before = services
+		.rooms
+		.timeline
+		.get_event_metadata(&event_id)
+		.await
+		.unwrap();
+	assert!(!meta_before.is_outlier, "precondition: event should start as a timeline event");
+
+	let pdu_json = services
+		.rooms
+		.timeline
+		.get_pdu_json(&event_id)
+		.await
+		.unwrap();
+
+	// Demote to outlier sequence: atomic batch under the room's insert lock.
+	let insert_lock = services.rooms.timeline.mutex_insert.lock(&room_id).await;
+
+	let mut demote_batch = conduwuit_database::Batch::new();
+	services
+		.rooms
+		.timeline
+		.remove_timeline_pointers_batch(&mut demote_batch, &event_id)
+		.await;
+	services.rooms.outlier.add_pdu_outlier_batch_demote(
+		&mut demote_batch,
+		&event_id,
+		&pdu_json,
+		Some(&room_id),
+	);
+	services.rooms.timeline.apply_batch(demote_batch);
+
+	drop(insert_lock);
+
+	let meta_after = services
+		.rooms
+		.timeline
+		.get_event_metadata(&event_id)
+		.await
+		.unwrap();
+	assert!(
+		meta_after.is_outlier,
+		"event must end up marked as an outlier after demotion -- is_outlier=false with no \
+		 timeline pointers means it's torn between both states: {meta_after:?}"
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -677,7 +883,12 @@ async fn test_yolo_reorder_timeline() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![join_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![join_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// 4. Append Event B
@@ -801,7 +1012,468 @@ async fn test_yolo_reorder_timeline() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
+	use conduwuit::{
+		PduCount,
+		matrix::pdu::{Id as PduId, RawId as RawPduId},
+		pdu::PduBuilder,
+	};
+	use futures::StreamExt;
+	use ruma::{
+		RoomId, RoomVersionId,
+		events::room::{
+			create::RoomCreateEventContent,
+			member::{MembershipState, RoomMemberEventContent},
+			message::RoomMessageEventContent,
+		},
+	};
+
+	fn topo_pducount_key(pdu_id: &RawPduId, depth: u64) -> Vec<u8> {
+		let mut shorteventid = [0_u8; 8];
+		shorteventid.copy_from_slice(&pdu_id.shorteventid());
+		let stream_ordering = i64::from_be_bytes(PduCount::offset_binary_encoding(shorteventid));
+		let timeline_key = conduwuit::matrix::pdu::TimelineKey::new(depth, stream_ordering);
+
+		let mut topo_key = Vec::with_capacity(24);
+		topo_key.extend_from_slice(&pdu_id.shortroomid());
+		topo_key.extend_from_slice(&timeline_key.to_be_bytes());
+		topo_key
+	}
+
+	let (services, _guard) = setup_test_services("dedup").await;
+
+	let room_id = RoomId::new(services.globals.server_name());
+	let shortroomid = services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	let server_user = services.globals.server_user.as_ref();
+	services
+		.users
+		.create(server_user, None, None)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomCreateEventContent {
+				federate: true,
+				predecessor: None,
+				room_version: RoomVersionId::V11,
+				..RoomCreateEventContent::new_v11()
+			}),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(server_user),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	let duplicated_event = services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::timeline(&RoomMessageEventContent::text_plain("duplicate me")),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	let duplicate_count = PduCount::Normal(services.globals.next_count().unwrap());
+	let duplicate_pdu_id: RawPduId = PduId {
+		shortroomid,
+		shorteventid: duplicate_count,
+	}
+	.into();
+	let metadata = services
+		.rooms
+		.timeline
+		.get_event_metadata(&duplicated_event)
+		.await
+		.unwrap();
+	let duplicate_topo_key = topo_pducount_key(&duplicate_pdu_id, metadata.depth.into());
+
+	// Seed the exact corruption that dedup-room repairs: a second timeline
+	// index entry for the same event ID, without changing the canonical
+	// eventid_pduid mapping.
+	services.db["room_pducount_eventid"].insert(&duplicate_pdu_id, duplicated_event.as_bytes());
+	services.db["roomid_topologicalorder_pducount"]
+		.insert(&duplicate_topo_key, duplicated_event.as_bytes());
+
+	let mut stream_duplicates = 0_usize;
+	let mut stream = Box::pin(services.rooms.timeline.all_pdus(&room_id));
+	while let Some((_, pdu)) = stream.next().await {
+		if pdu.event_id == duplicated_event {
+			stream_duplicates = stream_duplicates.saturating_add(1);
+		}
+	}
+	assert_eq!(stream_duplicates, 2, "test setup should create a duplicate stream entry");
+
+	// topo_pdus filters entries whose encoded position doesn't match the
+	// event's canonical EventMetadata (see comment on
+	// `count_topo_occurrences_for_test`) — exactly the mismatch this test
+	// just manufactured — so use a raw column scan here, not topo_pdus,
+	// to verify the corrupted entry actually landed in the DB.
+	let topo_duplicates =
+		count_topo_occurrences_for_test(&services, &room_id, &duplicated_event).await;
+	assert_eq!(topo_duplicates, 2, "test setup should create a duplicate topo entry");
+
+	let res = services
+		.admin
+		.command_in_place(
+			format!("yolo dedup-room {room_id}"),
+			None,
+			service::admin::InvocationSource::Console,
+		)
+		.await;
+	assert!(res.is_ok(), "dedup-room failed: {res:?}");
+
+	let mut stream_duplicates = 0_usize;
+	let mut stream = Box::pin(services.rooms.timeline.all_pdus(&room_id));
+	while let Some((_, pdu)) = stream.next().await {
+		if pdu.event_id == duplicated_event {
+			stream_duplicates = stream_duplicates.saturating_add(1);
+		}
+	}
+	assert_eq!(stream_duplicates, 1, "dedup-room should remove duplicate stream entry");
+
+	let topo_duplicates =
+		count_topo_occurrences_for_test(&services, &room_id, &duplicated_event).await;
+	assert_eq!(topo_duplicates, 1, "dedup-room should remove duplicate topo entry");
+}
+
+async fn create_test_room_with_message(
+	services: &std::sync::Arc<service::Services>,
+	body: &str,
+) -> (ruma::OwnedRoomId, ruma::OwnedEventId) {
+	use conduwuit::pdu::PduBuilder;
+	use ruma::{
+		RoomId, RoomVersionId,
+		events::room::{
+			create::RoomCreateEventContent,
+			member::{MembershipState, RoomMemberEventContent},
+			message::RoomMessageEventContent,
+		},
+	};
+
+	let room_id = RoomId::new(services.globals.server_name());
+	services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	let server_user = services.globals.server_user.as_ref();
+	services
+		.users
+		.create(server_user, None, None)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(String::new(), &RoomCreateEventContent {
+				federate: true,
+				predecessor: None,
+				room_version: RoomVersionId::V11,
+				..RoomCreateEventContent::new_v11()
+			}),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::state(
+				String::from(server_user),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	let event_id = services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::timeline(&RoomMessageEventContent::text_plain(body)),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	(room_id, event_id)
+}
+
+fn topo_pducount_key_for_test(pdu_id: &conduwuit::matrix::pdu::RawId, depth: u64) -> Vec<u8> {
+	let mut shorteventid = [0_u8; 8];
+	shorteventid.copy_from_slice(&pdu_id.shorteventid());
+	let stream_ordering =
+		i64::from_be_bytes(conduwuit::matrix::pdu::Count::offset_binary_encoding(shorteventid));
+	let timeline_key = conduwuit::matrix::pdu::TimelineKey::new(depth, stream_ordering);
+
+	let mut topo_key = Vec::with_capacity(24);
+	topo_key.extend_from_slice(&pdu_id.shortroomid());
+	topo_key.extend_from_slice(&timeline_key.to_be_bytes());
+	topo_key
+}
+
+async fn seed_stale_topo_entry_for_test(
+	services: &std::sync::Arc<service::Services>,
+	event_id: &ruma::EventId,
+) {
+	let pdu_id = services.rooms.timeline.get_pdu_id(event_id).await.unwrap();
+	let metadata = services
+		.rooms
+		.timeline
+		.get_event_metadata(event_id)
+		.await
+		.unwrap();
+	let stale_topo_key = topo_pducount_key_for_test(
+		&pdu_id,
+		metadata.deprecated_local_topo_depth.saturating_add(10_000),
+	);
+	services.db["roomid_topologicalorder_pducount"].insert(&stale_topo_key, event_id.as_bytes());
+}
+
+/// Counts raw entries for `event_id` in the `roomid_topologicalorder_pducount`
+/// column, scanning the column directly rather than going through
+/// `Service::topo_pdus`.
+///
+/// `topo_pdus` deliberately filters out any entry whose encoded
+/// (depth, pdu_count) doesn't match the event's canonical `EventMetadata`
+/// (see `EventMetadata::matches_timeline_position`) — that's the read-time
+/// safety property that keeps stale/duplicate index entries from ever being
+/// served to clients. The tests using this helper manufacture exactly that
+/// kind of mismatched entry on purpose, to verify `yolo dedup-room` /
+/// `reindex-short` / `reorder-timeline` clean it up — none of which rely on
+/// `topo_pdus` to find what to repair (they scan `all_pdus` or rebuild the
+/// column outright), so this helper needs to see the raw, unfiltered count
+/// to make that assertion meaningful.
+async fn count_topo_occurrences_for_test(
+	services: &std::sync::Arc<service::Services>,
+	room_id: &ruma::RoomId,
+	event_id: &ruma::EventId,
+) -> usize {
+	use futures::StreamExt;
+
+	let shortroomid = services.rooms.short.get_shortroomid(room_id).await.unwrap();
+	let prefix = shortroomid.to_be_bytes();
+
+	let mut count = 0_usize;
+	let mut stream =
+		Box::pin(services.db["roomid_topologicalorder_pducount"].raw_stream_prefix(&prefix));
+	while let Some(item) = stream.next().await {
+		let (_, val) = item.unwrap();
+		if val == event_id.as_bytes() {
+			count = count.saturating_add(1);
+		}
+	}
+	count
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_set_forward_extremities_excludes_ineligible_candidates() {
+	use futures::StreamExt;
+	use ruma::OwnedEventId;
+
+	let (services, _guard) =
+		setup_test_services("set_forward_extremities_excludes_ineligible").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "eligible tip").await;
+
+	// A candidate we never appended anywhere: mark it rejected via the public
+	// pdu_metadata API. Since it has no prior metadata, this also implicitly
+	// flags it as an outlier (see `mark_event_rejected`'s doc comment).
+	let rejected_event_id: OwnedEventId = "$fake_rejected_extremity_candidate_0000"
+		.try_into()
+		.unwrap();
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
+		.await;
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(
+			&room_id,
+			vec![event_id.clone(), rejected_event_id.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
+		.await;
+	drop(state_lock);
+
+	let extremities: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+
+	assert!(
+		extremities.contains(&event_id),
+		"the accepted timeline event must remain a forward extremity"
+	);
+	assert!(
+		!extremities.contains(&rejected_event_id),
+		"a rejected/outlier candidate must never be persisted as a forward extremity"
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_set_forward_extremities_all_ineligible_is_noop() {
+	use futures::StreamExt;
+	use ruma::OwnedEventId;
+
+	let (services, _guard) =
+		setup_test_services("set_forward_extremities_all_ineligible_noop").await;
+	let (room_id, event_id) =
+		create_test_room_with_message(&services, "existing eligible tip").await;
+
+	let baseline: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+	assert_eq!(
+		baseline,
+		vec![event_id.clone()],
+		"test setup should start with exactly one forward extremity"
+	);
+
+	let rejected_event_id: OwnedEventId = "$fake_rejected_extremity_candidate_0001"
+		.try_into()
+		.unwrap();
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
+		.await;
+
+	// Passing only ineligible candidates must not empty or corrupt the stored
+	// extremity set: it should be treated as an anomaly and left unchanged.
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(&room_id, vec![rejected_event_id].into_iter(), None, &state_lock)
+		.await;
+	drop(state_lock);
+
+	let extremities: Vec<OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(&room_id)
+		.collect()
+		.await;
+	assert_eq!(
+		extremities, baseline,
+		"an all-ineligible candidate set must leave existing extremities unchanged"
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_yolo_reindex_short_removes_stale_topo_entries() {
+	let (services, _guard) = setup_test_services("reindex_short_topo").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
+
+	assert_eq!(count_topo_occurrences_for_test(&services, &room_id, &event_id).await, 1);
+	seed_stale_topo_entry_for_test(&services, &event_id).await;
+	assert_eq!(
+		count_topo_occurrences_for_test(&services, &room_id, &event_id).await,
+		2,
+		"test setup should create a stale duplicate topo entry",
+	);
+
+	let res = services
+		.admin
+		.command_in_place(
+			format!("yolo reindex-short {room_id}"),
+			None,
+			service::admin::InvocationSource::Console,
+		)
+		.await;
+	assert!(res.is_ok(), "reindex-short failed: {res:?}");
+
+	assert_eq!(
+		count_topo_occurrences_for_test(&services, &room_id, &event_id).await,
+		1,
+		"reindex-short should rebuild topo index without stale duplicates",
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
+	let (services, _guard) = setup_test_services("reorder_topo").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
+
+	seed_stale_topo_entry_for_test(&services, &event_id).await;
+	assert_eq!(
+		count_topo_occurrences_for_test(&services, &room_id, &event_id).await,
+		2,
+		"test setup should create a stale duplicate topo entry",
+	);
+
+	let res = services
+		.admin
+		.command_in_place(
+			format!("yolo reorder-timeline {room_id} --no-compute-state"),
+			None,
+			service::admin::InvocationSource::Console,
+		)
+		.await;
+	assert!(res.is_ok(), "reorder-timeline failed: {res:?}");
+
+	assert_eq!(
+		count_topo_occurrences_for_test(&services, &room_id, &event_id).await,
+		1,
+		"reorder-timeline should rebuild topo index without stale duplicates",
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_busted_dag_resolution() {
 	use std::path::Path;
 
@@ -841,7 +1513,7 @@ async fn test_busted_dag_resolution() {
 	let res = services
 		.admin
 		.command_in_place(
-			format!("yolo reindex-short {room_id}"),
+			format!("yolo reindex-short {room_id} --skip-topo"),
 			None,
 			service::admin::InvocationSource::Console,
 		)
@@ -951,7 +1623,7 @@ async fn test_busted_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_unredacted_room_dag_resolution() {
 	use std::path::Path;
 
@@ -992,7 +1664,7 @@ async fn test_unredacted_room_dag_resolution() {
 	let res = services
 		.admin
 		.command_in_place(
-			format!("yolo reindex-short {room_id}"),
+			format!("yolo reindex-short {room_id} --skip-topo"),
 			None,
 			service::admin::InvocationSource::Console,
 		)
@@ -1093,7 +1765,7 @@ async fn test_unredacted_room_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_unredacted_lounge_dag_resolution() {
 	use std::path::Path;
 
@@ -1136,7 +1808,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let res = services
 		.admin
 		.command_in_place(
-			format!("yolo reindex-short {room_id}"),
+			format!("yolo reindex-short {room_id} --skip-topo"),
 			None,
 			service::admin::InvocationSource::Console,
 		)
@@ -1304,7 +1976,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	assert!(mismatches == 0, "{mismatches} state resolution mismatches (see above)");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_nheko_dag_resolution() {
 	use std::path::Path;
 
@@ -1345,7 +2017,7 @@ async fn test_nheko_dag_resolution() {
 	let res = services
 		.admin
 		.command_in_place(
-			format!("yolo reindex-short {room_id}"),
+			format!("yolo reindex-short {room_id} --skip-topo"),
 			None,
 			service::admin::InvocationSource::Console,
 		)
@@ -1446,7 +2118,7 @@ async fn test_nheko_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_heal_receipts() {
 	use conduwuit_database::Json;
 	use futures::StreamExt;
@@ -1531,7 +2203,144 @@ async fn test_yolo_heal_receipts() {
 	assert_eq!(count, 1, "Expected exactly 1 receipt remaining, got {count}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_threaded_receipts_notification_counters() {
+	use ruma::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+
+	let (services, _guard) = setup_test_services("threaded_receipts").await;
+
+	let room_id = RoomId::new(services.globals.server_name());
+	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
+	let thread_a: OwnedEventId = "$thread-a:test.conduwuit.local".try_into().unwrap();
+	let thread_b: OwnedEventId = "$thread-b:test.conduwuit.local".try_into().unwrap();
+
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id), 8_u64);
+	services.db["userroomid_highlightcount"].put((&user_id, &room_id), 2_u64);
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id, &thread_a), 4_u64);
+	services.db["userroomid_highlightcount"].put((&user_id, &room_id, &thread_a), 1_u64);
+	services.db["userroomid_notificationcount"].put((&user_id, &room_id, &thread_b), 6_u64);
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((4, 1)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		8
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		2
+	);
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(
+			&user_id,
+			&room_id,
+			&ReceiptThread::Thread(thread_a.clone()),
+		)
+		.await;
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		8
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		2
+	);
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((0, 0)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(&user_id, &room_id, &ReceiptThread::Main)
+		.await;
+
+	let thread_counts = services
+		.rooms
+		.user
+		.thread_notification_counts(&user_id, &room_id)
+		.await;
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(thread_counts.get(&thread_a).copied(), Some((0, 0)));
+	assert_eq!(thread_counts.get(&thread_b).copied(), Some((6, 0)));
+
+	services
+		.rooms
+		.user
+		.reset_notification_counts_for_thread(&user_id, &room_id, &ReceiptThread::Unthreaded)
+		.await;
+
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.notification_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert_eq!(
+		services
+			.rooms
+			.user
+			.highlight_count(&user_id, &room_id)
+			.await,
+		0
+	);
+	assert!(
+		services
+			.rooms
+			.user
+			.thread_notification_counts(&user_id, &room_id)
+			.await
+			.is_empty()
+	);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -1643,7 +2452,7 @@ async fn test_knocking_dag_resolution() {
 	let res = services
 		.admin
 		.command_in_place(
-			format!("yolo reindex-short {room_id}"),
+			format!("yolo reindex-short {room_id} --skip-topo"),
 			None,
 			service::admin::InvocationSource::Console,
 		)
@@ -1677,7 +2486,7 @@ async fn test_knocking_dag_resolution() {
 	println!("DAG knocking state resolved successfully without panicking!");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline_state_resolution() {
 	use conduwuit::pdu::PduBuilder;
 	use ruma::{
@@ -1759,7 +2568,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![name_a_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![name_a_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// Ensure Name B gets a strictly later origin_server_ts than Name A.
@@ -1784,7 +2598,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	services
 		.rooms
 		.state
-		.set_forward_extremities(&room_id, vec![name_a_event.clone()].into_iter(), &state_lock)
+		.set_forward_extremities(
+			&room_id,
+			vec![name_a_event.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
 		.await;
 
 	// 5. Branch 2: Message "Hello C" (non-state event)
@@ -1807,6 +2626,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.set_forward_extremities(
 			&room_id,
 			vec![name_b_event.clone(), message_c_event.clone()].into_iter(),
+			None,
 			&state_lock,
 		)
 		.await;
@@ -1878,7 +2698,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_janian_dag_reorder_with_state() {
 	use std::path::Path;
 

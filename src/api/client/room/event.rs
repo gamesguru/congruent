@@ -30,7 +30,7 @@ pub(crate) async fn get_room_event_route(
 		.user_can_see_event(body.sender_user(), room_id, event_id)
 		.map(Ok);
 
-	let (mut event, visible) = try_join(event, visible).await?;
+	let (mut event, visible) = Box::pin(try_join(event, visible)).await?;
 
 	if !visible
 		|| is_ignored_pdu(services, &event, body.sender_user()).await?

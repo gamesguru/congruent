@@ -1,4 +1,5 @@
 use conduwuit::{Err, Result, err, info, warn};
+use conduwuit_service::rooms::event_handler::AuthRecoveryStage;
 use ruma::{
 	CanonicalJsonObject, OwnedEventId, OwnedRoomId, RoomVersionId, events::StateEventType,
 };
@@ -188,6 +189,11 @@ pub(super) async fn import_pdus(
 			let mut chunk_rejected: usize = 0;
 			let mut chunk_failed: usize = 0;
 			let mut batch = self.services.rooms.timeline.db_batch();
+			// promote_outlier_batch's writes land only once `batch` is applied
+			// below; finalize each one's rejection/soft-fail markers afterward
+			// via finish_promote_outlier (see that method's doc comment).
+			let mut queued_promotions: Vec<OwnedEventId> = Vec::new();
+			let mut queued_marker_updates: Vec<(OwnedEventId, bool, bool)> = Vec::new();
 
 			for (eid, value, pdu, is_outlier, is_soft_failed, is_rejected) in chunk {
 				let is_outlier = is_outlier || force;
@@ -236,21 +242,18 @@ pub(super) async fn import_pdus(
 						pdu_val.remove("event_id");
 					}
 
-					let handled = self
-						.services
-						.rooms
-						.event_handler
-						.handle_outlier_pdu(
-							&origin,
-							create_event.as_ref().as_ref(),
-							&eid,
-							&room_id,
-							pdu_val,
-							true,
-							skip_sig_verify,
-							Some(&room_version),
-						)
-						.await;
+					let handled = Box::pin(self.services.rooms.event_handler.handle_outlier_pdu(
+						&origin,
+						create_event.as_ref().as_ref(),
+						&eid,
+						&room_id,
+						pdu_val,
+						true,
+						skip_sig_verify,
+						Some(&room_version),
+						AuthRecoveryStage::BeforeStateIds,
+					))
+					.await;
 
 					match handled {
 						| Ok((new_pdu, _)) => {
@@ -269,7 +272,8 @@ pub(super) async fn import_pdus(
 						self.services
 							.rooms
 							.outlier
-							.add_pdu_outlier(&eid, &value, Some(&room_id));
+							.add_pdu_outlier(&eid, &value, Some(&room_id))
+							.await;
 						return Ok((eid.clone(), true));
 					}
 					if force {
@@ -291,11 +295,23 @@ pub(super) async fn import_pdus(
 							)
 							.await?;
 					} else {
-						self.services
+						// Batched like the skip_auth branch above -- one DB commit (and
+						// one /sync wake) per chunk instead of per event. Finalizing
+						// (releasing the reservation, resolving rejection markers)
+						// happens after `batch` is applied below -- see
+						// finish_promote_outlier's doc comment.
+						let outcome = self
+							.services
 							.rooms
 							.timeline
-							.promote_outlier(&room_id, &eid)
+							.promote_outlier_batch(&mut batch, &room_id, &eid)
 							.await?;
+						if matches!(
+							outcome,
+							conduwuit_service::rooms::timeline::PromoteOutlierOutcome::Queued
+						) {
+							queued_promotions.push(eid.clone());
+						}
 					}
 
 					Ok((eid.clone(), true))
@@ -305,18 +321,8 @@ pub(super) async fn import_pdus(
 				match insert_result {
 					| Ok((eid, true)) => {
 						chunk_inserted = chunk_inserted.saturating_add(1);
-						if is_soft_failed {
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_soft_failed(&eid, "imported as soft-failed");
-						}
-						if is_rejected {
-							self.services
-								.rooms
-								.pdu_metadata
-								.mark_event_rejected(&eid, "imported as rejected")
-								.await;
+						if is_soft_failed || is_rejected {
+							queued_marker_updates.push((eid, is_soft_failed, is_rejected));
 						}
 					},
 					| Ok((_eid, false)) => {
@@ -329,7 +335,28 @@ pub(super) async fn import_pdus(
 				}
 			}
 
-			self.services.rooms.timeline.db_apply_batch(&batch);
+			self.services.rooms.timeline.db_apply_batch(batch);
+			for eid in &queued_promotions {
+				self.services
+					.rooms
+					.timeline
+					.finish_promote_outlier(&room_id, eid)
+					.await;
+			}
+			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
+				if is_rejected {
+					self.services
+						.rooms
+						.pdu_metadata
+						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected");
+				}
+				if is_soft_failed {
+					self.services.rooms.pdu_metadata.mark_event_soft_failed(
+						&eid,
+						conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
+					);
+				}
+			}
 			info!(
 				"Finished a chunk: {chunk_inserted} inserted, {chunk_rejected} rejected, \
 				 {chunk_failed} failed"
@@ -385,7 +412,8 @@ pub(super) async fn import_outliers(&self, jsonl: String) -> Result {
 		self.services
 			.rooms
 			.outlier
-			.add_pdu_outlier(&event_id, &pdu, None);
+			.add_pdu_outlier(&event_id, &pdu, None)
+			.await;
 		count = count.saturating_add(1);
 	}
 

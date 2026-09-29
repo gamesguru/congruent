@@ -15,6 +15,8 @@ pub(super) struct QueryParams {
 	/// Can be provided as `device_id` or `org.matrix.msc3202.device_id`.
 	#[serde(alias = "org.matrix.msc3202.device_id")]
 	pub(super) device_id: Option<String>,
+	#[serde(alias = "org.matrix.msc4140.delay")]
+	pub(super) org_matrix_msc4140_delay: Option<String>,
 }
 
 pub(super) struct Request {

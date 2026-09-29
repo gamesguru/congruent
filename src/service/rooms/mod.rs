@@ -1,6 +1,7 @@
 pub mod alias;
 pub mod auth_adapter;
 pub mod auth_chain;
+pub mod delayed_events;
 pub mod directory;
 pub mod event_handler;
 pub mod lazy_loading;
@@ -27,6 +28,7 @@ pub struct Service {
 	pub alias: Arc<alias::Service>,
 	pub auth_chain: Arc<auth_chain::Service>,
 	pub directory: Arc<directory::Service>,
+	pub delayed_events: Arc<delayed_events::Service>,
 	pub event_handler: Arc<event_handler::Service>,
 	pub lazy_loading: Arc<lazy_loading::Service>,
 	pub metadata: Arc<metadata::Service>,

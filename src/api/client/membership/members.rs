@@ -42,12 +42,11 @@ pub(crate) async fn get_member_events_route(
 		.is_joined(sender_user, room_id)
 		.await;
 
-	if !is_joined
-		&& !services
-			.rooms
-			.state_cache
-			.is_left(sender_user, room_id)
-			.await
+	if !services
+		.rooms
+		.state_cache
+		.can_access_history(sender_user, room_id)
+		.await
 	{
 		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
@@ -60,7 +59,7 @@ pub(crate) async fn get_member_events_route(
 		let mut pdus_rev = services
 			.rooms
 			.timeline
-			.pdus_rev(room_id, Some(pdu_count))
+			.pdus_rev(room_id, std::ops::Bound::Included(pdu_count))
 			.boxed();
 
 		let Some(Ok((_, pdu))) = pdus_rev.next().await else {

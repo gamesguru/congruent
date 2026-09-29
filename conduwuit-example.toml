@@ -271,6 +271,11 @@
 #
 #dns_min_ttl_nxdomain = 259200
 
+# The minimum amount of time to cache DNS lookups for server names in
+# federation. This is separate from hickory_resolver's internal caching.
+#
+#dns_cache_override_expire = 21600 (6 hours)
+
 # Number of DNS nameserver retries after a timeout or error.
 #
 #dns_attempts = 10
@@ -281,10 +286,6 @@
 # resolvers.
 #
 #dns_timeout = 10
-
-# This item is undocumented. Please contribute documentation for it.
-#
-#dns_cache_override_expire =
 
 # Fallback to TCP on DNS errors. Set this to false if unsupported by
 # nameserver.
@@ -465,6 +466,13 @@
 #
 #federation_presence_interval_s = 5
 
+# Timeout for fetching server signing keys from other homeservers
+# (seconds). You may want to lower this in test environments, but in
+# production, giving slower federation origins some time to respond is
+# beneficial.
+#
+#server_key_fetch_timeout = 45
+
 # MSC4284 Policy server request timeout (seconds). Generally policy
 # servers should respond near instantly, however may slow down under
 # load. If a policy server doesn't respond in a short amount of time, the
@@ -503,7 +511,7 @@
 # the minimum delay before the first retry after a failed transaction.
 # Subsequent retries use exponential backoff: base × 2^(tries-1).
 #
-#sender_retry_backoff_base = 2
+#sender_retry_backoff_base = 5
 
 # Federation sender transaction retry backoff limit (seconds).
 #
@@ -872,6 +880,20 @@
 # unless you know exactly what you are doing.
 #
 #only_query_trusted_key_servers = false
+
+# Enable strict enforcement of MSC4499 server signing key caching and
+# First Seen Wins key-ID uniqueness. When false (observation mode),
+# collisions and malformed historical claims are logged at WARN/ERROR
+# but do not hard-reject the incoming key payload.
+#
+#msc4499_strict_caching = true
+
+# Backoff duration in seconds after a failed federation key fetch.
+# During backoff, the server will not re-attempt key fetches for the
+# failing origin. MSC4499 recommends 60 seconds. Reduce for faster
+# complement testing.
+#
+#msc4499_backoff_secs = 60
 
 # Maximum number of keys to request in each trusted server batch query.
 #
@@ -2248,6 +2270,10 @@
 # MSC3266: room previews
 #
 #msc3266_enabled = false
+
+# MSC3030: Jump to date
+#
+#msc3030_enabled = true
 
 # MSC4222: state_after in sync v2
 #

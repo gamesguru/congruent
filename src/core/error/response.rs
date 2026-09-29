@@ -94,6 +94,12 @@ pub(super) fn bad_request_code(kind: &ErrorKind) -> StatusCode {
 		| NotFound | NotImplemented | FeatureDisabled | SenderIgnored { .. } =>
 			StatusCode::NOT_FOUND,
 
+		// 409
+		| CannotOverwriteMedia => StatusCode::CONFLICT,
+
+		// 504
+		| NotYetUploaded => StatusCode::GATEWAY_TIMEOUT,
+
 		// 403
 		| GuestAccessForbidden
 		| ThreepidAuthFailed

@@ -47,6 +47,12 @@ pub struct StateDiff {
 	pub removed: Arc<CompressedState>,
 }
 
+/// One frame in a compressed state stack.
+///
+/// `full_state` is only guaranteed to be `Some(...)` for the top-most frame
+/// returned by `load_shortstatehash_info` and related builders. Parent frames
+/// intentionally drop it once their children have been derived, so callers must
+/// only dereference the last frame's `full_state`.
 #[derive(Clone, Default)]
 pub struct ShortStateInfo {
 	pub shortstatehash: ShortStateHash,
@@ -1023,13 +1029,17 @@ pub async fn compute_lthash_from_full_state(
 			.short
 			.get_statekey_from_short(ssk)
 			.await
-			.map_err(|e| err!(Database("Cannot compute LtHash: unresolvable statekey {ssk}: {e}")))?;
+			.map_err(|e| {
+				err!(Database("Cannot compute LtHash: unresolvable statekey {ssk}: {e}"))
+			})?;
 		let event_id = self
 			.services
 			.short
 			.get_eventid_from_short::<OwnedEventId>(sei)
 			.await
-			.map_err(|e| err!(Database("Cannot compute LtHash: unresolvable eventid {sei}: {e}")))?;
+			.map_err(|e| {
+				err!(Database("Cannot compute LtHash: unresolvable eventid {sei}: {e}"))
+			})?;
 		lthash.insert(&ty.to_string(), &sk, &event_id);
 	}
 

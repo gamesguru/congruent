@@ -4,6 +4,7 @@ use conduwuit::Result;
 
 use crate::{
 	Engine, Map,
+	deprecated_maps::DEPRECATED_MAPS,
 	engine::descriptor::{self, CacheDisp, Descriptor},
 };
 
@@ -11,7 +12,20 @@ pub(super) type Maps = BTreeMap<MapsKey, MapsVal>;
 pub(super) type MapsKey = &'static str;
 pub(super) type MapsVal = Arc<Map>;
 
-pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> { open_list(db, MAPS) }
+pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> {
+	let descriptors = active_descriptors();
+	open_list(db, descriptors)
+}
+
+pub(super) fn descriptors() -> Vec<Descriptor> {
+	let capacity = ACTIVE_MAPS.len().saturating_add(DEPRECATED_MAPS.len());
+	let mut descriptors = Vec::with_capacity(capacity);
+	descriptors.extend_from_slice(ACTIVE_MAPS);
+	descriptors.extend_from_slice(DEPRECATED_MAPS);
+	descriptors
+}
+
+pub(super) fn active_descriptors() -> &'static [Descriptor] { ACTIVE_MAPS }
 
 #[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
@@ -20,7 +34,7 @@ pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
 		.collect()
 }
 
-pub(super) static MAPS: &[Descriptor] = &[
+pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "alias_roomid",
 		..descriptor::RANDOM_SMALL
@@ -50,6 +64,10 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "deviceleftid_userid",
+		..descriptor::SEQUENTIAL
+	},
+	Descriptor {
 		name: "disabledroomids",
 		..descriptor::RANDOM_SMALL
 	},
@@ -60,6 +78,26 @@ pub(super) static MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "eventid_metadata",
 		val_size_hint: Some(128),
+		..descriptor::RANDOM_SMALL
+	},
+	// Kept as a live CF: `db_lt_19` and `db_lt_21` write/read it during
+	// upgrade before folding its contents into `eventid_rejections` /
+	// `eventid_softfailed`. No runtime code uses it anymore, and it must stay
+	// described so pre-v21 upgrades can open it (dropping the descriptor would
+	// break the `<19` write path and restart-after-drop consistency).
+	Descriptor {
+		name: "eventid_status",
+		val_size_hint: Some(2),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "eventid_rejections",
+		val_size_hint: Some(1),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "eventid_softfailed",
+		val_size_hint: Some(1),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -128,8 +166,31 @@ pub(super) static MAPS: &[Descriptor] = &[
 		name: "mediaid_user",
 		..descriptor::RANDOM_SMALL
 	},
+	// MSC2836 threading: key = (parent_event_id, child_event_id), value =
+	// rel_type. Populated whenever an event's content carries an
+	// `m.relationship` pointing at a parent; queried by prefix on
+	// parent_event_id to answer "what are this event's children" for
+	// /event_relationships and unsigned.children/children_hash.
+	Descriptor {
+		name: "msc2836_children",
+		..descriptor::RANDOM
+	},
+	// MSC2836 threading: key = event_id, value = bincode
+	// Msc2836ReportedChildren (counts + children_hash) received from a
+	// remote server's /event_relationships response for this event. Kept
+	// separate from msc2836_children (our own directly-known child edges)
+	// since a remote server may know about children we haven't fetched
+	// ourselves yet; see pdu_metadata::msc2836_children_unsigned.
+	Descriptor {
+		name: "msc2836_reported_children",
+		..descriptor::RANDOM_SMALL
+	},
 	Descriptor {
 		name: "onetimekeyid_onetimekeys",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "fallbackkeyid_fallbackkey",
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -152,8 +213,17 @@ pub(super) static MAPS: &[Descriptor] = &[
 		name: "pushkey_deviceid",
 		..descriptor::RANDOM_SMALL
 	},
+	// Stream index (room+count+user) for since-token scans; see readreceipts_since().
 	Descriptor {
 		name: "readreceiptid_readreceipt",
+		..descriptor::RANDOM
+	},
+	// State index (room+user) for O(1) point lookups of a user's current public
+	// read receipt; see readreceipt_get()/readreceipt_update(). Dual-indexed
+	// alongside readreceiptid_readreceipt above, not a replacement for it.
+	Descriptor {
+		name: "roomuserid_readreceipt",
+		val_size_hint: Some(1024),
 		..descriptor::RANDOM
 	},
 	Descriptor {
@@ -162,14 +232,6 @@ pub(super) static MAPS: &[Descriptor] = &[
 	},
 	Descriptor {
 		name: "registrationtoken_info",
-		..descriptor::RANDOM_SMALL
-	},
-	// TODO: Legacy Conduit table, superseded by eventid_metadata.rejected
-	// and eventid_metadata.soft_failed fields. No service code references
-	// this CF. Remove in a future schema version bump.
-	Descriptor {
-		name: "rejectedeventids",
-		key_size_hint: Some(48),
 		..descriptor::RANDOM_SMALL
 	},
 	// Primary timeline index, keyed by stream order (monotonic server-local
@@ -229,6 +291,35 @@ pub(super) static MAPS: &[Descriptor] = &[
 		val_size_hint: Some(32),
 		..descriptor::SEQUENTIAL_SMALL
 	},
+	// Tier 3 backfill perf work (see
+	// docs/development-gg/backfill-extremities-write-time-design.md):
+	// backward extremities (missing prev_events), indexed by depth so
+	// `backfill_if_required` can range-scan near a position instead of
+	// walking the timeline. Not yet wired into the read path -- currently
+	// written at insert time only, pending the migration for existing
+	// rooms. Key: (shortroomid: u64, depth: u64, event_id) -> ().
+	// See also: roomid_missingeventid_depth, the delete-path companion index.
+	Descriptor {
+		name: "roomid_depth_missingeventid",
+		key_size_hint: Some(32),
+		val_size_hint: Some(0),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	// Companion to roomid_depth_missingeventid: keyed by event_id so
+	// arrival of a previously-missing event can find (and delete) its
+	// depth-indexed entry in O(1) instead of a scan.
+	// Key: (shortroomid: u64, event_id) -> depth: u64.
+	Descriptor {
+		name: "roomid_missingeventid_depth",
+		key_size_hint: Some(32),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_timestamp_pducount",
+		key_size_hint: Some(25),
+		..descriptor::SEQUENTIAL
+	},
 	Descriptor {
 		name: "roomserverids",
 		..descriptor::RANDOM_SMALL
@@ -266,31 +357,21 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
-		name: "roomuserid_lastprivatereadupdate",
-		..descriptor::RANDOM_SMALL
-	},
-	Descriptor {
 		name: "roomuserid_leftcount",
 		val_size_hint: Some(8),
 		..descriptor::RANDOM
 	},
 	Descriptor {
-		name: "roomuserid_privateread",
+		name: "roomuserid_forgotten",
+		val_size_hint: Some(0),
 		..descriptor::RANDOM_SMALL
 	},
-	Descriptor {
-		name: "roomuserid_privatereadevent",
-		..descriptor::RANDOM_SMALL
-	},
+	// Consolidated, thread-aware private read receipt map (MSC4102). Supersedes
+	// legacy private-read CFs when present.
 	Descriptor {
 		name: "roomuserid_privatereadreceipt",
 		val_size_hint: Some(1024),
 		..descriptor::RANDOM_SMALL
-	},
-	Descriptor {
-		name: "roomuserid_readreceipt",
-		val_size_hint: Some(1024),
-		..descriptor::RANDOM
 	},
 	Descriptor {
 		name: "roomuseroncejoinedids",
@@ -337,7 +418,7 @@ pub(super) static MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "shorteventid_authchain",
 		cache_disp: CacheDisp::Unique,
-		key_size_hint: Some(8),
+		key_size_hint: Some(16),
 		..descriptor::SEQUENTIAL
 	},
 	Descriptor {
@@ -400,6 +481,10 @@ pub(super) static MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "threadid_userids",
 		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "userroomthread_subscription",
+		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
 		name: "todeviceid_events",
@@ -481,6 +566,10 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "userid_lastremotedeviceliststreamid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "userid_origin",
 		..descriptor::RANDOM
 	},
@@ -536,10 +625,25 @@ pub(super) static MAPS: &[Descriptor] = &[
 		name: "userroomid_notificationcount",
 		..descriptor::RANDOM
 	},
+	Descriptor {
+		name: "delayid_scheduleddelayedevent",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "delayid_finalizeddelayedevent",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userroomdelayid",
+		..descriptor::RANDOM_SMALL
+	},
 ];
 
-/// Returns an iterator of column family names from the static MAPS list.
-/// Used for schema fingerprinting across crate boundaries.
+/// Returns an iterator of column family names from the active and deprecated
+/// descriptor lists. Used for schema fingerprinting across crate boundaries.
 pub fn column_family_names() -> impl Iterator<Item = &'static str> {
-	MAPS.iter().map(|desc| desc.name)
+	ACTIVE_MAPS
+		.iter()
+		.chain(DEPRECATED_MAPS.iter())
+		.map(|desc| desc.name)
 }

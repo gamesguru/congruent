@@ -1,16 +1,15 @@
 use std::{
 	collections::{BTreeSet, HashMap, HashSet},
-	pin::pin,
 	sync::Arc,
 	time::Instant,
 };
 
+use conduwuit::utils::timeline_sorter::sort_timeline_events;
 use conduwuit_core::{
 	Result, debug, info,
 	matrix::{event::Event, state_res::StateMap},
 	warn,
 };
-use futures::StreamExt;
 use ruma::{OwnedEventId, RoomId, RoomVersionId, events::TimelineEventType};
 
 use crate::rooms;
@@ -60,13 +59,13 @@ fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),
-		state_key: pdu.state_key.as_ref().map(ToString::to_string),
+		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
 		origin_server_ts: pdu.origin_server_ts.into(),
 		sender: pdu.sender.to_string(),
 		content: content_val,
-		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
-		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
+		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
+		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 		depth: u64::from(pdu.depth),
 		..Default::default()
 	}
@@ -88,7 +87,7 @@ impl super::Service {
 
 		// Phase 1: Stream events and extract metadata + keep state PDUs
 		eprintln!("[rebuild_state] Phase 1: streaming events...");
-		let (events_meta, room_version, state_pdus) = self.rebuild_stream_events(room_id).await;
+		let (events_meta, room_version, state_pdus) = self.rebuild_stream_events(room_id).await?;
 		eprintln!("[rebuild_state] Phase 1 done: {} events", events_meta.len());
 
 		let event_set: HashSet<OwnedEventId> =
@@ -157,18 +156,26 @@ impl super::Service {
 	async fn rebuild_stream_events(
 		&self,
 		room_id: &RoomId,
-	) -> (Vec<EventMeta>, RoomVersionId, Vec<Option<rezzy::LeanEvent>>) {
+	) -> Result<(Vec<EventMeta>, RoomVersionId, Vec<Option<rezzy::LeanEvent>>)> {
 		info!("rebuild_state: streaming events in topological order...");
 		let start = Instant::now();
 
+		let (entries, graph, _metadata_cache) = self.db.collect_reorder_entries(room_id).await?;
+		let sorted = sort_timeline_events(&entries, &graph);
+
 		let mut events_meta: Vec<EventMeta> = Vec::new();
 		let mut state_pdus: Vec<Option<rezzy::LeanEvent>> = Vec::new();
-		let mut room_version = RoomVersionId::V1;
-		let mut room_version_found = false;
+		let mut room_version = self
+			.services
+			.state
+			.get_room_version(room_id)
+			.await
+			.unwrap_or(RoomVersionId::V1);
 
-		let mut stream = pin!(self.topo_pdus(room_id, None));
-		while let Some(Ok((_pdu_count, pdu))) = stream.next().await {
-			let eid = pdu.event_id().to_owned();
+		for eid in sorted {
+			let (pdu, _json) = self.db.get_from_eventid_pdu(&eid).await.map_err(|e| {
+				conduwuit::err!(Database("rebuild_state: missing PDU {eid}: {e}"))
+			})?;
 			let prev: Vec<OwnedEventId> = pdu.prev_events().map(ToOwned::to_owned).collect();
 			let auth: Vec<OwnedEventId> = pdu.auth_events().map(ToOwned::to_owned).collect();
 			let is_state = pdu.state_key().is_some();
@@ -180,17 +187,21 @@ impl super::Service {
 			// Timeline events are authoritative; clear any stale rejection flags.
 			self.services.pdu_metadata.unmark_event_rejected(&eid);
 
-			if !room_version_found && *pdu.kind() == TimelineEventType::RoomCreate {
+			if *pdu.kind() == TimelineEventType::RoomCreate {
 				if let Ok(create_content) = serde_json::from_str::<
 					ruma::events::room::create::RoomCreateEventContent,
 				>(pdu.content().get())
 				{
 					room_version = create_content.room_version;
-					room_version_found = true;
+				} else {
+					warn!(
+						"rebuild_state: create event {eid} could not be parsed for room \
+						 version; using cached room version {room_version}"
+					);
 				}
 			}
 
-			events_meta.push((eid, prev, auth, state_key, depth));
+			events_meta.push((eid.clone(), prev, auth, state_key, depth));
 			// Keep state event PDUs for fork resolution; drop messages
 			state_pdus.push(if is_state { Some(pdu_to_lean(&pdu)) } else { None });
 		}
@@ -203,7 +214,7 @@ impl super::Service {
 			start.elapsed(),
 			room_version,
 		);
-		(events_meta, room_version, state_pdus)
+		Ok((events_meta, room_version, state_pdus))
 	}
 
 	// ── Phase 2b: Pre-compute auth chains bottom-up ──
@@ -332,15 +343,20 @@ impl super::Service {
 			}
 		}
 
-		let mut ssk_cache: HashMap<(String, String), u64> =
-			HashMap::with_capacity(unique_state_keys.len());
+		let mut ssk_cache: HashMap<
+			rezzy::basespec::event_types::EventType,
+			HashMap<String, u64>,
+		> = HashMap::with_capacity(unique_state_keys.len());
 		for (ty, sk) in &unique_state_keys {
 			let ssk = self
 				.services
 				.short
 				.get_or_create_shortstatekey(&ty.as_str().into(), sk)
 				.await;
-			ssk_cache.insert((ty.clone(), sk.clone()), ssk);
+			ssk_cache
+				.entry(ty.clone().into())
+				.or_default()
+				.insert(sk.clone(), ssk);
 		}
 
 		let mut sei_cache: HashMap<OwnedEventId, u64> =
@@ -372,9 +388,11 @@ impl super::Service {
 				// Non-state event: skeleton for DAG traversal only
 				rezzy::LeanEvent {
 					event_id: eid.to_string(),
-					prev_events: prev.iter().map(ToString::to_string).collect(),
-					auth_events: auth.iter().map(ToString::to_string).collect(),
+					prev_events: prev.iter().map(|id| format!("{id}")).collect(),
+					auth_events: auth.iter().map(|id| format!("{id}")).collect(),
 					depth: *depth,
+					rejected: false,
+					soft_fail: false,
 					..Default::default()
 				}
 			};
@@ -397,27 +415,35 @@ impl super::Service {
 
 		// ── Compute state at all events via rezzy streaming ──
 		let batch_start = Instant::now();
-		let all_ids_owned: Vec<String> = ctx
+		let target_ids_owned: Vec<String> = ctx
 			.events_meta
 			.iter()
+			.filter(|(_, prev, _, state_key, _)| state_key.is_some() || prev.len() != 1)
 			.map(|(eid, ..)| eid.to_string())
 			.collect();
+		debug!(
+			"rebuild_state: targeting {} / {} events for rezzy state computation",
+			target_ids_owned.len(),
+			ctx.events_meta.len(),
+		);
 
 		let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
 		// Spawn synchronous rezzy pipeline on a blocking thread
 		let lean_events_moved = lean_events;
 		tokio::task::spawn_blocking(move || {
-			let target_refs: Vec<&String> = all_ids_owned.iter().collect();
+			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
+			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
+			let empty_key = String::new();
 			let mut abort = false;
-			rezzy::compute_state_at_streaming_optimized(
+			let completed = rezzy::compute_state_at_streaming_optimized(
 				&target_refs,
 				&lean_events_moved,
 				version,
 				|id, update| {
 					let owned_update = match update {
 						| rezzy::StateUpdate::New { state, hash } =>
-							StateUpdateOwned::New { state, hash: Box::new(hash) },
+							StateUpdateOwned::New { state, hash: Box::new(*hash) },
 						| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
 							StateUpdateOwned::Unchanged {
 								parent_event_id: parent_event_id.clone(),
@@ -430,18 +456,20 @@ impl super::Service {
 						abort = true;
 					}
 				},
+				&empty_key,
 			);
+			if !completed {
+				warn!("compute_state_at_streaming_optimized detected cycle; results incomplete");
+			}
 		});
 
 		// ── Consume stream and write SSH for each event ──
-		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
-		let empty_ssh = Box::pin(
-			self.services
-				.state_compressor
-				.save_state(room_id, Arc::new(BTreeSet::new())),
-		)
-		.await?
-		.shortstatehash;
+		let empty_ssh = self
+			.services
+			.state_compressor
+			.save_state(room_id, Arc::new(BTreeSet::new()))
+			.await?
+			.shortstatehash;
 
 		let mut event_ssh: HashMap<OwnedEventId, u64> = HashMap::new();
 		let mut lthash_to_ssh: HashMap<rezzy::LtHash, u64> = HashMap::new();
@@ -450,34 +478,22 @@ impl super::Service {
 		let mut groups_deduped = 0_usize;
 		let mut processed = 0_usize;
 		let total_events = ctx.events_meta.len();
-		let mut events_meta_map = HashMap::with_capacity(ctx.events_meta.len());
-		for meta in &ctx.events_meta {
-			events_meta_map.insert(meta.0.as_str(), meta);
-		}
+		let mut pending_updates: HashMap<String, StateUpdateOwned> = HashMap::new();
 
 		// ── Instrumentation counters ──
 		let mut n_unchanged = 0_usize;
 		let mut n_new = 0_usize;
 		let mut n_new_deduped = 0_usize;
+		let mut n_inherited = 0_usize;
 		let mut t_unchanged = std::time::Duration::ZERO;
 		let mut t_compress = std::time::Duration::ZERO;
 		let mut t_save = std::time::Duration::ZERO;
 		let mut t_write = std::time::Duration::ZERO;
 		let mut t_recv_wait = std::time::Duration::ZERO;
 		let mut _t_last_recv = Instant::now();
+		let mut pdu_ssh_batch: Vec<(u64, u64)> = Vec::with_capacity(4096);
 
-		while let Some((resolved_id, owned_update)) = {
-			let t0 = Instant::now();
-			let result = rx.recv().await;
-			t_recv_wait = t_recv_wait.saturating_add(t0.elapsed());
-			_t_last_recv = Instant::now();
-			result
-		} {
-			let Some(&(eid, _, _, state_key, _)) = events_meta_map.get(resolved_id.as_str())
-			else {
-				continue;
-			};
-
+		for (eid, prev, _, state_key, _) in &ctx.events_meta {
 			processed = processed.saturating_add(1);
 
 			if processed.is_multiple_of(1000) {
@@ -492,87 +508,108 @@ impl super::Service {
 				);
 			}
 
-			let ssh = match owned_update {
-				| StateUpdateOwned::Unchanged { parent_event_id } => {
-					let t0 = Instant::now();
-					n_unchanged = n_unchanged.saturating_add(1);
-					groups_deduped = groups_deduped.saturating_add(1);
-					// Look up parent's SSH by string key to avoid OwnedEventId parsing
-					let parent_eid: OwnedEventId = parent_event_id
-						.as_str()
-						.try_into()
-						.expect("parent_event_id from rezzy should be a valid event ID");
-					let result = event_ssh.get(&parent_eid).copied().unwrap_or(empty_ssh);
-					t_unchanged = t_unchanged.saturating_add(t0.elapsed());
-					result
-				},
-				| StateUpdateOwned::New { state, hash } => {
-					n_new = n_new.saturating_add(1);
+			let is_rezzy_target = state_key.is_some() || prev.len() != 1;
+			let ssh = if is_rezzy_target {
+				let owned_update = if let Some(update) = pending_updates.remove(eid.as_str()) {
+					update
+				} else {
+					loop {
+						let t0 = Instant::now();
+						let Some((resolved_id, update)) = rx.recv().await else {
+							break StateUpdateOwned::Unchanged {
+								parent_event_id: prev
+									.first()
+									.map(|id| format!("{id}"))
+									.unwrap_or_default(),
+							};
+						};
+						t_recv_wait = t_recv_wait.saturating_add(t0.elapsed());
+						_t_last_recv = Instant::now();
 
-					// LtHash pre-check: skip the entire O(N) compression loop if
-					// we've already seen this exact state. LtHash is 128 bytes
-					// (cryptographic lattice hash) — collision is a non-issue.
-					if let Some(&existing_ssh) = lthash_to_ssh.get(&hash) {
-						groups_deduped = groups_deduped.saturating_add(1);
-						n_new_deduped = n_new_deduped.saturating_add(1);
-						existing_ssh
-					} else {
-						// Compress state to BTreeSet<u128> for storage.
-						let tc0 = Instant::now();
-						let mut compressed = BTreeSet::new();
-						for (key, ev_id_str) in &state {
-							let ssk = ssk_cache.get(key).copied().unwrap_or(0);
-							let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
-							let compressed_val =
-								rooms::state_compressor::compress_state_event(ssk, sei);
-							compressed.insert(compressed_val);
+						if resolved_id == *eid {
+							break update;
 						}
-						t_compress = t_compress.saturating_add(tc0.elapsed());
-
-						let ts0 = Instant::now();
-						let result = self
-							.services
-							.state_compressor
-							.save_state_with_parent(
-								room_id,
-								Some(current_shortstatehash),
-								Arc::new(compressed),
-							)
-							.await?;
-						let ssh = result.shortstatehash;
-						lthash_to_ssh.insert(*hash, ssh);
-						groups_compressed = groups_compressed.saturating_add(1);
-						t_save = t_save.saturating_add(ts0.elapsed());
-						ssh
+						pending_updates.insert(resolved_id, update);
 					}
-				},
+				};
+
+				match owned_update {
+					| StateUpdateOwned::Unchanged { parent_event_id } => {
+						let t0 = Instant::now();
+						n_unchanged = n_unchanged.saturating_add(1);
+						groups_deduped = groups_deduped.saturating_add(1);
+						// Look up parent's SSH by string key to avoid OwnedEventId parsing
+						let parent_eid: OwnedEventId = parent_event_id
+							.as_str()
+							.try_into()
+							.expect("parent_event_id from rezzy should be a valid event ID");
+						let result = event_ssh.get(&parent_eid).copied().unwrap_or(empty_ssh);
+						t_unchanged = t_unchanged.saturating_add(t0.elapsed());
+						result
+					},
+					| StateUpdateOwned::New { state, hash } => {
+						n_new = n_new.saturating_add(1);
+
+						// LtHash pre-check: skip the entire O(N) compression loop if
+						// we've already seen this exact state. LtHash is 128 bytes
+						// (cryptographic lattice hash) — collision is a non-issue.
+						if let Some(&existing_ssh) = lthash_to_ssh.get(&hash) {
+							groups_deduped = groups_deduped.saturating_add(1);
+							n_new_deduped = n_new_deduped.saturating_add(1);
+							existing_ssh
+						} else {
+							// Compress state to BTreeSet<u128> for storage.
+							let tc0 = Instant::now();
+							let mut compressed = BTreeSet::new();
+							for (key, ev_id_str) in &state {
+								let ssk = ssk_cache
+									.get(&key.0)
+									.and_then(|keys| keys.get(&key.1))
+									.copied()
+									.unwrap_or(0);
+								let sei = sei_str_cache.get(ev_id_str).copied().unwrap_or(0);
+								let compressed_val =
+									rooms::state_compressor::compress_state_event(ssk, sei);
+								compressed.insert(compressed_val);
+							}
+							t_compress = t_compress.saturating_add(tc0.elapsed());
+
+							let ts0 = Instant::now();
+							let result = self
+								.services
+								.state_compressor
+								// rebuild_state is an administrative bulk repair path.
+								// Using the root write path avoids walking the entire
+								// ancestor diff chain for every intermediate state.
+								.save_state_as_root(room_id, Arc::new(compressed))
+								.await?;
+							let ssh = result.shortstatehash;
+							lthash_to_ssh.insert(*hash, ssh);
+							groups_compressed = groups_compressed.saturating_add(1);
+							t_save = t_save.saturating_add(ts0.elapsed());
+							ssh
+						}
+					},
+				}
+			} else {
+				n_inherited = n_inherited.saturating_add(1);
+				event_ssh
+					.get(&prev[0])
+					.copied()
+					.unwrap_or(current_shortstatehash)
 			};
 
 			let tw0 = Instant::now();
 			// Write pdu_shortstatehash for this event
-			if state_key.is_some() {
-				if let Ok((pdu, mut json)) = self.db.get_from_eventid_pdu(eid).await {
-					let pdu_id: conduwuit_core::matrix::pdu::RawPduId =
-						conduwuit_core::matrix::pdu::PduId {
-							shortroomid,
-							shorteventid: conduwuit_core::matrix::pdu::PduCount::Normal(0),
-						}
-						.into();
-					let mut ssh_mut = ssh;
-					Box::pin(self.compute_state_for_event(
-						&pdu,
-						eid,
-						&mut json,
-						&mut ssh_mut,
-						&pdu_id,
-					))
-					.await;
+			let shorteventid = sei_cache.get(eid).copied().unwrap_or(0);
+			if shorteventid != 0 {
+				pdu_ssh_batch.push((shorteventid, ssh));
+				if pdu_ssh_batch.len() >= 4096 {
+					self.services
+						.state
+						.set_pdu_shortstatehash_batch(&pdu_ssh_batch);
+					pdu_ssh_batch.clear();
 				}
-			} else {
-				let shorteventid = sei_cache.get(eid).copied().unwrap_or(0);
-				self.services
-					.state
-					.set_pdu_shortstatehash(shorteventid, ssh);
 			}
 			t_write = t_write.saturating_add(tw0.elapsed());
 
@@ -586,6 +623,12 @@ impl super::Service {
 			}
 		}
 
+		if !pdu_ssh_batch.is_empty() {
+			self.services
+				.state
+				.set_pdu_shortstatehash_batch(&pdu_ssh_batch);
+		}
+
 		drop(cork.take());
 
 		info!(
@@ -597,8 +640,8 @@ impl super::Service {
 			groups_deduped,
 		);
 		eprintln!(
-			"  [PERF] consumer breakdown: unchanged={n_unchanged} new={n_new} \
-			 new_deduped={n_new_deduped}"
+			"  [PERF] consumer breakdown: inherited={n_inherited} unchanged={n_unchanged} \
+			 new={n_new} new_deduped={n_new_deduped}"
 		);
 		eprintln!(
 			"  [PERF]   t_recv_wait={t_recv_wait:?}  t_unchanged={t_unchanged:?}  \
@@ -634,7 +677,10 @@ impl super::Service {
 			}
 		}
 
-		let mut unconflicted = std::collections::BTreeMap::new();
+		let mut unconflicted: std::collections::BTreeMap<
+			(rezzy::basespec::event_types::EventType, String),
+			String,
+		> = std::collections::BTreeMap::new();
 		let mut conflicted_keys: HashSet<(String, String)> = HashSet::new();
 
 		for (key, ids) in &key_to_ids {
@@ -645,7 +691,7 @@ impl super::Service {
 					.copied()
 					.unwrap_or(0);
 				if count == num_maps {
-					unconflicted.insert((key.0.clone(), key.1.clone()), id.clone());
+					unconflicted.insert((key.0.clone().into(), key.1.clone()), id.clone());
 					continue;
 				}
 			}
@@ -758,7 +804,7 @@ impl super::Service {
 		let conflicted_events: HashMap<String, rezzy::LeanEvent> = if is_v2_1_plus {
 			// MSC4297 (V2.1+): rezzy computes the exact HashMap we need
 			let direct_conflicted: Vec<String> =
-				conflicted_eids.iter().map(ToString::to_string).collect();
+				conflicted_eids.iter().map(|id| format!("{id}")).collect();
 			eprintln!(
 				"[resolve_fork] computing V2.1+ conflicted subgraph ({} direct_conflicted, {} \
 				 auth_context)...",
@@ -801,12 +847,16 @@ impl super::Service {
 		);
 		let rezzy_start = Instant::now();
 		let mut pl_cache = HashMap::new();
+		// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
+		let empty_key = String::new();
+		let unconflicted_state: rezzy::state::at::SharedState = (&unconflicted).into();
 		let resolved_lean = rezzy::resolve_iterative_sort(
-			unconflicted.into(),
-			conflicted_events,
+			&unconflicted_state,
+			&conflicted_events,
 			&auth_context,
 			version,
 			&mut pl_cache,
+			&empty_key,
 		);
 		eprintln!(
 			"[resolve_fork] rezzy::resolve_iterative_sort took {:?}",
@@ -816,7 +866,7 @@ impl super::Service {
 		// 8. Convert back to Ruma StateMap
 		let mut resolved = StateMap::new();
 		for ((ty_str, sk_str), eid_str) in resolved_lean {
-			let ty: ruma::events::StateEventType = ty_str.into();
+			let ty: ruma::events::StateEventType = ty_str.to_string().into();
 			let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 			if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 				resolved.insert((ty, sk), eid);

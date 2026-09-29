@@ -32,6 +32,62 @@ fn saturating_inc_backward() {
 	assert_eq!(next, Count::min());
 }
 
+/// `pdus`/`pdus_rev` in `service::rooms::timeline::data` are EXCLUSIVE of
+/// their boundary and rely on this exact operation (`saturating_inc`) at
+/// their call sites to become inclusive when needed (e.g.
+/// `/members?at=...`). If this arithmetic ever drifts, that boundary
+/// handling silently breaks — see the `TestSearch`/`/members?at=` regression
+/// this test was added to guard against.
+#[test]
+fn saturating_inc_forward() {
+	use ruma::api::Direction;
+
+	// Normal count
+	let count = Count::Normal(10);
+	let next = count.saturating_inc(Direction::Forward);
+	assert_eq!(next, Count::Normal(11));
+
+	// Backfilled stays Backfilled going forward even once non-negative —
+	// the backfilled sequence only legitimately covers counts <= 0, so once
+	// we step past zero the value must normalize into the Normal variant.
+	let count = Count::Backfilled(-1);
+	let next = count.saturating_inc(Direction::Forward);
+	assert_eq!(next, Count::Backfilled(0));
+
+	let count = Count::Backfilled(0);
+	let next = count.saturating_inc(Direction::Forward);
+	assert_eq!(next, Count::Normal(1));
+
+	// Saturate at the largest valid normal count rather than overflowing into
+	// values whose signed ordering no longer matches token ordering.
+	let count = Count::max();
+	let next = count.saturating_inc(Direction::Forward);
+	assert_eq!(next, Count::max());
+}
+
+/// Documents the `Count` arithmetic that inclusive callers rely on when
+/// compensating for the exclusive `pdus`/`pdus_rev` boundaries.
+///
+/// This is intentionally a low-level arithmetic test only; it does not
+/// exercise the `/members?at=` integration path directly.
+#[test]
+fn saturating_inc_matches_boundary_compensation_arithmetic() {
+	use ruma::api::Direction;
+
+	// pdus_rev(until) excludes `until`; a caller wanting `at` included as the
+	// first (most recent) result must request pdus_rev(at + 1) so that
+	// "everything strictly before at+1" == "everything up to and including at".
+	let at = Count::Normal(42);
+	let bumped_for_pdus_rev = at.saturating_inc(Direction::Forward);
+	assert_eq!(bumped_for_pdus_rev, Count::Normal(43));
+
+	// pdus(from) excludes `from`; a caller wanting `from` included as the
+	// first (earliest) result must request pdus(from - 1).
+	let from = Count::Normal(42);
+	let bumped_for_pdus = from.saturating_inc(Direction::Backward);
+	assert_eq!(bumped_for_pdus, Count::Normal(41));
+}
+
 #[test]
 fn raw_id_normal_shorteventid_matches_bytes() {
 	use super::{Id, RawId};

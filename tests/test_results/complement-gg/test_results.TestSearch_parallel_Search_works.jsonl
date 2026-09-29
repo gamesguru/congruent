@@ -1,3 +1,0 @@
-{"Action":"fail","Test":"TestSearch"}
-{"Action":"fail","Test":"TestSearch/parallel"}
-{"Action":"fail","Test":"TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"}

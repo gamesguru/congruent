@@ -6,6 +6,15 @@ rustc-wrapper = ".cargo/cargo-wrapper.sh"
 
 [env]
 RUSTC_WRAPPER = { value = "sccache", force = false }
+# hardened_malloc-rs bakes `option_env!("CC")` into its build.rs and then execs
+# the whole string as a single program name, so a shell `CC="sccache cc"` breaks
+# it. Force a plain C compiler here; sccache is already wired up for rustc.
+CC = { value = "cc", force = true }
+# hardened_malloc-rs' vendored submodule is pinned to a version whose chacha.c
+# hits GCC 16's new -Wunterminated-string-initialization warning (the 16-byte
+# `sigma` string is intentionally NUL-free) and the Makefile sets -Werror.
+# Bump hardened_malloc-rs once upstream fixes this; until then, suppress.
+CFLAGS = { value = "-Wno-error=unterminated-string-initialization -Wno-unterminated-string-initialization", force = true }
 ROCKSDB_LIB_DIR = { value = "/usr/local/lib", force = false }
 ROCKSDB_INCLUDE_DIR = { value = "/usr/local/include", force = false }
 PKG_CONFIG_PATH = { value = "/usr/local/lib/pkgconfig", force = false }

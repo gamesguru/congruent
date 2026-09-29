@@ -17,7 +17,7 @@ use futures::{
 	FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all, pin_mut,
 };
 use ruma::{
-	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
+	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UserId,
 	events::{
 		AnyStrippedStateEvent, StateEventType, TimelineEventType,
 		room::create::RoomCreateEventContent,
@@ -47,7 +47,7 @@ struct Services {
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_compressor: Dep<rooms::state_compressor::Service>,
 	timeline: Dep<rooms::timeline::Service>,
-	outlier: Dep<rooms::outlier::Service>,
+	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
 }
 
 struct Data {
@@ -74,7 +74,7 @@ impl crate::Service for Service {
 				state_compressor: args
 					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
-				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
+				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 			},
 			db: Data {
 				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
@@ -111,6 +111,33 @@ impl Service {
 			statediffremoved,
 			state_lock,
 			true,
+			None,
+		)
+		.await
+	}
+
+	/// Same as `force_state`, but for callers that already hold
+	/// `rooms::timeline::Service::mutex_insert` for this room (currently only
+	/// `append_pdu`). Passing that guard through lets the outlier-demotion
+	/// step below skip re-acquiring the same non-reentrant lock, which would
+	/// otherwise deadlock the calling task against itself.
+	pub async fn force_state_insert_locked(
+		&self,
+		room_id: &RoomId,
+		shortstatehash: u64,
+		statediffnew: Arc<CompressedState>,
+		statediffremoved: Arc<CompressedState>,
+		state_lock: &RoomMutexGuard,
+		insert_lock: &rooms::timeline::InsertMutexGuard,
+	) -> Result {
+		self.force_state_inner(
+			room_id,
+			shortstatehash,
+			statediffnew,
+			statediffremoved,
+			state_lock,
+			true,
+			Some(insert_lock),
 		)
 		.await
 	}
@@ -133,10 +160,12 @@ impl Service {
 			statediffremoved,
 			state_lock,
 			false,
+			None,
 		)
 		.await
 	}
 
+	#[allow(clippy::too_many_arguments)]
 	async fn force_state_inner(
 		&self,
 		room_id: &RoomId,
@@ -145,6 +174,7 @@ impl Service {
 		statediffremoved: Arc<CompressedState>,
 		state_lock: &RoomMutexGuard,
 		update_cache: bool,
+		insert_lock: Option<&rooms::timeline::InsertMutexGuard>,
 	) -> Result {
 		info!(
 			target: "force_state",
@@ -162,10 +192,15 @@ impl Service {
 			return Ok(());
 		}
 
-		let new_event_ids = statediffnew
+		let new_state_events: HashMap<_, _> = statediffnew
 			.iter()
+			.map(|&new| parse_compressed_state_event(new))
+			.collect();
+
+		let new_event_ids = new_state_events
+			.values()
+			.copied()
 			.stream()
-			.map(|&new| parse_compressed_state_event(new).1)
 			.then(|shorteventid| {
 				self.services
 					.short
@@ -255,6 +290,21 @@ impl Service {
 			"new events done: {new_processed} processed, {new_members} members, {new_skipped} skipped"
 		);
 
+		// Collected once (not per removed member) so marking removed members as
+		// left doesn't turn into O(removed * members) work below.
+		let prior_members: Vec<_> = self
+			.services
+			.state_cache
+			.room_members(room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await;
+		let local_prior_members: Vec<&OwnedUserId> = prior_members
+			.iter()
+			.filter(|member| self.services.globals.user_is_local(member))
+			.collect();
+		let mut removed_members: Vec<(OwnedUserId, u64)> = Vec::new();
+
 		pin_mut!(removed_events);
 		while let Some((shortstatekey, shorteventid)) = removed_events.next().await {
 			// Process cache updates using shortstatekey (PDU-free!)
@@ -268,30 +318,20 @@ impl Service {
 			{
 				if event_type == StateEventType::RoomMember {
 					if let Ok(user_id) = UserId::parse(&*state_key) {
-						// Re-sync membership from the NEW state to update cache correctly.
-						// NB: Must use state_get(shortstatehash) NOT room_state_get —
-						// the new state has not been committed yet via set_room_state.
-						if let Ok(new_pdu) = self
-							.services
-							.state_accessor
-							.state_get(
-								shortstatehash,
-								&StateEventType::RoomMember,
-								user_id.as_str(),
-							)
-							.await
-						{
-							let _ = self
+						// Replacement member events were already processed by the new-events
+						// loop above. Without a replacement, the user is absent from the new
+						// state and must be marked left.
+						//
+						// Use the reconciled variant here so we do not wipe a just-added
+						// invite when state resolution is transitioning from leave/ban ->
+						// invite.
+						if !new_state_events.contains_key(&shortstatekey) {
+							let left_count = self
 								.services
 								.state_cache
-								.update_membership(room_id, user_id, &new_pdu, false)
+								.mark_as_left_reconciled(user_id, room_id)
 								.await;
-						} else {
-							// User is no longer in the room at all in the new state
-							self.services
-								.state_cache
-								.mark_as_left(user_id, room_id, None)
-								.await;
+							removed_members.push((user_id.to_owned(), left_count));
 						}
 					}
 				} else if event_type == StateEventType::SpaceChild {
@@ -316,15 +356,36 @@ impl Service {
 
 			let pdu_json = self.services.timeline.get_pdu_json(&event_id).await;
 			if let Ok(pdu_json) = &pdu_json {
-				self.services
-					.outlier
-					.add_pdu_outlier(&event_id, pdu_json, Some(room_id));
+				match insert_lock {
+					| Some(insert_lock) => self.services.timeline.add_pdu_outlier_locked(
+						&event_id,
+						pdu_json,
+						Some(room_id),
+						insert_lock,
+					),
+					| None =>
+						self.services
+							.timeline
+							.add_pdu_outlier(&event_id, pdu_json, Some(room_id))
+							.await,
+				}
 			}
 		}
-		info!(target: "force_state", "removed events done, updating joined count");
-		self.services.state_cache.update_joined_count(room_id).await;
 
+		if !removed_members.is_empty() {
+			self.services
+				.state_cache
+				.mark_device_list_lefts_batch(
+					&removed_members,
+					&prior_members,
+					&local_prior_members,
+				)
+				.await;
+		}
+
+		info!(target: "force_state", "removed events done, updating joined count");
 		self.set_room_state(room_id, shortstatehash, state_lock);
+		self.services.state_cache.update_joined_count(room_id).await;
 
 		info!(target: "force_state", "complete for {room_id}");
 		Ok(())
@@ -429,6 +490,28 @@ impl Service {
 			.insert(shorteventid, shortstatehash);
 	}
 
+	/// Batch-overwrite event state snapshots. Used by rebuild-state to avoid
+	/// one RocksDB write per event.
+	pub fn set_pdu_shortstatehash_batch(&self, entries: &[(u64, u64)]) {
+		if entries.is_empty() {
+			return;
+		}
+
+		let mut batch = conduwuit_database::Batch::new();
+		for &(shorteventid, shortstatehash) in entries {
+			let key = shorteventid.to_be_bytes();
+			let val = shortstatehash.to_be_bytes();
+			self.db
+				.shorteventid_shortstatehash
+				.batch_put(&mut batch, &key, val);
+			self.services
+				.short
+				.shorteventid_shortstatehash_cache
+				.insert(shorteventid, shortstatehash);
+		}
+		self.db.shorteventid_shortstatehash.apply_batch(batch);
+	}
+
 	/// Generates a new StateHash and associates it with the incoming event.
 	///
 	/// This adds all current state events (not including the incoming event)
@@ -443,17 +526,15 @@ impl Service {
 			.get_or_create_shorteventid(&new_pdu.event_id)
 			.await;
 
-		let previous_shortstatehash = self.get_room_shortstatehash(room_id).await;
+		let previous_shortstatehash = self.get_room_shortstatehash(room_id).await.unwrap_or(0);
 
-		if let Ok(p) = previous_shortstatehash {
-			self.db
-				.shorteventid_shortstatehash
-				.aput::<BUFSIZE, BUFSIZE, _, _>(shorteventid, p);
-			self.services
-				.short
-				.shorteventid_shortstatehash_cache
-				.insert(shorteventid, p);
-		}
+		self.db
+			.shorteventid_shortstatehash
+			.aput::<BUFSIZE, BUFSIZE, _, _>(shorteventid, previous_shortstatehash);
+		self.services
+			.short
+			.shorteventid_shortstatehash_cache
+			.insert(shorteventid, previous_shortstatehash);
 
 		match &new_pdu.state_key {
 			| Some(state_key) => {
@@ -463,18 +544,26 @@ impl Service {
 					.get_or_create_shortstatekey(&new_pdu.kind.to_string().into(), state_key)
 					.await;
 
-				let new_ssh = Box::pin(self.services.state_compressor.append_state_pdu(
-					previous_shortstatehash.as_ref().copied().unwrap_or(0),
-					shortstatekey,
-					&new_pdu.event_id,
-					|| self.services.globals.next_count(),
-				))
-				.await?;
+				let new_ssh = self
+					.services
+					.state_compressor
+					.append_state_pdu(
+						previous_shortstatehash,
+						shortstatekey,
+						&new_pdu.event_id,
+						|| self.services.globals.next_count(),
+					)
+					.await?;
 
-				Ok(new_ssh.unwrap_or_else(|| previous_shortstatehash.expect("must exist")))
+				Ok(new_ssh.unwrap_or(previous_shortstatehash))
 			},
-			| _ =>
-				Ok(previous_shortstatehash.expect("first event in room must be a state event")),
+			| _ => {
+				assert!(
+					previous_shortstatehash != 0,
+					"first event in room must be a state event"
+				);
+				Ok(previous_shortstatehash)
+			},
 		}
 	}
 
@@ -555,7 +644,7 @@ impl Service {
 
 		// Fallback: the create event might be an outlier (not in the state
 		// snapshot). Scan outliers for this room to find it.
-		let mut outlier_stream = Box::pin(self.services.outlier.room_stream(room_id));
+		let mut outlier_stream = Box::pin(self.services.timeline.room_outlier_stream(room_id));
 		while let Some((_eid, pdu)) = outlier_stream.next().await {
 			if pdu.kind == TimelineEventType::RoomCreate {
 				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
@@ -628,10 +717,79 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 		event_ids: I,
+		trusted_new_event: Option<&'a EventId>,
 		_state_lock: &'a RoomMutexGuard,
 	) where
 		I: Iterator<Item = OwnedEventId> + Send + 'a,
 	{
+		// Only events that are actually accepted into the timeline may become
+		// citable forward extremities. Outliers, rejected, and soft-failed
+		// events cannot be relied upon to ever converge, so admitting them
+		// here means every future event/state-res pass in this room pays to
+		// re-walk their dependencies indefinitely. This is the single write
+		// path to `roomid_pduleaves`, so enforcing eligibility here covers
+		// all callers (including `recalculate_extremities` and reorder).
+		//
+		// `trusted_new_event`, if given, is the one event currently being
+		// appended by this same operation: its `eventid_metadata` entry is
+		// written moments after this call returns (see
+		// `timeline::append_pdu`), so a metadata lookup for it here would
+		// always miss. It is exempted from the DB check and trusted
+		// directly, since by construction it is being newly accepted into
+		// the timeline right now, not an outlier/rejected/soft-failed event.
+		let mut eligible: Vec<OwnedEventId> = Vec::new();
+		for event_id in event_ids {
+			if trusted_new_event.is_some_and(|trusted| trusted.as_str() == event_id.as_str()) {
+				eligible.push(event_id);
+				continue;
+			}
+
+			let Ok(metadata) = self.services.timeline.get_event_metadata(&event_id).await else {
+				debug!(
+				%room_id, %event_id,
+				"Refusing to persist forward extremity with unknown event metadata",
+				);
+				continue;
+			};
+
+			// Only events actually accepted into the timeline may become citable
+			// forward extremities. A non-outlier event is not automatically
+			// acceptable: its rejection/soft-fail verdict now lives in the
+			// independent `eventid_rejections` / `eventid_softfailed` stores
+			// (not `EventMetadata`), and a non-outlier event can carry such a
+			// marker (mirroring the checks `recalculate_extremities` performs).
+			// Admit it only if it is not an outlier, rejected, or soft-failed.
+			let admitted = !metadata.is_outlier
+				&& !self
+					.services
+					.pdu_metadata
+					.is_event_rejected(&event_id)
+					.await && !self
+				.services
+				.pdu_metadata
+				.is_event_soft_failed(&event_id)
+				.await;
+			if admitted {
+				eligible.push(event_id);
+			} else {
+				debug!(
+				%room_id, %event_id,
+				"Refusing to persist ineligible (outlier/rejected/soft-failed) \
+				 event as a forward extremity",
+				);
+			}
+		}
+
+		if eligible.is_empty() {
+			warn!(
+				%room_id,
+				"set_forward_extremities: all candidate tips were ineligible \
+				 (outlier/rejected/soft-failed/unknown); leaving existing forward \
+				 extremities unchanged",
+			);
+			return;
+		}
+
 		let prefix = (room_id, Interfix);
 		self.db
 			.roomid_pduleaves
@@ -644,16 +802,16 @@ impl Service {
 		// tips than this (e.g. from recalculate_extremities),
 		// Keeping the newest tips is preferred since they are most likely to
 		// be merged by future events.
-		let collected: Vec<OwnedEventId> = event_ids.collect();
 		let max_extremities = self.services.globals.max_forward_extremities();
-		let start = collected.len().saturating_sub(max_extremities);
-		for event_id in &collected[start..] {
+		let start = eligible.len().saturating_sub(max_extremities);
+		for event_id in &eligible[start..] {
 			let key = (room_id, &**event_id);
 			self.db.roomid_pduleaves.put_raw(key, &**event_id);
 		}
 	}
 
 	/// This fetches auth events from the current state.
+	#[allow(clippy::too_many_arguments)]
 	#[tracing::instrument(skip(self, content, room_version), level = "trace")]
 	pub async fn get_auth_events(
 		&self,
@@ -663,6 +821,7 @@ impl Service {
 		state_key: Option<&str>,
 		content: &serde_json::value::RawValue,
 		room_version: &RoomVersion,
+		room_version_id: &RoomVersionId,
 	) -> Result<StateMap<PduEvent>> {
 		let Ok(shortstatehash) = self.get_room_shortstatehash(room_id).await else {
 			return Ok(HashMap::new());
@@ -685,6 +844,7 @@ impl Service {
 			&content_val,
 			// MSC4291 (v12+): auth_events must NOT reference m.room.create
 			version,
+			room_version_id.as_str(),
 		);
 		let auth_types: Vec<(StateEventType, conduwuit_core::matrix::StateKey)> = auth_types_raw
 			.into_iter()

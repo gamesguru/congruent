@@ -72,7 +72,7 @@ where
 }
 
 #[inline]
-pub(crate) fn deserialize<'a, K, V>(kv: KeyVal<'a>) -> Result<KeyVal<'a, K, V>>
+pub fn deserialize<'a, K, V>(kv: KeyVal<'a>) -> Result<KeyVal<'a, K, V>>
 where
 	K: Deserialize<'a>,
 	V: Deserialize<'a>,
@@ -81,7 +81,7 @@ where
 }
 
 #[inline]
-pub(crate) fn deserialize_key<'a, K>(key: Key<'a>) -> Result<Key<'a, K>>
+pub fn deserialize_key<'a, K>(key: Key<'a>) -> Result<Key<'a, K>>
 where
 	K: Deserialize<'a>,
 {
@@ -89,7 +89,7 @@ where
 }
 
 #[inline]
-pub(crate) fn deserialize_val<'a, V>(val: Val<'a>) -> Result<Val<'a, V>>
+pub fn deserialize_val<'a, V>(val: Val<'a>) -> Result<Val<'a, V>>
 where
 	V: Deserialize<'a>,
 {

@@ -176,14 +176,14 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 				writeln!(out, "- **depth**:            {}", meta.depth)?;
 				writeln!(out, "- **short_room_id**:    {}", meta.short_room_id)?;
 				writeln!(out, "- **is_outlier**:       {}", meta.is_outlier)?;
-				writeln!(out, "- **soft_failed**:      {}", meta.soft_failed)?;
-				writeln!(out, "- **rejected**:         {}", meta.rejected)?;
+				writeln!(out, "- **soft_failed**:      {soft_failed}")?;
+				writeln!(out, "- **rejected**:         {rejected}")?;
 				writeln!(
 					out,
 					"- **redacted_by**:      {}",
 					meta.redacted_by
 						.as_ref()
-						.map_or_else(|| "None".to_owned(), ToString::to_string)
+						.map_or_else(|| "None".to_owned(), |id| format!("{id}"))
 				)?;
 				writeln!(
 					out,
@@ -191,12 +191,6 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 					meta.short_state_hash
 						.map_or_else(|| "None".to_owned(), |h| h.to_string())
 				)?;
-				if !meta.soft_fail_reason.is_empty() {
-					writeln!(out, "- **soft_fail_reason**: {}", meta.soft_fail_reason)?;
-				}
-				if !meta.rejection_reason.is_empty() {
-					writeln!(out, "- **rejection_reason**: {}", meta.rejection_reason)?;
-				}
 			},
 			| Err(e) => {
 				use std::fmt::Write;
@@ -1028,6 +1022,7 @@ pub(crate) async fn force_set_state(
 			.set_forward_extremities(
 				room_id.as_ref(),
 				once(tip_pdu.event_id().to_owned()),
+				None,
 				&state_lock,
 			)
 			.await;
@@ -1325,7 +1320,8 @@ async fn validate_and_extract_state(
 			self.services
 				.rooms
 				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id));
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
 		}
 
 		if let Some(state_key) = &state_key_opt {
@@ -1389,7 +1385,8 @@ async fn validate_and_add_auth_chain(
 				self.services
 					.rooms
 					.outlier
-					.add_pdu_outlier(&event_id, &json, Some(room_id));
+					.add_pdu_outlier(&event_id, &json, Some(room_id))
+					.await;
 			}
 			// Clear markers for existing auth events to heal any previous
 			// soft-fails/rejections
@@ -1431,7 +1428,8 @@ async fn validate_and_add_auth_chain(
 			self.services
 				.rooms
 				.outlier
-				.add_pdu_outlier(&event_id, &value, Some(room_id));
+				.add_pdu_outlier(&event_id, &value, Some(room_id))
+				.await;
 			auth_added = auth_added.saturating_add(1);
 		}
 
@@ -1686,7 +1684,7 @@ async fn promote_sync_anchor(
 				self.services
 					.rooms
 					.state
-					.set_forward_extremities(room_id, once(anchor_id.clone()), state_lock)
+					.set_forward_extremities(room_id, once(anchor_id.clone()), None, state_lock)
 					.await;
 				info!("Promoted {anchor_id} as timeline anchor for /sync");
 			},
@@ -1719,19 +1717,22 @@ pub(super) async fn get_signing_keys(
 		return self.write_str(&out).await;
 	}
 
-	let signing_keys = if query {
-		self.services
+	let out = if query {
+		let signing_keys = self
+			.services
 			.server_keys
 			.server_request(&server_name)
-			.await?
+			.await?;
+		format!("```json\n{}\n```", signing_keys.json().get())
 	} else {
-		self.services
+		let signing_keys = self
+			.services
 			.server_keys
 			.signing_keys_for(&server_name)
-			.await?
+			.await?;
+		format!("```rs\n{signing_keys:#?}\n```")
 	};
 
-	let out = format!("```rs\n{signing_keys:#?}\n```");
 	self.write_str(&out).await
 }
 

@@ -59,6 +59,18 @@ pub(crate) async fn get_room_summary(
 		.resolve_with_servers(&body.room_id_or_alias, Some(body.via.clone()))
 		.await?;
 
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(&room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await
+	} else {
+		servers
+	};
+
 	if services.rooms.metadata.is_banned(&room_id).await {
 		return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 	}
@@ -74,6 +86,12 @@ async fn room_summary_response(
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
+	// Local state is only trustworthy while we're actually participating in
+	// the room. Once we've left (or never joined), `local_room_summary_response`
+	// still returns `Ok` -- it just reads whatever's left in local storage
+	// (e.g. a stale/zeroed `room_joined_count`) -- so without this gate it
+	// masks the remote-federation fallback below with garbage data instead of
+	// ever reaching it, for exactly the rooms that fallback exists to serve.
 	if services
 		.rooms
 		.state_cache
@@ -248,9 +266,21 @@ async fn remote_room_summary_hierarchy_response(
 			"Federaton of room {room_id} is currently disabled on this server."
 		)));
 	}
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(room_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await
+	} else {
+		servers.to_vec()
+	};
+
 	if servers.is_empty() {
-		return Err!(Request(MissingParam(
-			"No servers were provided to fetch the room over federation"
+		return Err!(Request(NotFound(
+			"Room is known locally but no federation servers are available for summary lookup"
 		)));
 	}
 

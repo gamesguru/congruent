@@ -120,7 +120,7 @@ parking_lot.workspace = true
 lock_api.workspace = true
 hyper-util.workspace = true
 dashmap.workspace = true
-rustc-hash = "2.1.2"
+rustc-hash.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true

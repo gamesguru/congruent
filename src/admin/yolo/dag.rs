@@ -30,16 +30,40 @@ pub(super) async fn get_room_dag(
 	outliers: bool,
 	segments: bool,
 	merge_outliers: bool,
+	topo: bool,
 ) -> Result {
 	let room_id = self.services.rooms.alias.resolve(&room_id).await?;
-	let pdu_ids: Vec<OwnedEventId> = self
-		.services
-		.rooms
-		.timeline
-		.all_pdus(&room_id)
-		.map(|(_, pdu)| pdu.event_id().to_owned())
-		.collect()
-		.await;
+	let pdu_ids: Vec<OwnedEventId> = if topo {
+		use futures::TryStreamExt;
+		self.services
+			.rooms
+			.timeline
+			.topo_pdus(&room_id, None)
+			.filter_map(|res: Result<(_, PduEvent)>| {
+				futures::future::ready(match res {
+					| Ok((_, pdu)) => Some(Ok(pdu.event_id().to_owned())),
+					| Err(
+						conduwuit::Error::SerdeDe(_)
+						| conduwuit::Error::Json(_)
+						| conduwuit::Error::CanonicalJson(_),
+					) => {
+						warn!("get_room_dag --topo: skipping undecodable topo row");
+						None
+					},
+					| Err(e) => Some(Err(e)),
+				})
+			})
+			.try_collect()
+			.await?
+	} else {
+		self.services
+			.rooms
+			.timeline
+			.all_pdus(&room_id)
+			.map(|(_, pdu)| pdu.event_id().to_owned())
+			.collect()
+			.await
+	};
 
 	let actual_start = if start < 0 {
 		let offset = usize::try_from(start.unsigned_abs()).unwrap_or(usize::MAX);
@@ -369,7 +393,7 @@ pub(super) async fn get_remote_dag(
 	extra_servers: Vec<OwnedServerName>,
 	gap_fill: bool,
 	import: bool,
-	_skip_auth: bool,
+	skip_auth: bool,
 	reorder: bool,
 ) -> Result {
 	use futures::StreamExt;
@@ -648,9 +672,9 @@ pub(super) async fn get_remote_dag(
 				async move {
 					// BYPASS signature verification to make get-remote-dag BLAZING fast!
 					// Just generate the ID and canonical JSON without fetching keys over network.
-					let res =
-						conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv);
-					(raw_pdu, res)
+					// raw_pdu itself is dropped here -- the canonical `value` returned below
+					// is what both the PduEvent and the export line are built from.
+					conduwuit::matrix::event::gen_event_id_canonical_json(&raw_pdu, &rv)
 				}
 			})
 			.buffered(500);
@@ -659,7 +683,7 @@ pub(super) async fn get_remote_dag(
 		let mut batch_pdus = Vec::new();
 		let mut batch_event_ids = HashSet::new();
 
-		while let Some((raw_pdu, validation_res)) = verifications.next().await {
+		while let Some(validation_res) = verifications.next().await {
 			let (event_id, mut value) = match validation_res {
 				| Ok((eid, val)) => (eid, val),
 				| Err(e) => {
@@ -675,29 +699,21 @@ pub(super) async fn get_remote_dag(
 				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 
-			batch_pdus.push((event_id, value, raw_pdu));
+			batch_pdus.push((event_id, value));
 		}
 
-		for (event_id, value, raw_pdu) in batch_pdus {
+		for (event_id, value) in batch_pdus {
 			if seen.contains(&event_id) {
 				continue;
 			}
 			seen.insert(event_id.clone());
 
-			let Ok(pdu) = PduEvent::from_id_val(&event_id, value.clone(), Some(room_id.as_ref()))
-			else {
+			let json = serde_json::to_string(&value).ok();
+			let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) else {
 				continue;
 			};
 
-			let mut export_val: serde_json::Map<String, serde_json::Value> =
-				serde_json::from_str(raw_pdu.get()).unwrap_or_default();
-			if !export_val.contains_key("event_id") {
-				export_val.insert(
-					"event_id".to_owned(),
-					serde_json::Value::String(event_id.to_string()),
-				);
-			}
-			if let Ok(json) = serde_json::to_string(&export_val) {
+			if let Some(json) = json {
 				if writer.write_all(json.as_bytes()).await.is_ok() {
 					let _ = writer.write_all(b"\n").await;
 				}
@@ -799,17 +815,48 @@ pub(super) async fn get_remote_dag(
 	))
 	.await?;
 
-	// Pipeline hint
 	if import {
+		self.write_str(&format!("\nImporting {total} PDUs from {display_path}...\n"))
+			.await?;
+		// The crawl above never verified signatures (bypassed for crawl speed),
+		// so importing must also skip verification -- there's nothing more
+		// trustworthy to check against at this point than at crawl time.
+		Box::pin(self.import_pdus(
+			display_path.clone(),
+			Some(room_id.clone()),
+			skip_auth,
+			true,
+			false,
+			Some(room_version.clone()),
+		))
+		.await?;
+
+		if reorder {
+			self.write_str(&format!("Reordering timeline for {room_id}...\n"))
+				.await?;
+			Box::pin(
+				self.services
+					.rooms
+					.timeline
+					.reorder_timeline(&room_id, false, false),
+			)
+			.await?;
+		}
+	} else {
+		// Pipeline hint -- only meaningful when the caller didn't ask us to
+		// run it ourselves.
 		self.write_str(&format!(
 			"\nTo import: `yolo import-pdus {display_path} --skip-sig-verify`\n"
 		))
 		.await?;
-	}
 
-	if reorder {
-		self.write_str(&format!("To reorder: `yolo reorder-timeline {room_id}`\n"))
+		if reorder {
+			self.write_str(
+				"Note: --reorder has no effect without --import (nothing was persisted to \
+				 reorder).\n",
+			)
 			.await?;
+		}
 	}
 
 	Ok(())
@@ -883,11 +930,11 @@ pub(super) async fn dag_merge_base(
 				let pdu =
 					PduEvent::from_id_val(&validated_id, value.clone(), Some(room_id.as_ref()))
 						.ok()?;
-				self.services.rooms.outlier.add_pdu_outlier(
-					&validated_id,
-					&value,
-					Some(room_id.as_ref()),
-				);
+				self.services
+					.rooms
+					.outlier
+					.add_pdu_outlier(&validated_id, &value, Some(room_id.as_ref()))
+					.await;
 				Some(pdu)
 			}
 			.await;
@@ -1490,7 +1537,10 @@ pub(super) async fn audit_auth_chain(
 	}
 	for eid in &missing {
 		if !fetched_ids.iter().any(|fid| fid == eid) {
-			let _ = writeln!(result_out, "  ✗ {eid} (not found on any server)");
+			let _ = writeln!(
+				result_out,
+				"  ✗ {eid} (fetch failed, was rejected, or was not found on any server)"
+			);
 		}
 	}
 	self.write_str(&result_out).await
@@ -1625,11 +1675,11 @@ pub(super) async fn fetch_missing_events(
 								.pdu_exists(&event_id)
 								.await
 							{
-								self.services.rooms.outlier.add_pdu_outlier(
-									&event_id,
-									&value,
-									Some(&room_id),
-								);
+								self.services
+									.rooms
+									.outlier
+									.add_pdu_outlier(&event_id, &value, Some(&room_id))
+									.await;
 								round_filled = round_filled.saturating_add(1);
 
 								// Collect prev_events of the newly fetched events as potential

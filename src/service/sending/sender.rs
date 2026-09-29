@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use conduwuit::info;
+use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
@@ -224,7 +224,7 @@ impl Service {
 
 	#[tracing::instrument(
 		name = "work",
-		level = "trace"
+		level = "trace",
 		skip_all,
 		fields(
 			futures = %futures.len(),
@@ -276,6 +276,8 @@ impl Service {
 		}
 	}
 
+	/// Returns `Some(dest)` if the destination definitively rejected the
+	/// transaction and its active requests must be cleaned up by the caller.
 	fn handle_response_err(
 		&self,
 		dest: Destination,
@@ -347,6 +349,7 @@ impl Service {
 	/// due to timer jitter), so the retry isn't permanently lost.
 	/// The delay should match the remaining backoff time to avoid hot-polling.
 	fn reschedule_flush(&self, dest: Destination, delay: Duration) {
+		let delay = delay.max(Duration::from_millis(100));
 		let sender = self
 			.channels
 			.get(self.shard_id(&dest))
@@ -412,11 +415,26 @@ impl Service {
 			if let Destination::Federation(server_name) = dest {
 				let since = self.db.get_latest_educount(server_name).await;
 				let since_upper = self.services.globals.current_count().unwrap_or(0);
+				debug!(
+					target: "receipt_debug",
+					%server_name, since, since_upper,
+					"handle_response_ok: empty transaction, checking for pending edus"
+				);
 				if since < since_upper {
+					debug!(
+						target: "receipt_debug",
+						%server_name, since, since_upper,
+						"handle_response_ok: since behind since_upper, rescheduling immediate flush"
+					);
 					statuses.remove(dest);
 					self.reschedule_flush(dest.clone(), Duration::from_millis(0));
 					return;
 				}
+				debug!(
+					target: "receipt_debug",
+					%server_name, since, since_upper,
+					"handle_response_ok: since caught up, not rescheduling"
+				);
 			}
 			statuses.remove(dest);
 			return;
@@ -693,6 +711,12 @@ impl Service {
 						&& !matches!(dest, Destination::Appservice(_))
 					{
 						allow = false;
+
+						let min_dur = Duration::from_secs(min)
+							.saturating_mul(1_u32.checked_shl(tries.saturating_sub(1)).unwrap_or(u32::MAX));
+						let min_dur = std::cmp::min(min_dur, Duration::from_secs(max));
+						let remaining = min_dur.saturating_sub(time.elapsed());
+						self.reschedule_flush(dest.clone(), remaining);
 					} else {
 						retry = true;
 						*e = TransactionStatus::Retrying(*tries);
@@ -751,6 +775,11 @@ impl Service {
 		let since_upper = self.services.globals.current_count()?;
 		let batch = (since, since_upper);
 		debug_assert!(batch.0 <= batch.1, "since range must not be negative");
+		debug!(
+			target: "receipt_debug",
+			%server_name, since = batch.0, since_upper = batch.1,
+			"select_edus: window"
+		);
 
 		let device_changes = self.select_edus_device_changes(server_name, batch);
 
@@ -776,6 +805,12 @@ impl Service {
 
 		// The safe global cursor is the minimum of all processed bounds
 		let last_count = device_max.min(receipt_max).min(presence_max);
+		debug!(
+			target: "receipt_debug",
+			%server_name, device_max, receipt_max, presence_max, last_count,
+			receipt_found = receipts.is_some(),
+			"select_edus: result bounds"
+		);
 
 		// Collect them all
 		if !device_changes.is_empty() {
@@ -793,11 +828,15 @@ impl Service {
 		events.extend(presence);
 		events.extend(receipts);
 
+		if events.is_empty() {
+			return Ok((events, since_upper));
+		}
+
 		Ok((events, last_count))
 	}
 
 	/// Look for device changes
-	#[tracing::instrument(name = "device_changes", level = "info", skip(self, server_name))]
+	#[tracing::instrument(name = "device_changes", level = "trace", skip(self, server_name))]
 	async fn select_edus_device_changes(
 		&self,
 		server_name: &ServerName,
@@ -807,7 +846,7 @@ impl Service {
 			.services
 			.users
 			.last_device_key_update_count
-			.load(Ordering::Relaxed);
+			.load(Ordering::Acquire);
 
 		if since.0 == 0 && since.0 >= last_update {
 			// New server with no previous sync token AND no recent device key
@@ -919,6 +958,11 @@ impl Service {
 		since: (u64, u64),
 		num: &std::sync::atomic::AtomicUsize,
 	) -> ReceiptMap {
+		debug!(
+			target: "receipt_debug",
+			%room_id, since_lower = since.0, since_upper = since.1,
+			"select_edus_receipts_room: scanning"
+		);
 		let receipts_stream = self
 			.services
 			.read_receipt
@@ -927,15 +971,59 @@ impl Service {
 		pin_mut!(receipts_stream);
 		let mut collected = Vec::new();
 		while let Some((user_id, count, read_receipt)) = receipts_stream.next().await {
+			trace!(
+				target: "receipt_debug",
+				%room_id, %user_id, count, since_upper = since.1,
+				"select_edus_receipts_room: saw candidate"
+			);
 			if count > since.1 {
+				trace!(
+					target: "receipt_debug",
+					%room_id, %user_id, count, since_upper = since.1,
+					"select_edus_receipts_room: stopping, candidate is past since_upper"
+				);
 				break;
 			}
 			if self.services.globals.user_is_local(&user_id) {
-				collected.push((user_id, count, read_receipt.json().get().to_owned()));
+				let Ok(event) =
+					serde_json::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.json().get())
+				else {
+					continue;
+				};
+				let AnySyncEphemeralRoomEvent::Receipt(receipt) = event else {
+					continue;
+				};
+				let Some((event_id, _)) = receipt.content.0.iter().next() else {
+					continue;
+				};
+				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
+					continue;
+				};
+				collected.push((
+					user_id,
+					count,
+					read_receipt.json().get().to_owned(),
+					event_count,
+				));
 			}
 		}
 
-		build_receipt_map(collected, since, SELECT_RECEIPT_LIMIT, num)
+		collected.sort_by_key(|(_, stream_count, _, event_count)| (*event_count, *stream_count));
+		debug!(
+			target: "receipt_debug",
+			%room_id, collected = collected.len(),
+			"select_edus_receipts_room: done scanning"
+		);
+
+		build_receipt_map(
+			collected
+				.into_iter()
+				.map(|(user_id, count, read_receipt_json, _)| (user_id, count, read_receipt_json))
+				.collect(),
+			since,
+			SELECT_RECEIPT_LIMIT,
+			num,
+		)
 	}
 
 	/// Look for presence
@@ -1138,7 +1226,7 @@ impl Service {
 
 	#[tracing::instrument(
 		name = "push",
-		level = "info",
+		level = "trace",
 		skip(self, events),
 		fields(
 			events = %events.len(),
@@ -1194,10 +1282,20 @@ impl Service {
 				);
 
 			let unread: UInt = if let Some(room_id) = pdu.room_id_or_hash() {
+				let thread_counts = self
+					.services
+					.user
+					.thread_notification_counts(&user_id, &room_id)
+					.await;
+				let thread_total_notifications = thread_counts
+					.values()
+					.map(|(notifications, _)| *notifications)
+					.fold(0_u64, u64::saturating_add);
 				self.services
 					.user
 					.notification_count(&user_id, &room_id)
 					.await
+					.saturating_add(thread_total_notifications)
 					.try_into()
 					.expect("notification count can't go that high")
 			} else {
@@ -1270,6 +1368,11 @@ impl Service {
 
 		if outbound_pdus.is_empty() && edus.is_empty() {
 			if let Some(count) = edu_count {
+				info!(
+					target: "receipt_debug",
+					%server, count,
+					"send_events: nothing to send, advancing educount watermark anyway"
+				);
 				self.db.set_latest_educount(&server, count);
 			}
 			return Ok(Destination::Federation(server));
@@ -1310,20 +1413,14 @@ impl Service {
 			.fetch_add(outbound_pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
-		let preimage = outbound_pdus
-			.iter()
-			.map(|raw| raw.get().as_bytes())
-			.chain(edus.iter().map(|raw| raw.json().get().as_bytes()));
-
-		// We prepend the current timestamp to the transaction ID as a defensive
-		// measure to ensure uniqueness. The primary protection against duplicate
-		// transaction IDs is using unique stream_id values in device_list_update
-		// EDUs (see build_device_list_edus), but the timestamp provides an
-		// additional layer of safety against any payload hash collisions.
-		let txn_hash = calculate_hash(preimage);
 		let now = MilliSecondsSinceUnixEpoch::now();
-		let txn_id = format!("{}_{}", now.get(), URL_SAFE_NO_PAD.encode(txn_hash));
-
+		// Monotonic counter seeded from unix-ms at startup, incremented per
+		// transaction -- same scheme Synapse's TransactionManager uses. Content
+		// hashing isn't needed for uniqueness: the counter alone guarantees each
+		// transaction ID this process emits is distinct, and per-process
+		// uniqueness is all the spec requires (`origin` + `txn_id` together
+		// identify a transaction).
+		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
 		let request = send_transaction_message::v1::Request {
 			transaction_id: txn_id.clone().into(),
 			origin: self.server.name.clone(),
@@ -1338,7 +1435,7 @@ impl Service {
 		let result = self
 			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
-		tracing::info!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
@@ -1368,6 +1465,11 @@ impl Service {
 			},
 			| Ok(_) => {
 				if let Some(count) = edu_count {
+					debug!(
+						target: "receipt_debug",
+						%server, count,
+						"send_events: transaction delivered, advancing educount watermark"
+					);
 					self.db.set_latest_educount(&server, count);
 				}
 				Ok(Destination::Federation(server))
@@ -1521,7 +1623,7 @@ pub(crate) fn build_receipt_map(
 
 	for (user_id, count, read_receipt_json) in receipts {
 		if count > since.1 {
-			break;
+			continue;
 		}
 
 		let Ok(event) = serde_json::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
@@ -1540,33 +1642,46 @@ pub(crate) fn build_receipt_map(
 			.next()
 			.expect("we only use one event per read receipt");
 
-		let receipt = receipt
-			.remove(&ReceiptType::Read)
-			.expect("our read receipts always set this")
-			.remove(&user_id)
-			.expect("our read receipts always have the user here");
+		let Some(mut users) = receipt.remove(&ReceiptType::Read) else {
+			continue;
+		};
+		let Some(receipt) = users.remove(&user_id) else {
+			continue;
+		};
 
+		let is_unthreaded =
+			matches!(receipt.thread, ruma::events::receipt::ReceiptThread::Unthreaded);
 		let receipt_data = ReceiptData {
 			data: receipt,
 			event_ids: vec![event_id.clone()],
 		};
 
 		match read.entry(user_id) {
-			| Entry::Vacant(v) => {
-				v.insert(receipt_data);
-				if num.fetch_add(1, Ordering::Relaxed) >= limit.saturating_sub(1) {
+			| Entry::Vacant(e) => {
+				let mut current = num.load(Ordering::Relaxed);
+				loop {
+					if current >= limit {
+						break;
+					}
+					match num.compare_exchange_weak(
+						current,
+						current.saturating_add(1),
+						Ordering::Relaxed,
+						Ordering::Relaxed,
+					) {
+						| Ok(_) => break,
+						| Err(observed) => current = observed,
+					}
+				}
+				if current >= limit {
 					break;
 				}
+				e.insert(receipt_data);
 			},
-			| Entry::Occupied(mut o) => {
-				let is_unthreaded = matches!(
-					receipt_data.data.thread,
-					ruma::events::receipt::ReceiptThread::Unthreaded
-				);
+			| Entry::Occupied(mut e) =>
 				if is_unthreaded {
-					o.insert(receipt_data);
-				}
-			},
+					e.insert(receipt_data);
+				},
 		}
 	}
 
@@ -1821,5 +1936,49 @@ mod tests {
 		let data = &map.read[&user_id];
 		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+	}
+
+	#[test]
+	fn test_build_receipt_map_out_of_order_count_does_not_skip_in_range_receipt() {
+		let mut receipts = Vec::new();
+		let user_id = user_id!("@alice:example.com").to_owned();
+
+		// An out-of-order receipt with a higher stream count comes first.
+		let json_late = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event1": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 10000
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 30, json_late.to_string()));
+
+		// The in-range receipt should still be considered even though it appears later.
+		let json_in_range = serde_json::json!({
+			"type": "m.receipt",
+			"content": {
+				"$event2": {
+					"m.read": {
+						"@alice:example.com": {
+							"ts": 12345
+						}
+					}
+				}
+			}
+		});
+		receipts.push((user_id.clone(), 12, json_in_range.to_string()));
+
+		let since = (10, 20);
+		let num = AtomicUsize::new(0);
+		let map = build_receipt_map(receipts, since, 100, &num);
+
+		assert_eq!(map.read.len(), 1);
+		assert_eq!(num.load(Ordering::Relaxed), 1);
+		assert_eq!(map.read[&user_id].event_ids, vec!["$event2".to_owned()]);
 	}
 }

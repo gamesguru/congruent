@@ -140,21 +140,77 @@ pub async fn create_event(
 		| None => Vec::new(),
 	};
 
-	let auth_events: HashMap<(StateEventType, SmallString<[u8; 48]>), PduEvent> = match room_id {
-		| Some(room_id) =>
-			self.services
-				.state
-				.get_auth_events(
+	let mut auth_events: HashMap<(StateEventType, SmallString<[u8; 48]>), PduEvent> =
+		match room_id {
+			| Some(room_id) =>
+				self.services
+					.state
+					.get_auth_events(
+						room_id,
+						&event_type,
+						sender,
+						state_key.as_deref(),
+						&content,
+						&room_version,
+						&room_version_id,
+					)
+					.await?,
+			| None => HashMap::new(),
+		};
+
+	// When a room has diverged (multiple forward extremities), we MUST resolve the
+	// state across all forks to determine the true current state for this new
+	// event. Relying solely on `roomid_shortstatehash` (which `get_auth_events`
+	// uses) is vulnerable to a TOCTOU race: if federation is concurrently
+	// processing a fork, it may have temporarily forced the room state to that
+	// fork's state, causing local users to fail auth against missing memberships.
+	if let Some(room_id) = room_id {
+		if prev_events.len() > 1 {
+			info!(
+				"DAG fork detected ({} extremities). Resolving state for new local event.",
+				prev_events.len()
+			);
+			if let Ok(Some(compressed_state)) = self
+				.services
+				.event_handler
+				.resolve_extremities(
+					prev_events.iter().map(AsRef::as_ref),
 					room_id,
-					&event_type,
-					sender,
-					state_key.as_deref(),
-					&content,
-					&room_version,
+					&room_version_id,
+					None,
 				)
-				.await?,
-		| None => HashMap::new(),
-	};
+				.await
+			{
+				let content_val: serde_json::Value =
+					serde_json::from_str(content.get()).unwrap_or_default();
+				let auth_types = rezzy::auth::auth_types_for_event(
+					&event_type.to_string(),
+					sender.as_str(),
+					state_key.as_deref(),
+					&content_val,
+					crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+					// The actual room version string; rezzy gates the
+					// restricted-join auth rule on it being v8+.
+					room_version_id.as_str(),
+				);
+
+				let mut new_auth_events = HashMap::new();
+				for (ty, sk) in &auth_types {
+					let state_ty: StateEventType = ty.as_str().into();
+					let state_key = conduwuit_core::matrix::StateKey::from(sk.as_str());
+					if let Some(pdu) = self
+						.services
+						.event_handler
+						.find_pdu_in_compressed_state(&state_ty, &state_key, &compressed_state)
+						.await
+					{
+						new_auth_events.insert((state_ty, state_key), pdu);
+					}
+				}
+				auth_events = new_auth_events;
+			}
+		}
+	}
 	// Our depth is the maximum depth of prev_events + 1
 	let depth = match room_id {
 		| Some(_) => prev_events
@@ -367,9 +423,12 @@ pub fn hash_sign_and_finalize(
 		};
 	}
 
-	// Compute event hash
 	pdu.event_id = gen_event_id(&pdu_json, room_version_id)?;
 	pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
+
+	// Rehydrate the persisted event from the finalized JSON so the stored PDU
+	// carries the same hashes/signatures as the canonical representation.
+	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_deref())?;
 
 	Ok(pdu_json)
 }

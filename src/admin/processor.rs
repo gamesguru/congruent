@@ -13,6 +13,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
+use regex::Regex;
 use ruma::{
 	EventId,
 	events::{
@@ -34,7 +35,6 @@ type ParsedCommand<'a> = (AdminCommand, Vec<String>, Vec<&'a str>);
 #[must_use]
 pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
-#[must_use]
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
 	Box::pin(async move { handle_command(services, command).await })
 }
@@ -331,12 +331,25 @@ fn reply(
 /// Heuristic: output that already contains markdown formatting should not be
 /// wrapped in code blocks.
 fn looks_like_markdown(s: &str) -> bool {
+	static BOLD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+	static LINK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
 	let trimmed = s.trim_start();
 	trimmed.starts_with('#')
 		|| trimmed.starts_with('>')
 		|| trimmed.starts_with("- ")
 		|| trimmed.starts_with("* ")
 		|| s.contains("```")
-		|| s.contains("**")
-		|| s.contains("](")
+		|| BOLD_RE
+			.get_or_init(|| {
+				Regex::new(r"(^|[^\w])\*\*[^\s][\s\S]*?[^\s]\*\*([^\w]|$)")
+					.expect("valid bold regex")
+			})
+			.is_match(s)
+		|| LINK_RE
+			.get_or_init(|| {
+				Regex::new(r"\[[^\]\n]+\]\([^()\s]+\)").expect("valid markdown link regex")
+			})
+			.is_match(s)
+		|| s.lines().any(|line| line.trim_start().starts_with('|'))
 }

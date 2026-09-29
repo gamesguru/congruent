@@ -32,7 +32,7 @@ use crate::{Result, err, error::Error, utils::sys};
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global",
@@ -346,6 +346,13 @@ pub struct Config {
 	#[serde(default = "default_dns_min_ttl_nxdomain")]
 	pub dns_min_ttl_nxdomain: u64,
 
+	/// The minimum amount of time to cache DNS lookups for server names in
+	/// federation. This is separate from hickory_resolver's internal caching.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_dns_cache_override_expire")]
+	pub dns_cache_override_expire: u64,
+
 	/// Number of DNS nameserver retries after a timeout or error.
 	///
 	/// default: 10
@@ -360,8 +367,6 @@ pub struct Config {
 	/// default: 10
 	#[serde(default = "default_dns_timeout")]
 	pub dns_timeout: u64,
-	#[serde(default = "default_dns_cache_override_expire")]
-	pub dns_cache_override_expire: u64,
 
 	/// Fallback to TCP on DNS errors. Set this to false if unsupported by
 	/// nameserver.
@@ -584,6 +589,15 @@ pub struct Config {
 	#[serde(default = "default_federation_presence_interval_s")]
 	pub federation_presence_interval_s: u64,
 
+	/// Timeout for fetching server signing keys from other homeservers
+	/// (seconds). You may want to lower this in test environments, but in
+	/// production, giving slower federation origins some time to respond is
+	/// beneficial.
+	///
+	/// default: 45
+	#[serde(default = "default_server_key_fetch_timeout")]
+	pub server_key_fetch_timeout: u64,
+
 	/// MSC4284 Policy server request timeout (seconds). Generally policy
 	/// servers should respond near instantly, however may slow down under
 	/// load. If a policy server doesn't respond in a short amount of time, the
@@ -631,7 +645,7 @@ pub struct Config {
 	/// the minimum delay before the first retry after a failed transaction.
 	/// Subsequent retries use exponential backoff: base × 2^(tries-1).
 	///
-	/// default: 2
+	/// default: 5
 	#[serde(default = "default_sender_retry_backoff_base")]
 	pub sender_retry_backoff_base: u64,
 
@@ -1046,6 +1060,24 @@ pub struct Config {
 	/// unless you know exactly what you are doing.
 	#[serde(default)]
 	pub only_query_trusted_key_servers: bool,
+
+	/// Enable strict enforcement of MSC4499 server signing key caching and
+	/// First Seen Wins key-ID uniqueness. When false (observation mode),
+	/// collisions and malformed historical claims are logged at WARN/ERROR
+	/// but do not hard-reject the incoming key payload.
+	///
+	/// default: true
+	#[serde(default = "true_fn")]
+	pub msc4499_strict_caching: bool,
+
+	/// Backoff duration in seconds after a failed federation key fetch.
+	/// During backoff, the server will not re-attempt key fetches for the
+	/// failing origin. MSC4499 recommends 60 seconds. Reduce for faster
+	/// complement testing.
+	///
+	/// default: 60
+	#[serde(default = "default_msc4499_backoff_secs")]
+	pub msc4499_backoff_secs: u64,
 
 	/// Maximum number of keys to request in each trusted server batch query.
 	///
@@ -2690,7 +2722,7 @@ pub struct DraupnirConfig {
 	pub secret: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
 	section = "global.experimental_features",
@@ -2701,9 +2733,23 @@ pub struct ExperimentalConfig {
 	#[serde(default)]
 	pub msc3266_enabled: bool,
 
+	/// MSC3030: Jump to date
+	#[serde(default = "true_fn")]
+	pub msc3030_enabled: bool,
+
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
+}
+
+impl Default for ExperimentalConfig {
+	fn default() -> Self {
+		Self {
+			msc3266_enabled: false,
+			msc4222_enabled: false,
+			msc3030_enabled: true,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2966,6 +3012,8 @@ fn default_dns_min_ttl() -> u64 { 60 * 180 }
 
 fn default_dns_min_ttl_nxdomain() -> u64 { 60 * 60 * 24 * 3 }
 
+fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }
+
 fn default_dns_attempts() -> u16 { 10 }
 
 fn default_dns_timeout() -> u64 { 10 }
@@ -3012,7 +3060,9 @@ fn default_sender_timeout() -> u64 { 180 }
 
 fn default_sender_idle_timeout() -> u64 { 180 }
 
-fn default_sender_retry_backoff_base() -> u64 { 2 }
+fn default_server_key_fetch_timeout() -> u64 { 45 }
+
+fn default_sender_retry_backoff_base() -> u64 { 5 }
 
 fn default_sender_retry_backoff_limit() -> u64 { 86400 }
 
@@ -3202,6 +3252,8 @@ fn parallelism_scaled(val: usize) -> usize { val.saturating_mul(sys::available_p
 
 fn default_trusted_server_batch_size() -> usize { 256 }
 
+fn default_msc4499_backoff_secs() -> u64 { 60 }
+
 fn default_db_pool_workers() -> usize {
 	sys::available_parallelism()
 		.saturating_mul(4)
@@ -3245,4 +3297,3 @@ fn default_ldap_uid_attribute() -> String { String::from("uid") }
 fn default_ldap_name_attribute() -> String { String::from("givenName") }
 
 fn default_presence_idle_debounce_ms() -> u64 { 60000 }
-fn default_dns_cache_override_expire() -> u64 { 60 * 60 * 6 }

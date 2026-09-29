@@ -4,15 +4,55 @@ use std::{
 };
 
 use conduwuit::{
-	Result, debug, err, implement,
-	matrix::{Event, StateMap},
+	Err, Result, debug, err, implement,
+	matrix::{Event, PduEvent, StateKey, StateMap},
 	trace,
 	utils::stream::{IterStream, TryBroadbandExt},
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::ready};
-use ruma::{EventId, RoomId, RoomVersionId};
+use ruma::{
+	EventId, OwnedEventId, RoomId, RoomVersionId,
+	events::{StateEventType, TimelineEventType},
+};
 
 use super::resolve_state::PduCache;
+
+/// Looks up the PDU for a single `(StateEventType, StateKey)` within a
+/// compressed fork state, going through the short-ID tables. Shared by
+/// callers that need to resolve auth events out of a `CompressedState`
+/// (e.g. state resolution over diverged forward extremities) so the
+/// shortstatekey/shorteventid unpacking isn't duplicated at each call site.
+#[implement(super::Service)]
+pub async fn find_pdu_in_compressed_state(
+	&self,
+	state_ty: &StateEventType,
+	state_key: &StateKey,
+	compressed_state: &crate::rooms::state_compressor::CompressedState,
+) -> Option<PduEvent> {
+	let shortstatekey = self
+		.services
+		.short
+		.get_shortstatekey(state_ty, state_key)
+		.await
+		.ok()?;
+
+	let event_bytes = compressed_state
+		.iter()
+		.find(|bytes| bytes.starts_with(&shortstatekey.to_be_bytes()))?;
+
+	let mut id_bytes = [0_u8; 8];
+	id_bytes.copy_from_slice(&event_bytes[8..16]);
+	let shorteventid = u64::from_be_bytes(id_bytes);
+
+	let event_id = self
+		.services
+		.short
+		.get_eventid_from_short::<OwnedEventId>(shorteventid)
+		.await
+		.ok()?;
+
+	self.services.timeline.get_pdu(&event_id).await.ok()
+}
 
 // TODO: if we know the prev_events of the incoming event we can avoid the
 // request and build the state from a known point and resolve if > 1 prev_event
@@ -31,17 +71,31 @@ where
 		.next()
 		.expect("at least one prev_event");
 
+	// Not found locally is a legitimate, common case -- e.g. the prev_event was
+	// never delivered to us (a prior transaction was rejected, we joined the
+	// room after it, etc.), not a database malfunction. Fall through to the
+	// caller's fetch_state() federation fallback instead of hard-failing the
+	// whole incoming event, matching how state_at_incoming_resolved's
+	// multi-prev-event sibling path already degrades on the equivalent lookup.
 	let Ok(prev_pdu) = self
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
 		.await
 	else {
+		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
 		return Ok(None);
 	};
 
+	// Unlike "not found locally", a prev_event that resolves to a PDU in a
+	// *different* room isn't a delivery gap -- there's no missing state a
+	// federation round trip could supply that would make this legitimate. It's
+	// a malformed or hostile event. Falling back to fetch_state here would
+	// turn a single cheap-to-craft event into a guaranteed outbound
+	// /state_ids request per inbound event, at whatever rate a malicious
+	// origin cares to push transactions. Hard reject instead.
 	if prev_pdu.room_id() != Some(room_id) {
-		return Ok(None);
+		return Err!(Database("prev_event {prev_event} claims a different room than {room_id}"));
 	}
 
 	let Ok(prev_event_sstatehash) = self
@@ -147,7 +201,7 @@ where
 				.pdu_shortstatehash(prev_eventid)
 				.map_ok(move |sstatehash| (sstatehash, prev_event))
 		})
-		.try_collect::<Vec<(u64, conduwuit_core::PduEvent)>>()
+		.try_collect::<Vec<(u64, PduEvent)>>()
 		.await
 	else {
 		return Ok(None);
@@ -268,10 +322,10 @@ where
 	// Determine which state keys are auth-critical (affects resolution outcome)
 	let mut auth_ssks = HashSet::new();
 	for ty in &[
-		ruma::events::StateEventType::RoomCreate,
-		ruma::events::StateEventType::RoomPowerLevels,
-		ruma::events::StateEventType::RoomJoinRules,
-		ruma::events::StateEventType::RoomServerAcl,
+		StateEventType::RoomCreate,
+		StateEventType::RoomPowerLevels,
+		StateEventType::RoomJoinRules,
+		StateEventType::RoomServerAcl,
 	] {
 		if let Ok(ssk) = self.services.short.get_shortstatekey(ty, "").await {
 			auth_ssks.insert(ssk);
@@ -319,29 +373,29 @@ where
 		if let Ok(ssk) = self
 			.services
 			.short
-			.get_shortstatekey(&ruma::events::StateEventType::RoomMember, pdu.sender().as_ref())
+			.get_shortstatekey(&StateEventType::RoomMember, pdu.sender().as_ref())
 			.await
 		{
 			auth_ssks.insert(ssk);
 		}
-		if pdu.kind() == &ruma::events::TimelineEventType::RoomMember {
+		if pdu.kind() == &TimelineEventType::RoomMember {
 			if let Some(sk) = pdu.state_key() {
 				if let Ok(ssk) = self
 					.services
 					.short
-					.get_shortstatekey(&ruma::events::StateEventType::RoomMember, sk)
+					.get_shortstatekey(&StateEventType::RoomMember, sk)
 					.await
 				{
 					auth_ssks.insert(ssk);
 				}
 			}
 		}
-		if pdu.kind() == &ruma::events::TimelineEventType::RoomThirdPartyInvite {
+		if pdu.kind() == &TimelineEventType::RoomThirdPartyInvite {
 			if let Some(sk) = pdu.state_key() {
 				if let Ok(ssk) = self
 					.services
 					.short
-					.get_shortstatekey(&ruma::events::StateEventType::RoomThirdPartyInvite, sk)
+					.get_shortstatekey(&StateEventType::RoomThirdPartyInvite, sk)
 					.await
 				{
 					auth_ssks.insert(ssk);

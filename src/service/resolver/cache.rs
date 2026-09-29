@@ -154,5 +154,9 @@ impl CachedOverride {
 
 	#[inline]
 	#[must_use]
+	pub fn is_overriding(&self) -> bool { self.overriding.is_some() }
+
+	#[inline]
+	#[must_use]
 	pub fn size(&self) -> usize { size_of_val(self) }
 }

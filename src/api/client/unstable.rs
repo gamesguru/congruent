@@ -10,6 +10,7 @@ use ruma::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
+			relations::event_relationships,
 		},
 		federation,
 	},
@@ -17,7 +18,10 @@ use ruma::{
 };
 
 use super::{update_avatar_url, update_displayname};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	msc2836::{self, Params, Requester},
+};
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
 ///
@@ -332,14 +336,6 @@ pub(crate) async fn get_room_dag_route(
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
-	// Check if we can serve from cache
-	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
-		if ts.elapsed() < Duration::from_secs(2) {
-			return Ok(axum::Json(cached_events.clone()));
-		}
-	}
-
-	// Determine if the room is public
 	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
 		== ruma::events::room::join_rules::JoinRule::Public;
 
@@ -370,9 +366,18 @@ pub(crate) async fn get_room_dag_route(
 		}
 	}
 
+	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
+		if ts.elapsed() < Duration::from_secs(2) {
+			return Ok(axum::Json(cached_events.clone()));
+		}
+	}
+
 	let mut events = Vec::new();
 	// Use pdus_rev to fetch from latest to oldest, avoiding full timeline scan.
-	let pdus = services.rooms.timeline.pdus_rev(&room_id, None);
+	let pdus = services
+		.rooms
+		.timeline
+		.pdus_rev(&room_id, std::ops::Bound::Unbounded);
 	futures::pin_mut!(pdus);
 
 	// Limit to the latest 200 events for performance
@@ -411,4 +416,44 @@ pub(crate) async fn get_room_dag_route(
 		.insert(room_id.clone(), (Instant::now(), events.clone()));
 
 	Ok(axum::Json(events))
+}
+
+/// # `POST /_matrix/client/unstable/event_relationships`
+///
+/// Walks the `m.relationship` DAG from an anchor event, fetching missing
+/// events over federation as needed.
+///
+/// An implementation of [MSC2836](https://github.com/matrix-org/matrix-spec-proposals/pull/2836)
+pub(crate) async fn get_event_relationships_route(
+	State(services): State<crate::State>,
+	body: Ruma<event_relationships::unstable::Request>,
+) -> Result<event_relationships::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	let params = Params::defaulted(msc2836::DefaultedParams {
+		event_id: body.event_id.clone(),
+		room_id: body.room_id.clone(),
+		max_depth: body.max_depth,
+		max_breadth: body.max_breadth,
+		limit: body.limit,
+		depth_first: body.depth_first,
+		recent_first: body.recent_first,
+		include_parent: body.include_parent,
+		include_children: body.include_children,
+		direction: body.direction.clone(),
+	});
+
+	let (events, limited) =
+		Box::pin(msc2836::resolve(&services, Requester::Client(sender_user), params)).await?;
+
+	let mut raw_events = Vec::with_capacity(events.len());
+	for pdu in &events {
+		raw_events.push(msc2836::to_raw_json_with_children(&services, pdu).await);
+	}
+
+	Ok(event_relationships::unstable::Response {
+		events: raw_events,
+		next_batch: None,
+		limited,
+	})
 }

@@ -97,9 +97,10 @@ where
 				remaining.push(idx);
 			}
 		}
-		// Sort remaining by key, falling back to id (since Reverse((&K, idx))
-		// tie-breaks via K) actually, we just use the same key here for consistency.
-		remaining.sort_unstable_by(|&a, &b| keys[a].cmp(&keys[b]));
+		// Sort remaining by key, tie-breaking on the original index so cyclic
+		// input still produces a deterministic order (sort_unstable_by does not
+		// preserve input order for equal keys on its own).
+		remaining.sort_unstable_by(|&a, &b| keys[a].cmp(&keys[b]).then_with(|| a.cmp(&b)));
 		for idx in remaining {
 			sorted.push(index_to_id[idx].clone());
 		}

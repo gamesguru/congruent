@@ -4,7 +4,7 @@ mod v5;
 use std::collections::VecDeque;
 
 use conduwuit::{
-	Event, PduCount, Result, debug_warn, err, info,
+	Event, PduCount, Result, debug_warn, info,
 	matrix::pdu::PduEvent,
 	result::LogErr,
 	utils::stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
@@ -19,7 +19,10 @@ use ruma::{
 	},
 };
 
-pub(crate) use self::{v3::sync_events_route, v5::sync_events_v5_route};
+pub(crate) use self::{
+	v3::sync_events_route,
+	v5::{sync_events_unstable_msc3575_route, sync_events_v5_route},
+};
 
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
 	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
@@ -27,6 +30,7 @@ pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
 #[derive(Default)]
 pub(crate) struct TimelinePdus {
 	pub pdus: VecDeque<(PduCount, PduEvent)>,
+	pub prev_batch: Option<PduCount>,
 	pub limited: bool,
 }
 
@@ -54,6 +58,7 @@ async fn load_timeline(
 	starting_count: Option<PduCount>,
 	ending_count: Option<PduCount>,
 	limit: usize,
+	is_expanded_timeline: bool,
 ) -> Result<TimelinePdus> {
 	info!(
 		target: "timeline_debug",
@@ -61,28 +66,23 @@ async fn load_timeline(
 		room_id, sender_user, starting_count, ending_count, limit
 	);
 
+	// `fetch_limit` items are drained via `.take(fetch_limit)` below, then one
+	// more is peeked via `.next()` to determine `limited` when we did not already
+	// exceed `limit`. That peek only ever matters when `ready_fold` collected
+	// fewer than `fetch_limit` items -- i.e. the upstream stream is already
+	// exhausted -- so it can never actually observe a further item regardless
+	// of how far upstream is bounded; whenever a further item *does* exist,
+	// `ready_fold`'s own `.take(fetch_limit)` already fills `pdus` to
+	// `fetch_limit` (> `limit`), which short-circuits `.next()` away before it
+	// runs. Bounding the upstream to `fetch_limit` (not `fetch_limit + 1`)
+	// keeps `wide_then`'s eager `.buffered(width)` prefetch from doing a whole
+	// extra item's worth of enrichment work (add_membership_to_unsigned +
+	// add_bundled_aggregations_to_pdu) that would just be discarded unused.
+	let fetch_limit = limit.saturating_add(1);
+	let stream_limit = fetch_limit;
+
 	let mut pdu_stream = match starting_count {
 		| Some(starting_count) => {
-			let last_timeline_count = services
-				.rooms
-				.timeline
-				.last_timeline_count(room_id)
-				.await
-				.map_err(|err| {
-					err!(Database(warn!("Failed to fetch end of room timeline: {}", err)))
-				})?;
-
-			if last_timeline_count <= starting_count {
-				// no messages have been sent in this room since `starting_count`
-				info!(
-					target: "timeline_debug",
-					"load_timeline early return for {}: last_timeline_count={:?} <= \
-					 starting_count={:?} sender={}",
-					room_id, last_timeline_count, starting_count, sender_user
-				);
-				return Ok(TimelinePdus::default());
-			}
-
 			// for incremental sync, stream from the DB all PDUs which were sent after
 			// `starting_count` but before `ending_count`, including `ending_count` but
 			// not `starting_count`. this code is pretty similar to the initial sync
@@ -90,7 +90,10 @@ async fn load_timeline(
 			services
 				.rooms
 				.timeline
-				.pdus_rev(room_id, ending_count.map(|count| count.saturating_add(1)))
+				.pdus_rev(
+					room_id,
+					ending_count.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+				)
 				.inspect_err(|e| warn!("sync timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
 				.inspect(move |(pducount, _)| {
@@ -101,10 +104,21 @@ async fn load_timeline(
 						room_id,
 						pducount,
 						starting_count,
-						*pducount > starting_count
+						is_expanded_timeline || *pducount > starting_count
 					);
 				})
-				.ready_take_while(move |&(pducount, _)| pducount > starting_count)
+				.ready_take_while(move |&(pducount, _)| {
+					is_expanded_timeline || pducount > starting_count
+				})
+				// Bound *before* wide_then: wide_then's concurrent `.buffered(width)`
+				// (width defaults to 32, see `automatic_width`) eagerly pulls and starts
+				// up to `width` upstream items to fill its concurrency window before
+				// yielding anything, regardless of how many the caller actually wants.
+				// Left unbounded here, every sync poll for every room ran up to 32
+				// concurrent add_membership_to_unsigned + add_bundled_aggregations_to_pdu
+				// DB lookups even for a `limit=3` request, discarding all but a handful
+				// of the results.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -129,9 +143,14 @@ async fn load_timeline(
 			services
 				.rooms
 				.timeline
-				.pdus_rev(room_id, ending_count.map(|count| count.saturating_add(1)))
+				.pdus_rev(
+					room_id,
+					ending_count.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Included),
+				)
 				.inspect_err(|e| warn!("sync initial timeline pdus_rev error for {room_id}: {e}"))
 				.ignore_err()
+				// See the comment on the incremental-sync branch above -- same reasoning.
+				.take(stream_limit)
 				.map(move |mut pdu| {
 					pdu.1.set_unsigned(Some(sender_user));
 					pdu
@@ -152,19 +171,103 @@ async fn load_timeline(
 		},
 	};
 
+	// 1. `fetch_limit` (defined above) fetches one extra PDU to evaluate layout
+	//    limits without shifting the window.
+	// 2. Stream layout into a temporary sequence container
 	let mut pdus = pdu_stream
 		.by_ref()
-		.take(limit)
-		.ready_fold(VecDeque::with_capacity(limit), |mut pdus, item| {
+		.take(fetch_limit)
+		.ready_fold(VecDeque::with_capacity(fetch_limit), |mut pdus, item| {
 			pdus.push_front(item);
 			pdus
 		})
 		.await;
 
-	let mut limited = false;
+	// 3. Establish initial constraint boundaries using lookahead markers
+	let mut limited = pdus.len() > limit || pdu_stream.next().await.is_some();
 
+	// If we didn't hit the limit, check if there is a topological gap.
+	// A topological gap exists if the oldest returned event references a
+	// prev_event that is not stored in the local timeline.
+	if !limited && starting_count.is_some() {
+		if let Some((_, oldest_pdu)) = pdus.front() {
+			for prev_id in oldest_pdu.prev_events() {
+				if services
+					.rooms
+					.timeline
+					.get_pdu_count(prev_id)
+					.await
+					.is_err()
+				{
+					limited = true;
+					break;
+				}
+			}
+		}
+	}
+
+	// 4. Capture chronological batch boundaries BEFORE topo sort shuffles order
+	//
+	// prev_batch only needs to sit strictly BEFORE the oldest event when the
+	// timeline was actually truncated (there's a real gap before the batch we
+	// returned). If everything fit (not `limited`), there is no gap -- the
+	// spec defines `state` as "the state between the previous sync and the
+	// start of the timeline", and with no gap that boundary is just the
+	// current sync position, same as Synapse: `_load_filtered_recents` seeds
+	// `room_key` from `upto_token` and only overwrites it with
+	// `oldest.stream_ordering - 1` inside the `len(filtered_recents) >
+	// timeline_limit` truncation branch. Using the oldest event's position
+	// unconditionally (as we did before) made e.g. `/members?at=prev_batch`
+	// resolve to state before the room's first event for any room small
+	// enough to fit in one sync, instead of the state right after the
+	// client's last known position.
+	let mut prev_batch = if limited {
+		if pdus.len() > limit {
+			pdus.get(pdus.len().saturating_sub(limit))
+				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+		} else {
+			pdus.front()
+				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+		}
+	} else {
+		ending_count
+	};
+
+	// 5. Trim off the lookahead element from the primary evaluation window
+	if pdus.len() > limit {
+		let drop_count = pdus.len().saturating_sub(limit);
+		pdus.drain(0..drop_count);
+	}
+
+	// 6. Execute hotfix branch's Topo Sort for correct DAG traversal ordering
+	if !pdus.is_empty() {
+		let mut event_to_count = std::collections::HashMap::new();
+		let events: Vec<_> = pdus
+			.into_iter()
+			.map(|(count, pdu)| {
+				event_to_count.insert(pdu.event_id.clone(), count);
+				pdu
+			})
+			.collect();
+
+		let sorted_events = conduwuit::matrix::dag::sort_topologically(events);
+
+		pdus = sorted_events
+			.into_iter()
+			.map(|pdu| {
+				let count = event_to_count
+					.remove(&pdu.event_id)
+					.expect("event count exists");
+				(count, pdu)
+			})
+			.collect();
+	}
+
+	// 7. Execute HEAD branch's Backward Topological Gap Truncation logic
 	if starting_count.is_some() {
-		// Traverse newest to oldest to find the first topological gap backwards
+		let mut gap_idx = None;
+
+		// Traverse newest to oldest to pinpoint structural graph breaks
 		for (i, (_, pdu)) in pdus.iter().enumerate().rev() {
 			let mut gap_found = false;
 			for prev_id in pdu.prev_events() {
@@ -181,24 +284,27 @@ async fn load_timeline(
 			}
 
 			if gap_found {
-				// We found a gap BEFORE this PDU. Keep this PDU, but drop anything before.
+				gap_idx = Some(i);
 				info!(
 					"Topological gap in timeline for {} before PDU {}. Truncating.",
 					room_id,
 					pdu.event_id()
 				);
-				pdus.drain(0..i);
-				limited = true;
 				break;
 			}
 		}
+
+		// If a break is found, drop broken history and rewrite the pagination tokens
+		if let Some(i) = gap_idx {
+			pdus.drain(0..i);
+			limited = true;
+
+			// The chronological edge has shifted; point prev_batch to the new front
+			prev_batch = pdus.iter().map(|(count, _)| *count).min();
+		}
 	}
 
-	// The timeline is limited if there are still more PDUs in the stream
-	if !limited {
-		limited = pdu_stream.next().await.is_some();
-	}
-
+	// 8. Unified Telemetry Logging
 	if pdus.is_empty() && starting_count.is_some() {
 		info!(
 			target: "timeline_debug",
@@ -217,7 +323,19 @@ async fn load_timeline(
 		);
 	}
 
-	Ok(TimelinePdus { pdus, limited })
+	// If there are no PDUs in this room's sync range, `prev_batch` must be
+	// `None`. Even though a non-limited (empty) window has an obvious "current
+	// position" we could point `prev_batch` at, a set `prev_batch` makes
+	// ruma's `Timeline::is_empty()` return false (it treats the presence of
+	// `prev_batch` as content). That in turn makes `JoinedRoom::is_empty()`
+	// false, so the incremental-sync loop in v3 always re-includes unchanged
+	// rooms like this one on every poll, violating the "unchanged room should
+	// not be in the sync" contract (complement `sync_test.go`). `prev_batch`
+	// only has meaning when there is actually a timeline to paginate, so keep
+	// it as `None` when the range is empty.
+	let prev_batch = if pdus.is_empty() { None } else { prev_batch };
+
+	Ok(TimelinePdus { pdus, prev_batch, limited })
 }
 
 async fn share_encrypted_room(

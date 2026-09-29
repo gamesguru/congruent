@@ -132,8 +132,20 @@ where
 			let mut fetch_stream = futures::stream::iter(fetch_futures).buffer_unordered(20);
 			let mut fetched_events: Vec<(OwnedEventId, Box<serde_json::value::RawValue>)> =
 				Vec::new();
-			let mut failed_event = None;
+			let mut failed_ids: Vec<OwnedEventId> = Vec::new();
 
+			// A single unfetchable event (e.g. an old member event whose
+			// origin server never shared it, or a permanently corrupted
+			// branch of the auth chain) must not sink the entire /state_ids
+			// response. Matches Synapse's `_get_state_ids_after_missing_prev_event`,
+			// which treats a partial fetch failure as a warning, not a
+			// blocker: it builds the state map from whatever it *did* manage
+			// to fetch, and lets normal auth-checking reject just the
+			// specific events that end up depending on what's missing.
+			// Aborting the whole ladder here on the first 404 previously
+			// caused this exact PDU's state resolution to nondeterministically
+			// hard-fail depending on unrelated fetch-completion ordering
+			// (see TestCorruptedAuthChain).
 			while let Some(result) = fetch_stream.next().await {
 				match result {
 					| Ok((eid, raw_json)) => {
@@ -141,16 +153,23 @@ where
 					},
 					| Err((eid, e)) => {
 						info!(%server, "fetch_state /event/{eid} failed: {e}");
-						failed_event = Some(e);
-						break;
+						failed_ids.push(eid);
 					},
 				}
 			}
 
-			if let Some(e) = failed_event {
-				pool.record_error(&server);
-				last_err = e;
-				continue;
+			if !failed_ids.is_empty() {
+				// A large /state_ids response can make `failed_ids` huge; only log a
+				// bounded sample of the offending event IDs (distinct from the total
+				// count) instead of serializing the whole vector into this warn.
+				let failed_sample: Vec<_> = failed_ids.iter().take(10).collect();
+				warn!(
+					%server,
+					count = failed_ids.len(),
+					missing = ?failed_sample,
+					"fetch_state: failed to fetch some referenced events; proceeding with \
+					 partial state, dependents will be rejected by normal auth checks"
+				);
 			}
 
 			pool.record_success(&server);
@@ -214,7 +233,11 @@ where
 						} else {
 							self.services
 								.server_keys
-								.verify_event(&val, Some(&room_version_id))
+								.verify_event_at(
+									&val,
+									Some(&room_version_id),
+									"fetch_state::broad_filter_map",
+								)
 								.await
 						};
 
@@ -237,7 +260,8 @@ where
 											.pdu_metadata
 											.mark_event_rejected(
 												&eid,
-												"redaction failed after hash mismatch",
+												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+													.with_detail("redaction failed after hash mismatch"),
 											)
 											.await;
 										val.insert(
@@ -246,11 +270,10 @@ where
 												eid.as_str().to_owned(),
 											),
 										);
-										self.services.outlier.add_pdu_outlier(
-											&eid,
-											&val,
-											Some(room_id),
-										);
+										self.services
+											.outlier
+											.add_pdu_outlier(&eid, &val, Some(room_id))
+											.await;
 										return None;
 									}
 								}
@@ -287,7 +310,11 @@ where
 								// re-fetch
 								self.services
 									.pdu_metadata
-									.mark_event_rejected(&eid, "signature verification failed")
+									.mark_event_rejected(
+										&eid,
+										crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
+											.tag(),
+									)
 									.await;
 								val.insert(
 									"event_id".to_owned(),
@@ -295,7 +322,8 @@ where
 								);
 								self.services
 									.outlier
-									.add_pdu_outlier(&eid, &val, Some(room_id));
+									.add_pdu_outlier(&eid, &val, Some(room_id))
+									.await;
 							},
 						}
 						None
@@ -319,18 +347,18 @@ where
 	// handle_outlier_pdu queries the DB).
 	for eid in sorted_eids {
 		if let Some((_, val)) = verified_events.remove(&eid) {
-			if let Err(e) = self
-				.handle_outlier_pdu(
-					origin,
-					Some(create_event),
-					&eid,
-					room_id,
-					val,
-					true, // is_outlier
-					true, // skip_sig_verify (already done above)
-					Some(&room_version_id),
-				)
-				.await
+			if let Err(e) = Box::pin(self.handle_outlier_pdu(
+				origin,
+				Some(create_event),
+				&eid,
+				room_id,
+				val,
+				true, // is_outlier
+				true, // skip_sig_verify (already done above)
+				Some(&room_version_id),
+				super::AuthRecoveryStage::AfterStateIds,
+			))
+			.await
 			{
 				debug_warn!("fetch_state: failed to handle outlier {eid}: {e}");
 			}
@@ -342,31 +370,62 @@ where
 		HashMap::with_capacity(state_pdu_ids.len());
 	for eid in state_pdu_ids {
 		// Read from our outlier store or timeline
-		let pdu = self.services.timeline.get_pdu(&eid).await;
-		if let Ok(pdu) = pdu {
-			let state_key = pdu
-				.state_key()
-				.ok_or_else(|| err!(Database("Found non-state pdu in state events.")))?;
-
-			let shortstatekey = self
-				.services
-				.short
-				.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
-				.await;
-
-			match state.entry(shortstatekey) {
-				| hash_map::Entry::Vacant(v) => {
-					v.insert(eid.clone());
-				},
-				| hash_map::Entry::Occupied(_) => {
-					return Err!(Database(
-						"State event's type and state_key combination exists multiple times: \
-						 {}, {}",
-						pdu.kind(),
-						state_key
-					));
-				},
+		let Ok(pdu) = self.services.timeline.get_pdu(&eid).await else {
+			continue;
+		};
+		let Some(state_key) = pdu.state_key() else {
+			if self.services.pdu_metadata.is_event_rejected(&eid).await {
+				continue;
 			}
+			return Err!(Database("Found non-state pdu in state events."));
+		};
+
+		// A rejected outlier (e.g. missing auth events from a corrupted auth
+		// chain) must never represent resolved room state. If we have a valid
+		// local prior state event for this slot, use the local event ID;
+		// otherwise skip the slot completely.
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
+			&& !self
+				.services
+				.pdu_metadata
+				.is_event_visible_to_clients(&eid)
+				.await
+		{
+			let local_eid = match self.services.state.get_room_shortstatehash(room_id).await {
+				| Ok(room_ssh) => self
+					.services
+					.state_accessor
+					.state_get(room_ssh, &pdu.kind().to_string().into(), state_key)
+					.await
+					.ok()
+					.map(|local_pdu| local_pdu.event_id().to_owned()),
+				| Err(_) => None,
+			};
+			let Some(local_eid) = local_eid else {
+				continue;
+			};
+			local_eid
+		} else {
+			eid
+		};
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+
+		match state.entry(shortstatekey) {
+			| hash_map::Entry::Vacant(v) => {
+				v.insert(target_eid);
+			},
+			| hash_map::Entry::Occupied(_) => {
+				return Err!(Database(
+					"State event's type and state_key combination exists multiple times: {}, {}",
+					pdu.kind(),
+					state_key
+				));
+			},
 		}
 	}
 

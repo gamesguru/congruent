@@ -1,22 +1,25 @@
 use std::{
 	collections::{HashMap, HashSet},
+	ops::Bound,
 	sync::Arc,
 };
 
 use conduwuit::{
 	Err, Event, PduCount, PduEvent, Result, at, err,
-	matrix::pdu::TopoToken,
+	matrix::pdu::{TimelineKey, TopoToken},
 	result::NotFound,
 	utils::{
 		self,
-		stream::{TryReadyExt, WidebandExt},
+		stream::{ReadyExt, TryReadyExt, WidebandExt},
 	},
 };
-use database::{Database, Deserialized, Json, KeyVal, Map};
+use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, api::Direction};
+use ruma::{
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
+};
 
-use super::{PduId, RawPduId};
+use super::{PduId, RawPduId, backward_extremities};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
 pub(super) struct Data {
@@ -89,7 +92,7 @@ impl Data {
 
 	#[inline]
 	pub(super) async fn latest_pdu_in_room(&self, room_id: &RoomId) -> Result<PduEvent> {
-		let pdus_rev = self.pdus_rev(room_id, PduCount::max());
+		let pdus_rev = self.pdus_rev(room_id, Bound::Unbounded);
 
 		pin_mut!(pdus_rev);
 		pdus_rev
@@ -114,6 +117,23 @@ impl Data {
 		let bytes = self.eventid_metadata.get(event_id.as_bytes()).await?;
 		rooms::timeline::EventMetadata::from_bincode(&bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))
+	}
+
+	/// Batch-fetch `EventMetadata` for a list of event ids.
+	pub(super) async fn get_event_metadata_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> Vec<Result<rooms::timeline::EventMetadata>> {
+		self.eventid_metadata
+			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.map(|res| {
+				res.and_then(|handle| {
+					rooms::timeline::EventMetadata::from_bincode(&handle)
+						.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))
+				})
+			})
+			.collect()
+			.await
 	}
 
 	pub(super) fn store_eventid_metadata(&self, event_id_bytes: &[u8], metadata_bytes: Vec<u8>) {
@@ -176,18 +196,23 @@ impl Data {
 
 	pub(super) async fn reindex_timeline(&self, room_id: &RoomId) -> Result<usize> {
 		let mut count = 0_usize;
-		let pdus = self.pdus(room_id, PduCount::min());
+		let pdus = self.pdus(room_id, Bound::Unbounded);
 		pin_mut!(pdus);
 
 		while let Some((_, pdu)) = pdus.try_next().await? {
 			if let Ok(json) = self.get_non_outlier_pdu_json(&pdu.event_id).await {
+				// `raw_put` already wakes watchers for this key (see
+				// `Map::insert`); an extra explicit wake here would be redundant.
 				self.eventid_pdu
 					.raw_put(pdu.event_id.as_bytes(), Json(&json));
-				self.eventid_pdu.wake(pdu.event_id.as_bytes());
 				count = count.saturating_add(1);
 			}
 		}
 		Ok(count)
+	}
+
+	pub(super) fn apply_batch(&self, batch: database::Batch<'_>) {
+		self.eventid_pdu.apply_batch(batch);
 	}
 
 	pub(super) async fn fallback_prev_events(&self, event_id: &EventId) -> HashSet<OwnedEventId> {
@@ -395,19 +420,74 @@ impl Data {
 	}
 
 	pub(crate) fn topo_pducount_key(pdu_id: &RawPduId, depth: u64) -> Vec<u8> {
+		let mut shorteventid = [0_u8; 8];
+		shorteventid.copy_from_slice(&pdu_id.shorteventid());
+		let stream_ordering = i64::from_be_bytes(PduCount::offset_binary_encoding(shorteventid));
+		let timeline_key = TimelineKey::new(depth, stream_ordering);
+
 		let mut topo_key = Vec::with_capacity(24);
 		topo_key.extend_from_slice(&pdu_id.shortroomid());
-		topo_key.extend_from_slice(&depth.to_be_bytes());
-		topo_key.extend_from_slice(&pdu_id.shorteventid());
+		topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 		topo_key
+	}
+
+	pub(super) async fn clear_room_topo_index_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		room_id: &RoomId,
+	) -> Result<usize> {
+		let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+		let prefix = shortroomid.to_be_bytes();
+		let keys = self
+			.roomid_topologicalorder_pducount
+			.raw_stream_prefix(&prefix)
+			.map_ok(|(key, _)| key.to_vec())
+			.try_collect::<Vec<_>>()
+			.await?;
+
+		if keys.is_empty() {
+			return Ok(0);
+		}
+
+		for key in &keys {
+			self.roomid_topologicalorder_pducount
+				.batch_delete(batch, key);
+		}
+
+		Ok(keys.len())
+	}
+
+	pub(super) async fn clear_room_topo_index(&self, room_id: &RoomId) -> Result<usize> {
+		let mut batch = database::Batch::new();
+		let cleared = self
+			.clear_room_topo_index_into_batch(&mut batch, room_id)
+			.await?;
+		self.roomid_topologicalorder_pducount.apply_batch(batch);
+		Ok(cleared)
+	}
+
+	pub(super) fn insert_topo_pducount_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		event_id: &EventId,
+		depth: u64,
+	) {
+		let topo_key = Self::topo_pducount_key(pdu_id, depth);
+		self.roomid_topologicalorder_pducount
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
 	pub(super) fn topo_key_to_pdu_id(topo_key: &[u8]) -> RawPduId {
 		let mut pdu_id_bytes = [0_u8; 16];
 		pdu_id_bytes[0..8].copy_from_slice(&topo_key[0..8]);
 
-		let mut count_bytes = [0_u8; 8];
-		count_bytes.copy_from_slice(&topo_key[16..24]);
+		let mut timeline_bytes = [0_u8; 16];
+		timeline_bytes.copy_from_slice(&topo_key[8..24]);
+		let timeline_key = TimelineKey::from_bytes(&timeline_bytes);
+
+		let count_bytes =
+			PduCount::offset_binary_encoding(timeline_key.stream_ordering.to_be_bytes());
 		pdu_id_bytes[8..16].copy_from_slice(&count_bytes);
 
 		pdu_id_bytes.as_slice().into()
@@ -416,7 +496,7 @@ impl Data {
 	pub(super) async fn pdu_id_to_depth(&self, pdu_id: &RawPduId) -> Result<u64> {
 		let event_id_bytes = self.room_pducount_eventid.get(pdu_id).await?;
 		let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
-		let meta: rooms::timeline::EventMetadata = bincode::deserialize(&metadata_bytes)
+		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
 		Ok(meta.depth.into())
 	}
@@ -432,54 +512,79 @@ impl Data {
 
 	/// Remove topo entry using a **known** depth, avoiding the `get_blocking`
 	/// call that `remove_topo_pducount` does.
-	pub(super) fn remove_topo_pducount_at_depth(&self, pdu_id: &RawPduId, old_depth: u64) {
-		self.roomid_topologicalorder_pducount
-			.remove(&Self::topo_pducount_key(pdu_id, old_depth));
+	pub(super) fn remove_stream_and_topo_pducount_from_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		event_id_bytes: &[u8],
+		depth: Option<u64>,
+	) {
+		self.room_pducount_eventid
+			.batch_delete(batch, pdu_id.as_bytes());
+		self.eventid_pduid.batch_delete(batch, event_id_bytes);
+
+		if let Some(depth) = depth {
+			self.roomid_topologicalorder_pducount
+				.batch_delete(batch, &Self::topo_pducount_key(pdu_id, depth));
+		}
 	}
 
-	pub(super) fn remove_stream_and_topo_pducount(
-		&self,
+	/// Batched equivalent of `remove_stream_and_topo_pducount`: resolves the
+	/// depth via the same blocking metadata read (`meta.depth`, matching
+	/// `remove_topo_pducount`'s field exactly -- not
+	/// `deprecated_local_topo_depth`, which is a different field with its own
+	/// separate callers), then routes the three deletes into `batch` instead
+	/// of writing them individually.
+	pub(super) fn remove_stream_and_topo_pducount_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id_bytes: &[u8],
 	) {
-		self.room_pducount_eventid.remove(pdu_id);
-		self.eventid_pduid.remove(event_id_bytes);
-		self.remove_topo_pducount(pdu_id, event_id_bytes);
+		let depth = self
+			.eventid_metadata
+			.get_blocking(event_id_bytes)
+			.ok()
+			.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
+			.map(|meta| meta.depth.into());
+		self.remove_stream_and_topo_pducount_from_batch(batch, pdu_id, event_id_bytes, depth);
 	}
 
-	/// Remove stream + topo indices using a **known** depth, avoiding
-	/// blocking metadata reads.
-	pub(super) fn remove_stream_and_topo_pducount_at_depth(
-		&self,
-		pdu_id: &RawPduId,
-		event_id_bytes: &[u8],
-		old_depth: u64,
-	) {
-		self.room_pducount_eventid.remove(pdu_id);
-		self.eventid_pduid.remove(event_id_bytes);
-		self.remove_topo_pducount_at_depth(pdu_id, old_depth);
-	}
-
-	pub(super) fn replace_stream_and_topo_pducount(
-		&self,
+	/// Batched equivalent of `replace_stream_and_topo_pducount`. All four
+	/// writes (stream, `eventid_pduid`, metadata, topo) land in the same
+	/// `database::Batch` and therefore the same atomic RocksDB write --
+	/// unlike the individually-`.insert()`ed version above, a crash (or a
+	/// concurrent reader) can never observe `eventid_pduid`/`eventid_metadata`
+	/// updated while the topo index still points at the old position, or
+	/// vice versa.
+	pub(super) fn replace_stream_and_topo_pducount_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		local_topo_depth: u64,
 		pdu_count: PduCount,
 	) {
 		self.room_pducount_eventid
-			.insert(pdu_id, event_id.as_bytes());
-		self.eventid_pduid.insert(event_id.as_bytes(), pdu_id);
-		self.set_event_metadata_depth_and_count(event_id, local_topo_depth, pdu_count);
+			.batch_put(batch, pdu_id, event_id.as_bytes());
+		self.eventid_pduid
+			.batch_put(batch, event_id.as_bytes(), pdu_id);
+		self.set_event_metadata_depth_and_count_into_batch(
+			batch,
+			event_id,
+			local_topo_depth,
+			pdu_count,
+		);
 		let topo_key = Self::topo_pducount_key(pdu_id, local_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
-	/// Combined write: updates stream + topo index and overwrites metadata
-	/// from a pre-computed `EventMetadata`, avoiding any DB reads.
-	pub(super) fn replace_stream_topo_with_cached_metadata(
-		&self,
+	/// Batched equivalent of `replace_stream_topo_with_cached_metadata` --
+	/// same reasoning as `replace_stream_and_topo_pducount_batch`.
+	pub(super) fn replace_stream_topo_with_cached_metadata_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		local_topo_depth: u64,
@@ -487,48 +592,72 @@ impl Data {
 		meta: &mut rooms::timeline::EventMetadata,
 	) {
 		self.room_pducount_eventid
-			.insert(pdu_id, event_id.as_bytes());
-		self.eventid_pduid.insert(event_id.as_bytes(), pdu_id);
+			.batch_put(batch, pdu_id, event_id.as_bytes());
+		self.eventid_pduid
+			.batch_put(batch, event_id.as_bytes(), pdu_id);
 
-		// Update metadata fields and write in one shot — no read needed
 		meta.deprecated_local_topo_depth = local_topo_depth;
 		meta.pdu_count = match pdu_count {
 			| PduCount::Normal(x) => Some(x),
 			| PduCount::Backfilled(_) => None, /* Force fallback to eventid_pduid for proper
 			                                    * decoding */
 		};
-		if let Ok(metadata_bytes) = bincode::serialize(meta) {
-			self.eventid_metadata
-				.insert(event_id.as_bytes(), &metadata_bytes);
+		match bincode::serialize(meta) {
+			| Ok(metadata_bytes) => {
+				self.eventid_metadata
+					.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+			},
+			| Err(e) => {
+				// The stream/topo writes for this event are still going into
+				// `batch` below and will land -- only the metadata write
+				// (and its `eventid_metadata` fast-path lookup for
+				// get_pdu_id) is skipped, leaving that one event to fall
+				// back to the `eventid_pduid` legacy path. Not silent: this
+				// is the same shape of write inconsistency
+				// docs/development-gg/backfill-v12-phantom-timeline-membership.md
+				// is about, just smaller, so it's worth knowing about even
+				// though EventMetadata's all-primitive fields make it very
+				// unlikely to actually fire.
+				conduwuit::warn!(%event_id, "Failed to serialize EventMetadata for batch write: {e}");
+			},
 		}
 
 		let topo_key = Self::topo_pducount_key(pdu_id, local_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 	}
 
-	/// Rebuild topo index entry using a cached `EventMetadata`, avoiding
-	/// any blocking DB reads. Updates the topo key and metadata in one shot.
-	pub(super) fn reindex_topo_with_cached_metadata(
-		&self,
+	/// Batched equivalent of `reindex_topo_with_cached_metadata`. The old
+	/// topo entry's removal and the new one's insertion land in the same
+	/// batch as the metadata update, so a reader can never observe the old
+	/// and new topo keys simultaneously absent (or the metadata pointing at
+	/// a depth neither key uses).
+	pub(super) fn reindex_topo_with_cached_metadata_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		new_topo_depth: u64,
 		meta: &mut rooms::timeline::EventMetadata,
 	) {
-		// Remove old topo entry using cached depth
-		self.remove_topo_pducount_at_depth(pdu_id, meta.deprecated_local_topo_depth);
+		let old_topo_key = Self::topo_pducount_key(pdu_id, meta.deprecated_local_topo_depth);
+		self.roomid_topologicalorder_pducount
+			.batch_delete(batch, &old_topo_key);
 
-		// Write new topo entry
 		let topo_key = Self::topo_pducount_key(pdu_id, new_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id.as_bytes());
+			.batch_put(batch, &topo_key, event_id.as_bytes());
 
-		// Update metadata with new depth — no read needed
 		meta.deprecated_local_topo_depth = new_topo_depth;
-		if let Ok(metadata_bytes) = bincode::serialize(meta) {
-			self.eventid_metadata
-				.insert(event_id.as_bytes(), &metadata_bytes);
+		match bincode::serialize(meta) {
+			| Ok(metadata_bytes) => {
+				self.eventid_metadata
+					.batch_put(batch, event_id.as_bytes(), metadata_bytes);
+			},
+			| Err(e) => conduwuit::warn!(
+				%event_id,
+				"Failed to serialize EventMetadata for batch write: {e}"
+			),
 		}
 	}
 
@@ -545,70 +674,115 @@ impl Data {
 		}
 	}
 
+	/// Strips only the timeline-membership of `event_id` (the
+	/// `eventid_pduid`/`room_pducount_eventid`/topo pointers, plus the stale
+	/// `eventid_metadata` entry those pointers were keyed against), leaving
+	/// `eventid_pdu` untouched.
+	///
+	/// This exists for callers that intend to immediately re-persist the
+	/// event as an outlier (e.g. `add_pdu_outlier`/`add_pdu_outlier_locked`)
+	/// under the same `mutex_insert` guard: `add_pdu_outlier_batch`'s "never
+	/// overwrite a timeline event" guard keys off the *existing*
+	/// `eventid_metadata` entry, so as long as that entry still says
+	/// `is_outlier: false` (which it does for any event currently in the
+	/// timeline) the outlier write is silently skipped. Clearing the
+	/// metadata here first lets the subsequent outlier write land.
+	///
+	/// Mirrors `remove_from_timeline`'s statement order --
+	/// `remove_topo_pducount` still needs to read the old `eventid_metadata`
+	/// for the event's depth, so that removal must happen before this
+	/// function's own metadata deletion, not after.
+	pub(super) async fn remove_timeline_pointers(&self, event_id: &EventId) {
+		if let Ok(pduid) = self.get_pdu_id(event_id).await {
+			self.eventid_pduid.remove(event_id);
+			self.room_pducount_eventid.remove(&pduid);
+			self.remove_topo_pducount(&pduid, event_id.as_bytes());
+		}
+
+		self.eventid_metadata.remove(event_id.as_bytes());
+	}
+
+	/// Batched equivalent of `remove_timeline_pointers`. This is for demotion
+	/// paths that will atomically rewrite the same event as an outlier in the
+	/// same RocksDB commit, so a crash cannot leave the JSON reachable through
+	/// neither the timeline indices nor outlier metadata.
+	pub(super) async fn remove_timeline_pointers_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		event_id: &EventId,
+	) {
+		if let Ok(pduid) = self.get_pdu_id(event_id).await {
+			let depth = self
+				.eventid_metadata
+				.get_blocking(event_id.as_bytes())
+				.ok()
+				.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
+				.map(|meta| meta.depth.into());
+			self.remove_stream_and_topo_pducount_from_batch(
+				batch,
+				&pduid,
+				event_id.as_bytes(),
+				depth,
+			);
+		}
+
+		self.eventid_metadata
+			.batch_delete(batch, event_id.as_bytes());
+	}
+
 	/// Rebuild the topological index entry for a single event without
-	/// touching stream order. Removes the old topo key, computes a new
+	/// touching stream order: removes the old topo key, computes a new
 	/// `deprecated_local_topo_depth`, writes the new topo key, and updates
-	/// metadata.
-	pub(super) fn reindex_topo(
-		&self,
+	/// metadata. Both blocking reads (old depth via the same lookup
+	/// `remove_topo_pducount` does, then metadata for the update) still
+	/// happen outside the batch -- RocksDB batches are write-only -- but
+	/// every write lands in `batch` together.
+	pub(super) fn reindex_topo_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		new_topo_depth: u64,
 	) {
 		let event_id_bytes = event_id.as_bytes();
 
-		// Remove old topo entry
-		self.remove_topo_pducount(pdu_id, event_id_bytes);
+		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
+			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
+				let old_topo_key =
+					Self::topo_pducount_key(pdu_id, meta.deprecated_local_topo_depth);
+				self.roomid_topologicalorder_pducount
+					.batch_delete(batch, &old_topo_key);
+			}
+		}
 
-		// Write new topo entry
 		let topo_key = Self::topo_pducount_key(pdu_id, new_topo_depth);
 		self.roomid_topologicalorder_pducount
-			.insert(&topo_key, event_id_bytes);
+			.batch_put(batch, &topo_key, event_id_bytes);
 
-		// Update metadata with new topo depth
 		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
 			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
 				meta.deprecated_local_topo_depth = new_topo_depth;
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.insert(event_id_bytes, &metadata_bytes);
+				match bincode::serialize(&meta) {
+					| Ok(metadata_bytes) => {
+						self.eventid_metadata
+							.batch_put(batch, event_id_bytes, metadata_bytes);
+					},
+					| Err(e) => conduwuit::warn!(
+						%event_id,
+						"Failed to serialize EventMetadata for batch write: {e}"
+					),
 				}
 			}
 		}
 	}
 
-	/// Update only the canonical JSON for a PDU without touching any index.
-	/// Used when state repair modifies `unsigned.prev_content`.
-	pub(super) fn update_pdu_json(&self, event_id: &EventId, json: &CanonicalJsonObject) {
-		self.eventid_pdu
-			.insert(event_id.as_bytes(), serde_json::to_vec(json).expect("json"));
-	}
-
-	pub(super) fn get_event_metadata_blocking(
-		&self,
-		event_id: &EventId,
-	) -> Option<rooms::timeline::EventMetadata> {
-		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id.as_bytes()) {
-			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
-		} else {
-			None
-		}
-	}
-
-	pub(super) fn set_event_metadata_depth(&self, event_id: &EventId, depth: u64) {
-		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id.as_bytes()) {
-			if let Ok(mut meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
-				meta.deprecated_local_topo_depth = depth;
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.insert(event_id.as_bytes(), &metadata_bytes);
-				}
-			}
-		}
-	}
-
-	pub(super) fn set_event_metadata_depth_and_count(
-		&self,
+	/// Batched equivalent of `set_event_metadata_depth_and_count`. The
+	/// read-modify-write still does its read outside the batch (RocksDB
+	/// batches are write-only), but the write half lands in `batch` instead
+	/// of as its own independent `.insert()`.
+	pub(super) fn set_event_metadata_depth_and_count_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		event_id: &EventId,
 		depth: u64,
 		pdu_count: PduCount,
@@ -620,9 +794,18 @@ impl Data {
 					| PduCount::Normal(x) => Some(x),
 					| PduCount::Backfilled(_) => None, // Force fallback to eventid_pduid
 				};
-				if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-					self.eventid_metadata
-						.insert(event_id.as_bytes(), &metadata_bytes);
+				match bincode::serialize(&meta) {
+					| Ok(metadata_bytes) => {
+						self.eventid_metadata.batch_put(
+							batch,
+							event_id.as_bytes(),
+							metadata_bytes,
+						);
+					},
+					| Err(e) => conduwuit::warn!(
+						%event_id,
+						"Failed to serialize EventMetadata for batch write: {e}"
+					),
 				}
 			}
 		}
@@ -630,10 +813,10 @@ impl Data {
 
 	/// Drop a duplicate PDU by ID without removing the event mapping
 	pub(super) fn drop_duplicate_pdu(&self, pdu_id: &RawPduId) {
-		self.room_pducount_eventid.remove(pdu_id);
 		if let Ok(event_id_bytes) = self.room_pducount_eventid.get_blocking(pdu_id) {
 			self.remove_topo_pducount(pdu_id, &event_id_bytes);
 		}
+		self.room_pducount_eventid.remove(pdu_id);
 	}
 
 	/// Returns the pdu's id. Tries metadata `pdu_count` first (fast path),
@@ -999,11 +1182,9 @@ impl Data {
 	}
 
 	#[allow(clippy::unused_self)]
-	pub(super) fn db_batch(&self) -> database::rocksdb::WriteBatch {
-		database::rocksdb::WriteBatch::default()
-	}
+	pub(super) fn db_batch(&self) -> database::Batch<'_> { database::Batch::new() }
 
-	pub(super) fn db_apply_batch(&self, batch: &database::rocksdb::WriteBatch) {
+	pub(super) fn db_apply_batch(&self, batch: database::Batch<'_>) {
 		self.eventid_pdu.apply_batch(batch);
 	}
 
@@ -1014,17 +1195,15 @@ impl Data {
 		json: &CanonicalJsonObject,
 		count: PduCount,
 	) {
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 		self.append_pdu_batch(&mut batch, pdu_id, pdu, json, count)
 			.await;
-		self.eventid_pdu.apply_batch(&batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(pdu.event_id.as_bytes());
+		self.eventid_pdu.apply_batch(batch);
 	}
 
-	pub(super) async fn append_pdu_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) async fn append_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 		json: &CanonicalJsonObject,
@@ -1033,17 +1212,6 @@ impl Data {
 		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
 
 		let event_id_bytes = pdu.event_id.as_bytes();
-
-		// Map event_id -> pdu_id
-		self.eventid_pduid
-			.insert_into_batch(batch, &event_id_bytes, pdu_id);
-
-		self.eventid_pdu
-			.raw_put_into_batch(batch, event_id_bytes, Json(json));
-
-		self.room_pducount_eventid
-			.insert_into_batch(batch, pdu_id, event_id_bytes);
-
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
 			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
@@ -1051,27 +1219,59 @@ impl Data {
 			None
 		};
 
+		if let Ok(existing_pdu_id) = self
+			.eventid_pduid
+			.get(event_id_bytes)
+			.await
+			.map(|handle| RawPduId::from(&*handle))
+		{
+			if existing_pdu_id != *pdu_id {
+				self.remove_stream_and_topo_pducount_from_batch(
+					batch,
+					&existing_pdu_id,
+					event_id_bytes,
+					existing_metadata
+						.as_ref()
+						.map(|meta| meta.deprecated_local_topo_depth),
+				);
+			}
+		}
+
+		// Map event_id -> pdu_id
+		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
+
+		self.eventid_pdu
+			.batch_raw_put(batch, event_id_bytes, Json(json));
+
+		self.room_pducount_eventid
+			.batch_put(batch, pdu_id, event_id_bytes);
+
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
 		self.roomid_topologicalorder_pducount
-			.insert_into_batch(batch, &topo_key, event_id_bytes);
+			.batch_put(batch, &topo_key, event_id_bytes);
+
+		// Integrate hotfix timestamp index into WriteBatch
+		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
+			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
+				let ts_key =
+					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
+			}
+		}
 
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id: u64::from_be_bytes(pdu_id.shortroomid()),
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-			rejected: pdu.rejected(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
 			pdu_count: Some(count.into_unsigned()),
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
-				.insert_into_batch(batch, event_id_bytes, metadata_bytes);
+				.batch_put(batch, event_id_bytes, metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -1094,6 +1294,68 @@ impl Data {
 			.collect()
 			.await;
 		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
+
+		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
+			.await;
+	}
+
+	/// Tier 3 write-time bookkeeping (see `backward_extremities.rs` and
+	/// `docs/development-gg/backfill-extremities-write-time-design.md`).
+	/// Called from both `append_pdu_batch` and `prepend_backfill_pdu_batch`
+	/// -- every insert path in the codebase funnels through one of those
+	/// two, so this is the single place this bookkeeping needs to happen.
+	///
+	/// Not yet read by anything (`backfill_if_required` still uses the old
+	/// scan) -- this only writes the index so it's ready once the read path
+	/// and the existing-room migration land. Landing the write path first
+	/// and separately is intentional: it's independently testable and
+	/// reviewable, and a bug here before anything reads the index is inert,
+	/// where a bug in the read-path swap would not be.
+	async fn record_backward_extremities_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		pdu_id: &RawPduId,
+		pdu: &PduEvent,
+	) {
+		let shortroomid = pdu_id.shortroomid();
+
+		// This event may itself have been a recorded extremity (something
+		// else's missing parent). Resolve it now that it's arriving.
+		let event_key = backward_extremities::pack_event_key(shortroomid, &pdu.event_id);
+		if let Ok(depth_bytes) = self.db["roomid_missingeventid_depth"].get(&event_key).await {
+			if let Some(depth) = backward_extremities::unpack_depth_value(&depth_bytes) {
+				let depth_key =
+					backward_extremities::pack_depth_key(shortroomid, depth, &pdu.event_id);
+				self.db["roomid_depth_missingeventid"].batch_delete(batch, &depth_key);
+			}
+			self.db["roomid_missingeventid_depth"].batch_delete(batch, &event_key);
+		}
+
+		// `get_pdu_id` is async, but `missing_prev_events` takes a sync
+		// predicate on purpose (see its doc comment -- that's what keeps it
+		// unit-testable without a DB). Resolve existence for every
+		// prev_event first, then hand the pure function a synchronous
+		// lookup over that already-resolved set.
+		let mut known_locally: HashSet<OwnedEventId> = HashSet::new();
+		for prev_id in &pdu.prev_events {
+			if self.get_pdu_id(prev_id).await.is_ok() {
+				known_locally.insert(prev_id.clone());
+			}
+		}
+
+		let depth = u64::from(pdu.depth());
+		for prev_id in backward_extremities::missing_prev_events(&pdu.prev_events, |id| {
+			known_locally.contains(id)
+		}) {
+			let depth_key = backward_extremities::pack_depth_key(shortroomid, depth, prev_id);
+			let event_key = backward_extremities::pack_event_key(shortroomid, prev_id);
+			self.db["roomid_depth_missingeventid"].batch_put(batch, &depth_key, []);
+			self.db["roomid_missingeventid_depth"].batch_put(
+				batch,
+				&event_key,
+				depth.to_be_bytes(),
+			);
+		}
 	}
 
 	pub(super) async fn prepend_backfill_pdu(
@@ -1103,30 +1365,21 @@ impl Data {
 		json: &CanonicalJsonObject,
 		pdu: &PduEvent,
 	) {
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 		self.prepend_backfill_pdu_batch(&mut batch, pdu_id, event_id, json, pdu)
 			.await;
-		self.eventid_pdu.apply_batch(&batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(event_id.as_bytes());
+		self.eventid_pdu.apply_batch(batch);
 	}
 
-	pub(super) async fn prepend_backfill_pdu_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) async fn prepend_backfill_pdu_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		pdu_id: &RawPduId,
 		event_id: &EventId,
 		json: &CanonicalJsonObject,
 		pdu: &PduEvent,
 	) {
 		let event_id_bytes = event_id.as_bytes();
-		self.eventid_pduid
-			.insert_into_batch(batch, &event_id_bytes, pdu_id);
-
-		self.eventid_pdu
-			.raw_put_into_batch(batch, event_id_bytes, Json(json));
-		self.room_pducount_eventid
-			.insert_into_batch(batch, pdu_id, event_id_bytes);
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
 			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
@@ -1134,27 +1387,60 @@ impl Data {
 			None
 		};
 
+		if let Ok(existing_pdu_id) = self
+			.eventid_pduid
+			.get(event_id_bytes)
+			.await
+			.map(|handle| RawPduId::from(&*handle))
+		{
+			if existing_pdu_id != *pdu_id {
+				self.remove_stream_and_topo_pducount_from_batch(
+					batch,
+					&existing_pdu_id,
+					event_id_bytes,
+					existing_metadata
+						.as_ref()
+						.map(|meta| meta.deprecated_local_topo_depth),
+				);
+			}
+		}
+
+		self.eventid_pduid.batch_put(batch, &event_id_bytes, pdu_id);
+
+		self.eventid_pdu
+			.batch_raw_put(batch, event_id_bytes, Json(json));
+		self.room_pducount_eventid
+			.batch_put(batch, pdu_id, event_id_bytes);
+
 		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
 		self.roomid_topologicalorder_pducount
-			.insert_into_batch(batch, &topo_key, event_id_bytes);
+			.batch_put(batch, &topo_key, event_id_bytes);
+
+		// Integrate hotfix timestamp index into WriteBatch
+		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
+			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
+				let ts_key =
+					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
+			}
+		}
 
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id: u64::from_be_bytes(pdu_id.shortroomid()),
 			is_outlier: false,
 			origin_server_ts: pdu.origin_server_ts().0,
 			depth: pdu.depth(),
-			soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-			rejected: pdu.rejected(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 			deprecated_local_topo_depth: pdu.depth().into(),
-			pdu_count: Some(pdu_id.pdu_count().into_unsigned()),
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
+			pdu_count: match pdu_id.pdu_count() {
+				| PduCount::Normal(x) => Some(x),
+				| PduCount::Backfilled(_) => None,
+			},
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
 			self.eventid_metadata
-				.insert_into_batch(batch, event_id_bytes, metadata_bytes);
+				.batch_put(batch, event_id_bytes, metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -1178,6 +1464,9 @@ impl Data {
 			.collect()
 			.await;
 		self.store_shortauthevents_into_batch(batch, short_event_id, &auth_shorts);
+
+		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
+			.await;
 	}
 
 	/// Removes a pdu and creates a new one with the same id.
@@ -1191,13 +1480,13 @@ impl Data {
 			return Err!(Request(NotFound("PDU does not exist.")));
 		}
 
-		let mut batch = database::rocksdb::WriteBatch::default();
+		let mut batch = database::Batch::new();
 
 		let event_id_bytes = event_id.as_bytes();
 
 		// --- Phase 1: Double-Write ---
 		self.eventid_pdu
-			.raw_put_into_batch(&mut batch, event_id_bytes, Json(pdu_json));
+			.batch_raw_put(&mut batch, event_id_bytes, Json(pdu_json));
 
 		if let Ok(pdu) =
 			serde_json::from_value::<PduEvent>(serde_json::to_value(pdu_json).unwrap())
@@ -1210,7 +1499,7 @@ impl Data {
 				};
 
 			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
-			self.roomid_topologicalorder_pducount.insert_into_batch(
+			self.roomid_topologicalorder_pducount.batch_put(
 				&mut batch,
 				&topo_key,
 				event_id_bytes,
@@ -1221,21 +1510,17 @@ impl Data {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				soft_failed: existing_metadata.as_ref().is_some_and(|m| m.soft_failed),
-				rejected: pdu.rejected(),
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
 				deprecated_local_topo_depth: pdu.depth().into(),
-				pdu_count: Some(pdu_id.pdu_count().into_unsigned()),
-				soft_fail_reason: String::new(),
-				rejection_reason: String::new(),
+				pdu_count: match pdu_id.pdu_count() {
+					| PduCount::Normal(x) => Some(x),
+					| PduCount::Backfilled(_) => None,
+				},
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-				self.eventid_metadata.insert_into_batch(
-					&mut batch,
-					event_id_bytes,
-					metadata_bytes,
-				);
+				self.eventid_metadata
+					.batch_put(&mut batch, event_id_bytes, metadata_bytes);
 			}
 
 			let short_event_id = self
@@ -1260,21 +1545,25 @@ impl Data {
 			self.store_shortauthevents_into_batch(&mut batch, short_event_id, &auth_shorts);
 		}
 
-		self.eventid_pdu.apply_batch(&batch);
-		self.room_pducount_eventid.wake(pdu_id);
-		self.eventid_pdu.wake(event_id_bytes);
+		self.eventid_pdu.apply_batch(batch);
 		Ok(())
 	}
 
 	/// Returns an iterator over all events and their tokens in a room that
-	/// happened before the event with id `until` in reverse-chronological
-	/// order.
+	/// happened before (and optionally including) `until`, in
+	/// reverse-chronological order.
+	///
+	/// `until` states its own inclusivity, so there is no separate "which way
+	/// do I bump this" step for callers to get backwards:
+	/// - `Bound::Excluded(count)`: the event at `count` is never yielded.
+	/// - `Bound::Included(count)`: the event at `count` is yielded first.
+	/// - `Bound::Unbounded`: start from the newest event in the room.
 	pub(super) fn pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		until: PduCount,
+		until: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		let seek_count = until.saturating_inc(Direction::Backward);
+		let seek_count = pdus_rev_exclusive_until(until).saturating_inc(Direction::Backward);
 		self.count_to_id(room_id, seek_count, Direction::Backward)
 			.map_ok(move |current| {
 				let prefix = current.shortroomid();
@@ -1292,11 +1581,23 @@ impl Data {
 			.try_flatten_stream()
 	}
 
+	/// Returns an iterator over all events and their tokens in a room that
+	/// happened after (and optionally including) `from`, in chronological
+	/// order.
+	///
+	/// `from` states its own inclusivity — see `pdus_rev`'s doc comment.
+	/// Forward and reverse iteration need *opposite-signed* adjustments to
+	/// achieve the same inclusivity (this one seeks `+1` for `Excluded`
+	/// where `pdus_rev` seeks `-1`), which is exactly the trap that made
+	/// this boundary handling worth centralizing here instead of leaving it
+	/// to call sites: see the `Bound` match below and its mirror in
+	/// `pdus_rev` above.
 	pub(super) fn pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		from: PduCount,
+		from: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
+		let from = pdus_exclusive_from(from);
 		self.count_to_id(room_id, from.saturating_inc(Direction::Forward), Direction::Forward)
 			.map_ok(move |current| {
 				let prefix = current.shortroomid();
@@ -1312,7 +1613,142 @@ impl Data {
 			})
 			.try_flatten_stream()
 	}
+}
 
+/// Resolves `pdus_rev`'s `until` bound to the exclusive count its seek needs.
+///
+/// Pulled out of `pdus_rev` as a free, DB-free function specifically so the
+/// boundary arithmetic can be unit tested without a database — this exact
+/// arithmetic has regressed twice (`cf208c1a5`, `f1415e22a`), both times only
+/// caught by slow integration tests whose failures looked environmental. See
+/// `docs/development-gg/fable/boundary-flake-advisory.md`.
+fn pdus_rev_exclusive_until(until: Bound<PduCount>) -> PduCount {
+	match until {
+		| Bound::Excluded(count) => count,
+		| Bound::Included(count) => count.saturating_inc(Direction::Forward),
+		| Bound::Unbounded => PduCount::max(),
+	}
+}
+
+/// Resolves `pdus`'s `from` bound to the exclusive count its seek needs.
+///
+/// Mirrors `pdus_rev_exclusive_until` but with the *opposite-signed*
+/// adjustment for `Bound::Included` — forward iteration needs to step
+/// backward to include its boundary where reverse iteration steps forward.
+/// This asymmetry is the actual trap in this API (see the advisory doc); the
+/// paired test `pdus_rev_and_pdus_bound_adjustments_are_mirror_opposite`
+/// pins it.
+fn pdus_exclusive_from(from: Bound<PduCount>) -> PduCount {
+	match from {
+		| Bound::Excluded(count) => count,
+		| Bound::Included(count) => count.saturating_inc(Direction::Backward),
+		| Bound::Unbounded => PduCount::min(),
+	}
+}
+
+#[cfg(test)]
+mod boundary_tests {
+	use std::ops::Bound;
+
+	use conduwuit::PduCount;
+
+	use super::{pdus_exclusive_from, pdus_rev_exclusive_until};
+
+	#[test]
+	fn pdus_rev_excluded_is_passthrough() {
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Excluded(mid)), mid);
+	}
+
+	#[test]
+	fn pdus_rev_included_steps_forward_past_the_boundary() {
+		// pdus_rev's underlying seek is exclusive, so to make `mid` the first
+		// (most recent) yielded event, the resolved count must be one past
+		// `mid` in the direction pdus_rev walks away from (i.e. +1).
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(mid)), PduCount::Normal(43));
+	}
+
+	#[test]
+	fn pdus_rev_unbounded_is_max() {
+		assert_eq!(pdus_rev_exclusive_until(Bound::Unbounded), PduCount::max());
+	}
+
+	#[test]
+	fn pdus_excluded_is_passthrough() {
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_exclusive_from(Bound::Excluded(mid)), mid);
+	}
+
+	#[test]
+	fn pdus_included_steps_backward_past_the_boundary() {
+		// Opposite of pdus_rev: pdus walks forward away from `from`, so
+		// including `from` itself means resolving to one *before* it (-1).
+		let mid = PduCount::Normal(42);
+		assert_eq!(pdus_exclusive_from(Bound::Included(mid)), PduCount::Normal(41));
+	}
+
+	#[test]
+	fn pdus_unbounded_is_min() {
+		assert_eq!(pdus_exclusive_from(Bound::Unbounded), PduCount::min());
+	}
+
+	/// This is the test that would have caught both `cf208c1a5` (flipped
+	/// `pdus`/`pdus_rev` to inclusive-by-default, breaking every caller that
+	/// already compensated manually) and `f1415e22a` (dropped the
+	/// compensation entirely, breaking backfill's gap scan) in milliseconds,
+	/// instead of via three flaky-looking complement test families.
+	///
+	/// `pdus_rev`'s `Bound::Included` adjustment and `pdus`'s `Bound::Included`
+	/// adjustment must move in *opposite* directions for the same boundary
+	/// count, because the two functions walk away from that boundary in
+	/// opposite directions. A "fix" that makes both add (or both subtract) is
+	/// wrong for one of the two, silently, at whichever call site adopts it
+	/// next.
+	#[test]
+	fn pdus_rev_and_pdus_bound_adjustments_are_mirror_opposite() {
+		let boundary = PduCount::Normal(100);
+
+		let rev_resolved = pdus_rev_exclusive_until(Bound::Included(boundary));
+		let fwd_resolved = pdus_exclusive_from(Bound::Included(boundary));
+
+		assert_eq!(rev_resolved, PduCount::Normal(101), "pdus_rev must step +1 to include");
+		assert_eq!(fwd_resolved, PduCount::Normal(99), "pdus must step -1 to include");
+		assert_ne!(
+			rev_resolved, fwd_resolved,
+			"pdus_rev and pdus resolve an Included(boundary) to different counts by design -- a \
+			 shared helper that returns one value for both directions is the exact bug this \
+			 test guards against"
+		);
+	}
+
+	/// Sparse, non-adjacent counts (simulating the global event counter
+	/// interleaving multiple rooms' events, as it does in production and in
+	/// the `TestJumpToDateEndpoint` parallel subtests) — the resolved seek
+	/// count doesn't need to correspond to a real event for the arithmetic
+	/// to be correct; `count_to_id` handles rounding to the nearest actual
+	/// event. This just pins that the arithmetic itself doesn't assume
+	/// adjacency.
+	#[test]
+	fn bound_resolution_does_not_assume_adjacent_counts() {
+		let sparse = PduCount::Normal(17);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(sparse)), PduCount::Normal(18));
+		assert_eq!(pdus_exclusive_from(Bound::Included(sparse)), PduCount::Normal(16));
+	}
+
+	/// Class-boundary case: including the newest backfilled event should
+	/// stay in the `Backfilled` variant (see `Count::saturating_add`), not
+	/// jump to `Normal`. Backward pagination tokens routinely sit in the
+	/// backfilled range (this repo's regression tokens included `t7_-114`),
+	/// so this is not a hypothetical edge.
+	#[test]
+	fn pdus_rev_included_backfilled_boundary_stays_backfilled() {
+		let boundary = PduCount::Backfilled(-1);
+		assert_eq!(pdus_rev_exclusive_until(Bound::Included(boundary)), PduCount::Backfilled(0));
+	}
+}
+
+impl Data {
 	/// Resolve a (pdu_id, event_id_bytes) pair from `room_pducount_eventid`
 	/// into a full `PdusIterItem` by looking up the PDU JSON in
 	/// `eventid_pdu`.
@@ -1403,53 +1839,58 @@ impl Data {
 				.to_be_bytes()
 				.to_vec();
 
+			let current = self
+				.count_to_id(room_id, until.pdu_count, Direction::Backward)
+				.await?;
+
+			let token_topo_key = if until.is_legacy() {
+				None
+			} else {
+				let token_pdu_id = self
+					.count_to_id(room_id, until.pdu_count, Direction::Backward)
+					.await?;
+				Some(Self::topo_pducount_key(&token_pdu_id, until.depth))
+			};
+
 			let topo_key = if until.is_legacy() {
 				// Legacy tokens don't have depth, fallback to the old buggy behavior just for
 				// them
-				self.count_to_id(
-					room_id,
-					until.pdu_count.saturating_inc(Direction::Backward),
-					Direction::Backward,
-				)
-				.and_then(move |current| async move {
-					self.legacy_seek_topo_key(
-						room_id,
-						until.pdu_count,
-						&current,
-						Direction::Backward,
-					)
-					.await
-				})
-				.await?
+				self.legacy_seek_topo_key(room_id, until.pdu_count, &current, Direction::Backward)
+					.await?
 			} else {
-				let current = self
-					.count_to_id(
-						room_id,
-						until.pdu_count.saturating_inc(Direction::Backward),
-						Direction::Backward,
-					)
-					.await?;
-				Self::topo_pducount_key(&current, until.depth)
+				// Resume concrete topo tokens from the top of the room's topo index, then
+				// trim by the exact token boundary below. Seeking directly from
+				// `(until.depth, until.count)` misses older events which are inserted later
+				// (e.g. backfill gap-fillers) but sort *before* the stale token.
+				Self::topo_pducount_key(&current, u64::MAX)
 			};
 
-			// Stream count ceiling: for legacy tokens with u64::MAX seek depth,
-			// events at high depths but with pdu_count > token_count arrived
-			// AFTER the sync position and must be excluded from backward
-			// pagination. This mirrors Synapse's SQL:
-			//   WHERE (topo, stream) <= (from_topo, from_stream)
-			let count_ceiling = until.pdu_count;
+			conduwuit::debug!(
+				target: "pagination_debug",
+				%room_id, until_depth = until.depth, until_pdu_count = ?until.pdu_count,
+				is_legacy = until.is_legacy(), seek_key = ?topo_key,
+				"topo_pdus_rev: seeking"
+			);
+
+			// Legacy tokens are stream positions, not concrete topo cursors. When
+			// seeking them from u64::MAX depth, exclude events which arrived after the
+			// sync position by count. Concrete t<depth>_<count> tokens instead use the
+			// inclusive topo boundary filter below, which still admits older events
+			// inserted later with higher stream positions.
+			let count_ceiling = until.is_legacy().then_some(until.pdu_count);
 
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
-				.rev_raw_stream_from(&topo_key);
+				.rev_raw_stream_from(&topo_key)
+				.ready_try_filter_map(move |(key, val)| match &token_topo_key {
+					| Some(token_topo_key) if key > token_topo_key.as_slice() => Ok(None),
+					| _ => Ok(Some((key, val))),
+				});
 			Ok(self
 				.parse_topo_stream(raw_stream, prefix)
-				.ready_try_filter_map(move |item| {
-					if item.0.pdu_count <= count_ceiling {
-						Ok(Some(item))
-					} else {
-						Ok(None)
-					}
+				.ready_try_filter_map(move |item| match count_ceiling {
+					| Some(ceiling) if item.0.pdu_count >= ceiling => Ok(None),
+					| _ => Ok(Some(item)),
 				}))
 		};
 		stream.try_flatten_stream()
@@ -1498,10 +1939,24 @@ impl Data {
 				Self::topo_pducount_key(&current, from.depth)
 			};
 
+			conduwuit::debug!(
+				target: "pagination_debug",
+				%room_id, from_depth = from.depth, from_pdu_count = ?from.pdu_count,
+				is_legacy = from.is_legacy(), seek_key = ?topo_key,
+				"topo_pdus: seeking"
+			);
+
+			let count_floor = from.is_legacy().then_some(from.pdu_count);
+
 			let raw_stream = self
 				.roomid_topologicalorder_pducount
 				.raw_stream_from(&topo_key);
-			Ok(self.parse_topo_stream(raw_stream, prefix))
+			Ok(self
+				.parse_topo_stream(raw_stream, prefix)
+				.ready_try_filter_map(move |item| match count_floor {
+					| Some(floor) if item.0.pdu_count <= floor => Ok(None),
+					| _ => Ok(Some(item)),
+				}))
 		};
 		stream.try_flatten_stream()
 	}
@@ -1543,22 +1998,48 @@ impl Data {
 		room_id: &RoomId,
 		notifies: Vec<OwnedUserId>,
 		highlights: Vec<OwnedUserId>,
+		thread_root: Option<&EventId>,
 	) {
 		let _cork = self.db.cork();
 
 		for user in notifies {
-			let mut userroom_id = user.as_bytes().to_vec();
-			userroom_id.push(0xFF);
-			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_notificationcount, &userroom_id);
+			match thread_root {
+				| Some(thread_root) => {
+					Self::increment_thread(
+						&self.userroomid_notificationcount,
+						(user.as_ref(), room_id, thread_root),
+					);
+				},
+				| None => {
+					let mut userroom_id = user.as_bytes().to_vec();
+					userroom_id.push(0xFF);
+					userroom_id.extend_from_slice(room_id.as_bytes());
+					increment(&self.userroomid_notificationcount, &userroom_id);
+				},
+			}
 		}
 
 		for user in highlights {
-			let mut userroom_id = user.as_bytes().to_vec();
-			userroom_id.push(0xFF);
-			userroom_id.extend_from_slice(room_id.as_bytes());
-			increment(&self.userroomid_highlightcount, &userroom_id);
+			match thread_root {
+				| Some(thread_root) => {
+					Self::increment_thread(
+						&self.userroomid_highlightcount,
+						(user.as_ref(), room_id, thread_root),
+					);
+				},
+				| None => {
+					let mut userroom_id = user.as_bytes().to_vec();
+					userroom_id.push(0xFF);
+					userroom_id.extend_from_slice(room_id.as_bytes());
+					increment(&self.userroomid_highlightcount, &userroom_id);
+				},
+			}
 		}
+	}
+
+	fn increment_thread(db: &Arc<Map>, key: (&UserId, &RoomId, &EventId)) {
+		let key = serialize_key(key).expect("failed to serialize thread notification key");
+		increment(db, &key);
 	}
 
 	async fn count_to_id(
@@ -1662,12 +2143,79 @@ impl Data {
 			// Clone raw bytes to owned before async resolve to avoid
 			// RocksDB cursor invalidation through try_buffered
 			.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-			.and_then(move |(topo_key, event_id_bytes)| async move {
-				let depth = u64::from_be_bytes(topo_key[8..16].try_into().expect("topo key must be 24 bytes"));
+			.try_filter_map(move |(topo_key, event_id_bytes)| async move {
+				let mut timeline_bytes = [0_u8; 16];
+				timeline_bytes.copy_from_slice(&topo_key[8..24]);
+				let timeline_key = TimelineKey::from_bytes(&timeline_bytes);
+				let depth = timeline_key.depth;
+
 				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
 				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
 				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
-				Ok((TopoToken { depth, pdu_count }, pdu))
+				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
+				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) else {
+					conduwuit::debug!(
+						target: "pagination_debug",
+						event_id = %String::from_utf8_lossy(&event_id_bytes),
+						?depth, ?pdu_count,
+						"parse_topo_stream: DROPPED (metadata deserialize failed)"
+					);
+					return Ok(None);
+				};
+				if !metadata.matches_timeline_position(depth, pdu_count) {
+					conduwuit::debug!(
+						target: "pagination_debug",
+						event_id = %String::from_utf8_lossy(&event_id_bytes),
+						key_depth = depth,
+						key_pdu_count = ?pdu_count,
+						meta_depth = metadata.deprecated_local_topo_depth,
+						meta_pdu_count = ?metadata.pdu_count,
+						meta_is_outlier = metadata.is_outlier,
+						"parse_topo_stream: DROPPED (matches_timeline_position == false)"
+					);
+					return Ok(None);
+				}
+
+				// `EventMetadata::pdu_count` never records the exact negative counter
+				// for a Backfilled event (see its doc comment), so
+				// `matches_timeline_position` treats `None` as matching *any*
+				// Backfilled key at the right depth -- it can't by itself tell a
+				// stale/orphaned topo entry (left behind by a reindex/reorder that
+				// moved this event_id to a different depth or counter) from the
+				// entry that is actually this event's current position. Cross-check
+				// against `eventid_pduid`, which every write site (append_pdu_batch,
+				// prepend_backfill_pdu_batch, reindex.rs, reorder.rs) keeps pointed
+				// at the event's live position, and drop the key if it disagrees.
+				if matches!(pdu_count, PduCount::Backfilled(_)) {
+					let Ok(canonical_id) = self.eventid_pduid.get(&event_id_bytes).await else {
+						conduwuit::debug!(
+							target: "pagination_debug",
+							event_id = %String::from_utf8_lossy(&event_id_bytes),
+							?depth, ?pdu_count,
+							"parse_topo_stream: DROPPED (no eventid_pduid entry for backfilled event)"
+						);
+						return Ok(None);
+					};
+					if RawPduId::from(&*canonical_id) != pdu_id {
+						conduwuit::debug!(
+							target: "pagination_debug",
+							event_id = %String::from_utf8_lossy(&event_id_bytes),
+							?depth, ?pdu_count,
+							canonical_id = ?RawPduId::from(&*canonical_id),
+							"parse_topo_stream: DROPPED (stale backfilled topo entry, event has moved)"
+						);
+						return Ok(None);
+					}
+				}
+
+				conduwuit::debug!(
+					target: "pagination_debug",
+					event_id = %String::from_utf8_lossy(&event_id_bytes),
+					?depth, ?pdu_count,
+					"parse_topo_stream: yielding"
+				);
+
+				Ok(Some((TopoToken { depth, pdu_count }, pdu)))
 			})
 	}
 
@@ -1710,13 +2258,16 @@ impl Data {
 				self.room_pducount_eventid
 					.rev_raw_stream_from(&current)
 					.ready_try_take_while(move |(key, _)| Ok(key.starts_with(&prefix)))
-					.map_ok(|(_key, val)| {
-						let s = std::str::from_utf8(val).expect("invalid event id utf8");
-						let event_id = <&EventId>::try_from(s).expect("invalid event id bytes");
+					.and_then(move |(_key, val)| async move {
+						let s = std::str::from_utf8(val)
+							.map_err(|e| err!(Database("Invalid event id utf8: {e:?}")))?;
+						let event_id = <&EventId>::try_from(s)
+							.map_err(|e| err!(Database("Invalid event id bytes: {e:?}")))?;
 						self.services
 							.short
-							.get_shorteventid_blocking(event_id)
-							.expect("missing short event id")
+							.get_shorteventid(event_id)
+							.await
+							.map_err(|e| err!(Database("Missing short event id: {e}")))
 					})
 			})
 			.try_flatten_stream()
@@ -1736,9 +2287,9 @@ impl Data {
 		self.shorteventid_shortprevevents.insert(&key, &val);
 	}
 
-	pub(super) fn store_shortprevevents_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) fn store_shortprevevents_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		shorteventid: rooms::short::ShortEventId,
 		shortprevevents: &[rooms::short::ShortEventId],
 	) {
@@ -1748,7 +2299,7 @@ impl Data {
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 		self.shorteventid_shortprevevents
-			.insert_into_batch(batch, &key, &val);
+			.batch_put(batch, &key, &val);
 	}
 
 	pub(super) async fn get_shortprevevents(
@@ -1794,9 +2345,9 @@ impl Data {
 		Ok(auth_shorts)
 	}
 
-	pub(super) fn store_shortauthevents_into_batch(
-		&self,
-		batch: &mut database::rocksdb::WriteBatch,
+	pub(super) fn store_shortauthevents_into_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
 		shorteventid: rooms::short::ShortEventId,
 		shortauthevents: &[rooms::short::ShortEventId],
 	) {
@@ -1806,7 +2357,7 @@ impl Data {
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 		self.shorteventid_shortauthevents
-			.insert_into_batch(batch, &key, &val);
+			.batch_put(batch, &key, &val);
 	}
 
 	pub(super) fn multi_get_shortprevevents<'a, I>(
@@ -1862,10 +2413,140 @@ impl Data {
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e:?}")))?;
 		Ok(ruma::MilliSecondsSinceUnixEpoch(meta.origin_server_ts))
 	}
+
+	pub(super) fn pdus_by_timestamp<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		timestamp: u64,
+		dir: Direction,
+	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
+		// Define rules of the stream
+		let setup = async move {
+			let short: u64 = self
+				.services
+				.short
+				.get_shortroomid(room_id)
+				.await
+				.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+			let (seek_ts, count) = match dir {
+				| Direction::Forward => (timestamp, PduCount::min()),
+				// Must be inclusive (at or before) according to Matrix MSC3030.
+				// Do NOT subtract 1 from timestamp (which breaks tie-breaking/pagination).
+				| Direction::Backward => (timestamp, PduCount::max()),
+			};
+
+			let key = pack_timestamp_key(short.to_be_bytes(), seek_ts, count);
+			Ok::<_, conduwuit::Error>((short, key.to_vec()))
+		};
+
+		// Main stream
+		setup
+			.map_ok(move |(short, key): (u64, Vec<u8>)| {
+				if key.is_empty() {
+					return futures::stream::empty().boxed();
+				}
+
+				let prefix = short.to_be_bytes();
+				let map = &self.db["roomid_timestamp_pducount"];
+
+				// Get stream w/ matching DB keys, in requested direction
+				let stream = match dir {
+					| Direction::Forward => map.raw_stream_from(&key).boxed(),
+					| Direction::Backward => map.rev_raw_stream_from(&key).boxed(),
+				};
+
+				stream
+					.ready_try_take_while(move |&(k, _)| Ok(k.starts_with(&prefix)))
+					// Extract PDU count via key lookup (shortroomid, timestamp, count)
+					.ready_filter_map(|res| {
+						let (k, _) = match res {
+							Ok(kv) => kv,
+							Err(e) => return Some(Err(e)),
+						};
+
+						if k.len() != 25 {
+							tracing::warn!("Invalid timestamp index key length: {}", k.len());
+							return None;
+						}
+
+						let variant = k[16];
+						if variant != 0 && variant != 1 {
+							tracing::warn!("Invalid timestamp index variant byte: {}", variant);
+							return None;
+						}
+
+						let is_normal = variant == 1;
+						let c_bytes: [u8; 8] = k[17..25].try_into().expect("valid slice");
+						let count = if is_normal {
+							PduCount::Normal(u64::from_be_bytes(c_bytes))
+						} else {
+							let sortable_c = u64::from_be_bytes(c_bytes);
+							PduCount::Backfilled((sortable_c ^ (1 << 63)).cast_signed())
+						};
+
+						Some(Ok(count))
+					})
+					// Using PDU count, fetch full PDU event object
+					.filter_map(move |count| async move {
+						let count = match count {
+							Ok(c) => c,
+							Err(e) => return Some(Err(e)),
+						};
+						let pdu_id = PduId { shortroomid: short, shorteventid: count };
+						match self.get_pdu_from_id_in_room(None, &pdu_id.into()).await {
+							Ok(pdu) => Some(Ok(pdu)),
+							Err(e) if e.is_not_found() => Some(Err(err!(
+								Database(
+									"Timestamp index points to missing PDU {pdu_id:?}: {e}"
+								)
+							))),
+							Err(e) => Some(Err(e)),
+						}
+					})
+					.boxed()
+			})
+			.try_flatten_stream()
+	}
 }
 
-//TODO: this is an ABA
+fn pack_timestamp_key(shortroomid: [u8; 8], ts: u64, count: PduCount) -> [u8; 25] {
+	let mut key = [0_u8; 25];
+	key[0..8].copy_from_slice(&shortroomid);
+	key[8..16].copy_from_slice(&ts.to_be_bytes());
+	match count {
+		| PduCount::Backfilled(c) => {
+			key[16] = 0;
+			// Map negative i64 to correctly ordered u64 for RocksDB sorting
+			let sortable_c = c.cast_unsigned() ^ (1 << 63);
+			key[17..25].copy_from_slice(&sortable_c.to_be_bytes());
+		},
+		| PduCount::Normal(c) => {
+			key[16] = 1;
+			key[17..25].copy_from_slice(&c.to_be_bytes());
+		},
+	}
+	key
+}
+
+const INCREMENT_LOCK_SHARDS: usize = 256;
+
+static INCREMENT_LOCKS: std::sync::LazyLock<[conduwuit::SyncMutex<()>; INCREMENT_LOCK_SHARDS]> =
+	std::sync::LazyLock::new(|| std::array::from_fn(|_| conduwuit::SyncMutex::new(())));
+
 fn increment(db: &Arc<Map>, key: &[u8]) {
+	use std::hash::{DefaultHasher, Hash, Hasher};
+	let mut hasher = DefaultHasher::new();
+	key.hash(&mut hasher);
+	let shard_count = u64::try_from(INCREMENT_LOCK_SHARDS).expect("lock shard count fits in u64");
+	let lock_index = usize::try_from(
+		hasher
+			.finish()
+			.checked_rem(shard_count)
+			.expect("lock shard count is non-zero"),
+	)
+	.expect("hash remainder fits in usize");
+	let _lock = INCREMENT_LOCKS[lock_index].lock();
 	let old = db.get_blocking(key);
 	let new = utils::increment(old.ok().as_deref());
 	db.insert(key, new);
@@ -1873,8 +2554,10 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+	use conduwuit::Result;
 	use conduwuit_core::matrix::pdu::{Count as PduCount, Id as PduId, RawId as RawPduId};
 	use rezzy::{HashMap, LeanEvent, verify_pagination};
+	use ruma::api::Direction;
 
 	use super::Data;
 
@@ -2042,6 +2725,57 @@ mod tests {
 			"rezzy places C earlier (depth=2) than c10y (depth=5): rezzy_pos={}, c10y_pos={}",
 			rezzy_pos("C"),
 			c10y_pos("C")
+		);
+	}
+
+	/// Verify the `topo_pducount_key` -> `topo_key_to_pdu_id` round-trip is
+	/// exact for `Backfilled` (negative) counts specifically — every other
+	/// test in this module only exercises small positive (`Normal`) counts.
+	/// This is the untested case relevant to the
+	/// `TestMessagesOverFederation` backfill investigation (see
+	/// docs/development-gg/backfill-append-toctou-race.md): if this
+	/// round-trip is lossy for negative counts, a backfilled event's topo
+	/// index entry could silently point at the wrong (or a colliding)
+	/// pdu_id.
+	#[test]
+	fn topo_key_roundtrips_backfilled_counts() {
+		let room = 1_u64;
+		for count in [-1_i64, -2, -3, -100, -9999, i64::MIN + 1] {
+			let pdu_id = make_pdu_id(room, count);
+			let depth = 7_u64;
+			let key = Data::topo_pducount_key(&pdu_id, depth);
+			let recovered = Data::topo_key_to_pdu_id(&key);
+			assert_eq!(
+				recovered.as_ref(),
+				pdu_id.as_ref(),
+				"round-trip must be exact for Backfilled count {count}"
+			);
+		}
+	}
+
+	/// Verify that a `Backfilled` (negative) count at a lower depth sorts
+	/// *before* (i.e. older than) `Normal` (positive) counts at higher
+	/// depths, and that among same-depth entries mixing polarities, the
+	/// depth-then-count ordering invariant still holds. This is the exact
+	/// shape of the `TestMessagesOverFederation` scenario: a
+	/// backfill-discovered gap-filler event (negative count) sitting
+	/// between live (positive count) events at adjacent depths.
+	#[test]
+	fn topo_keys_order_backfilled_and_normal_consistently() {
+		let room = 1_u64;
+
+		let key_backfilled_low_depth = Data::topo_pducount_key(&make_pdu_id(room, -50), 3);
+		let key_backfilled_high_depth = Data::topo_pducount_key(&make_pdu_id(room, -1), 4);
+		let key_normal_higher_depth = Data::topo_pducount_key(&make_pdu_id(room, 10), 5);
+
+		assert!(
+			key_backfilled_low_depth < key_backfilled_high_depth,
+			"lower depth (3) must sort before higher depth (4) regardless of Backfilled count \
+			 magnitude"
+		);
+		assert!(
+			key_backfilled_high_depth < key_normal_higher_depth,
+			"Backfilled entry at depth 4 must sort before Normal entry at depth 5"
 		);
 	}
 
@@ -2334,6 +3068,39 @@ mod tests {
 		simulate_backward_pagination(room, topo_entries, limit, inflate_depth, Some(start_from))
 	}
 
+	/// Simulate backward pagination from a concrete topo token while filtering
+	/// by the token's exact topo boundary rather than by stream count alone.
+	fn simulate_backward_pagination_from_concrete_token(
+		room: u64,
+		topo_entries: &[(String, u64, i64)],
+		limit: usize,
+		start_from: (u64, i64),
+	) -> Vec<Vec<String>> {
+		let mut keyed: Vec<(Vec<u8>, String)> = topo_entries
+			.iter()
+			.map(|(id, depth, count)| {
+				let key = Data::topo_pducount_key(&make_pdu_id(room, *count), *depth);
+				(key, id.clone())
+			})
+			.collect();
+		keyed.sort_by(|a, b| b.0.cmp(&a.0));
+
+		let token_key = Data::topo_pducount_key(&make_pdu_id(room, start_from.1), start_from.0);
+		let mut pages = Vec::new();
+		let mut remaining: Vec<String> = keyed
+			.into_iter()
+			.filter(|(key, _)| *key < token_key)
+			.map(|(_, id)| id)
+			.collect();
+
+		while !remaining.is_empty() {
+			let split_at = remaining.len().min(limit);
+			pages.push(remaining.drain(..split_at).collect());
+		}
+
+		pages
+	}
+
 	/// Regression test for TestNetworkPartitionOrdering.
 	///
 	/// Models the real complement scenario:
@@ -2377,6 +3144,38 @@ mod tests {
 		assert!(violations.is_empty(), "pagination must have no violations, got: {violations:?}");
 	}
 
+	/// A stale concrete topo token must still discover older events which
+	/// arrive later via backfill. Count-only filtering would wrongly drop
+	/// `MISSING` here because it arrived after the token, even though it sorts
+	/// before the token in topo order.
+	#[test]
+	fn concrete_backward_token_includes_late_inserted_older_event() {
+		let topo_entries = vec![
+			("CREATE".into(), 1_u64, -3_i64),
+			("JOIN".into(), 2, -2),
+			("POWER".into(), 3, -1),
+			("M0".into(), 4, 10),
+			("M1".into(), 5, 11),
+			("MISSING".into(), 6, 99),
+			("M2".into(), 7, 12),
+			("M3".into(), 8, 13),
+		];
+
+		let pages =
+			simulate_backward_pagination_from_concrete_token(1, &topo_entries, 10, (7, 12));
+		let all_events: Vec<String> = pages.into_iter().flatten().collect();
+
+		assert!(
+			all_events.contains(&"MISSING".to_owned()),
+			"late-inserted older event must still be reachable from a stale concrete token, got \
+			 {all_events:?}"
+		);
+		assert!(
+			!all_events.contains(&"M2".to_owned()) && !all_events.contains(&"M3".to_owned()),
+			"events at or after the concrete token must remain excluded, got {all_events:?}"
+		);
+	}
+
 	/// max() seek recovers remote branch events in the partition scenario,
 	/// but only when the adjacent event has the right depth.
 	#[test]
@@ -2397,5 +3196,118 @@ mod tests {
 
 		assert_eq!(exact_total, 7, "exact seek from MAX must return all 7 events");
 		assert_eq!(inflate_total, 7, "inflated seek from MAX must also return all 7 events");
+	}
+
+	// Tests for edge cases and out-of-order events.
+
+	// Helper to make a BTreeSet act like our database queries
+	fn simulate_pdus_by_timestamp(
+		index: &std::collections::BTreeSet<(u64, u64)>,
+		search_ts: u64,
+		dir: Direction,
+	) -> Vec<(u64, u64)> {
+		// Keys are (timestamp, count)
+		let start_count = match dir {
+			| Direction::Forward => u64::MIN,
+			| Direction::Backward => u64::MAX,
+		};
+		let start_key = (search_ts, start_count);
+
+		match dir {
+			| Direction::Forward => index.range(start_key..).copied().collect(),
+			| Direction::Backward => index.range(..=start_key).rev().copied().collect(),
+		}
+	}
+
+	#[tokio::test]
+	async fn test_pdus_by_timestamp_complex_walk() -> Result<()> {
+		// Test a messy timeline where timestamps don't always go up in order.
+		//
+		// Example timeline:
+		// E1: 1000ms, Count 1
+		// E2: 2000ms, Count 2
+		// E3: 2000ms, Count 3 (Duplicate TS, arrived after E2)
+		// E4: 1500ms, Count 4 (Clock Skew - arrived later but has earlier TS)
+		// E5: 3000ms, Count 5
+		//
+		// How it looks in the database (sorted by time, then count):
+		// 1. (1000ms, Count 1)
+		// 2. (1500ms, Count 4)
+		// 3. (2000ms, Count 2)
+		// 4. (2000ms, Count 3)
+		// 5. (3000ms, Count 5)
+
+		let mut index = std::collections::BTreeSet::new();
+		index.insert((1000, 1));
+		index.insert((2000, 2));
+		index.insert((2000, 3));
+		index.insert((1500, 4)); // Non-monotonic TS relative to count
+		index.insert((3000, 5));
+
+		// Searching forward from 1700ms finds the 2000ms and 3000ms events
+		let fwd = simulate_pdus_by_timestamp(&index, 1700, Direction::Forward);
+		assert_eq!(fwd, vec![(2000, 2), (2000, 3), (3000, 5)]);
+
+		// Searching backward from 1700ms finds the 1500ms and 1000ms events
+		let bwd = simulate_pdus_by_timestamp(&index, 1700, Direction::Backward);
+		assert_eq!(bwd, vec![(1500, 4), (1000, 1)]);
+
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn test_pdus_by_timestamp_large_sparse_gaps() -> Result<()> {
+		// Check we jump straight to the next event, not scan huge empty gaps.
+
+		let mut index = std::collections::BTreeSet::new();
+
+		// 1st group of events: 100,000 to 101,000
+		for i in 100_000..=101_000 {
+			index.insert((i, i));
+		}
+
+		// 2nd group of events: 964,000 to 965,000
+		for i in 964_000..=965_000 {
+			index.insert((i, i));
+		}
+
+		// Searching forward from the middle should find next group.
+		let fwd = simulate_pdus_by_timestamp(&index, 500_000, Direction::Forward);
+		assert_eq!(fwd.first(), Some(&(964_000, 964_000)));
+
+		// Searching backward should find the first group.
+		let bwd = simulate_pdus_by_timestamp(&index, 500_000, Direction::Backward);
+		assert_eq!(bwd.first(), Some(&(101_000, 101_000)));
+
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn test_pdus_by_timestamp_wild_jitter_staircase() -> Result<()> {
+		// Create 1000 events where the time generally goes up but sometimes jumps back
+		let timeline = (0..1000_u64).map(|i| {
+			let i_signed = i as i64;
+			let ts = i_signed * 10 + (i_signed % 11) * 5 - (i_signed % 13) * 7;
+			(ts.max(0) as u64, i)
+		});
+
+		// Set sorts like RocksDB, luckily
+		let mut index = std::collections::BTreeSet::new();
+		for (ts, count) in timeline {
+			index.insert((ts, count));
+		}
+
+		// Check we find correct starting point even if the timestamps jump around
+		let search_ts = 5000_u64;
+		let results = simulate_pdus_by_timestamp(&index, search_ts, Direction::Forward);
+
+		// Check first event we find is at (or after) our search time
+		if let Some(&(ts, _count)) = results.first() {
+			assert!(ts >= search_ts);
+		} else {
+			panic!("Search yielded no results");
+		}
+
+		Ok(())
 	}
 }

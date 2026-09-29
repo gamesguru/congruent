@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use conduwuit_core::{
-	Result, debug, info,
+	Err, Result, debug, info,
 	matrix::pdu::{PduCount, PduId, RawPduId},
 	warn,
 };
@@ -10,6 +10,9 @@ use ruma::{OwnedEventId, RoomId};
 use super::Service;
 
 impl Service {
+	const MAX_FORCE_REINDEX_EVENTS: usize = 25_000;
+	const REORDER_BATCH_OPS: usize = 25_000;
+
 	/// Rebuild the topological index for a room using proper DAG
 	/// topological sort.
 	///
@@ -31,12 +34,7 @@ impl Service {
 		force_reindex: bool,
 	) -> Result<usize> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
-		let _insert_lock = if force_reindex {
-			Some(self.mutex_insert.lock(room_id).await)
-		} else {
-			None
-		};
-		let state_lock = self.services.state.mutex.lock(room_id).await;
+		let insert_lock = self.mutex_insert.lock(room_id).await;
 
 		// Lightweight collection: reads only metadata + shortprevevents,
 		// avoids full PDU JSON deserialization.
@@ -71,17 +69,24 @@ impl Service {
 		);
 
 		if sorted.len() != entries.len() {
-			warn!(
+			return Err!(Database(
 				"reorder_timeline: topo sort dropped {} events (cycles or disconnected)",
 				entries.len().saturating_sub(sorted.len())
-			);
+			));
 		}
 
 		// Rebuild topological index
 		let count = sorted.len();
+		if force_reindex && count > Self::MAX_FORCE_REINDEX_EVENTS {
+			return Err!(Request(InvalidParam(
+				"force_reindex is currently limited to rooms with at most {} events because it \
+				 requires a single atomic whole-room rewrite; rerun without force_reindex for \
+				 large rooms",
+				Self::MAX_FORCE_REINDEX_EVENTS
+			)));
+		}
 		let reindex_start = std::time::Instant::now();
 		debug!("reorder_timeline: rebuilding topological index for {count} events...");
-
 		let mut available_counts: Vec<PduCount> = Vec::new();
 		if force_reindex {
 			available_counts = entries
@@ -119,20 +124,48 @@ impl Service {
 			);
 		}
 
-		let cork = self.db.db.cork();
+		// The previous version wrote each of these maps with independent
+		// `.insert()`/`.remove()` calls under a `cork()` -- `cork()` only
+		// buffers writes for I/O throughput, it gives no atomicity guarantee,
+		// so a crash (or, since these aren't behind the per-key locks the
+		// normal insert paths use, a concurrent reader) mid-loop could
+		// observe `eventid_pduid`/`eventid_metadata` updated for an event
+		// while `roomid_topologicalorder_pducount` still had its old entry,
+		// or no entry at all. That split is exactly the "phantom mapping"
+		// failure mode `get_pdu_id`'s callers can't distinguish from a real
+		// timeline position -- see
+		// docs/development-gg/backfill-v12-phantom-timeline-membership.md.
+		//
+		// Non-force reorders can safely stream bounded batches because each
+		// event's old topo key is deleted and its new topo key inserted in the
+		// same write batch. Force reindex still needs a single whole-room batch
+		// because it may renumber stream counts, and chunking that rename
+		// would let one event's delete clobber another event's newly-moved
+		// count key.
+		let mut batch = database::Batch::new();
+		let cleared_topo = self
+			.db
+			.clear_room_topo_index_into_batch(&mut batch, room_id)
+			.await?;
+		debug!("reorder_timeline: queued deletion of {cleared_topo} existing topo index rows");
+
 		if force_reindex {
 			for (event_id, &(old_count, ..)) in &entries {
 				let old_pdu_id: RawPduId = PduId { shortroomid, shorteventid: old_count }.into();
 				// Use cached depth to avoid blocking metadata read
 				if let Some(meta) = metadata_cache.get(event_id) {
-					self.db.remove_stream_and_topo_pducount_at_depth(
+					self.db.remove_stream_and_topo_pducount_from_batch(
+						&mut batch,
 						&old_pdu_id,
 						event_id.as_bytes(),
-						meta.deprecated_local_topo_depth,
+						Some(meta.deprecated_local_topo_depth),
 					);
 				} else {
-					self.db
-						.remove_stream_and_topo_pducount(&old_pdu_id, event_id.as_bytes());
+					self.db.remove_stream_and_topo_pducount_into_batch(
+						&mut batch,
+						&old_pdu_id,
+						event_id.as_bytes(),
+					);
 				}
 			}
 		}
@@ -149,7 +182,8 @@ impl Service {
 			if force_reindex {
 				// Use cached metadata to avoid blocking DB reads
 				if let Some(meta) = metadata_cache.get_mut(event_id) {
-					self.db.replace_stream_topo_with_cached_metadata(
+					self.db.replace_stream_topo_with_cached_metadata_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
@@ -157,7 +191,8 @@ impl Service {
 						meta,
 					);
 				} else {
-					self.db.replace_stream_and_topo_pducount(
+					self.db.replace_stream_and_topo_pducount_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
@@ -167,19 +202,30 @@ impl Service {
 			} else {
 				// Use cached metadata to avoid blocking DB reads
 				if let Some(meta) = metadata_cache.get_mut(event_id) {
-					self.db.reindex_topo_with_cached_metadata(
+					self.db.reindex_topo_with_cached_metadata_batch(
+						&mut batch,
 						&pdu_id,
 						event_id,
 						local_topo_depth,
 						meta,
 					);
 				} else {
-					self.db.reindex_topo(&pdu_id, event_id, local_topo_depth);
+					self.db
+						.reindex_topo_batch(&mut batch, &pdu_id, event_id, local_topo_depth);
 				}
 			}
+
+			if !force_reindex && batch.len() >= Self::REORDER_BATCH_OPS {
+				self.db.db_apply_batch(batch);
+				batch = database::Batch::new();
+			}
 		}
-		drop(cork);
+
+		if !batch.is_empty() {
+			self.db.db_apply_batch(batch);
+		}
 		debug!("reorder_timeline: topo rebuild took {:?}", reindex_start.elapsed());
+		drop(insert_lock);
 
 		// Final batch: cork_and_sync ensures WAL is durable when dropped
 		let final_sync = self.db.db.cork_and_sync();
@@ -220,6 +266,7 @@ impl Service {
 					.pdu_shortstatehash(latest_eid)
 					.await
 				{
+					let state_lock = self.services.state.mutex.lock(room_id).await;
 					self.services
 						.state
 						.set_room_state(room_id, ssh, &state_lock);
@@ -235,8 +282,6 @@ impl Service {
 			.state_cache
 			.reconcile_membership(room_id)
 			.await;
-
-		drop(state_lock);
 
 		debug!("reorder_timeline: complete, {count} events reordered (topo index/state)");
 

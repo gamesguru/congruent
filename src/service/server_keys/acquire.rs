@@ -8,10 +8,9 @@ use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, w
 use futures::{StreamExt, stream::FuturesUnordered};
 use ruma::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
-	api::federation::discovery::ServerSigningKeys,
+	api::federation::discovery::ServerSigningKeys, serde::Raw,
 };
 use serde_json::value::RawValue as RawJsonValue;
-use tokio::time::{Instant, timeout_at};
 
 use super::key_exists;
 
@@ -149,12 +148,8 @@ async fn acquire_origins<I>(&self, batch: I) -> Batch
 where
 	I: Iterator<Item = (OwnedServerName, Vec<OwnedServerSigningKeyId>)> + Send,
 {
-	let timeout = Instant::now()
-		.checked_add(Duration::from_secs(45))
-		.expect("timeout overflows");
-
 	let mut requests: FuturesUnordered<_> = batch
-		.map(|(origin, key_ids)| self.acquire_origin(origin, key_ids, timeout))
+		.map(|(origin, key_ids)| self.acquire_origin(origin, key_ids))
 		.collect();
 
 	let mut missing = Batch::new();
@@ -172,17 +167,18 @@ async fn acquire_origin(
 	&self,
 	origin: OwnedServerName,
 	mut key_ids: Vec<OwnedServerSigningKeyId>,
-	timeout: Instant,
 ) -> (OwnedServerName, Vec<OwnedServerSigningKeyId>) {
 	// Our own keys are available locally; never query ourselves over federation
 	if self.services.globals.server_is_ours(&origin) {
 		return (origin, key_ids);
 	}
-	match timeout_at(timeout, self.server_request(&origin)).await {
+
+	let timeout = Duration::from_secs(self.services.server.config.server_key_fetch_timeout);
+
+	match tokio::time::timeout(timeout, self.server_request(&origin)).await {
 		| Err(e) => debug_warn!(%origin, "timed out: {e}"),
 		| Ok(Err(e)) => debug_error!(%origin, "{e}"),
 		| Ok(Ok(server_keys)) => {
-			let server_keys: ServerSigningKeys = server_keys;
 			trace!(
 				%origin,
 				?key_ids,
@@ -190,8 +186,17 @@ async fn acquire_origin(
 				"received server_keys"
 			);
 
-			self.add_signing_keys(server_keys.clone()).await;
-			key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
+			match self
+				.add_signing_keys(&server_keys, super::FetchSource::Direct)
+				.await
+			{
+				| Ok(server_keys) => {
+					key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
+				},
+				| Err(e) => {
+					debug_error!("Failed to add signing keys: {e}");
+				},
+			}
 		},
 	}
 
@@ -204,24 +209,39 @@ where
 	I: Iterator<Item = (OwnedServerName, Vec<OwnedServerSigningKeyId>)> + Send,
 {
 	let mut missing: Batch = batch.collect();
-	for notary in self.services.globals.trusted_servers() {
-		let missing_keys = keys_count(&missing);
-		let missing_servers = missing.len();
-		debug!(
-			"Asking notary {notary} for {missing_keys} missing keys from {missing_servers} \
-			 servers"
-		);
+	let trusted_servers = self.services.globals.trusted_servers();
+	if trusted_servers.is_empty() {
+		return missing;
+	}
 
-		let batch = missing
+	let mut requests = FuturesUnordered::new();
+	for notary in trusted_servers {
+		let batch: Vec<_> = missing
 			.iter()
-			.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+			.map(|(s, k)| (s.clone(), k.clone()))
+			.collect();
 
-		match self.batch_notary_request(notary, batch).await {
+		requests.push(async move {
+			let req_batch = batch
+				.iter()
+				.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+
+			(notary, self.batch_notary_request(notary, req_batch).await)
+		});
+	}
+
+	while let Some((notary, result)) = requests.next().await {
+		match result {
 			| Err(e) => error!("Failed to contact notary {notary:?}: {e}"),
-			| Ok(results) =>
+			| Ok(results) => {
 				for server_keys in results {
 					self.acquire_notary_result(&mut missing, server_keys).await;
-				},
+				}
+
+				if keys_count(&missing) == 0 {
+					break;
+				}
+			},
 		}
 	}
 
@@ -229,15 +249,28 @@ where
 }
 
 #[implement(super::Service)]
-async fn acquire_notary_result(&self, missing: &mut Batch, server_keys: ServerSigningKeys) {
-	let server = &server_keys.server_name;
-	self.add_signing_keys(server_keys.clone()).await;
+async fn acquire_notary_result(&self, missing: &mut Batch, server_keys: Raw<ServerSigningKeys>) {
+	let Ok(server) = server_keys.get_field::<OwnedServerName>("server_name") else {
+		return;
+	};
+	let Some(server) = server else {
+		return;
+	};
 
-	if let Some(key_ids) = missing.get_mut(server) {
-		key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
-		if key_ids.is_empty() {
-			missing.remove(server);
-		}
+	match self
+		.add_signing_keys(&server_keys, super::FetchSource::Notary)
+		.await
+	{
+		| Ok(server_keys) =>
+			if let Some(key_ids) = missing.get_mut(&server) {
+				key_ids.retain(|key_id| !key_exists(&server_keys, key_id));
+				if key_ids.is_empty() {
+					missing.remove(&server);
+				}
+			},
+		| Err(e) => {
+			debug_error!("Failed to add signing keys: {e}");
+		},
 	}
 }
 

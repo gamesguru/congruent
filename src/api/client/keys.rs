@@ -8,6 +8,7 @@ use conduwuit::{
 	Err, Error, Result, debug, debug_warn, err, info,
 	result::NotFound,
 	utils::{IterStream, stream::WidebandExt},
+	warn,
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -49,8 +50,10 @@ pub(crate) async fn upload_keys_route(
 		if one_time_key
 			.deserialize()
 			.inspect_err(|e| {
-				debug_warn!(
+				warn!(
 					%key_id,
+					%sender_user,
+					%sender_device,
 					?one_time_key,
 					"Invalid one time key JSON submitted by client, skipping: {e}"
 				);
@@ -66,20 +69,56 @@ pub(crate) async fn upload_keys_route(
 			.await?;
 	}
 
+	for (key_id, fallback_key) in &body.fallback_keys {
+		if fallback_key
+			.deserialize()
+			.inspect_err(|e| {
+				debug_warn!(
+					%key_id,
+					?fallback_key,
+					"Invalid one time key JSON submitted by client, skipping: {e}"
+				);
+			})
+			.is_err()
+		{
+			continue;
+		}
+
+		services
+			.users
+			.add_fallback_key(sender_user, sender_device, key_id, fallback_key, false)
+			.await?;
+	}
+
 	if let Some(device_keys) = &body.device_keys {
 		let deser_device_keys = device_keys.deserialize().map_err(|e| {
-			err!(Request(BadJson(debug_warn!(
+			warn!(
+				%sender_user,
+				%sender_device,
 				?device_keys,
 				"Invalid device keys JSON uploaded by client: {e}"
-			))))
+			);
+			err!(Request(BadJson("Invalid device keys JSON uploaded by client")))
 		})?;
 
 		if deser_device_keys.user_id != sender_user {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_user_id = %deser_device_keys.user_id,
+				"User ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"User ID in keys uploaded does not match your own user ID"
 			)));
 		}
 		if deser_device_keys.device_id != sender_device {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_device_id = %deser_device_keys.device_id,
+				"Device ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"Device ID in keys uploaded does not match your own device ID"
 			)));
@@ -539,6 +578,10 @@ where
 		.into_iter()
 		.stream()
 		.wide_filter_map(|(server, vec)| async move {
+			let requested_users = vec
+				.iter()
+				.map(|(user_id, _)| user_id.as_str().to_owned())
+				.collect::<HashSet<_>>();
 			let mut device_keys_input_fed = BTreeMap::new();
 			for (user_id, keys) in vec {
 				device_keys_input_fed.insert(user_id.to_owned(), keys.clone());
@@ -546,8 +589,15 @@ where
 
 			let request =
 				federation::keys::get_keys::v1::Request { device_keys: device_keys_input_fed };
+			// Cap the per-server federation wait so a single unreachable (e.g.
+			// paused/offline) remote server doesn't stall the whole /keys/query
+			// response. Reachable servers answer in milliseconds; an unreachable
+			// one would otherwise block up to the connect timeout (default 10s),
+			// which cascades into client-side send timeouts. The caller is told
+			// about the missing server via `failures` and can retry.
+			let fed_timeout = timeout.min(Duration::from_secs(3));
 			let response = tokio::time::timeout(
-				timeout,
+				fed_timeout,
 				services.sending.send_federation_request(server, request),
 			)
 			.await
@@ -555,15 +605,33 @@ where
 			.map_err(|_| err!(Request(Unknown("Timeout when getting keys over federation."))))
 			.and_then(|res| res);
 
-			Some((server, response))
+			Some((server, requested_users, response))
 		})
 		.collect::<FuturesUnordered<_>>()
 		.await
 		.into_iter();
 
-	for (server, response) in futures {
+	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
+				let mut filtered_device_keys = BTreeMap::new();
+				for (user_id, devices) in response.device_keys {
+					if user_id.server_name().as_str() != server.as_str()
+						|| !requested_users.contains(user_id.as_str())
+					{
+						continue;
+					}
+
+					for (device_id, device_keys) in &devices {
+						services
+							.users
+							.cache_remote_device_keys(&user_id, device_id, device_keys)
+							.await;
+					}
+
+					filtered_device_keys.insert(user_id, devices);
+				}
+
 				for (user, master_key) in response.master_keys {
 					let (master_key_id, mut master_key) =
 						match parse_master_key(&user, &master_key) {
@@ -625,7 +693,7 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
-				device_keys.extend(response.device_keys);
+				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
 				failures.insert(server.to_string(), json!({ "error": e.to_string() }));
@@ -713,7 +781,7 @@ pub(crate) async fn claim_keys_helper(
 				one_time_keys_input_fed.insert(user_id.clone(), keys.clone());
 			}
 			let response = tokio::time::timeout(
-				timeout,
+				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
 					server,
 					federation::keys::claim_keys::v1::Request {

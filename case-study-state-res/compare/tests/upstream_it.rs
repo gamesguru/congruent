@@ -28,18 +28,20 @@ const SNAPSHOTS_DIR: &str =
 // Fixture Loading
 // ==========================================
 
-fn fixtures_path() -> &'static Path {
+fn fixtures_path() -> Option<&'static Path> {
 	let p = Path::new(FIXTURES_DIR);
-	assert!(
-		p.exists(),
-		"Fixtures directory not found at {FIXTURES_DIR}. Ensure the ruma-upstream submodule is \
-		 checked out."
-	);
-	p
+	p.exists().then_some(p)
+}
+
+fn snapshots_path() -> Option<&'static Path> {
+	let p = Path::new(SNAPSHOTS_DIR);
+	p.exists().then_some(p)
 }
 
 fn load_pdus_from_file(filename: &str) -> Vec<PduEvent> {
-	let path = fixtures_path().join(filename);
+	let path = fixtures_path()
+		.expect("fixtures_path checked before load")
+		.join(filename);
 	let content = fs::read_to_string(&path)
 		.unwrap_or_else(|_| panic!("Failed to read fixture: {:?}", path));
 
@@ -84,7 +86,9 @@ fn load_pdus_from_file(filename: &str) -> Vec<PduEvent> {
 }
 
 fn load_event_id_list(filename: &str) -> Vec<OwnedEventId> {
-	let path = fixtures_path().join(filename);
+	let path = fixtures_path()
+		.expect("fixtures_path checked before load")
+		.join(filename);
 	let content = fs::read_to_string(&path)
 		.unwrap_or_else(|_| panic!("Failed to read state map: {:?}", path));
 
@@ -212,7 +216,9 @@ impl EventStore {
 // ==========================================
 
 fn extract_snapshot(snapshot_name: &str) -> String {
-	let path = Path::new(SNAPSHOTS_DIR).join(format!("{snapshot_name}@resolved_state.snap"));
+	let path = snapshots_path()
+		.expect("snapshots_path checked before load")
+		.join(format!("{snapshot_name}@resolved_state.snap"));
 
 	let content = fs::read_to_string(&path)
 		.unwrap_or_else(|_| panic!("Failed to read snapshot: {:?}", path));
@@ -302,6 +308,8 @@ fn to_lean(pdu: &PduEvent) -> rezzy::LeanEvent {
 		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
 		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
 		depth: u64::from(pdu.depth),
+		rejected: false,
+		soft_fail: false,
 	}
 }
 
@@ -356,7 +364,7 @@ fn resolve_via_rezzy(
 				.copied()
 				.unwrap_or(0);
 			if count == num_maps {
-				unconflicted.insert((key.0.clone(), key.1.clone()), id.clone());
+				unconflicted.insert((key.0.clone().into(), key.1.clone()), id.clone());
 				continue;
 			}
 		}
@@ -400,6 +408,7 @@ fn resolve_via_rezzy(
 	// Build LeanEvent maps
 	let mut conflicted_events: HashMap<String, rezzy::LeanEvent> = HashMap::new();
 	let mut auth_context: HashMap<String, rezzy::LeanEvent> = HashMap::new();
+	let mut pl_cache: HashMap<String, i64> = HashMap::new();
 
 	// All state set values + union auth
 	let mut all_ids: HashSet<OwnedEventId> = union_auth;
@@ -420,13 +429,18 @@ fn resolve_via_rezzy(
 	}
 
 	let version = to_rezzy_version(room_version);
-	let resolved_lean =
-		rezzy::resolve_iterative_sort(unconflicted, conflicted_events, &auth_context, version);
+	let resolved_lean = rezzy::resolve_iterative_sort(
+		unconflicted,
+		conflicted_events,
+		&auth_context,
+		version,
+		&mut pl_cache,
+	);
 
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.into();
+		let ty: ruma::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
@@ -503,8 +517,17 @@ async fn resolve_state_maps(
 
 macro_rules! batched_test {
 	($name:ident, [$($file:expr),+ $(,)?], $version:expr, $snapshot:expr) => {
+		#[cfg_attr(
+			not(compare_has_ruma_upstream),
+			ignore = "requires upstream ruma-state-res fixtures/snapshots"
+		)]
 		#[tokio::test]
 		async fn $name() {
+			if fixtures_path().is_none() || snapshots_path().is_none() {
+				eprintln!("skipping {}: upstream ruma-state-res data is unavailable", stringify!($name));
+				return;
+			}
+
 			let state = resolve_batched(&[$($file),+], &$version).await;
 			let store = {
 				let mut all = Vec::new();
@@ -526,8 +549,17 @@ macro_rules! batched_test {
 
 macro_rules! state_map_test {
 	($name:ident, states: [$($sfile:expr),+], pdus: [$($pfile:expr),+], $version:expr, $snapshot:expr) => {
+		#[cfg_attr(
+			not(compare_has_ruma_upstream),
+			ignore = "requires upstream ruma-state-res fixtures/snapshots"
+		)]
 		#[tokio::test]
 		async fn $name() {
+			if fixtures_path().is_none() || snapshots_path().is_none() {
+				eprintln!("skipping {}: upstream ruma-state-res data is unavailable", stringify!($name));
+				return;
+			}
+
 			let state = resolve_state_maps(&[$($sfile),+], &[$($pfile),+], &$version).await;
 			let store = {
 				let mut all = Vec::new();

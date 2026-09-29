@@ -73,7 +73,7 @@ pub(crate) async fn get_backfill_route(
 			services
 				.rooms
 				.timeline
-				.pdus_rev(&body.room_id, Some(from.saturating_add(1)))
+				.pdus_rev(&body.room_id, std::ops::Bound::Included(from))
 				.try_filter_map(move |(_, pdu)| {
 					let origin = origin.clone();
 					async move {

@@ -9,14 +9,17 @@ use std::str::FromStr;
 use axum::{
 	Router,
 	response::{IntoResponse, Redirect},
-	routing::{any, get, post, put},
+	routing::{any, delete, get, post, put},
 };
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
 use http::{Uri, uri};
 
 use self::handler::RouterExt;
-pub(super) use self::{args::Args as Ruma, response::RumaResponse};
+pub(super) use self::{
+	args::{Args as Ruma, authenticate_user},
+	response::RumaResponse,
+};
 use crate::{admin, client, server};
 
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
@@ -56,6 +59,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_pushrule_actions_route)
 		.ruma_route(&client::delete_pushrule_route)
 		.ruma_route(&client::get_room_event_route)
+		.ruma_route(&client::get_room_event_by_timestamp_route)
 		.ruma_route(&client::get_room_aliases_route)
 		.ruma_route(&client::get_filter_route)
 		.ruma_route(&client::create_filter_route)
@@ -64,6 +68,14 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_room_account_data_route)
 		.ruma_route(&client::get_global_account_data_route)
 		.ruma_route(&client::get_room_account_data_route)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/{event_type}",
+			delete(client::delete_global_account_data_msc3391_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/account_data/{event_type}",
+			delete(client::delete_room_account_data_msc3391_route),
+		)
 		.ruma_route(&client::set_displayname_route)
 		.ruma_route(&client::get_displayname_route)
 		.ruma_route(&client::set_avatar_url_route)
@@ -113,15 +125,35 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::invite_user_route)
 		.ruma_route(&client::set_room_visibility_route)
 		.ruma_route(&client::get_room_visibility_route)
-		.ruma_route(&client::get_public_rooms_route)
-		.ruma_route(&client::get_public_rooms_filtered_route)
+		.merge(
+			Router::new()
+				.ruma_route(&client::get_public_rooms_route)
+				.ruma_route(&client::get_public_rooms_filtered_route)
+				.layer(axum::middleware::map_response(inject_public_join_rule)),
+		)
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
 		.ruma_route(&client::get_protocols_route)
-		.route("/_matrix/client/unstable/thirdparty/protocols",
-			get(client::get_protocols_route_unstable))
-		.ruma_route(&client::send_message_event_route)
-		.ruma_route(&client::send_state_event_for_key_route)
+		.route(
+			"/_matrix/client/unstable/thirdparty/protocols",
+			get(client::get_protocols_route_unstable),
+		)
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/send/{event_type}/{txn_id}",
+			put(client::send_message_event_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/send/{event_type}/{txn_id}",
+			put(client::send_message_event_route),
+		)
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/state/{event_type}/{state_key}",
+			put(client::send_state_event_for_key_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/state/{event_type}/{state_key}",
+			put(client::send_state_event_for_key_route),
+		)
 		.ruma_route(&client::get_state_events_route)
 		.ruma_route(&client::get_state_events_for_key_route)
 		// Ruma doesn't have support for multiple paths for a single endpoint yet, and these routes
@@ -149,10 +181,23 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		)
 		.route("/_matrix/client/r0/sync", get(client::sync_events_route))
 		.route("/_matrix/client/v3/sync", get(client::sync_events_route))
-		.ruma_route(&client::sync_events_v5_route)
+		.route("/_matrix/client/v4/sync", post(client::sync_events_v5_route))
+		.route("/_matrix/client/v5/sync", post(client::sync_events_v5_route))
+		.route(
+			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+			post(client::sync_events_unstable_msc3575_route),
+		)
 		.ruma_route(&client::get_context_route)
-		.ruma_route(&client::get_message_events_route)
-		.ruma_route(&client::search_events_route)
+		.merge(
+			Router::new()
+				.ruma_route(&client::get_message_events_route)
+				.layer(axum::middleware::from_fn(default_messages_dir)),
+		)
+		.merge(
+			Router::new()
+				.ruma_route(&client::search_events_route)
+				.layer(axum::middleware::map_response(ensure_search_results_present)),
+		)
 		.ruma_route(&client::turn_server_route)
 		.ruma_route(&client::send_event_to_device_route)
 		.ruma_route(&client::create_content_route)
@@ -186,6 +231,22 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::delete_dehydrated_device_route)
 		.ruma_route(&client::get_dehydrated_device_route)
 		.ruma_route(&client::get_dehydrated_events_route)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events",
+			get(client::get_all_delayed_events_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}",
+			get(client::get_delayed_event_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}",
+			post(client::update_delayed_event_without_action_route),
+		)
+		.route(
+			"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}/{action}",
+			post(client::update_delayed_event_route),
+		)
 		.ruma_route(&client::get_tags_route)
 		.ruma_route(&client::update_tag_route)
 		.ruma_route(&client::delete_tag_route)
@@ -196,11 +257,18 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_pushers_route)
 		.ruma_route(&client::upgrade_room_route)
 		.ruma_route(&client::get_threads_route)
+		.route(
+			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/subscription",
+			get(client::get_thread_subscription_msc4306_route)
+				.put(client::put_thread_subscription_msc4306_route)
+				.delete(client::delete_thread_subscription_msc4306_route),
+		)
 		.ruma_route(&client::get_relating_events_with_rel_type_and_event_type_route)
 		.ruma_route(&client::get_relating_events_with_rel_type_route)
 		.ruma_route(&client::get_relating_events_route)
 		.ruma_route(&client::get_hierarchy_route)
 		.ruma_route(&client::get_mutual_rooms_route)
+		.ruma_route(&client::get_event_relationships_route)
 		.ruma_route(&client::get_room_summary)
 		.route(
 			"/_matrix/client/unstable/im.nheko.summary/rooms/{room_id_or_alias}/summary",
@@ -227,15 +295,19 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 				"/_matrix/key/v2/server/{key_id}",
 				get(server::get_server_keys_deprecated_route),
 			)
-			.ruma_route(&server::get_public_rooms_route)
-			.ruma_route(&server::get_public_rooms_filtered_route)
-			.route(
-				"/_matrix/federation/v1/send/{txnId}",
-				put(server::send_transaction_message_route),
-			)
+			.ruma_route(&server::get_remote_server_keys_route)
+			.ruma_route(&server::get_remote_server_keys_batch_route)
+			.merge(
+			Router::new()
+				.ruma_route(&server::get_public_rooms_route)
+				.ruma_route(&server::get_public_rooms_filtered_route)
+				.layer(axum::middleware::map_response(inject_public_join_rule)),
+		)
+			.ruma_route(&server::send_transaction_message_route)
 			.ruma_route(&server::get_event_route)
 			.ruma_route(&server::get_backfill_route)
 			.ruma_route(&server::get_missing_events_route)
+			.ruma_route(&server::get_event_relationships_route)
 			.ruma_route(&server::get_event_authorization_route)
 			.ruma_route(&server::get_room_state_route)
 			.ruma_route(&server::get_room_state_ids_route)
@@ -255,6 +327,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::claim_keys_route)
 			.ruma_route(&server::get_openid_userinfo_route)
 			.ruma_route(&server::get_hierarchy_route)
+			.ruma_route(&server::get_event_by_timestamp_route)
 			.ruma_route(&server::well_known_server)
 			.ruma_route(&server::get_content_route)
 			.ruma_route(&server::get_content_thumbnail_route)
@@ -282,6 +355,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 
 	if config.allow_legacy_media {
 		router = router
+			.ruma_route(&client::create_mxc_uri_route)
+			.ruma_route(&client::create_content_async_route)
 			.ruma_route(&client::get_media_config_legacy_route)
 			.ruma_route(&client::get_media_preview_legacy_route)
 			.ruma_route(&client::get_content_legacy_route)
@@ -366,4 +441,116 @@ async fn legacy_media_disabled() -> impl IntoResponse {
 
 async fn federation_disabled() -> impl IntoResponse {
 	err!(Request(Forbidden("Federation is disabled.")))
+}
+
+async fn inject_public_join_rule(res: axum::response::Response) -> axum::response::Response {
+	use axum::body::to_bytes;
+
+	let (parts, body) = res.into_parts();
+
+	let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
+	};
+
+	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+		if let Some(chunk) = json.get_mut("chunk").and_then(|c| c.as_array_mut()) {
+			for room in chunk {
+				if room.get("join_rule").is_none() {
+					room["join_rule"] = serde_json::json!("public");
+				}
+			}
+		}
+		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+			return axum::response::Response::from_parts(
+				parts,
+				axum::body::Body::from(modified_bytes),
+			);
+		}
+	}
+
+	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// ruma's `ResultRoomEvents::results` has `skip_serializing_if =
+/// "Vec::is_empty"`, so an empty page of search results serializes with the
+/// `results` key dropped entirely rather than as `results: []`. Complement's
+/// `Can back-paginate search results` test (and the spec's implied contract)
+/// expects the key to always be present when `room_events` was requested.
+/// Patched here at the response-body level instead of in the vendored ruma
+/// crate, mirroring `inject_public_join_rule` above.
+async fn ensure_search_results_present(
+	res: axum::response::Response,
+) -> axum::response::Response {
+	use axum::body::to_bytes;
+
+	let (parts, body) = res.into_parts();
+
+	let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
+	};
+
+	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+		if let Some(room_events) = json
+			.get_mut("search_categories")
+			.and_then(|c| c.get_mut("room_events"))
+			.and_then(|r| r.as_object_mut())
+		{
+			room_events
+				.entry("results")
+				.or_insert_with(|| serde_json::json!([]));
+		}
+		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+			return axum::response::Response::from_parts(
+				parts,
+				axum::body::Body::from(modified_bytes),
+			);
+		}
+	}
+
+	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// ruma's `get_message_events::v3::Request::dir` is a required `Direction`
+/// (no `Option`, no `#[serde(default)]`), matching the letter of the spec
+/// ("dir (Required)"). But Synapse treats it as optional and defaults to
+/// forwards when absent (`PaginationConfig.from_request`,
+/// `default_dir: Direction = Direction.FORWARDS`) -- the same kind of
+/// spec-vs-reference-implementation gap already established for `from` by
+/// MSC3567 ("Synapse already implements this, but it is not spec-compliant").
+/// Complement tests against that lenient behavior (e.g. `TestRoomForget`'s
+/// "Forgotten room messages cannot be paginated" omits `dir` entirely), so a
+/// request missing `dir` would otherwise 400 with `M_BAD_JSON` before our
+/// handler ever gets to run its own checks.
+///
+/// Since this is a required *request* field (not a response shape ruma
+/// serializes for us), it can't be patched the same way as the
+/// response-side workarounds above -- there's no body to fix up after the
+/// fact, because ruma's deserializer rejects the request before our handler
+/// runs. Instead this injects a default `dir=f` into the query string
+/// ahead of extraction, mirroring Synapse's default.
+async fn default_messages_dir(
+	mut req: http::Request<axum::body::Body>,
+	next: axum::middleware::Next,
+) -> axum::response::Response {
+	let uri = req.uri();
+	let has_dir = uri
+		.query()
+		.is_some_and(|q| q.split('&').any(|kv| kv.split('=').next() == Some("dir")));
+
+	if !has_dir {
+		let path = uri.path();
+		let query = match uri.query() {
+			| Some(q) if !q.is_empty() => format!("{q}&dir=f"),
+			| _ => "dir=f".to_owned(),
+		};
+
+		if let Ok(new_uri) = Uri::builder()
+			.path_and_query(format!("{path}?{query}"))
+			.build()
+		{
+			*req.uri_mut() = new_uri;
+		}
+	}
+
+	next.run(req).await
 }

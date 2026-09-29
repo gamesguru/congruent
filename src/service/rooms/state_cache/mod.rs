@@ -47,6 +47,7 @@ struct Data {
 	roomuserid_invitecount: Arc<Map>,
 	roomuserid_joined: Arc<Map>,
 	roomuserid_leftcount: Arc<Map>,
+	roomuserid_forgotten: Arc<Map>,
 	roomuserid_knockedcount: Arc<Map>,
 	roomuseroncejoinedids: Arc<Map>,
 	serverroomids: Arc<Map>,
@@ -112,6 +113,7 @@ impl crate::Service for Service {
 				roomuserid_invitecount: args.db["roomuserid_invitecount"].clone(),
 				roomuserid_joined: args.db["roomuserid_joined"].clone(),
 				roomuserid_leftcount: args.db["roomuserid_leftcount"].clone(),
+				roomuserid_forgotten: args.db["roomuserid_forgotten"].clone(),
 				roomuserid_knockedcount: args.db["roomuserid_knockedcount"].clone(),
 				roomuseroncejoinedids: args.db["roomuseroncejoinedids"].clone(),
 				serverroomids: args.db["serverroomids"].clone(),
@@ -677,6 +679,28 @@ pub async fn is_knocked_or_joined(&self, user_id: &UserId, room_id: &RoomId) -> 
 pub async fn is_left(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.userroomid_leftstate.qry(&key).await.is_ok()
+}
+
+/// Whether `user_id` has called `/forget` on `room_id`. Independent of
+/// `is_left`/`get_left_count`: forgetting no longer deletes those records
+/// (see `forget()`), since /sync needs the real leave position to still
+/// surface the leave to other devices via `include_leave`, even after one
+/// device forgets the room.
+#[implement(Service)]
+#[tracing::instrument(skip(self), level = "trace")]
+pub async fn is_forgotten(&self, user_id: &UserId, room_id: &RoomId) -> bool {
+	let key = (room_id, user_id);
+	self.db.roomuserid_forgotten.qry(&key).await.is_ok()
+}
+
+#[implement(Service)]
+#[tracing::instrument(skip(self), level = "trace")]
+pub async fn can_access_history(&self, user_id: &UserId, room_id: &RoomId) -> bool {
+	if self.is_joined(user_id, room_id).await {
+		return true;
+	}
+
+	self.is_left(user_id, room_id).await && !self.is_forgotten(user_id, room_id).await
 }
 
 #[implement(Service)]

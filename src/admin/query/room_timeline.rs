@@ -52,7 +52,7 @@ pub(super) async fn pdus(
 		.services
 		.rooms
 		.timeline
-		.pdus_rev(&room_id, from)
+		.pdus_rev(&room_id, from.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded))
 		.try_take(limit.unwrap_or(3))
 		.try_collect()
 		.await?;

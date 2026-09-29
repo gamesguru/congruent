@@ -1,5 +1,0 @@
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation"}
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/good_connectivity"}
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
-{"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
-{"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}

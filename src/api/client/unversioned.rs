@@ -42,7 +42,12 @@ pub(crate) async fn get_supported_versions_route(
 		("org.matrix.simplified_msc3575".to_owned(), true), /* Simplified Sliding sync (https://github.com/matrix-org/matrix-spec-proposals/pull/4186) */
 		("uk.timedout.msc4323".to_owned(), true), /* agnostic suspend (https://github.com/matrix-org/matrix-spec-proposals/pull/4323) */
 		("org.matrix.msc4155".to_owned(), true), /* invite filtering (https://github.com/matrix-org/matrix-spec-proposals/pull/4155) */
+		("org.matrix.msc4140".to_owned(), true), /* delayed events (https://github.com/matrix-org/matrix-spec-proposals/pull/4140) */
 	]);
+
+	if services.config.experimental_features.msc3030_enabled {
+		unstable_features.insert("org.matrix.msc3030".to_owned(), true); /* timestamp to event (https://github.com/matrix-org/matrix-spec-proposals/pull/3030) */
+	}
 
 	if services.config.experimental_features.msc3266_enabled {
 		unstable_features.insert("org.matrix.msc3266".to_owned(), true); /* room previews (https://github.com/matrix-org/matrix-spec-proposals/pull/3266) */

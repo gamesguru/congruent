@@ -4,13 +4,15 @@
 Adds missing fields (hashes, signatures, depth) that conduwuit's Pdu requires.
 Processes all JSON fixture files from rezzy and outputs one JSONL per test case.
 """
+
 import json
-import os
 import sys
 from pathlib import Path
 
 rezzy_FIXTURES = Path("/run/media/shane/shane4tb-ent/repos/rezzy/res/ruma_upstream")
-OUTPUT_DIR = Path("/run/media/shane/shane4tb-ent/repos/continuwuity/case-study-state-res/fixtures")
+OUTPUT_DIR = Path(
+    "/run/media/shane/shane4tb-ent/repos/continuwuity/case-study-state-res/fixtures"
+)
 
 # Test cases: name -> list of fixture files (in order)
 TEST_CASES = {

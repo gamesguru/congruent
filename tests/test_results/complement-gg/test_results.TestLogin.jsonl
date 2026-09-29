@@ -1,9 +1,0 @@
-{"Action":"fail","Test":"TestLogin"}
-{"Action":"fail","Test":"TestLogin/parallel"}
-{"Action":"pass","Test":"TestLogin/parallel/GET_/login_yields_a_set_of_flows"}
-{"Action":"pass","Test":"TestLogin/parallel/Login_with_uppercase_username_works_and_GET_/whoami_afterwards_also"}
-{"Action":"pass","Test":"TestLogin/parallel/POST_/login_as_non-existing_user_is_rejected"}
-{"Action":"pass","Test":"TestLogin/parallel/POST_/login_can_log_in_as_a_user_with_just_the_local_part_of_the_id"}
-{"Action":"pass","Test":"TestLogin/parallel/POST_/login_can_login_as_user"}
-{"Action":"pass","Test":"TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request"}
-{"Action":"fail","Test":"TestLogin/parallel/POST_/login_wrong_password_is_rejected"}

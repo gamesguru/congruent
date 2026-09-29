@@ -144,6 +144,55 @@ pub fn merge_true_extremities_roaring(
 	true_extremities_set
 }
 
+fn merge_recalculated_extremities<I>(
+	mut true_extremities: HashSet<OwnedEventId>,
+	graph_event_ids: &HashSet<ShortEventId>,
+	current_extremities: I,
+) -> HashSet<OwnedEventId>
+where
+	I: IntoIterator<Item = (OwnedEventId, Option<ShortEventId>)>,
+{
+	for (event_id, shorteventid) in current_extremities {
+		if shorteventid.is_none_or(|short| !graph_event_ids.contains(&short)) {
+			true_extremities.insert(event_id);
+		}
+	}
+
+	true_extremities
+}
+
+fn accepted_extremity_graph(
+	raw_edges: &HashMap<ShortEventId, Vec<ShortEventId>>,
+	accepted_events: &HashSet<ShortEventId>,
+	bridge_events: &HashSet<ShortEventId>,
+) -> Vec<(ShortEventId, Vec<ShortEventId>)> {
+	let mut graph_edges = Vec::with_capacity(accepted_events.len());
+
+	for &short_id in accepted_events {
+		let mut parents = Vec::new();
+		let mut stack = raw_edges.get(&short_id).cloned().unwrap_or_default();
+		let mut seen = HashSet::new();
+
+		while let Some(prev) = stack.pop() {
+			if !seen.insert(prev) {
+				continue;
+			}
+
+			if bridge_events.contains(&prev) {
+				if let Some(prevs) = raw_edges.get(&prev) {
+					stack.extend(prevs.iter().copied());
+				}
+			} else {
+				parents.push(prev);
+			}
+		}
+
+		graph_edges.push((short_id, parents));
+	}
+
+	graph_edges
+}
+
 impl Service {
 	/// Prune fork storms down to operationally relevant tips using tail-based
 	/// recalculation. This is a convenience wrapper around
@@ -181,7 +230,14 @@ impl Service {
 
 		let mut stream =
 			std::pin::pin!(self.db.room_shorteventids_rev(room_id, None).chunks(1024));
-		let mut graph_edges = Vec::new();
+		let mut raw_edges = HashMap::new();
+		let mut accepted_event_ids = HashSet::new();
+		let mut bridge_event_ids = HashSet::new();
+		let mut outlier_event_ids = HashSet::new();
+		let mut missing_shortprevevents = 0_usize;
+		let mut missing_shortprevevents_samples = Vec::new();
+		let mut skipped_unresolved_shortids = 0_usize;
+		let mut missing_metadata = 0_usize;
 
 		while let Some(chunk) = stream.next().await {
 			let short_ids: Vec<ShortEventId> = chunk.into_iter().filter_map(Result::ok).collect();
@@ -191,16 +247,102 @@ impl Service {
 				.db
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
+			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
+			// verdicts can be batch-read below instead of two sequential single-key
+			// lookups per event.
+			let mut non_outlier_pairs: Vec<(ShortEventId, OwnedEventId)> = Vec::new();
 
 			for (short_id, prevs_res) in short_ids.into_iter().zip(all_prevs.into_iter()) {
-				let prevs = prevs_res.unwrap_or_default();
-				graph_edges.push((short_id, prevs));
+				let prevs = match prevs_res {
+					| Ok(prevs) => prevs,
+					| Err(_) => {
+						missing_shortprevevents = missing_shortprevevents.saturating_add(1);
+						if missing_shortprevevents_samples.len() < 8 {
+							missing_shortprevevents_samples.push(short_id);
+						}
+						Vec::new()
+					},
+				};
+				raw_edges.insert(short_id, prevs);
+
+				let Ok(event_id) = self
+					.services
+					.short
+					.get_eventid_from_short::<OwnedEventId>(short_id)
+					.await
+				else {
+					skipped_unresolved_shortids = skipped_unresolved_shortids.saturating_add(1);
+					continue;
+				};
+
+				let is_outlier = match self.db.get_event_metadata(&event_id).await {
+					| Ok(meta) => meta.is_outlier,
+					| Err(_) => {
+						missing_metadata = missing_metadata.saturating_add(1);
+						accepted_event_ids.insert(short_id);
+						continue;
+					},
+				};
+				if is_outlier {
+					outlier_event_ids.insert(short_id);
+				} else {
+					// Defer: the verdict check is batched over the whole chunk
+					// after the inner loop.
+					non_outlier_pairs.push((short_id, event_id));
+				}
+			}
+
+			// Batch-read rejection/soft-fail verdicts for every non-outlier
+			// event in this chunk (a single amplification pass per store, run
+			// in parallel) rather than two sequential single-key lookups per
+			// event -- `recalculate_extremities` sweeps the whole room history
+			// while holding the room state lock, so per-event RocksDB reads here
+			// would substantially lengthen the lock hold.
+			let non_outlier_ids: Vec<OwnedEventId> = non_outlier_pairs
+				.iter()
+				.map(|(_, event_id)| event_id.clone())
+				.collect();
+			let flagged = self
+				.services
+				.pdu_metadata
+				.verdict_flagged_batch(&non_outlier_ids)
+				.await;
+			for (short_id, event_id) in non_outlier_pairs {
+				if flagged.contains(&event_id) {
+					bridge_event_ids.insert(short_id);
+				} else {
+					accepted_event_ids.insert(short_id);
+				}
 			}
 		}
+
+		if missing_shortprevevents > 0 {
+			warn!(
+				%room_id,
+				scanned_events = raw_edges.len(),
+				missing_shortprevevents,
+				?missing_shortprevevents_samples,
+				"shortprevevents index holes while recalculating extremities; affected events \
+				 were treated as DAG roots"
+			);
+		}
+		if skipped_unresolved_shortids > 0 || missing_metadata > 0 {
+			warn!(
+				%room_id,
+				scanned_events = raw_edges.len(),
+				skipped_unresolved_shortids,
+				missing_metadata,
+				"event metadata gaps while recalculating extremities"
+			);
+		}
+
+		let graph_edges =
+			accepted_extremity_graph(&raw_edges, &accepted_event_ids, &bridge_event_ids);
 
 		// Lightning fast true forward extremity computation (entire room history) via
 		// rezzy
 		let true_tips_short = rezzy::state::at::find_forward_extremities_roaring(graph_edges);
+		let calculated_tips = true_tips_short.len();
 
 		let current_extremities = self.services.state.get_forward_extremities(room_id);
 		let current_set: HashSet<_> = current_extremities.collect().await;
@@ -218,11 +360,29 @@ impl Service {
 			}
 		}
 
-		// Add current extremities that were outside the graph window (should be 0 now
-		// that we trace infinitely)
+		let mut current_extremities = Vec::with_capacity(current_set.len());
 		for eid in &current_set {
-			true_extremities_set.insert(eid.clone());
+			let shorteventid = self.services.short.get_shorteventid(eid).await.ok();
+			current_extremities.push((eid.clone(), shorteventid));
 		}
+
+		let retained_current_outside_graph = current_extremities
+			.iter()
+			.filter(|(_, short)| short.is_none_or(|short| !accepted_event_ids.contains(&short)))
+			.count();
+		let dropped_stale_current = current_extremities
+			.iter()
+			.filter(|(event_id, short)| {
+				short.is_some_and(|short| accepted_event_ids.contains(&short))
+					&& !true_extremities_set.contains(event_id)
+			})
+			.count();
+
+		let true_extremities_set = merge_recalculated_extremities(
+			true_extremities_set,
+			&accepted_event_ids,
+			current_extremities,
+		);
 
 		let mut final_extremities: Vec<OwnedEventId> = true_extremities_set.into_iter().collect();
 
@@ -247,6 +407,42 @@ impl Service {
 
 		// If the finalized extremities perfectly match the current DB, we skip
 		let final_set: HashSet<_> = final_extremities.iter().cloned().collect();
+		let changed = final_set != current_set;
+		if missing_shortprevevents > 0 || dropped_stale_current > 0 {
+			warn!(
+				%room_id,
+				update_db,
+				changed,
+				scanned_events = raw_edges.len(),
+				accepted_events = accepted_event_ids.len(),
+				bridge_events = bridge_event_ids.len(),
+				outlier_events = outlier_event_ids.len(),
+				current_tips = current_set.len(),
+				calculated_tips,
+				final_tips = num_true_extremities,
+				retained_current_outside_graph,
+				dropped_stale_current,
+				missing_shortprevevents,
+				skipped_unresolved_shortids,
+				missing_metadata,
+				"extremity recalculation found DAG/index anomalies"
+			);
+		} else if changed {
+			info!(
+				%room_id,
+				update_db,
+				scanned_events = raw_edges.len(),
+				accepted_events = accepted_event_ids.len(),
+				bridge_events = bridge_event_ids.len(),
+				outlier_events = outlier_event_ids.len(),
+				current_tips = current_set.len(),
+				calculated_tips,
+				final_tips = num_true_extremities,
+				retained_current_outside_graph,
+				"extremity recalculation changed room tips"
+			);
+		}
+
 		if final_set == current_set {
 			return Ok((false, num_true_extremities));
 		}
@@ -254,7 +450,12 @@ impl Service {
 		if update_db {
 			self.services
 				.state
-				.set_forward_extremities(room_id, final_extremities.into_iter(), &state_lock)
+				.set_forward_extremities(
+					room_id,
+					final_extremities.into_iter(),
+					None,
+					&state_lock,
+				)
 				.await;
 		}
 
@@ -575,6 +776,193 @@ mod tests {
 		assert!(result.contains(&e4));
 		assert!(!result.contains(&e2));
 		assert!(!result.contains(&e3));
+	}
+
+	#[test]
+	fn test_merge_recalculated_extremities_drops_accepted_graph_stale_leaf() {
+		let stale_leaf = event_id!("$stale").to_owned();
+		let child_tip = event_id!("$child").to_owned();
+		let out_of_graph = event_id!("$outlier").to_owned();
+
+		let true_extremities: HashSet<OwnedEventId> =
+			vec![child_tip.clone()].into_iter().collect();
+		let graph_event_ids: HashSet<ShortEventId> = vec![1, 2].into_iter().collect();
+		let current_extremities = vec![
+			(stale_leaf.clone(), Some(1)),
+			(child_tip.clone(), Some(2)),
+			(out_of_graph.clone(), None),
+		];
+
+		let result = merge_recalculated_extremities(
+			true_extremities,
+			&graph_event_ids,
+			current_extremities,
+		);
+
+		assert!(result.contains(&child_tip));
+		assert!(result.contains(&out_of_graph));
+		assert!(
+			!result.contains(&stale_leaf),
+			"stored extremity with an accepted graph child must not survive recalculation"
+		);
+	}
+
+	#[test]
+	fn test_accepted_extremity_graph_ignores_bad_children_but_bridges_through_them() {
+		let root = 1;
+		let rejected = 2;
+		let accepted_tip = 3;
+		let accepted_sibling = 4;
+		let outlier = 5;
+		let accepted_after_outlier = 6;
+
+		let raw_edges: HashMap<ShortEventId, Vec<ShortEventId>> = HashMap::from([
+			(root, Vec::new()),
+			(rejected, vec![root]),
+			(accepted_tip, vec![rejected]),
+			(accepted_sibling, vec![root]),
+			(outlier, vec![root]),
+			(accepted_after_outlier, vec![outlier]),
+		]);
+		let accepted_events: HashSet<ShortEventId> =
+			HashSet::from([root, accepted_tip, accepted_sibling, accepted_after_outlier]);
+		let bridge_events: HashSet<ShortEventId> = HashSet::from([rejected]);
+
+		let graph = accepted_extremity_graph(&raw_edges, &accepted_events, &bridge_events);
+		let parents_by_event: HashMap<ShortEventId, HashSet<ShortEventId>> = graph
+			.into_iter()
+			.map(|(event, parents)| (event, parents.into_iter().collect()))
+			.collect();
+
+		assert_eq!(parents_by_event.get(&root).unwrap().len(), 0);
+		assert!(
+			parents_by_event.get(&accepted_tip).unwrap().contains(&root),
+			"accepted child beyond rejected/soft-failed events should retire the older root"
+		);
+		assert!(
+			parents_by_event
+				.get(&accepted_sibling)
+				.unwrap()
+				.contains(&root)
+		);
+		assert!(
+			!parents_by_event.contains_key(&rejected),
+			"rejected/soft-failed events must not become recalculated tips"
+		);
+		assert!(
+			!parents_by_event
+				.get(&accepted_after_outlier)
+				.unwrap()
+				.contains(&root),
+			"outliers must not bridge an accepted event back to an older root"
+		);
+	}
+
+	#[test]
+	fn test_accepted_extremity_graph_stress_mixed_real_world_edges() {
+		let root = 1;
+		let fork_a = 2;
+		let fork_b = 3;
+		let rejected_a = 4;
+		let soft_failed_a = 5;
+		let accepted_after_bad_chain = 6;
+		let outlier_a = 7;
+		let accepted_after_outlier = 8;
+		let merge_tip = 9;
+		let independent_tip = 10;
+		let rejected_only_child = 11;
+		let outlier_only_child = 12;
+		let accepted_after_rejected_only_child = 13;
+
+		let raw_edges: HashMap<ShortEventId, Vec<ShortEventId>> = HashMap::from([
+			(root, Vec::new()),
+			(fork_a, vec![root]),
+			(fork_b, vec![root]),
+			(rejected_a, vec![fork_a]),
+			(soft_failed_a, vec![rejected_a]),
+			(accepted_after_bad_chain, vec![soft_failed_a]),
+			(outlier_a, vec![fork_b]),
+			(accepted_after_outlier, vec![outlier_a]),
+			(merge_tip, vec![accepted_after_bad_chain, fork_b]),
+			(independent_tip, vec![root]),
+			(rejected_only_child, vec![independent_tip]),
+			(outlier_only_child, vec![accepted_after_outlier]),
+			(accepted_after_rejected_only_child, vec![rejected_only_child]),
+		]);
+		let accepted_events: HashSet<ShortEventId> = HashSet::from([
+			root,
+			fork_a,
+			fork_b,
+			accepted_after_bad_chain,
+			accepted_after_outlier,
+			merge_tip,
+			independent_tip,
+			accepted_after_rejected_only_child,
+		]);
+		let bridge_events: HashSet<ShortEventId> =
+			HashSet::from([rejected_a, soft_failed_a, rejected_only_child]);
+
+		let graph = accepted_extremity_graph(&raw_edges, &accepted_events, &bridge_events);
+		let tips = rezzy::state::at::find_forward_extremities_roaring(graph.clone());
+		let tips: HashSet<ShortEventId> = tips.into_iter().collect();
+
+		assert!(tips.contains(&merge_tip));
+		assert!(tips.contains(&accepted_after_outlier));
+		assert!(tips.contains(&accepted_after_rejected_only_child));
+		assert_eq!(
+			tips.len(),
+			3,
+			"only accepted timeline leaves should remain as recalculated tips"
+		);
+		assert!(
+			!tips.contains(&independent_tip),
+			"accepted child beyond rejected event should retire the older tip"
+		);
+		assert!(
+			!tips.contains(&fork_a),
+			"accepted child beyond rejected/soft-failed chain should retire fork_a"
+		);
+		assert!(
+			!tips.contains(&fork_b),
+			"direct accepted merge should retire fork_b (even if an outlier also references it)"
+		);
+
+		let current_event_ids = HashSet::from([
+			event_id!("$fork_a").to_owned(),
+			event_id!("$fork_b").to_owned(),
+			event_id!("$merge_tip").to_owned(),
+			event_id!("$accepted_after_outlier").to_owned(),
+			event_id!("$external_tip").to_owned(),
+		]);
+		let true_extremities = HashSet::from([
+			event_id!("$merge_tip").to_owned(),
+			event_id!("$accepted_after_outlier").to_owned(),
+			event_id!("$accepted_after_rejected_only_child").to_owned(),
+		]);
+		let current_extremities = vec![
+			(event_id!("$fork_a").to_owned(), Some(fork_a)),
+			(event_id!("$fork_b").to_owned(), Some(fork_b)),
+			(event_id!("$merge_tip").to_owned(), Some(merge_tip)),
+			(event_id!("$accepted_after_outlier").to_owned(), Some(accepted_after_outlier)),
+			(event_id!("$external_tip").to_owned(), None),
+		];
+
+		let merged = merge_recalculated_extremities(
+			true_extremities,
+			&accepted_events,
+			current_extremities,
+		);
+
+		assert!(!merged.contains(&event_id!("$fork_a").to_owned()));
+		assert!(!merged.contains(&event_id!("$fork_b").to_owned()));
+		assert!(merged.contains(&event_id!("$merge_tip").to_owned()));
+		assert!(merged.contains(&event_id!("$accepted_after_outlier").to_owned()));
+		assert!(merged.contains(&event_id!("$accepted_after_rejected_only_child").to_owned()));
+		assert!(
+			merged.contains(&event_id!("$external_tip").to_owned()),
+			"current tips outside the accepted graph remain unverifiable and should be preserved"
+		);
+		assert_ne!(merged, current_event_ids);
 	}
 
 	// --- Roaring bitmap variant tests ---

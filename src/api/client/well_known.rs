@@ -67,7 +67,7 @@ pub(crate) async fn well_known_support(
 		.well_known
 		.support_page
 		.as_ref()
-		.map(ToString::to_string);
+		.map(|p| format!("{p}"));
 
 	let email_address = services.config.well_known.support_email.clone();
 	let matrix_id = services.config.well_known.support_mxid.clone();

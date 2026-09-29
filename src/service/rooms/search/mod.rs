@@ -82,9 +82,13 @@ pub fn index_pdu(&self, shortroomid: ShortRoomId, pdu_id: &RawPduId, message_bod
 		})
 		.collect::<Vec<_>>();
 
-	self.db
-		.tokenids
-		.insert_batch(batch.iter().map(|k| (k.as_slice(), &[])));
+	let mut db_batch = database::Batch::new();
+	for key in &batch {
+		self.db
+			.tokenids
+			.batch_put(&mut db_batch, key.as_slice(), []);
+	}
+	self.db.tokenids.apply_batch(db_batch);
 }
 
 #[implement(Service)]

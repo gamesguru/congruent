@@ -137,6 +137,40 @@ servers to contact, leading to:
 - **Stuck outliers** when an event's prev_events can't be fetched by the
   single path that tries
 
+## Auth-Chain Resolution Note
+
+`resolve_missing_outlier_auth_events` (`handle_outlier_pdu.rs`) tries a
+bulk `/event_auth` fetch for missing auth events. Synapse's analogous
+path has no such bulk primitive in the gap-recovery case this exercises —
+it resolves missing auth events via individual `/event/{id}` fetches
+(`_get_events_and_persist`, `federation_event.py`). See
+`event-auth-fallback-vs-synapse.md` for the full comparison; this is a
+design-divergence note, not a root-cause claim for any specific failing
+test.
+
+If `resolve_missing_outlier_auth_events` still can't resolve everything
+via `/event_auth`, it returns `Err(MissingAuthEvents)` and defers to its
+caller, `fetch_and_handle_outliers`, which already runs a suspend/retry
+loop for this event (multi-server routing list, ratelimiting, bounded
+retries). That loop now has three tiers for a `MissingAuthEvents` error:
+
+1. First occurrence: retry with another bulk `/event_auth` fetch.
+2. Second occurrence (bulk retry still incomplete): fall back to
+   individual `/event/{id}` fetches for just the still-missing IDs, via
+   the same `push_fetch` machinery used for every other event fetch in
+   this function (multi-server, ratelimited, retried).
+3. Third occurrence (individual fetches still incomplete): give up —
+   mark rejected, store as an outlier, back off.
+
+This keeps the bulk path as the fast first attempt (matching our
+existing behavior) while adding Synapse's individual-fetch fallback as a
+second tier, routed through the loop's existing retry/ratelimit
+machinery rather than a new bespoke recovery path. See git history on
+`handle_outlier_pdu.rs` ("Split outlier auth recovery to reduce stack
+use") for why a separate recursive inline fallback inside
+`resolve_missing_outlier_auth_events` itself was rejected in favor of
+this approach — that function's stack depth is already a known concern.
+
 ### Related Issues
 
 - Stuck outlier `$gpwWnqDYqCLRDVHXE8S45KVSJnyVBOJoRgBIWlz4Zuc` in

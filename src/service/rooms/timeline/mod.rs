@@ -1,43 +1,56 @@
 mod append;
 mod backfill;
+pub use backfill::PromoteOutlierOutcome;
+mod backward_extremities;
 mod build;
 mod create;
 mod data;
 pub mod extremities;
-mod heal;
+mod helpers;
 mod metadata;
+mod notifications;
+mod promotion_claims;
+mod reachability;
 mod rebuild_state;
 mod redact;
 pub mod reindex;
 mod reorder;
 mod repair_unsigned;
 
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, ops::Bound, sync::Arc};
 
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
+/// Proof that the caller already holds `Service::mutex_insert` for a room.
+/// Threaded through `force_state`/`force_state_quiet` so their outlier
+/// demotion step can skip re-acquiring the same non-reentrant per-room lock
+/// when called from inside `append_pdu` (which holds it for the whole
+/// insert), while still self-locking when called from anywhere else.
+pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
-	Result, Server, SyncMutex, at, err,
+	Result, Server, SyncMutex, at, err, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
 	},
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
-use futures::{Future, Stream, TryStreamExt, pin_mut};
+use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
 use lru_cache::LruCache;
 use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId,
-	events::room::encrypted::Relation,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
 };
 use serde::Deserialize;
 
 use self::data::Data;
 pub use self::{
+	append::AppendOptions,
 	create::pdu_fits,
 	data::{PdusIterItem, TopoIterItem},
-	heal::{HealOptions, HealResult},
 	metadata::EventMetadata,
+	promotion_claims::{PromotionClaims, PromotionDisposition},
+	reachability::LiveReachability,
 	repair_unsigned::update_unsigned_prev_content,
 };
 use crate::{
@@ -68,14 +81,66 @@ struct ExtractBody {
 	body: Option<String>,
 }
 
+/// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
+/// pointing at this event's parent. Distinct from `m.relates_to` above.
+#[derive(Deserialize)]
+pub(crate) struct Msc2836Relationship {
+	pub(crate) rel_type: String,
+	pub(crate) event_id: OwnedEventId,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ExtractMsc2836Relationship {
+	#[serde(rename = "m.relationship")]
+	pub(crate) relationship: Option<Msc2836Relationship>,
+}
+
 pub struct Service {
 	services: Services,
 	db: Data,
 	pub mutex_insert: RoomMutexMap,
 	pub mutex_fetch: MutexMap<OwnedEventId, ()>,
+	/// Singleflights `backfill_if_required`'s gap scan per room. Without
+	/// this, N concurrent backward `/messages` calls on the same room each
+	/// run their own full scan-and-decide pass; the eventual inserts are
+	/// already safe (see `backfill_pdu`'s `mutex_federation` lock + TOCTOU
+	/// recheck), but the redundant scans and duplicate `/backfill` requests
+	/// are pure waste. See
+	/// `docs/development-gg/fable/boundary-flake-advisory.md` §3.
+	pub mutex_backfill: RoomMutexMap,
+	/// Tier 2 of the backfill scan perf work (see
+	/// `docs/development-gg/room-issues.csv`): remembers the exact
+	/// `(state_hash, from, limit)` of the most recent gap-free
+	/// `backfill_if_required` scan per room. A repeat request for that
+	/// *exact* `from` with a `limit` no larger than what was already
+	/// verified skips the scan entirely, but only if the room's current
+	/// short-state-hash still matches the one observed during the scan.
+	///
+	/// This is intentionally narrower than a "gap-free below count X"
+	/// boundary cache: `backfill_if_required` verifies gap-freedom only
+	/// within the fixed-size window it scans (anchored at `from`), not
+	/// "everything below `from`", so a boundary-style cache would need to
+	/// track ranges, not a single count, to stay correct. The exact-tuple
+	/// form sidesteps that while still allowing the cache to survive
+	/// unrelated writes: the room state hash is the invalidation token.
+	pub backfill_gap_free_cache:
+		moka::sync::Cache<OwnedRoomId, (ShortStateHash, TopoToken, usize)>,
+	/// Short-lived suppression for repeated unresolved backfill windows.
+	/// If the same room/window/gap signature comes back unchanged after a
+	/// failed federation attempt, re-scanning and re-requesting it again is
+	/// pure CPU/network waste. This is intentionally short TTL so a transient
+	/// remote failure can still be retried shortly after.
+	pub backfill_gap_repeat_cache: moka::sync::Cache<(OwnedRoomId, u64), ()>,
 	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
+	/// Arbiter between outlier promotions (see
+	/// [`Self::promote_outlier_batch`]) and event rejections racing for the
+	/// same event ID -- see [`PromotionClaims`]'s doc comment (and its
+	/// module's unit tests) for the concurrency invariant this enforces and
+	/// why it has to be a single shared claim map rather than two separate
+	/// stores each checked-then-acted-on independently.
+	pub pending_promotions: PromotionClaims,
 }
 
 struct Services {
@@ -84,6 +149,7 @@ struct Services {
 	appservice: Dep<appservice::Service>,
 	admin: Dep<admin::Service>,
 	alias: Dep<rooms::alias::Service>,
+	directory: Dep<rooms::directory::Service>,
 	globals: Dep<globals::Service>,
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
@@ -121,7 +187,15 @@ impl crate::Service for Service {
 			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
 			last_timeline_count_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
-				.time_to_idle(std::time::Duration::from_secs(600))
+				.time_to_idle(std::time::Duration::from_mins(10))
+				.build(),
+			backfill_gap_free_cache: moka::sync::Cache::builder()
+				.max_capacity(100_000)
+				.time_to_idle(std::time::Duration::from_mins(10))
+				.build(),
+			backfill_gap_repeat_cache: moka::sync::Cache::builder()
+				.max_capacity(100_000)
+				.time_to_live(std::time::Duration::from_secs(15))
 				.build(),
 			services: Services {
 				server: args.server.clone(),
@@ -129,6 +203,7 @@ impl crate::Service for Service {
 				appservice: args.depend::<appservice::Service>("appservice"),
 				admin: args.depend::<admin::Service>("admin"),
 				alias: args.depend::<rooms::alias::Service>("rooms::alias"),
+				directory: args.depend::<rooms::directory::Service>("rooms::directory"),
 				globals: args.depend::<globals::Service>("globals"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
@@ -155,6 +230,8 @@ impl crate::Service for Service {
 			db: Data::new(&args),
 			mutex_insert: RoomMutexMap::new(),
 			mutex_fetch: MutexMap::new(),
+			mutex_backfill: RoomMutexMap::new(),
+			pending_promotions: PromotionClaims::new(),
 		}))
 	}
 
@@ -190,6 +267,21 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	#[inline]
+	fn backfill_gap_free_cache_hit(
+		cached: Option<(ShortStateHash, TopoToken, usize)>,
+		current_statehash: ShortStateHash,
+		from: TopoToken,
+		scan_limit: usize,
+	) -> bool {
+		current_statehash != 0
+			&& cached.is_some_and(|(verified_statehash, verified_from, verified_limit)| {
+				verified_statehash == current_statehash
+					&& verified_from == from
+					&& verified_limit >= scan_limit
+			})
+	}
+
 	/// Index a PDU's body for full-text search if it's a RoomMessage.
 	/// Encapsulates the pattern duplicated across append, backfill, and heal.
 	pub(super) fn index_pdu_search(
@@ -208,11 +300,9 @@ impl Service {
 		}
 	}
 
-	pub fn db_batch(&self) -> database::rocksdb::WriteBatch { self.db.db_batch() }
+	pub fn db_batch(&self) -> database::Batch<'_> { self.db.db_batch() }
 
-	pub fn db_apply_batch(&self, batch: &database::rocksdb::WriteBatch) {
-		self.db.db_apply_batch(batch);
-	}
+	pub fn db_apply_batch(&self, batch: database::Batch<'_>) { self.db.db_apply_batch(batch); }
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn first_pdu_in_room(&self, room_id: &RoomId) -> Result<impl Event> {
@@ -237,9 +327,19 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn last_timeline_count(&self, room_id: &RoomId) -> Result<PduCount> {
 		if let Some(count) = self.last_timeline_count_cache.get(&room_id.to_owned()) {
+			info!(
+				target: "watermark_debug",
+				%room_id, ?count,
+				"last_timeline_count: cache hit"
+			);
 			return Ok(count);
 		}
 		let count = self.db.last_timeline_count(room_id).await?;
+		info!(
+			target: "watermark_debug",
+			%room_id, ?count,
+			"last_timeline_count: cache miss, read from DB"
+		);
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), count);
 		Ok(count)
@@ -316,11 +416,10 @@ impl Service {
 		let next_count = match self.db.next_timeline_count(&after_pdu).await {
 			| Ok(count) => count,
 			| Err(e) if e.is_not_found() => {
-				let current = self.services.state.get_room_shortstatehash(room_id).await?;
-				self.next_shortstatehash_cache
-					.lock()
-					.insert((shortroomid, after), current);
-				return Ok(current);
+				// Not cached: this fallback means "no PDU after `after` yet", which the
+				// next appended PDU invalidates. Caching it here would leave a stale entry
+				// with no append-time hook to evict it.
+				return self.services.state.get_room_shortstatehash(room_id).await;
 			},
 			| Err(e) => return Err(e),
 		};
@@ -403,6 +502,31 @@ impl Service {
 		self.db.remove_from_timeline(event_id).await;
 	}
 
+	/// Strips only the event's timeline pointers plus its now-stale
+	/// `is_outlier: false` metadata, leaving the PDU JSON itself intact.
+	/// Callers demoting a timeline event to an outlier must hold
+	/// `mutex_insert` for the room across this call and the subsequent
+	/// `add_pdu_outlier_locked` call, so no concurrent writer can observe
+	/// the event with neither timeline pointers nor outlier metadata.
+	#[inline]
+	pub async fn remove_timeline_pointers(&self, event_id: &EventId) {
+		self.db.remove_timeline_pointers(event_id).await;
+	}
+
+	#[inline]
+	pub async fn remove_timeline_pointers_batch<'a>(
+		&'a self,
+		batch: &mut database::Batch<'a>,
+		event_id: &EventId,
+	) {
+		self.db
+			.remove_timeline_pointers_batch(batch, event_id)
+			.await;
+	}
+
+	#[inline]
+	pub fn apply_batch(&self, batch: database::Batch<'_>) { self.db.apply_batch(batch); }
+
 	#[inline]
 	pub async fn drop_duplicate_pdu(&self, pdu_id: &RawPduId) {
 		self.db.drop_duplicate_pdu(pdu_id);
@@ -414,7 +538,119 @@ impl Service {
 	}
 }
 
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn backfill_gap_cache_requires_matching_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_rejects_zero_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_requires_sufficient_limit() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 100));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
+	}
+}
+
+/// Copy room push rules from an upgraded room to its replacement.
+///
+/// This is used both for local room upgrades and for tombstones received
+/// over federation so the replacement room inherits the same per-room
+/// notification rules on every homeserver that knows about the room.
+pub async fn copy_room_push_rules_for_upgrade(
+	service: &Service,
+	room_id: &RoomId,
+	replacement_room: &RoomId,
+) -> Result {
+	let local_users = service
+		.services
+		.users
+		.list_local_users()
+		.map(|user_id: &UserId| user_id.to_owned())
+		.collect::<Vec<_>>()
+		.await;
+
+	for user_id in local_users {
+		let _push_rules_lock = service
+			.services
+			.account_data
+			.push_rules_lock(&user_id)
+			.await;
+		let Ok(mut push_rules): Result<PushRulesEvent> = service
+			.services
+			.account_data
+			.get_global(&user_id, GlobalAccountDataEventType::PushRules)
+			.await
+		else {
+			continue;
+		};
+
+		let Some(mut rule) = push_rules
+			.content
+			.global
+			.room
+			.iter()
+			.find(|rule| rule.rule_id == room_id)
+			.cloned()
+		else {
+			continue;
+		};
+
+		rule.rule_id = replacement_room.to_owned();
+		push_rules.content.global.room.insert(rule);
+
+		service
+			.services
+			.account_data
+			.update(
+				None,
+				&user_id,
+				GlobalAccountDataEventType::PushRules.to_string().into(),
+				&serde_json::to_value(push_rules)?,
+			)
+			.await?;
+	}
+
+	Ok(())
+}
+
 impl Service {
+	#[inline]
+	pub fn pdus_by_timestamp<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+		timestamp: u64,
+		dir: ruma::api::Direction,
+	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
+		self.db.pdus_by_timestamp(room_id, timestamp, dir)
+	}
+
 	#[inline]
 	pub async fn get_non_outlier_pdu_json(
 		&self,
@@ -443,6 +679,55 @@ impl Service {
 		event_id: &EventId,
 	) -> Result<PduEvent> {
 		self.db.get_non_outlier_pdu_in_room(room_id, event_id).await
+	}
+
+	#[inline]
+	pub async fn get_pdu_outlier(&self, event_id: &EventId) -> Result<PduEvent> {
+		self.services.outlier.get_pdu_outlier(event_id).await
+	}
+
+	#[inline]
+	pub fn clear_outlier_flag(&self, event_id: &EventId) {
+		self.services.outlier.clear_outlier_flag(event_id);
+	}
+
+	#[inline]
+	pub async fn add_pdu_outlier(
+		&self,
+		event_id: &EventId,
+		pdu: &CanonicalJsonObject,
+		room_id: Option<&RoomId>,
+	) {
+		self.services
+			.outlier
+			.add_pdu_outlier(event_id, pdu, room_id)
+			.await;
+	}
+
+	#[inline]
+	pub fn add_pdu_outlier_locked(
+		&self,
+		event_id: &EventId,
+		pdu: &CanonicalJsonObject,
+		room_id: Option<&RoomId>,
+		insert_lock: &InsertMutexGuard,
+	) {
+		self.services
+			.outlier
+			.add_pdu_outlier_locked(event_id, pdu, room_id, insert_lock);
+	}
+
+	#[inline]
+	pub async fn remove_outlier(&self, event_id: &EventId) {
+		self.services.outlier.remove_outlier(event_id).await;
+	}
+
+	#[inline]
+	pub fn room_outlier_stream<'a>(
+		&'a self,
+		room_id: &'a RoomId,
+	) -> impl Stream<Item = (OwnedEventId, PduEvent)> + Send + 'a {
+		self.services.outlier.room_stream(room_id)
 	}
 
 	/// Checks if pdu exists directly in the timeline (non-outlier).
@@ -552,18 +837,24 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 	) -> impl Stream<Item = PdusIterItem> + Send + 'a {
-		self.pdus(room_id, None).ignore_err()
+		self.pdus(room_id, Bound::Unbounded).ignore_err()
 	}
 
-	/// Reverse iteration starting after `until`.
+	/// Reverse iteration over PDUs bounded by `until`.
+	///
+	/// `until` states its own inclusivity — `Bound::Excluded(count)` to stop
+	/// before `count`, `Bound::Included(count)` to yield `count` first, or
+	/// `Bound::Unbounded` to start from the newest event in the room. There
+	/// is deliberately no `Option<PduCount>` overload: that shape is what let
+	/// two different call sites independently forget which way to adjust the
+	/// boundary (see `docs/development-gg/fable/boundary-flake-advisory.md`).
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		until: Option<PduCount>,
+		until: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		self.db
-			.pdus_rev(room_id, until.unwrap_or_else(PduCount::max))
+		self.db.pdus_rev(room_id, until)
 	}
 
 	pub fn topo_pdus_rev<'a>(
@@ -578,14 +869,20 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn fix_pdu_event_ids(&self) -> Result<usize> { self.db.fix_pdu_event_ids().await }
 
-	/// Forward iteration starting after `from`.
+	/// Forward iteration over PDUs bounded by `from`.
+	///
+	/// `from` states its own inclusivity — see `pdus_rev`'s doc comment.
+	/// Note the adjustment `pdus` applies internally for `Bound::Excluded` is
+	/// the opposite sign from `pdus_rev`'s; that asymmetry is exactly why
+	/// callers should never hand-roll it (see the doc comment on
+	/// `Data::pdus` in `data.rs`).
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-		from: Option<PduCount>,
+		from: Bound<PduCount>,
 	) -> impl Stream<Item = Result<PdusIterItem>> + Send + 'a {
-		self.db.pdus(room_id, from.unwrap_or_else(PduCount::min))
+		self.db.pdus(room_id, from)
 	}
 
 	/// Forward iteration using topological ordering, starting after `from`.
@@ -597,6 +894,49 @@ impl Service {
 	) -> impl Stream<Item = Result<TopoIterItem>> + Send + 'a {
 		self.db
 			.topo_pdus(room_id, from.unwrap_or_else(TopoToken::min))
+	}
+
+	/// Coalesce a group of timeline writes into one flush boundary.
+	///
+	/// Used by federation intake so a room transaction's prev-event repairs
+	/// and the incoming event itself become visible together to `/sync`.
+	pub async fn with_cork_and_flush<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork_and_flush();
+		f().await
+	}
+
+	/// Coalesce a group of timeline writes without forcing a flush when `f`
+	/// completes. Unlike `with_cork_and_flush`, callers are expected to
+	/// either be nested inside an outer flush boundary or not need one
+	/// (e.g. batching outlier persistence ahead of a later
+	/// `with_cork_and_flush`) -- use this when per-write flushing, not
+	/// durability, is the problem being solved.
+	pub async fn with_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork();
+		f().await
+	}
+
+	/// Briefly lift an enclosing `with_cork_and_flush` boundary around
+	/// `f`, so remote I/O run in the middle of a corked write phase (e.g.
+	/// federation fetches performed while resolving a prev-event's missing
+	/// state/auth events) doesn't suppress unrelated WAL flushes across the
+	/// whole server for the duration. The outer cork is restored once `f`
+	/// completes. Harmless to call when no cork is currently held.
+	pub async fn without_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _uncork = self.db.db.uncork_briefly();
+		f().await
 	}
 }
 

@@ -63,11 +63,15 @@ impl Service {
 	/// Sweep all events in a room and repopulate any missing derived data
 	/// from the `eventid_pdu` source of truth.
 	///
-	/// This is safe to run at any time — it only writes missing entries and
-	/// never overwrites existing data.
-	pub async fn reindex_short(&self, room_id: &RoomId) -> Result<ReindexStats> {
+	/// This is safe to run at any time. It preserves canonical stream order and
+	/// existing local topo depths, while rebuilding the room topo index from
+	/// the stream source of truth.
+	pub async fn reindex_short(
+		&self,
+		room_id: &RoomId,
+		rebuild_topo: bool,
+	) -> Result<ReindexStats> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
-		let state_lock = self.services.state.mutex.lock(room_id).await;
 		let room_version = self.services.state.get_room_version(room_id).await?;
 		let mut stats = ReindexStats::default();
 
@@ -100,6 +104,16 @@ impl Service {
 
 		// Phase 2: For each event, read PDU JSON and repair derived data
 		let cork = self.db.db.cork();
+		let cleared_topo = if rebuild_topo {
+			self.db.clear_room_topo_index(room_id).await?
+		} else {
+			0
+		};
+		let mut topo_batch = self.db.db_batch();
+		let mut topo_batch_len = 0_usize;
+		if rebuild_topo {
+			info!("reindex_short: cleared {cleared_topo} topo index rows for {room_id}");
+		}
 
 		// Auth chain cache for incremental computation (roaring bitmaps)
 		let mut auth_chain_cache: HashMap<ShortEventId, Arc<RoaringTreemap>> = HashMap::new();
@@ -165,17 +179,44 @@ impl Service {
 			let pdu_id: RawPduId = PduId { shortroomid, shorteventid: *count }.into();
 
 			// --- eventid_metadata ---
-			if self.db.get_event_metadata(event_id).await.is_err() {
-				let meta = EventMetadata {
-					short_room_id: shortroomid,
-					origin_server_ts: pdu.origin_server_ts().0,
-					depth: pdu.depth(),
-					pdu_count: Some(count.into_unsigned()),
-					..Default::default()
-				};
-				if let Ok(bytes) = bincode::serialize(&meta) {
-					self.db.store_eventid_metadata(event_id.as_bytes(), bytes);
-					stats.repaired_metadata = stats.repaired_metadata.saturating_add(1);
+			let metadata = match self.db.get_event_metadata(event_id).await {
+				| Ok(meta) => meta,
+				| Err(_) => {
+					let meta = EventMetadata {
+						short_room_id: shortroomid,
+						is_outlier: false,
+						origin_server_ts: pdu.origin_server_ts().0,
+						depth: pdu.depth(),
+						redacted_by: pdu.redacts().map(ToOwned::to_owned),
+						short_state_hash: None,
+						deprecated_local_topo_depth: pdu.depth().into(),
+						pdu_count: match count {
+							| PduCount::Normal(x) => Some(*x),
+							| PduCount::Backfilled(_) => None,
+						},
+					};
+					if let Ok(bytes) = bincode::serialize(&meta) {
+						self.db.store_eventid_metadata(event_id.as_bytes(), bytes);
+						stats.repaired_metadata = stats.repaired_metadata.saturating_add(1);
+					}
+					meta
+				},
+			};
+
+			if rebuild_topo {
+				// --- roomid_topologicalorder_pducount ---
+				self.db.insert_topo_pducount_into_batch(
+					&mut topo_batch,
+					&pdu_id,
+					event_id,
+					metadata.deprecated_local_topo_depth,
+				);
+				stats.repaired_topo_index = stats.repaired_topo_index.saturating_add(1);
+				topo_batch_len = topo_batch_len.saturating_add(1);
+				if topo_batch_len >= 1000 {
+					self.db.db_apply_batch(topo_batch);
+					topo_batch = self.db.db_batch();
+					topo_batch_len = 0;
 				}
 			}
 
@@ -183,22 +224,18 @@ impl Service {
 			let prev_event_ids: Vec<OwnedEventId> =
 				pdu.prev_events().map(ToOwned::to_owned).collect();
 
-			if self
-				.db
-				.get_shortprevevents(short_eid)
-				.await
-				.map_or(true, |v| v.is_empty())
-				&& !prev_event_ids.is_empty()
-			{
-				let mut prev_shorts = Vec::with_capacity(prev_event_ids.len());
-				for prev_id in &prev_event_ids {
-					prev_shorts.push(
-						self.services
-							.short
-							.get_or_create_shorteventid(prev_id)
-							.await,
-					);
-				}
+			let mut prev_shorts = Vec::with_capacity(prev_event_ids.len());
+			for prev_id in &prev_event_ids {
+				prev_shorts.push(
+					self.services
+						.short
+						.get_or_create_shorteventid(prev_id)
+						.await,
+				);
+			}
+
+			let stored_prev_shorts = self.db.get_shortprevevents(short_eid).await.ok();
+			if stored_prev_shorts.as_ref() != Some(&prev_shorts) {
 				self.db.store_shortprevevents(short_eid, &prev_shorts);
 				stats.repaired_prev_events = stats.repaired_prev_events.saturating_add(1);
 			}
@@ -220,25 +257,22 @@ impl Service {
 				shorts
 			};
 
-			if self
-				.db
-				.get_shortauthevents(short_eid)
-				.await
-				.map_or(true, |v| v.is_empty())
-				&& !auth_shorts.is_empty()
-			{
+			let stored_auth_shorts = self.db.get_shortauthevents(short_eid).await.ok();
+			let auth_events_repaired = stored_auth_shorts.as_ref() != Some(&auth_shorts);
+			if auth_events_repaired {
 				self.db.store_shortauthevents(short_eid, &auth_shorts);
 				stats.repaired_auth_events = stats.repaired_auth_events.saturating_add(1);
 			}
 
 			// --- shorteventid_authchain (incremental) ---
 			// auth_chain[e] = auth_events(e) ∪ ⋃(auth_chain[ae])
-			if self
-				.services
-				.auth_chain
-				.get_cached_eventid_authchain(&[short_eid])
-				.await
-				.is_err()
+			if auth_events_repaired
+				|| self
+					.services
+					.auth_chain
+					.get_cached_eventid_authchain(shortroomid, short_eid)
+					.await
+					.is_err()
 			{
 				let mut full_chain = RoaringTreemap::new();
 				for &auth_short in &auth_shorts {
@@ -250,15 +284,17 @@ impl Service {
 				}
 
 				let chain_arc = Arc::new(full_chain);
-				self.services
-					.auth_chain
-					.cache_auth_chain_bitmap(vec![short_eid], &chain_arc);
+				self.services.auth_chain.cache_auth_chain_bitmap(
+					shortroomid,
+					short_eid,
+					&chain_arc,
+				);
 				auth_chain_cache.insert(short_eid, chain_arc);
 				stats.repaired_auth_chains = stats.repaired_auth_chains.saturating_add(1);
 			} else if let Ok(existing) = self
 				.services
 				.auth_chain
-				.get_cached_eventid_authchain(&[short_eid])
+				.get_cached_eventid_authchain(shortroomid, short_eid)
 				.await
 			{
 				// Populate local cache for descendants
@@ -289,6 +325,10 @@ impl Service {
 			stats.repaired_search_index = stats.repaired_search_index.saturating_add(1);
 		}
 
+		if rebuild_topo && topo_batch_len > 0 {
+			self.db.db_apply_batch(topo_batch);
+		}
+
 		// --- Forward extremities (roomid_pduleaves) ---
 		let (extremities_updated, extremities_count) =
 			self.recalculate_extremities(room_id, true).await?;
@@ -296,7 +336,6 @@ impl Service {
 		stats.extremities_updated = extremities_updated;
 
 		drop(cork);
-		drop(state_lock);
 
 		info!("reindex_short: completed for {room_id}: {stats}");
 		Ok(stats)

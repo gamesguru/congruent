@@ -1,7 +1,8 @@
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
-	Result, Server, SyncRwLock, debug, debug_info, error, info, trace, utils::stream::IterStream,
+	Result, Server, SyncRwLock, debug, debug_info, error, info, trace,
+	utils::stream::{IterStream, ReadyExt},
 	warn,
 };
 use database::Database;
@@ -93,6 +94,7 @@ impl Services {
 			rooms: rooms::Service {
 				alias: build!(rooms::alias::Service),
 				auth_chain: build!(rooms::auth_chain::Service),
+				delayed_events: build!(rooms::delayed_events::Service),
 				directory: build!(rooms::directory::Service),
 				event_handler: build!(rooms::event_handler::Service),
 				lazy_loading: build!(rooms::lazy_loading::Service),
@@ -144,6 +146,10 @@ impl Services {
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 
+		// Initialize first-run state before listeners start accepting requests so
+		// registration and banner checks cannot race the firstrun worker.
+		self.firstrun.initialize_first_run_marker().await?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;
@@ -167,6 +173,12 @@ impl Services {
 
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
+
+		// Some service workers exit only after the server enters stopping state
+		// and receives a shutdown signal. Interrupting alone is insufficient.
+		if self.server.running() {
+			self.server.shutdown().unwrap_or_else(error::default_log);
+		}
 
 		// set the server user as offline
 		if self.server.config.allow_local_presence {
@@ -195,10 +207,12 @@ impl Services {
 	}
 
 	pub async fn clear_cache(&self) {
+		use conduwuit::utils::stream::BroadbandExt;
 		self.services()
-			.for_each(|service| async move {
+			.broad_then(|service| async move {
 				service.clear_cache().await;
 			})
+			.ready_for_each(|()| ())
 			.await;
 	}
 

@@ -21,7 +21,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{RoomId, ServerName, UserId, api::OutgoingRequest};
+use ruma::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
 use tokio::{task, task::JoinSet};
 
 use self::data::Data;
@@ -41,7 +41,13 @@ pub struct Service {
 	services: Services,
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
 	pub(super) semaphore: Arc<tokio::sync::Semaphore>,
-	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<ruma::OwnedServerName>>,
+	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
+	/// Monotonic counter for outgoing federation transaction IDs, seeded from
+	/// the current unix-ms timestamp at startup and incremented per
+	/// transaction sent (same scheme Synapse's `TransactionManager` uses).
+	/// Seeding from wall-clock time rather than starting at 0 keeps IDs
+	/// unique across restarts without needing to persist the counter.
+	pub(super) next_txn_id: std::sync::atomic::AtomicU64,
 }
 
 struct Services {
@@ -91,6 +97,9 @@ impl crate::Service for Service {
 			db: Data::new(&args),
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
+			next_txn_id: std::sync::atomic::AtomicU64::new(
+				ruma::MilliSecondsSinceUnixEpoch::now().get().into(),
+			),
 			server: args.server.clone(),
 			services: Services {
 				client: args.depend::<client::Service>("client"),
@@ -334,6 +343,61 @@ impl Service {
 		self.flush_servers(servers).await
 	}
 
+	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
+	pub async fn wait_for_pdu_servers(
+		&self,
+		servers: Vec<OwnedServerName>,
+		pdu_id: &RawPduId,
+		timeout: Duration,
+		timeout_message: &'static str,
+	) -> Result<()> {
+		if servers.is_empty() {
+			return Ok(());
+		}
+
+		let keys: Vec<(Vec<u8>, bool)> = servers
+			.iter()
+			.map(|server| {
+				let mut key = Destination::Federation(server.clone()).get_prefix();
+				key.extend_from_slice(pdu_id.as_ref());
+				(key, false)
+			})
+			.collect();
+
+		let started_at = tokio::time::Instant::now();
+		let mut keys = keys;
+		loop {
+			let mut pending = Vec::new();
+			for (key, attempted) in &mut keys {
+				let is_current = self.db.servercurrentevent_data.contains(key).await;
+				*attempted |= is_current;
+
+				if is_current || (!*attempted && self.db.servernameevent_data.contains(key).await)
+				{
+					pending.push(key.clone());
+				}
+			}
+
+			if pending.is_empty() {
+				return Ok(());
+			}
+
+			let remaining = timeout.saturating_sub(started_at.elapsed());
+			if remaining.is_zero() {
+				return Err(err!(Request(Unknown("{timeout_message}"))));
+			}
+
+			let mut watchers = futures::stream::FuturesUnordered::new();
+			for key in &pending {
+				watchers.push(self.db.servernameevent_data.watch_prefix(key));
+				watchers.push(self.db.servercurrentevent_data.watch_prefix(key));
+			}
+
+			let wait = remaining.min(Duration::from_secs(1));
+			let _ = tokio::time::timeout(wait, watchers.next()).await;
+		}
+	}
+
 	#[tracing::instrument(skip(self, servers), level = "debug")]
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
@@ -416,29 +480,20 @@ impl Service {
 		user_id: Option<&UserId>,
 		push_key: Option<&str>,
 	) -> Result {
-		match (appservice_id, user_id, push_key) {
-			| (None, Some(user_id), Some(push_key)) => {
-				self.db
-					.delete_all_requests_for(&Destination::Push(
-						user_id.to_owned(),
-						push_key.to_owned(),
-					))
-					.await;
-
-				Ok(())
-			},
-			| (Some(appservice_id), None, None) => {
-				self.db
-					.delete_all_requests_for(&Destination::Appservice(appservice_id.to_owned()))
-					.await;
-
-				Ok(())
-			},
+		let destination = match (appservice_id, user_id, push_key) {
+			| (None, Some(user_id), Some(push_key)) =>
+				Destination::Push(user_id.to_owned(), push_key.to_owned()),
+			| (Some(appservice_id), None, None) =>
+				Destination::Appservice(appservice_id.to_owned()),
 			| _ => {
 				debug_warn!("cleanup_events called with too many or too few arguments");
-				Ok(())
+				return Ok(());
 			},
-		}
+		};
+
+		self.db.delete_all_requests_for(&destination).await;
+
+		Ok(())
 	}
 
 	fn dispatch(&self, msg: Msg) -> Result {
@@ -576,5 +631,5 @@ fn num_senders(args: &crate::Args<'_>) -> usize {
 	args.server
 		.config
 		.sender_workers
-		.clamp(MIN_SENDERS, max_senders)
+		.clamp(MIN_SENDERS, max_senders.max(MIN_SENDERS))
 }

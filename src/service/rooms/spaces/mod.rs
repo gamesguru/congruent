@@ -62,6 +62,16 @@ pub enum SummaryAccessibility {
 	Inaccessible,
 }
 
+impl SummaryAccessibility {
+	fn for_suggested_only(self, suggested_only: bool) -> Self {
+		match self {
+			| Self::Accessible(summary) =>
+				Self::Accessible(filter_summary_children_state(summary, suggested_only)),
+			| Self::Inaccessible => Self::Inaccessible,
+		}
+	}
+}
+
 /// Identifier used to check if rooms are accessible. None is used if you want
 /// to return the room, no matter if accessible or not
 pub enum Identifier<'a> {
@@ -350,7 +360,7 @@ pub async fn get_summary_and_children_client(
 		.get_summary_and_children_local(current_room, &identifier)
 		.await
 	{
-		return Ok(Some(response));
+		return Ok(Some(response.for_suggested_only(suggested_only)));
 	}
 
 	if self
@@ -368,7 +378,7 @@ pub async fn get_summary_and_children_client(
 		.get_summary_and_children_federation(current_room, suggested_only, user_id, via)
 		.await
 	{
-		| Ok(Some(response)) => return Ok(Some(response)),
+		| Ok(Some(response)) => return Ok(Some(response.for_suggested_only(suggested_only))),
 		| Ok(None) => {
 			debug!(room_id = %current_room, "spaces: federation returned no summary");
 		},
@@ -381,6 +391,7 @@ pub async fn get_summary_and_children_client(
 	// vanish from the hierarchy when federation is unreachable.
 	debug!(room_id = %current_room, "spaces: using local fallback (may have stale counts)");
 	self.get_summary_and_children_local_fallback(current_room, &identifier)
+		.map_ok(|response| response.map(|response| response.for_suggested_only(suggested_only)))
 		.await
 }
 
@@ -589,35 +600,47 @@ pub(crate) fn is_join_rule_accessible(
 /// Returns the children of a SpaceHierarchyParentSummary, making use of the
 /// children_state field.
 ///
-/// Sorted by the spec-mandated `order` field (lexicographic), rooms without
-/// `order` come last, tiebreak by room_id for determinism across homeservers.
+/// Sorted by the spec-mandated `order`, `origin_server_ts`, and room ID tie
+/// breakers. Do not rely on state iteration order here.
 pub fn get_parent_children_via(
 	parent: &SpaceHierarchyParentSummary,
 	suggested_only: bool,
 ) -> Vec<(OwnedRoomId, Vec<OwnedServerName>)> {
+	let is_space = parent
+		.room_type
+		.as_ref()
+		.is_some_and(|rt| rt.as_str() == "m.space");
+	if !is_space {
+		return Vec::new();
+	}
+
 	let mut children: Vec<_> = parent
 		.children_state
 		.iter()
 		.map(Raw::deserialize)
 		.filter_map(Result::ok)
 		.filter(|ce| !suggested_only || ce.content.suggested)
-		.map(|ce| (ce.state_key, ce.content.order, ce.content.via))
 		.collect();
 
-	// Spec: sort by `order` field (lexicographic), rooms without `order` come
-	// last, tiebreak by room_id for determinism across homeservers.
-	children.sort_by(|(room_a, order_a, _), (room_b, order_b, _)| {
-		match (order_a.as_deref(), order_b.as_deref()) {
-			| (Some(a), Some(b)) => a.cmp(b).then_with(|| room_a.cmp(room_b)),
-			| (Some(_), None) => std::cmp::Ordering::Less,
-			| (None, Some(_)) => std::cmp::Ordering::Greater,
-			| (None, None) => room_a.cmp(room_b),
-		}
+	children.sort_by(|a, b| match (a.content.order.as_deref(), b.content.order.as_deref()) {
+		| (Some(order_a), Some(order_b)) => match order_a.cmp(order_b) {
+			| std::cmp::Ordering::Equal => match a.origin_server_ts.cmp(&b.origin_server_ts) {
+				| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
+				| ordering => ordering,
+			},
+			| ordering => ordering,
+		},
+		| (Some(_), None) => std::cmp::Ordering::Less,
+		| (None, Some(_)) => std::cmp::Ordering::Greater,
+		| (None, None) => match a.origin_server_ts.cmp(&b.origin_server_ts) {
+			| std::cmp::Ordering::Equal => a.state_key.cmp(&b.state_key),
+			| ordering => ordering,
+		},
 	});
 
 	children
 		.into_iter()
-		.map(|(room_id, _order, via)| (room_id, via))
+		.map(|ce| (ce.state_key, ce.content.via))
 		.collect()
 }
 
@@ -710,7 +733,11 @@ impl From<CachedSpaceHierarchySummary> for SpaceHierarchyRoomsChunk {
 /// Here because cannot implement `From` across ruma-federation-api and
 /// ruma-client-api types
 #[must_use]
-pub fn summary_to_chunk(summary: SpaceHierarchyParentSummary) -> SpaceHierarchyRoomsChunk {
+pub fn summary_to_chunk(
+	summary: SpaceHierarchyParentSummary,
+	suggested_only: bool,
+) -> SpaceHierarchyRoomsChunk {
+	let summary = filter_summary_children_state(summary, suggested_only);
 	let SpaceHierarchyParentSummary {
 		canonical_alias,
 		name,
@@ -744,4 +771,19 @@ pub fn summary_to_chunk(summary: SpaceHierarchyParentSummary) -> SpaceHierarchyR
 		room_version,
 		allowed_room_ids,
 	}
+}
+
+fn filter_summary_children_state(
+	mut summary: SpaceHierarchyParentSummary,
+	suggested_only: bool,
+) -> SpaceHierarchyParentSummary {
+	if suggested_only {
+		summary.children_state.retain(|child| {
+			child
+				.deserialize()
+				.is_ok_and(|child| child.content.suggested)
+		});
+	}
+
+	summary
 }

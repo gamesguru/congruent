@@ -29,13 +29,16 @@ use ruma::{
 	RoomId, ServerName, UInt, UserId,
 	api::{
 		client::error::{ErrorKind, ErrorKind::LimitExceeded},
-		federation::transactions::{
-			edu::{
-				DeviceListUpdateContent, DirectDeviceContent, Edu, PresenceContent,
-				PresenceUpdate, ReceiptContent, ReceiptData, ReceiptMap, SigningKeyUpdateContent,
-				TypingContent,
+		federation::{
+			device::get_devices,
+			transactions::{
+				edu::{
+					DeviceListUpdateContent, DirectDeviceContent, Edu, PresenceContent,
+					PresenceUpdate, ReceiptContent, ReceiptData, ReceiptMap,
+					SigningKeyUpdateContent, TypingContent,
+				},
+				send_transaction_message,
 			},
-			send_transaction_message,
 		},
 	},
 	events::{
@@ -229,18 +232,22 @@ async fn process_inbound_transaction(
 		.transactions_processed
 		.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-	// Spawn EDU processing into background so PDU pipeline starts immediately.
-	// EDUs are lightweight DB writes (to-device, receipts, typing) that don't
-	// need to block the transaction response.
+	// Process EDUs concurrently with the PDU pipeline, but don't acknowledge the
+	// transaction until both sides have actually committed. Returning 200 before
+	// receipt/typing/device-list EDUs land creates an ack-before-commit race:
+	// the sender advances its EDU watermark while the receiver may still not
+	// have applied the write or an ACL gate for that same transaction.
 	let edu_origin = body.origin().to_owned();
-	services.server.runtime().spawn(async move {
+	let edu_processing = async {
 		edus.for_each_concurrent(automatic_width(), |edu| {
 			handle_edu(&services, &client, &edu_origin, edu)
 		})
 		.await;
-	});
+	};
 
-	let results = match handle(&services, &client, body.origin(), pdus).await {
+	let ((), results) =
+		tokio::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
+	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
 			fail_federation_txn(services, &txn_key, &sender, err);
@@ -950,7 +957,15 @@ async fn handle_edu_device_list_update(
 	origin: &ServerName,
 	content: DeviceListUpdateContent,
 ) {
-	let DeviceListUpdateContent { user_id, .. } = content;
+	let DeviceListUpdateContent {
+		user_id,
+		device_id,
+		stream_id,
+		prev_id,
+		deleted,
+		keys,
+		device_display_name,
+	} = content;
 
 	if user_id.server_name() != origin {
 		debug_warn!(
@@ -962,7 +977,199 @@ async fn handle_edu_device_list_update(
 
 	info!(%user_id, %origin, "Received DeviceListUpdate event");
 
-	services.users.mark_device_key_update(&user_id).await;
+	let incoming_stream_id = u64::from(stream_id);
+	let last_seen_stream_id = services.users.remote_device_list_stream_id(&user_id).await;
+
+	if incoming_stream_id <= last_seen_stream_id {
+		return;
+	}
+
+	if prev_id
+		.iter()
+		.map(|prev| u64::from(*prev))
+		.any(|prev| prev > last_seen_stream_id && prev != incoming_stream_id)
+	{
+		// TODO: Synapse keeps a richer pending-update pipeline keyed by prev_id, which
+		// lets it reconcile some out-of-order EDUs locally instead of forcing clients
+		// to refetch. We intentionally keep this lighter for now and conservatively
+		// surface a change.
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+		services.users.mark_device_key_update(&user_id).await;
+		return;
+	}
+
+	if deleted == Some(true) {
+		let had_cached_keys = services
+			.users
+			.get_device_keys(&user_id, &device_id)
+			.await
+			.is_ok();
+
+		services
+			.users
+			.remove_remote_device_keys(&user_id, &device_id)
+			.await;
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+
+		if had_cached_keys {
+			services.users.mark_device_key_update(&user_id).await;
+		}
+
+		return;
+	}
+
+	let Some(incoming_keys) = keys else {
+		let request = get_devices::v1::Request { user_id: user_id.clone() };
+
+		let Ok(response) = services
+			.sending
+			.send_federation_request(user_id.server_name(), request)
+			.await
+		else {
+			// The EDU only carried a stream position, so we need a follow-up
+			// /user/devices fetch to decide whether anything actually changed.
+			// If that fetch fails, defer processing instead of fabricating a
+			// local keychange. The sender will retry the EDU, and we can only
+			// safely advance the remote cursor once we have confirmed state.
+			tracing::warn!(
+				%user_id,
+				%origin,
+				incoming_stream_id,
+				last_seen_stream_id,
+				"failed to fetch remote device list; deferring update"
+			);
+			return;
+		};
+
+		let fetched_stream_id = u64::from(response.stream_id);
+		if fetched_stream_id <= last_seen_stream_id {
+			return;
+		}
+
+		// TODO: Synapse tracks and replays prev_id chains locally, which lets it avoid
+		// some of these fallback /user/devices fetches and save federation bandwidth.
+		let mut actually_changed = false;
+		for device in response.devices {
+			let incoming_keys = inject_device_display_name(
+				device.keys.clone(),
+				device.device_display_name.as_ref(),
+			);
+
+			let existing_keys = services
+				.users
+				.get_device_keys(&user_id, &device.device_id)
+				.await
+				.ok();
+			let keys_changed = match existing_keys {
+				| Some(existing_keys) =>
+					remote_device_keys_differ(&existing_keys, &incoming_keys),
+				| None => true,
+			};
+
+			if keys_changed {
+				actually_changed = true;
+			}
+
+			services
+				.users
+				.cache_remote_device_keys(&user_id, &device.device_id, &incoming_keys)
+				.await;
+		}
+
+		services
+			.users
+			.set_remote_device_list_stream_id(&user_id, fetched_stream_id);
+
+		if actually_changed {
+			services.users.mark_device_key_update(&user_id).await;
+		}
+
+		return;
+	};
+
+	let incoming_keys = inject_device_display_name(incoming_keys, device_display_name.as_ref());
+
+	let existing_keys = services
+		.users
+		.get_device_keys(&user_id, &device_id)
+		.await
+		.ok();
+	let keys_changed = match existing_keys {
+		| Some(existing_keys) => remote_device_keys_differ(&existing_keys, &incoming_keys),
+		| None => true,
+	};
+
+	services
+		.users
+		.cache_remote_device_keys(&user_id, &device_id, &incoming_keys)
+		.await;
+	services
+		.users
+		.set_remote_device_list_stream_id(&user_id, incoming_stream_id);
+
+	if keys_changed {
+		services.users.mark_device_key_update(&user_id).await;
+	}
+}
+
+fn inject_device_display_name(
+	mut keys: Raw<DeviceKeys>,
+	display_name: Option<&String>,
+) -> Raw<DeviceKeys> {
+	let Ok(mut object) = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()
+	else {
+		return keys;
+	};
+
+	let mut modified = false;
+
+	match display_name {
+		| Some(name) => {
+			let unsigned = object
+				.entry("unsigned")
+				.or_insert_with(|| serde_json::json!({}));
+			if let serde_json::Value::Object(unsigned_object) = unsigned {
+				if unsigned_object
+					.get("device_display_name")
+					.and_then(|v| v.as_str())
+					!= Some(name)
+				{
+					unsigned_object.insert("device_display_name".to_owned(), name.clone().into());
+					modified = true;
+				}
+			}
+		},
+		| None => {
+			if let Some(serde_json::Value::Object(unsigned_object)) = object.get_mut("unsigned") {
+				if unsigned_object.remove("device_display_name").is_some() {
+					modified = true;
+				}
+			}
+		},
+	}
+
+	if modified {
+		if let Ok(raw) = serde_json::value::to_raw_value(&object) {
+			keys = Raw::from_json(raw);
+		}
+	}
+
+	keys
+}
+
+fn remote_device_keys_differ(
+	existing_keys: &Raw<DeviceKeys>,
+	incoming_keys: &Raw<DeviceKeys>,
+) -> bool {
+	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
+		| (Ok(existing_keys), Ok(incoming_keys)) =>
+			serde_json::to_value(existing_keys).ok() != serde_json::to_value(incoming_keys).ok(),
+		| _ => existing_keys.json().get() != incoming_keys.json().get(),
+	}
 }
 
 async fn handle_edu_direct_to_device(

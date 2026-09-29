@@ -255,7 +255,12 @@ pub(super) async fn fetch_pdu(
 				&server,
 				&room_id,
 				false,
-				true,
+				false, // historical/admin rescue; do not merge today's forward extremities
+				false,
+				None,
+				// No outer `with_cork_and_flush` on this admin path -- the
+				// timeline insert must flush itself.
+				false,
 			),
 	)
 	.await?;
@@ -463,7 +468,8 @@ pub(super) async fn fetch_state_ids(
 					self.services
 						.rooms
 						.outlier
-						.add_pdu_outlier(&eid, &val, Some(&room_id));
+						.add_pdu_outlier(&eid, &val, Some(&room_id))
+						.await;
 					fetched = fetched.saturating_add(1);
 				} else {
 					failed = failed.saturating_add(1);

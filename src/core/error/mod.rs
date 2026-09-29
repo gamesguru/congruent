@@ -102,6 +102,8 @@ pub enum Error {
 	Conflict(Cow<'static, str>), // This is only needed for when a room alias already exists
 	#[error("Missing auth events required for event validation: {0:?}")]
 	MissingAuthEvents(Vec<ruma::OwnedEventId>),
+	#[error("State resolution failed but the event's prev events were all present: {0}")]
+	StateResolutionWithPrevsPresent(Cow<'static, str>),
 	#[error(transparent)]
 	ContentDisposition(#[from] ruma::http_headers::ContentDispositionParseError),
 	#[error("{0}")]

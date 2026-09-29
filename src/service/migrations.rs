@@ -33,7 +33,7 @@ use crate::{Services, media, rooms::short::ShortStateHash};
 /// - If database is opened at lesser version we apply migrations up to this.
 ///   Note that named-feature migrations may also be performed when opening at
 ///   equal or lesser version. These are expected to be backward-compatible.
-pub(crate) const DATABASE_VERSION: u64 = 20;
+pub(crate) const DATABASE_VERSION: u64 = 21;
 
 /// Column families explicitly dropped in migrations. These are included
 /// in the fingerprint hash (prefixed with '-') so that a branch which
@@ -107,7 +107,7 @@ async fn fresh(services: &Services) -> Result<()> {
 	db["global"].insert(b"fix_corrupt_msc4133_fields", []);
 	db["global"].insert(b"populate_userroomid_leftstate_table", []);
 	db["global"].insert(b"fix_local_invite_state", []);
-	// v19 - PDU and read receipt refactor/optimization
+	// v20 - PDU/read-receipt refactor plus RawPduId format unification
 	db["global"].insert(MIGRATE_EVENT_STORE_TO_SSOT_MARKER, []);
 	db["global"].insert(MIGRATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
 	db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
@@ -367,6 +367,19 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_20(services))
 			.await
 			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
+	} else if services.globals.db.database_version().await < 20 {
+		services.globals.db.bump_database_version(20);
+	}
+
+	// v21 - delete the single-slot `EventStatus` model; verdicts live in the
+	// independent `eventid_rejections`/`eventid_softfailed` stores. `db_lt_21`
+	// folds the legacy `eventid_status` CF and any legacy `eventid_metadata.status`
+	// field into those stores and rewrites `eventid_metadata` rows status-less.
+	// (`eventid_status` stays as a live-but-unused CF for upgrade-path safety.)
+	if services.globals.db.database_version().await < 21 {
+		db_lt_21(services)
+			.await
+			.map_err(|e| err!("Failed to run v21 migrations: {e}"))?;
 	}
 
 	if services.globals.db.database_version().await != DATABASE_VERSION {
@@ -503,90 +516,151 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 	info!("Starting private read receipt migration...");
 
 	let db = &services.db;
-	let legacy_count_map = db["roomuserid_privateread"].clone();
-	let legacy_event_map = db["roomuserid_privatereadevent"].clone();
-	let legacy_update_map = db["roomuserid_lastprivatereadupdate"].clone();
 	let new_receipt_map = db["roomuserid_privatereadreceipt"].clone();
+	let Some(legacy_count_map) = db
+		.db
+		.cf_exists("roomuserid_privateread")
+		.then(|| database::Map::open(&db.db, "roomuserid_privateread"))
+		.transpose()?
+	else {
+		info!("Legacy private read receipt maps not present; marking migration complete.");
+		db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
+		db.db.sort()?;
+		return Ok(());
+	};
+	let legacy_event_map = db
+		.db
+		.cf_exists("roomuserid_privatereadevent")
+		.then(|| database::Map::open(&db.db, "roomuserid_privatereadevent"))
+		.transpose()?;
+	let legacy_update_map = db
+		.db
+		.cf_exists("roomuserid_lastprivatereadupdate")
+		.then(|| database::Map::open(&db.db, "roomuserid_lastprivatereadupdate"))
+		.transpose()?;
+	let (total_migrated, with_event, count_only, skipped) = {
+		let stream = legacy_count_map.raw_stream();
+		pin_mut!(stream);
+		let mut total_migrated: usize = 0;
+		let mut with_event: usize = 0;
+		let mut count_only: usize = 0;
+		let mut skipped: usize = 0;
 
-	let stream = legacy_count_map.raw_stream();
-	pin_mut!(stream);
-	let mut total_migrated: usize = 0;
-	let mut with_event: usize = 0;
-	let mut count_only: usize = 0;
-	let mut skipped: usize = 0;
+		while let Some((key, value)) = stream.try_next().await? {
+			let Some(sep) = key.iter().position(|&b| b == database::SEP) else {
+				continue;
+			};
 
-	while let Some((key, value)) = stream.try_next().await? {
-		let Some(sep) = key.iter().position(|&b| b == database::SEP) else {
-			continue;
-		};
+			let room_id_bytes = &key[..sep];
+			let user_id_bytes = &key[sep.saturating_add(1)..];
 
-		let room_id_bytes = &key[..sep];
-		let user_id_bytes = &key[sep.saturating_add(1)..];
+			let Ok(room_id) = <&RoomId>::try_from(
+				conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
+			) else {
+				skipped = skipped.saturating_add(1);
+				continue;
+			};
+			let Ok(user_id) = <&UserId>::try_from(
+				conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
+			) else {
+				skipped = skipped.saturating_add(1);
+				continue;
+			};
 
-		let Ok(room_id) = <&RoomId>::try_from(
-			conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
-		) else {
-			skipped = skipped.saturating_add(1);
-			continue;
-		};
-		let Ok(user_id) = <&UserId>::try_from(
-			conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
-		) else {
-			skipped = skipped.saturating_add(1);
-			continue;
-		};
+			let count =
+				conduwuit::utils::u64_from_bytes(value.get(..8).unwrap_or_default()).unwrap_or(0);
 
-		let count =
-			conduwuit::utils::u64_from_bytes(value.get(..8).unwrap_or_default()).unwrap_or(0);
+			let mut legacy_key = room_id.as_bytes().to_vec();
+			legacy_key.push(0xFF);
+			legacy_key.extend_from_slice(user_id.as_bytes());
 
-		let mut legacy_key = room_id.as_bytes().to_vec();
-		legacy_key.push(0xFF);
-		legacy_key.extend_from_slice(user_id.as_bytes());
-
-		let event: ruma::events::receipt::ReceiptEvent =
-			if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
-				with_event = with_event.saturating_add(1);
-				serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+			let event: ruma::events::receipt::ReceiptEvent =
+				if let Some(legacy_event_map) = &legacy_event_map {
+					if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
+						with_event = with_event.saturating_add(1);
+						serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+							ruma::events::receipt::ReceiptEvent {
+								content: ruma::events::receipt::ReceiptEventContent(
+									std::collections::BTreeMap::new(),
+								),
+								room_id: room_id.to_owned(),
+							}
+						})
+					} else {
+						count_only = count_only.saturating_add(1);
+						ruma::events::receipt::ReceiptEvent {
+							content: ruma::events::receipt::ReceiptEventContent(
+								std::collections::BTreeMap::new(),
+							),
+							room_id: room_id.to_owned(),
+						}
+					}
+				} else {
+					count_only = count_only.saturating_add(1);
 					ruma::events::receipt::ReceiptEvent {
 						content: ruma::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
 						room_id: room_id.to_owned(),
 					}
-				})
-			} else {
-				count_only = count_only.saturating_add(1);
-				// No cached event -- store receipt with count only (no DB lookups)
-				ruma::events::receipt::ReceiptEvent {
-					content: ruma::events::receipt::ReceiptEventContent(
-						std::collections::BTreeMap::new(),
-					),
-					room_id: room_id.to_owned(),
+				};
+
+			let update_count = if let Some(legacy_update_map) = &legacy_update_map {
+				if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
+					conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
+				} else {
+					0
 				}
+			} else {
+				0
 			};
 
-		let update_count = if let Ok(update_bytes) = legacy_update_map.get(&legacy_key).await {
-			conduwuit::utils::u64_from_bytes(&update_bytes).unwrap_or(0)
-		} else {
-			0
-		};
+			let mut new_key = room_id.as_bytes().to_vec();
+			new_key.push(database::SEP);
+			new_key.extend_from_slice(user_id.as_bytes());
 
-		let mut new_key = room_id.as_bytes().to_vec();
-		new_key.push(database::SEP);
-		new_key.extend_from_slice(user_id.as_bytes());
+			new_receipt_map.put(new_key, Json((count, event, update_count)));
+			total_migrated = total_migrated.saturating_add(1);
 
-		new_receipt_map.put(new_key, Json((count, event, update_count)));
-		total_migrated = total_migrated.saturating_add(1);
-
-		if total_migrated.is_multiple_of(5000) {
-			info!("Migrated {} private read receipts...", total_migrated);
+			if total_migrated.is_multiple_of(5000) {
+				info!("Migrated {} private read receipts...", total_migrated);
+			}
 		}
-	}
+
+		(total_migrated, with_event, count_only, skipped)
+	};
 
 	info!(
 		"Successfully migrated {total_migrated} private read receipts ({with_event} with event, \
 		 {count_only} count-only, {skipped} skipped)."
 	);
+
+	// `Map::open` stashes a lifetime-erased `Arc<ColumnFamily>` (see the SAFETY
+	// comment in `map/open.rs`) that becomes invalid the moment its column
+	// family is dropped. These are the only owners of that handle, so drop
+	// them explicitly before `drop_cf` below invalidates the handles --
+	// otherwise we'd be holding dangling column family handles, risking a
+	// crash (or worse) the next time they're touched, including on their own
+	// eventual `Drop`.
+	drop(legacy_count_map);
+	drop(legacy_event_map);
+	drop(legacy_update_map);
+
+	if db.db.cf_exists("roomuserid_privateread") {
+		db.db
+			.drop_cf("roomuserid_privateread")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_privateread: {e}"));
+	}
+	if db.db.cf_exists("roomuserid_privatereadevent") {
+		db.db
+			.drop_cf("roomuserid_privatereadevent")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_privatereadevent: {e}"));
+	}
+	if db.db.cf_exists("roomuserid_lastprivatereadupdate") {
+		db.db
+			.drop_cf("roomuserid_lastprivatereadupdate")
+			.unwrap_or_else(|e| warn!("Failed to drop roomuserid_lastprivatereadupdate: {e}"));
+	}
 	db["global"].insert(MIGRATE_PRIVATE_READ_RECEIPTS_TO_SSOT_MARKER, []);
 	db.db.sort()?;
 	Ok(())
@@ -603,6 +677,8 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	let eventid_pdu = db["eventid_pdu"].clone();
 	let room_pducount_eventid = db["room_pducount_eventid"].clone();
 	let eventid_metadata = db["eventid_metadata"].clone();
+	let eventid_rejections = db["eventid_rejections"].clone();
+	let eventid_softfailed = db["eventid_softfailed"].clone();
 	let roomid_topologicalorder_pducount = db["roomid_topologicalorder_pducount"].clone();
 
 	let cork = db.cork_and_sync();
@@ -614,6 +690,51 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	let mut timeline_event_ids: std::collections::HashSet<Vec<u8>> =
 		std::collections::HashSet::new();
 	let mut depth_cache: HashMap<Vec<u8>, u64> = HashMap::new();
+
+	// When this migration rewrites an `eventid_metadata` row it may be
+	// clobbering a pre-v21 row that still carries the legacy single-slot
+	// `EventStatus` verdict (v20 layout). `db_lt_21` later folds those verdicts
+	// out of `EventMetadata`, but it runs *after* this SSOT migration on the
+	// same startup, so once we strip the `status` field here there is nothing
+	// left for `db_lt_21` to fold. Preserve any legacy verdict into the
+	// authoritative independent stores *before* overwriting the row.
+	// Read errors are fatal here: if we cannot verify whether this row still
+	// carries a legacy verdict, aborting the migration (rather than silently
+	// proceeding to overwrite it) is the only way to guarantee the verdict is
+	// not lost. Only `NotFound` means there is genuinely no legacy row to
+	// preserve.
+	let fold_legacy_status = |event_id_bytes: &[u8]| -> Result<()> {
+		let existing_bytes = match eventid_metadata.get_blocking(event_id_bytes) {
+			| Ok(bytes) => bytes,
+			| Err(e) if e.is_not_found() => return Ok(()),
+			| Err(e) => {
+				return Err(err!(
+					"Failed reading eventid_metadata while preserving legacy verdict for event \
+					 {:?}: {e}",
+					event_id_bytes.len(),
+				));
+			},
+		};
+		let Ok(legacy) = bincode::deserialize::<EventMetadataV20>(&existing_bytes) else {
+			return Ok(());
+		};
+		if let EventStatusV20::Rejected(code) = &legacy.status {
+			if eventid_rejections
+				.get_blocking(event_id_bytes)
+				.is_not_found()
+			{
+				eventid_rejections.insert(event_id_bytes, [code.to_u8()]);
+			}
+		} else if let EventStatusV20::SoftFailed(code) = &legacy.status {
+			if eventid_softfailed
+				.get_blocking(event_id_bytes)
+				.is_not_found()
+			{
+				eventid_softfailed.insert(event_id_bytes, [code.to_u8()]);
+			}
+		}
+		Ok(())
+	};
 
 	// Phase 1: Migrate timeline events from pduid_pdu (pdu_id -> PDU JSON)
 	if let Ok(pduid_pdu) = database::Map::open(&db.db, "pduid_pdu") {
@@ -661,17 +782,23 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 				is_outlier: false,
 				origin_server_ts: pdu.origin_server_ts().0,
 				depth: pdu.depth(),
-				soft_failed: false,
-				rejected: pdu.rejected(),
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: None,
 				deprecated_local_topo_depth,
 				pdu_count: Some(unsigned_pdu_count),
-				soft_fail_reason: String::new(),
-				rejection_reason: String::new(),
 			};
 			if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
+				fold_legacy_status(event_id_bytes)?;
 				eventid_metadata.insert(event_id_bytes, metadata_bytes);
+			}
+			if pdu.rejected()
+				&& db["eventid_rejections"]
+					.get_blocking(event_id_bytes)
+					.is_not_found()
+			{
+				db["eventid_rejections"].insert(event_id_bytes, [
+					crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
+				]);
 			}
 
 			// roomid_topologicalorder_pducount
@@ -713,17 +840,23 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 					is_outlier: true,
 					origin_server_ts: pdu.origin_server_ts().0,
 					depth: pdu.depth(),
-					soft_failed: false,
-					rejected: pdu.rejected(),
 					redacted_by: pdu.redacts().map(ToOwned::to_owned),
 					short_state_hash: None,
 					deprecated_local_topo_depth: 0,
 					pdu_count: None,
-					soft_fail_reason: String::new(),
-					rejection_reason: String::new(),
 				};
 				if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
+					fold_legacy_status(event_id_bytes)?;
 					eventid_metadata.insert(event_id_bytes, metadata_bytes);
+				}
+				if pdu.rejected()
+					&& db["eventid_rejections"]
+						.get_blocking(event_id_bytes)
+						.is_not_found()
+				{
+					db["eventid_rejections"].insert(event_id_bytes, [
+						crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8(),
+					]);
 				}
 			}
 
@@ -747,12 +880,24 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 	);
 
 	db["global"].insert(MIGRATE_EVENT_STORE_TO_SSOT_MARKER, []);
-	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
+
+	// Phase 1 above writes `roomid_topologicalorder_pducount` entries using an
+	// ad-hoc key layout (shortroomid ++ raw depth ++ raw count bytes), not the
+	// canonical `TimelineKey`-based encoding `populate_topological_index` (and
+	// every read-path helper, e.g. `Data::topo_pducount_key`) expects. On a
+	// normal upgrade `populate_topological_index` runs right after this and
+	// rebuilds the whole index, so only clear its marker when this invocation
+	// actually wrote timeline entries that require that rebuild. If no legacy
+	// timeline PDUs were migrated (`timeline == 0`), clearing the marker would
+	// force a full rebuild on every boot whenever `eventid_pdu` stays empty.
+	if timeline > 0 {
+		db["global"].remove(POPULATE_TOPOLOGICAL_INDEX_MARKER);
+	}
 	db.db.sort()?;
 	Ok(())
 }
 
-const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v2";
+const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v4";
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
 async fn populate_topological_index(services: &Services) -> Result<()> {
@@ -810,7 +955,7 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 				continue;
 			};
 
-			let Ok(meta) = crate::rooms::timeline::EventMetadata::from_bincode(&meta_handle)
+			let Ok(mut meta) = crate::rooms::timeline::EventMetadata::from_bincode(&meta_handle)
 			else {
 				continue;
 			};
@@ -827,13 +972,19 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			}
 
 			let global_depth: u64 = meta.depth.into();
+			let stream_ordering =
+				i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
+			let timeline_key = conduwuit::pdu::TimelineKey::new(global_depth, stream_ordering);
 
 			let mut topo_key = Vec::with_capacity(24);
 			topo_key.extend_from_slice(&shortroomid);
-			topo_key.extend_from_slice(&global_depth.to_be_bytes());
-			topo_key.extend_from_slice(&count_bytes);
+			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
 			roomid_topologicalorder_pducount.put(&topo_key, batch_entries[i].1.clone());
+			meta.deprecated_local_topo_depth = global_depth;
+			if let Ok(metadata_bytes) = bincode::serialize(&meta) {
+				eventid_metadata.put(batch_entries[i].1.as_slice(), metadata_bytes);
+			}
 
 			total_migrated = total_migrated.saturating_add(1);
 			if total_migrated.is_multiple_of(10000) {
@@ -917,8 +1068,18 @@ async fn populate_pdu_count_in_metadata(services: &Services) -> Result<()> {
 			} else {
 				count_bytes.copy_from_slice(&pdu_id_bytes[8..16]);
 			}
-			let count = i64::from_be_bytes(count_bytes).unsigned_abs();
-			meta.pdu_count = Some(count);
+			// `unsigned_abs()` here would fold Backfilled(-n) and Normal(n) onto
+			// the same Some(n), which then fails `matches_timeline_position`'s
+			// `Backfilled(_) => self.pdu_count.is_none()` arm for every
+			// backfilled event this migration touches (dropping them from
+			// topological pagination). Only Normal counts get a stored value;
+			// Backfilled counts stay None, matching every other write site
+			// (insert_pdu, replace_pdu, reindex.rs, reorder.rs).
+			meta.pdu_count =
+				match conduwuit::PduCount::from_signed(i64::from_be_bytes(count_bytes)) {
+					| conduwuit::PduCount::Normal(x) => Some(x),
+					| conduwuit::PduCount::Backfilled(_) => None,
+				};
 
 			if let Ok(new_bytes) = bincode::serialize(&meta) {
 				eventid_metadata.insert(&batch_entries[i].0, new_bytes);
@@ -1481,58 +1642,84 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 }
 
 async fn db_lt_19(services: &Services) -> Result<()> {
-	info!("Running v19 migration (migrating softfailedeventids to eventid_metadata)...");
+	info!("Running v19 cleanup migration...");
 	let db = &services.db;
 	let cork = db.cork_and_sync();
 
-	let mut count = 0_usize;
-	let mut migrated = 0_usize;
+	if db.db.cf_exists("softfailedeventids") {
+		if let Ok(softfailedeventids) = database::Map::open(&db.db, "softfailedeventids") {
+			let softfailed_stream = softfailedeventids.raw_stream();
+			pin_mut!(softfailed_stream);
 
-	// Open softfailedeventids map if it exists
-	if let Ok(softfailedeventids) = database::Map::open(&db.db, "softfailedeventids") {
-		let softfailed_stream = softfailedeventids.raw_stream();
-		pin_mut!(softfailed_stream);
+			let mut batch = database::Batch::new();
+			let mut batch_count = 0_usize;
 
-		let mut batch = database::rocksdb::WriteBatch::default();
+			while let Some(item) = softfailed_stream.next().await {
+				let (event_id_bytes, _) = item?;
 
-		let mut batch_count = 0_usize;
-
-		while let Some(Ok((event_id_bytes, _))) = softfailed_stream.next().await {
-			count = count.saturating_add(1);
-			if let Ok(metadata_bytes) = db["eventid_metadata"].get_blocking(&event_id_bytes) {
-				if let Ok(mut meta) =
-					crate::rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
+				// `eventid_status` already carries a verdict for this event:
+				// leave it alone so the existing (possibly more specific)
+				// verdict is preserved. Only `NotFound` / an empty record is
+				// treated as "absent"; any other read error is a real failure
+				// we must not paper over by synthesizing `Unknown`.
+				let already_has_status = match db["eventid_status"].get_blocking(&event_id_bytes)
 				{
-					if !meta.soft_failed {
-						meta.soft_failed = true;
-						if let Ok(new_bytes) = bincode::serialize(&meta) {
-							db["eventid_metadata"].insert_into_batch(
-								&mut batch,
-								&event_id_bytes,
-								&new_bytes,
-							);
-							migrated = migrated.saturating_add(1);
-							batch_count = batch_count.saturating_add(1);
-						}
-					}
+					| Ok(bytes) => !bytes.is_empty(),
+					| Err(e) if e.is_not_found() => false,
+					| Err(e) => {
+						return Err(err!(
+							"Failed reading eventid_status while folding softfailedeventids: {e}"
+						));
+					},
+				};
+				if already_has_status {
+					continue;
+				}
+
+				// An event can be listed in `softfailedeventids` while a more
+				// specific verdict (Rejected or a typed SoftFailed code) already
+				// lives in its `eventid_metadata.status`. Writing a blanket
+				// SoftFail(Unknown) here would clobber that and, because the v21
+				// fold reads `eventid_status` before `eventid_metadata`, end up
+				// hiding the real verdict. Only synthesize `Unknown` when no
+				// stronger verdict is present; otherwise leave the row alone so
+				// the v21 migration can fold the stored verdict verbatim.
+				let metadata_has_verdict = db["eventid_metadata"]
+					.get_blocking(&event_id_bytes)
+					.ok()
+					.and_then(|bytes| bincode::deserialize::<EventMetadataV20>(&bytes).ok())
+					.is_some_and(|legacy| {
+						!matches!(
+							legacy.status,
+							EventStatusV20::Pending | EventStatusV20::Accepted
+						)
+					});
+				if metadata_has_verdict {
+					continue;
+				}
+
+				db["eventid_status"].batch_put(&mut batch, &event_id_bytes, [
+					1_u8,
+					crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8(),
+				]);
+				batch_count = batch_count.saturating_add(1);
+
+				if batch_count >= 1000 {
+					db["eventid_status"].apply_batch(batch);
+					batch = database::Batch::new();
+					batch_count = 0;
 				}
 			}
-
-			if batch_count >= 1000 {
-				db["eventid_metadata"].apply_batch(&batch);
-				batch.clear();
-				batch_count = 0;
-			}
+			db["eventid_status"].apply_batch(batch);
 		}
 
-		db["eventid_metadata"].apply_batch(&batch);
 		db.db
 			.drop_cf("softfailedeventids")
 			.unwrap_or_else(|e| warn!("Failed to drop softfailedeventids: {e}"));
 	}
 
 	// Drop eventid_receivecount if it exists
-	if database::Map::open(&db.db, "eventid_receivecount").is_ok() {
+	if db.db.cf_exists("eventid_receivecount") {
 		db.db
 			.drop_cf("eventid_receivecount")
 			.unwrap_or_else(|e| warn!("Failed to drop eventid_receivecount: {e}"));
@@ -1540,16 +1727,188 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 
 	// Drop roomid_outliereventid — outlier tracking now uses
 	// eventid_metadata.is_outlier
-	if database::Map::open(&db.db, "roomid_outliereventid").is_ok() {
+	if db.db.cf_exists("roomid_outliereventid") {
 		db.db
 			.drop_cf("roomid_outliereventid")
 			.unwrap_or_else(|e| warn!("Failed to drop roomid_outliereventid: {e}"));
 	}
 
 	drop(cork);
-	info!("Migrated {}/{} soft-failed events to eventid_metadata.", migrated, count);
+	info!("v19 cleanup migration completed.");
 
 	services.globals.db.bump_database_version(19);
+	Ok(())
+}
+
+/// Legacy `EventMetadata` layout (v20) that still carried the single-slot
+/// `status: EventStatus` field, used only to read pre-v21 rows during
+/// `db_lt_21`. Field order replicates the exact on-disk layout of the old
+/// struct so legacy rows deserialize correctly.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EventMetadataV20 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	status: EventStatusV20,
+	redacted_by: Option<ruma::OwnedEventId>,
+	short_state_hash: Option<u64>,
+	#[serde(default)]
+	deprecated_local_topo_depth: u64,
+	#[serde(default)]
+	pdu_count: Option<u64>,
+}
+
+/// Legacy single-slot event verdict (v20), mirroring the deleted `EventStatus`
+/// enum's serde layout. Reuses the still-live `RejectionCode`/`SoftFailCode`
+/// types because their serialized form is unchanged.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+enum EventStatusV20 {
+	#[default]
+	Pending,
+	Accepted,
+	Rejected(crate::rooms::pdu_metadata::RejectionCode),
+	SoftFailed(crate::rooms::pdu_metadata::SoftFailCode),
+}
+
+/// v21: delete the single-slot `EventStatus` model. The verdict now lives
+/// entirely in the independent `eventid_rejections` / `eventid_softfailed`
+/// stores, and `EventMetadata` no longer carries a `status` field. This folds
+/// the legacy `eventid_status` CF (2-byte records) and any legacy
+/// `eventid_metadata.status` field into those stores, and rewrites every
+/// `eventid_metadata` row into the status-less layout. The `eventid_status` CF
+/// stays as a live-but-unused map to keep upgrade paths and restarts safe.
+async fn db_lt_21(services: &Services) -> Result<()> {
+	info!("Starting v21 migration (fold event status into independent stores)...");
+	let db = &services.db;
+	// Hold the cork for the whole migration so the per-record inserts and
+	// batched flushes below land in a single WAL flush instead of one per
+	// record (prohibitively slow on databases with many legacy verdicts).
+	let cork = db.cork_and_sync();
+
+	let eventid_rejections = db["eventid_rejections"].clone();
+	let eventid_softfailed = db["eventid_softfailed"].clone();
+	let eventid_metadata = db["eventid_metadata"].clone();
+
+	// Fold legacy `eventid_status` 2-byte records ([1, code] = soft-fail,
+	// [2, code] = rejected) into the independent stores, skipping any entry the
+	// independent store already records (fresh writes win).
+	if db.db.cf_exists("eventid_status") {
+		let eventid_status = database::Map::open(&db.db, "eventid_status")
+			.map_err(|e| err!("Failed to open legacy eventid_status CF for v21 folding: {e}"))?;
+		let stream = eventid_status.raw_stream();
+		pin_mut!(stream);
+		while let Some(item) = stream.next().await {
+			let (event_id_bytes, value) = item.map_err(|e| {
+				err!("Failed while reading legacy eventid_status during v21 migration: {e}")
+			})?;
+			if value.len() < 2 {
+				continue;
+			}
+			match value[0] {
+				| 1 if eventid_softfailed
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+				{
+					eventid_softfailed.insert(&event_id_bytes, [value[1]]);
+				},
+				| 2 if eventid_rejections
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+				{
+					eventid_rejections.insert(&event_id_bytes, [value[1]]);
+				},
+				| _ => {},
+			}
+		}
+		info!("Folded legacy eventid_status records into independent stores.");
+	}
+
+	// Rewrite every `eventid_metadata` row into the status-less layout, folding
+	// the legacy `status` field into the independent stores as we go. Rows that
+	// already parse as v21 are left untouched; anything that parses as neither
+	// v20 nor v21 is a migration error and aborts instead of being skipped.
+	let mut batch = database::Batch::new();
+	let mut batch_count = 0_usize;
+	let metadata_stream = eventid_metadata.raw_stream();
+	pin_mut!(metadata_stream);
+	while let Some(item) = metadata_stream.next().await {
+		let (event_id_bytes, value) = item.map_err(|e| {
+			err!("Failed while scanning eventid_metadata during v21 migration: {e}")
+		})?;
+		let legacy = match bincode::deserialize::<EventMetadataV20>(value) {
+			| Ok(legacy) => legacy,
+			// A row that doesn't parse as the legacy v20 layout is only safe to
+			// leave untouched if it already parses as the new status-less v21
+			// layout (i.e. it was already migrated). Any other failure means the
+			// row is old or corrupt, so abort rather than silently bumping the
+			// schema and hiding the problem.
+			| Err(_)
+				if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value)
+					.is_ok() =>
+			{
+				continue;
+			},
+			| Err(v20_err) => {
+				return Err(err!(
+					"eventid_metadata row ({} bytes) neither parses as v20 nor as v21 during \
+					 v21 migration: {v20_err}",
+					value.len(),
+				));
+			},
+		};
+
+		// Fold the legacy single-slot verdict into the independent stores.
+		match &legacy.status {
+			| EventStatusV20::Rejected(code)
+				if eventid_rejections
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_rejections.insert(&event_id_bytes, [code.to_u8()]);
+			},
+			| EventStatusV20::SoftFailed(code)
+				if eventid_softfailed
+					.get_blocking(&event_id_bytes)
+					.is_not_found() =>
+			{
+				eventid_softfailed.insert(&event_id_bytes, [code.to_u8()]);
+			},
+			| _ => {},
+		}
+
+		// Re-encode the row without the `status` field.
+		let metadata = crate::rooms::timeline::EventMetadata {
+			short_room_id: legacy.short_room_id,
+			is_outlier: legacy.is_outlier,
+			origin_server_ts: legacy.origin_server_ts,
+			depth: legacy.depth,
+			redacted_by: legacy.redacted_by,
+			short_state_hash: legacy.short_state_hash,
+			deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
+			pdu_count: legacy.pdu_count,
+		};
+		if let Ok(new_bytes) = bincode::serialize(&metadata) {
+			eventid_metadata.batch_put(&mut batch, &event_id_bytes, new_bytes);
+			batch_count = batch_count.saturating_add(1);
+			if batch_count >= 1000 {
+				eventid_metadata.apply_batch(batch);
+				batch = database::Batch::new();
+				batch_count = 0;
+			}
+		}
+	}
+	eventid_metadata.apply_batch(batch);
+	info!("Rewrote eventid_metadata rows in status-less layout.");
+
+	// `eventid_status` stays a live (now-unused) CF: it must remain described
+	// so the `<19` upgrade path (`db_lt_19`) and restart-after-drop consistency
+	// keep working. Its contents were folded out above.
+
+	drop(cork);
+
+	services.globals.db.bump_database_version(21);
+	info!("v21 migration completed.");
 	Ok(())
 }
 
@@ -1568,7 +1927,7 @@ async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
 	let mut total = 0_usize;
 	let mut migrated = 0_usize;
 	let mut skipped = 0_usize;
-	let mut batch = database::rocksdb::WriteBatch::default();
+	let mut batch = database::Batch::new();
 
 	while let Some(Ok((event_id_bytes, old_raw_id_bytes))) = stream.next().await {
 		total = total.saturating_add(1);
@@ -1627,23 +1986,20 @@ async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
 		new_raw_id_bytes[8..16].copy_from_slice(&encoded_count);
 
 		// Apply updates
-		room_pducount_eventid.remove_from_batch(&mut batch, old_raw_id_bytes);
-		room_pducount_eventid.insert_into_batch(&mut batch, &new_raw_id_bytes, event_id_bytes);
-		eventid_pduid.insert_into_batch(&mut batch, event_id_bytes, new_raw_id_bytes);
+		room_pducount_eventid.batch_delete(&mut batch, old_raw_id_bytes);
+		room_pducount_eventid.batch_put(&mut batch, &new_raw_id_bytes, event_id_bytes);
+		eventid_pduid.batch_put(&mut batch, event_id_bytes, new_raw_id_bytes);
 
 		migrated = migrated.saturating_add(1);
 
 		if migrated.is_multiple_of(10000) {
-			room_pducount_eventid.apply_batch(&batch);
-			eventid_pduid.apply_batch(&batch);
-			batch.clear();
+			room_pducount_eventid.apply_batch(batch);
+			batch = database::Batch::new();
 			info!("RawPduId unification: Processed {} PDUs...", migrated);
 		}
 	}
 
-	room_pducount_eventid.apply_batch(&batch);
-	eventid_pduid.apply_batch(&batch);
-	batch.clear();
+	room_pducount_eventid.apply_batch(batch);
 
 	info!(
 		"RawPduId unification complete. Migrated {} PDUs ({} skipped, {} total).",
@@ -1741,6 +2097,6 @@ mod tests {
 		// The hash includes DATABASE_VERSION.to_be_bytes() as first input.
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
-		assert_eq!(DATABASE_VERSION, 20);
+		assert_eq!(DATABASE_VERSION, 21);
 	}
 }

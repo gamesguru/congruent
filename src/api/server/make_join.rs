@@ -87,13 +87,19 @@ pub(crate) async fn create_join_event_template_route(
 			// (common in test scenarios where events arrive in rapid succession).
 			// Retry briefly to let federation state catch up.
 			let mut auth_result =
-				select_authorising_user(&services, &body.room_id, &allowed_rooms).await;
+				select_authorising_user(&services, &body.room_id, &body.user_id, &allowed_rooms)
+					.await;
 
 			if auth_result.is_err() {
 				for _ in 0..5 {
 					tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-					auth_result =
-						select_authorising_user(&services, &body.room_id, &allowed_rooms).await;
+					auth_result = select_authorising_user(
+						&services,
+						&body.room_id,
+						&body.user_id,
+						&allowed_rooms,
+					)
+					.await;
 					if auth_result.is_ok() {
 						break;
 					}
@@ -142,8 +148,19 @@ pub(crate) async fn create_join_event_template_route(
 pub(crate) async fn select_authorising_user(
 	services: &Services,
 	room_id: &RoomId,
+	target_user: &UserId,
 	allowed_rooms: &[OwnedRoomId],
 ) -> Result<OwnedUserId> {
+	if services
+		.rooms
+		.state_accessor
+		.get_member(room_id, target_user)
+		.await
+		.is_ok_and(|member| member.membership == MembershipState::Ban)
+	{
+		return Err!(Request(UnableToGrantJoin("Joining user is banned from this room.")));
+	}
+
 	let local_members: Vec<_> = services
 		.rooms
 		.state_cache
@@ -241,7 +258,8 @@ pub(crate) async fn user_can_perform_restricted_join(
 		return Err!(Request(Forbidden("You are not invited to this room.")));
 	}
 
-	// Collect the allowed room IDs for use by select_authorising_user
+	// Collect the full allowed room IDs for allow rules that need to return the
+	// room set as-is (for example the antispam override path below).
 	let allowed_rooms: Vec<OwnedRoomId> = r
 		.allow
 		.iter()
@@ -251,6 +269,8 @@ pub(crate) async fn user_can_perform_restricted_join(
 		})
 		.collect();
 
+	let mut valid_allowed_rooms = Vec::new();
+	let mut has_unsupported_allow_rule = false;
 	let mut could_satisfy = true;
 	for allow_rule in &r.allow {
 		match allow_rule {
@@ -277,7 +297,7 @@ pub(crate) async fn user_can_perform_restricted_join(
 						"User {} is allowed to join room {} via membership in room {}",
 						user_id, room_id, membership.room_id
 					);
-					return Ok(Some(allowed_rooms));
+					valid_allowed_rooms.push(membership.room_id.clone());
 				}
 			},
 			| AllowRule::UnstableSpamChecker => {
@@ -292,6 +312,7 @@ pub(crate) async fn user_can_perform_restricted_join(
 			},
 			| _ => {
 				// We don't recognise this join rule, so we cannot satisfy the request.
+				has_unsupported_allow_rule = true;
 				could_satisfy = false;
 				debug_info!(
 					"Unsupported allow rule in restricted join for room {}: {:?}",
@@ -300,6 +321,17 @@ pub(crate) async fn user_can_perform_restricted_join(
 				);
 			},
 		}
+	}
+
+	if !valid_allowed_rooms.is_empty() {
+		return Ok(Some(valid_allowed_rooms));
+	}
+
+	if has_unsupported_allow_rule {
+		// Malformed or unsupported allow rules are not something another server
+		// can legitimately "fix" on our behalf. Fail closed instead of falling
+		// back to a remote join that would accept broken room state.
+		return Err!(Request(Forbidden("You are not invited to this room.")));
 	}
 
 	if could_satisfy {

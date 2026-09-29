@@ -1,7 +1,4 @@
-use std::{
-	collections::{HashMap, HashSet},
-	fmt::Write,
-};
+use std::{collections::HashSet, fmt::Write};
 
 use conduwuit::{
 	Result, err, info,
@@ -76,75 +73,104 @@ pub(super) async fn rescue_room(
 			.await;
 	}
 
-	let mut events: HashMap<OwnedEventId, PduEvent> = self
+	let mut event_ids: Vec<OwnedEventId> = self
 		.services
 		.rooms
 		.outlier
 		.room_stream(&room_id)
+		.map(|(event_id, _)| event_id)
 		.collect()
 		.await;
 
-	if let Some(limit) = timeline_limit {
+	let timeline_pdus: Vec<OwnedEventId> = if let Some(limit) = timeline_limit {
 		self.write_str(&format!("Including last {limit} timeline PDUs for re-processing..."))
 			.await?;
-		let timeline_pdus: Vec<(OwnedEventId, PduEvent)> = self
-			.services
+		self.services
 			.rooms
 			.timeline
-			.pdus_rev(&room_id, None)
+			.pdus_rev(&room_id, std::ops::Bound::Unbounded)
 			.filter_map(|item| ready(item.ok()))
 			.take(limit)
-			.map(|(_, pdu)| (pdu.event_id().to_owned(), pdu))
+			.map(|(_, pdu)| pdu.event_id().to_owned())
 			.collect()
-			.await;
+			.await
+	} else {
+		Vec::new()
+	};
 
-		for (event_id, pdu) in timeline_pdus {
-			events.entry(event_id).or_insert(pdu);
-		}
-	}
+	event_ids.extend(timeline_pdus.iter().cloned());
 
-	if events.is_empty() {
+	let mut seen = HashSet::new();
+	event_ids.retain(|event_id| seen.insert(event_id.clone()));
+
+	if event_ids.is_empty() {
 		return self.write_str("No outliers found in this room.").await;
 	}
 
+	if force {
+		for event_id in &event_ids {
+			self.services.rooms.pdu_metadata.clear_pdu_markers(event_id);
+		}
+	}
+
 	self.write_str(&format!(
-		"Healing {} events in room {room_id} via heal_room()...",
-		events.len()
+		"Promoting {} events in room {room_id} via promote_outliers_sorted()...",
+		event_ids.len()
 	))
 	.await?;
-	let result = Box::pin(self.services.rooms.timeline.heal_room(
+	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
+	let promoted = Box::pin(self.services.rooms.timeline.promote_outliers_sorted(
 		&room_id,
-		events,
-		None,
-		&conduwuit_service::rooms::timeline::HealOptions {
-			clear_markers: force,
-			compute_state: false,
-			rebuild_membership: false,
-			is_reorder: reorder,
-		},
+		&event_ids,
+		&room_version,
 	))
 	.await?;
 
-	let msg = format!(
-		"Healed room {room_id}: {} inserted, {} skipped, {} failed, {} extremities.",
-		result.inserted,
-		result.skipped,
-		result.failed,
-		result.extremities.len()
-	);
-	self.write_str(&msg).await?;
-
-	self.write_str(&format!("Rebuilding state for {room_id} using rezzy..."))
+	self.write_str(&format!("Promoted {promoted} events in room {room_id}."))
 		.await?;
-	Box::pin(self.services.rooms.timeline.rebuild_state(&room_id)).await?;
 
-	self.write_str(&format!("Rebuilding membership cache for {room_id}..."))
+	if !timeline_pdus.is_empty() {
+		// `promote_outliers_sorted` only promotes outliers, so timeline PDUs
+		// included via --timeline-limit (already non-outlier) were skipped
+		// above. Repair their derived data (topo index, search index) here
+		// instead of silently dropping them.
+		let reindexed = Box::pin(
+			self.services
+				.rooms
+				.timeline
+				.reindex_timeline_events(&room_id, &timeline_pdus),
+		)
 		.await?;
-	self.services
-		.rooms
-		.state_cache
-		.reconcile_membership(&room_id)
-		.await;
+		self.write_str(&format!(
+			"Reindexed {reindexed}/{} timeline PDUs from --timeline-limit in room {room_id}.",
+			timeline_pdus.len()
+		))
+		.await?;
+	}
+
+	if reorder {
+		self.write_str(&format!("Reordering timeline for {room_id} after rescue..."))
+			.await?;
+		Box::pin(
+			self.services
+				.rooms
+				.timeline
+				.reorder_timeline(&room_id, false, false),
+		)
+		.await?;
+	} else {
+		self.write_str(&format!("Rebuilding state for {room_id} using rezzy..."))
+			.await?;
+		Box::pin(self.services.rooms.timeline.rebuild_state(&room_id)).await?;
+
+		self.write_str(&format!("Rebuilding membership cache for {room_id}..."))
+			.await?;
+		self.services
+			.rooms
+			.state_cache
+			.reconcile_membership(&room_id)
+			.await;
+	}
 
 	if !heal_from.is_empty() {
 		// Find the latest local event to use as at_event for bootstrapping
@@ -250,8 +276,13 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				&create_event,
 				&origin,
 				&room_id,
-				true, // skip_soft_fail: always lenient for admin rescue
-				true, // is_forward_extremity
+				true,  // skip_soft_fail: always lenient for admin rescue
+				false, // is_forward_extremity: historical/admin rescue, not a live tip
+				false, // prev_fetch_had_invalid_data: no fresh fetch_prev here
+				None,
+				// No outer `with_cork_and_flush` on this admin path -- the
+				// timeline insert must flush itself.
+				false,
 			),
 	)
 	.await?;
@@ -633,8 +664,14 @@ pub(super) async fn heal_receipts(&self) -> Result {
 }
 
 #[admin_command]
-pub(super) async fn reindex_short(&self, room_id: Option<OwnedRoomId>, all: bool) -> Result {
+pub(super) async fn reindex_short(
+	&self,
+	room_id: Option<OwnedRoomId>,
+	all: bool,
+	skip_topo: bool,
+) -> Result {
 	self.bail_restricted()?;
+	let rebuild_topo = !skip_topo;
 
 	if all {
 		let rooms: Vec<OwnedRoomId> = self
@@ -652,7 +689,13 @@ pub(super) async fn reindex_short(&self, room_id: Option<OwnedRoomId>, all: bool
 		let mut total_stats =
 			conduwuit_service::rooms::timeline::reindex::ReindexStats::default();
 		for (i, rid) in rooms.iter().enumerate() {
-			match self.services.rooms.timeline.reindex_short(rid).await {
+			match self
+				.services
+				.rooms
+				.timeline
+				.reindex_short(rid, rebuild_topo)
+				.await
+			{
 				| Ok(stats) => {
 					if stats.repaired_prev_events > 0
 						|| stats.repaired_metadata > 0
@@ -716,7 +759,12 @@ pub(super) async fn reindex_short(&self, room_id: Option<OwnedRoomId>, all: bool
 			.await?;
 	} else {
 		let rid = room_id.expect("room_id required when --all not set");
-		let stats = self.services.rooms.timeline.reindex_short(&rid).await?;
+		let stats = self
+			.services
+			.rooms
+			.timeline
+			.reindex_short(&rid, rebuild_topo)
+			.await?;
 		self.write_str(&format!("Reindex complete for {rid}: {stats}"))
 			.await?;
 	}

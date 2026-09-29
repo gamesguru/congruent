@@ -7,10 +7,10 @@
 
 use std::time::SystemTime;
 
-#[cfg(feature = "url_preview")]
-use conduwuit::utils::response::LimitReadExt;
 use conduwuit::{Err, Result, debug, err, info};
 use conduwuit_core::implement;
+#[cfg(feature = "url_preview")]
+use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
 #[cfg(feature = "url_preview")]
 use ruma::OwnedMxcUri;
@@ -25,6 +25,10 @@ pub struct UrlPreviewData {
 	pub title: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:description"))]
 	pub description: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:type"))]
+	pub og_type: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:url"))]
+	pub og_url: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:image"))]
 	pub image: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "matrix:image:size"))]
@@ -211,7 +215,12 @@ pub async fn download_image(
 		)
 		.await?;
 
-	let (mut width, mut height);
+	let (width, height);
+
+	// Metadata (size/dimensions) reported to clients always describes the
+	// original fetched image, even though a downscaled copy may be what's
+	// actually stored below.
+	preview_data.image_size = Some(image.len());
 
 	let cursor = std::io::Cursor::new(&image);
 	if let Ok(reader) = ImageReader::new(cursor).with_guessed_format() {
@@ -228,8 +237,6 @@ pub async fn download_image(
 
 					if resized.write_to(&mut cursor, ImageFormat::Jpeg).is_ok() {
 						image = cursor.into_inner();
-						width = Some(resized.width());
-						height = Some(resized.height());
 					}
 				}
 			}
@@ -429,9 +436,18 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 
 	let mut preview_data = UrlPreviewData::default();
 
+	let base_url = Url::parse(url).ok();
+	let resolve = |raw: &str| -> String {
+		base_url
+			.as_ref()
+			.and_then(|base| base.join(raw).ok())
+			.map_or_else(|| raw.to_owned(), |joined| joined.to_string())
+	};
+
 	if let Some(obj) = html.opengraph.images.first() {
+		let image_url = resolve(&obj.url);
 		if let Ok(data_with_img) = self
-			.download_image(&obj.url, Some(preview_data.clone()))
+			.download_image(&image_url, Some(preview_data.clone()))
 			.await
 		{
 			preview_data = data_with_img;
@@ -440,13 +456,15 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	}
 
 	if let Some(obj) = html.opengraph.videos.first() {
-		preview_data = self.download_video(&obj.url, Some(preview_data)).await?;
+		let video_url = resolve(&obj.url);
+		preview_data = self.download_video(&video_url, Some(preview_data)).await?;
 		preview_data.video_width = obj.properties.get("width").and_then(|v| v.parse().ok());
 		preview_data.video_height = obj.properties.get("height").and_then(|v| v.parse().ok());
 	}
 
 	if let Some(obj) = html.opengraph.audios.first() {
-		preview_data = self.download_audio(&obj.url, Some(preview_data)).await?;
+		let audio_url = resolve(&obj.url);
+		preview_data = self.download_audio(&audio_url, Some(preview_data)).await?;
 	}
 
 	let props = html.opengraph.properties;
@@ -454,6 +472,8 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	/* use OpenGraph title/description, but fall back to HTML if not available */
 	preview_data.title = props.get("title").cloned().or(html.title);
 	preview_data.description = props.get("description").cloned().or(html.description);
+	preview_data.og_type = Some(html.opengraph.og_type);
+	preview_data.og_url = props.get("url").cloned();
 
 	Ok(preview_data)
 }

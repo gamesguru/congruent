@@ -167,7 +167,7 @@ where
 		.map(|map| {
 			let mut ss = rezzy::SharedState::new();
 			for ((ty, sk), id) in *map {
-				ss.insert((ty.to_string(), sk.to_string()), id.to_string());
+				ss.insert((ty.to_string().into(), sk.to_string()), id.to_string());
 			}
 			ss
 		})
@@ -185,6 +185,7 @@ where
 	struct LocalArenaProvider<'a, F> {
 		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String>>>,
+		version: rezzy::StateResVersion,
 		fetch_pdu: F,
 	}
 
@@ -202,7 +203,10 @@ where
 			}
 
 			let pdu = (self.fetch_pdu)(&event_id)?;
-			let lean = Arc::new(pdu_to_lean(&pdu));
+			let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
+				(self.fetch_pdu)(auth_event_id)
+			});
+			let lean = Arc::new(pdu_to_lean(&pdu, power_level));
 
 			self.global_cache.insert(event_id, lean.clone());
 
@@ -225,9 +229,9 @@ where
 					}
 				}
 
-				if let Ok(mut pdu) = timeline.get_pdu(eid).await {
+				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
 					if meta.is_event_rejected(&pdu.event_id).await
-						&& timeline.pdu_exists(&pdu.event_id).await
+						&& timeline.non_outlier_pdu_exists(&pdu.event_id).await
 					{
 						warn!(
 							event_id = %pdu.event_id,
@@ -258,6 +262,7 @@ where
 	let provider = LocalArenaProvider {
 		global_cache: &self.services.short.leanevent_cache,
 		arena: typed_arena::Arena::new(),
+		version,
 		fetch_pdu,
 	};
 
@@ -305,7 +310,7 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.into();
+		let ty: ruma::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
@@ -315,26 +320,141 @@ where
 	Ok(resolved)
 }
 
-fn pdu_to_lean(pdu: &conduwuit_core::PduEvent) -> rezzy::LeanEvent<String> {
+fn sender_power_level_from_auth<F>(
+	version: rezzy::StateResVersion,
+	pdu: &conduwuit_core::PduEvent,
+	mut fetch_auth: F,
+) -> i64
+where
+	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
+{
+	if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+		return i64::MAX;
+	}
+
+	// Room version 12+ ("explicitly privilege room creators", see
+	// `RoomVersion::explicitly_privilege_room_creators` and the auth-rules
+	// checks in `state_res::event_auth`): the room creator, and any user
+	// listed in the create event's `additional_creators`, always sort with
+	// `i64::MAX` power for state-resolution purposes -- this overrides
+	// whatever (if anything) the power-levels event says about them.
+	let explicitly_privilege_room_creators = matches!(
+		version,
+		rezzy::StateResVersion::V2_1
+			| rezzy::StateResVersion::V2_1_1
+			| rezzy::StateResVersion::V2_2
+	);
+
+	// Scan the full auth chain up-front so both the create event and a
+	// power-levels event can be found regardless of which order they appear
+	// in `auth_events` -- a PL-bearing event must not return before the
+	// creator-privilege override below has had a chance to apply.
+	let mut create_pdu = None;
+	let mut pl_level = None;
+
+	for auth_event_id in &pdu.auth_events {
+		if create_pdu.is_some() && pl_level.is_some() {
+			break;
+		}
+
+		let Some(auth_pdu) = fetch_auth(auth_event_id) else {
+			continue;
+		};
+
+		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
+			&& auth_pdu.state_key.as_deref() == Some("")
+		{
+			create_pdu = Some(auth_pdu);
+			continue;
+		}
+
+		if pl_level.is_some()
+			|| auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+			|| auth_pdu.state_key.as_deref() != Some("")
+		{
+			continue;
+		}
+
+		let content_val: serde_json::Value =
+			serde_json::from_str(auth_pdu.content.get()).unwrap_or(serde_json::Value::Null);
+		let parse_intlike = |value: &serde_json::Value| {
+			value
+				.as_i64()
+				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+		};
+
+		let level = content_val
+			.get("users")
+			.and_then(serde_json::Value::as_object)
+			.and_then(|users| users.get(pdu.sender.as_str()))
+			.and_then(parse_intlike)
+			.or_else(|| content_val.get("users_default").and_then(parse_intlike))
+			.unwrap_or(0);
+
+		pl_level = Some(level);
+	}
+
+	let Some(create_pdu) = create_pdu.as_ref() else {
+		return pl_level.unwrap_or(0);
+	};
+
+	if explicitly_privilege_room_creators {
+		// Room version 12+: creator status is determined solely by "sent the
+		// create event" or "listed in `additional_creators`" -- the deprecated
+		// `creator` content field is a pre-v11 concept and irrelevant here (see
+		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
+		let is_v12_creator = create_pdu.sender == pdu.sender
+			|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+				create_pdu.content.get(),
+			)
+			.is_ok_and(|create_content| {
+				create_content
+					.additional_creators
+					.as_ref()
+					.is_some_and(|creators| creators.iter().any(|creator| creator == &pdu.sender))
+			});
+
+		if is_v12_creator {
+			return i64::MAX;
+		}
+
+		return pl_level.unwrap_or(0);
+	}
+
+	if let Some(level) = pl_level {
+		return level;
+	}
+
+	// Pre-v12 fallback: with no power-levels event found in the auth chain,
+	// only the room's original creator gets an implicit power level of 100.
+	#[allow(deprecated)]
+	let is_pre_v12_creator = create_pdu.sender == pdu.sender
+		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+			create_pdu.content.get(),
+		)
+		.is_ok_and(|create_content| {
+			create_content
+				.creator
+				.as_ref()
+				.is_some_and(|creator| creator == &pdu.sender)
+		});
+
+	if is_pre_v12_creator { 100 } else { 0 }
+}
+
+fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
 	let content_val: serde_json::Value =
 		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
-	let power_level = content_val
-		.get("power_level")
-		.and_then(|pl| {
-			pl.as_i64()
-				.or_else(|| pl.as_str().and_then(|s| s.parse().ok()))
-		})
-		.unwrap_or(0);
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),
-		state_key: pdu.state_key.as_ref().map(ToString::to_string),
+		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
 		origin_server_ts: pdu.origin_server_ts.into(),
 		sender: pdu.sender.to_string(),
 		content: content_val,
-		prev_events: pdu.prev_events.iter().map(ToString::to_string).collect(),
-		auth_events: pdu.auth_events.iter().map(ToString::to_string).collect(),
+		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
+		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 		depth: u64::from(pdu.depth),
 		..Default::default()
 	}

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests;
-use axum::extract::State;
+use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, RoomVersion, err, info,
@@ -36,7 +36,7 @@ pub(crate) async fn send_state_event_for_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> Result<send_state_event::v3::Response> {
+) -> Result<axum::response::Response> {
 	let sender_user = body.sender_user();
 	services
 		.users
@@ -47,23 +47,48 @@ pub(crate) async fn send_state_event_for_key_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	Ok(send_state_event::v3::Response {
-		event_id: send_state_event_for_key_helper(
-			&services,
-			sender_user,
-			&body.room_id,
-			&body.event_type,
-			&body.body.body,
-			&body.state_key,
-			if body.appservice_info.is_some() {
-				body.timestamp
-			} else {
-				None
-			},
-		)
-		.boxed()
-		.await?,
-	})
+	if let Some(delay) = body.delay {
+		if std::time::SystemTime::now().checked_add(delay).is_none() {
+			return Err!(Request(InvalidParam("org.matrix.msc4140.delay is too large.")));
+		}
+		let event = conduwuit_service::rooms::delayed_events::ScheduledDelayedEvent {
+			event_type: body.event_type.clone().into(),
+			state_key: Some(body.state_key.clone()),
+			content: body.body.body.cast_ref().clone(),
+			user_id: sender_user.to_owned(),
+			room_id: body.room_id.clone(),
+			running_since: std::time::SystemTime::now(),
+			delay,
+		};
+		let delay_id = services
+			.rooms
+			.delayed_events
+			.queue_delayed_event(event)
+			.await?;
+
+		return Ok(axum::Json(serde_json::json!({
+			"delay_id": delay_id,
+		}))
+		.into_response());
+	}
+
+	let event_id = send_state_event_for_key_helper(
+		&services,
+		sender_user,
+		&body.room_id,
+		&body.event_type,
+		&body.body.body,
+		&body.state_key,
+		if body.appservice_info.is_some() {
+			body.timestamp
+		} else {
+			None
+		},
+	)
+	.boxed()
+	.await?;
+
+	Ok(RumaResponse(send_state_event::v3::Response { event_id }).into_response())
 }
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}`
@@ -73,11 +98,8 @@ pub(crate) async fn send_state_event_for_empty_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> Result<RumaResponse<send_state_event::v3::Response>> {
-	send_state_event_for_key_route(State(services), ClientIp(ip), body)
-		.boxed()
-		.await
-		.map(RumaResponse)
+) -> Result<axum::response::Response> {
+	send_state_event_for_key_route(State(services), ClientIp(ip), body).await
 }
 
 /// # `GET /_matrix/client/v3/rooms/{roomid}/state`
@@ -99,12 +121,11 @@ pub(crate) async fn get_state_events_route(
 		.is_joined(sender_user, room_id)
 		.await;
 
-	if !is_joined
-		&& !services
-			.rooms
-			.state_cache
-			.is_left(sender_user, room_id)
-			.await
+	if !services
+		.rooms
+		.state_cache
+		.can_access_history(sender_user, room_id)
+		.await
 	{
 		return Err!(Request(Forbidden("You don't have permission to view the room state.")));
 	}
@@ -163,12 +184,11 @@ pub(crate) async fn get_state_events_for_key_route(
 		.is_joined(sender_user, room_id)
 		.await;
 
-	if !is_joined
-		&& !services
-			.rooms
-			.state_cache
-			.is_left(sender_user, room_id)
-			.await
+	if !services
+		.rooms
+		.state_cache
+		.can_access_history(sender_user, room_id)
+		.await
 	{
 		return Err!(Request(NotFound(debug_warn!(
 			"You don't have permission to view the room state."
@@ -591,30 +611,43 @@ async fn allowed_to_send_state_event(
 				{
 					let room_features = RoomVersion::new(&create_content.room_version);
 					if let Ok(room_features) = room_features {
-						if room_features.explicitly_privilege_room_creators {
-							if let Ok(pl_content) = json.deserialize_as::<serde_json::Value>() {
-								if let Some(users) =
-									pl_content.get("users").and_then(|u| u.as_object())
-								{
-									// Check the room creator (event sender of m.room.create)
-									if users.contains_key(room_create.sender().as_str()) {
-										return Err!(Request(BadJson(
-											"Room creator cannot be set in power levels users \
-											 map"
-										)));
+						if room_features.explicitly_privilege_room_creators
+							&& let Ok(mut pl_content) = json.deserialize_as::<serde_json::Value>()
+							&& let Some(pl_obj) = pl_content.as_object_mut()
+						{
+							let mut creators = vec![room_create.sender().as_str().to_owned()];
+							if let Some(additional) = &create_content.additional_creators {
+								creators.extend(additional.iter().map(|u| format!("{u}")));
+							}
+
+							let removed_creator = pl_obj
+								.get_mut("users")
+								.and_then(|u| u.as_object_mut())
+								.is_some_and(|users| {
+									let mut removed = false;
+									for creator in &creators {
+										removed = users.remove(creator).is_some() || removed;
 									}
-									// Check additional_creators
-									if let Some(additional) = create_content.additional_creators {
-										for creator in &additional {
-											if users.contains_key(creator.as_str()) {
-												return Err!(Request(BadJson(
-													"Room creator cannot be set in power levels \
-													 users map: {creator}"
-												)));
-											}
-										}
-									}
+									removed
+								});
+
+							if removed_creator {
+								let users_empty = pl_obj
+									.get("users")
+									.and_then(|u| u.as_object())
+									.is_none_or(serde_json::Map::is_empty);
+								let has_non_users_content =
+									pl_obj.keys().any(|key| key != "users");
+
+								if users_empty && !has_non_users_content {
+									return Err!(Request(BadJson(
+										"Room creator cannot be set in power levels users map"
+									)));
 								}
+
+								*json = Raw::<AnyStateEventContent>::from_json_string(
+									serde_json::to_string(&pl_content)?,
+								)?;
 							}
 						}
 					}

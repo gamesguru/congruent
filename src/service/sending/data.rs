@@ -171,20 +171,16 @@ impl Data {
 			})
 			.collect();
 
-		map.insert_batch(
-			keys.iter()
-				.map(Vec::as_slice)
-				.zip(requests.map(at!(0)))
-				.map(|(key, event)| {
-					let value = if let SendingEvent::Edu(value) = &event {
-						&**value
-					} else {
-						&[]
-					};
-
-					(key, value)
-				}),
-		);
+		let mut batch = database::Batch::new();
+		for (key, event) in keys.iter().map(Vec::as_slice).zip(requests.map(at!(0))) {
+			let value = if let SendingEvent::Edu(value) = &event {
+				&**value
+			} else {
+				&[]
+			};
+			map.batch_put(&mut batch, key, value);
+		}
+		map.apply_batch(batch);
 
 		keys
 	}

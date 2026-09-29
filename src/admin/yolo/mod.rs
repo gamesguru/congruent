@@ -144,11 +144,6 @@ pub enum YoloCommand {
 	RecalculateExtremities {
 		/// The room ID or alias.
 		room: OwnedRoomOrAliasId,
-
-		/// The number of recent events to analyze (default: 50, or -1 for all
-		/// events)
-		#[arg(allow_hyphen_values = true, long, default_value_t = 50)]
-		tail: i64,
 	},
 
 	/// Read-only calculation of the true topological DAG forward extremities
@@ -156,11 +151,6 @@ pub enum YoloCommand {
 	CountExtremities {
 		/// The room ID or alias.
 		room: OwnedRoomOrAliasId,
-
-		/// The number of recent events to analyze (default: 50, or -1 for all
-		/// events)
-		#[arg(allow_hyphen_values = true, long, default_value_t = 50)]
-		tail: i64,
 	},
 
 	/// Purge outlier PDUs that already exist in our timeline.
@@ -300,6 +290,12 @@ pub enum YoloCommand {
 		/// separate file
 		#[arg(long)]
 		merge_outliers: bool,
+		/// Walk `roomid_topologicalorder_pducount` (the actual index
+		/// `/messages` and `/sync` paginate over) instead of raw arrival
+		/// order. Use this to check what clients really see, since arrival
+		/// order is immutable and `reorder-timeline` never touches it.
+		#[arg(long)]
+		topo: bool,
 	},
 
 	/// Fetch a room's DAG from a remote server via federation backfill API
@@ -429,6 +425,9 @@ pub enum YoloCommand {
 		/// Only show counts and stats, omit the full event ID lists.
 		#[arg(long)]
 		summary: bool,
+		/// Fetch missing state event bodies for richer diff output.
+		#[arg(long)]
+		get_missing: bool,
 		/// Skip signature verification (prevents DB write contention)
 		#[arg(long)]
 		skip_sig_verify: bool,
@@ -599,6 +598,11 @@ pub enum YoloCommand {
 		/// Reindex all rooms.
 		#[arg(long)]
 		all: bool,
+
+		/// Skip rebuilding roomid_topologicalorder_pducount. Use when a
+		/// reorder-timeline run will immediately rebuild topo ordering.
+		#[arg(long)]
+		skip_topo: bool,
 	},
 
 	/// Purge obsolete duplicate read receipts from the database.

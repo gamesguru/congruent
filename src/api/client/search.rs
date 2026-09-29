@@ -20,6 +20,7 @@ use ruma::{
 };
 use search_events::v3::{Request, Response};
 
+use super::message::visibility_filter;
 use crate::Ruma;
 
 type RoomStates = BTreeMap<OwnedRoomId, RoomState>;
@@ -151,76 +152,20 @@ async fn category_room_events(
 		.collect()
 		.await;
 
-	let results: Vec<SearchResult> = results
-		.into_iter()
-		.map(at!(2))
-		.flatten()
-		.stream()
-		.then(|mut pdu| async {
-			if let Err(e) = services
-				.rooms
-				.pdu_metadata
-				.add_bundled_aggregations_to_pdu(sender_user, &mut pdu)
-				.await
-			{
-				debug_warn!("Failed to add bundled aggregations to search result: {e}");
-			}
-			pdu
-		})
-		.then(|pdu| async {
-			let before_limit = usize::try_from(criteria.event_context.before_limit).unwrap_or(5);
-			let after_limit = usize::try_from(criteria.event_context.after_limit).unwrap_or(5);
+	let mut search_results = Vec::new();
+	for mut pdu in results.into_iter().map(at!(2)).flatten() {
+		if let Err(e) = services
+			.rooms
+			.pdu_metadata
+			.add_bundled_aggregations_to_pdu(sender_user, &mut pdu)
+			.await
+		{
+			debug_warn!("Failed to add bundled aggregations to search result: {e}");
+		}
 
-			let mut events_before = Vec::new();
-			let mut events_after = Vec::new();
-
-			if before_limit > 0 || after_limit > 0 {
-				if let Some(room_id) = pdu.room_id_or_hash() {
-					if let Ok(count) = services.rooms.timeline.get_pdu_count(pdu.event_id()).await
-					{
-						if before_limit > 0 {
-							use futures::{StreamExt, pin_mut};
-							let stream = services
-								.rooms
-								.timeline
-								.pdus_rev(&room_id, Some(count))
-								.take(before_limit);
-							pin_mut!(stream);
-							while let Some(Ok((_, prev_pdu))) = stream.next().await {
-								events_before.push(prev_pdu.into_format());
-							}
-						}
-
-						if after_limit > 0 {
-							use futures::{StreamExt, pin_mut};
-							let stream = services
-								.rooms
-								.timeline
-								.pdus(&room_id, Some(count))
-								.take(after_limit);
-							pin_mut!(stream);
-							while let Some(Ok((_, next_pdu))) = stream.next().await {
-								events_after.push(next_pdu.into_format());
-							}
-						}
-					}
-				}
-			}
-
-			SearchResult {
-				rank: None,
-				result: Some(pdu.into_format()),
-				context: EventContextResult {
-					profile_info: BTreeMap::new(), //TODO
-					events_after,
-					events_before,
-					start: None, //TODO
-					end: None,   //TODO
-				},
-			}
-		})
-		.collect()
-		.await;
+		search_results.push(build_search_result(services, sender_user, criteria, pdu).await);
+	}
+	let results: Vec<SearchResult> = search_results;
 
 	let highlights = criteria
 		.search_term
@@ -231,7 +176,7 @@ async fn category_room_events(
 	let next_batch = (results.len() >= limit)
 		.then_some(next_batch.saturating_add(results.len()))
 		.as_ref()
-		.map(ToString::to_string);
+		.map(|n| format!("{n}"));
 
 	Ok(ResultRoomEvents {
 		count: Some(total),
@@ -241,6 +186,115 @@ async fn category_room_events(
 		highlights,
 		groups: BTreeMap::new(), // TODO
 	})
+}
+
+async fn build_search_result(
+	services: &Services,
+	sender_user: &UserId,
+	criteria: &Criteria,
+	pdu: conduwuit::matrix::pdu::PduEvent,
+) -> SearchResult {
+	let before_limit = usize::try_from(criteria.event_context.before_limit).unwrap_or(5);
+	let after_limit = usize::try_from(criteria.event_context.after_limit).unwrap_or(5);
+	let context =
+		load_event_context(services, sender_user, &pdu, before_limit, after_limit).await;
+
+	SearchResult {
+		rank: None,
+		result: Some(pdu.into_format()),
+		context,
+	}
+}
+
+async fn load_event_context(
+	services: &Services,
+	sender_user: &UserId,
+	pdu: &conduwuit::matrix::pdu::PduEvent,
+	before_limit: usize,
+	after_limit: usize,
+) -> EventContextResult {
+	let mut events_before = Vec::new();
+	let mut events_after = Vec::new();
+
+	if before_limit == 0 && after_limit == 0 {
+		return EventContextResult {
+			profile_info: BTreeMap::new(), //TODO
+			events_after,
+			events_before,
+			start: None, //TODO
+			end: None,   //TODO
+		};
+	}
+
+	let Some(room_id) = pdu.room_id_or_hash() else {
+		return EventContextResult {
+			profile_info: BTreeMap::new(), //TODO
+			events_after,
+			events_before,
+			start: None, //TODO
+			end: None,   //TODO
+		};
+	};
+
+	let Ok(count) = services.rooms.timeline.get_pdu_count(pdu.event_id()).await else {
+		return EventContextResult {
+			profile_info: BTreeMap::new(), //TODO
+			events_after,
+			events_before,
+			start: None, //TODO
+			end: None,   //TODO
+		};
+	};
+
+	if before_limit > 0 {
+		use futures::{StreamExt, pin_mut};
+		let stream = services
+			.rooms
+			.timeline
+			.pdus_rev(&room_id, std::ops::Bound::Excluded(count))
+			.map_ok(|item| ((), item.1));
+		pin_mut!(stream);
+		while let Some(Ok(item)) = stream.next().await {
+			let Some(((), prev_pdu)) = visibility_filter(services, item, sender_user).await
+			else {
+				continue;
+			};
+
+			events_before.push(prev_pdu.into_format());
+			if events_before.len() >= before_limit {
+				break;
+			}
+		}
+	}
+
+	if after_limit > 0 {
+		use futures::{StreamExt, pin_mut};
+		let stream = services
+			.rooms
+			.timeline
+			.pdus(&room_id, std::ops::Bound::Excluded(count))
+			.map_ok(|item| ((), item.1));
+		pin_mut!(stream);
+		while let Some(Ok(item)) = stream.next().await {
+			let Some(((), next_pdu)) = visibility_filter(services, item, sender_user).await
+			else {
+				continue;
+			};
+
+			events_after.push(next_pdu.into_format());
+			if events_after.len() >= after_limit {
+				break;
+			}
+		}
+	}
+
+	EventContextResult {
+		profile_info: BTreeMap::new(), //TODO
+		events_after,
+		events_before,
+		start: None, //TODO
+		end: None,   //TODO
+	}
 }
 
 async fn procure_room_state(services: &Services, room_id: &RoomId) -> Result<RoomState> {

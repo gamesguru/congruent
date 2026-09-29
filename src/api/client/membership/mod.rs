@@ -289,7 +289,11 @@ pub(crate) async fn fetch_join_knock_servers(
 		addl_servers.sort_unstable();
 		addl_servers.dedup();
 		conduwuit::utils::shuffle(&mut addl_servers);
-		servers.append(&mut addl_servers);
+		for server in addl_servers {
+			if !servers.contains(&server) {
+				servers.push(server);
+			}
+		}
 	}
 
 	info!("Built list of servers for join/knock: {:?}", servers);

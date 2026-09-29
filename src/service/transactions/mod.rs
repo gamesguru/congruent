@@ -9,7 +9,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use conduwuit::{Error, Result, SyncRwLock, debug_warn, info, warn};
+use conduwuit::{
+	Error, Result, SyncRwLock, debug_warn, info,
+	utils::{MutexMap, MutexMapGuard},
+	warn,
+};
 use database::{Handle, Map};
 use ruma::{
 	DeviceId, OwnedServerName, OwnedTransactionId, TransactionId, UserId,
@@ -86,6 +90,8 @@ pub enum FederationTxnState {
 pub struct Service {
 	services: Services,
 	db: Data,
+	client_txn_mutex: MutexMap<Vec<u8>, ()>,
+	room_txn_mutex: MutexMap<Vec<u8>, ()>,
 	federation_txn_state: Arc<SyncRwLock<HashMap<TxnKey, TxnState>>>,
 	last_cleanup: AtomicU64,
 }
@@ -108,6 +114,8 @@ impl crate::Service for Service {
 			db: Data {
 				userdevicetxnid_response: args.db["userdevicetxnid_response"].clone(),
 			},
+			client_txn_mutex: MutexMap::new(),
+			room_txn_mutex: MutexMap::new(),
 			federation_txn_state: Arc::new(SyncRwLock::new(HashMap::new())),
 			last_cleanup: AtomicU64::new(0),
 		}))
@@ -160,6 +168,25 @@ impl Service {
 		self.db.userdevicetxnid_response.insert(&key, data);
 	}
 
+	pub fn add_room_txnid(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+		data: &[u8],
+	) {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(room_id.as_bytes());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		self.db.userdevicetxnid_response.insert(&key, data);
+	}
+
 	pub async fn get_client_txn(
 		&self,
 		user_id: &UserId,
@@ -168,6 +195,50 @@ impl Service {
 	) -> Result<Handle<'_>> {
 		let key = (user_id, device_id, txn_id);
 		self.db.userdevicetxnid_response.qry(&key).await
+	}
+
+	pub async fn get_room_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+	) -> Result<Handle<'_>> {
+		let key = (user_id, device_id, room_id, txn_id);
+		self.db.userdevicetxnid_response.qry(&key).await
+	}
+
+	pub async fn lock_client_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		txn_id: &TransactionId,
+	) -> Option<MutexMapGuard<Vec<u8>, ()>> {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		Some(self.client_txn_mutex.lock(key.as_slice()).await)
+	}
+
+	pub async fn lock_room_txn(
+		&self,
+		user_id: &UserId,
+		device_id: Option<&DeviceId>,
+		room_id: &ruma::RoomId,
+		txn_id: &TransactionId,
+	) -> Option<MutexMapGuard<Vec<u8>, ()>> {
+		let mut key = user_id.as_bytes().to_vec();
+		key.push(0xFF);
+		key.extend_from_slice(device_id.map(DeviceId::as_bytes).unwrap_or_default());
+		key.push(0xFF);
+		key.extend_from_slice(room_id.as_bytes());
+		key.push(0xFF);
+		key.extend_from_slice(txn_id.as_bytes());
+
+		Some(self.room_txn_mutex.lock(key.as_slice()).await)
 	}
 
 	/// Atomically gets a cached response, joins an active transaction, or

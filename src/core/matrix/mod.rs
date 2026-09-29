@@ -1,5 +1,6 @@
 //! Core Matrix Library
 
+pub mod dag;
 pub mod event;
 pub mod pdu;
 pub mod state_key;

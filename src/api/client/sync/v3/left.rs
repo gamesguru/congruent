@@ -77,14 +77,22 @@ pub(super) async fn load_left_room(
 		return Ok(None);
 	}
 
-	// return early if:
-	// - this is an initial sync and the room filter doesn't include leaves, or
-	// - this is an incremental sync, and we've already synced the leave, and the
-	//   room filter doesn't include leaves
-	if last_sync_end_count.is_none_or(|last_sync_end_count| last_sync_end_count >= left_count)
-		&& !filter.room.include_leave
-	{
-		return Ok(None);
+	let is_forgotten = services
+		.rooms
+		.state_cache
+		.is_forgotten(syncing_user, room_id)
+		.await;
+
+	match last_sync_end_count {
+		| None =>
+			if is_forgotten || !filter.room.include_leave {
+				return Ok(None);
+			},
+		| Some(last_sync_end_count) => {
+			if last_sync_end_count >= left_count && !filter.room.include_leave {
+				return Ok(None);
+			}
+		},
 	}
 
 	if let Some(ref leave_membership_event) = leave_membership_event {
@@ -227,7 +235,7 @@ pub(super) async fn load_left_room(
 		Vec::new()
 	};
 
-	let TimelinePdus { pdus, limited } = timeline;
+	let TimelinePdus { pdus, limited, prev_batch } = timeline;
 
 	// filter out ignored events from the timeline
 	let raw_timeline_pdus: Vec<PduEvent> = pdus
@@ -302,7 +310,7 @@ pub(super) async fn load_left_room(
 			account_data: RoomAccountData { events: Vec::new() },
 			timeline: Timeline {
 				limited,
-				prev_batch: Some(current_count.to_string()),
+				prev_batch: prev_batch.map(|c| c.to_string()),
 				events: raw_timeline_pdus
 					.into_iter()
 					.map(Event::into_format)
@@ -366,6 +374,7 @@ async fn build_left_state_and_timeline(
 		Some(timeline_start_count),
 		Some(timeline_end_count),
 		timeline_limit,
+		false,
 	)
 	.await?;
 
@@ -387,6 +396,7 @@ async fn build_left_state_and_timeline(
 
 	let timeline = TimelinePdus {
 		pdus: filtered_pdus,
+		prev_batch: raw_timeline.prev_batch,
 		limited: raw_timeline.limited,
 	};
 

@@ -334,6 +334,7 @@ impl Service {
 	#[inline]
 	pub fn next_count(&self) -> Result<u64> { self.db.next_count() }
 
+	#[inline]
 	pub fn next_count_batch(&self, diff: u64) -> Result<u64> { self.db.next_count_batch(diff) }
 
 	#[inline]

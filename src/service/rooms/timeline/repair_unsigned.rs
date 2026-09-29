@@ -52,7 +52,7 @@ pub fn update_unsigned_prev_content(
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 	let pdus_stream = self
-		.pdus(room_id, Some(PduCount::min()))
+		.pdus(room_id, std::ops::Bound::Excluded(PduCount::min()))
 		.filter_map(|r| ready(r.ok()))
 		.filter(|(_count, pdu)| ready(pdu.state_key().is_some()))
 		.map(|(_count, pdu)| {

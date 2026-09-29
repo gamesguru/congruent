@@ -57,6 +57,28 @@ where
 		},
 	};
 
+	// Shared by every site that decides whether to fetch a missing *auth*
+	// event (as opposed to `back_off`'s per-event write side, or the
+	// differently-tuned backoff window used for top-level timeline events)
+	// so the two durations below can't drift out of sync between callers.
+	let auth_event_ratelimited = |id: &EventId| {
+		self.services
+			.globals
+			.bad_event_ratelimiter
+			.read()
+			.get(id)
+			.is_some_and(|(time, tries)| {
+				const MIN_DURATION: u64 = 60 * 2;
+				const MAX_DURATION: u64 = 60 * 60 * 8;
+				continue_exponential_backoff_secs(
+					MIN_DURATION,
+					MAX_DURATION,
+					time.elapsed(),
+					*tries,
+				)
+			})
+	};
+
 	let mut routing_servers = if let Some(explicit) = explicit_routing_servers {
 		explicit
 	} else {
@@ -82,6 +104,14 @@ where
 	let mut fetched_info: HashMap<OwnedEventId, CanonicalJsonObject> = HashMap::new();
 	let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::with_capacity(128);
 	let mut auth_chain_fetched: HashSet<OwnedEventId> = HashSet::with_capacity(128);
+	let mut individual_auth_fetch_attempted: HashSet<OwnedEventId> = HashSet::new();
+	// `graph` membership means "known to the topological sort", not "we've
+	// issued a fetch for this ID" -- tier 1 below inserts placeholder graph
+	// nodes for missing auth events regardless of whether the bulk fetch
+	// actually resolves them, so gating the individual-fetch fallback on
+	// `!graph.contains_key(id)` would always be false by the time it runs.
+	// Track fetch-attempted IDs separately.
+	let mut individually_fetch_in_flight: HashSet<OwnedEventId> = HashSet::new();
 	let mut active_fetches = FuturesUnordered::new();
 	let fetch_concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(
 		self.services.server.concurrency_scaled(2),
@@ -243,177 +273,167 @@ where
 	loop {
 		while let Some(fetch_result) = active_fetches.next().await {
 			match fetch_result {
-				| FetchResult::Event(next_id, fetch_res) => match fetch_res {
-					| Ok((res, successful_server)) => {
-						debug!("Got {next_id} over federation from {successful_server}");
+				| FetchResult::Event(next_id, fetch_res) => {
+					individually_fetch_in_flight.remove(&next_id);
+					match fetch_res {
+						| Ok((res, successful_server)) => {
+							debug!("Got {next_id} over federation from {successful_server}");
 
-						let room_version_id = match create_event {
-							| Some(ce) => {
-								match crate::rooms::event_handler::get_room_version_id(ce) {
-									| Ok(v) => v,
-									| Err(_) => {
-										warn!(
-											"Provided create_event for {room_id} has no room \
-											 version! Skipping outlier {next_id}"
-										);
-										back_off(next_id.clone());
-										continue;
+							let room_version_id = match create_event {
+								| Some(ce) =>
+									match crate::rooms::event_handler::get_room_version_id(ce) {
+										| Ok(v) => v,
+										| Err(_) => {
+											warn!(
+												"Provided create_event for {room_id} has no \
+												 room version! Skipping outlier {next_id}"
+											);
+											back_off(next_id.clone());
+											continue;
+										},
 									},
-								}
-							},
-							| None => {
-								let mut version = None;
-								if let Ok(json) =
-									serde_json::from_str::<serde_json::Value>(res.pdu.get())
-								{
-									if json.get("type").and_then(|t| t.as_str())
-										== Some("m.room.create")
+								| None => {
+									let mut version = None;
+									if let Ok(json) =
+										serde_json::from_str::<serde_json::Value>(res.pdu.get())
 									{
-										let v = json
-											.get("content")
-											.and_then(|c| c.get("room_version"))
-											.and_then(|v| v.as_str())
-											.unwrap_or("1");
-										version = ruma::RoomVersionId::try_from(v).ok();
+										if json.get("type").and_then(|t| t.as_str())
+											== Some("m.room.create")
+										{
+											let v = json
+												.get("content")
+												.and_then(|c| c.get("room_version"))
+												.and_then(|v| v.as_str())
+												.unwrap_or("1");
+											version = ruma::RoomVersionId::try_from(v).ok();
+										}
 									}
-								}
-								match version {
-									| Some(v) => v,
-									| None =>
-										if let Some(override_v) = room_version_override {
-											override_v.clone()
-										} else {
-											match self
-												.services
-												.state
-												.get_room_version(room_id)
-												.await
-											{
-												| Ok(v) => v,
-												| Err(e) => {
-													warn!(
-														"Unknown room version for {room_id}, \
-														 skipping outlier {next_id}: {e}"
-													);
-													back_off(next_id.clone());
-													continue;
-												},
+									match version {
+										| Some(v) => v,
+										| None => {
+											if let Some(override_v) = room_version_override {
+												override_v.clone()
+											} else {
+												match self
+													.services
+													.state
+													.get_room_version(room_id)
+													.await
+												{
+													| Ok(v) => v,
+													| Err(e) => {
+														warn!(
+															"Unknown room version for \
+															 {room_id}, skipping outlier \
+															 {next_id}: {e}"
+														);
+														back_off(next_id.clone());
+														continue;
+													},
+												}
 											}
 										},
-								}
-							},
-						};
-						let (calculated_event_id, value) =
-							match gen_event_id_canonical_json(&res.pdu, &room_version_id) {
-								| Ok(res) => res,
-								| Err(e) => {
-									info!(
-										"Failed to parse PDU JSON over federation from \
-										 {successful_server} for event {next_id}: {e}. Raw \
-										 JSON: {}",
-										res.pdu.get()
-									);
-									back_off(next_id);
-									continue;
+									}
 								},
 							};
+							let (calculated_event_id, value) =
+								match gen_event_id_canonical_json(&res.pdu, &room_version_id) {
+									| Ok(res) => res,
+									| Err(e) => {
+										info!(
+											"Failed to parse PDU JSON over federation from \
+											 {successful_server} for event {next_id}: {e}. Raw \
+											 JSON: {}",
+											res.pdu.get()
+										);
+										back_off(next_id);
+										continue;
+									},
+								};
 
-						if calculated_event_id != next_id {
-							warn!(
-								"Server didn't return event id we requested: requested: \
-								 {next_id}, we got {calculated_event_id}. Event: {:?}",
-								&res.pdu
-							);
-						}
+							if calculated_event_id != next_id {
+								warn!(
+									"Server didn't return event id we requested: requested: \
+									 {next_id}, we got {calculated_event_id}. Event: {:?}",
+									&res.pdu
+								);
+							}
 
-						let mut next_auth_events = HashSet::new();
-						let mut missing_auth = false;
-						if let Some(auth_events) = value
-							.get("auth_events")
-							.and_then(CanonicalJsonValue::as_array)
-						{
-							for auth_event in auth_events {
-								if let Ok(auth_event) = serde_json::from_value::<OwnedEventId>(
-									auth_event.clone().into(),
-								) {
-									if self
-										.services
-										.pdu_metadata
-										.is_event_soft_failed(&auth_event)
-										.await
-									{
-										info!(target: "auth_chain", "Found known soft-failed auth event locally: {auth_event}");
-									}
-
-									if !graph.contains_key(&auth_event) {
-										if !self.services.timeline.pdu_exists(&auth_event).await {
-											let ratelimited = if let Some((time, tries)) = self
-												.services
-												.globals
-												.bad_event_ratelimiter
-												.read()
-												.get(&*auth_event)
-											{
-												const MIN_DURATION: u64 = 60 * 2;
-												const MAX_DURATION: u64 = 60 * 60 * 8;
-												continue_exponential_backoff_secs(
-													MIN_DURATION,
-													MAX_DURATION,
-													time.elapsed(),
-													*tries,
-												)
-											} else {
-												false
-											};
-
-											if ratelimited {
-												info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited)");
-												continue;
-											}
-
-											if graph.len() >= limit.into() {
-												info!(target: "auth_chain", "Max auth event limit reached! Limit: {limit}");
-												continue;
-											}
-
-											trace!(
-												"Found missing auth event id {auth_event} for \
-												 event {next_id}"
-											);
-											missing_auth = true;
+							let mut next_auth_events = HashSet::new();
+							let mut missing_auth = false;
+							if let Some(auth_events) = value
+								.get("auth_events")
+								.and_then(CanonicalJsonValue::as_array)
+							{
+								for auth_event in auth_events {
+									if let Ok(auth_event) = serde_json::from_value::<OwnedEventId>(
+										auth_event.clone().into(),
+									) {
+										if self
+											.services
+											.pdu_metadata
+											.is_event_soft_failed(&auth_event)
+											.await
+										{
+											info!(target: "auth_chain", "Found known soft-failed auth event locally: {auth_event}");
 										}
-										graph.insert(auth_event.clone(), HashSet::new());
-									}
 
-									if graph.contains_key(&auth_event) {
-										next_auth_events.insert(auth_event);
+										if !graph.contains_key(&auth_event) {
+											if !self
+												.services
+												.timeline
+												.pdu_exists(&auth_event)
+												.await
+											{
+												if auth_event_ratelimited(&auth_event) {
+													info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited)");
+													continue;
+												}
+
+												if graph.len() >= limit.into() {
+													info!(target: "auth_chain", "Max auth event limit reached! Limit: {limit}");
+													continue;
+												}
+
+												trace!(
+													"Found missing auth event id {auth_event} \
+													 for event {next_id}"
+												);
+												missing_auth = true;
+											}
+											graph.insert(auth_event.clone(), HashSet::new());
+										}
+
+										if graph.contains_key(&auth_event) {
+											next_auth_events.insert(auth_event);
+										}
 									}
 								}
+							} else {
+								warn!("Auth event list invalid");
 							}
-						} else {
-							warn!("Auth event list invalid");
-						}
 
-						if missing_auth {
-							push_auth_fetch(
-								room_id.to_owned(),
-								next_id.clone(),
-								true,
-								&mut active_fetches,
+							if missing_auth {
+								push_auth_fetch(
+									room_id.to_owned(),
+									next_id.clone(),
+									true,
+									&mut active_fetches,
+								);
+							}
+
+							graph.insert(next_id.clone(), next_auth_events);
+							fetched_info.insert(next_id, value);
+						},
+						| Err(e) => {
+							debug!(
+								target: "auth_chain",
+								"Failed to fetch event {next_id} from all fallback servers: {e}"
 							);
-						}
-
-						graph.insert(next_id.clone(), next_auth_events);
-						fetched_info.insert(next_id, value);
-					},
-					| Err(e) => {
-						debug!(
-							target: "auth_chain",
-							"Failed to fetch event {next_id} from all fallback servers: {e}"
-						);
-						back_off(next_id);
-					},
-				}, // end match fetch_res
+							back_off(next_id);
+						},
+					}
+				},
 				| FetchResult::AuthChain(next_id, fetch_res) => match fetch_res {
 					| Ok((res, successful_server)) => {
 						debug!(
@@ -571,13 +591,14 @@ where
 				true,
 				skip_sig_verify,
 				room_version_override,
+				super::AuthRecoveryStage::BeforeStateIds,
 			))
 			.await
 			{
 				| Ok((pdu, json)) => {
 					processed_pdus.insert(next_id.clone(), (pdu, Some(json)));
 				},
-				| Err(e) =>
+				| Err(e) => {
 					if let conduwuit::Error::MissingAuthEvents(missing) = &e {
 						if auth_chain_fetched.insert(next_id.clone()) {
 							debug_info!(
@@ -598,26 +619,85 @@ where
 							}
 							suspended = true;
 							unprocessed.push((next_id, value));
+						} else if individual_auth_fetch_attempted.insert(next_id.clone()) {
+							// Bulk /event_auth has now been tried (and retried) and still
+							// left auth events missing -- either the remote doesn't
+							// implement /event_auth, or it's misbehaving for this room.
+							// Fall back to fetching exactly the still-missing IDs
+							// individually, same as the initial fetches above: through
+							// `push_fetch`, so this gets the same multi-server routing
+							// list, ratelimiting, and retry-with-backoff as any other
+							// event fetch, rather than a bespoke recovery path. This
+							// mirrors Synapse's `_get_events_and_persist`, which resolves
+							// this exact gap with per-ID `/event/{id}` fetches.
+							debug_info!(
+								"Bulk /event_auth left {} auth events missing for {next_id}; \
+								 falling back to individual /event fetches",
+								missing.len()
+							);
+							// Whether at least one auth event actually got a fetch
+							// scheduled (either just now, or already in flight from
+							// an earlier round). If every single one is presently
+							// ratelimited, there is nothing to wait on this round --
+							// requeuing `next_id` anyway would let it fall through to
+							// the terminal `else` below on its very next pass (since
+							// `individual_auth_fetch_attempted` is a one-shot flag,
+							// already consumed above) and get permanently rejected
+							// before any backoff window actually expired.
+							let mut any_scheduled = false;
+							for auth_event in missing {
+								if auth_event_ratelimited(auth_event) {
+									info!(target: "auth_chain", "Backing off from {auth_event} (auth event ratelimited, skipping individual fetch)");
+								} else {
+									any_scheduled = true;
+									if individually_fetch_in_flight.insert(auth_event.clone()) {
+										push_fetch(auth_event.clone(), true, &mut active_fetches);
+									}
+								}
+								if !graph.contains_key(auth_event) {
+									graph.insert(auth_event.clone(), HashSet::new());
+								}
+							}
+
+							if any_scheduled {
+								suspended = true;
+								unprocessed.push((next_id, value));
+							} else {
+								debug_info!(
+									"All individual auth-event fallback fetches for {next_id} \
+									 are ratelimited; deferring to a future retry instead of \
+									 rejecting early"
+								);
+							}
 						} else {
-							warn!(target: "auth_chain", "Permanently backing off event {next_id} after auth chain fetch yielded incomplete auth events");
+							warn!(target: "auth_chain", "Backing off event {next_id} after individual auth-event fallback still left events missing");
+							// `missing` can run into the hundreds (e.g. MSC4297); persist
+							// only a count plus the first few IDs rather than the
+							// full list, to keep the stored reason bounded.
+							let preview: Vec<_> = missing.iter().take(5).collect();
 							self.services
 								.pdu_metadata
 								.mark_event_rejected(
 									&next_id,
-									"incomplete auth events after auth chain fetch",
+									&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
+										.with_detail(format!(
+											"{} auth events still missing after /event_auth and \
+											 individual /event retries, e.g. {preview:?}",
+											missing.len()
+										)),
 								)
 								.await;
-							self.services.outlier.add_pdu_outlier(
-								&next_id,
-								&value,
-								Some(room_id),
-							);
+							self.services
+								.outlier
+								.add_pdu_outlier(&next_id, &value, Some(room_id))
+								.await;
 							back_off(next_id.clone());
 						}
 					} else {
 						warn!(target: "auth_chain", "Permanently backing off event {next_id} after general failure: {e:?}");
 						back_off(next_id);
-					},
+					}
+				},
 			}
 		}
 

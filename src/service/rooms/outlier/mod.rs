@@ -28,7 +28,6 @@ struct Data {
 
 struct Services {
 	short: Dep<rooms::short::Service>,
-	#[allow(dead_code)]
 	timeline: Dep<rooms::timeline::Service>,
 }
 
@@ -79,7 +78,7 @@ pub fn stream_keys(&self) -> impl Stream<Item = OwnedEventId> + Send + '_ {
 		.ignore_err()
 		.ready_filter_map(|(key, val)| {
 			let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
-			let meta: rooms::timeline::EventMetadata = bincode::deserialize(val).ok()?;
+			let meta = rooms::timeline::EventMetadata::from_bincode(val).ok()?;
 			meta.is_outlier.then_some(eid)
 		})
 }
@@ -139,29 +138,124 @@ pub fn room_stream<'a>(
 }
 
 /// Append the PDU as an outlier.
+///
+/// Holds the same per-room `mutex_insert` lock that
+/// `append_pdu`/`backfill_pdu`/`promote_outlier`/`force_insert_pdu` use for
+/// their own check-then-insert of `eventid_metadata`. Without this, the
+/// guard in `add_pdu_outlier_batch` (skip if the event is already in the
+/// timeline) is a plain read-then-write with nothing stopping a concurrent
+/// timeline insert from landing between the read and the write, letting
+/// this call clobber a just-appended timeline event back into an outlier.
 #[implement(Service)]
 #[tracing::instrument(skip(self, pdu), level = "debug")]
-pub fn add_pdu_outlier(
+pub async fn add_pdu_outlier(
 	&self,
 	event_id: &EventId,
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
 ) {
-	let mut batch = database::rocksdb::WriteBatch::default();
-	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
-	self.db.eventid_pdu.apply_batch(&batch);
-	self.db.eventid_pdu.wake(event_id.as_bytes());
+	let room_id_for_lock = derive_room_id(pdu, room_id, event_id);
+	let _guard = match room_id_for_lock.as_deref() {
+		| Some(room_id) => Some(self.services.timeline.mutex_insert.lock(room_id).await),
+		// No determinable room_id (should be rare/impossible outside of malformed
+		// input); nothing else can be racing writes for a room we can't identify.
+		| None => None,
+	};
+
+	self.add_pdu_outlier_inner(event_id, pdu, room_id);
 }
 
-/// Append the PDU as an outlier using a WriteBatch.
+/// Same as `add_pdu_outlier`, but for callers that already hold
+/// `rooms::timeline::Service::mutex_insert` for this room (e.g.
+/// `force_state` invoked from inside `append_pdu`). `mutex_insert` is not
+/// reentrant, so re-locking here from the same call stack would deadlock;
+/// the `&InsertMutexGuard` parameter is unused beyond proving at the call
+/// site that the lock is genuinely already held.
 #[implement(Service)]
-#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
-pub fn add_pdu_outlier_batch(
+#[tracing::instrument(skip(self, pdu, _insert_lock), level = "debug")]
+pub fn add_pdu_outlier_locked(
 	&self,
-	batch: &mut database::rocksdb::WriteBatch,
 	event_id: &EventId,
 	pdu: &CanonicalJsonObject,
 	room_id: Option<&RoomId>,
+	_insert_lock: &rooms::timeline::InsertMutexGuard,
+) {
+	self.add_pdu_outlier_inner(event_id, pdu, room_id);
+}
+
+#[implement(Service)]
+fn add_pdu_outlier_inner(
+	&self,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
+	let mut batch = database::Batch::new();
+	self.add_pdu_outlier_batch(&mut batch, event_id, pdu, room_id);
+	self.db.eventid_pdu.apply_batch(batch);
+}
+
+/// Determine the room a PDU belongs to, mirroring the priority order used in
+/// `add_pdu_outlier_batch`'s `room_id_from_pdu`: the PDU's own `room_id`
+/// field first (authoritative once present), then the caller-supplied hint,
+/// then (for `m.room.create` only) the room id derivable from the event id
+/// itself.
+fn derive_room_id(
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	event_id: &EventId,
+) -> Option<OwnedRoomId> {
+	pdu.get("room_id")
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|r| <&RoomId>::try_from(r).ok())
+		.map(ToOwned::to_owned)
+		.or_else(|| room_id.map(ToOwned::to_owned))
+		.or_else(|| {
+			let is_create =
+				pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
+			is_create
+				.then(|| event_id.as_str().replace('$', "!"))
+				.and_then(|r| OwnedRoomId::parse(r).ok())
+		})
+}
+
+/// Append the PDU as an outlier using a Batch.
+#[implement(Service)]
+#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
+pub fn add_pdu_outlier_batch<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, false);
+}
+
+/// Append the PDU as an outlier during demotion of a timeline event.
+///
+/// Bypasses the `!meta.is_outlier` guard because the event's timeline pointers
+/// are being removed in the same `Batch`.
+#[implement(Service)]
+#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
+pub fn add_pdu_outlier_batch_demote<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+) {
+	self.add_pdu_outlier_batch_impl(batch, event_id, pdu, room_id, true);
+}
+
+#[implement(Service)]
+fn add_pdu_outlier_batch_impl<'a>(
+	&'a self,
+	batch: &mut database::Batch<'a>,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	room_id: Option<&RoomId>,
+	demote: bool,
 ) {
 	// Guard: never overwrite an event that already has a timeline entry.
 	// The eventid_pdu and eventid_metadata tables are shared between timeline
@@ -170,7 +264,7 @@ pub fn add_pdu_outlier_batch(
 	// invisible to /sync's timeline iterator (the "stuck state" bug).
 	if let Ok(existing_meta) = self.db.eventid_metadata.get_blocking(event_id.as_bytes()) {
 		if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&existing_meta) {
-			if !meta.is_outlier {
+			if !demote && !meta.is_outlier {
 				info!(
 					%event_id,
 					"add_pdu_outlier: skipping, event already in timeline"
@@ -183,24 +277,12 @@ pub fn add_pdu_outlier_batch(
 	let mut pdu = pdu.clone();
 	pdu.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.as_str().to_owned()));
 
-	let room_id_from_pdu = pdu
-		.get("room_id")
-		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| <&RoomId>::try_from(r).ok())
-		.map(ToOwned::to_owned)
-		.or_else(|| room_id.map(ToOwned::to_owned))
-		.or_else(|| {
-			let is_create =
-				pdu.get("type").and_then(CanonicalJsonValue::as_str) == Some("m.room.create");
-			is_create
-				.then(|| event_id.as_str().replace('$', "!"))
-				.and_then(|r| OwnedRoomId::parse(r).ok())
-		});
+	let room_id_from_pdu = derive_room_id(&pdu, room_id, event_id);
 
 	// --- Phase 1: Write ---
 	self.db
 		.eventid_pdu
-		.raw_put_into_batch(batch, event_id.as_bytes(), Json(&pdu));
+		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
 
 	if let Ok(parsed_pdu) =
 		serde_json::from_value::<PduEvent>(serde_json::to_value(&pdu).unwrap())
@@ -209,26 +291,26 @@ pub fn add_pdu_outlier_batch(
 			.as_deref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
 
+		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
+		// the wire), so a freshly-parsed `parsed_pdu` always reports
+		// `rejected() == false` here. Rejection/soft-fail verdicts live in
+		// the independent `eventid_rejections` / `eventid_softfailed`
+		// stores, which this function never touches, so a rejection recorded
+		// by `mark_event_rejected()` is preserved across the outlier write.
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id,
 			is_outlier: true,
 			origin_server_ts: parsed_pdu.origin_server_ts().0,
 			depth: parsed_pdu.depth(),
-			soft_failed: false,
-			rejected: parsed_pdu.rejected(),
 			redacted_by: parsed_pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: None,
 			deprecated_local_topo_depth: 0,
 			pdu_count: None,
-			soft_fail_reason: String::new(),
-			rejection_reason: String::new(),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
-			self.db.eventid_metadata.insert_into_batch(
-				batch,
-				event_id.as_bytes(),
-				&metadata_bytes,
-			);
+			self.db
+				.eventid_metadata
+				.batch_put(batch, event_id.as_bytes(), &metadata_bytes);
 		}
 
 		let short_event_id = self
@@ -252,7 +334,7 @@ pub fn add_pdu_outlier_batch(
 
 		self.db
 			.shorteventid_shortprevevents
-			.insert_into_batch(batch, &key_bytes, &val_bytes);
+			.batch_put(batch, &key_bytes, &val_bytes);
 
 		let auth_shorts: Vec<rooms::short::ShortEventId> = parsed_pdu
 			.auth_events()
@@ -268,17 +350,15 @@ pub fn add_pdu_outlier_batch(
 			.flat_map(|s| s.to_be_bytes())
 			.collect::<Vec<u8>>();
 
-		self.db.shorteventid_shortauthevents.insert_into_batch(
-			batch,
-			&key_bytes,
-			&auth_val_bytes,
-		);
+		self.db
+			.shorteventid_shortauthevents
+			.batch_put(batch, &key_bytes, &auth_val_bytes);
 	}
 }
 
 /// Apply a batch of outlier insertions
 #[implement(Service)]
-pub fn apply_outlier_batch(&self, batch: &database::rocksdb::WriteBatch) {
+pub fn apply_outlier_batch(&self, batch: database::Batch<'_>) {
 	self.db.eventid_pdu.apply_batch(batch);
 }
 
