@@ -117,7 +117,7 @@ pub(crate) fn serialize_lthash(lthash: &rezzy::LtHash) -> (String, String) {
 	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
 
 	let mut digest = String::with_capacity(64);
-	for b in lthash.checksum() {
+	for b in lthash.digest() {
 		use std::fmt::Write;
 		write!(&mut digest, "{b:02x}").unwrap();
 	}

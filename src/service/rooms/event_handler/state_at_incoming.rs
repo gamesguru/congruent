@@ -486,7 +486,7 @@ where
 async fn get_extremity_lthash(
 	&self,
 	sstatehash: u64,
-	prev_event: &conduwuit_core::PduEvent,
+	prev_event: &PduEvent,
 ) -> Result<rezzy::LtHash> {
 	let mut lthash = self
 		.services
@@ -502,11 +502,7 @@ async fn get_extremity_lthash(
 		if let Ok(old_event_id) = self
 			.services
 			.state_accessor
-			.state_get_id::<ruma::OwnedEventId>(
-				sstatehash,
-				&event_type.as_str().into(),
-				state_key,
-			)
+			.state_get_id::<OwnedEventId>(sstatehash, &event_type.as_str().into(), state_key)
 			.await
 		{
 			lthash.remove(&event_type, state_key, &old_event_id);

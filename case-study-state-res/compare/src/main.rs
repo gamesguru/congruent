@@ -591,7 +591,6 @@ fn resolve_via_rezzy(
 			rejected: false,
 			soft_fail: false,
 			room_id: None,
-			..Default::default()
 		}
 	};
 
