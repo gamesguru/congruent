@@ -939,7 +939,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 		let (event_id_bytes, _) = entry.map_err(|e| {
 			err!(Database("Failed to read eventid_pdu during short-prev migration: {e}"))
 		})?;
-		let event_id_string = std::str::from_utf8(&event_id_bytes).map_err(|e| {
+		let event_id_string = std::str::from_utf8(event_id_bytes).map_err(|e| {
 			err!(Database("Invalid event ID UTF-8 during short-prev migration: {e}"))
 		})?;
 		let event_id = OwnedEventId::parse(event_id_string).map_err(|e| {
@@ -964,8 +964,9 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 			.short
 			.get_or_create_shorteventid(&event_id)
 			.await;
-		let mut short_prev_events = Vec::with_capacity(pdu.prev_events().len());
-		for prev_event_id in pdu.prev_events() {
+		let prev_events = pdu.prev_events();
+		let mut short_prev_events = Vec::with_capacity(prev_events.size_hint().0);
+		for prev_event_id in prev_events {
 			short_prev_events.push(
 				services
 					.rooms
@@ -1870,7 +1871,7 @@ struct EventMetadataV20 {
 	origin_server_ts: ruma::UInt,
 	depth: ruma::UInt,
 	status: EventStatusV20,
-	redacted_by: Option<ruma::OwnedEventId>,
+	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
 	deprecated_local_topo_depth: u64,
@@ -1890,7 +1891,7 @@ struct EventMetadataV19 {
 	depth: ruma::UInt,
 	soft_failed: bool,
 	rejected: bool,
-	redacted_by: Option<ruma::OwnedEventId>,
+	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
 	deprecated_local_topo_depth: u64,
@@ -1912,7 +1913,7 @@ struct EventMetadataV18 {
 	depth: ruma::UInt,
 	soft_failed: bool,
 	rejected: bool,
-	redacted_by: Option<ruma::OwnedEventId>,
+	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 }
 
