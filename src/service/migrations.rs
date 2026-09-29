@@ -14,7 +14,7 @@ use database::Json;
 use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use itertools::Itertools;
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
@@ -338,6 +338,17 @@ async fn migrate(services: &Services) -> Result<()> {
 		unify_raw_pdu_id_16_byte(services)
 			.await
 			.map_err(|e| err!("Failed to run 'unify_raw_pdu_id_16_byte': {e}"))?;
+	}
+
+	if db["global"]
+		.get(POPULATE_SHORTPREVEVENTS_MARKER)
+		.await
+		.is_not_found()
+	{
+		info!("Running migration 'populate_shortprevevents'");
+		populate_shortprevevents(services)
+			.await
+			.map_err(|e| err!("Failed to run 'populate_shortprevevents': {e}"))?;
 	}
 
 	if db["global"]
@@ -904,6 +915,90 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v4";
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
+/// Build the short-event-id -> short-prev-event-id index from the canonical
+/// PDU store. This is deliberately a separate migration from the topological
+/// index migration: the latter only needs metadata and cannot reconstruct
+/// prev_events.
+async fn populate_shortprevevents(services: &Services) -> Result<()> {
+	const BATCH_SIZE: usize = 10_000;
+
+	info!("Starting migration to populate shorteventid_shortprevevents...");
+
+	let db = &services.db;
+	let eventid_pdu = db["eventid_pdu"].clone();
+	let shorteventid_shortprevevents = db["shorteventid_shortprevevents"].clone();
+	let cork = db.cork_and_sync();
+	let stream = eventid_pdu.raw_stream();
+	pin_mut!(stream);
+
+	let mut batch = database::Batch::new();
+	let mut processed = 0_usize;
+	let mut repaired = 0_usize;
+
+	while let Some(entry) = stream.next().await {
+		let (event_id_bytes, _) = entry.map_err(|e| {
+			err!(Database("Failed to read eventid_pdu during short-prev migration: {e}"))
+		})?;
+		let event_id_string = std::str::from_utf8(&event_id_bytes).map_err(|e| {
+			err!(Database("Invalid event ID UTF-8 during short-prev migration: {e}"))
+		})?;
+		let event_id = OwnedEventId::parse(event_id_string).map_err(|e| {
+			err!(Database("Invalid event ID during short-prev migration: {event_id_string}: {e}"))
+		})?;
+
+		// Do not silently skip an unreadable PDU. Leaving the marker unset makes
+		// the migration retryable after the underlying record is repaired.
+		let pdu = services
+			.rooms
+			.timeline
+			.get_pdu(&event_id)
+			.await
+			.map_err(|e| {
+				err!(Database(
+					"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
+				))
+			})?;
+
+		let short_event_id = services
+			.rooms
+			.short
+			.get_or_create_shorteventid(&event_id)
+			.await;
+		let mut short_prev_events = Vec::with_capacity(pdu.prev_events().len());
+		for prev_event_id in pdu.prev_events() {
+			short_prev_events.push(
+				services
+					.rooms
+					.short
+					.get_or_create_shorteventid(prev_event_id)
+					.await,
+			);
+		}
+
+		let key = short_event_id.to_be_bytes();
+		let value = short_prev_events
+			.iter()
+			.flat_map(|short_id| short_id.to_be_bytes())
+			.collect::<Vec<_>>();
+		shorteventid_shortprevevents.batch_put(&mut batch, &key, &value);
+		processed = processed.saturating_add(1);
+		repaired = repaired.saturating_add(1);
+
+		if repaired.is_multiple_of(BATCH_SIZE) {
+			shorteventid_shortprevevents.apply_batch(batch);
+			batch = database::Batch::new();
+			info!("Populated short-prev index for {processed} events...");
+		}
+	}
+
+	shorteventid_shortprevevents.apply_batch(batch);
+	info!("Successfully populated short-prev index for {processed} events.");
+	db["global"].insert(POPULATE_SHORTPREVEVENTS_MARKER, []);
+	drop(cork);
+	db.db.sort()?;
+	Ok(())
+}
+
 async fn populate_topological_index(services: &Services) -> Result<()> {
 	const BATCH_SIZE: usize = 10_000;
 
@@ -992,23 +1087,17 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			topo_key.extend_from_slice(&shortroomid);
 			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
+			roomid_topologicalorder_pducount.batch_put(
+				&mut write_batch,
+				&topo_key,
+				batch_entries[i].1.as_slice(),
+			);
 			meta.deprecated_local_topo_depth = global_depth;
 			if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-				roomid_topologicalorder_pducount.batch_put(
-					&mut write_batch,
-					&topo_key,
-					batch_entries[i].1.as_slice(),
-				);
 				eventid_metadata.batch_put(
 					&mut write_batch,
 					batch_entries[i].1.as_slice(),
 					metadata_bytes,
-				);
-			} else {
-				roomid_topologicalorder_pducount.batch_put(
-					&mut write_batch,
-					&topo_key,
-					batch_entries[i].1.as_slice(),
 				);
 			}
 
