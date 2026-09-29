@@ -1,0 +1,282 @@
+---
+# Complement Crypto Integration Tests
+# -----------------------------------
+name: Complement Crypto Tests
+
+on:
+  push:
+    branches: [main, main-upstream]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  SKIP_CONFIRM: 1
+
+jobs:
+
+  setup:
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: "dev-quick"
+      FEATURES: "direct_tls,url_preview"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Export CPU target env vars
+        run: |
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        with:
+          shared-key: ubuntu-24.04-${{ steps.cpu.outputs.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
+
+      # Build the dev-quick binary for this suite.
+      - name: Build continuwuity (dev-quick, shared)
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+
+      - name: Upload shared binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: target/latest/conduwuit
+          retention-days: 7
+          overwrite: true
+
+  # -----------------------------------------------------------------------------
+  # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
+  # as three parallel client-matrix variants so js, rs, and js+rs results are
+  # attributed separately (mirroring the official complement-crypto repo, which
+  # runs JS-only, Rust-only and mixed jobs). The rs/js+rs variants consume a
+  # PREBUILT matrix-rust-sdk FFI (shared library + generated Go bindings) from a
+  # URL configured via the C10Y_CRYPTO_RUST_SDK_URL repository variable, rather
+  # than compiling matrix-rust-sdk (an ~8.5GB source build that would blow the
+  # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
+  # -----------------------------------------------------------------------------
+  complement-crypto-tests:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      COMPLEMENT_PARALLEL: 24
+      FEATURES: "direct_tls,url_preview"
+      PROFILE: "dev-quick"
+    permissions:
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: js
+            badge: js
+            client_matrix: jj
+          - name: rs
+            badge: rs
+            client_matrix: rr
+          - name: js+rs
+            badge: jsrs
+            client_matrix: jr,rj
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      # The suite needs the system libs Rust links against (mounts them into the
+      # complement homeserver image), so set up the toolchain/prebuilts even
+      # though we download rather than compile the binary.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold \
+            postgresql-client \
+            chromium
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Configure Docker Network Firewall
+        run: |
+          sudo ufw allow in on br-+ comment "(from Complement-Crypto testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Build Complement Docker image
+        run: make complement/docker PROFILE=${{ env.PROFILE }}
+
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
+
+      # complement-crypto (`go 1.25.0`) runs its `go test` on the runner (host-side,
+      # like `just complement`), so the Go toolchain plus the embedded JS-SDK bundle
+      # and system chromium must be present.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: complement-crypto-src/go.sum
+
+      - name: Build JS SDK bundle (for //go:embed dist)
+        if: contains(matrix.client_matrix, 'j')
+        run: |
+          cd complement-crypto-src
+          corepack enable
+          # `matrix-js-sdk@develop` is not a published npm version; the script
+          # feeds its arg straight into `yarn add`, so install the develop
+          # BRANCH via the GitHub URL form (see rebuild_js_sdk.sh --help).
+          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
+
+      # rs / js+rs variants consume a PREBUILT matrix-rust-sdk FFI (libmatrix_sdk_ffi.so
+      # plus the generated Go bindings) from C10Y_CRYPTO_RUST_SDK_URL instead of
+      # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
+      # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
+      - name: Download prebuilt matrix-rust-sdk FFI
+        if: contains(matrix.client_matrix, 'r')
+        env:
+          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+        run: |
+          if [ -z "$RUST_SDK_URL" ]; then
+            echo "::error::Repository variable C10Y_CRYPTO_RUST_SDK_URL is not set. Point it at a tarball containing libmatrix_sdk_ffi.so + the Go bindings (see .github/workflows/complement.yml)."
+            exit 1
+          fi
+          mkdir -p /tmp/mrsdk
+          curl -fsSL "$RUST_SDK_URL" -o /tmp/mrsdk.tar.gz
+          tar -xzf /tmp/mrsdk.tar.gz -C /tmp/mrsdk
+          SO=$(find /tmp/mrsdk -name libmatrix_sdk_ffi.so | head -n 1)
+          if [ -z "$SO" ]; then
+            echo "::error::libmatrix_sdk_ffi.so not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          mkdir -p matrix-rust-sdk/target/debug
+          install -m 0755 "$SO" matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.so
+          BINDINGS_DIR=$(dirname "$(find /tmp/mrsdk -name rust.go | head -n 1)")
+          if [ -z "$BINDINGS_DIR" ] || [ ! -d "$BINDINGS_DIR" ]; then
+            echo "::error::Go bindings (rust.go) not found in $RUST_SDK_URL"
+            exit 1
+          fi
+          cp -r "$BINDINGS_DIR"/. complement-crypto-src/internal/api/rust/
+          echo "Installed prebuilt matrix-rust-sdk FFI from $RUST_SDK_URL"
+
+      - name: Run Complement-Crypto tests (${{ matrix.name }})
+        id: complement-crypto
+        env:
+          COMPLEMENT_CRYPTO_PARALLEL: "3"
+          COMPLEMENT_CRYPTO_TIMEOUT: "45m"
+          # Per-variant client matrix: js (jj), rs (rr), or mixed js+rs (jr,rj).
+          # `just e2ee` picks the matching Go build tags from this value.
+          COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX: ${{ matrix.client_matrix }}
+          COMPLEMENT_CRYPTO_RUST_SDK_DIR: ${{ github.workspace }}/matrix-rust-sdk
+        run: |
+          # `just e2ee` runs complement-crypto's `go test` directly on the runner
+          # against the complement homeserver image built above.
+          just e2ee ".*"
+
+      - name: Upload Complement-Crypto results (${{ matrix.name }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complement-crypto-results-${{ matrix.name }}
+          path: |
+            tests/crypto/results.jsonl
+            tests/crypto/test_results.*.jsonl
+            tests/crypto/logs.*.jsonl
+          retention-days: 90
+
+      # Publish a per-variant complement-crypto badge
+      # (`badge-compcrypto-<branch>-<variant>.json`) to the shared
+      # `_metadata/badges` orphan branch. Counts come from the merged results that
+      # `just e2ee` wrote; mirror the base-complement ledger call.
+      - name: Update Complement-Crypto badge (${{ matrix.name }})
+        if: always()
+        continue-on-error: true
+        run: |
+          RESULTS=tests/crypto/results.jsonl
+          if [ ! -f "$RESULTS" ]; then
+            echo "No complement-crypto results found; skipping badge update."
+            exit 0
+          fi
+          echo "crypto_pass=$(jq -r 'select(.Action=="pass" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_fail=$(jq -r 'select(.Action=="fail" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_skip=$(jq -r 'select(.Action=="skip" and .Test != null) | .Test' "$RESULTS" | wc -l)" >> "$GITHUB_ENV"
+          echo "crypto_version=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Run Update Results Ledger (crypto ${{ matrix.name }})
+        if: env.crypto_pass != ''
+        continue-on-error: true
+        uses: ./.github/actions/update-results-ledger
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          crypto_pass_count: ${{ env.crypto_pass }}
+          crypto_fail_count: ${{ env.crypto_fail }}
+          crypto_skip_count: ${{ env.crypto_skip }}
+          version_string: ${{ env.crypto_version }}
+          actor: ${{ github.actor }}
+          binary_path: target/latest/conduwuit
+          arch: x86_64
+          os: ubuntu-24.04
+          profile: dev-quick
+          badge_suffix: -${{ matrix.badge }}
