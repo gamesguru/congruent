@@ -1778,7 +1778,22 @@ struct EventMetadataV19 {
 	_rejection_reason: String,
 }
 
+/// Pre-v19 layout. Some v19 databases retain rows written before the
+/// topological-depth, PDU-count, and reason-string fields were added.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct EventMetadataV18 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	soft_failed: bool,
+	rejected: bool,
+	redacted_by: Option<ruma::OwnedEventId>,
+	short_state_hash: Option<u64>,
+}
+
 enum LegacyEventMetadata {
+	V18(EventMetadataV18),
 	V19(EventMetadataV19),
 	V20(EventMetadataV20),
 }
@@ -1864,21 +1879,38 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 			| Ok(legacy) => LegacyEventMetadata::V20(legacy),
 			| Err(v20_err) => match bincode::deserialize::<EventMetadataV19>(value) {
 				| Ok(legacy) => LegacyEventMetadata::V19(legacy),
-				| Err(v19_err) => {
+				| Err(v19_err) => match bincode::deserialize::<EventMetadataV18>(value) {
+					| Ok(legacy) => LegacyEventMetadata::V18(legacy),
+					| Err(v18_err) => {
 					// A row that doesn't parse as either legacy layout is only safe
 					// to leave untouched if it already parses as v21.
 					if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value).is_ok() {
 						continue;
 					}
 					return Err(err!(
-						"eventid_metadata row ({} bytes) parses as neither v20 nor v19 nor v21 during v21 migration: v20={v20_err}; v19={v19_err}",
+						"eventid_metadata row ({} bytes) parses as neither v20 nor v19 nor v18 nor v21 during v21 migration: v20={v20_err}; v19={v19_err}; v18={v18_err}",
 						value.len(),
 					));
-				}
+					}
+				},
 			},
 		};
 
 		let (metadata, rejection, soft_failed) = match legacy {
+			| LegacyEventMetadata::V18(legacy) => (
+				crate::rooms::timeline::EventMetadata {
+					short_room_id: legacy.short_room_id,
+					is_outlier: legacy.is_outlier,
+					origin_server_ts: legacy.origin_server_ts,
+					depth: legacy.depth,
+					redacted_by: legacy.redacted_by,
+					short_state_hash: legacy.short_state_hash,
+					deprecated_local_topo_depth: 0,
+					pdu_count: None,
+				},
+				legacy.rejected.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
+				legacy.soft_failed.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
+			),
 			| LegacyEventMetadata::V20(legacy) => {
 				let verdict = match legacy.status {
 					| EventStatusV20::Rejected(code) => (Some(code.to_u8()), None),

@@ -49,7 +49,7 @@ does, grouped by workflow.
 
 | Command                          | What it does                        | When to use                       |
 | -------------------------------- | ----------------------------------- | --------------------------------- |
-| `yolo reorder-timeline !room_id` | Re-sort by `origin_server_ts`       | Events out of chronological order |
+| `yolo reorder-timeline !room_id` | Rebuild topological DAG order       | Events out of order / DAG jumbled |
 | `yolo repair-unsigned !room_id`  | Rebuild `unsigned` fields           | Corrupted unsigned metadata       |
 | `yolo resend-receipts !room_id`  | Re-send read receipts to federation | Missing receipts on remote        |
 

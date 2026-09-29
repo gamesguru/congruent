@@ -18,15 +18,15 @@ impl Service {
 	///
 	/// Reads all PDUs, builds the DAG from `prev_events`, performs a
 	/// topological sort (parents before children, Kahn's algorithm with
-	/// chronological tiebreaking), then rebuilds the
-	/// `roomid_topologicalorder_pducount` index with correct
-	/// `deprecated_local_topo_depth` values computed as
-	/// `max(parent_depths) + 1`. Stream order
-	/// (`room_pducount_eventid`) is NEVER modified — it is immutable
-	/// arrival-time ordering.
+	/// `(origin_server_ts, matrix depth, event_id)` tiebreaking), then rebuilds
+	/// the `roomid_topologicalorder_pducount` index with
+	/// `deprecated_local_topo_depth` values set to the event's 1-based position
+	/// in that sort. Stream order (`room_pducount_eventid`) is NEVER modified —
+	/// it is immutable arrival-time ordering.
 	///
-	/// Optionally recomputes state snapshots incrementally and repairs
-	/// `unsigned.prev_content` on state events.
+	/// Optionally recomputes state snapshots incrementally (unless
+	/// `no_compute_state`). It does not repair `unsigned.prev_content`; use
+	/// `repair-unsigned` for that.
 	pub async fn reorder_timeline(
 		&self,
 		room_id: &RoomId,

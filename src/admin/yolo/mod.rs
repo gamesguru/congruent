@@ -27,7 +27,8 @@ pub struct ReorderTimelineOptions {
 	#[arg(long)]
 	pub(super) no_compute_state: bool,
 
-	/// If set, permanently re-assigns the immutable stream order to match the DAG.
+	/// If set, permanently re-assigns the immutable stream order to match the
+	/// DAG.
 	#[arg(long)]
 	pub(super) force_reindex: bool,
 
@@ -235,11 +236,19 @@ pub enum YoloCommand {
 		heal_from: Vec<OwnedServerName>,
 	},
 
-	/// Reorder the timeline for a room using topological DAG sort.
+	/// Rebuild a room's topological timeline index by DAG order.
 	///
-	/// Performs a full topological sort (parents before children) and
-	/// recomputes `local_topological_depth` as `max(parent_depths) + 1`.
-	/// Stream order is immutable and never modified.
+	/// Reads all PDUs, builds the DAG from `prev_events`, and performs a Kahn
+	/// topological sort (parents before children). Concurrent events are
+	/// ordered by `origin_server_ts`, then the Matrix `depth`, then `event_id`.
+	/// The local topological index (`roomid_topologicalorder_pducount`) is then
+	/// rebuilt with `deprecated_local_topo_depth` set to the event's 1-based
+	/// position in that sort.
+	///
+	/// Stream order (`room_pducount_eventid`) is immutable and is never
+	/// modified unless `--force-reindex` is set, which renumbers it (limited
+	/// to rooms with at most 25,000 events). Clients should re-sync the room
+	/// afterward.
 	ReorderTimeline {
 		/// The room ID.
 		#[arg(required_unless_present = "all")]
