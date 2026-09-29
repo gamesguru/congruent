@@ -155,7 +155,7 @@ pub(super) async fn rescue_room(
 			self.services
 				.rooms
 				.timeline
-				.reorder_timeline(&room_id, false, false),
+				.reorder_timeline(&room_id, false, false, false),
 		)
 		.await?;
 	} else {
@@ -501,7 +501,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 					self.services
 						.rooms
 						.timeline
-						.reorder_timeline(room_id, false, false),
+						.reorder_timeline(room_id, false, false, false),
 				)
 				.await
 				.is_ok()

@@ -11,11 +11,30 @@ mod rejected;
 mod state;
 mod timeline;
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use conduwuit::Result;
 use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId};
 
 use crate::admin_command_dispatch;
+
+#[derive(Debug, Args)]
+pub(super) struct ReorderTimelineOptions {
+	/// If set, reorders timeline in ALL rooms.
+	#[arg(long)]
+	pub(super) all: bool,
+
+	/// If set, do not compute state during timeline re-insertion.
+	#[arg(long)]
+	pub(super) no_compute_state: bool,
+
+	/// If set, permanently re-assigns the immutable stream order to match the DAG.
+	#[arg(long)]
+	pub(super) force_reindex: bool,
+
+	/// Allow reordering when missing parent edges are detected.
+	#[arg(long)]
+	pub(super) allow_incomplete: bool,
+}
 
 #[admin_command_dispatch]
 #[derive(Debug, Subcommand)]
@@ -226,23 +245,8 @@ pub enum YoloCommand {
 		#[arg(required_unless_present = "all")]
 		room_id: Option<OwnedRoomId>,
 
-		/// If set, reorders timeline in ALL rooms.
-		#[arg(long)]
-		all: bool,
-
-		/// If set, do not compute state during timeline re-insertion.
-		/// Use this if you are going to run `yolo rebuild-state` afterwards.
-		#[arg(long)]
-		no_compute_state: bool,
-
-		/// If set, permanently re-assigns the immutable stream order
-		/// (`PduCount`) to perfectly match the DAG's topological order. This
-		/// destroys the arrival-time ordering but eliminates chronological
-		/// breaks in `/sync` and `get-room-dag`. Clients will skip events or
-		/// see duplicates if they do not clear their cache or initial sync
-		/// afterwards.
-		#[arg(long)]
-		force_reindex: bool,
+		#[command(flatten)]
+		options: ReorderTimelineOptions,
 	},
 
 	/// Incrementally rebuild the state of the room from the beginning of the
@@ -358,6 +362,11 @@ pub enum YoloCommand {
 		/// Run reorder-timeline after completion (requires --import)
 		#[arg(long, requires = "import")]
 		reorder: bool,
+
+		/// Stop immediately when /backfill returns an empty response without
+		/// running /event fallback
+		#[arg(long)]
+		no_fallback: bool,
 	},
 
 	/// Fetches a PDU from a remote server and attempts to verify/persist it.
