@@ -367,8 +367,6 @@ async fn migrate(services: &Services) -> Result<()> {
 		Box::pin(db_lt_20(services))
 			.await
 			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
-	} else if services.globals.db.database_version().await < 20 {
-		services.globals.db.bump_database_version(20);
 	}
 
 	// v21 - delete the single-slot `EventStatus` model; verdicts live in the

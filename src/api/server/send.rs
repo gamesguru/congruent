@@ -41,6 +41,7 @@ use ruma::{
 			},
 		},
 	},
+	encryption::DeviceKeys,
 	events::{
 		StateEventType,
 		receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
@@ -61,6 +62,7 @@ type ResolvedMap = BTreeMap<OwnedEventId, Result>;
 type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct StateHashInfo {
 	algorithm: Option<String>,
 	after: String,
@@ -73,7 +75,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<send_transaction_message::v1::Response> {
 	if body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -101,7 +103,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(axum::Json(response))
+			Ok(response)
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -160,7 +162,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<send_transaction_message::v1::Response> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -173,7 +175,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(axum::Json(response)),
+		| Some(Ok(response)) => Ok(response),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,
@@ -342,30 +344,19 @@ async fn process_inbound_transaction(
 		);
 	}
 
-	// Bundle response
-	let mut response_json = serde_json::json!({
-		"pdus": results
+	let response = send_transaction_message::v1::Response {
+		pdus: results
 			.into_iter()
-			.map(|(e, r)| {
-				let mut obj = serde_json::Map::new();
-				if let Err(err) = r {
-					obj.insert(
-						"error".to_owned(),
-						serde_json::Value::String(error::sanitized_message(err)),
-					);
-				}
-				(e.to_string(), serde_json::Value::Object(obj))
-			})
-			.collect::<serde_json::Map<_, _>>(),
-	});
-
-	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
+			.map(|(event_id, result)| (event_id, result.map_err(error::sanitized_message)))
+			.collect(),
+	};
 
 	services
 		.transactions
-		.finish_federation_txn(txn_key, sender, response_json);
+		.finish_federation_txn(txn_key, sender, response);
 }
 
+#[allow(dead_code)]
 async fn inject_state_hash_mismatches(
 	services: &crate::State,
 	body: &Ruma<send_transaction_message::v1::Request>,
@@ -429,6 +420,7 @@ async fn inject_state_hash_mismatches(
 /// delta to the before-state LtHash.  `pdu_shortstatehash` returns the state
 /// snapshot *before* the event, so for state events we must remove the
 /// previous event at (type, state_key) and insert the new one.
+#[allow(dead_code)]
 async fn compute_receiver_after_digest(
 	services: &crate::State,
 	event_id: &OwnedEventId,

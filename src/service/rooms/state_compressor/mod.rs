@@ -923,7 +923,7 @@ pub async fn get_lthash(&self, shortstatehash: ShortStateHash) -> Result<LtHash>
 	{
 		if bytes.len() == 2048 {
 			let mut arr = [0_u16; 1024];
-			for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+			for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
 				arr[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
 			}
 			let lthash = LtHash(arr);
