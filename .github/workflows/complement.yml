@@ -299,7 +299,12 @@ jobs:
 
       - name: Parse Complement results
         id: results
-        if: always()
+        # Only parse when the runner actually ran (success or test failures).
+        # If an earlier build/setup step failed, this step is skipped and the
+        # tracked baseline tests/complement/results.jsonl is left in the tree;
+        # parsing that stale ledger would fabricate a passing count and make
+        # the Matrix notification report a successful run.
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         run: |
           RESULTS="tests/complement/results.jsonl"
           if [ ! -f "$RESULTS" ]; then
@@ -469,7 +474,7 @@ jobs:
             || echo "unknown")
           echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
       - name: Update Results Ledger
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         uses: ./.github/actions/update-results-ledger
         with:
@@ -487,7 +492,7 @@ jobs:
           room_version: ${{ matrix.room_version }}
 
       - name: Ingest results into PostgreSQL
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         env:
           SSH_PASSPHRASE: ${{ secrets.C10Y_SSH_KEY_PRIVATE_PASSPHRASE || '' }}
@@ -534,7 +539,7 @@ jobs:
           # Add the server key to known_hosts to prevent interactive prompts
           ssh-keyscan -p 22 nutra.tk | tee -a ~/.ssh/known_hosts
       - name: Run Postgres Ingestion
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         uses: ./.github/actions/postgres
         with:
