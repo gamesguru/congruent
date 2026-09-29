@@ -125,16 +125,13 @@ pub(crate) async fn delete_alias_route(
 			}
 			content.alt_aliases = retained_alt_aliases;
 
-			services
-				.rooms
-				.timeline
-				.build_and_append_pdu(
-					PduBuilder::state(String::new(), &content),
-					sender_user,
-					Some(&room_id),
-					&state_lock,
-				)
-				.await?;
+			Box::pin(services.rooms.timeline.build_and_append_pdu(
+				PduBuilder::state(String::new(), &content),
+				sender_user,
+				Some(&room_id),
+				&state_lock,
+			))
+			.await?;
 		}
 	}
 

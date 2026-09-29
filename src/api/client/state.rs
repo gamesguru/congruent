@@ -327,22 +327,19 @@ async fn send_state_event_for_key_helper(
 		}
 	}
 
-	let event_id = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder {
-				event_type: event_type.to_string().into(),
-				content: serde_json::from_str(json.json().get())?,
-				state_key: Some(state_key.into()),
-				timestamp,
-				..Default::default()
-			},
-			sender,
-			Some(room_id),
-			&state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder {
+			event_type: event_type.to_string().into(),
+			content: serde_json::from_str(json.json().get())?,
+			state_key: Some(state_key.into()),
+			timestamp,
+			..Default::default()
+		},
+		sender,
+		Some(room_id),
+		&state_lock,
+	))
+	.await?;
 
 	Ok(event_id)
 }
