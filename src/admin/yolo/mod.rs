@@ -18,7 +18,7 @@ use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, Owned
 use crate::admin_command_dispatch;
 
 #[derive(Debug, Args)]
-pub(super) struct ReorderTimelineOptions {
+pub struct ReorderTimelineOptions {
 	/// If set, reorders timeline in ALL rooms.
 	#[arg(long)]
 	pub(super) all: bool,
