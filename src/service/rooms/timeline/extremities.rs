@@ -247,12 +247,37 @@ impl Service {
 				.db
 				.multi_get_shortprevevents(futures::stream::iter(short_ids.clone()));
 			let all_prevs: Vec<Result<Vec<ShortEventId>>> = prevs_stream.collect().await;
+
+			// Batch-resolve the whole chunk's ShortEventId -> EventId and then
+			// batch-read metadata for the resolved ids. Doing these per event
+			// (as before) added two single-key RocksDB round trips per event
+			// while the room state lock was held.
+			let resolved_ids: Vec<Option<OwnedEventId>> = self
+				.services
+				.short
+				.multi_get_eventid_from_short(futures::stream::iter(short_ids.clone()))
+				.collect::<Vec<Result<OwnedEventId>>>()
+				.await
+				.into_iter()
+				.map(Result::ok)
+				.collect();
+
+			let metadata_ids: Vec<OwnedEventId> =
+				resolved_ids.iter().flatten().cloned().collect();
+			let mut metadata = self
+				.db
+				.get_event_metadata_batch(&metadata_ids)
+				.await
+				.into_iter();
+
 			// Non-outlier event ids in this chunk, deferred so their rejection/soft-fail
 			// verdicts can be batch-read below instead of two sequential single-key
 			// lookups per event.
 			let mut non_outlier_pairs: Vec<(ShortEventId, OwnedEventId)> = Vec::new();
 
-			for (short_id, prevs_res) in short_ids.into_iter().zip(all_prevs.into_iter()) {
+			for ((short_id, prevs_res), event_id) in
+				short_ids.into_iter().zip(all_prevs).zip(resolved_ids)
+			{
 				let prevs = match prevs_res {
 					| Ok(prevs) => prevs,
 					| Err(_) => {
@@ -265,19 +290,15 @@ impl Service {
 				};
 				raw_edges.insert(short_id, prevs);
 
-				let Ok(event_id) = self
-					.services
-					.short
-					.get_eventid_from_short::<OwnedEventId>(short_id)
-					.await
-				else {
+				let Some(event_id) = event_id else {
 					skipped_unresolved_shortids = skipped_unresolved_shortids.saturating_add(1);
 					continue;
 				};
 
-				let is_outlier = match self.db.get_event_metadata(&event_id).await {
-					| Ok(meta) => meta.is_outlier,
-					| Err(_) => {
+				// One metadata result per resolved id, consumed in order.
+				let is_outlier = match metadata.next() {
+					| Some(Ok(meta)) => meta.is_outlier,
+					| Some(Err(_)) | None => {
 						missing_metadata = missing_metadata.saturating_add(1);
 						accepted_event_ids.insert(short_id);
 						continue;

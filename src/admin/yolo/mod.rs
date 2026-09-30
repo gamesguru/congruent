@@ -574,18 +574,28 @@ pub enum YoloCommand {
 		skip_membership_rebuild: bool,
 	},
 
-	/// Fast local-only health check across all rooms.
+	/// Local-only health check across all rooms.
 	///
-	/// Scans every room in the database and reports:
+	/// By default this is fast: it reads only cheap invariants per room and
+	/// reports:
 	/// - Corrupt room IDs (non-ASCII, parse failures)
 	/// - Soft-failed or missing create events
 	/// - Orphaned rooms (no local users)
-	/// - Extremity anomalies (0 or >10 forward extremities)
+	/// - Extremity anomalies (0 or >1 stored forward extremities)
 	/// - Membership cache drift (state vs cache mismatch)
+	///
+	/// `--deep` additionally runs the expensive per-room DAG work: a full
+	/// forward-extremity recalculation (scans the entire room history) and the
+	/// chronological timeline scan (decodes up to 1000 PDUs). `--fix` implies
+	/// `--deep`.
 	CheckRooms {
 		/// Only show rooms with problems (hide healthy rooms)
 		#[arg(long, short)]
 		problems_only: bool,
+
+		/// Run the expensive full-DAG and chronology scans per room
+		#[arg(long)]
+		deep: bool,
 
 		/// Auto-repair membership cache drift when detected
 		#[arg(long)]
