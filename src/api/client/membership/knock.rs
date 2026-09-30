@@ -12,7 +12,7 @@ use conduwuit::{
 	utils::{self, to_canonical_object},
 	warn,
 };
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId,
 	RoomVersionId, UserId,

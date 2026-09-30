@@ -1,10 +1,7 @@
 use axum::{extract::State, response::Json};
 use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
-	utils::{
-		future::TryExtExt,
-		stream::{BroadbandExt, ReadyExt},
-	},
+	utils::{future::TryExtExt, stream::BroadbandExt},
 };
 use futures::{StreamExt, future::join};
 use ruma::{

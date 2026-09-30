@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use conduwuit::{
-	Error, Result, err, implement, info,
+	Error, Result, err, implement,
 	state_res::StateMap,
 	trace,
 	utils::stream::{IterStream, ReadyExt, WidebandExt},

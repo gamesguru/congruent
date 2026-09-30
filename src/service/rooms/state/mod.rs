@@ -311,13 +311,17 @@ impl Service {
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
-		self.db
-			.shorteventid_roothandle
-			.batch_put(&mut batch, &shorteventid.to_be_bytes(), serialized.as_slice());
+		self.db.shorteventid_roothandle.batch_put(
+			&mut batch,
+			&shorteventid.to_be_bytes(),
+			serialized.as_slice(),
+		);
 		if is_state {
-			self.db
-				.roomid_roothandle
-				.batch_put(&mut batch, room_id.as_bytes(), serialized.as_slice());
+			self.db.roomid_roothandle.batch_put(
+				&mut batch,
+				room_id.as_bytes(),
+				serialized.as_slice(),
+			);
 		}
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
@@ -825,7 +829,7 @@ impl Service {
 			version,
 			room_version_id.as_str(),
 		);
-		let auth_types: Vec<(StateEventType, conduwuit_core::matrix::StateKey)> = auth_types_raw
+		let auth_types: Vec<(StateEventType, StateKey)> = auth_types_raw
 			.into_iter()
 			.map(|(ty, sk)| (ty.into(), sk.into()))
 			.collect();

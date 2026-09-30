@@ -889,7 +889,7 @@ async fn check_joined_since_last_sync(
 			if let Ok(event_id) = services
 				.rooms
 				.state_accessor
-				.state_get_id_hamt::<ruma::OwnedEventId>(
+				.state_get_id_hamt::<OwnedEventId>(
 					room_id,
 					current_root_handle,
 					&StateEventType::RoomMember,

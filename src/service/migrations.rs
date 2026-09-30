@@ -2447,8 +2447,7 @@ async fn legacy_added_events_roothandles(
 		let first = shorteventids.first().ok_or(err!(Database(error!(
 			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
 		))))?;
-		let event_id: ruma::OwnedEventId =
-			services.rooms.short.get_eventid_from_short(*first).await?;
+		let event_id: OwnedEventId = services.rooms.short.get_eventid_from_short(*first).await?;
 		let pdu = services.rooms.timeline.get_pdu(&event_id).await?;
 		let room_id = pdu
 			.room_id_or_hash()
@@ -2491,7 +2490,7 @@ async fn legacy_build_root_handle_for_state(
 			.short
 			.get_statekey_from_short(shortstatekey)
 			.await?;
-		let event_id: ruma::OwnedEventId = services
+		let event_id: OwnedEventId = services
 			.rooms
 			.short
 			.get_eventid_from_short(shorteventid)
@@ -2551,7 +2550,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 						.short
 						.get_statekey_from_short(shortstatekey)
 						.await?;
-					let event_id: ruma::OwnedEventId = services
+					let event_id: OwnedEventId = services
 						.rooms
 						.short
 						.get_eventid_from_short(shorteventid)

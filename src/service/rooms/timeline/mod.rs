@@ -18,7 +18,7 @@ pub mod reindex;
 mod reorder;
 mod repair_unsigned;
 
-use std::{fmt::Write, mem::size_of, ops::Bound, sync::Arc};
+use std::{fmt::Write, ops::Bound, sync::Arc};
 
 pub use append::AppendPduContext;
 use async_trait::async_trait;
@@ -30,7 +30,7 @@ pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
 /// still self-locking when called from anywhere else.
 pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
-	Result, Server, SyncMutex, at, err, info,
+	Result, Server, at, err, info,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduEvent},
@@ -38,7 +38,6 @@ use conduwuit_core::{
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
-use lru_cache::LruCache;
 use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
@@ -55,8 +54,7 @@ pub use self::{
 	repair_unsigned::update_unsigned_prev_content,
 };
 use crate::{
-	Dep, account_data, admin, appservice, globals, pusher, rooms,
-	rooms::short::ShortEventId,
+	Dep, account_data, admin, appservice, globals, pusher, rooms, rooms::short::ShortEventId,
 	sending, server_keys, users,
 };
 
@@ -124,16 +122,13 @@ pub struct Service {
 	/// track ranges, not a single count, to stay correct. The exact-tuple
 	/// form sidesteps that while still allowing the cache to survive
 	/// unrelated writes: the room state hash is the invalidation token.
-	pub backfill_gap_free_cache:
-		moka::sync::Cache<OwnedRoomId, (ShortStateHash, TopoToken, usize)>,
+	pub backfill_gap_free_cache: moka::sync::Cache<OwnedRoomId, (u64, TopoToken, usize)>,
 	/// Short-lived suppression for repeated unresolved backfill windows.
 	/// If the same room/window/gap signature comes back unchanged after a
 	/// failed federation attempt, re-scanning and re-requesting it again is
 	/// pure CPU/network waste. This is intentionally short TTL so a transient
 	/// remote failure can still be retried shortly after.
 	pub backfill_gap_repeat_cache: moka::sync::Cache<(OwnedRoomId, u64), ()>,
-	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
-	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
 	pub last_timeline_count_cache: moka::sync::Cache<OwnedRoomId, PduCount>,
 	/// Arbiter between outlier promotions (see
 	/// [`Self::promote_outlier_batch`]) and event rejections racing for the
@@ -178,14 +173,7 @@ pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
-		let config = &args.server.config;
-		let cache_capacity =
-			f64::from(config.shortstatekey_cache_capacity) * config.cache_capacity_modifier;
-		let cache_capacity = conduwuit_core::utils::math::usize_from_f64(cache_capacity)?;
-
 		Ok(Arc::new(Self {
-			next_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
-			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
 			last_timeline_count_cache: moka::sync::Cache::builder()
 				.max_capacity(100_000)
 				.time_to_idle(std::time::Duration::from_mins(10))
@@ -236,20 +224,6 @@ impl crate::Service for Service {
 	}
 
 	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
-		let next_cache_len = self.next_shortstatehash_cache.lock().len();
-		let next_cache_bytes = next_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let next_bytes = conduwuit_core::utils::bytes::pretty(next_cache_bytes);
-		writeln!(out, "next_shortstatehash_cache: {next_cache_len} ({next_bytes})")?;
-
-		let prev_cache_len = self.prev_shortstatehash_cache.lock().len();
-		let prev_cache_bytes = prev_cache_len.saturating_mul(
-			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
-		);
-		let prev_bytes = conduwuit_core::utils::bytes::pretty(prev_cache_bytes);
-		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
-
 		let mutex_insert = self.mutex_insert.len();
 		writeln!(out, "insert_mutex: {mutex_insert}")?;
 		let mutex_fetch = self.mutex_fetch.len();
@@ -266,8 +240,8 @@ impl crate::Service for Service {
 impl Service {
 	#[inline]
 	fn backfill_gap_free_cache_hit(
-		cached: Option<(ShortStateHash, TopoToken, usize)>,
-		current_statehash: ShortStateHash,
+		cached: Option<(u64, TopoToken, usize)>,
+		current_statehash: u64,
 		from: TopoToken,
 		scan_limit: usize,
 	) -> bool {
@@ -920,5 +894,4 @@ impl Service {
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
 	}
-
 }

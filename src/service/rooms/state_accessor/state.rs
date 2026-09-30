@@ -75,7 +75,7 @@ pub async fn user_membership_hamt(
 pub async fn user_membership_at_event(
 	&self,
 	event_id: &EventId,
-	room_id: &ruma::RoomId,
+	room_id: &RoomId,
 	user_id: &UserId,
 ) -> MembershipState {
 	if let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await {
