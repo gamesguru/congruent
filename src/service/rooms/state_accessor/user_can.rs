@@ -128,7 +128,7 @@ pub async fn user_can_see_event(
 		return true;
 	}
 
-	let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await else {
+	let Ok(root_handle) = self.pdu_roothandle_before_event(room_id, event_id).await else {
 		// No historical state snapshot for this event. Use the current room state's
 		// history_visibility as a best-effort fallback. For shared/world_readable
 		// policies, allow if the user was ever a member. For joined/invited, deny

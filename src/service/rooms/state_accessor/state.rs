@@ -67,7 +67,7 @@ pub async fn user_membership_hamt(
 /// Get a user's membership at the point in time when a specific event was
 /// created.
 ///
-/// Resolves the event's state snapshot via `pdu_roothandle_at_event`, then
+/// Resolves the event's state snapshot via `pdu_roothandle_before_event`, then
 /// queries the membership from that HAMT root. Falls back to the current
 /// membership from `state_cache` when no snapshot is available (e.g.
 /// backfilled events without state).
@@ -78,7 +78,7 @@ pub async fn user_membership_at_event(
 	room_id: &RoomId,
 	user_id: &UserId,
 ) -> MembershipState {
-	if let Ok(root_handle) = self.pdu_roothandle_at_event(room_id, event_id).await {
+	if let Ok(root_handle) = self.pdu_roothandle_before_event(room_id, event_id).await {
 		self.user_membership_hamt(room_id, &root_handle, user_id)
 			.await
 	} else {
@@ -479,24 +479,28 @@ pub async fn load_full_state_hamt(
 	Ok(short_states)
 }
 
-/// Returns the HAMT RootHandle for this pdu.
+/// Returns the HAMT RootHandle for the state *after* this pdu, i.e. including
+/// the pdu's own state change.
 #[implement(super::Service)]
-pub async fn pdu_roothandle(&self, event_id: &EventId) -> Result<rezzy::hamt::RootHandle> {
+pub async fn pdu_roothandle_after_event(
+	&self,
+	event_id: &EventId,
+) -> Result<rezzy::hamt::RootHandle> {
 	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
 	self.services.state.get_roothandle(shorteventid).await
 }
 
-/// Returns the HAMT RootHandle for the state *at* this pdu, i.e. the state
-/// immediately before the pdu's own state change was applied (matching the
-/// legacy `pdu_shortstatehash` semantics).
+/// Returns the HAMT RootHandle for the state immediately *before* this pdu's
+/// own state change was applied (matching the legacy `pdu_shortstatehash`
+/// semantics).
 ///
-/// `pdu_roothandle` resolves the state *after* a PDU, which for state events
-/// (e.g. a membership leave) already includes the event's own change, so a
-/// user/server that was joined before it would no longer pass a
+/// `pdu_roothandle_after_event` resolves the state *after* a PDU, which for
+/// state events (e.g. a membership leave) already includes the event's own
+/// change, so a user/server that was joined before it would no longer pass a
 /// `user_was_joined` check. Falls back to the post-event root when the event
 /// has no preceding timeline position (e.g. the first event in a room).
 #[implement(super::Service)]
-pub async fn pdu_roothandle_at_event(
+pub async fn pdu_roothandle_before_event(
 	&self,
 	room_id: &RoomId,
 	event_id: &EventId,
@@ -509,7 +513,7 @@ pub async fn pdu_roothandle_at_event(
 		.await
 	{
 		| Ok(root_handle) => Ok(root_handle),
-		| Err(e) if e.is_not_found() => self.pdu_roothandle(event_id).await,
+		| Err(e) if e.is_not_found() => self.pdu_roothandle_after_event(event_id).await,
 		| Err(e) => Err(e),
 	}
 }

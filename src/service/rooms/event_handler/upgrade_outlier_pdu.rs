@@ -426,7 +426,7 @@ where
 /// be recovered from the incoming event's single predecessor, avoiding a full
 /// rebuild from the short-state map.
 ///
-/// `pdu_roothandle` yields the post-event root for timeline/migrated events,
+/// `pdu_roothandle_after_event` yields the post-event root for timeline/migrated events,
 /// which already includes the predecessor's own state change. Backfilled events
 /// historically store the *pre*-event root, so confirm the predecessor's own
 /// slot resolves to itself before trusting it; otherwise return `None` and let
@@ -461,7 +461,7 @@ async fn reusable_predecessor_root_handle(
 	let root = match self
 		.services
 		.state_accessor
-		.pdu_roothandle(prev_event)
+		.pdu_roothandle_after_event(prev_event)
 		.await
 	{
 		| Ok(root) => root,

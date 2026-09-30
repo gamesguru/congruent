@@ -393,7 +393,7 @@ pub(crate) async fn get_room_dag_route(
 		if let Ok(root_handle) = services
 			.rooms
 			.state_accessor
-			.pdu_roothandle(&pdu.event_id)
+			.pdu_roothandle_after_event(&pdu.event_id)
 			.await
 		{
 			// Diagnostic-only field (stripped before client delivery): emit a

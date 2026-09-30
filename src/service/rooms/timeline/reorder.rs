@@ -281,7 +281,7 @@ impl Service {
 				if let Ok(root_handle) = self
 					.services
 					.state_accessor
-					.pdu_roothandle(latest_eid)
+					.pdu_roothandle_after_event(latest_eid)
 					.await
 				{
 					let state_lock = self.services.state.mutex.lock(room_id).await;

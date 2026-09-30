@@ -1560,7 +1560,7 @@ async fn test_busted_dag_resolution() {
 	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
@@ -1711,7 +1711,7 @@ async fn test_unredacted_room_dag_resolution() {
 	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
@@ -2064,7 +2064,7 @@ async fn test_nheko_dag_resolution() {
 	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
@@ -2662,7 +2662,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let root_c = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_at_event(&room_id, &message_c_event)
+		.pdu_roothandle_before_event(&room_id, &message_c_event)
 		.await
 		.unwrap();
 	let name_c: Option<RoomNameEventContent> = services
@@ -2682,7 +2682,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let root_m = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_at_event(&room_id, &merge_event)
+		.pdu_roothandle_before_event(&room_id, &merge_event)
 		.await
 		.unwrap();
 	let name_m: Option<RoomNameEventContent> = services

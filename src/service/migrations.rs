@@ -2588,7 +2588,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	// attach the wrong state boundary to `shorteventid_roothandle`. Instead we
 	// invert the legacy statediffs: the snapshot whose `added` set contains a
 	// state event is that event's *post-event* state, which is exactly what
-	// `get_roothandle`/`pdu_roothandle` must return. This also covers the first
+	// `get_roothandle`/`pdu_roothandle_after_event` must return. This also covers the first
 	// state event of each room (present in the first snapshot's `added` even
 	// though it has no predecessor mapping). Snapshots are accumulated and
 	// flushed in bounded batches so the whole history is never held in memory.

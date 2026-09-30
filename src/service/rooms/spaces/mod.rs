@@ -316,7 +316,7 @@ fn get_space_child_events<'a>(
 			let latest = self.services.timeline.latest_pdu_in_room(room_id).await?;
 			self.services
 				.state_accessor
-				.pdu_roothandle(latest.event_id())
+				.pdu_roothandle_after_event(latest.event_id())
 				.await
 		})
 		.map_ok(|current_root_handle| {

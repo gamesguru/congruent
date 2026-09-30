@@ -66,7 +66,7 @@ pub(crate) async fn get_member_events_route(
 		let root_handle = services
 			.rooms
 			.state_accessor
-			.pdu_roothandle(pdu.event_id())
+			.pdu_roothandle_after_event(pdu.event_id())
 			.await?;
 
 		// Collect into Vec<Pdu> to avoid HRTB/opaque-type conflicts with
@@ -103,7 +103,7 @@ pub(crate) async fn get_member_events_route(
 			let root = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle_at_event(room_id, leave_pdu.event_id())
+				.pdu_roothandle_before_event(room_id, leave_pdu.event_id())
 				.await
 				.ok();
 			info!(

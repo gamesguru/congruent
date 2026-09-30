@@ -143,7 +143,7 @@ async fn compute_state_hash_for_pdu(
 	// used by the receiving endpoint so both sides compare identical values.
 	let root_handle = services
 		.state_accessor
-		.pdu_roothandle(event_id)
+		.pdu_roothandle_after_event(event_id)
 		.await
 		.ok()?;
 	let entries: Vec<(String, String, OwnedEventId)> = services

@@ -96,7 +96,7 @@ pub(super) async fn decorate_pdu_for_export(
 				.services
 				.rooms
 				.state_accessor
-				.pdu_roothandle(pdu.event_id())
+				.pdu_roothandle_after_event(pdu.event_id())
 				.await
 			{
 				// Diagnostic-only: a stable 64-bit fingerprint of the event's

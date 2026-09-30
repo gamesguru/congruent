@@ -44,7 +44,7 @@ where
 	let prev_roothandle = self
 		.services
 		.state_accessor
-		.pdu_roothandle(prev_event)
+		.pdu_roothandle_after_event(prev_event)
 		.await;
 
 	let Ok(prev_roothandle) = prev_roothandle else {
@@ -105,7 +105,7 @@ where
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
 				.state_accessor
-				.pdu_roothandle(prev_eventid)
+				.pdu_roothandle_after_event(prev_eventid)
 				.map_ok(move |root_handle| (root_handle, prev_event))
 		})
 		.try_collect::<HashMap<_, _>>()
@@ -295,7 +295,7 @@ where
 		.broad_and_then(|(prev_eventid, prev_event)| {
 			self.services
 				.state_accessor
-				.pdu_roothandle(prev_eventid)
+				.pdu_roothandle_after_event(prev_eventid)
 				.map_ok(move |root_handle| (root_handle, prev_event))
 		})
 		.try_collect::<HashMap<_, _>>()

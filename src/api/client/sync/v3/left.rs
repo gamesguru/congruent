@@ -141,14 +141,14 @@ pub(super) async fn load_left_room(
 				"leave PDU should be for the user requesting the sync"
 			);
 
-			// `pdu_roothandle` resolves the state *after* a PDU, so the
+			// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
 			// leave event's own root includes `leave_membership_event`. For the
 			// membership immediately before the user left we walk back one
 			// event to the pre-leave root.
 			let leave_root_handle = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle(&leave_membership_event.event_id)
+				.pdu_roothandle_after_event(&leave_membership_event.event_id)
 				.await?;
 
 			let leave_count = services
@@ -417,7 +417,7 @@ async fn build_left_state_and_timeline(
 			if let Ok(root_handle) = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle(&pdu.event_id)
+				.pdu_roothandle_after_event(&pdu.event_id)
 				.await
 			{
 				return root_handle;
@@ -441,7 +441,7 @@ async fn build_left_state_and_timeline(
 			let timeline_end_root_handle = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle(leave_membership_event.event_id())
+				.pdu_roothandle_after_event(leave_membership_event.event_id())
 				.await?;
 
 			build_state_incremental(
