@@ -8,6 +8,7 @@ mod misc;
 pub(crate) mod outlier_utils;
 mod outliers;
 mod rejected;
+mod short_audit;
 mod state;
 mod timeline;
 

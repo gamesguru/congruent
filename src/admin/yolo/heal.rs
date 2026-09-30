@@ -360,6 +360,14 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 	self.write_str(&format!("Scanning {n_rooms} rooms...\n"))
 		.await?;
 
+	if deep {
+		self.write_str("Global derived-index audit\n").await?;
+		let audit = super::short_audit::audit(self.services).await;
+		self.write_str(&audit.report()).await?;
+		self.write_str("\nPer-room deep DAG audit not yet enabled.\n\n")
+			.await?;
+	}
+
 	let mut total_rooms = 0_usize;
 	let mut problem_rooms = 0_usize;
 	let mut fixed_rooms = 0_usize;
