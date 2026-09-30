@@ -526,7 +526,7 @@ impl super::Service {
 				tx.blocking_send((id, owned_update))
 					.map_err(|_| "state output channel closed")
 			});
-			if let Err(rezzy::StateComputationError::CycleDetected) = result {
+			if result == Err(rezzy::StateComputationError::CycleDetected) {
 				warn!("streaming state computation detected cycle; results incomplete");
 			}
 		});
