@@ -931,68 +931,79 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 	let stream = eventid_pdu.raw_stream();
 	pin_mut!(stream);
 
-	let mut batch = database::Batch::new();
 	let mut processed = 0_usize;
-	let mut repaired = 0_usize;
 
-	while let Some(entry) = stream.next().await {
-		let (event_id_bytes, _) = entry.map_err(|e| {
-			err!(Database("Failed to read eventid_pdu during short-prev migration: {e}"))
-		})?;
-		let event_id_string = std::str::from_utf8(event_id_bytes).map_err(|e| {
-			err!(Database("Invalid event ID UTF-8 during short-prev migration: {e}"))
-		})?;
-		let event_id = OwnedEventId::parse(event_id_string).map_err(|e| {
-			err!(Database("Invalid event ID during short-prev migration: {event_id_string}: {e}"))
-		})?;
-
-		// Do not silently skip an unreadable PDU. Leaving the marker unset makes
-		// the migration retryable after the underlying record is repaired.
-		let pdu = services
-			.rooms
-			.timeline
-			.get_pdu(&event_id)
-			.await
-			.map_err(|e| {
+	loop {
+		let mut entries = Vec::with_capacity(BATCH_SIZE);
+		while entries.len() < BATCH_SIZE {
+			let Some(entry) = stream.next().await else { break };
+			let (event_id_bytes, pdu_json_bytes) = entry.map_err(|e| {
+				err!(Database("Failed to read eventid_pdu during short-prev migration: {e}"))
+			})?;
+			let event_id_string = std::str::from_utf8(event_id_bytes).map_err(|e| {
+				err!(Database("Invalid event ID UTF-8 during short-prev migration: {e}"))
+			})?;
+			let event_id = OwnedEventId::parse(event_id_string).map_err(|e| {
 				err!(Database(
-					"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
+					"Invalid event ID during short-prev migration: {event_id_string}: {e}"
 				))
 			})?;
 
-		let short_event_id = services
+			// Do not silently skip an unreadable PDU. Leaving the marker unset makes
+			// the migration retryable after the underlying record is repaired.
+			let pdu =
+				serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(|e| {
+					err!(Database(
+						"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
+					))
+				})?;
+
+			// Only the DAG edges are needed below; retaining the decoded PDU would
+			// pin up to BATCH_SIZE full event bodies in memory at once.
+			let prev_events = pdu.prev_events().map(ToOwned::to_owned).collect::<Vec<_>>();
+			entries.push((event_id, prev_events));
+		}
+
+		if entries.is_empty() {
+			break;
+		}
+
+		let short_event_ids = services
 			.rooms
 			.short
-			.get_or_create_shorteventid(&event_id)
+			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| &**event_id))
+			.collect::<Vec<_>>()
 			.await;
-		let prev_events = pdu.prev_events();
-		let mut short_prev_events = Vec::with_capacity(prev_events.size_hint().0);
-		for prev_event_id in prev_events {
-			short_prev_events.push(
-				services
-					.rooms
-					.short
-					.get_or_create_shorteventid(prev_event_id)
-					.await,
-			);
+
+		let mut prev_event_ids = Vec::new();
+		let mut prev_ranges = Vec::with_capacity(entries.len());
+		for (_, prev_events) in &entries {
+			let start = prev_event_ids.len();
+			prev_event_ids.extend(prev_events.iter().map(|event_id| &**event_id));
+			prev_ranges.push(start..prev_event_ids.len());
+		}
+		let prev_short_ids = services
+			.rooms
+			.short
+			.multi_get_or_create_shorteventid(prev_event_ids.iter().copied())
+			.collect::<Vec<_>>()
+			.await;
+
+		let mut batch = database::Batch::new();
+		for (short_event_id, range) in short_event_ids.iter().zip(prev_ranges) {
+			let key = short_event_id.to_be_bytes();
+			let value = prev_short_ids[range]
+				.iter()
+				.flat_map(|short_id| short_id.to_be_bytes())
+				.collect::<Vec<_>>();
+			shorteventid_shortprevevents.batch_put(&mut batch, &key, &value);
 		}
 
-		let key = short_event_id.to_be_bytes();
-		let value = short_prev_events
-			.iter()
-			.flat_map(|short_id| short_id.to_be_bytes())
-			.collect::<Vec<_>>();
-		shorteventid_shortprevevents.batch_put(&mut batch, &key, &value);
-		processed = processed.saturating_add(1);
-		repaired = repaired.saturating_add(1);
-
-		if repaired.is_multiple_of(BATCH_SIZE) {
-			shorteventid_shortprevevents.apply_batch(batch);
-			batch = database::Batch::new();
-			info!("Populated short-prev index for {processed} events...");
-		}
+		shorteventid_shortprevevents.apply_batch(batch);
+		processed = processed.saturating_add(entries.len());
+		info!("Populated short-prev index for {processed} events...");
 	}
 
-	shorteventid_shortprevevents.apply_batch(batch);
 	info!("Successfully populated short-prev index for {processed} events.");
 	db["global"].insert(POPULATE_SHORTPREVEVENTS_MARKER, []);
 	drop(cork);
