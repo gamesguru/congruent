@@ -222,9 +222,21 @@ where
 		let event_id = incoming_pdu.event_id();
 		state_after.insert(shortstatekey, event_id.to_owned());
 
+		// `state_at_incoming_event` is, in the single-predecessor case,
+		// materialized from the predecessor's own root handle, so reuse that
+		// root instead of rebuilding and re-persisting an identical HAMT.
+		// Fall back to a full rebuild for fork/state-resolution inputs and for
+		// predecessors whose stored root predates their own state change.
 		previous_root_handle = Some(
-			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
-				.await?,
+			match self
+				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
+				.await?
+			{
+				| Some(root) => root,
+				| None =>
+					self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+						.await?,
+			},
 		);
 		new_room_state = Some(
 			self.resolve_state(room_id, &room_version_id, state_after)
@@ -408,6 +420,75 @@ where
 	);
 
 	Ok(pdu_id)
+}
+
+/// Returns the HAMT root representing the state at `incoming_pdu` when it can
+/// be recovered from the incoming event's single predecessor, avoiding a full
+/// rebuild from the short-state map.
+///
+/// `pdu_roothandle` yields the post-event root for timeline/migrated events,
+/// which already includes the predecessor's own state change. Backfilled events
+/// historically store the *pre*-event root, so confirm the predecessor's own
+/// slot resolves to itself before trusting it; otherwise return `None` and let
+/// the caller materialize the map. Because the predecessor's root has already
+/// been persisted, this also avoids re-writing nodes on the hot path.
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+async fn reusable_predecessor_root_handle(
+	&self,
+	room_id: &RoomId,
+	incoming_pdu: &PduEvent,
+) -> Result<Option<rezzy::hamt::RootHandle>> {
+	let mut prev_events = incoming_pdu.prev_events();
+	let (Some(prev_event), None) = (prev_events.next(), prev_events.next()) else {
+		return Ok(None);
+	};
+
+	// A missing predecessor PDU/root or an absent state slot is a legitimate
+	// reason to rebuild. Any other failure (storage/transient) must propagate
+	// rather than silently forcing the expensive fallback and masking it.
+	let prev_pdu = match self
+		.services
+		.timeline
+		.get_pdu_in_room(Some(room_id), prev_event)
+		.await
+	{
+		| Ok(pdu) => pdu,
+		| Err(e) if e.is_not_found() => return Ok(None),
+		| Err(e) => return Err(e),
+	};
+
+	let root = match self
+		.services
+		.state_accessor
+		.pdu_roothandle(prev_event)
+		.await
+	{
+		| Ok(root) => root,
+		| Err(e) if e.is_not_found() => return Ok(None),
+		| Err(e) => return Err(e),
+	};
+
+	// Guard against backfilled pre-event roots: if the predecessor is a state
+	// event, its own slot must resolve back to itself at this root.
+	if let Some(state_key) = prev_pdu.state_key() {
+		let event_type: StateEventType = prev_pdu.kind().to_string().into();
+		let local = match self
+			.services
+			.state_accessor
+			.state_get_in_room_hamt(room_id, &root, &event_type, state_key)
+			.await
+		{
+			| Ok(local) => local,
+			| Err(e) if e.is_not_found() => return Ok(None),
+			| Err(e) => return Err(e),
+		};
+		if local.event_id() != prev_event {
+			return Ok(None);
+		}
+	}
+
+	Ok(Some(root))
 }
 
 #[implement(super::Service)]

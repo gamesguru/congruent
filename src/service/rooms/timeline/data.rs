@@ -2595,7 +2595,8 @@ mod tests {
 				event_type: "m.room.create".into(),
 				state_key: Some(String::new()),
 				sender: "@x:x".into(),
-				content: serde_json::json!({"room_version": "10", "creator": "@x:x"}),
+				content: rezzy::JsonValue::parse(r#"{"room_version":"10","creator":"@x:x"}"#)
+					.expect("valid json"),
 				..Default::default()
 			},
 			LeanEvent {
@@ -2973,7 +2974,8 @@ mod tests {
 				event_type: "m.room.create".into(),
 				state_key: Some(String::new()),
 				sender: "@x:x".into(),
-				content: serde_json::json!({"room_version": "10", "creator": "@x:x"}),
+				content: rezzy::JsonValue::parse(r#"{"room_version":"10","creator":"@x:x"}"#)
+					.expect("valid json"),
 				..Default::default()
 			},
 			LeanEvent {

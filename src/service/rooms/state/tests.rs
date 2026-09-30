@@ -6,7 +6,7 @@ use conduwuit_core::{
 	Server,
 	config::Config,
 	log::{Log, LogLevelReloadHandles, capture},
-	matrix::PduEvent,
+	matrix::{Event, PduEvent},
 };
 use figment::providers::Format;
 use ruma::{
@@ -64,6 +64,22 @@ fn create_dummy_pdu(
 	event_type: &str,
 	state_key: &str,
 ) -> PduEvent {
+	create_dummy_pdu_with_content(
+		room_id,
+		event_id,
+		event_type,
+		state_key,
+		CanonicalJsonObject::new(),
+	)
+}
+
+fn create_dummy_pdu_with_content(
+	room_id: &RoomId,
+	event_id: &EventId,
+	event_type: &str,
+	state_key: &str,
+	content: CanonicalJsonObject,
+) -> PduEvent {
 	let mut json = CanonicalJsonObject::new();
 	json.insert("room_id".into(), ruma::CanonicalJsonValue::String(room_id.as_str().to_owned()));
 	json.insert(
@@ -72,10 +88,7 @@ fn create_dummy_pdu(
 	);
 	json.insert("type".into(), ruma::CanonicalJsonValue::String(event_type.to_owned()));
 	json.insert("state_key".into(), ruma::CanonicalJsonValue::String(state_key.to_owned()));
-	json.insert(
-		"content".into(),
-		ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
-	);
+	json.insert("content".into(), ruma::CanonicalJsonValue::Object(content));
 	json.insert("origin_server_ts".into(), ruma::CanonicalJsonValue::Integer(123_456_789.into()));
 	json.insert("depth".into(), ruma::CanonicalJsonValue::Integer(1.into()));
 	json.insert("prev_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
@@ -86,6 +99,19 @@ fn create_dummy_pdu(
 	json.insert("hashes".into(), ruma::CanonicalJsonValue::Object(hashes));
 
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create pdu")
+}
+
+/// Persist a synthetic PDU into the PDU/timeline store so that the
+/// state-transition cache delta can resolve an added event's PDU. This mirrors
+/// the production `append_pdu` write-then-associate ordering.
+async fn persist_dummy_pdu(services: &Services, room_id: &RoomId, pdu: &PduEvent) {
+	let value = pdu.to_canonical_object();
+	services
+		.rooms
+		.timeline
+		.force_insert_pdu(room_id, pdu.event_id(), pdu, &value, false)
+		.await
+		.expect("failed to persist dummy pdu");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -186,14 +212,24 @@ async fn test_state_equivalence() {
 		"m.room.create",
 		"",
 	);
-	let event2 = create_dummy_pdu(
+	let mut member_content = CanonicalJsonObject::new();
+	member_content
+		.insert("membership".to_owned(), ruma::CanonicalJsonValue::String("join".to_owned()));
+	let event2 = create_dummy_pdu_with_content(
 		&room_id,
 		&owned_event_id!("$event2:test.conduwuit.local"),
 		"m.room.member",
 		"@alice:test.conduwuit.local",
+		member_content,
 	);
 
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+
+	// Persist the events first, mirroring `append_pdu`'s write-then-associate
+	// ordering: `set_event_state`'s cache delta resolves the added state event's
+	// PDU.
+	persist_dummy_pdu(&services, &room_id, &event1).await;
+	persist_dummy_pdu(&services, &room_id, &event2).await;
 
 	// Exercise the public state-update path (set_event_state), which persists
 	// the HAMT node, sets the room root, and atomically maps the shortevent ID.
