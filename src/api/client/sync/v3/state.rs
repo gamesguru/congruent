@@ -127,7 +127,7 @@ pub(super) async fn build_state_incremental<'a>(
 		let last_pdu_of_last_sync = services
 			.rooms
 			.timeline
-			.pdus_rev(room_id, Some(last_sync_end_count.saturating_add(1)))
+			.pdus_rev(room_id, std::ops::Bound::Included(last_sync_end_count))
 			.boxed()
 			.next()
 			.await

@@ -95,9 +95,13 @@ rustc-ice-*
 
 # complement test logs are huge
 complement-src/
-tests/test_results/complement/test_logs.jsonl
+tests/complement/test_logs.*.jsonl
+tests/complement/test_results.*.jsonl
 *.db
-tests/test_results/complement/backups/raw_issues_v11_v12.txt
+tests/complement/backups/raw_issues_v11_v12.txt
+# complement-crypto run artifacts (the tracked tests/crypto/results.jsonl ledger is
+# force-added; the rest of the dir is staging/log noise)
+tests/crypto/
 
 # Node
 node_modules/
@@ -121,3 +125,14 @@ __pycache__/
 matrix-spec-txt/
 ruma-upstream/
 ruwuma/
+
+# nested DBs
+*.log
+*.sst
+media/
+CURRENT
+IDENTITY
+LOCK
+MANIFEST-*
+OPTIONS-*
+dbs/*.toml

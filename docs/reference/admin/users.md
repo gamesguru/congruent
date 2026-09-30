@@ -161,3 +161,9 @@ Requires the `--yes-i-want-to-do-this` flag.
 ## `!admin users reset-push-rules`
 
 Resets the push-rules (notification settings) of the target user to the server defaults
+
+## `!admin users bump-device-lists`
+
+Force rebroadcasts user's device list updates to participating servers.
+
+This is useful if a device list update was missed by other servers. Can accept `all` to rebroadcast for all local users.

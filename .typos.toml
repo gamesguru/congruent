@@ -1,5 +1,6 @@
 [files]
-extend-exclude = ["*.csr", "*.lock", "pnpm-lock.yaml"]
+extend-exclude = ["*.csr", "*.lock", "pnpm-lock.yaml", "docs/development-gg/*.csv", "case-study-state-res/*",
+"conduwuit-*.toml", "*.diff", "tests/test_results/**"]
 
 [default]
 
@@ -11,7 +12,8 @@ extend-ignore-re = [
     "[A-Za-z0-9+=]{72,}",
     "([A-Za-z0-9+=]|\\\\\\s\\*){72,}",
     "[0-9+][A-Za-z0-9+]{30,}[a-z0-9+]",
-    "\\$[A-Z0-9+][A-Za-z0-9+]{6,}[a-z0-9+]",
+    "\\$[A-Za-z0-9+_-]{6,}",
+
     "\\b[a-z0-9+/=][A-Za-z0-9+/=]{7,}[a-z0-9+/=][A-Z]\\b",
     # In the renovate config
     ".ontainer"

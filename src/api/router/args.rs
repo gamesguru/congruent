@@ -159,8 +159,9 @@ where
 		};
 
 		let auth = auth::auth(services, &mut request, json_body.as_ref(), &T::METADATA).await?;
+		let body = make_body::<T>(&mut request, json_body.as_mut())?;
 		Ok(Self {
-			body: make_body::<T>(&mut request, json_body.as_mut())?,
+			body,
 			origin: auth.origin,
 			sender_user: auth.sender_user,
 			sender_device: auth.sender_device,
@@ -177,10 +178,11 @@ where
 {
 	let body = take_body(request, json_body);
 	let http_request = into_http_request(request, body);
-	T::try_from_http_request(http_request, &request.path)
-		.map_err(|e| err!(Request(BadJson(debug_warn!("{e}")))))
+	let path = request.parts.uri.path();
+	T::try_from_http_request(http_request, &request.path).map_err(|e| {
+		err!(Request(BadJson(debug_warn!("Failed to deserialize request for {path}: {e}"))))
+	})
 }
-
 fn into_http_request(request: &Request, body: Bytes) -> hyper::Request<Bytes> {
 	let mut http_request = hyper::Request::builder()
 		.uri(request.parts.uri.clone())

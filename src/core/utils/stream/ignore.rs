@@ -16,9 +16,12 @@ where
 	#[cfg(debug_assertions)]
 	#[inline]
 	fn ignore_err(self: T) -> impl Stream<Item = Item> + Send + 'a {
-		use super::TryExpect;
-
-		self.expect_ok()
+		self.filter_map(|res| {
+			if let Err(ref e) = res {
+				tracing::error!("ignore_err: stream item error (debug build): {e}");
+			}
+			ready(res.ok())
+		})
 	}
 
 	#[cfg(not(debug_assertions))]

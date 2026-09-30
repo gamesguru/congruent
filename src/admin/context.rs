@@ -14,7 +14,7 @@ pub(crate) struct Context<'a> {
 	pub(crate) services: &'a Services,
 	pub(crate) body: &'a [&'a str],
 	pub(crate) timer: SystemTime,
-	pub(crate) reply_id: Option<&'a EventId>,
+	pub(crate) _reply_id: Option<&'a EventId>,
 	pub(crate) sender: Option<&'a UserId>,
 	pub(crate) output: Mutex<BufWriter<Vec<u8>>>,
 	pub(crate) source: InvocationSource,

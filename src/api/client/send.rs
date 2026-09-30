@@ -99,7 +99,7 @@ pub(crate) async fn send_message_event_route(
 		// Check if this is a new transaction id
 		if let Ok(response) = services
 			.transactions
-			.get_client_txn(sender_user, sender_device, &body.txn_id)
+			.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await
 		{
 			if response.is_empty() {
@@ -112,14 +112,14 @@ pub(crate) async fn send_message_event_route(
 
 		let txn_lock = services
 			.transactions
-			.lock_client_txn(sender_user, sender_device, &body.txn_id)
+			.lock_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await;
 
 		// Re-check after acquiring the transaction lock in case a concurrent request
 		// with the same txn id populated the cache while this request was waiting.
 		if let Ok(response) = services
 			.transactions
-			.get_client_txn(sender_user, sender_device, &body.txn_id)
+			.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await
 		{
 			if response.is_empty() {
@@ -145,9 +145,10 @@ pub(crate) async fn send_message_event_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		services.transactions.add_client_txnid(
+		services.transactions.add_room_txnid(
 			sender_user,
 			sender_device,
+			&body.room_id,
 			&body.txn_id,
 			&encode_cached_send_txn_response(SEND_TXN_DELAY_ID_PREFIX, delay_id.as_bytes()),
 		);
@@ -160,7 +161,7 @@ pub(crate) async fn send_message_event_route(
 	// Check if this is a new transaction id
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -176,14 +177,14 @@ pub(crate) async fn send_message_event_route(
 
 	let txn_lock = services
 		.transactions
-		.lock_client_txn(sender_user, sender_device, &body.txn_id)
+		.lock_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await;
 
 	// Re-check after acquiring the transaction lock in case a concurrent request
 	// with the same txn id populated the cache while this request was waiting.
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -203,7 +204,7 @@ pub(crate) async fn send_message_event_route(
 	// same txn id populated the cache while this request was waiting.
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -233,9 +234,10 @@ pub(crate) async fn send_message_event_route(
 	))
 	.await?;
 
-	services.transactions.add_client_txnid(
+	services.transactions.add_room_txnid(
 		sender_user,
 		sender_device,
+		&body.room_id,
 		&body.txn_id,
 		&encode_cached_send_txn_response(SEND_TXN_EVENT_ID_PREFIX, event_id.as_bytes()),
 	);

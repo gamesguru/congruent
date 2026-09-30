@@ -2,9 +2,11 @@ mod bundled_aggregations;
 mod data;
 use std::sync::Arc;
 
-use conduwuit::{Result, matrix::PduCount};
+use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
+use conduwuit::{Result, debug, matrix::PduCount, warn};
 use futures::{StreamExt, future::try_join};
-use ruma::{EventId, RoomId, UserId, api::Direction};
+use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
+use sha2::{Digest, Sha256};
 
 use self::data::Data;
 use crate::{
@@ -21,6 +23,275 @@ struct Services {
 	short: Dep<rooms::short::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
+}
+
+/// Machine-checkable classification of why an event was rejected during
+/// outlier/auth processing.
+///
+/// This exists so retry classification never has to substring-match
+/// arbitrary human prose — that broke silently in practice: `"auth event
+/// {mid} is rejected"` (`handle_incoming_pdu.rs`) and `"depends on rejected
+/// auth event {aid}"` (`handle_outlier_pdu.rs`) are the same underlying
+/// cause (a cascading rejection, worth retrying if the dependency's own
+/// verdict later changes), but only one of those two wordings matched the
+/// old `.contains(...)` list. `tag()` is the single string persisted via
+/// `mark_event_rejected` for a given variant, `parse` recovers the variant
+/// from a stored reason by matching only that leading tag (not the
+/// free-text detail after it), and `is_retryable` is a plain match — so
+/// renaming a detail message, or adding a new call site, can't silently
+/// change retry behavior the way a fresh literal string always could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum RejectionCode {
+	/// Signature verification failed against the origin's keys. Permanent —
+	/// the same bytes will never verify differently.
+	SignatureVerificationFailed = 0,
+	/// The PDU didn't parse into a valid `PduEvent` at all. Permanent — the
+	/// data itself is malformed.
+	InvalidPduFormat = 1,
+	/// This event's own auth chain includes an event we've already
+	/// rejected. Permanent — deliberately *not* retryable, even though the
+	/// dependency's own rejection might itself have been resolution-related
+	/// and could later get un-rejected. This is a cascading judgment about
+	/// *another* event's current state, not a resolution failure of this
+	/// event's own; if the dependency's rejection is ever lifted, whatever
+	/// later re-processes the dependency fresh will naturally re-derive
+	/// this event's verdict too. Treating this tag itself as retryable
+	/// would strip the permanence guarantee from every event that
+	/// legitimately, permanently cascades from an intrinsically-bad auth
+	/// event (Complement's
+	/// `TestInboundFederationRejectsEventsWithRejectedAuthEvents`
+	/// exists specifically to check that cascade stays permanent — mirrors
+	/// Synapse's `AUTH_ERROR` being terminal).
+	DependsOnRejectedAuthEvent = 2,
+	/// This event's prev_events point only at rejected predecessors.
+	/// Retryable — the rejection is about the event's current resolution
+	/// context, not the event bytes themselves. If the predecessor rejection
+	/// is later cleared, a fresh attempt may be able to resolve state and
+	/// auth correctly.
+	PrevEventsRejected = 3,
+	/// We could not resolve one of this event's auth events at all (not
+	/// locally, not via `/event_auth`, not via `/state_ids`). Retryable —
+	/// this is a resolution failure, not evidence the event is invalid; a
+	/// caller with more context (a fuller state snapshot, a successful
+	/// backfill) may be able to supply the missing data.
+	MissingAuthEvent = 4,
+	/// Two auth events share the same type+state_key. Permanent — a
+	/// structural property of the claimed auth event set that can't change
+	/// on retry.
+	DuplicateAuthEventKey = 5,
+	/// No `m.room.create` in the resolved auth events (room versions that
+	/// require one). Permanent for the same reason as above.
+	MissingCreateEvent = 6,
+	/// The event's claimed auth events were all resolved, but the auth
+	/// check against them failed. Permanent — re-running the same check
+	/// against the same resolved auth events can't change the outcome.
+	AuthCheckFailed = 7,
+	/// A `/get_missing_events` response contained a prev_event that failed
+	/// canonical-JSON validation. Retryable — a different server, or a
+	/// retry of the same server, may return well-formed data.
+	StructurallyInvalidInGetMissingEvents = 8,
+	/// At least one of this event's prev_events was still unknown after the
+	/// `/state_ids` fetch used to recover state (and a follow-up single-hop
+	/// `/event` fetch) both failed to resolve it. Retryable — a subsequent
+	/// attempt (e.g. once a sibling event fills in the gap, or federation
+	/// recovers) may succeed where this one didn't.
+	PrevEventUnknownStateIdsFailed = 9,
+	/// Every prev_event was present/known, but `/state_ids`-based state
+	/// recovery still failed to produce a resolvable state snapshot (as
+	/// opposed to [`Self::PrevEventUnknownStateIdsFailed`], which is about a
+	/// prev_event that never got resolved at all). Retryable — this is a
+	/// resolution failure, not evidence the event is invalid; a later
+	/// attempt with a fuller state snapshot may succeed.
+	StateResolutionFailedWithPrevsPresent = 10,
+	/// A rejection reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Treated as permanent (not retryable),
+	/// and never written fresh — only produced during `EventMetadata`
+	/// migration of legacy rows.
+	Unknown = 11,
+}
+
+impl RejectionCode {
+	/// The stable string persisted via `mark_event_rejected` for this
+	/// variant. Callers that want to attach dynamic detail (an event ID,
+	/// say) should use [`Self::with_detail`] instead so the detail doesn't
+	/// end up as part of what [`Self::parse`] has to match against.
+	#[must_use]
+	pub const fn tag(self) -> &'static str {
+		match self {
+			| Self::SignatureVerificationFailed => "signature_verification_failed",
+			| Self::InvalidPduFormat => "invalid_pdu_format",
+			| Self::DependsOnRejectedAuthEvent => "depends_on_rejected_auth_event",
+			| Self::PrevEventsRejected => "prev_events_rejected",
+			| Self::MissingAuthEvent => "missing_auth_event",
+			| Self::DuplicateAuthEventKey => "duplicate_auth_event_key",
+			| Self::MissingCreateEvent => "missing_create_event",
+			| Self::AuthCheckFailed => "auth_check_failed",
+			| Self::StructurallyInvalidInGetMissingEvents =>
+				"structurally_invalid_in_get_missing_events",
+			| Self::PrevEventUnknownStateIdsFailed => "prev_event_unknown_state_ids_failed",
+			| Self::StateResolutionFailedWithPrevsPresent =>
+				"state_resolution_failed_with_prevs_present",
+			| Self::Unknown => "unknown",
+		}
+	}
+
+	/// Whether this class of rejection is worth retrying once more context
+	/// is available (see the variant docs above for the reasoning behind
+	/// each one).
+	#[must_use]
+	pub const fn is_retryable(self) -> bool {
+		matches!(
+			self,
+			Self::MissingAuthEvent
+				| Self::PrevEventsRejected
+				| Self::StructurallyInvalidInGetMissingEvents
+				| Self::PrevEventUnknownStateIdsFailed
+				| Self::StateResolutionFailedWithPrevsPresent
+		)
+	}
+
+	/// Build the reason string to persist: this variant's stable tag,
+	/// followed by a free-text detail for admin/debug readability (e.g. the
+	/// specific event ID involved). Only the tag is ever matched back by
+	/// [`Self::parse`] — the detail can say anything without risk of
+	/// breaking retry classification.
+	pub fn with_detail<D: std::fmt::Display>(self, detail: D) -> String {
+		format!("{}: {detail}", self.tag())
+	}
+
+	/// Recover the code from a reason string previously produced by
+	/// [`Self::tag`] or [`Self::with_detail`]. Matches only the leading
+	/// tag (everything before the first `:`), so it's exact even as detail
+	/// wording changes. Returns `None` for anything that isn't one of our
+	/// known tags (e.g. a reason string predating this enum, or a typo) —
+	/// callers should treat that as "not retryable" rather than guessing.
+	#[must_use]
+	pub fn parse(reason: &str) -> Option<Self> {
+		let tag = reason.split(':').next().unwrap_or(reason).trim();
+		[
+			Self::SignatureVerificationFailed,
+			Self::InvalidPduFormat,
+			Self::DependsOnRejectedAuthEvent,
+			Self::PrevEventsRejected,
+			Self::MissingAuthEvent,
+			Self::DuplicateAuthEventKey,
+			Self::MissingCreateEvent,
+			Self::AuthCheckFailed,
+			Self::StructurallyInvalidInGetMissingEvents,
+			Self::PrevEventUnknownStateIdsFailed,
+			Self::StateResolutionFailedWithPrevsPresent,
+		]
+		.into_iter()
+		.find(|code| code.tag() == tag)
+	}
+
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::SignatureVerificationFailed => 0,
+			| Self::InvalidPduFormat => 1,
+			| Self::DependsOnRejectedAuthEvent => 2,
+			| Self::PrevEventsRejected => 3,
+			| Self::MissingAuthEvent => 4,
+			| Self::DuplicateAuthEventKey => 5,
+			| Self::MissingCreateEvent => 6,
+			| Self::AuthCheckFailed => 7,
+			| Self::StructurallyInvalidInGetMissingEvents => 8,
+			| Self::PrevEventUnknownStateIdsFailed => 9,
+			| Self::StateResolutionFailedWithPrevsPresent => 10,
+			| Self::Unknown => 11,
+		}
+	}
+
+	#[must_use]
+	pub fn from_u8(val: u8) -> Self {
+		match val {
+			| 0 => Self::SignatureVerificationFailed,
+			| 1 => Self::InvalidPduFormat,
+			| 2 => Self::DependsOnRejectedAuthEvent,
+			| 3 => Self::PrevEventsRejected,
+			| 4 => Self::MissingAuthEvent,
+			| 5 => Self::DuplicateAuthEventKey,
+			| 6 => Self::MissingCreateEvent,
+			| 7 => Self::AuthCheckFailed,
+			| 8 => Self::StructurallyInvalidInGetMissingEvents,
+			| 9 => Self::PrevEventUnknownStateIdsFailed,
+			| 10 => Self::StateResolutionFailedWithPrevsPresent,
+			| _ => Self::Unknown,
+		}
+	}
+}
+
+/// Machine-checkable classification of why an event was soft-failed, in the
+/// same spirit as [`RejectionCode`] — a typed tag persisted via
+/// `mark_event_soft_failed` instead of arbitrary free-text prose, so admin
+/// tooling and future logic match on a stable identifier rather than
+/// substring-matching human wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+pub enum SoftFailCode {
+	/// The event failed the auth check against the current resolved room
+	/// state during timeline upgrade.
+	AuthCheckFailed = 0,
+	/// The event was imported with a pre-existing soft-fail marker.
+	Imported = 1,
+	/// An operator soft-failed the event via the admin `manage-rejected`
+	/// command.
+	Manual = 2,
+	/// A soft-fail reason string persisted before [`Self`] was typed that no
+	/// longer maps to a known variant. Only produced during migration.
+	Unknown = 3,
+}
+
+impl SoftFailCode {
+	#[must_use]
+	pub const fn to_u8(self) -> u8 {
+		match self {
+			| Self::AuthCheckFailed => 0,
+			| Self::Imported => 1,
+			| Self::Manual => 2,
+			| Self::Unknown => 3,
+		}
+	}
+
+	#[must_use]
+	pub fn from_u8(val: u8) -> Self {
+		match val {
+			| 0 => Self::AuthCheckFailed,
+			| 1 => Self::Imported,
+			| 2 => Self::Manual,
+			| _ => Self::Unknown,
+		}
+	}
+
+	#[must_use]
+	pub const fn tag(self) -> &'static str {
+		match self {
+			| Self::AuthCheckFailed => "auth_check_failed",
+			| Self::Imported => "imported",
+			| Self::Manual => "manual",
+			| Self::Unknown => "unknown",
+		}
+	}
+
+	#[must_use]
+	pub fn parse(reason: &str) -> Option<Self> {
+		let tag = reason.split(':').next().unwrap_or(reason).trim();
+		[Self::AuthCheckFailed, Self::Imported, Self::Manual]
+			.into_iter()
+			.find(|code| code.tag() == tag)
+	}
+}
+
+/// Returns true if a persisted rejection reason (from
+/// `get_rejection_reason`) is worth retrying. See [`RejectionCode`] for the
+/// classification and reasoning; a reason that doesn't parse as one of our
+/// known codes is treated as not retryable (permanent) rather than guessed
+/// at.
+#[must_use]
+pub fn is_retryable_rejection_reason(reason: &str) -> bool {
+	RejectionCode::parse(reason).is_some_and(RejectionCode::is_retryable)
 }
 
 impl crate::Service for Service {
@@ -131,13 +402,362 @@ impl Service {
 
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn mark_event_soft_failed(&self, event_id: &EventId) {
-		self.db.mark_event_soft_failed(event_id);
+	pub fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
+		self.db.mark_event_soft_failed(event_id, code);
+	}
+
+	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
+		self.db.get_soft_fail_reason(event_id).await
 	}
 
 	#[inline]
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
 		self.db.is_event_soft_failed(event_id).await
+	}
+
+	pub async fn is_event_rejected(&self, event_id: &EventId) -> bool {
+		self.db.is_event_rejected(event_id).await
+	}
+
+	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
+	/// marker. Batch-reads both verdict stores so callers scanning many
+	/// events (e.g. `recalculate_extremities` during monitor sweeps) don't
+	/// issue two sequential single-key lookups per event while holding the
+	/// room lock.
+	pub async fn verdict_flagged_batch(
+		&self,
+		event_ids: &[OwnedEventId],
+	) -> std::collections::HashSet<OwnedEventId> {
+		self.db.verdict_flagged_batch(event_ids).await
+	}
+
+	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
+		self.db.mark_event_rejected(event_id, reason);
+	}
+
+	/// Directly marks an event as rejected, bypassing timeline checks.
+	pub fn mark_event_rejected_skip_visibility_check(&self, event_id: &EventId, reason: &str) {
+		self.db.mark_event_rejected(event_id, reason);
+	}
+
+	pub fn unmark_event_soft_failed(&self, event_id: &EventId) {
+		self.db.unmark_event_soft_failed(event_id);
+	}
+
+	pub fn unmark_event_rejected(&self, event_id: &EventId) {
+		self.db.unmark_event_rejected(event_id);
+	}
+
+	/// Returns true if the event is not rejected. Soft-failed events ARE
+	/// accepted for auth purposes (used in federation/state-res contexts).
+	pub async fn is_event_accepted(&self, event_id: &EventId) -> bool {
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_none()
+	}
+
+	/// Returns true if the event is in the timeline and should be visible
+	/// to clients. Events only in the outlier store (rejected, pending,
+	/// etc.) are not visible.
+	pub async fn is_event_visible_to_clients(&self, event_id: &EventId) -> bool {
+		self.services.timeline.get_pdu_id(event_id).await.is_ok()
+	}
+
+	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Option<String> {
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.map(|code| code.tag().to_owned())
+	}
+
+	/// Returns true if the event is rejected for a reason that should
+	/// permanently cascade to dependents (`DependsOnRejectedAuthEvent`,
+	/// etc.).
+	///
+	/// A bare `is_event_rejected` conflates two very different situations: an
+	/// auth event that is intrinsically bad (bad signature, failed auth
+	/// check -- permanent, must cascade) and one we merely failed to
+	/// *resolve* in time (missing auth events, a degraded fetch --
+	/// transient, see [`RejectionCode::is_retryable`]). Callers deciding
+	/// whether to hard-cascade a rejection onto a dependent event (which
+	/// itself gets marked with the permanent
+	/// [`RejectionCode::DependsOnRejectedAuthEvent`]) must use this instead
+	/// of a bare `is_event_rejected` check, or a purely transient rejection
+	/// on the dependency permanently poisons every event that depends on it.
+	pub async fn is_event_permanently_rejected(&self, event_id: &EventId) -> bool {
+		// A single read: `get_rejection_code` returns `None` for anything not
+		// rejected, and the retryability check is combined with that one read,
+		// so there's no TOCTOU window between an `is_event_rejected` check and a
+		// later reason read (a concurrent `take_retry_if_rejection_retryable`
+		// clearing the rejection can't make us fall through to `!retryable ==
+		// true` on a stale reason).
+		self.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+			.is_some_and(|code| !code.is_retryable())
+	}
+
+	/// Returns true if the event is marked rejected specifically because
+	/// *its own* auth-event chain never finished resolving
+	/// ([`RejectionCode::MissingAuthEvent`]) -- as opposed to other
+	/// retryable codes that get attached at a later pipeline stage, after
+	/// this event's own outlier auth check already succeeded (e.g.
+	/// `StateResolutionFailedWithPrevsPresent`,
+	/// `PrevEventUnknownStateIdsFailed`, both set during timeline-upgrade
+	/// state resolution, not outlier auth validation).
+	///
+	/// Callers deciding whether it's safe to reuse a stored outlier as
+	/// *auth context* for another event (rather than just deciding whether
+	/// to retry the event itself) must use this narrower check instead of
+	/// [`is_retryable_rejection_reason`]: an event with e.g.
+	/// `StateResolutionFailedWithPrevsPresent` already passed real auth
+	/// validation and its stored content is trustworthy auth context, so
+	/// treating it as "unresolved" would force a needless (and likely
+	/// equally unsuccessful) re-fetch of an event that was never the
+	/// problem.
+	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> bool {
+		matches!(
+			self.db
+				.get_rejection_code(event_id)
+				.await
+				.unwrap_or_default(),
+			Some(RejectionCode::MissingAuthEvent)
+		)
+	}
+
+	/// Returns true if `event_id` is currently marked rejected for a reason
+	/// worth retrying (see [`is_retryable_rejection_reason`]), and if so,
+	/// clears the rejection so the next processing attempt starts fresh
+	/// instead of being permanently short-circuited by the stale verdict.
+	///
+	/// Callers that hit an "already known and rejected" gate before doing
+	/// their own work (e.g. `handle_outlier_pdu`'s early return) should use
+	/// this instead of a bare `is_event_rejected` check, so a caller with
+	/// more context than whichever attempt originally rejected the event
+	/// (a fuller state snapshot, a successful backfill, a later `/send`)
+	/// gets a real chance to reach a different, correct verdict rather than
+	/// inheriting a resolution failure that was never about the event
+	/// itself being invalid.
+	pub async fn take_retry_if_rejection_retryable(&self, event_id: &EventId) -> bool {
+		// Single read for the same reason as `is_event_permanently_rejected`:
+		// avoid a TOCTOU window between an `is_event_rejected` check and a
+		// separate `get_rejection_reason` read.
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
+			return false;
+		};
+		if code.is_retryable() {
+			self.unmark_event_rejected(event_id);
+			true
+		} else {
+			false
+		}
+	}
+
+	pub fn clear_pdu_markers(&self, event_id: &EventId) { self.db.clear_pdu_markers(event_id); }
+
+	/// Like [`Self::take_retry_if_rejection_retryable`], but for callers that
+	/// are about to promote a stored outlier straight into the timeline
+	/// *without* re-running auth (`promote_outlier`/`promote_outlier_batch`
+	/// skip all auth checks on the assumption their input already passed
+	/// them). A single fresh read decides whether it's safe to queue the
+	/// event for promotion:
+	///
+	/// - not currently rejected at all -> safe, returns `true`
+	/// - rejected with [`RejectionCode::MissingAuthEvent`] -> this event's own
+	///   auth chain never finished resolving, so there is no validated verdict
+	///   to trust here; force-promoting it would be an auth bypass, not a
+	///   legitimate retry (see [`Self::is_event_pending_auth_resolution`]'s doc
+	///   comment). Leaves the marker in place and returns `false`.
+	/// - rejected with any other retryable code -> clears the marker (so a
+	///   later `promote_outlier_batch`'s `is_event_rejected` recheck doesn't
+	///   silently skip the write while the caller still counts the event as
+	///   promoted) and returns `true`.
+	/// - rejected with a permanent code -> leaves the marker in place and
+	///   returns `false`.
+	///
+	/// Using a single fresh read (rather than a caller-held stale snapshot)
+	/// matters here specifically because the decision to clear and the
+	/// decision to queue must agree on the *same* rejection state.
+	pub async fn take_retry_if_rejection_retryable_for_promotion(
+		&self,
+		event_id: &EventId,
+	) -> bool {
+		let Some(code) = self
+			.db
+			.get_rejection_code(event_id)
+			.await
+			.unwrap_or_default()
+		else {
+			return true;
+		};
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
+				self.unmark_event_rejected(event_id);
+				true
+			},
+			| _ => false,
+		}
+	}
+
+	/// Finalizes an outlier promotion's rejection/soft-fail markers with a
+	/// single read of the current rejection state, then either clears them
+	/// (event is now fully accepted) or leaves them in place (a concurrent
+	/// writer rejected the event for a non-retryable reason in the meantime).
+	///
+	/// Must be called only *after* the promotion's PDU write has already
+	/// landed (e.g. after the caller applies the batch from
+	/// `promote_outlier_batch`) -- calling it before risks a stale
+	/// `soft_failed`/`rejected` snapshot captured in that pending batch
+	/// silently overwriting the clear once the batch is applied.
+	///
+	/// `MissingAuthEvent` is intentionally preserved here: it means the event
+	/// still lacks a validated auth chain, so promotion must not erase that
+	/// marker just because the reason is retryable in general.
+	///
+	/// Like [`Self::take_retry_if_rejection_retryable`], this narrows the
+	/// TOCTOU window against a `mark_event_rejected` landing between the
+	/// read and the write below. `mark_event_rejected` also checks
+	/// `timeline::Service::is_promotion_pending` in addition to
+	/// `is_event_visible_to_clients`, so between them they cover the entire
+	/// window from `promote_outlier_batch`'s reservation through
+	/// `finish_promote_outlier` releasing it -- see `mark_event_rejected`'s
+	/// and `finish_promote_outlier`'s (`backfill.rs`) doc comments for what's
+	/// left uncovered (sub-instruction-timing only) and why it's surfaced
+	/// loudly rather than silently patched here.
+	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
+		// A read error means the rejection state is *unknown*, not "not
+		// rejected". Clearing the markers (or reporting success) on a failed
+		// read would erase/wrongly-accept a rejection whose state we never
+		// actually observed. Preserve the uncertain state: report failure and
+		// leave every marker in place so the event is not force-promoted
+		// before its true verdict is known.
+		let code = match self.db.get_rejection_code(event_id).await {
+			| Ok(code) => code,
+			| Err(e) => {
+				warn!(
+					%event_id,
+					"Failed to read rejection state while finishing promotion; leaving markers intact: {e}"
+				);
+				return false;
+			},
+		};
+		let Some(code) = code else {
+			// No rejection verdict -- clear any stale markers and accept.
+			self.clear_pdu_markers(event_id);
+			return true;
+		};
+		match code {
+			| RejectionCode::MissingAuthEvent => false,
+			| code if code.is_retryable() => {
+				self.clear_pdu_markers(event_id);
+				true
+			},
+			| _ => false,
+		}
+	}
+
+	/// MSC2836: record that `child` relates to `parent` via `rel_type`
+	/// (`content.m.relationship`).
+	pub fn msc2836_add_child(&self, parent: &EventId, child: &EventId, rel_type: &str) {
+		self.db.msc2836_add_child(parent, child, rel_type);
+	}
+
+	/// MSC2836: all known children of `parent`, as (child event ID, rel_type)
+	/// pairs.
+	pub async fn msc2836_get_children(&self, parent: &EventId) -> Vec<(OwnedEventId, String)> {
+		self.db.msc2836_get_children(parent).await
+	}
+
+	/// MSC2836: purely local children counts + hash for `event_id`, from our
+	/// own directly-known child edges only (no remote-reported data mixed
+	/// in). See [`Self::msc2836_children_unsigned`] for the combined view.
+	async fn msc2836_local_children(
+		&self,
+		event_id: &EventId,
+	) -> (std::collections::BTreeMap<String, u64>, String) {
+		let known = self.db.msc2836_get_children(event_id).await;
+
+		let mut counts = std::collections::BTreeMap::<String, u64>::new();
+		let mut ids = Vec::with_capacity(known.len());
+		for (child, rel_type) in &known {
+			let count = counts.entry(rel_type.clone()).or_insert(0);
+			*count = count.saturating_add(1);
+			ids.push(child.to_string());
+		}
+		ids.sort_unstable();
+		ids.dedup();
+
+		let hash = STANDARD_NO_PAD.encode(Sha256::digest(ids.concat().as_bytes()));
+		debug!(%event_id, ?ids, "MSC2836 local child IDs");
+
+		(counts, hash)
+	}
+
+	/// MSC2836: the `unsigned.children` / `unsigned.children_hash` values to
+	/// report for `event_id`, combining our own directly-known child edges
+	/// with whatever a remote server has reported for this event (using
+	/// whichever total is higher, per the MSC).
+	pub async fn msc2836_children_unsigned(
+		&self,
+		event_id: &EventId,
+	) -> (std::collections::BTreeMap<String, u64>, String) {
+		let (counts, hash) = self.msc2836_local_children(event_id).await;
+		let local_total: u64 = counts.values().sum();
+		debug!(%event_id, ?counts, %hash, "MSC2836 local child metadata");
+
+		if let Some((reported_counts, reported_hash)) =
+			self.db.msc2836_get_reported_children(event_id).await
+		{
+			let reported_total: u64 = reported_counts.values().sum();
+			debug!(%event_id, ?reported_counts, %reported_hash, "MSC2836 reported child metadata");
+			if reported_total > local_total
+				|| (reported_total == local_total && reported_hash != hash)
+			{
+				return (reported_counts, reported_hash);
+			}
+		}
+
+		(counts, hash)
+	}
+
+	/// MSC2836: whether `event_id` has children we know about (via a remote
+	/// report) but haven't fetched/indexed ourselves yet -- i.e. it's worth
+	/// asking federation for an update. Per the MSC: unexplored if the
+	/// reported count exceeds the locally-known count, or the counts match
+	/// but the hashes differ.
+	pub async fn msc2836_needs_explore(&self, event_id: &EventId) -> bool {
+		let Some((reported_counts, reported_hash)) =
+			self.db.msc2836_get_reported_children(event_id).await
+		else {
+			return false;
+		};
+		let (known_counts, known_hash) = self.msc2836_local_children(event_id).await;
+		let reported_total: u64 = reported_counts.values().sum();
+		let known_total: u64 = known_counts.values().sum();
+		reported_total > known_total
+			|| (reported_total == known_total && reported_hash != known_hash)
+	}
+
+	/// MSC2836: remember children counts/hash reported by a remote server
+	/// for `event_id`, if higher than what's currently known/stored.
+	pub fn msc2836_set_reported_children(
+		&self,
+		event_id: &EventId,
+		counts: &std::collections::BTreeMap<String, u64>,
+		hash: &str,
+	) {
+		self.db
+			.msc2836_set_reported_children(event_id, counts, hash);
 	}
 }

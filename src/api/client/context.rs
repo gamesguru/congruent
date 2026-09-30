@@ -1,12 +1,13 @@
 use axum::extract::State;
 use conduwuit::{
-	Err, Event, Result, at, debug_warn, err, ref_at,
+	Err, Event, PduEvent, Result, at, debug_warn, err, info, ref_at,
 	utils::{
 		IterStream,
 		future::TryExtExt,
 		stream::{BroadbandExt, ReadyExt, TryIgnore, WidebandExt},
 	},
 };
+use conduwuit_core::matrix::pdu::TopoToken;
 use conduwuit_service::rooms::{lazy_loading, lazy_loading::Options, short::ShortStateKey};
 use futures::{
 	FutureExt, StreamExt, TryFutureExt, TryStreamExt,
@@ -19,6 +20,7 @@ use crate::{
 	client::{
 		is_ignored_pdu,
 		message::{event_filter, ignored_filter, lazy_loading_witness, visibility_filter},
+		sync::add_membership_to_unsigned,
 	},
 };
 
@@ -85,18 +87,30 @@ pub(crate) async fn get_context_route(
 	is_ignored_pdu(&services, &base_pdu, sender_user).await?;
 
 	let base_count = base_id.pdu_count();
+	let base_token = TopoToken {
+		depth: u64::from(base_pdu.depth()),
+		pdu_count: base_count,
+	};
 
-	let base_event = ignored_filter(&services, (base_count, base_pdu), sender_user);
+	let base_event = ignored_filter(&services, (base_token, base_pdu), sender_user).boxed();
 
 	// PDUs are used to get seen user IDs and then returned in response.
-
+	//
+	// Each of these is a deeply nested chain of stream combinators, so its
+	// generated future type is enormous. Box it individually (rather than
+	// relying on the single `.boxed()` on the outer `join3`) so the giant
+	// state machine is moved to the heap right away instead of first being
+	// materialized on this function's stack frame as a field of the `Join3`
+	// struct -- without this, building that struct alone needs a couple
+	// hundred KB of stack, which risks overflow.
 	let events_before = services
 		.rooms
 		.timeline
-		.pdus_rev(room_id, Some(base_count))
+		.topo_pdus_rev(room_id, Some(base_token))
 		.ignore_err()
 		.then(async |mut pdu| {
 			pdu.1.set_unsigned(Some(sender_user));
+			add_membership_to_unsigned(&services, sender_user, &mut pdu.1).await;
 			if let Err(e) = services
 				.rooms
 				.pdu_metadata
@@ -111,15 +125,17 @@ pub(crate) async fn get_context_route(
 		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
 		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
-		.collect();
+		.collect()
+		.boxed();
 
 	let events_after = services
 		.rooms
 		.timeline
-		.pdus(room_id, Some(base_count))
+		.topo_pdus(room_id, Some(base_token))
 		.ignore_err()
 		.then(async |mut pdu| {
 			pdu.1.set_unsigned(Some(sender_user));
+			add_membership_to_unsigned(&services, sender_user, &mut pdu.1).await;
 			if let Err(e) = services
 				.rooms
 				.pdu_metadata
@@ -134,10 +150,14 @@ pub(crate) async fn get_context_route(
 		.wide_filter_map(|item| ignored_filter(&services, item, sender_user))
 		.wide_filter_map(|item| visibility_filter(&services, item, sender_user))
 		.take(limit / 2)
-		.collect();
+		.collect()
+		.boxed();
 
-	let (base_event, events_before, events_after): (_, Vec<_>, Vec<_>) =
-		join3(base_event, events_before, events_after).boxed().await;
+	let (base_event, events_before, events_after): (
+		Option<(TopoToken, PduEvent)>,
+		Vec<_>,
+		Vec<_>,
+	) = join3(base_event, events_before, events_after).await;
 
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
@@ -181,7 +201,8 @@ pub(crate) async fn get_context_route(
 		.try_collect()
 		.boxed();
 
-	let (lazy_loading_witnessed, state_ids) = join(lazy_loading_witnessed, state_ids).await;
+	let (lazy_loading_witnessed, state_ids): (_, Result<Vec<(ShortStateKey, OwnedEventId)>>) =
+		join(lazy_loading_witnessed, state_ids).await;
 
 	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = state_ids?;
 	let shortstatekeys = state_ids.iter().map(at!(0)).stream();
@@ -213,22 +234,51 @@ pub(crate) async fn get_context_route(
 		.collect()
 		.await;
 
+	let next_token = if events_after.is_empty() {
+		// Match the topological order used by /messages for the forward bound.
+		services
+			.rooms
+			.timeline
+			.topo_pdus(room_id, Some(base_token))
+			.boxed()
+			.next()
+			.await
+			.and_then(Result::ok)
+			.map(|(token, _)| token)
+	} else {
+		None
+	};
+
+	let start = events_before
+		.last()
+		.map(at!(0))
+		.or(Some(base_token))
+		.as_ref()
+		.map(|t| format!("{t}"));
+	let end = events_after
+		.last()
+		.map(at!(0))
+		.or(next_token)
+		.or(Some(base_token))
+		.as_ref()
+		.map(|t| format!("{t}"));
+	info!(
+		%room_id,
+		%event_id,
+		?base_count,
+		base_depth = base_token.depth,
+		?start,
+		?end,
+		before_count = events_before.len(),
+		after_count = events_after.len(),
+		"context token derivation"
+	);
+
 	Ok(get_context::v3::Response {
 		event: base_event.map(at!(1)).map(Event::into_format),
 
-		start: events_before
-			.last()
-			.map(at!(0))
-			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Backward)))
-			.as_ref()
-			.map(ToString::to_string),
-
-		end: events_after
-			.last()
-			.map(at!(0))
-			.or_else(|| Some(base_count.saturating_inc(ruma::api::Direction::Forward)))
-			.as_ref()
-			.map(ToString::to_string),
+		start,
+		end,
 
 		events_before: events_before
 			.into_iter()

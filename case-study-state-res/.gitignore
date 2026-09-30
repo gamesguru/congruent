@@ -1,0 +1,4 @@
+.tmp
+*.json
+*.txt
+*.jsonl

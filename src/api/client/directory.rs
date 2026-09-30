@@ -256,8 +256,10 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 		});
 	}
 
-	// Use limit or else 10, with maximum 100
-	let limit: usize = limit.map_or(10_u64, u64::from).try_into()?;
+	// Use the spec maximum as the implicit default. A smaller default page can
+	// hide a freshly-created public room from `/publicRooms` when many rooms are
+	// created in parallel and all tie on joined-member count.
+	let limit: usize = limit.map_or(100_u64, u64::from).try_into()?;
 	let mut num_since: usize = 0;
 
 	if let Some(s) = &since {
@@ -320,7 +322,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 		.collect()
 		.await;
 
-	all_rooms.sort_by(|l, r| r.num_joined_members.cmp(&l.num_joined_members));
+	all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
 	let total_room_count_estimate = UInt::try_from(all_rooms.len())
 		.unwrap_or_else(|_| uint!(0))

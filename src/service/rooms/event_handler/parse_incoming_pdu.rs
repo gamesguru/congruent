@@ -3,7 +3,6 @@ use std::str::FromStr;
 use conduwuit::{
 	Err, Event, Result, err, implement,
 	matrix::event::{gen_event_id, gen_event_id_canonical_json},
-	warn,
 };
 use itertools::Itertools;
 use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomVersionId};
@@ -137,26 +136,13 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		.state
 		.get_room_version(&room_id)
 		.await
-		.unwrap_or_else(|e| {
-			let fallback = self.fallback_room_version(&value);
-			warn!(
-				%room_id, ?fallback, "Unknown room version ({e:?}). Guessing room version based on PDU structure.",
-			);
-			fallback
-		});
+		.unwrap_or(RoomVersionId::V1);
 	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|e| {
-		err!(Request(InvalidParam("Could not convert event to canonical json: {e}")))
+		err!(Request(InvalidParam(warn!(
+			"Could not convert event to canonical json: {e}. Raw PDU: {}",
+			pdu.get()
+		))))
 	})?;
 	self.validate_pdu(&value)?;
 	Ok((room_id, event_id, value))
-}
-
-#[implement(super::Service)]
-fn fallback_room_version(&self, value: &CanonicalJsonObject) -> RoomVersionId {
-	warn!("fallback_room_version keys: {:?}", value.keys().collect::<Vec<_>>());
-	if value.contains_key("hashes") {
-		self.services.server.config.default_room_version.clone()
-	} else {
-		RoomVersionId::V1
-	}
 }

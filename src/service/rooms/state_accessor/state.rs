@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, ops::Deref, sync::Arc};
 
 use conduwuit::{
 	Result, at, err, implement,
@@ -51,6 +51,32 @@ pub async fn user_membership(
 	self.state_get_content(shortstatehash, &StateEventType::RoomMember, user_id.as_str())
 		.await
 		.map_or(MembershipState::Leave, |c: RoomMemberEventContent| c.membership)
+}
+
+/// Get a user's membership at the point in time when a specific event was
+/// created.
+///
+/// Looks up the event's state snapshot via `pdu_shortstatehash`, then
+/// queries the membership from that snapshot. Falls back to the current
+/// membership from `state_cache` when no snapshot is available (e.g.
+/// backfilled events without state).
+#[implement(super::Service)]
+pub async fn user_membership_at_event(
+	&self,
+	event_id: &EventId,
+	room_id: &ruma::RoomId,
+	user_id: &UserId,
+) -> MembershipState {
+	if let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await {
+		self.user_membership(shortstatehash, user_id).await
+	} else {
+		// No state snapshot... fall back to current membership
+		self.services
+			.state_cache
+			.user_membership(user_id, room_id)
+			.await
+			.unwrap_or(MembershipState::Leave)
+	}
 }
 
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
@@ -165,7 +191,10 @@ pub async fn state_get_shortid(
 				.copied()
 				.map(parse_compressed_state_event)
 				.map(at!(1))
-				.ok_or(err!(Request(NotFound("Not found in room state"))))
+				.ok_or(err!(Request(NotFound(
+					"Not found in room state: type={event_type} key={state_key:?} \
+					 ssh={shortstatehash}"
+				))))
 		})
 		.await?
 }
@@ -382,22 +411,24 @@ pub fn state_full_shortids(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
-pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
-	self.load_full_state(shortstatehash)
-		.await
-		.map(|s| s.is_empty())
-		.unwrap_or(true)
-}
-
-#[implement(super::Service)]
 #[tracing::instrument(name = "load", level = "debug", skip(self))]
 async fn load_full_state(&self, shortstatehash: ShortStateHash) -> Result<Arc<CompressedState>> {
+	if shortstatehash == 0 {
+		return Ok(Arc::new(CompressedState::new()));
+	}
+
 	self.services
 		.state_compressor
 		.load_shortstatehash_info(shortstatehash)
 		.map_err(|e| err!(Database("Missing state IDs: {e}")))
-		.map_ok(|vec| vec.last().expect("at least one layer").full_state.clone())
+		.map_ok(|vec| {
+			vec.last()
+				.expect("at least one layer")
+				.full_state
+				.as_ref()
+				.expect("top layer must have full_state")
+				.clone()
+		})
 		.await
 }
 
@@ -406,14 +437,34 @@ async fn load_full_state(&self, shortstatehash: ShortStateHash) -> Result<Arc<Co
 pub async fn pdu_shortstatehash(&self, event_id: &EventId) -> Result<ShortStateHash> {
 	const BUFSIZE: usize = size_of::<ShortEventId>();
 
+	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
+	if let Some(shortstatehash) = self
+		.services
+		.short
+		.shorteventid_shortstatehash_cache
+		.get(&shorteventid)
+	{
+		return Ok(shortstatehash);
+	}
+
+	let shortstatehash = self
+		.db
+		.shorteventid_shortstatehash
+		.aqry::<BUFSIZE, _>(&shorteventid)
+		.await
+		.deserialized()?;
 	self.services
 		.short
-		.get_shorteventid(event_id)
-		.and_then(|shorteventid| {
-			self.db
-				.shorteventid_shortstatehash
-				.aqry::<BUFSIZE, _>(&shorteventid)
-		})
+		.shorteventid_shortstatehash_cache
+		.insert(shorteventid, shortstatehash);
+
+	Ok(shortstatehash)
+}
+
+#[implement(super::Service)]
+#[inline]
+pub async fn state_is_empty(&self, shortstatehash: ShortStateHash) -> bool {
+	self.load_full_state(shortstatehash)
 		.await
-		.deserialized()
+		.map_or(true, |full_state| full_state.is_empty())
 }

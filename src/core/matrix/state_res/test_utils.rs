@@ -121,21 +121,21 @@ pub(crate) async fn do_check(
 					.collect::<Vec<_>>()
 			);
 
-			let auth_chain_sets: Vec<_> = state_sets
-				.iter()
-				.map(|map| {
-					store
-						.auth_event_ids(room_id(), map.values().cloned().collect())
-						.unwrap()
-				})
-				.collect();
-
 			let event_map = &event_map;
 			let fetch = |id: OwnedEventId| ready(event_map.get(&id).cloned());
 			let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
-			let resolved =
-				super::resolve(&RoomVersionId::V6, state_sets, &auth_chain_sets, &fetch, &exists)
-					.await;
+			let auth_chain_fetch = |events: Vec<OwnedEventId>| {
+				ready(store.auth_event_ids(room_id(), events).unwrap_or_default())
+			};
+			let resolved = super::resolve(
+				&RoomVersionId::V6,
+				state_sets,
+				&fetch,
+				None::<&fn(Vec<OwnedEventId>) -> std::future::Ready<Vec<crate::PduEvent>>>,
+				&auth_chain_fetch,
+				None::<&fn(Vec<OwnedEventId>)>,
+			)
+			.await;
 
 			match resolved {
 				| Ok(state) => state,
@@ -383,6 +383,14 @@ pub(crate) fn member_content_join() -> Box<RawJsonValue> {
 	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)).unwrap()
 }
 
+pub(crate) fn member_content_leave() -> Box<RawJsonValue> {
+	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Leave)).unwrap()
+}
+
+pub(crate) fn member_content_invite() -> Box<RawJsonValue> {
+	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Invite)).unwrap()
+}
+
 pub(crate) fn to_init_pdu_event(
 	id: &str,
 	sender: &UserId,
@@ -413,6 +421,7 @@ pub(crate) fn to_init_pdu_event(
 		depth: uint!(0),
 		hashes: EventHash { sha256: "".to_owned() },
 		signatures: None,
+		rejected: false,
 	}
 }
 
@@ -461,6 +470,7 @@ where
 		depth: uint!(0),
 		hashes: EventHash { sha256: "".to_owned() },
 		signatures: None,
+		rejected: false,
 	}
 }
 

@@ -223,14 +223,14 @@ async fn is_event_report_valid(
 fn build_report(report: Report) -> RoomMessageEventContent {
 	let mut text =
 		format!("@room New {} report received from {}:\n\n", report.report_type, report.sender);
-	if report.user_id.is_some() {
-		let _ = writeln!(text, "- Reported User ID: `{}`", report.user_id.unwrap());
+	if let Some(ref user_id) = report.user_id {
+		let _ = writeln!(text, "- Reported User ID: `{user_id}`");
 	}
-	if report.room_id.is_some() {
-		let _ = writeln!(text, "- Reported Room ID: `{}`", report.room_id.unwrap());
+	if let Some(ref room_id) = report.room_id {
+		let _ = writeln!(text, "- Reported Room ID: `{room_id}`");
 	}
-	if report.event_id.is_some() {
-		let _ = writeln!(text, "- Reported Event ID: `{}`", report.event_id.unwrap());
+	if let Some(ref event_id) = report.event_id {
+		let _ = writeln!(text, "- Reported Event ID: `{event_id}`");
 	}
 	if let Some(reason) = report.reason {
 		let _ = writeln!(text, "- Report Reason: {reason}");

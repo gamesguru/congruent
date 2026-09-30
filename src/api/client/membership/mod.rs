@@ -11,10 +11,10 @@ mod unban;
 use std::net::IpAddr;
 
 use axum::extract::State;
-use conduwuit::{Err, Result, warn};
+use conduwuit::{Err, Result, info, utils::stream::IterStream, warn};
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
+	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
 	events::{
 		StaticEventContent,
@@ -245,4 +245,57 @@ pub(crate) fn validate_remote_member_event_stub(
 	}
 
 	Ok(())
+}
+
+/// Helper function to gather servers to try when joining or knocking on a room.
+/// Abstracts the fallback logic for discovering remote servers.
+pub(crate) async fn fetch_join_knock_servers(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+	mut servers: Vec<OwnedServerName>,
+	from_alias: bool,
+) -> Vec<OwnedServerName> {
+	if servers.is_empty() || from_alias {
+		let addl_via_servers = services
+			.rooms
+			.state_cache
+			.servers_invite_via(room_id)
+			.map(ToOwned::to_owned);
+
+		let addl_state_servers = services
+			.rooms
+			.state_cache
+			.invite_state(sender_user, room_id)
+			.await
+			.unwrap_or_default();
+
+		let mut addl_servers: Vec<_> = addl_state_servers
+			.iter()
+			.filter_map(|event| event.get_field("sender").ok().flatten())
+			.filter_map(|sender: &str| UserId::parse(sender).ok())
+			.map(|user| user.server_name().to_owned())
+			.stream()
+			.chain(addl_via_servers)
+			.collect()
+			.await;
+
+		if !from_alias {
+			if let Some(server) = room_id.server_name() {
+				addl_servers.push(server.to_owned());
+			}
+		}
+
+		addl_servers.sort_unstable();
+		addl_servers.dedup();
+		conduwuit::utils::shuffle(&mut addl_servers);
+		for server in addl_servers {
+			if !servers.contains(&server) {
+				servers.push(server);
+			}
+		}
+	}
+
+	info!("Built list of servers for join/knock: {:?}", servers);
+	servers
 }

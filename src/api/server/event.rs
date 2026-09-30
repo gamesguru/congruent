@@ -26,6 +26,15 @@ pub(crate) async fn get_event_route(
 		.room_id_or_hash()
 		.ok_or_else(|| err!(Request(NotFound("Event has no room_id."))))?;
 
+	if services
+		.rooms
+		.pdu_metadata
+		.is_event_rejected(&body.event_id)
+		.await
+	{
+		return Err!(Request(NotFound("Event not found. Rejected perhaps ;P")));
+	}
+
 	AccessCheck {
 		services: &services,
 		origin: body.origin(),
@@ -35,18 +44,12 @@ pub(crate) async fn get_event_route(
 	.check()
 	.await?;
 
-	if !services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), &room_id)
-		.await
-	{
-		info!(
-			origin = body.origin().as_str(),
-			"Refusing to serve state for room we aren't participating in"
-		);
-		return Err!(Request(NotFound("This server is not participating in that room.")));
-	}
+	info!(
+		origin = body.origin().as_str(),
+		event_id = %body.event_id,
+		room_id = %room_id,
+		"Serving single event request"
+	);
 
 	let event_json = services
 		.rooms

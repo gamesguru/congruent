@@ -6,7 +6,6 @@
 use std::{convert::AsRef, fmt::Debug, io::Write};
 
 use conduwuit::{arrayvec::ArrayVec, implement};
-use rocksdb::WriteBatchWithTransaction;
 use serde::Serialize;
 
 use crate::{
@@ -212,22 +211,9 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, iter), fields(%self), level = "trace")]
-pub fn insert_batch<'a, I, K, V>(&'a self, iter: I)
+pub fn wake<K>(&self, key: &K)
 where
-	I: Iterator<Item = (K, V)> + Send + Debug,
-	K: AsRef<[u8]> + Sized + Debug + 'a,
-	V: AsRef<[u8]> + Sized + 'a,
+	K: AsRef<[u8]> + ?Sized,
 {
-	let mut batch = WriteBatchWithTransaction::<false>::default();
-	for (key, val) in iter {
-		batch.put_cf(&self.cf(), key.as_ref(), val.as_ref());
-	}
-
-	let write_options = &self.write_options;
-	self.db
-		.db
-		.write_opt(&batch, write_options)
-		.or_else(or_else)
-		.expect("database insert batch error");
+	self.watchers.wake(key.as_ref());
 }

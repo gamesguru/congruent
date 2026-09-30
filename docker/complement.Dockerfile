@@ -11,6 +11,8 @@ COPY ${BINARY_PATH} /usr/local/bin/conduwuit
 RUN chmod +x /usr/local/bin/conduwuit /usr/local/bin/complement-entrypoint.sh
 ARG UID=1000
 ARG GID=1000
+ENV CONDUWUIT_LOG_COLORS=false
+ENV NO_COLOR=1
 ENV CONDUWUIT_UID=${UID}
 ENV CONDUWUIT_GID=${GID}
 RUN chown -R ${UID}:${GID} /etc/continuwuity /var/lib/continuwuity

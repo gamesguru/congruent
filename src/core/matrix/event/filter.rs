@@ -1,4 +1,5 @@
 use ruma::api::client::filter::{RoomEventFilter, UrlFilter};
+use serde::Deserialize;
 use serde_json::Value;
 
 use super::Event;
@@ -27,24 +28,32 @@ impl<E: Event> Matches<E> for &RoomEventFilter {
 			return false;
 		}
 
+		if !matches_rel_type(event, self) {
+			return false;
+		}
+
 		true
 	}
 }
 
 fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	if filter
-		.not_rooms
-		.iter()
-		.any(is_equal_to!(event.room_id().expect("event has a room ID")))
-	{
-		return false;
+	let room_id = event.room_id_or_hash();
+
+	if !filter.not_rooms.is_empty() {
+		if let Some(ref rid) = room_id {
+			if filter.not_rooms.iter().any(is_equal_to!(&**rid)) {
+				return false;
+			}
+		}
 	}
 
 	if let Some(rooms) = filter.rooms.as_ref() {
-		if !rooms
-			.iter()
-			.any(is_equal_to!(event.room_id().expect("event has a room ID")))
-		{
+		if let Some(ref rid) = room_id {
+			if !rooms.iter().any(is_equal_to!(&**rid)) {
+				return false;
+			}
+		} else if !rooms.is_empty() {
+			// If we have a filter but the event (e.g. v12 create) has no room_id
 			return false;
 		}
 	}
@@ -66,46 +75,54 @@ fn matches_sender<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	true
 }
 
-fn matches_wildcard(target: &str, pattern: &str) -> bool {
-	if pattern == "*" {
-		return true;
-	}
-	let mut parts = pattern.split('*');
-	let first = parts.next().expect("split always yields at least one item");
-	if !target.starts_with(first) {
-		return false;
-	}
-	let mut remaining = target.strip_prefix(first).unwrap_or("");
-	for part in parts {
-		if part.is_empty() {
-			continue;
-		}
-		if let Some(idx) = remaining.find(part) {
-			let next_start = idx.saturating_add(part.len());
-			remaining = remaining.get(next_start..).unwrap_or("");
-		} else {
-			return false;
-		}
-	}
-	if !pattern.ends_with('*') {
-		remaining.is_empty()
-	} else {
-		true
-	}
-}
 fn matches_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	let kind = event.kind().to_cow_str();
 
-	if filter
-		.not_types
-		.iter()
-		.any(|pattern| matches_wildcard(&kind, pattern))
-	{
+	if filter.not_types.iter().any(is_equal_to!(&kind)) {
 		return false;
 	}
 
 	if let Some(types) = filter.types.as_ref() {
-		if !types.iter().any(|pattern| matches_wildcard(&kind, pattern)) {
+		if !types.iter().any(is_equal_to!(&kind)) {
+			return false;
+		}
+	}
+
+	true
+}
+
+#[derive(Deserialize)]
+struct ExtractRelType {
+	rel_type: String,
+}
+
+#[derive(Deserialize)]
+struct ExtractRelatesTo {
+	#[serde(rename = "m.relates_to")]
+	relates_to: Option<ExtractRelType>,
+}
+
+/// Per [MSC3874](https://github.com/matrix-org/matrix-spec-proposals/pull/3874).
+fn matches_rel_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
+	if filter.rel_types.is_none() && filter.not_rel_types.is_empty() {
+		return true;
+	}
+
+	let rel_type = event
+		.get_content::<ExtractRelatesTo>()
+		.ok()
+		.and_then(|c| c.relates_to)
+		.map(|r| r.rel_type);
+
+	if let Some(rel_types) = filter.rel_types.as_ref() {
+		match &rel_type {
+			| Some(rt) if rel_types.iter().any(is_equal_to!(rt)) => {},
+			| _ => return false,
+		}
+	}
+
+	if let Some(rt) = &rel_type {
+		if filter.not_rel_types.iter().any(is_equal_to!(rt)) {
 			return false;
 		}
 	}

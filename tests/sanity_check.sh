@@ -51,8 +51,23 @@ done
 
 # Clean up the background process
 echo "Shutting down conduwuit..."
-kill -QUIT $PID || true
-wait $PID || true
+kill -QUIT $PID 2>/dev/null || true
+
+# Wait up to 30s for graceful shutdown, then force-kill
+shutdown_timeout=30
+shutdown_elapsed=0
+while kill -0 $PID 2>/dev/null && [ $shutdown_elapsed -lt $shutdown_timeout ]; do
+	sleep 1
+	shutdown_elapsed=$((shutdown_elapsed + 1))
+done
+
+if kill -0 $PID 2>/dev/null; then
+	echo "⚠ conduwuit did not exit within ${shutdown_timeout}s, sending SIGKILL..."
+	kill -9 $PID 2>/dev/null || true
+	wait $PID 2>/dev/null || true
+else
+	wait $PID 2>/dev/null || true
+fi
 
 if [ "$success" = true ]; then
 	echo "Sanity check passed!"

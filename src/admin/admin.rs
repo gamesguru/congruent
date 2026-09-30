@@ -13,6 +13,7 @@ use crate::{
 	server::{self, ServerCommand},
 	token::{self, TokenCommand},
 	user::{self, UserCommand},
+	yolo::{self, YoloCommand},
 };
 
 #[derive(Debug, Parser)]
@@ -51,13 +52,16 @@ pub enum AdminCommand {
 	Check(CheckCommand),
 
 	#[command(subcommand)]
-	#[command(alias = "yolo")]
 	/// Commands for debugging things
 	Debug(DebugCommand),
 
 	#[command(subcommand)]
 	/// Low-level queries for database getters and iterators
 	Query(QueryCommand),
+
+	#[command(subcommand)]
+	/// Advanced diagnostic and audit commands
+	Yolo(YoloCommand),
 }
 
 #[tracing::instrument(skip_all, name = "command", level = "info")]
@@ -91,5 +95,6 @@ pub(super) async fn process(command: AdminCommand, context: &Context<'_>) -> Res
 			query::process(command, context).await
 		},
 		| Check(command) => check::process(command, context).await,
+		| Yolo(command) => yolo::process(command, context).await,
 	}
 }

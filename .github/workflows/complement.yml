@@ -1,4 +1,6 @@
 ---
+# Complement Integration Tests
+# ----------------------------
 name: Complement Tests
 
 on:
@@ -20,7 +22,8 @@ jobs:
     # if: vars.C10Y_ENABLE_GITHUB_WORKFLOW_COMPLEMENT_TESTS_COMPLEMENT_TESTS != ''
     runs-on: ${{ matrix.os }}${{ matrix.arch == 'arm64' && '-arm' || '' }}
     env:
-      FEATURES: "direct_tls"
+      COMPLEMENT_PARALLEL: 24
+      FEATURES: "direct_tls,url_preview"
 
     strategy:
       fail-fast: false
@@ -28,29 +31,29 @@ jobs:
         include:
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-22.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "12"
           - arch: amd64
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
           - arch: arm64
             prebuilt_arch: arm64-cortex-a76
             target_cpu: cortex-a76
             jemalloc_lg_page: 16
             os: ubuntu-24.04
-            profile: release-quick
+            profile: dev-quick
             room_version: "11"
 
     # For writing/updating PR comments on running test totals (# pass/fail/skip)
@@ -68,7 +71,7 @@ jobs:
           submodules: recursive
 
       - name: Fetch tags and origin/main for comparison
-        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" origin/main -- tests/test_results/complement/test_results.jsonl
+        run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl
 
       - name: Install system dependencies
         run: |
@@ -127,13 +130,16 @@ jobs:
           echo "Prebuilt Arch: ${{ matrix.prebuilt_arch }}"
           echo "Detected CPU Target: ${{ steps.cpu.outputs.target }}"
 
+      # Every cell builds its own binary on its own runner (as before the
+      # shared-binary consolidation). Each runner's glibc matches its OS
+      # (e.g. ubuntu-22.04 -> glibc 2.35), so the binary always runs there.
       - name: Build conduwuit for Complement
         env:
           CONTINUWUITY_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
           JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.jemalloc_lg_page || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ${{ matrix.target_cpu != '' && format('-C target-cpu={0}', matrix.target_cpu) || '' }}
-        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls"
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ matrix.profile }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ matrix.profile }} --features direct_tls,url_preview"
 
       - name: Sanity check binary
         run: ./tests/sanity_check.sh ./target/latest/conduwuit
@@ -172,21 +178,33 @@ jobs:
           go-version: "1.22"
           cache-dependency-path: complement-src/go.sum
 
-      - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@latest
-
       - name: Configure Docker Network Firewall
         run: |
           sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)" || true
 
       - name: Run Complement tests
+        id: complement
         env:
           CONDUWUIT_SENDER_TIMEOUT: 5
           CONDUWUIT_SENDER_RETRY_BACKOFF_LIMIT: 5
           COMPLEMENT_SHARE_ENV_PREFIX: PASS_
           PASS_CONDUWUIT_DEFAULT_ROOM_VERSION: '"${{ matrix.room_version }}"'
+          COMPLEMENT_RESULTS_DIR: tests/complement
+        shell: bash
         run: |
-          make complement/run COMPLEMENT_DIR=./complement-src
+          COMPLEMENT_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
+          HOST_LIBS=$(ldd target/latest/conduwuit | awk '/=> \/usr\/lib\// {print $3}' | grep -vE 'libc\.so|libm\.so|libgcc_s\.so|libstdc\+\+\.so|libdl\.so|libpthread\.so|librt\.so' | awk '{print $1":"$1":ro"}' | paste -sd ';' - || true)
+          MOUNTS="/usr/local/lib:/usr/local/lib:ro"
+          if [ -n "$HOST_LIBS" ]; then
+            MOUNTS="$MOUNTS;$HOST_LIBS"
+          fi
+          env \
+            COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS=1 \
+            RESULTS_DIR="${COMPLEMENT_RESULTS_DIR}" \
+            COMPLEMENT_BASE_IMAGE="$COMPLEMENT_IMAGE" \
+            COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
+            COMPLEMENT_RUN="." \
+            ./bin/complement ./complement-src
 
       - name: Compare results with baseline
         continue-on-error: true
@@ -194,7 +212,7 @@ jobs:
 
       - name: Compare FULL results with baseline
         continue-on-error: true
-        run: git diff --color=always tests/test_results/complement/test_results.jsonl
+        run: git diff --color=always tests/complement/results.jsonl
 
       - name: Upload test logs
         if: always()
@@ -202,15 +220,20 @@ jobs:
         with:
           name: complement-logs-${{ matrix.arch }}-${{ matrix.os }}-v${{ matrix.room_version }}
           path: |
-            tests/test_results/complement/test_results.jsonl
-            tests/test_results/complement/test_logs.jsonl
+            tests/complement/results.jsonl
+            tests/complement/logs.jsonl
           retention-days: 90
 
       - name: Parse Complement results
         id: results
-        if: always()
+        # Only parse when the runner actually ran (success or test failures).
+        # If an earlier build/setup step failed, this step is skipped and the
+        # tracked baseline tests/complement/results.jsonl is left in the tree;
+        # parsing that stale ledger would fabricate a passing count and make
+        # the Matrix notification report a successful run.
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         run: |
-          RESULTS="tests/test_results/complement/test_results.jsonl"
+          RESULTS="tests/complement/results.jsonl"
           if [ ! -f "$RESULTS" ]; then
             echo "Results file not found, skipping parsing."
             exit 0
@@ -219,16 +242,20 @@ jobs:
           # Inject arch, os, and profile into the JSONL file itself.
           # We use a temp file to avoid reading/writing to the same file.
           TEMP_RESULTS=$(mktemp)
+          SORTED_RESULTS=$(mktemp)
           jq -c --arg a "${{ matrix.arch }}" --arg o "${{ matrix.os }}" --arg p "${{ matrix.profile }}" --arg rv "${{ matrix.room_version }}" \
             '. + {arch: $a, os: $o, profile: $p, room_version: $rv}' "$RESULTS" > "$TEMP_RESULTS"
-          mv "$TEMP_RESULTS" "$RESULTS"
+          sort -u "$TEMP_RESULTS" > "$SORTED_RESULTS"
+          mv "$SORTED_RESULTS" "$RESULTS"
+          rm -f "$TEMP_RESULTS"
 
           PASS=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS")
           FAIL=$(jq -s '[.[] | select(.Action == "fail")] | length' "$RESULTS")
           SKIP=$(jq -s '[.[] | select(.Action == "skip")] | length' "$RESULTS")
           TOTAL=$((PASS + FAIL + SKIP))
           FAILED_TESTS=$(jq -r 'select(.Action == "fail") | .Test' "$RESULTS" \
-            | sort -u)
+            | sort -u \
+            | head -n 5)
 
           echo "pass=$PASS" | tee -a "$GITHUB_OUTPUT"
           echo "fail=$FAIL" | tee -a "$GITHUB_OUTPUT"
@@ -244,7 +271,127 @@ jobs:
           echo "| ✓ Pass | $PASS |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ✗ Fail | $FAIL |" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "| ⌒ Skip | $SKIP |" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "| **Total** | **$TOTAL** |" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Print failing test log excerpts
+        if: always()
+        continue-on-error: true
+        env:
+          # Whether the "Run Complement tests" step actually ran. If a prior
+          # build/setup step failed, it is skipped/cancelled and the tracked
+          # test_results.jsonl left in the tree is stale, not something the
+          # Complement run produced -- so a missing logs.jsonl is then
+          # *not* evidence of a broken log pipeline.
+          COMPLEMENT_OUTCOME: ${{ steps.complement.outcome }}
+        run: |
+          RESULTS="tests/complement/results.jsonl" \
+          LOGS="tests/complement/logs.jsonl" \
+          python3 - <<'PY'
+          import collections
+          import html
+          import json
+          import os
+          import re
+          import pathlib
+
+          results_path = pathlib.Path(os.environ["RESULTS"])
+          logs_path = pathlib.Path(os.environ["LOGS"])
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          complement_outcome = os.environ.get("COMPLEMENT_OUTCOME")
+
+          if not summary_path:
+              print("GITHUB_STEP_SUMMARY not set, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not results_path.is_file():
+              # The whole test run crashed before writing anything -- nothing
+              # to excerpt, and nothing wrong with *this* step specifically.
+              print("Results file missing, skipping failing test excerpts.")
+              raise SystemExit(0)
+
+          if not logs_path.is_file():
+              # Only flag a broken log pipeline when the Complement step
+              # actually ran (success or failure) and produced these results.
+              # If it was skipped/cancelled because an earlier build or setup
+              # step failed, the checked-in test_results.jsonl is stale and no
+              # Complement run wrote these "results" -- a missing logs.jsonl
+              # is then expected and is not a log-pipeline bug.
+              if complement_outcome not in ("success", "failure"):
+                  print(
+                      "Complement step did not run "
+                      f"(outcome={complement_outcome!r}); not flagging missing logs."
+                  )
+                  raise SystemExit(0)
+              # Results exist but logs don't: that's not "the run produced
+              # nothing", that's the log pipeline being broken (see the
+              # bin/complement staging bug this masked for a while). Surface
+              # it loudly in the summary instead of a line buried in the raw
+              # job log that nobody reads.
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write(
+                      "\n> ⚠️ **Test log file missing** "
+                      f"(`{logs_path}`) even though results were recorded. "
+                      "Failing test log excerpts cannot be shown for this run -- "
+                      "check the Complement runner's log-file handling.\n"
+                  )
+              print(f"Results present but {logs_path} missing; flagged in summary.")
+              raise SystemExit(0)
+
+          failed = []
+          seen = set()
+          with results_path.open("r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if row.get("Action") == "fail":
+                      test = row.get("Test")
+                      if test and test not in seen:
+                          seen.add(test)
+                          failed.append(test)
+                  if len(failed) >= 5:
+                      break
+
+          if not failed:
+              print("No failing tests to print.")
+              raise SystemExit(0)
+
+          failed_set = set(failed)
+          excerpts = {test: collections.deque(maxlen=80) for test in failed}
+          with logs_path.open("r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      row = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  test = row.get("Test")
+                  if test not in failed_set:
+                      continue
+                  output = row.get("Output")
+                  if output:
+                      for out_line in output.rstrip("\n").splitlines():
+                          excerpts[test].append(out_line)
+
+          with open(summary_path, "a", encoding="utf-8") as summary:
+              summary.write("\n### Failing Test Log Excerpts\n")
+              for test in failed:
+                  summary.write(f"\n<details><summary>{html.escape(test)}</summary>\n\n")
+                  max_backticks = 0
+                  for out_line in excerpts[test]:
+                      for match in re.finditer(r"`+", out_line):
+                          max_backticks = max(max_backticks, len(match.group(0)))
+                  fence = "`" * max(3, max_backticks + 1)
+                  summary.write(f"{fence}text\n")
+                  for out_line in excerpts[test]:
+                      summary.write(out_line + "\n")
+                  summary.write(f"{fence}\n</details>\n")
+          PY
 
       - name: Get conduwuit version
         id: version
@@ -254,7 +401,7 @@ jobs:
             || echo "unknown")
           echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
       - name: Update Results Ledger
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         uses: ./.github/actions/update-results-ledger
         with:
@@ -272,7 +419,7 @@ jobs:
           room_version: ${{ matrix.room_version }}
 
       - name: Ingest results into PostgreSQL
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         env:
           SSH_PASSPHRASE: ${{ secrets.C10Y_SSH_KEY_PRIVATE_PASSPHRASE || '' }}
@@ -319,7 +466,7 @@ jobs:
           # Add the server key to known_hosts to prevent interactive prompts
           ssh-keyscan -p 22 nutra.tk | tee -a ~/.ssh/known_hosts
       - name: Run Postgres Ingestion
-        if: always()
+        if: always() && (steps.complement.outcome == 'success' || steps.complement.outcome == 'failure')
         continue-on-error: true
         uses: ./.github/actions/postgres
         with:
@@ -327,7 +474,7 @@ jobs:
           database_url: ${{ secrets.C10Y_POSTGRES_URL }}
           setup_tables: false
           rebuild_db: false
-          results_file: tests/test_results/complement/test_results.jsonl
+          results_file: tests/complement/results.jsonl
           run_metadata: >-
             {
               "commit_hash": "${{ github.event.pull_request.head.sha || github.sha }}",
@@ -356,8 +503,8 @@ jobs:
           fi
           python3 .github/actions/postgres/ci-query-failures.py
 
-      - name: Get newly failing tests
-        id: new_failures
+      - name: Get failing tests
+        id: failures
         if: always()
         continue-on-error: true
         env:
@@ -374,7 +521,7 @@ jobs:
           ROOM_VERSION="${{ matrix.room_version }}"
           FEATURES="${{ env.FEATURES }}"
 
-          # Fetch the newly failing and passing tests for this specific run.
+          # Fetch the failing tests for this specific run.
           # Keep this query branch-local instead of depending on v_run_regressions,
           # because that shared view may be managed by another branch.
           COMMON_CTES="
@@ -390,78 +537,25 @@ jobs:
                 AND EXISTS (SELECT 1 FROM run_details rd WHERE rd.run_id = r.id)
               ORDER BY r.run_date DESC, r.id DESC
               LIMIT 1
-            ),
-            baseline_selection AS (
-              SELECT DISTINCT ON (arch, os)
-                id,
-                os
-              FROM runs
-              WHERE (branch IN ('main', 'main-upstream', 'refs/heads/main', 'refs/heads/main-upstream')
-                OR version_string LIKE '%main%')
-              ORDER BY
-                arch,
-                os,
-                run_date DESC,
-                id DESC
-            ),
-            baseline_status AS (
-              SELECT
-                bsel.os,
-                rd.test_name,
-                bool_or(rd.status = 'pass') AS any_pass,
-                bool_or(rd.status = 'skip') AS any_skip
-              FROM baseline_selection bsel
-              JOIN run_details rd ON rd.run_id = bsel.id
-              GROUP BY
-                bsel.os,
-                rd.test_name
             )"
-          NEW_FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
+          FAILURES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
             SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
             FROM current_run r
             JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
             WHERE rd.status = 'fail'
-              AND bs.test_name IS NOT NULL
-              AND (bs.any_pass OR bs.any_skip);" | sed 's/\\n/\n/g')
-          NEW_PASSES=$(./bin/db-shell -A -t -c "${COMMON_CTES}
-            SELECT COALESCE(STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name), '')
-            FROM current_run r
-            JOIN run_details rd ON rd.run_id = r.id
-            LEFT JOIN baseline_status bs ON bs.os IS NOT DISTINCT FROM r.os AND bs.test_name = rd.test_name
-            WHERE rd.status = 'pass'
-              AND bs.test_name IS NOT NULL
-              AND NOT bs.any_pass;" | sed 's/\\n/\n/g')
-
-
-          echo "new_failures<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_FAILURES" | tee -a "$GITHUB_OUTPUT"
+          " | sed 's/\\n/\n/g')
+          echo "failures<<EOF" | tee -a "$GITHUB_OUTPUT"
+          echo "$FAILURES" | tee -a "$GITHUB_OUTPUT"
           echo "EOF" | tee -a "$GITHUB_OUTPUT"
 
-          echo "new_passes<<EOF" | tee -a "$GITHUB_OUTPUT"
-          echo "$NEW_PASSES" | tee -a "$GITHUB_OUTPUT"
-          echo "EOF" | tee -a "$GITHUB_OUTPUT"
-
-          # Count non-empty lines of new failures
-          NEW_FAILURES_COUNT=$(echo "$NEW_FAILURES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_FAILURES_COUNT" -gt 0 ]; then
+          # Count non-empty lines of failures
+          FAILURES_COUNT=$(echo "$FAILURES" | grep -c '[^[:space:]]' || true)
+          if [ "$FAILURES_COUNT" -gt 0 ]; then
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Failed Tests ($NEW_FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "<details><summary>Failed Tests ($FAILURES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-
-          # Count non-empty lines of new passes
-          NEW_PASSES_COUNT=$(echo "$NEW_PASSES" | grep -c '[^[:space:]]' || true)
-          if [ "$NEW_PASSES_COUNT" -gt 0 ]; then
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "<details><summary>Newly Passed Tests ($NEW_PASSES_COUNT)</summary>" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "$NEW_PASSES" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "$FAILURES" | tee -a "$GITHUB_STEP_SUMMARY"
             echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "</details>" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
@@ -470,8 +564,7 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         env:
-          FAILED_TESTS: ${{ steps.new_failures.outputs.new_failures }}
-          PASSED_TESTS: ${{ steps.new_failures.outputs.new_passes }}
+          FAILED_TESTS: ${{ steps.failures.outputs.failures }}
         with:
           script: |
             const pass = ${{ steps.results.outputs.pass || 0 }};
@@ -482,16 +575,11 @@ jobs:
             const os = '${{ matrix.os }}';
             const roomVersion = '${{ matrix.room_version }}';
             const failedTestsRaw = process.env.FAILED_TESTS || '';
-            const passedTestsRaw = process.env.PASSED_TESTS || '';
 
-            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0);
-            let failedContent = 'No newly failing tests recorded.';
-            if (lines.length > 0) {
-              const list = lines.join('\n');
-              failedContent = '```\n' + list + '\n```';
-            }
-
-            const passedLines = passedTestsRaw.trim().split('\n').filter(l => l.length > 0);
+            const lines = failedTestsRaw.trim().split('\n').filter(l => l.length > 0).slice(0, 5);
+            const failedContent = lines.length > 0
+              ? '```\n' + lines.join('\n') + '\n```'
+              : 'No failures recorded.';
 
             const currentRunLines = [
               `## Complement Test Results (${arch} ${os} v${roomVersion})`,
@@ -503,26 +591,13 @@ jobs:
               `| ✓ Pass | ${pass} |`,
               `| ✗ Fail | ${fail} |`,
               `| ⌒ Skip | ${skip} |`,
-              `| **Total** | **${total}** |`,
               '',
-              `<details><summary>Newly Failed Tests (${lines.length})</summary>`,
+              `<details><summary>Failed Tests (${fail})</summary>`,
               '',
               failedContent,
               '',
               '</details>',
             ];
-
-            if (passedLines.length > 0) {
-              const passedContent = '```\n' + passedLines.join('\n') + '\n```';
-              currentRunLines.push(
-                '',
-                `<details><summary>Newly Passed Tests (${passedLines.length})</summary>`,
-                '',
-                passedContent,
-                '',
-                '</details>'
-              );
-            }
 
             let currentRun = currentRunLines.join('\n');
 
@@ -594,7 +669,7 @@ jobs:
         run: |
           ARCH="${{ matrix.arch }}"
           OS="${{ matrix.os }}"
-          SHA="${{ github.sha }}"
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "${RESULTS_OUTCOME}" = "success" ]; then

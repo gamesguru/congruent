@@ -1,0 +1,15 @@
+[package]
+name = "compare"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+conduwuit_core = { path = "../../src/core" }
+ruma = { git = "https://forgejo.ellis.link/continuwuation/ruwuma", rev = "d00b51a8669b21689c4eb47fb81f3a8b27c3e371", features = ["unstable-pdu"] }
+rezzy.workspace = true
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "std", "tracing", "tracing-log", "ansi", "fmt"] }

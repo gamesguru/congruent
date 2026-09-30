@@ -67,7 +67,7 @@ impl Manager {
 
 		info!("Starting service workers...");
 		for service in services {
-			self.start_worker(&mut workers, &service).await?;
+			self.start_worker(&mut workers, &service)?;
 		}
 
 		Ok(())
@@ -75,9 +75,20 @@ impl Manager {
 
 	pub(super) async fn stop(&self) {
 		if let Some(manager) = self.manager.lock().await.take() {
+			manager.abort();
+
+			// Shutdown must not hang forever on workers that miss or ignore the
+			// interrupt/shutdown contract. At this point the server is already in
+			// stopping state, so abort lingering workers after interrupting the
+			// manager task. The manager can be blocked in `join_next()` while
+			// holding `workers`, so aborting it first ensures this lock is
+			// actually acquirable here.
+			self.workers.lock().await.abort_all();
 			debug!("Waiting for service manager...");
 			if let Err(e) = manager.await {
-				error!("Manager shutdown error: {e:?}");
+				if !e.is_cancelled() {
+					error!("Manager shutdown error: {e:?}");
+				}
 			}
 		}
 	}
@@ -88,7 +99,7 @@ impl Manager {
 			tokio::select! {
 				result = workers.join_next() => match result {
 					Some(Ok(result)) => self.handle_result(&mut workers, result).await?,
-					Some(Err(error)) => self.handle_abort(&mut workers, Error::from(error)).await?,
+					Some(Err(error)) => self.handle_abort(&mut workers, &Error::from(error))?,
 					None => break,
 				}
 			}
@@ -98,9 +109,15 @@ impl Manager {
 		Ok(())
 	}
 
-	async fn handle_abort(&self, _workers: &mut WorkersLocked<'_>, error: Error) -> Result<()> {
+	fn handle_abort(&self, _workers: &mut WorkersLocked<'_>, error: &Error) -> Result<()> {
+		if !self.server.running() {
+			info!("Worker task aborted during shutdown: {error:?}");
+			return Ok(());
+		}
+
 		// not supported until service can be associated with abort
-		unimplemented!("unexpected worker task abort {error:?}");
+		error!("Unexpected worker task abort: {error:?}");
+		Ok(())
 	}
 
 	async fn handle_result(
@@ -110,12 +127,13 @@ impl Manager {
 	) -> Result<()> {
 		let (service, result) = result;
 		match result {
-			| Ok(()) => self.handle_finished(workers, &service).await,
+			| Ok(()) => self.handle_finished(workers, &service),
 			| Err(error) => self.handle_error(workers, &service, error).await,
 		}
 	}
 
-	async fn handle_finished(
+	#[allow(clippy::unused_self)]
+	fn handle_finished(
 		&self,
 		_workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,
@@ -146,11 +164,11 @@ impl Manager {
 		warn!("service {name:?} worker restarting after {} delay", time::pretty(delay));
 		sleep(delay).await;
 
-		self.start_worker(workers, service).await
+		self.start_worker(workers, service)
 	}
 
 	/// Start the worker in a task for the service.
-	async fn start_worker(
+	fn start_worker(
 		&self,
 		workers: &mut WorkersLocked<'_>,
 		service: &Arc<dyn Service>,

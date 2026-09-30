@@ -1,11 +1,18 @@
-use axum::extract::State;
+use axum::{
+	Json,
+	body::Body,
+	extract::{Path, State},
+};
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
 use ruma::{
-	RoomId, UserId,
-	api::client::config::{
-		get_global_account_data, get_room_account_data, set_global_account_data,
-		set_room_account_data,
+	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	api::{
+		IncomingRequest,
+		client::config::{
+			get_global_account_data, get_room_account_data, set_global_account_data,
+			set_room_account_data,
+		},
 	},
 	events::{
 		AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent,
@@ -16,7 +23,7 @@ use ruma::{
 use serde::Deserialize;
 use serde_json::{json, value::RawValue as RawJsonValue};
 
-use crate::Ruma;
+use crate::{Ruma, router::authenticate_user};
 
 /// # `PUT /_matrix/client/r0/user/{userId}/account_data/{type}`
 ///
@@ -112,6 +119,48 @@ pub(crate) async fn get_room_account_data_route(
 	Ok(get_room_account_data::v3::Response { account_data: account_data.content })
 }
 
+/// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/account_data/{type}`
+///
+/// Removes some account data for the sender user.
+pub(crate) async fn delete_global_account_data_msc3391_route(
+	State(services): State<crate::State>,
+	Path((user_id, event_type)): Path<(OwnedUserId, String)>,
+	request: hyper::Request<Body>,
+) -> Result<Json<serde_json::Value>> {
+	let sender_user =
+		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
+			.await?;
+
+	if sender_user != user_id {
+		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
+	}
+
+	delete_account_data(&services, None, &user_id, &event_type).await?;
+
+	Ok(Json(json!({})))
+}
+
+/// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/rooms/{roomId}/account_data/{type}`
+///
+/// Removes some room account data for the sender user.
+pub(crate) async fn delete_room_account_data_msc3391_route(
+	State(services): State<crate::State>,
+	Path((user_id, room_id, event_type)): Path<(OwnedUserId, OwnedRoomId, String)>,
+	request: hyper::Request<Body>,
+) -> Result<Json<serde_json::Value>> {
+	let sender_user =
+		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
+			.await?;
+
+	if sender_user != user_id {
+		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
+	}
+
+	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;
+
+	Ok(Json(json!({})))
+}
+
 async fn set_account_data(
 	services: &Services,
 	room_id: Option<&RoomId>,
@@ -129,6 +178,10 @@ async fn set_account_data(
 	let data: serde_json::Value = serde_json::from_str(data.get())
 		.map_err(|e| err!(Request(BadJson(warn!("Invalid JSON provided: {e}")))))?;
 
+	if data.as_object().is_some_and(serde_json::Map::is_empty) {
+		return delete_account_data(services, room_id, sender_user, event_type_s).await;
+	}
+
 	services
 		.account_data
 		.update(
@@ -140,6 +193,25 @@ async fn set_account_data(
 				"content": data,
 			}),
 		)
+		.await
+}
+
+async fn delete_account_data(
+	services: &Services,
+	room_id: Option<&RoomId>,
+	sender_user: &UserId,
+	event_type_s: &str,
+) -> Result {
+	if event_type_s == RoomAccountDataEventType::FullyRead.to_cow_str() {
+		return Err!(Request(BadJson(
+			"This endpoint cannot be used for marking a room as fully read (setting \
+			 m.fully_read)"
+		)));
+	}
+
+	services
+		.account_data
+		.delete(room_id, sender_user, event_type_s)
 		.await
 }
 

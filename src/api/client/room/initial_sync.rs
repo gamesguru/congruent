@@ -46,7 +46,7 @@ pub(crate) async fn room_initial_sync_route(
 	let events = services
 		.rooms
 		.timeline
-		.pdus_rev(room_id, None)
+		.pdus_rev(room_id, std::ops::Bound::Unbounded)
 		.try_take(limit)
 		.and_then(async |mut pdu| {
 			pdu.1.set_unsigned(body.sender_user.as_deref());
@@ -70,13 +70,13 @@ pub(crate) async fn room_initial_sync_route(
 			.await?;
 
 	let messages = PaginationChunk {
-		start: events.last().map(at!(0)).as_ref().map(ToString::to_string),
+		start: events.last().map(at!(0)).as_ref().map(|c| format!("{c}")),
 
 		end: events
 			.first()
 			.map(at!(0))
 			.as_ref()
-			.map(ToString::to_string)
+			.map(|c| format!("{c}"))
 			.unwrap_or_default(),
 
 		chunk: events

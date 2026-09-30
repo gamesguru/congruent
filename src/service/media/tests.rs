@@ -113,8 +113,8 @@ mod url_and_opengraph_parsing_tests {
 		use super::super::preview::parse_preview_url;
 
 		// Standard parsing should pass through
-		assert!(parse_preview_url("https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg").is_ok());
-		assert!(parse_preview_url("http://example.com").is_ok());
+		parse_preview_url("https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg").unwrap();
+		parse_preview_url("http://example.com").unwrap();
 
 		// Missing schemas should automatically fallback to https
 		let appended = parse_preview_url("wikipedia.org").expect("failed to parse schemeless");
@@ -181,15 +181,15 @@ mod url_and_opengraph_parsing_tests {
             <meta property="og:title" content="Bertrand Russell - Wikipedia">
             <meta property="og:type" content="website">
         "#;
-		let html = HTML::from_string(wikipedia.to_string(), None).expect("failed to parse HTML");
+		let html = HTML::from_string(wikipedia.to_owned(), None).expect("failed to parse HTML");
 
 		let img = html.opengraph.images.first().expect("no og:image found");
 		assert_eq!(
 			img.url,
 			"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
 		);
-		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("955"));
-		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1200"));
+		assert_eq!(img.properties.get("width").map(String::as_str), Some("955"));
+		assert_eq!(img.properties.get("height").map(String::as_str), Some("1200"));
 	}
 
 	#[test]
@@ -204,18 +204,18 @@ mod url_and_opengraph_parsing_tests {
             <meta property="og:type" content="video.other">
             <meta property="og:video:tag" content="Nicone">
         "#;
-		let html = HTML::from_string(youtube.to_string(), None).expect("failed to parse HTML");
+		let html = HTML::from_string(youtube.to_owned(), None).expect("failed to parse HTML");
 
 		let img = html.opengraph.images.first().expect("no og:image found");
 		assert_eq!(
 			img.url,
 			"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
 		);
-		assert_eq!(img.properties.get("width").map(|s| s.as_str()), Some("1000"));
-		assert_eq!(img.properties.get("height").map(|s| s.as_str()), Some("1000"));
+		assert_eq!(img.properties.get("width").map(String::as_str), Some("1000"));
+		assert_eq!(img.properties.get("height").map(String::as_str), Some("1000"));
 
 		// Assert no og:video element since it wasn't defined
-		assert!(html.opengraph.videos.first().is_none());
+		assert!(html.opengraph.videos.is_empty());
 	}
 
 	#[test]
@@ -227,7 +227,7 @@ mod url_and_opengraph_parsing_tests {
             <meta property="og:image:height" content="1080">
         "#;
 		let html =
-			HTML::from_string(html_snippet.to_string(), None).expect("failed to parse HTML");
+			HTML::from_string(html_snippet.to_owned(), None).expect("failed to parse HTML");
 		let obj = html.opengraph.images.first().expect("no og:image found");
 
 		let preview_data = UrlPreviewData::default();

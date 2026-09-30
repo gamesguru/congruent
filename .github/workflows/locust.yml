@@ -1,0 +1,224 @@
+---
+# Locust Load Tests
+# -----------------
+name: Locust Load Tests
+
+on:
+  push:
+    branches: [main, main-upstream]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  SKIP_CONFIRM: 1
+
+jobs:
+
+  setup:
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: "dev-quick"
+      FEATURES: "direct_tls,url_preview"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup RocksDB and Jemalloc
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      - name: Export CPU target env vars
+        run: |
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C target-cpu=${{ steps.cpu.outputs.target }}" | tee -a $GITHUB_ENV
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+        with:
+          shared-key: ubuntu-24.04-${{ steps.cpu.outputs.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          env-vars: CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS PROFILE
+
+      # Build the dev-quick binary for this suite.
+      - name: Build continuwuity (dev-quick, shared)
+        env:
+          RUSTFLAGS: -C link-arg=-fuse-ld=mold
+        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+
+      - name: Upload shared binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: target/latest/conduwuit
+          retention-days: 7
+          overwrite: true
+
+  # -----------------------------------------------------------------------------
+  # Locust load test. Also consumes the shared binary; runs the homeserver
+  # directly (no Docker image) and drives matrix-locust against it.
+  # -----------------------------------------------------------------------------
+  locust-test:
+    needs: setup
+    runs-on: ubuntu-24.04
+    env:
+      PROFILE: dev-quick
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            liburing-dev \
+            libbz2-dev \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            mold
+
+      - name: Detect best CPU target
+        id: cpu
+        uses: ./.github/actions/get-cpu-target
+
+      - name: Setup prebuilts (RocksDB/Jemalloc)
+        uses: ./.github/actions/setup-prebuilts
+        with:
+          cache-key: ubuntu-24.04
+          arch: ${{ steps.cpu.outputs.target }}
+
+      # matrix-locust only works on Python <= 3.12 (see note below).
+      - name: Set up Python 3.12 (required by matrix-locust toolchain)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Download shared binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: conduwuit-dev-quick
+          path: /tmp/shared-bin
+
+      - name: Install shared binary
+        run: |
+          mkdir -p target/latest
+          install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
+
+      - name: Start conduwuit server
+        env:
+          CONDUWUIT_PORT: "6167"
+        run: |
+          mkdir -p /tmp/conduwuit-db
+          cat > /tmp/conduwuit.toml <<EOF
+          [global]
+          server_name = "localhost"
+          address = ["127.0.0.1"]
+          port = $CONDUWUIT_PORT
+          database_path = "/tmp/conduwuit-db"
+          allow_registration = true
+          yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+          EOF
+          ./target/latest/conduwuit -c /tmp/conduwuit.toml &
+          echo $! > /tmp/conduwuit.pid
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:$CONDUWUIT_PORT/_matrix/client/versions && break
+            sleep 1
+          done
+
+      # The matrix-locust toolchain (locust==2.17.0 + matrix-nio==0.21.2) is
+      # only compatible with Python <= 3.12: matrix-nio 0.21.2 imports `cgi`
+      # (removed in Python 3.13) and locust 2.17.0 accesses instance-level
+      # `__annotations__` (removed on 3.14), so both crash on newer Pythons.
+      - name: Setup matrix-locust
+        run: |
+          if [ -d "../matrix-locust" ]; then
+            cp -r ../matrix-locust /tmp/matrix-locust
+          else
+            # Pin to a specific upstream commit so the load-test setup is
+            # reproducible instead of tracking matrix-locust's moving default
+            # branch.
+            git clone https://github.com/circles-project/matrix-locust.git /tmp/matrix-locust
+            cd /tmp/matrix-locust
+            git checkout 4efee8d84c65730de23c293c369d577dcf63b2e5
+            cd -
+          fi
+          cd /tmp/matrix-locust
+          # generate_users.py (no --domains) emits empty-domain usernames ending
+          # in ":" (e.g. "user.000001:"). matrix-locust's set_user() then rewrites
+          # the --host to "http://matrix.<domain>" = "http://matrix.", which cannot
+          # resolve, so every /register fails with "[Errno -3] Temporary failure
+          # in name resolution". Emit a bare localpart when there is no domain so
+          # set_user() keeps the user-supplied --host (http://127.0.0.1:6167).
+          sed -i 's/        username = "user\.{:06d}:{}"\.format(i, host)/        username = "user.{:06d}".format(i) + (":" + host if host else "")/' generate_users.py
+          # `python` is the Python 3.12 set up by actions/setup-python above.
+          # Building the venv from it (instead of the runner's `python3`)
+          # guarantees the toolchain lands on a supported interpreter.
+          python -m venv venv
+          ./venv/bin/pip install --upgrade pip
+          # Pin the runtime deps so upgrades can't silently change the results.
+          ./venv/bin/pip install locust==2.17.0 matrix-nio==0.21.2 requests==2.34.2 click==8.4.2 gevent==26.8.0
+
+      - name: Run Locust load test
+        working-directory: /tmp/matrix-locust
+        run: |
+          mkdir -p data
+          ./venv/bin/python generate_users.py 100
+          ./venv/bin/python generate_rooms.py
+          echo "=== 1. Registering users ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/register.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/register
+          echo "=== 2. Creating rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/create_room.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/create_room
+          echo "=== 3. Joining rooms ==="
+          ./venv/bin/python -m locust -f matrix_locust/client_server/join.py --headless -u 100 -r 10 -t 30s --host http://127.0.0.1:6167 --csv data/join
+          echo "=== 4. Normal chat load test ==="
+          ./venv/bin/python -m locust -f locust-run-users.py --headless -u 100 -r 10 -t 1m --host http://127.0.0.1:6167 --csv data/chat
+
+      - name: Stop conduwuit server
+        if: always()
+        run: |
+          if [ -f /tmp/conduwuit.pid ]; then
+            kill $(cat /tmp/conduwuit.pid) || true
+          fi
+
+      - name: Upload Locust results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: locust-results
+          path: |
+            /tmp/matrix-locust/data/
+            /tmp/matrix-locust/data/*.csv
+            /tmp/matrix-locust/locust*.html
+          retention-days: 30

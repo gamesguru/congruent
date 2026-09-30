@@ -53,6 +53,7 @@ pub(crate) async fn open(ctx: Arc<Context>, desc: &[Descriptor]) -> Result<Arc<S
 		ctx: ctx.clone(),
 		checksums: config.rocksdb_checksums,
 		corks: AtomicU32::new(0),
+		lifts: AtomicU32::new(0),
 	}))
 }
 

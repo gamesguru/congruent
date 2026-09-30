@@ -1,7 +1,7 @@
 #![type_length_limit = "3072"]
 
 extern crate conduwuit_core as conduwuit;
-extern crate rust_rocksdb as rocksdb;
+pub extern crate rust_rocksdb as rocksdb;
 
 conduwuit_macros::introspect_crate! {}
 
@@ -12,6 +12,7 @@ conduwuit::mod_dtor! {}
 mod benches;
 mod cork;
 mod de;
+mod deprecated_maps;
 mod deserialized;
 mod engine;
 mod handle;
@@ -35,7 +36,7 @@ pub use self::{
 	deserialized::Deserialized,
 	handle::Handle,
 	keyval::{KeyVal, Slice, serialize_key, serialize_val},
-	map::{Get, Map, Qry, compact},
+	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
 	ser::{Cbor, Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
 };
 pub(crate) use self::{
@@ -54,7 +55,8 @@ impl Database {
 	/// Load an existing database or create a new one.
 	pub async fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
 		let ctx = Context::new(server)?;
-		let db = Engine::open(ctx.clone(), maps::MAPS).await?;
+		let descriptors = maps::descriptors();
+		let db = Engine::open(ctx.clone(), &descriptors).await?;
 		Ok(Arc::new(Self {
 			maps: maps::open(&db)?,
 			db: db.clone(),

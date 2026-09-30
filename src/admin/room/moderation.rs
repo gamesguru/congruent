@@ -57,58 +57,7 @@ async fn ban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 		}
 	}
 
-	let room_id = if room.is_room_id() {
-		let room_id = match RoomId::parse(&room) {
-			| Ok(room_id) => room_id,
-			| Err(e) => {
-				return Err!(
-					"Failed to parse room ID {room}. Please note that this requires a full room \
-					 ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
-					 (`#roomalias:example.com`): {e}"
-				);
-			},
-		};
-
-		debug!("Room specified is a room ID, banning room ID");
-
-		room_id.to_owned()
-	} else if room.is_room_alias_id() {
-		let room_alias = match RoomAliasId::parse(&room) {
-			| Ok(room_alias) => room_alias,
-			| Err(e) => {
-				return Err!(
-					"Failed to parse room ID {room}. Please note that this requires a full room \
-					 ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
-					 (`#roomalias:example.com`): {e}"
-				);
-			},
-		};
-
-		debug!(
-			"Room specified is not a room ID, attempting to resolve room alias to a room ID \
-			 locally, if not using get_alias_helper to fetch room ID remotely"
-		);
-
-		match self.services.rooms.alias.resolve_alias(room_alias).await {
-			| Ok((room_id, servers)) => {
-				debug!(
-					%room_id,
-					?servers,
-					"Got federation response fetching room ID for room {room}"
-				);
-				room_id
-			},
-			| Err(e) => {
-				return Err!("Failed to resolve room alias {room} to a room ID: {e}");
-			},
-		}
-	} else {
-		return Err!(
-			"Room specified is not a room ID or room alias. Please note that this requires a \
-			 full room ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
-			 (`#roomalias:example.com`)",
-		);
-	};
+	let room_id = resolve_room_id(self.services, &room).await?;
 
 	info!("Making all users leave the room {room_id} and forgetting it");
 	let mut users = self
@@ -192,76 +141,15 @@ async fn ban_list_of_rooms(&self) -> Result {
 					}
 				}
 
-				if room_alias_or_id.is_room_id() {
-					let room_id = match RoomId::parse(room_alias_or_id) {
-						| Ok(room_id) => room_id,
-						| Err(e) => {
-							// ignore rooms we failed to parse
-							warn!(
-								"Error parsing room \"{room}\" during bulk room banning, \
-								 ignoring error and logging here: {e}"
-							);
-							continue;
-						},
-					};
-
-					room_ids.push(room_id.to_owned());
-				}
-
-				if room_alias_or_id.is_room_alias_id() {
-					match RoomAliasId::parse(room_alias_or_id) {
-						| Ok(room_alias) => {
-							let room_id = match self
-								.services
-								.rooms
-								.alias
-								.resolve_local_alias(room_alias)
-								.await
-							{
-								| Ok(room_id) => room_id,
-								| _ => {
-									debug!(
-										"We don't have this room alias to a room ID locally, \
-										 attempting to fetch room ID over federation"
-									);
-
-									match self
-										.services
-										.rooms
-										.alias
-										.resolve_alias(room_alias)
-										.await
-									{
-										| Ok((room_id, servers)) => {
-											debug!(
-												%room_id,
-												?servers,
-												"Got federation response fetching room ID for \
-												 {room}",
-											);
-											room_id
-										},
-										| Err(e) => {
-											warn!(
-												"Failed to resolve room alias {room} to a room \
-												 ID: {e}"
-											);
-											continue;
-										},
-									}
-								},
-							};
-
-							room_ids.push(room_id);
-						},
-						| Err(e) => {
-							warn!(
-								"Error parsing room \"{room}\" during bulk room banning, \
-								 ignoring error and logging here: {e}"
-							);
-							continue;
-						},
-					}
+				match resolve_room_id(self.services, room_alias_or_id).await {
+					| Ok(room_id) => room_ids.push(room_id),
+					| Err(e) => {
+						warn!(
+							"Error resolving room \"{room}\" during bulk room banning, ignoring \
+							 error and logging here: {e}"
+						);
+						continue;
+					},
 				}
 			},
 			| Err(e) => {
@@ -453,6 +341,63 @@ async fn list_banned_rooms(&self, no_details: bool) -> Result {
 		.collect::<Vec<_>>()
 		.join("\n");
 
-	self.write_str(&format!("Rooms Banned ({num}):\n```\n{body}\n```",))
+	self.write_str(&format!("Rooms Banned ({num}):\n```\n{body}\n```"))
 		.await
+}
+
+async fn resolve_room_id(
+	services: &service::Services,
+	room: &RoomOrAliasId,
+) -> Result<OwnedRoomId> {
+	if room.is_room_id() {
+		let room_id = match RoomId::parse(room) {
+			| Ok(room_id) => room_id,
+			| Err(e) => {
+				return Err!(
+					"Failed to parse room ID {room}. Please note that this requires a full room \
+					 ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
+					 (`#roomalias:example.com`): {e}"
+				);
+			},
+		};
+
+		debug!("Room specified is a room ID, resolving room ID");
+		Ok(room_id.to_owned())
+	} else if room.is_room_alias_id() {
+		let room_alias = match RoomAliasId::parse(room) {
+			| Ok(room_alias) => room_alias,
+			| Err(e) => {
+				return Err!(
+					"Failed to parse room ID {room}. Please note that this requires a full room \
+					 ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
+					 (`#roomalias:example.com`): {e}"
+				);
+			},
+		};
+
+		debug!(
+			"Room specified is not a room ID, attempting to resolve room alias to a room ID \
+			 locally, if not using get_alias_helper to fetch room ID remotely"
+		);
+
+		match services.rooms.alias.resolve_alias(room_alias).await {
+			| Ok((room_id, servers)) => {
+				debug!(
+					%room_id,
+					?servers,
+					"Got federation response fetching room ID for room {room}"
+				);
+				Ok(room_id)
+			},
+			| Err(e) => {
+				Err!("Failed to resolve room alias {room} to a room ID: {e}")
+			},
+		}
+	} else {
+		Err!(
+			"Room specified is not a room ID or room alias. Please note that this requires a \
+			 full room ID (`!awIh6gGInaS5wLQJwa:example.com`) or a room alias \
+			 (`#roomalias:example.com`)"
+		)
+	}
 }

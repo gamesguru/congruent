@@ -113,6 +113,7 @@ impl Services {
 				timeline: build!(rooms::timeline::Service),
 				typing: build!(rooms::typing::Service),
 				user: build!(rooms::user::Service),
+				monitor: build!(rooms::monitor::Service),
 			},
 			federation: build!(federation::Service),
 			sending: build!(sending::Service),
@@ -145,6 +146,10 @@ impl Services {
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 
+		// Initialize first-run state before listeners start accepting requests so
+		// registration and banner checks cannot race the firstrun worker.
+		self.firstrun.initialize_first_run_marker().await?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;
@@ -153,13 +158,13 @@ impl Services {
 			manager
 		};
 
-		info!("Starting service workers...");
-		manager.start().await?;
-
 		// reset dormant online/away statuses to offline on startup
 		if self.server.config.allow_local_presence {
 			info!("Local presence statuses will be reset in the background.");
 		}
+
+		info!("Starting service workers...");
+		manager.start().await?;
 
 		info!("Services startup complete.");
 
@@ -168,6 +173,12 @@ impl Services {
 
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
+
+		// Some service workers exit only after the server enters stopping state
+		// and receives a shutdown signal. Interrupting alone is insufficient.
+		if self.server.running() {
+			self.server.shutdown().unwrap_or_else(error::default_log);
+		}
 
 		// set the server user as offline
 		if self.server.config.allow_local_presence {

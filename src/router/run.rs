@@ -72,6 +72,8 @@ pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 
 	let services = Services::build(server).await?.start().await?;
 
+	services.rooms.outlier.startup_janitor().await;
+
 	#[cfg(all(feature = "systemd", target_os = "linux"))]
 	sd_notify::notify(&[sd_notify::NotifyState::Ready])
 		.expect("failed to notify systemd of ready state");

@@ -2,6 +2,7 @@
 
 pub mod alloc;
 pub mod config;
+pub mod console_history;
 pub mod debug;
 pub mod error;
 pub mod info;

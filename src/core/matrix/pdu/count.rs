@@ -7,32 +7,13 @@ use std::{
 };
 
 use ruma::api::Direction;
-use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result, err};
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug, Serialize)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Count {
 	Normal(u64),
 	Backfilled(i64),
-}
-
-impl<'de> Deserialize<'de> for Count {
-	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-	where
-		D: serde::Deserializer<'de>,
-	{
-		#[derive(Deserialize)]
-		enum CountHelper {
-			Normal(u64),
-			Backfilled(i64),
-		}
-
-		match CountHelper::deserialize(deserializer)? {
-			| CountHelper::Normal(i) => Ok(Self::from_unsigned(i)),
-			| CountHelper::Backfilled(i) => Ok(Self::from_signed(i)),
-		}
-	}
 }
 
 impl Count {
@@ -128,8 +109,11 @@ impl Count {
 	#[must_use]
 	pub fn saturating_add(self, add: u64) -> Self {
 		match self {
-			| Self::Normal(i) => Self::Normal(i.saturating_add(add)),
-			| Self::Backfilled(i) => Self::Backfilled(i.saturating_add(add as i64)),
+			| Self::Normal(i) => Self::Normal(i.saturating_add(add).min(i64::MAX as u64)),
+			| Self::Backfilled(i) => {
+				let add = i64::try_from(add).unwrap_or(i64::MAX);
+				Self::from_signed(i.saturating_add(add))
+			},
 		}
 	}
 
@@ -137,7 +121,12 @@ impl Count {
 	#[must_use]
 	pub fn saturating_sub(self, sub: u64) -> Self {
 		match self {
-			| Self::Normal(i) => Self::Normal(i.saturating_sub(sub)),
+			| Self::Normal(i) =>
+				if let Some(res) = i.checked_sub(sub) {
+					Self::Normal(res)
+				} else {
+					Self::Backfilled(0_i64.saturating_sub(sub.saturating_sub(i) as i64))
+				},
 			| Self::Backfilled(i) => Self::Backfilled(i.saturating_sub(sub as i64)),
 		}
 	}
@@ -155,6 +144,17 @@ impl Count {
 		if let Self::Backfilled(i) = self {
 			debug_assert!(*i <= 0, "Backfilled sequence must be negative");
 		}
+	}
+
+	/// Applies offset binary encoding (flips the sign bit) to a byte
+	/// representation of an i64 or u64 so that it sorts correctly in RocksDB
+	/// unsigned byte comparison. This operation is its own inverse, so it is
+	/// used for both encoding and decoding.
+	#[inline]
+	#[must_use]
+	pub fn offset_binary_encoding(mut count_bytes: [u8; 8]) -> [u8; 8] {
+		count_bytes[0] ^= 0x80;
+		count_bytes
 	}
 }
 
@@ -200,23 +200,125 @@ impl Default for Count {
 mod tests {
 	use super::*;
 
+	/// Backfilled events must always sort before Normal events in the
+	/// timeline ordering.  The sync early-return in `load_timeline` relies on
+	/// `last_timeline_count <= starting_count` to skip rooms with no new
+	/// activity.  If `last_timeline_count` returns a Backfilled count, it
+	/// must be less than any Normal sync token so the room is skipped.
 	#[test]
-	fn test_count_deserialization_invariants() {
-		// Valid Normal Count deserialization
-		let normal_json = "{\"Normal\":5}";
-		let normal: Count = serde_json::from_str(normal_json).unwrap();
-		assert_eq!(normal, Count::Normal(5));
+	fn backfilled_is_less_than_normal() {
+		assert!(Count::Backfilled(-1) < Count::Normal(0));
+		assert!(Count::Backfilled(-1) < Count::Normal(1));
+		assert!(Count::Backfilled(0) < Count::Normal(1));
+		assert!(Count::Backfilled(i64::MIN) < Count::Normal(0));
+	}
 
-		// Valid Backfilled Count deserialization (negative index)
-		let backfilled_json = "{\"Backfilled\":-5}";
-		let backfilled: Count = serde_json::from_str(backfilled_json).unwrap();
-		assert_eq!(backfilled, Count::Backfilled(-5));
+	/// `Count::min()` must be strictly less than any realistic Normal sync
+	/// token so that `last_timeline_count` returning `min()` for empty rooms
+	/// always triggers the sync early-return path.
+	#[test]
+	fn min_is_less_than_any_normal_token() {
+		assert!(Count::min() < Count::Normal(0));
+		assert!(Count::min() < Count::Normal(1));
+		assert!(Count::min() < Count::Normal(u64::MAX / 2));
+		assert!(Count::min() <= Count::Backfilled(-1));
+	}
 
-		// Invalid Backfilled Count deserialization (positive index)
-		// Should be converted to Normal(5) through from_signed(5)
-		let invalid_backfilled_json = "{\"Backfilled\":5}";
-		let count: Count = serde_json::from_str(invalid_backfilled_json).unwrap();
-		assert_eq!(count, Count::Normal(5));
-		count.debug_assert_valid(); // This would panic if the invariant was bypassed!
+	/// `Count::max()` must be strictly greater than any realistic Normal sync
+	/// token.  Previously `last_timeline_count` incorrectly returned `max()`
+	/// for backfilled-only rooms, which defeated the sync early-return check
+	/// and caused massive log spam.
+	#[test]
+	fn max_is_greater_than_any_normal_token() {
+		assert!(Count::max() > Count::Normal(0));
+		assert!(Count::max() > Count::Normal(26_400_000));
+		assert!(Count::max() > Count::Backfilled(-1));
+		assert!(Count::max() > Count::min());
+	}
+
+	/// Verify the sync early-return invariant directly:
+	/// `last_timeline_count <= starting_count` must be true when the room's
+	/// latest event is Backfilled and the client's sync token is Normal.
+	#[test]
+	fn sync_early_return_skips_backfilled_rooms() {
+		let starting_count = Count::Normal(26_400_689); // typical sync token
+		let last_backfilled = Count::Backfilled(-100); // room with only backfilled events
+		let last_empty = Count::min(); // room with no events at all
+
+		assert!(
+			last_backfilled <= starting_count,
+			"backfilled-only rooms must trigger sync early return"
+		);
+		assert!(last_empty <= starting_count, "empty rooms must trigger sync early return");
+	}
+
+	/// Verify that a room with recent Normal activity is NOT skipped.
+	#[test]
+	fn sync_early_return_does_not_skip_active_rooms() {
+		let starting_count = Count::Normal(26_400_689);
+		let last_active = Count::Normal(26_400_692); // newer than sync token
+
+		assert!(last_active > starting_count, "active rooms must NOT trigger sync early return");
+	}
+}
+
+use std::array::TryFromSliceError;
+
+/// Unified timeline coordinate representing both live and backfill events.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TimelineKey {
+	/// True Matrix DAG depth (`topological_ordering`).
+	pub depth: u64,
+	/// Monotonic sequence (`stream_ordering`): positive for live, negative for
+	/// backfill.
+	pub stream_ordering: i64,
+}
+
+impl TimelineKey {
+	#[inline]
+	#[must_use]
+	pub fn new(depth: u64, stream_ordering: i64) -> Self { Self { depth, stream_ordering } }
+
+	/// Encodes into a 16-byte big-endian array optimized for lexicographical
+	/// range scans (`ORDER BY depth ASC, stream_ordering ASC`).
+	#[inline]
+	#[must_use]
+	pub fn to_be_bytes(&self) -> [u8; 16] {
+		let mut buf = [0_u8; 16];
+
+		// Primary Axis: Depth (ASC)
+		buf[0..8].copy_from_slice(&self.depth.to_be_bytes());
+
+		// Secondary Axis: Offset-Binary Stream Ordering (ASC)
+		let offset_binary = (self.stream_ordering as u64) ^ 0x8000_0000_0000_0000;
+		buf[8..16].copy_from_slice(&offset_binary.to_be_bytes());
+
+		buf
+	}
+
+	/// Decodes a 16-byte KV slice back into a TimelineKey during pagination.
+	#[inline]
+	#[must_use]
+	pub fn from_bytes(bytes: &[u8; 16]) -> Self {
+		let mut depth_bytes = [0_u8; 8];
+		depth_bytes.copy_from_slice(&bytes[0..8]);
+		let depth = u64::from_be_bytes(depth_bytes);
+
+		let mut stream_bytes = [0_u8; 8];
+		stream_bytes.copy_from_slice(&bytes[8..16]);
+		let offset_binary = u64::from_be_bytes(stream_bytes);
+
+		let stream_ordering = (offset_binary ^ 0x8000_0000_0000_0000) as i64;
+
+		Self { depth, stream_ordering }
+	}
+}
+
+impl TryFrom<&[u8]> for TimelineKey {
+	type Error = TryFromSliceError;
+
+	fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+		let bytes: &[u8; 16] = slice.try_into()?;
+		Ok(Self::from_bytes(bytes))
 	}
 }

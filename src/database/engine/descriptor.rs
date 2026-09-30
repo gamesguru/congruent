@@ -46,7 +46,6 @@ pub(crate) struct Descriptor {
 pub(crate) enum CacheDisp {
 	Unique,
 	Shared,
-	SharedWith(&'static str),
 }
 
 /// Base descriptor supplying common defaults to all derived descriptors.

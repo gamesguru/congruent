@@ -165,6 +165,10 @@ Raw database query
 
 Raw database delete (for string keys)
 
+### `!admin query raw raw-clear`
+
+Clear all entries from a database map
+
 ### `!admin query raw raw-keys`
 
 Raw database keys iteration

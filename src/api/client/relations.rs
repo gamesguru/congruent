@@ -186,11 +186,9 @@ async fn paginate_relations_with_filter(
 	let has_more = events.len() >= limit;
 
 	let next_batch = if has_more {
-		match dir {
-			| Direction::Forward => events.last(),
-			| Direction::Backward => events.first(),
-		}
-		.map(|(count, _)| count.to_string())
+		// `from` is an exclusive boundary for both directions, so the next page
+		// must restart from the last event we actually returned on this page.
+		events.last().map(|(count, _)| count.to_string())
 	} else {
 		None
 	};
