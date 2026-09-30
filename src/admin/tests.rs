@@ -2576,17 +2576,17 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		)
 		.await;
 
-	// Ensure Name B gets a strictly later origin_server_ts than Name A.
-	// Under parallel test load, both events can land in the same millisecond,
-	// making the V2 mainline sort tiebreaker depend on event_id hash ordering.
-	tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-
 	// 4. Branch 1: Set Room Name to "Name B" (state event)
 	let name_b_event = services
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomNameEventContent::new("Name B".to_owned())),
+			PduBuilder {
+				timestamp: Some(ruma::MilliSecondsSinceUnixEpoch(
+					ruma::MilliSecondsSinceUnixEpoch::now().0 + ruma::UInt::from(1_000_u32),
+				)),
+				..PduBuilder::state(String::new(), &RoomNameEventContent::new("Name B".to_owned()))
+			},
 			server_user,
 			Some(&room_id),
 			&state_lock,
