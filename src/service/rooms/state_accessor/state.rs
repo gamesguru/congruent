@@ -509,10 +509,20 @@ pub async fn pdu_roothandle_before_event(
 	// event that happens to precede it in the repaired linear timeline. The
 	// latter can be a concurrent fork and therefore carry unrelated state.
 	let pdu = self.services.timeline.get_pdu(event_id).await?;
-	if let Some(prev_event_id) = pdu.prev_events().next() {
-		let shorteventid = self.services.short.get_shorteventid(prev_event_id).await?;
-		if let Ok(root_handle) = self.services.state.get_roothandle(shorteventid).await {
-			return Ok(root_handle);
+
+	// A non-state event doesn't change state, so its stored root *is* the state
+	// before it. For a merge event this is the resolved state of all its
+	// parents; picking one parent's root would return that fork's state alone.
+	if pdu.state_key.is_none() {
+		return self.pdu_roothandle_after_event(event_id).await;
+	}
+
+	if pdu.prev_events().count() == 1 {
+		if let Some(prev_event_id) = pdu.prev_events().next() {
+			let shorteventid = self.services.short.get_shorteventid(prev_event_id).await?;
+			if let Ok(root_handle) = self.services.state.get_roothandle(shorteventid).await {
+				return Ok(root_handle);
+			}
 		}
 	}
 
