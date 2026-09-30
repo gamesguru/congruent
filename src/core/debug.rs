@@ -53,11 +53,7 @@ macro_rules! debug_info {
 	}
 }
 
-pub const INFO_SPAN_LEVEL: Level = if logging() {
-	Level::INFO
-} else {
-	Level::DEBUG
-};
+pub const INFO_SPAN_LEVEL: Level = if logging() { Level::INFO } else { Level::DEBUG };
 
 pub static DEBUGGER: LazyLock<bool> =
 	LazyLock::new(|| env::var("_").unwrap_or_default().ends_with("gdb"));

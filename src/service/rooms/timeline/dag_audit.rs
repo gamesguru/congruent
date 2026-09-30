@@ -61,8 +61,8 @@ impl RoomDagAudit {
 	pub fn summary(&self) -> String {
 		format!(
 			"STRUCT DAG reached={} accepted={} bridge={} outlier={} unknown={}; prev edges={} \
-			 (acc={} br={} out={} dangling={} unmapped={} missing_rows={}); auth edges={} (acc={} \
-			 br={} out={} dangling={} unmapped={} missing_rows={})",
+			 (acc={} br={} out={} dangling={} unmapped={} missing_rows={}); auth edges={} \
+			 (acc={} br={} out={} dangling={} unmapped={} missing_rows={})",
 			self.scanned_events,
 			self.accepted_events,
 			self.bridge_events,
@@ -98,8 +98,7 @@ impl Service {
 		let mut stream = std::pin::pin!(room_ids);
 
 		while let Some(chunk) = stream.next().await {
-			let short_ids: Vec<ShortEventId> =
-				chunk.into_iter().filter_map(Result::ok).collect();
+			let short_ids: Vec<ShortEventId> = chunk.into_iter().filter_map(Result::ok).collect();
 			if short_ids.is_empty() {
 				continue;
 			}
@@ -122,12 +121,9 @@ impl Service {
 			// Classify the reached events themselves, then every referenced id.
 			self.classify_shortids(&short_ids, &mut classes).await;
 			for short in &short_ids {
-				audit.accepted_events = audit
-					.accepted_events
-					.saturating_add(u64::from(matches!(
-						classes.get(short),
-						Some(ParentClass::Accepted)
-					)));
+				audit.accepted_events = audit.accepted_events.saturating_add(u64::from(
+					matches!(classes.get(short), Some(ParentClass::Accepted)),
+				));
 				audit.bridge_events = audit.bridge_events.saturating_add(u64::from(matches!(
 					classes.get(short),
 					Some(ParentClass::Bridge)
@@ -146,12 +142,14 @@ impl Service {
 			for (index, _) in short_ids.iter().enumerate() {
 				match prevs.get(index) {
 					| Some(Ok(parents)) => targets.extend(parents.iter().copied()),
-					| Some(Err(_)) => audit.prev_missing_rows = audit.prev_missing_rows.saturating_add(1),
+					| Some(Err(_)) =>
+						audit.prev_missing_rows = audit.prev_missing_rows.saturating_add(1),
 					| None => {},
 				}
 				match auths.get(index) {
 					| Some(Ok(auth)) => targets.extend(auth.iter().copied()),
-					| Some(Err(_)) => audit.auth_missing_rows = audit.auth_missing_rows.saturating_add(1),
+					| Some(Err(_)) =>
+						audit.auth_missing_rows = audit.auth_missing_rows.saturating_add(1),
 					| None => {},
 				}
 			}
@@ -233,8 +231,10 @@ impl Service {
 			return;
 		}
 
-		let verdict_ids: Vec<OwnedEventId> =
-			verdict_pairs.iter().map(|(_, event_id)| event_id.clone()).collect();
+		let verdict_ids: Vec<OwnedEventId> = verdict_pairs
+			.iter()
+			.map(|(_, event_id)| event_id.clone())
+			.collect();
 		let flagged = self
 			.services
 			.pdu_metadata

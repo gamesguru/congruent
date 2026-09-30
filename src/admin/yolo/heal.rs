@@ -364,8 +364,11 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 		self.write_str("Global derived-index audit\n").await?;
 		let audit = super::short_audit::audit(self.services).await;
 		self.write_str(&audit.report()).await?;
-		self.write_str("\nPer-room deep DAG audit not yet enabled.\n\n")
-			.await?;
+		self.write_str(
+			"\nPer-room extremity/chronology scan follows; rooms with findings also get a \
+			 read-only structural prev/auth DAG classification.\n\n",
+		)
+		.await?;
 	}
 
 	let mut total_rooms = 0_usize;
@@ -575,6 +578,21 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 			}
 		}
 
+		// Read-only structural classification of the room's prev/auth DAG,
+		// shown beside the extremity/chronology result for rooms with findings.
+		let structural = if deep && !issues.is_empty() {
+			Some(
+				self.services
+					.rooms
+					.timeline
+					.audit_room_dag(room_id)
+					.await
+					.summary(),
+			)
+		} else {
+			None
+		};
+
 		if issues.is_empty() {
 			if !problems_only {
 				writeln!(output, "OK   {room_id} (ext={ext_count}, joined={cache_joined})").ok();
@@ -582,6 +600,9 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 		} else {
 			problem_rooms = problem_rooms.saturating_add(1);
 			writeln!(output, "FAIL {room_id} -- {}", issues.join(", ")).ok();
+			if let Some(structural) = &structural {
+				writeln!(output, "     {structural}").ok();
+			}
 		}
 
 		// Flush every 25 rooms to show live progress

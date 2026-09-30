@@ -4,6 +4,7 @@ pub use backfill::PromoteOutlierOutcome;
 mod backward_extremities;
 mod build;
 mod create;
+mod dag_audit;
 mod data;
 pub mod extremities;
 mod helpers;

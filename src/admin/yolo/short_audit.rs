@@ -145,15 +145,11 @@ impl DerivedIndexAudit {
 		.ok();
 		write_samples(&mut out, "prev stale samples", &self.prev_stale_samples);
 		write_samples(
-			out,
+			&mut out,
 			"prev parent_unresolved samples",
 			&self.prev_parent_unresolved_samples,
 		);
-		write_samples(
-			out,
-			"prev parent_absent samples",
-			&self.prev_parent_absent_samples,
-		);
+		write_samples(&mut out, "prev parent_absent samples", &self.prev_parent_absent_samples);
 		writeln!(
 			out,
 			"  shorteventid_shortauthevents: rows={}, stale={}, missing={}, malformed={}, \
@@ -168,15 +164,11 @@ impl DerivedIndexAudit {
 		.ok();
 		write_samples(&mut out, "auth stale samples", &self.auth_stale_samples);
 		write_samples(
-			out,
+			&mut out,
 			"auth parent_unresolved samples",
 			&self.auth_parent_unresolved_samples,
 		);
-		write_samples(
-			out,
-			"auth parent_absent samples",
-			&self.auth_parent_absent_samples,
-		);
+		write_samples(&mut out, "auth parent_absent samples", &self.auth_parent_absent_samples);
 		writeln!(out, "  shorteventid_authchain: rows={}", self.authchain_rows).ok();
 		writeln!(
 			out,
@@ -244,7 +236,7 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	// Canonical short-ID set (one short id per eventid_pdu row).
 	let (canonical, canonical_events) = canonical_bits(services, words).await;
 	audit.canonical_events = canonical_events;
-	audit.canonical_bits = count_bits(&canonical);
+	audit.canonical_bits = masked_count(&canonical, counter);
 	let canonical_not_fwd = masked_diff_count(&canonical, &event_fwd, counter);
 
 	// Short prev/auth edge families.
@@ -330,15 +322,7 @@ async fn scan_edges(
 		.raw_stream()
 		.ignore_err()
 		.fold(
-			(
-				vec![0_u64; words],
-				0_u64,
-				0_u64,
-				0_u64,
-				0_u64,
-				Vec::new(),
-				Vec::new(),
-			),
+			(vec![0_u64; words], 0_u64, 0_u64, 0_u64, 0_u64, Vec::new(), Vec::new()),
 			|(
 				mut indexed,
 				mut rows,
@@ -541,6 +525,25 @@ fn short_of(bytes: &[u8]) -> Option<u64> { bytes.try_into().ok().map(u64::from_b
 
 fn count_bits(bits: &[u64]) -> u64 { bits.iter().map(|word| u64::from(word.count_ones())).sum() }
 
+/// `popcount(bits)` over the bits `0..=counter`, matching
+/// [`masked_diff_count`].
+fn masked_count(bits: &[u64], counter: u64) -> u64 {
+	let last = usize::try_from(counter / 64).unwrap_or(usize::MAX);
+	let tail = u64::MAX >> 63_u64.saturating_sub(counter % 64);
+
+	bits.iter()
+		.enumerate()
+		.map(|(word, &x)| {
+			let mask = match word.cmp(&last) {
+				| std::cmp::Ordering::Less => u64::MAX,
+				| std::cmp::Ordering::Equal => tail,
+				| std::cmp::Ordering::Greater => 0,
+			};
+			u64::from((x & mask).count_ones())
+		})
+		.sum()
+}
+
 /// `popcount(a & !b)` over the bits `0..=counter`.
 fn masked_diff_count(a: &[u64], b: &[u64], counter: u64) -> u64 {
 	let last = usize::try_from(counter / 64).unwrap_or(usize::MAX);
@@ -622,9 +625,9 @@ fn consistency_error(audit: &DerivedIndexAudit, canonical_not_fwd: u64) -> Optio
 		let spread = audit.prev_stale.saturating_add(audit.canonical_bits);
 		if spread > audit.prev_rows {
 			errors.push(format!(
-				"prev_missing=0 requires canonical ⊆ indexed, but prev_stale ({}) + canonical_bits \
-				 ({}) = {spread} exceeds prev_rows ({})",
-				audit.prev_stale, audit.prev_rows
+				"prev_missing=0 requires canonical ⊆ indexed, but prev_stale ({}) + \
+				 canonical_bits ({}) = {spread} exceeds prev_rows ({})",
+				audit.prev_stale, audit.canonical_bits, audit.prev_rows
 			));
 		}
 	}
