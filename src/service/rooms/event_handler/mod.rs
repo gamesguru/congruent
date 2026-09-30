@@ -64,7 +64,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	timeline: Dep<rooms::timeline::Service>,
 	server: Arc<Server>,
 }
@@ -83,7 +83,7 @@ impl Clone for Services {
 			state: self.state.clone(),
 			state_cache: self.state_cache.clone(),
 			state_accessor: self.state_accessor.clone(),
-			state_compressor: self.state_compressor.clone(),
+			state_hamt: self.state_hamt.clone(),
 			timeline: self.timeline.clone(),
 			server: self.server.clone(),
 		}
@@ -114,8 +114,7 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				server: args.server.clone(),
 			},

@@ -760,8 +760,8 @@ pub async fn process_timeline_upgrade(
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
-		prev_fetch_deeper_anchor,
-		prev_fetch_had_invalid_data,
+		_prev_fetch_deeper_anchor,
+		_prev_fetch_had_invalid_data,
 	) = if let Some(prefetched) = prefetched_prev {
 		prefetched
 	} else {
@@ -880,10 +880,6 @@ pub async fn process_timeline_upgrade(
 				create_event,
 				origin,
 				room_id,
-				false,
-				true,
-				prev_fetch_had_invalid_data,
-				prev_fetch_deeper_anchor,
 				true,
 			))
 			.await

@@ -131,22 +131,22 @@ pub(crate) async fn get_state_events_route(
 	}
 
 	// For departed users, serve state frozen at the point they left
-	let shortstatehash = if !is_joined {
-		let ssh = leave_shortstatehash(&services, sender_user, room_id).await;
+	let leave_root = if !is_joined {
+		let root = leave_roothandle(&services, sender_user, room_id).await;
 		info!(
 			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_ssh={ssh:?}"
+			"/state: departed user {sender_user} in {room_id}, leave_root={root:?}"
 		);
-		ssh
+		root
 	} else {
 		None
 	};
 
-	let room_state: Vec<_> = if let Some(ssh) = shortstatehash {
+	let room_state: Vec<_> = if let Some(root) = leave_root {
 		services
 			.rooms
 			.state_accessor
-			.state_full_pdus(ssh)
+			.state_full_pdus_hamt(root)
 			.map(Event::into_format)
 			.collect()
 			.await
@@ -197,16 +197,16 @@ pub(crate) async fn get_state_events_for_key_route(
 
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
-		if let Some(ssh) = leave_shortstatehash(&services, sender_user, room_id).await {
+		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
 			info!(
 				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_ssh={ssh}",
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={root:?}",
 				body.event_type
 			);
 			services
 				.rooms
 				.state_accessor
-				.state_get(ssh, &body.event_type, &body.state_key)
+				.state_get_in_room_hamt(room_id, &root, &body.event_type, &body.state_key)
 				.await
 		} else {
 			services
@@ -272,11 +272,11 @@ pub(crate) async fn get_state_events_for_empty_key_route(
 /// Get the shortstatehash for the state snapshot at the point when a user
 /// departed (left/banned) from a room. Returns None if the leave event
 /// can't be found or has no associated state snapshot.
-async fn leave_shortstatehash(
+async fn leave_roothandle(
 	services: &Services,
 	user_id: &UserId,
 	room_id: &RoomId,
-) -> Option<u64> {
+) -> Option<rezzy::hamt::RootHandle> {
 	let leave_pdu = services
 		.rooms
 		.state_cache
@@ -288,7 +288,7 @@ async fn leave_shortstatehash(
 	services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(leave_pdu.event_id())
+		.pdu_roothandle_at_event(room_id, leave_pdu.event_id())
 		.await
 		.ok()
 }

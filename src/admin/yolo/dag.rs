@@ -243,20 +243,29 @@ pub(super) async fn get_room_dag(
 		(0, 0)
 	};
 
-	let room_ssh = self
+	let room_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await
 		.ok();
+
+	let room_ssh = room_root.as_ref().map(|root| {
+		u64::from_be_bytes(
+			root.structural_hash[..8]
+				.try_into()
+				.expect("structural hash is at least 8 bytes"),
+		)
+	});
 
 	let tip_match = match (stats.last_ssh, room_ssh) {
 		| (Some(tip), Some(room)) if tip == room => "✓ tip matches room state".to_owned(),
 		| (Some(tip), Some(room)) if stats.last_is_state_event => {
-			// pdu_shortstatehash is the state BEFORE the tip event; room SSH is
-			// the state AFTER. Verify the room state actually contains the tip
-			// event's state change — look up (type, state_key) in room state.
+			// The exported fingerprint is the tip event's state root; the room
+			// fingerprint is the room's current state root. Verify the room
+			// state actually contains the tip event's state change — look up
+			// (type, state_key) in room state.
 			if let (Some(last_eid), Some(last_type), Some(last_sk)) =
 				(&stats.last_event_id, &stats.last_event_type, &stats.last_state_key)
 			{
@@ -264,7 +273,12 @@ pub(super) async fn get_room_dag(
 					.services
 					.rooms
 					.state_accessor
-					.state_get_id::<Box<EventId>>(room, &last_type.to_string().into(), last_sk)
+					.state_get_id_hamt::<Box<EventId>>(
+						&room_id,
+						room_root.as_ref().expect("room fingerprint implies a root"),
+						&last_type.to_string().into(),
+						last_sk,
+					)
 					.await
 					.is_ok_and(|eid| *eid == **last_eid);
 
@@ -1401,14 +1415,15 @@ pub(super) async fn audit_auth_chain(
 			.services
 			.rooms
 			.state
-			.get_room_shortstatehash(&room_id)
+			.get_room_state_hamt(&room_id)
 			.await
 		{
-			| Ok(sstatehash) =>
+			| Ok(room_root) =>
 				self.services
 					.rooms
 					.state_accessor
-					.state_full_ids(sstatehash)
+					.state_full_ids_hamt(&room_root)
+					.filter_map(|res| async move { res.ok() })
 					.map(|(_, id)| id)
 					.collect()
 					.await,

@@ -927,19 +927,23 @@ async fn collect_member_presence(
 	// Phase 1: Collect users from rooms the syncing user newly joined
 	if let Some(last_sync_end_count) = last_sync_end_count {
 		for room_id in joined_rooms.keys() {
-			let shortstatehash = services
+			let last_sync_end_root_handle = services
 				.rooms
 				.timeline
-				.next_shortstatehash(room_id, PduCount::Normal(last_sync_end_count))
+				.prev_root_handle(
+					room_id,
+					PduCount::Normal(last_sync_end_count.saturating_add(1)),
+				)
 				.await
 				.ok();
 
-			let was_joined = match shortstatehash {
-				| Some(ssh) => services
+			let was_joined = match last_sync_end_root_handle {
+				| Some(root_handle) => services
 					.rooms
 					.state_accessor
-					.state_get_content::<RoomMemberEventContent>(
-						ssh,
+					.state_get_content_hamt::<RoomMemberEventContent>(
+						room_id,
+						&root_handle,
 						&StateEventType::RoomMember,
 						syncing_user.as_str(),
 					)

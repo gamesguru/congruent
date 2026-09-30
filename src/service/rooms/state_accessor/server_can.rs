@@ -50,9 +50,14 @@ pub async fn server_can_see_event(
 	// Fast path: if the server has joined users and visibility is Shared,
 	// all history is visible. Invited/knocked servers don't qualify.
 	if server_in_room {
-		if let Ok(shortstatehash) = self.services.state.get_room_shortstatehash(&room_id).await {
+		if let Ok(room_root) = self.services.state.get_room_state_hamt(&room_id).await {
 			let history_visibility = self
-				.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
+				.state_get_content_hamt(
+					&room_id,
+					&room_root,
+					&StateEventType::RoomHistoryVisibility,
+					"",
+				)
 				.await
 				.map_or(HistoryVisibility::Shared, |c: RoomHistoryVisibilityEventContent| {
 					c.history_visibility
@@ -64,12 +69,18 @@ pub async fn server_can_see_event(
 		}
 	}
 
-	// Fallback when pdu_shortstatehash is missing (outliers, force-set imports,
-	// DB corruption). Check current room visibility instead of blindly granting.
-	let Ok(shortstatehash) = self.pdu_shortstatehash(&event_id).await else {
-		if let Ok(room_ssh) = self.services.state.get_room_shortstatehash(&room_id).await {
+	// Fallback when the event's state root is missing (outliers, force-set
+	// imports, DB corruption). Check current room visibility instead of blindly
+	// granting.
+	let Ok(root_handle) = self.pdu_roothandle_at_event(&room_id, &event_id).await else {
+		if let Ok(room_root) = self.services.state.get_room_state_hamt(&room_id).await {
 			let hv = self
-				.state_get_content(room_ssh, &StateEventType::RoomHistoryVisibility, "")
+				.state_get_content_hamt(
+					&room_id,
+					&room_root,
+					&StateEventType::RoomHistoryVisibility,
+					"",
+				)
 				.await
 				.map_or(HistoryVisibility::Shared, |c: RoomHistoryVisibilityEventContent| {
 					c.history_visibility
@@ -86,7 +97,12 @@ pub async fn server_can_see_event(
 	};
 
 	let history_visibility = self
-		.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
+		.state_get_content_hamt(
+			&room_id,
+			&root_handle,
+			&StateEventType::RoomHistoryVisibility,
+			"",
+		)
 		.await
 		.map_or(HistoryVisibility::Shared, |c: RoomHistoryVisibilityEventContent| {
 			c.history_visibility
@@ -109,7 +125,9 @@ pub async fn server_can_see_event(
 
 			while let Some(member) = members.next().await {
 				if member.server_name() == origin
-					&& self.user_was_invited(shortstatehash, member).await
+					&& self
+						.user_was_invited_hamt(&room_id, &root_handle, member)
+						.await
 				{
 					return true;
 				}
@@ -123,7 +141,9 @@ pub async fn server_can_see_event(
 
 			while let Some(member) = members.next().await {
 				if member.server_name() == origin
-					&& self.user_was_joined(shortstatehash, member).await
+					&& self
+						.user_was_joined_hamt(&room_id, &root_handle, member)
+						.await
 				{
 					return true;
 				}

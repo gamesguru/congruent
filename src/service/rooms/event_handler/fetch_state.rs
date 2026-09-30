@@ -25,7 +25,7 @@ use crate::rooms::short::ShortStateKey;
 	skip_all,
 	fields(%origin),
 )]
-pub(super) async fn fetch_state<Pdu>(
+pub(crate) async fn fetch_state<Pdu>(
 	&self,
 	origin: &ServerName,
 	create_event: &Pdu,
@@ -391,11 +391,16 @@ where
 				.is_event_visible_to_clients(&eid)
 				.await
 		{
-			let local_eid = match self.services.state.get_room_shortstatehash(room_id).await {
-				| Ok(room_ssh) => self
+			let local_eid = match self.services.state.get_room_state_hamt(room_id).await {
+				| Ok(room_root) => self
 					.services
 					.state_accessor
-					.state_get(room_ssh, &pdu.kind().to_string().into(), state_key)
+					.state_get_in_room_hamt(
+						room_id,
+						&room_root,
+						&pdu.kind().to_string().into(),
+						state_key,
+					)
 					.await
 					.ok()
 					.map(|local_pdu| local_pdu.event_id().to_owned()),

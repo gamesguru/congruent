@@ -58,6 +58,12 @@ use crate::Ruma;
 type ResolvedMap = BTreeMap<OwnedEventId, Result>;
 type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
 
+#[derive(serde::Deserialize)]
+struct StateHashInfo {
+	algorithm: Option<String>,
+	after: String,
+}
+
 /// # `PUT /_matrix/federation/v1/send/{txnId}`
 ///
 /// Push EDUs and PDUs to this server.
@@ -65,7 +71,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<send_transaction_message::v1::Response> {
+) -> Result<axum::Json<serde_json::Value>> {
 	if body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -93,7 +99,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(response)
+			Ok(axum::Json(response))
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -152,7 +158,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<send_transaction_message::v1::Response> {
+) -> Result<axum::Json<serde_json::Value>> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -165,7 +171,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(response),
+		| Some(Ok(response)) => Ok(axum::Json(response)),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,
@@ -335,16 +341,139 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let response = send_transaction_message::v1::Response {
-		pdus: results
+	let mut response_json = serde_json::json!({
+		"pdus": results
 			.into_iter()
-			.map(|(e, r)| (e, r.map_err(error::sanitized_message)))
-			.collect(),
-	};
+			.map(|(e, r)| {
+				let mut obj = serde_json::Map::new();
+				if let Err(err) = r {
+					obj.insert(
+						"error".to_owned(),
+						serde_json::Value::String(error::sanitized_message(err)),
+					);
+				}
+				(e.to_string(), serde_json::Value::Object(obj))
+			})
+			.collect::<serde_json::Map<_, _>>(),
+	});
+
+	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
 
 	services
 		.transactions
-		.finish_federation_txn(txn_key, sender, response);
+		.finish_federation_txn(txn_key, sender, response_json);
+}
+
+async fn inject_state_hash_mismatches(
+	services: &crate::State,
+	body: &Ruma<send_transaction_message::v1::Request>,
+	response_json: &mut serde_json::Value,
+) {
+	let Some(json) = &body.json_body else { return };
+	let Some(obj) = json.as_object() else { return };
+	let Some(hashes) = obj
+		.get("state_hashes")
+		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
+	else {
+		return;
+	};
+
+	let Ok(state_hashes) =
+		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
+	else {
+		return;
+	};
+	let Some(pdus_obj) = response_json
+		.get_mut("pdus")
+		.and_then(|p| p.as_object_mut())
+	else {
+		return;
+	};
+
+	for (event_id, hash_info) in state_hashes {
+		// Skip validation for unrecognized or missing algorithms to support future
+		// agility
+		let Some(ref algo) = hash_info.algorithm else {
+			info!(
+				target: "state_hashes",
+				event_id = ?event_id,
+				"skipping state hash validation for missing algorithm"
+			);
+			continue;
+		};
+		if algo != "lthash16-v1" {
+			info!(
+				target: "state_hashes",
+				event_id = ?event_id,
+				"skipping state hash validation for unrecognized algorithm"
+			);
+			continue;
+		}
+		let Some(pdu_res) = pdus_obj
+			.get_mut(event_id.as_str())
+			.and_then(|p| p.as_object_mut())
+		else {
+			continue;
+		};
+		if pdu_res.contains_key("error") {
+			continue;
+		}
+
+		let Some(after_digest) = compute_receiver_after_digest(services, &event_id).await else {
+			continue;
+		};
+
+		if after_digest != hash_info.after {
+			pdu_res.insert(
+				"state_hash_mismatch".to_owned(),
+				serde_json::json!({
+					"algorithm": "lthash16-v1",
+					"digest": after_digest
+				}),
+			);
+		}
+	}
+}
+
+/// Compute the "after" digest for a received event by building the LtHash
+/// lattice over the event's post-event state (its `shorteventid_roothandle`).
+///
+/// This replaces the legacy shortstatehash/`get_lthash` accumulator that the
+/// HAMT migration removed. The post-event root already represents the state
+/// after the event is applied, so the lattice is derived directly from it.
+async fn compute_receiver_after_digest(
+	services: &crate::State,
+	event_id: &OwnedEventId,
+) -> Option<String> {
+	use conduwuit::Event;
+	use futures::StreamExt;
+
+	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.ok()?;
+
+	let entries: Vec<(String, String, OwnedEventId)> = services
+		.rooms
+		.state_accessor
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let ty = pdu.kind().to_string();
+			let sk = pdu.state_key()?.to_owned();
+			Some((ty, sk, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
+	}
+
+	Some(conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1)
 }
 
 /// Handles a failed federation transaction by sending the error through

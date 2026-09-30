@@ -31,7 +31,6 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::{PromotionClaims, TopoToken};
-use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -135,15 +134,25 @@ pub async fn backfill_if_required(
 	// window covers this request too, but only while the room state hash still
 	// matches the one observed during the scan.
 	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
-	let current_shortstatehash = self
+	// Fingerprint the room's current state with the leading bytes of its HAMT
+	// root handle structural hash, so the gap-free cache is invalidated when
+	// the room state transitions.
+	let current_state_fingerprint = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
+		.map(|root_handle| {
+			u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			)
+		})
 		.unwrap_or(0);
 	if Self::backfill_gap_free_cache_hit(
 		self.backfill_gap_free_cache.get(&room_id.to_owned()),
-		current_shortstatehash,
+		current_state_fingerprint,
 		from,
 		usize::try_from(scan_limit_u32).unwrap_or(100),
 	) {
@@ -292,9 +301,9 @@ pub async fn backfill_if_required(
 				continue;
 			}
 
-			if current_shortstatehash != 0 {
+			if current_state_fingerprint != 0 {
 				self.backfill_gap_free_cache
-					.insert(room_id.to_owned(), (current_shortstatehash, from, scan_limit));
+					.insert(room_id.to_owned(), (current_state_fingerprint, from, scan_limit));
 			}
 			return Ok(());
 		}
@@ -1118,7 +1127,7 @@ pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId)
 /// Associate a backfilled event with its genuine state-at-event, computed via
 /// real state resolution over the event's own `prev_events` -- the same
 /// pipeline live federation `/send` events use
-/// (`event_handler::resolve_state_at_incoming_event`/`compress_state_at_event`,
+/// (`event_handler::state_at_incoming_degree_one`/`state_at_incoming_resolved`,
 /// normally reached through `upgrade_outlier_to_timeline_pdu`'s
 /// `is_forward_extremity: false` branch).
 ///
@@ -1130,9 +1139,9 @@ pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId)
 /// into the snapshot it wrote. See
 /// docs/development-gg/backfill-state-association-bug.md.
 ///
-/// Only writes the per-event state association (`set_event_state`) -- never
-/// merges into the room's live current state, matching backfilled events'
-/// semantics (they are historical, not the tip).
+/// Only writes the per-event state association (`set_event_roothandle`) --
+/// never merges into the room's live current state, matching backfilled
+/// events' semantics (they are historical, not the tip).
 ///
 /// `origin` should be the actual server this event was backfilled from
 /// (`backfill_pdu`'s own `origin` parameter) wherever the caller has one --
@@ -1154,59 +1163,52 @@ async fn associate_resolved_state(
 		.await?;
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
 
-	let state_at_event = self
-		.services
-		.event_handler
-		.resolve_state_at_incoming_event(
-			pdu,
-			&create_event,
-			origin,
-			room_id,
-			&room_version_id,
-			false, // skip_soft_fail: enforce real auth + remote fallback, matching the live path
-			false, // prev_fetch_had_invalid_data: not applicable outside fetch_prev
-			None,  // state_ids_anchor_hint
-			// merge_current_extremities: false -- this is historical data, never fold
-			// in the room's current live tip when this event's own prev_events don't
-			// match it (they never will, for anything actually historical).
-			false,
-		)
-		.await?;
+	// Resolve the state-at-event purely from the event's own `prev_events`
+	// (never folding in the room's current live tip -- this is historical
+	// data). Must run before acquiring any state.mutex guard for this room:
+	// resolution can perform federation I/O and thousands of short-ID
+	// lookups.
+	let state_at_event = if pdu.prev_events().count() == 1 {
+		self.services
+			.event_handler
+			.state_at_incoming_degree_one(pdu, room_id)
+			.await?
+	} else {
+		self.services
+			.event_handler
+			.state_at_incoming_resolved(pdu, room_id, &room_version_id)
+			.await?
+	};
 
-	// Must run before acquiring any state.mutex guard for this room --
-	// compress_state_at_event can perform thousands of short-ID lookups.
-	let compressed = self
+	let state_at_event = match state_at_event {
+		| Some(state) => state,
+		| None => self
+			.services
+			.event_handler
+			.fetch_state(origin, &create_event, room_id, pdu.event_id(), false)
+			.await?
+			.ok_or_else(|| err!("Could not resolve state at backfilled event"))?,
+	};
+
+	let root_handle = self
 		.services
 		.event_handler
-		.compress_state_at_event(&state_at_event)
+		.state_map_to_root_handle(room_id, &state_at_event)
 		.await?;
 
 	self.services
 		.state
-		.set_event_state(pdu.event_id(), room_id, compressed)
+		.set_event_roothandle(pdu.event_id(), &root_handle)
 		.await?;
 	Ok(())
 }
 
 #[implement(super::Service)]
 async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
-	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
-		.services
-		.state_accessor
-		.state_full_ids::<OwnedEventId>(shortstatehash)
-		.collect::<Vec<_>>()
-		.await;
-	let compressed: crate::rooms::state_compressor::CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
-		.collect()
-		.await;
-
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 	self.services
 		.state
-		.set_event_state(event_id, room_id, Arc::new(compressed))
+		.set_event_roothandle(event_id, &root_handle)
 		.await?;
 	Ok(())
 }

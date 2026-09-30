@@ -18,15 +18,16 @@ pub mod reindex;
 mod reorder;
 mod repair_unsigned;
 
-use std::{fmt::Write, ops::Bound, sync::Arc};
+use std::{fmt::Write, mem::size_of, ops::Bound, sync::Arc};
 
+pub use append::AppendPduContext;
 use async_trait::async_trait;
 pub use conduwuit_core::matrix::pdu::{PduId, RawPduId, ShortRoomId, TopoToken};
 /// Proof that the caller already holds `Service::mutex_insert` for a room.
-/// Threaded through `force_state`/`force_state_quiet` so their outlier
-/// demotion step can skip re-acquiring the same non-reentrant per-room lock
-/// when called from inside `append_pdu` (which holds it for the whole
-/// insert), while still self-locking when called from anywhere else.
+/// Threaded through the state-transition path so the outlier demotion step
+/// can skip re-acquiring the same non-reentrant per-room lock when called
+/// from inside `append_pdu` (which holds it for the whole insert), while
+/// still self-locking when called from anywhere else.
 pub type InsertMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
 use conduwuit_core::{
 	Result, Server, SyncMutex, at, err, info,
@@ -46,7 +47,6 @@ use serde::Deserialize;
 
 use self::data::Data;
 pub use self::{
-	append::AppendOptions,
 	create::pdu_fits,
 	data::{PdusIterItem, TopoIterItem},
 	metadata::EventMetadata,
@@ -55,8 +55,8 @@ pub use self::{
 	repair_unsigned::update_unsigned_prev_content,
 };
 use crate::{
-	Dep, account_data, admin, appservice, globals, pusher, rooms,
-	rooms::short::{ShortEventId, ShortStateHash},
+	Dep, account_data, admin, appservice, config, globals, pusher, rooms,
+	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
 	sending, server_keys, users,
 };
 
@@ -156,7 +156,6 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
 	pdu_metadata: Dep<rooms::pdu_metadata::Service>,
 	read_receipt: Dep<rooms::read_receipt::Service>,
 	sending: Dep<sending::Service>,
@@ -167,6 +166,7 @@ struct Services {
 	threads: Dep<rooms::threads::Service>,
 	search: Dep<rooms::search::Service>,
 	spaces: Dep<rooms::spaces::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>,
 	event_handler: Dep<rooms::event_handler::Service>,
 	outlier: Dep<rooms::outlier::Service>,
 	auth_chain: Dep<rooms::auth_chain::Service>,
@@ -211,8 +211,6 @@ impl crate::Service for Service {
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
 				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 				read_receipt: args.depend::<rooms::read_receipt::Service>("rooms::read_receipt"),
 				sending: args.depend::<sending::Service>("sending"),
@@ -224,6 +222,7 @@ impl crate::Service for Service {
 				search: args.depend::<rooms::search::Service>("rooms::search"),
 				spaces: args.depend::<rooms::spaces::Service>("rooms::spaces"),
 				outlier: args.depend::<rooms::outlier::Service>("rooms::outlier"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				event_handler: args
 					.depend::<rooms::event_handler::Service>("rooms::event_handler"),
 				auth_chain: args.depend::<rooms::auth_chain::Service>("rooms::auth_chain"),
@@ -259,10 +258,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	async fn clear_cache(&self) {
-		self.next_shortstatehash_cache.lock().clear();
-		self.prev_shortstatehash_cache.lock().clear();
-	}
+	async fn clear_cache(&self) {}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
@@ -344,120 +340,6 @@ impl Service {
 		self.last_timeline_count_cache
 			.insert(room_id.to_owned(), count);
 		Ok(count)
-	}
-
-	/// Returns the shortstatehash of the room at the event directly preceding
-	/// the exclusive `before` param. `before` does not have to be a valid
-	/// count or in the room.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn prev_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		before: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.prev_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, before))
-		{
-			return Ok(*hash);
-		}
-
-		let before_pdu = PduId { shortroomid, shorteventid: before };
-
-		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
-		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			self.prev_shortstatehash_cache
-				.lock()
-				.insert((shortroomid, before), hash);
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event directly following
-	/// the exclusive `after` param. `after` does not have to be a valid count
-	/// or in the room.
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn next_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		after: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		if let Some(hash) = self
-			.next_shortstatehash_cache
-			.lock()
-			.get_mut(&(shortroomid, after))
-		{
-			return Ok(*hash);
-		}
-
-		let after_pdu = PduId { shortroomid, shorteventid: after };
-
-		let next_count = match self.db.next_timeline_count(&after_pdu).await {
-			| Ok(count) => count,
-			| Err(e) if e.is_not_found() => {
-				// Not cached: this fallback means "no PDU after `after` yet", which the
-				// next appended PDU invalidates. Caching it here would leave a stale entry
-				// with no append-time hook to evict it.
-				return self.services.state.get_room_shortstatehash(room_id).await;
-			},
-			| Err(e) => return Err(e),
-		};
-		let next_pdu = PduId { shortroomid, shorteventid: next_count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
-
-		let result = self.services.state.get_shortstatehash(shorteventid).await;
-
-		if let Ok(hash) = result {
-			self.next_shortstatehash_cache
-				.lock()
-				.insert((shortroomid, after), hash);
-		}
-
-		result
-	}
-
-	/// Returns the shortstatehash of the room at the event
-	#[tracing::instrument(skip(self), level = "debug")]
-	pub async fn get_shortstatehash(
-		&self,
-		room_id: &RoomId,
-		count: PduCount,
-	) -> Result<ShortStateHash> {
-		let shortroomid: ShortRoomId = self
-			.services
-			.short
-			.get_shortroomid(room_id)
-			.await
-			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
-
-		let pdu_id = PduId { shortroomid, shorteventid: count };
-
-		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
-
-		self.services.state.get_shortstatehash(shorteventid).await
 	}
 
 	/// Returns the `shorteventid` from the `pdu_id`
@@ -809,6 +691,83 @@ impl Service {
 		self.db.get_pdu_json_from_id(pdu_id).await
 	}
 
+	/// Returns the HAMT root handle of the room at the event directly following
+	/// the exclusive `after` param. `after` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn next_root_handle(
+		&self,
+		room_id: &RoomId,
+		after: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let after_pdu = PduId { shortroomid, shorteventid: after };
+
+		let next_count = self.db.next_timeline_count(&after_pdu).await?;
+		let next_pdu = PduId { shortroomid, shorteventid: next_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the event directly preceding
+	/// the exclusive `before` param. `before` does not have to be a valid count
+	/// or in the room.
+	///
+	/// Note: deliberately uncached for now.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn prev_root_handle(
+		&self,
+		room_id: &RoomId,
+		before: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let before_pdu = PduId { shortroomid, shorteventid: before };
+
+		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
+		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
+	/// Returns the HAMT root handle of the room at the given event count.
+	#[tracing::instrument(skip(self), level = "debug")]
+	pub async fn get_root_handle(
+		&self,
+		room_id: &RoomId,
+		count: PduCount,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let shortroomid: ShortRoomId = self
+			.services
+			.short
+			.get_shortroomid(room_id)
+			.await
+			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+
+		let pdu_id = PduId { shortroomid, shorteventid: count };
+
+		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
+
+		self.services.state.get_roothandle(shorteventid).await
+	}
+
 	/// Checks if pdu exists
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
@@ -960,5 +919,48 @@ impl Service {
 		I: Stream<Item = ShortEventId> + Send + 'a,
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
+	}
+
+	/// Coalesce a group of timeline writes into one flush boundary.
+	///
+	/// Used by federation intake so a room transaction's prev-event repairs
+	/// and the incoming event become visible together to `/sync`.
+	pub async fn with_cork_and_flush<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork_and_flush();
+		f().await
+	}
+
+	/// Coalesce a group of timeline writes without forcing a flush when `f`
+	/// completes. Unlike `with_cork_and_flush`, callers are expected to
+	/// either be nested inside an outer flush boundary or not need one
+	/// (e.g. batching outlier persistence ahead of a later
+	/// `with_cork_and_flush`) -- use this when per-write flushing, not
+	/// durability, is the problem being solved.
+	pub async fn with_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _cork = self.db.db.cork();
+		f().await
+	}
+
+	/// Briefly lift an enclosing `with_cork_and_flush` boundary around
+	/// `f`, so remote I/O run in the middle of a corked write phase (e.g.
+	/// federation fetches performed while resolving a prev-event's missing
+	/// state/auth events) doesn't suppress unrelated WAL flushes across the
+	/// whole server for the duration. The outer cork is restored once `f`
+	/// completes. Harmless to call when no cork is currently held.
+	pub async fn without_cork<R, F, Fut>(&self, f: F) -> R
+	where
+		F: FnOnce() -> Fut,
+		Fut: Future<Output = R>,
+	{
+		let _uncork = self.db.db.uncork_briefly();
+		f().await
 	}
 }

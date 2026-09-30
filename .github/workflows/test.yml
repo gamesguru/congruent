@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: '**'
   workflow_dispatch:
 
 env:
@@ -67,7 +67,10 @@ jobs:
         run: rustup show && rustup component add clippy rustfmt
 
       - name: Install pinned nightly toolchain (for fmt + llvm-cov)
-        run: rustup toolchain install nightly-2026-08-20 --component rustfmt --component clippy --component llvm-tools-preview
+        run: |
+          rustup toolchain install nightly-2026-08-20 --component rustfmt --component clippy --component llvm-tools-preview
+          rustup default nightly-2026-08-20
+          rustup component add rustfmt --toolchain nightly
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -79,6 +82,8 @@ jobs:
         run: echo "RUSTFLAGS=$RUSTFLAGS" && echo "JEMALLOC_OVERRIDE=$JEMALLOC_OVERRIDE" && make vars doctor cpu-info
 
       - name: Format
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-08-20
         run: make format
 
       - name: Test

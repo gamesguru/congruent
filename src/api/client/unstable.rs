@@ -390,13 +390,20 @@ pub(crate) async fn get_room_dag_route(
 		let mut obj: serde_json::Map<String, serde_json::Value> =
 			serde_json::from_value(serde_json::to_value(&pdu)?)?;
 
-		if let Ok(ssh) = services
+		if let Ok(root_handle) = services
 			.rooms
 			.state_accessor
-			.pdu_shortstatehash(&pdu.event_id)
+			.pdu_roothandle(&pdu.event_id)
 			.await
 		{
-			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(ssh));
+			// Diagnostic-only field (stripped before client delivery): emit a
+			// stable 64-bit fingerprint of the event's HAMT root.
+			let fingerprint = u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			);
+			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(fingerprint));
 		}
 
 		// Add event_id in case PduEvent serialization omits it (V3+ rooms)

@@ -7,10 +7,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conduwuit::{Result, err};
-use conduwuit_core::Pdu;
-use database::Map;
 use ruma::{
-	EventEncryptionAlgorithm, JsOption, OwnedEventId, OwnedRoomAliasId, RoomId, UserId,
+	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::{
@@ -29,24 +27,21 @@ use ruma::{
 	room::RoomType,
 };
 
-use crate::{Dep, rooms, rooms::short::ShortStateHash};
+use crate::{Dep, rooms};
 
 pub struct Service {
 	services: Services,
-	db: Data,
+	pub encrypted_rooms_cache:
+		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
 }
 
 struct Services {
+	globals: Dep<crate::globals::Service>,
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
-	globals: Dep<crate::globals::Service>,
-}
-
-struct Data {
-	shorteventid_shortstatehash: Arc<Map>,
 }
 
 #[async_trait]
@@ -54,17 +49,14 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: Services {
+				globals: args.depend::<crate::globals::Service>("globals"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
-				globals: args.depend::<crate::globals::Service>("globals"),
 			},
-			db: Data {
-				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
-			},
+			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}
 
@@ -85,12 +77,14 @@ impl Service {
 			.map(|v| rooms::auth_adapter::to_state_res_version(&v))
 	}
 
+	/// Returns the current room name.
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
 			.map(|c: RoomNameEventContent| c.name)
 	}
 
+	/// Returns the current room avatar event content, when present.
 	pub async fn get_avatar(&self, room_id: &RoomId) -> JsOption<RoomAvatarEventContent> {
 		let content = self
 			.room_state_get_content(room_id, &StateEventType::RoomAvatar, "")
@@ -100,6 +94,7 @@ impl Service {
 		JsOption::from_option(content)
 	}
 
+	/// Returns the current membership state content for a user.
 	pub async fn get_member(
 		&self,
 		room_id: &RoomId,
@@ -150,6 +145,7 @@ impl Service {
 			.map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule)
 	}
 
+	/// Returns the room type declared by its create event.
 	pub async fn get_room_type(&self, room_id: &RoomId) -> Result<RoomType> {
 		self.room_state_get_content(room_id, &StateEventType::RoomCreate, "")
 			.await
@@ -171,35 +167,23 @@ impl Service {
 			.map(|content: RoomEncryptionEventContent| content.algorithm)
 	}
 
+	/// Tests whether the room has encryption state, caching positive results.
 	pub async fn is_encrypted_room(&self, room_id: &RoomId) -> bool {
-		self.room_state_get(room_id, &StateEventType::RoomEncryption, "")
-			.await
-			.is_ok()
-	}
+		if self.encrypted_rooms_cache.read().contains(room_id) {
+			return true;
+		}
 
-	pub async fn state_get(
-		&self,
-		shortstatehash: ShortStateHash,
-		event_type: &StateEventType,
-		state_key: &str,
-	) -> Result<Pdu> {
-		self.state_get_in_room(None, shortstatehash, event_type, state_key)
+		let encrypted = self
+			.room_state_get(room_id, &StateEventType::RoomEncryption, "")
 			.await
-	}
+			.is_ok();
 
-	pub async fn state_get_in_room(
-		&self,
-		room_id: Option<&RoomId>,
-		shortstatehash: ShortStateHash,
-		event_type: &StateEventType,
-		state_key: &str,
-	) -> Result<Pdu> {
-		let event_id: OwnedEventId = self
-			.state_get_id(shortstatehash, event_type, state_key)
-			.await?;
-		self.services
-			.timeline
-			.get_pdu_in_room(room_id, &event_id)
-			.await
+		if encrypted {
+			self.encrypted_rooms_cache
+				.write()
+				.insert(room_id.to_owned());
+		}
+
+		encrypted
 	}
 }

@@ -98,6 +98,7 @@ features = [
     "http2",
     "json",
     "matched-path",
+    "query",
     "tokio",
     "tracing",
 ]
@@ -603,6 +604,10 @@ version = "0.3.0"
 
 [workspace.dependencies.roaring]
 version = "0.10" # compatible with Synapse's rustc 1.87.0
+
+[workspace.dependencies.criterion]
+version = "0.5"
+
 
 #
 # Patches

@@ -40,10 +40,10 @@ async fn create_join_event(
 
 	// We need to return the state prior to joining, let's keep a reference to that
 	// here
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
 
@@ -130,10 +130,12 @@ async fn create_join_event(
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
+		.state_full_ids_hamt(&root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
 		.map(at!(1))
-		.collect()
-		.await;
+		.collect();
 
 	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
 	// membership events must still be included in a partial-state response so
@@ -143,13 +145,15 @@ async fn create_join_event(
 	// those instead and doesn't need heroes at all.
 	let heroes = if omit_members {
 		let (has_name, has_canonical_alias) = tokio::join!(
-			services
-				.rooms
-				.state_accessor
-				.state_contains_type(shortstatehash, &ruma::events::StateEventType::RoomName),
-			services.rooms.state_accessor.state_contains_type(
-				shortstatehash,
-				&ruma::events::StateEventType::RoomCanonicalAlias
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&ruma::events::StateEventType::RoomName,
+			),
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&ruma::events::StateEventType::RoomCanonicalAlias,
 			),
 		);
 		if has_name || has_canonical_alias {

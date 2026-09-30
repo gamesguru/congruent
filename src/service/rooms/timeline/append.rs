@@ -1,7 +1,4 @@
-use std::{
-	collections::{BTreeMap, HashSet},
-	sync::Arc,
-};
+use std::collections::{BTreeMap, HashSet};
 
 use conduwuit::trace;
 use conduwuit_core::{
@@ -15,7 +12,7 @@ use conduwuit_core::{
 };
 use futures::StreamExt;
 use ruma::{
-	CanonicalJsonObject, OwnedEventId, RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, RoomVersionId, UserId,
 	events::{
 		GlobalAccountDataEventType, StateEventType, TimelineEventType,
 		push_rules::PushRulesEvent,
@@ -28,16 +25,13 @@ use ruma::{
 };
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard};
-use crate::{
-	appservice::NamespaceRegex,
-	rooms::state_compressor::{CompressedState, HashSetCompressStateEvent},
-};
+use crate::appservice::NamespaceRegex;
 
-/// State/soft-fail options for [`append_pdu`], grouped to keep the argument
-/// count within clippy's threshold.
-pub struct AppendOptions {
-	pub resolved_state: Option<HashSetCompressStateEvent>,
-	pub soft_fail: bool,
+pub struct AppendPduContext<'a> {
+	pub state_lock: &'a RoomMutexGuard,
+	pub room_id: &'a ruma::RoomId,
+	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
+	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 }
 
 /// Inputs shared by push-rule evaluation in live append and receipt-based
@@ -61,23 +55,22 @@ pub async fn append_incoming_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	pdu_json: CanonicalJsonObject,
 	new_room_leaves: Leaves,
-	state_ids_compressed: Arc<CompressedState>,
-	resolved_state: Option<HashSetCompressStateEvent>,
 	soft_fail: bool,
-	inside_flush_boundary: bool,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
+	resolved_state_applied: bool,
+	ctx: AppendPduContext<'a>,
 ) -> Result<Option<RawPduId>>
 where
-	Leaves: Iterator<Item = OwnedEventId> + Send + 'a,
+	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
-	// We append to state before appending the pdu, so we don't have a moment in
-	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	self.services
-		.state
-		.set_event_state(&pdu.event_id, room_id, state_ids_compressed)
-		.await?;
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
+	// We defer state association until after soft-fail checks to avoid persisting
+	// HAMT nodes and mappings for rejected/soft-failed events.
 
 	// Soft-failed events pass auth against the state at the event but fail
 	// against the current room state. Per spec §11.33.2.6 they SHOULD NOT
@@ -98,15 +91,12 @@ where
 	}
 
 	let pdu_id = self
-		.append_pdu(
-			pdu,
-			pdu_json,
-			new_room_leaves,
-			AppendOptions { resolved_state, soft_fail },
-			inside_flush_boundary,
+		.append_pdu(pdu, pdu_json, new_room_leaves, resolved_state_applied, AppendPduContext {
 			state_lock,
 			room_id,
-		)
+			state_root_handle,
+			prev_state_root_handle,
+		})
 		.await?;
 
 	// Clean up the outlier table entry now that this event is in the timeline.
@@ -160,23 +150,24 @@ pub async fn append_pdu<'a, Leaves>(
 	pdu: &'a PduEvent,
 	mut pdu_json: CanonicalJsonObject,
 	leaves: Leaves,
-	options: AppendOptions,
-	inside_flush_boundary: bool,
-	state_lock: &'a RoomMutexGuard,
-	room_id: &'a ruma::RoomId,
+	resolved_state_applied: bool,
+	ctx: AppendPduContext<'a>,
 ) -> Result<RawPduId>
 where
-	Leaves: Iterator<Item = OwnedEventId> + Send + 'a,
+	Leaves: Iterator<Item = &'a EventId> + Send + 'a,
 {
-	let AppendOptions { resolved_state, soft_fail } = options;
-	// Coalesce timeline writes; callers that are already inside a broader room
-	// flush boundary pass `inside_flush_boundary = true` so we don't publish
-	// half-finished repairs before the enclosing transaction is complete.
-	let cork = if inside_flush_boundary {
-		self.db.db.cork()
-	} else {
-		self.db.db.cork_and_flush()
-	};
+	let AppendPduContext {
+		state_lock,
+		room_id,
+		state_root_handle,
+		prev_state_root_handle,
+	} = ctx;
+
+	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
+	let cork = self.db.db.cork_and_flush();
+	// Soft-failed events return before `append_pdu` (see `append_incoming_pdu`),
+	// so this path is always a non-soft-failed append.
+	let soft_fail = false;
 
 	let shortroomid = self
 		.services
@@ -189,55 +180,41 @@ where
 	// but state events need to have previous content in the unsigned field, so
 	// clients can easily interpret things like membership changes
 	if let Some(state_key) = pdu.state_key() {
-		if let Ok(shortstatehash) = self
-			.services
-			.state_accessor
-			.pdu_shortstatehash(pdu.event_id())
-			.await
+		let event_type: StateEventType = pdu.kind().to_string().into();
+		if let CanonicalJsonValue::Object(unsigned) = pdu_json
+			.entry("unsigned".to_owned())
+			.or_insert_with(|| CanonicalJsonValue::Object(BTreeMap::default()))
 		{
-			match self
-				.services
-				.state_accessor
-				.state_get(shortstatehash, &pdu.kind().to_string().into(), state_key)
-				.await
-			{
-				| Ok(prev_state) => {
-					let prev_content_value = prev_state.get_content_as_value();
-					let curr_content_value = pdu.get_content_as_value();
-
-					// Log no-op membership transitions (identical content)
-					if pdu.kind() == &TimelineEventType::RoomMember
-						&& prev_content_value == curr_content_value
-					{
-						info!(
-							event_id = %pdu.event_id(),
-							sender = %pdu.sender(),
-							state_key = %state_key,
-							prev_event_id = %prev_state.event_id(),
-							room_id = %room_id,
-							"no-op membership event: content identical to prev_content \
-							 (possible stale state lookup during DAG fork)",
-						);
-					}
-
-					if let Err(e) = crate::rooms::timeline::update_unsigned_prev_content(
-						&mut pdu_json,
-						&prev_state,
-					) {
-						error!(%room_id, event_id = %pdu.event_id(), "Failed to update unsigned.prev_content: {e}");
-					}
-				},
-				| Err(e) => {
-					// It's normal for prev_state to be missing, especially for new members
-					// joining a room. No need to log an error.
-					conduwuit::debug!(
-						event_id = %pdu.event_id(),
-						%shortstatehash,
-						%state_key,
-						"state_get failed for prev_content (expected for new members): {e}",
+			if let Some(prev_root_handle) = prev_state_root_handle.as_ref() {
+				if let Ok(prev_state) = self
+					.services
+					.state_accessor
+					.state_get_in_room_hamt(room_id, prev_root_handle, &event_type, state_key)
+					.await
+				{
+					unsigned.insert(
+						"prev_content".to_owned(),
+						CanonicalJsonValue::Object(
+							utils::to_canonical_object(prev_state.get_content_as_value())
+								.map_err(|e| {
+									err!(Database(error!(
+										"Failed to convert prev_state to canonical JSON: {e}",
+									)))
+								})?,
+						),
 					);
-				},
+					unsigned.insert(
+						String::from("prev_sender"),
+						CanonicalJsonValue::String(prev_state.sender().to_string()),
+					);
+					unsigned.insert(
+						String::from("replaces_state"),
+						CanonicalJsonValue::String(prev_state.event_id().to_string()),
+					);
+				}
 			}
+		} else {
+			error!("Invalid unsigned type in pdu.");
 		}
 	}
 
@@ -252,7 +229,12 @@ where
 	trace!("setting forward extremities");
 	self.services
 		.state
-		.set_forward_extremities(room_id, leaves, Some(pdu.event_id()), state_lock)
+		.set_forward_extremities(
+			room_id,
+			leaves.map(ToOwned::to_owned),
+			Some(pdu.event_id()),
+			state_lock,
+		)
 		.await;
 
 	let insert_lock = self.mutex_insert.lock(room_id).await;
@@ -316,58 +298,16 @@ where
 	};
 	drop(cork);
 
-	let resolved_state_applied = resolved_state.is_some();
-	if let Some(HashSetCompressStateEvent { shortstatehash, added, removed }) = resolved_state {
-		// Still holding `insert_lock`: force_state's outlier-demotion step must not
-		// try to re-acquire it (self-deadlock), so pass it through as proof.
-		Box::pin(self.services.state.force_state_insert_locked(
+	self.services
+		.state
+		.set_event_state_with_root(
 			room_id,
-			shortstatehash,
-			added,
-			removed,
+			pdu,
 			state_lock,
-			&insert_lock,
-		))
+			state_root_handle.as_ref(),
+			prev_state_root_handle.as_ref(),
+		)
 		.await?;
-	}
-
-	// Flattened Auth Chain Cache:
-	// Pre-calculate the auth chain closure for this PDU by doing a single
-	// get_auth_chain lookup on its auth_events. Because the auth events
-	// were already appended, their closures are cached, making this an
-	// O(1) DB hit per auth event rather than a 30-second DAG crawl later.
-	let short_event_id = self
-		.services
-		.short
-		.get_or_create_shorteventid(pdu.event_id())
-		.await;
-	if let Ok(full_auth_chain) = self
-		.services
-		.auth_chain
-		.get_auth_chain(room_id, pdu.auth_events().map(AsRef::as_ref))
-		.await
-	{
-		// The auth chain closure for this PDU must include both the
-		// transitive ancestors returned by get_auth_chain AND the PDU's
-		// own direct auth_events (which get_auth_chain uses as *starting*
-		// points but does not include in its output).
-		let mut bm = roaring::RoaringTreemap::new();
-		for id in &full_auth_chain {
-			bm.insert(*id);
-		}
-		for auth_event_id in pdu.auth_events() {
-			let short = self
-				.services
-				.short
-				.get_or_create_shorteventid(auth_event_id)
-				.await;
-			bm.insert(short);
-		}
-
-		self.services
-			.auth_chain
-			.cache_auth_chain_bitmap(shortroomid, short_event_id, &bm);
-	}
 
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
@@ -397,12 +337,21 @@ where
 	drop(insert_lock);
 
 	// See if the event matches any known pushers via power level
-	let power_levels: RoomPowerLevelsEventContent = self
-		.services
-		.state_accessor
-		.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
-		.await
-		.unwrap_or_default();
+	let power_levels: RoomPowerLevelsEventContent = match state_root_handle {
+		| Some(root_handle) => self
+			.services
+			.state_accessor
+			.state_get_in_room_hamt(room_id, &root_handle, &StateEventType::RoomPowerLevels, "")
+			.await
+			.and_then(|pdu| pdu.get_content())
+			.unwrap_or_default(),
+		| None => self
+			.services
+			.state_accessor
+			.room_state_get_content(room_id, &StateEventType::RoomPowerLevels, "")
+			.await
+			.unwrap_or_default(),
+	};
 
 	let mut push_target: HashSet<_> = self
 			.services

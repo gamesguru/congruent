@@ -109,6 +109,22 @@ pub(crate) async fn get_keys_route(
 	})
 }
 
+/// # `POST /_matrix/key/v2/query`
+///
+/// The v2 key-query endpoint (implemented on the notary/dev branches). Not yet
+/// implemented here; registered so that other HTTP methods on the path (e.g.
+/// `PUT`) return a 405, and this route can be filled in when the real v2
+/// implementation is ported.
+pub(crate) async fn query_keys_v2_route(
+	State(_services): State<crate::State>,
+	_body: axum::body::Bytes,
+) -> Result<axum::Json<serde_json::Value>> {
+	Err(Error::BadRequest(
+		ErrorKind::NotImplemented,
+		"v2 key query is not yet implemented",
+	))
+}
+
 /// # `POST /_matrix/federation/v1/user/keys/claim`
 ///
 /// Claims one-time keys.
