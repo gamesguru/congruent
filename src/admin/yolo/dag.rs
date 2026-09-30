@@ -395,6 +395,7 @@ pub(super) async fn get_remote_dag(
 	import: bool,
 	skip_auth: bool,
 	reorder: bool,
+	no_fallback: bool,
 ) -> Result {
 	use futures::StreamExt;
 
@@ -620,6 +621,16 @@ pub(super) async fn get_remote_dag(
 				queue.push_front(id);
 			}
 
+			if no_fallback {
+				info!(
+					"get-remote-dag: --no-fallback specified; stopping on empty /backfill \
+					 response"
+				);
+				self.write_str("Stopping on empty /backfill response (--no-fallback enabled).\n")
+					.await?;
+				break;
+			}
+
 			if !pool.all_exhausted() {
 				continue; // Try another server
 			}
@@ -762,6 +773,28 @@ pub(super) async fn get_remote_dag(
 		.await
 		.map_err(|e| err!(Database("Failed to flush writer: {e:?}")))?;
 
+	if !queue.is_empty() {
+		let frontier_path = format!("/tmp/remote-dag-frontier-{safe_room_id}.jsonl");
+		if let Ok(f) = tokio::fs::File::create(&frontier_path).await {
+			use tokio::io::AsyncWriteExt;
+			let mut f_writer = tokio::io::BufWriter::new(f);
+			for eid in &queue {
+				let _ = f_writer.write_all(format!("{eid}\n").as_bytes()).await;
+			}
+			let _ = f_writer.flush().await;
+			info!(
+				"get-remote-dag: wrote {} unresolved frontier IDs to {frontier_path}",
+				queue.len()
+			);
+			let _ = self
+				.write_str(&format!(
+					"Unresolved frontier ({} IDs) saved to {frontier_path}\n",
+					queue.len()
+				))
+				.await;
+		}
+	}
+
 	let elapsed = start_time.elapsed();
 	let (bf_whole, bf_frac) = if total > 0 {
 		let divisor = u64::try_from(total).unwrap_or(1);
@@ -838,7 +871,7 @@ pub(super) async fn get_remote_dag(
 				self.services
 					.rooms
 					.timeline
-					.reorder_timeline(&room_id, false, false),
+					.reorder_timeline(&room_id, false, false, false),
 			)
 			.await?;
 		}

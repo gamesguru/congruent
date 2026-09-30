@@ -38,10 +38,6 @@ Recalculate and fix forward extremities using true topological DAG resolution
 
 Read-only calculation of the true topological DAG forward extremities without mutating the database
 
-## `!admin yolo clean-extremities`
-
-Prune dangling forward extremities and reset them to the current room state
-
 ## `!admin yolo purge-outliers`
 
 Purge outlier PDUs that already exist in our timeline.
@@ -56,9 +52,11 @@ Attempts to "rescue" all outlier PDUs in a room
 
 ## `!admin yolo reorder-timeline`
 
-Reorder the timeline for a room by receive order (PduCount).
+Rebuild a room's topological timeline index by DAG order.
 
-Fixes anachronisms caused by rescued outliers being appended at the end of the timeline instead of in receive order (PduCount).
+Reads all PDUs, builds the DAG from `prev_events`, and performs a Kahn topological sort (parents before children). Concurrent events are ordered by `origin_server_ts`, then the Matrix `depth`, then `event_id`. The local topological index (`roomid_topologicalorder_pducount`) is then rebuilt with `deprecated_local_topo_depth` set to the event's 1-based position in that sort.
+
+Stream order (`room_pducount_eventid`) is immutable and is never modified unless `--force-reindex` is set, which renumbers it (limited to rooms with at most 25,000 events). Clients should re-sync the room afterward.
 
 ## `!admin yolo rebuild-state`
 
@@ -78,7 +76,13 @@ Get the room DAG as a list of PDUs in a range
 
 ## `!admin yolo get-remote-dag`
 
-Fetch a room's DAG from a remote server via federation backfill API and write it to a JSONL file
+Fetch a room's DAG from a remote server via federation backfill API and write it to a JSONL file.
+
+By default, this command strictly queries the single `<SERVER>` specified.
+
+With --gap-fill, it builds an auto-discovery pool of up to 25 other known servers in the room and fans out dynamically if the primary server fails or rate-limits.
+
+With --import, inserts fetched PDUs directly into the timeline. With --reorder, chains reorder-timeline after completion.
 
 ## `!admin yolo fetch-pdu`
 
@@ -138,6 +142,14 @@ Fast local-only health check across all rooms.
 
 Scans every room in the database and reports: - Corrupt room IDs (non-ASCII, parse failures) - Soft-failed or missing create events - Orphaned rooms (no local users) - Extremity anomalies (0 or >10 forward extremities) - Membership cache drift (state vs cache mismatch)
 
+## `!admin yolo reindex-short`
+
+Sweep `eventid_pdu` (source of truth) and repopulate any missing or corrupt derived data:
+
+- `eventid_shorteventid` / `shorteventid_eventid` (ID mappings) - `eventid_metadata` (bincode metadata: timestamps, depth, pdu_count) - `shorteventid_shortprevevents` / `shortauthevents` (DAG edge caches) - `shorteventid_authchain` (transitive auth chain, computed incrementally) - `roomid_topologicalorder_pducount` (topo index entries) - `roomid_pduleaves` (forward extremities from true DAG tips) - `tofrom_relation` (thread/reply/reaction relations)
+
+Safe to run at any time. Only writes missing entries; never overwrites existing data. Run before `recalculate-extremities` on rooms affected by old builds.
+
 ## `!admin yolo heal-receipts`
 
 Purge obsolete duplicate read receipts from the database
@@ -150,7 +162,7 @@ Rejected events are permanently excluded from state resolution. Use `compare-roo
 
 ## `!admin yolo unreject-room`
 
-Bulk-unreject all rejected events in a room.
+Unreject events in a room.
 
 Scans the timeline and outlier tree, unmarks any events flagged as rejected so they participate in state resolution again. Use --soft-fail to also clear soft-fail markers.
 
@@ -193,6 +205,10 @@ Example: yolo fetch-missing-events !room:server
 Remove duplicate timeline events stored under wrong content-hash event IDs.
 
 Iterates all timeline PDUs in a room, recomputes the correct event_id from the canonical JSON hash, and removes entries where the stored event_id doesn't match. Use --dry-run to preview without deleting.
+
+## `!admin yolo fetch-state-ids`
+
+Manually fetches the state and auth chain event IDs via /state_ids and incrementally caches them locally to avoid 504 timeouts
 
 ## `!admin yolo clear-ratelimiter`
 

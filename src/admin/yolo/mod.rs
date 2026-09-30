@@ -8,14 +8,35 @@ mod misc;
 pub(crate) mod outlier_utils;
 mod outliers;
 mod rejected;
+mod short_audit;
 mod state;
 mod timeline;
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use conduwuit::Result;
 use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId};
 
 use crate::admin_command_dispatch;
+
+#[derive(Debug, Args)]
+pub struct ReorderTimelineOptions {
+	/// If set, reorders timeline in ALL rooms.
+	#[arg(long)]
+	pub(super) all: bool,
+
+	/// If set, do not compute state during timeline re-insertion.
+	#[arg(long)]
+	pub(super) no_compute_state: bool,
+
+	/// If set, permanently re-assigns the immutable stream order to match the
+	/// DAG.
+	#[arg(long)]
+	pub(super) force_reindex: bool,
+
+	/// Allow reordering when missing parent edges are detected.
+	#[arg(long)]
+	pub(super) allow_incomplete: bool,
+}
 
 #[admin_command_dispatch]
 #[derive(Debug, Subcommand)]
@@ -216,33 +237,26 @@ pub enum YoloCommand {
 		heal_from: Vec<OwnedServerName>,
 	},
 
-	/// Reorder the timeline for a room using topological DAG sort.
+	/// Rebuild a room's topological timeline index by DAG order.
 	///
-	/// Performs a full topological sort (parents before children) and
-	/// recomputes `local_topological_depth` as `max(parent_depths) + 1`.
-	/// Stream order is immutable and never modified.
+	/// Reads all PDUs, builds the DAG from `prev_events`, and performs a Kahn
+	/// topological sort (parents before children). Concurrent events are
+	/// ordered by `origin_server_ts`, then the Matrix `depth`, then `event_id`.
+	/// The local topological index (`roomid_topologicalorder_pducount`) is then
+	/// rebuilt with `deprecated_local_topo_depth` set to the event's 1-based
+	/// position in that sort.
+	///
+	/// Stream order (`room_pducount_eventid`) is immutable and is never
+	/// modified unless `--force-reindex` is set, which renumbers it (limited
+	/// to rooms with at most 25,000 events). Clients should re-sync the room
+	/// afterward.
 	ReorderTimeline {
 		/// The room ID.
 		#[arg(required_unless_present = "all")]
 		room_id: Option<OwnedRoomId>,
 
-		/// If set, reorders timeline in ALL rooms.
-		#[arg(long)]
-		all: bool,
-
-		/// If set, do not compute state during timeline re-insertion.
-		/// Use this if you are going to run `yolo rebuild-state` afterwards.
-		#[arg(long)]
-		no_compute_state: bool,
-
-		/// If set, permanently re-assigns the immutable stream order
-		/// (`PduCount`) to perfectly match the DAG's topological order. This
-		/// destroys the arrival-time ordering but eliminates chronological
-		/// breaks in `/sync` and `get-room-dag`. Clients will skip events or
-		/// see duplicates if they do not clear their cache or initial sync
-		/// afterwards.
-		#[arg(long)]
-		force_reindex: bool,
+		#[command(flatten)]
+		options: ReorderTimelineOptions,
 	},
 
 	/// Incrementally rebuild the state of the room from the beginning of the
@@ -358,6 +372,11 @@ pub enum YoloCommand {
 		/// Run reorder-timeline after completion (requires --import)
 		#[arg(long, requires = "import")]
 		reorder: bool,
+
+		/// Stop immediately when /backfill returns an empty response without
+		/// running /event fallback
+		#[arg(long)]
+		no_fallback: bool,
 	},
 
 	/// Fetches a PDU from a remote server and attempts to verify/persist it.
@@ -556,18 +575,28 @@ pub enum YoloCommand {
 		skip_membership_rebuild: bool,
 	},
 
-	/// Fast local-only health check across all rooms.
+	/// Local-only health check across all rooms.
 	///
-	/// Scans every room in the database and reports:
+	/// By default this is fast: it reads only cheap invariants per room and
+	/// reports:
 	/// - Corrupt room IDs (non-ASCII, parse failures)
 	/// - Soft-failed or missing create events
 	/// - Orphaned rooms (no local users)
-	/// - Extremity anomalies (0 or >10 forward extremities)
+	/// - Extremity anomalies (0 or >1 stored forward extremities)
 	/// - Membership cache drift (state vs cache mismatch)
+	///
+	/// `--deep` additionally runs the expensive per-room DAG work: a full
+	/// forward-extremity recalculation (scans the entire room history) and the
+	/// chronological timeline scan (decodes up to 1000 PDUs). `--fix` implies
+	/// `--deep`.
 	CheckRooms {
 		/// Only show rooms with problems (hide healthy rooms)
 		#[arg(long, short)]
 		problems_only: bool,
+
+		/// Run the expensive full-DAG and chronology scans per room
+		#[arg(long)]
+		deep: bool,
 
 		/// Auto-repair membership cache drift when detected
 		#[arg(long)]

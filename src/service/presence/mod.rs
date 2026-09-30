@@ -74,7 +74,9 @@ impl crate::Service for Service {
 		let receiver = self.timer_channel.1.clone();
 
 		// Resetting dormant online/away statuses to offline on startup
-		let startup_task = if self.services.server.config.allow_local_presence {
+		let startup_task = if !self.services.server.is_maintenance()
+			&& self.services.server.config.allow_local_presence
+		{
 			let self_ = Arc::clone(&self);
 			Some(self.services.server.runtime().spawn(async move {
 				self_.unset_all_presence().await;
@@ -103,6 +105,9 @@ impl crate::Service for Service {
 				interval.tick().await;
 				if !self_flush.services.server.running() {
 					break;
+				}
+				if self_flush.services.server.is_maintenance() {
+					continue;
 				}
 
 				let mut users: Vec<_> = Vec::new();
@@ -233,7 +238,7 @@ impl crate::Service for Service {
 			}
 
 			// Periodic tally
-			if Instant::now() >= next_tally {
+			if !self.services.server.is_maintenance() && Instant::now() >= next_tally {
 				presence_timers.retain(|_, task| !task.is_finished());
 				info!(
 					target: "stats",

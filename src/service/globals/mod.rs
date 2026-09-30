@@ -100,6 +100,9 @@ impl crate::Service for Service {
 			if !self.server.running() {
 				break;
 			}
+			if self.server.is_maintenance() {
+				continue;
+			}
 
 			let http_success = self
 				.server

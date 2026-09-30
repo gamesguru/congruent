@@ -155,7 +155,7 @@ pub(super) async fn rescue_room(
 			self.services
 				.rooms
 				.timeline
-				.reorder_timeline(&room_id, false, false),
+				.reorder_timeline(&room_id, false, false, false),
 		)
 		.await?;
 	} else {
@@ -340,9 +340,12 @@ pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 }
 
 #[admin_command]
-pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result {
+#[allow(clippy::fn_params_excessive_bools)]
+pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: bool) -> Result {
 	use conduwuit_core::debug_info;
 	let ours = self.services.globals.server_name();
+	// A repair implies the scan that finds the drift.
+	let full = deep || fix;
 
 	let room_ids: Vec<_> = self
 		.services
@@ -356,6 +359,17 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 	let n_rooms = room_ids.len();
 	self.write_str(&format!("Scanning {n_rooms} rooms...\n"))
 		.await?;
+
+	if deep {
+		self.write_str("Global derived-index audit\n").await?;
+		let audit = super::short_audit::audit(self.services).await;
+		self.write_str(&audit.report()).await?;
+		self.write_str(
+			"\nPer-room extremity/chronology scan follows; rooms with findings also get a \
+			 read-only structural prev/auth DAG classification.\n\n",
+		)
+		.await?;
+	}
 
 	let mut total_rooms = 0_usize;
 	let mut problem_rooms = 0_usize;
@@ -438,25 +452,28 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 			}
 		}
 
-		debug_info!("recalculating extremities...");
-		// Forward extremities check
-		let (would_change, num_true) = self
-			.services
-			.rooms
-			.timeline
-			.recalculate_extremities(room_id, fix)
-			.await
-			.unwrap_or((false, 0));
+		if full {
+			debug_info!("recalculating extremities...");
+			// Forward extremities check. This scans the entire room history,
+			// so it is skipped unless --deep or --fix was requested.
+			let (would_change, num_true) = self
+				.services
+				.rooms
+				.timeline
+				.recalculate_extremities(room_id, fix)
+				.await
+				.unwrap_or((false, 0));
 
-		debug_info!("recalculated extremities.");
+			debug_info!("recalculated extremities.");
 
-		if would_change {
-			if fix {
-				issues.push(format!("EXTREMITIES_DRIFT (Fixed, true tips: {num_true})"));
-			} else {
-				issues.push(format!(
-					"EXTREMITIES_DRIFT (DAG tips silently broken, true tips: {num_true})"
-				));
+			if would_change {
+				if fix {
+					issues.push(format!("EXTREMITIES_DRIFT (Fixed, true tips: {num_true})"));
+				} else {
+					issues.push(format!(
+						"EXTREMITIES_DRIFT (DAG tips silently broken, true tips: {num_true})"
+					));
+				}
 			}
 		}
 
@@ -474,54 +491,56 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 			issues.push(format!("MULTIPLE_EXTREMITIES ({ext_count} tips)"));
 		}
 
-		debug_info!("checking chronological timeline...");
-		// Chronological timeline check (detecting hidden fragmentation/breaks)
-		let mut timeline_breaks = 0_usize;
-		let mut timeline_segments = 1_usize;
-		let mut has_timeline_issue = false;
-		let pdus = self.services.rooms.timeline.all_pdus(room_id).take(1000);
-		futures::pin_mut!(pdus);
-		let mut prev_ts = None;
-		while let Some((_count, pdu)) = pdus.next().await {
-			let ts: u64 = pdu.origin_server_ts().0.into();
-			if let Some(pts) = prev_ts {
-				if ts < pts {
-					timeline_breaks = timeline_breaks.saturating_add(1);
-					timeline_segments = timeline_segments.saturating_add(1);
-					has_timeline_issue = true;
+		if full {
+			debug_info!("checking chronological timeline...");
+			// Chronological timeline check (detecting hidden fragmentation/breaks)
+			let mut timeline_breaks = 0_usize;
+			let mut timeline_segments = 1_usize;
+			let mut has_timeline_issue = false;
+			let pdus = self.services.rooms.timeline.all_pdus(room_id).take(1000);
+			futures::pin_mut!(pdus);
+			let mut prev_ts = None;
+			while let Some((_count, pdu)) = pdus.next().await {
+				let ts: u64 = pdu.origin_server_ts().0.into();
+				if let Some(pts) = prev_ts {
+					if ts < pts {
+						timeline_breaks = timeline_breaks.saturating_add(1);
+						timeline_segments = timeline_segments.saturating_add(1);
+						has_timeline_issue = true;
+					}
 				}
+				prev_ts = Some(ts);
 			}
-			prev_ts = Some(ts);
-		}
-		debug_info!("chronological timeline check done.");
+			debug_info!("chronological timeline check done.");
 
-		if has_timeline_issue {
-			if fix {
-				if Box::pin(
-					self.services
-						.rooms
-						.timeline
-						.reorder_timeline(room_id, false, false),
-				)
-				.await
-				.is_ok()
-				{
-					issues.push(format!(
-						"CHRONOLOGICAL_BREAKS (Fixed, breaks={timeline_breaks}, \
-						 segments={timeline_segments})"
-					));
-					fixed_rooms = fixed_rooms.saturating_add(1);
+			if has_timeline_issue {
+				if fix {
+					if Box::pin(
+						self.services
+							.rooms
+							.timeline
+							.reorder_timeline(room_id, false, false, false),
+					)
+					.await
+					.is_ok()
+					{
+						issues.push(format!(
+							"CHRONOLOGICAL_BREAKS (Fixed, breaks={timeline_breaks}, \
+							 segments={timeline_segments})"
+						));
+						fixed_rooms = fixed_rooms.saturating_add(1);
+					} else {
+						issues.push(format!(
+							"CHRONOLOGICAL_BREAKS (Failed to fix, breaks={timeline_breaks}, \
+							 segments={timeline_segments})"
+						));
+					}
 				} else {
 					issues.push(format!(
-						"CHRONOLOGICAL_BREAKS (Failed to fix, breaks={timeline_breaks}, \
+						"CHRONOLOGICAL_BREAKS (breaks={timeline_breaks}, \
 						 segments={timeline_segments})"
 					));
 				}
-			} else {
-				issues.push(format!(
-					"CHRONOLOGICAL_BREAKS (breaks={timeline_breaks}, \
-					 segments={timeline_segments})"
-				));
 			}
 		}
 
@@ -559,6 +578,21 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 			}
 		}
 
+		// Read-only structural classification of the room's prev/auth DAG,
+		// shown beside the extremity/chronology result for rooms with findings.
+		let structural = if deep && !issues.is_empty() {
+			Some(
+				self.services
+					.rooms
+					.timeline
+					.audit_room_dag(room_id)
+					.await
+					.summary(),
+			)
+		} else {
+			None
+		};
+
 		if issues.is_empty() {
 			if !problems_only {
 				writeln!(output, "OK   {room_id} (ext={ext_count}, joined={cache_joined})").ok();
@@ -566,6 +600,9 @@ pub(super) async fn check_rooms(&self, problems_only: bool, fix: bool) -> Result
 		} else {
 			problem_rooms = problem_rooms.saturating_add(1);
 			writeln!(output, "FAIL {room_id} -- {}", issues.join(", ")).ok();
+			if let Some(structural) = &structural {
+				writeln!(output, "     {structural}").ok();
+			}
 		}
 
 		// Flush every 25 rooms to show live progress

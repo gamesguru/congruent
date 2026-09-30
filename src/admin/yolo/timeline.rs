@@ -4,19 +4,18 @@ use conduwuit::{Result, err, matrix::Event};
 use futures::StreamExt;
 use ruma::{OwnedEventId, OwnedRoomId};
 
+use super::ReorderTimelineOptions;
 use crate::admin_command;
 
 #[admin_command]
 pub(super) async fn reorder_timeline(
 	&self,
 	room_id: Option<OwnedRoomId>,
-	all: bool,
-	no_compute_state: bool,
-	force_reindex: bool,
+	options: ReorderTimelineOptions,
 ) -> Result {
 	self.bail_restricted()?;
 
-	if all {
+	if options.all {
 		let mut room_ids: Vec<OwnedRoomId> = Vec::new();
 		let mut rooms = self.services.rooms.metadata.iter_ids();
 		while let Some(room_id) = rooms.next().await {
@@ -32,8 +31,9 @@ pub(super) async fn reorder_timeline(
 		for room_id in room_ids {
 			match Box::pin(self.services.rooms.timeline.reorder_timeline(
 				&room_id,
-				no_compute_state,
-				force_reindex,
+				options.no_compute_state,
+				options.force_reindex,
+				options.allow_incomplete,
 			))
 			.await
 			{
@@ -66,8 +66,9 @@ pub(super) async fn reorder_timeline(
 
 	let count = Box::pin(self.services.rooms.timeline.reorder_timeline(
 		&room_id,
-		no_compute_state,
-		force_reindex,
+		options.no_compute_state,
+		options.force_reindex,
+		options.allow_incomplete,
 	))
 	.await?;
 

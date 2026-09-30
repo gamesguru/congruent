@@ -415,6 +415,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		name: "serverroomids",
 		..descriptor::RANDOM_SMALL
 	},
+	// TODO: Re-evaluate locality for the short-event maps below. Their keys are
+	// currently short-ID based; room-local or composite room/short-ID prefixes
+	// may improve scoped scans and repair/reindex work without changing the
+	// logical mappings. Do not change the on-disk schema without a migration.
 	Descriptor {
 		name: "shorteventid_authchain",
 		cache_disp: CacheDisp::Unique,

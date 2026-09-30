@@ -18,20 +18,21 @@ impl Service {
 	///
 	/// Reads all PDUs, builds the DAG from `prev_events`, performs a
 	/// topological sort (parents before children, Kahn's algorithm with
-	/// chronological tiebreaking), then rebuilds the
-	/// `roomid_topologicalorder_pducount` index with correct
-	/// `deprecated_local_topo_depth` values computed as
-	/// `max(parent_depths) + 1`. Stream order
-	/// (`room_pducount_eventid`) is NEVER modified — it is immutable
-	/// arrival-time ordering.
+	/// `(origin_server_ts, matrix depth, event_id)` tiebreaking), then rebuilds
+	/// the `roomid_topologicalorder_pducount` index with
+	/// `deprecated_local_topo_depth` values set to the event's 1-based position
+	/// in that sort. Stream order (`room_pducount_eventid`) is NEVER modified —
+	/// it is immutable arrival-time ordering.
 	///
-	/// Optionally recomputes state snapshots incrementally and repairs
-	/// `unsigned.prev_content` on state events.
+	/// Optionally recomputes state snapshots incrementally (unless
+	/// `no_compute_state`). It does not repair `unsigned.prev_content`; use
+	/// `repair-unsigned` for that.
 	pub async fn reorder_timeline(
 		&self,
 		room_id: &RoomId,
 		no_compute_state: bool,
 		force_reindex: bool,
+		allow_incomplete: bool,
 	) -> Result<usize> {
 		let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 		let insert_lock = self.mutex_insert.lock(room_id).await;
@@ -53,8 +54,25 @@ impl Service {
 		}
 
 		// Retain only edges within our event set for both topo sort and extremities.
+		let mut dropped_parent_edges = 0_usize;
 		for parents in graph.values_mut() {
+			let len_before = parents.len();
 			parents.retain(|prev_id| entries.contains_key(prev_id));
+			dropped_parent_edges =
+				dropped_parent_edges.saturating_add(len_before.saturating_sub(parents.len()));
+		}
+		if dropped_parent_edges > 0 {
+			warn!(
+				"reorder_timeline: dropped {dropped_parent_edges} missing parent edges for room \
+				 {room_id} (incomplete DAG history)"
+			);
+			if !allow_incomplete {
+				return Err!(Request(InvalidParam(
+					"reorder_timeline: aborted because {dropped_parent_edges} missing parent \
+					 edges were detected (incomplete DAG history). Pass --allow-incomplete to \
+					 override."
+				)));
+			}
 		}
 
 		// Topological sort: parents before children (Kahn's algorithm).

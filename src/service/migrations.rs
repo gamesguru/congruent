@@ -14,7 +14,7 @@ use database::Json;
 use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use itertools::Itertools;
 use ruma::{
-	OwnedRoomId, OwnedUserId, RoomId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
@@ -341,6 +341,17 @@ async fn migrate(services: &Services) -> Result<()> {
 	}
 
 	if db["global"]
+		.get(POPULATE_SHORTPREVEVENTS_MARKER)
+		.await
+		.is_not_found()
+	{
+		info!("Running migration 'populate_shortprevevents'");
+		populate_shortprevevents(services)
+			.await
+			.map_err(|e| err!("Failed to run 'populate_shortprevevents': {e}"))?;
+	}
+
+	if db["global"]
 		.get(POPULATE_TOPOLOGICAL_INDEX_MARKER)
 		.await
 		.is_not_found()
@@ -388,15 +399,24 @@ async fn migrate(services: &Services) -> Result<()> {
 		));
 	}
 
-	// Validate schema fingerprint (trust-on-first-use for upgrades)
+	// Validate schema fingerprint. A fingerprint from an older schema is expected
+	// to differ because the schema version is part of the hash. Only retain the
+	// hard-fail behavior for databases that were already current when opened;
+	// successful versioned migrations are the compatibility boundary for upgrades.
 	let expected = compute_schema_fingerprint();
 	if let Some(stored) = services.globals.db.schema_fingerprint().await {
 		if stored != expected {
-			return Err!(Database(
-				"Schema fingerprint mismatch! This database was created by a different build \
-				 with incompatible column families. Expected {expected:x?}, found {stored:x?}. \
-				 Do NOT continue — data corruption will occur.",
-			));
+			if db_version >= DATABASE_VERSION {
+				return Err!(Database(
+					"Schema fingerprint mismatch! This database was created by a different \
+					 build with incompatible column families. Expected {expected:x?}, found \
+					 {stored:x?}. Do NOT continue — data corruption will occur.",
+				));
+			}
+			warn!(
+				"Replacing schema fingerprint from database version {db_version} after \
+				 successful migration to {DATABASE_VERSION}"
+			);
 		}
 	}
 	services.globals.db.set_schema_fingerprint(&expected);
@@ -898,8 +918,104 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 const POPULATE_TOPOLOGICAL_INDEX_MARKER: &[u8] = b"populate_topological_index_v4";
 const POPULATE_SHORTPREVEVENTS_MARKER: &[u8] = b"populate_shortprevevents";
 
+/// Build the short-event-id -> short-prev-event-id index from the canonical
+/// PDU store. This is deliberately a separate migration from the topological
+/// index migration: the latter only needs metadata and cannot reconstruct
+/// prev_events.
+async fn populate_shortprevevents(services: &Services) -> Result<()> {
+	const BATCH_SIZE: usize = 10_000;
+
+	info!("Starting migration to populate shorteventid_shortprevevents...");
+
+	let db = &services.db;
+	let eventid_pdu = db["eventid_pdu"].clone();
+	let shorteventid_shortprevevents = db["shorteventid_shortprevevents"].clone();
+	let cork = db.cork_and_sync();
+	let stream = eventid_pdu.raw_stream();
+	pin_mut!(stream);
+
+	let mut processed = 0_usize;
+
+	loop {
+		let mut entries = Vec::with_capacity(BATCH_SIZE);
+		while entries.len() < BATCH_SIZE {
+			let Some(entry) = stream.next().await else { break };
+			let (event_id_bytes, pdu_json_bytes) = entry.map_err(|e| {
+				err!(Database("Failed to read eventid_pdu during short-prev migration: {e}"))
+			})?;
+			let event_id_string = std::str::from_utf8(event_id_bytes).map_err(|e| {
+				err!(Database("Invalid event ID UTF-8 during short-prev migration: {e}"))
+			})?;
+			let event_id = OwnedEventId::parse(event_id_string).map_err(|e| {
+				err!(Database(
+					"Invalid event ID during short-prev migration: {event_id_string}: {e}"
+				))
+			})?;
+
+			// Do not silently skip an unreadable PDU. Leaving the marker unset makes
+			// the migration retryable after the underlying record is repaired.
+			let pdu =
+				serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(|e| {
+					err!(Database(
+						"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
+					))
+				})?;
+
+			// Only the DAG edges are needed below; retaining the decoded PDU would
+			// pin up to BATCH_SIZE full event bodies in memory at once.
+			let prev_events = pdu.prev_events().map(ToOwned::to_owned).collect::<Vec<_>>();
+			entries.push((event_id, prev_events));
+		}
+
+		if entries.is_empty() {
+			break;
+		}
+
+		let short_event_ids = services
+			.rooms
+			.short
+			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| &**event_id))
+			.collect::<Vec<_>>()
+			.await;
+
+		let mut prev_event_ids = Vec::new();
+		let mut prev_ranges = Vec::with_capacity(entries.len());
+		for (_, prev_events) in &entries {
+			let start = prev_event_ids.len();
+			prev_event_ids.extend(prev_events.iter().map(|event_id| &**event_id));
+			prev_ranges.push(start..prev_event_ids.len());
+		}
+		let prev_short_ids = services
+			.rooms
+			.short
+			.multi_get_or_create_shorteventid(prev_event_ids.iter().copied())
+			.collect::<Vec<_>>()
+			.await;
+
+		let mut batch = database::Batch::new();
+		for (short_event_id, range) in short_event_ids.iter().zip(prev_ranges) {
+			let key = short_event_id.to_be_bytes();
+			let value = prev_short_ids[range]
+				.iter()
+				.flat_map(|short_id| short_id.to_be_bytes())
+				.collect::<Vec<_>>();
+			shorteventid_shortprevevents.batch_put(&mut batch, &key, &value);
+		}
+
+		shorteventid_shortprevevents.apply_batch(batch);
+		processed = processed.saturating_add(entries.len());
+		info!("Populated short-prev index for {processed} events...");
+	}
+
+	info!("Successfully populated short-prev index for {processed} events.");
+	db["global"].insert(POPULATE_SHORTPREVEVENTS_MARKER, []);
+	drop(cork);
+	db.db.sort()?;
+	Ok(())
+}
+
 async fn populate_topological_index(services: &Services) -> Result<()> {
-	const BATCH_SIZE: usize = 1000;
+	const BATCH_SIZE: usize = 10_000;
 
 	info!("Starting migration to populate roomid_topologicalorder_pducount...");
 	let db = &services.db;
@@ -907,21 +1023,29 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 	let eventid_metadata = db["eventid_metadata"].clone();
 
 	let roomid_topologicalorder_pducount = db["roomid_topologicalorder_pducount"].clone();
+	let cork = db.cork_and_sync();
 
 	// First, completely clear the old broken index (the byte encoding has changed).
 	let clear_stream = roomid_topologicalorder_pducount.raw_stream();
 	pin_mut!(clear_stream);
 	let mut cleared: usize = 0;
+	let mut clear_batch = database::Batch::new();
 	while let Some(Ok((key, _))) = clear_stream.next().await {
-		roomid_topologicalorder_pducount.remove(&key);
+		roomid_topologicalorder_pducount.batch_delete(&mut clear_batch, &key);
 		cleared = cleared.saturating_add(1);
+		if cleared.is_multiple_of(BATCH_SIZE) {
+			roomid_topologicalorder_pducount.apply_batch(clear_batch);
+			clear_batch = database::Batch::new();
+		}
 	}
+	roomid_topologicalorder_pducount.apply_batch(clear_batch);
 	info!("Cleared {cleared} old entries from topological index to prepare for rebuild.");
 
 	let stream = room_pducount_eventid.raw_stream();
 	pin_mut!(stream);
 	let mut total_migrated: usize = 0;
 	let mut batch_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(BATCH_SIZE);
+	let mut write_batch = database::Batch::new();
 
 	loop {
 		// Collect a batch of entries from the stream
@@ -978,21 +1102,33 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 			topo_key.extend_from_slice(&shortroomid);
 			topo_key.extend_from_slice(&timeline_key.to_be_bytes());
 
-			roomid_topologicalorder_pducount.put(&topo_key, batch_entries[i].1.clone());
+			roomid_topologicalorder_pducount.batch_put(
+				&mut write_batch,
+				&topo_key,
+				batch_entries[i].1.as_slice(),
+			);
 			meta.deprecated_local_topo_depth = global_depth;
 			if let Ok(metadata_bytes) = bincode::serialize(&meta) {
-				eventid_metadata.put(batch_entries[i].1.as_slice(), metadata_bytes);
+				eventid_metadata.batch_put(
+					&mut write_batch,
+					batch_entries[i].1.as_slice(),
+					metadata_bytes,
+				);
 			}
 
 			total_migrated = total_migrated.saturating_add(1);
-			if total_migrated.is_multiple_of(10000) {
+			if total_migrated.is_multiple_of(BATCH_SIZE) {
+				roomid_topologicalorder_pducount.apply_batch(write_batch);
+				write_batch = database::Batch::new();
 				info!("Migrated {} events to topological index...", total_migrated);
 			}
 		}
 	}
+	roomid_topologicalorder_pducount.apply_batch(write_batch);
 
 	info!("Successfully populated topological index for {total_migrated} events!");
 	db["global"].insert(POPULATE_TOPOLOGICAL_INDEX_MARKER, []);
+	drop(cork);
 	db.db.sort()?;
 	Ok(())
 }
@@ -1749,12 +1885,56 @@ struct EventMetadataV20 {
 	origin_server_ts: ruma::UInt,
 	depth: ruma::UInt,
 	status: EventStatusV20,
-	redacted_by: Option<ruma::OwnedEventId>,
+	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
 	deprecated_local_topo_depth: u64,
 	#[serde(default)]
 	pdu_count: Option<u64>,
+}
+
+/// Older v19 layout. v19 databases can still contain rows written before the
+/// EventStatus transition: the verdict was represented by independent boolean
+/// fields plus human-readable reason strings. Those rows must be accepted by
+/// v21 and their verdicts folded into the independent verdict maps.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct EventMetadataV19 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	soft_failed: bool,
+	rejected: bool,
+	redacted_by: Option<OwnedEventId>,
+	short_state_hash: Option<u64>,
+	#[serde(default)]
+	deprecated_local_topo_depth: u64,
+	#[serde(default)]
+	pdu_count: Option<u64>,
+	#[serde(default)]
+	_soft_fail_reason: String,
+	#[serde(default)]
+	_rejection_reason: String,
+}
+
+/// Pre-v19 layout. Some v19 databases retain rows written before the
+/// topological-depth, PDU-count, and reason-string fields were added.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct EventMetadataV18 {
+	short_room_id: u64,
+	is_outlier: bool,
+	origin_server_ts: ruma::UInt,
+	depth: ruma::UInt,
+	soft_failed: bool,
+	rejected: bool,
+	redacted_by: Option<OwnedEventId>,
+	short_state_hash: Option<u64>,
+}
+
+enum LegacyEventMetadata {
+	V18(EventMetadataV18),
+	V19(EventMetadataV19),
+	V20(EventMetadataV20),
 }
 
 /// Legacy single-slot event verdict (v20), mirroring the deleted `EventStatus`
@@ -1823,8 +2003,8 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 	}
 
 	// Rewrite every `eventid_metadata` row into the status-less layout, folding
-	// the legacy `status` field into the independent stores as we go. Rows that
-	// already parse as v21 are left untouched; anything that parses as neither
+	// legacy verdicts into the independent stores as we go. Rows that already
+	// parse as v21 are left untouched; anything that parses as neither v19 nor
 	// v20 nor v21 is a migration error and aborts instead of being skipped.
 	let mut batch = database::Batch::new();
 	let mut batch_count = 0_usize;
@@ -1835,57 +2015,105 @@ async fn db_lt_21(services: &Services) -> Result<()> {
 			err!("Failed while scanning eventid_metadata during v21 migration: {e}")
 		})?;
 		let legacy = match bincode::deserialize::<EventMetadataV20>(value) {
-			| Ok(legacy) => legacy,
-			// A row that doesn't parse as the legacy v20 layout is only safe to
-			// leave untouched if it already parses as the new status-less v21
-			// layout (i.e. it was already migrated). Any other failure means the
-			// row is old or corrupt, so abort rather than silently bumping the
-			// schema and hiding the problem.
-			| Err(_)
-				if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value)
-					.is_ok() =>
-			{
-				continue;
-			},
-			| Err(v20_err) => {
-				return Err(err!(
-					"eventid_metadata row ({} bytes) neither parses as v20 nor as v21 during \
-					 v21 migration: {v20_err}",
-					value.len(),
-				));
+			| Ok(legacy) => LegacyEventMetadata::V20(legacy),
+			| Err(v20_err) => match bincode::deserialize::<EventMetadataV19>(value) {
+				| Ok(legacy) => LegacyEventMetadata::V19(legacy),
+				| Err(v19_err) => match bincode::deserialize::<EventMetadataV18>(value) {
+					| Ok(legacy) => LegacyEventMetadata::V18(legacy),
+					| Err(v18_err) => {
+						// A row that doesn't parse as either legacy layout is only safe
+						// to leave untouched if it already parses as v21.
+						if bincode::deserialize::<crate::rooms::timeline::EventMetadata>(value)
+							.is_ok()
+						{
+							continue;
+						}
+						return Err(err!(
+							"eventid_metadata row ({} bytes) parses as neither v20 nor v19 nor \
+							 v18 nor v21 during v21 migration: v20={v20_err}; v19={v19_err}; \
+							 v18={v18_err}",
+							value.len(),
+						));
+					},
+				},
 			},
 		};
 
-		// Fold the legacy single-slot verdict into the independent stores.
-		match &legacy.status {
-			| EventStatusV20::Rejected(code)
-				if eventid_rejections
-					.get_blocking(&event_id_bytes)
-					.is_not_found() =>
-			{
-				eventid_rejections.insert(&event_id_bytes, [code.to_u8()]);
+		let (metadata, rejection, soft_failed) = match legacy {
+			| LegacyEventMetadata::V18(legacy) => (
+				crate::rooms::timeline::EventMetadata {
+					short_room_id: legacy.short_room_id,
+					is_outlier: legacy.is_outlier,
+					origin_server_ts: legacy.origin_server_ts,
+					depth: legacy.depth,
+					redacted_by: legacy.redacted_by,
+					short_state_hash: legacy.short_state_hash,
+					deprecated_local_topo_depth: 0,
+					pdu_count: None,
+				},
+				legacy
+					.rejected
+					.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
+				legacy
+					.soft_failed
+					.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
+			),
+			| LegacyEventMetadata::V20(legacy) => {
+				let verdict = match legacy.status {
+					| EventStatusV20::Rejected(code) => (Some(code.to_u8()), None),
+					| EventStatusV20::SoftFailed(code) => (None, Some(code.to_u8())),
+					| EventStatusV20::Pending | EventStatusV20::Accepted => (None, None),
+				};
+				(
+					crate::rooms::timeline::EventMetadata {
+						short_room_id: legacy.short_room_id,
+						is_outlier: legacy.is_outlier,
+						origin_server_ts: legacy.origin_server_ts,
+						depth: legacy.depth,
+						redacted_by: legacy.redacted_by,
+						short_state_hash: legacy.short_state_hash,
+						deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
+						pdu_count: legacy.pdu_count,
+					},
+					verdict.0,
+					verdict.1,
+				)
 			},
-			| EventStatusV20::SoftFailed(code)
-				if eventid_softfailed
-					.get_blocking(&event_id_bytes)
-					.is_not_found() =>
-			{
-				eventid_softfailed.insert(&event_id_bytes, [code.to_u8()]);
-			},
-			| _ => {},
+			| LegacyEventMetadata::V19(legacy) => (
+				crate::rooms::timeline::EventMetadata {
+					short_room_id: legacy.short_room_id,
+					is_outlier: legacy.is_outlier,
+					origin_server_ts: legacy.origin_server_ts,
+					depth: legacy.depth,
+					redacted_by: legacy.redacted_by,
+					short_state_hash: legacy.short_state_hash,
+					deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
+					pdu_count: legacy.pdu_count,
+				},
+				legacy
+					.rejected
+					.then_some(crate::rooms::pdu_metadata::RejectionCode::Unknown.to_u8()),
+				legacy
+					.soft_failed
+					.then_some(crate::rooms::pdu_metadata::SoftFailCode::Unknown.to_u8()),
+			),
+		};
+
+		if let Some(code) = rejection
+			&& eventid_rejections
+				.get_blocking(&event_id_bytes)
+				.is_not_found()
+		{
+			eventid_rejections.insert(&event_id_bytes, [code]);
+		}
+		if let Some(code) = soft_failed
+			&& eventid_softfailed
+				.get_blocking(&event_id_bytes)
+				.is_not_found()
+		{
+			eventid_softfailed.insert(&event_id_bytes, [code]);
 		}
 
-		// Re-encode the row without the `status` field.
-		let metadata = crate::rooms::timeline::EventMetadata {
-			short_room_id: legacy.short_room_id,
-			is_outlier: legacy.is_outlier,
-			origin_server_ts: legacy.origin_server_ts,
-			depth: legacy.depth,
-			redacted_by: legacy.redacted_by,
-			short_state_hash: legacy.short_state_hash,
-			deprecated_local_topo_depth: legacy.deprecated_local_topo_depth,
-			pdu_count: legacy.pdu_count,
-		};
 		if let Ok(new_bytes) = bincode::serialize(&metadata) {
 			eventid_metadata.batch_put(&mut batch, &event_id_bytes, new_bytes);
 			batch_count = batch_count.saturating_add(1);

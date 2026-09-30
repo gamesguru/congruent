@@ -16,3 +16,6 @@
 [submodule "mtx-slipstream"]
 	path = mtx-slipstream
 	url = https://github.com/Wombat-Foundation/mtx-slipstream.git
+[submodule "res"]
+	path = res
+	url = git@gitlab.com:gamesguru/congruent-res.git
