@@ -35,12 +35,18 @@ pub(super) struct DerivedIndexAudit {
 	pub statekey_malformed: u64,
 
 	pub canonical_events: u64,
+	pub canonical_bits: u64,
+	pub internal_error: Option<String>,
+
 	pub prev_rows: u64,
 	pub prev_stale: u64,
 	pub prev_missing: u64,
 	pub prev_malformed: u64,
 	pub prev_parent_unresolved: u64,
 	pub prev_parent_absent: u64,
+	pub prev_stale_samples: Vec<u64>,
+	pub prev_parent_unresolved_samples: Vec<u64>,
+	pub prev_parent_absent_samples: Vec<u64>,
 
 	pub auth_rows: u64,
 	pub auth_stale: u64,
@@ -48,6 +54,11 @@ pub(super) struct DerivedIndexAudit {
 	pub auth_malformed: u64,
 	pub auth_parent_unresolved: u64,
 	pub auth_parent_absent: u64,
+	pub auth_stale_samples: Vec<u64>,
+	pub auth_parent_unresolved_samples: Vec<u64>,
+	pub auth_parent_absent_samples: Vec<u64>,
+
+	pub event_reverse_only_samples: Vec<u64>,
 
 	pub authchain_rows: u64,
 
@@ -78,6 +89,19 @@ impl DerivedIndexAudit {
 		}
 
 		writeln!(out, "  short-id counter: {}", self.counter).ok();
+		match &self.internal_error {
+			| Some(error) => {
+				writeln!(out, "  audit validity: INVALID -- {error}").ok();
+				writeln!(
+					out,
+					"  (prev/auth figures below are internally inconsistent; do not act on them)"
+				)
+				.ok();
+			},
+			| None => {
+				writeln!(out, "  audit validity: ok").ok();
+			},
+		}
 		writeln!(
 			out,
 			"  eventid_shorteventid <-> shorteventid_eventid: fwd_rows={}, rev_rows={}, \
@@ -89,6 +113,7 @@ impl DerivedIndexAudit {
 			self.event_malformed
 		)
 		.ok();
+		write_samples(&mut out, "eventid reverse_only samples", &self.event_reverse_only_samples);
 		writeln!(
 			out,
 			"  statekey_shortstatekey <-> shortstatekey_statekey: fwd_rows={}, rev_rows={}, \
@@ -100,7 +125,12 @@ impl DerivedIndexAudit {
 			self.statekey_malformed
 		)
 		.ok();
-		writeln!(out, "  canonical events (eventid_pdu): {}", self.canonical_events).ok();
+		writeln!(
+			out,
+			"  canonical events (eventid_pdu): {}, distinct shorts: {}",
+			self.canonical_events, self.canonical_bits
+		)
+		.ok();
 		writeln!(
 			out,
 			"  shorteventid_shortprevevents: rows={}, stale={}, missing={}, malformed={}, \
@@ -113,6 +143,17 @@ impl DerivedIndexAudit {
 			self.prev_parent_absent
 		)
 		.ok();
+		write_samples(&mut out, "prev stale samples", &self.prev_stale_samples);
+		write_samples(
+			out,
+			"prev parent_unresolved samples",
+			&self.prev_parent_unresolved_samples,
+		);
+		write_samples(
+			out,
+			"prev parent_absent samples",
+			&self.prev_parent_absent_samples,
+		);
 		writeln!(
 			out,
 			"  shorteventid_shortauthevents: rows={}, stale={}, missing={}, malformed={}, \
@@ -125,6 +166,17 @@ impl DerivedIndexAudit {
 			self.auth_parent_absent
 		)
 		.ok();
+		write_samples(&mut out, "auth stale samples", &self.auth_stale_samples);
+		write_samples(
+			out,
+			"auth parent_unresolved samples",
+			&self.auth_parent_unresolved_samples,
+		);
+		write_samples(
+			out,
+			"auth parent_absent samples",
+			&self.auth_parent_absent_samples,
+		);
 		writeln!(out, "  shorteventid_authchain: rows={}", self.authchain_rows).ok();
 		writeln!(
 			out,
@@ -176,6 +228,7 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.event_malformed = event_fwd_malformed.saturating_add(event_rev_malformed);
 	audit.event_dangling = masked_diff_count(&event_fwd, &event_rev, counter);
 	audit.event_reverse_only = masked_diff_count(&event_rev, &event_fwd, counter);
+	audit.event_reverse_only_samples = sample_diff(&event_rev, &event_fwd, counter, 8);
 
 	// State-key short-ID bijection.
 	let (statekey_fwd, statekey_fwd_malformed) =
@@ -191,6 +244,8 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	// Canonical short-ID set (one short id per eventid_pdu row).
 	let (canonical, canonical_events) = canonical_bits(services, words).await;
 	audit.canonical_events = canonical_events;
+	audit.canonical_bits = count_bits(&canonical);
+	let canonical_not_fwd = masked_diff_count(&canonical, &event_fwd, counter);
 
 	// Short prev/auth edge families.
 	let prev =
@@ -200,8 +255,11 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.prev_malformed = prev.malformed;
 	audit.prev_parent_unresolved = prev.parent_unresolved;
 	audit.prev_parent_absent = prev.parent_absent;
+	audit.prev_parent_unresolved_samples = prev.parent_unresolved_samples;
+	audit.prev_parent_absent_samples = prev.parent_absent_samples;
 	audit.prev_stale = masked_diff_count(&prev.indexed, &canonical, counter);
 	audit.prev_missing = masked_diff_count(&canonical, &prev.indexed, counter);
+	audit.prev_stale_samples = sample_diff(&prev.indexed, &canonical, counter, 8);
 
 	let auth =
 		scan_edges(&services.db["shorteventid_shortauthevents"], &event_rev, &canonical, words)
@@ -210,8 +268,11 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.auth_malformed = auth.malformed;
 	audit.auth_parent_unresolved = auth.parent_unresolved;
 	audit.auth_parent_absent = auth.parent_absent;
+	audit.auth_parent_unresolved_samples = auth.parent_unresolved_samples;
+	audit.auth_parent_absent_samples = auth.parent_absent_samples;
 	audit.auth_stale = masked_diff_count(&auth.indexed, &canonical, counter);
 	audit.auth_missing = masked_diff_count(&canonical, &auth.indexed, counter);
+	audit.auth_stale_samples = sample_diff(&auth.indexed, &canonical, counter, 8);
 
 	// Auth-chain cache: room-prefixed keys, counted but not deeply verified.
 	audit.authchain_rows = u64::try_from(
@@ -243,6 +304,8 @@ pub(super) async fn audit(services: &Services) -> DerivedIndexAudit {
 	audit.event_statehash_dangling = esh_dangling;
 	audit.event_statehash_malformed = esh_malformed;
 
+	audit.internal_error = consistency_error(&audit, canonical_not_fwd);
+
 	audit
 }
 
@@ -251,6 +314,8 @@ struct EdgeFamily {
 	malformed: u64,
 	parent_unresolved: u64,
 	parent_absent: u64,
+	parent_unresolved_samples: Vec<u64>,
+	parent_absent_samples: Vec<u64>,
 	indexed: Bits,
 }
 
@@ -260,12 +325,29 @@ async fn scan_edges(
 	canonical: &Bits,
 	words: usize,
 ) -> EdgeFamily {
+	const SAMPLES: usize = 8;
 	let folded = map
 		.raw_stream()
 		.ignore_err()
 		.fold(
-			(vec![0_u64; words], 0_u64, 0_u64, 0_u64, 0_u64),
-			|(mut indexed, mut rows, mut malformed, mut parent_unresolved, mut parent_absent),
+			(
+				vec![0_u64; words],
+				0_u64,
+				0_u64,
+				0_u64,
+				0_u64,
+				Vec::new(),
+				Vec::new(),
+			),
+			|(
+				mut indexed,
+				mut rows,
+				mut malformed,
+				mut parent_unresolved,
+				mut parent_absent,
+				mut unresolved_samples,
+				mut absent_samples,
+			),
 			 (key, val)| async move {
 				rows = rows.saturating_add(1);
 				match short_of(key) {
@@ -279,15 +361,29 @@ async fn scan_edges(
 
 						if !get_bit(reverse_events, parent) {
 							parent_unresolved = parent_unresolved.saturating_add(1);
+							if unresolved_samples.len() < SAMPLES {
+								unresolved_samples.push(parent);
+							}
 						} else if !get_bit(canonical, parent) {
 							parent_absent = parent_absent.saturating_add(1);
+							if absent_samples.len() < SAMPLES {
+								absent_samples.push(parent);
+							}
 						}
 					}
 				} else {
 					malformed = malformed.saturating_add(1);
 				}
 
-				(indexed, rows, malformed, parent_unresolved, parent_absent)
+				(
+					indexed,
+					rows,
+					malformed,
+					parent_unresolved,
+					parent_absent,
+					unresolved_samples,
+					absent_samples,
+				)
 			},
 		)
 		.await;
@@ -297,6 +393,8 @@ async fn scan_edges(
 		malformed: folded.2,
 		parent_unresolved: folded.3,
 		parent_absent: folded.4,
+		parent_unresolved_samples: folded.5,
+		parent_absent_samples: folded.6,
 		indexed: folded.0,
 	}
 }
@@ -460,6 +558,91 @@ fn masked_diff_count(a: &[u64], b: &[u64], counter: u64) -> u64 {
 			u64::from((x & !y & mask).count_ones())
 		})
 		.sum()
+}
+
+/// First `limit` short ids set in `a` but not `b`, within `0..=counter`.
+fn sample_diff(a: &[u64], b: &[u64], counter: u64, limit: usize) -> Vec<u64> {
+	let last = usize::try_from(counter / 64).unwrap_or(usize::MAX);
+	let tail = u64::MAX >> 63_u64.saturating_sub(counter % 64);
+	let mut out = Vec::new();
+
+	for (word, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+		let mask = match word.cmp(&last) {
+			| std::cmp::Ordering::Less => u64::MAX,
+			| std::cmp::Ordering::Equal => tail,
+			| std::cmp::Ordering::Greater => 0,
+		};
+		let mut bits = x & !y & mask;
+
+		while bits != 0 {
+			let bit = bits.trailing_zeros();
+			let short = u64::try_from(word)
+				.unwrap_or(u64::MAX)
+				.saturating_mul(64)
+				.saturating_add(u64::from(bit));
+			out.push(short);
+
+			if out.len() >= limit {
+				return out;
+			}
+
+			bits &= bits.wrapping_sub(1);
+		}
+	}
+
+	out
+}
+
+/// Detects internal contradictions that mean the reported prev/auth figures
+/// cannot be trusted. Returning `Some` marks the whole audit `INVALID`.
+fn consistency_error(audit: &DerivedIndexAudit, canonical_not_fwd: u64) -> Option<String> {
+	let mut errors = Vec::new();
+
+	if audit.canonical_events > 0 && audit.canonical_bits == 0 {
+		errors.push(format!(
+			"{} canonical lookups resolved but zero short-id bits were set",
+			audit.canonical_events
+		));
+	}
+
+	if audit.canonical_bits > audit.canonical_events {
+		errors.push(format!(
+			"canonical distinct shorts ({}) exceed successful lookups ({})",
+			audit.canonical_bits, audit.canonical_events
+		));
+	}
+
+	if canonical_not_fwd > 0 {
+		errors.push(format!(
+			"{canonical_not_fwd} canonical shorts are absent from eventid_shorteventid"
+		));
+	}
+
+	if audit.prev_missing == 0 {
+		let spread = audit.prev_stale.saturating_add(audit.canonical_bits);
+		if spread > audit.prev_rows {
+			errors.push(format!(
+				"prev_missing=0 requires canonical ⊆ indexed, but prev_stale ({}) + canonical_bits \
+				 ({}) = {spread} exceeds prev_rows ({})",
+				audit.prev_stale, audit.prev_rows
+			));
+		}
+	}
+
+	if errors.is_empty() {
+		None
+	} else {
+		Some(errors.join("; "))
+	}
+}
+
+fn write_samples(out: &mut String, label: &str, samples: &[u64]) {
+	if samples.is_empty() {
+		return;
+	}
+
+	let list: Vec<String> = samples.iter().map(|short| format!("{short:#x}")).collect();
+	writeln!(out, "    {label}: {}", list.join(" ")).ok();
 }
 
 fn set_bit(bits: &mut [u64], index: u64) {
