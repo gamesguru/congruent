@@ -797,11 +797,12 @@ async fn join_room_by_id_helper_remote_process(
 	// only advances the HAMT root without touching derived caches, so without
 	// this the remote server would never appear in `roomserverids` and outbound
 	// events would not be fanned out to it.
-	services
-		.rooms
-		.state
-		.update_caches_for_state_delta_between(room_id, None, &root_handle)
-		.await?;
+	Box::pin(services.rooms.state.update_caches_for_state_delta_between(
+		room_id,
+		None,
+		&root_handle,
+	))
+	.await?;
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power

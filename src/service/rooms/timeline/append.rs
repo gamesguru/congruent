@@ -298,16 +298,14 @@ where
 	};
 	drop(cork);
 
-	self.services
-		.state
-		.set_event_state_with_root(
-			room_id,
-			pdu,
-			state_lock,
-			state_root_handle.as_ref(),
-			prev_state_root_handle.as_ref(),
-		)
-		.await?;
+	Box::pin(self.services.state.set_event_state_with_root(
+		room_id,
+		pdu,
+		state_lock,
+		state_root_handle.as_ref(),
+		prev_state_root_handle.as_ref(),
+	))
+	.await?;
 
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),

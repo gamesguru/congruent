@@ -142,14 +142,13 @@ pub async fn backfill_if_required(
 		.state
 		.get_room_state_hamt(room_id)
 		.await
-		.map(|root_handle| {
+		.map_or(0, |root_handle| {
 			u64::from_be_bytes(
 				root_handle.structural_hash[..8]
 					.try_into()
 					.expect("structural hash is at least 8 bytes"),
 			)
-		})
-		.unwrap_or(0);
+		});
 	if Self::backfill_gap_free_cache_hit(
 		self.backfill_gap_free_cache.get(&room_id.to_owned()),
 		current_state_fingerprint,

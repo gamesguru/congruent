@@ -138,11 +138,11 @@ impl Service {
 	) -> Result<()> {
 		let current_root = self.get_room_state_hamt(room_id).await.ok();
 
-		self.update_caches_for_state_delta_between(
+		Box::pin(self.update_caches_for_state_delta_between(
 			room_id,
 			current_root.as_ref(),
 			new_root_handle,
-		)
+		))
 		.await?;
 
 		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
@@ -265,8 +265,7 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 	) -> Result<rezzy::hamt::RootHandle> {
-		self.set_event_state_with_root(room_id, new_pdu, state_lock, None, None)
-			.await
+		Box::pin(self.set_event_state_with_root(room_id, new_pdu, state_lock, None, None)).await
 	}
 
 	#[tracing::instrument(skip_all, level = "debug")]
@@ -333,11 +332,11 @@ impl Service {
 		// their servers are never registered for outbound federation fan-out.
 		if is_state {
 			if let Some(prev_root) = prev_root_handle {
-				self.update_caches_for_state_delta_between(
+				Box::pin(self.update_caches_for_state_delta_between(
 					room_id,
 					Some(prev_root),
 					&root_handle,
-				)
+				))
 				.await?;
 			}
 		}

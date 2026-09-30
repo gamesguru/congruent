@@ -387,9 +387,13 @@ pub async fn get_summary_and_children_client(
 	}
 
 	// Try federation (authoritative for rooms we merely observe)
-	match self
-		.get_summary_and_children_federation(current_room, suggested_only, user_id, via)
-		.await
+	match Box::pin(self.get_summary_and_children_federation(
+		current_room,
+		suggested_only,
+		user_id,
+		via,
+	))
+	.await
 	{
 		| Ok(Some(response)) => return Ok(Some(response.for_suggested_only(suggested_only))),
 		| Ok(None) => {

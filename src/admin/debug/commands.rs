@@ -948,35 +948,25 @@ pub(crate) async fn force_set_state(
 	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
 
 	if skip_membership_rebuild {
-		// Fast path: just set the state root directly, skip per-member iteration
+		// Fast path: skip per-member iteration when rebuilding membership
 		info!("Fast-setting room state (skipping membership rebuild)");
-		self.services.rooms.state.set_room_state_hamt(
-			room_id.as_ref(),
-			&new_room_state,
-			&state_lock,
-		);
-
-		// Update joined count from state snapshot
-		self.services
-			.rooms
-			.state_cache
-			.update_joined_count(room_id.as_ref())
-			.await;
 	} else {
+		// Quiet path: rebuild the membership cache below without any per-member
+		// cache churn here.
 		info!("Forcing new room state (quiet mode)");
-		// Quiet path: set the state root and joined count without per-member
-		// cache churn; the membership cache is rebuilt below.
-		self.services.rooms.state.set_room_state_hamt(
-			room_id.as_ref(),
-			&new_room_state,
-			&state_lock,
-		);
-		self.services
-			.rooms
-			.state_cache
-			.update_joined_count(room_id.as_ref())
-			.await;
 	}
+
+	self.services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id.as_ref(), &new_room_state, &state_lock);
+
+	// Update joined count from state snapshot
+	self.services
+		.rooms
+		.state_cache
+		.update_joined_count(room_id.as_ref())
+		.await;
 
 	// Set the tip event as the sole forward extremity. Previous behavior
 	// scattered extremities across all state events, fracturing the DAG.

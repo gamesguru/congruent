@@ -348,9 +348,7 @@ impl super::Service {
 			.collect()
 			.await;
 
-		for ((_shortstatekey, shorteventid), key_result) in
-			entries.iter().zip(string_keys.into_iter())
-		{
+		for ((_shortstatekey, shorteventid), key_result) in entries.iter().zip(string_keys) {
 			if let Ok((event_type, state_key)) = key_result {
 				if let Ok(event_id) = self
 					.services
@@ -655,7 +653,7 @@ impl super::Service {
 							// `hash` is rezzy's incrementally-maintained lattice
 							// for this exact state, so reuse it directly as the
 							// root's state-group lattice.
-							let root = self.store_hamt_root(room_id, entries, &*hash)?;
+							let root = self.store_hamt_root(room_id, entries, &hash)?;
 							lthash_to_root.insert(*hash, root.clone());
 							groups_compressed = groups_compressed.saturating_add(1);
 							t_save = t_save.saturating_add(ts0.elapsed());

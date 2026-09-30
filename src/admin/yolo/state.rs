@@ -951,10 +951,8 @@ pub(super) async fn set_state_event(
 		.collect()
 		.await;
 
-	for ((shortstatekey, eid), key_result) in short_state_keys
-		.into_iter()
-		.zip(event_ids)
-		.zip(string_keys)
+	for ((shortstatekey, eid), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 	{
 		let shorteventid = self
 			.services
