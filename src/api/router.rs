@@ -297,7 +297,6 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			)
 			.ruma_route(&server::get_remote_server_keys_route)
 			.ruma_route(&server::get_remote_server_keys_batch_route)
-			.route("/_matrix/key/v2/query", post(server::query_keys_v2_route))
 			.merge(
 			Router::new()
 				.ruma_route(&server::get_public_rooms_route)

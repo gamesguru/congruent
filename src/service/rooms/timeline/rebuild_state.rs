@@ -510,29 +510,24 @@ impl super::Service {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
 			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 			let empty_key = String::new();
-			let mut abort = false;
-			for id in target_refs {
-				let Some(state) =
-					rezzy::compute_state_at(id, &lean_events_moved, version, &empty_key)
-				else {
-					continue;
+			let result = rezzy::StreamingInputs::new(
+				&target_refs,
+				&lean_events_moved,
+				version,
+				&empty_key,
+			)
+			.try_compute_optimized(|id, update| {
+				let owned_update = match update {
+					| rezzy::StateUpdate::New { state, hash } =>
+						StateUpdateOwned::New { state, hash: Box::new(*hash) },
+					| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
+						StateUpdateOwned::Unchanged { parent_event_id: parent_event_id.clone() },
 				};
-				let mut hash = rezzy::LtHash::default();
-				for ((event_type, state_key), event_id) in &state {
-					hash.insert(event_type.as_ref(), state_key, event_id);
-				}
-				if abort {
-					break;
-				}
-				if tx
-					.blocking_send((id.clone(), StateUpdateOwned::New {
-						state: state.into(),
-						hash: Box::new(hash),
-					}))
-					.is_err()
-				{
-					abort = true;
-				}
+				tx.blocking_send((id, owned_update))
+					.map_err(|_| "state output channel closed")
+			});
+			if let Err(rezzy::StateComputationError::CycleDetected) = result {
+				warn!("streaming state computation detected cycle; results incomplete");
 			}
 		});
 
