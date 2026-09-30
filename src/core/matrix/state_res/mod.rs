@@ -678,19 +678,13 @@ where
 		}
 	}
 
-	// Forwards BFS: walk reverse-auth edges from the roots of the traversed
-	// auth graph. The collected edges point from auth ancestors to their
-	// children, so starting at conflicted events walks in the wrong direction.
+	// Forwards BFS: walk reverse-auth edges from the conflicted events. The
+	// reverse edges point from auth ancestors to their children, so this finds
+	// only descendants of the conflicted seeds. Starting from graph leaves would
+	// incorrectly retain shared auth ancestors such as power-level events.
 	let mut forwards_reachable = HashSet::new();
-	let child_ids: HashSet<&OwnedEventId> = children_map
-		.values()
-		.flat_map(|children| children.iter())
-		.collect();
-	let mut f_queue: std::collections::VecDeque<OwnedEventId> = backwards_reachable
-		.iter()
-		.filter(|id| !child_ids.contains(*id))
-		.cloned()
-		.collect();
+	let mut f_queue: std::collections::VecDeque<OwnedEventId> =
+		conflicted_events.into_iter().collect();
 
 	while let Some(event_id) = f_queue.pop_front() {
 		if !forwards_reachable.insert(event_id.clone()) {
