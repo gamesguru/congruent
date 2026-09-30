@@ -54,7 +54,8 @@ struct RebuildCtx {
 }
 
 fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
-	let content_val = rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default();
+	let content_val =
+		rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 	let power_level = content_val
 		.get("power_level")
 		.and_then(|pl| {

@@ -64,22 +64,6 @@ fn create_dummy_pdu(
 	event_type: &str,
 	state_key: &str,
 ) -> PduEvent {
-	create_dummy_pdu_with_content(
-		room_id,
-		event_id,
-		event_type,
-		state_key,
-		CanonicalJsonObject::new(),
-	)
-}
-
-fn create_dummy_pdu_with_content(
-	room_id: &RoomId,
-	event_id: &EventId,
-	event_type: &str,
-	state_key: &str,
-	content: CanonicalJsonObject,
-) -> PduEvent {
 	let mut json = CanonicalJsonObject::new();
 	json.insert("room_id".into(), ruma::CanonicalJsonValue::String(room_id.as_str().to_owned()));
 	json.insert(
@@ -88,7 +72,10 @@ fn create_dummy_pdu_with_content(
 	);
 	json.insert("type".into(), ruma::CanonicalJsonValue::String(event_type.to_owned()));
 	json.insert("state_key".into(), ruma::CanonicalJsonValue::String(state_key.to_owned()));
-	json.insert("content".into(), ruma::CanonicalJsonValue::Object(content));
+	json.insert(
+		"content".into(),
+		ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
+	);
 	json.insert("origin_server_ts".into(), ruma::CanonicalJsonValue::Integer(123_456_789.into()));
 	json.insert("depth".into(), ruma::CanonicalJsonValue::Integer(1.into()));
 	json.insert("prev_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
@@ -212,15 +199,13 @@ async fn test_state_equivalence() {
 		"m.room.create",
 		"",
 	);
-	let mut member_content = CanonicalJsonObject::new();
-	member_content
-		.insert("membership".to_owned(), ruma::CanonicalJsonValue::String("join".to_owned()));
-	let event2 = create_dummy_pdu_with_content(
+	// Deliberately empty content: a redacted member event looks like this and
+	// must be treated as "leave" rather than failing to deserialize.
+	let event2 = create_dummy_pdu(
 		&room_id,
 		&owned_event_id!("$event2:test.conduwuit.local"),
 		"m.room.member",
 		"@alice:test.conduwuit.local",
-		member_content,
 	);
 
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;

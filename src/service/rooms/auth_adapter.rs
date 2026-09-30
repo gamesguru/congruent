@@ -42,10 +42,8 @@ pub fn to_state_res_version(room_version_id: &RoomVersionId) -> StateResVersion 
 #[must_use]
 pub fn pdu_to_lean<E: Event>(pdu: &E) -> LeanEvent<String> {
 	let content = pdu.get_content_as_value();
-	let content = serde_json::to_string(&content)
-		.ok()
-		.and_then(|json| rezzy::JsonValue::parse(&json).ok())
-		.unwrap_or_default();
+	let content =
+		rezzy::JsonValue::parse(&content.to_string()).expect("PDU content must be valid JSON");
 	LeanEvent {
 		event_id: pdu.event_id().to_string(),
 		event_type: pdu.kind().to_string(),

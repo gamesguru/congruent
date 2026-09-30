@@ -180,7 +180,8 @@ pub async fn create_event(
 				)
 				.await
 			{
-				let content_val = rezzy::JsonValue::parse(content.get()).unwrap_or_default();
+				let content_val = rezzy::JsonValue::parse(content.get())
+					.expect("PDU content must be valid JSON");
 				let auth_types = rezzy::auth::auth_types_for_event(
 					&event_type.to_string(),
 					sender.as_str(),

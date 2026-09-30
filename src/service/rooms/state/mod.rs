@@ -825,7 +825,8 @@ impl Service {
 			return Ok(HashMap::new());
 		};
 
-		let content_val = rezzy::JsonValue::parse(content.get()).unwrap_or_default();
+		let content_val =
+			rezzy::JsonValue::parse(content.get()).expect("PDU content must be valid JSON");
 		// For auth_types_for_event, V2 vs V2_1+ is the only distinction
 		// (whether `m.room.create` is included). V2_1_1 and V2_2 behave the same.
 		let version = if room_version.room_ids_as_hashes {

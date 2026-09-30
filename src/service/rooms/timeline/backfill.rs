@@ -1248,7 +1248,8 @@ pub async fn promote_outliers_sorted(
 			event_type: pdu.kind.to_string(),
 			sender: pdu.sender.to_string(),
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
-			content: rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default(),
+			content: rezzy::JsonValue::parse(pdu.content.get())
+				.expect("PDU content must be valid JSON"),
 			origin_server_ts: u64::from(pdu.origin_server_ts),
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),

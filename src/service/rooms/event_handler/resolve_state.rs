@@ -407,7 +407,8 @@ fn pdu_to_lean(
 	pdu: &conduwuit_core::PduEvent,
 	power_level: i64,
 ) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
-	let content_val = rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default();
+	let content_val =
+		rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),

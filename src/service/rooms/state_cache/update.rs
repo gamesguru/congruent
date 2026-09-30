@@ -37,7 +37,12 @@ pub async fn update_membership(
 	pdu: &Pdu,
 	update_joined_count: bool,
 ) -> Result {
-	let membership = pdu.get_content::<RoomMemberEventContent>()?;
+	// A redacted member event carries empty content. Per the spec a missing
+	// `membership` is treated as "leave", so do not fail the whole cache update
+	// on it.
+	let membership = pdu
+		.get_content::<RoomMemberEventContent>()
+		.unwrap_or_else(|_| RoomMemberEventContent::new(MembershipState::Leave));
 
 	// Keep track what remote users exist by adding them as "deactivated" users
 	//

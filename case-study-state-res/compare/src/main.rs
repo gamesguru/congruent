@@ -573,7 +573,7 @@ fn resolve_via_rezzy(
 	// Convert PDUs to LeanEvents
 	let to_lean = |pdu: &Pdu| -> rezzy::LeanEvent {
 		let content_val =
-			rezzy::JsonValue::parse(pdu.content.get()).unwrap_or(rezzy::JsonValue::Null);
+			rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 		rezzy::LeanEvent {
 			event_id: pdu.event_id.to_string(),
 			event_type: pdu.kind.to_string(),

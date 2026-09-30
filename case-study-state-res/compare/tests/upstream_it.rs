@@ -288,8 +288,8 @@ fn format_state_for_snapshot(state: &StateMap<OwnedEventId>, store: &EventStore)
 
 /// Convert a PduEvent to a rezzy LeanEvent.
 fn to_lean(pdu: &PduEvent) -> rezzy::LeanEvent {
-	let content_val: serde_json::Value =
-		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+	let content_val =
+		rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 	let power_level = content_val
 		.get("power_level")
 		.and_then(|pl| {
@@ -310,6 +310,7 @@ fn to_lean(pdu: &PduEvent) -> rezzy::LeanEvent {
 		depth: u64::from(pdu.depth),
 		rejected: false,
 		soft_fail: false,
+		room_id: None,
 	}
 }
 
@@ -429,13 +430,16 @@ fn resolve_via_rezzy(
 	}
 
 	let version = to_rezzy_version(room_version);
-	let resolved_lean = rezzy::resolve_iterative_sort(
-		unconflicted,
-		conflicted_events,
+	let empty_key = String::new();
+	let inputs = rezzy::IterativeInputs::new(
+		&unconflicted,
+		&conflicted_events,
 		&auth_context,
 		version,
 		&mut pl_cache,
+		&empty_key,
 	);
+	let resolved_lean = rezzy::resolve_iterative_sort(inputs);
 
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
