@@ -98,6 +98,7 @@ features = [
     "http2",
     "json",
     "matched-path",
+    "query",
     "tokio",
     "tracing",
 ]
@@ -414,10 +415,14 @@ features = [
     "unstable-msc4439", # pgp_key in .well_known/matrix/support
 ]
 
+[workspace.dependencies.mtxdb]
+git = "https://gitlab.com/Wombat-Foundation/mtxdb.git"
+branch = "refactor/pack-id-store-layout"
+features = ["multi-reader"]
+
 [workspace.dependencies.rezzy]
-git = "https://github.com/gamesguru/rezzy.git"
-branch = "dev"
-#path = "../rezzy" # NOTE: do NOT push with this enabled, it won't work!
+git = "https://gitlab.com/gamesguru/rezzy.git"
+branch = "alpha"
 
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
@@ -604,6 +609,10 @@ version = "0.3.0"
 [workspace.dependencies.roaring]
 version = "0.10" # compatible with Synapse's rustc 1.87.0
 
+[workspace.dependencies.criterion]
+version = "0.5"
+
+
 #
 # Patches
 #
@@ -648,6 +657,10 @@ ruma = { path = "ruwuma/crates/ruma" }
 package = "mtx-slipstream"
 path = "mtx-slipstream"
 default-features = false
+
+[workspace.dependencies.conduwuit-mtxdb]
+package = "conduwuit_mtxdb"
+path = "src/mtxdb"
 
 [workspace.dependencies.conduwuit-router]
 package = "conduwuit_router"

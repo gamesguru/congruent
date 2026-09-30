@@ -212,10 +212,6 @@
 
 # This item is undocumented. Please contribute documentation for it.
 #
-#shortstatehash_cache_capacity = varies by system
-
-# This item is undocumented. Please contribute documentation for it.
-#
 #statekeyshort_cache_capacity = varies by system
 
 # This item is undocumented. Please contribute documentation for it.
@@ -225,6 +221,11 @@
 # This item is undocumented. Please contribute documentation for it.
 #
 #stateinfo_cache_capacity = varies by system
+
+# Maximum entries in the LtHash lattice cache (MSC4500).
+# Each entry is 2 KiB; default 512 ≈ 1 MiB.
+#
+#lthash_cache_capacity = 512
 
 # This item is undocumented. Please contribute documentation for it.
 #
@@ -2273,6 +2274,10 @@
 # MSC4222: state_after in sync v2
 #
 #msc4222_enabled = false
+
+# MSC4500: State Accumulators
+#
+#msc4500_enabled = true
 
 #[global.smtp]
 
