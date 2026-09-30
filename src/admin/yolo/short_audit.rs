@@ -391,15 +391,15 @@ async fn canonical_bits(services: &Services, words: usize) -> (Bits, u64) {
 	let mut bits = vec![0_u64; words];
 	let mut count = 0_u64;
 
-	let keys = pdu.raw_keys().chunks(1024);
+	// The item lifetime of `Map::raw_keys`/`raw_stream` is unsafely extended to
+	// the map (see `crate::stream`), so its slices are only valid until the
+	// cursor advances. Copy each key to an owned buffer as it is produced, before
+	// any chunking; collecting the borrowed keys first would retain 1024 aliases
+	// of the cursor buffer and collapse every chunk to one key.
+	let keys = pdu.raw_keys().ignore_err().map(<[u8]>::to_vec).chunks(1024);
 	pin_mut!(keys);
 
-	while let Some(chunk) = keys.next().await {
-		let ids: Vec<Vec<u8>> = chunk
-			.into_iter()
-			.filter_map(Result::ok)
-			.map(<[u8]>::to_vec)
-			.collect();
+	while let Some(ids) = keys.next().await {
 		if ids.is_empty() {
 			continue;
 		}
@@ -612,6 +612,19 @@ fn consistency_error(audit: &DerivedIndexAudit, canonical_not_fwd: u64) -> Optio
 		errors.push(format!(
 			"canonical distinct shorts ({}) exceed successful lookups ({})",
 			audit.canonical_bits, audit.canonical_events
+		));
+	}
+
+	// `eventid_pdu` is a bijection: each resolved event id must yield a distinct
+	// short. A large excess of lookups over distinct shorts means the canonical
+	// bitmap collapsed (e.g. cursor-buffer aliasing) and every downstream stale
+	// count is meaningless.
+	let duplicate_shorts = audit.canonical_events.saturating_sub(audit.canonical_bits);
+	if duplicate_shorts > 0 {
+		errors.push(format!(
+			"canonical lookups ({}) resolved to only {} distinct shorts ({} duplicate \
+			 assignments)",
+			audit.canonical_events, audit.canonical_bits, duplicate_shorts
 		));
 	}
 
