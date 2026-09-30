@@ -299,7 +299,7 @@ async fn build_state_and_timeline(
 		build_timeline(services, sync_context, room_id, joined_since_last_sync).await?;
 
 	let (state_events, state_after, (notification_counts, unread_thread_notifications)) =
-		try_join3(
+		Box::pin(try_join3(
 			build_state_events(
 				services,
 				sync_context,
@@ -310,7 +310,7 @@ async fn build_state_and_timeline(
 			),
 			build_state_after(services, sync_context, room_id, roothandles.clone(), &timeline),
 			build_notification_counts(services, sync_context, room_id, &timeline),
-		)
+		))
 		.await?;
 
 	debug!(
