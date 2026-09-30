@@ -2624,6 +2624,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					serialized.as_slice(),
 				);
 			}
+			roothandle_map.apply_batch(batch);
+			batch = conduwuit_database::Batch::new();
 			post_state_events.clear();
 			pending_events = 0;
 		}

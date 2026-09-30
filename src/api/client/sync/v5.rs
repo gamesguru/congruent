@@ -2016,7 +2016,7 @@ where
 		let since_root_handle = services
 			.rooms
 			.timeline
-			.next_root_handle(room_id, PduCount::Normal(globalsince))
+			.prev_root_handle(room_id, PduCount::Normal(globalsince.saturating_add(1)))
 			.await
 			.ok();
 

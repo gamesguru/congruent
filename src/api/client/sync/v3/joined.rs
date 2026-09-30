@@ -587,7 +587,7 @@ async fn build_state_events(
 			if let Ok(root_handle) = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle_after_event(&pdu.event_id)
+				.pdu_roothandle_before_event(room_id, &pdu.event_id)
 				.await
 			{
 				// The state before the first timeline event is only empty when the first

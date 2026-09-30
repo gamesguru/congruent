@@ -222,31 +222,43 @@ impl Service {
 		// resolve PDUs
 		let mut added_pdus = Vec::with_capacity(added.len());
 		for (_k, event_id) in added {
-			let event_id_obj = self
+			let Ok(event_id_obj) = self
 				.services
 				.short
 				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await?;
-			let pdu = self
+				.await
+			else {
+				continue;
+			};
+			let Ok(pdu) = self
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await?;
+				.await
+			else {
+				continue;
+			};
 			added_pdus.push(Arc::new(pdu));
 		}
 
 		let mut removed_pdus = Vec::with_capacity(removed.len());
 		for (_k, event_id) in removed {
-			let event_id_obj = self
+			let Ok(event_id_obj) = self
 				.services
 				.short
 				.get_eventid_from_short::<OwnedEventId>(event_id)
-				.await?;
-			let pdu = self
+				.await
+			else {
+				continue;
+			};
+			let Ok(pdu) = self
 				.services
 				.timeline
 				.get_pdu_in_room(Some(room_id), &event_id_obj)
-				.await?;
+				.await
+			else {
+				continue;
+			};
 			removed_pdus.push(Arc::new(pdu));
 		}
 
