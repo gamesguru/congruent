@@ -47,21 +47,20 @@ pub async fn send_message_event_helper(
 			.insert("transaction_id".to_owned(), txn_id.to_string().into());
 	}
 
-	let event_id = self
-		.build_and_append_pdu(
-			PduBuilder {
-				event_type: event_type.to_string().into(),
-				content,
-				state_key: None,
-				redacts: None,
-				timestamp,
-				unsigned,
-			},
-			sender,
-			Some(room_id),
-			state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(self.build_and_append_pdu(
+		PduBuilder {
+			event_type: event_type.to_string().into(),
+			content,
+			state_key: None,
+			redacts: None,
+			timestamp,
+			unsigned,
+		},
+		sender,
+		Some(room_id),
+		state_lock,
+	))
+	.await?;
 
 	Ok(event_id)
 }
@@ -108,21 +107,20 @@ pub async fn send_state_event_for_key_helper(
 	let content = serde_json::from_str(content.json().get())
 		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
 
-	let event_id = self
-		.build_and_append_pdu(
-			PduBuilder {
-				event_type: event_type.to_string().into(),
-				content,
-				state_key: Some(state_key.into()),
-				redacts: None,
-				timestamp,
-				unsigned,
-			},
-			sender,
-			Some(room_id),
-			state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(self.build_and_append_pdu(
+		PduBuilder {
+			event_type: event_type.to_string().into(),
+			content,
+			state_key: Some(state_key.into()),
+			redacts: None,
+			timestamp,
+			unsigned,
+		},
+		sender,
+		Some(room_id),
+		state_lock,
+	))
+	.await?;
 
 	Ok(event_id)
 }

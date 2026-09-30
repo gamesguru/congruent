@@ -408,11 +408,11 @@ Applied to `src/service/rooms/timeline/append.rs`'s `append_incoming_pdu`,
 staged, **not yet run against Complement**:
 
 ```diff
- 	if soft_fail {
+	if soft_fail {
 -		self.clear_outlier_flag(pdu.event_id());
- 		self.services
- 			.pdu_metadata
- 			.unmark_event_rejected(pdu.event_id());
+		self.services
+			.pdu_metadata
+			.unmark_event_rejected(pdu.event_id());
 ```
 
 **Why it's a real bug independent of whether it's this bug's cause:**

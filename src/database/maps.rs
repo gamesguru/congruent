@@ -453,6 +453,12 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::SEQUENTIAL
 	},
 	Descriptor {
+		name: "shortstatehash_lthash",
+		key_size_hint: Some(8),
+		val_size_hint: Some(2048),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
 		name: "shortstatehash_statediff",
 		key_size_hint: Some(8),
 		..descriptor::SEQUENTIAL_SMALL

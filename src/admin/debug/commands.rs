@@ -959,7 +959,8 @@ pub(crate) async fn force_set_state(
 		shortstatehash: short_state_hash,
 		added,
 		removed,
-	} = self
+	} = Box::pin(
+		self
 		.services
 		.rooms
 		.state_compressor
@@ -968,8 +969,9 @@ pub(crate) async fn force_set_state(
 		// load_shortstatehash_info, which hangs on rooms with deep history.
 		// save_state_as_root checks the stateinfo_cache (O(1)) and falls back to
 		// writing the full state as a fresh root, completing in O(state_size).
-		.save_state_as_root(room_id.clone().as_ref(), new_room_state)
-		.await?;
+		.save_state_as_root(room_id.clone().as_ref(), new_room_state),
+	)
+	.await?;
 
 	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
 

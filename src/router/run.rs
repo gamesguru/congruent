@@ -70,7 +70,7 @@ pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 	debug!("Starting...");
 
-	let services = Services::build(server).await?.start().await?;
+	let services = Box::pin(Services::build(server).await?.start()).await?;
 
 	services.rooms.outlier.startup_janitor().await;
 

@@ -34,23 +34,20 @@ pub(crate) async fn unban_user_route(
 		)));
 	}
 
-	services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(body.user_id.to_string(), &RoomMemberEventContent {
-				membership: MembershipState::Leave,
-				reason: body.reason.clone(),
-				join_authorized_via_users_server: None,
-				third_party_invite: None,
-				is_direct: None,
-				..current_member_content
-			}),
-			sender_user,
-			Some(&body.room_id),
-			&state_lock,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(body.user_id.to_string(), &RoomMemberEventContent {
+			membership: MembershipState::Leave,
+			reason: body.reason.clone(),
+			join_authorized_via_users_server: None,
+			third_party_invite: None,
+			is_direct: None,
+			..current_member_content
+		}),
+		sender_user,
+		Some(&body.room_id),
+		&state_lock,
+	))
+	.await?;
 
 	drop(state_lock);
 

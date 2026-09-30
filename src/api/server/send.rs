@@ -42,7 +42,10 @@ use ruma::{
 		},
 	},
 	encryption::DeviceKeys,
-	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
+	events::{
+		StateEventType,
+		receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
+	},
 	int,
 	serde::Raw,
 	to_device::DeviceIdOrAllDevices,
@@ -57,6 +60,13 @@ use crate::Ruma;
 
 type ResolvedMap = BTreeMap<OwnedEventId, Result>;
 type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct StateHashInfo {
+	algorithm: Option<String>,
+	after: String,
+}
 
 /// # `PUT /_matrix/federation/v1/send/{txnId}`
 ///
@@ -334,17 +344,124 @@ async fn process_inbound_transaction(
 		);
 	}
 
-	// Bundle response
 	let response = send_transaction_message::v1::Response {
 		pdus: results
 			.into_iter()
-			.map(|(e, r)| (e, r.map_err(error::sanitized_message)))
+			.map(|(event_id, result)| (event_id, result.map_err(error::sanitized_message)))
 			.collect(),
 	};
 
 	services
 		.transactions
 		.finish_federation_txn(txn_key, sender, response);
+}
+
+#[allow(dead_code)]
+async fn inject_state_hash_mismatches(
+	services: &crate::State,
+	body: &Ruma<send_transaction_message::v1::Request>,
+	response_json: &mut serde_json::Value,
+) {
+	let Some(json) = &body.json_body else { return };
+	let Some(obj) = json.as_object() else { return };
+	let Some(hashes) = obj.get("tk.nutra.msc4500.state_hashes") else { return };
+
+	let Ok(state_hashes) =
+		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
+	else {
+		return;
+	};
+	let Some(pdus_obj) = response_json
+		.get_mut("pdus")
+		.and_then(|p| p.as_object_mut())
+	else {
+		return;
+	};
+
+	for (event_id, hash_info) in state_hashes {
+		// Skip validation for unrecognized algorithms to support future agility
+		if let Some(ref algo) = hash_info.algorithm {
+			if algo != "lthash16" {
+				info!(
+					target: "state_hashes",
+					event_id = ?event_id,
+					"skipping state hash validation for unrecognized algorithm"
+				);
+				continue;
+			}
+		}
+		let Some(pdu_res) = pdus_obj
+			.get_mut(event_id.as_str())
+			.and_then(|p| p.as_object_mut())
+		else {
+			continue;
+		};
+		if pdu_res.contains_key("error") {
+			continue;
+		}
+
+		let Some(after_digest) = compute_receiver_after_digest(services, &event_id).await else {
+			continue;
+		};
+
+		if after_digest != hash_info.after {
+			pdu_res.insert(
+				"state_hash_mismatch".to_owned(),
+				serde_json::json!({
+					"algorithm": "lthash16",
+					"digest": after_digest
+				}),
+			);
+		}
+	}
+}
+
+/// Compute the "after" digest for a received event by applying its state
+/// delta to the before-state LtHash.  `pdu_shortstatehash` returns the state
+/// snapshot *before* the event, so for state events we must remove the
+/// previous event at (type, state_key) and insert the new one.
+#[allow(dead_code)]
+async fn compute_receiver_after_digest(
+	services: &crate::State,
+	event_id: &OwnedEventId,
+) -> Option<String> {
+	let sstatehash = services
+		.rooms
+		.state_accessor
+		.pdu_shortstatehash(event_id)
+		.await
+		.ok()?;
+	let lthash_before = services
+		.rooms
+		.state_compressor
+		.get_lthash(sstatehash)
+		.await
+		.ok()?;
+
+	// Check if this is a state event that modifies the hash
+	let pdu = services.rooms.timeline.get_pdu(event_id).await.ok()?;
+	if let Some(state_key) = &pdu.state_key {
+		let ev_type = StateEventType::from(pdu.kind.to_string().as_str());
+		let ev_type_str = pdu.kind.to_string();
+		let mut lthash_after = lthash_before;
+
+		// Remove old event at this (type, state_key) if one exists
+		if let Ok(old_event_id) = services
+			.rooms
+			.state_accessor
+			.state_get_id::<OwnedEventId>(sstatehash, &ev_type, state_key)
+			.await
+		{
+			lthash_after.remove(&ev_type_str, state_key, &old_event_id);
+		}
+
+		// Insert the new event
+		lthash_after.insert(&ev_type_str, state_key, event_id);
+		Some(super::state_accumulator::serialize_lthash(&lthash_after).1)
+	} else {
+		// Non-state event: after == before
+		Some(super::state_accumulator::serialize_lthash(&lthash_before).1)
+	}
 }
 
 /// Handles a failed federation transaction by sending the error through

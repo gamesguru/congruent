@@ -226,6 +226,11 @@
 #
 #stateinfo_cache_capacity = varies by system
 
+# Maximum entries in the LtHash lattice cache (MSC4500).
+# Each entry is 2 KiB; default 512 ≈ 1 MiB.
+#
+#lthash_cache_capacity = 512
+
 # This item is undocumented. Please contribute documentation for it.
 #
 #roomid_spacehierarchy_cache_capacity = varies by system

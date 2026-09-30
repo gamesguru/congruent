@@ -142,7 +142,7 @@ impl Services {
 			"Running database migrations... This may take a while depending on the database \
 			 size."
 		);
-		super::migrations::migrations(self)
+		Box::pin(super::migrations::migrations(self))
 			.await
 			.inspect_err(|e| error!("Migrations failed: {e}"))?;
 

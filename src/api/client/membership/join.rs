@@ -1105,11 +1105,13 @@ async fn join_room_by_id_helper_local(
 	};
 
 	// For non-restricted rooms, the local join is authoritative -- no fallback.
-	let event_id = services
-		.rooms
-		.timeline
-		.build_and_append_pdu(builder, sender_user, Some(room_id), &state_lock)
-		.await?;
+	let event_id = Box::pin(services.rooms.timeline.build_and_append_pdu(
+		builder,
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await?;
 
 	let pdu_id = services.rooms.timeline.get_pdu_id(&event_id).await?;
 

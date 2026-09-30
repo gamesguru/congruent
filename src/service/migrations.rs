@@ -83,7 +83,7 @@ pub(crate) async fn migrations(services: &Services) -> Result<()> {
 	}
 
 	if users_count > 0 {
-		migrate(services).await
+		Box::pin(migrate(services)).await
 	} else {
 		fresh(services).await
 	}
@@ -373,8 +373,11 @@ async fn migrate(services: &Services) -> Result<()> {
 			.map_err(|e| err!("Failed to run 'populate_pdu_count_in_metadata': {e}"))?;
 	}
 
+	// Version 20 - populate MSC4500 LtHash state accumulators
 	if services.globals.db.database_version().await < 20 {
-		services.globals.db.bump_database_version(20);
+		Box::pin(db_lt_20(services))
+			.await
+			.map_err(|e| err!("Failed to run v20 migrations: {e}"))?;
 	}
 
 	// v21 - delete the single-slot `EventStatus` model; verdicts live in the
@@ -2228,7 +2231,58 @@ async fn unify_raw_pdu_id_16_byte(services: &Services) -> Result<()> {
 		"RawPduId unification complete. Migrated {} PDUs ({} skipped, {} total).",
 		migrated, skipped, total
 	);
+
 	db["global"].insert(UNIFY_RAW_PDU_ID_MARKER, []);
+
+	Ok(())
+}
+
+async fn db_lt_20(services: &Services) -> Result<()> {
+	info!("Running v20 migration (populating LtHash state accumulators)...");
+	let db = &services.db;
+	let _cork = db.cork_and_sync();
+
+	let shortstatehash_statediff = db["shortstatehash_statediff"].clone();
+	let shortstatehash_lthash = db["shortstatehash_lthash"].clone();
+
+	let mut count = 0_usize;
+	let mut migrated = 0_usize;
+
+	let stream = shortstatehash_statediff.raw_stream();
+	pin_mut!(stream);
+
+	while let Some(result) = stream.next().await {
+		let (ssh_bytes, _) =
+			result.map_err(|e| err!(Database("v20 migration stream error: {e}")))?;
+		count = count.saturating_add(1);
+
+		let needs_compute = match shortstatehash_lthash.get_blocking(&ssh_bytes) {
+			| Ok(_) => false,
+			| Err(e) if e.is_not_found() => true,
+			| Err(e) =>
+				return Err!(Database("v20 migration failed reading shortstatehash_lthash: {e}")),
+		};
+		if needs_compute {
+			let ssh = conduwuit::utils::u64_from_bytes(ssh_bytes)
+				.map_err(|e| err!(Database("bad shortstatehash: {e}")))?;
+
+			let diff = services.rooms.state_compressor.get_statediff(ssh).await?;
+			services
+				.rooms
+				.state_compressor
+				.update_lthash(ssh, diff.parent, &diff.added, &diff.removed)
+				.await?;
+
+			migrated = migrated.saturating_add(1);
+			if migrated.is_multiple_of(1000) {
+				info!("LtHash population: processed {}/{} state groups...", migrated, count);
+			}
+		}
+	}
+
+	info!("LtHash population complete. Migrated {}/{} state groups.", migrated, count);
+
+	services.globals.db.bump_database_version(20);
 	Ok(())
 }
 

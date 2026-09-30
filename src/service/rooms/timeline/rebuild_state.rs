@@ -117,9 +117,13 @@ impl super::Service {
 
 		// Phase 5: Final multi-head extremity merge
 		eprintln!("[rebuild_state] Phase 5: merge extremities...");
-		let current_shortstatehash = self
-			.rebuild_merge_extremities(room_id, &ctx, &event_ssh, current_shortstatehash)
-			.await?;
+		let current_shortstatehash = Box::pin(self.rebuild_merge_extremities(
+			room_id,
+			&ctx,
+			&event_ssh,
+			current_shortstatehash,
+		))
+		.await?;
 		eprintln!("[rebuild_state] Phase 5 done");
 
 		// Phase 6: Apply final state
@@ -1031,12 +1035,13 @@ impl super::Service {
 		}
 
 		debug!("rebuild_state: merged state has {} entries", compressed.len());
-		let merged_ssh = self
-			.services
-			.state_compressor
-			.save_state(room_id, Arc::new(compressed))
-			.await?
-			.shortstatehash;
+		let merged_ssh = Box::pin(
+			self.services
+				.state_compressor
+				.save_state(room_id, Arc::new(compressed)),
+		)
+		.await?
+		.shortstatehash;
 
 		Ok(merged_ssh)
 	}

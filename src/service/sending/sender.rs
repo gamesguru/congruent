@@ -11,11 +11,7 @@ use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
 	trace,
-	utils::{
-		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
-		future::TryExtExt,
-		stream::{BroadbandExt, IterStream, WidebandExt},
-	},
+	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
 	warn,
 };
 use futures::{
@@ -25,8 +21,8 @@ use futures::{
 	stream::FuturesUnordered,
 };
 use ruma::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
+	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
 	api::{
 		appservice::event::push_events::v1::EphemeralData,
 		federation::transactions::{
@@ -39,8 +35,8 @@ use ruma::{
 	},
 	device_id,
 	events::{
-		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType, push_rules::PushRulesEvent,
-		receipt::ReceiptType,
+		AnySyncEphemeralRoomEvent, GlobalAccountDataEventType, StateEventType,
+		push_rules::PushRulesEvent, receipt::ReceiptType,
 	},
 	push,
 	serde::Raw,
@@ -56,6 +52,134 @@ enum TransactionStatus {
 	Failed(u32, Instant), // number of times failed, time of last failure
 	Retrying(u32),        // number of times failed
 	Cooldown(Instant),
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct StateHashInfo {
+	algorithm: String,
+	before: String,
+	after: String,
+}
+
+#[derive(Clone, Debug)]
+struct Msc4500SendTransactionRequest {
+	inner: send_transaction_message::v1::Request,
+	state_hashes: BTreeMap<OwnedEventId, StateHashInfo>,
+}
+
+impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
+	type EndpointError =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::EndpointError;
+	type IncomingResponse =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::IncomingResponse;
+
+	const METADATA: ruma::api::Metadata =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::METADATA;
+
+	fn try_into_http_request<T: Default + bytes::BufMut>(
+		self,
+		base_url: &str,
+		access_token: ruma::api::SendAccessToken<'_>,
+		considering_versions: &'_ [ruma::api::MatrixVersion],
+	) -> core::result::Result<http::Request<T>, ruma::api::error::IntoHttpError> {
+		let req = self.inner.try_into_http_request::<Vec<u8>>(
+			base_url,
+			access_token,
+			considering_versions,
+		)?;
+		let (parts, body) = req.into_parts();
+
+		let mut json: serde_json::Value =
+			serde_json::from_slice(&body).expect("Ruma request body should be valid JSON");
+
+		if let Some(obj) = json.as_object_mut() {
+			if !self.state_hashes.is_empty() {
+				let state_hashes_val = serde_json::to_value(self.state_hashes).unwrap();
+				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
+			}
+		}
+
+		let new_body_bytes = serde_json::to_vec(&json).unwrap();
+		let mut new_body_t = T::default();
+		new_body_t.put_slice(&new_body_bytes);
+
+		Ok(http::Request::from_parts(parts, new_body_t))
+	}
+}
+
+pub(crate) fn serialize_lthash(lthash: &rezzy::LtHash) -> (String, String) {
+	let mut bytes = vec![0_u8; 2048];
+	for (i, val) in lthash.0.iter().enumerate() {
+		let le = val.to_le_bytes();
+		bytes[i.saturating_mul(2)] = le[0];
+		bytes[i.saturating_mul(2).saturating_add(1)] = le[1];
+	}
+	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
+
+	let mut digest = String::with_capacity(64);
+	for b in lthash.digest() {
+		use std::fmt::Write;
+		write!(&mut digest, "{b:02x}").unwrap();
+	}
+
+	(lattice, digest)
+}
+
+async fn compute_outbound_state_hashes(
+	services: &super::Services,
+	pdus: &[(OwnedEventId, CanonicalJsonObject)],
+) -> BTreeMap<OwnedEventId, StateHashInfo> {
+	let mut state_hashes = BTreeMap::new();
+	for (event_id, value) in pdus {
+		if let Some(hash_info) = compute_state_hash_for_pdu(services, event_id, value).await {
+			state_hashes.insert(event_id.clone(), hash_info);
+		}
+	}
+	state_hashes
+}
+
+async fn compute_state_hash_for_pdu(
+	services: &super::Services,
+	event_id: &OwnedEventId,
+	value: &CanonicalJsonObject,
+) -> Option<StateHashInfo> {
+	let sstatehash_before = services
+		.state_accessor
+		.pdu_shortstatehash(event_id)
+		.await
+		.ok()?;
+	let lthash_before = services
+		.state_compressor
+		.get_lthash(sstatehash_before)
+		.await
+		.ok()?;
+	let before_digest = serialize_lthash(&lthash_before).1;
+
+	let mut after_digest = before_digest.clone();
+
+	if let Some(state_key) = value.get("state_key").and_then(|k| k.as_str()) {
+		if let Some(ev_type_str) = value.get("type").and_then(|t| t.as_str()) {
+			let ev_type = StateEventType::from(ev_type_str);
+			let mut lthash_after = lthash_before;
+
+			if let Ok(old_event_id) = services
+				.state_accessor
+				.state_get_id::<OwnedEventId>(sstatehash_before, &ev_type, state_key)
+				.await
+			{
+				lthash_after.remove(ev_type_str, state_key, &old_event_id);
+			}
+
+			lthash_after.insert(ev_type_str, state_key, event_id);
+			after_digest = serialize_lthash(&lthash_after).1;
+		}
+	}
+
+	Some(StateHashInfo {
+		algorithm: "lthash16".to_owned(),
+		before: before_digest,
+		after: after_digest,
+	})
 }
 
 type SendingError = Box<(Destination, Error)>;
@@ -1195,17 +1319,32 @@ impl Service {
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
 	) -> SendingResult {
-		let pdus: Vec<_> = events
-			.iter()
-			.filter_map(|pdu| match pdu {
-				| SendingEvent::Pdu(pdu) => Some(pdu),
-				| _ => None,
-			})
-			.stream()
-			.wide_filter_map(|pdu_id| self.services.timeline.get_pdu_json_from_id(pdu_id).ok())
-			.wide_then(|pdu| self.convert_to_outgoing_federation_event(pdu))
-			.collect()
-			.await;
+		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
+		for event in &events {
+			let SendingEvent::Pdu(pdu_id) = event else {
+				continue;
+			};
+
+			let Ok(pdu) = self.services.timeline.get_pdu_json_from_id(pdu_id).await else {
+				continue;
+			};
+			let Some(event_id) = pdu
+				.get("event_id")
+				.and_then(|id| id.as_str())
+				.and_then(|id| OwnedEventId::try_from(id).ok())
+			else {
+				continue;
+			};
+
+			source_pdus.push((event_id, pdu));
+		}
+
+		let state_hashes = compute_outbound_state_hashes(&self.services, &source_pdus).await;
+
+		let mut outbound_pdus: Vec<Box<RawJsonValue>> = Vec::with_capacity(source_pdus.len());
+		for (_, pdu) in source_pdus {
+			outbound_pdus.push(self.convert_to_outgoing_federation_event(pdu).await);
+		}
 
 		let edus: Vec<Raw<Edu>> = events
 			.iter()
@@ -1227,7 +1366,7 @@ impl Service {
 			.filter_map(Result::ok)
 			.collect();
 
-		if pdus.is_empty() && edus.is_empty() {
+		if outbound_pdus.is_empty() && edus.is_empty() {
 			if let Some(count) = edu_count {
 				info!(
 					target: "receipt_debug",
@@ -1271,7 +1410,7 @@ impl Service {
 		// Track federation stats
 		self.stats
 			.outgoing_pdus
-			.fetch_add(pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
+			.fetch_add(outbound_pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
 		let now = MilliSecondsSinceUnixEpoch::now();
@@ -1286,13 +1425,15 @@ impl Service {
 			transaction_id: txn_id.clone().into(),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
-			pdus,
+			pdus: outbound_pdus,
 			edus,
 		};
 
-		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
+
+		tracing::info!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
 		let result = self
-			.send_federation_request_on(&self.services.client.sender, &server, request)
+			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
 		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
