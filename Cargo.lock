@@ -1062,6 +1062,7 @@ dependencies = [
  "conduwuit_build_metadata",
  "conduwuit_core",
  "conduwuit_database",
+ "conduwuit_git_info",
  "conduwuit_macros",
  "conduwuit_router",
  "conduwuit_service",
@@ -1096,6 +1097,7 @@ dependencies = [
  "bincode",
  "clap",
  "conduwuit_api",
+ "conduwuit_build_metadata",
  "conduwuit_core",
  "conduwuit_database",
  "conduwuit_macros",
@@ -1183,7 +1185,6 @@ dependencies = [
  "checked_ops",
  "chrono",
  "clap",
- "conduwuit_build_metadata",
  "conduwuit_macros",
  "const-str",
  "core_affinity",
@@ -1257,6 +1258,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "conduwuit_git_info"
+version = "0.5.10"
 
 [[package]]
 name = "conduwuit_macros"
@@ -1382,7 +1387,6 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64 0.22.1",
- "conduwuit_build_metadata",
  "conduwuit_core",
  "conduwuit_service",
  "futures",

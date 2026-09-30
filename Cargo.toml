@@ -703,6 +703,11 @@ path = "src/web"
 default-features = false
 
 
+[workspace.dependencies.conduwuit-git-info]
+package = "conduwuit_git_info"
+path = "src/git_info"
+default-features = false
+
 [workspace.dependencies.conduwuit-build-metadata]
 package = "conduwuit_build_metadata"
 path = "src/build_metadata"

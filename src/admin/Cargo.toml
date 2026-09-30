@@ -80,6 +80,7 @@ bincode = "1.3.3"
 toml = { workspace = true, features = ["display"] }
 clap.workspace = true
 conduwuit-api.workspace = true
+conduwuit-build-metadata.workspace = true
 conduwuit-core.workspace = true
 conduwuit-database.workspace = true
 conduwuit-macros.workspace = true

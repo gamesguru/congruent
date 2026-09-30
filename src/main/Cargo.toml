@@ -220,6 +220,7 @@ conduwuit-database.workspace = true
 conduwuit-router.workspace = true
 conduwuit-service.workspace = true
 conduwuit-build-metadata.workspace = true
+conduwuit-git-info.workspace = true
 conduwuit-macros.workspace = true
 
 clap.workspace = true

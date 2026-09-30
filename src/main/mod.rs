@@ -36,11 +36,12 @@ pub use crate::clap::Args;
 
 pub fn run() -> Result<()> {
 	panic::init();
+	init_git_info();
 
 	let args = clap::parse();
 
 	if args.version_verbose {
-		let mut output = conduwuit_build_metadata::verbose_version();
+		let mut output = conduwuit_git_info::verbose_version();
 
 		let enabled = build_features::ENABLED_FEATURES;
 		output.push_str("\nenabled_features: ");
@@ -202,4 +203,20 @@ async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result
 
 	debug_info!("Exit runtime");
 	Ok(())
+}
+
+/// Hand the compile-time git info to core so the rest of the program can read
+/// it without depending on the crate that changes on every commit.
+fn init_git_info() {
+	use conduwuit_git_info as git;
+
+	conduwuit_core::info::git::set(conduwuit_core::info::git::GitInfo {
+		commit_hash: git::GIT_COMMIT_HASH,
+		commit_hash_short: git::GIT_COMMIT_HASH_SHORT,
+		version_extra: git::VERSION_EXTRA,
+		branch: git::GIT_BRANCH,
+		remote_url: git::GIT_REMOTE_URL,
+		remote_web_url: git::GIT_REMOTE_WEB_URL,
+		remote_commit_url: git::GIT_REMOTE_COMMIT_URL,
+	});
 }
