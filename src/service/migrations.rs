@@ -2686,7 +2686,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					.get_or_create_shorteventid(pdu.event_id())
 					.await
 					.to_be_bytes(),
-				&crate::rooms::state::root_handle_to_bytes(&current_root),
+				crate::rooms::state::root_handle_to_bytes(&current_root),
 			);
 		}
 		roothandle_map.apply_batch(event_batch);

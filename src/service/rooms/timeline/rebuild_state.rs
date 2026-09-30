@@ -518,7 +518,7 @@ impl super::Service {
 				};
 				let mut hash = rezzy::LtHash::default();
 				for ((event_type, state_key), event_id) in &state {
-					hash.insert(&event_type.to_string(), state_key, event_id);
+					hash.insert(event_type.as_ref(), state_key, event_id);
 				}
 				if abort {
 					break;

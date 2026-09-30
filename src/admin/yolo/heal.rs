@@ -118,12 +118,12 @@ pub(super) async fn rescue_room(
 		event_ids.len()
 	))
 	.await?;
-	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
-	let promoted = Box::pin(self.services.rooms.timeline.promote_outliers_sorted(
-		&room_id,
-		&event_ids,
-		&room_version,
-	))
+	let promoted = Box::pin(
+		self.services
+			.rooms
+			.timeline
+			.promote_outliers_sorted(&room_id, &event_ids),
+	)
 	.await?;
 
 	self.write_str(&format!("Promoted {promoted} events in room {room_id}."))

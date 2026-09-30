@@ -20,8 +20,8 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, RoomVersionId,
-	ServerName, UInt,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
+	UInt,
 	api::federation,
 	events::{
 		StateEventType,
@@ -460,7 +460,6 @@ pub async fn backfill_if_required(
 
 #[implement(super::Service)]
 async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
-	let room_version = self.services.state.get_room_version(room_id).await?;
 	let state_pdus = self
 		.services
 		.state_accessor
@@ -549,7 +548,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		return Ok(0);
 	}
 
-	self.promote_outliers_sorted(room_id, &outlier_state_event_ids, &room_version)
+	self.promote_outliers_sorted(room_id, &outlier_state_event_ids)
 		.await
 }
 
@@ -1213,8 +1212,8 @@ async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) ->
 }
 
 /// Promote a batch of outlier events into the backfilled timeline in
-/// topological order (ancestors before descendants). Uses rezzy's Kahn sort
-/// to order events by their DAG structure.
+/// topological order (ancestors before descendants), using event depth as the
+/// ordering key for the fetched batch.
 ///
 /// This is called during `/send_join` to make auth chain + state events
 /// visible when users scroll up. Events already in the timeline are skipped.
@@ -1223,7 +1222,6 @@ pub async fn promote_outliers_sorted(
 	&self,
 	room_id: &RoomId,
 	event_ids: &[OwnedEventId],
-	room_version: &RoomVersionId,
 ) -> Result<usize> {
 	use conduwuit_core::debug;
 
