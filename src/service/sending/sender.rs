@@ -77,8 +77,8 @@ impl Service {
 	pub(super) async fn sender(self: Arc<Self>, id: usize) -> Result {
 		// In maintenance mode (listening=false), skip all outbound federation.
 		// Queued transactions are preserved and will drain on normal boot.
-		if !self.server.config.listening {
-			info!("sender[{id}]: maintenance mode, skipping outbound federation");
+		if self.server.is_maintenance() {
+			debug!("sender[{id}]: maintenance mode, skipping outbound federation");
 			return Ok(());
 		}
 
