@@ -5,10 +5,10 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Result, debug, debug_info, err, implement, info, is_equal_to,
+	Err, Result, debug, debug_info, err, implement, info,
 	matrix::{Event, EventTypeExt, PduEvent, StateKey, state_res},
 	trace,
-	utils::stream::{BroadbandExt, IterStream, ReadyExt},
+	utils::stream::IterStream,
 	warn,
 };
 use futures::{StreamExt, future::ready};
@@ -201,36 +201,6 @@ where
 		false
 	};
 
-	// Now we calculate the set of extremities this room has after the incoming
-	// event has been applied. We start with the previous extremities (aka leaves)
-	trace!("Calculating extremities");
-	let mut extremities: Vec<_> = self
-		.services
-		.state
-		.get_forward_extremities(room_id)
-		.ready_filter(|event_id| {
-			// Remove any that are referenced by this incoming event's prev_events
-			!incoming_pdu.prev_events().any(is_equal_to!(event_id))
-		})
-		.broad_filter_map(|event_id| async move {
-			// Only keep those extremities were not referenced yet
-			self.services
-				.pdu_metadata
-				.is_event_referenced(room_id, &event_id)
-				.await
-				.eq(&false)
-				.then_some(event_id)
-		})
-		.collect()
-		.await;
-	extremities.push(incoming_pdu.event_id().to_owned());
-
-	debug!(
-		"Retained {} extremities checked against {} prev_events",
-		extremities.len(),
-		incoming_pdu.prev_events().count()
-	);
-
 	let mut new_room_state: Option<rezzy::hamt::RootHandle> = None;
 	let mut previous_root_handle: Option<rezzy::hamt::RootHandle> = None;
 
@@ -343,6 +313,39 @@ where
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
 	};
+
+	// Now we calculate the set of extremities this room has after the incoming
+	// event has been applied, using the final soft-fail decision. Soft-failed
+	// events must not modify the DAG tip set, and an ancestor being upgraded
+	// only becomes a tip when it would otherwise leave the set empty.
+	trace!("Calculating extremities");
+	let current_extremities: Vec<OwnedEventId> = self
+		.services
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	let prev_events: Vec<&ruma::EventId> = incoming_pdu.prev_events().collect();
+	let room_id_owned = room_id.to_owned();
+	let is_referenced = |event_id: &ruma::EventId| {
+		let eid = event_id.to_owned();
+		let rid = room_id_owned.clone();
+		async move {
+			self.services
+				.pdu_metadata
+				.is_event_referenced(&rid, &eid)
+				.await
+		}
+	};
+	let extremities = super::extremities::calculate_forward_extremities(
+		current_extremities,
+		incoming_pdu.event_id(),
+		&prev_events,
+		soft_fail,
+		is_referenced,
+		is_timeline_event,
+	)
+	.await;
 
 	if soft_fail {
 		info!(

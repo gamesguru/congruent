@@ -145,8 +145,8 @@ async fn test_force_state() {
 	let room_id = owned_room_id!("!test:test.conduwuit.local");
 
 	let dummy_root = rezzy::hamt::RootHandle {
-		codec_version: rezzy::hamt::HAMT_CODEC_VERSION_V1,
-		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION_V1,
+		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
+		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
 		routing_params: [0; 4],
 		structural_hash: rezzy::hamt::StructuralHash::default(),
 		state_group_id: [0_u8; 32],
