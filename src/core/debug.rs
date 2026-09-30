@@ -53,7 +53,7 @@ macro_rules! debug_info {
 	}
 }
 
-pub const INFO_SPAN_LEVEL: Level = if cfg!(debug_assertions) {
+pub const INFO_SPAN_LEVEL: Level = if logging() {
 	Level::INFO
 } else {
 	Level::DEBUG
@@ -113,4 +113,4 @@ pub fn type_name<T: ?Sized>() -> &'static str { std::any::type_name::<T>() }
 
 #[must_use]
 #[inline]
-pub const fn logging() -> bool { cfg!(debug_assertions) }
+pub const fn logging() -> bool { true }
