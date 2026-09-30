@@ -12,9 +12,16 @@ build = "build.rs"
 
 [lib]
 path = "mod.rs"
+test = false
+doctest = false
 crate-type = [
     "rlib",
 ]
+
+[[bin]]
+name = "version"
+path = "src/bin/version.rs"
+test = false
 
 [dependencies]
 
