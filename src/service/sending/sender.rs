@@ -136,20 +136,35 @@ async fn compute_state_hash_for_pdu(
 	event_id: &OwnedEventId,
 	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
-	let Ok(root_handle) = services.state_accessor.pdu_roothandle(event_id).await else {
-		warn!(event_id = %event_id, "failed to resolve outbound state hash root");
-		return None;
-	};
+	use conduwuit::Event;
 
-	let mut after = String::with_capacity(64);
-	for b in root_handle.state_group_id {
-		use std::fmt::Write;
-		let _ = write!(&mut after, "{b:02x}");
+	// The per-event root is the post-event state, which is the state whose
+	// digest is sent alongside this PDU. Build the same LtHash representation
+	// used by the receiving endpoint so both sides compare identical values.
+	let root_handle = services
+		.state_accessor
+		.pdu_roothandle(event_id)
+		.await
+		.ok()?;
+	let entries: Vec<(String, String, OwnedEventId)> = services
+		.state_accessor
+		.state_full_pdus_hamt(root_handle)
+		.filter_map(|pdu| async move {
+			let state_key = pdu.state_key()?.to_owned();
+			Some((pdu.kind().to_string(), state_key, pdu.event_id().to_owned()))
+		})
+		.collect()
+		.await;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	for (event_type, state_key, state_event_id) in &entries {
+		lattice.insert(event_type, state_key, state_event_id.as_str());
 	}
 
+	let digest = conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1;
 	Some(StateHashInfo {
 		algorithm: "lthash16-v1".to_owned(),
-		after,
+		after: digest,
 	})
 }
 

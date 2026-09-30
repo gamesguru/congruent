@@ -95,17 +95,15 @@ roomid_roothandle ─ root_handle ─ get_node(structural_hash) ─ root node
   filter". The existing benches (`hamt_point_lookups`) already exercise the
   dedicated search path; consumers should use it rather than
   `load_full_state_hamt`.
-- **`state_is_empty_hamt`** currently materializes the whole map
-  (`load_full_state_hamt`) just to check `.is_empty()`. A structural check on
-  the root hash would be O(1). Flagged as a future optimization in the code
-  (`state_accessor/state.rs`).
+- **`state_is_empty_hamt`** performs an O(1) structural check on the root
+  node's data and child bitmaps; it does not materialize the whole map.
 
 ## Public-consumer status (as of PR #89 head)
 
 The cloud-facing readers all resolve a `RootHandle` (via `get_room_state_hamt`
 or a timeline root handle) and read through the `*_hamt` accessors:
 
-- `src/api/client/sync/v3/joined.rs:452/961` and `sync/v5.rs:1889` — sync room
+- `src/api/client/sync/v3/joined.rs:455/961` and `sync/v5.rs:1910` — sync room
   state via `get_room_state_hamt` / `state_full_shortids_hamt`.
 - `src/api/client/sync/v3/left.rs` — left-room boundary via per-event root
   handles.

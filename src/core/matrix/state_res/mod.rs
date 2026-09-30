@@ -205,6 +205,9 @@ where
 				if let Some(cb) = event_missing_cb {
 					cb(missing);
 				}
+				return Err(Error::InvalidPdu(
+					"Cannot resolve state with missing auth events".to_owned(),
+				));
 			}
 			(csg, HashMap::new())
 		} else {
@@ -675,10 +678,21 @@ where
 		}
 	}
 
-	// Forwards BFS: walk reverse-auth edges from conflicted events
+	// Forwards BFS: walk reverse-auth edges from the roots of the traversed
+	// auth graph. The collected edges point from auth ancestors to their
+	// children, so starting at conflicted events walks in the wrong direction.
 	let mut forwards_reachable = HashSet::new();
-	let mut f_queue: std::collections::VecDeque<OwnedEventId> =
-		conflicted_events.iter().cloned().collect();
+	let mut f_queue: std::collections::VecDeque<OwnedEventId> = backwards_reachable
+		.iter()
+		.filter(|id| {
+			!backwards_reachable.iter().any(|other| {
+				children_map
+					.get(other)
+					.is_some_and(|children| children.contains(*id))
+			})
+		})
+		.cloned()
+		.collect();
 
 	while let Some(event_id) = f_queue.pop_front() {
 		if !forwards_reachable.insert(event_id.clone()) {

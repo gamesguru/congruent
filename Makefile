@@ -161,7 +161,7 @@ format: ##H Run pre-commit hooks/formatters
 
 .PHONY: check
 check:   ##H Run cargo check
-	@echo "Lint code? PROFILE='$(PROFILE)'"
+	@echo "Run cargo check? PROFILE='$(PROFILE)'"
 	@$(MAKE) _confirm
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
@@ -170,7 +170,7 @@ check:   ##H Run cargo check
 		AWS_LC_SYS_INCLUDES="$(PREFIX)/include" \
 		AWS_LC_RS_NO_BUNDLE=1 \
 		AWS_LC_RS_PREBUILT_PATH=$(PREFIX) \
-		cargo check
+		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
 
 .PHONY: lint
 lint:   ##H Lint code

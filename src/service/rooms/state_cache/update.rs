@@ -973,6 +973,7 @@ pub async fn update_caches_for_state_delta(
 	added_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
 ) -> Result<()> {
 	let mut memberships_changed = false;
+	let mut users_to_mark_left = Vec::new();
 
 	// 1. Invalidate derived caches for removed events.
 	for pdu in removed_events {
@@ -1025,14 +1026,17 @@ pub async fn update_caches_for_state_delta(
 					},
 					| Err(e) if e.is_not_found() => {
 						// The user has no member event in the new state at all.
-						self.mark_as_left(target_user_id, room_id, None).await;
-						memberships_changed = true;
+						users_to_mark_left.push(target_user_id.to_owned());
 					},
 					| Err(e) => return Err(e),
 				}
 			},
 			| _ => {},
 		}
+	}
+	for user_id in users_to_mark_left {
+		self.mark_as_left(&user_id, room_id, None).await;
+		memberships_changed = true;
 	}
 
 	// 2. Process added/changed events normally

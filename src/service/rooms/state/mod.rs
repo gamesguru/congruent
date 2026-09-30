@@ -136,7 +136,11 @@ impl Service {
 		new_root_handle: &rezzy::hamt::RootHandle,
 		state_lock: &RoomMutexGuard,
 	) -> Result<()> {
-		let current_root = self.get_room_state_hamt(room_id).await.ok();
+		let current_root = match self.get_room_state_hamt(room_id).await {
+			| Ok(root) => Some(root),
+			| Err(error) if error.is_not_found() => None,
+			| Err(error) => return Err(error),
+		};
 
 		Box::pin(self.update_caches_for_state_delta_between(
 			room_id,
@@ -265,7 +269,19 @@ impl Service {
 		new_pdu: &PduEvent,
 		state_lock: &RoomMutexGuard,
 	) -> Result<rezzy::hamt::RootHandle> {
-		Box::pin(self.set_event_state_with_root(room_id, new_pdu, state_lock, None, None)).await
+		let previous_root = match self.get_room_state_hamt(room_id).await {
+			| Ok(root) => Some(root),
+			| Err(error) if error.is_not_found() => None,
+			| Err(error) => return Err(error),
+		};
+		Box::pin(self.set_event_state_with_root(
+			room_id,
+			new_pdu,
+			state_lock,
+			None,
+			previous_root.as_ref(),
+		))
+		.await
 	}
 
 	#[tracing::instrument(skip_all, level = "debug")]

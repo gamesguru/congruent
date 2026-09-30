@@ -143,20 +143,24 @@ async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
 	let room_id = owned_room_id!("!test:test.conduwuit.local");
-
-	let dummy_root = rezzy::hamt::RootHandle {
-		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
-		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
-		routing_params: [0; 4],
-		structural_hash: rezzy::hamt::StructuralHash::default(),
-		state_group_id: [0_u8; 32],
-	};
+	let event = create_dummy_pdu(
+		&room_id,
+		&owned_event_id!("$force-state:test.conduwuit.local"),
+		"m.room.create",
+		"",
+	);
 
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let expected_root = services
+		.rooms
+		.state
+		.set_event_state(&room_id, &event, &mutex)
+		.await
+		.expect("set_event_state failed");
 	services
 		.rooms
 		.state
-		.force_state(&room_id, &dummy_root, &mutex)
+		.force_state(&room_id, &expected_root, &mutex)
 		.await
 		.expect("force_state failed");
 
@@ -166,8 +170,8 @@ async fn test_force_state() {
 		.get_room_state_hamt(&room_id)
 		.await
 		.expect("failed to get room state");
-	assert_eq!(retrieved_root.structural_hash, dummy_root.structural_hash);
-	assert_eq!(retrieved_root.state_group_id, dummy_root.state_group_id);
+	assert_eq!(retrieved_root.structural_hash, expected_root.structural_hash);
+	assert_eq!(retrieved_root.state_group_id, expected_root.state_group_id);
 }
 
 #[tokio::test(flavor = "multi_thread")]
