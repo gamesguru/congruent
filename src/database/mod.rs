@@ -90,4 +90,3 @@ impl Index<&str> for Database {
 	}
 }
 pub mod batch;
-pub use self::batch::Batch;

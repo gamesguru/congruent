@@ -2599,7 +2599,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	// flushed in bounded batches so the whole history is never held in memory.
 	let mut post_state_events: HashMap<ShortStateHash, Vec<ShortEventId>> = HashMap::new();
 	let mut pending_events = 0_usize;
-	let mut batch = conduwuit_database::Batch::new(&services.db["shorteventid_roothandle"]);
+	let roothandle_map = services.db["shorteventid_roothandle"].clone();
+	let mut batch = conduwuit_database::Batch::new();
 
 	let statediff_map = services.db["shortstatehash_statediff"].clone();
 	let mut diff_stream = statediff_map.raw_stream();
@@ -2622,10 +2623,10 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 			for (shorteventid, serialized) in
 				legacy_added_events_roothandles(services, &post_state_events).await?
 			{
-				batch.insert(
-					&services.db["shorteventid_roothandle"],
-					shorteventid.to_be_bytes(),
-					&serialized,
+				roothandle_map.batch_put(
+					&mut batch,
+					&shorteventid.to_be_bytes(),
+					serialized.as_slice(),
 				);
 			}
 			post_state_events.clear();
@@ -2637,14 +2638,14 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 		for (shorteventid, serialized) in
 			legacy_added_events_roothandles(services, &post_state_events).await?
 		{
-			batch.insert(
-				&services.db["shorteventid_roothandle"],
-				shorteventid.to_be_bytes(),
-				&serialized,
+			roothandle_map.batch_put(
+				&mut batch,
+				&shorteventid.to_be_bytes(),
+				serialized.as_slice(),
 			);
 		}
 	}
-	batch.commit();
+	roothandle_map.apply_batch(batch);
 
 	services.globals.db.bump_database_version(23);
 	Ok(())

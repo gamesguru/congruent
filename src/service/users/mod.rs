@@ -1669,7 +1669,6 @@ impl Service {
 		let key = (user_id, device_id);
 		self.db.userdeviceid_metadata.put(key, Json(device));
 
-		std::future::ready(()).await;
 		Ok(())
 	}
 

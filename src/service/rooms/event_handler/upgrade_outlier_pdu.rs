@@ -159,6 +159,7 @@ where
 				incoming_pdu.state_key(),
 				incoming_pdu.content(),
 				&room_version,
+				&room_version_id,
 			)
 			.await?;
 
@@ -207,7 +208,6 @@ where
 		.services
 		.state
 		.get_forward_extremities(room_id)
-		.map(ToOwned::to_owned)
 		.ready_filter(|event_id| {
 			// Remove any that are referenced by this incoming event's prev_events
 			!incoming_pdu.prev_events().any(is_equal_to!(event_id))
@@ -365,7 +365,10 @@ where
 		// Soft fail, we keep the event as an outlier but don't add it to the timeline
 		self.services
 			.pdu_metadata
-			.mark_event_soft_failed(incoming_pdu.event_id());
+			.mark_event_soft_failed(
+				incoming_pdu.event_id(),
+				crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
+			);
 
 		warn!(
 			event_id = %incoming_pdu.event_id,

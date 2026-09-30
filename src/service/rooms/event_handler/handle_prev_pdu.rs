@@ -156,10 +156,6 @@ where
 		origin,
 		room_id,
 		false,
-		false,
-		false,
-		None,
-		true,
 	))
 	.await?;
 

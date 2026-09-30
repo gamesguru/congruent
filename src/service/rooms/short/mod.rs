@@ -30,7 +30,6 @@ pub struct Service {
 		moka::sync::Cache<(StateEventType, StateKey), ShortStateKey>,
 	pub shortstatekey_statekey_cache:
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
-	pub shorteventid_shortstatehash_cache: moka::sync::Cache<ShortEventId, ShortStateHash>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 	shorteventid_create_mutex: SyncMutex<()>,
 }
@@ -105,9 +104,6 @@ impl crate::Service for Service {
 				.build(),
 			shortstatekey_statekey_cache: moka::sync::Cache::builder()
 				.max_capacity(shortstatekey_cap.into())
-				.build(),
-			shorteventid_shortstatehash_cache: moka::sync::Cache::builder()
-				.max_capacity(shorteventid_cap.into())
 				.build(),
 			leanevent_cache: moka::sync::Cache::builder()
 				.max_capacity(args.server.config.leanevent_cache_capacity.into())

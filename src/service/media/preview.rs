@@ -54,8 +54,7 @@ pub struct UrlPreviewData {
 #[implement(Service)]
 pub fn remove_url_preview(&self, url: &str) -> Result<()> {
 	// TODO: also remove the downloaded image
-	let result = self.db.remove_url_preview(url);
-	std::future::ready(result).await
+	self.db.remove_url_preview(url)
 }
 
 #[implement(Service)]
@@ -73,8 +72,7 @@ pub fn set_url_preview(&self, url: &str, data: &UrlPreviewData) -> Result<()> {
 		image_dimensions = ?data.image_width.zip(data.image_height),
 		"URL preview successfully generated",
 	);
-	let result = self.db.set_url_preview(url, data, now);
-	std::future::ready(result).await
+	self.db.set_url_preview(url, data, now)
 }
 
 #[implement(Service)]

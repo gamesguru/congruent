@@ -55,8 +55,8 @@ pub use self::{
 	repair_unsigned::update_unsigned_prev_content,
 };
 use crate::{
-	Dep, account_data, admin, appservice, config, globals, pusher, rooms,
-	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
+	Dep, account_data, admin, appservice, globals, pusher, rooms,
+	rooms::short::ShortEventId,
 	sending, server_keys, users,
 };
 
@@ -180,7 +180,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let config = &args.server.config;
 		let cache_capacity =
-			f64::from(config.shortstatehash_cache_capacity) * config.cache_capacity_modifier;
+			f64::from(config.shortstatekey_cache_capacity) * config.cache_capacity_modifier;
 		let cache_capacity = conduwuit_core::utils::math::usize_from_f64(cache_capacity)?;
 
 		Ok(Arc::new(Self {
@@ -921,46 +921,4 @@ impl Service {
 		self.db.multi_get_shortauthevents(shorteventids)
 	}
 
-	/// Coalesce a group of timeline writes into one flush boundary.
-	///
-	/// Used by federation intake so a room transaction's prev-event repairs
-	/// and the incoming event become visible together to `/sync`.
-	pub async fn with_cork_and_flush<R, F, Fut>(&self, f: F) -> R
-	where
-		F: FnOnce() -> Fut,
-		Fut: Future<Output = R>,
-	{
-		let _cork = self.db.db.cork_and_flush();
-		f().await
-	}
-
-	/// Coalesce a group of timeline writes without forcing a flush when `f`
-	/// completes. Unlike `with_cork_and_flush`, callers are expected to
-	/// either be nested inside an outer flush boundary or not need one
-	/// (e.g. batching outlier persistence ahead of a later
-	/// `with_cork_and_flush`) -- use this when per-write flushing, not
-	/// durability, is the problem being solved.
-	pub async fn with_cork<R, F, Fut>(&self, f: F) -> R
-	where
-		F: FnOnce() -> Fut,
-		Fut: Future<Output = R>,
-	{
-		let _cork = self.db.db.cork();
-		f().await
-	}
-
-	/// Briefly lift an enclosing `with_cork_and_flush` boundary around
-	/// `f`, so remote I/O run in the middle of a corked write phase (e.g.
-	/// federation fetches performed while resolving a prev-event's missing
-	/// state/auth events) doesn't suppress unrelated WAL flushes across the
-	/// whole server for the duration. The outer cork is restored once `f`
-	/// completes. Harmless to call when no cork is currently held.
-	pub async fn without_cork<R, F, Fut>(&self, f: F) -> R
-	where
-		F: FnOnce() -> Fut,
-		Fut: Future<Output = R>,
-	{
-		let _uncork = self.db.db.uncork_briefly();
-		f().await
-	}
 }

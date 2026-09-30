@@ -254,12 +254,7 @@ pub(super) async fn fetch_pdu(
 				&create_event,
 				&server,
 				&room_id,
-				false,
-				false, // historical/admin rescue; do not merge today's forward extremities
-				false,
-				None,
-				// No outer `with_cork_and_flush` on this admin path -- the
-				// timeline insert must flush itself.
+				// historical/admin rescue; not a live timeline tip
 				false,
 			),
 	)

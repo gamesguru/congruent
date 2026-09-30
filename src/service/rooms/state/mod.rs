@@ -37,8 +37,8 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 	}
 
 	Ok(rezzy::hamt::RootHandle {
-		codec_version: rezzy::hamt::HAMT_CODEC_VERSION_V1,
-		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION_V1,
+		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
+		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
 		routing_params: [0; 4],
 		structural_hash: bytes[0..STRUCTURAL_HASH_LEN]
 			.try_into()
@@ -298,7 +298,7 @@ impl Service {
 			(root, None)
 		};
 
-		let mut batch = conduwuit_database::Batch::new(&self.db.shorteventid_roothandle);
+		let mut batch = conduwuit_database::Batch::new();
 
 		if let Some(node) = new_node {
 			self.services
@@ -311,12 +311,16 @@ impl Service {
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
-		batch.insert(&self.db.shorteventid_roothandle, shorteventid.to_be_bytes(), &serialized);
+		self.db
+			.shorteventid_roothandle
+			.batch_put(&mut batch, &shorteventid.to_be_bytes(), serialized.as_slice());
 		if is_state {
-			batch.insert(&self.db.roomid_roothandle, room_id.as_bytes(), &serialized);
+			self.db
+				.roomid_roothandle
+				.batch_put(&mut batch, room_id.as_bytes(), serialized.as_slice());
 		}
 
-		batch.commit();
+		self.db.shorteventid_roothandle.apply_batch(batch);
 
 		// Update the derived membership/participation caches for the state
 		// transition. `state_root_handle` is the *post*-event root, so the delta
@@ -663,7 +667,7 @@ impl Service {
 		let data = root_handle_to_bytes(root_handle);
 		self.db
 			.shorteventid_roothandle
-			.insert(shorteventid.to_be_bytes(), &data);
+			.insert(&shorteventid.to_be_bytes(), &data);
 		Ok(())
 	}
 

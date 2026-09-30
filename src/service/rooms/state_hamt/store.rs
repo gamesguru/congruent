@@ -139,7 +139,7 @@ impl Store {
 	///
 	/// The mtime for the node joins the same batch as the node value itself, so
 	/// the grace window and the node's durability are updated atomically.
-	pub fn put_node_batch(&self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'_>) {
+	pub fn put_node_batch<'a>(&'a self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'a>) {
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
 		let hash = node.structural_hash;
@@ -147,8 +147,9 @@ impl Store {
 		// Cache it immediately so concurrent reads can hit memory
 		self.node_cache.insert(hash, node);
 
-		batch.insert(&self.db, hash.as_ref(), bytes.as_slice());
-		batch.insert(&self.node_mtimes, hash.as_ref(), unix_millis().to_be_bytes());
+		self.db.batch_put(batch, hash.as_ref(), bytes.as_slice());
+		self.node_mtimes
+			.batch_put(batch, hash.as_ref(), unix_millis().to_be_bytes());
 	}
 
 	/// Stores an already-encoded node and records its persistence time.
@@ -169,10 +170,10 @@ impl Store {
 
 	/// Persists a node and all of its resolved children recursively into a
 	/// batch.
-	pub fn persist_node_recursive_batch(
-		&self,
+	pub fn persist_node_recursive_batch<'a>(
+		&'a self,
 		node: Arc<HamtNode<u64, u64>>,
-		batch: &mut Batch<'_>,
+		batch: &mut Batch<'a>,
 	) {
 		for child in &node.children {
 			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
