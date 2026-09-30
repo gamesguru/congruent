@@ -502,18 +502,19 @@ pub async fn pdu_roothandle_after_event(
 #[implement(super::Service)]
 pub async fn pdu_roothandle_before_event(
 	&self,
-	room_id: &RoomId,
+	_room_id: &RoomId,
 	event_id: &EventId,
 ) -> Result<rezzy::hamt::RootHandle> {
-	let count = self.services.timeline.get_pdu_count(event_id).await?;
-	match self
-		.services
-		.timeline
-		.prev_root_handle(room_id, count)
-		.await
-	{
-		| Ok(root_handle) => Ok(root_handle),
-		| Err(e) if e.is_not_found() => self.pdu_roothandle_after_event(event_id).await,
-		| Err(e) => Err(e),
+	// State before an event is determined by its DAG predecessors, not by the
+	// event that happens to precede it in the repaired linear timeline. The
+	// latter can be a concurrent fork and therefore carry unrelated state.
+	let pdu = self.services.timeline.get_pdu(event_id).await?;
+	if let Some(prev_event_id) = pdu.prev_events().next() {
+		let shorteventid = self.services.short.get_shorteventid(prev_event_id).await?;
+		if let Ok(root_handle) = self.services.state.get_roothandle(shorteventid).await {
+			return Ok(root_handle);
+		}
 	}
+
+	self.pdu_roothandle_after_event(event_id).await
 }
