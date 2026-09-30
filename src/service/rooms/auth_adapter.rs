@@ -41,12 +41,17 @@ pub fn to_state_res_version(room_version_id: &RoomVersionId) -> StateResVersion 
 /// auth checking and state resolution APIs.
 #[must_use]
 pub fn pdu_to_lean<E: Event>(pdu: &E) -> LeanEvent<String> {
+	let content = pdu.get_content_as_value();
+	let content = serde_json::to_string(&content)
+		.ok()
+		.and_then(|json| rezzy::JsonValue::parse(&json).ok())
+		.unwrap_or_default();
 	LeanEvent {
 		event_id: pdu.event_id().to_string(),
 		event_type: pdu.kind().to_string(),
 		sender: pdu.sender().to_string(),
 		state_key: pdu.state_key().map(str::to_owned),
-		content: pdu.get_content_as_value(),
+		content,
 		prev_events: pdu.prev_events().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events().map(|id| format!("{id}")).collect(),
 		origin_server_ts: pdu.origin_server_ts().get().into(),

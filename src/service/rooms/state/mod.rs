@@ -825,8 +825,7 @@ impl Service {
 			return Ok(HashMap::new());
 		};
 
-		let content_val: serde_json::Value =
-			serde_json::from_str(content.get()).unwrap_or(serde_json::Value::Null);
+		let content_val = rezzy::JsonValue::parse(content.get()).unwrap_or_default();
 		// For auth_types_for_event, V2 vs V2_1+ is the only distinction
 		// (whether `m.room.create` is included). V2_1_1 and V2_2 behave the same.
 		let version = if room_version.room_ids_as_hashes {

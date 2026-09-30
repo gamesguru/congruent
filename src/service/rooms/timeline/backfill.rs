@@ -1232,7 +1232,8 @@ pub async fn promote_outliers_sorted(
 	}
 
 	// Build LeanEvent map from outlier PDUs for topo sort
-	let mut events_map: HashMap<String, rezzy::LeanEvent> = HashMap::new();
+	let mut events_map: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> =
+		HashMap::new();
 
 	for event_id in event_ids {
 		// Skip events already in the timeline
@@ -1249,7 +1250,7 @@ pub async fn promote_outliers_sorted(
 			event_type: pdu.kind.to_string(),
 			sender: pdu.sender.to_string(),
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
-			content: serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null),
+			content: rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default(),
 			origin_server_ts: u64::from(pdu.origin_server_ts),
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
@@ -1264,29 +1265,14 @@ pub async fn promote_outliers_sorted(
 		return Ok(0);
 	}
 
-	// Find the create event for the sort
-	let create_ev = events_map
-		.values()
-		.find(|ev| ev.event_type == "m.room.create");
-
-	// Topo sort: ancestors first (create → PL → joins → messages)
-	let state_res_version = {
-		use ruma::RoomVersionId::*;
-		match room_version {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 | V11 =>
-				rezzy::StateResVersion::V2,
-			| V12 => rezzy::StateResVersion::V2_1,
-			| ver => return Err!(Database("Unsupported room version for topo sort: {ver}")),
-		}
-	};
-	let mut pl_cache = HashMap::new();
-	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
-		&events_map,
-		&events_map, // auth context is the same set
-		create_ev,
-		state_res_version,
-		&mut pl_cache,
-	);
+	// Depth is the reliable ordering key for a fetched timeline batch.
+	let mut sorted_ids: Vec<String> = events_map.keys().cloned().collect();
+	sorted_ids.sort_by(|a, b| {
+		events_map[a]
+			.depth
+			.cmp(&events_map[b].depth)
+			.then_with(|| a.cmp(b))
+	});
 
 	debug!(
 		"Promoting {} outliers to timeline in room {} ({} sorted)",

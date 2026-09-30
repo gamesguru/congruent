@@ -143,18 +143,19 @@ where
 	};
 
 	struct LocalArenaProvider<'a, F> {
-		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
-		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String>>>,
+		global_cache:
+			&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
 		version: rezzy::StateResVersion,
 		fetch_pdu: F,
 	}
 
-	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, serde_json::Value>
+	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
 		for LocalArenaProvider<'_, F>
 	where
 		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 	{
-		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String>> {
+		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
 			let event_id = OwnedEventId::try_from(id.as_str()).ok()?;
 
 			if let Some(cached_arc) = self.global_cache.get(&event_id) {
@@ -234,7 +235,7 @@ where
 	) {
 		// V2.1+ subgraph computation needs full auth chain visibility.
 		// Build event context by BFS-walking auth chains from all fork state events.
-		let mut ctx: HashMap<String, rezzy::LeanEvent<String>> = HashMap::new();
+		let mut ctx: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> = HashMap::new();
 		let mut q: std::collections::VecDeque<String> = lean_state_sets
 			.iter()
 			.flat_map(|ss| ss.values().cloned())
@@ -245,7 +246,7 @@ where
 			}
 			let ev = <_ as rezzy::basespec::rezzy_types::EventProvider<
 				String,
-				serde_json::Value,
+				rezzy::JsonValue,
 			>>::get_event(&provider, &eid);
 			if let Some(ev) = ev {
 				for aid in &ev.auth_events {
@@ -402,9 +403,11 @@ where
 	if is_pre_v12_creator { 100 } else { 0 }
 }
 
-fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
-	let content_val: serde_json::Value =
-		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+fn pdu_to_lean(
+	pdu: &conduwuit_core::PduEvent,
+	power_level: i64,
+) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
+	let content_val = rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default();
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),

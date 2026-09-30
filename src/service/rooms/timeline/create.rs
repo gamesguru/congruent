@@ -180,8 +180,7 @@ pub async fn create_event(
 				)
 				.await
 			{
-				let content_val: serde_json::Value =
-					serde_json::from_str(content.get()).unwrap_or_default();
+				let content_val = rezzy::JsonValue::parse(content.get()).unwrap_or_default();
 				let auth_types = rezzy::auth::auth_types_for_event(
 					&event_type.to_string(),
 					sender.as_str(),

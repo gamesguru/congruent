@@ -2307,10 +2307,6 @@ mod tests {
 // MSC4500 LtHash accumulator migration, renumbered from the augmented-HAMT
 // branch's v19 to v22 so it can coexist with the v19-v21 set above.
 async fn db_lt_22(services: &Services) -> Result<()> {
-	// TODO: re-implement this.
-	info!("Running v19 migration (skipping LtHash population during HAMT migration)...");
-	services.db["global"].insert(b"lthash_population_skipped_v19", []);
-
 	services.globals.db.bump_database_version(22);
 	Ok(())
 }
@@ -2645,6 +2641,56 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 		}
 	}
 	roothandle_map.apply_batch(batch);
+
+	// Every timeline event needs a state boundary. State events were covered
+	// above by the legacy state-diff inversion; ordinary events have no state
+	// diff of their own and inherit the root preceding them. Walk each room in
+	// chronological order and fill the remaining per-event root handles.
+	let room_ids: Vec<_> = services.rooms.metadata.iter_ids().collect().await;
+	for room_id in room_ids {
+		let structural_key = crate::rooms::state_hamt::room_structural_key(
+			&services.globals.server_secret,
+			room_id,
+		);
+		let empty_lattice = rezzy::state::LtHash::default();
+		let (empty_root, empty_node) =
+			rezzy::hamt::build_hamt_root_handle(&structural_key, &empty_lattice, Vec::new())
+				.map_err(|e| {
+					err!(error!("Failed to build empty HAMT root for {room_id}: {e:?}"))
+				})?;
+		services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(empty_node);
+
+		// `all_pdus` yields events oldest-first; walk forward so each non-state
+		// event inherits the root of the most recent preceding state event.
+		let pdus: Vec<_> = services.rooms.timeline.all_pdus(room_id).collect().await;
+		let mut current_root = empty_root;
+		let mut event_batch = conduwuit_database::Batch::new();
+		for (_, pdu) in pdus {
+			if pdu.state_key().is_some() {
+				if let Ok(shorteventid) =
+					services.rooms.short.get_shorteventid(pdu.event_id()).await
+					&& let Ok(data) = roothandle_map.get(&shorteventid.to_be_bytes()).await
+				{
+					current_root = crate::rooms::state::root_handle_from_bytes(&data)?;
+				}
+			}
+			roothandle_map.batch_put(
+				&mut event_batch,
+				&services
+					.rooms
+					.short
+					.get_or_create_shorteventid(pdu.event_id())
+					.await
+					.to_be_bytes(),
+				&crate::rooms::state::root_handle_to_bytes(&current_root),
+			);
+		}
+		roothandle_map.apply_batch(event_batch);
+	}
 
 	services.globals.db.bump_database_version(23);
 	Ok(())

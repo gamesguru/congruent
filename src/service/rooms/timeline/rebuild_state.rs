@@ -54,8 +54,7 @@ struct RebuildCtx {
 }
 
 fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
-	let content_val: serde_json::Value =
-		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+	let content_val = rezzy::JsonValue::parse(pdu.content.get()).unwrap_or_default();
 	let power_level = content_val
 		.get("power_level")
 		.and_then(|pl| {
@@ -511,30 +510,28 @@ impl super::Service {
 			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 			let empty_key = String::new();
 			let mut abort = false;
-			let completed = rezzy::compute_state_at_streaming_optimized(
-				&target_refs,
-				&lean_events_moved,
-				version,
-				|id, update| {
-					let owned_update = match update {
-						| rezzy::StateUpdate::New { state, hash } =>
-							StateUpdateOwned::New { state, hash: Box::new(*hash) },
-						| rezzy::StateUpdate::Unchanged { parent_event_id, .. } =>
-							StateUpdateOwned::Unchanged {
-								parent_event_id: parent_event_id.clone(),
-							},
-					};
-					if abort {
-						return;
-					}
-					if tx.blocking_send((id, owned_update)).is_err() {
-						abort = true;
-					}
-				},
-				&empty_key,
-			);
-			if !completed {
-				warn!("compute_state_at_streaming_optimized detected cycle; results incomplete");
+			for id in target_refs {
+				let Some(state) =
+					rezzy::compute_state_at(id, &lean_events_moved, version, &empty_key)
+				else {
+					continue;
+				};
+				let mut hash = rezzy::LtHash::default();
+				for ((event_type, state_key), event_id) in &state {
+					hash.insert(&event_type.to_string(), state_key, event_id);
+				}
+				if abort {
+					break;
+				}
+				if tx
+					.blocking_send((id.clone(), StateUpdateOwned::New {
+						state: state.into(),
+						hash: Box::new(hash),
+					}))
+					.is_err()
+				{
+					abort = true;
+				}
 			}
 		});
 
@@ -599,7 +596,7 @@ impl super::Service {
 						t_recv_wait = t_recv_wait.saturating_add(t0.elapsed());
 						_t_last_recv = Instant::now();
 
-						if resolved_id == *eid {
+						if resolved_id == eid.as_str() {
 							break update;
 						}
 						pending_updates.insert(resolved_id, update);
@@ -916,14 +913,14 @@ impl super::Service {
 		// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 		let empty_key = String::new();
 		let unconflicted_state: rezzy::state::at::SharedState = (&unconflicted).into();
-		let resolved_lean = rezzy::resolve_iterative_sort(
+		let resolved_lean = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
 			&unconflicted_state,
 			&conflicted_events,
 			&auth_context,
 			version,
 			&mut pl_cache,
 			&empty_key,
-		);
+		));
 		eprintln!(
 			"[resolve_fork] rezzy::resolve_iterative_sort took {:?}",
 			rezzy_start.elapsed()

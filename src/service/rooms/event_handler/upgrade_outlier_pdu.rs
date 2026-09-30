@@ -204,6 +204,10 @@ where
 	let mut new_room_state: Option<rezzy::hamt::RootHandle> = None;
 	let mut previous_root_handle: Option<rezzy::hamt::RootHandle> = None;
 
+	// Soft-failed federation events remain part of the DAG and need their state
+	// association for later federation/auth processing, but must not update the
+	// client-visible room state or derived membership caches. Persist the root
+	// here; append_incoming_pdu still omits the event from the timeline.
 	if let Some(state_key) = incoming_pdu.state_key() {
 		debug!("Event is a state-event. Deriving new room state");
 
@@ -235,8 +239,9 @@ where
 		// events stop being delivered to their servers.
 		// We only update the derived caches; the HAMT root is committed
 		// separately by set_event_state_with_root in append_pdu.
-		if let (Some(prev_root), Some(new_root)) =
-			(previous_root_handle.as_ref(), new_room_state.as_ref())
+		if !soft_fail
+			&& let (Some(prev_root), Some(new_root)) =
+				(previous_root_handle.as_ref(), new_room_state.as_ref())
 		{
 			Box::pin(self.services.state.update_caches_for_state_delta_between(
 				room_id,

@@ -1009,10 +1009,14 @@ pub async fn update_caches_for_state_delta(
 				// For removed memberships that have no corresponding added event in the delta,
 				// mark the user as left. Replacements are handled by `added_events`.
 
+				// Only test whether the member has an entry in the new root; do
+				// not resolve the PDU. Resolving would conflate "no member event"
+				// with "member entry present but its event mapping/PDU is missing",
+				// causing us to mark a still-present user as left.
 				match self
 					.services
 					.state_accessor
-					.room_state_get_hamt_at_root(
+					.state_get_shortid_hamt(
 						room_id,
 						new_root_handle,
 						&StateEventType::RoomMember,

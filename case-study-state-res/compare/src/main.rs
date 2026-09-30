@@ -572,8 +572,8 @@ fn resolve_via_rezzy(
 
 	// Convert PDUs to LeanEvents
 	let to_lean = |pdu: &Pdu| -> rezzy::LeanEvent {
-		let content_val: serde_json::Value =
-			serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+		let content_val =
+			rezzy::JsonValue::parse(pdu.content.get()).unwrap_or(rezzy::JsonValue::Null);
 		rezzy::LeanEvent {
 			event_id: pdu.event_id.to_string(),
 			event_type: pdu.kind.to_string(),
@@ -632,7 +632,7 @@ fn resolve_via_rezzy(
 
 	let mut pl_cache = HashMap::new();
 	let empty_key = String::new();
-	let resolved_lean = rezzy::resolve_iterative_sort(
+	let inputs = rezzy::IterativeInputs::new(
 		&unconflicted,
 		&conflicted_events,
 		&auth_context,
@@ -640,6 +640,7 @@ fn resolve_via_rezzy(
 		&mut pl_cache,
 		&empty_key,
 	);
+	let resolved_lean = rezzy::resolve_iterative_sort(inputs);
 
 	// Convert back to StateMap
 	let mut resolved = HashMap::new();
