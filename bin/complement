@@ -110,13 +110,16 @@ export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
 
 # Cleanup only Complement containers spawned by this wrapper run.
 cleanup_complement_containers() {
-	local containers container ours=()
+	local containers container network ours=() networks=()
 	mapfile -t containers < <(docker ps -aq --filter "name=complement")
 
 	for container in "${containers[@]}"; do
 		if docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null |
 			grep -Fxq "COMPLEMENT_WRAPPER_TOKEN=$COMPLEMENT_WRAPPER_TOKEN"; then
 			ours+=("$container")
+			while read -r network; do
+				[ -n "$network" ] && networks+=("$network")
+			done < <(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$container" 2>/dev/null)
 		fi
 	done
 
@@ -125,7 +128,21 @@ cleanup_complement_containers() {
 		printf '%s\n' "${ours[@]}" | xargs -r docker rm -f
 	fi
 
-	# TODO: perhaps also prune images here?
+	# Complement creates one network per blueprint. Remove networks belonging to
+	# this run after their containers are gone, avoiding address-pool exhaustion.
+	printf '%s\n' "${networks[@]}" | sort -u | while read -r network; do
+		[ -n "$network" ] && docker network rm "$network" >/dev/null 2>&1 || true
+	done
+
+	# Also reap orphaned networks left by an interrupted earlier run. Only
+	# consider this workspace's Complement namespace, and never remove a network
+	# that still has containers attached to it.
+	docker network ls --filter name="complement_${COMPLEMENT_PACKAGE_NAMESPACE_PREFIX}" \
+		--format '{{.ID}}' | while read -r network_id; do
+		[ -n "$network_id" ] || continue
+		[ "$(docker network inspect -f '{{len .Containers}}' "$network_id" 2>/dev/null)" = 0 ] || continue
+		docker network rm "$network_id" >/dev/null 2>&1 || true
+	done
 }
 
 # Ensure result files exist even if tests fail to start
