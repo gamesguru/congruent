@@ -253,7 +253,7 @@ where
 		(prev_root, new_root)
 	};
 
-		info!(room_id = %room_id, "Applying the resolved state transition");
+	info!(room_id = %room_id, "Applying the resolved state transition");
 	// The legacy force_state updated the joined-member/servers caches
 	// (`roomserverids`) on state transitions. That cache update must be
 	// preserved here, otherwise remote members that join the room are
