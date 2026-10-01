@@ -222,15 +222,11 @@ impl Service {
 		// resolve PDUs
 		let mut added_pdus = Vec::new();
 		for (shortstatekey, event_id) in added {
-			let Ok((event_type, _)) = self
+			if let Ok((event_type, _)) = self
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-			else {
-				continue;
-			};
-			if !matches!(
+				.await && !matches!(
 				event_type,
 				StateEventType::RoomMember
 					| StateEventType::RoomEncryption
@@ -259,15 +255,11 @@ impl Service {
 
 		let mut removed_pdus = Vec::new();
 		for (shortstatekey, event_id) in removed {
-			let Ok((event_type, _)) = self
+			if let Ok((event_type, _)) = self
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-			else {
-				continue;
-			};
-			if !matches!(
+				.await && !matches!(
 				event_type,
 				StateEventType::RoomMember
 					| StateEventType::RoomEncryption
