@@ -450,7 +450,6 @@ async fn knock_room_helper_local(
 			room_id,
 			state_root_handle: Some(current_root_handle),
 			prev_state_root_handle: previous_root_handle,
-			advance_current_state: false,
 			was_joined_before_state_install: None,
 		},
 	))
@@ -655,7 +654,6 @@ async fn knock_room_helper_remote(
 			room_id,
 			state_root_handle: Some(state_root_handle),
 			prev_state_root_handle: previous_root_handle,
-			advance_current_state: false,
 			was_joined_before_state_install: None,
 		},
 	))

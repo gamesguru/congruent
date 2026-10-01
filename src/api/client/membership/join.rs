@@ -913,7 +913,6 @@ async fn join_room_by_id_helper_remote_process(
 			room_id,
 			state_root_handle: Some(state_root_handle),
 			prev_state_root_handle: previous_root_handle,
-			advance_current_state: false,
 			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),
 		},
 	))

@@ -835,7 +835,7 @@
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
 {"Action":"fail","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
-{"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
+{"Action":"fail","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
 {"Action":"pass","Test":"TestSync/parallel/Can_sync_a_joined_room"}

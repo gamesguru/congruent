@@ -131,7 +131,6 @@ pub async fn build_and_append_pdu(
 				room_id: &room_id,
 				state_root_handle: Some(state_root_handle.clone()),
 				prev_state_root_handle: previous_root_handle,
-				advance_current_state: false,
 				was_joined_before_state_install: None,
 			},
 		)

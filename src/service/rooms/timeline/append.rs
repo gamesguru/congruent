@@ -32,7 +32,6 @@ pub struct AppendPduContext<'a> {
 	pub room_id: &'a ruma::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
-	pub advance_current_state: bool,
 	/// Membership of the event's state key in this room, sampled *before* a
 	/// `/send_join` state root was installed. `None` means "no such prior
 	/// sample"; the live cache is consulted instead.
@@ -72,7 +71,6 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
-		advance_current_state,
 		was_joined_before_state_install,
 	} = ctx;
 
@@ -103,7 +101,6 @@ where
 			room_id,
 			state_root_handle,
 			prev_state_root_handle,
-			advance_current_state,
 			was_joined_before_state_install,
 		})
 		.await?;
@@ -170,7 +167,6 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
-		advance_current_state,
 		was_joined_before_state_install,
 	} = ctx;
 
@@ -317,19 +313,6 @@ where
 		prev_state_root_handle.as_ref(),
 	))
 	.await?;
-	// A recovered state snapshot may be attached to a non-state event. In that
-	// case set_event_state_with_root records the event's historical root but
-	// intentionally does not advance the room's current-state pointer. The
-	// resolved snapshot is current for this accepted event, so publish it now.
-	if pdu.state_key().is_none()
-		&& advance_current_state
-		&& let Some(root_handle) = state_root_handle.as_ref()
-	{
-		self.services
-			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock);
-	}
-
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(
