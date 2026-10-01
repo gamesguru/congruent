@@ -16,6 +16,7 @@ use ruma::{
 	},
 	serde::JsonObject,
 };
+use rezzy::stripped_state::validate_stripped_state;
 
 use crate::Ruma;
 
@@ -170,6 +171,14 @@ pub(crate) async fn create_invite_route(
 	}
 
 	let mut invite_state = body.invite_room_state.clone();
+	let invite_state_values = invite_state
+		.iter()
+		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
+		.collect::<std::result::Result<Vec<_>, _>>()
+		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
+
+	validate_stripped_state(body.room_id.as_str(), body.room_version.as_str(), &invite_state_values)
+		.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 
 	let mut event: JsonObject = serde_json::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
