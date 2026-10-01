@@ -3,14 +3,14 @@ export COMPLEMENT_TEST=1
 set -xe
 # If we have no $SERVER_NAME set, abort
 if [ -z "$SERVER_NAME" ]; then
-  echo "SERVER_NAME is not set, aborting"
-  exit 1
+	echo "SERVER_NAME is not set, aborting"
+	exit 1
 fi
 
 # If /complement/ca/ca.crt or /complement/ca/ca.key are missing, abort
 if [ ! -f /complement/ca/ca.crt ] || [ ! -f /complement/ca/ca.key ]; then
-  echo "/complement/ca/ca.crt or /complement/ca/ca.key is missing, aborting"
-  exit 1
+	echo "/complement/ca/ca.crt or /complement/ca/ca.key is missing, aborting"
+	exit 1
 fi
 
 # Add the root cert to the local trust store
@@ -24,14 +24,14 @@ openssl genrsa -out "/$SERVER_NAME.key" 2048
 
 echo "Generating CSR for $SERVER_NAME"
 openssl req -new -sha256 \
-  -key "/$SERVER_NAME.key" \
-  -out "/$SERVER_NAME.csr" \
-  -subj "/C=US/ST=CA/O=Continuwuity, Inc./CN=$SERVER_NAME"\
-  -addext "subjectAltName=DNS:$SERVER_NAME"
+	-key "/$SERVER_NAME.key" \
+	-out "/$SERVER_NAME.csr" \
+	-subj "/C=US/ST=CA/O=Continuwuity, Inc./CN=$SERVER_NAME" \
+	-addext "subjectAltName=DNS:$SERVER_NAME"
 openssl req -in "$SERVER_NAME.csr" -noout -text
 
 echo "Signing certificate for $SERVER_NAME with Complement CA"
-cat <<EOF > ./cert.ext
+cat <<EOF >./cert.ext
 authorityKeyIdentifier=keyid,issuer
 basicConstraints = CA:FALSE
 keyUsage = digitalSignature, keyEncipherment, dataEncipherment, nonRepudiation
@@ -47,15 +47,15 @@ DNS.6 = $SERVER_NAME
 IP.1 = 127.0.0.1
 EOF
 openssl x509 \
-  -req \
-  -in "/$SERVER_NAME.csr" \
-  -CA /complement/ca/ca.crt \
-  -CAkey /complement/ca/ca.key \
-  -CAserial /tmp/ca.srl -CAcreateserial \
-  -out "/$SERVER_NAME.crt" \
-  -days 1 \
-  -sha256 \
-  -extfile ./cert.ext
+	-req \
+	-in "/$SERVER_NAME.csr" \
+	-CA /complement/ca/ca.crt \
+	-CAkey /complement/ca/ca.key \
+	-CAserial /tmp/ca.srl -CAcreateserial \
+	-out "/$SERVER_NAME.crt" \
+	-days 1 \
+	-sha256 \
+	-extfile ./cert.ext
 
 # Tell continuwuity where to find the certs
 export CONTINUWUITY_TLS__KEY="/$SERVER_NAME.key"
@@ -63,11 +63,13 @@ export CONTINUWUITY_TLS__CERTS="/$SERVER_NAME.crt"
 # And who it is
 export CONTINUWUITY_SERVER_NAME="$SERVER_NAME"
 # Ensure each test node gets an isolated database to prevent reuse errors
-export CONDUWUIT_DATABASE_PATH="/var/lib/continuwuity/$SERVER_NAME"
+export CONDUWUIT_DATABASE_PATH="${CONDUWUIT_DATABASE_PATH:-/var/lib/continuwuity/$SERVER_NAME}"
+echo "rocksdb: $CONDUWUIT_DATABASE_PATH/rocksdb"
+echo "mtxdb: $CONDUWUIT_DATABASE_PATH/mtxdb"
 
 echo "Starting Continuwuity with SERVER_NAME=$SERVER_NAME"
 mkdir -p "$CONDUWUIT_DATABASE_PATH"
-chown -R ${CONDUWUIT_UID}:${CONDUWUIT_GID} "/$SERVER_NAME.key" "/$SERVER_NAME.crt" "$CONDUWUIT_DATABASE_PATH"
+chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "/$SERVER_NAME.key" "/$SERVER_NAME.crt" "$CONDUWUIT_DATABASE_PATH"
 
 # Drop root privileges and start continuwuity as the host UID
 export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
@@ -75,12 +77,12 @@ export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 # Verify all dynamic libraries are resolvable before starting
 MISSING_LIBS=$(ldd /usr/local/bin/conduwuit 2>&1 | grep "not found" || true)
 if [ -n "$MISSING_LIBS" ]; then
-  echo "FATAL: Missing dynamic libraries (check COMPLEMENT_HOST_MOUNTS):"
-  echo "$MISSING_LIBS"
-  echo ""
-  echo "Mounted paths visible in /usr/local/lib:"
-  ls -la /usr/local/lib/ 2>/dev/null | head -20
-  exit 1
+	echo "FATAL: Missing dynamic libraries (check COMPLEMENT_HOST_MOUNTS):"
+	echo "$MISSING_LIBS"
+	echo ""
+	echo "Mounted paths visible in /usr/local/lib:"
+	find /usr/local/lib/ -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null | head -20
+	exit 1
 fi
 
-exec setpriv --reuid=${CONDUWUIT_UID} --regid=${CONDUWUIT_GID} --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml
+exec setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml
