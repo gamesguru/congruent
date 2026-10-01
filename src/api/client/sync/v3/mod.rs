@@ -104,27 +104,26 @@ async fn msc4429_profile_updates(
 		return serde_json::Value::Null;
 	}
 
-	let rooms = services
-		.rooms
-		.state_cache
-		.rooms_joined(user_id)
-		.collect::<Vec<_>>()
-		.await;
-	let mut visible = HashSet::new();
-	for room_id in rooms {
-		visible.extend(
-			services
-				.rooms
-				.state_cache
-				.room_members(room_id)
-				.map(ToOwned::to_owned)
-				.collect::<Vec<_>>()
-				.await,
-		);
-	}
-
 	let mut users = serde_json::Map::new();
 	if since.is_none() {
+		let rooms = services
+			.rooms
+			.state_cache
+			.rooms_joined(user_id)
+			.collect::<Vec<_>>()
+			.await;
+		let mut visible = HashSet::new();
+		for room_id in rooms {
+			visible.extend(
+				services
+					.rooms
+					.state_cache
+					.room_members(room_id)
+					.map(ToOwned::to_owned)
+					.collect::<Vec<_>>()
+					.await,
+			);
+		}
 		for target in visible.iter().filter(|target| **target != user_id) {
 			let mut fields = serde_json::Map::new();
 			for field in &ids {
@@ -142,16 +141,21 @@ async fn msc4429_profile_updates(
 			.users
 			.profile_updates(since, current_count)
 			.for_each(|(_, update)| {
-				if ids.contains(update.field.as_str())
-					&& visible.contains(&update.user_id)
-					&& update.user_id != user_id
-				{
+				if ids.contains(update.field.as_str()) && update.user_id != user_id {
 					latest.insert((update.user_id.clone(), update.field.clone()), update.value);
 				}
 				std::future::ready(())
 			})
 			.await;
 		for ((target, field), value) in latest {
+			if !services
+				.rooms
+				.state_cache
+				.user_sees_user(user_id, &target)
+				.await
+			{
+				continue;
+			}
 			if let Some(fields) = users
 				.entry(target.to_string())
 				.or_insert_with(|| serde_json::json!({"profile_updates": {}}))
