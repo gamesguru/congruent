@@ -666,10 +666,6 @@ fn default_power_levels_content(
 	}
 
 	if !creators.is_empty() {
-		// Raise the default power level of tombstone to 150
-		power_levels_content["events"]["m.room.tombstone"] =
-			serde_json::to_value(150).expect("150 is valid Value");
-
 		for creator in creators {
 			// Omit creators from the power level list altogether
 			power_levels_content["users"]

@@ -122,6 +122,19 @@ pub(crate) async fn register_route(
 		)));
 	}
 
+	// Validate explicitly provided username before UIAA
+	if let Some(username) = &body.username
+		&& !is_guest
+	{
+		determine_registration_user_id(
+			&services,
+			Some(username.clone()),
+			is_guest,
+			emergency_mode_enabled,
+		)
+		.await?;
+	}
+
 	// Appeservices and guests get to skip auth
 	let skip_auth = body.appservice_info.is_some() || is_guest;
 
