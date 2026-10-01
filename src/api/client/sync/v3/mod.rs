@@ -89,7 +89,10 @@ async fn msc4429_profile_updates(
 	let filter = serde_json::to_value(filter).unwrap_or_default();
 	let ids = ["profile_fields", "org.matrix.msc4429.profile_fields"]
 		.into_iter()
-		.find_map(|key| filter.get(key).and_then(|v| v.get("ids")))
+		.find_map(|key| {
+			let value = filter.get(key)?;
+			value.get("ids").or_else(|| value.as_array().map(|_| value))
+		})
 		.and_then(serde_json::Value::as_array)
 		.map(|ids| {
 			ids.iter()
@@ -1015,10 +1018,12 @@ pub(crate) async fn build_sync_events(
 	if let Some(users) = profile_updates.as_object_mut() {
 		for left_room in left_rooms.values() {
 			for event in &left_room.timeline.events {
-				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get()) else {
+				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get())
+				else {
 					continue;
 				};
-				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str) else {
+				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str)
+				else {
 					continue;
 				};
 				if event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.member")
@@ -1028,7 +1033,10 @@ pub(crate) async fn build_sync_events(
 						.and_then(serde_json::Value::as_str)
 						.is_some_and(|membership| matches!(membership, "leave" | "ban"))
 				{
-					users.insert(state_key.to_owned(), serde_json::json!({"profile_updates": null}));
+					users.insert(
+						state_key.to_owned(),
+						serde_json::json!({"profile_updates": null}),
+					);
 				}
 			}
 		}
