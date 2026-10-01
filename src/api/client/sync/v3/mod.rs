@@ -40,7 +40,7 @@ use ruma::{
 		},
 	},
 	events::{
-		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent,
+		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyStrippedStateEvent,
 		presence::{PresenceEvent, PresenceEventContent},
 	},
 	serde::Raw,
@@ -60,6 +60,23 @@ use crate::{
 /// joined and left rooms. If the number of events sent since the last sync
 /// exceeds this number, the `timeline` will be `limited`.
 const DEFAULT_TIMELINE_LIMIT: usize = 10;
+
+fn client_stripped_state(
+	events: Vec<Raw<AnyStrippedStateEvent>>,
+) -> Vec<Raw<AnyStrippedStateEvent>> {
+	events
+		.into_iter()
+		.map(|event| {
+			let mut object: serde_json::Map<String, serde_json::Value> =
+				serde_json::from_str(event.json().get()).expect("stored stripped state is valid JSON");
+			object.remove("origin_server_ts");
+			Raw::from_json_string(
+				serde_json::to_string(&object).expect("stripped state is serializable"),
+			)
+			.expect("stripped state is valid JSON")
+		})
+		.collect()
+}
 
 /// A collection of updates to users' device lists, used for E2EE.
 #[derive(Clone)]
@@ -596,7 +613,9 @@ pub(crate) async fn build_sync_events(
 					"including room in invite section"
 				);
 				let invited_room = InvitedRoom {
-					invite_state: InviteState { events: invite_state },
+					invite_state: InviteState {
+						events: client_stripped_state(invite_state),
+					},
 				};
 
 				invited_rooms.insert(room_id, invited_room);
@@ -653,7 +672,9 @@ pub(crate) async fn build_sync_events(
 
 			if include_knock {
 				let knocked_room = KnockedRoom {
-					knock_state: KnockState { events: knock_state },
+					knock_state: KnockState {
+						events: client_stripped_state(knock_state),
+					},
 				};
 
 				knocked_rooms.insert(room_id, knocked_room);

@@ -60,6 +60,12 @@ fi
 
 toplevel="$(git rev-parse --show-toplevel)"
 pushd "$toplevel" >/dev/null
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+SOURCE_COMMIT_SHORT="$(git rev-parse --short HEAD)"
+COMPLEMENT_COMMIT="$(git -C "$COMPLEMENT_SRC" rev-parse HEAD 2>/dev/null || echo unavailable)"
+echo "Complement source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
+echo "Complement test source commit: $COMPLEMENT_COMMIT"
+echo "Complement base image: $COMPLEMENT_BASE_IMAGE"
 
 if [ "$RUN_TESTS" = "." ]; then
 	run_suffix="all"
@@ -415,6 +421,8 @@ echo ""
 echo "complement logs saved at $LOG_FILE"
 echo "complement results staged at $RESULTS_FILE"
 echo "complement results merged into $MAIN_RESULTS_FILE"
+echo "server source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
+echo "complement test source commit: $COMPLEMENT_COMMIT"
 echo ""
 echo ""
 
