@@ -30,16 +30,12 @@ pub fn lthash_from_bytes(bytes: &[u8]) -> Option<LtHash> {
 }
 
 /// Serializes an LtHash into a `(lattice, digest)` pair.
+/// Both lattice and digest are unpadded URL-safe base64 (MSC4500).
 #[must_use]
 pub fn serialize_lthash(lthash: &LtHash) -> (String, String) {
 	let bytes = lthash_to_bytes(lthash);
 	let lattice = URL_SAFE_NO_PAD.encode(&bytes);
-
-	let mut digest = String::with_capacity(64);
-	for b in lthash.digest() {
-		use std::fmt::Write;
-		let _ = write!(&mut digest, "{b:02x}");
-	}
+	let digest = URL_SAFE_NO_PAD.encode(lthash.digest());
 
 	(lattice, digest)
 }
@@ -79,8 +75,7 @@ mod tests {
 		"A78DwAPBA8IDwwPEA8UDxgPHA8gDyQPKA8sDzAPNA84DzwPQA9ED0gPTA9QD1QPWA9cD2APZA9oD2wPcA90D3gPfA-",
 		"AD4QPiA-MD5APlA-YD5wPoA-kD6gPrA-wD7QPuA-8D8APxA_ID8wP0A_UD9gP3A_gD-QP6A_sD_AP9A_4D_wM",
 	);
-	const EXPECTED_DIGEST: &str =
-		"5ef0ce69ffde6f004921d360a19bcde51a94c359645de5fac4d66690fa51eabd";
+	const EXPECTED_DIGEST: &str = "XvDOaf_ebwBJI9NgoZvN5RqUw1lkXeX6xNZmkPpR6r0";
 
 	fn golden_lthash() -> LtHash {
 		LtHash(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
@@ -100,6 +95,7 @@ mod tests {
 		let (lattice, digest) = serialize_lthash(&lthash);
 		assert_eq!(lattice, EXPECTED_LATTICE);
 		assert_eq!(digest, EXPECTED_DIGEST);
+		assert_eq!(digest.len(), 43);
 	}
 
 	#[test]
@@ -118,7 +114,7 @@ mod tests {
 
 		let mut hasher = Blake2b::<U32>::new();
 		Digest::update(&mut hasher, &bytes);
-		let expected = format!("{:x}", hasher.finalize());
+		let expected = URL_SAFE_NO_PAD.encode(hasher.finalize());
 
 		assert_eq!(expected, EXPECTED_DIGEST);
 		assert_eq!(serialize_lthash(&lthash).1, expected);

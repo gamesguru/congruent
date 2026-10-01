@@ -156,7 +156,7 @@ async fn verify_federation_request(
 
 	let key = services
 		.server_keys
-		.get_verify_key(&x_matrix.origin, &x_matrix.key)
+		.get_active_verify_key(&x_matrix.origin, &x_matrix.key)
 		.await
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
@@ -190,12 +190,12 @@ mod tests {
 			"Lattice encoding must be deterministic URL-safe base64"
 		);
 
-		// Checksum format must be 64-character lowercase hex (32 bytes)
-		assert_eq!(digest.len(), 64);
+		// Checksum format must be 43-character base64url (32 bytes)
+		assert_eq!(digest.len(), 43);
 		assert!(
 			digest
 				.chars()
-				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 		);
 	}
 
@@ -214,12 +214,12 @@ mod tests {
 		// bytes without padding)
 		assert_eq!(lattice.len(), 2731);
 
-		// Ensure checksum is also stable length and lowercase hex format
-		assert_eq!(digest.len(), 64);
+		// Ensure checksum is 43-character base64url format
+		assert_eq!(digest.len(), 43);
 		assert!(
 			digest
 				.chars()
-				.all(|c: char| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+				.all(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 		);
 
 		// The digest and lattice should no longer be the empty one

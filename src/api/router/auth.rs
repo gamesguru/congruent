@@ -346,7 +346,7 @@ async fn auth_server(
 
 	let key = services
 		.server_keys
-		.get_verify_key(origin, &x_matrix.key)
+		.get_active_verify_key(origin, &x_matrix.key)
 		.await
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
