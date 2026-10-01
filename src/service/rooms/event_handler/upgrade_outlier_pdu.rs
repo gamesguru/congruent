@@ -95,6 +95,19 @@ where
 		state_at_incoming_event.expect("we always set this to some above");
 
 	let room_version = to_room_version(&room_version_id);
+	let is_current_forward_extremity = if is_timeline_event {
+		self.services
+			.state
+			.get_forward_extremities(room_id)
+			.await
+			.is_ok_and(|extremities| {
+				incoming_pdu
+					.prev_events()
+					.any(|prev| extremities.iter().any(|extremity| extremity == prev))
+			})
+	} else {
+		false
+	};
 
 	debug!(
 		event_id = %incoming_pdu.event_id,
@@ -360,7 +373,9 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: is_timeline_event && was_recovered && new_room_state.is_some(),
+		advance_current_state: is_timeline_event
+			&& (was_recovered || is_current_forward_extremity)
+			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
 
