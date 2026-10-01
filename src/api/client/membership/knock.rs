@@ -661,6 +661,15 @@ async fn knock_room_helper_remote(
 	))
 	.await?;
 
+	// Installing the resolved state root makes append_pdu skip its normal
+	// membership-cache update. Persist the local knock explicitly so the
+	// knocker's next /sync includes this room in `rooms.knock`.
+	services.rooms.state_cache.mark_as_knocked(
+		sender_user,
+		room_id,
+		Some(send_knock_response.knock_room_state.clone()),
+	);
+
 	info!("Successfully set final room state for new room");
 
 	Ok(())
