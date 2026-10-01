@@ -238,10 +238,19 @@ where
 		);
 
 		(prev_root, new_root)
+	} else if is_timeline_event {
+		// Non-state timeline events may introduce recovered state (e.g. via /state_ids).
+		// Resolve the state at the incoming event against current room state so that
+		// newly discovered state is adopted without evicting concurrent local state.
+		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+		let new_root = Some(
+			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
+				.await?,
+		);
+
+		(prev_root, new_root)
 	} else {
-		// For non-state events, the state before the event is recorded as
-		// the event's historical state root, but it does not modify the room's
-		// current state or membership caches.
+		// Outlier non-state events (backfill, etc.) only record their historical state root.
 		let new_root = Some(
 			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
 				.await?,
@@ -259,7 +268,6 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
-		&& incoming_pdu.state_key().is_some()
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
@@ -336,7 +344,9 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: false,
+		advance_current_state: is_timeline_event
+			&& incoming_pdu.state_key().is_none()
+			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
 

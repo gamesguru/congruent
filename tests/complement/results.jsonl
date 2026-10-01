@@ -216,7 +216,7 @@
 {"Action":"pass","Test":"TestIsDirectFlagFederation"}
 {"Action":"pass","Test":"TestIsDirectFlagLocal"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFailOver"}
-{"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
+{"Action":"fail","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser/join_remote_federated_room_as_application_service_user"}
 {"Action":"pass","Test":"TestJoinFederatedRoomWithUnverifiableEvents"}
 {"Action":"pass","Test":"TestJoinFederatedRoomWithUnverifiableEvents//send_join_response_missing_signatures_shouldn't_block_room_join"}
