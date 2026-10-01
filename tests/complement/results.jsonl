@@ -428,7 +428,7 @@
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Incremental_sync_returns_the_latest_update"}
 {"Action":"fail","Test":"TestMSC4429ProfileUpdates/Initial_sync_includes_requested_profile_fields_and_filters_others"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/No_updates_without_profile_fields_filter"}
-{"Action":"fail","Test":"TestMSC4429ProfileUpdates/Widening_profile_fields_filter_does_not_return_old_filtered_updates"}
+{"Action":"pass","Test":"TestMSC4429ProfileUpdates/Widening_profile_fields_filter_does_not_return_old_filtered_updates"}
 {"Action":"pass","Test":"TestMSC4499Key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/current_key_id_with_wrong_private_key"}

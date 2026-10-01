@@ -526,9 +526,17 @@ impl Service {
 	/// need to notify all rooms of this change.
 	pub fn set_displayname(&self, user_id: &UserId, displayname: Option<String>) {
 		if let Some(displayname) = displayname {
-			self.db.userid_displayname.insert(user_id, displayname);
+			self.db
+				.userid_displayname
+				.insert(user_id, displayname.clone());
+			self.record_profile_update(
+				user_id,
+				"displayname",
+				Some(serde_json::Value::String(displayname)),
+			);
 		} else {
 			self.db.userid_displayname.remove(user_id);
+			self.record_profile_update(user_id, "displayname", None);
 		}
 	}
 
@@ -1884,13 +1892,22 @@ impl Service {
 			self.db.useridprofilekey_value.del(key);
 		}
 
+		self.record_profile_update(user_id, profile_key, update_value);
+	}
+
+	fn record_profile_update(
+		&self,
+		user_id: &UserId,
+		profile_key: &str,
+		value: Option<serde_json::Value>,
+	) {
 		if let Ok(stream_id) = self.services.globals.next_count() {
 			self.db.userprofileupdate_value.put(
 				(stream_id, user_id.to_owned(), profile_key.to_owned()),
 				Json(ProfileUpdate {
 					user_id: user_id.to_owned(),
 					field: profile_key.to_owned(),
-					value: update_value,
+					value,
 				}),
 			);
 		}
