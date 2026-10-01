@@ -529,7 +529,7 @@
 {"Action":"pass","Test":"TestNotPresentUserCannotBanOthers"}
 {"Action":"pass","Test":"TestOlderLeftRoomsNotInLeaveSection"}
 {"Action":"pass","Test":"TestOutboundFederationEventSizeGetMissingEvents"}
-{"Action":"pass","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
+{"Action":"fail","Test":"TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6"}
 {"Action":"pass","Test":"TestOutboundFederationProfile"}
 {"Action":"pass","Test":"TestOutboundFederationProfile/Outbound_federation_can_query_profile_data"}
 {"Action":"pass","Test":"TestOutboundFederationSend"}

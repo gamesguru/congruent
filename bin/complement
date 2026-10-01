@@ -177,23 +177,37 @@ anchor_one() {
 # across patterns of differing depth (e.g. `TestA/Sub` vs `TestB/Sub/Sub`
 # joined by one `|` silently loses one side -- go re-splits the combined
 # string on every `/`, not just the ones belonging to the same alternative).
-# So instead of building one `-run` regex, split on top-level `|` ourselves
-# and run `go test` once per alternative, appending results/logs together.
+# Combine flat top-level alternatives into one `go test` invocation. Only split
+# alternatives that contain subtest paths, where Go's slash-aware `-run`
+# matching can misinterpret alternatives with different depths.
 ALT_PATTERNS=()
 if [ "$RUN_TESTS" = "." ]; then
 	ALT_PATTERNS=(".")
 else
 	IFS='|' read -r -a raw_alts <<<"$RUN_TESTS"
+	all_flat=1
 	for alt in "${raw_alts[@]}"; do
-		ALT_PATTERNS+=("$(anchor_one "$alt")")
+		if [[ "$alt" == */* ]]; then
+			all_flat=0
+			break
+		fi
 	done
-	if [ "${#ALT_PATTERNS[@]}" -gt 1 ]; then
-		echo "Anchored run regexes (run separately, one go test invocation each):"
+	if [ "${#raw_alts[@]}" -gt 1 ] && [ "$all_flat" -eq 1 ]; then
+		combined="$(
+			IFS='|'
+			echo "${raw_alts[*]}"
+		)"
+		ALT_PATTERNS+=("^(${combined})")
+		echo "Flat alternatives batched into one go test invocation:"
+		echo "  ${ALT_PATTERNS[0]}"
+	else
+		for alt in "${raw_alts[@]}"; do
+			ALT_PATTERNS+=("$(anchor_one "$alt")")
+		done
+		echo "Anchored run regexes (run separately when subtest paths require it):"
 		for alt in "${ALT_PATTERNS[@]}"; do
 			echo "  $alt"
 		done
-	else
-		echo "Anchored run regex: ${ALT_PATTERNS[0]}"
 	fi
 	echo ""
 fi
