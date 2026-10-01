@@ -790,7 +790,7 @@ pub async fn process_timeline_upgrade(
 			.pdu_metadata
 			.mark_event_rejected(
 				&event_id,
-				&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+				&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
 					.with_detail("prev_event contained structurally invalid data"),
 			)
 			.await;
