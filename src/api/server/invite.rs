@@ -208,7 +208,7 @@ pub(crate) async fn create_invite_route(
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
-	if conduwuit::info::room_version::is_msc4311(&body.room_version) {
+	if conduwuit::info::room_version::has_msc4311_stripped_state_validation(&body.room_version) {
 		validate_msc4311_stripped_state(body.room_id.as_str(), &invite_state_values)
 			.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 	}

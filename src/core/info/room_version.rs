@@ -49,6 +49,12 @@ pub fn is_msc3389(version: &RoomVersionId) -> bool {
 #[must_use]
 pub fn is_msc4311(version: &RoomVersionId) -> bool { version == &*MSC4311_ROOM_VERSION }
 
+#[inline]
+#[must_use]
+pub fn has_msc4311_stripped_state_validation(version: &RoomVersionId) -> bool {
+	is_msc4311(version) || *version == RoomVersionId::V12
+}
+
 impl crate::Server {
 	#[inline]
 	pub fn supported_room_version(&self, version: &RoomVersionId) -> bool {
