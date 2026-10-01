@@ -582,7 +582,7 @@ pub(crate) async fn build_sync_events(
 			let include_invite = match (last_sync_end_count, invite_count) {
 				| (None, _) | (_, None) => true,
 				| (Some(last_sync_end_count), Some(invite_count)) =>
-					last_sync_end_count < invite_count,
+					last_sync_end_count <= invite_count,
 			};
 
 			if include_invite {
@@ -648,7 +648,7 @@ pub(crate) async fn build_sync_events(
 			let include_knock = match (last_sync_end_count, knock_count) {
 				| (None, _) | (_, None) => true,
 				| (Some(last_sync_end_count), Some(knock_count)) =>
-					last_sync_end_count < knock_count,
+					last_sync_end_count <= knock_count,
 			};
 
 			if include_knock {
