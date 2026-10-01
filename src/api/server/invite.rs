@@ -7,7 +7,6 @@ use conduwuit::{
 	utils::{self, hash::sha256},
 	warn,
 };
-use rezzy::stripped_state::validate_stripped_state;
 use ruma::{
 	CanonicalJsonValue, OwnedUserId, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
@@ -19,6 +18,38 @@ use ruma::{
 };
 
 use crate::Ruma;
+
+fn validate_msc4311_stripped_state(
+	room_id: &str,
+	events: &[rezzy::JsonValue],
+) -> std::result::Result<(), String> {
+	let mut has_create = false;
+
+	for (index, event) in events.iter().enumerate() {
+		for field in ["type", "sender", "content", "origin_server_ts", "room_id"] {
+			if event.get(field).is_none() {
+				return Err(format!("stripped state event {index} is missing {field}"));
+			}
+		}
+
+		let event_room_id = event
+			.get("room_id")
+			.and_then(rezzy::JsonValue::as_str)
+			.ok_or_else(|| format!("stripped state event {index} has an invalid room_id"))?;
+		if event_room_id != room_id {
+			return Err(format!("stripped state event {index} is for a different room"));
+		}
+
+		has_create |=
+			event.get("type").and_then(rezzy::JsonValue::as_str) == Some("m.room.create");
+	}
+
+	if !has_create {
+		return Err("m.room.create is missing from state".into());
+	}
+
+	Ok(())
+}
 
 /// # `PUT /_matrix/federation/v2/invite/{roomId}/{eventId}`
 ///
@@ -177,12 +208,8 @@ pub(crate) async fn create_invite_route(
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
-	validate_stripped_state(
-		body.room_id.as_str(),
-		body.room_version.as_str(),
-		&invite_state_values,
-	)
-	.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
+	validate_msc4311_stripped_state(body.room_id.as_str(), &invite_state_values)
+		.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 
 	let mut event: JsonObject = serde_json::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
