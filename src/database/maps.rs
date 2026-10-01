@@ -613,6 +613,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "userprofileupdate_value",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "userroomid_highlightcount",
 		..descriptor::RANDOM
 	},

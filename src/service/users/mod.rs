@@ -45,6 +45,14 @@ pub struct UserSuspension {
 	pub suspended_by: String,
 }
 
+/// A profile change retained for MSC4429 incremental sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileUpdate {
+	pub user_id: OwnedUserId,
+	pub field: String,
+	pub value: Option<serde_json::Value>,
+}
+
 pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
 	services: Services,
@@ -94,6 +102,7 @@ struct Data {
 	userid_selfsigningkeyid: Arc<Map>,
 	userid_usersigningkeyid: Arc<Map>,
 	useridprofilekey_value: Arc<Map>,
+	userprofileupdate_value: Arc<Map>,
 }
 
 impl crate::Service for Service {
@@ -144,6 +153,7 @@ impl crate::Service for Service {
 				userid_selfsigningkeyid: args.db["userid_selfsigningkeyid"].clone(),
 				userid_usersigningkeyid: args.db["userid_usersigningkeyid"].clone(),
 				useridprofilekey_value: args.db["useridprofilekey_value"].clone(),
+				userprofileupdate_value: args.db["userprofileupdate_value"].clone(),
 			},
 			take_one_time_key_lock: MutexMap::new(),
 		}))
@@ -1867,10 +1877,22 @@ impl Service {
 		// TODO: insert to the stable MSC4175 key when it's stable
 		let key = (user_id, profile_key);
 
+		let update_value = profile_key_value.clone();
 		if let Some(value) = profile_key_value {
 			self.db.useridprofilekey_value.put(key, Json(value));
 		} else {
 			self.db.useridprofilekey_value.del(key);
+		}
+
+		if let Ok(stream_id) = self.services.globals.next_count() {
+			self.db.userprofileupdate_value.put(
+				(stream_id, user_id.to_owned(), profile_key.to_owned()),
+				Json(ProfileUpdate {
+					user_id: user_id.to_owned(),
+					field: profile_key.to_owned(),
+					value: update_value,
+				}),
+			);
 		}
 	}
 
