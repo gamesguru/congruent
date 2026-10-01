@@ -67,7 +67,7 @@ where
 	// Lift the enclosing flush boundary around state resolution and fetch_state
 	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
 	// unrelated WAL flushes across the whole server.
-	let state_at_incoming_event = self
+	let (state_at_incoming_event, was_recovered) = self
 		.services
 		.timeline
 		.without_cork(|| async {
@@ -83,14 +83,14 @@ where
 				let state = self
 					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
 					.await?;
-				Ok::<_, conduwuit::Error>(state)
+				Ok::<_, conduwuit::Error>((state, true))
 			} else {
-				Ok::<_, conduwuit::Error>(state)
+				Ok::<_, conduwuit::Error>((state, false))
 			}
 		})
 		.await?;
 
-	let state_at_incoming_event =
+	let (state_at_incoming_event, was_recovered) =
 		state_at_incoming_event.expect("we always set this to some above");
 
 	let room_version = to_room_version(&room_version_id);
@@ -240,6 +240,14 @@ where
 		);
 
 		(prev_root, new_root)
+	} else if is_timeline_event && was_recovered {
+		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+		let new_root = Some(
+			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
+				.await?,
+		);
+
+		(prev_root, new_root)
 	} else if is_timeline_event {
 		// Non-state timeline events reuse the predecessor root for historical
 		// queries, but never advance the live room state.
@@ -274,7 +282,7 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
-		&& incoming_pdu.state_key().is_some()
+		&& (incoming_pdu.state_key().is_some() || was_recovered)
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
@@ -351,6 +359,7 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
+		advance_current_state: is_timeline_event && was_recovered && new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
 
