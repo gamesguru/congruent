@@ -1078,7 +1078,6 @@ pub async fn update_caches_for_state_delta(
 					);
 					continue;
 				};
-
 				self.update_membership(room_id, target_user_id, &pdu, false)
 					.await?;
 				memberships_changed = true;

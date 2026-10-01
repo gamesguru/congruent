@@ -220,8 +220,24 @@ impl Service {
 			})?;
 
 		// resolve PDUs
-		let mut added_pdus = Vec::with_capacity(added.len());
-		for (_k, event_id) in added {
+		let mut added_pdus = Vec::new();
+		for (shortstatekey, event_id) in added {
+			let Ok((event_type, _)) = self
+				.services
+				.short
+				.get_statekey_from_short(shortstatekey)
+				.await
+			else {
+				continue;
+			};
+			if !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
+				continue;
+			}
 			let Ok(event_id_obj) = self
 				.services
 				.short
@@ -241,8 +257,24 @@ impl Service {
 			added_pdus.push(Arc::new(pdu));
 		}
 
-		let mut removed_pdus = Vec::with_capacity(removed.len());
-		for (_k, event_id) in removed {
+		let mut removed_pdus = Vec::new();
+		for (shortstatekey, event_id) in removed {
+			let Ok((event_type, _)) = self
+				.services
+				.short
+				.get_statekey_from_short(shortstatekey)
+				.await
+			else {
+				continue;
+			};
+			if !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
+				continue;
+			}
 			let Ok(event_id_obj) = self
 				.services
 				.short
