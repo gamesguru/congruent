@@ -67,7 +67,7 @@ where
 	// Lift the enclosing flush boundary around state resolution and fetch_state
 	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
 	// unrelated WAL flushes across the whole server.
-	let (state_at_incoming_event, was_recovered) = self
+	let state_at_incoming_event = self
 		.services
 		.timeline
 		.without_cork(|| async {
@@ -83,9 +83,9 @@ where
 				let state = self
 					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
 					.await?;
-				Ok::<_, conduwuit::Error>((state, true))
+				Ok::<_, conduwuit::Error>(state)
 			} else {
-				Ok::<_, conduwuit::Error>((state, false))
+				Ok::<_, conduwuit::Error>(state)
 			}
 		})
 		.await?;
@@ -240,21 +240,9 @@ where
 		);
 
 		(prev_root, new_root)
-	} else if is_timeline_event && was_recovered {
-		// Non-state timeline events that required state recovery via /state_ids
-		// may introduce new state events. Resolve the recovered state against
-		// current room state so that newly discovered state is adopted without
-		// evicting concurrent local state.
-		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
-		let new_root = Some(
-			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
-				.await?,
-		);
-
-		(prev_root, new_root)
 	} else if is_timeline_event {
-		// Live non-state timeline events whose state is already known reuse the
-		// predecessor root and advance current state without triggering cache diffs.
+		// Non-state timeline events reuse the predecessor root for historical
+		// queries, but never advance the live room state.
 		let root = match self
 			.reusable_predecessor_root_handle(room_id, &incoming_pdu)
 			.await?
@@ -286,7 +274,7 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
-		&& (incoming_pdu.state_key().is_some() || was_recovered)
+		&& incoming_pdu.state_key().is_some()
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
@@ -364,8 +352,7 @@ where
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
 		advance_current_state: is_timeline_event
-			&& incoming_pdu.state_key().is_none()
-			&& was_recovered
+			&& incoming_pdu.state_key().is_some()
 			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
