@@ -1040,6 +1040,28 @@ pub(crate) async fn build_sync_events(
 				}
 			}
 		}
+		for joined_room in joined_rooms.values() {
+			for event in &joined_room.timeline.events {
+				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get()) else {
+					continue;
+				};
+				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str) else {
+					continue;
+				};
+				let is_leave = event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.member")
+					&& event
+						.get("content")
+						.and_then(|content| content.get("membership"))
+						.and_then(serde_json::Value::as_str)
+						.is_some_and(|membership| matches!(membership, "leave" | "ban"));
+				if is_leave {
+					let Ok(target) = UserId::parse(state_key) else { continue };
+					if !services.rooms.state_cache.user_sees_user(user_id, &target).await {
+						users.insert(state_key.to_owned(), serde_json::json!({"profile_updates": null}));
+					}
+				}
+			}
+		}
 	}
 	if profile_updates
 		.as_object()
