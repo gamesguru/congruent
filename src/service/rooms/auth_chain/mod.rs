@@ -390,9 +390,11 @@ async fn get_auth_chain_inner(
 		}
 	}
 
-	if let Ok(create_id) = EventId::parse(format!("${}", &room_id.as_str()[1..])) {
-		if event_id != &create_id {
-			if let Ok(create_short) = self.services.short.get_shorteventid(&create_id).await {
+	if let Some(room_id_without_sigil) = room_id.as_str().strip_prefix('!')
+		&& let Ok(create_id) = EventId::parse(format!("${room_id_without_sigil}").as_str())
+	{
+		if event_id != create_id {
+			if let Ok(create_short) = self.services.short.get_shorteventid(create_id).await {
 				found.insert(create_short);
 			}
 		}
