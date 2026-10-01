@@ -156,29 +156,12 @@ pub(crate) async fn invite_helper(
 				)
 				.await?;
 
-			let invite_room_state = services
-				.rooms
-				.state
-				.summary_stripped(&pdu, room_id)
-				.await
-				.into_iter()
-				.map(|event| {
-					let mut object: serde_json::Map<String, serde_json::Value> =
-						serde_json::from_str(event.json().get())
-							.expect("stored invite state is valid JSON");
-					object.insert("room_id".to_owned(), room_id.to_string().into());
-					ruma::serde::Raw::from_json_string(
-						serde_json::to_string(&object).expect("invite state is serializable"),
-					)
-					.expect("invite state is valid JSON")
-				})
-				.collect();
+			let invite_room_state = services.rooms.state.summary_stripped(&pdu, room_id).await;
 
 			drop(state_lock);
 
 			(pdu, pdu_json, invite_room_state)
 		};
-
 		let room_version_id = services.rooms.state.get_room_version(room_id).await?;
 
 		let response = services

@@ -166,6 +166,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 		let json = json!({
 			"content": event.content(),
 			"origin_server_ts": event.origin_server_ts(),
+			"room_id": event.room_id_or_hash(),
 			"sender": event.sender(),
 			"state_key": event.state_key(),
 			"type": event.kind(),
