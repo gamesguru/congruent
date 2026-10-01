@@ -3,7 +3,7 @@ use axum_client_ip::ClientIp;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{
 	Err, Error, PduEvent, Result, err, error,
-	matrix::{Event, event::gen_event_id, state_res::RoomVersion},
+	matrix::{Event, event::gen_event_id},
 	utils::{self, hash::sha256},
 	warn,
 };
@@ -177,27 +177,11 @@ pub(crate) async fn create_invite_route(
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
-	let room_features = RoomVersion::new(&body.room_version)?;
-	let validation_room_version = if room_features.strips_room_id(true) {
-		// MSC4311 carries a stripped create event, not the full PDU from which
-		// the v12 room ID was hashed. Bind its explicit room_id here, then use
-		// Rezzy's legacy room-binding checks for the structurally stripped state.
-		if let Some(create) = invite_state_values
-			.iter()
-			.find(|event| event.get("type").and_then(rezzy::JsonValue::as_str) == Some("m.room.create"))
-		{
-			if create.get("room_id").and_then(rezzy::JsonValue::as_str) != Some(body.room_id.as_str()) {
-				return Err!(Request(MissingParam(
-					"Invalid invite room state: create event room_id does not match room ID",
-				)));
-			}
-		}
-		"10"
-	} else {
-		body.room_version.as_str()
-	};
-
-	validate_stripped_state(body.room_id.as_str(), validation_room_version, &invite_state_values)
+	validate_stripped_state(
+		body.room_id.as_str(),
+		body.room_version.as_str(),
+		&invite_state_values,
+	)
 	.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 
 	let mut event: JsonObject = serde_json::from_str(body.event.get())
