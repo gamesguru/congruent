@@ -213,10 +213,10 @@
 {"Action":"pass","Test":"TestInviteFiltering/Will_allow_users_when_a_user_appears_in_multiple_fields"}
 {"Action":"pass","Test":"TestInviteFiltering/Will_ignore_null_fields"}
 {"Action":"pass","Test":"TestInviteFromIgnoredUsersDoesNotAppearInSync"}
-{"Action":"pass","Test":"TestIsDirectFlagFederation"}
+{"Action":"fail","Test":"TestIsDirectFlagFederation"}
 {"Action":"pass","Test":"TestIsDirectFlagLocal"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFailOver"}
-{"Action":"fail","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
+{"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser/join_remote_federated_room_as_application_service_user"}
 {"Action":"pass","Test":"TestJoinFederatedRoomWithUnverifiableEvents"}
 {"Action":"pass","Test":"TestJoinFederatedRoomWithUnverifiableEvents//send_join_response_missing_signatures_shouldn't_block_room_join"}

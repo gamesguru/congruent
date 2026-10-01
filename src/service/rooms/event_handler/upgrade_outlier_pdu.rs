@@ -67,7 +67,7 @@ where
 	// Lift the enclosing flush boundary around state resolution and fetch_state
 	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
 	// unrelated WAL flushes across the whole server.
-	let state_at_incoming_event = self
+	let (state_at_incoming_event, was_recovered) = self
 		.services
 		.timeline
 		.without_cork(|| async {
@@ -80,10 +80,12 @@ where
 			};
 
 			if state.is_none() {
-				self.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
-					.await
+				let state = self
+					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
+					.await?;
+				Ok::<_, conduwuit::Error>((state, true))
 			} else {
-				Ok(state)
+				Ok::<_, conduwuit::Error>((state, false))
 			}
 		})
 		.await?;
@@ -238,10 +240,11 @@ where
 		);
 
 		(prev_root, new_root)
-	} else if is_timeline_event {
-		// Non-state timeline events may introduce recovered state (e.g. via /state_ids).
-		// Resolve the state at the incoming event against current room state so that
-		// newly discovered state is adopted without evicting concurrent local state.
+	} else if is_timeline_event && was_recovered {
+		// Non-state timeline events that required state recovery via /state_ids
+		// may introduce new state events. Resolve the recovered state against
+		// current room state so that newly discovered state is adopted without
+		// evicting concurrent local state.
 		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
 		let new_root = Some(
 			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
@@ -249,8 +252,23 @@ where
 		);
 
 		(prev_root, new_root)
+	} else if is_timeline_event {
+		// Live non-state timeline events whose state is already known reuse the
+		// predecessor root and advance current state without triggering cache diffs.
+		let root = match self
+			.reusable_predecessor_root_handle(room_id, &incoming_pdu)
+			.await?
+		{
+			| Some(root) => root,
+			| None =>
+				self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+					.await?,
+		};
+
+		(None, Some(root))
 	} else {
-		// Outlier non-state events (backfill, etc.) only record their historical state root.
+		// Backfilled outliers only record their historical state root and do not
+		// alter current room state.
 		let new_root = Some(
 			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
 				.await?,
@@ -268,6 +286,7 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
+		&& (incoming_pdu.state_key().is_some() || was_recovered)
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
