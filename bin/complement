@@ -99,7 +99,7 @@ COMPLEMENT_WRAPPER_TOKEN="${COMPLEMENT_WRAPPER_TOKEN:-"complement-$$-$(date +%s%
 COMPLEMENT_WRAPPER_ENV_PREFIX="${COMPLEMENT_SHARE_ENV_PREFIX:-COMPLEMENT_WRAPPER_}"
 COMPLEMENT_WRAPPER_ENV_NAME="${COMPLEMENT_WRAPPER_ENV_PREFIX}COMPLEMENT_WRAPPER_TOKEN"
 printf -v "$COMPLEMENT_WRAPPER_ENV_NAME" '%s' "$COMPLEMENT_WRAPPER_TOKEN"
-export "$COMPLEMENT_WRAPPER_ENV_NAME"
+declare -x "$COMPLEMENT_WRAPPER_ENV_NAME=$COMPLEMENT_WRAPPER_TOKEN"
 export COMPLEMENT_SHARE_ENV_PREFIX="$COMPLEMENT_WRAPPER_ENV_PREFIX"
 
 # Cleanup only Complement containers spawned by this wrapper run.
@@ -166,7 +166,10 @@ anchor_one() {
 		idx=$((idx + 1))
 	done
 
-	(IFS='/'; echo "${anchored[*]}")
+	(
+		IFS='/'
+		echo "${anchored[*]}"
+	)
 }
 
 # `go test -run` splits its whole argument on unescaped `/` to match subtest
@@ -218,11 +221,42 @@ record_result() {
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
 EVENTS_FIFO="${EVENTS_FIFO_DIR}/events"
+MERGE_DONE=0
+
+merge_results_on_exit() {
+	local status="${1:-$?}"
+	trap - EXIT
+
+	if [ "$MERGE_DONE" -eq 0 ] && [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
+		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" || true
+		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" || true
+		local tmp_results
+		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+			mv -f "$tmp_results" "$MAIN_RESULTS_FILE"
+			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+		else
+			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+			rm -f "$tmp_results"
+		fi
+	elif [ "$MERGE_DONE" -eq 0 ]; then
+		echo "Warning: $RESULTS_FILE is missing or empty. No results processed." >&2
+	fi
+
+	if [ "$MERGE_DONE" -eq 0 ] && [ -f "$LOG_FILE" ]; then
+		cp "$LOG_FILE" "$MAIN_LOG_FILE"
+	fi
+
+	cleanup_results_fifo
+	cleanup_complement_containers
+	exit "$status"
+}
 
 cleanup_results_fifo() {
 	rm -rf "$EVENTS_FIFO_DIR"
 }
-trap 'cleanup_results_fifo; cleanup_complement_containers' EXIT
+trap 'merge_results_on_exit "$?"' EXIT
 
 # Runs one anchored `-run` pattern's `go test` invocation, appending its JSON
 # log and pass/fail/skip events onto the shared LOG_FILE/RESULTS_FILE. Returns
@@ -309,14 +343,17 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 		# (see record_result above). Merge the completed run into the ledger
 		# just like a partial run; never replace the historical ledger with
 		# the staging file.
-		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
-			|| echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
-		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
-			|| echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
+		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" ||
+			echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
+		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" ||
+			echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
 		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
 		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-			mv -f "$tmp_results" "$MAIN_RESULTS_FILE" \
-				|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+			mv -f "$tmp_results" "$MAIN_RESULTS_FILE" ||
+				{
+					echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2
+					exit 1
+				}
 			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
 		else
 			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
@@ -326,8 +363,11 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 	else
 		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
 		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-			mv "$tmp_results" "$MAIN_RESULTS_FILE" \
-				|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+			mv "$tmp_results" "$MAIN_RESULTS_FILE" ||
+				{
+					echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2
+					exit 1
+				}
 			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
 		else
 			# Merge failed (e.g. under load); append the staged results so the
@@ -364,8 +404,6 @@ echo "complement results merged into $MAIN_RESULTS_FILE"
 echo ""
 echo ""
 
-if [ "$TEST_EXIT_CODE" -ne 0 ]; then
-	exit "$TEST_EXIT_CODE"
-fi
-
-exit 0
+MERGE_DONE=1
+trap - EXIT
+merge_results_on_exit "$TEST_EXIT_CODE"
