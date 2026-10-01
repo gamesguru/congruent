@@ -427,9 +427,18 @@ async fn knock_room_helper_local(
 			.map_err(|e| err!(BadServerResponse("Invalid knock event PDU: {e:?}")))?;
 	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
-	// update_membership is handled automatically by append_pdu
-	let current_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
+	let (current_root_handle, state_node) = services
+		.rooms
+		.state
+		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, None)
+		.await?;
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(state_node);
 
+	// update_membership is handled automatically by append_pdu
 	info!("Appending room knock event locally");
 	Box::pin(services.rooms.timeline.append_pdu(
 		&parsed_knock_pdu,
@@ -439,7 +448,7 @@ async fn knock_room_helper_local(
 		service::rooms::timeline::AppendPduContext {
 			state_lock: &state_lock,
 			room_id,
-			state_root_handle: current_root_handle,
+			state_root_handle: Some(current_root_handle),
 			prev_state_root_handle: previous_root_handle,
 		},
 	))
@@ -448,7 +457,6 @@ async fn knock_room_helper_local(
 	Ok(())
 }
 
-#[allow(unused_variables, unreachable_code, unused_assignments, unused_mut)]
 async fn knock_room_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -602,11 +610,10 @@ async fn knock_room_helper_remote(
 		entries.push((shortstatekey, shorteventid));
 	}
 
-	return Err(err!(Request(NotImplemented("TODO(MSC00DC/HAMT): remote knock append"))));
-
-	let structural_key = room_id.as_bytes();
+	let structural_key =
+		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
 	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(structural_key, &lattice, entries)
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!(error!("Failed to build HAMT root for knock: {e:?}")))?;
 
 	services
@@ -620,6 +627,19 @@ async fn knock_room_helper_remote(
 		.state
 		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
+	// We append to state before appending the pdu, so we never have the pdu
+	// without its state.
+	let (state_root_handle, state_node) = services
+		.rooms
+		.state
+		.append_to_state(&parsed_knock_pdu, room_id, &state_lock, Some(&root_handle))
+		.await?;
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(state_node);
+
 	// update_membership is handled automatically by append_pdu
 
 	info!("Appending room knock event locally");
@@ -631,16 +651,13 @@ async fn knock_room_helper_remote(
 		service::rooms::timeline::AppendPduContext {
 			state_lock: &state_lock,
 			room_id,
-			state_root_handle: Some(root_handle.clone()),
+			state_root_handle: Some(state_root_handle),
 			prev_state_root_handle: previous_root_handle,
 		},
 	))
 	.await?;
 
-	info!("Setting final room state for new room");
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist — pointer already
-	// updated via set_room_state_hamt above.
+	info!("Successfully set final room state for new room");
 
 	Ok(())
 }

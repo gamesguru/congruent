@@ -30,12 +30,18 @@ where
 		.next()
 		.expect("at least one prev_event");
 
-	let prev_pdu = self
+	// Not found locally is a legitimate, common case (the prev_event was never
+	// delivered to us, we joined after it, etc.), not a database malfunction.
+	// Return None so the caller falls back to fetch_state().
+	let Ok(prev_pdu) = self
 		.services
 		.timeline
 		.get_pdu_in_room(Some(room_id), prev_event)
 		.await
-		.map_err(|e| err!(Database("Could not find prev event: {e:?}")))?;
+	else {
+		debug!("prev_event {prev_event} not found locally; falling back to fetch_state");
+		return Ok(None);
+	};
 
 	if prev_pdu.room_id() != Some(room_id) {
 		return Err(err!(Database("prev_event is not in the same room")));

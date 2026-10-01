@@ -8,7 +8,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-mtxdb = { workspace = true, features = [] }
+mtxdb = { workspace = true, features = ["multi-reader"] }
 
 [lints]
 workspace = true
