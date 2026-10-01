@@ -239,18 +239,15 @@ where
 
 		(prev_root, new_root)
 	} else {
-		// State recovery via /state_ids may have materialized previously unknown
-		// state events as outliers while resolving a non-state event.  The
-		// resolved state is still the state at this event and must become the
-		// room's current state when the event is accepted; otherwise those events
-		// remain addressable outliers but never affect current-state queries.
-		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+		// For non-state events, the state before the event is recorded as
+		// the event's historical state root, but it does not modify the room's
+		// current state or membership caches.
 		let new_root = Some(
 			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
 				.await?,
 		);
 
-		(prev_root, new_root)
+		(None, new_root)
 	};
 
 	info!(room_id = %room_id, "Applying the resolved state transition");
@@ -262,6 +259,7 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
+		&& incoming_pdu.state_key().is_some()
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
@@ -338,9 +336,7 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: is_timeline_event
-			&& incoming_pdu.state_key().is_none()
-			&& new_room_state.is_some(),
+		advance_current_state: false,
 		was_joined_before_state_install: None,
 	};
 
