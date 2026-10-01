@@ -90,7 +90,8 @@ where
 		})
 		.await?;
 
-	let (state_at_incoming_event, was_recovered) =
+	let (state_at_incoming_event, was_recovered) = state_at_incoming_event;
+	let state_at_incoming_event =
 		state_at_incoming_event.expect("we always set this to some above");
 
 	let room_version = to_room_version(&room_version_id);
