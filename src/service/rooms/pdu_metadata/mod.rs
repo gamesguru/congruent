@@ -3,7 +3,7 @@ mod data;
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use conduwuit::{Result, debug, matrix::PduCount, warn};
+use conduwuit::{Result, debug, info, matrix::PduCount, warn};
 use futures::{StreamExt, future::try_join};
 use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 use sha2::{Digest, Sha256};
@@ -636,14 +636,16 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		// A read error means the rejection state is *unknown*, not "not
-		// rejected". Clearing the markers (or reporting success) on a failed
-		// read would erase/wrongly-accept a rejection whose state we never
-		// actually observed. Preserve the uncertain state: report failure and
-		// leave every marker in place so the event is not force-promoted
-		// before its true verdict is known.
+		// A read error other than NotFound means the rejection state is
+		// unknown, not "not rejected". Clearing the markers (or reporting
+		// success) on such a failed read would erase or wrongly accept a
+		// rejection whose state we never actually observed.
 		let code = match self.db.get_rejection_code(event_id).await {
 			| Ok(code) => code,
+			| Err(e) if e.is_not_found() => {
+				info!(%event_id, "No rejection marker found after promotion; treating event as accepted");
+				None
+			},
 			| Err(e) => {
 				warn!(
 					%event_id,
