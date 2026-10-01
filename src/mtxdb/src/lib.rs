@@ -15,19 +15,19 @@ pub use mtxdb::storage::StorageError;
 
 /// An opened conduwuit mtxdb instance.
 pub struct Database {
-	inner: Arc<mtxdb::SharedDatabase>,
+	inner: Arc<mtxdb::Database>,
 }
 
 impl Database {
 	/// Open or create a writable mtxdb database rooted at `path`.
 	pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
-		let inner = mtxdb::SharedDatabase::open(PathBuf::from(path.as_ref()))?;
+		let inner = mtxdb::Database::open(PathBuf::from(path.as_ref()))?;
 		Ok(Self { inner: Arc::new(inner) })
 	}
 
 	/// Access the underlying shared database for adapter implementation code.
 	#[must_use]
-	pub fn shared(&self) -> &Arc<mtxdb::SharedDatabase> { &self.inner }
+	pub fn shared(&self) -> &Arc<mtxdb::Database> { &self.inner }
 }
 
 impl Clone for Database {
