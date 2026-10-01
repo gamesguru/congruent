@@ -522,7 +522,9 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// predecessor repair on the failure path. Leaving it uncached lets
 					// that retry happen: a harmless no-op for the already-satisfied
 					// case, and a genuine second attempt for the failed one.
-					| Ok((sorted, fetched, deeper_anchor, invalid)) if !sorted.is_empty() => {
+					| Ok((sorted, fetched, deeper_anchor, invalid))
+						if !sorted.is_empty() || invalid =>
+					{
 						if let Some(anchor) = &deeper_anchor {
 							state_ids_anchor = anchor.clone();
 						}
@@ -761,7 +763,7 @@ pub async fn process_timeline_upgrade(
 		sorted_prev_events,
 		fetched_prev_events,
 		_prev_fetch_deeper_anchor,
-		_prev_fetch_had_invalid_data,
+		prev_fetch_had_invalid_data,
 	) = if let Some(prefetched) = prefetched_prev {
 		prefetched
 	} else {
@@ -774,6 +776,28 @@ pub async fn process_timeline_upgrade(
 		))
 		.await?
 	};
+
+	if prev_fetch_had_invalid_data {
+		warn!(
+			%event_id,
+			"prev_events fetch contained structurally invalid data; storing as outlier and rejecting"
+		);
+		self.services
+			.outlier
+			.add_pdu_outlier(&event_id, &val, Some(room_id))
+			.await;
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(
+				&event_id,
+				&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
+					.with_detail("prev_event contained structurally invalid data"),
+			)
+			.await;
+		return Err(err!(Request(InvalidParam(
+			"prev_event contained structurally invalid data"
+		))));
+	}
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 

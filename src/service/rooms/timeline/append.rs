@@ -32,6 +32,7 @@ pub struct AppendPduContext<'a> {
 	pub room_id: &'a ruma::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
+	pub advance_current_state: bool,
 	/// Membership of the event's state key in this room, sampled *before* a
 	/// `/send_join` state root was installed. `None` means "no such prior
 	/// sample"; the live cache is consulted instead.
@@ -71,6 +72,7 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
+		advance_current_state,
 		was_joined_before_state_install,
 	} = ctx;
 
@@ -101,6 +103,7 @@ where
 			room_id,
 			state_root_handle,
 			prev_state_root_handle,
+			advance_current_state,
 			was_joined_before_state_install,
 		})
 		.await?;
@@ -318,6 +321,7 @@ where
 	// intentionally does not advance the room's current-state pointer. The
 	// resolved snapshot is current for this accepted event, so publish it now.
 	if pdu.state_key().is_none()
+		&& advance_current_state
 		&& let Some(root_handle) = state_root_handle.as_ref()
 	{
 		self.services
