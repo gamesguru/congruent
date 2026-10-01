@@ -365,6 +365,7 @@ where
 		prev_state_root_handle: previous_root_handle.clone(),
 		advance_current_state: is_timeline_event
 			&& incoming_pdu.state_key().is_none()
+			&& was_recovered
 			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
