@@ -404,7 +404,7 @@ pub async fn mark_as_invited_silent(
 	self.db.roomuserid_invitecount.batch_raw_put(
 		&mut batch,
 		&roomuser_id,
-		self.services.globals.next_count().unwrap(),
+		self.services.globals.next_count().unwrap().saturating_add(1),
 	);
 	if let Some(sender_user) = sender_user {
 		self.db
@@ -726,7 +726,7 @@ pub fn mark_as_knocked(
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 
-	let new_count = self.services.globals.next_count().unwrap();
+	let new_count = self.services.globals.next_count().unwrap().saturating_add(1);
 	tracing::info!(
 		target: "knock_debug",
 		"mark_as_knocked called for user_id={} room_id={} new_count={} knocked_state={:?}",
@@ -826,7 +826,7 @@ pub async fn mark_as_invited(
 	self.db.roomuserid_invitecount.batch_raw_put(
 		&mut batch,
 		&roomuser_id,
-		self.services.globals.next_count().unwrap(),
+		self.services.globals.next_count().unwrap().saturating_add(1),
 	);
 	self.db
 		.userroomid_invitesender
