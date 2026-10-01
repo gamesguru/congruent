@@ -643,7 +643,7 @@ impl Service {
 		let code = match self.db.get_rejection_code(event_id).await {
 			| Ok(code) => code,
 			| Err(e) if e.is_not_found() => {
-				info!(%event_id, "No rejection marker found after promotion; treating event as accepted");
+				debug!(%event_id, "No rejection marker found after promotion; treating event as accepted");
 				None
 			},
 			| Err(e) => {
