@@ -67,7 +67,7 @@ where
 	// Lift the enclosing flush boundary around state resolution and fetch_state
 	// so that federation I/O (e.g. /state_ids round-trips) doesn't suppress
 	// unrelated WAL flushes across the whole server.
-	let (state_at_incoming_event, was_recovered) = self
+	let state_at_incoming_event = self
 		.services
 		.timeline
 		.without_cork(|| async {
