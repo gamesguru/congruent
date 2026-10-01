@@ -834,7 +834,7 @@
 {"Action":"pass","Test":"TestSendMessageWithTxn"}
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
-{"Action":"fail","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
+{"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
 {"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}

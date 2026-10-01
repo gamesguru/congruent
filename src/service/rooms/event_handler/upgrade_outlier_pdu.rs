@@ -96,15 +96,15 @@ where
 
 	let room_version = to_room_version(&room_version_id);
 	let is_current_forward_extremity = if is_timeline_event {
-		self.services
+		let extremities: Vec<_> = self
+			.services
 			.state
 			.get_forward_extremities(room_id)
-			.await
-			.is_ok_and(|extremities| {
-				incoming_pdu
-					.prev_events()
-					.any(|prev| extremities.iter().any(|extremity| extremity == prev))
-			})
+			.collect()
+			.await;
+		incoming_pdu
+			.prev_events()
+			.any(|prev| extremities.iter().any(|extremity| extremity == prev))
 	} else {
 		false
 	};
