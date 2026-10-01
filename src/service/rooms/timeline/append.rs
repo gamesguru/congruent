@@ -170,6 +170,7 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
+		advance_current_state,
 		was_joined_before_state_install,
 	} = ctx;
 
