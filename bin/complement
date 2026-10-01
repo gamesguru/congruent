@@ -177,9 +177,9 @@ anchor_one() {
 # across patterns of differing depth (e.g. `TestA/Sub` vs `TestB/Sub/Sub`
 # joined by one `|` silently loses one side -- go re-splits the combined
 # string on every `/`, not just the ones belonging to the same alternative).
-# Combine flat top-level alternatives into one `go test` invocation. Only split
-# alternatives that contain subtest paths, where Go's slash-aware `-run`
-# matching can misinterpret alternatives with different depths.
+# Combine flat top-level alternatives into one `go test` invocation. Split
+# alternatives containing subtest paths because Go's slash-aware `-run`
+# matching cannot preserve mixed-depth alternatives exactly.
 ALT_PATTERNS=()
 if [ "$RUN_TESTS" = "." ]; then
 	ALT_PATTERNS=(".")
