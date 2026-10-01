@@ -106,24 +106,6 @@ async fn msc4429_profile_updates(
 
 	let mut users = serde_json::Map::new();
 	if since.is_none() {
-		let rooms = services
-			.rooms
-			.state_cache
-			.rooms_joined(user_id)
-			.collect::<Vec<_>>()
-			.await;
-		let mut visible = HashSet::new();
-		for room_id in rooms {
-			visible.extend(
-				services
-					.rooms
-					.state_cache
-					.room_members(room_id)
-					.map(ToOwned::to_owned)
-					.collect::<Vec<_>>()
-					.await,
-			);
-		}
 		let mut latest = HashMap::new();
 		services
 			.users
@@ -135,14 +117,37 @@ async fn msc4429_profile_updates(
 				std::future::ready(())
 			})
 			.await;
-		for target in visible.iter().filter(|target| **target != user_id) {
-			let fields = latest
-				.iter()
-				.filter(|((update_user, _), _)| *update_user == *target)
-				.filter_map(|((_, field), value)| {
-					value.clone().map(|value| (field.clone(), value))
-				})
+		let targets = latest
+			.keys()
+			.map(|(target, _)| target)
+			.filter(|target| *target != user_id)
+			.collect::<HashSet<_>>();
+		for target in targets {
+			if !services
+				.rooms
+				.state_cache
+				.user_sees_user(user_id, target)
+				.await
+			{
+				continue;
+			}
+			let mut fields = services
+				.users
+				.all_profile_keys(target)
+				.filter(|(field, _)| std::future::ready(ids.contains(field.as_str())))
+				.collect::<HashMap<_, _>>()
+				.await
+				.into_iter()
 				.collect::<serde_json::Map<_, _>>();
+			for ((update_user, field), value) in &latest {
+				if *update_user == *target {
+					if let Some(value) = value.clone() {
+						fields.insert(field.clone(), value);
+					} else {
+						fields.remove(field);
+					}
+				}
+			}
 			if !fields.is_empty() {
 				users.insert(target.to_string(), serde_json::json!({"profile_updates": fields}));
 			}

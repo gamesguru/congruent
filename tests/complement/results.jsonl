@@ -213,7 +213,7 @@
 {"Action":"pass","Test":"TestInviteFiltering/Will_allow_users_when_a_user_appears_in_multiple_fields"}
 {"Action":"pass","Test":"TestInviteFiltering/Will_ignore_null_fields"}
 {"Action":"pass","Test":"TestInviteFromIgnoredUsersDoesNotAppearInSync"}
-{"Action":"pass","Test":"TestIsDirectFlagFederation"}
+{"Action":"fail","Test":"TestIsDirectFlagFederation"}
 {"Action":"pass","Test":"TestIsDirectFlagLocal"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFailOver"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
@@ -422,11 +422,11 @@
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`invite_state`_on_`/sync`_(remote_invite)"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`knock_state`_on_`/sync`_(local_knock)"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`knock_state`_on_`/sync`_(remote_knock)"}
-{"Action":"fail","Test":"TestMSC4429ProfileUpdates"}
+{"Action":"pass","Test":"TestMSC4429ProfileUpdates"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/A_user_leaving_the_last_shared_room_returns_a_profile_update_of_null"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Cleared_profile_field_is_returned_as_null"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Incremental_sync_returns_the_latest_update"}
-{"Action":"fail","Test":"TestMSC4429ProfileUpdates/Initial_sync_includes_requested_profile_fields_and_filters_others"}
+{"Action":"pass","Test":"TestMSC4429ProfileUpdates/Initial_sync_includes_requested_profile_fields_and_filters_others"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/No_updates_without_profile_fields_filter"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Widening_profile_fields_filter_does_not_return_old_filtered_updates"}
 {"Action":"pass","Test":"TestMSC4499Key"}
