@@ -180,7 +180,7 @@ impl RoomVersion {
 			| RoomVersionId::V11 => Self::V11,
 			| RoomVersionId::V12 => Self::V12,
 			| ver if ver.as_str() == "12.1" => Self::V12_1,
-			| ver if ver.as_str() == "org.matrix.msc3389.10" => Self::V10,
+			| ver if crate::info::room_version::is_msc3389(ver) => Self::V10,
 			| ver => return Err(Error::Unsupported(format!("found version `{ver}`"))),
 		})
 	}

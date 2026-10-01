@@ -22,6 +22,10 @@ pub static MSC3389_ROOM_VERSION: LazyLock<RoomVersionId> = LazyLock::new(|| {
 	RoomVersionId::try_from("org.matrix.msc3389.10").expect("valid room version")
 });
 
+pub static MSC4311_ROOM_VERSION: LazyLock<RoomVersionId> = LazyLock::new(|| {
+	RoomVersionId::try_from("org.matrix.msc4311.10").expect("valid room version")
+});
+
 /// Experimental, partially supported room versions
 pub static UNSTABLE_ROOM_VERSIONS: LazyLock<Vec<RoomVersionId>> = LazyLock::new(|| {
 	vec![
@@ -29,10 +33,21 @@ pub static UNSTABLE_ROOM_VERSIONS: LazyLock<Vec<RoomVersionId>> = LazyLock::new(
 		RoomVersionId::V4,
 		RoomVersionId::V5,
 		MSC3389_ROOM_VERSION.clone(),
+		MSC4311_ROOM_VERSION.clone(),
 	]
 });
 
 type RoomVersion = (RoomVersionId, RoomVersionStability);
+
+#[inline]
+#[must_use]
+pub fn is_msc3389(version: &RoomVersionId) -> bool {
+	version == &*MSC3389_ROOM_VERSION || version.as_str() == "org.matrix.msc3389.10"
+}
+
+#[inline]
+#[must_use]
+pub fn is_msc4311(version: &RoomVersionId) -> bool { version == &*MSC4311_ROOM_VERSION }
 
 impl crate::Server {
 	#[inline]
