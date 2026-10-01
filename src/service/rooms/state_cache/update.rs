@@ -165,7 +165,20 @@ pub async fn update_membership(
 					}
 				}
 			}
-			self.mark_as_knocked(user_id, room_id, Some(knock_state));
+			let has_create = knock_state.iter().any(|event| {
+				serde_json::from_str::<serde_json::Value>(event.json().get())
+					.ok()
+					.and_then(|value| {
+						value
+							.get("type")
+							.and_then(serde_json::Value::as_str)
+							.map(str::to_owned)
+					})
+					.as_deref() == Some("m.room.create")
+			});
+			if has_create {
+				self.mark_as_knocked(user_id, room_id, Some(knock_state));
+			}
 		},
 		| _ => {},
 	}
