@@ -78,7 +78,7 @@ pub async fn user_membership_at_event(
 	room_id: &RoomId,
 	user_id: &UserId,
 ) -> MembershipState {
-	if let Ok(root_handle) = self.pdu_roothandle_before_event(room_id, event_id).await {
+	if let Ok(root_handle) = self.pdu_roothandle_before_event(event_id).await {
 		self.user_membership_hamt(room_id, &root_handle, user_id)
 			.await
 	} else {
@@ -502,7 +502,6 @@ pub async fn pdu_roothandle_after_event(
 #[implement(super::Service)]
 pub async fn pdu_roothandle_before_event(
 	&self,
-	_room_id: &RoomId,
 	event_id: &EventId,
 ) -> Result<rezzy::hamt::RootHandle> {
 	// State before an event is determined by its DAG predecessors, not by the

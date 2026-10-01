@@ -2665,7 +2665,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let root_c = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_before_event(&room_id, &message_c_event)
+		.pdu_roothandle_before_event(&message_c_event)
 		.await
 		.unwrap();
 	let name_c: Option<RoomNameEventContent> = services
@@ -2685,7 +2685,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let root_m = services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_before_event(&room_id, &merge_event)
+		.pdu_roothandle_before_event(&merge_event)
 		.await
 		.unwrap();
 	let name_m: Option<RoomNameEventContent> = services

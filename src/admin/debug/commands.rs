@@ -1505,7 +1505,7 @@ async fn reject_conflicting_state(
 		.services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_before_event(room_id, at_event_id)
+		.pdu_roothandle_before_event(at_event_id)
 		.await
 	{
 		| Ok(root_handle) => Ok(root_handle),

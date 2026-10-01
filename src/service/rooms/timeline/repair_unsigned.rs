@@ -81,7 +81,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 				let prev_state = if let Ok(root_handle) = self
 					.services
 					.state_accessor
-					.pdu_roothandle_before_event(room_id, &event_id)
+					.pdu_roothandle_before_event(&event_id)
 					.await
 				{
 					self.services

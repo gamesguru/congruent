@@ -103,7 +103,7 @@ pub(crate) async fn get_member_events_route(
 			let root = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle_before_event(room_id, leave_pdu.event_id())
+				.pdu_roothandle_before_event(leave_pdu.event_id())
 				.await
 				.ok();
 			info!(

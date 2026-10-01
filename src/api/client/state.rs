@@ -288,7 +288,7 @@ async fn leave_roothandle(
 	services
 		.rooms
 		.state_accessor
-		.pdu_roothandle_before_event(room_id, leave_pdu.event_id())
+		.pdu_roothandle_before_event(leave_pdu.event_id())
 		.await
 		.ok()
 }

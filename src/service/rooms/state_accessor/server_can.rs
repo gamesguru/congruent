@@ -72,7 +72,7 @@ pub async fn server_can_see_event(
 	// Fallback when the event's state root is missing (outliers, force-set
 	// imports, DB corruption). Check current room visibility instead of blindly
 	// granting.
-	let Ok(root_handle) = self.pdu_roothandle_before_event(&room_id, &event_id).await else {
+	let Ok(root_handle) = self.pdu_roothandle_before_event(&event_id).await else {
 		if let Ok(room_root) = self.services.state.get_room_state_hamt(&room_id).await {
 			let hv = self
 				.state_get_content_hamt(
