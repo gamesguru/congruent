@@ -131,7 +131,40 @@ pub async fn update_membership(
 			self.mark_as_left(user_id, room_id, Some(pdu.clone())).await;
 		},
 		| MembershipState::Knock => {
-			let knock_state = self.services.state.summary_stripped(pdu, room_id).await;
+			let mut knock_state = self.services.state.summary_stripped(pdu, room_id).await;
+			// A remote knock can be observed once through the federation response
+			// (with the complete stripped state) and again while applying the local
+			// membership event (where the local state cache may only contain that
+			// member event). Do not overwrite the complete state with that partial
+			// second summary.
+			let has_create = knock_state.iter().any(|event| {
+				serde_json::from_str::<serde_json::Value>(event.json().get())
+					.ok()
+					.and_then(|value| {
+						value
+							.get("type")
+							.and_then(serde_json::Value::as_str)
+							.map(str::to_owned)
+					})
+					.as_deref() == Some("m.room.create")
+			});
+			if !has_create {
+				if let Ok(previous) = self.knock_state(user_id, room_id).await {
+					if previous.iter().any(|event| {
+						serde_json::from_str::<serde_json::Value>(event.json().get())
+							.ok()
+							.and_then(|value| {
+								value
+									.get("type")
+									.and_then(serde_json::Value::as_str)
+									.map(str::to_owned)
+							})
+							.as_deref() == Some("m.room.create")
+					}) {
+						knock_state = previous;
+					}
+				}
+			}
 			self.mark_as_knocked(user_id, room_id, Some(knock_state));
 		},
 		| _ => {},
