@@ -329,6 +329,7 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
+		was_joined_before_state_install: None,
 	};
 
 	// Now we calculate the set of extremities this room has after the incoming

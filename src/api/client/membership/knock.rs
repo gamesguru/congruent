@@ -450,6 +450,7 @@ async fn knock_room_helper_local(
 			room_id,
 			state_root_handle: Some(current_root_handle),
 			prev_state_root_handle: previous_root_handle,
+			was_joined_before_state_install: None,
 		},
 	))
 	.await?;
@@ -653,6 +654,7 @@ async fn knock_room_helper_remote(
 			room_id,
 			state_root_handle: Some(state_root_handle),
 			prev_state_root_handle: previous_root_handle,
+			was_joined_before_state_install: None,
 		},
 	))
 	.await?;

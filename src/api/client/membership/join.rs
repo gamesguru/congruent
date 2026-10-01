@@ -785,6 +785,16 @@ async fn join_room_by_id_helper_remote_process(
 		.store
 		.persist_node_recursive(root_node);
 
+	// Sample the joining user's membership *before* the `/send_join` state root is
+	// installed. That state includes the joiner's own membership, so reading the
+	// cache after installation always reports them as already joined, which would
+	// suppress the device-list notification for a genuine first join.
+	let was_joined_before_state_install = services
+		.rooms
+		.state_cache
+		.is_joined(sender_user, room_id)
+		.await;
+
 	services
 		.rooms
 		.state
@@ -903,6 +913,7 @@ async fn join_room_by_id_helper_remote_process(
 			room_id,
 			state_root_handle: Some(state_root_handle),
 			prev_state_root_handle: previous_root_handle,
+			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),
 		},
 	))
 	.await?;

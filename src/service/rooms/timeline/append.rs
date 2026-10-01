@@ -32,6 +32,10 @@ pub struct AppendPduContext<'a> {
 	pub room_id: &'a ruma::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
+	/// Membership of the event's state key in this room, sampled *before* a
+	/// `/send_join` state root was installed. `None` means "no such prior
+	/// sample"; the live cache is consulted instead.
+	pub was_joined_before_state_install: Option<(&'a UserId, bool)>,
 }
 
 /// Inputs shared by push-rule evaluation in live append and receipt-based
@@ -67,6 +71,7 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
+		was_joined_before_state_install,
 	} = ctx;
 
 	// We defer state association until after soft-fail checks to avoid persisting
@@ -96,6 +101,7 @@ where
 			room_id,
 			state_root_handle,
 			prev_state_root_handle,
+			was_joined_before_state_install,
 		})
 		.await?;
 
@@ -161,6 +167,7 @@ where
 		room_id,
 		state_root_handle,
 		prev_state_root_handle,
+		was_joined_before_state_install,
 	} = ctx;
 
 	// Coalesce timeline writes; flush before pub'ing receipt changes / waking sync.
@@ -487,11 +494,21 @@ where
 				// membership event whose membership stays `join` (e.g. a display name or
 				// avatar profile update) must not be treated as a device-list change; that
 				// would spuriously notify other users to rotate their room keys.
-				let was_joined = self
-					.services
-					.state_cache
-					.is_joined(target_user_id, room_id)
-					.await;
+				//
+				// A `/send_join` state root installs the room state *including* the joining
+				// user's own membership, so by this point the live cache already reports the
+				// target as joined and would suppress the notification on a genuine first
+				// join. Callers that installed such a state pass the pre-install sample; all
+				// others fall back to the cache.
+				let was_joined = match was_joined_before_state_install {
+					| Some((sampled_user_id, was_joined)) if sampled_user_id == target_user_id =>
+						was_joined,
+					| _ =>
+						self.services
+							.state_cache
+							.is_joined(target_user_id, room_id)
+							.await,
+				};
 
 				// Update our membership info, we do this here incase a user is invited or
 				// knocked and immediately leaves we need the DB to record the invite or
