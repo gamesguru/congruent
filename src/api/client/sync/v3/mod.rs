@@ -68,7 +68,8 @@ fn client_stripped_state(
 		.into_iter()
 		.map(|event| {
 			let mut object: serde_json::Map<String, serde_json::Value> =
-				serde_json::from_str(event.json().get()).expect("stored stripped state is valid JSON");
+				serde_json::from_str(event.json().get())
+					.expect("stored stripped state is valid JSON");
 			object.remove("origin_server_ts");
 			Raw::from_json_string(
 				serde_json::to_string(&object).expect("stripped state is serializable"),

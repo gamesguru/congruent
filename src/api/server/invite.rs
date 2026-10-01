@@ -7,6 +7,7 @@ use conduwuit::{
 	utils::{self, hash::sha256},
 	warn,
 };
+use rezzy::stripped_state::validate_stripped_state;
 use ruma::{
 	CanonicalJsonValue, OwnedUserId, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
@@ -16,7 +17,6 @@ use ruma::{
 	},
 	serde::JsonObject,
 };
-use rezzy::stripped_state::validate_stripped_state;
 
 use crate::Ruma;
 
@@ -177,8 +177,12 @@ pub(crate) async fn create_invite_route(
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
-	validate_stripped_state(body.room_id.as_str(), body.room_version.as_str(), &invite_state_values)
-		.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
+	validate_stripped_state(
+		body.room_id.as_str(),
+		body.room_version.as_str(),
+		&invite_state_values,
+	)
+	.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 
 	let mut event: JsonObject = serde_json::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
