@@ -2585,7 +2585,10 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 				timestamp: Some(ruma::MilliSecondsSinceUnixEpoch(
 					ruma::MilliSecondsSinceUnixEpoch::now().0 + ruma::UInt::from(1_000_u32),
 				)),
-				..PduBuilder::state(String::new(), &RoomNameEventContent::new("Name B".to_owned()))
+				..PduBuilder::state(
+					String::new(),
+					&RoomNameEventContent::new("Name B".to_owned()),
+				)
 			},
 			server_user,
 			Some(&room_id),
