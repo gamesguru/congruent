@@ -14,6 +14,13 @@ pub struct Owned<E: Event>(pub(super) E);
 
 pub struct Ref<'a, E: Event>(pub(super) &'a E);
 
+fn is_hash_derived_create<E: Event>(event: &E) -> bool {
+	*event.kind() == ruma::events::TimelineEventType::RoomCreate
+		&& event.room_id_or_hash().is_some_and(|room_id| {
+			room_id.as_str().strip_prefix('!') == event.event_id().as_str().strip_prefix('$')
+		})
+}
+
 impl<E: Event> From<Owned<E>> for Raw<AnySyncTimelineEvent> {
 	fn from(event: Owned<E>) -> Self { Ref(&event.0).into() }
 }
@@ -163,7 +170,7 @@ impl<E: Event> From<Owned<E>> for Raw<AnyStrippedStateEvent> {
 impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
-		let json = json!({
+		let mut json = json!({
 			"content": event.content(),
 			"origin_server_ts": event.origin_server_ts(),
 			"room_id": event.room_id_or_hash(),
@@ -171,6 +178,15 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 			"state_key": event.state_key(),
 			"type": event.kind(),
 		});
+
+		// A hash-derived room's create event must not carry `room_id`: the room ID
+		// is derived from the canonical create event itself. Including the derived
+		// room ID here would change that canonical JSON and therefore its hash.
+		if is_hash_derived_create(event) {
+			json.as_object_mut()
+				.expect("stripped state is an object")
+				.remove("room_id");
+		}
 
 		serde_json::from_value(json).expect("Failed to serialize Event value")
 	}
