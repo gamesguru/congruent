@@ -257,7 +257,10 @@ pub async fn get_active_verify_key(
 	}
 
 	if notary_first {
-		if let Ok(result) = self.get_active_verify_key_from_notaries(origin, key_id).await {
+		if let Ok(result) = self
+			.get_active_verify_key_from_notaries(origin, key_id)
+			.await
+		{
 			return Ok(result);
 		}
 	}
@@ -269,7 +272,10 @@ pub async fn get_active_verify_key(
 	}
 
 	if !notary_first {
-		if let Ok(result) = self.get_active_verify_key_from_notaries(origin, key_id).await {
+		if let Ok(result) = self
+			.get_active_verify_key_from_notaries(origin, key_id)
+			.await
+		{
 			return Ok(result);
 		}
 	}
