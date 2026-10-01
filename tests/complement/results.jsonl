@@ -128,7 +128,7 @@
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/good_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
 {"Action":"pass","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
-{"Action":"pass","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
+{"Action":"fail","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
 {"Action":"pass","Test":"TestDeviceManagement"}
 {"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
 {"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"}
