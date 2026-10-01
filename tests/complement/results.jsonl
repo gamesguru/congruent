@@ -213,7 +213,7 @@
 {"Action":"pass","Test":"TestInviteFiltering/Will_allow_users_when_a_user_appears_in_multiple_fields"}
 {"Action":"pass","Test":"TestInviteFiltering/Will_ignore_null_fields"}
 {"Action":"pass","Test":"TestInviteFromIgnoredUsersDoesNotAppearInSync"}
-{"Action":"fail","Test":"TestIsDirectFlagFederation"}
+{"Action":"pass","Test":"TestIsDirectFlagFederation"}
 {"Action":"pass","Test":"TestIsDirectFlagLocal"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFailOver"}
 {"Action":"pass","Test":"TestJoinFederatedRoomFromApplicationServiceBridgeUser"}
@@ -413,9 +413,9 @@
 {"Action":"pass","Test":"TestMSC4311FullEventsOnStrippedStateFederation/parallel"}
 {"Action":"pass","Test":"TestMSC4311FullEventsOnStrippedStateFederation/parallel/`invite_room_state`"}
 {"Action":"pass","Test":"TestMSC4311FullEventsOnStrippedStateFederation/parallel/`knock_room_state`"}
-{"Action":"pass","Test":"TestMSC4311RejectInvalidStrippedStateFederation"}
-{"Action":"pass","Test":"TestMSC4311RejectInvalidStrippedStateFederation/parallel"}
-{"Action":"pass","Test":"TestMSC4311RejectInvalidStrippedStateFederation/parallel/`m.room.create`_event_missing_from_`invite_room_state`"}
+{"Action":"fail","Test":"TestMSC4311RejectInvalidStrippedStateFederation"}
+{"Action":"fail","Test":"TestMSC4311RejectInvalidStrippedStateFederation/parallel"}
+{"Action":"fail","Test":"TestMSC4311RejectInvalidStrippedStateFederation/parallel/`m.room.create`_event_missing_from_`invite_room_state`"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`invite_state`_on_`/sync`_(local_invite)"}
