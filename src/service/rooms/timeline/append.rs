@@ -12,13 +12,13 @@ use conduwuit_core::{
 };
 use futures::StreamExt;
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, UserId,
 	events::{
 		GlobalAccountDataEventType, StateEventType, TimelineEventType,
 		push_rules::PushRulesEvent,
 		room::{
 			encrypted::Relation, power_levels::RoomPowerLevelsEventContent,
-			redaction::RoomRedactionEventContent, tombstone::RoomTombstoneEventContent,
+			tombstone::RoomTombstoneEventContent,
 		},
 	},
 	push::{Action, Ruleset, Tweak},
@@ -460,35 +460,16 @@ where
 
 	match *pdu.kind() {
 		| TimelineEventType::RoomRedaction => {
-			use RoomVersionId::*;
-
 			let room_version_id = self.services.state.get_room_version(room_id).await?;
-			match room_version_id {
-				| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 => {
-					if let Some(redact_id) = pdu.redacts() {
-						if self
-							.services
-							.state_accessor
-							.user_can_redact(redact_id, pdu.sender(), room_id, false)
-							.await?
-						{
-							self.redact_pdu(redact_id, pdu, shortroomid).await?;
-						}
-					}
-				},
-				| _ => {
-					let content: RoomRedactionEventContent = pdu.get_content()?;
-					if let Some(redact_id) = &content.redacts {
-						if self
-							.services
-							.state_accessor
-							.user_can_redact(redact_id, pdu.sender(), room_id, false)
-							.await?
-						{
-							self.redact_pdu(redact_id, pdu, shortroomid).await?;
-						}
-					}
-				},
+			if let Some(redact_id) = pdu.redacts_id(&room_version_id) {
+				if self
+					.services
+					.state_accessor
+					.user_can_redact(&redact_id, pdu.sender(), room_id, false)
+					.await?
+				{
+					self.redact_pdu(&redact_id, pdu, shortroomid).await?;
+				}
 			}
 		},
 		| TimelineEventType::SpaceChild =>

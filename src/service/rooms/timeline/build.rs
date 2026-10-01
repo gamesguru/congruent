@@ -8,13 +8,10 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	OwnedEventId, OwnedServerName, RoomId, RoomVersionId, UserId,
+	OwnedEventId, OwnedServerName, RoomId, UserId,
 	events::{
 		TimelineEventType,
-		room::{
-			member::{MembershipState, RoomMemberEventContent},
-			redaction::RoomRedactionEventContent,
-		},
+		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
 
@@ -46,34 +43,17 @@ pub async fn build_and_append_pdu(
 
 	// If redaction event is not authorized, do not append it to the timeline
 	if *pdu.kind() == TimelineEventType::RoomRedaction {
-		use RoomVersionId::*;
 		trace!("Running redaction checks for room {room_id}");
-		match self.services.state.get_room_version(&room_id).await? {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 => {
-				if let Some(redact_id) = pdu.redacts() {
-					if !self
-						.services
-						.state_accessor
-						.user_can_redact(redact_id, pdu.sender(), &room_id, false)
-						.await?
-					{
-						return Err!(Request(Forbidden("User cannot redact this event.")));
-					}
-				}
-			},
-			| _ => {
-				let content: RoomRedactionEventContent = pdu.get_content()?;
-				if let Some(redact_id) = &content.redacts {
-					if !self
-						.services
-						.state_accessor
-						.user_can_redact(redact_id, pdu.sender(), &room_id, false)
-						.await?
-					{
-						return Err!(Request(Forbidden("User cannot redact this event.")));
-					}
-				}
-			},
+		let room_version_id = self.services.state.get_room_version(&room_id).await?;
+		if let Some(redact_id) = pdu.redacts_id(&room_version_id) {
+			if !self
+				.services
+				.state_accessor
+				.user_can_redact(&redact_id, pdu.sender(), &room_id, false)
+				.await?
+			{
+				return Err!(Request(Forbidden("User cannot redact this event.")));
+			}
 		}
 	}
 

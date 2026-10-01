@@ -179,32 +179,27 @@ anchor_one() {
 }
 
 # `go test -run` splits its whole argument on unescaped `/` to match subtest
-# hierarchy depth-by-depth; it has no concept of top-level `|` alternation
-# across patterns of differing depth (e.g. `TestA/Sub` vs `TestB/Sub/Sub`
-# joined by one `|` silently loses one side -- go re-splits the combined
-# string on every `/`, not just the ones belonging to the same alternative).
-# Combine flat top-level alternatives into one `go test` invocation. Split
-# alternatives containing subtest paths because Go's slash-aware `-run`
-# matching cannot preserve mixed-depth alternatives exactly.
+# hierarchy depth-by-depth. That makes a mixed expression such as
+# `TestA|TestB|TestC/Sub` unusable: Go interprets the slash as applying to the
+# whole alternation. Run the top-level parents together instead; this preserves
+# one Complement deployment and includes the requested subtests (along with
+# their siblings) under the selected parent.
 ALT_PATTERNS=()
 if [ "$RUN_TESTS" = "." ]; then
 	ALT_PATTERNS=(".")
 else
 	IFS='|' read -r -a raw_alts <<<"$RUN_TESTS"
-	all_flat=1
-	for alt in "${raw_alts[@]}"; do
-		if [[ "$alt" == */* ]]; then
-			all_flat=0
-			break
-		fi
-	done
-	if [ "${#raw_alts[@]}" -gt 1 ] && [ "$all_flat" -eq 1 ]; then
+	if [ "${#raw_alts[@]}" -gt 1 ]; then
+		parents=()
+		for alt in "${raw_alts[@]}"; do
+			parents+=("${alt%%/*}")
+		done
 		combined="$(
 			IFS='|'
-			echo "${raw_alts[*]}"
+			echo "${parents[*]}"
 		)"
 		ALT_PATTERNS+=("^(${combined})")
-		echo "Flat alternatives batched into one go test invocation:"
+		echo "Parent alternatives batched into one go test invocation:"
 		echo "  ${ALT_PATTERNS[0]}"
 	else
 		for alt in "${raw_alts[@]}"; do

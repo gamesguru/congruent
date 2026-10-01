@@ -1,6 +1,6 @@
 //! Room version support
 
-use std::iter::once;
+use std::{iter::once, sync::LazyLock};
 
 use ruma::{RoomVersionId, api::client::discovery::get_capabilities::RoomVersionStability};
 
@@ -18,9 +18,19 @@ pub const STABLE_ROOM_VERSIONS: &[RoomVersionId] = &[
 	RoomVersionId::V12,
 ];
 
+pub static MSC3389_ROOM_VERSION: LazyLock<RoomVersionId> = LazyLock::new(|| {
+	RoomVersionId::try_from("org.matrix.msc3389.10").expect("valid room version")
+});
+
 /// Experimental, partially supported room versions
-pub const UNSTABLE_ROOM_VERSIONS: &[RoomVersionId] =
-	&[RoomVersionId::V3, RoomVersionId::V4, RoomVersionId::V5];
+pub static UNSTABLE_ROOM_VERSIONS: LazyLock<Vec<RoomVersionId>> = LazyLock::new(|| {
+	vec![
+		RoomVersionId::V3,
+		RoomVersionId::V4,
+		RoomVersionId::V5,
+		MSC3389_ROOM_VERSION.clone(),
+	]
+});
 
 type RoomVersion = (RoomVersionId, RoomVersionStability);
 
