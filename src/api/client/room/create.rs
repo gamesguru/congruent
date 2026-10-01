@@ -633,6 +633,12 @@ fn default_power_levels_content(
 			serde_json::to_value(50).expect("50 is valid Value");
 	}
 
+	if !creators.is_empty() {
+		// MSC4289 requires privileged-creator rooms to default tombstones to PL150
+		power_levels_content["events"]["m.room.tombstone"] =
+			serde_json::to_value(150).expect("150 is valid Value");
+	}
+
 	if let Some(power_level_content_override) = power_level_content_override {
 		let json: JsonObject = serde_json::from_str(power_level_content_override.json().get())
 			.map_err(|e| err!(Request(BadJson("Invalid power_level_content_override: {e:?}"))))?;
@@ -657,11 +663,6 @@ fn default_power_levels_content(
 	}
 
 	if !creators.is_empty() {
-		// MSC4289 requires privileged-creator rooms to protect tombstones from
-		// ordinary PL100 administrators.
-		power_levels_content["events"]["m.room.tombstone"] =
-			serde_json::to_value(150).expect("150 is valid Value");
-
 		for creator in creators {
 			// Omit creators from the power level list altogether
 			power_levels_content["users"]
