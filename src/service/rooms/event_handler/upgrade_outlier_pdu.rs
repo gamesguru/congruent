@@ -18,6 +18,7 @@ use super::{get_room_version_id, to_room_version};
 use crate::rooms::timeline::RawPduId;
 
 #[implement(super::Service)]
+#[allow(clippy::too_many_arguments)]
 pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	&self,
 	incoming_pdu: PduEvent,
@@ -26,7 +27,8 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	origin: &ServerName,
 	room_id: &RoomId,
 	is_timeline_event: bool,
-) -> Result<Option<RawPduId>>
+	predecessors_were_recovered: bool,
+) -> Result<(Option<RawPduId>, bool)>
 where
 	Pdu: Event + Send + Sync,
 {
@@ -37,7 +39,7 @@ where
 		.get_pdu_id(incoming_pdu.event_id())
 		.await
 	{
-		return Ok(Some(pduid));
+		return Ok((Some(pduid), false));
 	}
 
 	if self
@@ -143,7 +145,7 @@ where
 		.get_pdu_id(incoming_pdu.event_id())
 		.await
 	{
-		return Ok(Some(pduid));
+		return Ok((Some(pduid), false));
 	}
 
 	let mut soft_fail = if is_timeline_event {
@@ -240,7 +242,7 @@ where
 		);
 
 		(prev_root, new_root)
-	} else if is_timeline_event && was_recovered {
+	} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
 		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
 		let new_root = Some(
 			self.resolve_state(room_id, &room_version_id, state_at_incoming_event)
@@ -282,7 +284,7 @@ where
 	// We only update the derived caches; the HAMT root is committed
 	// separately by set_event_state_with_root in append_pdu.
 	if !soft_fail
-		&& (incoming_pdu.state_key().is_some() || was_recovered)
+		&& (incoming_pdu.state_key().is_some() || was_recovered || predecessors_were_recovered)
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
@@ -359,7 +361,9 @@ where
 		room_id,
 		state_root_handle: new_room_state.clone(),
 		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: is_timeline_event && was_recovered && new_room_state.is_some(),
+		advance_current_state: is_timeline_event
+			&& (was_recovered || predecessors_were_recovered)
+			&& new_room_state.is_some(),
 		was_joined_before_state_install: None,
 	};
 
@@ -451,7 +455,7 @@ where
 		"Accepted",
 	);
 
-	Ok(pdu_id)
+	Ok((pdu_id, was_recovered || predecessors_were_recovered))
 }
 
 /// Returns the HAMT root representing the state at `incoming_pdu` when it can

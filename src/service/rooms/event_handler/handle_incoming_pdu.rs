@@ -847,41 +847,47 @@ pub async fn process_timeline_upgrade(
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
-			sorted_prev_events
+			let predecessors_were_recovered = sorted_prev_events
 				.iter()
 				.try_stream()
 				.map_ok(AsRef::as_ref)
-				.try_for_each(|prev_id| {
-					self.handle_prev_pdu(
-						origin,
-						event_id.as_ref(),
-						room_id,
-						eventid_info.remove(prev_id),
-						create_event,
-						first_ts_in_room,
-						prev_id,
-					)
-					.inspect_err(move |e| {
-						warn!("Prev {prev_id} failed: {e}");
-						match self
-							.services
-							.globals
-							.bad_event_ratelimiter
-							.write()
-							.entry(prev_id.into())
-						{
-							| hash_map::Entry::Vacant(e) => {
-								e.insert((Instant::now(), 1));
-							},
-							| hash_map::Entry::Occupied(mut e) => {
-								let tries = e.get().1.saturating_add(1);
-								*e.get_mut() = (Instant::now(), tries);
-							},
-						}
-					})
-					.map(|_| self.services.server.check_running())
+				.try_fold(false, |recovered_any, prev_id| {
+					let event_id = event_id.clone();
+					let event_info = eventid_info.remove(prev_id);
+					async move {
+						let recovered = self
+							.handle_prev_pdu(
+								origin,
+								event_id.as_ref(),
+								room_id,
+								event_info,
+								create_event,
+								first_ts_in_room,
+								prev_id,
+							)
+							.inspect_err(move |e| {
+								warn!("Prev {prev_id} failed: {e}");
+								match self
+									.services
+									.globals
+									.bad_event_ratelimiter
+									.write()
+									.entry(prev_id.into())
+								{
+									| hash_map::Entry::Vacant(e) => {
+										e.insert((Instant::now(), 1));
+									},
+									| hash_map::Entry::Occupied(mut e) => {
+										let tries = e.get().1.saturating_add(1);
+										*e.get_mut() = (Instant::now(), tries);
+									},
+								}
+							})
+							.await?;
+						self.services.server.check_running()?;
+						Ok::<bool, conduwuit::Error>(recovered_any || recovered)
+					}
 				})
-				.boxed()
 				.await?;
 
 			// Done with prev events, now handling the incoming event
@@ -905,8 +911,10 @@ pub async fn process_timeline_upgrade(
 				origin,
 				room_id,
 				true,
+				predecessors_were_recovered,
 			))
 			.await
+			.map(|(pdu_id, _)| pdu_id)
 		})
 		.await
 }

@@ -125,12 +125,13 @@ async fn msc4429_profile_updates(
 			);
 		}
 		for target in visible.iter().filter(|target| **target != user_id) {
-			let mut fields = serde_json::Map::new();
-			for field in &ids {
-				if let Ok(value) = services.users.profile_key(target, field).await {
-					fields.insert((*field).to_owned(), value);
-				}
-			}
+			let current = services
+				.users
+				.all_profile_keys(target)
+				.filter(|(field, _)| std::future::ready(ids.contains(field.as_str())))
+				.collect::<HashMap<_, _>>()
+				.await;
+			let fields = current.into_iter().collect::<serde_json::Map<_, _>>();
 			if !fields.is_empty() {
 				users.insert(target.to_string(), serde_json::json!({"profile_updates": fields}));
 			}

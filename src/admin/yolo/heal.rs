@@ -278,6 +278,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				&room_id,
 				// historical/admin rescue; not a live timeline tip
 				false,
+				false,
 			),
 	)
 	.await?;
