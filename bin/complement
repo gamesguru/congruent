@@ -203,8 +203,17 @@ record_result() {
 	# Stream straight to the staged results file as results arrive; no
 	# in-memory aggregation and no full-file rewrite per event.
 	jq -nc --arg Action "$action" --arg Test "$test_name" '{Action: $Action, Test: $Test}' >>"$RESULTS_FILE"
+	[ "$action" = "skip" ] && return
 
-	printf '%s\t%s %s\n' "${action^^}" "$test_name" "$elapsed"
+	# Keep the complete test name in JSONL, but bound the terminal display so
+	# deeply nested subtest names do not push the elapsed time off-screen.
+	local display_name="$test_name"
+	if [ "${#display_name}" -gt 80 ]; then
+		display_name="${display_name:0:79}…"
+	fi
+	local name_padding=$((80 - ${#display_name}))
+	printf '%-6s  %s%*s  %8s\n' \
+		"${action^^}" "$display_name" "$name_padding" "" "$elapsed"
 }
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
