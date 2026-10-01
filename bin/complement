@@ -297,22 +297,23 @@ if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
 	if [ "$RUN_TESTS" = "." ]; then
 		# A full run spans every package under ./tests/..., and Go's -json
 		# stream identifies tests by name only once we've dropped .Package
-		# (see record_result above) -- so same-named tests in different
-		# packages (e.g. TestSync in tests/csapi and tests/msc4222) land as
-		# two rows here. --dedupe-in-place forces that down to one row per
-		# name, same as the partial-run merge path already does.
-		#
-		# Dedupe/sort are best-effort: if the merge helper fails (e.g. under
-		# heavy machine load) that must NEVER lose the run's results. Fall
-		# back to copying the raw staged results (pass/fail preserved) into
-		# MAIN_RESULTS_FILE so the ledger still reflects the run.
+		# (see record_result above). Merge the completed run into the ledger
+		# just like a partial run; never replace the historical ledger with
+		# the staging file.
 		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
 			|| echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
 		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
 			|| echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
-		cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
-			|| { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
-		echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+			mv -f "$tmp_results" "$MAIN_RESULTS_FILE" \
+				|| { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+		else
+			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+			rm -f "$tmp_results"
+		fi
 	else
 		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
 		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
