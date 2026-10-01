@@ -201,14 +201,8 @@ where
 		false
 	};
 
-	let mut new_room_state: Option<rezzy::hamt::RootHandle> = None;
-	let mut previous_root_handle: Option<rezzy::hamt::RootHandle> = None;
-
-	// Soft-failed federation events remain part of the DAG and need their state
-	// association for later federation/auth processing, but must not update the
-	// client-visible room state or derived membership caches. Persist the root
-	// here; append_incoming_pdu still omits the event from the timeline.
-	if let Some(state_key) = incoming_pdu.state_key() {
+	let (previous_root_handle, new_room_state) = if let Some(state_key) = incoming_pdu.state_key()
+	{
 		debug!("Event is a state-event. Deriving new room state");
 
 		// We also add state after incoming event to the fork states.
@@ -227,7 +221,7 @@ where
 		// root instead of rebuilding and re-persisting an identical HAMT.
 		// Fall back to a full rebuild for fork/state-resolution inputs and for
 		// predecessors whose stored root predates their own state change.
-		previous_root_handle = Some(
+		let prev_root = Some(
 			match self
 				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
 				.await?
@@ -238,30 +232,45 @@ where
 						.await?,
 			},
 		);
-		new_room_state = Some(
+		let new_root = Some(
 			self.resolve_state(room_id, &room_version_id, state_after)
 				.await?,
 		);
 
-		debug!("Forcing new room state");
-		// The legacy force_state updated the joined-member/servers caches
-		// (`roomserverids`) on state transitions. That cache update must be
-		// preserved here, otherwise remote members that join the room are
-		// never registered for outbound federation fan-out and locally-sent
-		// events stop being delivered to their servers.
-		// We only update the derived caches; the HAMT root is committed
-		// separately by set_event_state_with_root in append_pdu.
-		if !soft_fail
-			&& let (Some(prev_root), Some(new_root)) =
-				(previous_root_handle.as_ref(), new_room_state.as_ref())
-		{
-			Box::pin(self.services.state.update_caches_for_state_delta_between(
-				room_id,
-				Some(prev_root),
-				new_root,
-			))
-			.await?;
-		}
+		(prev_root, new_root)
+	} else {
+		// State recovery via /state_ids may have materialized previously unknown
+		// state events as outliers while resolving a non-state event.  The
+		// resolved state is still the state at this event and must become the
+		// room's current state when the event is accepted; otherwise those events
+		// remain addressable outliers but never affect current-state queries.
+		let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
+		let new_root = Some(
+			self.state_map_to_root_handle(room_id, &state_at_incoming_event)
+				.await?,
+		);
+
+		(prev_root, new_root)
+	};
+
+		info!(room_id = %room_id, "Applying the resolved state transition");
+	// The legacy force_state updated the joined-member/servers caches
+	// (`roomserverids`) on state transitions. That cache update must be
+	// preserved here, otherwise remote members that join the room are
+	// never registered for outbound federation fan-out and locally-sent
+	// events stop being delivered to their servers.
+	// We only update the derived caches; the HAMT root is committed
+	// separately by set_event_state_with_root in append_pdu.
+	if !soft_fail
+		&& let (Some(prev_root), Some(new_root)) =
+			(previous_root_handle.as_ref(), new_room_state.as_ref())
+	{
+		Box::pin(self.services.state.update_caches_for_state_delta_between(
+			room_id,
+			Some(prev_root),
+			new_root,
+		))
+		.await?;
 	}
 
 	if !soft_fail {
