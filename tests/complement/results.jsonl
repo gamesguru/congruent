@@ -419,7 +419,7 @@
 {"Action":"fail","Test":"TestMSC4311StrippedStateClientAPI"}
 {"Action":"fail","Test":"TestMSC4311StrippedStateClientAPI/parallel"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`invite_state`_on_`/sync`_(local_invite)"}
-{"Action":"fail","Test":"TestMSC4311StrippedStateClientAPI/parallel/`invite_state`_on_`/sync`_(remote_invite)"}
+{"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`invite_state`_on_`/sync`_(remote_invite)"}
 {"Action":"pass","Test":"TestMSC4311StrippedStateClientAPI/parallel/`knock_state`_on_`/sync`_(local_knock)"}
 {"Action":"fail","Test":"TestMSC4311StrippedStateClientAPI/parallel/`knock_state`_on_`/sync`_(remote_knock)"}
 {"Action":"fail","Test":"TestMSC4429ProfileUpdates"}
