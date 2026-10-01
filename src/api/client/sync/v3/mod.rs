@@ -79,6 +79,89 @@ fn client_stripped_state(
 		.collect()
 }
 
+async fn msc4429_profile_updates(
+	services: &Services,
+	user_id: &UserId,
+	filter: &FilterDefinition,
+	since: Option<u64>,
+	current_count: u64,
+) -> serde_json::Value {
+	let filter = serde_json::to_value(filter).unwrap_or_default();
+	let ids = ["profile_fields", "org.matrix.msc4429.profile_fields"]
+		.into_iter()
+		.find_map(|key| filter.get(key).and_then(|v| v.get("ids")))
+		.and_then(serde_json::Value::as_array)
+		.map(|ids| {
+			ids.iter()
+				.filter_map(|id| id.as_str())
+				.collect::<HashSet<_>>()
+		});
+	let Some(ids) = ids else { return serde_json::Value::Null };
+	if ids.is_empty() {
+		return serde_json::Value::Null;
+	}
+
+	let rooms = services
+		.rooms
+		.state_cache
+		.rooms_joined(user_id)
+		.collect::<Vec<_>>()
+		.await;
+	let mut visible = HashSet::new();
+	for room_id in rooms {
+		visible.extend(
+			services
+				.rooms
+				.state_cache
+				.room_members(room_id)
+				.map(ToOwned::to_owned)
+				.collect::<Vec<_>>()
+				.await,
+		);
+	}
+
+	let mut users = serde_json::Map::new();
+	if since.is_none() {
+		for target in visible.iter().filter(|target| **target != user_id) {
+			let mut fields = serde_json::Map::new();
+			for field in &ids {
+				if let Ok(value) = services.users.profile_key(target, field).await {
+					fields.insert((*field).to_owned(), value);
+				}
+			}
+			if !fields.is_empty() {
+				users.insert(target.to_string(), serde_json::json!({"profile_updates": fields}));
+			}
+		}
+	} else {
+		let mut latest = HashMap::new();
+		services
+			.users
+			.profile_updates(since, current_count)
+			.for_each(|(_, update)| {
+				if ids.contains(update.field.as_str())
+					&& visible.contains(&update.user_id)
+					&& update.user_id != user_id
+				{
+					latest.insert((update.user_id.clone(), update.field.clone()), update.value);
+				}
+				std::future::ready(())
+			})
+			.await;
+		for ((target, field), value) in latest {
+			users
+				.entry(target.to_string())
+				.or_insert_with(|| serde_json::json!({"profile_updates": {}}))
+				.get_mut("profile_updates")
+				.and_then(serde_json::Value::as_object_mut)
+				.map(|fields| {
+					fields.insert(field, value.unwrap_or(serde_json::Value::Null));
+				});
+		}
+	}
+	serde_json::Value::Object(users)
+}
+
 /// A collection of updates to users' device lists, used for E2EE.
 #[derive(Clone)]
 struct DeviceListUpdates {
@@ -918,6 +1001,45 @@ pub(crate) async fn build_sync_events(
 		if let Some(obj) = val.as_object_mut() {
 			obj.insert("device_lists".to_owned(), device_lists_json);
 		}
+	}
+
+	let profile_updates = msc4429_profile_updates(
+		services,
+		syncing_user,
+		&filter,
+		last_sync_end_count,
+		current_count,
+	)
+	.await;
+	let mut profile_updates = profile_updates;
+	if let Some(users) = profile_updates.as_object_mut() {
+		for left_room in left_rooms.values() {
+			for event in &left_room.timeline.events {
+				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get()) else {
+					continue;
+				};
+				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str) else {
+					continue;
+				};
+				if event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.member")
+					&& event
+						.get("content")
+						.and_then(|content| content.get("membership"))
+						.and_then(serde_json::Value::as_str)
+						.is_some_and(|membership| matches!(membership, "leave" | "ban"))
+				{
+					users.insert(state_key.to_owned(), serde_json::json!({"profile_updates": null}));
+				}
+			}
+		}
+	}
+	if profile_updates
+		.as_object()
+		.is_some_and(|users| !users.is_empty())
+	{
+		val.as_object_mut()
+			.unwrap()
+			.insert("org.matrix.msc4429.users".to_owned(), profile_updates);
 	}
 
 	Ok(val)

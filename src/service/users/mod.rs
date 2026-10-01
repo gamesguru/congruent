@@ -1896,6 +1896,27 @@ impl Service {
 		}
 	}
 
+	/// Returns MSC4429 profile changes in stream order.
+	pub fn profile_updates(
+		&self,
+		from: Option<u64>,
+		to: u64,
+	) -> impl Stream<Item = (u64, ProfileUpdate)> + Send + '_ {
+		type Key = (u64, OwnedUserId, String);
+		let first = (from.unwrap_or_default().saturating_add(1),);
+
+		self.db
+			.userprofileupdate_value
+			.stream_from(&first)
+			.ignore_err()
+			.ready_take_while(move |((stream_id, ..), _): &(Key, _)| *stream_id <= to)
+			.filter_map(|((stream_id, ..), value): (Key, serde_json::Value)| async move {
+				serde_json::from_value(value)
+					.ok()
+					.map(|update| (stream_id, update))
+			})
+	}
+
 	#[cfg(feature = "ldap")]
 	async fn create_ldap_connection(
 		config: &conduwuit_core::config::LdapConfig,
