@@ -152,14 +152,14 @@ async fn msc4429_profile_updates(
 			})
 			.await;
 		for ((target, field), value) in latest {
-			users
+			if let Some(fields) = users
 				.entry(target.to_string())
 				.or_insert_with(|| serde_json::json!({"profile_updates": {}}))
 				.get_mut("profile_updates")
 				.and_then(serde_json::Value::as_object_mut)
-				.map(|fields| {
-					fields.insert(field, value.unwrap_or(serde_json::Value::Null));
-				});
+			{
+				fields.insert(field, value.unwrap_or(serde_json::Value::Null));
+			}
 		}
 	}
 	serde_json::Value::Object(users)
@@ -898,8 +898,8 @@ pub(crate) async fn build_sync_events(
 	let ruma_response = sync_events::v3::Response {
 		next_batch: current_count.to_string(),
 		rooms: Rooms {
-			leave: left_rooms,
-			join: joined_rooms,
+			leave: left_rooms.clone(),
+			join: joined_rooms.clone(),
 			invite: invited_rooms,
 			knock: knocked_rooms.clone(),
 		},
@@ -1062,7 +1062,7 @@ pub(crate) async fn build_sync_events(
 					if !services
 						.rooms
 						.state_cache
-						.user_sees_user(syncing_user, &target)
+						.user_sees_user(syncing_user, target)
 						.await
 					{
 						users.insert(
