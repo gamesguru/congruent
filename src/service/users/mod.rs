@@ -524,7 +524,11 @@ impl Service {
 
 	/// Sets a new displayname or removes it if displayname is None. You still
 	/// need to notify all rooms of this change.
-	pub fn set_displayname(&self, user_id: &UserId, displayname: Option<String>) {
+	pub async fn set_displayname(&self, user_id: &UserId, displayname: Option<String>) {
+		if self.displayname(user_id).await.ok() == displayname {
+			return;
+		}
+
 		if let Some(displayname) = displayname {
 			self.db
 				.userid_displayname
@@ -1876,12 +1880,18 @@ impl Service {
 	}
 
 	/// Sets a new profile key value, removes the key if value is None
-	pub fn set_profile_key(
+	pub async fn set_profile_key(
 		&self,
 		user_id: &UserId,
 		profile_key: &str,
 		profile_key_value: Option<serde_json::Value>,
 	) {
+		// Skip no-op writes so unchanged values don't append update records or
+		// advance the global count.
+		if self.profile_key(user_id, profile_key).await.ok() == profile_key_value {
+			return;
+		}
+
 		// TODO: insert to the stable MSC4175 key when it's stable
 		let key = (user_id, profile_key);
 

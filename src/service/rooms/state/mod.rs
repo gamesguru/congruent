@@ -89,7 +89,14 @@ struct Data {
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
 	state_hamt_root_lattices: Arc<Map>,
+	/// Bounded cache of encoded root lattices, keyed by structural hash.
+	/// Lattices are immutable and content-addressed, so entries never go
+	/// stale.
+	lattice_cache: moka::sync::Cache<[u8; 32], Arc<[u8]>>,
 }
+
+/// Encoded length of a persisted `LtHash` lattice.
+const LATTICE_LEN: usize = 2048;
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
 pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
@@ -114,6 +121,9 @@ impl crate::Service for Service {
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
 				state_hamt_root_lattices: args.db["state_hamt_root_lattices"].clone(),
+				lattice_cache: moka::sync::Cache::builder()
+					.max_capacity(u64::from(args.server.config.lthash_cache_capacity))
+					.build(),
 			},
 		}))
 	}
@@ -431,73 +441,61 @@ impl Service {
 			| None => self.get_room_state_hamt(room_id).await.ok(),
 		};
 		if let Some(base) = base {
-			if let Ok(raw) = self
-				.db
-				.state_hamt_root_lattices
-				.get(&base.structural_hash)
-				.await
-			{
-				if raw.len() == 2048 {
-					let mut lattice = rezzy::state::LtHash::from_bytes(&raw)
-						.expect("lattice length checked above");
-					let old = self
-						.services
-						.state_hamt
-						.store
-						.get_node(&base.structural_hash)?;
-					let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-					let value = self
+			if let Some(mut lattice) = self.get_root_lattice(&base).await {
+				let old = self
+					.services
+					.state_hamt
+					.store
+					.get_node(&base.structural_hash)?;
+				let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+				let value = self
+					.services
+					.short
+					.get_or_create_shorteventid(new_pdu.event_id())
+					.await;
+				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
+					&old,
+					&rooms::state_hamt::room_structural_key(
+						&self.services.globals.server_secret,
+						room_id,
+					),
+					new_shortstatekey,
+					Some(value),
+					&mut resolver,
+				)
+				.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
+				if let Some(old) = displaced {
+					let old_id = self
 						.services
 						.short
-						.get_or_create_shorteventid(new_pdu.event_id())
-						.await;
-					let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
-						&old,
-						&rooms::state_hamt::room_structural_key(
-							&self.services.globals.server_secret,
-							room_id,
-						),
-						new_shortstatekey,
-						Some(value),
-						&mut resolver,
-					)
-					.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
-					if let Some(old) = displaced {
-						let old_id = self
-							.services
-							.short
-							.get_eventid_from_short::<OwnedEventId>(old)
-							.await?;
-						lattice.replace(
-							&event_type.to_string(),
-							state_key,
-							old_id.as_str(),
-							new_pdu.event_id().as_str(),
-						);
-					} else {
-						lattice.insert(
-							&event_type.to_string(),
-							state_key,
-							new_pdu.event_id().as_str(),
-						);
-					}
-					for (hash, bytes) in created {
-						self.services
-							.state_hamt
-							.store
-							.put_encoded_node(hash, &bytes);
-					}
-					let handle = self
-						.services
+						.get_eventid_from_short::<OwnedEventId>(old)
+						.await?;
+					lattice.replace(
+						&event_type.to_string(),
+						state_key,
+						old_id.as_str(),
+						new_pdu.event_id().as_str(),
+					);
+				} else {
+					lattice.insert(
+						&event_type.to_string(),
+						state_key,
+						new_pdu.event_id().as_str(),
+					);
+				}
+				for (hash, bytes) in created {
+					self.services
 						.state_hamt
 						.store
-						.root_handle(new_node.structural_hash, &lattice);
-					let encoded = lattice.to_bytes();
-					self.db
-						.state_hamt_root_lattices
-						.insert(&handle.structural_hash, &encoded);
-					return Ok((handle, new_node));
+						.put_encoded_node(hash, &bytes);
 				}
+				let handle = self
+					.services
+					.state_hamt
+					.store
+					.root_handle(new_node.structural_hash, &lattice);
+				self.persist_root_lattice(&handle, &lattice);
+				return Ok((handle, new_node));
 			}
 		}
 
@@ -553,12 +551,51 @@ impl Service {
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
-		let encoded_lattice = lattice.to_bytes();
-		self.db
-			.state_hamt_root_lattices
-			.insert(&root_handle.structural_hash, &encoded_lattice);
+		self.persist_root_lattice(&root_handle, &lattice);
 
 		Ok((root_handle, root_node))
+	}
+
+	/// Persists the lattice for a root and populates the lattice cache.
+	pub fn persist_root_lattice(
+		&self,
+		root_handle: &rezzy::hamt::RootHandle,
+		lattice: &rezzy::state::LtHash,
+	) {
+		let encoded = lattice.to_bytes();
+		self.db
+			.state_hamt_root_lattices
+			.insert(&root_handle.structural_hash, &encoded);
+		self.db
+			.lattice_cache
+			.insert(root_handle.structural_hash, Arc::from(&*encoded));
+	}
+
+	/// Returns the lattice persisted for a root, if any. Served from the
+	/// bounded cache, falling back to the database on a miss.
+	pub async fn get_root_lattice(
+		&self,
+		root_handle: &rezzy::hamt::RootHandle,
+	) -> Option<rezzy::state::LtHash> {
+		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
+			return rezzy::state::LtHash::from_bytes(&raw);
+		}
+
+		let raw = self
+			.db
+			.state_hamt_root_lattices
+			.get(&root_handle.structural_hash)
+			.await
+			.ok()?;
+		if raw.len() != LATTICE_LEN {
+			return None;
+		}
+
+		let lattice = rezzy::state::LtHash::from_bytes(&raw)?;
+		self.db
+			.lattice_cache
+			.insert(root_handle.structural_hash, Arc::from(&*raw));
+		Some(lattice)
 	}
 
 	async fn load_state_map_from_root_handle(

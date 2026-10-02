@@ -213,7 +213,8 @@ pub(crate) async fn register_route(
 
 	services
 		.users
-		.set_displayname(&user_id, Some(displayname.clone()));
+		.set_displayname(&user_id, Some(displayname.clone()))
+		.await;
 
 	// Initial account data
 	services

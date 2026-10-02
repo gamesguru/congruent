@@ -390,6 +390,9 @@ async fn inject_state_hash_mismatches(
 		return;
 	};
 
+	// Digests are memoized per distinct state root within this transaction.
+	let mut digests: HashMap<[u8; 32], Option<String>> = HashMap::new();
+
 	for (event_id, hash_info) in state_hashes {
 		// Skip validation for unrecognized or missing algorithms to support future
 		// agility
@@ -419,7 +422,9 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let Some(after_digest) = compute_receiver_after_digest(services, &event_id).await else {
+		let Some(after_digest) =
+			compute_receiver_after_digest(services, &event_id, &mut digests).await
+		else {
 			continue;
 		};
 
@@ -444,6 +449,7 @@ async fn inject_state_hash_mismatches(
 async fn compute_receiver_after_digest(
 	services: &crate::State,
 	event_id: &OwnedEventId,
+	memo: &mut HashMap<[u8; 32], Option<String>>,
 ) -> Option<String> {
 	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
 	let root_handle = services
@@ -453,18 +459,30 @@ async fn compute_receiver_after_digest(
 		.await
 		.ok()?;
 
-	// Fail closed: if any state entry cannot be resolved, report no digest
-	// rather than a misleading mismatch against partial state.
-	let entries = super::state_accumulator::state_tuples(services, &root_handle)
-		.await
-		.ok()?;
-
-	let mut lattice = rezzy::state::LtHash::default();
-	for (ty, sk, id) in &entries {
-		lattice.insert(ty, sk, id.as_str());
+	if let Some(digest) = memo.get(&root_handle.structural_hash) {
+		return digest.clone();
 	}
 
-	Some(conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1)
+	// Prefer the persisted root lattice; rebuild from state only when the
+	// sidecar is missing. Fail closed: if any state entry cannot be resolved,
+	// report no digest rather than a misleading mismatch against partial state.
+	let lattice = match services.rooms.state.get_root_lattice(&root_handle).await {
+		| Some(lattice) => Some(lattice),
+		| None => super::state_accumulator::state_tuples(services, &root_handle)
+			.await
+			.ok()
+			.map(|entries| {
+				let mut lattice = rezzy::state::LtHash::default();
+				for (ty, sk, id) in &entries {
+					lattice.insert(ty, sk, id.as_str());
+				}
+				lattice
+			}),
+	};
+
+	let digest = lattice.map(|l| conduwuit_core::utils::hash::lthash::serialize_lthash(&l).1);
+	memo.insert(root_handle.structural_hash, digest.clone());
+	digest
 }
 
 /// Handles a failed federation transaction by sending the error through

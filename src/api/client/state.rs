@@ -8,7 +8,7 @@ use conduwuit::{
 	utils::BoolExt,
 };
 use conduwuit_service::Services;
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{FutureExt, TryStreamExt};
 use ruma::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
 	api::client::state::{get_state_events, get_state_events_for_key, send_state_event},
@@ -146,10 +146,10 @@ pub(crate) async fn get_state_events_route(
 		services
 			.rooms
 			.state_accessor
-			.state_full_pdus_hamt(root)
-			.map(Event::into_format)
-			.collect()
-			.await
+			.state_full_pdus_hamt_strict(root)
+			.map_ok(Event::into_format)
+			.try_collect()
+			.await?
 	} else {
 		services
 			.rooms

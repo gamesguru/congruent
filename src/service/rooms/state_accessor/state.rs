@@ -326,6 +326,26 @@ pub fn state_full_pdus_hamt(
 		})
 }
 
+/// Strict variant of [`Self::state_full_pdus_hamt`]: traversal, short-ID and
+/// PDU lookup failures are emitted as `Err` items instead of being dropped, so
+/// callers that cache or serve a snapshot can fail closed on partial state.
+#[implement(super::Service)]
+pub fn state_full_pdus_hamt_strict(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = Result<Pdu>> + Send + '_ {
+	self.state_full_shortids_hamt(root_handle)
+		.then(move |result| async move {
+			let (_, short_id) = result?;
+			let event_id = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(short_id)
+				.await?;
+			self.services.timeline.get_pdu(&event_id).await
+		})
+}
+
 /// Returns a Stream of all the full state (type, key, event) for a given
 /// RootHandle.
 #[implement(super::Service)]

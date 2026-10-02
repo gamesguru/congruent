@@ -95,6 +95,9 @@ pub async fn resolve_state(
 			.state_hamt
 			.store
 			.persist_node_recursive(root_node);
+		self.services
+			.state
+			.persist_root_lattice(&root_handle, &lattice);
 	});
 
 	Ok(root_handle)

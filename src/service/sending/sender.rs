@@ -137,6 +137,7 @@ async fn compute_state_hash_for_pdu(
 	_value: &CanonicalJsonObject,
 ) -> Option<StateHashInfo> {
 	use conduwuit::Event;
+	use futures::TryStreamExt;
 
 	// The per-event root is the post-event state, which is the state whose
 	// digest is sent alongside this PDU. Build the same LtHash representation
@@ -148,13 +149,16 @@ async fn compute_state_hash_for_pdu(
 		.ok()?;
 	let entries: Vec<(String, String, OwnedEventId)> = services
 		.state_accessor
-		.state_full_pdus_hamt(root_handle)
-		.filter_map(|pdu| async move {
-			let state_key = pdu.state_key()?.to_owned();
-			Some((pdu.kind().to_string(), state_key, pdu.event_id().to_owned()))
+		.state_full_pdus_hamt_strict(root_handle)
+		.try_filter_map(|pdu| async move {
+			let Some(state_key) = pdu.state_key().map(ToOwned::to_owned) else {
+				return Ok(None);
+			};
+			Ok(Some((pdu.kind().to_string(), state_key, pdu.event_id().to_owned())))
 		})
-		.collect()
-		.await;
+		.try_collect()
+		.await
+		.ok()?;
 
 	let mut lattice = rezzy::state::LtHash::default();
 	for (event_type, state_key, state_event_id) in &entries {

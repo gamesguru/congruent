@@ -2,12 +2,12 @@ use std::collections::HashSet;
 
 use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt, warn};
 use database::{Batch, Json, serialize_key};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use ruma::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType,
-		StateEventType,
+		StateEventType, TimelineEventType,
 		direct::DirectEvent,
 		invite_permission_config::FilterLevel,
 		room::{
@@ -933,16 +933,26 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	let room_root_opt = self.services.state.get_room_state_hamt(room_id).await.ok();
 
 	if let Some(room_root) = room_root_opt.as_ref() {
-		let state_full = self
+		// Fail closed: reconciling against a partial snapshot would remove
+		// members whose PDUs were merely unavailable.
+		let members: Vec<_> = match self
 			.services
 			.state_accessor
-			.state_full_hamt(room_root.clone());
-		let mut state_full = std::pin::pin!(state_full);
-		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
-			if event_type != StateEventType::RoomMember {
+			.state_full_pdus_hamt_strict(room_root.clone())
+			.try_collect()
+			.await
+		{
+			| Ok(pdus) => pdus,
+			| Err(e) => {
+				warn!(%room_id, "Skipping membership reconcile, state is incomplete: {e}");
+				return;
+			},
+		};
+		for pdu in members {
+			if *pdu.kind() != TimelineEventType::RoomMember {
 				continue;
 			}
-			let Ok(uid) = OwnedUserId::try_from(state_key.as_str()) else {
+			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
 				continue;
 			};
 
@@ -1042,7 +1052,7 @@ pub async fn update_caches_for_state_delta(
 	// 1. Invalidate derived caches for removed events.
 	for pdu in removed_events {
 		match pdu.kind() {
-			| ruma::events::TimelineEventType::SpaceChild => {
+			| TimelineEventType::SpaceChild => {
 				self.services
 					.spaces
 					.roomid_spacehierarchy_cache
@@ -1050,14 +1060,14 @@ pub async fn update_caches_for_state_delta(
 					.await
 					.remove(room_id);
 			},
-			| ruma::events::TimelineEventType::RoomEncryption => {
+			| TimelineEventType::RoomEncryption => {
 				self.services
 					.state_accessor
 					.encrypted_rooms_cache
 					.write()
 					.remove(room_id);
 			},
-			| ruma::events::TimelineEventType::RoomMember => {
+			| TimelineEventType::RoomMember => {
 				self.services
 					.spaces
 					.roomid_spacehierarchy_cache
@@ -1116,7 +1126,7 @@ pub async fn update_caches_for_state_delta(
 	// 2. Process added/changed events normally
 	for pdu in added_events {
 		match pdu.kind() {
-			| ruma::events::TimelineEventType::SpaceChild => {
+			| TimelineEventType::SpaceChild => {
 				self.services
 					.spaces
 					.roomid_spacehierarchy_cache
@@ -1124,14 +1134,14 @@ pub async fn update_caches_for_state_delta(
 					.await
 					.remove(room_id);
 			},
-			| ruma::events::TimelineEventType::RoomEncryption => {
+			| TimelineEventType::RoomEncryption => {
 				self.services
 					.state_accessor
 					.encrypted_rooms_cache
 					.write()
 					.remove(room_id);
 			},
-			| ruma::events::TimelineEventType::RoomMember => {
+			| TimelineEventType::RoomMember => {
 				let Some(state_key) = pdu.state_key() else {
 					warn!("Skipping member event without a state key while updating room caches");
 					continue;
