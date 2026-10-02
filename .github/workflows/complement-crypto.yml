@@ -95,9 +95,6 @@ jobs:
   complement-crypto-tests:
     needs: setup
     runs-on: ubuntu-24.04
-    # This matrix job includes Rust-consuming variants and therefore requires
-    # the optional prebuilt SDK URL. Skip the matrix when it is unavailable.
-    if: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL != '' }}
     env:
       COMPLEMENT_PARALLEL: 24
       FEATURES: "direct_tls,url_preview"
@@ -203,7 +200,7 @@ jobs:
       # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
       # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
       - name: Download prebuilt matrix-rust-sdk FFI
-        if: contains(matrix.client_matrix, 'r')
+        if: contains(matrix.client_matrix, 'r') && vars.C10Y_CRYPTO_RUST_SDK_URL != ''
         env:
           RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
         run: |
@@ -231,6 +228,7 @@ jobs:
 
       - name: Run Complement-Crypto tests (${{ matrix.name }})
         id: complement-crypto
+        if: matrix.client_matrix == 'jj' || vars.C10Y_CRYPTO_RUST_SDK_URL != ''
         env:
           COMPLEMENT_CRYPTO_PARALLEL: "3"
           COMPLEMENT_CRYPTO_TIMEOUT: "45m"
