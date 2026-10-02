@@ -68,7 +68,7 @@ echo "Complement source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
 echo "Congruent source revision: $CONGRUENT_REVISION"
 echo "Complement test source commit: $COMPLEMENT_COMMIT"
 echo "Complement base image: $COMPLEMENT_BASE_IMAGE"
-echo "Complement parallelism: packages=${COMPLEMENT_PARALLEL}, tests=${COMPLEMENT_PARALLEL}"
+echo "Complement execution: dirty_runs=${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}, host_cpus=$(nproc 2>/dev/null || echo unknown), go_p=${COMPLEMENT_PARALLEL}, go_parallel=${COMPLEMENT_PARALLEL}"
 
 if [ "$RUN_TESTS" = "." ]; then
 	run_suffix="all"
@@ -256,42 +256,92 @@ record_result() {
 
 EVENTS_FIFO_DIR="$(mktemp -d "${RESULTS_FILE}.events.XXXXXX")"
 EVENTS_FIFO="${EVENTS_FIFO_DIR}/events"
-MERGE_DONE=0
-
-merge_results_on_exit() {
-	local status="${1:-$?}"
-	trap - EXIT
-
-	if [ "$MERGE_DONE" -eq 0 ] && [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
-		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" || true
-		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" || true
-		local tmp_results
-		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-			mv -f "$tmp_results" "$MAIN_RESULTS_FILE"
-			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
-		else
-			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
-			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
-			rm -f "$tmp_results"
-		fi
-	elif [ "$MERGE_DONE" -eq 0 ]; then
-		echo "Warning: $RESULTS_FILE is missing or empty. No results processed." >&2
-	fi
-
-	if [ "$MERGE_DONE" -eq 0 ] && [ -f "$LOG_FILE" ]; then
-		cp "$LOG_FILE" "$MAIN_LOG_FILE"
-	fi
-
-	cleanup_results_fifo
-	cleanup_complement_containers
-	exit "$status"
-}
+test_start_seconds=$SECONDS
+TEST_EXIT_CODE=0
+_active_producer=""
+_reported=""
 
 cleanup_results_fifo() {
 	rm -rf "$EVENTS_FIFO_DIR"
 }
-trap 'merge_results_on_exit "$?"' EXIT
+
+_kill_active_producer() {
+	if [ -n "$_active_producer" ]; then
+		kill -- "-$_active_producer" 2>/dev/null || kill -- "$_active_producer" 2>/dev/null || true
+		wait "$_active_producer" 2>/dev/null || true
+		_active_producer=""
+	fi
+}
+
+finish() {
+	[ -n "$_reported" ] && return 0
+	_reported=1
+
+	local merge_script="$toplevel/bin/merge_complement_results.py"
+	if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
+		if [ "$RUN_TESTS" = "." ]; then
+			python3 "$merge_script" --dedupe-in-place "$RESULTS_FILE" ||
+				echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
+			python3 "$merge_script" --sort-in-place "$RESULTS_FILE" ||
+				echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
+			if cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE"; then
+				echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+			else
+				echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2
+				TEST_EXIT_CODE=1
+			fi
+		else
+			local tmp_merge
+			tmp_merge="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
+			if python3 "$merge_script" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_merge"; then
+				if mv -f "$tmp_merge" "$MAIN_RESULTS_FILE"; then
+					echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
+				else
+					echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2
+					TEST_EXIT_CODE=1
+				fi
+			else
+				echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+				cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+				rm -f "$tmp_merge"
+			fi
+		fi
+	else
+		echo "Warning: $RESULTS_FILE is missing or empty. No results processed." >&2
+		if [ "${TEST_EXIT_CODE:-0}" -eq 0 ]; then
+			TEST_EXIT_CODE=1
+		fi
+	fi
+
+	# Log: point-in-time snapshot, straight copy (not a merge -- no history to preserve).
+	if [ -f "$LOG_FILE" ]; then
+		cp "$LOG_FILE" "$MAIN_LOG_FILE"
+		echo "refreshed $MAIN_LOG_FILE from staged log"
+	fi
+
+	local _pass _fail _skip test_duration_seconds
+	_pass=$(grep -c '"pass"' "$RESULTS_FILE" 2>/dev/null || true)
+	_fail=$(grep -c '"fail"' "$RESULTS_FILE" 2>/dev/null || true)
+	_skip=$(grep -c '"skip"' "$RESULTS_FILE" 2>/dev/null || true)
+	test_duration_seconds=$((SECONDS - test_start_seconds))
+
+	echo ""
+	echo "RESULTS: ${_pass:-0} pass / ${_fail:-0} fail / ${_skip:-0} skip"
+	echo "TIME: $(printf '%d:%02d' $((test_duration_seconds / 60)) $((test_duration_seconds % 60))) min"
+	echo ""
+	echo "complement logs saved at $LOG_FILE"
+	echo "complement results staged at $RESULTS_FILE"
+	echo "complement results merged into $MAIN_RESULTS_FILE"
+	echo ""
+
+	cleanup_results_fifo
+	cleanup_complement_containers
+}
+
+trap finish EXIT
+trap '_kill_active_producer; exit 130' INT
+trap '_kill_active_producer; exit 143' TERM
+trap '_kill_active_producer; exit 129' HUP
 
 # Runs one anchored `-run` pattern's `go test` invocation, appending its JSON
 # log and pass/fail/skip events onto the shared LOG_FILE/RESULTS_FILE. Returns
@@ -339,6 +389,7 @@ run_one_pattern() {
 	# serially (-parallel 1): each test triggers a database-wiping restart of
 	# the server between tests, which would break any concurrently running test.
 	set +e
+	set -m
 	(
 		set -o pipefail
 		env \
@@ -350,6 +401,8 @@ run_one_pattern() {
 				>"$EVENTS_FIFO"
 	) &
 	local producer_pid=$!
+	set +m
+	_active_producer="$producer_pid"
 
 	while IFS=$'\t' read -r action test_name elapsed; do
 		[ -n "$action" ] || continue
@@ -358,11 +411,11 @@ run_one_pattern() {
 
 	wait "$producer_pid"
 	exit_code=$?
+	_active_producer=""
 	set -e
 	return "$exit_code"
 }
 
-TEST_EXIT_CODE=0
 for pattern in "${ALT_PATTERNS[@]}"; do
 	set +e
 	run_one_pattern "$pattern"
@@ -373,77 +426,10 @@ for pattern in "${ALT_PATTERNS[@]}"; do
 	fi
 done
 
-if [ -f "$RESULTS_FILE" ] && [ -s "$RESULTS_FILE" ]; then
-	if [ "$RUN_TESTS" = "." ]; then
-		# A full run spans every package under ./tests/..., and Go's -json
-		# stream identifies tests by name only once we've dropped .Package
-		# (see record_result above). Merge the completed run into the ledger
-		# just like a partial run; never replace the historical ledger with
-		# the staging file.
-		python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" ||
-			echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
-		python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" ||
-			echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
-		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-			mv -f "$tmp_results" "$MAIN_RESULTS_FILE" ||
-				{
-					echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2
-					exit 1
-				}
-			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
-		else
-			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
-			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
-			rm -f "$tmp_results"
-		fi
-	else
-		tmp_results="$(mktemp "${MAIN_RESULTS_FILE}.merge.XXXXXX")"
-		if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-			mv "$tmp_results" "$MAIN_RESULTS_FILE" ||
-				{
-					echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2
-					exit 1
-				}
-			echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
-		else
-			# Merge failed (e.g. under load); append the staged results so the
-			# new pass/fail rows are still recorded rather than lost.
-			echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
-			cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
-			rm -f "$tmp_results"
-		fi
-	fi
-else
-	echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
-	if [ "$TEST_EXIT_CODE" -eq 0 ]; then
-		TEST_EXIT_CODE=1
-	fi
+finish
+
+if [ "$TEST_EXIT_CODE" -ne 0 ]; then
+	exit "$TEST_EXIT_CODE"
 fi
 
-# Unlike RESULTS_FILE, the log is point-in-time debug output with no
-# historical rows to preserve across runs, so a straight copy (not a
-# merge) is enough. This mirrors the RESULTS_FILE handling above, which
-# the staging refactor added -- LOG_FILE was left staged-only, so
-# MAIN_LOG_FILE (the path CI's "Upload test logs" step and the "Print
-# failing test log excerpts" step both read) never got refreshed and
-# silently stayed empty/stale every run.
-if [ -f "$LOG_FILE" ]; then
-	cp "$LOG_FILE" "$MAIN_LOG_FILE"
-	echo "refreshed $MAIN_LOG_FILE from staged log"
-fi
-
-echo ""
-echo ""
-echo "complement logs saved at $LOG_FILE"
-echo "complement results staged at $RESULTS_FILE"
-echo "complement results merged into $MAIN_RESULTS_FILE"
-echo "server source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
-echo "congruent source revision: $CONGRUENT_REVISION"
-echo "complement test source commit: $COMPLEMENT_COMMIT"
-echo ""
-echo ""
-
-MERGE_DONE=1
-trap - EXIT
-merge_results_on_exit "$TEST_EXIT_CODE"
+exit 0

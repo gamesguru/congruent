@@ -400,6 +400,7 @@ e2ee args=".*":
     run_suffix="$(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9]/_/g; s/^_*//; s/_*$//; s/__*/_/g' | cut -c 1-32)"
     if [ -z "$run_suffix" ] || [ "$run_suffix" = "_" ]; then run_suffix="all"; fi
     run_stamp="$(date +%s%N)"
+    test_start_seconds=$SECONDS
     # Centralization: ALL complement-crypto output (raw per-shard logs, merged
     # logs, staged results, and the tracked results.jsonl ledger) lives under
     # tests/crypto. There is no separate .tmp staging dir.
@@ -658,7 +659,16 @@ e2ee args=".*":
         echo "linked complement-crypto runtime logs -> $RESULTS_FILE_STAGING/logs"
     fi
 
+    _pass=$(grep -c '"pass"' "$RESULTS_FILE" 2>/dev/null || true)
+    _fail=$(grep -c '"fail"' "$RESULTS_FILE" 2>/dev/null || true)
+    _skip=$(grep -c '"skip"' "$RESULTS_FILE" 2>/dev/null || true)
+    test_duration_seconds=$((SECONDS - test_start_seconds))
+
     echo ""
+    echo "RESULTS: ${_pass:-0} pass / ${_fail:-0} fail / ${_skip:-0} skip"
+    echo "TIME: $(printf '%d:%02d' $((test_duration_seconds / 60)) $((test_duration_seconds % 60))) min"
+    echo ""
+    echo "complement logs saved at $LOG_FILE"
     echo "complement results staged at $RESULTS_FILE"
     echo "complement results merged into $MAIN_RESULTS_FILE"
     echo ""
