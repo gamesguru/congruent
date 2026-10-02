@@ -255,7 +255,7 @@ prebuild-aws-lc:
 
     mkdir -p build && cd build
     # rm -f CMakeCache.txt
-    cmake -DCMAKE_INSTALL_PREFIX={{ PREFIX }} -DBUILD_TESTING=OFF -DBUILD_LIBSSL=ON ..
+    cmake -DCMAKE_INSTALL_PREFIX={{ PREFIX }} -DBUILD_TESTING=OFF -DBUILD_LIBSSL=ON -DGENERATE_RUST_BINDINGS=ON ..
     make -j$(nproc)
 
 # Install aws-lc globally (requires sudo)
