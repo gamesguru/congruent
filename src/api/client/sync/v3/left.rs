@@ -151,16 +151,10 @@ pub(super) async fn load_left_room(
 				.pdu_roothandle_after_event(&leave_membership_event.event_id)
 				.await?;
 
-			let leave_count = services
-				.rooms
-				.timeline
-				.get_pdu_count(&leave_membership_event.event_id)
-				.await?;
-
 			let before_leave_root_handle = services
 				.rooms
-				.timeline
-				.prev_root_handle(room_id, leave_count)
+				.state_accessor
+				.pdu_roothandle_before_event(&leave_membership_event.event_id)
 				.await
 				.unwrap_or_else(|_| leave_root_handle.clone());
 
@@ -417,7 +411,7 @@ async fn build_left_state_and_timeline(
 			if let Ok(root_handle) = services
 				.rooms
 				.state_accessor
-				.pdu_roothandle_after_event(&pdu.event_id)
+				.pdu_roothandle_before_event(&pdu.event_id)
 				.await
 			{
 				return root_handle;

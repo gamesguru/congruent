@@ -36,7 +36,6 @@ pub use crate::clap::Args;
 
 pub fn run() -> Result<()> {
 	panic::init();
-	init_git_info();
 
 	let args = clap::parse();
 
@@ -64,6 +63,8 @@ pub fn run() -> Result<()> {
 }
 
 pub fn run_with_args(args: &Args) -> Result<()> {
+	init_git_info();
+
 	// Spawn deadlock detection thread
 	deadlock::spawn();
 

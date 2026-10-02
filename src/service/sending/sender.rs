@@ -1419,9 +1419,7 @@ impl Service {
 		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
 
 		let result = self
-			.services
-			.federation
-			.execute_on(&self.services.client.sender, &server, msc4500_req)
+			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
 		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 

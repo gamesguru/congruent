@@ -772,6 +772,7 @@ async fn join_room_by_id_helper_remote_process(
 			.await;
 		entries.push((shortstatekey, shorteventid));
 	}
+	drop(state);
 
 	let structural_key =
 		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);

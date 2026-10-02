@@ -2505,6 +2505,9 @@ async fn legacy_build_root_handle_for_state(
 			))
 		})?;
 
+	services.db["state_hamt_root_lattices"]
+		.insert(&root_handle.structural_hash, &lattice.to_bytes());
+
 	Ok((root_handle, root_node))
 }
 
@@ -2575,6 +2578,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 				// Write the same flat-48-byte encoding used by set_room_state_hamt,
 				// so get_room_state_hamt can read the value back.
+				services.db["state_hamt_root_lattices"]
+					.insert(&root_handle.structural_hash, &lattice.to_bytes());
 				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
 				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
 			},
@@ -2668,10 +2673,11 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.
-		let pdus: Vec<_> = services.rooms.timeline.all_pdus(room_id).collect().await;
+		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(room_id));
 		let mut current_root = empty_root;
 		let mut event_batch = conduwuit_database::Batch::new();
-		for (_, pdu) in pdus {
+		let mut batched = 0_usize;
+		while let Some((_, pdu)) = pdus.next().await {
 			if pdu.state_key().is_some() {
 				if let Ok(shorteventid) =
 					services.rooms.short.get_shorteventid(pdu.event_id()).await
@@ -2690,6 +2696,12 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					.to_be_bytes(),
 				crate::rooms::state::root_handle_to_bytes(&current_root),
 			);
+			batched = batched.saturating_add(1);
+			if batched >= FLUSH_AFTER_EVENTS {
+				roothandle_map.apply_batch(event_batch);
+				event_batch = conduwuit_database::Batch::new();
+				batched = 0;
+			}
 		}
 		roothandle_map.apply_batch(event_batch);
 	}

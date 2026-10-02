@@ -1058,6 +1058,12 @@ pub async fn update_caches_for_state_delta(
 					.remove(room_id);
 			},
 			| ruma::events::TimelineEventType::RoomMember => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
 				let Some(state_key) = pdu.state_key() else {
 					warn!("Skipping member event without a state key while updating room caches");
 					continue;
@@ -1139,6 +1145,13 @@ pub async fn update_caches_for_state_delta(
 				};
 				self.update_membership(room_id, target_user_id, &pdu, false)
 					.await?;
+				// Membership changes can affect restricted-room accessibility.
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
 				memberships_changed = true;
 			},
 			| _ => {},

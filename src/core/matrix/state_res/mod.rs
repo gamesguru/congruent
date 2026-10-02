@@ -248,7 +248,7 @@ where
 		// auth chains which are not state events and must not participate
 		// in iterative_auth_check.
 		.broad_filter_map(async |id| {
-			let ev = event_fetch(id.clone()).await?;
+			let ev = cached_fetch(id.clone()).await?;
 			ev.state_key().is_some().then_some(id)
 		})
 		.collect()

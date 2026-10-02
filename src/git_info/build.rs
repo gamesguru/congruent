@@ -32,6 +32,13 @@ fn main() {
 		commit_hash_short = Some(short_hash);
 	}
 
+	let branch = get_env("CONTINUWUITY_BRANCH")
+		.or_else(|| get_env("GITHUB_REF_NAME"))
+		.or_else(|| git::run(&["rev-parse", "--abbrev-ref", "HEAD"]));
+	if let Some(b) = branch.as_ref() {
+		println!("cargo:rustc-env=GIT_BRANCH={b}");
+	}
+
 	if get_env("CONTINUWUITY_VERSION_EXTRA").is_none() {
 		let desc = git::description();
 		let mut extra = vec![desc.unwrap_or_else(|| {
@@ -39,11 +46,7 @@ fn main() {
 				.clone()
 				.unwrap_or_else(|| "unknown".into())
 		})];
-		if let Some(b) = get_env("CONTINUWUITY_BRANCH")
-			.or_else(|| get_env("GITHUB_REF_NAME"))
-			.or_else(|| git::run(&["rev-parse", "--abbrev-ref", "HEAD"]))
-		{
-			println!("cargo:rustc-env=GIT_BRANCH={b}");
+		if let Some(b) = branch.as_ref() {
 			extra.push(format!("b={b}"));
 		}
 		extra.retain(|s| !s.is_empty());
