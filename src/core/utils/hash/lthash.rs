@@ -26,7 +26,7 @@ pub fn lthash_from_bytes(bytes: &[u8]) -> Option<LtHash> {
 	for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
 		arr[i] = u16::from_le_bytes(*chunk);
 	}
-	Some(LtHash(arr))
+	Some(rezzy::state::lthash::LtLattice(arr))
 }
 
 /// Serializes an LtHash into a `(lattice, digest)` pair.
@@ -78,7 +78,7 @@ mod tests {
 	const EXPECTED_DIGEST: &str = "XvDOaf_ebwBJIdNgoZvN5RqUw1lkXeX6xNZmkPpR6r0";
 
 	fn golden_lthash() -> LtHash {
-		LtHash(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
+		rezzy::state::lthash::LtLattice(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
 	}
 
 	#[test]
