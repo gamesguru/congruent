@@ -844,6 +844,31 @@ opt-level = 'z'
 #	'-Clink-arg=-Wl,-z,nodelete',
 #]
 
+# Compile-speed profile for the inner development loop.
+#
+# [profile.dev] is deliberately configured for hot-reloading and for running a
+# fast debug server, so it is left untouched. This profile only trades runtime
+# performance for compile speed.
+[profile.fast]
+inherits = "dev"
+debug = 0
+
+# Every package, workspace members included: the workspace crates
+# (conduwuit_service, conduwuit_api, ...) are what actually dominate the
+# critical path, so they need the codegen parallelism most.
+[profile.fast.package.'*']
+opt-level = 0
+codegen-units = 256
+debug = 0
+
+# Proc macros and build scripts *run* during the build, and package.'*' does not
+# apply to them. Leaving them at opt-level 0 costs real time here, since this
+# workspace leans on ruma-macros/askama_derive/conduwuit_macros heavily.
+[profile.fast.build-override]
+opt-level = 1
+codegen-units = 16
+debug = 0
+
 # primarily used for CI
 [profile.test]
 inherits = "dev"
