@@ -29,7 +29,7 @@ use futures::{
 	pin_mut,
 };
 use ruma::{
-	DeviceId, OwnedEventId, OwnedRoomId, RoomId, UInt, UserId,
+	DeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::{
 		IncomingRequest, Metadata, OutgoingResponse,
 		client::sync::sync_events::{self, DeviceLists, UnreadNotificationsCount},
@@ -1986,6 +1986,30 @@ async fn collect_account_data(
 	account_data
 }
 
+/// Joined members of a newly-seen encrypted room whose devices the sender must
+/// be told about: every member other than the sender who shares no other
+/// encrypted room with them.
+async fn new_encrypted_room_members(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+) -> Vec<OwnedUserId> {
+	services
+		.rooms
+		.state_cache
+		.room_members(room_id)
+		// Don't send key updates from the sender to the sender
+		.ready_filter(|user_id| sender_user != *user_id)
+		// Only send keys if the sender doesn't share an encrypted room with the target
+		// already
+		.filter_map(|user_id| async move {
+			(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
+				.then(|| user_id.to_owned())
+		})
+		.collect::<Vec<_>>()
+		.await
+}
+
 async fn collect_e2ee<'a, Rooms>(
 	services: &Services,
 	(sender_user, sender_device, globalsince, _, body): (
@@ -2139,24 +2163,15 @@ where
 				}
 				if joined_since_last_sync || new_encrypted_room {
 					// If the user is in a new encrypted room, give them all joined users
-					device_list_changes.extend(
-						services
-						.rooms
-						.state_cache
-						.room_members(room_id)
-						// Don't send key updates from the sender to the sender
-						.ready_filter(|user_id| sender_user != *user_id)
-						// Only send keys if the sender doesn't share an encrypted room with the target
-						// already
-						.filter_map(|user_id| async move {
-							(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
-								.then(|| user_id.to_owned())
-						})
-						.collect::<Vec<_>>()
-						.await,
-					);
+					device_list_changes
+						.extend(new_encrypted_room_members(services, sender_user, room_id).await);
 				}
 			}
+		} else if encrypted_room {
+			// No state existed at or before `globalsince`, so the room was first
+			// joined after the last sync: treat it as a new encrypted room.
+			device_list_changes
+				.extend(new_encrypted_room_members(services, sender_user, room_id).await);
 		}
 		// Look for device list updates in this room
 		device_list_changes.extend(

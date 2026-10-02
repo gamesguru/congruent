@@ -1062,6 +1062,25 @@ pub async fn promote_outlier_batch<'a>(
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
+	// Likewise never promote a soft-failed event: it failed auth against the
+	// current room state and must stay out of the visible timeline. Admin
+	// rescue clears the marker explicitly before promoting.
+	if self
+		.services
+		.pdu_metadata
+		.is_event_soft_failed(event_id)
+		.await
+	{
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event is soft-failed, skipping"
+		);
+		drop(insert_lock);
+		return Ok(PromoteOutlierOutcome::Skipped);
+	}
+
 	// Use backfill (negative) PDU count — these are historical events
 	// that predate the join, not new forward events.
 	let count: i64 = self.services.globals.next_count()?.try_into()?;
@@ -1187,6 +1206,20 @@ async fn associate_resolved_state(
 			.await?
 			.ok_or_else(|| err!("Could not resolve state at backfilled event"))?,
 	};
+
+	// The stored per-event root is the state *after* the event (see
+	// `pdu_roothandle_after_event`), so a state event must include its own
+	// change; otherwise membership/join-rule changes vanish from historical
+	// reads and `pdu_roothandle_before_event` skips this event for descendants.
+	let mut state_at_event = state_at_event;
+	if let Some(state_key) = pdu.state_key() {
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+		state_at_event.insert(shortstatekey, pdu.event_id().to_owned());
+	}
 
 	let root_handle = self
 		.services

@@ -264,7 +264,10 @@ pub async fn get_active_verify_key(
 		// A cached binding says this key is retired: fail fast rather than
 		// triggering outbound fetches for every request signed with it.
 		if cached.old_verify_keys.contains_key(key_id)
-			&& !self.active_verify_keys_for(origin).await.contains_key(key_id)
+			&& !self
+				.active_verify_keys_for(origin)
+				.await
+				.contains_key(key_id)
 		{
 			return Err!(Request(Forbidden("Signing key {key_id} of {origin} is retired")));
 		}

@@ -190,9 +190,12 @@ impl Store {
 	/// any grace window. Callers are responsible for only deleting nodes that
 	/// are confirmed unreachable (e.g. after [`Store::sweep`]).
 	pub fn del_node(&self, hash: &StructuralHash) -> Result<()> {
-		self.node_cache.invalidate(hash);
+		// Remove the durable value first and evict the cache last. Evicting
+		// first would let a concurrent `get_node` repopulate the cache from the
+		// not-yet-deleted row, leaving a cached node with no backing row.
 		self.db.remove_raw(hash.as_ref());
 		self.node_mtimes.remove_raw(hash.as_ref());
+		self.node_cache.invalidate(hash);
 		Ok(())
 	}
 

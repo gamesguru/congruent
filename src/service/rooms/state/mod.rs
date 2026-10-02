@@ -336,11 +336,17 @@ impl Service {
 			.await;
 
 		let is_state = new_pdu.state_key().is_some();
-		let (root_handle, new_node) = if is_state {
+		// A supplied `state_root_handle` is the *post*-event root: callers have
+		// already applied the event (and any state resolution) and persisted its
+		// nodes. Appending the event again would clobber a resolution winner, so
+		// only append when no post-event root was provided.
+		let (root_handle, new_node) = if is_state && state_root_handle.is_none() {
 			let (handle, node) = self
-				.append_to_state(new_pdu, room_id, state_lock, state_root_handle)
+				.append_to_state(new_pdu, room_id, state_lock, None)
 				.await?;
 			(handle, Some(node))
+		} else if let Some(root) = state_root_handle {
+			(root.clone(), None)
 		} else {
 			let root = match state_root_handle {
 				| Some(root) => root.clone(),

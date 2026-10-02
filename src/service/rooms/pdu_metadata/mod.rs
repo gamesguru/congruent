@@ -654,15 +654,18 @@ impl Service {
 				return false;
 			},
 		};
+		// Only the rejection marker is cleared on acceptance: soft-fail markers
+		// are intentional verdicts that must persist (promotion refuses
+		// soft-failed events up front, see `promote_outlier`).
 		let Some(code) = code else {
-			// No rejection verdict -- clear any stale markers and accept.
-			self.clear_pdu_markers(event_id);
+			// No rejection verdict -- clear any stale rejection and accept.
+			self.unmark_event_rejected(event_id);
 			return true;
 		};
 		match code {
 			| RejectionCode::MissingAuthEvent => false,
 			| code if code.is_retryable() => {
-				self.clear_pdu_markers(event_id);
+				self.unmark_event_rejected(event_id);
 				true
 			},
 			| _ => false,

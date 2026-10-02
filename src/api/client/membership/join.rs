@@ -796,11 +796,6 @@ async fn join_room_by_id_helper_remote_process(
 		.is_joined(sender_user, room_id)
 		.await;
 
-	services
-		.rooms
-		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
-
 	debug!("Registering joined members for new room");
 	// Register the room's joined members/servers (including remote users such as
 	// the room creator) in the participation cache. The legacy `force_state`
@@ -814,6 +809,13 @@ async fn join_room_by_id_helper_remote_process(
 		&root_handle,
 	))
 	.await?;
+
+	// Install the root only after the derived caches were updated successfully,
+	// so a cache failure never exposes new state with stale caches.
+	services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power

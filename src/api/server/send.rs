@@ -445,9 +445,6 @@ async fn compute_receiver_after_digest(
 	services: &crate::State,
 	event_id: &OwnedEventId,
 ) -> Option<String> {
-	use conduwuit::Event;
-	use futures::StreamExt;
-
 	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
 	let root_handle = services
 		.rooms
@@ -456,17 +453,11 @@ async fn compute_receiver_after_digest(
 		.await
 		.ok()?;
 
-	let entries: Vec<(String, String, OwnedEventId)> = services
-		.rooms
-		.state_accessor
-		.state_full_pdus_hamt(root_handle)
-		.filter_map(|pdu| async move {
-			let ty = pdu.kind().to_string();
-			let sk = pdu.state_key()?.to_owned();
-			Some((ty, sk, pdu.event_id().to_owned()))
-		})
-		.collect()
-		.await;
+	// Fail closed: if any state entry cannot be resolved, report no digest
+	// rather than a misleading mismatch against partial state.
+	let entries = super::state_accumulator::state_tuples(services, &root_handle)
+		.await
+		.ok()?;
 
 	let mut lattice = rezzy::state::LtHash::default();
 	for (ty, sk, id) in &entries {

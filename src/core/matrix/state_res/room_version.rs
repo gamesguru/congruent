@@ -181,6 +181,8 @@ impl RoomVersion {
 			| RoomVersionId::V12 => Self::V12,
 			| ver if ver.as_str() == "12.1" => Self::V12_1,
 			| ver if crate::info::room_version::is_msc3389(ver) => Self::V10,
+			// TODO: verify against the MSC4311 spec; V10 is inferred from the
+			// version name (`org.matrix.msc4311.10`), not from the MSC text.
 			| ver if crate::info::room_version::is_msc4311(ver) => Self::V10,
 			| ver => return Err(Error::Unsupported(format!("found version `{ver}`"))),
 		})

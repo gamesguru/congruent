@@ -141,6 +141,10 @@ where
 		full_auth_chain.insert(shortid);
 	}
 
+	// Cached chains may predate the derived create event being recorded.
+	self.add_derived_create_event(room_id, None, &mut full_auth_chain)
+		.await;
+
 	let full_auth_chain: Vec<ShortEventId> = full_auth_chain.iter().collect();
 
 	info!(
@@ -227,6 +231,10 @@ where
 		full_auth_chain |= &auth_chain;
 		full_auth_chain.insert(shortid);
 	}
+
+	// Cached chains may predate the derived create event being recorded.
+	self.add_derived_create_event(room_id, None, &mut full_auth_chain)
+		.await;
 
 	info!(
 		chain_length = ?full_auth_chain.len(),
@@ -390,17 +398,55 @@ async fn get_auth_chain_inner(
 		}
 	}
 
-	if let Some(room_id_without_sigil) = room_id.as_str().strip_prefix('!')
-		&& let Ok(create_id) = EventId::parse(format!("${room_id_without_sigil}").as_str())
+	if !self
+		.add_derived_create_event(room_id, Some(event_id), &mut found)
+		.await
 	{
-		if event_id != create_id {
-			if let Ok(create_short) = self.services.short.get_shorteventid(create_id).await {
-				found.insert(create_short);
-			}
-		}
+		is_complete = false;
 	}
 
 	Ok((found, is_complete))
+}
+
+/// Adds the `m.room.create` event whose ID is derived from the room ID (room
+/// versions where the room ID is the create event's hash) to `chain`.
+///
+/// Returns `false` when a short-ID mapping for the create event exists but its
+/// PDU is unavailable, meaning the chain would be incomplete and must not be
+/// cached. Rooms with no derivable create event are unaffected and return
+/// `true`.
+#[implement(Service)]
+async fn add_derived_create_event(
+	&self,
+	room_id: &RoomId,
+	exclude: Option<&EventId>,
+	chain: &mut RoaringTreemap,
+) -> bool {
+	let Some(room_id_without_sigil) = room_id.as_str().strip_prefix('!') else {
+		return true;
+	};
+	let create_id = format!("${room_id_without_sigil}");
+	let Ok(create_id) = EventId::parse(create_id.as_str()) else {
+		return true;
+	};
+	if exclude.is_some_and(|event_id| event_id == create_id) {
+		return true;
+	}
+	let Ok(create_short) = self.services.short.get_shorteventid(create_id).await else {
+		return true;
+	};
+	if self
+		.services
+		.timeline
+		.get_pdu_in_room(Some(room_id), create_id)
+		.await
+		.is_err()
+	{
+		return false;
+	}
+
+	chain.insert(create_short);
+	true
 }
 
 #[implement(Service)]

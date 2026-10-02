@@ -17,8 +17,16 @@ use crate::Services;
 
 static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// RocksDB's default Env is process-global: tearing one database down joins
+// background threads shared by every database in the process. Full `Services`
+// instances are also heavy, so serialize the tests that build one.
+static DB_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct TempDbGuard {
 	path: PathBuf,
+	// Declared after `path` so the lock is released only once the database
+	// directory has been removed.
+	_lock: tokio::sync::MutexGuard<'static, ()>,
 }
 
 impl Drop for TempDbGuard {
@@ -31,11 +39,12 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	// Cargo.toml), so this is unconditional and independent of which provider
 	// the library's optional `ring`/`aws_lc_rs` features select for consumers.
 	let _ = rustls::crypto::ring::default_provider().install_default();
+	let lock = DB_TEST_MUTEX.lock().await;
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_state_test_db_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
 
-	let guard = TempDbGuard { path: db_path.clone() };
+	let guard = TempDbGuard { path: db_path.clone(), _lock: lock };
 
 	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
 		r#"

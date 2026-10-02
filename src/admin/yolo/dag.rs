@@ -8,7 +8,7 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 	warn,
 };
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use ruma::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
@@ -1423,10 +1423,9 @@ pub(super) async fn audit_auth_chain(
 					.rooms
 					.state_accessor
 					.state_full_ids_hamt(&room_root)
-					.filter_map(|res| async move { res.ok() })
-					.map(|(_, id)| id)
-					.collect()
-					.await,
+					.map_ok(|(_, id)| id)
+					.try_collect()
+					.await?,
 			| Err(_) =>
 				self.services
 					.rooms

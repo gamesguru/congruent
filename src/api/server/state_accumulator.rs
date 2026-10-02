@@ -3,7 +3,7 @@ use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
-use futures::StreamExt;
+use futures::TryStreamExt;
 use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
 
@@ -81,18 +81,10 @@ pub(crate) async fn get_state_accumulator_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("Root handle not found for event."))))?;
 
-	// Build the LtHash lattice over the event's post-event state.
-	let entries: Vec<(String, String, OwnedEventId)> = services
-		.rooms
-		.state_accessor
-		.state_full_pdus_hamt(root_handle)
-		.filter_map(|pdu| async move {
-			let ty = pdu.kind().to_string();
-			let sk = pdu.state_key()?.to_owned();
-			Some((ty, sk, pdu.event_id().to_owned()))
-		})
-		.collect()
-		.await;
+	// Build the LtHash lattice over the event's post-event state. Any entry
+	// that cannot be resolved fails the request rather than yielding a
+	// digest over partial state.
+	let entries = state_tuples(&services, &root_handle).await?;
 
 	let mut lattice = rezzy::state::LtHash::default();
 	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
@@ -228,4 +220,45 @@ mod tests {
 		assert_ne!(lattice, empty_lattice);
 		assert_ne!(digest, empty_digest);
 	}
+}
+
+/// Resolves every `(type, state_key, event_id)` tuple beneath a HAMT root
+/// directly from the HAMT and short-ID mappings, without loading PDUs.
+///
+/// Fails closed: a traversal error or an unresolvable short ID aborts rather
+/// than returning an incomplete state, so callers never digest partial state.
+pub(super) async fn state_tuples(
+	services: &crate::State,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<Vec<(String, String, OwnedEventId)>> {
+	use conduwuit::utils::stream::IterStream;
+
+	let shorts: Vec<_> = services
+		.rooms
+		.state_accessor
+		.state_full_shortids_hamt(root_handle.clone())
+		.try_collect()
+		.await?;
+
+	let state_keys: Vec<_> = services
+		.rooms
+		.short
+		.multi_get_statekey_from_short(shorts.iter().map(|(ssk, _)| *ssk).stream())
+		.try_collect()
+		.await?;
+
+	let event_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(
+			shorts.iter().map(|(_, seid)| *seid).stream(),
+		)
+		.try_collect()
+		.await?;
+
+	Ok(state_keys
+		.into_iter()
+		.zip(event_ids)
+		.map(|((ty, sk), id)| (ty.to_string(), sk.to_string(), id))
+		.collect())
 }

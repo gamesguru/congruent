@@ -498,7 +498,8 @@ pub async fn pdu_roothandle_after_event(
 /// state events (e.g. a membership leave) already includes the event's own
 /// change, so a user/server that was joined before it would no longer pass a
 /// `user_was_joined` check. Falls back to the post-event root when the event
-/// has no preceding timeline position (e.g. the first event in a room).
+/// has multiple predecessors; the first event in a room has the empty state
+/// before it.
 #[implement(super::Service)]
 pub async fn pdu_roothandle_before_event(
 	&self,
@@ -514,6 +515,30 @@ pub async fn pdu_roothandle_before_event(
 	// parents; picking one parent's root would return that fork's state alone.
 	if pdu.state_key.is_none() {
 		return self.pdu_roothandle_after_event(event_id).await;
+	}
+
+	// An event with no predecessors (the room's first event) is preceded by
+	// the empty state; returning its own post-event root would leak the event's
+	// state change into the "before" view.
+	if pdu.prev_events().next().is_none() {
+		if let Some(room_id) = pdu.room_id() {
+			let structural_key = crate::rooms::state_hamt::room_structural_key(
+				&self.services.globals.server_secret,
+				room_id,
+			);
+			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
+				&structural_key,
+				&rezzy::state::LtHash::default(),
+				Vec::new(),
+			)
+			.map_err(|e| err!(error!("Failed to build empty HAMT root: {e:?}")))?;
+			self.services
+				.state_hamt
+				.store
+				.persist_node_recursive(empty_node);
+
+			return Ok(empty_root);
+		}
 	}
 
 	if pdu.prev_events().count() == 1 {
