@@ -95,9 +95,9 @@ jobs:
   complement-crypto-tests:
     needs: setup
     runs-on: ubuntu-24.04
-    # The JS-only variant does not need the optional prebuilt Rust SDK. Skip
-    # the Rust-consuming variants when the repository variable is not set.
-    if: ${{ !contains(matrix.client_matrix, 'r') || vars.C10Y_CRYPTO_RUST_SDK_URL != '' }}
+    # This matrix job includes Rust-consuming variants and therefore requires
+    # the optional prebuilt SDK URL. Skip the matrix when it is unavailable.
+    if: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL != '' }}
     env:
       COMPLEMENT_PARALLEL: 24
       FEATURES: "direct_tls,url_preview"
