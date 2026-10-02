@@ -202,6 +202,12 @@ pub(crate) async fn create_invite_route(
 	}
 
 	let mut invite_state = body.invite_room_state.clone();
+	let mut event: JsonObject = serde_json::from_str(body.event.get())
+		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
+	let is_direct_invite = event
+		.get("content")
+		.and_then(|content| content.get("is_direct"))
+		.is_some_and(|is_direct| is_direct.as_bool() == Some(true));
 	let invite_state_values = invite_state
 		.iter()
 		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
@@ -209,14 +215,11 @@ pub(crate) async fn create_invite_route(
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
 	if conduwuit::info::room_version::has_msc4311_stripped_state_validation(&body.room_version)
-		&& !invite_state_values.is_empty()
+		&& (!invite_state_values.is_empty() || !is_direct_invite)
 	{
 		validate_msc4311_stripped_state(body.room_id.as_str(), &invite_state_values)
 			.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
 	}
-
-	let mut event: JsonObject = serde_json::from_str(body.event.get())
-		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 
