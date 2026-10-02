@@ -7,7 +7,7 @@ on:
   push:
     branches: [main, main-upstream]
   pull_request:
-    branches: [main]
+    branches: [main, guru/dev-2026-03-27+b1-presence+b2-federation, _base/dev-to-hamt]
   workflow_dispatch:
 
 env:
