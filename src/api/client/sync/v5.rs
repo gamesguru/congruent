@@ -726,7 +726,15 @@ async fn sync_events_v5_route_inner(
 						// clippy can't see across the loop boundary that this is used.
 						#[allow(unused_assignments)]
 						(room_extras = re);
-						if !response.rooms.is_empty() || !response.extensions.is_empty() {
+						// A room can be present merely because its list entry was
+						// rebuilt.  That is not necessarily the update which woke us:
+						// writes made while a PDU is being appended can wake the watcher
+						// before the new timeline row is visible.  Keep waiting in that
+						// case so long-polling does not return an empty timeline.
+						let has_room_update = response.rooms.values().any(|room| {
+							!room.timeline.is_empty() || !room.required_state.is_empty()
+						});
+						if has_room_update || !response.extensions.is_empty() {
 							break;
 						}
 					}

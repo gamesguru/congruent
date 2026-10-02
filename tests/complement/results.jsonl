@@ -335,7 +335,7 @@
 {"Action":"pass","Test":"TestMSC3389RedactionStripsRelationInOlderVersions"}
 {"Action":"skip","Test":"TestMSC3757OwnedState"}
 {"Action":"pass","Test":"TestMSC3967"}
-{"Action":"fail","Test":"TestMSC4186SlidingSync"}
+{"Action":"pass","Test":"TestMSC4186SlidingSync"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/BulkLoad"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/CombiningRoomConfigs"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/ExpandedTimeline"}
@@ -358,7 +358,7 @@
 {"Action":"pass","Test":"TestMSC4186SlidingSync/Lists"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/Lists/Incremental_sync_only_returns_rooms_with_updates"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/Lists/Initial_list_returns_count_and_room_metadata"}
-{"Action":"fail","Test":"TestMSC4186SlidingSync/LongPolling"}
+{"Action":"pass","Test":"TestMSC4186SlidingSync/LongPolling"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/MaxLimits"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/MaxLimits/More_than_100_lists_is_rejected"}
 {"Action":"pass","Test":"TestMSC4186SlidingSync/MaxLimits/More_than_100_room_subscriptions_is_rejected"}
