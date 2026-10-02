@@ -85,4 +85,47 @@ if [ -n "$MISSING_LIBS" ]; then
 	exit 1
 fi
 
-exec setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml
+# Supervisor loop: Complement's dirty-run mode reuses this container across
+# tests. A SIGUSR1 (sent via `docker kill --signal=SIGUSR1`) makes the
+# entrypoint wipe the database and restart conduwuit, giving the next test a
+# clean slate without Docker ever recreating the container.
+CONDUWUIT_PID=""
+
+reset_server() {
+	echo "Reset triggered: stopping conduwuit and wiping database"
+	if [ -n "$CONDUWUIT_PID" ] && kill -0 "$CONDUWUIT_PID" 2>/dev/null; then
+		kill -TERM "$CONDUWUIT_PID" 2>/dev/null || true
+		for _ in $(seq 1 100); do
+			kill -0 "$CONDUWUIT_PID" 2>/dev/null || break
+			sleep 0.1
+		done
+		kill -KILL "$CONDUWUIT_PID" 2>/dev/null || true
+		wait "$CONDUWUIT_PID" 2>/dev/null || true
+	fi
+	rm -rf "${CONDUWUIT_DATABASE_PATH:?}"
+	mkdir -p "$CONDUWUIT_DATABASE_PATH"
+	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+}
+
+terminate_server() {
+	echo "Terminate triggered: stopping conduwuit"
+	if [ -n "$CONDUWUIT_PID" ] && kill -0 "$CONDUWUIT_PID" 2>/dev/null; then
+		kill -TERM "$CONDUWUIT_PID" 2>/dev/null || true
+		wait "$CONDUWUIT_PID" 2>/dev/null || true
+	fi
+	exit 0
+}
+
+trap reset_server SIGUSR1 SIGHUP
+trap terminate_server SIGTERM SIGINT
+
+while true; do
+	echo "Resetting database and starting Continuwuity (SERVER_NAME=$SERVER_NAME)"
+	rm -rf "${CONDUWUIT_DATABASE_PATH:?}"
+	mkdir -p "$CONDUWUIT_DATABASE_PATH"
+	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
+	CONDUWUIT_PID=$!
+	wait "$CONDUWUIT_PID" || true
+	echo "Conduwuit exited; restarting with a fresh database"
+done

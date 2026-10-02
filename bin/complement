@@ -323,7 +323,7 @@ run_one_pattern() {
 		-skip "$SKIPPED_COMPLEMENT_TESTS"
 		-run "$pattern"
 		-p "$COMPLEMENT_PARALLEL"
-		-parallel "$COMPLEMENT_PARALLEL"
+		-parallel 1
 		-timeout 1h
 		-count=1
 		"${packages[@]}"
@@ -333,14 +333,17 @@ run_one_pattern() {
 	mkfifo "$EVENTS_FIFO"
 
 	local exit_code=0
-	# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for faster complement,
-	# at the possible expense of test environment pollution.
+	# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for
+	# faster complement. Tests share the one dirty container, so they must run
+	# serially (-parallel 1): each test triggers a database-wiping restart of
+	# the server between tests, which would break any concurrently running test.
 	set +e
 	(
 		set -o pipefail
 		env \
 			-C "$COMPLEMENT_SRC" \
 			COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
+			COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
 			go test -json "${flags[@]}" |
 			tee -a "$LOG_FILE" |
 			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | (.Elapsed // 0) as $elapsed | [.Action, .Test, (if $elapsed == 0 then "0s" else (((($elapsed * 100) | round) / 100) | tostring) + "s" end)] | @tsv' \
