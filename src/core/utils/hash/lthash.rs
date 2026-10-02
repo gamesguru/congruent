@@ -90,15 +90,11 @@ mod tests {
 	}
 
 	#[test]
-	fn serialize_lthash_matches_blake2b_256() {
-		use blake2::{Blake2b, Digest, digest::consts::U32};
-
+	fn serialize_lthash_matches_blake3_256() {
 		let lthash = golden_lthash();
 		let bytes = lthash_to_bytes(&lthash);
 
-		let mut hasher = Blake2b::<U32>::new();
-		Digest::update(&mut hasher, &bytes);
-		let expected = URL_SAFE_NO_PAD.encode(hasher.finalize());
+		let expected = URL_SAFE_NO_PAD.encode(blake3::hash(&bytes).as_bytes());
 
 		assert_eq!(expected, EXPECTED_DIGEST);
 		assert_eq!(serialize_lthash(&lthash).1, expected);
