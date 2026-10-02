@@ -75,7 +75,7 @@ mod tests {
 		"A78DwAPBA8IDwwPEA8UDxgPHA8gDyQPKA8sDzAPNA84DzwPQA9ED0gPTA9QD1QPWA9cD2APZA9oD2wPcA90D3gPfA-",
 		"AD4QPiA-MD5APlA-YD5wPoA-kD6gPrA-wD7QPuA-8D8APxA_ID8wP0A_UD9gP3A_gD-QP6A_sD_AP9A_4D_wM",
 	);
-	const EXPECTED_DIGEST: &str = "XvDOaf_ebwBJI9NgoZvN5RqUw1lkXeX6xNZmkPpR6r0";
+	const EXPECTED_DIGEST: &str = "XvDOaf_ebwBJIdNgoZvN5RqUw1lkXeX6xNZmkPpR6r0";
 
 	fn golden_lthash() -> LtHash {
 		LtHash(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
