@@ -88,7 +88,8 @@ fi
 # Supervisor loop: Complement's dirty-run mode reuses this container across
 # tests. A SIGUSR1 (sent via `docker kill --signal=SIGUSR1`) makes the
 # entrypoint wipe the database and restart conduwuit, giving the next test a
-# clean slate without Docker ever recreating the container.
+# clean slate without Docker ever recreating the container. Ordinary process
+# exits, including crash recovery, restart on the existing database.
 #
 # The wipe is gated on NEEDS_DB_WIPE rather than being unconditional: Complement
 # also drives StopServer/StartServer as a plain `docker stop` / `docker start`
@@ -137,8 +138,5 @@ while true; do
 	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
 	CONDUWUIT_PID=$!
 	wait "$CONDUWUIT_PID" || true
-	echo "Conduwuit exited; restarting with a fresh database"
-	# An in-process restart (crash, or a reset that already stopped the server)
-	# must not silently resume stale state from the previous run.
-	NEEDS_DB_WIPE=1
+	echo "Conduwuit exited; restarting with the existing database"
 done

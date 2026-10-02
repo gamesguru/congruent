@@ -31,6 +31,18 @@ RUN_TESTS="${COMPLEMENT_RUN:-.}"
 # Parallelism for tests. Default to 2 to improve stability on high-core machines.
 COMPLEMENT_PARALLEL="${COMPLEMENT_PARALLEL:-2}"
 
+# Package workers can use separate Complement deployments. Tests inside a
+# dirty deployment must be serialized because they share its homeservers and
+# reset lifecycle.
+COMPLEMENT_PACKAGE_PARALLEL="${COMPLEMENT_PACKAGE_PARALLEL:-$COMPLEMENT_PARALLEL}"
+if [ -z "${COMPLEMENT_TEST_PARALLEL:-}" ]; then
+	if [ "${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}" = "1" ]; then
+		COMPLEMENT_TEST_PARALLEL=1
+	else
+		COMPLEMENT_TEST_PARALLEL="$COMPLEMENT_PARALLEL"
+	fi
+fi
+
 # On Linux, host.docker.internal doesn't work by default.
 # We try to detect the docker0 bridge IP and use it.
 if [[ "$OSTYPE" == "linux-gnu"* ]] && [ -z "${COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT:-}" ]; then
@@ -68,7 +80,7 @@ echo "Complement source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
 echo "Congruent source revision: $CONGRUENT_REVISION"
 echo "Complement test source commit: $COMPLEMENT_COMMIT"
 echo "Complement base image: $COMPLEMENT_BASE_IMAGE"
-echo "Complement execution: dirty_runs=${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}, host_cpus=$(nproc 2>/dev/null || echo unknown), go_p=${COMPLEMENT_PARALLEL}, go_parallel=${COMPLEMENT_PARALLEL}"
+echo "Complement execution: dirty_runs=${COMPLEMENT_ENABLE_DIRTY_RUNS:-0}, host_cpus=$(nproc 2>/dev/null || echo unknown), go_p=${COMPLEMENT_PACKAGE_PARALLEL}, go_parallel=${COMPLEMENT_TEST_PARALLEL}"
 
 if [ "$RUN_TESTS" = "." ]; then
 	run_suffix="all"
@@ -373,8 +385,8 @@ run_one_pattern() {
 		-tags "conduwuit_blacklist"
 		-skip "$SKIPPED_COMPLEMENT_TESTS"
 		-run "$pattern"
-		-p "$COMPLEMENT_PARALLEL"
-		-parallel "$COMPLEMENT_PARALLEL"
+		-p "$COMPLEMENT_PACKAGE_PARALLEL"
+		-parallel "$COMPLEMENT_TEST_PARALLEL"
 		-timeout 1h
 		-count=1
 		"${packages[@]}"
@@ -385,9 +397,8 @@ run_one_pattern() {
 
 	local exit_code=0
 	# `COMPLEMENT_ENABLE_DIRTY_RUNS=1` reuses the same complement container for
-	# faster complement. Tests share the one dirty container, so they must run
-	# serially (-parallel 1): each test triggers a database-wiping restart of
-	# the server between tests, which would break any concurrently running test.
+	# faster complement. In that mode COMPLEMENT_TEST_PARALLEL defaults to 1 so
+	# tests share the dirty deployment without racing its reset lifecycle.
 	set +e
 	set -m
 	(
