@@ -319,10 +319,7 @@ impl super::Service {
 			.store
 			.persist_node_recursive(root_node);
 
-		let mut encoded = Vec::with_capacity(2048);
-		for value in lattice.0 {
-			encoded.extend_from_slice(&value.to_le_bytes());
-		}
+		let encoded = lattice.to_bytes();
 		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
 
 		Ok(root_handle)

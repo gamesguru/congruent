@@ -432,10 +432,8 @@ impl Service {
 				.await
 			{
 				if raw.len() == 2048 {
-					let mut lattice = rezzy::state::LtHash::default();
-					for (v, b) in lattice.0.iter_mut().zip(raw.as_chunks::<2>().0.iter()) {
-						*v = u16::from_le_bytes(*b);
-					}
+					let mut lattice = rezzy::state::LtHash::from_bytes(&raw)
+						.expect("lattice length checked above");
 					let old = self
 						.services
 						.state_hamt
@@ -488,10 +486,7 @@ impl Service {
 						.state_hamt
 						.store
 						.root_handle(new_node.structural_hash, &lattice);
-					let mut encoded = Vec::with_capacity(2048);
-					for v in lattice.0 {
-						encoded.extend_from_slice(&v.to_le_bytes());
-					}
+					let encoded = lattice.to_bytes();
 					self.db
 						.state_hamt_root_lattices
 						.insert(&handle.structural_hash, &encoded);
@@ -552,10 +547,7 @@ impl Service {
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
-		let mut encoded_lattice = Vec::with_capacity(2048);
-		for value in lattice.0 {
-			encoded_lattice.extend_from_slice(&value.to_le_bytes());
-		}
+		let encoded_lattice = lattice.to_bytes();
 		self.db
 			.state_hamt_root_lattices
 			.insert(&root_handle.structural_hash, &encoded_lattice);

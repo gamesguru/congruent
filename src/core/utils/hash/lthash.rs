@@ -4,30 +4,12 @@ use rezzy::LtHash;
 /// Converts an LtHash into a little-endian byte vector.
 #[must_use]
 #[inline]
-pub fn lthash_to_bytes(lthash: &LtHash) -> Vec<u8> {
-	let mut bytes = vec![0_u8; lthash.0.len().saturating_mul(2)];
-	for (i, val) in lthash.0.iter().enumerate() {
-		let le = val.to_le_bytes();
-		let idx = i.saturating_mul(2);
-		bytes[idx] = le[0];
-		bytes[idx.saturating_add(1)] = le[1];
-	}
-	bytes
-}
+pub fn lthash_to_bytes(lthash: &LtHash) -> Vec<u8> { lthash.to_bytes() }
 
 /// Restores an LtHash from a little-endian byte slice.
 #[must_use]
 #[inline]
-pub fn lthash_from_bytes(bytes: &[u8]) -> Option<LtHash> {
-	if bytes.len() != 2048 {
-		return None;
-	}
-	let mut arr = [0_u16; 1024];
-	for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
-		arr[i] = u16::from_le_bytes(*chunk);
-	}
-	Some(rezzy::state::lthash::LtLattice(arr))
-}
+pub fn lthash_from_bytes(bytes: &[u8]) -> Option<LtHash> { LtHash::from_bytes(bytes) }
 
 /// Serializes an LtHash into a `(lattice, digest)` pair.
 /// Both lattice and digest are unpadded URL-safe base64 (MSC4500).
@@ -78,7 +60,9 @@ mod tests {
 	const EXPECTED_DIGEST: &str = "XvDOaf_ebwBJIdNgoZvN5RqUw1lkXeX6xNZmkPpR6r0";
 
 	fn golden_lthash() -> LtHash {
-		rezzy::state::lthash::LtLattice(core::array::from_fn(|i| u16::try_from(i).expect("lattice index fits in u16")))
+		LtHash::from_lanes(core::array::from_fn(|i| {
+			u16::try_from(i).expect("lattice index fits in u16")
+		}))
 	}
 
 	#[test]
