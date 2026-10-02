@@ -323,7 +323,7 @@ run_one_pattern() {
 		-skip "$SKIPPED_COMPLEMENT_TESTS"
 		-run "$pattern"
 		-p "$COMPLEMENT_PARALLEL"
-		-parallel 1
+		-parallel "$COMPLEMENT_PARALLEL"
 		-timeout 1h
 		-count=1
 		"${packages[@]}"
@@ -343,7 +343,6 @@ run_one_pattern() {
 		env \
 			-C "$COMPLEMENT_SRC" \
 			COMPLEMENT_BASE_IMAGE="$COMPLEMENT_BASE_IMAGE" \
-			COMPLEMENT_ENABLE_DIRTY_RUNS=1 \
 			go test -json "${flags[@]}" |
 			tee -a "$LOG_FILE" |
 			jq --unbuffered -r 'select((.Action == "pass" or .Action == "fail" or .Action == "skip") and .Test != null) | (.Elapsed // 0) as $elapsed | [.Action, .Test, (if $elapsed == 0 then "0s" else (((($elapsed * 100) | round) / 100) | tostring) + "s" end)] | @tsv' \
