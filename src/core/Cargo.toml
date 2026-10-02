@@ -15,6 +15,11 @@ crate-type = [
 #	"dylib",
 ]
 
+# `serde_regex` is used only as a string path in `#[serde(with = "serde_regex")]`,
+# which cargo-machete's path-based scan cannot detect.
+[package.metadata.cargo-machete]
+ignored = ["serde_regex"]
+
 [features]
 brotli_compression = [
 	"reqwest/brotli",
@@ -78,7 +83,6 @@ futures.workspace = true
 http-body-util.workspace = true
 http.workspace = true
 ipaddress.workspace = true
-itertools.workspace = true
 libc.workspace = true
 libloading.workspace = true
 libloading.optional = true

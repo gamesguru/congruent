@@ -18,6 +18,14 @@ crate-type = [
 #	"dylib",
 ]
 
+# `ctor` is used only via the `::ctor::ctor` paths emitted by
+# `conduwuit_macros::introspect_crate!`. `reqwest` and `conduwuit-api` are only
+# referenced from `[features]` (feature forwarding / the dynamic mod loader).
+# `aws-lc-rs` is a `dep:`-gated pin that forces the rustls crypto provider to be
+# built and linked, as required by the provider init in `mod.rs`.
+[package.metadata.cargo-machete]
+ignored = ["aws-lc-rs", "conduwuit-api", "const-str", "ctor", "reqwest"]
+
 [package.metadata.deb]
 name = "continuwuity"
 maintainer = "Continuwuity Team and contributors <team@continuwuity.org>"
@@ -165,7 +173,6 @@ release_max_log_level = [
 sentry_telemetry = [
 	"dep:sentry",
 	"dep:sentry-tracing",
-	"dep:sentry-tower",
 	"conduwuit-core/sentry_telemetry",
 	"conduwuit-router/sentry_telemetry",
 ]
@@ -184,7 +191,6 @@ tokio_console = [
 	"tokio/tracing",
 ]
 tokio_metrics = [
-    "dep:tokio-metrics",
     "conduwuit-core/tokio_metrics",
     "conduwuit-admin/tokio_metrics",
 ]
@@ -219,15 +225,14 @@ conduwuit-core.workspace = true
 conduwuit-database.workspace = true
 conduwuit-router.workspace = true
 conduwuit-service.workspace = true
-conduwuit-build-metadata.workspace = true
 conduwuit-git-info.workspace = true
 conduwuit-macros.workspace = true
 
 clap.workspace = true
+const-str.workspace = true
 ctor.workspace = true
 console-subscriber.optional = true
 console-subscriber.workspace = true
-const-str.workspace = true
 log.workspace = true
 opentelemetry.optional = true
 opentelemetry.workspace = true
@@ -235,14 +240,10 @@ opentelemetry-otlp.optional = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.optional = true
 opentelemetry_sdk.workspace = true
-sentry-tower.optional = true
-sentry-tower.workspace = true
 sentry-tracing.optional = true
 sentry-tracing.workspace = true
 sentry.optional = true
 sentry.workspace = true
-tokio-metrics.optional = true
-tokio-metrics.workspace = true
 tokio.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true

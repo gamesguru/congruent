@@ -1059,7 +1059,6 @@ dependencies = [
  "clap",
  "conduwuit_admin",
  "conduwuit_api",
- "conduwuit_build_metadata",
  "conduwuit_core",
  "conduwuit_database",
  "conduwuit_git_info",
@@ -1079,10 +1078,8 @@ dependencies = [
  "rustls",
  "rustyline-async",
  "sentry",
- "sentry-tower",
  "sentry-tracing",
  "tokio",
- "tokio-metrics",
  "tracing",
  "tracing-flame",
  "tracing-journald",
@@ -1094,7 +1091,6 @@ dependencies = [
 name = "conduwuit_admin"
 version = "0.5.10"
 dependencies = [
- "bincode",
  "clap",
  "conduwuit_api",
  "conduwuit_build_metadata",
@@ -1112,7 +1108,6 @@ dependencies = [
  "rezzy",
  "ruma",
  "rustls",
- "serde",
  "serde-saphyr",
  "serde_json",
  "tokio",
@@ -1125,7 +1120,6 @@ dependencies = [
 name = "conduwuit_api"
 version = "0.5.10"
 dependencies = [
- "async-trait",
  "axum",
  "axum-client-ip",
  "axum-extra",
@@ -1137,12 +1131,10 @@ dependencies = [
  "const-str",
  "ctor",
  "futures",
- "hex",
  "hmac",
  "http",
  "http-body-util",
  "hyper",
- "ipaddress",
  "itertools 0.14.0",
  "lettre",
  "log",
@@ -1199,7 +1191,6 @@ dependencies = [
  "http-body-util",
  "hyper-util",
  "ipaddress",
- "itertools 0.14.0",
  "lettre",
  "libc",
  "libloading 0.9.0",
@@ -1267,7 +1258,6 @@ version = "0.5.10"
 name = "conduwuit_macros"
 version = "0.5.10"
 dependencies = [
- "cargo_toml",
  "itertools 0.14.0",
  "proc-macro2",
  "quote",
@@ -1303,13 +1293,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "log",
  "ruma",
- "rustls",
  "sd-notify",
- "sentry",
  "sentry-tower",
- "sentry-tracing",
  "serde_json",
  "tokio",
  "tower",
@@ -1334,7 +1320,6 @@ dependencies = [
  "criterion",
  "ctor",
  "dashmap",
- "ed25519-dalek",
  "either",
  "figment",
  "futures",
@@ -1356,14 +1341,12 @@ dependencies = [
  "rand 0.10.3",
  "recaptcha-verify",
  "regex",
- "reqwest 0.12.28",
  "reqwest 0.13.5",
  "rezzy",
  "roaring",
  "ruma",
  "rustls",
  "rustyline-async",
- "scc",
  "sd-notify",
  "serde",
  "serde-saphyr",
@@ -1383,21 +1366,16 @@ name = "conduwuit_web"
 version = "0.5.10"
 dependencies = [
  "askama",
- "async-trait",
  "axum",
- "axum-extra",
  "base64 0.22.1",
  "conduwuit_core",
  "conduwuit_service",
- "futures",
  "memory-serve",
- "rand 0.10.3",
  "ruma",
  "serde",
  "thiserror",
  "tower-http",
  "tower-sec-fetch",
- "tracing",
  "validator",
 ]
 
@@ -2901,7 +2879,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
- "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -5041,21 +5018,16 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
- "hyper-rustls",
  "hyper-util",
  "js-sys",
  "log",
  "percent-encoding",
  "pin-project-lite",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-rustls",
  "tower",
  "tower-http",
  "tower-service",
@@ -5533,12 +5505,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "saa"
-version = "5.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd85992a680de788217d9c70b74aa7685b108cf1aba02f728fb27f1b27199ad1"
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5568,16 +5534,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scc"
-version = "3.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d5f8ca67c4f6208caf824037a6a9df0211b4e0937fccc4f543441f294d04511"
-dependencies = [
- "saa",
- "sdd",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5599,15 +5555,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e4ef7359e694bfaf1dd27a30f9d760b54c00dfae9f19bd0c05a39bc9128fe76"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "sdd"
-version = "4.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31877eee03686b905845993b5d9809a220c9dd5a10e9d6021d7ca67384c9070"
-dependencies = [
- "saa",
 ]
 
 [[package]]
@@ -7396,7 +7343,6 @@ dependencies = [
  "askama",
  "cargo_metadata",
  "clap",
- "conduwuit",
  "conduwuit_admin",
 ]
 

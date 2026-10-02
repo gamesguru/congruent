@@ -15,6 +15,11 @@ crate-type = [
 ]
 path = "mod.rs"
 
+# `ctor` is used only via the `::ctor::ctor` paths emitted by
+# `conduwuit_macros::introspect_crate!`, which cargo-machete cannot see.
+[package.metadata.cargo-machete]
+ignored = ["const-str", "ctor"]
+
 [features]
 # TLS crypto providers are opt-in so this library stays provider-agnostic for
 # its consumers. The `setup_test_services` tests install the selected provider
@@ -73,7 +78,6 @@ conduwuit-macros.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 either.workspace = true
-ed25519-dalek.workspace = true
 futures.workspace = true
 governor.workspace = true
 hickory-resolver.workspace = true
@@ -95,9 +99,6 @@ rand.workspace = true
 recaptcha-verify = { version = "0.2.0", default-features = false }
 regex.workspace = true
 reqwest.workspace = true
-reqwest_recaptcha = { package = "reqwest", version = "0.12.28", default-features = false, features = [
-	"rustls-tls-native-roots-no-provider",
-] } # As long as recaptcha-verify's reqwest is outdated
 rezzy.workspace = true
 roaring.workspace = true
 ruma.workspace = true
@@ -117,7 +118,6 @@ webpage.optional = true
 webpage.workspace = true
 yansi.workspace = true
 dashmap.workspace = true
-scc = "3.7.1"
 bincode = "1.3.3"
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
