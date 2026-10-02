@@ -157,6 +157,7 @@ features = [
     "hickory-dns",
     "http2",
     "stream",
+    "form",
 ]
 
 [workspace.dependencies.serde]

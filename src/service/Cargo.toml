@@ -96,7 +96,6 @@ lru-cache.workspace = true
 moka.workspace = true
 nonzero_ext.workspace = true
 rand.workspace = true
-recaptcha-verify = { version = "0.2.0", default-features = false }
 regex.workspace = true
 reqwest.workspace = true
 rezzy.workspace = true
