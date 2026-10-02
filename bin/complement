@@ -68,6 +68,7 @@ echo "Complement source commit: $SOURCE_COMMIT_SHORT ($SOURCE_COMMIT)"
 echo "Congruent source revision: $CONGRUENT_REVISION"
 echo "Complement test source commit: $COMPLEMENT_COMMIT"
 echo "Complement base image: $COMPLEMENT_BASE_IMAGE"
+echo "Complement parallelism: packages=${COMPLEMENT_PARALLEL}, tests=${COMPLEMENT_PARALLEL}"
 
 if [ "$RUN_TESTS" = "." ]; then
 	run_suffix="all"

@@ -89,10 +89,17 @@ fi
 # tests. A SIGUSR1 (sent via `docker kill --signal=SIGUSR1`) makes the
 # entrypoint wipe the database and restart conduwuit, giving the next test a
 # clean slate without Docker ever recreating the container.
+#
+# The wipe is gated on NEEDS_DB_WIPE rather than being unconditional: Complement
+# also drives StopServer/StartServer as a plain `docker stop` / `docker start`
+# round-trip, which re-executes this whole script. Tests such as
+# TestDelayedEvents/delayed_state_events_are_kept_on_server_restart assert that
+# the database survives that round-trip, so a re-executed entrypoint must start
+# the server on whatever data is already on disk.
 CONDUWUIT_PID=""
+NEEDS_DB_WIPE=0
 
-reset_server() {
-	echo "Reset triggered: stopping conduwuit and wiping database"
+stop_conduwuit() {
 	if [ -n "$CONDUWUIT_PID" ] && kill -0 "$CONDUWUIT_PID" 2>/dev/null; then
 		kill -TERM "$CONDUWUIT_PID" 2>/dev/null || true
 		for _ in $(seq 1 100); do
@@ -102,17 +109,17 @@ reset_server() {
 		kill -KILL "$CONDUWUIT_PID" 2>/dev/null || true
 		wait "$CONDUWUIT_PID" 2>/dev/null || true
 	fi
-	rm -rf "${CONDUWUIT_DATABASE_PATH:?}"
-	mkdir -p "$CONDUWUIT_DATABASE_PATH"
-	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+}
+
+reset_server() {
+	echo "Reset triggered: stopping conduwuit, database wiped before the next start"
+	NEEDS_DB_WIPE=1
+	stop_conduwuit
 }
 
 terminate_server() {
 	echo "Terminate triggered: stopping conduwuit"
-	if [ -n "$CONDUWUIT_PID" ] && kill -0 "$CONDUWUIT_PID" 2>/dev/null; then
-		kill -TERM "$CONDUWUIT_PID" 2>/dev/null || true
-		wait "$CONDUWUIT_PID" 2>/dev/null || true
-	fi
+	stop_conduwuit
 	exit 0
 }
 
@@ -120,12 +127,18 @@ trap reset_server SIGUSR1 SIGHUP
 trap terminate_server SIGTERM SIGINT
 
 while true; do
-	echo "Resetting database and starting Continuwuity (SERVER_NAME=$SERVER_NAME)"
-	rm -rf "${CONDUWUIT_DATABASE_PATH:?}"
-	mkdir -p "$CONDUWUIT_DATABASE_PATH"
-	chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+	if [ "$NEEDS_DB_WIPE" -eq 1 ]; then
+		echo "Resetting database and starting Continuwuity (SERVER_NAME=$SERVER_NAME)"
+		rm -rf "${CONDUWUIT_DATABASE_PATH:?}"
+		mkdir -p "$CONDUWUIT_DATABASE_PATH"
+		chown -R "${CONDUWUIT_UID}:${CONDUWUIT_GID}" "$CONDUWUIT_DATABASE_PATH"
+		NEEDS_DB_WIPE=0
+	fi
 	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
 	CONDUWUIT_PID=$!
 	wait "$CONDUWUIT_PID" || true
 	echo "Conduwuit exited; restarting with a fresh database"
+	# An in-process restart (crash, or a reset that already stopped the server)
+	# must not silently resume stale state from the previous run.
+	NEEDS_DB_WIPE=1
 done
