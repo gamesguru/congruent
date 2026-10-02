@@ -124,7 +124,8 @@ terminate_server() {
 	exit 0
 }
 
-trap reset_server SIGUSR1 SIGHUP
+trap reset_server SIGUSR1
+trap terminate_server SIGHUP
 trap terminate_server SIGTERM SIGINT
 
 while true; do
@@ -137,6 +138,11 @@ while true; do
 	fi
 	setpriv --reuid="${CONDUWUIT_UID}" --regid="${CONDUWUIT_GID}" --clear-groups /usr/local/bin/conduwuit --config /etc/continuwuity/config.toml &
 	CONDUWUIT_PID=$!
-	wait "$CONDUWUIT_PID" || true
-	echo "Conduwuit exited; restarting with the existing database"
+	rc=0
+	wait "$CONDUWUIT_PID" || rc=$?
+	if [ "$NEEDS_DB_WIPE" -eq 1 ]; then
+		continue
+	fi
+	echo "Conduwuit exited unexpectedly (status $rc)"
+	exit "$rc"
 done

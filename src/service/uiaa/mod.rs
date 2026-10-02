@@ -67,13 +67,22 @@ impl Service {
 			.post(RECAPTCHA_SITEVERIFY_URL)
 			.form(&[("secret", private_site_key), ("response", response)])
 			.send()
-			.await?
+			.await?;
+
+		let status = response.status();
+		let body = response
 			.limit_read_text(RECAPTCHA_MAX_RESPONSE_SIZE)
 			.await?;
 
-		// Google's rejections are non-2XX but still carry a JSON body
-		// describing the failure, so parse before inspecting the status.
-		let response = serde_json::from_str::<RecaptchaVerifyResponse>(&response)?;
+		// Error responses may still carry a JSON body, so only trust the
+		// `success` flag when the HTTP status is also successful.
+		if !status.is_success() {
+			return Err(err!(BadServerResponse(
+				"ReCaptcha verification failed with status {status}"
+			)));
+		}
+
+		let response = serde_json::from_str::<RecaptchaVerifyResponse>(&body)?;
 
 		if response.success {
 			Ok(())

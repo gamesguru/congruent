@@ -732,7 +732,9 @@ async fn sync_events_v5_route_inner(
 						// before the new timeline row is visible.  Keep waiting in that
 						// case so long-polling does not return an empty timeline.
 						let has_room_update = response.rooms.values().any(|room| {
-							!room.timeline.is_empty() || !room.required_state.is_empty()
+							!room.timeline.is_empty()
+								|| !room.required_state.is_empty()
+								|| room.invite_state.is_some()
 						});
 						if has_room_update || !response.extensions.is_empty() {
 							break;

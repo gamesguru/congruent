@@ -659,9 +659,9 @@ e2ee args=".*":
         echo "linked complement-crypto runtime logs -> $RESULTS_FILE_STAGING/logs"
     fi
 
-    _pass=$(grep -c '"pass"' "$RESULTS_FILE" 2>/dev/null || true)
-    _fail=$(grep -c '"fail"' "$RESULTS_FILE" 2>/dev/null || true)
-    _skip=$(grep -c '"skip"' "$RESULTS_FILE" 2>/dev/null || true)
+    _pass=$(jq -s '[.[] | select(.Action == "pass")] | length' "$RESULTS_FILE" 2>/dev/null || true)
+    _fail=$(jq -s '[.[] | select(.Action == "fail")] | length' "$RESULTS_FILE" 2>/dev/null || true)
+    _skip=$(jq -s '[.[] | select(.Action == "skip")] | length' "$RESULTS_FILE" 2>/dev/null || true)
     test_duration_seconds=$((SECONDS - test_start_seconds))
 
     echo ""
