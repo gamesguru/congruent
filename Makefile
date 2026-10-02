@@ -166,8 +166,6 @@ check:   ##H Run cargo check
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
 
 .PHONY: lint
@@ -177,8 +175,6 @@ lint:   ##H Lint code
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		CC=gcc \
 		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
 		cargo clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
@@ -190,8 +186,6 @@ test:   ##H Run tests
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		NO_SCCACHE=$(NO_SCCACHE) \
 		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
 
@@ -200,8 +194,6 @@ cov:    ##H Run tests with llvm-cov coverage (text summary)
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			$(CARGO_SCOPE)
@@ -211,8 +203,6 @@ cov/html:       ##H Run tests with llvm-cov and open HTML report
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
 			--ignore-filename-regex 'src/admin|/tests\.rs' \
 			--html --open \
@@ -237,8 +227,6 @@ build:  ##H Build with selected profile
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		ROCKSDB_STATIC=$(ROCKSDB_STATIC) \
 		ROCKSDB_LIB_STATIC=$(ROCKSDB_LIB_STATIC) \
 # 		RUSTFLAGS="-L $(ROCKSDB_LIB_DIR) -l z -l bz2 -l lz4 -l snappy -l zstd -l uring -l stdc++ $$RUSTFLAGS" \
@@ -271,8 +259,6 @@ build-cross: ##H Cross-compile for specific glibc and CPU (uses cargo-zigbuild)
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		RUSTFLAGS="-C target-cpu=$(CPU_TARGET) -C link-arg=-L/usr/lib -C link-arg=-L/usr/local/lib $$RUSTFLAGS" \
 		cargo zigbuild --target x86_64-unknown-linux-gnu.$(GLIBC_VERSION) --features $(FEATURES) --locked $(CARGO_FLAGS)
 
@@ -316,8 +302,6 @@ build-docs:     ##H Regenerate docs (admin commands, etc.)
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		AWS_LC_SYS_SYSTEM_DIR=$(PREFIX) \
-		AWS_LC_SYS_STATIC=1 \
 		cargo run -p xtask $(CARGO_FLAGS) -- generate-docs
 
 

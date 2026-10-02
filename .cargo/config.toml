@@ -25,8 +25,6 @@ PKG_CONFIG_PATH = { value = "/usr/local/lib/pkgconfig", force = false }
 ZSTD_SYS_USE_PKG_CONFIG = { value = "1", force = false }
 JEMALLOC_OVERRIDE = { value = "/usr/local/lib/libjemalloc.so", force = false }
 LD_LIBRARY_PATH = { value = "/usr/local/lib", force = false }
-AWS_LC_SYS_SYSTEM_DIR = { value = "/usr/local", force = false }
-AWS_LC_SYS_STATIC = { value = "1", force = false }
 
 #
 # You may need to install "mold", a more efficient linker than ld or cc

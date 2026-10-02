@@ -4,7 +4,10 @@ use std::{
 	sync::Arc,
 };
 
-use conduwuit::{Err, Error, Result, err, error, utils, utils::hash};
+use conduwuit::{
+	Err, Error, Result, err, error, utils,
+	utils::{hash, response::LimitReadExt},
+};
 use lettre::Address;
 use ruma::{
 	UserId,
@@ -65,7 +68,7 @@ impl Service {
 			.form(&[("secret", private_site_key), ("response", response)])
 			.send()
 			.await?
-			.text()
+			.limit_read_text(RECAPTCHA_MAX_RESPONSE_SIZE)
 			.await?;
 
 		// Google's rejections are non-2XX but still carry a JSON body
@@ -81,6 +84,9 @@ impl Service {
 }
 
 const RECAPTCHA_SITEVERIFY_URL: &str = "https://www.google.com/recaptcha/api/siteverify";
+
+/// Generous bound on the siteverify reply, which is a small JSON object.
+const RECAPTCHA_MAX_RESPONSE_SIZE: u64 = 4096;
 
 #[derive(serde::Deserialize)]
 struct RecaptchaVerifyResponse {
