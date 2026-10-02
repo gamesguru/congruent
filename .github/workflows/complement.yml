@@ -7,7 +7,7 @@ on:
   push:
     branches: [main, main-upstream]
   pull_request:
-    branches: '**'
+    branches: "**"
   workflow_dispatch:
 
 env:
@@ -68,7 +68,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodules
+        run: git submodule update --init complement-src ruwuma ruma-upstream
 
       - name: Fetch tags and origin/main for comparison
         run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl

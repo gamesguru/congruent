@@ -166,7 +166,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodules
+        run: git submodule update --init ruwuma ruma-upstream
 
       - name: Install system dependencies
         run: |

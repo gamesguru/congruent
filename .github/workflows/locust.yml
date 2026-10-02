@@ -7,7 +7,7 @@ on:
   push:
     branches: [main, main-upstream]
   pull_request:
-    branches: [main]
+    branches: [main, guru/dev-2026-03-27+b1-presence+b2-federation]
   workflow_dispatch:
 
 env:
@@ -16,7 +16,6 @@ env:
   SKIP_CONFIRM: 1
 
 jobs:
-
   setup:
     runs-on: ubuntu-24.04
     env:
@@ -28,7 +27,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodules
+        run: git submodule update --init ruwuma ruma-upstream
 
       - name: Install system dependencies
         run: |

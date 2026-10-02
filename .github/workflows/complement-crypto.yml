@@ -16,7 +16,6 @@ env:
   SKIP_CONFIRM: 1
 
 jobs:
-
   setup:
     runs-on: ubuntu-24.04
     env:
@@ -28,7 +27,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodules
+        run: git submodule update --init complement-crypto-src ruwuma ruma-upstream
 
       - name: Install system dependencies
         run: |
@@ -95,7 +97,7 @@ jobs:
     runs-on: ubuntu-24.04
     # The JS-only variant does not need the optional prebuilt Rust SDK. Skip
     # the Rust-consuming variants when the repository variable is not set.
-    if: !contains(matrix.client_matrix, 'r') || vars.C10Y_CRYPTO_RUST_SDK_URL != ''
+    if: ${{ !contains(matrix.client_matrix, 'r') || vars.C10Y_CRYPTO_RUST_SDK_URL != '' }}
     env:
       COMPLEMENT_PARALLEL: 24
       FEATURES: "direct_tls,url_preview"
@@ -121,7 +123,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodule
+        run: git submodule update --init complement-crypto-src
 
       # The suite needs the system libs Rust links against (mounts them into the
       # complement homeserver image), so set up the toolchain/prebuilts even
