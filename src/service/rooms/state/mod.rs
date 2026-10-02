@@ -358,10 +358,7 @@ impl Service {
 		} else if let Some(root) = state_root_handle {
 			(root.clone(), None)
 		} else {
-			let root = match state_root_handle {
-				| Some(root) => root.clone(),
-				| None => self.get_room_state_hamt(room_id).await?,
-			};
+			let root = self.get_room_state_hamt(room_id).await?;
 			(root, None)
 		};
 

@@ -2047,12 +2047,19 @@ where
 			continue;
 		};
 
-		let since_root_handle = services
+		let since_root_handle = match services
 			.rooms
 			.timeline
 			.prev_root_handle(room_id, PduCount::Normal(globalsince.saturating_add(1)))
 			.await
-			.ok();
+		{
+			| Ok(root) => Some(root),
+			| Err(error) if error.is_not_found() => None,
+			| Err(error) => {
+				error!(%room_id, ?error, "Failed to resolve room state at the previous sync point");
+				continue;
+			},
+		};
 
 		let encrypted_room = services
 			.rooms
