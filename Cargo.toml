@@ -654,7 +654,8 @@ ruma = { path = "ruwuma/crates/ruma" }
 
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
-path = "mtx-slipstream"
+git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
+branch = "dev"
 default-features = false
 
 [workspace.dependencies.conduwuit-mtxdb]
