@@ -92,11 +92,18 @@ impl Store {
 
 	/// Returns true when `hash` is provably already durable in the store.
 	///
-	/// A cache hit is exactly such a proof: entries enter the cache only via
-	/// [`Self::get_node_blocking`], which reads a committed value back out of
-	/// the store, or via a completed put. A cache *miss* proves nothing, because
-	/// the cache is bounded and evicts, so callers must still write in that case.
-	fn is_durable(&self, hash: &StructuralHash) -> bool { self.node_cache.contains_key(hash) }
+	/// Proof means a committed row on disk, never a cache hit. The node cache
+	/// doubles as a read-your-writes buffer for staged-but-unapplied batches --
+	/// [`Self::put_node_batch`] publishes into it before `apply_batch` runs -- so
+	/// a cached node may have no backing row yet, and may never acquire one if
+	/// that batch is dropped. Treating a cache hit as durability would let such a
+	/// node be skipped forever instead of being rewritten on the next
+	/// materialization, turning transient in-flight state into permanent loss for
+	/// any root that ends up referencing it.
+	///
+	/// The probe costs a point read and saves a value write, an mtime write, and
+	/// the compaction pressure of re-storing bytes that are already there.
+	fn is_durable(&self, hash: &StructuralHash) -> bool { self.db.exists_blocking(hash).is_ok() }
 
 	/// Resolves a node while avoiding blocking a single-threaded Tokio runtime.
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {

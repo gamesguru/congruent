@@ -160,6 +160,51 @@ async fn test_state_round_trip() {
 	assert_eq!(&*serialized, &*expected);
 }
 
+/// A persisted `RootHandle` must round trip every field it carries.
+///
+/// The previous encoding wrote only the two hashes and refilled the codec and
+/// routing versions with the running build's constants on read, so a value read
+/// back could not be distinguished from one written under a different codec.
+#[test]
+fn test_root_handle_serialization_round_trip() {
+	use rezzy::hamt::{HAMT_CODEC_VERSION, HAMT_ROUTING_VERSION, RootHandle};
+
+	let handle = RootHandle {
+		codec_version: HAMT_CODEC_VERSION,
+		routing_version: HAMT_ROUTING_VERSION,
+		routing_params: [0, 1, 2, 3],
+		structural_hash: [7; 32],
+		state_group_id: [9; 32],
+	};
+
+	let bytes = super::root_handle_to_bytes(&handle);
+	assert_eq!(bytes.len(), super::ROOT_HANDLE_LEN);
+	assert_eq!(bytes.len(), size_of::<RootHandle>());
+
+	let parsed = super::root_handle_from_bytes(&bytes).expect("handle should parse");
+	assert_eq!(parsed.codec_version, handle.codec_version);
+	assert_eq!(parsed.routing_version, handle.routing_version);
+	assert_eq!(parsed.routing_params, handle.routing_params);
+	assert_eq!(parsed.structural_hash, handle.structural_hash);
+	assert_eq!(parsed.state_group_id, handle.state_group_id);
+
+	// Non-default routing params are the part the old two-hash encoding dropped
+	// outright; assert the bytes really carry them rather than a zero fill.
+	assert!(
+		bytes.windows(4).any(|w| w == [0, 1, 2, 3]),
+		"routing params must survive serialization"
+	);
+}
+
+#[test]
+fn test_root_handle_rejects_truncated_value() {
+	let handle = super::root_handle_from_bytes(&[0; 32]).unwrap_err();
+	assert!(
+		handle.to_string().contains("invalid length"),
+		"expected a length error, got {handle}"
+	);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;

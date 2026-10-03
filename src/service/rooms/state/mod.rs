@@ -16,18 +16,55 @@ use conduwuit_database::{Ignore, Interfix, Map};
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 
-/// A raw `RootHandle` value persisted in `roomid_roothandle` /
-/// `shorteventid_roothandle`: 32-byte structural hash followed by the 32-byte
-/// state-group ID, with no per-field serde separators. The database serde
-/// format cannot represent `[u8; N]` arrays (nested-tuple separator assert and
-/// `deserialize_u8` is unimplemented), so these maps are stored as flat bytes.
+const CODEC_VERSION_LEN: usize = 1;
+const ROUTING_VERSION_LEN: usize = 1;
+const ROUTING_PARAMS_LEN: usize = 4;
+const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
+const STATE_GROUP_ID_LEN: usize = size_of::<rezzy::hamt::StateGroupId>();
+
+const CODEC_VERSION_AT: usize = 0;
+const ROUTING_VERSION_AT: usize = CODEC_VERSION_AT + CODEC_VERSION_LEN;
+const ROUTING_PARAMS_AT: usize = ROUTING_VERSION_AT + ROUTING_VERSION_LEN;
+const STRUCTURAL_HASH_AT: usize = ROUTING_PARAMS_AT + ROUTING_PARAMS_LEN;
+const STATE_GROUP_ID_AT: usize = STRUCTURAL_HASH_AT + STRUCTURAL_HASH_LEN;
+
+/// Byte length of the persisted [`rezzy::hamt::RootHandle`] encoding.
+pub(crate) const ROOT_HANDLE_LEN: usize = STATE_GROUP_ID_AT + STATE_GROUP_ID_LEN;
+
+/// Copies the fixed-width array `N` starting at `offset`.
+///
+/// The caller has already checked `bytes.len() == ROOT_HANDLE_LEN`, so every
+/// offset above is in range and this cannot fail.
+fn fixed<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+	let end = offset
+		.checked_add(N)
+		.expect("fixed-width RootHandle field offset overflow");
+	bytes[offset..end]
+		.try_into()
+		.expect("length-checked fixed-width RootHandle field")
+}
+
+/// Serializes a `RootHandle` for `roomid_roothandle` / `shorteventid_roothandle`.
+///
+/// These maps hold flat bytes because the database serde format cannot represent
+/// `[u8; N]` arrays (nested-tuple separator assert and `deserialize_u8` is
+/// unimplemented).
+///
+/// Every field of the handle is written, including the codec and routing
+/// versions. Persisting only the two hashes left the decoder filling those in
+/// with the *running* build's values, so a handle read back under a different
+/// codec would claim a version it was never written with.
 pub(crate) fn root_handle_to_bytes(handle: &rezzy::hamt::RootHandle) -> Vec<u8> {
 	let mut out = Vec::with_capacity(ROOT_HANDLE_LEN);
+	out.push(handle.codec_version);
+	out.push(handle.routing_version);
+	out.extend_from_slice(&handle.routing_params);
 	out.extend_from_slice(&handle.structural_hash);
 	out.extend_from_slice(&handle.state_group_id);
 	out
 }
 
+/// Parses a [`rezzy::hamt::RootHandle`] written by [`root_handle_to_bytes`].
 pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHandle> {
 	if bytes.len() != ROOT_HANDLE_LEN {
 		return Err(err!(error!(
@@ -37,15 +74,11 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 	}
 
 	Ok(rezzy::hamt::RootHandle {
-		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
-		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
-		routing_params: [0; 4],
-		structural_hash: bytes[0..STRUCTURAL_HASH_LEN]
-			.try_into()
-			.expect("fixed 32-byte structural hash slice"),
-		state_group_id: bytes[STRUCTURAL_HASH_LEN..ROOT_HANDLE_LEN]
-			.try_into()
-			.expect("fixed 32-byte state-group ID slice"),
+		codec_version: bytes[CODEC_VERSION_AT],
+		routing_version: bytes[ROUTING_VERSION_AT],
+		routing_params: fixed(bytes, ROUTING_PARAMS_AT),
+		structural_hash: fixed(bytes, STRUCTURAL_HASH_AT),
+		state_group_id: fixed(bytes, STATE_GROUP_ID_AT),
 	})
 }
 
@@ -58,10 +91,6 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 /// amplification outside the batch the timeline write is committed with.
 #[must_use]
 pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
-
-const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
-pub(crate) const ROOT_HANDLE_LEN: usize =
-	STRUCTURAL_HASH_LEN + size_of::<rezzy::hamt::StateGroupId>();
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{
@@ -814,6 +843,63 @@ impl Service {
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
 		Ok(())
+	}
+
+	/// Returns every recorded root handle in the database.
+	///
+	/// This is the *complete* live-root set [`crate::rooms::state_hamt::Store::sweep`]
+	/// requires: both the current per-room `roomid_roothandle` pointers and every
+	/// per-event `shorteventid_roothandle` snapshot. Sweep treats anything outside
+	/// this set as unreachable, so a partial enumeration here would have it delete
+	/// live state.
+	///
+	/// Reads both maps through `raw_stream` rather than any prefix scan, because
+	/// the two maps are keyed differently (room ID bytes and a big-endian
+	/// short-event ID) and neither has a prefix that isolates its own entries
+	/// from keys of the other shape. A key that does not decode to a
+	/// [`ROOT_HANDLE_LEN`]-byte value is skipped rather than treated as an error:
+	/// the map is not expected to hold anything else, and refusing to sweep
+	/// because of one unrecognised entry would leave orphans alive forever.
+	pub async fn live_root_handles(&self) -> Result<Vec<rezzy::hamt::RootHandle>> {
+		let mut handles = Vec::new();
+
+		for map in [&self.db.roomid_roothandle, &self.db.shorteventid_roothandle] {
+			let mut stream = map.raw_stream();
+			while let Some(kv) = stream.next().await {
+				let (_, value): database::KeyVal<'_> = kv?;
+				if value.len() != ROOT_HANDLE_LEN {
+					warn!(target: "state_hamt", "skipping unrecognized root handle record");
+					continue;
+				}
+				handles.push(root_handle_from_bytes(&value)?);
+			}
+		}
+
+		Ok(handles)
+	}
+
+	/// Reclaims HAMT nodes no recorded root can reach.
+	///
+	/// `live_roots` is gathered by [`Self::live_root_handles`] rather than taken
+	/// from the caller, because supplying an incomplete set silently deletes live
+	/// state -- see [`crate::rooms::state_hamt::Store::sweep`].
+	///
+	/// `grace` bounds how recently a node may have been written and still be
+	/// spared, so a node persisted moments before being linked into a root is not
+	/// mistaken for an orphan.
+	pub async fn sweep_hamt_nodes(
+		&self,
+		grace: std::time::Duration,
+		dry_run: bool,
+	) -> Result<rooms::state_hamt::store::SweepReport> {
+		let live_roots = self.live_root_handles().await?;
+		let roots: Vec<&rezzy::hamt::RootHandle> = live_roots.iter().collect();
+
+		self.services
+			.state_hamt
+			.store
+			.sweep(&roots, grace, dry_run)
+			.await
 	}
 
 	pub fn get_forward_extremities<'a>(
