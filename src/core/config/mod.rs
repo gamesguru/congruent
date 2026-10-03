@@ -2740,6 +2740,13 @@ pub struct ExperimentalConfig {
 	/// MSC4500: State Accumulators
 	#[serde(default = "true_fn")]
 	pub msc4500_enabled: bool,
+
+	/// MSC4500: also commit the labelled state-resolution input set
+	/// (`resolution-inputs-blake3-v1`) in outbound `state_hashes`. This walks
+	/// the auth closure of every `prev_events` state per PDU, so it is off by
+	/// default.
+	#[serde(default)]
+	pub msc4500_resolution_inputs: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2749,6 +2756,7 @@ impl Default for ExperimentalConfig {
 			msc4222_enabled: false,
 			msc3030_enabled: true,
 			msc4500_enabled: true,
+			msc4500_resolution_inputs: false,
 		}
 	}
 }

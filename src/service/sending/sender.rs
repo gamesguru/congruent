@@ -12,13 +12,7 @@ use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
 	trace,
-	utils::{
-		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
-		hash::lthash::{
-			ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS, StateHashEntry, StateHashes, encode_digest,
-		},
-		stream::BroadbandExt,
-	},
+	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
 	warn,
 };
 use futures::{
@@ -52,6 +46,9 @@ use ruma::{
 use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::QueueItem};
+use crate::rooms::state_accessor::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, StateHashEntry, StateHashes,
+};
 
 #[derive(Debug)]
 enum TransactionStatus {
@@ -64,7 +61,7 @@ enum TransactionStatus {
 #[derive(Clone, Debug)]
 struct Msc4500SendTransactionRequest {
 	inner: send_transaction_message::v1::Request,
-	state_hashes: StateHashes,
+	state_hashes: Option<StateHashes>,
 }
 
 impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
@@ -93,10 +90,10 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
 
 		if let Some(obj) = json.as_object_mut() {
-			if !self.state_hashes.entries.is_empty() {
-				let state_hashes_val = serde_json::to_value(self.state_hashes)
+			if let Some(state_hashes) = self.state_hashes {
+				let state_hashes_val = serde_json::to_value(state_hashes)
 					.map_err(ruma::api::error::IntoHttpError::from)?;
-				obj.insert("state_hashes".to_owned(), state_hashes_val);
+				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
 			}
 		}
 
@@ -116,106 +113,46 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 
 async fn compute_outbound_state_hashes(
 	services: &super::Services,
+	experimental: &conduwuit::config::ExperimentalConfig,
 	pdus: &[(OwnedEventId, CanonicalJsonObject)],
-) -> StateHashes {
-	let entries: BTreeMap<OwnedEventId, StateHashEntry> = futures::stream::iter(pdus)
-		.broad_filter_map(|(event_id, value)| async move {
-			Some((event_id.clone(), compute_state_hash_for_pdu(services, event_id, value).await))
-		})
-		.collect()
-		.await;
-
-	StateHashes {
-		algorithm: ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS.to_owned(),
-		entries,
-	}
-}
-
-async fn compute_state_hash_for_pdu(
-	services: &super::Services,
-	event_id: &OwnedEventId,
-	_value: &CanonicalJsonObject,
-) -> StateHashEntry {
-	let before_root = services
-		.state_accessor
-		.pdu_roothandle_before_event(event_id)
-		.await
-		.ok();
-	let after_root = services
-		.state_accessor
-		.pdu_roothandle_after_event(event_id)
-		.await
-		.ok();
-
-	let before = match before_root {
-		| Some(root) => state_digests_for_root(services, root).await,
-		| None => None,
-	};
-	let after = match after_root {
-		| Some(root) => state_digests_for_root(services, root).await,
-		| None => None,
-	};
-
-	match (before, after) {
-		| (
-			Some((before_primary, before_redactions)),
-			Some((after_primary, after_redactions)),
-		) => StateHashEntry {
-			before: Some(before_primary),
-			after: Some(after_primary),
-			redactions_before: Some(before_redactions),
-			redactions_after: Some(after_redactions),
-			..Default::default()
-		},
-		| _ => StateHashEntry { limited: true, ..Default::default() },
-	}
-}
-
-/// Builds and collapses the primary accumulator and the causal redaction
-/// overlay over the selected state reachable from `root_handle`, returning
-/// `(primary, redactions)`. Returns `None` (a `limited` assertion) when any
-/// state entry or its redaction status cannot be resolved, rather than
-/// emitting a digest over partial or guessed state.
-async fn state_digests_for_root(
-	services: &super::Services,
-	root_handle: rezzy::hamt::RootHandle,
-) -> Option<(String, String)> {
-	use conduwuit::Event;
-	use futures::TryStreamExt;
-
-	let entries: Vec<(String, String, OwnedEventId)> = services
-		.state_accessor
-		.state_full_pdus_hamt_strict(root_handle)
-		.try_filter_map(|pdu| async move {
-			let Some(state_key) = pdu.state_key().map(ToOwned::to_owned) else {
-				return Ok(None);
-			};
-			Ok(Some((pdu.kind().to_string(), state_key, pdu.event_id().to_owned())))
-		})
-		.try_collect()
-		.await
-		.ok()?;
-
-	let mut lattice = rezzy::state::LtHash::default();
-	let mut overlay = rezzy::state::RedactionOverlay::default();
-	for (event_type, state_key, state_event_id) in &entries {
-		lattice.insert(event_type, state_key, state_event_id.as_str());
-		if services
-			.timeline
-			.get_event_metadata(state_event_id)
-			.await
-			.ok()?
-			.redacted_by
-			.is_some()
-		{
-			overlay.insert(event_type, state_key, state_event_id.as_str());
-		}
+) -> Option<StateHashes> {
+	if pdus.is_empty() || !experimental.msc4500_enabled {
+		return None;
 	}
 
-	Some((
-		conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1,
-		encode_digest(&overlay.digest()),
-	))
+	let with_inputs = experimental.msc4500_resolution_inputs;
+	let algorithm = if with_inputs { ALGORITHM_WITH_INPUTS } else { ALGORITHM };
+
+	// Transactions always carry an entry for every PDU; a PDU whose DAG point
+	// cannot be resolved exactly is an explicit `limited` deferral, never a
+	// guessed digest.
+	let mut inputs_cache = InputCache::new();
+	let mut entries = BTreeMap::new();
+	for (event_id, _) in pdus {
+		let entry = match services.state_accessor.msc4500_pdu_digests(event_id).await {
+			| None => StateHashEntry::limited(with_inputs),
+			| Some(digests) => {
+				let inputs = if with_inputs {
+					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let digest = match pdu {
+						| Some(pdu) =>
+							services
+								.state_accessor
+								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+								.await,
+						| None => None,
+					};
+					Some(digest)
+				} else {
+					None
+				};
+				StateHashEntry::asserting(digests, inputs)
+			},
+		};
+		entries.insert(event_id.clone(), entry);
+	}
+
+	Some(StateHashes { algorithm: algorithm.to_owned(), entries })
 }
 
 type SendingError = Box<(Destination, Error)>;
@@ -1375,7 +1312,12 @@ impl Service {
 			source_pdus.push((event_id, pdu));
 		}
 
-		let state_hashes = compute_outbound_state_hashes(&self.services, &source_pdus).await;
+		let state_hashes = compute_outbound_state_hashes(
+			&self.services,
+			&self.server.config.experimental_features,
+			&source_pdus,
+		)
+		.await;
 
 		let mut outbound_pdus: Vec<Box<RawJsonValue>> = Vec::with_capacity(source_pdus.len());
 		for (_, pdu) in source_pdus {

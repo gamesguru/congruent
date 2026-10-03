@@ -12,18 +12,14 @@ use conduwuit::{
 	state_res::lexicographical_topological_sort,
 	trace,
 	utils::{
-		IterStream, ReadyExt,
-		hash::lthash::{
-			ALGORITHM_LTHASH16_BLAKE3_V1, ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS, StateHashes,
-			encode_digest,
-		},
-		millis_since_unix_epoch,
+		IterStream, ReadyExt, millis_since_unix_epoch,
 		stream::{BroadbandExt, TryBroadbandExt, automatic_width},
 	},
 	warn,
 };
 use conduwuit_service::{
 	Services,
+	rooms::state_accessor::{InputCache, StateHashes},
 	sending::{EDU_LIMIT, PDU_LIMIT},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -370,33 +366,27 @@ async fn inject_state_hash_mismatches(
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
-	let Some(hashes_val) = obj
+	let Some(hashes) = obj
 		.get("state_hashes")
 		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
 	else {
 		return;
 	};
 
-	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes_val.clone().into())
-	else {
+	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes.clone().into()) else {
 		return;
 	};
-	let algorithm = state_hashes.algorithm.clone();
 
-	// Which digest components this transaction asserts. An unrecognised
-	// algorithm is parsed but deferred whole, per the receiver contract.
-	let profile = match algorithm.as_str() {
-		| ALGORITHM_LTHASH16_BLAKE3_V1 => Profile::Primary,
-		| ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS => Profile::Redactions,
-		| _ => {
-			info!(
-				target: "state_hashes",
-				algorithm = ?algorithm,
-				"deferring state hash validation for unsupported algorithm"
-			);
-			return;
-		},
-	};
+	// One algorithm governs the whole transaction. An unrecognized one defers
+	// validation of every entry rather than skipping them one at a time.
+	if !state_hashes.is_known_algorithm() {
+		info!(
+			target: "state_hashes",
+			algorithm = %state_hashes.algorithm,
+			"skipping state hash validation for unrecognized algorithm"
+		);
+		return;
+	}
 
 	let Some(pdus_obj) = response_json
 		.get_mut("pdus")
@@ -405,30 +395,16 @@ async fn inject_state_hash_mismatches(
 		return;
 	};
 
-	// Digests are memoized per distinct state root within this transaction.
-	let mut digests: HashMap<[u8; 32], (String, String)> = HashMap::new();
+	// Only compute the (costly) input closure when this server also opted in.
+	let check_inputs = state_hashes.has_resolution_inputs()
+		&& services
+			.server
+			.config
+			.experimental_features
+			.msc4500_resolution_inputs;
+	let mut inputs_cache = InputCache::new();
 
-	for (event_id, entry) in state_hashes.entries {
-		// An explicit deferral makes no assertion.
-		if entry.limited {
-			continue;
-		}
-		// An entry that omits a digest the algorithm requires is incomplete:
-		// defer rather than treat it as a mismatch.
-		let received_before = entry.before.as_ref();
-		let received_after = entry.after.as_ref();
-		let received_redactions_before = entry.redactions_before.as_ref();
-		let received_redactions_after = entry.redactions_after.as_ref();
-
-		if received_before.is_none() || received_after.is_none() {
-			continue;
-		}
-		if profile.requires_redactions()
-			&& (received_redactions_before.is_none() || received_redactions_after.is_none())
-		{
-			continue;
-		}
-
+	for (event_id, entry) in &state_hashes.entries {
 		let Some(pdu_res) = pdus_obj
 			.get_mut(event_id.as_str())
 			.and_then(|p| p.as_object_mut())
@@ -439,182 +415,69 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let Some(local) = compute_receiver_digests(services, &event_id, &mut digests).await
+		// `limited` is an explicit deferral. An entry missing a required digest is
+		// malformed: it is not an assertion that the overlay is empty, and it is
+		// not a mismatch either.
+		let Some((_, after, _, redactions_after)) = entry.required_digests() else {
+			if !entry.limited {
+				warn!(
+					target: "state_hashes",
+					%event_id,
+					"state_hashes entry is missing a required digest; deferring"
+				);
+			}
+			continue;
+		};
+
+		// An unresolved DAG point is deferred rather than reported as a mismatch.
+		let Some(local) = services
+			.rooms
+			.state_accessor
+			.msc4500_pdu_digests(event_id)
+			.await
 		else {
 			continue;
 		};
 
-		let mut any = Some(&local.before_primary) != received_before
-			|| Some(&local.after_primary) != received_after;
-		if profile.requires_redactions() {
-			any |= Some(&local.before_redactions) != received_redactions_before
-				|| Some(&local.after_redactions) != received_redactions_after;
-		}
-
-		if any {
-			let mut mismatch = serde_json::Map::new();
-			mismatch.insert("algorithm".to_owned(), algorithm.clone().into());
-			insert_digest_pair(&mut mismatch, "before", &local.before_primary, received_before);
-			insert_digest_pair(&mut mismatch, "after", &local.after_primary, received_after);
-			if profile.requires_redactions() {
-				insert_digest_pair(
-					&mut mismatch,
-					"redactions_before",
-					&local.before_redactions,
-					received_redactions_before,
-				);
-				insert_digest_pair(
-					&mut mismatch,
-					"redactions_after",
-					&local.after_redactions,
-					received_redactions_after,
-				);
+		// Absent and `null` both mean the sender made no input assertion.
+		let received_inputs = entry.resolution_inputs();
+		let local_inputs = if check_inputs {
+			match services.rooms.timeline.get_pdu(event_id).await {
+				| Ok(pdu) =>
+					services
+						.rooms
+						.state_accessor
+						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+						.await,
+				| Err(_) => None,
 			}
-			pdu_res.insert("state_hash_mismatch".to_owned(), serde_json::Value::Object(mismatch));
+		} else {
+			None
+		};
+		let inputs_differ = matches!(
+			(received_inputs, local_inputs.as_deref()),
+			(Some(received), Some(local)) if received != local
+		);
+
+		let after_differs = local.after.primary != after;
+		let redactions_differ = local.after.redactions != redactions_after;
+		if !after_differs && !redactions_differ && !inputs_differ {
+			continue;
 		}
-	}
-}
 
-/// The digest profiles a transaction may assert. Each names the components the
-/// receiver must compute and compare; a missing required component defers.
-#[derive(Clone, Copy)]
-enum Profile {
-	Primary,
-	Redactions,
-}
-
-impl Profile {
-	const fn requires_redactions(self) -> bool { matches!(self, Self::Redactions) }
-}
-
-/// Inserts an `expected_<name>`/`received_<name>` digest pair into a mismatch
-/// body. A `received` of `None` should not occur for a required component but
-/// is rendered as JSON `null` rather than omitted.
-fn insert_digest_pair(
-	mismatch: &mut serde_json::Map<String, serde_json::Value>,
-	name: &str,
-	expected: &str,
-	received: Option<&String>,
-) {
-	mismatch.insert(format!("expected_{name}"), expected.to_owned().into());
-	mismatch.insert(
-		format!("received_{name}"),
-		received
-			.cloned()
-			.map_or(serde_json::Value::Null, serde_json::Value::String),
-	);
-}
-
-/// The receiver's local digest components for a received PDU.
-struct ReceiverDigests {
-	before_primary: String,
-	before_redactions: String,
-	after_primary: String,
-	after_redactions: String,
-}
-
-/// Computes the receiver's local digests for a received PDU. `None` when
-/// either DAG point cannot be resolved, which the caller treats as a deferral
-/// rather than a mismatch.
-async fn compute_receiver_digests(
-	services: &crate::State,
-	event_id: &OwnedEventId,
-	memo: &mut HashMap<[u8; 32], (String, String)>,
-) -> Option<ReceiverDigests> {
-	let (after_primary, after_redactions) =
-		compute_receiver_after_digests(services, event_id, memo).await?;
-	let (before_primary, before_redactions) =
-		compute_receiver_before_digests(services, event_id, memo).await?;
-	Some(ReceiverDigests {
-		before_primary,
-		before_redactions,
-		after_primary,
-		after_redactions,
-	})
-}
-
-/// Compute the "before" digests for a received event: the state resolved at the
-/// event's `prev_events`, excluding the event itself.
-async fn compute_receiver_before_digests(
-	services: &crate::State,
-	event_id: &OwnedEventId,
-	memo: &mut HashMap<[u8; 32], (String, String)>,
-) -> Option<(String, String)> {
-	let root_handle = services
-		.rooms
-		.state_accessor
-		.pdu_roothandle_before_event(event_id)
-		.await
-		.ok()?;
-	digests_for_root_handle(services, &root_handle, memo).await
-}
-
-/// Compute the "after" digests for a received event by resolving the event's
-/// post-event state HAMT root (`shorteventid_roothandle`).
-async fn compute_receiver_after_digests(
-	services: &crate::State,
-	event_id: &OwnedEventId,
-	memo: &mut HashMap<[u8; 32], (String, String)>,
-) -> Option<(String, String)> {
-	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
-	let root_handle = services
-		.rooms
-		.state
-		.get_roothandle(shorteventid)
-		.await
-		.ok()?;
-	digests_for_root_handle(services, &root_handle, memo).await
-}
-
-/// Computes the `(primary, redactions)` digests for `root_handle`. The primary
-/// lattice is taken from the persisted sidecar, rebuilding it from the HAMT
-/// only when the sidecar is missing. The redaction overlay is derived from the
-/// selected state PDUs' stored `redacted_by` marker. Fails closed: if any state
-/// entry cannot be resolved, returns `None` rather than a digest over partial
-/// or guessed state.
-async fn digests_for_root_handle(
-	services: &crate::State,
-	root_handle: &rezzy::hamt::RootHandle,
-	memo: &mut HashMap<[u8; 32], (String, String)>,
-) -> Option<(String, String)> {
-	if let Some(digests) = memo.get(&root_handle.structural_hash) {
-		return Some(digests.clone());
-	}
-
-	let entries = super::state_accumulator::state_tuples(services, root_handle)
-		.await
-		.ok()?;
-
-	let primary = match services.rooms.state.get_root_lattice(root_handle).await {
-		| Some(lattice) => conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1,
-		| None => {
-			let mut lattice = rezzy::state::LtHash::default();
-			for (ty, sk, id) in &entries {
-				lattice.insert(ty, sk, id.as_str());
-			}
-			conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1
-		},
-	};
-
-	let mut overlay = rezzy::state::RedactionOverlay::default();
-	for (ty, sk, id) in &entries {
-		if services
-			.rooms
-			.timeline
-			.get_event_metadata(id)
-			.await
-			.ok()?
-			.redacted_by
-			.is_some()
-		{
-			overlay.insert(ty, sk, id.as_str());
+		let mut mismatch = serde_json::json!({
+			"algorithm": state_hashes.algorithm,
+			"expected_after": local.after.primary,
+			"received_after": after,
+			"expected_redactions_after": local.after.redactions,
+			"received_redactions_after": redactions_after,
+		});
+		if check_inputs {
+			mismatch["expected_resolution_inputs_before"] = serde_json::json!(local_inputs);
+			mismatch["received_resolution_inputs_before"] = serde_json::json!(received_inputs);
 		}
+		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
 	}
-	let redactions = encode_digest(&overlay.digest());
-
-	let digests = (primary, redactions);
-	memo.insert(root_handle.structural_hash, digests.clone());
-	Some(digests)
 }
 
 /// Handles a failed federation transaction by sending the error through

@@ -1,3 +1,8 @@
+mod msc4500;
+pub use msc4500::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PduDigests, PointDigests,
+	StateHashEntry, StateHashes,
+};
 mod room_state;
 mod server_can;
 mod state;
@@ -31,6 +36,7 @@ use crate::{Dep, rooms};
 
 pub struct Service {
 	services: Services,
+	msc4500_memo: conduwuit::SyncMutex<msc4500::CausalMemo>,
 	pub encrypted_rooms_cache:
 		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
 }
@@ -58,6 +64,7 @@ impl crate::Service for Service {
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				server: args.server.clone(),
 			},
+			msc4500_memo: conduwuit::SyncMutex::default(),
 			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}
