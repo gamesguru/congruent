@@ -412,6 +412,7 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 	if obj.contains_key("presence")
 		|| obj.contains_key("account_data")
 		|| obj.contains_key("to_device")
+		|| obj.contains_key("org.matrix.msc4429.users")
 	{
 		return false;
 	}
@@ -707,7 +708,7 @@ pub(crate) async fn build_sync_events(
 			let include_invite = match (last_sync_end_count, invite_count) {
 				| (None, _) | (_, None) => true,
 				| (Some(last_sync_end_count), Some(invite_count)) =>
-					last_sync_end_count <= invite_count,
+					last_sync_end_count < invite_count,
 			};
 
 			if include_invite {
@@ -775,7 +776,7 @@ pub(crate) async fn build_sync_events(
 			let include_knock = match (last_sync_end_count, knock_count) {
 				| (None, _) | (_, None) => true,
 				| (Some(last_sync_end_count), Some(knock_count)) =>
-					last_sync_end_count <= knock_count,
+					last_sync_end_count < knock_count,
 			};
 
 			if include_knock {

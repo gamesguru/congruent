@@ -2302,6 +2302,63 @@ mod tests {
 		// included by confirming it matches the expected value.
 		assert_eq!(DATABASE_VERSION, 24);
 	}
+
+	fn diff(parent: Option<u64>, added: &[u64], removed: &[u64]) -> StateDiff {
+		let key = |n: u64| {
+			let mut k = [0_u8; 16];
+			k[..8].copy_from_slice(&(n % 5).to_be_bytes());
+			k[8..].copy_from_slice(&n.to_be_bytes());
+			k
+		};
+		StateDiff {
+			parent,
+			added: Arc::new(added.iter().copied().map(key).collect()),
+			removed: Arc::new(removed.iter().copied().map(key).collect()),
+		}
+	}
+
+	#[tokio::test]
+	async fn test_cached_full_state_matches_chain_walk() {
+		// 1 <- 2 <- 3 <- 4, with forks 5 (from 2) and 6 (from 5).
+		let diffs: HashMap<u64, StateDiff> = HashMap::from([
+			(1, diff(None, &[1, 2, 3], &[])),
+			(2, diff(Some(1), &[4, 5], &[1])),
+			(3, diff(Some(2), &[6], &[2, 4])),
+			(4, diff(Some(3), &[7, 1], &[])),
+			(5, diff(Some(2), &[8], &[5])),
+			(6, diff(Some(5), &[9], &[8, 3])),
+		]);
+		let walk = |hash: u64| {
+			let mut stack = Vec::new();
+			let mut curr = Some(hash);
+			while let Some(h) = curr {
+				stack.push(diffs[&h].clone());
+				curr = diffs[&h].parent;
+			}
+			let mut full = LegacyFullState::new();
+			for d in stack.into_iter().rev() {
+				full.extend(d.added.iter().copied());
+				for rm in d.removed.iter() {
+					full.remove(rm);
+				}
+			}
+			full
+		};
+
+		// Tiny capacity forces both cache hits and evictions.
+		for capacity in [1, 2, 64] {
+			let mut cache = LegacyStateCache::new(capacity);
+			for hash in [1_u64, 2, 3, 4, 6, 5, 4, 1, 6] {
+				let got = legacy_get_full_state_cached(hash, &mut cache, |h| {
+					ready(Ok(diffs[&h].clone()))
+				})
+				.await
+				.unwrap();
+				assert_eq!(*got, walk(hash), "hash {hash} capacity {capacity}");
+			}
+			assert!(cache.states.len() <= capacity);
+		}
+	}
 }
 
 // MSC4500 LtHash accumulator migration, renumbered from the augmented-HAMT
@@ -2395,6 +2452,82 @@ async fn legacy_get_full_state(
 	Ok(full_state)
 }
 
+type LegacyFullState = std::collections::HashSet<[u8; 16]>;
+
+/// Small bounded cache of resolved legacy full states, keyed by snapshot.
+/// Snapshots are visited in ascending `shortstatehash` order, so a snapshot's
+/// parent is usually among the most recently resolved states and the parent
+/// chain walk stops there instead of replaying every ancestor diff.
+struct LegacyStateCache {
+	states: HashMap<ShortStateHash, Arc<LegacyFullState>>,
+	order: std::collections::VecDeque<ShortStateHash>,
+	capacity: usize,
+}
+
+impl LegacyStateCache {
+	fn new(capacity: usize) -> Self {
+		Self {
+			states: HashMap::new(),
+			order: std::collections::VecDeque::new(),
+			capacity: capacity.max(1),
+		}
+	}
+
+	fn insert(&mut self, hash: ShortStateHash, state: Arc<LegacyFullState>) {
+		if self.states.insert(hash, state).is_none() {
+			self.order.push_back(hash);
+		}
+		while self.order.len() > self.capacity {
+			if let Some(old) = self.order.pop_front() {
+				self.states.remove(&old);
+			}
+		}
+	}
+}
+
+/// Resolve the full state of `shortstatehash`, starting from the nearest
+/// cached ancestor instead of the root of the diff chain. Result is identical
+/// to `legacy_get_full_state`; `fetch` loads a single statediff.
+async fn legacy_get_full_state_cached<F, Fut>(
+	shortstatehash: ShortStateHash,
+	cache: &mut LegacyStateCache,
+	fetch: F,
+) -> Result<Arc<LegacyFullState>>
+where
+	F: Fn(ShortStateHash) -> Fut,
+	Fut: Future<Output = Result<StateDiff>>,
+{
+	if let Some(state) = cache.states.get(&shortstatehash) {
+		return Ok(Arc::clone(state));
+	}
+
+	let mut stack = Vec::new();
+	let mut base: LegacyFullState = LegacyFullState::new();
+	let mut curr = Some(shortstatehash);
+	while let Some(hash) = curr {
+		if let Some(state) = cache.states.get(&hash) {
+			base = (**state).clone();
+			break;
+		}
+		let diff = fetch(hash).await?;
+		curr = diff.parent;
+		stack.push(diff);
+	}
+
+	for diff in stack.into_iter().rev() {
+		for add in diff.added.iter() {
+			base.insert(*add);
+		}
+		for rm in diff.removed.iter() {
+			base.remove(rm);
+		}
+	}
+
+	let state = Arc::new(base);
+	cache.insert(shortstatehash, Arc::clone(&state));
+	Ok(state)
+}
+
 /// Returns the `shorteventid`s of the state events a legacy statediff added,
 /// i.e. the state events whose *post-event* state is that snapshot. The raw
 /// statediff payload starts with the parent `ShortStateHash`, followed by
@@ -2437,9 +2570,12 @@ fn legacy_statediff_added_shorteventids(slice: &[u8]) -> Vec<ShortEventId> {
 async fn legacy_added_events_roothandles(
 	services: &Services,
 	post_state_events: &HashMap<ShortStateHash, Vec<ShortEventId>>,
+	cache: &mut LegacyStateCache,
 ) -> Result<Vec<(ShortEventId, Vec<u8>)>> {
 	let mut out = Vec::new();
-	for (shortstatehash, shorteventids) in post_state_events {
+	let mut snapshots: Vec<_> = post_state_events.iter().collect();
+	snapshots.sort_unstable_by_key(|(shortstatehash, _)| **shortstatehash);
+	for (shortstatehash, shorteventids) in snapshots {
 		let first = shorteventids.first().ok_or(err!(Database(error!(
 			"Empty event group for shortstatehash {shortstatehash} during v20 backfill."
 		))))?;
@@ -2451,7 +2587,8 @@ async fn legacy_added_events_roothandles(
 			.clone();
 
 		let (root_handle, root_node) =
-			legacy_build_root_handle_for_state(services, &room_id, *shortstatehash).await?;
+			legacy_build_root_handle_for_state(services, &room_id, *shortstatehash, cache)
+				.await?;
 		services
 			.rooms
 			.state_hamt
@@ -2471,13 +2608,17 @@ async fn legacy_build_root_handle_for_state(
 	services: &Services,
 	room_id: &RoomId,
 	shortstatehash: ShortStateHash,
+	cache: &mut LegacyStateCache,
 ) -> Result<(rezzy::hamt::RootHandle, Arc<rezzy::hamt::HamtNode<u64, u64>>)> {
-	let full_state = legacy_get_full_state(services, shortstatehash).await?;
+	let full_state = legacy_get_full_state_cached(shortstatehash, cache, |hash| {
+		legacy_get_statediff(services, hash)
+	})
+	.await?;
 
 	let mut lattice = rezzy::state::LtHash::default();
 	let mut entries = Vec::with_capacity(full_state.len());
 
-	for state_event in full_state {
+	for state_event in full_state.iter() {
 		let shortstatekey = conduwuit::utils::u64_from_bytes(&state_event[0..8]).expect("bytes");
 		let shorteventid = conduwuit::utils::u64_from_bytes(&state_event[8..16]).expect("bytes");
 
@@ -2504,6 +2645,9 @@ async fn legacy_build_root_handle_for_state(
 				"Failed to build HAMT root for room {room_id} and state {shortstatehash}: {e:?}"
 			))
 		})?;
+
+	services.db["state_hamt_root_lattices"]
+		.insert(&root_handle.structural_hash, lattice.to_bytes());
 
 	Ok((root_handle, root_node))
 }
@@ -2575,6 +2719,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 				// Write the same flat-48-byte encoding used by set_room_state_hamt,
 				// so get_room_state_hamt can read the value back.
+				services.db["state_hamt_root_lattices"]
+					.insert(&root_handle.structural_hash, lattice.to_bytes());
 				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
 				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
 			},
@@ -2594,6 +2740,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	// flushed in bounded batches so the whole history is never held in memory.
 	let mut post_state_events: HashMap<ShortStateHash, Vec<ShortEventId>> = HashMap::new();
 	let mut pending_events = 0_usize;
+	let mut state_cache = LegacyStateCache::new(64);
 	let roothandle_map = services.db["shorteventid_roothandle"].clone();
 	let mut batch = conduwuit_database::Batch::new();
 
@@ -2616,7 +2763,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		if pending_events >= FLUSH_AFTER_EVENTS {
 			for (shorteventid, serialized) in
-				legacy_added_events_roothandles(services, &post_state_events).await?
+				legacy_added_events_roothandles(services, &post_state_events, &mut state_cache)
+					.await?
 			{
 				roothandle_map.batch_put(
 					&mut batch,
@@ -2633,7 +2781,8 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 	if pending_events > 0 {
 		for (shorteventid, serialized) in
-			legacy_added_events_roothandles(services, &post_state_events).await?
+			legacy_added_events_roothandles(services, &post_state_events, &mut state_cache)
+				.await?
 		{
 			roothandle_map.batch_put(
 				&mut batch,
@@ -2668,10 +2817,11 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.
-		let pdus: Vec<_> = services.rooms.timeline.all_pdus(room_id).collect().await;
+		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(room_id));
 		let mut current_root = empty_root;
 		let mut event_batch = conduwuit_database::Batch::new();
-		for (_, pdu) in pdus {
+		let mut batched = 0_usize;
+		while let Some((_, pdu)) = pdus.next().await {
 			if pdu.state_key().is_some() {
 				if let Ok(shorteventid) =
 					services.rooms.short.get_shorteventid(pdu.event_id()).await
@@ -2690,6 +2840,12 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					.to_be_bytes(),
 				crate::rooms::state::root_handle_to_bytes(&current_root),
 			);
+			batched = batched.saturating_add(1);
+			if batched >= FLUSH_AFTER_EVENTS {
+				roothandle_map.apply_batch(event_batch);
+				event_batch = conduwuit_database::Batch::new();
+				batched = 0;
+			}
 		}
 		roothandle_map.apply_batch(event_batch);
 	}

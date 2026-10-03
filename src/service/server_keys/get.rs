@@ -251,8 +251,27 @@ pub async fn get_active_verify_key(
 	let notary_first = self.services.server.config.query_trusted_key_servers_first;
 	let notary_only = self.services.server.config.only_query_trusted_key_servers;
 
-	if let Some(result) = self.active_verify_keys_for(origin).await.remove(key_id) {
-		trace!("Found active key in cache");
+	if let Ok(cached) = self.merged_signing_keys_for(origin).await {
+		// Only trust the cache while the response is still valid; otherwise
+		// re-query so a key the origin has since retired is not accepted.
+		if cached.valid_until_ts >= self.minimum_valid_ts() {
+			if let Some(result) = self.active_verify_keys_for(origin).await.remove(key_id) {
+				trace!("Found active key in cache");
+				return Ok(result);
+			}
+		}
+
+		// A cached binding says this key is retired: fail fast rather than
+		// triggering outbound fetches for every request signed with it.
+		if cached.old_verify_keys.contains_key(key_id)
+			&& !self
+				.active_verify_keys_for(origin)
+				.await
+				.contains_key(key_id)
+		{
+			return Err!(Request(Forbidden("Signing key {key_id} of {origin} is retired")));
+		}
+	} else if let Some(result) = self.active_verify_keys_for(origin).await.remove(key_id) {
 		return Ok(result);
 	}
 

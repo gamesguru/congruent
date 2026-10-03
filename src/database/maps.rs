@@ -33,6 +33,11 @@ pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
 		.collect()
 }
 
+// Encoded `rezzy::hamt::RootHandle`: codec_version, routing_version,
+// routing_params, structural_hash, state_group_id. Must stay in sync with
+// `rooms::state::root_handle_to_bytes`; this crate cannot import it.
+const ROOT_HANDLE_LEN: usize = 1 + 1 + 4 + 32 + 32;
+
 pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	Descriptor {
 		name: "alias_roomid",
@@ -281,12 +286,12 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	},
 	Descriptor {
 		name: "roomid_roothandle",
-		val_size_hint: Some(48),
+		val_size_hint: Some(ROOT_HANDLE_LEN),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
 		name: "shorteventid_roothandle",
-		val_size_hint: Some(48),
+		val_size_hint: Some(ROOT_HANDLE_LEN),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -453,11 +458,6 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		cache_disp: CacheDisp::Unique,
 		key_size_hint: Some(8),
 		val_size_hint: Some(1016),
-		..descriptor::RANDOM_SMALL
-	},
-	Descriptor {
-		name: "softfailedeventids",
-		key_size_hint: Some(48),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {

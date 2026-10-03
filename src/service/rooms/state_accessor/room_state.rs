@@ -55,6 +55,21 @@ pub fn room_state_full_pdus<'a>(
 		.try_flatten_stream()
 }
 
+/// Strict variant of [`Self::room_state_full_pdus`]: missing PDUs and HAMT
+/// traversal errors are emitted as `Err` items instead of being dropped.
+#[implement(super::Service)]
+pub fn room_state_full_pdus_strict<'a>(
+	&'a self,
+	room_id: &'a RoomId,
+) -> impl Stream<Item = Result<Pdu>> + Send + 'a {
+	self.services
+		.state
+		.get_room_state_hamt(room_id)
+		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
+		.map_ok(move |root_handle| self.state_full_pdus_hamt_strict(root_handle).boxed())
+		.try_flatten_stream()
+}
+
 /// Returns a single EventId from `room_id` with key (`event_type`,
 /// `state_key`).
 #[implement(super::Service)]

@@ -853,6 +853,19 @@ pub async fn active_verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
 		keys.extend(origin_keys.verify_keys);
 	}
 
+	// The cumulative accepted record is authoritative: it reflects retirements
+	// that the raw origin payload may not (e.g. malformed retired-key metadata).
+	if let Ok(historical) = self
+		.db
+		.server_signingkeys
+		.get(&historical_db_key(origin))
+		.await
+		.deserialized::<ServerSigningKeys>()
+	{
+		keys = historical.verify_keys;
+		keys.retain(|key_id, _| !historical.old_verify_keys.contains_key(key_id));
+	}
+
 	if self.services.globals.server_is_ours(origin) {
 		keys.extend(self.verify_keys.clone());
 	}

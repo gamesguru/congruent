@@ -78,6 +78,45 @@ impl Service {
 		// consume the immediate first tick so we don't double-scan on startup
 		interval.tick().await;
 
+		// --- Periodic HAMT node reclamation ---
+		// A dedicated task rather than another arm on the forward-fill tick, so
+		// each keeps its own interval and either can be disabled on its own --
+		// notably, node reclamation must not stop when federation is turned off.
+		let node_sweep_interval = self
+			.services
+			.server
+			.config
+			.state_hamt_node_sweep_interval_secs;
+		if node_sweep_interval != 0 {
+			let state = self.services.state.clone();
+			let server = self.services.server.clone();
+			let delete = self.services.server.config.state_hamt_node_sweep_delete;
+			let mut shutdown = server.signal.subscribe();
+			// Clone the handle so it does not keep `server` borrowed while the
+			// task below moves it.
+			let runtime = server.runtime().clone();
+			runtime.spawn(async move {
+				let mut interval =
+					tokio::time::interval(Duration::from_secs(node_sweep_interval));
+				interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+				// consume the immediate first tick so we don't sweep on startup
+				interval.tick().await;
+
+				loop {
+					tokio::select! {
+						_ = interval.tick() => {},
+						_ = shutdown.recv() => {},
+					}
+
+					if !server.running() {
+						break;
+					}
+
+					Self::sweep_state_hamt_nodes(&state, delete).await;
+				}
+			});
+		}
+
 		loop {
 			tokio::select! {
 				_ = interval.tick() => {},
@@ -94,6 +133,50 @@ impl Service {
 
 			debug!(target: "forwardfill", "Starting periodic forward-fill sweep...");
 			self.scan_all_rooms(PERIODIC_STALE_THRESHOLD_MS).await;
+		}
+	}
+
+	/// One HAMT node reclamation pass, reporting what it did either way.
+	///
+	/// Dry run unless `state_hamt_node_sweep_delete` is set: the sweep deletes
+	/// everything no recorded root reaches, so it is only safe to trust that the
+	/// recorded root set is complete.
+	///
+	/// The grace window is one hour, comfortably longer than the interval between
+	/// a node being persisted and being linked into a root handle, so a
+	/// concurrent state update is never mistaken for an orphan.
+	async fn sweep_state_hamt_nodes(state: &crate::rooms::state::Service, delete: bool) {
+		let dry_run = !delete;
+		let grace = Duration::from_hours(1);
+
+		match state.sweep_hamt_nodes(grace, dry_run).await {
+			| Ok(report) if dry_run => {
+				info!(
+					target: "state_hamt",
+					"HAMT node sweep (dry run): {} orphaned nodes, {} bytes reclaimable",
+					report.orphaned,
+					report.bytes,
+				);
+
+				if report.orphaned > 0 {
+					warn!(
+						target: "state_hamt",
+						"{} unreachable HAMT nodes would be reclaimed; set 						 state_hamt_node_sweep_delete to enable deletion",
+						report.orphaned,
+					);
+				}
+			},
+			| Ok(report) => {
+				info!(
+					target: "state_hamt",
+					"HAMT node sweep: reclaimed {} orphaned nodes, {} bytes",
+					report.orphaned,
+					report.bytes,
+				);
+			},
+			| Err(e) => {
+				warn!(target: "state_hamt", "HAMT node sweep failed: {e}");
+			},
 		}
 	}
 

@@ -1,3 +1,8 @@
+mod msc4500;
+pub use msc4500::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PduDigests, PointDigests,
+	StateHashEntry, StateHashes,
+};
 mod room_state;
 mod server_can;
 mod state;
@@ -6,7 +11,7 @@ mod user_can;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use conduwuit::{Result, err};
+use conduwuit::{Result, Server, err};
 use ruma::{
 	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
@@ -31,6 +36,7 @@ use crate::{Dep, rooms};
 
 pub struct Service {
 	services: Services,
+	msc4500_memo: conduwuit::SyncMutex<msc4500::CausalMemo>,
 	pub encrypted_rooms_cache:
 		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
 }
@@ -42,6 +48,7 @@ struct Services {
 	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	server: Arc<Server>,
 }
 
 #[async_trait]
@@ -55,7 +62,9 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
+				server: args.server.clone(),
 			},
+			msc4500_memo: conduwuit::SyncMutex::default(),
 			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}

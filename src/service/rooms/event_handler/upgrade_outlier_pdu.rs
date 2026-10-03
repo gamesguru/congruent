@@ -276,26 +276,6 @@ where
 	};
 
 	info!(room_id = %room_id, "Applying the resolved state transition");
-	// The legacy force_state updated the joined-member/servers caches
-	// (`roomserverids`) on state transitions. That cache update must be
-	// preserved here, otherwise remote members that join the room are
-	// never registered for outbound federation fan-out and locally-sent
-	// events stop being delivered to their servers.
-	// We only update the derived caches; the HAMT root is committed
-	// separately by set_event_state_with_root in append_pdu.
-	if !soft_fail
-		&& (incoming_pdu.state_key().is_some() || was_recovered || predecessors_were_recovered)
-		&& let (Some(prev_root), Some(new_root)) =
-			(previous_root_handle.as_ref(), new_room_state.as_ref())
-	{
-		Box::pin(self.services.state.update_caches_for_state_delta_between(
-			room_id,
-			Some(prev_root),
-			new_root,
-		))
-		.await?;
-	}
-
 	if !soft_fail {
 		// Don't call the below checks on events that have already soft-failed, there's
 		// no reason to re-calculate that.
@@ -431,6 +411,28 @@ where
 			"Event was soft failed"
 		);
 		return Err!(Request(InvalidParam("Event has been soft failed")));
+	}
+
+	// The legacy force_state updated the joined-member/servers caches
+	// (`roomserverids`) on state transitions. That cache update must be
+	// preserved here, otherwise remote members that join the room are
+	// never registered for outbound federation fan-out and locally-sent
+	// events stop being delivered to their servers.
+	// This runs only once every soft-fail check has passed so rejected events
+	// never mutate derived caches.
+	// We only update the derived caches; the HAMT root is committed
+	// separately by set_event_state_with_root in append_pdu.
+	if !soft_fail
+		&& (incoming_pdu.state_key().is_some() || was_recovered || predecessors_were_recovered)
+		&& let (Some(prev_root), Some(new_root)) =
+			(previous_root_handle.as_ref(), new_room_state.as_ref())
+	{
+		Box::pin(self.services.state.update_caches_for_state_delta_between(
+			room_id,
+			Some(prev_root),
+			new_root,
+		))
+		.await?;
 	}
 
 	// Now that the event has passed all auth it is added into the timeline.

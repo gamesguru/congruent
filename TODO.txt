@@ -1,3 +1,139 @@
+
+###############################
+Sat 2026/10/03
+###############################
+
+I’ll inspect the current `rezzy-json` implementation and `.typos.toml` context, then fix the compile errors with the smallest compatible patch and run the relevant checks.
+```
+• Ran git status --short && sed -n '1,130p' rezzy-json/src/lib.rs && sed -n '270,340p' rezzy-json/src/lib.rs…
+  └ rezzy-json/src/lib.rs:328:            simd_json::OwnedValue::Array(values) => {
+    rezzy-json/src/lib.rs:331:            simd_json::OwnedValue::Object(values) => Self::Object(
+    Cargo.toml:44:    ".typos.toml",
+• Edited rezzy-json/src/lib.rs (+8 -6)
++        #[cfg(not(feature = "simd"))]
++        {
++        }
+• Ran cargo fmt --package rezzy-json && cargo check -p rezzy-json --features simd && cargo check -p rezzy-js…
+  └     Checking rezzy-json v0.6.0-rc.1 (/run/media/shane/shane4tb-ent/repos/rezzy/rezzy-json)
+        Finished `dev` profile [unoptimized] target(s) in 4.82s
+        Finished `dev` profile [unoptimized] target(s) in 0.04s
+• Ran git diff --stat && git diff -- rezzy-json/src/lib.rs && git status --short
+  └ M  rezzy-json/Cargo.toml
+    MM rezzy-json/src/lib.rs
+    M  src/state/lthash.rs
+```
+Fixed the `rezzy-json` compile errors in rezzy-json/src/lib.rs:
+
+- Disabled the non-SIMD fallback under `#[cfg(not(feature = "simd"))]`, removing the unreachable-code warning.
+- Replaced nonexistent `Number::new` calls with existing constructors.
+- Removed the missing `ToOwned` requirement.
+- Preserved float normalization through `Number::from_f64`.
+
+Verified both configurations:
+
+- `cargo check -p rezzy-json --features simd`
+- `cargo check -p rezzy-json`
+
+Both pass.
+```
+  Worked for 35s • 5:09 PM
+```
+Node encoding confirmed: 21 + 16L + 32C. Let me compute the actual per-event write volume properly:
+$ cat \> /tmp/opencode/hamt.py \<\<'EOF'
+BRANCH=32
+def tree(n):
+&#32;&#32;&#32;&#32;"""Returns (total\_nodes, interior\_nodes, leaf\_nodes, bytes) for a CHAMP of n leaves."""
+&#32;&#32;&#32;&#32;if n\<=0: return (1,0,1,21)
+&#32;&#32;&#32;&#32;nodes=0; inter=0; leaf=0; byts=0
+&#32;&#32;&#32;&#32;depth=0
+&#32;&#32;&#32;&#32;while True:
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;count=BRANCH\*\*depth
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# entries per node at this depth
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;per=n/count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;if per\<=BRANCH or count\>=n:
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# this is the leaf-holding level
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;leaf=count; nodes+=count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;byts+=count\*(21+16\*per)
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;break
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# interior level: 32 children
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;inter+=count; nodes+=count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;byts+=count\*(21+32\*32)
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;depth+=1
+&#32;&#32;&#32;&#32;return (nodes,inter,leaf,byts)
+
+def spine\_depth(n):
+&#32;&#32;&#32;&#32;d=0
+&#32;&#32;&#32;&#32;while BRANCH\*\*d \< n: d+=1
+&#32;&#32;&#32;&#32;return d
+
+print(f"{'N':\>10} {'Tn':\>8} {'depth':\>6} {'spine':\>6} {'fulltree\_B':\>12} {'fulltree\_KB':\>12} {'spine\_B':\>8} {'ratio':\>8}")
+for n in (100,1000,10000,100000,1000000):
+&#32;&#32;&#32;&#32;tn,inter,leaf,b=tree(n)
+&#32;&#32;&#32;&#32;d=spine\_depth(n)
+&#32;&#32;&#32;&#32;spine=d+1
+&#32;&#32;&#32;&#32;\# spine bytes: mostly interior (21+1024) with one leaf
+&#32;&#32;&#32;&#32;sb=(spine-1)\*(21+32\*32)+(21+16)
+&#32;&#32;&#32;&#32;print(f"{n:\>10} {tn:\>8} {d:\>6} {spine:\>6} {b:\>12,} {b/1024:\>12,.0f} {sb:\>8} {b/sb:\>8,.0f}x")
+EOF
+python3 /tmp/opencode/hamt.py
+N       Tn  depth  spine   fulltree\_B  fulltree\_KB  spine\_B    ratio
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;100       33      2      3      3,317.0            3     2127        2x
+&#32;&#32;&#32;&#32;&#32;&#32;1000       33      2      3     17,717.0           17     2127        8x
+&#32;&#32;&#32;&#32;&#32;10000     1057      3      4    215,989.0          211     3172       68x
+&#32;&#32;&#32;&#32;100000    33825      4      5  3,392,693.0        3,313     4217      805x
+&#32;&#32;&#32;1000000    33825      4      5 17,792,693.0       17,376     4217    4,219x
+
+That calculation is consistent with the confirmed node model `21 + 16L + 32C`.
+
+The key result is the write-amplification gap:
+
+- 1,000 events: \~17 KiB full tree vs \~2.1 KiB spine
+- 10,000: \~211 KiB vs \~3.1 KiB
+- 100,000: \~3.2 MiB vs \~4.1 KiB
+- 1,000,000: \~17.4 MiB vs \~4.2 KiB
+
+So for large populations, rewriting the full HAMT is catastrophically more expensive than writing the copy-on-write path. At one million events, it is roughly 4,200× more data.
+
+That strongly supports storing population updates as append-only/delta work and reserving full-tree materialization for compaction, checkpoints, or rebuilds—not per-event writes.
+```
+  Worked for 13s • 5:20 PM
+```
+Clippy is clean. Now the analysis — I verified these firsthand, since the first agent wrongly claimed build\_hamt\_root\_handle doesn't exist in rezzy (it does, src/hamt/mod.rs:813).
+Clippy fix: hoisted the base64 import into the test-module header (lthash.rs:1108) and replaced the format\_collect chain with the fold + write\! pattern the file's own hex() helper already uses (lthash.rs:1722). cargo clippy --all-targets and cargo fmt --check both clean, 35 lthash tests pass.
+How much goes to roots
+rezzy persists nothing — no SQL/DDL anywhere in src/. It returns created: Vec\<(StructuralHash, Vec\<u8\>)\> (the depth+1 path-copy spine) and lets the caller store it. One root per state group everywhere:
+&#32;&#9;records	bytes	composition
+sithnapse	4	\~4,340	2× full MTHR (\~2,127 B each) + 32 B alias + 8 B refcount
+congruent	4	\~2,240	3× 64 B RootHandle pointer + 2048 B lattice
+96% of every root record is the 2048-byte LtHash lattice. That's not incidental — state\_group\_id = BLAKE3(lattice) (hash.rs:148) and LtHash is homomorphic, so incremental updates need the retained lattice, not just the 32-byte digest. The lattice cost is inherent to the design.
+What's actually wrong
+1\. congruent rebuilds the whole tree per incoming state event. This dwarfs everything above. upgrade\_outlier\_pdu.rs:239 → resolve\_state() → build\_hamt\_root\_handle → persist\_node\_recursive (resolve\_state.rs:89-97) re-materializes the entire HAMT from a flat HashMap and writes all of it, instead of using the persist\_mutation path-copy that exists and is only reachable from locally-generated events.
+state entries	full-tree rebuild	path-copy spine	ratio
+10,000	211 KB	3.2 KB	68×
+100,000	3.3 MB	4.2 KB	805×
+1,000,000	17.4 MB	4.2 KB	4,219×
+And put\_node (store.rs:125-135) writes two records per node (value + mtime) with no existence check — so content-addressed nodes that are byte-identical to what's already on disk get rewritten anyway. Dedup is defeated on every rebuild.
+2\. sithnapse stores the same2 KB lattice twice. mtxdb\_syn.rs:565-585 writes the MTHR blob under root\_node\_id(state\_group) and state\_group\_root\_node\_id(state\_group\_id) — identical bytes, two keys (value.clone() vs value). The StateGroupId interning only pays off when state groups converge (state res, forks rejoining); in the linear case that's 100% waste and doubles root bytes.
+3\. sithnapse has no read-before-write short-circuit. It does three reads (:596, :618, :634) but uses them only for collision detection and refcount arithmetic — never to compare against value and skip. So records A and C are rewritten byte-identically on every call.
+4\. congruent writes roomid\_roothandle twice per state event. state/mod.rs:384 in the atomic batch, then append.rs:330 → set\_room\_state\_hamt → state/mod.rs:679 again, unbatched. advance\_current\_state is true exactly on the incoming-state-event hot path (upgrade\_outlier\_pdu.rs:344-348).
+5\. Neither reclaims nodes. congruent's Store::sweep mark-and-sweep (store.rs:237-350) has zero callers — no admin command, no job, no test. sithnapse explicitly retains nodes (store.py:2428-2432). Combined with \#1, congruent's node tables grow \~211 KB per event at 10k entries, permanently.
+6\. congruent violates rezzy's documented persistence contract. hash.rs:67-71 says outright: "Do not use bincode or other positional binary formats with this struct… use a versioned envelope with an explicit format tag." root\_handle\_to\_bytes is exactly a positional binary format, and it drops codec\_version/routing\_version/routing\_params. A codec bump silently misparses every stored root. Also maps.rs:284,289 still say val\_size\_hint: Some(48) — it's been 64 since StructuralHash widened from \[u8;16\].
+The one-line summary: roots are \~2 KB because of a necessary2048-byte lattice; the actual write amplification is congruent rewriting 211 KB–17 MB of nodes per event on a path that already has a 3 KB alternative.
+
+The central diagnosis is right: the dominant problem is congruent rebuilding and rewriting the full HAMT for every incoming state event. The existing path-copy spine is the obvious fix, reducing writes from hundreds of KB/MB to a few KB.
+
+Priority order:
+
+1. Change congruent’s incoming-event path to use `persist_mutation` rather than `build_hamt_root_handle` \+ recursive full persistence.
+2. Add content-existence checks or make `put_node` truly content-addressed/idempotent.
+3. Remove the duplicate congruent `roomid_roothandle` write.
+4. Fix the versioned root-handle envelope before relying on persisted roots across codec changes.
+5. Deduplicate sithnapse’s two identical 2,048-byte lattice records.
+6. Add an actual sweep/reclamation caller and coverage.
+
+One arithmetic correction: congruent’s `2,048 + 3×64 = 2,240` bytes means the lattice is about 91.4% of the root record, not 96%. The broader conclusion remains unchanged: the lattice is an inherent root cost, while the HAMT rewrite amplification is accidental and fixable.
+
+
 ###############################
 Mon 2026/08/17
 ###############################
@@ -309,3 +445,38 @@ Remaining roadmap items (orthogonal to each other, both separate layers):
 2. Synapse-style staging + background ingestion — the optional step 2 for the
    ingestion layer (close the remaining sync-vs-async /send race class;
    EventStatus was step 1 for the rejection-flag part of that layer).
+
+
+#################################################################################
+# Fri 2026/10/02 - some cleanups (profile, hamt, etc)
+#################################################################################
+
+Here is what each item means in practice. I'm explaining from the review comments and the agents' reports, not from fresh code reading.
+
+1. Profile watcher is still global
+- src/service/sync/watch.rs makes every /sync session watch the whole userprofileupdate_value map, using an empty prefix.
+- Any user's display name, avatar or profile-field change wakes every active sync on the server. Most of those wakeups find nothing the session is allowed to see and are thrown away.
+- On a busy server that is wasted work for every profile edit.
+- Fix: subscribe only sessions whose filter asks for profile fields. Alternatively, scope the wake-up to users who share a room with the syncing user. It's a performance issue, not a correctness one.
+
+2. Profile backfill migration
+- Custom profile fields are now announced to clients through an update-record stream. Records are written only when a field changes.
+- Fields set before this change have no record. A client doing an initial MSC4429 sync won't see them until someone edits them again.
+- Fix: a one-time, repeatable migration that writes an update record for every existing field. Or make initial sync read the current profile rows directly instead of the stream.
+- Cost: this is a correctness gap for existing users, but only for the MSC4429 initial-sync feature.
+
+3. Strict accessor callers
+- The old state accessors silently skip any state event whose PDU can't be loaded. A caller then sees a partial room state and treats it as the whole thing.
+- I added strict versions that return errors. Only theesponses and reconcile_membership were moved over.
+- About a dozen other callers still use the lossy versof them cache or serve the result, which is where apartial snapshot does harm. Callers that just display
+- Next step: audit those callers and move the risky on
+
+4. del_node race
+- del_node removes a HAMT node from the database and from an in-memory cache.
+- A reader that loaded the node just before the delete after the delete. The cache then holds a node with no
+  database row.
+- I reordered it to delete the row first and evict the window but doesn't close it.
+- Closing it needs a lock or a version counter around
+- Risk: this only matters if nodes are deleted while rderstand to be the garbage-collection sweep. It should rare and low-impact.
+
+If you want me to pick one, the strict-accessor audit se it's the only one that can serve wrong data. Theprofile backfill is next, for existing users.

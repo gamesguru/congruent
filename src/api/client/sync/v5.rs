@@ -29,7 +29,7 @@ use futures::{
 	pin_mut,
 };
 use ruma::{
-	DeviceId, OwnedEventId, OwnedRoomId, RoomId, UInt, UserId,
+	DeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::{
 		IncomingRequest, Metadata, OutgoingResponse,
 		client::sync::sync_events::{self, DeviceLists, UnreadNotificationsCount},
@@ -732,7 +732,9 @@ async fn sync_events_v5_route_inner(
 						// before the new timeline row is visible.  Keep waiting in that
 						// case so long-polling does not return an empty timeline.
 						let has_room_update = response.rooms.values().any(|room| {
-							!room.timeline.is_empty() || !room.required_state.is_empty()
+							!room.timeline.is_empty()
+								|| !room.required_state.is_empty()
+								|| room.invite_state.is_some()
 						});
 						if has_room_update || !response.extensions.is_empty() {
 							break;
@@ -1984,6 +1986,30 @@ async fn collect_account_data(
 	account_data
 }
 
+/// Joined members of a newly-seen encrypted room whose devices the sender must
+/// be told about: every member other than the sender who shares no other
+/// encrypted room with them.
+async fn new_encrypted_room_members(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+) -> Vec<OwnedUserId> {
+	services
+		.rooms
+		.state_cache
+		.room_members(room_id)
+		// Don't send key updates from the sender to the sender
+		.ready_filter(|user_id| sender_user != *user_id)
+		// Only send keys if the sender doesn't share an encrypted room with the target
+		// already
+		.filter_map(|user_id| async move {
+			(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
+				.then(|| user_id.to_owned())
+		})
+		.collect::<Vec<_>>()
+		.await
+}
+
 async fn collect_e2ee<'a, Rooms>(
 	services: &Services,
 	(sender_user, sender_device, globalsince, _, body): (
@@ -2021,12 +2047,19 @@ where
 			continue;
 		};
 
-		let since_root_handle = services
+		let since_root_handle = match services
 			.rooms
 			.timeline
 			.prev_root_handle(room_id, PduCount::Normal(globalsince.saturating_add(1)))
 			.await
-			.ok();
+		{
+			| Ok(root) => Some(root),
+			| Err(error) if error.is_not_found() => None,
+			| Err(error) => {
+				error!(%room_id, ?error, "Failed to resolve room state at the previous sync point");
+				continue;
+			},
+		};
 
 		let encrypted_room = services
 			.rooms
@@ -2137,24 +2170,15 @@ where
 				}
 				if joined_since_last_sync || new_encrypted_room {
 					// If the user is in a new encrypted room, give them all joined users
-					device_list_changes.extend(
-						services
-						.rooms
-						.state_cache
-						.room_members(room_id)
-						// Don't send key updates from the sender to the sender
-						.ready_filter(|user_id| sender_user != *user_id)
-						// Only send keys if the sender doesn't share an encrypted room with the target
-						// already
-						.filter_map(|user_id| async move {
-							(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
-								.then(|| user_id.to_owned())
-						})
-						.collect::<Vec<_>>()
-						.await,
-					);
+					device_list_changes
+						.extend(new_encrypted_room_members(services, sender_user, room_id).await);
 				}
 			}
+		} else if encrypted_room {
+			// No state existed at or before `globalsince`, so the room was first
+			// joined after the last sync: treat it as a new encrypted room.
+			device_list_changes
+				.extend(new_encrypted_room_members(services, sender_user, room_id).await);
 		}
 		// Look for device list updates in this room
 		device_list_changes.extend(

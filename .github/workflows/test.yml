@@ -201,6 +201,11 @@ jobs:
           BLOB=$(git hash-object -w "/tmp/${BADGE_FILE}")
           git update-index --add --cacheinfo 100644,"$BLOB","${BADGE_FILE}"
           TREE=$(git write-tree)
+          if [ -n "$PARENT" ] && [ "$TREE" = "$(git rev-parse "$PARENT^{tree}")" ]; then
+            echo "Badge unchanged; skipping publish"
+            rm -f "$GIT_INDEX_FILE"
+            exit 0
+          fi
           if [ -n "$PARENT" ]; then
             COMMIT=$(git commit-tree "$TREE" -p "$PARENT" -m "Update unit test badge for ${BRANCH} [skip ci]")
           else

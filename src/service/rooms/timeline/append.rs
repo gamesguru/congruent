@@ -76,16 +76,25 @@ where
 		was_joined_before_state_install,
 	} = ctx;
 
-	// We defer state association until after soft-fail checks to avoid persisting
-	// HAMT nodes and mappings for rejected/soft-failed events.
-
 	// Soft-failed events pass auth against the state at the event but fail
 	// against the current room state. Per spec §11.33.2.6 they SHOULD NOT
-	// appear in /sync or /messages. Store the state association (above) for
-	// DAG integrity, but do NOT append to the timeline sequence or clear the
-	// outlier marker yet. The event still isn't in the timeline at this point,
-	// so it must remain an outlier until a successful append happens.
+	// appear in /sync or /messages. Record only the historical state-root
+	// association (needed by state resolution and auth lookups that reference
+	// the event) without touching current room state, and do NOT append to the
+	// timeline sequence or clear the outlier marker. The event still isn't in
+	// the timeline at this point, so it must remain an outlier until a
+	// successful append happens.
 	if soft_fail {
+		if let Some(root_handle) = state_root_handle
+			.as_ref()
+			.or(prev_state_root_handle.as_ref())
+		{
+			self.services
+				.state
+				.set_event_roothandle(pdu.event_id(), root_handle)
+				.await?;
+		}
+
 		self.services
 			.pdu_metadata
 			.unmark_event_rejected(pdu.event_id());
@@ -307,8 +316,9 @@ where
 
 		(pdu_id, pdu_count, Some(count))
 	};
-	drop(cork);
 
+	// Commit the event's state association inside the same cork as the timeline
+	// write, so a flush never exposes the PDU without its state root.
 	Box::pin(self.services.state.set_event_state_with_root(
 		room_id,
 		pdu,
@@ -317,11 +327,18 @@ where
 		prev_state_root_handle.as_ref(),
 	))
 	.await?;
-	if advance_current_state && let Some(root_handle) = state_root_handle.as_ref() {
+	// Recovered outlier timelines carry no state event of their own, so the batch
+	// above did not advance the room pointer for them. A state event already had
+	// it committed inside that batch, so re-writing it here would be redundant.
+	if advance_current_state
+		&& !crate::rooms::state::is_state_event(pdu)
+		&& let Some(root_handle) = state_root_handle.as_ref()
+	{
 		self.services
 			.state
 			.set_room_state_hamt(room_id, root_handle, state_lock);
 	}
+	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(

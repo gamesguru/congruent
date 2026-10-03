@@ -15,6 +15,11 @@ crate-type = [
 #	"dylib",
 ]
 
+# `ctor` is used only via the `::ctor::ctor` paths emitted by
+# `conduwuit_macros::introspect_crate!`.
+[package.metadata.cargo-machete]
+ignored = ["const-str", "ctor"]
+
 [features]
 brotli_compression = [
 	"conduwuit-admin/brotli_compression",
@@ -25,7 +30,6 @@ brotli_compression = [
 ]
 direct_tls = [
 	"axum-server/tls-rustls-no-provider",
-	"dep:rustls",
 	"dep:axum-server-dual-protocol",
 ]
 gzip_compression = [
@@ -71,13 +75,9 @@ release_max_log_level = [
 	"conduwuit-service/release_max_log_level",
 	"tracing/max_level_trace",
 	"tracing/release_max_level_info",
-	"log/max_level_trace",
-	"log/release_max_level_info",
 ]
 sentry_telemetry = [
 	"conduwuit-core/sentry_telemetry",
-	"dep:sentry",
-	"dep:sentry-tracing",
 	"dep:sentry-tower",
 ]
 systemd = [
@@ -117,8 +117,6 @@ sentry.optional = true
 sentry.workspace = true
 sentry-tower.optional = true
 sentry-tower.workspace = true
-sentry-tracing.optional = true
-sentry-tracing.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower.workspace = true

@@ -31,6 +31,7 @@ modules.xml
 
 # Rust
 /target
+target-stage
 
 ### vscode ###
 .vscode/*

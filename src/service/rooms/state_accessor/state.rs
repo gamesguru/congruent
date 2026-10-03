@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use conduwuit::{
 	Pdu, Result, at, err, implement,
 	matrix::{Event, StateKey},
-	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
+	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
 use ruma::{
@@ -294,7 +294,7 @@ pub fn state_full_ids_hamt<'a>(
 	root_handle: &'a rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
 	self.state_full_shortids_hamt(root_handle.clone())
-		.then(move |result| async move {
+		.map(move |result| async move {
 			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
 			let event_id = self
 				.services
@@ -303,6 +303,7 @@ pub fn state_full_ids_hamt<'a>(
 				.await?;
 			Ok::<_, conduwuit::Error>((ssk, event_id))
 		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
 		.boxed()
 }
 
@@ -321,9 +322,32 @@ pub fn state_full_pdus_hamt(
 		.short
 		.multi_get_eventid_from_short(short_ids)
 		.ready_filter_map(Result::ok)
-		.broad_filter_map(move |event_id: OwnedEventId| async move {
+		.map(move |event_id: OwnedEventId| async move {
 			self.services.timeline.get_pdu(&event_id).await.ok()
 		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
+		.filter_map(std::future::ready)
+}
+
+/// Strict variant of [`Self::state_full_pdus_hamt`]: traversal, short-ID and
+/// PDU lookup failures are emitted as `Err` items instead of being dropped, so
+/// callers that cache or serve a snapshot can fail closed on partial state.
+#[implement(super::Service)]
+pub fn state_full_pdus_hamt_strict(
+	&self,
+	root_handle: rezzy::hamt::RootHandle,
+) -> impl Stream<Item = Result<Pdu>> + Send + '_ {
+	self.state_full_shortids_hamt(root_handle)
+		.map(move |result| async move {
+			let (_, short_id) = result?;
+			let event_id = self
+				.services
+				.short
+				.get_eventid_from_short::<OwnedEventId>(short_id)
+				.await?;
+			self.services.timeline.get_pdu(&event_id).await
+		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
 }
 
 /// Returns a Stream of all the full state (type, key, event) for a given
@@ -498,7 +522,8 @@ pub async fn pdu_roothandle_after_event(
 /// state events (e.g. a membership leave) already includes the event's own
 /// change, so a user/server that was joined before it would no longer pass a
 /// `user_was_joined` check. Falls back to the post-event root when the event
-/// has no preceding timeline position (e.g. the first event in a room).
+/// has multiple predecessors; the first event in a room has the empty state
+/// before it.
 #[implement(super::Service)]
 pub async fn pdu_roothandle_before_event(
 	&self,
@@ -514,6 +539,30 @@ pub async fn pdu_roothandle_before_event(
 	// parents; picking one parent's root would return that fork's state alone.
 	if pdu.state_key.is_none() {
 		return self.pdu_roothandle_after_event(event_id).await;
+	}
+
+	// An event with no predecessors (the room's first event) is preceded by
+	// the empty state; returning its own post-event root would leak the event's
+	// state change into the "before" view.
+	if pdu.prev_events().next().is_none() {
+		if let Some(room_id) = pdu.room_id() {
+			let structural_key = crate::rooms::state_hamt::room_structural_key(
+				&self.services.globals.server_secret,
+				room_id,
+			);
+			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
+				&structural_key,
+				&rezzy::state::LtHash::default(),
+				Vec::new(),
+			)
+			.map_err(|e| err!(error!("Failed to build empty HAMT root: {e:?}")))?;
+			self.services
+				.state_hamt
+				.store
+				.persist_node_recursive(empty_node);
+
+			return Ok(empty_root);
+		}
 	}
 
 	if pdu.prev_events().count() == 1 {

@@ -3,7 +3,7 @@ use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
-use futures::{StreamExt, future::join};
+use futures::{StreamExt, TryStreamExt, future::join};
 use ruma::{
 	OwnedEventId,
 	api::client::membership::{
@@ -74,10 +74,9 @@ pub(crate) async fn get_member_events_route(
 		let all_pdus: Vec<Pdu> = services
 			.rooms
 			.state_accessor
-			.state_full_pdus_hamt(root_handle)
-			.map(Event::into_pdu)
-			.collect()
-			.await;
+			.state_full_pdus_hamt_strict(root_handle)
+			.try_collect()
+			.await?;
 
 		let chunk = all_pdus
 			.into_iter()

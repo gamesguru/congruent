@@ -777,7 +777,19 @@ pub async fn process_timeline_upgrade(
 		.await?
 	};
 
-	if prev_fetch_had_invalid_data {
+	// A malformed item in the response only matters when it left us without any
+	// usable predecessor; otherwise it may be unrelated to this event.
+	let fetched_prev_ids = &fetched_prev_events;
+	let all_prevs_unknown = futures::StreamExt::all(
+		futures::stream::iter(incoming_pdu.prev_events()),
+		|prev_id| async move {
+			!fetched_prev_ids.contains_key(prev_id)
+				&& !self.services.timeline.pdu_exists(prev_id).await
+		},
+	)
+	.await;
+
+	if prev_fetch_had_invalid_data && all_prevs_unknown {
 		warn!(
 			%event_id,
 			"prev_events fetch contained structurally invalid data; storing as outlier and rejecting"
@@ -883,7 +895,10 @@ pub async fn process_timeline_upgrade(
 									},
 								}
 							})
-							.await?;
+							.await
+							// A failed predecessor is logged and rate-limited above; it must
+							// not prevent the incoming event from being handled.
+							.unwrap_or(false);
 						self.services.server.check_running()?;
 						Ok::<bool, conduwuit::Error>(recovered_any || recovered)
 					}

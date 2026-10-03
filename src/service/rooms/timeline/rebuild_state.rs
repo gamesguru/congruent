@@ -319,10 +319,7 @@ impl super::Service {
 			.store
 			.persist_node_recursive(root_node);
 
-		let mut encoded = Vec::with_capacity(2048);
-		for value in lattice.0 {
-			encoded.extend_from_slice(&value.to_le_bytes());
-		}
+		let encoded = lattice.to_bytes();
 		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
 
 		Ok(root_handle)
@@ -991,15 +988,15 @@ impl super::Service {
 		// Materialize the union of the extremity states.
 		let mut all_entries: HashMap<ShortStateKey, ShortEventId> = HashMap::new();
 		for root in &extremity_roots {
-			if let Ok(full_state) = self
+			// Abort rather than merge a partial union: dropping an extremity's
+			// state would commit incomplete room state.
+			let full_state = self
 				.services
 				.state_accessor
 				.load_full_state_hamt(root)
-				.await
-			{
-				for (shortstatekey, shorteventid) in full_state {
-					all_entries.insert(shortstatekey, shorteventid);
-				}
+				.await?;
+			for (shortstatekey, shorteventid) in full_state {
+				all_entries.insert(shortstatekey, shorteventid);
 			}
 		}
 

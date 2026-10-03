@@ -16,18 +16,55 @@ use conduwuit_database::{Ignore, Interfix, Map};
 /// A (add, rem) pair of `(shortstatekey, shorteventid)` from a HAMT delta.
 type HamtDelta = (Vec<(u64, u64)>, Vec<(u64, u64)>);
 
-/// A raw `RootHandle` value persisted in `roomid_roothandle` /
-/// `shorteventid_roothandle`: 32-byte structural hash followed by the 32-byte
-/// state-group ID, with no per-field serde separators. The database serde
-/// format cannot represent `[u8; N]` arrays (nested-tuple separator assert and
-/// `deserialize_u8` is unimplemented), so these maps are stored as flat bytes.
+const CODEC_VERSION_LEN: usize = 1;
+const ROUTING_VERSION_LEN: usize = 1;
+const ROUTING_PARAMS_LEN: usize = 4;
+const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
+const STATE_GROUP_ID_LEN: usize = size_of::<rezzy::hamt::StateGroupId>();
+
+const CODEC_VERSION_AT: usize = 0;
+const ROUTING_VERSION_AT: usize = CODEC_VERSION_AT + CODEC_VERSION_LEN;
+const ROUTING_PARAMS_AT: usize = ROUTING_VERSION_AT + ROUTING_VERSION_LEN;
+const STRUCTURAL_HASH_AT: usize = ROUTING_PARAMS_AT + ROUTING_PARAMS_LEN;
+const STATE_GROUP_ID_AT: usize = STRUCTURAL_HASH_AT + STRUCTURAL_HASH_LEN;
+
+/// Byte length of the persisted [`rezzy::hamt::RootHandle`] encoding.
+pub(crate) const ROOT_HANDLE_LEN: usize = STATE_GROUP_ID_AT + STATE_GROUP_ID_LEN;
+
+/// Copies the fixed-width array `N` starting at `offset`.
+///
+/// The caller has already checked `bytes.len() == ROOT_HANDLE_LEN`, so every
+/// offset above is in range and this cannot fail.
+fn fixed<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+	let end = offset
+		.checked_add(N)
+		.expect("fixed-width RootHandle field offset overflow");
+	bytes[offset..end]
+		.try_into()
+		.expect("length-checked fixed-width RootHandle field")
+}
+
+/// Serializes a `RootHandle` for `roomid_roothandle` / `shorteventid_roothandle`.
+///
+/// These maps hold flat bytes because the database serde format cannot represent
+/// `[u8; N]` arrays (nested-tuple separator assert and `deserialize_u8` is
+/// unimplemented).
+///
+/// Every field of the handle is written, including the codec and routing
+/// versions. Persisting only the two hashes left the decoder filling those in
+/// with the *running* build's values, so a handle read back under a different
+/// codec would claim a version it was never written with.
 pub(crate) fn root_handle_to_bytes(handle: &rezzy::hamt::RootHandle) -> Vec<u8> {
 	let mut out = Vec::with_capacity(ROOT_HANDLE_LEN);
+	out.push(handle.codec_version);
+	out.push(handle.routing_version);
+	out.extend_from_slice(&handle.routing_params);
 	out.extend_from_slice(&handle.structural_hash);
 	out.extend_from_slice(&handle.state_group_id);
 	out
 }
 
+/// Parses a [`rezzy::hamt::RootHandle`] written by [`root_handle_to_bytes`].
 pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHandle> {
 	if bytes.len() != ROOT_HANDLE_LEN {
 		return Err(err!(error!(
@@ -37,21 +74,23 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 	}
 
 	Ok(rezzy::hamt::RootHandle {
-		codec_version: rezzy::hamt::HAMT_CODEC_VERSION,
-		routing_version: rezzy::hamt::HAMT_ROUTING_VERSION,
-		routing_params: [0; 4],
-		structural_hash: bytes[0..STRUCTURAL_HASH_LEN]
-			.try_into()
-			.expect("fixed 32-byte structural hash slice"),
-		state_group_id: bytes[STRUCTURAL_HASH_LEN..ROOT_HANDLE_LEN]
-			.try_into()
-			.expect("fixed 32-byte state-group ID slice"),
+		codec_version: bytes[CODEC_VERSION_AT],
+		routing_version: bytes[ROUTING_VERSION_AT],
+		routing_params: fixed(bytes, ROUTING_PARAMS_AT),
+		structural_hash: fixed(bytes, STRUCTURAL_HASH_AT),
+		state_group_id: fixed(bytes, STATE_GROUP_ID_AT),
 	})
 }
 
-const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
-pub(crate) const ROOT_HANDLE_LEN: usize =
-	STRUCTURAL_HASH_LEN + size_of::<rezzy::hamt::StateGroupId>();
+/// True when [`Service::set_event_state_with_root`] advances the room's
+/// current-state pointer (`roomid_roothandle`) inside its atomic write batch.
+///
+/// Callers must not follow that call with a standalone
+/// [`Service::set_room_state_hamt`] for the same PDU when this holds: the batch
+/// has already committed the byte-identical pointer, so the second write is pure
+/// amplification outside the batch the timeline write is committed with.
+#[must_use]
+pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use ruma::{
@@ -89,7 +128,14 @@ struct Data {
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
 	state_hamt_root_lattices: Arc<Map>,
+	/// Bounded cache of encoded root lattices, keyed by structural hash.
+	/// Lattices are immutable and content-addressed, so entries never go
+	/// stale.
+	lattice_cache: moka::sync::Cache<[u8; 32], Arc<[u8]>>,
 }
+
+/// Encoded length of a persisted `LtHash` lattice.
+const LATTICE_LEN: usize = 2048;
 
 type RoomMutexMap = MutexMap<OwnedRoomId, ()>;
 pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
@@ -114,6 +160,9 @@ impl crate::Service for Service {
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
 				state_hamt_root_lattices: args.db["state_hamt_root_lattices"].clone(),
+				lattice_cache: moka::sync::Cache::builder()
+					.max_capacity(u64::from(args.server.config.lthash_cache_capacity))
+					.build(),
 			},
 		}))
 	}
@@ -335,17 +384,20 @@ impl Service {
 			.get_or_create_shorteventid(new_pdu.event_id())
 			.await;
 
-		let is_state = new_pdu.state_key().is_some();
-		let (root_handle, new_node) = if is_state {
+		let is_state = is_state_event(new_pdu);
+		// A supplied `state_root_handle` is the *post*-event root: callers have
+		// already applied the event (and any state resolution) and persisted its
+		// nodes. Appending the event again would clobber a resolution winner, so
+		// only append when no post-event root was provided.
+		let (root_handle, new_node) = if is_state && state_root_handle.is_none() {
 			let (handle, node) = self
-				.append_to_state(new_pdu, room_id, state_lock, state_root_handle)
+				.append_to_state(new_pdu, room_id, state_lock, None)
 				.await?;
 			(handle, Some(node))
+		} else if let Some(root) = state_root_handle {
+			(root.clone(), None)
 		} else {
-			let root = match state_root_handle {
-				| Some(root) => root.clone(),
-				| None => self.get_room_state_hamt(room_id).await?,
-			};
+			let root = self.get_room_state_hamt(room_id).await?;
 			(root, None)
 		};
 
@@ -425,78 +477,61 @@ impl Service {
 			| None => self.get_room_state_hamt(room_id).await.ok(),
 		};
 		if let Some(base) = base {
-			if let Ok(raw) = self
-				.db
-				.state_hamt_root_lattices
-				.get(&base.structural_hash)
-				.await
-			{
-				if raw.len() == 2048 {
-					let mut lattice = rezzy::state::LtHash::default();
-					for (v, b) in lattice.0.iter_mut().zip(raw.as_chunks::<2>().0.iter()) {
-						*v = u16::from_le_bytes(*b);
-					}
-					let old = self
-						.services
-						.state_hamt
-						.store
-						.get_node(&base.structural_hash)?;
-					let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-					let value = self
+			if let Some(mut lattice) = self.get_root_lattice(&base).await {
+				let old = self
+					.services
+					.state_hamt
+					.store
+					.get_node(&base.structural_hash)?;
+				let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+				let value = self
+					.services
+					.short
+					.get_or_create_shorteventid(new_pdu.event_id())
+					.await;
+				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
+					&old,
+					&rooms::state_hamt::room_structural_key(
+						&self.services.globals.server_secret,
+						room_id,
+					),
+					new_shortstatekey,
+					Some(value),
+					&mut resolver,
+				)
+				.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
+				if let Some(old) = displaced {
+					let old_id = self
 						.services
 						.short
-						.get_or_create_shorteventid(new_pdu.event_id())
-						.await;
-					let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
-						&old,
-						&rooms::state_hamt::room_structural_key(
-							&self.services.globals.server_secret,
-							room_id,
-						),
-						new_shortstatekey,
-						Some(value),
-						&mut resolver,
-					)
-					.map_err(|e| err!(error!("HAMT mutation failed: {e:?}")))?;
-					if let Some(old) = displaced {
-						let old_id = self
-							.services
-							.short
-							.get_eventid_from_short::<OwnedEventId>(old)
-							.await?;
-						lattice.replace(
-							&event_type.to_string(),
-							state_key,
-							old_id.as_str(),
-							new_pdu.event_id().as_str(),
-						);
-					} else {
-						lattice.insert(
-							&event_type.to_string(),
-							state_key,
-							new_pdu.event_id().as_str(),
-						);
-					}
-					for (hash, bytes) in created {
-						self.services
-							.state_hamt
-							.store
-							.put_encoded_node(hash, &bytes);
-					}
-					let handle = self
-						.services
+						.get_eventid_from_short::<OwnedEventId>(old)
+						.await?;
+					lattice.replace(
+						&event_type.to_string(),
+						state_key,
+						old_id.as_str(),
+						new_pdu.event_id().as_str(),
+					);
+				} else {
+					lattice.insert(
+						&event_type.to_string(),
+						state_key,
+						new_pdu.event_id().as_str(),
+					);
+				}
+				for (hash, bytes) in created {
+					self.services
 						.state_hamt
 						.store
-						.root_handle(new_node.structural_hash, &lattice);
-					let mut encoded = Vec::with_capacity(2048);
-					for v in lattice.0 {
-						encoded.extend_from_slice(&v.to_le_bytes());
-					}
-					self.db
-						.state_hamt_root_lattices
-						.insert(&handle.structural_hash, &encoded);
-					return Ok((handle, new_node));
+						.put_encoded_node(hash, &bytes)?;
 				}
+				let handle = self
+					.services
+					.state_hamt
+					.store
+					.root_handle(new_node.structural_hash, &lattice);
+				self.persist_root_lattice(&handle, &lattice);
+				return Ok((handle, new_node));
 			}
 		}
 
@@ -552,15 +587,99 @@ impl Service {
 		let (root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 				.map_err(|e| err!(error!("Failed to build HAMT in append_to_state: {e:?}")))?;
-		let mut encoded_lattice = Vec::with_capacity(2048);
-		for value in lattice.0 {
-			encoded_lattice.extend_from_slice(&value.to_le_bytes());
-		}
-		self.db
-			.state_hamt_root_lattices
-			.insert(&root_handle.structural_hash, &encoded_lattice);
+		self.persist_root_lattice(&root_handle, &lattice);
 
 		Ok((root_handle, root_node))
+	}
+
+	/// Applies `mutations` on top of `prev` with copy-on-write path copying and
+	/// persists only the nodes along the changed spines, returning the new root
+	/// handle.
+	///
+	/// This is the bulk counterpart to the single-key fast path in
+	/// [`Self::append_to_state`]: `K` changed state keys cost `O(K log₃₂ S)`
+	/// node writes instead of the `O(S)` of materializing and rewriting the
+	/// whole tree. `lattice` must already describe the post-mutation state, and
+	/// is persisted alongside the nodes so a root never references a node that
+	/// is not durable yet.
+	pub fn persist_state_hamt_mutations(
+		&self,
+		structural_key: &[u8],
+		prev: &rezzy::hamt::RootHandle,
+		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
+		lattice: &rezzy::state::LtHash,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let old = self
+			.services
+			.state_hamt
+			.store
+			.get_node(&prev.structural_hash)?;
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+
+		// Displaced values are unused: callers pass a lattice already computed
+		// from the resolved post-mutation state, so there is no need to replay
+		// per-key insert/replace arithmetic here.
+		let (new_node, _displaced, created) =
+			rezzy::hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
+				.map_err(|e| err!(error!("HAMT batch mutation failed: {e:?}")))?;
+
+		for (hash, bytes) in created {
+			self.services
+				.state_hamt
+				.store
+				.put_encoded_node(hash, &bytes)?;
+		}
+
+		let handle = self
+			.services
+			.state_hamt
+			.store
+			.root_handle(new_node.structural_hash, lattice);
+		self.persist_root_lattice(&handle, lattice);
+
+		Ok(handle)
+	}
+
+	/// Persists the lattice for a root and populates the lattice cache.
+	pub fn persist_root_lattice(
+		&self,
+		root_handle: &rezzy::hamt::RootHandle,
+		lattice: &rezzy::state::LtHash,
+	) {
+		let encoded = lattice.to_bytes();
+		self.db
+			.state_hamt_root_lattices
+			.insert(&root_handle.structural_hash, &encoded);
+		self.db
+			.lattice_cache
+			.insert(root_handle.structural_hash, Arc::from(&*encoded));
+	}
+
+	/// Returns the lattice persisted for a root, if any. Served from the
+	/// bounded cache, falling back to the database on a miss.
+	pub async fn get_root_lattice(
+		&self,
+		root_handle: &rezzy::hamt::RootHandle,
+	) -> Option<rezzy::state::LtHash> {
+		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
+			return rezzy::state::LtHash::from_bytes(&raw);
+		}
+
+		let raw = self
+			.db
+			.state_hamt_root_lattices
+			.get(&root_handle.structural_hash)
+			.await
+			.ok()?;
+		if raw.len() != LATTICE_LEN {
+			return None;
+		}
+
+		let lattice = rezzy::state::LtHash::from_bytes(&raw)?;
+		self.db
+			.lattice_cache
+			.insert(root_handle.structural_hash, Arc::from(&*raw));
+		Some(lattice)
 	}
 
 	async fn load_state_map_from_root_handle(
@@ -724,6 +843,63 @@ impl Service {
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
 		Ok(())
+	}
+
+	/// Returns every recorded root handle in the database.
+	///
+	/// This is the *complete* live-root set [`crate::rooms::state_hamt::Store::sweep`]
+	/// requires: both the current per-room `roomid_roothandle` pointers and every
+	/// per-event `shorteventid_roothandle` snapshot. Sweep treats anything outside
+	/// this set as unreachable, so a partial enumeration here would have it delete
+	/// live state.
+	///
+	/// Reads both maps through `raw_stream` rather than any prefix scan, because
+	/// the two maps are keyed differently (room ID bytes and a big-endian
+	/// short-event ID) and neither has a prefix that isolates its own entries
+	/// from keys of the other shape. A key that does not decode to a
+	/// [`ROOT_HANDLE_LEN`]-byte value is skipped rather than treated as an error:
+	/// the map is not expected to hold anything else, and refusing to sweep
+	/// because of one unrecognised entry would leave orphans alive forever.
+	pub async fn live_root_handles(&self) -> Result<Vec<rezzy::hamt::RootHandle>> {
+		let mut handles = Vec::new();
+
+		for map in [&self.db.roomid_roothandle, &self.db.shorteventid_roothandle] {
+			let mut stream = map.raw_stream();
+			while let Some(kv) = stream.next().await {
+				let (_, value): database::KeyVal<'_> = kv?;
+				if value.len() != ROOT_HANDLE_LEN {
+					warn!(target: "state_hamt", "skipping unrecognized root handle record");
+					continue;
+				}
+				handles.push(root_handle_from_bytes(value)?);
+			}
+		}
+
+		Ok(handles)
+	}
+
+	/// Reclaims HAMT nodes no recorded root can reach.
+	///
+	/// `live_roots` is gathered by [`Self::live_root_handles`] rather than taken
+	/// from the caller, because supplying an incomplete set silently deletes live
+	/// state -- see [`crate::rooms::state_hamt::Store::sweep`].
+	///
+	/// `grace` bounds how recently a node may have been written and still be
+	/// spared, so a node persisted moments before being linked into a root is not
+	/// mistaken for an orphan.
+	pub async fn sweep_hamt_nodes(
+		&self,
+		grace: std::time::Duration,
+		dry_run: bool,
+	) -> Result<rooms::state_hamt::store::SweepReport> {
+		let live_roots = self.live_root_handles().await?;
+		let roots: Vec<&rezzy::hamt::RootHandle> = live_roots.iter().collect();
+
+		self.services
+			.state_hamt
+			.store
+			.sweep(&roots, grace, dry_run)
+			.await
 	}
 
 	pub fn get_forward_extremities<'a>(

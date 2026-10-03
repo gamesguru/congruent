@@ -158,15 +158,16 @@ pub async fn build_and_append_pdu(
 		}
 	}
 
-	info!("Setting final room state for new room");
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist — pointer already
-	// updated via set_room_state_hamt above.
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state
-			.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
-	});
+	// The room pointer is advanced inside `append_pdu`'s atomic batch for state
+	// events, together with the timeline write, so a flush can never expose the
+	// PDU without its state root. Only a non-state event still needs it set here.
+	if !crate::rooms::state::is_state_event(&pdu) {
+		self.services.globals.with_cork_and_flush(|| {
+			self.services
+				.state
+				.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
+		});
+	}
 
 	let mut servers: HashSet<OwnedServerName> = self
 		.services

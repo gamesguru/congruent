@@ -21,10 +21,8 @@ crate-type = [
 [dependencies]
 conduwuit-service.workspace = true
 conduwuit-core.workspace = true
-async-trait.workspace = true
 askama.workspace = true
 axum.workspace = true
-axum-extra.workspace = true
 base64.workspace = true
 futures.workspace = true
 tracing.workspace = true

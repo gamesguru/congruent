@@ -127,15 +127,21 @@ async fn create_join_event(
 	.await?;
 
 	trace!("Fetching current state IDs");
-	let state_ids: Vec<OwnedEventId> = services
+	// Resolve short event IDs in batches rather than one lookup per state
+	// event; any traversal or lookup failure aborts the join response.
+	let short_event_ids: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(&root_handle)
-		.try_collect::<Vec<_>>()
-		.await?
-		.into_iter()
-		.map(at!(1))
-		.collect();
+		.state_full_shortids_hamt(root_handle.clone())
+		.map_ok(at!(1))
+		.try_collect()
+		.await?;
+	let state_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(short_event_ids.into_iter().stream())
+		.try_collect()
+		.await?;
 
 	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
 	// membership events must still be included in a partial-state response so

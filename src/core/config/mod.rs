@@ -830,6 +830,30 @@ pub struct Config {
 	#[serde(default = "default_forwardfill_sweep_interval_secs")]
 	pub forwardfill_sweep_interval_secs: u64,
 
+	/// How often the HAMT node reclamation sweep runs, in seconds. Set to 0 to
+	/// disable it.
+	///
+	/// The sweep walks every recorded root handle and deletes HAMT nodes that no
+	/// root can reach. It is a dry run by default: it reports what it would
+	/// reclaim without deleting, because reclaiming requires trusting that the
+	/// recorded root set really is complete. Enable
+	/// `state_hamt_node_sweep_delete` only once a dry run has shown the report
+	/// is sane.
+	///
+	/// default: 21600 (6 hours)
+	#[serde(default = "default_state_hamt_node_sweep_interval_secs")]
+	pub state_hamt_node_sweep_interval_secs: u64,
+
+	/// Whether the periodic HAMT node sweep actually deletes unreachable nodes.
+	///
+	/// While false, the sweep is a dry run that only logs its report. A root
+	/// handle missing from the live set makes genuinely reachable nodes look
+	/// like orphans, so deletion is opt-in rather than the default.
+	///
+	/// default: false
+	#[serde(default)]
+	pub state_hamt_node_sweep_delete: bool,
+
 	/// Allows federation requests to be made to itself
 	///
 	/// This isn't intended and is very likely a bug if federation requests are
@@ -2740,6 +2764,13 @@ pub struct ExperimentalConfig {
 	/// MSC4500: State Accumulators
 	#[serde(default = "true_fn")]
 	pub msc4500_enabled: bool,
+
+	/// MSC4500: also commit the labelled state-resolution input set
+	/// (`resolution-inputs-blake3-v1`) in outbound `state_hashes`. This walks
+	/// the auth closure of every `prev_events` state per PDU, so it is off by
+	/// default.
+	#[serde(default)]
+	pub msc4500_resolution_inputs: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2749,6 +2780,7 @@ impl Default for ExperimentalConfig {
 			msc4222_enabled: false,
 			msc3030_enabled: true,
 			msc4500_enabled: true,
+			msc4500_resolution_inputs: false,
 		}
 	}
 }
@@ -3088,6 +3120,8 @@ fn default_max_forward_extremities() -> isize { 10 }
 fn default_transaction_id_cache_max_age_secs() -> u64 { 60 * 60 * 2 }
 
 fn default_forwardfill_sweep_interval_secs() -> u64 { 60 * 60 * 4 }
+
+fn default_state_hamt_node_sweep_interval_secs() -> u64 { 60 * 60 * 6 }
 
 fn default_transaction_id_cache_max_entries() -> usize { 8192 }
 

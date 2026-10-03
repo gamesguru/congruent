@@ -1,8 +1,4 @@
-use std::{
-	borrow::Borrow,
-	collections::{HashMap, HashSet},
-	iter::Iterator,
-};
+use std::{collections::HashMap, iter::Iterator};
 
 use conduwuit::{
 	Result, debug, err, implement,
@@ -10,7 +6,7 @@ use conduwuit::{
 	trace,
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryBroadbandExt, TryWidebandExt},
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::try_join};
+use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use ruma::{EventId, OwnedEventId, RoomId, RoomVersionId};
 
 // TODO: if we know the prev_events of the incoming event we can avoid the
@@ -141,10 +137,7 @@ where
 			extremity_roothandles.len()
 		);
 		let (root_handle, prev_event) = unique_forks[0].1.clone();
-		let Ok((fork_state, _)) = self
-			.state_at_incoming_fork(room_id, root_handle, prev_event)
-			.await
-		else {
+		let Ok(fork_state) = self.state_at_incoming_fork(root_handle, prev_event).await else {
 			return Ok(None);
 		};
 		return fork_state
@@ -164,17 +157,14 @@ where
 	}
 
 	trace!("Calculating fork states...");
-	let (fork_states, _auth_chain_sets): (Vec<StateMap<_>>, Vec<HashSet<_>>) =
-		extremity_roothandles
-			.into_iter()
-			.try_stream()
-			.wide_and_then(|(root_handle, prev_event)| {
-				self.state_at_incoming_fork(room_id, root_handle, prev_event)
-			})
-			.try_collect()
-			.map_ok(Vec::into_iter)
-			.map_ok(Iterator::unzip)
-			.await?;
+	let fork_states: Vec<StateMap<_>> = extremity_roothandles
+		.into_iter()
+		.try_stream()
+		.wide_and_then(|(root_handle, prev_event)| {
+			self.state_at_incoming_fork(root_handle, prev_event)
+		})
+		.try_collect()
+		.await?;
 
 	let Ok(new_state) = self
 		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
@@ -203,10 +193,9 @@ where
 #[implement(super::Service)]
 async fn state_at_incoming_fork<Pdu>(
 	&self,
-	room_id: &RoomId,
 	root_handle: rezzy::hamt::RootHandle,
 	prev_event: Pdu,
-) -> Result<(StateMap<OwnedEventId>, HashSet<OwnedEventId>)>
+) -> Result<StateMap<OwnedEventId>>
 where
 	Pdu: Event,
 {
@@ -229,13 +218,7 @@ where
 		// Now it's the state after the pdu
 	}
 
-	let auth_chain = self
-		.services
-		.auth_chain
-		.event_ids_iter(room_id, leaf_state.values().map(Borrow::borrow))
-		.try_collect();
-
-	let fork_state = leaf_state
+	leaf_state
 		.iter()
 		.stream()
 		.broad_then(|(k, id)| {
@@ -246,9 +229,8 @@ where
 		})
 		.ready_filter_map(Result::ok)
 		.collect()
-		.map(Ok);
-
-	try_join(fork_state, auth_chain).await
+		.map(Ok)
+		.await
 }
 
 #[implement(super::Service)]
@@ -314,17 +296,14 @@ where
 		return Ok(None);
 	}
 
-	let (fork_states, _auth_chain_sets): (Vec<StateMap<_>>, Vec<HashSet<_>>) =
-		extremity_roothandles
-			.into_iter()
-			.try_stream()
-			.wide_and_then(|(root_handle, prev_event)| {
-				self.state_at_incoming_fork(room_id, root_handle, prev_event)
-			})
-			.try_collect()
-			.map_ok(Vec::into_iter)
-			.map_ok(Iterator::unzip)
-			.await?;
+	let fork_states: Vec<StateMap<_>> = extremity_roothandles
+		.into_iter()
+		.try_stream()
+		.wide_and_then(|(root_handle, prev_event)| {
+			self.state_at_incoming_fork(root_handle, prev_event)
+		})
+		.try_collect()
+		.await?;
 
 	let Ok(new_state) = self
 		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
