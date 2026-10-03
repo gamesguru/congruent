@@ -118,7 +118,8 @@ jobs:
       pull-requests: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
+      matrix:
+        include: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
