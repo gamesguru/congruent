@@ -56,9 +56,9 @@
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/js"}
 {"Action":"pass","Test":"TestNewUserCannotGetKeysForOfflineServer/rust"}
-{"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
+{"Action":"fail","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
-{"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
+{"Action":"fail","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
@@ -115,9 +115,9 @@
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreBatched/rust"}
-{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder"}
+{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder"}
 {"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/js"}
-{"Action":"pass","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
+{"Action":"fail","Test":"TestToDeviceMessagesAreProcessedInOrder/rust"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/js"}
 {"Action":"pass","Test":"TestToDeviceMessagesArentLostWhenKeysQueryFails/rust"}
