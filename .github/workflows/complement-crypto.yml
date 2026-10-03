@@ -82,6 +82,21 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  crypto-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      include: ${{ steps.matrix.outputs.include }}
+    steps:
+      - id: matrix
+        env:
+          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+        run: |
+          if [ -n "$RUST_SDK_URL" ]; then
+            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"},{"name":"rs","badge":"rs","client_matrix":"rr"},{"name":"js+rs","badge":"jsrs","client_matrix":"jr,rj"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"}]' >> "$GITHUB_OUTPUT"
+          fi
+
   # -----------------------------------------------------------------------------
   # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
   # as three parallel client-matrix variants so js, rs, and js+rs results are
@@ -93,8 +108,7 @@ jobs:
   # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
   # -----------------------------------------------------------------------------
   complement-crypto-tests:
-    needs: setup
-    if: matrix.client_matrix == 'jj' || vars.C10Y_CRYPTO_RUST_SDK_URL != ''
+    needs: [setup, crypto-matrix]
     runs-on: ubuntu-24.04
     env:
       COMPLEMENT_PARALLEL: 24
@@ -104,17 +118,7 @@ jobs:
       pull-requests: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: js
-            badge: js
-            client_matrix: jj
-          - name: rs
-            badge: rs
-            client_matrix: rr
-          - name: js+rs
-            badge: jsrs
-            client_matrix: jr,rj
+      matrix: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
