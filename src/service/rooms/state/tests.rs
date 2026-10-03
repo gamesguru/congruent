@@ -292,3 +292,183 @@ async fn test_state_equivalence() {
 		.expect("failed to load HAMT state");
 	assert_eq!(actual, expected);
 }
+
+/// Builds a room state of `members` membership entries plus the create event.
+///
+/// Returns the resulting root. Each entry goes in through the ordinary
+/// single-key state path so the tree reaches a realistic fan-out and depth.
+async fn seed_membership_state(
+	services: &Services,
+	room_id: &RoomId,
+	mutex: &super::RoomMutexGuard,
+	members: usize,
+) -> rezzy::hamt::RootHandle {
+	let create = create_dummy_pdu(
+		room_id,
+		&owned_event_id!("$seed-create:test.conduwuit.local"),
+		"m.room.create",
+		"",
+	);
+	persist_dummy_pdu(services, room_id, &create).await;
+	let mut root = services
+		.rooms
+		.state
+		.set_event_state(room_id, &create, mutex)
+		.await
+		.expect("set_event_state create failed");
+
+	for index in 0..members {
+		let event_id_raw = format!("$seed-member-{index}:test.conduwuit.local");
+		let event_id = EventId::parse(&event_id_raw).expect("seed event id should parse");
+		let event = create_dummy_pdu(
+			room_id,
+			&event_id,
+			"m.room.member",
+			&format!("@user{index}:test.conduwuit.local"),
+		);
+		persist_dummy_pdu(services, room_id, &event).await;
+		root = services
+			.rooms
+			.state
+			.set_event_state(room_id, &event, mutex)
+			.await
+			.expect("set_event_state member failed");
+	}
+
+	root
+}
+
+/// A bulk state update must copy only the changed spines, not re-emit the tree.
+///
+/// `resolve_state` used to call `build_hamt_root_handle` +
+/// `persist_node_recursive`, which wrote every node in the room's HAMT on every
+/// incoming state event — `O(S)` bytes where the path-copy spine is `O(log₃₂ S)`.
+/// This pins the write volume so that regression cannot come back silently: for
+/// a 200-entry room the tree is ~33 nodes, so a full re-materialization is an
+/// order of magnitude above the bound asserted here.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_bulk_state_update_writes_only_changed_spines() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = owned_room_id!("!test:test.conduwuit.local");
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+
+	let root = seed_membership_state(&services, &room_id, &mutex, 200).await;
+
+	// Replace one membership entry: one changed leaf, so one changed spine.
+	let updated = create_dummy_pdu(
+		&room_id,
+		&owned_event_id!("$update-7:test.conduwuit.local"),
+		"m.room.member",
+		"@user7:test.conduwuit.local",
+	);
+	persist_dummy_pdu(&services, &room_id, &updated).await;
+
+	let target_key = services
+		.rooms
+		.short
+		.get_or_create_shortstatekey(&StateEventType::RoomMember, "@user7:test.conduwuit.local")
+		.await;
+	let target_value = services
+		.rooms
+		.short
+		.get_or_create_shorteventid(&updated.event_id)
+		.await;
+
+	// Reuse the persisted lattice so the assertion is about node volume only.
+	let mut lattice = services
+		.rooms
+		.state
+		.get_root_lattice(&root)
+		.await
+		.expect("seeded root must have a retained lattice");
+	lattice.replace(
+		&StateEventType::RoomMember.to_string(),
+		"@user7:test.conduwuit.local",
+		"$seed-member-7:test.conduwuit.local",
+		updated.event_id.as_str(),
+	);
+
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+
+	let (written_before, elided_before) =
+		services.rooms.state_hamt.store.write_stats().snapshot();
+	let new_root = services
+		.rooms
+		.state
+		.persist_state_hamt_mutations(
+			&structural_key,
+			&root,
+			vec![(target_key, Some(target_value))],
+			&lattice,
+		)
+		.expect("bulk mutation failed");
+	let (written_after, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
+
+	let written = written_after - written_before;
+	assert_ne!(
+		new_root.structural_hash, root.structural_hash,
+		"changing a leaf must change the root"
+	);
+
+	// `ceil(log32(201)) == 2`, so a single-key update rewrites at most the root
+	// and its one child. The generous bound still separates path copying (~3
+	// nodes) from a full re-materialization (~33).
+	assert!(
+		written <= 8,
+		"single-key bulk update wrote {written} nodes; expected a path-copy spine (<=8), which \
+		 suggests the tree was re-materialized"
+	);
+
+	// The updated leaf must be readable through the new root, and every other
+	// entry must have survived the update.
+	let actual = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&new_root)
+		.await
+		.expect("failed to load HAMT state");
+	assert_eq!(actual.len(), 201, "state size must be preserved by the update");
+	assert_eq!(actual.get(&target_key), Some(&target_value));
+
+	// Re-applying the identical mutation produces an identical root and must not
+	// write anything: the content-addressed elision has nothing left to do.
+	let (rewritten_before, _) = services.rooms.state_hamt.store.write_stats().snapshot();
+	let repeat_root = services
+		.rooms
+		.state
+		.persist_state_hamt_mutations(
+			&structural_key,
+			&new_root,
+			vec![(target_key, Some(target_value))],
+			&lattice,
+		)
+		.expect("repeat bulk mutation failed");
+	let (rewritten_after, _) = services.rooms.state_hamt.store.write_stats().snapshot();
+
+	assert_eq!(
+		repeat_root.structural_hash, new_root.structural_hash,
+		"re-applying the same mutation must be idempotent"
+	);
+	assert_eq!(
+		rewritten_after - rewritten_before,
+		0,
+		"idempotent re-application must not write nodes"
+	);
+	// The decisive assertion. Elision alone would mask a full re-walk: the
+	// unchanged nodes of a re-materialized tree are byte-identical to what the
+	// store already holds, so they get elided and the write counter above still
+	// looks small. Asserting *zero elisions* pins the structural property
+	// instead -- the update was computed from the previous root's changed spines
+	// and never touched the rest of the tree.
+	//
+	// This matters beyond write volume: an elided write still paid to encode and
+	// BLAKE3-hash the node on the way in, and elision only holds while the
+	// bounded node cache retains the hash. A room large enough to evict its own
+	// unchanged subtrees would fall back to writing every one of them.
+	assert_eq!(
+		elided_after - elided_before,
+		0,
+		"path-copy update must not re-emit unchanged nodes"
+	);
+}

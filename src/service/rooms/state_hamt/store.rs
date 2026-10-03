@@ -1,5 +1,8 @@
 use std::{
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicU64, Ordering},
+	},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -22,6 +25,29 @@ pub struct SweepReport {
 	pub dry_run: bool,
 }
 
+/// Counters describing how much redundant node writing the content-addressed
+/// elision in [`Store`] avoided.
+///
+/// These exist because write amplification here is otherwise invisible: every
+/// elided write is a value that is byte-identical to what the store already
+/// holds, so nothing downstream can observe it except the write volume itself.
+#[derive(Debug, Default)]
+pub struct WriteStats {
+	/// Node value writes actually issued to the backing store.
+	pub written: AtomicU64,
+	/// Node writes skipped because the content-addressed node was already
+	/// durable.
+	pub elided: AtomicU64,
+}
+
+impl WriteStats {
+	/// A consistent-enough snapshot of the counters for assertions.
+	#[must_use]
+	pub fn snapshot(&self) -> (u64, u64) {
+		(self.written.load(Ordering::Relaxed), self.elided.load(Ordering::Relaxed))
+	}
+}
+
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 pub struct Store {
 	/// RocksDB column family containing the densely persisted nodes.
@@ -40,6 +66,9 @@ pub struct Store {
 	/// Note: `u64, u64` is currently a placeholder for `ShortStateKey` and
 	/// `ShortEventId` which are the actual domain types.
 	node_cache: moka::sync::Cache<StructuralHash, Arc<HamtNode<u64, u64>>>,
+
+	/// Redundant-write counters for the content-addressed elision below.
+	write_stats: WriteStats,
 }
 
 impl Store {
@@ -49,8 +78,25 @@ impl Store {
 		// could be wired to a config value like other caches.
 		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
 
-		Self { db, node_mtimes, node_cache }
+		Self {
+			db,
+			node_mtimes,
+			node_cache,
+			write_stats: WriteStats::default(),
+		}
 	}
+
+	/// Returns the redundant-write counters for this store.
+	#[must_use]
+	pub fn write_stats(&self) -> &WriteStats { &self.write_stats }
+
+	/// Returns true when `hash` is provably already durable in the store.
+	///
+	/// A cache hit is exactly such a proof: entries enter the cache only via
+	/// [`Self::get_node_blocking`], which reads a committed value back out of
+	/// the store, or via a completed put. A cache *miss* proves nothing, because
+	/// the cache is bounded and evicts, so callers must still write in that case.
+	fn is_durable(&self, hash: &StructuralHash) -> bool { self.node_cache.contains_key(hash) }
 
 	/// Resolves a node while avoiding blocking a single-threaded Tokio runtime.
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
@@ -82,7 +128,20 @@ impl Store {
 			return Err(err!(Database(error!("State HAMT node not found in database."))));
 		}
 
-		let persisted = PersistedInternalNode::<u64, u64>::decode_v1_unverified(&bytes)
+		let node = Self::decode_node(hash, &bytes)?;
+		self.node_cache.insert(*hash, node.clone());
+
+		Ok(node)
+	}
+
+	/// Validates and parses an encoded node body into an in-memory `HamtNode`
+	/// whose children are left lazy for [`Self::get_blocking_resolver`] to pull.
+	///
+	/// Shared by the read and write paths so a node cached right after being
+	/// written is held under exactly the same representation a later read would
+	/// have produced.
+	fn decode_node(hash: &StructuralHash, bytes: &[u8]) -> Result<Arc<HamtNode<u64, u64>>> {
+		let persisted = PersistedInternalNode::<u64, u64>::decode_v1_unverified(bytes)
 			.map_err(|e| err!(Database(error!("{e}"))))?;
 
 		if (persisted.datamap & persisted.nodemap) != 0 {
@@ -116,22 +175,35 @@ impl Store {
 			structural_hash: *hash,
 		});
 
-		self.node_cache.insert(*hash, node.clone());
-
 		Ok(node)
 	}
 
 	/// Persists a node to RocksDB and populates the cache.
+	///
+	/// Content addressing makes this idempotent: a node reached here under an
+	/// already-durable hash is byte-identical to what the store holds, so the
+	/// write is skipped. That matters because callers legitimately re-emit
+	/// unchanged nodes whenever they re-materialize a tree.
 	pub fn put_node(&self, node: Arc<HamtNode<u64, u64>>) {
+		let hash = node.structural_hash;
+		if self.is_durable(&hash) {
+			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
+			// Refresh the cache entry: the caller may hold a freshly parsed node
+			// that is worth keeping resident even though it needs no write.
+			self.node_cache.insert(hash, node);
+			return;
+		}
+
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
-		let hash = node.structural_hash;
 
-		// Cache it immediately so concurrent reads can hit memory
-		self.node_cache.insert(hash, node);
-
-		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+		// Durable value before the cache entry, mirroring the ordering
+		// `del_node` relies on: a cache hit must never be able to expose a node
+		// that has no backing row.
 		self.db.insert(&hash, &bytes);
+		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+		self.node_cache.insert(hash, node);
+		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
@@ -140,22 +212,42 @@ impl Store {
 	/// The mtime for the node joins the same batch as the node value itself, so
 	/// the grace window and the node's durability are updated atomically.
 	pub fn put_node_batch<'a>(&'a self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'a>) {
+		let hash = node.structural_hash;
+		if self.is_durable(&hash) {
+			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
+			self.node_cache.insert(hash, node);
+			return;
+		}
+
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
-		let hash = node.structural_hash;
 
-		// Cache it immediately so concurrent reads can hit memory
 		self.node_cache.insert(hash, node);
-
 		self.db.batch_put(batch, hash.as_ref(), bytes.as_slice());
 		self.node_mtimes
 			.batch_put(batch, hash.as_ref(), unix_millis().to_be_bytes());
+		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
 	}
 
 	/// Stores an already-encoded node and records its persistence time.
-	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) {
-		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+	///
+	/// Populates the node cache like [`Self::put_node`]: without this, the node a
+	/// caller just wrote is invisible to readers until it is evicted or the
+	/// process restarts, and it would be re-emitted on every subsequent
+	/// materialization of the same subtree.
+	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) -> Result<()> {
+		if self.is_durable(&hash) {
+			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
+			return Ok(());
+		}
+
+		let node = Self::decode_node(&hash, bytes)?;
 		self.db.insert(&hash, bytes);
+		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
+		self.node_cache.insert(hash, node);
+		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
+
+		Ok(())
 	}
 
 	/// Persists a node and all of its resolved children recursively.

@@ -49,6 +49,16 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 	})
 }
 
+/// True when [`Service::set_event_state_with_root`] advances the room's
+/// current-state pointer (`roomid_roothandle`) inside its atomic write batch.
+///
+/// Callers must not follow that call with a standalone
+/// [`Service::set_room_state_hamt`] for the same PDU when this holds: the batch
+/// has already committed the byte-identical pointer, so the second write is pure
+/// amplification outside the batch the timeline write is committed with.
+#[must_use]
+pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
+
 const STRUCTURAL_HASH_LEN: usize = size_of::<rezzy::hamt::StructuralHash>();
 pub(crate) const ROOT_HANDLE_LEN: usize =
 	STRUCTURAL_HASH_LEN + size_of::<rezzy::hamt::StateGroupId>();
@@ -345,7 +355,7 @@ impl Service {
 			.get_or_create_shorteventid(new_pdu.event_id())
 			.await;
 
-		let is_state = new_pdu.state_key().is_some();
+		let is_state = is_state_event(new_pdu);
 		// A supplied `state_root_handle` is the *post*-event root: callers have
 		// already applied the event (and any state resolution) and persisted its
 		// nodes. Appending the event again would clobber a resolution winner, so
@@ -484,7 +494,7 @@ impl Service {
 					self.services
 						.state_hamt
 						.store
-						.put_encoded_node(hash, &bytes);
+						.put_encoded_node(hash, &bytes)?;
 				}
 				let handle = self
 					.services
@@ -588,7 +598,7 @@ impl Service {
 			self.services
 				.state_hamt
 				.store
-				.put_encoded_node(hash, &bytes);
+				.put_encoded_node(hash, &bytes)?;
 		}
 
 		let handle = self

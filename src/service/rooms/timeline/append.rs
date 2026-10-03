@@ -327,7 +327,13 @@ where
 		prev_state_root_handle.as_ref(),
 	))
 	.await?;
-	if advance_current_state && let Some(root_handle) = state_root_handle.as_ref() {
+	// Recovered outlier timelines carry no state event of their own, so the batch
+	// above did not advance the room pointer for them. A state event already had
+	// it committed inside that batch, so re-writing it here would be redundant.
+	if advance_current_state
+		&& !crate::rooms::state::is_state_event(pdu)
+		&& let Some(root_handle) = state_root_handle.as_ref()
+	{
 		self.services
 			.state
 			.set_room_state_hamt(room_id, root_handle, state_lock);
