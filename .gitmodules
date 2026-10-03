@@ -19,3 +19,5 @@
 [submodule "res"]
 	path = res
 	url = git@gitlab.com:gamesguru/congruent-res.git
+	# override locally with: git config set submodule.res.update checkout
+	update = none

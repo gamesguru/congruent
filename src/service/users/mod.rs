@@ -45,6 +45,14 @@ pub struct UserSuspension {
 	pub suspended_by: String,
 }
 
+/// A profile change retained for MSC4429 incremental sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProfileUpdate {
+	pub user_id: OwnedUserId,
+	pub field: String,
+	pub value: Option<serde_json::Value>,
+}
+
 pub struct Service {
 	pub last_device_key_update_count: std::sync::atomic::AtomicU64,
 	services: Services,
@@ -94,6 +102,7 @@ struct Data {
 	userid_selfsigningkeyid: Arc<Map>,
 	userid_usersigningkeyid: Arc<Map>,
 	useridprofilekey_value: Arc<Map>,
+	userprofileupdate_value: Arc<Map>,
 }
 
 impl crate::Service for Service {
@@ -144,6 +153,7 @@ impl crate::Service for Service {
 				userid_selfsigningkeyid: args.db["userid_selfsigningkeyid"].clone(),
 				userid_usersigningkeyid: args.db["userid_usersigningkeyid"].clone(),
 				useridprofilekey_value: args.db["useridprofilekey_value"].clone(),
+				userprofileupdate_value: args.db["userprofileupdate_value"].clone(),
 			},
 			take_one_time_key_lock: MutexMap::new(),
 		}))
@@ -514,11 +524,23 @@ impl Service {
 
 	/// Sets a new displayname or removes it if displayname is None. You still
 	/// need to notify all rooms of this change.
-	pub fn set_displayname(&self, user_id: &UserId, displayname: Option<String>) {
+	pub async fn set_displayname(&self, user_id: &UserId, displayname: Option<String>) {
+		if self.displayname(user_id).await.ok() == displayname {
+			return;
+		}
+
 		if let Some(displayname) = displayname {
-			self.db.userid_displayname.insert(user_id, displayname);
+			self.db
+				.userid_displayname
+				.insert(user_id, displayname.clone());
+			self.record_profile_update(
+				user_id,
+				"displayname",
+				Some(serde_json::Value::String(displayname)),
+			);
 		} else {
 			self.db.userid_displayname.remove(user_id);
+			self.record_profile_update(user_id, "displayname", None);
 		}
 	}
 
@@ -1858,20 +1880,68 @@ impl Service {
 	}
 
 	/// Sets a new profile key value, removes the key if value is None
-	pub fn set_profile_key(
+	pub async fn set_profile_key(
 		&self,
 		user_id: &UserId,
 		profile_key: &str,
 		profile_key_value: Option<serde_json::Value>,
 	) {
+		// Skip no-op writes so unchanged values don't append update records or
+		// advance the global count.
+		if self.profile_key(user_id, profile_key).await.ok() == profile_key_value {
+			return;
+		}
+
 		// TODO: insert to the stable MSC4175 key when it's stable
 		let key = (user_id, profile_key);
 
+		let update_value = profile_key_value.clone();
 		if let Some(value) = profile_key_value {
 			self.db.useridprofilekey_value.put(key, Json(value));
 		} else {
 			self.db.useridprofilekey_value.del(key);
 		}
+
+		self.record_profile_update(user_id, profile_key, update_value);
+	}
+
+	fn record_profile_update(
+		&self,
+		user_id: &UserId,
+		profile_key: &str,
+		value: Option<serde_json::Value>,
+	) {
+		if let Ok(stream_id) = self.services.globals.next_count() {
+			self.db.userprofileupdate_value.put(
+				(stream_id, user_id.to_owned(), profile_key.to_owned()),
+				Json(ProfileUpdate {
+					user_id: user_id.to_owned(),
+					field: profile_key.to_owned(),
+					value,
+				}),
+			);
+		}
+	}
+
+	/// Returns MSC4429 profile changes in stream order.
+	pub fn profile_updates(
+		&self,
+		from: Option<u64>,
+		to: u64,
+	) -> impl Stream<Item = (u64, ProfileUpdate)> + Send + '_ {
+		type Key = (u64, OwnedUserId, String);
+		let first = (from.unwrap_or_default().saturating_add(1),);
+
+		self.db
+			.userprofileupdate_value
+			.stream_from(&first)
+			.ignore_err()
+			.ready_take_while(move |((stream_id, ..), _): &(Key, _)| *stream_id <= to)
+			.filter_map(|((stream_id, ..), value): (Key, serde_json::Value)| async move {
+				serde_json::from_value(value)
+					.ok()
+					.map(|update| (stream_id, update))
+			})
 	}
 
 	#[cfg(feature = "ldap")]
@@ -1894,6 +1964,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn search_ldap(&self, _user_id: &UserId) -> Result<Vec<(String, Option<bool>)>> {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 
@@ -2008,6 +2079,7 @@ impl Service {
 
 	#[cfg(not(feature = "ldap"))]
 	pub async fn auth_ldap(&self, _user_dn: &str, _password: &str) -> Result {
+		std::future::ready(()).await;
 		Err!(FeatureDisabled("ldap"))
 	}
 

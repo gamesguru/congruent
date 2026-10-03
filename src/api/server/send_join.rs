@@ -40,10 +40,10 @@ async fn create_join_event(
 
 	// We need to return the state prior to joining, let's keep a reference to that
 	// here
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
 		.map_err(|e| err!(Request(NotFound(error!("Room has no state: {e}")))))?;
 
@@ -127,13 +127,21 @@ async fn create_join_event(
 	.await?;
 
 	trace!("Fetching current state IDs");
-	let state_ids: Vec<OwnedEventId> = services
+	// Resolve short event IDs in batches rather than one lookup per state
+	// event; any traversal or lookup failure aborts the join response.
+	let short_event_ids: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
-		.map(at!(1))
-		.collect()
-		.await;
+		.state_full_shortids_hamt(root_handle.clone())
+		.map_ok(at!(1))
+		.try_collect()
+		.await?;
+	let state_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(short_event_ids.into_iter().stream())
+		.try_collect()
+		.await?;
 
 	// Per MSC3943 (an addendum to MSC3706), a nameless room's heroes'
 	// membership events must still be included in a partial-state response so
@@ -143,13 +151,15 @@ async fn create_join_event(
 	// those instead and doesn't need heroes at all.
 	let heroes = if omit_members {
 		let (has_name, has_canonical_alias) = tokio::join!(
-			services
-				.rooms
-				.state_accessor
-				.state_contains_type(shortstatehash, &ruma::events::StateEventType::RoomName),
-			services.rooms.state_accessor.state_contains_type(
-				shortstatehash,
-				&ruma::events::StateEventType::RoomCanonicalAlias
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&ruma::events::StateEventType::RoomName,
+			),
+			services.rooms.state_accessor.state_contains_type_hamt(
+				room_id,
+				&root_handle,
+				&ruma::events::StateEventType::RoomCanonicalAlias,
 			),
 		);
 		if has_name || has_canonical_alias {

@@ -276,10 +276,6 @@ pub struct Config {
 	pub shortstatekey_cache_capacity: u32,
 
 	/// default: varies by system
-	#[serde(default = "default_shortstatehash_cache_capacity")]
-	pub shortstatehash_cache_capacity: u32,
-
-	/// default: varies by system
 	#[serde(default = "default_statekeyshort_cache_capacity")]
 	pub statekeyshort_cache_capacity: u32,
 
@@ -290,6 +286,13 @@ pub struct Config {
 	/// default: varies by system
 	#[serde(default = "default_stateinfo_cache_capacity")]
 	pub stateinfo_cache_capacity: u32,
+
+	/// Maximum entries in the LtHash lattice cache (MSC4500).
+	/// Each entry is 2 KiB; default 512 ≈ 1 MiB.
+	///
+	/// default: 512
+	#[serde(default = "default_lthash_cache_capacity")]
+	pub lthash_cache_capacity: u32,
 
 	/// default: varies by system
 	#[serde(default = "default_roomid_spacehierarchy_cache_capacity")]
@@ -2733,6 +2736,10 @@ pub struct ExperimentalConfig {
 	/// MSC4222: state_after in sync v2
 	#[serde(default)]
 	pub msc4222_enabled: bool,
+
+	/// MSC4500: State Accumulators
+	#[serde(default = "true_fn")]
+	pub msc4500_enabled: bool,
 }
 
 impl Default for ExperimentalConfig {
@@ -2741,6 +2748,7 @@ impl Default for ExperimentalConfig {
 			msc3266_enabled: false,
 			msc4222_enabled: false,
 			msc3030_enabled: true,
+			msc4500_enabled: true,
 		}
 	}
 }
@@ -2977,10 +2985,6 @@ fn default_shortstatekey_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
 
-fn default_shortstatehash_cache_capacity() -> u32 {
-	parallelism_scaled_u32(10_000).saturating_add(100_000)
-}
-
 fn default_statekeyshort_cache_capacity() -> u32 {
 	parallelism_scaled_u32(10_000).saturating_add(100_000)
 }
@@ -2990,6 +2994,8 @@ fn default_servernameevent_data_cache_capacity() -> u32 {
 }
 
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
+
+fn default_lthash_cache_capacity() -> u32 { 512 }
 
 fn default_roomid_spacehierarchy_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 

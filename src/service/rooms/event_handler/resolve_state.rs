@@ -1,7 +1,7 @@
-use std::{borrow::Borrow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use conduwuit::{
-	Error, Result, err, implement, info,
+	Error, Result, err, implement,
 	state_res::StateMap,
 	trace,
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
@@ -9,8 +9,6 @@ use conduwuit::{
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
-
-use crate::rooms::state_compressor::CompressedState;
 
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
@@ -24,120 +22,85 @@ pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
 	room_version_id: &RoomVersionId,
-	incoming_state: HashMap<u64, OwnedEventId>,
-) -> Result<Arc<CompressedState>> {
+	incomingstate: HashMap<u64, OwnedEventId>,
+) -> Result<rezzy::hamt::RootHandle> {
 	trace!("Loading current room state ids");
-	let current_sstatehash = self
+	let current_root_handle = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.map_err(|e| err!(Database(error!("No state for {room_id:?}: {e:?}"))))
 		.await?;
 
-	let current_state_ids: HashMap<_, _> = self
+	let currentstate_ids: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids(current_sstatehash)
-		.collect()
-		.await;
+		.state_full_ids_hamt(&current_root_handle)
+		.try_collect()
+		.await?;
 
 	trace!("Loading fork states");
-	let fork_states = [current_state_ids, incoming_state];
+	let forkstates = [currentstate_ids, incomingstate];
 
-	// Build OwnedEventId -> ShortStateKey reverse map from the fork states BEFORE
-	// they are consumed into streams below. After state resolution completes, we
-	// use this for O(1) fast-path shortstatehash lookups instead of issuing
-	// ~50k concurrent get_or_create_shortstatekey DB calls.
-	//
-	// State resolution selects its output event_ids exclusively from the input
-	// fork states, so every resolved entry will normally hit this fast path.
-	// The get_or_create_shortstatekey fallback handles truly new state events
-	// (rare -- e.g., a new join that wasn't in either input fork).
-	let eid_to_ssk: HashMap<OwnedEventId, u64> = fork_states
-		.iter()
-		.flat_map(|fs| fs.iter().map(|(&ssk, eid)| (eid.clone(), ssk)))
-		.collect();
-
-	let fork_states = fork_states
+	let forkstates = forkstates
 		.iter()
 		.stream()
-		.wide_then(|fork_state| {
-			let shortstatekeys = fork_state.keys().copied().stream();
-			let event_ids = fork_state.values().cloned().stream();
+		.wide_then(|forkstate| {
+			let shortstatekeys = forkstate.keys().copied().stream();
+			let event_ids = forkstate.values().cloned().stream();
 			self.services
 				.short
 				.multi_get_statekey_from_short(shortstatekeys)
 				.zip(event_ids)
-				.ready_filter_map(|(ty_sk, id)| Some((ty_sk.ok()?, id)))
+				.ready_filter_map(|(ty_sk, id): (Result<_>, _)| Some((ty_sk.ok()?, id)))
 				.collect()
 		})
 		.map(Ok::<_, Error>)
 		.try_collect::<Vec<StateMap<OwnedEventId>>>();
-
-	let fork_states = fork_states.await?;
-
-	// Do NOT fetch from federation here. State resolution must be local-only
-	// to avoid blocking. Missing auth chain events cause state_res to skip those
-	// subgraph branches — producing a best-effort result with local data. The
-	// ingestion pipeline (handle_outlier_pdu, fetch_prev) is responsible for
-	// pre-fetching auth events before we reach this point.
-
-	// Diagnostic: log PL events in each fork state
-	for (i, fork) in fork_states.iter().enumerate() {
-		for ((ty, sk), eid) in fork {
-			if ty.to_string() == "m.room.power_levels" {
-				info!("resolve_state fork[{i}] PL ({ty},{sk}) => {eid}");
-			}
-		}
-	}
+	let forkstates = forkstates.await?;
 
 	trace!("Resolving state");
-	let n_fork_states: usize = fork_states.iter().map(HashMap::len).sum();
-	info!(%room_id, n_fork_states, "state_res: fork states loaded, starting resolution");
-	let t = std::time::Instant::now();
-	let state = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
+	let state: StateMap<OwnedEventId> = self
+		.state_resolution(room_id, room_version_id, forkstates.iter(), None)
 		.boxed()
 		.await?;
-	info!(%room_id, n_resolved = state.len(), elapsed = ?t.elapsed(), "state_res: resolution complete");
 
-	// Diagnostic: log resolved PL and JoinRules
-	for ((ty, sk), eid) in &state {
-		if ty.to_string() == "m.room.power_levels" || ty.to_string() == "m.room.join_rules" {
-			info!("resolve_state RESULT ({ty},{sk}) => {eid}");
-		}
-	}
 	trace!("State resolution done.");
-	let eid_to_ssk = &eid_to_ssk;
-	let state_events: Vec<_> = state
-		.iter()
-		.stream()
-		.wide_then(|((event_type, state_key), event_id)| async move {
-			// FAST PATH: ~99.9% of resolved events were in a fork state; their
-			// ShortStateKey is already known in memory — no DB call needed.
-			if let Some(&ssk) = eid_to_ssk.get(event_id) {
-				return (ssk, event_id.clone());
-			}
-			// SLOW PATH: truly new state event (e.g., a new join member event).
-			let ssk = self
-				.services
-				.short
-				.get_or_create_shortstatekey(event_type, state_key)
-				.await;
-			(ssk, event_id.clone())
-		})
-		.collect()
-		.await;
 
-	trace!("Compressing state...");
-	let new_room_state: CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_events.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.await;
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(state.len());
 
-	Ok(Arc::new(new_room_state))
+	for ((ty, sk), id) in &state {
+		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
+
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(ty, sk)
+			.await;
+		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
+		entries.push((shortstatekey, shorteventid));
+	}
+
+	let structural_key = crate::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		room_id,
+	);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
+
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+		self.services
+			.state
+			.persist_root_lattice(&root_handle, &lattice);
+	});
+
+	Ok(root_handle)
 }
 
 #[implement(super::Service)]
@@ -183,18 +146,19 @@ where
 	};
 
 	struct LocalArenaProvider<'a, F> {
-		global_cache: &'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
-		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String>>>,
+		global_cache:
+			&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
 		version: rezzy::StateResVersion,
 		fetch_pdu: F,
 	}
 
-	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, serde_json::Value>
+	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
 		for LocalArenaProvider<'_, F>
 	where
 		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 	{
-		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String>> {
+		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
 			let event_id = OwnedEventId::try_from(id.as_str()).ok()?;
 
 			if let Some(cached_arc) = self.global_cache.get(&event_id) {
@@ -274,7 +238,7 @@ where
 	) {
 		// V2.1+ subgraph computation needs full auth chain visibility.
 		// Build event context by BFS-walking auth chains from all fork state events.
-		let mut ctx: HashMap<String, rezzy::LeanEvent<String>> = HashMap::new();
+		let mut ctx: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> = HashMap::new();
 		let mut q: std::collections::VecDeque<String> = lean_state_sets
 			.iter()
 			.flat_map(|ss| ss.values().cloned())
@@ -285,7 +249,7 @@ where
 			}
 			let ev = <_ as rezzy::basespec::rezzy_types::EventProvider<
 				String,
-				serde_json::Value,
+				rezzy::JsonValue,
 			>>::get_event(&provider, &eid);
 			if let Some(ev) = ev {
 				for aid in &ev.auth_events {
@@ -442,9 +406,12 @@ where
 	if is_pre_v12_creator { 100 } else { 0 }
 }
 
-fn pdu_to_lean(pdu: &conduwuit_core::PduEvent, power_level: i64) -> rezzy::LeanEvent<String> {
-	let content_val: serde_json::Value =
-		serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null);
+fn pdu_to_lean(
+	pdu: &conduwuit_core::PduEvent,
+	power_level: i64,
+) -> rezzy::LeanEvent<String, rezzy::JsonValue> {
+	let content_val =
+		rezzy::JsonValue::parse(pdu.content.get()).expect("PDU content must be valid JSON");
 	rezzy::LeanEvent {
 		event_id: pdu.event_id.to_string(),
 		event_type: pdu.kind.to_string(),

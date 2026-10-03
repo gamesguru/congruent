@@ -78,15 +78,20 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 				}
 
 				// Try state snapshot lookup
-				let prev_state = if let Ok(ssh) = self
+				let prev_state = if let Ok(root_handle) = self
 					.services
 					.state_accessor
-					.pdu_shortstatehash(&event_id)
+					.pdu_roothandle_before_event(&event_id)
 					.await
 				{
 					self.services
 						.state_accessor
-						.state_get(ssh, &kind.clone().into(), &state_key)
+						.state_get_in_room_hamt(
+							room_id,
+							&root_handle,
+							&kind.clone().into(),
+							&state_key,
+						)
 						.await
 						.ok()
 						.filter(|prev| prev.event_id() != event_id)

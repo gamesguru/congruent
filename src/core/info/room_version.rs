@@ -1,6 +1,6 @@
 //! Room version support
 
-use std::iter::once;
+use std::{iter::once, sync::LazyLock};
 
 use ruma::{RoomVersionId, api::client::discovery::get_capabilities::RoomVersionStability};
 
@@ -18,11 +18,42 @@ pub const STABLE_ROOM_VERSIONS: &[RoomVersionId] = &[
 	RoomVersionId::V12,
 ];
 
+pub static MSC3389_ROOM_VERSION: LazyLock<RoomVersionId> = LazyLock::new(|| {
+	RoomVersionId::try_from("org.matrix.msc3389.10").expect("valid room version")
+});
+
+pub static MSC4311_ROOM_VERSION: LazyLock<RoomVersionId> = LazyLock::new(|| {
+	RoomVersionId::try_from("org.matrix.msc4311.10").expect("valid room version")
+});
+
 /// Experimental, partially supported room versions
-pub const UNSTABLE_ROOM_VERSIONS: &[RoomVersionId] =
-	&[RoomVersionId::V3, RoomVersionId::V4, RoomVersionId::V5];
+pub static UNSTABLE_ROOM_VERSIONS: LazyLock<Vec<RoomVersionId>> = LazyLock::new(|| {
+	vec![
+		RoomVersionId::V3,
+		RoomVersionId::V4,
+		RoomVersionId::V5,
+		MSC3389_ROOM_VERSION.clone(),
+		MSC4311_ROOM_VERSION.clone(),
+	]
+});
 
 type RoomVersion = (RoomVersionId, RoomVersionStability);
+
+#[inline]
+#[must_use]
+pub fn is_msc3389(version: &RoomVersionId) -> bool {
+	version == &*MSC3389_ROOM_VERSION || version.as_str() == "org.matrix.msc3389.10"
+}
+
+#[inline]
+#[must_use]
+pub fn is_msc4311(version: &RoomVersionId) -> bool { version == &*MSC4311_ROOM_VERSION }
+
+#[inline]
+#[must_use]
+pub fn has_msc4311_stripped_state_validation(version: &RoomVersionId) -> bool {
+	is_msc4311(version) || *version == RoomVersionId::V12
+}
 
 impl crate::Server {
 	#[inline]

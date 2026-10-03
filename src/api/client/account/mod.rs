@@ -355,8 +355,11 @@ pub async fn full_user_deactivate(
 	services
 		.users
 		.all_profile_keys(user_id)
-		.ready_for_each(|(profile_key, _)| {
-			services.users.set_profile_key(user_id, &profile_key, None);
+		.for_each(async |(profile_key, _)| {
+			services
+				.users
+				.set_profile_key(user_id, &profile_key, None)
+				.await;
 		})
 		.await;
 

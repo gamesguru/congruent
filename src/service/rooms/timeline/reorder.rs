@@ -273,23 +273,23 @@ impl Service {
 		if self
 			.services
 			.state
-			.get_room_shortstatehash(room_id)
+			.get_room_state_hamt(room_id)
 			.await
 			.is_err()
 		{
 			if let Some(latest_eid) = sorted.last() {
-				if let Ok(ssh) = self
+				if let Ok(root_handle) = self
 					.services
 					.state_accessor
-					.pdu_shortstatehash(latest_eid)
+					.pdu_roothandle_after_event(latest_eid)
 					.await
 				{
 					let state_lock = self.services.state.mutex.lock(room_id).await;
 					self.services
 						.state
-						.set_room_state(room_id, ssh, &state_lock);
+						.set_room_state_hamt(room_id, &root_handle, &state_lock);
 					info!(
-						"reorder_timeline: bootstrapped room state to shortstatehash {ssh} from \
+						"reorder_timeline: bootstrapped room state to latest root handle from \
 						 latest event {latest_eid}"
 					);
 				}

@@ -1,0 +1,264 @@
+use axum::{Json, extract::State};
+use axum_extra::{TypedHeader, headers::Authorization};
+use conduwuit::{Err, Event, Result, err, info};
+use conduwuit_core::utils::hash::lthash::serialize_lthash;
+use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
+use futures::TryStreamExt;
+use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
+use serde::{Deserialize, Serialize};
+
+use super::AccessCheck;
+
+#[derive(Deserialize)]
+pub(crate) struct StateAccumulatorQuery {
+	pub event_id: OwnedEventId,
+}
+
+#[derive(Serialize)]
+pub(crate) struct StateAccumulatorResponse {
+	pub event_id: OwnedEventId,
+	pub algorithm: String,
+	pub lattice: String,
+	pub n_state_events: u64,
+	pub digest: String,
+}
+
+pub(crate) async fn get_state_accumulator_route(
+	State(services): State<crate::State>,
+	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
+	axum::extract::Path(room_id_str): axum::extract::Path<String>,
+	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
+	uri: http::Uri,
+) -> Result<impl axum::response::IntoResponse> {
+	let signature_uri = uri
+		.path_and_query()
+		.map_or("/", http::uri::PathAndQuery::as_str)
+		.to_owned();
+
+	let room_id = OwnedRoomId::try_from(room_id_str)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+
+	verify_federation_request(&services, &x_matrix, &signature_uri).await?;
+
+	AccessCheck {
+		services: &services,
+		origin: &x_matrix.origin,
+		room_id: &room_id,
+		event_id: None,
+	}
+	.check()
+	.await?;
+
+	info!(
+		origin = x_matrix.origin.as_str(),
+		room_id = %room_id,
+		event_id = %query.event_id,
+		"Serving MSC4500 state accumulator request"
+	);
+
+	// Verify the event belongs to the requested room
+	let pdu = services
+		.rooms
+		.timeline
+		.get_pdu(&query.event_id)
+		.await
+		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
+
+	if pdu.room_id_or_hash().as_ref() != Some(&room_id) {
+		return Err!(Request(NotFound("Event does not belong to the requested room.")));
+	}
+
+	let shorteventid = services
+		.rooms
+		.short
+		.get_or_create_shorteventid(&query.event_id)
+		.await;
+
+	let root_handle = services
+		.rooms
+		.state
+		.get_roothandle(shorteventid)
+		.await
+		.map_err(|_| err!(Request(NotFound("Root handle not found for event."))))?;
+
+	// Build the LtHash lattice over the event's post-event state. Any entry
+	// that cannot be resolved fails the request rather than yielding a
+	// digest over partial state.
+	let entries = state_tuples(&services, &root_handle).await?;
+
+	let mut lattice = rezzy::state::LtHash::default();
+	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
+	for (ty, sk, id) in &entries {
+		lattice.insert(ty, sk, id.as_str());
+	}
+	let (lattice_b64, digest) = serialize_lthash(&lattice);
+
+	let response = StateAccumulatorResponse {
+		event_id: query.event_id,
+		algorithm: "lthash16-blake3-v1".to_owned(),
+		lattice: lattice_b64,
+		n_state_events,
+		digest,
+	};
+
+	Ok(Json(response))
+}
+
+async fn verify_federation_request(
+	services: &crate::State,
+	x_matrix: &XMatrix,
+	signature_uri: &str,
+) -> Result<()> {
+	type Member = (String, ruma::CanonicalJsonValue);
+	type Object = ruma::CanonicalJsonObject;
+	type Value = ruma::CanonicalJsonValue;
+
+	let destination = services.globals.server_name();
+	if let Some(dest) = x_matrix.destination.as_deref() {
+		if dest != destination {
+			return Err!(Request(Forbidden(warn!(
+				"Invalid destination. Expected: {}, Got: {}",
+				destination, dest
+			))));
+		}
+	}
+
+	if services
+		.moderation
+		.is_remote_server_forbidden(&x_matrix.origin)
+	{
+		return Err!(Request(Forbidden(warn!(
+			"Federation requests from {} denied.",
+			x_matrix.origin
+		))));
+	}
+
+	let signature: [Member; 1] =
+		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
+	let signatures: [Member; 1] =
+		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
+	let authorization: Object = [
+		("destination".into(), Value::String(destination.into())),
+		("method".into(), Value::String(http::Method::GET.as_str().into())),
+		("origin".into(), Value::String(x_matrix.origin.as_str().into())),
+		("signatures".into(), Value::Object(signatures.into())),
+		("uri".into(), Value::String(signature_uri.to_owned())),
+	]
+	.into();
+
+	let key = services
+		.server_keys
+		.get_active_verify_key(&x_matrix.origin, &x_matrix.key)
+		.await
+		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
+
+	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
+	let keys: PubKeyMap = [(x_matrix.origin.as_str().into(), keys)].into();
+	ruma::signatures::verify_json(&keys, authorization).map_err(|e| {
+		err!(Request(Forbidden(warn!(
+			"Failed to verify X-Matrix signatures from {}: {e}",
+			x_matrix.origin
+		))))
+	})?;
+
+	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use conduwuit_core::utils::hash::lthash::serialize_lthash;
+	use ruma::OwnedEventId;
+
+	#[test]
+	fn test_serialize_empty_lthash() {
+		let empty_lthash = rezzy::LtHash::ZERO;
+		let (lattice, digest): (String, String) = serialize_lthash(&empty_lthash);
+
+		// The lattice for an empty LtHash is 2048 null bytes.
+		// 2048 bytes of 0s encoded in base64url without padding:
+		let expected_lattice = "A".repeat(2731);
+		assert_eq!(
+			lattice, expected_lattice,
+			"Lattice encoding must be deterministic URL-safe base64"
+		);
+
+		// Checksum format must be 43-character base64url (32 bytes)
+		assert_eq!(digest.len(), 43);
+		assert!(
+			digest
+				.chars()
+				.all(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+		);
+	}
+
+	#[test]
+	fn test_serialize_populated_lthash() {
+		let mut lthash = rezzy::LtHash::ZERO;
+		// Add some dummy data to manipulate the lthash state
+		let event_id1: OwnedEventId = "$abc:example.com".try_into().unwrap();
+		let event_id2: OwnedEventId = "$def:example.com".try_into().unwrap();
+		lthash.insert("m.room.name", "", &event_id1);
+		lthash.insert("m.room.topic", "", &event_id2);
+
+		let (lattice, digest): (String, String) = serialize_lthash(&lthash);
+
+		// Lattice must remain exactly 2731 base64url-encoded characters long (2048
+		// bytes without padding)
+		assert_eq!(lattice.len(), 2731);
+
+		// Ensure checksum is 43-character base64url format
+		assert_eq!(digest.len(), 43);
+		assert!(
+			digest
+				.chars()
+				.all(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+		);
+
+		// The digest and lattice should no longer be the empty one
+		let empty_lthash = rezzy::LtHash::ZERO;
+		let (empty_lattice, empty_digest): (String, String) = serialize_lthash(&empty_lthash);
+		assert_ne!(lattice, empty_lattice);
+		assert_ne!(digest, empty_digest);
+	}
+}
+
+/// Resolves every `(type, state_key, event_id)` tuple beneath a HAMT root
+/// directly from the HAMT and short-ID mappings, without loading PDUs.
+///
+/// Fails closed: a traversal error or an unresolvable short ID aborts rather
+/// than returning an incomplete state, so callers never digest partial state.
+pub(super) async fn state_tuples(
+	services: &crate::State,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<Vec<(String, String, OwnedEventId)>> {
+	use conduwuit::utils::stream::IterStream;
+
+	let shorts: Vec<_> = services
+		.rooms
+		.state_accessor
+		.state_full_shortids_hamt(root_handle.clone())
+		.try_collect()
+		.await?;
+
+	let state_keys: Vec<_> = services
+		.rooms
+		.short
+		.multi_get_statekey_from_short(shorts.iter().map(|(ssk, _)| *ssk).stream())
+		.try_collect()
+		.await?;
+
+	let event_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(
+			shorts.iter().map(|(_, seid)| *seid).stream(),
+		)
+		.try_collect()
+		.await?;
+
+	Ok(state_keys
+		.into_iter()
+		.zip(event_ids)
+		.map(|((ty, sk), id)| (ty.to_string(), sk.to_string(), id))
+		.collect())
+}

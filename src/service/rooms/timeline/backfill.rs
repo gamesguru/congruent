@@ -20,8 +20,8 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, StreamExt};
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, RoomVersionId,
-	ServerName, UInt,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
+	UInt,
 	api::federation,
 	events::{
 		StateEventType,
@@ -31,7 +31,6 @@ use ruma::{
 use serde_json::value::RawValue as RawJsonValue;
 
 use super::{PromotionClaims, TopoToken};
-use crate::rooms::short::ShortStateKey;
 
 /// Maximum number of prev_event hops [`materialize_remote_history_limited`]
 /// (and, transitively, [`get_remote_pdu_limited`]'s recursive remote
@@ -135,15 +134,24 @@ pub async fn backfill_if_required(
 	// window covers this request too, but only while the room state hash still
 	// matches the one observed during the scan.
 	let scan_limit_u32: u32 = limit.clamp(100, 500).try_into().unwrap_or(100);
-	let current_shortstatehash = self
+	// Fingerprint the room's current state with the leading bytes of its HAMT
+	// root handle structural hash, so the gap-free cache is invalidated when
+	// the room state transitions.
+	let current_state_fingerprint = self
 		.services
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
-		.unwrap_or(0);
+		.map_or(0, |root_handle| {
+			u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			)
+		});
 	if Self::backfill_gap_free_cache_hit(
 		self.backfill_gap_free_cache.get(&room_id.to_owned()),
-		current_shortstatehash,
+		current_state_fingerprint,
 		from,
 		usize::try_from(scan_limit_u32).unwrap_or(100),
 	) {
@@ -292,9 +300,9 @@ pub async fn backfill_if_required(
 				continue;
 			}
 
-			if current_shortstatehash != 0 {
+			if current_state_fingerprint != 0 {
 				self.backfill_gap_free_cache
-					.insert(room_id.to_owned(), (current_shortstatehash, from, scan_limit));
+					.insert(room_id.to_owned(), (current_state_fingerprint, from, scan_limit));
 			}
 			return Ok(());
 		}
@@ -452,7 +460,6 @@ pub async fn backfill_if_required(
 
 #[implement(super::Service)]
 async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
-	let room_version = self.services.state.get_room_version(room_id).await?;
 	let state_pdus = self
 		.services
 		.state_accessor
@@ -541,7 +548,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		return Ok(0);
 	}
 
-	self.promote_outliers_sorted(room_id, &outlier_state_event_ids, &room_version)
+	self.promote_outliers_sorted(room_id, &outlier_state_event_ids)
 		.await
 }
 
@@ -1055,6 +1062,25 @@ pub async fn promote_outlier_batch<'a>(
 		return Ok(PromoteOutlierOutcome::Skipped);
 	}
 
+	// Likewise never promote a soft-failed event: it failed auth against the
+	// current room state and must stay out of the visible timeline. Admin
+	// rescue clears the marker explicitly before promoting.
+	if self
+		.services
+		.pdu_metadata
+		.is_event_soft_failed(event_id)
+		.await
+	{
+		warn!(
+			target: "backfill_debug",
+			%event_id,
+			%room_id,
+			"promote_outlier: event is soft-failed, skipping"
+		);
+		drop(insert_lock);
+		return Ok(PromoteOutlierOutcome::Skipped);
+	}
+
 	// Use backfill (negative) PDU count — these are historical events
 	// that predate the join, not new forward events.
 	let count: i64 = self.services.globals.next_count()?.try_into()?;
@@ -1118,7 +1144,7 @@ pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId)
 /// Associate a backfilled event with its genuine state-at-event, computed via
 /// real state resolution over the event's own `prev_events` -- the same
 /// pipeline live federation `/send` events use
-/// (`event_handler::resolve_state_at_incoming_event`/`compress_state_at_event`,
+/// (`event_handler::state_at_incoming_degree_one`/`state_at_incoming_resolved`,
 /// normally reached through `upgrade_outlier_to_timeline_pdu`'s
 /// `is_forward_extremity: false` branch).
 ///
@@ -1130,9 +1156,9 @@ pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId)
 /// into the snapshot it wrote. See
 /// docs/development-gg/backfill-state-association-bug.md.
 ///
-/// Only writes the per-event state association (`set_event_state`) -- never
-/// merges into the room's live current state, matching backfilled events'
-/// semantics (they are historical, not the tip).
+/// Only writes the per-event state association (`set_event_roothandle`) --
+/// never merges into the room's live current state, matching backfilled
+/// events' semantics (they are historical, not the tip).
 ///
 /// `origin` should be the actual server this event was backfilled from
 /// (`backfill_pdu`'s own `origin` parameter) wherever the caller has one --
@@ -1154,66 +1180,73 @@ async fn associate_resolved_state(
 		.await?;
 	let room_version_id = self.services.state.get_room_version(room_id).await?;
 
-	let state_at_event = self
-		.services
-		.event_handler
-		.resolve_state_at_incoming_event(
-			pdu,
-			&create_event,
-			origin,
-			room_id,
-			&room_version_id,
-			false, // skip_soft_fail: enforce real auth + remote fallback, matching the live path
-			false, // prev_fetch_had_invalid_data: not applicable outside fetch_prev
-			None,  // state_ids_anchor_hint
-			// merge_current_extremities: false -- this is historical data, never fold
-			// in the room's current live tip when this event's own prev_events don't
-			// match it (they never will, for anything actually historical).
-			false,
-		)
-		.await?;
+	// Resolve the state-at-event purely from the event's own `prev_events`
+	// (never folding in the room's current live tip -- this is historical
+	// data). Must run before acquiring any state.mutex guard for this room:
+	// resolution can perform federation I/O and thousands of short-ID
+	// lookups.
+	let state_at_event = if pdu.prev_events().count() == 1 {
+		self.services
+			.event_handler
+			.state_at_incoming_degree_one(pdu, room_id)
+			.await?
+	} else {
+		self.services
+			.event_handler
+			.state_at_incoming_resolved(pdu, room_id, &room_version_id)
+			.await?
+	};
 
-	// Must run before acquiring any state.mutex guard for this room --
-	// compress_state_at_event can perform thousands of short-ID lookups.
-	let compressed = self
+	let state_at_event = match state_at_event {
+		| Some(state) => state,
+		| None => self
+			.services
+			.event_handler
+			.fetch_state(origin, &create_event, room_id, pdu.event_id(), false)
+			.await?
+			.ok_or_else(|| err!("Could not resolve state at backfilled event"))?,
+	};
+
+	// The stored per-event root is the state *after* the event (see
+	// `pdu_roothandle_after_event`), so a state event must include its own
+	// change; otherwise membership/join-rule changes vanish from historical
+	// reads and `pdu_roothandle_before_event` skips this event for descendants.
+	let mut state_at_event = state_at_event;
+	if let Some(state_key) = pdu.state_key() {
+		let shortstatekey = self
+			.services
+			.short
+			.get_or_create_shortstatekey(&pdu.kind().to_string().into(), state_key)
+			.await;
+		state_at_event.insert(shortstatekey, pdu.event_id().to_owned());
+	}
+
+	let root_handle = self
 		.services
 		.event_handler
-		.compress_state_at_event(&state_at_event)
+		.state_map_to_root_handle(room_id, &state_at_event)
 		.await?;
 
 	self.services
 		.state
-		.set_event_state(pdu.event_id(), room_id, compressed)
+		.set_event_roothandle(pdu.event_id(), &root_handle)
 		.await?;
 	Ok(())
 }
 
 #[implement(super::Service)]
 async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) -> Result<()> {
-	let shortstatehash = self.services.state.get_room_shortstatehash(room_id).await?;
-	let state_ids: Vec<(ShortStateKey, OwnedEventId)> = self
-		.services
-		.state_accessor
-		.state_full_ids::<OwnedEventId>(shortstatehash)
-		.collect::<Vec<_>>()
-		.await;
-	let compressed: crate::rooms::state_compressor::CompressedState = self
-		.services
-		.state_compressor
-		.compress_state_events(state_ids.iter().map(|(key, id)| (key, id.as_ref())))
-		.collect()
-		.await;
-
+	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 	self.services
 		.state
-		.set_event_state(event_id, room_id, Arc::new(compressed))
+		.set_event_roothandle(event_id, &root_handle)
 		.await?;
 	Ok(())
 }
 
 /// Promote a batch of outlier events into the backfilled timeline in
-/// topological order (ancestors before descendants). Uses rezzy's Kahn sort
-/// to order events by their DAG structure.
+/// topological order (ancestors before descendants), using event depth as the
+/// ordering key for the fetched batch.
 ///
 /// This is called during `/send_join` to make auth chain + state events
 /// visible when users scroll up. Events already in the timeline are skipped.
@@ -1222,7 +1255,6 @@ pub async fn promote_outliers_sorted(
 	&self,
 	room_id: &RoomId,
 	event_ids: &[OwnedEventId],
-	room_version: &RoomVersionId,
 ) -> Result<usize> {
 	use conduwuit_core::debug;
 
@@ -1231,7 +1263,8 @@ pub async fn promote_outliers_sorted(
 	}
 
 	// Build LeanEvent map from outlier PDUs for topo sort
-	let mut events_map: HashMap<String, rezzy::LeanEvent> = HashMap::new();
+	let mut events_map: HashMap<String, rezzy::LeanEvent<String, rezzy::JsonValue>> =
+		HashMap::new();
 
 	for event_id in event_ids {
 		// Skip events already in the timeline
@@ -1248,7 +1281,8 @@ pub async fn promote_outliers_sorted(
 			event_type: pdu.kind.to_string(),
 			sender: pdu.sender.to_string(),
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
-			content: serde_json::from_str(pdu.content.get()).unwrap_or(serde_json::Value::Null),
+			content: rezzy::JsonValue::parse(pdu.content.get())
+				.expect("PDU content must be valid JSON"),
 			origin_server_ts: u64::from(pdu.origin_server_ts),
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
@@ -1263,29 +1297,14 @@ pub async fn promote_outliers_sorted(
 		return Ok(0);
 	}
 
-	// Find the create event for the sort
-	let create_ev = events_map
-		.values()
-		.find(|ev| ev.event_type == "m.room.create");
-
-	// Topo sort: ancestors first (create → PL → joins → messages)
-	let state_res_version = {
-		use ruma::RoomVersionId::*;
-		match room_version {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 | V11 =>
-				rezzy::StateResVersion::V2,
-			| V12 => rezzy::StateResVersion::V2_1,
-			| ver => return Err!(Database("Unsupported room version for topo sort: {ver}")),
-		}
-	};
-	let mut pl_cache = HashMap::new();
-	let sorted_ids = rezzy::resolve::sorting::lean_kahn_sort(
-		&events_map,
-		&events_map, // auth context is the same set
-		create_ev,
-		state_res_version,
-		&mut pl_cache,
-	);
+	// Depth is the reliable ordering key for a fetched timeline batch.
+	let mut sorted_ids: Vec<String> = events_map.keys().cloned().collect();
+	sorted_ids.sort_by(|a, b| {
+		events_map[a]
+			.depth
+			.cmp(&events_map[b].depth)
+			.then_with(|| a.cmp(b))
+	});
 
 	debug!(
 		"Promoting {} outliers to timeline in room {} ({} sorted)",

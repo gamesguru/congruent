@@ -19,6 +19,38 @@ use ruma::{
 
 use crate::Ruma;
 
+fn validate_msc4311_stripped_state(
+	room_id: &str,
+	events: &[rezzy::JsonValue],
+) -> std::result::Result<(), String> {
+	let mut has_create = false;
+
+	for (index, event) in events.iter().enumerate() {
+		for field in ["type", "sender", "content", "origin_server_ts", "room_id"] {
+			if event.get(field).is_none() {
+				return Err(format!("stripped state event {index} is missing {field}"));
+			}
+		}
+
+		let event_room_id = event
+			.get("room_id")
+			.and_then(rezzy::JsonValue::as_str)
+			.ok_or_else(|| format!("stripped state event {index} has an invalid room_id"))?;
+		if event_room_id != room_id {
+			return Err(format!("stripped state event {index} is for a different room"));
+		}
+
+		has_create |=
+			event.get("type").and_then(rezzy::JsonValue::as_str) == Some("m.room.create");
+	}
+
+	if !has_create {
+		return Err("m.room.create is missing from state".into());
+	}
+
+	Ok(())
+}
+
 /// # `PUT /_matrix/federation/v2/invite/{roomId}/{eventId}`
 ///
 /// Invites a remote user to a room.
@@ -170,9 +202,24 @@ pub(crate) async fn create_invite_route(
 	}
 
 	let mut invite_state = body.invite_room_state.clone();
-
 	let mut event: JsonObject = serde_json::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
+	let is_direct_invite = event
+		.get("content")
+		.and_then(|content| content.get("is_direct"))
+		.is_some_and(|is_direct| is_direct.as_bool() == Some(true));
+	let invite_state_values = invite_state
+		.iter()
+		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
+		.collect::<std::result::Result<Vec<_>, _>>()
+		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
+
+	if conduwuit::info::room_version::has_msc4311_stripped_state_validation(&body.room_version)
+		&& (!invite_state_values.is_empty() || !is_direct_invite)
+	{
+		validate_msc4311_stripped_state(body.room_id.as_str(), &invite_state_values)
+			.map_err(|e| err!(Request(MissingParam("Invalid invite room state: {e}"))))?;
+	}
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 

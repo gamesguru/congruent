@@ -128,13 +128,13 @@ pub async fn user_can_see_event(
 		return true;
 	}
 
-	let Ok(shortstatehash) = self.pdu_shortstatehash(event_id).await else {
+	let Ok(root_handle) = self.pdu_roothandle_before_event(event_id).await else {
 		// No historical state snapshot for this event. Use the current room state's
 		// history_visibility as a best-effort fallback. For shared/world_readable
-		// policies, allow if currently a member. For joined/invited, deny since we
-		// cannot verify historical membership without the shortstatehash.
+		// policies, allow if the user was ever a member. For joined/invited, deny
+		// since we cannot verify historical membership without the state root.
 		debug_info!(
-			"visibility {event_id}: no shortstatehash, is_joined={currently_member}, \
+			"visibility {event_id}: no roothandle, is_joined={currently_member}, \
 			 was_member={was_member}"
 		);
 		let history_visibility = self
@@ -152,24 +152,26 @@ pub async fn user_can_see_event(
 	};
 
 	let history_visibility = self
-		.state_get_content(shortstatehash, &StateEventType::RoomHistoryVisibility, "")
+		.state_get_content_hamt(room_id, &root_handle, &StateEventType::RoomHistoryVisibility, "")
 		.await
 		.map_or(HistoryVisibility::Shared, |c: RoomHistoryVisibilityEventContent| {
 			c.history_visibility
 		});
 
 	debug_info!(
-		"visibility {event_id}: ssh={shortstatehash} hv={history_visibility:?} \
-		 member={currently_member}"
+		"visibility {event_id}: hv={history_visibility:?} member={currently_member} \
+		 was_member={was_member}"
 	);
 	match history_visibility {
 		| HistoryVisibility::Invited => {
 			// Allow if any member on requesting server was AT LEAST invited, else deny
-			self.user_was_invited(shortstatehash, user_id).await
+			self.user_was_invited_hamt(room_id, &root_handle, user_id)
+				.await
 		},
 		| HistoryVisibility::Joined => {
 			// Allow if any member on requested server was joined, else deny
-			self.user_was_joined(shortstatehash, user_id).await
+			self.user_was_joined_hamt(room_id, &root_handle, user_id)
+				.await
 		},
 		| HistoryVisibility::WorldReadable => true,
 		| HistoryVisibility::Shared | _ => {

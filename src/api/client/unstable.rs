@@ -135,11 +135,10 @@ pub(crate) async fn set_profile_key_route(
 		Box::pin(update_avatar_url(&services, &body.user_id, Some(mxc), None, &all_joined_rooms))
 			.await;
 	} else {
-		services.users.set_profile_key(
-			&body.user_id,
-			&body.key_name,
-			Some(profile_key_value.clone()),
-		);
+		services
+			.users
+			.set_profile_key(&body.user_id, &body.key_name, Some(profile_key_value.clone()))
+			.await;
 	}
 
 	if services.config.allow_local_presence {
@@ -201,7 +200,8 @@ pub(crate) async fn delete_profile_key_route(
 	} else {
 		services
 			.users
-			.set_profile_key(&body.user_id, &body.key_name, None);
+			.set_profile_key(&body.user_id, &body.key_name, None)
+			.await;
 	}
 
 	if services.config.allow_local_presence {
@@ -246,7 +246,8 @@ pub(crate) async fn get_profile_key_route(
 
 			services
 				.users
-				.set_displayname(&body.user_id, response.displayname.clone());
+				.set_displayname(&body.user_id, response.displayname.clone())
+				.await;
 
 			services
 				.users
@@ -259,11 +260,10 @@ pub(crate) async fn get_profile_key_route(
 			match response.custom_profile_fields.get(&body.key_name) {
 				| Some(value) => {
 					profile_key_value.insert(body.key_name.clone(), value.clone());
-					services.users.set_profile_key(
-						&body.user_id,
-						&body.key_name,
-						Some(value.clone()),
-					);
+					services
+						.users
+						.set_profile_key(&body.user_id, &body.key_name, Some(value.clone()))
+						.await;
 				},
 				| _ => {
 					return Err!(Request(NotFound("The requested profile key does not exist.")));
@@ -390,13 +390,20 @@ pub(crate) async fn get_room_dag_route(
 		let mut obj: serde_json::Map<String, serde_json::Value> =
 			serde_json::from_value(serde_json::to_value(&pdu)?)?;
 
-		if let Ok(ssh) = services
+		if let Ok(root_handle) = services
 			.rooms
 			.state_accessor
-			.pdu_shortstatehash(&pdu.event_id)
+			.pdu_roothandle_after_event(&pdu.event_id)
 			.await
 		{
-			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(ssh));
+			// Diagnostic-only field (stripped before client delivery): emit a
+			// stable 64-bit fingerprint of the event's HAMT root.
+			let fingerprint = u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			);
+			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(fingerprint));
 		}
 
 		// Add event_id in case PduEvent serialization omits it (V3+ rooms)

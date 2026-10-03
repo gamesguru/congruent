@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
-use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt};
+use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt, warn};
 use database::{Batch, Json, serialize_key};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use ruma::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType,
-		StateEventType,
+		StateEventType, TimelineEventType,
 		direct::DirectEvent,
 		invite_permission_config::FilterLevel,
 		room::{
@@ -37,7 +37,12 @@ pub async fn update_membership(
 	pdu: &Pdu,
 	update_joined_count: bool,
 ) -> Result {
-	let membership = pdu.get_content::<RoomMemberEventContent>()?;
+	// A redacted member event carries empty content. Per the spec a missing
+	// `membership` is treated as "leave", so do not fail the whole cache update
+	// on it.
+	let membership = pdu
+		.get_content::<RoomMemberEventContent>()
+		.unwrap_or_else(|_| RoomMemberEventContent::new(MembershipState::Leave));
 
 	// Keep track what remote users exist by adding them as "deactivated" users
 	//
@@ -126,8 +131,54 @@ pub async fn update_membership(
 			self.mark_as_left(user_id, room_id, Some(pdu.clone())).await;
 		},
 		| MembershipState::Knock => {
-			let knock_state = self.services.state.summary_stripped(pdu, room_id).await;
-			self.mark_as_knocked(user_id, room_id, Some(knock_state));
+			let mut knock_state = self.services.state.summary_stripped(pdu, room_id).await;
+			// A remote knock can be observed once through the federation response
+			// (with the complete stripped state) and again while applying the local
+			// membership event (where the local state cache may only contain that
+			// member event). Do not overwrite the complete state with that partial
+			// second summary.
+			let has_create = knock_state.iter().any(|event| {
+				serde_json::from_str::<serde_json::Value>(event.json().get())
+					.ok()
+					.and_then(|value| {
+						value
+							.get("type")
+							.and_then(serde_json::Value::as_str)
+							.map(str::to_owned)
+					})
+					.as_deref() == Some("m.room.create")
+			});
+			if !has_create {
+				if let Ok(previous) = self.knock_state(user_id, room_id).await {
+					if previous.iter().any(|event| {
+						serde_json::from_str::<serde_json::Value>(event.json().get())
+							.ok()
+							.and_then(|value| {
+								value
+									.get("type")
+									.and_then(serde_json::Value::as_str)
+									.map(str::to_owned)
+							})
+							.as_deref() == Some("m.room.create")
+					}) {
+						knock_state = previous;
+					}
+				}
+			}
+			let has_create = knock_state.iter().any(|event| {
+				serde_json::from_str::<serde_json::Value>(event.json().get())
+					.ok()
+					.and_then(|value| {
+						value
+							.get("type")
+							.and_then(serde_json::Value::as_str)
+							.map(str::to_owned)
+					})
+					.as_deref() == Some("m.room.create")
+			});
+			if has_create {
+				self.mark_as_knocked(user_id, room_id, Some(knock_state));
+			}
 		},
 		| _ => {},
 	}
@@ -399,7 +450,11 @@ pub async fn mark_as_invited_silent(
 	self.db.roomuserid_invitecount.batch_raw_put(
 		&mut batch,
 		&roomuser_id,
-		self.services.globals.next_count().unwrap(),
+		self.services
+			.globals
+			.next_count()
+			.unwrap()
+			.saturating_add(1),
 	);
 	if let Some(sender_user) = sender_user {
 		self.db
@@ -481,7 +536,7 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 /// Like `mark_as_left_silent`, but also updates device-list-left markers for
 /// other local users, matching `mark_as_left`'s side effect for that.
 ///
-/// Used by production state reconciliation (`force_state_inner`), where a
+/// Used by production state reconciliation, where a
 /// member disappears from state with no real leave PDU to build a
 /// timestamp-based `preserve_newer_invite` comparison from (see
 /// `mark_as_left_silent`'s docs for why an unconditional invite-preserve is
@@ -721,7 +776,12 @@ pub fn mark_as_knocked(
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
 
-	let new_count = self.services.globals.next_count().unwrap();
+	let new_count = self
+		.services
+		.globals
+		.next_count()
+		.unwrap()
+		.saturating_add(1);
 	tracing::info!(
 		target: "knock_debug",
 		"mark_as_knocked called for user_id={} room_id={} new_count={} knocked_state={:?}",
@@ -821,7 +881,11 @@ pub async fn mark_as_invited(
 	self.db.roomuserid_invitecount.batch_raw_put(
 		&mut batch,
 		&roomuser_id,
-		self.services.globals.next_count().unwrap(),
+		self.services
+			.globals
+			.next_count()
+			.unwrap()
+			.saturating_add(1),
 	);
 	self.db
 		.userroomid_invitesender
@@ -866,21 +930,29 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 		.collect()
 		.await;
 
-	let room_ssh_opt = self
-		.services
-		.state
-		.get_room_shortstatehash(room_id)
-		.await
-		.ok();
+	let room_root_opt = self.services.state.get_room_state_hamt(room_id).await.ok();
 
-	if let Some(room_ssh) = room_ssh_opt {
-		let state_full = self.services.state_accessor.state_full(room_ssh);
-		let mut state_full = std::pin::pin!(state_full);
-		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
-			if event_type != StateEventType::RoomMember {
+	if let Some(room_root) = room_root_opt.as_ref() {
+		// Fail closed: reconciling against a partial snapshot would remove
+		// members whose PDUs were merely unavailable.
+		let members: Vec<_> = match self
+			.services
+			.state_accessor
+			.state_full_pdus_hamt_strict(room_root.clone())
+			.try_collect()
+			.await
+		{
+			| Ok(pdus) => pdus,
+			| Err(e) => {
+				warn!(%room_id, "Skipping membership reconcile, state is incomplete: {e}");
+				return;
+			},
+		};
+		for pdu in members {
+			if *pdu.kind() != TimelineEventType::RoomMember {
 				continue;
 			}
-			let Ok(uid) = OwnedUserId::try_from(state_key.as_str()) else {
+			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
 				continue;
 			};
 
@@ -907,11 +979,16 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 		members_synced = members_synced.saturating_add(1);
 	}
 	for user_id in state_invited.difference(&cached_invited) {
-		if let Some(room_ssh) = room_ssh_opt {
+		if let Some(room_root) = room_root_opt.as_ref() {
 			if let Ok(pdu) = self
 				.services
 				.state_accessor
-				.state_get(room_ssh, &StateEventType::RoomMember, user_id.as_str())
+				.state_get_in_room_hamt(
+					room_id,
+					room_root,
+					&StateEventType::RoomMember,
+					user_id.as_str(),
+				)
 				.await
 			{
 				let last_state = self.services.state.summary_stripped(&pdu, room_id).await;
@@ -953,4 +1030,148 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 		"heal_room: synced {members_synced} membership cache entries, removed {stale_removed} \
 		 stale"
 	);
+}
+
+/// Update caches based on a state replacement (delta between old and new
+/// state).
+///
+/// This is used when `force_state` replaces the room state entirely. We must
+/// update the derived caches to reflect the new state.
+#[implement(super::Service)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn update_caches_for_state_delta(
+	&self,
+	room_id: &RoomId,
+	new_root_handle: &rezzy::hamt::RootHandle,
+	removed_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+	added_events: Vec<std::sync::Arc<conduwuit::PduEvent>>,
+) -> Result<()> {
+	let mut memberships_changed = false;
+	let mut users_to_mark_left = Vec::new();
+
+	// 1. Invalidate derived caches for removed events.
+	for pdu in removed_events {
+		match pdu.kind() {
+			| TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
+					.remove(room_id);
+			},
+			| TimelineEventType::RoomMember => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
+
+				// For removed memberships that have no corresponding added event in the delta,
+				// mark the user as left. Replacements are handled by `added_events`.
+
+				// Only test whether the member has an entry in the new root; do
+				// not resolve the PDU. Resolving would conflate "no member event"
+				// with "member entry present but its event mapping/PDU is missing",
+				// causing us to mark a still-present user as left.
+				match self
+					.services
+					.state_accessor
+					.state_get_shortid_hamt(
+						room_id,
+						new_root_handle,
+						&StateEventType::RoomMember,
+						target_user_id.as_str(),
+					)
+					.await
+				{
+					| Ok(_) => {
+						// The user has a member event in the new state,
+						// added_events will handle it.
+					},
+					| Err(e) if e.is_not_found() => {
+						// The user has no member event in the new state at all.
+						users_to_mark_left.push(target_user_id.to_owned());
+					},
+					| Err(e) => return Err(e),
+				}
+			},
+			| _ => {},
+		}
+	}
+	for user_id in users_to_mark_left {
+		self.mark_as_left(&user_id, room_id, None).await;
+		memberships_changed = true;
+	}
+
+	// 2. Process added/changed events normally
+	for pdu in added_events {
+		match pdu.kind() {
+			| TimelineEventType::SpaceChild => {
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+			},
+			| TimelineEventType::RoomEncryption => {
+				self.services
+					.state_accessor
+					.encrypted_rooms_cache
+					.write()
+					.remove(room_id);
+			},
+			| TimelineEventType::RoomMember => {
+				let Some(state_key) = pdu.state_key() else {
+					warn!("Skipping member event without a state key while updating room caches");
+					continue;
+				};
+				let Ok(target_user_id) = UserId::parse(state_key) else {
+					warn!(
+						"Skipping member event with an invalid state key while updating room \
+						 caches"
+					);
+					continue;
+				};
+				self.update_membership(room_id, target_user_id, &pdu, false)
+					.await?;
+				// Membership changes can affect restricted-room accessibility.
+				self.services
+					.spaces
+					.roomid_spacehierarchy_cache
+					.lock()
+					.await
+					.remove(room_id);
+				memberships_changed = true;
+			},
+			| _ => {},
+		}
+	}
+
+	// 3. Recompute derived aggregate caches if needed
+	if memberships_changed {
+		self.update_joined_count(room_id).await;
+	}
+
+	Ok(())
 }

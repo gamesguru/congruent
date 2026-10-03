@@ -108,7 +108,7 @@ impl Services {
 				state: build!(rooms::state::Service),
 				state_accessor: build!(rooms::state_accessor::Service),
 				state_cache: build!(rooms::state_cache::Service),
-				state_compressor: build!(rooms::state_compressor::Service),
+				state_hamt: build!(rooms::state_hamt::Service),
 				threads: build!(rooms::threads::Service),
 				timeline: build!(rooms::timeline::Service),
 				typing: build!(rooms::typing::Service),

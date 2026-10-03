@@ -12,11 +12,12 @@ pub(super) type Maps = BTreeMap<MapsKey, MapsVal>;
 pub(super) type MapsKey = &'static str;
 pub(super) type MapsVal = Arc<Map>;
 
-pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> {
-	let descriptors = active_descriptors();
-	open_list(db, descriptors)
-}
+pub(super) fn open(db: &Arc<Engine>) -> Result<Maps> { open_list(db, &descriptors()) }
 
+/// All descriptors in open order: active maps first, then legacy/deprecated
+/// maps. Deprecated maps stay in the slice so `Engine::open` creates their CFs
+/// and `maps::open` opens them into the maps table, keeping migration-by-name
+/// lookups working unchanged.
 pub(super) fn descriptors() -> Vec<Descriptor> {
 	let capacity = ACTIVE_MAPS.len().saturating_add(DEPRECATED_MAPS.len());
 	let mut descriptors = Vec::with_capacity(capacity);
@@ -24,8 +25,6 @@ pub(super) fn descriptors() -> Vec<Descriptor> {
 	descriptors.extend_from_slice(DEPRECATED_MAPS);
 	descriptors
 }
-
-pub(super) fn active_descriptors() -> &'static [Descriptor] { ACTIVE_MAPS }
 
 #[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
@@ -281,8 +280,13 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
-		name: "roomid_shortstatehash",
-		val_size_hint: Some(8),
+		name: "roomid_roothandle",
+		val_size_hint: Some(48),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "shorteventid_roothandle",
+		val_size_hint: Some(48),
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
@@ -445,19 +449,6 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		..descriptor::SEQUENTIAL_SMALL
 	},
 	Descriptor {
-		name: "shorteventid_shortstatehash",
-		key_size_hint: Some(8),
-		val_size_hint: Some(8),
-		block_size: 512,
-		index_size: 512,
-		..descriptor::SEQUENTIAL
-	},
-	Descriptor {
-		name: "shortstatehash_statediff",
-		key_size_hint: Some(8),
-		..descriptor::SEQUENTIAL_SMALL
-	},
-	Descriptor {
 		name: "shortstatekey_statekey",
 		cache_disp: CacheDisp::Unique,
 		key_size_hint: Some(8),
@@ -468,6 +459,27 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 		name: "statehash_shortstatehash",
 		val_size_hint: Some(8),
 		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_nodes",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(16),
+		val_size_hint: Some(512),
+		block_size: 1024,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_root_lattices",
+		key_size_hint: Some(16),
+		val_size_hint: Some(2048),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "state_hamt_node_mtimes",
+		key_size_hint: Some(16),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
 		name: "statekey_shortstatekey",
@@ -593,6 +605,10 @@ pub(super) static ACTIVE_MAPS: &[Descriptor] = &[
 	},
 	Descriptor {
 		name: "useridprofilekey_value",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userprofileupdate_value",
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {

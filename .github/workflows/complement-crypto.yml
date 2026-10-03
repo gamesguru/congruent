@@ -7,7 +7,7 @@ on:
   push:
     branches: [main, main-upstream]
   pull_request:
-    branches: [main]
+    branches: [main, guru/dev-2026-03-27+b1-presence+b2-federation, _base/dev-to-hamt]
   workflow_dispatch:
 
 env:
@@ -16,7 +16,6 @@ env:
   SKIP_CONFIRM: 1
 
 jobs:
-
   setup:
     runs-on: ubuntu-24.04
     env:
@@ -28,7 +27,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodules
+        run: git submodule update --init complement-crypto-src ruwuma ruma-upstream
 
       - name: Install system dependencies
         run: |
@@ -80,6 +82,21 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  crypto-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      include: ${{ steps.matrix.outputs.include }}
+    steps:
+      - id: matrix
+        env:
+          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+        run: |
+          if [ -n "$RUST_SDK_URL" ]; then
+            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"},{"name":"rs","badge":"rs","client_matrix":"rr"},{"name":"js+rs","badge":"jsrs","client_matrix":"jr,rj"}]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"}]' >> "$GITHUB_OUTPUT"
+          fi
+
   # -----------------------------------------------------------------------------
   # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
   # as three parallel client-matrix variants so js, rs, and js+rs results are
@@ -91,7 +108,7 @@ jobs:
   # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
   # -----------------------------------------------------------------------------
   complement-crypto-tests:
-    needs: setup
+    needs: [setup, crypto-matrix]
     runs-on: ubuntu-24.04
     env:
       COMPLEMENT_PARALLEL: 24
@@ -101,24 +118,17 @@ jobs:
       pull-requests: write
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: js
-            badge: js
-            client_matrix: jj
-          - name: rs
-            badge: rs
-            client_matrix: rr
-          - name: js+rs
-            badge: jsrs
-            client_matrix: jr,rj
+      matrix: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-tags: true
           fetch-depth: 0
-          submodules: recursive
+          submodules: false
+
+      - name: Init required submodule
+        run: git submodule update --init complement-crypto-src
 
       # The suite needs the system libs Rust links against (mounts them into the
       # complement homeserver image), so set up the toolchain/prebuilts even
@@ -195,7 +205,7 @@ jobs:
       # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
       # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
       - name: Download prebuilt matrix-rust-sdk FFI
-        if: contains(matrix.client_matrix, 'r')
+        if: contains(matrix.client_matrix, 'r') && vars.C10Y_CRYPTO_RUST_SDK_URL != ''
         env:
           RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
         run: |
@@ -223,6 +233,7 @@ jobs:
 
       - name: Run Complement-Crypto tests (${{ matrix.name }})
         id: complement-crypto
+        if: matrix.client_matrix == 'jj' || vars.C10Y_CRYPTO_RUST_SDK_URL != ''
         env:
           COMPLEMENT_CRYPTO_PARALLEL: "3"
           COMPLEMENT_CRYPTO_TIMEOUT: "45m"

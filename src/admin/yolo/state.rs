@@ -6,11 +6,12 @@ use std::{
 
 use conduwuit::{
 	Err, PduCount, Result, err, info,
-	matrix::{Event, pdu::PduEvent},
+	matrix::{Event, StateKey, pdu::PduEvent},
+	utils::IterStream,
 	warn,
 };
 use conduwuit_database::Batch;
-use futures::{StreamExt, pin_mut};
+use futures::{StreamExt, TryStreamExt, pin_mut};
 use ruma::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
@@ -347,11 +348,11 @@ pub(super) async fn compare_room_state(
 		}
 	}
 
-	let local_state_hash = self
+	let local_root_handle = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await?;
 
 	// Inject tip event into remote state (uses cached tip_pdu_opt)
@@ -402,7 +403,7 @@ pub(super) async fn compare_room_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full(local_state_hash);
+			.state_full_hamt(local_root_handle.clone());
 		pin_mut!(state_full);
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
@@ -554,7 +555,7 @@ pub(super) async fn compare_room_state(
 		extra_locally.len()
 	)?;
 	writeln!(out)?;
-	writeln!(out, "Room SSH:        {local_state_hash}")?;
+	writeln!(out, "Room root:       {}", fmt_root_handle(&local_root_handle))?;
 	writeln!(out, "Extremities:     {extremity_count}")?;
 	writeln!(
 		out,
@@ -833,6 +834,15 @@ fn fmt_event_meta(
 	}
 }
 
+/// Renders a HAMT `RootHandle`'s cross-server `state_group_id` as lowercase hex.
+fn fmt_root_handle(handle: &rezzy::hamt::RootHandle) -> String {
+	let mut out = String::with_capacity(64);
+	for byte in handle.state_group_id {
+		write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+	}
+	out
+}
+
 #[admin_command]
 pub(super) async fn set_state_event(
 	&self,
@@ -841,8 +851,6 @@ pub(super) async fn set_state_event(
 	event_id: OwnedEventId,
 	state_key: String,
 ) -> Result {
-	use conduwuit_service::rooms::state_compressor::CompressedState;
-
 	self.bail_restricted()?;
 
 	// TODO: transactionalize this whole function for safety & idempotency
@@ -894,12 +902,13 @@ pub(super) async fn set_state_event(
 
 	let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
-	// Get current state
-	let current_shortstatehash = self
+	// Current room state root (HAMT). The target event is overlaid onto the
+	// resolved state below and persisted via `set_event_state_with_root`.
+	let current_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Room has no state"))))?;
 
@@ -908,11 +917,10 @@ pub(super) async fn set_state_event(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_ids(current_shortstatehash)
-		.collect()
-		.await;
+		.state_full_ids_hamt(&current_root)
+		.try_collect()
+		.await?;
 
-	// Build new compressed state
 	let target_shortstatekey = self
 		.services
 		.rooms
@@ -920,53 +928,76 @@ pub(super) async fn set_state_event(
 		.get_or_create_shortstatekey(&event_type, &state_key)
 		.await;
 
-	let mut new_state = CompressedState::new();
+	// Replace (or insert) the target (type, state_key) entry.
+	let mut new_state = current_state;
+	new_state.insert(target_shortstatekey, event_id.clone());
 
-	for (shortstatekey, eid) in &current_state {
-		if *shortstatekey == target_shortstatekey {
-			// Replace with our target event
-			let compressed = self
-				.services
-				.rooms
-				.state_compressor
-				.compress_state_event(*shortstatekey, &event_id)
-				.await;
-			new_state.insert(compressed);
-		} else {
-			let compressed = self
-				.services
-				.rooms
-				.state_compressor
-				.compress_state_event(*shortstatekey, eid)
-				.await;
-			new_state.insert(compressed);
+	// Build the HAMT root for the new state, resolving short IDs so the
+	// lattice can be reconstructed from the entries.
+	let mut lattice = rezzy::state::LtHash::default();
+	let mut entries = Vec::with_capacity(new_state.len());
+	let mut short_state_keys = Vec::with_capacity(new_state.len());
+	let mut event_ids = Vec::with_capacity(new_state.len());
+	for (&shortstatekey, eid) in &new_state {
+		short_state_keys.push(shortstatekey);
+		event_ids.push(eid.clone());
+	}
+
+	let string_keys: Vec<Result<(StateEventType, StateKey)>> = self
+		.services
+		.rooms
+		.short
+		.multi_get_statekey_from_short(short_state_keys.iter().copied().stream())
+		.collect()
+		.await;
+
+	for ((shortstatekey, eid), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
+	{
+		let shorteventid = self
+			.services
+			.rooms
+			.short
+			.get_or_create_shorteventid(&eid)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+
+		if let Ok((ty, sk)) = key_result {
+			lattice.insert(ty.to_string().as_str(), sk.as_str(), eid.as_str());
 		}
 	}
 
-	// If the (type, state_key) wasn't in the current state, add it
-	if !current_state.contains_key(&target_shortstatekey) {
-		let compressed = self
-			.services
-			.rooms
-			.state_compressor
-			.compress_state_event(target_shortstatekey, &event_id)
-			.await;
-		new_state.insert(compressed);
-	}
+	let structural_key = conduwuit_service::rooms::state_hamt::room_structural_key(
+		&self.services.globals.server_secret,
+		&room_id,
+	);
+	let (new_root, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
-	// Save the new state
-	let new_state = std::sync::Arc::new(new_state);
-	let new_shortstatehash = self
-		.services
+	// Persist the root node, then record the event's post-event root and commit
+	// the new root as the room's current state. This mirrors the legacy
+	// `set_event_state` + `set_room_state` pair: the event is associated with
+	// the new snapshot, but the room's derived caches are not recomputed here
+	// (the membership cache is updated explicitly below for member events).
+	self.services.globals.with_cork_and_flush(|| {
+		self.services
+			.rooms
+			.state_hamt
+			.store
+			.persist_node_recursive(root_node);
+	});
+
+	self.services
 		.rooms
 		.state
-		.set_event_state(&event_id, &room_id, new_state)
+		.set_event_roothandle(&event_id, &new_root)
 		.await?;
 
 	self.services
 		.rooms
 		.state
-		.set_room_state(&room_id, new_shortstatehash, &state_lock);
+		.set_room_state_hamt(&room_id, &new_root, &state_lock);
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {
@@ -1081,14 +1112,18 @@ pub(super) async fn audit_membership(
 		timeline_scan_started.elapsed()
 	);
 
-	let state_hash = self
+	let state_root = self
 		.services
 		.rooms
 		.state
-		.get_room_shortstatehash(&room_id)
+		.get_room_state_hamt(&room_id)
 		.await?;
 
-	let state = self.services.rooms.state_accessor.state_full(state_hash);
+	let state = self
+		.services
+		.rooms
+		.state_accessor
+		.state_full_hamt(state_root.clone());
 
 	let state_scan_started = Instant::now();
 	pin_mut!(state);
@@ -1573,7 +1608,12 @@ pub(super) async fn audit_membership(
 					.services
 					.rooms
 					.state_accessor
-					.state_get(state_hash, &StateEventType::RoomMember, user_id.as_str())
+					.state_get_in_room_hamt(
+						&room_id,
+						&state_root,
+						&StateEventType::RoomMember,
+						user_id.as_str(),
+					)
 					.await
 				{
 					if self

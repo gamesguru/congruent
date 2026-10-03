@@ -309,3 +309,38 @@ Remaining roadmap items (orthogonal to each other, both separate layers):
 2. Synapse-style staging + background ingestion — the optional step 2 for the
    ingestion layer (close the remaining sync-vs-async /send race class;
    EventStatus was step 1 for the rejection-flag part of that layer).
+
+
+#################################################################################
+# Fri 2026/10/02 - some cleanups (profile, hamt, etc)
+#################################################################################
+
+Here is what each item means in practice. I'm explaining from the review comments and the agents' reports, not from fresh code reading.
+
+1. Profile watcher is still global
+- src/service/sync/watch.rs makes every /sync session watch the whole userprofileupdate_value map, using an empty prefix.
+- Any user's display name, avatar or profile-field change wakes every active sync on the server. Most of those wakeups find nothing the session is allowed to see and are thrown away.
+- On a busy server that is wasted work for every profile edit.
+- Fix: subscribe only sessions whose filter asks for profile fields. Alternatively, scope the wake-up to users who share a room with the syncing user. It's a performance issue, not a correctness one.
+
+2. Profile backfill migration
+- Custom profile fields are now announced to clients through an update-record stream. Records are written only when a field changes.
+- Fields set before this change have no record. A client doing an initial MSC4429 sync won't see them until someone edits them again.
+- Fix: a one-time, repeatable migration that writes an update record for every existing field. Or make initial sync read the current profile rows directly instead of the stream.
+- Cost: this is a correctness gap for existing users, but only for the MSC4429 initial-sync feature.
+
+3. Strict accessor callers
+- The old state accessors silently skip any state event whose PDU can't be loaded. A caller then sees a partial room state and treats it as the whole thing.
+- I added strict versions that return errors. Only theesponses and reconcile_membership were moved over.
+- About a dozen other callers still use the lossy versof them cache or serve the result, which is where apartial snapshot does harm. Callers that just display
+- Next step: audit those callers and move the risky on
+
+4. del_node race
+- del_node removes a HAMT node from the database and from an in-memory cache.
+- A reader that loaded the node just before the delete after the delete. The cache then holds a node with no
+  database row.
+- I reordered it to delete the row first and evict the window but doesn't close it.
+- Closing it needs a lock or a version counter around
+- Risk: this only matters if nodes are deleted while rderstand to be the garbage-collection sweep. It should rare and low-impact.
+
+If you want me to pick one, the strict-accessor audit se it's the only one that can serve wrong data. Theprofile backfill is next, for existing users.
