@@ -100,7 +100,6 @@ reqwest_recaptcha = { package = "reqwest", version = "0.12.28", default-features
 ] } # As long as recaptcha-verify's reqwest is outdated
 rezzy.workspace = true
 roaring.workspace = true
-ruma.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true
 serde.workspace = true
