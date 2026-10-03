@@ -3782,7 +3782,7 @@ dependencies = [
 [[package]]
 name = "mtxdb"
 version = "0.1.0-beta.2"
-source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=refactor%2Fpack-id-store-layout#ee2aeeda18b937492f15ed54832c98d326a342e6"
+source = "git+https://gitlab.com/Wombat-Foundation/mtxdb.git?branch=refactor%2Fpack-id-store-layout#18095abe9ff358c66ee607779f9251afc8a8798a"
 dependencies = [
  "arc-swap",
  "blake3",
@@ -3793,6 +3793,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "parking_lot",
+ "rezzy-recon",
  "sha2 0.10.9",
  "zstd 0.13.3",
  "zstd-sys",
@@ -5081,7 +5082,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#9cc147bef10a5de5d2205945f46fc383afc6b828"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#f463203e21b56c7b476248a82575e3570980a02d"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -5096,9 +5097,18 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#9cc147bef10a5de5d2205945f46fc383afc6b828"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#f463203e21b56c7b476248a82575e3570980a02d"
 dependencies = [
  "ryu",
+]
+
+[[package]]
+name = "rezzy-recon"
+version = "0.6.0-rc.1"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#f463203e21b56c7b476248a82575e3570980a02d"
+dependencies = [
+ "base64 0.22.1",
+ "sha2 0.10.9",
 ]
 
 [[package]]

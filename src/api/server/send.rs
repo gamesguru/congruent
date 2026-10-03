@@ -12,7 +12,12 @@ use conduwuit::{
 	state_res::lexicographical_topological_sort,
 	trace,
 	utils::{
-		IterStream, ReadyExt, millis_since_unix_epoch,
+		IterStream, ReadyExt,
+		hash::lthash::{
+			ALGORITHM_LTHASH16_BLAKE3_V1, ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS, StateHashes,
+			encode_digest,
+		},
+		millis_since_unix_epoch,
 		stream::{BroadbandExt, TryBroadbandExt, automatic_width},
 	},
 	warn,
@@ -57,12 +62,6 @@ use crate::Ruma;
 
 type ResolvedMap = BTreeMap<OwnedEventId, Result>;
 type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
-
-#[derive(serde::Deserialize)]
-struct StateHashInfo {
-	algorithm: Option<String>,
-	after: String,
-}
 
 /// # `PUT /_matrix/federation/v1/send/{txnId}`
 ///
@@ -371,18 +370,34 @@ async fn inject_state_hash_mismatches(
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
-	let Some(hashes) = obj
+	let Some(hashes_val) = obj
 		.get("state_hashes")
 		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
 	else {
 		return;
 	};
 
-	let Ok(state_hashes) =
-		serde_json::from_value::<BTreeMap<OwnedEventId, StateHashInfo>>(hashes.clone().into())
+	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes_val.clone().into())
 	else {
 		return;
 	};
+	let algorithm = state_hashes.algorithm.clone();
+
+	// Which digest components this transaction asserts. An unrecognised
+	// algorithm is parsed but deferred whole, per the receiver contract.
+	let profile = match algorithm.as_str() {
+		| ALGORITHM_LTHASH16_BLAKE3_V1 => Profile::Primary,
+		| ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS => Profile::Redactions,
+		| _ => {
+			info!(
+				target: "state_hashes",
+				algorithm = ?algorithm,
+				"deferring state hash validation for unsupported algorithm"
+			);
+			return;
+		},
+	};
+
 	let Some(pdus_obj) = response_json
 		.get_mut("pdus")
 		.and_then(|p| p.as_object_mut())
@@ -391,27 +406,29 @@ async fn inject_state_hash_mismatches(
 	};
 
 	// Digests are memoized per distinct state root within this transaction.
-	let mut digests: HashMap<[u8; 32], Option<String>> = HashMap::new();
+	let mut digests: HashMap<[u8; 32], (String, String)> = HashMap::new();
 
-	for (event_id, hash_info) in state_hashes {
-		// Skip validation for unrecognized or missing algorithms to support future
-		// agility
-		let Some(ref algo) = hash_info.algorithm else {
-			info!(
-				target: "state_hashes",
-				event_id = ?event_id,
-				"skipping state hash validation for missing algorithm"
-			);
-			continue;
-		};
-		if algo != "lthash16-blake3-v1" {
-			info!(
-				target: "state_hashes",
-				event_id = ?event_id,
-				"skipping state hash validation for unrecognized algorithm"
-			);
+	for (event_id, entry) in state_hashes.entries {
+		// An explicit deferral makes no assertion.
+		if entry.limited {
 			continue;
 		}
+		// An entry that omits a digest the algorithm requires is incomplete:
+		// defer rather than treat it as a mismatch.
+		let received_before = entry.before.as_ref();
+		let received_after = entry.after.as_ref();
+		let received_redactions_before = entry.redactions_before.as_ref();
+		let received_redactions_after = entry.redactions_after.as_ref();
+
+		if received_before.is_none() || received_after.is_none() {
+			continue;
+		}
+		if profile.requires_redactions()
+			&& (received_redactions_before.is_none() || received_redactions_after.is_none())
+		{
+			continue;
+		}
+
 		let Some(pdu_res) = pdus_obj
 			.get_mut(event_id.as_str())
 			.and_then(|p| p.as_object_mut())
@@ -422,35 +439,123 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let Some(after_digest) =
-			compute_receiver_after_digest(services, &event_id, &mut digests).await
+		let Some(local) = compute_receiver_digests(services, &event_id, &mut digests).await
 		else {
 			continue;
 		};
 
-		if after_digest != hash_info.after {
-			pdu_res.insert(
-				"state_hash_mismatch".to_owned(),
-				serde_json::json!({
-					"algorithm": "lthash16-blake3-v1",
-					"digest": after_digest
-				}),
-			);
+		let mut any = Some(&local.before_primary) != received_before
+			|| Some(&local.after_primary) != received_after;
+		if profile.requires_redactions() {
+			any |= Some(&local.before_redactions) != received_redactions_before
+				|| Some(&local.after_redactions) != received_redactions_after;
+		}
+
+		if any {
+			let mut mismatch = serde_json::Map::new();
+			mismatch.insert("algorithm".to_owned(), algorithm.clone().into());
+			insert_digest_pair(&mut mismatch, "before", &local.before_primary, received_before);
+			insert_digest_pair(&mut mismatch, "after", &local.after_primary, received_after);
+			if profile.requires_redactions() {
+				insert_digest_pair(
+					&mut mismatch,
+					"redactions_before",
+					&local.before_redactions,
+					received_redactions_before,
+				);
+				insert_digest_pair(
+					&mut mismatch,
+					"redactions_after",
+					&local.after_redactions,
+					received_redactions_after,
+				);
+			}
+			pdu_res.insert("state_hash_mismatch".to_owned(), serde_json::Value::Object(mismatch));
 		}
 	}
 }
 
-/// Compute the "after" digest for a received event by building the LtHash
-/// lattice over the event's post-event state (its `shorteventid_roothandle`).
-///
-/// This replaces the legacy shortstatehash/`get_lthash` accumulator that the
-/// HAMT migration removed. The post-event root already represents the state
-/// after the event is applied, so the lattice is derived directly from it.
-async fn compute_receiver_after_digest(
+/// The digest profiles a transaction may assert. Each names the components the
+/// receiver must compute and compare; a missing required component defers.
+#[derive(Clone, Copy)]
+enum Profile {
+	Primary,
+	Redactions,
+}
+
+impl Profile {
+	const fn requires_redactions(self) -> bool { matches!(self, Self::Redactions) }
+}
+
+/// Inserts an `expected_<name>`/`received_<name>` digest pair into a mismatch
+/// body. A `received` of `None` should not occur for a required component but
+/// is rendered as JSON `null` rather than omitted.
+fn insert_digest_pair(
+	mismatch: &mut serde_json::Map<String, serde_json::Value>,
+	name: &str,
+	expected: &str,
+	received: Option<&String>,
+) {
+	mismatch.insert(format!("expected_{name}"), expected.to_owned().into());
+	mismatch.insert(
+		format!("received_{name}"),
+		received
+			.cloned()
+			.map_or(serde_json::Value::Null, serde_json::Value::String),
+	);
+}
+
+/// The receiver's local digest components for a received PDU.
+struct ReceiverDigests {
+	before_primary: String,
+	before_redactions: String,
+	after_primary: String,
+	after_redactions: String,
+}
+
+/// Computes the receiver's local digests for a received PDU. `None` when
+/// either DAG point cannot be resolved, which the caller treats as a deferral
+/// rather than a mismatch.
+async fn compute_receiver_digests(
 	services: &crate::State,
 	event_id: &OwnedEventId,
-	memo: &mut HashMap<[u8; 32], Option<String>>,
-) -> Option<String> {
+	memo: &mut HashMap<[u8; 32], (String, String)>,
+) -> Option<ReceiverDigests> {
+	let (after_primary, after_redactions) =
+		compute_receiver_after_digests(services, event_id, memo).await?;
+	let (before_primary, before_redactions) =
+		compute_receiver_before_digests(services, event_id, memo).await?;
+	Some(ReceiverDigests {
+		before_primary,
+		before_redactions,
+		after_primary,
+		after_redactions,
+	})
+}
+
+/// Compute the "before" digests for a received event: the state resolved at the
+/// event's `prev_events`, excluding the event itself.
+async fn compute_receiver_before_digests(
+	services: &crate::State,
+	event_id: &OwnedEventId,
+	memo: &mut HashMap<[u8; 32], (String, String)>,
+) -> Option<(String, String)> {
+	let root_handle = services
+		.rooms
+		.state_accessor
+		.pdu_roothandle_before_event(event_id)
+		.await
+		.ok()?;
+	digests_for_root_handle(services, &root_handle, memo).await
+}
+
+/// Compute the "after" digests for a received event by resolving the event's
+/// post-event state HAMT root (`shorteventid_roothandle`).
+async fn compute_receiver_after_digests(
+	services: &crate::State,
+	event_id: &OwnedEventId,
+	memo: &mut HashMap<[u8; 32], (String, String)>,
+) -> Option<(String, String)> {
 	let shorteventid = services.rooms.short.get_shorteventid(event_id).await.ok()?;
 	let root_handle = services
 		.rooms
@@ -458,31 +563,58 @@ async fn compute_receiver_after_digest(
 		.get_roothandle(shorteventid)
 		.await
 		.ok()?;
+	digests_for_root_handle(services, &root_handle, memo).await
+}
 
-	if let Some(digest) = memo.get(&root_handle.structural_hash) {
-		return digest.clone();
+/// Computes the `(primary, redactions)` digests for `root_handle`. The primary
+/// lattice is taken from the persisted sidecar, rebuilding it from the HAMT
+/// only when the sidecar is missing. The redaction overlay is derived from the
+/// selected state PDUs' stored `redacted_by` marker. Fails closed: if any state
+/// entry cannot be resolved, returns `None` rather than a digest over partial
+/// or guessed state.
+async fn digests_for_root_handle(
+	services: &crate::State,
+	root_handle: &rezzy::hamt::RootHandle,
+	memo: &mut HashMap<[u8; 32], (String, String)>,
+) -> Option<(String, String)> {
+	if let Some(digests) = memo.get(&root_handle.structural_hash) {
+		return Some(digests.clone());
 	}
 
-	// Prefer the persisted root lattice; rebuild from state only when the
-	// sidecar is missing. Fail closed: if any state entry cannot be resolved,
-	// report no digest rather than a misleading mismatch against partial state.
-	let lattice = match services.rooms.state.get_root_lattice(&root_handle).await {
-		| Some(lattice) => Some(lattice),
-		| None => super::state_accumulator::state_tuples(services, &root_handle)
-			.await
-			.ok()
-			.map(|entries| {
-				let mut lattice = rezzy::state::LtHash::default();
-				for (ty, sk, id) in &entries {
-					lattice.insert(ty, sk, id.as_str());
-				}
-				lattice
-			}),
+	let entries = super::state_accumulator::state_tuples(services, root_handle)
+		.await
+		.ok()?;
+
+	let primary = match services.rooms.state.get_root_lattice(root_handle).await {
+		| Some(lattice) => conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1,
+		| None => {
+			let mut lattice = rezzy::state::LtHash::default();
+			for (ty, sk, id) in &entries {
+				lattice.insert(ty, sk, id.as_str());
+			}
+			conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1
+		},
 	};
 
-	let digest = lattice.map(|l| conduwuit_core::utils::hash::lthash::serialize_lthash(&l).1);
-	memo.insert(root_handle.structural_hash, digest.clone());
-	digest
+	let mut overlay = rezzy::state::RedactionOverlay::default();
+	for (ty, sk, id) in &entries {
+		if services
+			.rooms
+			.timeline
+			.get_event_metadata(id)
+			.await
+			.ok()?
+			.redacted_by
+			.is_some()
+		{
+			overlay.insert(ty, sk, id.as_str());
+		}
+	}
+	let redactions = encode_digest(&overlay.digest());
+
+	let digests = (primary, redactions);
+	memo.insert(root_handle.structural_hash, digests.clone());
+	Some(digests)
 }
 
 /// Handles a failed federation transaction by sending the error through

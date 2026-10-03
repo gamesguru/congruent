@@ -1,5 +1,61 @@
+use std::collections::BTreeMap;
+
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rezzy::LtHash;
+use ruma::OwnedEventId;
+use serde::{Deserialize, Serialize};
+
+/// Wire algorithm identifier for the primary MSC4500 accumulator alone.
+pub const ALGORITHM_LTHASH16_BLAKE3_V1: &str = "lthash16-blake3-v1";
+
+/// Wire algorithm identifier for the primary accumulator plus the causal
+/// redaction overlay.
+pub const ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS: &str =
+	"lthash16-blake3-v1+redactions-blake3-v1";
+
+/// Wire algorithm identifier for the primary accumulator, the redaction
+/// overlay, and the labelled resolution-input accumulator.
+pub const ALGORITHM_LTHASH16_BLAKE3_V1_RESOLUTION: &str =
+	"lthash16-blake3-v1+redactions-blake3-v1+resolution-inputs-blake3-v1";
+
+/// The `state_hashes` object carried at the root of an MSC4500
+/// `/send` transaction body.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateHashes {
+	/// Identifies the complete digest profile used for every entry.
+	pub algorithm: String,
+	/// Per-PDU state assertions, keyed by the PDU's event ID.
+	pub entries: BTreeMap<OwnedEventId, StateHashEntry>,
+}
+
+/// One PDU's state assertion inside [`StateHashes::entries`].
+///
+/// Every digest is optional so a receiver can parse partial or staged
+/// implementations. Which fields are required for a valid assertion is a
+/// function of the transaction `algorithm`, enforced by the sender and by the
+/// receiver's validation, not by serde. An absent digest means "no assertion
+/// was made for this component"; it is never interpreted as an empty sentinel.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateHashEntry {
+	/// Digest of the state evaluated at the PDU's `prev_events`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub before: Option<String>,
+	/// Digest of the state after the PDU is applied.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub after: Option<String>,
+	/// Redaction digest at the same DAG point as `before`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub redactions_before: Option<String>,
+	/// Redaction digest after the PDU is applied.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub redactions_after: Option<String>,
+	/// Labelled resolver-input digest for the PDU's `prev_events`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub resolution_inputs_before: Option<String>,
+	/// `true` when the sender makes no digest assertion for this PDU.
+	#[serde(default)]
+	pub limited: bool,
+}
 
 /// Converts an LtHash into a little-endian byte vector.
 #[must_use]
@@ -21,6 +77,10 @@ pub fn serialize_lthash(lthash: &LtHash) -> (String, String) {
 
 	(lattice, digest)
 }
+
+/// Encodes a collapsed 32-byte digest as unpadded URL-safe base64 (MSC4500).
+#[must_use]
+pub fn encode_digest(digest: &[u8; 32]) -> String { URL_SAFE_NO_PAD.encode(digest) }
 
 #[cfg(test)]
 mod tests {

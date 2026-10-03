@@ -12,7 +12,13 @@ use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
 	trace,
-	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
+	utils::{
+		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
+		hash::lthash::{
+			ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS, StateHashEntry, StateHashes, encode_digest,
+		},
+		stream::BroadbandExt,
+	},
 	warn,
 };
 use futures::{
@@ -55,16 +61,10 @@ enum TransactionStatus {
 	Cooldown(Instant),
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
-struct StateHashInfo {
-	algorithm: String,
-	after: String,
-}
-
 #[derive(Clone, Debug)]
 struct Msc4500SendTransactionRequest {
 	inner: send_transaction_message::v1::Request,
-	state_hashes: BTreeMap<OwnedEventId, StateHashInfo>,
+	state_hashes: StateHashes,
 }
 
 impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
@@ -93,10 +93,10 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
 
 		if let Some(obj) = json.as_object_mut() {
-			if !self.state_hashes.is_empty() {
+			if !self.state_hashes.entries.is_empty() {
 				let state_hashes_val = serde_json::to_value(self.state_hashes)
 					.map_err(ruma::api::error::IntoHttpError::from)?;
-				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
+				obj.insert("state_hashes".to_owned(), state_hashes_val);
 			}
 		}
 
@@ -117,36 +117,72 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 async fn compute_outbound_state_hashes(
 	services: &super::Services,
 	pdus: &[(OwnedEventId, CanonicalJsonObject)],
-) -> BTreeMap<OwnedEventId, StateHashInfo> {
-	use conduwuit::utils::stream::BroadbandExt;
-	use futures::StreamExt;
-
-	futures::stream::iter(pdus)
+) -> StateHashes {
+	let entries: BTreeMap<OwnedEventId, StateHashEntry> = futures::stream::iter(pdus)
 		.broad_filter_map(|(event_id, value)| async move {
-			compute_state_hash_for_pdu(services, event_id, value)
-				.await
-				.map(|info| (event_id.clone(), info))
+			Some((event_id.clone(), compute_state_hash_for_pdu(services, event_id, value).await))
 		})
 		.collect()
-		.await
+		.await;
+
+	StateHashes {
+		algorithm: ALGORITHM_LTHASH16_BLAKE3_V1_REDACTIONS.to_owned(),
+		entries,
+	}
 }
 
 async fn compute_state_hash_for_pdu(
 	services: &super::Services,
 	event_id: &OwnedEventId,
 	_value: &CanonicalJsonObject,
-) -> Option<StateHashInfo> {
-	use conduwuit::Event;
-	use futures::TryStreamExt;
-
-	// The per-event root is the post-event state, which is the state whose
-	// digest is sent alongside this PDU. Build the same LtHash representation
-	// used by the receiving endpoint so both sides compare identical values.
-	let root_handle = services
+) -> StateHashEntry {
+	let before_root = services
+		.state_accessor
+		.pdu_roothandle_before_event(event_id)
+		.await
+		.ok();
+	let after_root = services
 		.state_accessor
 		.pdu_roothandle_after_event(event_id)
 		.await
-		.ok()?;
+		.ok();
+
+	let before = match before_root {
+		| Some(root) => state_digests_for_root(services, root).await,
+		| None => None,
+	};
+	let after = match after_root {
+		| Some(root) => state_digests_for_root(services, root).await,
+		| None => None,
+	};
+
+	match (before, after) {
+		| (
+			Some((before_primary, before_redactions)),
+			Some((after_primary, after_redactions)),
+		) => StateHashEntry {
+			before: Some(before_primary),
+			after: Some(after_primary),
+			redactions_before: Some(before_redactions),
+			redactions_after: Some(after_redactions),
+			..Default::default()
+		},
+		| _ => StateHashEntry { limited: true, ..Default::default() },
+	}
+}
+
+/// Builds and collapses the primary accumulator and the causal redaction
+/// overlay over the selected state reachable from `root_handle`, returning
+/// `(primary, redactions)`. Returns `None` (a `limited` assertion) when any
+/// state entry or its redaction status cannot be resolved, rather than
+/// emitting a digest over partial or guessed state.
+async fn state_digests_for_root(
+	services: &super::Services,
+	root_handle: rezzy::hamt::RootHandle,
+) -> Option<(String, String)> {
+	use conduwuit::Event;
+	use futures::TryStreamExt;
+
 	let entries: Vec<(String, String, OwnedEventId)> = services
 		.state_accessor
 		.state_full_pdus_hamt_strict(root_handle)
@@ -161,15 +197,25 @@ async fn compute_state_hash_for_pdu(
 		.ok()?;
 
 	let mut lattice = rezzy::state::LtHash::default();
+	let mut overlay = rezzy::state::RedactionOverlay::default();
 	for (event_type, state_key, state_event_id) in &entries {
 		lattice.insert(event_type, state_key, state_event_id.as_str());
+		if services
+			.timeline
+			.get_event_metadata(state_event_id)
+			.await
+			.ok()?
+			.redacted_by
+			.is_some()
+		{
+			overlay.insert(event_type, state_key, state_event_id.as_str());
+		}
 	}
 
-	let digest = conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1;
-	Some(StateHashInfo {
-		algorithm: "lthash16-blake3-v1".to_owned(),
-		after: digest,
-	})
+	Some((
+		conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1,
+		encode_digest(&overlay.digest()),
+	))
 }
 
 type SendingError = Box<(Destination, Error)>;

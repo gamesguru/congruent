@@ -419,6 +419,7 @@ features = [
 [workspace.dependencies.mtxdb]
 git = "https://gitlab.com/Wombat-Foundation/mtxdb.git"
 branch = "refactor/pack-id-store-layout"
+features = ["reconcile"]
 
 [workspace.dependencies.rezzy]
 git = "https://gitlab.com/gamesguru/rezzy.git"
