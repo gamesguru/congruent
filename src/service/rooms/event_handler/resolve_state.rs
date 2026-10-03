@@ -97,7 +97,7 @@ pub async fn resolve_state(
 	// Resolution picks a winner per `(type, state_key)` from the union of the
 	// forks, so it should not drop a key the previous root carried. Handle it
 	// anyway rather than silently leaving a stale leaf behind.
-	for ((ty, sk), _) in previous_statemap {
+	for (ty, sk) in previous_statemap.keys() {
 		if !state.contains_key(&(ty.clone(), sk.clone())) {
 			let shortstatekey = self
 				.services
