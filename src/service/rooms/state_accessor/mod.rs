@@ -6,7 +6,7 @@ mod user_can;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use conduwuit::{Result, err};
+use conduwuit::{Result, Server, err};
 use ruma::{
 	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
@@ -42,6 +42,7 @@ struct Services {
 	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
+	server: Arc<Server>,
 }
 
 #[async_trait]
@@ -55,6 +56,7 @@ impl crate::Service for Service {
 				short: args.depend::<rooms::short::Service>("rooms::short"),
 				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
+				server: args.server.clone(),
 			},
 			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))

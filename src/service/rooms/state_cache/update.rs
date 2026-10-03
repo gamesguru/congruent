@@ -935,37 +935,42 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	if let Some(room_root) = room_root_opt.as_ref() {
 		// Fail closed: reconciling against a partial snapshot would remove
 		// members whose PDUs were merely unavailable.
-		let result = self
+		let members: Vec<_> = match self
 			.services
 			.state_accessor
 			.state_full_pdus_hamt_strict(room_root.clone())
-			.try_for_each(|pdu| async {
-				if *pdu.kind() != TimelineEventType::RoomMember {
-					return Ok(());
-				}
-				let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
-					return Ok(());
-				};
-				let content: serde_json::Value = pdu.get_content_as_value();
-				match content
-					.get("membership")
-					.and_then(|v| v.as_str())
-					.unwrap_or("leave")
-				{
-					| "join" => {
-						state_joined.insert(uid);
-					},
-					| "invite" => {
-						state_invited.insert(uid);
-					},
-					| _ => {},
-				}
-				Ok::<_, conduwuit::Error>(())
-			})
-			.await;
-		if let Err(e) = result {
-			warn!(%room_id, "Skipping membership reconcile, state is incomplete: {e}");
-			return;
+			.try_collect()
+			.await
+		{
+			| Ok(pdus) => pdus,
+			| Err(e) => {
+				warn!(%room_id, "Skipping membership reconcile, state is incomplete: {e}");
+				return;
+			},
+		};
+		for pdu in members {
+			if *pdu.kind() != TimelineEventType::RoomMember {
+				continue;
+			}
+			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
+				continue;
+			};
+
+			let content: serde_json::Value = pdu.get_content_as_value();
+			let membership = content
+				.get("membership")
+				.and_then(|v| v.as_str())
+				.unwrap_or("leave");
+
+			match membership {
+				| "join" => {
+					state_joined.insert(uid);
+				},
+				| "invite" => {
+					state_invited.insert(uid);
+				},
+				| _ => {},
+			}
 		}
 	}
 

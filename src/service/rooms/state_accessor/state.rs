@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use conduwuit::{
 	Pdu, Result, at, err, implement,
 	matrix::{Event, StateKey},
-	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore},
+	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
 use ruma::{
