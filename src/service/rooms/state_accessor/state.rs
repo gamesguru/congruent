@@ -294,7 +294,7 @@ pub fn state_full_ids_hamt<'a>(
 	root_handle: &'a rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
 	self.state_full_shortids_hamt(root_handle.clone())
-		.then(move |result| async move {
+		.map(move |result| async move {
 			let (ssk, seid): (ShortStateKey, ShortEventId) = result?;
 			let event_id = self
 				.services
@@ -303,6 +303,7 @@ pub fn state_full_ids_hamt<'a>(
 				.await?;
 			Ok::<_, conduwuit::Error>((ssk, event_id))
 		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
 		.boxed()
 }
 
@@ -321,9 +322,11 @@ pub fn state_full_pdus_hamt(
 		.short
 		.multi_get_eventid_from_short(short_ids)
 		.ready_filter_map(Result::ok)
-		.broad_filter_map(move |event_id: OwnedEventId| async move {
+		.map(move |event_id: OwnedEventId| async move {
 			self.services.timeline.get_pdu(&event_id).await.ok()
 		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
+		.filter_map(std::future::ready)
 }
 
 /// Strict variant of [`Self::state_full_pdus_hamt`]: traversal, short-ID and
@@ -335,7 +338,7 @@ pub fn state_full_pdus_hamt_strict(
 	root_handle: rezzy::hamt::RootHandle,
 ) -> impl Stream<Item = Result<Pdu>> + Send + '_ {
 	self.state_full_shortids_hamt(root_handle)
-		.then(move |result| async move {
+		.map(move |result| async move {
 			let (_, short_id) = result?;
 			let event_id = self
 				.services
@@ -344,6 +347,7 @@ pub fn state_full_pdus_hamt_strict(
 				.await?;
 			self.services.timeline.get_pdu(&event_id).await
 		})
+		.buffer_unordered(self.services.server.concurrency_scaled(32))
 }
 
 /// Returns a Stream of all the full state (type, key, event) for a given

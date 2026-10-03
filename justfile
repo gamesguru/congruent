@@ -617,30 +617,24 @@ e2ee args=".*":
 
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
-        if [ "$run_suffix" = "all" ]; then
-            # Dedupe/sort are best-effort: if the merge helper fails (e.g. under
-            # heavy load) it must NEVER lose the run's results. Fall back to
-            # copying the raw staged results (pass/fail preserved).
-            python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
-                || echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
-            python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
-                || echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
-            cp "$RESULTS_FILE" "$MAIN_RESULTS_FILE" \
-                || { echo "MERGE FAILED: refreshing $MAIN_RESULTS_FILE from staged results" >&2; exit 1; }
-            echo "refreshed $MAIN_RESULTS_FILE from $(wc -l <"$RESULTS_FILE") staged results"
+        # Dedupe/sort the staged rows, then merge them into the persistent
+        # ledger. This preserves results from tests not covered by the current
+        # matrix or test-pattern run (for example, a JS-only crypto run).
+        python3 "$toplevel/bin/merge_complement_results.py" --dedupe-in-place "$RESULTS_FILE" \
+            || echo "WARN: dedupe of staged results failed ($RESULTS_FILE); keeping raw rows" >&2
+        python3 "$toplevel/bin/merge_complement_results.py" --sort-in-place "$RESULTS_FILE" \
+            || echo "WARN: sort of staged results failed ($RESULTS_FILE); keeping arrival order" >&2
+        tmp_results="$MAIN_RESULTS_FILE.tmp"
+        if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
+            mv -f "$tmp_results" "$MAIN_RESULTS_FILE" \
+                || { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
+            echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
         else
-            tmp_results="$MAIN_RESULTS_FILE.tmp"
-            if python3 "$toplevel/bin/merge_complement_results.py" "$MAIN_RESULTS_FILE" "$RESULTS_FILE" "$tmp_results"; then
-                mv -f "$tmp_results" "$MAIN_RESULTS_FILE" \
-                    || { echo "MERGE FAILED: moving merged results into $MAIN_RESULTS_FILE" >&2; exit 1; }
-                echo "merged $(wc -l <"$RESULTS_FILE") staged results into $MAIN_RESULTS_FILE"
-            else
-                # Merge failed (e.g. under load); append the staged results so
-                # the new pass/fail rows are recorded rather than lost.
-                echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
-                cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
-                rm -f "$tmp_results"
-            fi
+            # Merge failed (e.g. under load); append the staged results so
+            # the new pass/fail rows are recorded rather than lost.
+            echo "WARN: merge into $MAIN_RESULTS_FILE failed; appending staged results" >&2
+            cat "$RESULTS_FILE" >>"$MAIN_RESULTS_FILE"
+            rm -f "$tmp_results"
         fi
     else
         echo "Warning: $RESULTS_FILE is missing or empty. No results processed."
@@ -681,7 +675,10 @@ e2ee args=".*":
 # matrix-rust-sdk checkout (see the e2ee prerequisite errors).
 # Usage: just crypto-rs TestNameRegex   (also: crypto-js, crypto-jsrs)
 crypto-js pattern=".*":
-    COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=jj {{ just_executable() }} e2ee "{{ pattern }}"
+    # matrix-js-sdk#4291: JS does not update its crypto membership from a
+    # completed /invite until the corresponding /sync is processed. This test
+    # intentionally delays that /sync, so skip only the known JS limitation.
+    COMPLEMENT_CRYPTO_SKIP='TestDelayedInviteResponse/js' COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=jj {{ just_executable() }} e2ee "{{ pattern }}"
 
 crypto-rs pattern=".*":
     COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=rr {{ just_executable() }} e2ee "{{ pattern }}"
@@ -695,11 +692,9 @@ crypto-jsrs pattern=".*":
 
 PROFILE := env_var_or_default("PROFILE", "release")
 
-# matrix-js-sdk source (branch/commit/tag) that the Complement-Crypto tester
-# image embeds. This is fed straight into `yarn add`, so a branch must use the
-# GitHub URL form (e.g. `#develop`), not a bare `@develop` (which yarn treats
-# as a published version name that does not exist).
-MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://github.com/matrix-org/matrix-js-sdk#develop")
+# matrix-js-sdk source that the Complement-Crypto tester image embeds. Keep the
+# default pinned for reproducible local bundles; override it when needed.
+MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://github.com/matrix-org/matrix-js-sdk#aa1aeed63b5ef0327f0442d63e31efca58df46b0")
 
 # Aggregates test results generated by complement
 ci-complement-stats:
