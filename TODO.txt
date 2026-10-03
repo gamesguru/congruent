@@ -332,7 +332,7 @@ Here is what each item means in practice. I'm explaining from the review comment
 3. Strict accessor callers
 - The old state accessors silently skip any state event whose PDU can't be loaded. A caller then sees a partial room state and treats it as the whole thing.
 - I added strict versions that return errors. Only theesponses and reconcile_membership were moved over.
-- About a dozen other callers still use the lossy versof them cache or serve the result, which is where apartial snapshot does harm. Callers that just displa
+- About a dozen other callers still use the lossy versof them cache or serve the result, which is where apartial snapshot does harm. Callers that just display
 - Next step: audit those callers and move the risky on
 
 4. del_node race
@@ -341,6 +341,6 @@ Here is what each item means in practice. I'm explaining from the review comment
   database row.
 - I reordered it to delete the row first and evict the window but doesn't close it.
 - Closing it needs a lock or a version counter around
-- Risk: this only matters if nodes are deleted while rderstand to be the garbage-collection sweep. It shouldbe rare and low-impact.
+- Risk: this only matters if nodes are deleted while rderstand to be the garbage-collection sweep. It should rare and low-impact.
 
 If you want me to pick one, the strict-accessor audit se it's the only one that can serve wrong data. Theprofile backfill is next, for existing users.
