@@ -167,7 +167,7 @@ async fn compute_state_hash_for_pdu(
 
 	let digest = conduwuit_core::utils::hash::lthash::serialize_lthash(&lattice).1;
 	Some(StateHashInfo {
-		algorithm: "lthash16-v1".to_owned(),
+		algorithm: "lthash16-blake3-v1".to_owned(),
 		after: digest,
 	})
 }

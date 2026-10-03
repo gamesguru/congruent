@@ -404,7 +404,7 @@ async fn inject_state_hash_mismatches(
 			);
 			continue;
 		};
-		if algo != "lthash16-v1" {
+		if algo != "lthash16-blake3-v1" {
 			info!(
 				target: "state_hashes",
 				event_id = ?event_id,
@@ -432,7 +432,7 @@ async fn inject_state_hash_mismatches(
 			pdu_res.insert(
 				"state_hash_mismatch".to_owned(),
 				serde_json::json!({
-					"algorithm": "lthash16-v1",
+					"algorithm": "lthash16-blake3-v1",
 					"digest": after_digest
 				}),
 			);
