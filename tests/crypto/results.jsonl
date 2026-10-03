@@ -33,7 +33,7 @@
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestClientRetriesSendToDevice/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestDelayedInviteResponse"}
+{"Action":"pass","Test":"TestDelayedInviteResponse"}
 {"Action":"fail","Test":"TestDelayedInviteResponse/js"}
 {"Action":"pass","Test":"TestDelayedInviteResponse/rust"}
 {"Action":"pass","Test":"TestExistingSessionCannotGetKeysForOfflineServer"}
