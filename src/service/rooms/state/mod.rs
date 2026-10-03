@@ -871,7 +871,7 @@ impl Service {
 					warn!(target: "state_hamt", "skipping unrecognized root handle record");
 					continue;
 				}
-				handles.push(root_handle_from_bytes(&value)?);
+				handles.push(root_handle_from_bytes(value)?);
 			}
 		}
 

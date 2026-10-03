@@ -298,6 +298,19 @@ impl Store {
 		Ok(())
 	}
 
+	/// Backdates a node's recorded persistence time by `age`.
+	///
+	/// Test-only. Reclamation eligibility is decided by the grace window, so
+	/// exercising the deleting path needs a node that is unambiguously older than
+	/// any grace a test would pass -- a node written microseconds ago is
+	/// correctly spared as possibly-still-in-flight.
+	#[cfg(test)]
+	pub fn age_node_for_test(&self, hash: &StructuralHash, age: Duration) {
+		let millis = u64::try_from(age.as_millis()).unwrap_or(u64::MAX);
+		self.node_mtimes
+			.insert(hash, unix_millis().saturating_sub(millis).to_be_bytes());
+	}
+
 	/// Sweeps the node store for hashes unreachable from the given live roots,
 	/// optionally deleting them.
 	///

@@ -668,6 +668,26 @@
 #
 #forwardfill_sweep_interval_secs = 14400 (4 hours)
 
+# How often the HAMT node reclamation sweep runs, in seconds. Set to 0 to
+# disable it.
+#
+# The sweep walks every recorded root handle and deletes HAMT nodes that no
+# root can reach. It is a dry run by default: it reports what it would
+# reclaim without deleting, because reclaiming requires trusting that the
+# recorded root set really is complete. Enable
+# `state_hamt_node_sweep_delete` only once a dry run has shown the report
+# is sane.
+#
+#state_hamt_node_sweep_interval_secs = 21600 (6 hours)
+
+# Whether the periodic HAMT node sweep actually deletes unreachable nodes.
+#
+# While false, the sweep is a dry run that only logs its report. A root
+# handle missing from the live set makes genuinely reachable nodes look
+# like orphans, so deletion is opt-in rather than the default.
+#
+#state_hamt_node_sweep_delete = false
+
 # Allows federation requests to be made to itself
 #
 # This isn't intended and is very likely a bug if federation requests are

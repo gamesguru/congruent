@@ -367,7 +367,7 @@ async fn seed_membership_state(
 		let event_id = EventId::parse(&event_id_raw).expect("seed event id should parse");
 		let event = create_dummy_pdu(
 			room_id,
-			&event_id,
+			event_id,
 			"m.room.member",
 			&format!("@user{index}:test.conduwuit.local"),
 		);
@@ -516,4 +516,122 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		0,
 		"path-copy update must not re-emit unchanged nodes"
 	);
+}
+
+/// Node reclamation must remove exactly the unreachable nodes.
+///
+/// The live-root set is derived from the recorded root handles, so a test that
+/// only exercised the store's own bookkeeping would not catch a regression in
+/// `live_root_handles` — which is where a partial root set would silently turn
+/// into live-state deletion.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sweep_reclaims_only_unreachable_nodes() {
+	use std::time::Duration;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = owned_room_id!("!sweep:test.conduwuit.local");
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 50).await;
+
+	// Everything reachable from the recorded root must be pinned.
+	let live_roots = services
+		.rooms
+		.state
+		.live_root_handles()
+		.await
+		.expect("enumerate roots");
+	assert!(!live_roots.is_empty(), "the seeded room must record roots");
+	let live: Vec<rezzy::hamt::RootHandle> = live_roots.clone();
+
+	// An orphan: a real, fully-built tree that no recorded root handle points
+	// at, as if its only root had been deleted.
+	let mut orphan_lattice = rezzy::state::LtHash::default();
+	for index in 0..8_u64 {
+		orphan_lattice.insert(
+			"m.room.member",
+			&format!("@orphan{index}:test.conduwuit.local"),
+			&format!("$orphan{index}:test.conduwuit.local"),
+		);
+	}
+	let (_, orphan) =
+		rezzy::hamt::build_hamt_root_handle(&[0xAB; 32], &orphan_lattice, [(1_u64 << 40, 7_u64)])
+			.expect("build orphan tree");
+	let orphan_hash = orphan.structural_hash;
+	services.rooms.state_hamt.store.put_node(orphan);
+
+	// Grace window: a node written moments ago may still be in flight, so it is
+	// spared even though nothing reaches it.
+	let spared = services
+		.rooms
+		.state
+		.sweep_hamt_nodes(Duration::from_secs(60), true)
+		.await
+		.expect("grace-window dry run");
+	assert_eq!(spared.orphaned, 0, "a just-written node must be spared by the grace window");
+	assert!(
+		services
+			.rooms
+			.state_hamt
+			.store
+			.get_node(&orphan_hash)
+			.is_ok(),
+		"a just-written node must survive a grace-window dry run"
+	);
+
+	// Age it past the window and a dry run reports it without deleting it.
+	services
+		.rooms
+		.state_hamt
+		.store
+		.age_node_for_test(&orphan_hash, Duration::from_hours(1));
+	let dry = services
+		.rooms
+		.state
+		.sweep_hamt_nodes(Duration::from_secs(60), true)
+		.await
+		.expect("dry-run sweep");
+	assert!(dry.dry_run);
+	assert!(dry.orphaned >= 1, "dry run should report the orphan");
+	assert!(
+		services
+			.rooms
+			.state_hamt
+			.store
+			.get_node(&orphan_hash)
+			.is_ok(),
+		"a dry run must not delete anything"
+	);
+
+	// A live run reclaims the orphan.
+	let report = services
+		.rooms
+		.state
+		.sweep_hamt_nodes(Duration::from_secs(60), false)
+		.await
+		.expect("sweep");
+	assert!(!report.dry_run);
+	assert!(
+		services
+			.rooms
+			.state_hamt
+			.store
+			.get_node(&orphan_hash)
+			.is_err(),
+		"the unreachable node should have been reclaimed"
+	);
+
+	// The seeded root still resolves, so nothing live was reclaimed with it.
+	services
+		.rooms
+		.state
+		.sweep_hamt_nodes(Duration::from_secs(0), false)
+		.await
+		.expect("second sweep");
+	assert_eq!(root.structural_hash, live[0].structural_hash);
+	let node = services
+		.rooms
+		.state_hamt
+		.store
+		.get_node(&root.structural_hash);
+	assert!(node.is_ok(), "live root node must survive the sweep");
 }

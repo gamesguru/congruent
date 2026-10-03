@@ -91,13 +91,16 @@ impl Service {
 			let state = self.services.state.clone();
 			let server = self.services.server.clone();
 			let delete = self.services.server.config.state_hamt_node_sweep_delete;
-			tokio::spawn(async move {
+			let mut shutdown = server.signal.subscribe();
+			// Clone the handle so it does not keep `server` borrowed while the
+			// task below moves it.
+			let runtime = server.runtime().clone();
+			runtime.spawn(async move {
 				let mut interval =
 					tokio::time::interval(Duration::from_secs(node_sweep_interval));
 				interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 				// consume the immediate first tick so we don't sweep on startup
 				interval.tick().await;
-				let mut shutdown = server.signal.subscribe();
 
 				loop {
 					tokio::select! {
@@ -144,7 +147,7 @@ impl Service {
 	/// concurrent state update is never mistaken for an orphan.
 	async fn sweep_state_hamt_nodes(state: &crate::rooms::state::Service, delete: bool) {
 		let dry_run = !delete;
-		let grace = Duration::from_secs(60 * 60);
+		let grace = Duration::from_hours(1);
 
 		match state.sweep_hamt_nodes(grace, dry_run).await {
 			| Ok(report) if dry_run => {
