@@ -479,11 +479,11 @@
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/DuplicateJSONKeyRejection/B-then-A"}
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/IdenticalCrossMapIsLegal"}
 {"Action":"pass","Test":"TestMSC4499Key/Validation/\u00a74/IntraPayloadRejection"}
-{"Action":"pass","Test":"TestMSC4500State"}
-{"Action":"pass","Test":"TestMSC4500State/Accumulator"}
+{"Action":"fail","Test":"TestMSC4500State"}
+{"Action":"fail","Test":"TestMSC4500State/Accumulator"}
 {"Action":"pass","Test":"TestMSC4500State/HashMatch"}
-{"Action":"pass","Test":"TestMSC4500State/HashMismatch"}
-{"Action":"pass","Test":"TestMSC4500State/Outbound"}
+{"Action":"fail","Test":"TestMSC4500State/HashMismatch"}
+{"Action":"fail","Test":"TestMSC4500State/Outbound"}
 {"Action":"pass","Test":"TestMediaConfig"}
 {"Action":"pass","Test":"TestMediaFilenames"}
 {"Action":"pass","Test":"TestMediaFilenames/Parallel"}
