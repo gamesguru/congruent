@@ -68,6 +68,7 @@ base64.workspace = true
 axum-extra.workspace = true
 bytes.workspace = true
 bytesize.workspace = true
+mtx-slipstream.workspace = true
 cargo_toml.workspace = true
 checked_ops.workspace = true
 chrono.workspace = true

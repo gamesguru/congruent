@@ -427,8 +427,10 @@ branch = "alpha"
 
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
-git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
-branch = "dev"
+# Temporary local override while the compatibility namespace is being built.
+path = "../slipstream"
+# git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
+# branch = "dev"
 
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"

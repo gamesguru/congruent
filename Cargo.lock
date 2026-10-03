@@ -1156,6 +1156,7 @@ dependencies = [
  "lock_api",
  "log",
  "maplit",
+ "mtx-slipstream",
  "nix",
  "num-traits",
  "parking_lot",
@@ -2395,6 +2396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "halfbrown"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c7ed2f2edad8a14c8186b847909a41fbb9c3eafa44f88bd891114ed5019da09"
+dependencies = [
+ "hashbrown 0.16.1",
+]
+
+[[package]]
 name = "hardened_malloc-rs"
 version = "0.1.2+12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3614,6 +3624,15 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mtx-slipstream"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "rezzy",
+ "simd-json 0.18.1",
 ]
 
 [[package]]
@@ -4895,7 +4914,7 @@ version = "0.6.0-rc.1"
 source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#20cef477de9f5942043104f2fa85ebb2bdd74725"
 dependencies = [
  "ryu",
- "simd-json",
+ "simd-json 0.14.3",
 ]
 
 [[package]]
@@ -5688,10 +5707,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa2bcf6c6e164e81bc7a5d49fc6988b3d515d9e8c07457d7b74ffb9324b9cd40"
 dependencies = [
  "getrandom 0.2.17",
- "halfbrown",
+ "halfbrown 0.2.5",
  "ref-cast",
  "simdutf8",
- "value-trait",
+ "value-trait 0.10.1",
+]
+
+[[package]]
+name = "simd-json"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ebe141eb4a23ecc4d5de93fa5b139ac65dc07c38037a2fe9a8fb7c9d36bd832"
+dependencies = [
+ "halfbrown 0.4.0",
+ "ref-cast",
+ "simdutf8",
+ "value-trait 0.12.2",
 ]
 
 [[package]]
@@ -6632,7 +6663,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9170e001f458781e92711d2ad666110f153e4e50bfd5cbd02db6547625714187"
 dependencies = [
  "float-cmp",
- "halfbrown",
+ "halfbrown 0.2.5",
+ "itoa",
+ "ryu",
+]
+
+[[package]]
+name = "value-trait"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3f4b4a98dfe54bc9ed3641af7ffcb837240269627dbd5cb047d13daa39736cc"
+dependencies = [
+ "float-cmp",
+ "halfbrown 0.4.0",
  "itoa",
  "ryu",
 ]
