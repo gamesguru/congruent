@@ -10,6 +10,8 @@ use conduwuit::{
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use ruma::{OwnedEventId, RoomId, RoomVersionId};
 
+use crate::rooms::short::{ShortEventId, ShortStateKey};
+
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
 /// like rebuild_state.
@@ -67,8 +69,15 @@ pub async fn resolve_state(
 
 	trace!("State resolution done.");
 
+	// `forkstates[0]` is the current state in `(type, state_key)` space, which
+	// is the same space `state` resolves into, so it doubles as the diff base
+	// for deciding which leaves actually changed.
+	let previous_statemap = &forkstates[0];
+
 	let mut lattice = rezzy::state::LtHash::default();
-	let mut entries = Vec::with_capacity(state.len());
+	// Only the changed leaves become mutations, so this stays proportional to
+	// the state delta rather than the state size.
+	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();
 
 	for ((ty, sk), id) in &state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());
@@ -79,28 +88,42 @@ pub async fn resolve_state(
 			.get_or_create_shortstatekey(ty, sk)
 			.await;
 		let shorteventid = self.services.short.get_or_create_shorteventid(id).await;
-		entries.push((shortstatekey, shorteventid));
+
+		if previous_statemap.get(&(ty.clone(), sk.clone())) != Some(id) {
+			mutations.push((shortstatekey, Some(shorteventid)));
+		}
+	}
+
+	// Resolution picks a winner per `(type, state_key)` from the union of the
+	// forks, so it should not drop a key the previous root carried. Handle it
+	// anyway rather than silently leaving a stale leaf behind.
+	for ((ty, sk), _) in previous_statemap {
+		if !state.contains_key(&(ty.clone(), sk.clone())) {
+			let shortstatekey = self
+				.services
+				.short
+				.get_or_create_shortstatekey(ty, sk)
+				.await;
+			mutations.push((shortstatekey, None));
+		}
 	}
 
 	let structural_key = crate::rooms::state_hamt::room_structural_key(
 		&self.services.globals.server_secret,
 		room_id,
 	);
-	let (root_handle, root_node) =
-		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
-			.map_err(|e| err!(error!("Failed to build HAMT root: {e:?}")))?;
 
+	// Copy-on-write from the current root: only the changed spines are written.
+	// Materializing the whole tree here would rewrite every node on every
+	// incoming state event.
 	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(root_node);
-		self.services
-			.state
-			.persist_root_lattice(&root_handle, &lattice);
-	});
-
-	Ok(root_handle)
+		self.services.state.persist_state_hamt_mutations(
+			&structural_key,
+			&current_root_handle,
+			mutations,
+			&lattice,
+		)
+	})
 }
 
 #[implement(super::Service)]

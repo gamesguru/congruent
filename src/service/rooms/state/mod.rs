@@ -553,6 +553,54 @@ impl Service {
 		Ok((root_handle, root_node))
 	}
 
+	/// Applies `mutations` on top of `prev` with copy-on-write path copying and
+	/// persists only the nodes along the changed spines, returning the new root
+	/// handle.
+	///
+	/// This is the bulk counterpart to the single-key fast path in
+	/// [`Self::append_to_state`]: `K` changed state keys cost `O(K log₃₂ S)`
+	/// node writes instead of the `O(S)` of materializing and rewriting the
+	/// whole tree. `lattice` must already describe the post-mutation state, and
+	/// is persisted alongside the nodes so a root never references a node that
+	/// is not durable yet.
+	pub fn persist_state_hamt_mutations(
+		&self,
+		structural_key: &[u8],
+		prev: &rezzy::hamt::RootHandle,
+		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
+		lattice: &rezzy::state::LtHash,
+	) -> Result<rezzy::hamt::RootHandle> {
+		let old = self
+			.services
+			.state_hamt
+			.store
+			.get_node(&prev.structural_hash)?;
+		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+
+		// Displaced values are unused: callers pass a lattice already computed
+		// from the resolved post-mutation state, so there is no need to replay
+		// per-key insert/replace arithmetic here.
+		let (new_node, _displaced, created) =
+			rezzy::hamt::persist_mutations(&old, structural_key, mutations, &mut resolver)
+				.map_err(|e| err!(error!("HAMT batch mutation failed: {e:?}")))?;
+
+		for (hash, bytes) in created {
+			self.services
+				.state_hamt
+				.store
+				.put_encoded_node(hash, &bytes);
+		}
+
+		let handle = self
+			.services
+			.state_hamt
+			.store
+			.root_handle(new_node.structural_hash, lattice);
+		self.persist_root_lattice(&handle, lattice);
+
+		Ok(handle)
+	}
+
 	/// Persists the lattice for a root and populates the lattice cache.
 	pub fn persist_root_lattice(
 		&self,
