@@ -492,7 +492,7 @@ impl Service {
 					notify.room_alias = self
 						.services
 						.state_accessor
-						.get_canonical_alias(&notice_room_id)
+						.get_canonical_alias(&room_id)
 						.await
 						.ok();
 				}

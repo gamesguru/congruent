@@ -176,7 +176,7 @@ impl Service {
 		&self,
 		auth: &Option<AuthData>,
 		flows: Vec<AuthFlow>,
-		params: RawJson,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> Result<Identity> {
 		match auth.as_ref() {
@@ -219,7 +219,7 @@ impl Service {
 		self.authenticate(
 			auth,
 			vec![AuthFlow::new(vec![AuthType::Password])],
-			Box::default(),
+			slipstream::json!({}),
 			identity,
 		)
 		.await
@@ -235,7 +235,7 @@ impl Service {
 	async fn create_session(
 		&self,
 		flows: Vec<AuthFlow>,
-		params: RawJson,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> UiaaInfo {
 		let mut uiaa_sessions = self.uiaa_sessions.lock().await;
@@ -378,7 +378,10 @@ impl Service {
 				match self
 					.services
 					.threepid
-					.consume_valid_session(sid, client_secret)
+					.consume_valid_session(
+						&slipstream::OwnedSessionId::from(sid.as_str()),
+						&slipstream::OwnedClientSecret::from(client_secret.as_str()),
+					)
 					.await
 				{
 					| Ok(email) => {

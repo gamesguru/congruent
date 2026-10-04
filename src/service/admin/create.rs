@@ -60,7 +60,7 @@ pub async fn create_admin_room(services: &Services) -> Result {
 			PduBuilder::state(String::new(), &RoomCreateEventContent {
 				federate: true,
 				predecessor: None,
-				room_version: *room_version,
+				room_version: room_version.clone(),
 				..create_content
 			}),
 			server_user,

@@ -142,7 +142,7 @@ async fn set_room_tag(&self, room_id: &RoomId, user_id: &UserId, tag: &str) -> R
 			Some(room_id),
 			user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(event)?,
+			&slipstream::codec::to_value(&event),
 		)
 		.await
 }

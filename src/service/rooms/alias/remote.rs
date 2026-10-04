@@ -9,7 +9,7 @@ pub(super) async fn remote_resolve(
 ) -> Result<(OwnedRoomId, Vec<OwnedServerName>)> {
 	debug!("Asking {} to resolve {room_alias:?}", room_alias.server_name());
 	match self
-		.remote_request(room_alias, room_alias.server_name())
+		.remote_request(room_alias, &room_alias.server_name())
 		.await
 	{
 		| Err(e) => {

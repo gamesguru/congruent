@@ -186,12 +186,13 @@ impl Service {
 		let mxcs = self.db.get_all_user_mxcs(user).await;
 		let mut deletion_count: usize = 0;
 
-		for mxc in mxcs {
-			let Ok(mxc) = mxc.as_str().parse().inspect_err(|e| {
-				debug_error!(%mxc, "Failed to parse MXC URI from database: {e}");
-			}) else {
+		for mxc_uri in mxcs {
+			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
+			else {
+				debug_error!(%mxc_uri, "Failed to parse MXC URI from database");
 				continue;
 			};
+			let mxc = Mxc { server_name: &server_name, media_id };
 
 			debug_info!(%deletion_count, "Deleting MXC {mxc} by user {user} from database and filesystem");
 			match self.delete(&mxc).await {
@@ -309,7 +310,9 @@ impl Service {
 
 			trace!("Parsed MXC key to URL: {mxc_s}");
 			let mxc = OwnedMxcUri::from(mxc_s);
-			if (mxc.server_name() == Ok(self.services.globals.server_name())
+			if (mxc
+				.server_name()
+				.is_ok_and(|server| &server == self.services.globals.server_name())
 				&& !yes_i_want_to_delete_local_media)
 				|| !mxc.is_valid()
 			{
@@ -365,11 +368,13 @@ impl Service {
 
 		let mut deletion_count: usize = 0;
 
-		for mxc in remote_mxcs {
-			let Ok(mxc) = mxc.as_str().parse() else {
+		for mxc_uri in remote_mxcs {
+			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
+			else {
 				debug_warn!("Invalid MXC in database, skipping");
 				continue;
 			};
+			let mxc = Mxc { server_name: &server_name, media_id };
 
 			debug_info!("Deleting MXC {mxc} from database and filesystem");
 

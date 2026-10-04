@@ -481,7 +481,7 @@ async fn migrate(services: &Services) -> Result<()> {
 				.alias
 				.all_local_aliases()
 				.ready_for_each(|(room_id, alias)| {
-					let matches = patterns.matches(alias);
+					let matches = patterns.matches(alias.as_str());
 					if matches.matched_any() {
 						warn!(
 							"Room with alias #{alias} ({room_id}) matches the following \
@@ -1332,7 +1332,7 @@ async fn db_lt_12(services: &Services) -> Result<()> {
 				None,
 				&user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(account_data).expect("to json value always works"),
+				&slipstream::codec::to_value(&account_data),
 			)
 			.await?;
 	}
@@ -1376,7 +1376,7 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 				None,
 				&user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(account_data).expect("to json value always works"),
+				&slipstream::codec::to_value(&account_data),
 			)
 			.await?;
 	}
@@ -1629,7 +1629,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 				match from_slice::<Value>(value) {
 					// corrupted timezone field
 					| Err(_) if key == "us.cloke.msc4175.tz" => {
-						let new_value = Value::String(String::from_utf8(value.to_vec())?);
+						let new_value = slipstream::json::Value::String(String::from_utf8(value.to_vec())?);
 						useridprofilekey_value.put((user, key), Json(new_value));
 						fixed = fixed.saturating_add(1);
 					},
@@ -1676,8 +1676,8 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 		.stream()
 		.try_fold(
 			0_usize,
-			async |mut total: usize, ((user_id, room_id), state)| -> Result<usize> {
-				if state.deserialize().is_err() {
+			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
+				if state.deserialize_as::<Option<Pdu>>().is_err() {
 					// The cached leave event is corrupted. Try to reconstruct it from
 					// the room's current membership state when a HAMT root is already
 					// available (fresh/migrated rooms with a `roomid_roothandle`
@@ -1741,6 +1741,8 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 
 const FIXED_LOCAL_INVITE_STATE_MARKER: &str = "fix_local_invite_state";
 async fn fix_local_invite_state(services: &Services) -> Result {
+	type InviteKeyVal = ((OwnedUserId, OwnedRoomId), Raw<Vec<Raw<AnyStrippedStateEvent>>>);
+
 	// Clean up the effects of !1249 by caching stripped state for invites
 
 	type KeyVal = ((OwnedUserId, OwnedRoomId), Raw<Vec<AnyStrippedStateEvent>>);
@@ -1752,11 +1754,11 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 	// for each user invited to a room
 	let fixed =  userroomid_invitestate.stream()
 		// if they're a local user on this homeserver
-		.try_filter(|((user_id, _), _)| ready(services.globals.user_is_local(user_id)))
-		.and_then(async |((user_id, room_id), stripped_state)| Ok::<_,
-			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize
+		.try_filter(|((user_id, _), _): &InviteKeyVal| ready(services.globals.user_is_local(user_id)))
+		.and_then(async |((user_id, room_id), stripped_state): InviteKeyVal| Ok::<_,
+			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize_as::<Vec<Raw<AnyStrippedStateEvent>>>
 		().unwrap_or_else(|e| {
-			trace!("Failed to deserialize: {:?}", stripped_state.json());
+			trace!("Failed to deserialize: {:?}", stripped_state.get());
 			warn!(
 				%user_id,
 				%room_id,

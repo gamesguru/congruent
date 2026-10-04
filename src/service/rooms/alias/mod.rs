@@ -151,7 +151,7 @@ impl Service {
 
 		if room_version.explicitly_privilege_room_creators {
 			let create_content: RoomCreateEventContent =
-				serde_json::from_str(create_event.content().get())
+				slipstream::codec::from_str(create_event.content().get())
 					.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
 			let user_owned = user_id.to_owned();
 			if create_event.sender() == user_id

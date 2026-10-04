@@ -434,6 +434,15 @@ impl DbKey for StateKey {
 	fn db_ser(&self) -> Self::Ser<'_> { self.as_str() }
 }
 
+impl DbKey for slipstream::http_headers::ContentDisposition {
+	type Ser<'a>
+		= String
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self.to_string() }
+}
+
 impl<'a> DbDe<'a> for StateKey {
 	type De = &'a str;
 

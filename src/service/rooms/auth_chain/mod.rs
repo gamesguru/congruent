@@ -378,7 +378,7 @@ async fn get_auth_chain_inner(
 			let mut legacy_short_ids = self
 				.services
 				.short
-				.multi_get_or_create_shorteventid(new_auth_events.iter().map(|id| &**id))
+				.multi_get_or_create_shorteventid(new_auth_events.iter().map(|id| id.as_ref()))
 				.zip(futures::stream::iter(new_auth_events.clone()))
 				.boxed();
 
@@ -432,7 +432,7 @@ async fn add_derived_create_event(
 	if exclude.is_some_and(|event_id| event_id == create_id) {
 		return true;
 	}
-	let Ok(create_short) = self.services.short.get_shorteventid(create_id).await else {
+	let Ok(create_short) = self.services.short.get_shorteventid(&create_id).await else {
 		return true;
 	};
 	if self

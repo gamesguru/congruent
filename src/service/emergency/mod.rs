@@ -72,10 +72,9 @@ impl Service {
 				None,
 				server_user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(&GlobalAccountDataEvent {
+				&slipstream::codec::to_value(&GlobalAccountDataEvent {
 					content: PushRulesEventContent { global: ruleset },
-				})
-				.expect("to json value always works"),
+				}),
 			)
 			.await?;
 
