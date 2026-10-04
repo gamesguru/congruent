@@ -2523,7 +2523,6 @@ pub struct WellKnownConfig {
 	/// Please migrate to the new `[global.matrix_rtc]` config section.
 	///
 	/// default: []
-	#[serde(default)]
 	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub rtc_focus_server_urls: Vec<RtcFocusInfo>,
 }
@@ -2570,7 +2569,6 @@ pub struct MatrixRtcConfig {
 	/// To disable, set this to an empty list (`[]`).
 	///
 	/// default: []
-	#[serde(default)]
 	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub foci: Vec<RtcFocusInfo>,
 }
