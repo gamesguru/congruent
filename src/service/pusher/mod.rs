@@ -133,7 +133,7 @@ impl Service {
 
 				let pushkey = data.pusher.ids.pushkey.as_str();
 				let key = (sender, pushkey);
-				self.db.senderkey_pusher.put(key, Json(pusher));
+				self.db.senderkey_pusher.put(key, &data.pusher);
 				self.db.pushkey_deviceid.insert(pushkey, sender_device);
 			},
 			| set_pusher::v3::PusherAction::Delete(ids) => {
@@ -446,7 +446,7 @@ impl Service {
 				let mut notify = Notification::new(d);
 
 				notify.event_id = Some(event.event_id().to_owned());
-				notify.room_id = event.room_id_or_hash().map(OwnedRoomId::to_owned);
+				notify.room_id = event.room_id_or_hash();
 				if http
 					.data
 					.get("org.matrix.msc4076.disable_badge_count")
@@ -472,7 +472,7 @@ impl Service {
 					}
 					notify.sender = Some(event.sender().to_owned());
 					notify.event_type = Some(event.kind().to_owned());
-					notify.content = serde_json::value::to_raw_value(event.content()).ok();
+					notify.content = Some(event.content().clone());
 
 					if *event.kind() == TimelineEventType::RoomMember {
 						notify.user_is_target =

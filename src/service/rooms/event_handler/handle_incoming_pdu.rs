@@ -344,12 +344,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.get("state_key")
 					.and_then(|v| v.as_str())
 					.unwrap_or_default();
-				let target_user = UserId::parse(state_key);
-				let target_user = if target_user.as_str().is_empty() {
-					sender.clone()
-				} else {
-					target_user
-				};
+				let target_user = UserId::parse(state_key).unwrap_or_else(|_| sender.clone());
 				debug_info!(
 					"Invite to {room_id} appears to have been rescinded by {sender}, marking \
 					 target {target_user} as left"

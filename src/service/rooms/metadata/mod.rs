@@ -83,7 +83,7 @@ pub fn ban_room(&self, room_id: &RoomId, banned: bool) {
 }
 
 #[implement(Service)]
-pub fn list_banned_rooms(&self) -> impl Stream<Item = &RoomId> + Send + '_ {
+pub fn list_banned_rooms(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 	self.db.bannedroomids.keys().ignore_err()
 }
 

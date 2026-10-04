@@ -5,11 +5,12 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Error, Result, err, error, utils,
+	Err, Error, Result, err, error,
+	matrix::pdu::RawJson,
+	utils,
 	utils::{hash, response::LimitReadExt},
 };
 use lettre::Address;
-use serde_json::value::RawValue;
 use slipstream::{
 	UserId,
 	api::client::{
@@ -175,7 +176,7 @@ impl Service {
 		&self,
 		auth: &Option<AuthData>,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: RawJson,
 		identity: Option<Identity>,
 	) -> Result<Identity> {
 		match auth.as_ref() {
@@ -234,7 +235,7 @@ impl Service {
 	async fn create_session(
 		&self,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: RawJson,
 		identity: Option<Identity>,
 	) -> UiaaInfo {
 		let mut uiaa_sessions = self.uiaa_sessions.lock().await;

@@ -230,7 +230,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 	let mut removed_servers = Vec::new();
 	self.room_servers(room_id)
 		.ready_for_each(|old_joined_server| {
-			if joined_servers.remove(old_joined_server) {
+			if joined_servers.remove(&old_joined_server) {
 				return;
 			}
 
