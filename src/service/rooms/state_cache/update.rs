@@ -146,7 +146,8 @@ pub async fn update_membership(
 							.and_then(serde_json::Value::as_str)
 							.map(str::to_owned)
 					})
-					.as_deref() == Some("m.room.create")
+					.as_deref()
+					== Some("m.room.create")
 			});
 			if !has_create {
 				if let Ok(previous) = self.knock_state(user_id, room_id).await {
@@ -159,7 +160,8 @@ pub async fn update_membership(
 									.and_then(serde_json::Value::as_str)
 									.map(str::to_owned)
 							})
-							.as_deref() == Some("m.room.create")
+							.as_deref()
+							== Some("m.room.create")
 					}) {
 						knock_state = previous;
 					}
@@ -174,7 +176,8 @@ pub async fn update_membership(
 							.and_then(serde_json::Value::as_str)
 							.map(str::to_owned)
 					})
-					.as_deref() == Some("m.room.create")
+					.as_deref()
+					== Some("m.room.create")
 			});
 			if has_create {
 				self.mark_as_knocked(user_id, room_id, Some(knock_state));

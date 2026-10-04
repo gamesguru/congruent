@@ -492,7 +492,8 @@ impl Store {
 	/// tests or synchronous spawns).
 	pub fn get_blocking_resolver(
 		&self,
-	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_ {
+	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_
+	{
 		move |hash: &StructuralHash| {
 			if let Ok(handle) = tokio::runtime::Handle::try_current() {
 				if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {

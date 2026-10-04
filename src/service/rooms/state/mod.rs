@@ -275,12 +275,13 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await && !matches!(
-				event_type,
-				StateEventType::RoomMember
-					| StateEventType::RoomEncryption
-					| StateEventType::SpaceChild
-			) {
+				.await
+				&& !matches!(
+					event_type,
+					StateEventType::RoomMember
+						| StateEventType::RoomEncryption
+						| StateEventType::SpaceChild
+				) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -308,12 +309,13 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await && !matches!(
-				event_type,
-				StateEventType::RoomMember
-					| StateEventType::RoomEncryption
-					| StateEventType::SpaceChild
-			) {
+				.await
+				&& !matches!(
+					event_type,
+					StateEventType::RoomMember
+						| StateEventType::RoomEncryption
+						| StateEventType::SpaceChild
+				) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -974,11 +976,12 @@ impl Service {
 					.services
 					.pdu_metadata
 					.is_event_rejected(&event_id)
-					.await && !self
-				.services
-				.pdu_metadata
-				.is_event_soft_failed(&event_id)
-				.await;
+					.await
+				&& !self
+					.services
+					.pdu_metadata
+					.is_event_soft_failed(&event_id)
+					.await;
 			if admitted {
 				eligible.push(event_id);
 			} else {

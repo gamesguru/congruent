@@ -25,10 +25,10 @@ use crate::{admin, client, server};
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 	let config = &server.config;
 	let mut router = router
-        .ruma_route(&client::get_profile_key_route)
-        .ruma_route(&client::set_profile_key_route)
-        .ruma_route(&client::delete_profile_key_route)
-        .ruma_route(&client::appservice_ping)
+		.ruma_route(&client::get_profile_key_route)
+		.ruma_route(&client::set_profile_key_route)
+		.ruma_route(&client::delete_profile_key_route)
+		.ruma_route(&client::appservice_ping)
 		.ruma_route(&client::get_supported_versions_route)
 		.ruma_route(&client::get_register_available_route)
 		.ruma_route(&client::register::register_route)
@@ -69,11 +69,13 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_global_account_data_route)
 		.ruma_route(&client::get_room_account_data_route)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/{event_type}",
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/account_data/\
+			 {event_type}",
 			delete(client::delete_global_account_data_msc3391_route),
 		)
 		.route(
-			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/account_data/{event_type}",
+			"/_matrix/client/unstable/org.matrix.msc3391/user/{user_id}/rooms/{room_id}/\
+			 account_data/{event_type}",
 			delete(client::delete_room_account_data_msc3391_route),
 		)
 		.ruma_route(&client::set_displayname_route)
@@ -113,8 +115,14 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_alias_route)
 		.ruma_route(&client::join_room_by_id_route)
 		.ruma_route(&client::join_room_by_id_or_alias_route)
-		.route("/_matrix/client/v3/rooms/{room_id}/joined_members", get(client::joined_members_route))
-		.route("/_matrix/client/r0/rooms/{room_id}/joined_members", get(client::joined_members_route))
+		.route(
+			"/_matrix/client/v3/rooms/{room_id}/joined_members",
+			get(client::joined_members_route),
+		)
+		.route(
+			"/_matrix/client/r0/rooms/{room_id}/joined_members",
+			get(client::joined_members_route),
+		)
 		.ruma_route(&client::knock_room_route)
 		.ruma_route(&client::leave_room_route)
 		.ruma_route(&client::forget_room_route)
@@ -258,7 +266,8 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::upgrade_room_route)
 		.ruma_route(&client::get_threads_route)
 		.route(
-			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/subscription",
+			"/_matrix/client/unstable/io.element.msc4306/rooms/{room_id}/thread/{thread_id}/\
+			 subscription",
 			get(client::get_thread_subscription_msc4306_route)
 				.put(client::put_thread_subscription_msc4306_route)
 				.delete(client::delete_thread_subscription_msc4306_route),
@@ -272,7 +281,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::get_room_summary)
 		.route(
 			"/_matrix/client/unstable/im.nheko.summary/rooms/{room_id_or_alias}/summary",
-			get(client::get_room_summary_legacy)
+			get(client::get_room_summary_legacy),
 		)
 		.ruma_route(&client::get_suspended_status)
 		.ruma_route(&client::put_suspended_status)
@@ -283,7 +292,10 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.route("/_continuwuity/server_version", get(client::conduwuit_server_version))
 		.ruma_route(&client::room_initial_sync_route)
 		.route("/client/server.json", get(client::syncv3_client_server_json))
-		.route("/_matrix/client/unstable/org.continuwuity.dag/{room_id}", get(client::get_room_dag_route))
+		.route(
+			"/_matrix/client/unstable/org.continuwuity.dag/{room_id}",
+			get(client::get_room_dag_route),
+		)
 		.ruma_route(&admin::rooms::ban::ban_room)
 		.ruma_route(&admin::rooms::list::list_rooms);
 
@@ -298,11 +310,11 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::get_remote_server_keys_route)
 			.ruma_route(&server::get_remote_server_keys_batch_route)
 			.merge(
-			Router::new()
-				.ruma_route(&server::get_public_rooms_route)
-				.ruma_route(&server::get_public_rooms_filtered_route)
-				.layer(axum::middleware::map_response(inject_public_join_rule)),
-		)
+				Router::new()
+					.ruma_route(&server::get_public_rooms_route)
+					.ruma_route(&server::get_public_rooms_filtered_route)
+					.layer(axum::middleware::map_response(inject_public_join_rule)),
+			)
 			.route(
 				"/_matrix/federation/v1/send/{txnId}",
 				put(server::send_transaction_message_route),

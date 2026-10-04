@@ -453,7 +453,8 @@ impl Service {
 				if http
 					.data
 					.get("org.matrix.msc4076.disable_badge_count")
-					.is_none() && http.data.get("disable_badge_count").is_none()
+					.is_none()
+					&& http.data.get("disable_badge_count").is_none()
 				{
 					notify.counts = NotificationCounts::new(unread, uint!(0));
 				} else {
