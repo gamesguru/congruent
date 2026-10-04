@@ -1,6 +1,6 @@
 pub(super) mod dehydrated_device;
 
-use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
+use std::{collections::{BTreeMap, HashMap}, mem, net::IpAddr, sync::Arc};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
