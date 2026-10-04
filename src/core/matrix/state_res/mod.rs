@@ -1068,9 +1068,8 @@ where
 						slipstream::events::room::create::RoomCreateEventContent,
 					>(creator_ev.content().get())
 					.is_ok_and(|cc| {
-						cc.room_version
-							.as_ref()
-							.and_then(|version| RoomVersion::new(version).ok())
+						RoomVersion::new(&cc.room_version)
+							.ok()
 							.is_some_and(|rv| rv.explicitly_privilege_room_creators)
 							&& (creator_ev.sender().as_str() == s.as_str()
 								|| cc.additional_creators.as_ref().is_some_and(|cs| {
