@@ -396,7 +396,7 @@ async fn join_room_by_id_helper_remote(
 
 	join_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			utils::millis_since_unix_epoch()
 				.try_into()
 				.expect("Timestamp is valid js_int value"),

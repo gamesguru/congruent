@@ -416,7 +416,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	);
 	leave_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			utils::millis_since_unix_epoch()
 				.try_into()
 				.expect("Timestamp is valid js_int value"),

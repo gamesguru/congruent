@@ -44,15 +44,15 @@ pub fn parse_and_clean_pdu(
 #[cfg(test)]
 mod tests {
 	use serde_json::json;
-	use slipstream::{events::TimelineEventType, room_id, room_version_id};
+	use slipstream::{OwnedRoomId, RoomVersionId, events::TimelineEventType};
 
 	use super::*;
 	use crate::matrix::event::gen_event_id;
 
 	#[test]
 	fn test_parse_and_clean_pdu() {
-		let room_id = room_id!("!test:example.com");
-		let version = room_version_id!("10"); // V3+ strips room_id
+		let room_id = OwnedRoomId::from("!test:example.com");
+		let version = RoomVersionId::parse("10").unwrap(); // V3+ strips room_id
 
 		let raw_json = json!({
 			"event_id": "$test_event",
@@ -89,7 +89,7 @@ mod tests {
 
 	#[test]
 	fn v12_create_event_hashes_after_room_id_stripping() {
-		let version = room_version_id!("12");
+		let version = RoomVersionId::parse("12").unwrap();
 
 		let make_value = || {
 			serde_json::from_value::<CanonicalJsonObject>(json!({
@@ -138,8 +138,8 @@ mod tests {
 
 	#[test]
 	fn v12_non_create_event_keeps_room_id_before_hashing() {
-		let room_id = room_id!("!test:example.com");
-		let version = room_version_id!("12");
+		let room_id = OwnedRoomId::from("!test:example.com");
+		let version = RoomVersionId::parse("12").unwrap();
 
 		let value: CanonicalJsonObject = serde_json::from_value(json!({
 			"type": "m.room.member",

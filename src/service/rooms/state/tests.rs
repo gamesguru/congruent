@@ -90,9 +90,9 @@ fn create_dummy_pdu(
 	);
 	json.insert(
 		"origin_server_ts".into(),
-		slipstream::CanonicalJsonValue::Integer(123_456_789.into()),
+		slipstream::CanonicalJsonValue::Number(123_456_789_u64.into()),
 	);
-	json.insert("depth".into(), slipstream::CanonicalJsonValue::Integer(1.into()));
+	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
 	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
 	json.insert("auth_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
 

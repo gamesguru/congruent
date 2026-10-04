@@ -600,10 +600,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 		target: "knock_debug",
 		"mark_as_left called for user_id={} room_id={}", user_id, room_id
 	);
-	let prior_members = self
-		.room_members(room_id)
-		.collect::<Vec<_>>()
-		.await;
+	let prior_members = self.room_members(room_id).collect::<Vec<_>>().await;
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 

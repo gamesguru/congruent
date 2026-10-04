@@ -969,8 +969,7 @@ impl Data {
 			let actual_room = pdu.room_id_or_hash();
 			if actual_room != *expected_room {
 				return Err!(Database(
-					"PDU {event_id} does belong to room {actual_room} (expected \
-					 {expected_room})"
+					"PDU {event_id} does belong to room {actual_room} (expected {expected_room})"
 				));
 			}
 		}

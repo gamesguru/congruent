@@ -915,7 +915,7 @@ async fn test_yolo_reorder_timeline() {
 		.unwrap();
 	json_a.insert(
 		"origin_server_ts".to_owned(),
-		slipstream::CanonicalJsonValue::Integer(2000.into()),
+		slipstream::CanonicalJsonValue::Number(2000_u64.into()),
 	);
 	let pdu_id_a = services.rooms.timeline.get_pdu_id(&event_a).await.unwrap();
 	services
@@ -933,7 +933,7 @@ async fn test_yolo_reorder_timeline() {
 		.unwrap();
 	json_b.insert(
 		"origin_server_ts".to_owned(),
-		slipstream::CanonicalJsonValue::Integer(1000.into()),
+		slipstream::CanonicalJsonValue::Number(1000_u64.into()),
 	);
 	let pdu_id_b = services.rooms.timeline.get_pdu_id(&event_b).await.unwrap();
 	services

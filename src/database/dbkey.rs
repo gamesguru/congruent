@@ -8,7 +8,7 @@
 //! those projections, and codec-encoded values become raw bytes. The byte
 //! encoding on disk is unchanged.
 
-use conduwuit::{Error, Result};
+use conduwuit::{Error, Result, matrix::StateKey};
 use serde::{Deserialize, Serialize, Serializer};
 use slipstream::codec;
 
@@ -300,6 +300,39 @@ id_impls!(
 	slipstream::OwnedTransactionId,
 	slipstream::OwnedMxcUri,
 );
+
+impl DbKey for StateKey {
+	type Ser<'a>
+		= &'a str
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self.as_str() }
+}
+
+impl<'a> DbDe<'a> for StateKey {
+	type De = &'a str;
+
+	fn from_de(de: Self::De) -> Result<Self> { Ok(Self::from(de)) }
+}
+
+impl DbKey for slipstream::RoomVersionId {
+	type Ser<'a>
+		= &'a str
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self.as_str() }
+}
+
+impl<'a> DbDe<'a> for slipstream::RoomVersionId {
+	type De = &'a str;
+
+	fn from_de(de: Self::De) -> Result<Self> {
+		de.parse()
+			.map_err(|e| Error::SerdeDe(format!("invalid room version: {e}").into()))
+	}
+}
 
 macro_rules! event_type_impls {
 	($($t:ty),* $(,)?) => {$(

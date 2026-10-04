@@ -25,7 +25,7 @@ mod tests {
 	#[test]
 	fn test_pdu_json_canonical_strip() {
 		let mut event = BTreeMap::new();
-		event.insert("__shortstatehash".to_owned(), CanonicalJsonValue::Integer(12345.into()));
+		event.insert("__shortstatehash".to_owned(), CanonicalJsonValue::Number(12345_u64.into()));
 		event.insert("event_id".to_owned(), CanonicalJsonValue::String("$abc123".to_owned()));
 		event.insert("prev_state_events".to_owned(), CanonicalJsonValue::Array(vec![]));
 		event.insert("state_jump_pointers".to_owned(), CanonicalJsonValue::Array(vec![]));

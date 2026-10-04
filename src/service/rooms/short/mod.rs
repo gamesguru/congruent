@@ -411,8 +411,7 @@ where
 	const BUFSIZE: usize = size_of::<ShortEventId>();
 
 	if let Some(cached) = self.shorteventid_eventid_cache.get(&shorteventid) {
-		let s = slipstream::codec::to_string(cached)
-			.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))?;
+		let s = slipstream::codec::to_string(&cached);
 		return slipstream::codec::from_str::<Id>(&s)
 			.map_err(|e| err!(Database("Failed to deserialize EventId from cache: {e:?}")));
 	}
@@ -424,7 +423,10 @@ where
 		.await?;
 	let bytes = handle.as_ref();
 	let event_id_str = utils::string::str_from_bytes(bytes)?;
-	let res = Id::from_json(&slipstream::json::Value::parse(event_id_str)?).map_err(|e| {
+	let value = slipstream::json::Value::parse(event_id_str).map_err(|e| {
+		err!(Database("Failed to parse EventId JSON from short {shorteventid:?}: {e:?}"))
+	})?;
+	let res = Id::from_json(&value).map_err(|e| {
 		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
 	})?;
 
@@ -445,7 +447,7 @@ pub fn multi_get_eventid_from_short<'a, Id, S>(
 ) -> impl Stream<Item = Result<Id>> + Send + 'a
 where
 	S: Stream<Item = ShortEventId> + Send + 'a,
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned + Send + 'a,
+	Id: Deserialize + Sized + ToOwned + Send + 'a,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	shorteventid
@@ -457,13 +459,11 @@ where
 
 			for (i, key) in chunk.iter().copied().enumerate() {
 				if let Some(cached) = self.shorteventid_eventid_cache.get(&key) {
-					let res = serde_json::to_vec(&cached)
-						.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))
-						.and_then(|s| {
-							serde_json::from_slice::<Id>(&s).map_err(|e| {
+					let res =
+						slipstream::codec::from_str::<Id>(&slipstream::codec::to_string(&cached))
+							.map_err(|e| {
 								err!(Database("Failed to deserialize EventId from cache: {e:?}"))
-							})
-						});
+							});
 					results.push(Some(res));
 				} else {
 					results.push(None);
@@ -748,10 +748,10 @@ mod tests {
 		// Initial lookup should result in cache miss and query DB (or allocate new
 		// since not in DB) Since it doesn't exist in DB, get_shorteventid returns
 		// Err, but get_or_create resolves/creates it
-		let short_id1 = service.get_or_create_shorteventid(event_id).await;
+		let short_id1 = service.get_or_create_shorteventid(&event_id).await;
 
 		// Cache should now contain the mappings
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), Some(short_id1));
 		assert_eq!(service.shorteventid_eventid_cache.get(&short_id1), Some(event_id.to_owned()));
 
 		// Clear cache and retrieve via get_shorteventid to verify DB storage
@@ -759,17 +759,17 @@ mod tests {
 		service.shorteventid_eventid_cache.invalidate_all();
 		service.eventid_shorteventid_cache.run_pending_tasks();
 		service.shorteventid_eventid_cache.run_pending_tasks();
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), None);
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), None);
 
-		let short_id2 = service.get_shorteventid(event_id).await.unwrap();
+		let short_id2 = service.get_shorteventid(&event_id).await.unwrap();
 		assert_eq!(short_id1, short_id2);
 
 		// Cache should be repopulated after DB hit
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), Some(short_id1));
 
 		// Test retrieve event_id from short_id
 		let retrieved: OwnedEventId = service.get_eventid_from_short(short_id1).await.unwrap();
-		assert_eq!(retrieved, event_id.to_owned());
+		assert_eq!(retrieved, event_id);
 	}
 
 	#[tokio::test]

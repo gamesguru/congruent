@@ -278,17 +278,16 @@ impl Service {
 				.get("m.relations")
 				.and_then(|r| r.as_object())
 				.and_then(|r| r.get("m.thread"))
-				.and_then(|relations| BundledThread::from_json(relations).ok()) {
+				.and_then(|relations| BundledThread::from_json(relations).ok())
+			{
 				// Thread already existed
 				relations.count = relations.count.saturating_add(uint!(1));
 				relations.latest_event = event.to_format();
 
 				let content = relations.to_json();
 
-				unsigned.insert(
-					"m.relations".to_owned(),
-					slipstream::json!({ "m.thread": content }),
-				);
+				unsigned
+					.insert("m.relations".to_owned(), slipstream::json!({ "m.thread": content }));
 			} else {
 				// New thread
 				let relations = BundledThread {
@@ -299,10 +298,8 @@ impl Service {
 
 				let content = relations.to_json();
 
-				unsigned.insert(
-					"m.relations".to_owned(),
-					slipstream::json!({ "m.thread": content }),
-				);
+				unsigned
+					.insert("m.relations".to_owned(), slipstream::json!({ "m.thread": content }));
 			}
 
 			self.services
