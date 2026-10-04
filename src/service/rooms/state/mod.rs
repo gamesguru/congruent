@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
 use async_trait::async_trait;
 use conduwuit::{RoomVersion, debug, matrix::StateKey};
 use conduwuit_core::{
-	Event, PduEvent, Result, err,
+	Event, PduEvent, Result, err, info,
 	state_res::StateMap,
 	utils::{
 		IterStream, MutexMap, MutexMapGuard, ReadyExt,
@@ -174,7 +174,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
 
 impl Service {
@@ -784,6 +784,7 @@ impl Service {
 			return Ok(version);
 		}
 
+		info!(target: "rooms", "Could not get room_version by direct lookup for {}", room_id);
 		// Try the current room state snapshot first.
 		if let Ok(content) = self
 			.services
@@ -800,6 +801,7 @@ impl Service {
 			return Ok(version);
 		}
 
+		warn!(target: "rooms", "Could not get room_version via state for {}", room_id);
 		// Fallback: the create event might be an outlier (not in the state
 		// snapshot). Scan outliers for this room to find it.
 		let mut outlier_stream = Box::pin(self.services.timeline.room_outlier_stream(room_id));
@@ -813,8 +815,8 @@ impl Service {
 			}
 		}
 
-		Err(conduwuit::err!(Request(NotFound(
-			"No create event found for room (checked state + outliers)"
+		Err(err!(Request(NotFound(
+			"No create event found for room (checked db, state, and outliers)"
 		))))
 	}
 

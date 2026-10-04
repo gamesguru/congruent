@@ -602,7 +602,6 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	);
 	let prior_members = self
 		.room_members(room_id)
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 	let userroom_id = (user_id, room_id);
@@ -1159,7 +1158,7 @@ pub async fn update_caches_for_state_delta(
 					);
 					continue;
 				};
-				self.update_membership(room_id, target_user_id, &pdu, false)
+				self.update_membership(room_id, &target_user_id, &pdu, false)
 					.await?;
 				// Membership changes can affect restricted-room accessibility.
 				self.services

@@ -35,8 +35,7 @@ pub async fn build_and_append_pdu(
 
 	let room_id = room_id
 		.map(ToOwned::to_owned)
-		.or_else(|| pdu.room_id_or_hash())
-		.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+		.unwrap_or_else(|| pdu.room_id_or_hash());
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}

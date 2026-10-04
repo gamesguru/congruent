@@ -533,7 +533,7 @@ async fn migrate_read_receipts(services: &Services) -> Result<()> {
 		let count = conduwuit::utils::u64_from_bytes(count_bytes).unwrap_or(0);
 		let user_id_bytes = &key[count_end.saturating_add(1)..];
 
-		let Ok(event) = serde_json::from_slice::<ReceiptEvent>(value) else {
+		let Ok(event) = slipstream::codec::from_slice::<ReceiptEvent>(value) else {
 			continue;
 		};
 
@@ -623,7 +623,7 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 				if let Some(legacy_event_map) = &legacy_event_map {
 					if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
 						with_event = with_event.saturating_add(1);
-						serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
+						slipstream::codec::from_slice(&event_bytes).unwrap_or_else(|_| {
 							slipstream::events::receipt::ReceiptEvent {
 								content: slipstream::events::receipt::ReceiptEventContent(
 									std::collections::BTreeMap::new(),

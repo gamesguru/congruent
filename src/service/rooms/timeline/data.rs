@@ -967,43 +967,11 @@ impl Data {
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
-			if let Some(actual_room) = actual_room {
-				if actual_room != expected_room {
-					return Err!(Database(
-						"PDU {event_id} does belong to room {actual_room} (expected \
-						 {expected_room})"
-					));
-				}
-			} else {
-				// v12 create events do not contain room_id in the JSON.
-				// Verify room association.
-				if let Ok(expected_short) =
-					self.services.short.get_shortroomid(expected_room).await
-				{
-					if let Ok(pduid) = self.get_pdu_id(event_id).await {
-						if pduid.shortroomid() != expected_short.to_be_bytes() {
-							return Err!(Database(
-								"PDU {event_id} is not associated with room {expected_room}"
-							));
-						}
-					} else if let Ok(meta_bytes) =
-						self.eventid_metadata.get(event_id.as_bytes()).await
-					{
-						if let Ok(meta) =
-							rooms::timeline::EventMetadata::from_bincode(&meta_bytes)
-						{
-							if meta.short_room_id != expected_short {
-								return Err!(Database(
-									"PDU {event_id} is not associated with room {expected_room}"
-								));
-							}
-						} else {
-							return Err!(Database("corrupt metadata"));
-						}
-					} else {
-						return Err!(Database("PDU has no room association metadata"));
-					}
-				}
+			if actual_room != *expected_room {
+				return Err!(Database(
+					"PDU {event_id} does belong to room {actual_room} (expected \
+					 {expected_room})"
+				));
 			}
 		}
 

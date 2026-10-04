@@ -300,10 +300,7 @@ impl Service {
 	{
 		let mut notify = None;
 		let mut tweaks = Vec::new();
-		let Some(room_id) = event.room_id_or_hash() else {
-			// This only affects v12+ create events
-			return Ok(());
-		};
+		let room_id = event.room_id_or_hash();
 
 		let power_levels: RoomPowerLevelsEventContent = self
 			.services

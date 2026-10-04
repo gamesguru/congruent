@@ -15,7 +15,7 @@ use serde_json::json;
 use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::threads::get_threads::v1::IncludeThreads,
-	codec::{DeError, Deserialize as CodecDeserialize},
+	codec::{DeError, Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	endpoint::body_field,
 	events::relation::{BundledThread, RelationType},
 	json::Value,
@@ -278,20 +278,16 @@ impl Service {
 				.get("m.relations")
 				.and_then(|r| r.as_object())
 				.and_then(|r| r.get("m.thread"))
-				.and_then(|relations| {
-					serde_json::from_value::<BundledThread>(relations.clone().into()).ok()
-				}) {
+				.and_then(|relations| BundledThread::from_json(relations).ok()) {
 				// Thread already existed
 				relations.count = relations.count.saturating_add(uint!(1));
 				relations.latest_event = event.to_format();
 
-				let content = serde_json::to_value(relations).expect("to_value always works");
+				let content = relations.to_json();
 
 				unsigned.insert(
 					"m.relations".to_owned(),
-					json!({ "m.thread": content })
-						.try_into()
-						.expect("thread is valid json"),
+					slipstream::json!({ "m.thread": content }),
 				);
 			} else {
 				// New thread
@@ -301,13 +297,11 @@ impl Service {
 					current_user_participated: true,
 				};
 
-				let content = serde_json::to_value(relations).expect("to_value always works");
+				let content = relations.to_json();
 
 				unsigned.insert(
 					"m.relations".to_owned(),
-					json!({ "m.thread": content })
-						.try_into()
-						.expect("thread is valid json"),
+					slipstream::json!({ "m.thread": content }),
 				);
 			}
 
