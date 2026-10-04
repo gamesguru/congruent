@@ -236,7 +236,7 @@ pub fn server_rooms<'a>(
 		.serverroomids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, room_id): (Ignore, &RoomId)| room_id)
+		.map(|(_, room_id): (Ignore, OwnedRoomId)| room_id)
 		.ready_filter(|room_id| RoomId::parse(room_id.as_str()).is_ok())
 }
 
@@ -491,7 +491,7 @@ pub fn rooms_joined<'a>(
 		.userroomid_joined
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, room_id): (Ignore, &RoomId)| room_id)
+		.map(|(_, room_id): (Ignore, OwnedRoomId)| room_id)
 }
 
 /// Returns an iterator over all rooms a user was invited to.
@@ -502,7 +502,7 @@ pub fn rooms_invited<'a>(
 	user_id: &'a UserId,
 ) -> impl Stream<Item = StrippedStateEventItem> + Send + 'a {
 	type KeyVal<'a> = (Key<'a>, &'a [u8]);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db
@@ -523,7 +523,7 @@ pub fn rooms_knocked<'a>(
 ) -> impl Stream<Item = StrippedStateEventItem> + Send + 'a {
 	// TODO: other places we depend on shorteventid but might not update it?
 	type KeyVal<'a> = (Key<'a>, &'a [u8]);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db
@@ -589,7 +589,7 @@ pub fn rooms_left<'a>(
 	user_id: &'a UserId,
 ) -> impl Stream<Item = (OwnedRoomId, Option<Pdu>)> + Send + 'a {
 	type KeyVal<'a> = (Key<'a>, Raw<Option<Pdu>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let prefix = (user_id, Interfix);
 	self.db

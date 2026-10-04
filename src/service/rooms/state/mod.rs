@@ -917,7 +917,7 @@ impl Service {
 		self.db
 			.roomid_pduleaves
 			.keys_prefix(&prefix)
-			.map_ok(|(_, event_id): (Ignore, &EventId)| event_id.to_owned())
+			.map_ok(|(_, event_id): (Ignore, OwnedEventId)| event_id.to_owned())
 			.ignore_err()
 	}
 

@@ -1,6 +1,7 @@
 pub(super) mod dehydrated_device;
 
 #[cfg(feature = "ldap")]
+use slipstream::OwnedRoomId;
 use std::collections::HashMap;
 use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
 
@@ -731,7 +732,7 @@ impl Service {
 			.userdeviceid_metadata
 			.keys_prefix(&prefix)
 			.ignore_err()
-			.map(|(_, device_id): (Ignore, &DeviceId)| device_id)
+			.map(|(_, device_id): (Ignore, OwnedDeviceId)| device_id)
 	}
 
 	/// Load the set of access tokens currently active for a device. The value
@@ -1421,7 +1422,7 @@ impl Service {
 		from: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a UserId, u64, &'a UserId), Ignore);
+		type KeyVal<'a> = ((OwnedUserId, u64, OwnedUserId), Ignore);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1456,7 +1457,7 @@ impl Service {
 		from: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a UserId, u64), &'a UserId);
+		type KeyVal<'a> = ((OwnedUserId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1480,7 +1481,7 @@ impl Service {
 		from: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a RoomId, u64), &'a UserId);
+		type KeyVal<'a> = ((OwnedRoomId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1695,7 +1696,7 @@ impl Service {
 		since: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (u64, Raw<AnyToDeviceEvent>)> + Send + 'a {
-		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
+		type Key<'a> = (OwnedUserId, OwnedDeviceId, u64);
 
 		let from = (user_id, device_id, since.map_or(0, |since| since.saturating_add(1)));
 
@@ -1719,7 +1720,7 @@ impl Service {
 	) where
 		Until: Into<Option<u64>> + Send,
 	{
-		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
+		type Key<'a> = (OwnedUserId, OwnedDeviceId, u64);
 
 		// `until: None` means the caller has no acknowledged position for this device
 		// (e.g. an initial /sync with no `since`) - nothing has been consumed yet, so

@@ -40,7 +40,7 @@ pub enum Status {
 }
 
 pub type MemberSet = HashSet<OwnedUserId>;
-type Key<'a> = (&'a UserId, Option<&'a DeviceId>, &'a RoomId, &'a UserId);
+type Key<'a> = (OwnedUserId, Option<OwnedDeviceId>, OwnedRoomId, OwnedUserId);
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {

@@ -1,3 +1,4 @@
+use slipstream::OwnedRoomId;
 use std::{
 	collections::{HashMap, HashSet},
 	ops::Bound,

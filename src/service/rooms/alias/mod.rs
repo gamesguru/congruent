@@ -1,5 +1,6 @@
 mod remote;
 
+use slipstream::OwnedRoomAliasId;
 use std::sync::Arc;
 
 use conduwuit::{
@@ -288,7 +289,7 @@ impl Service {
 			.aliasid_alias
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.map(|(_, alias): (Ignore, &RoomAliasId)| alias)
+			.map(|(_, alias): (Ignore, OwnedRoomAliasId)| alias)
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]

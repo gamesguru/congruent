@@ -1,3 +1,4 @@
+use slipstream::OwnedRoomId;
 use std::{fmt::Debug, mem, sync::Arc};
 
 use bytes::BytesMut;

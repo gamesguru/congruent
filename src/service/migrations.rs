@@ -1667,7 +1667,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 const POPULATED_USERROOMID_LEFTSTATE_TABLE_MARKER: &str = "populate_userroomid_leftstate_table";
 async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 	type KeyVal<'a> = (Key<'a>, Raw<Option<Pdu>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let db = &services.db;
 	let cork = db.cork_and_sync();
