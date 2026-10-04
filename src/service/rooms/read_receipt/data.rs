@@ -42,8 +42,9 @@ pub(super) type ReceiptItem = (OwnedUserId, u64, Raw<AnySyncEphemeralRoomEvent>)
 type PublicReadReceipts = BTreeMap<String, (u64, ReceiptEvent)>;
 type PrivateReadReceipts = BTreeMap<String, (u64, ReceiptEvent, u64)>;
 
-fn decode<T: CodecDeserialize>(bytes: &[u8]) -> Option<T> {
-	slipstream::codec::from_str(std::str::from_utf8(bytes).ok()?).ok()
+fn decode<T: CodecDeserialize>(bytes: &[u8]) -> Result<T> {
+	slipstream::codec::from_str(std::str::from_utf8(bytes)?)
+		.map_err(|e| err!(Database("Failed to decode read receipt: {e}")))
 }
 
 impl Data {
@@ -406,7 +407,7 @@ impl Data {
 
 				let mut json: CanonicalJsonObject = serde_json::from_slice(value)?;
 				json.remove("room_id");
-				let event = serde_json::value::to_raw_value(&json)?;
+				let event = slipstream::codec::to_string(&json)?;
 
 				conduwuit::trace!(
 					"Yielding read receipt for user {} at count {} (since was {})",
@@ -415,7 +416,7 @@ impl Data {
 					since
 				);
 
-				Ok((user_id, count, Raw::from_json(event)))
+				Ok((user_id, count, Raw::from_json_text(&event)?))
 			})
 			.ignore_err()
 	}

@@ -19,10 +19,11 @@ use database::{Deserialized, Json, Map};
 use futures::{StreamExt, join};
 use http::StatusCode;
 use loole::Sender;
+use serde::{Deserialize, Serialize};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::error::{ErrorKind, StandardErrorBody},
-	codec::{Deserialize, Serialize},
+	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	events::TimelineEventType,
 	serde::Raw,
 };
@@ -246,7 +247,7 @@ pub struct ScheduledDelayedEvent {
 	pub delay: Duration,
 }
 
-impl Serialize for ScheduledDelayedEvent {
+impl CodecSerialize for ScheduledDelayedEvent {
 	fn to_json(&self) -> slipstream::json::Value {
 		let mut obj = slipstream::json::Object::new();
 		obj.insert("event_type".into(), self.event_type.to_json());
@@ -270,7 +271,7 @@ impl Serialize for ScheduledDelayedEvent {
 	}
 }
 
-impl Deserialize for ScheduledDelayedEvent {
+impl CodecDeserialize for ScheduledDelayedEvent {
 	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
 		let obj = value
 			.as_object()
@@ -333,7 +334,7 @@ pub struct FinalizedDelayedEvent {
 	pub finalized_ts: MilliSecondsSinceUnixEpoch,
 }
 
-impl Serialize for FinalizedDelayedEvent {
+impl CodecSerialize for FinalizedDelayedEvent {
 	fn to_json(&self) -> slipstream::json::Value {
 		let mut obj = slipstream::json::Object::new();
 		obj.insert("event".into(), self.event.to_json());
@@ -354,7 +355,7 @@ impl Serialize for FinalizedDelayedEvent {
 	}
 }
 
-impl Deserialize for FinalizedDelayedEvent {
+impl CodecDeserialize for FinalizedDelayedEvent {
 	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
 		let obj = value
 			.as_object()

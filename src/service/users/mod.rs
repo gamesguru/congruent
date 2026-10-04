@@ -17,6 +17,7 @@ use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
+use serde_json::json;
 use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
 	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,

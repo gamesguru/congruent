@@ -220,7 +220,7 @@ impl Service {
 			.stream_prefix(&prefix)
 			.ignore_err()
 			.ready_filter_map(
-				|(key, subscription): ((&UserId, OwnedRoomId, OwnedEventId), &[u8])| {
+				|(key, subscription): ((OwnedUserId, OwnedRoomId, OwnedEventId), &[u8])| {
 					let subscription =
 						serde_json::from_slice::<ThreadSubscription>(subscription).ok()?;
 					(subscription.subscribed && subscription.bump_stamp > since).then_some((
@@ -377,7 +377,7 @@ impl Service {
 				| Some(event_id) => self
 					.services
 					.timeline
-					.get_pdu_count(event_id)
+					.get_pdu_count(&event_id)
 					.await
 					.unwrap_or(root_count),
 				| None => root_count,
@@ -406,6 +406,16 @@ impl Service {
 	}
 
 	pub(super) async fn get_participants(&self, root_id: &RawPduId) -> Result<Vec<OwnedUserId>> {
-		self.db.threadid_userids.get(root_id).await.deserialized()
+		let bytes = self.db.threadid_userids.get(root_id).await?;
+		bytes
+			.split(|byte| *byte == 0xFF)
+			.map(|user| {
+				std::str::from_utf8(user)
+					.map(OwnedUserId::from)
+					.map_err(|_| {
+						conduwuit::err!(Database("Invalid user ID in thread participants"))
+					})
+			})
+			.collect()
 	}
 }

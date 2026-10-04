@@ -150,7 +150,7 @@ where
 	> = BTreeMap::new();
 
 	for value in receipts {
-		let receipt = serde_json::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
+		let receipt = slipstream::codec::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
 			value.json().get(),
 		);
 		match receipt {
@@ -247,10 +247,10 @@ where
 
 	conduwuit::trace!(
 		target: "read_receipt_debug",
-		"Packed {} read receipts into EDU", content.len()
+		"Packed {} read receipts into EDU", content.0.len()
 	);
 	conduwuit::trace!(?content);
-	let json_val = serde_json::json!({
+	let json_val = slipstream::json::json!({
 		"type": "m.receipt",
 		"content": content,
 	});
@@ -261,7 +261,7 @@ where
 		"pack_receipts output JSON"
 	);
 
-	Raw::from_json(serde_json::value::to_raw_value(&json_val).expect("received valid json"))
+	Raw::from_json_text(&json_val.to_string()).expect("received valid json")
 }
 
 #[must_use]
@@ -276,13 +276,11 @@ where
 		let mut content_map = BTreeMap::new();
 		content_map.insert(event_id, event_receipts);
 		let content = ReceiptEventContent::from_iter(content_map);
-		let json_val = serde_json::json!({
+		let json_val = slipstream::json::json!({
 			"type": "m.receipt",
 			"content": content,
 		});
-		events.push(Raw::from_json(
-			serde_json::value::to_raw_value(&json_val).expect("received valid json"),
-		));
+		events.push(Raw::from_json_text(&json_val.to_string()).expect("received valid json"));
 	}
 
 	events
