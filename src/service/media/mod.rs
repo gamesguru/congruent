@@ -17,7 +17,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
+use slipstream::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
 use tokio::{
 	fs,
 	io::{AsyncReadExt, AsyncWriteExt, BufReader},

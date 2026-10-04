@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use database::{Database, Interfix, Map};
 use futures::StreamExt;
-use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
+use slipstream::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
 
 use super::{preview::UrlPreviewData, thumbnail::Dim};
 
