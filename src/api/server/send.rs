@@ -441,7 +441,7 @@ async fn inject_state_hash_mismatches(
 
 		// Absent and `null` both mean the sender made no input assertion.
 		let received_inputs = entry.resolution_inputs();
-		let local_inputs = if check_inputs {
+		let local_inputs = if check_inputs && received_inputs.is_some() {
 			match services.rooms.timeline.get_pdu(event_id).await {
 				| Ok(pdu) =>
 					services
