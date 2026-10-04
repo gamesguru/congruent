@@ -167,9 +167,7 @@ pub async fn get_room<T>(
 where
 	T: Deserialize,
 {
-	let handle = self
-		.get_raw(Some(room_id), user_id, kind.as_ref())
-		.await?;
+	let handle = self.get_raw(Some(room_id), user_id, kind.as_ref()).await?;
 	decode_account_data(&handle)
 }
 

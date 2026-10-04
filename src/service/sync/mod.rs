@@ -94,7 +94,9 @@ impl Serialize for CompatListFilters {
 		if !self.spaces.is_empty() {
 			obj.insert(
 				"spaces".into(),
-				slipstream::json::Value::Array(self.spaces.iter().map(Serialize::to_json).collect()),
+				slipstream::json::Value::Array(
+					self.spaces.iter().map(Serialize::to_json).collect(),
+				),
 			);
 		}
 		slipstream::json::Value::Object(obj)
@@ -108,8 +110,12 @@ impl Deserialize for CompatListFilters {
 			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
 		Ok(Self {
 			is_dm: obj.get("is_dm").and_then(slipstream::json::Value::as_bool),
-			is_encrypted: obj.get("is_encrypted").and_then(slipstream::json::Value::as_bool),
-			is_invite: obj.get("is_invite").and_then(slipstream::json::Value::as_bool),
+			is_encrypted: obj
+				.get("is_encrypted")
+				.and_then(slipstream::json::Value::as_bool),
+			is_invite: obj
+				.get("is_invite")
+				.and_then(slipstream::json::Value::as_bool),
 			room_types: obj
 				.get("room_types")
 				.and_then(|v| v.as_array())

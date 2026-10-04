@@ -515,11 +515,7 @@ impl Service {
 						new_pdu.event_id().as_str(),
 					);
 				} else {
-					lattice.insert(
-						event_type.as_ref(),
-						state_key,
-						new_pdu.event_id().as_str(),
-					);
+					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
 				for (hash, bytes) in created {
 					self.services

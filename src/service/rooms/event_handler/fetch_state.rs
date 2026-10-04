@@ -342,8 +342,7 @@ where
 	let mut entries = HashMap::new();
 	for (eid, (pdu, _)) in &verified_events {
 		graph.insert(eid.clone(), pdu.auth_events().map(ToOwned::to_owned).collect());
-		entries
-			.insert(eid.clone(), (0_u64.into(), pdu.depth(), pdu.origin_server_ts));
+		entries.insert(eid.clone(), (0_u64.into(), pdu.depth(), pdu.origin_server_ts));
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 

@@ -11,7 +11,10 @@ mod opt_event_id {
 		value: &Option<OwnedEventId>,
 		serializer: S,
 	) -> Result<S::Ok, S::Error> {
-		value.as_ref().map(OwnedEventId::as_str).serialize(serializer)
+		value
+			.as_ref()
+			.map(OwnedEventId::as_str)
+			.serialize(serializer)
 	}
 
 	pub(super) fn deserialize<'de, D: Deserializer<'de>>(

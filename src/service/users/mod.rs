@@ -69,10 +69,7 @@ impl Deserialize for UserSuspension {
 				.get("suspended")
 				.and_then(Value::as_bool)
 				.unwrap_or(false),
-			suspended_at: obj
-				.get("suspended_at")
-				.and_then(Value::as_u64)
-				.unwrap_or(0),
+			suspended_at: obj.get("suspended_at").and_then(Value::as_u64).unwrap_or(0),
 			suspended_by: obj
 				.get("suspended_by")
 				.and_then(|v| v.as_str())

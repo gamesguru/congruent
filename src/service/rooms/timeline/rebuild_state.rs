@@ -602,9 +602,7 @@ impl super::Service {
 						n_unchanged = n_unchanged.saturating_add(1);
 						groups_deduped = groups_deduped.saturating_add(1);
 						// Look up parent's root by string key to avoid OwnedEventId parsing
-						let parent_eid: OwnedEventId = parent_event_id
-							.as_str()
-							.into();
+						let parent_eid: OwnedEventId = parent_event_id.as_str().into();
 						let result = event_root
 							.get(&parent_eid)
 							.cloned()

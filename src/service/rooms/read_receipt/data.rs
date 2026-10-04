@@ -201,12 +201,7 @@ impl Data {
 		for (event_id, receipts) in &event.content.0 {
 			for (receipt_type, users) in receipts {
 				if let Some(receipt) = users.get(user_id) {
-					new_receipts.push((
-						event_id.clone(),
-						*receipt_type,
-						receipt.clone(),
-						false,
-					));
+					new_receipts.push((event_id.clone(), *receipt_type, receipt.clone(), false));
 				}
 			}
 		}
