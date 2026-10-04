@@ -1,11 +1,6 @@
 pub(super) mod dehydrated_device;
 
-use std::{
-	collections::{BTreeMap, HashMap},
-	mem,
-	net::IpAddr,
-	sync::Arc,
-};
+use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
@@ -51,23 +46,17 @@ pub struct UserSuspension {
 }
 
 impl Serialize for UserSuspension {
-	fn to_json(&self) -> slipstream::json::Value {
-		let mut obj = slipstream::json::Object::new();
-		obj.insert("suspended".into(), slipstream::json::Value::Bool(self.suspended));
-		obj.insert(
-			"suspended_at".into(),
-			slipstream::json::Value::Number(slipstream::json::Number::from(self.suspended_at)),
-		);
-		obj.insert(
-			"suspended_by".into(),
-			slipstream::json::Value::String(self.suspended_by.clone()),
-		);
-		slipstream::json::Value::Object(obj)
+	fn to_json(&self) -> Value {
+		let mut obj = json::Object::new();
+		obj.insert("suspended".into(), Value::Bool(self.suspended));
+		obj.insert("suspended_at".into(), Value::Number(json::Number::from(self.suspended_at)));
+		obj.insert("suspended_by".into(), Value::String(self.suspended_by.clone()));
+		Value::Object(obj)
 	}
 }
 
 impl Deserialize for UserSuspension {
-	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+	fn from_json(value: &Value) -> Result<Self, slipstream::codec::DeError> {
 		let obj = value
 			.as_object()
 			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
@@ -103,19 +92,19 @@ pub struct ProfileUpdate {
 }
 
 impl Serialize for ProfileUpdate {
-	fn to_json(&self) -> slipstream::json::Value {
-		let mut obj = slipstream::json::Object::new();
+	fn to_json(&self) -> Value {
+		let mut obj = json::Object::new();
 		obj.insert("user_id".into(), self.user_id.to_json());
-		obj.insert("field".into(), slipstream::json::Value::String(self.field.clone()));
+		obj.insert("field".into(), Value::String(self.field.clone()));
 		if let Some(ref v) = self.value {
 			obj.insert("value".into(), v.clone());
 		}
-		slipstream::json::Value::Object(obj)
+		Value::Object(obj)
 	}
 }
 
 impl Deserialize for ProfileUpdate {
-	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+	fn from_json(value: &Value) -> Result<Self, slipstream::codec::DeError> {
 		let obj = value
 			.as_object()
 			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
@@ -1037,7 +1026,7 @@ impl Service {
 			// freshly-expiring one-time key. Clients do upload the flag, but we
 			// set it explicitly here to be robust (some SDKs omit it on upload).
 			let mut claim_key = slipstream::codec::from_str::<Value>(fallback_key_value.get())
-				.unwrap_or_else(|_| Value::Object(slipstream::json::Object::new()));
+				.unwrap_or_else(|_| Value::Object(json::Object::new()));
 			claim_key.insert("fallback".into(), Value::Bool(true));
 			let claim_key = Raw::from_value(&claim_key);
 
@@ -1364,14 +1353,14 @@ impl Service {
 					target: "cross_signing",
 					"Key {key_id} of {target_id} has no signatures field, initializing empty"
 				);
-				Value::Object(slipstream::json::Object::new())
+				Value::Object(json::Object::new())
 			})
 			.as_object_mut()
 			.ok_or_else(|| {
 				err!(Database(info!("key in keyid_key has invalid signatures field.")))
 			})?
 			.entry(sender_id.to_string())
-			.or_insert_with(|| Value::Object(slipstream::json::Object::new()));
+			.or_insert_with(|| Value::Object(json::Object::new()));
 
 		let sig_map = signatures.as_object_mut().ok_or_else(|| {
 			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
@@ -1909,7 +1898,7 @@ impl Service {
 			.qry(&key)
 			.await
 			.and_then(|handle| {
-				slipstream::json::Value::parse(utils::string::str_from_bytes(handle.as_ref())?)
+				Value::parse(utils::string::str_from_bytes(handle.as_ref())?)
 					.map_err(|e| err!(Database("Invalid profile key in database: {e}")))
 			})
 	}
@@ -1927,9 +1916,7 @@ impl Service {
 			.stream_prefix(&prefix)
 			.ignore_err()
 			.ready_filter_map(|((_, key), value): KeyVal<'_>| {
-				let value =
-					slipstream::json::Value::parse(utils::string::str_from_bytes(value).ok()?)
-						.ok()?;
+				let value = Value::parse(utils::string::str_from_bytes(value).ok()?).ok()?;
 				Some((key, value))
 			})
 	}
@@ -2278,7 +2265,7 @@ where
 		.get_mut("signatures")
 		.and_then(|v| v.as_object_mut())
 	{
-		for (user, signature) in mem::replace(signatures, slipstream::json::Object::new()) {
+		for (user, signature) in mem::replace(signatures, json::Object::new()) {
 			let sid = <UserId>::try_from(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
 			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {

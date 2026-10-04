@@ -39,11 +39,7 @@ pub async fn get_event_keys(
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
 		let pubkeys = self
-			.get_pubkeys_for_event(
-				server.borrow(),
-				key_ids.iter().map(Borrow::borrow),
-				origin_server_ts,
-			)
+			.get_pubkeys_for_event(server, key_ids.iter().map(Borrow::borrow), origin_server_ts)
 			.await;
 		keys.insert(server.to_owned(), pubkeys);
 	}

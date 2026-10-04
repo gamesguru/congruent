@@ -7,7 +7,7 @@ use database::Ignore;
 use futures::{Stream, StreamExt, future, stream::iter};
 use itertools::Itertools;
 use slipstream::{
-	OwnedServerName, RoomId, ServerName,
+	OwnedServerName, RoomId,
 	events::{StateEventType, room::power_levels::RoomPowerLevelsEventContent},
 	int,
 };

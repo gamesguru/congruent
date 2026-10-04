@@ -10,8 +10,6 @@ use conduwuit_core::{
 };
 use conduwuit_database::{Deserialized, Interfix, Json, Map};
 use futures::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::threads::get_threads::v1::IncludeThreads,

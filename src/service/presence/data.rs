@@ -17,7 +17,7 @@ use crate::{Dep, globals, users};
 pub(crate) struct Data {
 	presenceid_presence: Arc<Map>,
 	userid_presenceid: Arc<Map>,
-	presence_cache: Cache<slipstream::OwnedUserId, Arc<(u64, Presence)>>,
+	presence_cache: Cache<OwnedUserId, Arc<(u64, Presence)>>,
 	services: Services,
 }
 

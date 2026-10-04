@@ -1,6 +1,6 @@
 use conduwuit::{Error, Result, utils};
 use slipstream::{
-	UInt, UserId,
+	UserId,
 	codec::{Deserialize, Serialize},
 	events::presence::{PresenceEvent, PresenceEventContent},
 	presence::PresenceState,

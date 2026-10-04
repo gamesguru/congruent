@@ -21,16 +21,17 @@ const BITS_PER_ELEMENT: f64 = 6.235;
 ///
 /// Returns a compact Bloom filter digest of the server's event graph for
 /// divergence detection (MSC0F01: Gossip-Based Federation Room Reconciliation).
-#[derive(Serialize)]
-pub(crate) struct RoomDigestResponse {
-	pub digest: String,
-	pub digest_type: String,
-	pub digest_bits: u32,
-	pub digest_window: u32,
-	pub event_count: u64,
-	pub extremity_event_ids: Vec<OwnedEventId>,
-	pub depth_range: (u64, u64),
-	pub origin_server_ts_range: (u64, u64),
+slipstream::codec_struct! {
+	RoomDigestResponse {
+		digest: String = ("digest"),
+		digest_type: String = ("digest_type"),
+		digest_bits: u32 = ("digest_bits"),
+		digest_window: u32 = ("digest_window"),
+		event_count: u64 = ("event_count"),
+		extremity_event_ids: Vec<OwnedEventId> = ("extremity_event_ids"),
+		depth_range: (u64, u64) = ("depth_range"),
+		origin_server_ts_range: (u64, u64) = ("origin_server_ts_range"),
+	}
 }
 
 /// Build an XXH3-128 double-hashed Bloom filter over a set of event IDs.

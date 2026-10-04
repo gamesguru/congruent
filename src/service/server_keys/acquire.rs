@@ -42,7 +42,7 @@ where
 
 	let batch = batch
 		.iter()
-		.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+		.map(|(server, keys)| (server, keys.iter().map(Borrow::borrow)));
 
 	self.acquire_pubkeys(batch).await;
 }
@@ -226,7 +226,7 @@ where
 		requests.push(async move {
 			let req_batch = batch
 				.iter()
-				.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+				.map(|(server, keys)| (server, keys.iter().map(Borrow::borrow)));
 
 			(notary, self.batch_notary_request(notary, req_batch).await)
 		});

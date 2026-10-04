@@ -9,14 +9,10 @@ use http::{
 	header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue},
 };
 use slipstream::{
-	Mxc, OwnedServerName, ServerName, UserId,
+	Mxc, ServerName, UserId,
 	api::{
 		client::{
-			authenticated_media::{
-				get_content::v1 as auth_get_content,
-				get_content_thumbnail::v1 as auth_get_thumbnail,
-			},
-			error::{Error as SlipstreamError, ErrorKind},
+			error::ErrorKind,
 			media::{
 				get_content::v3 as client_get_content,
 				get_content_thumbnail::v3 as client_get_thumbnail,

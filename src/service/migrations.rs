@@ -1905,7 +1905,10 @@ mod owned_event_id_option {
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
 	use slipstream::OwnedEventId;
 
-	pub fn serialize<S>(value: &Option<OwnedEventId>, serializer: S) -> Result<S::Ok, S::Error>
+	pub(super) fn serialize<S>(
+		value: &Option<OwnedEventId>,
+		serializer: S,
+	) -> Result<S::Ok, S::Error>
 	where
 		S: Serializer,
 	{
@@ -1915,7 +1918,7 @@ mod owned_event_id_option {
 			.serialize(serializer)
 	}
 
-	pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<OwnedEventId>, D::Error>
+	pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<OwnedEventId>, D::Error>
 	where
 		D: Deserializer<'de>,
 	{

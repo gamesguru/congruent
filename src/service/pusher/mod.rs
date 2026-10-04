@@ -7,11 +7,11 @@ use conduwuit_core::{
 	utils::{stream::TryIgnore, string_from_bytes},
 	warn,
 };
-use conduwuit_database::{Deserialized, Ignore, Interfix, Json, Map};
+use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
 use ipaddress::IPAddress;
 use slipstream::{
-	DeviceId, OwnedDeviceId, OwnedRoomId, RoomId, UInt, UserId,
+	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
 		IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::push::{Pusher, PusherKind, set_pusher},

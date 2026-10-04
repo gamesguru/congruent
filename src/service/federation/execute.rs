@@ -10,7 +10,6 @@ use ipaddress::IPAddress;
 use reqwest::{Client, Method, Request, Response, Url};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
-	ServerSigningKeyId,
 	api::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::error::Error as RumaError,
@@ -60,7 +59,7 @@ pub async fn execute_on<T>(
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
-	T::EndpointError: std::fmt::Debug,
+	T::EndpointError: Debug,
 {
 	if !self.services.server.config.allow_federation {
 		return Err!(debug!("Federation is disabled."));

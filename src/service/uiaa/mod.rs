@@ -5,9 +5,7 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Error, Result, err, error,
-	matrix::pdu::RawJson,
-	utils,
+	Err, Error, Result, err, error, utils,
 	utils::{hash, response::LimitReadExt},
 };
 use lettre::Address;

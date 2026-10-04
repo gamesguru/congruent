@@ -14,7 +14,6 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::StreamExt;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,

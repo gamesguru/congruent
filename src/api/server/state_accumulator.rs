@@ -14,13 +14,14 @@ pub(crate) struct StateAccumulatorQuery {
 	pub event_id: OwnedEventId,
 }
 
-#[derive(Serialize)]
-pub(crate) struct StateAccumulatorResponse {
-	pub event_id: OwnedEventId,
-	pub algorithm: String,
-	pub lattice: String,
-	pub n_state_events: u64,
-	pub digest: String,
+slipstream::codec_struct! {
+	StateAccumulatorResponse {
+		event_id: OwnedEventId = ("event_id"),
+		algorithm: String = ("algorithm"),
+		lattice: String = ("lattice"),
+		n_state_events: u64 = ("n_state_events"),
+		digest: String = ("digest"),
+	}
 }
 
 pub(crate) async fn get_state_accumulator_route(

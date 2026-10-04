@@ -3,7 +3,7 @@ use std::future::ready;
 use conduwuit::{Event, PduCount, Result};
 use conduwuit_core::matrix::pdu::PduEvent;
 use futures::{StreamExt, pin_mut};
-use slipstream::{CanonicalJsonObject, EventId, OwnedEventId, RoomId};
+use slipstream::{CanonicalJsonObject, OwnedEventId, RoomId};
 
 /// Populates `unsigned.prev_content`, `unsigned.prev_sender`, and
 /// `unsigned.replaces_state` on a PDU's JSON from the given previous state

@@ -198,15 +198,17 @@ pub(crate) async fn joined_members_route(
 	Ok(Json(Response { joined: room_members }))
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct RoomMemberResponse {
-	pub(crate) display_name: Option<String>,
-	pub(crate) avatar_url: Option<slipstream::OwnedMxcUri>,
+slipstream::codec_struct! {
+	RoomMemberResponse {
+		display_name: Option<String> = ("display_name", omit),
+		avatar_url: Option<slipstream::OwnedMxcUri> = ("avatar_url", omit),
+	}
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct Response {
-	pub(crate) joined: std::collections::BTreeMap<slipstream::OwnedUserId, RoomMemberResponse>,
+slipstream::codec_struct! {
+	Response {
+		joined: std::collections::BTreeMap<slipstream::OwnedUserId, RoomMemberResponse> = ("joined"),
+	}
 }
 
 fn membership_filter<Pdu: Event>(

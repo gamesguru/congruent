@@ -7,14 +7,14 @@ mod opt_event_id {
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
 	use slipstream::OwnedEventId;
 
-	pub fn serialize<S: Serializer>(
+	pub(super) fn serialize<S: Serializer>(
 		value: &Option<OwnedEventId>,
 		serializer: S,
 	) -> Result<S::Ok, S::Error> {
 		value.as_ref().map(|id| id.as_str()).serialize(serializer)
 	}
 
-	pub fn deserialize<'de, D: Deserializer<'de>>(
+	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
 		deserializer: D,
 	) -> Result<Option<OwnedEventId>, D::Error> {
 		Ok(

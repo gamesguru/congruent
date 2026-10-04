@@ -63,7 +63,7 @@ impl Service {
 	pub async fn push_rules_lock(
 		&self,
 		user_id: &UserId,
-	) -> conduwuit::utils::mutex_map::Guard<Vec<u8>, ()> {
+	) -> utils::mutex_map::Guard<Vec<u8>, ()> {
 		let key = Self::push_rules_lock_key(user_id);
 		self.push_rules_mutex.lock(key.as_slice()).await
 	}
@@ -118,7 +118,7 @@ pub async fn delete(
 		"type": event_type,
 		"content": {},
 	});
-	let data = slipstream::json::Value::parse(&data.to_string())
+	let data = Value::parse(&data.to_string())
 		.map_err(|e| err!(Database("failed to encode empty account data: {e}")))?;
 
 	let count = self.services.globals.next_count().unwrap();
@@ -190,7 +190,7 @@ pub async fn get_raw(
 
 	// MSC3890: Treat empty content as deleted/not found
 	let bytes = handle.as_ref();
-	let data = slipstream::json::Value::parse(utils::string::str_from_bytes(bytes)?)
+	let data = Value::parse(utils::string::str_from_bytes(bytes)?)
 		.map_err(|e| err!(Database("Invalid account data in database: {e}")))?;
 
 	if data
@@ -234,13 +234,13 @@ pub fn changes_since<'a>(
 		.map(move |(_, v)| {
 			match room_id {
 				| Some(_) => {
-					let value = slipstream::json::Value::parse(utils::string::str_from_bytes(v)?)
+					let value = Value::parse(utils::string::str_from_bytes(v)?)
 						.map_err(|e| err!(Database("Invalid account data: {e:?}")))?;
 					Raw::<AnyRoomAccountDataEvent>::from_json(&value)
 						.map(AnyRawAccountDataEvent::Room)
 				},
 				| None => {
-					let value = slipstream::json::Value::parse(utils::string::str_from_bytes(v)?)
+					let value = Value::parse(utils::string::str_from_bytes(v)?)
 						.map_err(|e| err!(Database("Invalid account data: {e:?}")))?;
 					Raw::<AnyGlobalAccountDataEvent>::from_json(&value)
 						.map(AnyRawAccountDataEvent::Global)
@@ -253,7 +253,7 @@ pub fn changes_since<'a>(
 }
 
 fn is_account_data_tombstone(data: &[u8]) -> bool {
-	slipstream::json::Value::parse(utils::string::str_from_bytes(data).unwrap_or_default())
+	Value::parse(utils::string::str_from_bytes(data).unwrap_or_default())
 		.ok()
 		.and_then(|data| {
 			data.get("content")
