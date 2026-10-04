@@ -3,40 +3,22 @@ use axum::{
 	extract::{FromRequest, State},
 };
 use conduwuit::{Err, Result};
-use slipstream::api::{AuthScheme, Metadata, VersionHistory};
+use slipstream::api::Metadata;
 
 use crate::router::authenticate_user;
 
 pub(crate) struct GetDelayedEventRequest;
 
 impl GetDelayedEventRequest {
-	const METADATA: Metadata = Metadata {
-		method: http::Method::GET,
-		rate_limited: true,
-		authentication: AuthScheme::AccessToken,
-		history: VersionHistory::new(
-			&["/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}"],
-			&[],
-			None,
-			None,
-		),
-	};
+	const METADATA: Metadata =
+		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{}");
 }
 
 pub(crate) struct GetAllDelayedEventsRequest;
 
 impl GetAllDelayedEventsRequest {
-	const METADATA: Metadata = Metadata {
-		method: http::Method::GET,
-		rate_limited: true,
-		authentication: AuthScheme::AccessToken,
-		history: VersionHistory::new(
-			&["/_matrix/client/unstable/org.matrix.msc4140/delayed_events"],
-			&[],
-			None,
-			None,
-		),
-	};
+	const METADATA: Metadata =
+		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events");
 }
 
 pub(crate) struct DelayedEventUser {
