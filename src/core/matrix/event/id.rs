@@ -11,9 +11,8 @@ pub fn gen_event_id_canonical_json(
 	pdu: &RawJsonValue,
 	room_version_id: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject)> {
-	let value =
-		slipstream::canonical_json::from_json_str(pdu.get())
-			.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?;
+	let value = slipstream::canonical_json::from_json_str(pdu.get())
+		.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?;
 	let value = slipstream::canonical_json::into_object(value)
 		.ok_or_else(|| err!(BadServerResponse(warn!("incoming event is not an object"))))?;
 
@@ -42,9 +41,8 @@ pub fn gen_event_id_from_bytes(
 	let raw_str = std::str::from_utf8(raw_bytes)
 		.map_err(|e| err!(Database("stored PDU is not valid UTF-8: {e}")))?;
 
-	let value =
-		slipstream::canonical_json::from_json_str(raw_str)
-			.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
+	let value = slipstream::canonical_json::from_json_str(raw_str)
+		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
 	let mut value = slipstream::canonical_json::into_object(value)
 		.ok_or_else(|| err!(Database("stored PDU is not an object")))?;
 	pdu_json_canonical_strip(&mut value);

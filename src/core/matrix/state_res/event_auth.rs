@@ -216,7 +216,7 @@ where
 		let content: RoomCreateContentFields = from_json_str(incoming_event.content().get())?;
 		if content
 			.room_version
-			.is_some_and(|v| v.deserialize_as().is_err())
+			.is_some_and(|v| v.deserialize_as::<RoomVersionId>().is_err())
 		{
 			warn!("unsupported room version found in m.room.create event");
 			return Ok(false);
@@ -385,7 +385,7 @@ where
 		}
 
 		let target_user =
-			<&UserId>::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
+			UserId::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
 
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
@@ -411,7 +411,7 @@ where
 
 		if !valid_membership_change(
 			room_version,
-			target_user,
+			&target_user,
 			target_user_member_event.as_ref(),
 			sender,
 			sender_member_event.as_ref(),
@@ -419,7 +419,7 @@ where
 			current_third_party_invite,
 			power_levels_event.as_ref(),
 			join_rules_event.as_ref(),
-			user_for_join_auth.as_deref(),
+			user_for_join_auth.as_ref(),
 			&user_for_join_auth_membership,
 			&room_create_event,
 		)? {
@@ -486,8 +486,10 @@ where
 				room_create_event.sender() == sender
 			} else {
 				#[allow(deprecated)]
-				from_json_str::<RoomCreateEventContent>(room_create_event.content().get())
-					.is_ok_and(|create| create.creator.unwrap() == *sender)
+				slipstream::codec::from_str::<RoomCreateEventContent>(
+					room_create_event.content().get(),
+				)
+				.is_ok_and(|create| create.creator.unwrap() == *sender)
 			};
 
 			if is_creator { int!(100) } else { int!(0) }
@@ -501,9 +503,10 @@ where
 				.additional_creators
 				.as_ref()
 				.is_some_and(|creators| {
-					creators
-						.iter()
-						.any(|c| c.deserialize_as().is_ok_and(|c| c == *sender))
+					creators.iter().any(|c| {
+						c.deserialize_as::<OwnedUserId>()
+							.is_ok_and(|c| c == *sender)
+					})
 				}) {
 			trace!("privileging room creator or additional creator");
 			// This user is the room creator or an additional creator, give them max power
@@ -646,7 +649,7 @@ where
 		ce.sender() == user_id
 	} else if !have_pls {
 		#[allow(deprecated)]
-		let creator = from_json_str::<RoomCreateEventContent>(ce.content().get())
+		let creator = slipstream::codec::from_str::<RoomCreateEventContent>(ce.content().get())
 			.unwrap()
 			.creator
 			.ok_or_else(|| serde_json::Error::missing_field("creator"))
@@ -1586,13 +1589,15 @@ fn verify_third_party_invite(
 
 	// A list of public keys in the public_keys field
 	for key in tpid_ev.public_keys.unwrap_or_default() {
-		if key.public_key == decoded_invite_token {
+		if key.get("public_key").and_then(|value| value.as_str())
+			== Some(decoded_invite_token.encode().as_str())
+		{
 			return true;
 		}
 	}
 
 	// A single public key in the public_key field
-	tpid_ev.public_key == decoded_invite_token
+	tpid_ev.public_key.as_deref() == Some(decoded_invite_token.encode().as_str())
 }
 
 #[cfg(test)]

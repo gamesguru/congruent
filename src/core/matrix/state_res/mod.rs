@@ -1064,12 +1064,14 @@ where
 
 				// Check if sender is a v12 privileged room creator
 				let is_privileged_creator = creator_event.as_ref().is_some_and(|creator_ev| {
-					from_json_str::<slipstream::events::room::create::RoomCreateEventContent>(
-						creator_ev.content().get(),
-					)
+					slipstream::codec::from_str::<
+						slipstream::events::room::create::RoomCreateEventContent,
+					>(creator_ev.content().get())
 					.is_ok_and(|cc| {
-						RoomVersion::new(&cc.room_version)
-							.is_ok_and(|rv| rv.explicitly_privilege_room_creators)
+						cc.room_version
+							.as_ref()
+							.and_then(|version| RoomVersion::new(version).ok())
+							.is_some_and(|rv| rv.explicitly_privilege_room_creators)
 							&& (creator_ev.sender().as_str() == s.as_str()
 								|| cc.additional_creators.as_ref().is_some_and(|cs| {
 									cs.iter().any(|c| c.as_str() == s.as_str())
@@ -1097,7 +1099,7 @@ where
 			{
 				#[allow(deprecated)]
 				if let Some(creator_user) = create_content.creator {
-					is_creator = creator_user == ev.sender();
+					is_creator = creator_user.as_str() == ev.sender().as_str();
 				}
 			}
 			if is_creator {
@@ -1687,9 +1689,9 @@ async fn inject_privileged_creators<E, F, Fut>(
 	let Some(create_ev) = cached_fetch(create_id.clone()).await else {
 		return;
 	};
-	let Ok(cc) = from_json_str::<slipstream::events::room::create::RoomCreateEventContent>(
-		create_ev.content().get(),
-	) else {
+	let Ok(cc) = slipstream::codec::from_str::<
+		slipstream::events::room::create::RoomCreateEventContent,
+	>(create_ev.content().get()) else {
 		return;
 	};
 

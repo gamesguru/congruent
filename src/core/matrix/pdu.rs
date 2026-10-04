@@ -228,7 +228,7 @@ macro_rules! impl_event_delegates {
 		+ Send
 		+ std::fmt::Debug
 		+ '_ {
-			self.as_pdu().auth_events.iter().map(AsRef::as_ref)
+			self.as_pdu().auth_events.iter()
 		}
 
 		#[inline]
@@ -247,14 +247,14 @@ macro_rules! impl_event_delegates {
 
 		#[inline]
 		fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-			self.as_pdu().prev_events.iter().map(AsRef::as_ref)
+			self.as_pdu().prev_events.iter()
 		}
 
 		#[inline]
-		fn redacts(&self) -> Option<&EventId> { self.as_pdu().redacts.as_deref() }
+		fn redacts(&self) -> Option<&EventId> { self.as_pdu().redacts.as_ref() }
 
 		#[inline]
-		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_deref() }
+		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_ref() }
 
 		#[inline]
 		fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
@@ -263,7 +263,7 @@ macro_rules! impl_event_delegates {
 			}
 			if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
 				let constructed_hash = self.as_pdu().event_id.as_str().replace('$', "!");
-				return RoomId::parse(&constructed_hash).ok().map(ToOwned::to_owned);
+				return RoomId::parse(&constructed_hash).ok();
 			}
 			None
 		}

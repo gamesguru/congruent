@@ -12,21 +12,16 @@ pub fn to_canonical_object<T: serde::Serialize>(
 	value: T,
 ) -> Result<CanonicalJsonObject, CanonicalJsonError> {
 	use CanonicalJsonError::SerDe;
-	use serde::ser::Error;
 
-	match serde_json::to_value(value).map_err(SerDe)? {
+	match serde_json::to_value(value).map_err(|e| SerDe(e.to_string()))? {
 		| serde_json::Value::Object(map) => {
-			let encoded = serde_json::to_string(&map).map_err(SerDe)?;
-			let value =
-				slipstream::canonical_json::from_json_str(
-					&encoded,
-				)
-				.map_err(SerDe)?;
-			slipstream::canonical_json::into_object(value).ok_or_else(|| {
-				SerDe(serde_json::Error::custom("serialized value was not an object"))
-			})
+			let encoded = serde_json::to_string(&map).map_err(|e| SerDe(e.to_string()))?;
+			let value = slipstream::canonical_json::from_json_str(&encoded)
+				.map_err(|e| SerDe(e.to_string()))?;
+			slipstream::canonical_json::into_object(value)
+				.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
 		},
-		| _ => Err(SerDe(serde_json::Error::custom("Value must be an object"))),
+		| _ => Err(SerDe("Value must be an object".to_owned())),
 	}
 }
 
