@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["case-study-state-res/compare", "src/*", "xtask/"]
+members = ["src/*", "xtask/"]
 default-members = ["src/*"]
 exclude = ["ruwuma", "ruma-upstream"]
 
