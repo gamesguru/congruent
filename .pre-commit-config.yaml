@@ -50,7 +50,7 @@ repos:
         # `cargo fmt` can't silently drift to whatever "nightly" resolves to
         # today and reformat the whole tree with a different rustfmt version's
         # comment-wrapping rules. Bump this in lockstep with rust-toolchain.toml.
-        entry: sh -c 'RUSTUP_TOOLCHAIN=nightly cargo fmt --'
+        entry: sh -c 'RUSTUP_TOOLCHAIN=nightly cargo +nightly fmt --'
         language: system
         types: [rust]
         pass_filenames: false
