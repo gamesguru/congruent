@@ -901,7 +901,6 @@ impl Service {
 			.services
 			.state_cache
 			.server_rooms(server_name)
-			.map(ToOwned::to_owned)
 			.broad_filter_map(|room_id| {
 				let num = Arc::clone(&num);
 				async move {
@@ -1166,7 +1165,7 @@ impl Service {
 				},
 				| SendingEvent::Edu(edu) =>
 					if appservice.receive_ephemeral {
-						if let Ok(edu) = serde_json::from_slice(edu) {
+						if let Ok(edu) = database::from_json_slice(edu) {
 							edu_jsons.push(edu);
 						}
 					},
@@ -1336,7 +1335,7 @@ impl Service {
 				| _ => None,
 			})
 			.map(|edu_buf| {
-				let res = serde_json::from_slice(edu_buf);
+				let res = database::from_json_slice(edu_buf);
 				if let Err(ref e) = res {
 					tracing::error!(
 						"Failed to deserialize EDU: {} - JSON: {}",

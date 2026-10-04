@@ -16,7 +16,7 @@ use super::validate::check_no_duplicate_json_keys;
 /// MSC4499: Validate raw JSON before any typed deserialization.
 /// Shared by all key ingestion paths (direct fetch, notary, batch notary).
 fn validate_raw(raw: &Raw<ServerSigningKeys>, strict: bool) -> bool {
-	if let Err(e) = check_no_duplicate_json_keys(raw.json().get(), strict) {
+	if let Err(e) = check_no_duplicate_json_keys(raw.get(), strict) {
 		debug_warn!("Rejecting key response with duplicate JSON keys: {e}");
 		return false;
 	}

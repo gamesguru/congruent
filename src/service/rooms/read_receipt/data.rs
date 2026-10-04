@@ -405,7 +405,7 @@ impl Data {
 					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?
 					.to_owned();
 
-				let mut json: CanonicalJsonObject = serde_json::from_slice(value)?;
+				let mut json: CanonicalJsonObject = database::from_json_slice(value)?;
 				json.remove("room_id");
 				let event = slipstream::codec::to_string(&json)?;
 

@@ -490,3 +490,13 @@ impl DbKey for slipstream::Mxc<'_> {
 
 	fn db_ser(&self) -> Self::Ser<'_> { self.to_string() }
 }
+
+/// Decode a codec-encoded JSON value stored as UTF-8 bytes.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` are not valid UTF-8 JSON for `T`.
+pub fn from_json_slice<T: codec::Deserialize>(bytes: &[u8]) -> Result<T> {
+	let text = std::str::from_utf8(bytes).map_err(|e| Error::SerdeDe(e.to_string().into()))?;
+	codec::from_str(text).map_err(|e| Error::SerdeDe(e.to_string().into()))
+}

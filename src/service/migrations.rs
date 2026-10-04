@@ -788,7 +788,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 		pin_mut!(stream);
 
 		while let Some(Ok((pdu_id_bytes, pdu_json_bytes))) = stream.next().await {
-			let Ok(pdu) = serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
+			let Ok(pdu) = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
@@ -870,7 +870,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 		pin_mut!(stream);
 
 		while let Some(Ok((event_id_bytes, pdu_json_bytes))) = stream.next().await {
-			let Ok(pdu) = serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
+			let Ok(pdu) = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
@@ -981,12 +981,13 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 
 			// Do not silently skip an unreadable PDU. Leaving the marker unset makes
 			// the migration retryable after the underlying record is repaired.
-			let pdu =
-				serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(|e| {
+			let pdu = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(
+				|e| {
 					err!(Database(
 						"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
 					))
-				})?;
+				},
+			)?;
 
 			// Only the DAG edges are needed below; retaining the decoded PDU would
 			// pin up to BATCH_SIZE full event bodies in memory at once.

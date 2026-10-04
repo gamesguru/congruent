@@ -1607,12 +1607,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 				.map(ToOwned::to_owned)
 				.stream(),
 		)
-		.chain(
-			self.services
-				.state_cache
-				.room_servers(room_id)
-				.map(ToOwned::to_owned),
-		)
+		.chain(self.services.state_cache.room_servers(room_id))
 		.ready_filter(|server_name| {
 			!self.services.globals.server_is_ours(server_name)
 				&& !self

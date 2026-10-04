@@ -80,7 +80,7 @@ pub async fn room_state_get_id<Id>(
 	state_key: &str,
 ) -> Result<Id>
 where
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
+	Id: slipstream::codec::Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;

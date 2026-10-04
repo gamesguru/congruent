@@ -169,7 +169,6 @@ impl Service {
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|s| !self.services.globals.server_is_ours(s))
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 

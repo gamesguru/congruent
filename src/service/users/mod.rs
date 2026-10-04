@@ -305,10 +305,9 @@ impl Service {
 								obj.retain(|_, v| !v.is_null());
 							}
 
-							if let Ok(parsed) =
-								slipstream::codec::from_value::<InvitePermissionConfigEventContent>(
-									content_val,
-								)
+							if let Ok(parsed) = slipstream::codec::from_value::<
+								InvitePermissionConfigEventContent,
+							>(content_val)
 							{
 								config_content = Some(parsed);
 								break;
@@ -616,11 +615,7 @@ impl Service {
 			self.db
 				.userid_displayname
 				.insert(user_id, displayname.clone());
-			self.record_profile_update(
-				user_id,
-				"displayname",
-				Some(Value::String(displayname)),
-			);
+			self.record_profile_update(user_id, "displayname", Some(Value::String(displayname)));
 		} else {
 			self.db.userid_displayname.remove(user_id);
 			self.record_profile_update(user_id, "displayname", None);
@@ -1078,11 +1073,9 @@ impl Service {
 			.raw_stream_prefix(&prefix)
 			.ignore_err()
 			.ready_for_each(|(key, _): (&[u8], &[u8])| {
-				let Some(one_time_key_id) =
-					key.rsplit(|&b| b == 0xFF)
-						.next()
-						.and_then(decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>)
-				else {
+				let Some(one_time_key_id) = key.rsplit(|&b| b == 0xFF).next().and_then(
+					decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>,
+				) else {
 					tracing::warn!(
 						"count_one_time_keys: skipping unparsable key id for \
 						 {user_id}|{device_id}"
@@ -1187,9 +1180,8 @@ impl Service {
 
 		if let Some(master_key) = master_key {
 			let (master_key_key, _) = parse_master_key(user_id, master_key)?;
-			let mut master_key_val: Value =
-				slipstream::codec::from_str(master_key.get())
-					.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
+			let mut master_key_val: Value = slipstream::codec::from_str(master_key.get())
+				.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
 
 			info!(
 				target: "cross_signing",
@@ -1500,7 +1492,6 @@ impl Service {
 			.services
 			.state_cache
 			.rooms_joined(user_id)
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1509,7 +1500,6 @@ impl Service {
 				.services
 				.state_cache
 				.server_rooms(user_id.server_name())
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await;
 

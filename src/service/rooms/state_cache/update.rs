@@ -921,16 +921,8 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	let mut members_synced = 0_usize;
 	let mut state_joined: HashSet<OwnedUserId> = HashSet::new();
 	let mut state_invited: HashSet<OwnedUserId> = HashSet::new();
-	let cached_joined: HashSet<OwnedUserId> = self
-		.room_members(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-	let cached_invited: HashSet<OwnedUserId> = self
-		.room_members_invited(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
+	let cached_joined: HashSet<OwnedUserId> = self.room_members(room_id).collect().await;
+	let cached_invited: HashSet<OwnedUserId> = self.room_members_invited(room_id).collect().await;
 
 	let room_root_opt = self.services.state.get_room_state_hamt(room_id).await.ok();
 

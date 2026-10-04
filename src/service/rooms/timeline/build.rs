@@ -35,7 +35,7 @@ pub async fn build_and_append_pdu(
 
 	let room_id = room_id
 		.map(ToOwned::to_owned)
-		.unwrap_or_else(|| pdu.room_id_or_hash());
+		.unwrap_or_else(|| pdu.room_id_or_hash().expect("built PDU has a room ID"));
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}
@@ -172,7 +172,6 @@ pub async fn build_and_append_pdu(
 		.services
 		.state_cache
 		.room_servers(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 

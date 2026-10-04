@@ -17,7 +17,6 @@ use slipstream::{
 pub async fn add_servers_invite_via(&self, room_id: &RoomId, servers: Vec<OwnedServerName>) {
 	let mut servers: Vec<_> = self
 		.servers_invite_via(room_id)
-		.map(ToOwned::to_owned)
 		.chain(iter(servers.into_iter()))
 		.collect()
 		.await;
@@ -81,12 +80,18 @@ pub async fn servers_route_via(&self, room_id: &RoomId) -> Result<Vec<OwnedServe
 pub fn servers_invite_via<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a ServerName> + Send + 'a {
-	type KeyVal<'a> = (Ignore, Vec<&'a ServerName>);
-
+) -> impl Stream<Item = OwnedServerName> + Send + 'a {
+	// The value is a 0xFF-separated list of server names.
 	self.db
 		.roomid_inviteviaservers
 		.stream_raw_prefix(room_id)
 		.ignore_err()
-		.map(|(_, servers): KeyVal<'_>| *servers.last().expect("at least one server"))
+		.flat_map(|(_, servers): (Ignore, &[u8])| {
+			let servers: Vec<OwnedServerName> = servers
+				.split(|&b| b == 0xFF)
+				.filter_map(|server| std::str::from_utf8(server).ok())
+				.filter_map(|server| OwnedServerName::parse(server).ok())
+				.collect();
+			iter(servers)
+		})
 }

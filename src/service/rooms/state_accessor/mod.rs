@@ -90,7 +90,10 @@ impl Service {
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
-			.map(|c: RoomNameEventContent| c.name)
+			.and_then(|c: RoomNameEventContent| {
+				c.name
+					.ok_or_else(|| err!(Request(NotFound("No name found in event content"))))
+			})
 	}
 
 	/// Returns the current room avatar event content, when present.

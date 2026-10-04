@@ -269,8 +269,8 @@ pub async fn server_sees_user(&self, server: &ServerName, user_id: &UserId) -> b
 	let sees = self
 		.server_rooms(server)
 		.any(|room_id| async move {
-			self.is_invited_or_joined(user_id, room_id).await
-				|| self.is_knocked(user_id, room_id).await
+			self.is_invited_or_joined(user_id, &room_id).await
+				|| self.is_knocked(user_id, &room_id).await
 		})
 		.await;
 
@@ -312,7 +312,7 @@ pub fn get_shared_rooms<'a>(
 	&'a self,
 	user_a: &'a UserId,
 	user_b: &'a UserId,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	use conduwuit::utils::set;
 
 	let a = self.rooms_joined(user_a);
@@ -341,10 +341,10 @@ pub fn room_members<'a>(
 pub async fn invalidate_user_visibility(&self, user_id: &UserId, room_id: &RoomId) {
 	self.room_members(room_id)
 		.ready_for_each(|other_user| {
-			let key = if user_id < other_user {
-				(user_id.to_owned(), other_user.to_owned())
+			let key = if user_id < &other_user {
+				(user_id.to_owned(), other_user)
 			} else {
-				(other_user.to_owned(), user_id.to_owned())
+				(other_user, user_id.to_owned())
 			};
 			self.user_visibility_cache.invalidate(&key);
 		})
@@ -377,7 +377,7 @@ pub async fn room_joined_count(&self, room_id: &RoomId) -> Result<u64> {
 pub fn local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	self.room_members(room_id)
 		.ready_filter(|user| self.services.globals.user_is_local(user))
 }
@@ -389,7 +389,7 @@ pub fn local_users_in_room<'a>(
 pub fn active_local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	self.local_users_in_room(room_id)
 		.filter(|user| self.services.users.is_active(user))
 }
@@ -510,7 +510,7 @@ pub fn rooms_invited<'a>(
 		.stream_prefix(&prefix)
 		.ignore_err()
 		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
-		.map(|(room_id, state)| Ok((room_id, serde_json::from_slice(state)?)))
+		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.ignore_err()
 }
 
@@ -531,7 +531,7 @@ pub fn rooms_knocked<'a>(
 		.stream_prefix(&prefix)
 		.ignore_err()
 		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
-		.map(|(room_id, state)| Ok((room_id, serde_json::from_slice(state)?)))
+		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.inspect(|res| {
 			if let Err(e) = res {
 				conduwuit::warn!("rooms_knocked deserialize error: {e}");
@@ -552,7 +552,7 @@ pub async fn invite_state(
 		.userroomid_invitestate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 #[implement(Service)]
@@ -567,7 +567,7 @@ pub async fn knock_state(
 		.userroomid_knockedstate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 #[implement(Service)]
@@ -578,7 +578,7 @@ pub async fn left_state(&self, user_id: &UserId, room_id: &RoomId) -> Result<Opt
 		.userroomid_leftstate
 		.qry(&key)
 		.await
-		.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+		.and_then(|handle| database::from_json_slice(&handle))
 }
 
 /// Returns an iterator over all rooms a user left.

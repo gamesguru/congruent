@@ -284,7 +284,6 @@ impl Service {
 						.forbidden_remote_server_names
 						.is_match(s.host())
 			})
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 

@@ -76,8 +76,8 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can set this alias")));
 		}
@@ -109,8 +109,8 @@ impl Service {
 		alias: &RoomAliasId,
 		user_id: &UserId,
 	) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can remove this alias")));
 		}
@@ -218,18 +218,17 @@ impl Service {
 		servers: Option<Vec<OwnedServerName>>,
 	) -> Result<(OwnedRoomId, Vec<OwnedServerName>)> {
 		if room.is_room_id() {
-			let room_id: &RoomId = room.try_into().expect("valid RoomId");
+			let room_id = OwnedRoomId::parse(room.as_str()).expect("valid RoomId");
 			let mut s = servers.unwrap_or_default();
 			if let Some(server_name) = room_id.server_name() {
-				let owned_server_name = server_name.to_owned();
-				if !s.contains(&owned_server_name) {
-					s.push(owned_server_name);
+				if !s.contains(&server_name) {
+					s.push(server_name);
 				}
 			}
-			Ok((room_id.to_owned(), s))
+			Ok((room_id, s))
 		} else {
-			let alias: &RoomAliasId = room.try_into().expect("valid RoomAliasId");
-			self.resolve_alias(alias).await
+			let alias = OwnedRoomAliasId::parse(room.as_str()).expect("valid RoomAliasId");
+			self.resolve_alias(&alias).await
 		}
 	}
 
@@ -261,7 +260,6 @@ impl Service {
 				.services
 				.state_cache
 				.room_servers(&room_id)
-				.map(ToOwned::to_owned)
 				.collect()
 				.await;
 			return Ok((room_id, servers));
@@ -293,12 +291,12 @@ impl Service {
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn all_local_aliases(&self) -> impl Stream<Item = (&RoomId, &str)> + Send + '_ {
+	pub fn all_local_aliases(&self) -> impl Stream<Item = (OwnedRoomId, String)> + Send + '_ {
 		self.db
 			.alias_roomid
 			.stream()
 			.ignore_err()
-			.map(|(alias_localpart, room_id): (&str, &RoomId)| (room_id, alias_localpart))
+			.map(|(alias_localpart, room_id): (String, OwnedRoomId)| (room_id, alias_localpart))
 	}
 
 	async fn user_can_remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<bool> {
@@ -380,11 +378,7 @@ impl Service {
 		appservice_info: &Option<RegistrationInfo>,
 	) -> Result<()> {
 		let server_name = room_alias.server_name();
-		if !self
-			.services
-			.globals
-			.server_is_ours(&server_name)
-		{
+		if !self.services.globals.server_is_ours(&server_name) {
 			return Err!(Request(InvalidParam("Alias is from another server.")));
 		}
 

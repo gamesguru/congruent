@@ -33,6 +33,7 @@ use std::{ops::Index, sync::Arc};
 use conduwuit::{Result, Server, err};
 
 pub use self::{
+	dbkey::from_json_slice,
 	de::{Ignore, IgnoreAll},
 	deserialized::Deserialized,
 	handle::Handle,

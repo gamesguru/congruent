@@ -1,8 +1,4 @@
-use conduwuit_core::{
-	Result, err, implement,
-	matrix::event::Event,
-	utils::{self},
-};
+use conduwuit_core::{Result, err, implement, matrix::event::Event};
 use slipstream::EventId;
 
 use super::ExtractBody;
@@ -45,11 +41,10 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
-	pdu.redact(&room_version, reason.to_value())?;
+	let reason = reason.to_value();
+	pdu.redact(&room_version, &reason)?;
 
-	let obj = utils::to_canonical_object(&pdu).map_err(|e| {
-		err!(Database(error!(%event_id, ?e, "Failed to convert PDU to canonical JSON")))
-	})?;
+	let obj = pdu.to_canonical_object();
 
 	self.replace_pdu(&pdu_id, &obj, event_id).await
 }

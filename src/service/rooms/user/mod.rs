@@ -7,7 +7,8 @@ use conduwuit::{
 use database::{Database, Deserialized, Ignore, Interfix, Map};
 use futures::{StreamExt, stream::select};
 use slipstream::{
-	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId, events::receipt::ReceiptThread,
+	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
+	events::receipt::ReceiptThread,
 };
 
 use crate::{Dep, globals, rooms};

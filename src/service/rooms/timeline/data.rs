@@ -1936,7 +1936,7 @@ impl Data {
 		(pdu_id, pdu): KeyVal<'_>,
 	) -> Result<PdusIterItem> {
 		let pdu_id: RawPduId = pdu_id.into();
-		let pdu = match serde_json::from_slice::<PduEvent>(pdu) {
+		let pdu = match database::from_json_slice::<PduEvent>(pdu) {
 			| Ok(p) => p,
 			| Err(e) => {
 				conduwuit::warn!(

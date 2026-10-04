@@ -147,11 +147,11 @@ pub(super) fn fold_redaction_sets(
 #[must_use]
 pub(super) fn redaction_overlay_digest(
 	selected: &[(String, String, OwnedEventId)],
-	redacted: &HashSet<&EventId>,
+	redacted: &HashSet<&OwnedEventId>,
 ) -> String {
 	let mut overlay = RedactionOverlay::default();
 	for (kind, state_key, id) in selected {
-		if redacted.contains(&**id) {
+		if redacted.contains(id) {
 			overlay.insert(kind, state_key, id.as_str());
 		}
 	}

@@ -151,7 +151,7 @@ where
 
 	for value in receipts {
 		let receipt = slipstream::codec::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
-			value.json().get(),
+			value.get(),
 		);
 		match receipt {
 			| Ok(value) => {
