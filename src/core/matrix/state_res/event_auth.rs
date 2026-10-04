@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, marker::PhantomData};
 
 use futures::{
 	Future,
@@ -19,7 +19,7 @@ use slipstream::{
 		third_party_invite::RoomThirdPartyInviteEventContent,
 	},
 	int,
-	serde::{Base64, Raw},
+	serde::Base64,
 };
 
 use super::{
@@ -32,6 +32,17 @@ use super::{
 };
 use crate::{debug, error, info, trace, warn};
 
+#[derive(Deserialize, Debug)]
+struct JsonRaw<T>(serde_json::Value, #[serde(skip)] PhantomData<T>);
+
+impl<T> JsonRaw<T> {
+	fn deserialize_as<U: slipstream::codec::Deserialize>(
+		&self,
+	) -> Result<U, slipstream::codec::DeError> {
+		slipstream::codec::from_str(&self.0.to_string())
+	}
+}
+
 // FIXME: field extracting could be bundled for `content`
 #[derive(Deserialize)]
 struct GetMembership {
@@ -40,15 +51,15 @@ struct GetMembership {
 
 #[derive(Deserialize, Debug)]
 struct RoomMemberContentFields {
-	membership: Option<Raw<MembershipState>>,
-	join_authorised_via_users_server: Option<Raw<OwnedUserId>>,
+	membership: Option<JsonRaw<MembershipState>>,
+	join_authorised_via_users_server: Option<JsonRaw<OwnedUserId>>,
 }
 
 #[derive(Deserialize)]
 struct RoomCreateContentFields {
-	room_version: Option<Raw<RoomVersionId>>,
-	creator: Option<Raw<IgnoredAny>>,
-	additional_creators: Option<Vec<Raw<OwnedUserId>>>,
+	room_version: Option<JsonRaw<RoomVersionId>>,
+	creator: Option<JsonRaw<IgnoredAny>>,
+	additional_creators: Option<Vec<JsonRaw<OwnedUserId>>>,
 	#[serde(rename = "m.federate", default = "slipstream::serde::default_true")]
 	federate: bool,
 }
@@ -87,9 +98,9 @@ pub fn auth_types_for_event(
 	if kind == &TimelineEventType::RoomMember {
 		#[derive(Deserialize)]
 		struct RoomMemberContentFields {
-			membership: Option<Raw<MembershipState>>,
-			third_party_invite: Option<Raw<ThirdPartyInvite>>,
-			join_authorised_via_users_server: Option<Raw<OwnedUserId>>,
+			membership: Option<JsonRaw<MembershipState>>,
+			third_party_invite: Option<JsonRaw<ThirdPartyInvite>>,
+			join_authorised_via_users_server: Option<JsonRaw<OwnedUserId>>,
 		}
 
 		if let Some(state_key) = state_key {
@@ -694,7 +705,7 @@ where
 {
 	#[derive(Deserialize)]
 	struct GetThirdPartyInvite {
-		third_party_invite: Option<Raw<ThirdPartyInvite>>,
+		third_party_invite: Option<JsonRaw<ThirdPartyInvite>>,
 	}
 	let create_content = from_json_str::<RoomCreateContentFields>(create_room.content().get())?;
 	let content = current_event.content();

@@ -31,7 +31,7 @@ pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, Box<RawJsonVal
 	};
 
 	if let Some(redacts) = content.get("redacts").and_then(|value| value.as_str()) {
-		return (redacts.parse().ok(), event.content().to_owned());
+		return (Some(OwnedEventId::from(redacts)), event.content().to_owned());
 	}
 
 	if let Some(redacts) = event.redacts().map(ToOwned::to_owned) {
