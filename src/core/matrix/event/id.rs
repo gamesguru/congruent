@@ -11,8 +11,10 @@ pub fn gen_event_id_canonical_json(
 	pdu: &RawJsonValue,
 	room_version_id: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject)> {
-	let value: CanonicalJsonObject = serde_json::from_str(pdu.get())
-		.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?;
+	let value = ruma::CanonicalJsonValue::parse(pdu.get())
+		.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?
+		.into_object()
+		.ok_or_else(|| err!(BadServerResponse(warn!("incoming event is not an object"))))?;
 
 	let event_id = gen_event_id(&value, room_version_id)?;
 
@@ -39,8 +41,10 @@ pub fn gen_event_id_from_bytes(
 	let raw_str = std::str::from_utf8(raw_bytes)
 		.map_err(|e| err!(Database("stored PDU is not valid UTF-8: {e}")))?;
 
-	let mut value: CanonicalJsonObject = serde_json::from_str(raw_str)
-		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
+	let mut value = ruma::CanonicalJsonValue::parse(raw_str)
+		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?
+		.into_object()
+		.ok_or_else(|| err!(Database("stored PDU is not an object")))?;
 	pdu_json_canonical_strip(&mut value);
 
 	gen_event_id(&value, room_version_id)
