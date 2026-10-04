@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::{
 	Err, Result, err, implement,
-	utils::{MutexMap, ReadyExt, result::LogErr, stream::TryIgnore},
+	utils::{self, MutexMap, ReadyExt, result::LogErr, stream::TryIgnore},
 };
 use database::{Handle, Ignore, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
@@ -26,7 +26,7 @@ pub struct Service {
 }
 
 fn decode_account_data<T: Deserialize>(handle: &Handle<'_>) -> Result<T> {
-	let value = Value::parse(str_from_bytes(handle.as_ref())?)
+	let value = Value::parse(utils::string::str_from_bytes(handle.as_ref())?)
 		.map_err(|e| err!(Database("Invalid account data in database: {e}")))?;
 	T::from_json(&value).map_err(|e| err!(Database("Failed to parse account data: {e:?}")))
 }
@@ -118,12 +118,14 @@ pub async fn delete(
 		"type": event_type,
 		"content": {},
 	});
+	let data = slipstream::json::Value::parse(&data.to_string())
+		.map_err(|e| err!(Database("failed to encode empty account data: {e}")))?;
 
 	let count = self.services.globals.next_count().unwrap();
 	let roomuserdataid = (room_id, user_id, count, event_type);
 	self.db
 		.roomuserdataid_accountdata
-		.put(roomuserdataid, Json(&data));
+		.put(roomuserdataid, Json(data));
 
 	self.db.roomusertype_roomuserdataid.put(key, roomuserdataid);
 
@@ -188,7 +190,7 @@ pub async fn get_raw(
 
 	// MSC3890: Treat empty content as deleted/not found
 	let bytes = handle.as_ref();
-	let data = slipstream::json::Value::parse(str_from_bytes(bytes)?)
+	let data = slipstream::json::Value::parse(utils::string::str_from_bytes(bytes)?)
 		.map_err(|e| err!(Database("Invalid account data in database: {e}")))?;
 
 	if data
@@ -232,13 +234,13 @@ pub fn changes_since<'a>(
 		.map(move |(_, v)| {
 			match room_id {
 				| Some(_) => {
-					let value = slipstream::json::Value::parse(str_from_bytes(v)?)
+					let value = slipstream::json::Value::parse(utils::string::str_from_bytes(v)?)
 						.map_err(|e| err!(Database("Invalid account data: {e:?}")))?;
 					Raw::<AnyRoomAccountDataEvent>::from_json(&value)
 						.map(AnyRawAccountDataEvent::Room)
 				},
 				| None => {
-					let value = slipstream::json::Value::parse(str_from_bytes(v)?)
+					let value = slipstream::json::Value::parse(utils::string::str_from_bytes(v)?)
 						.map_err(|e| err!(Database("Invalid account data: {e:?}")))?;
 					Raw::<AnyGlobalAccountDataEvent>::from_json(&value)
 						.map(AnyRawAccountDataEvent::Global)
@@ -251,7 +253,7 @@ pub fn changes_since<'a>(
 }
 
 fn is_account_data_tombstone(data: &[u8]) -> bool {
-	slipstream::json::Value::parse(str_from_bytes(data).unwrap_or_default())
+	slipstream::json::Value::parse(utils::string::str_from_bytes(data).unwrap_or_default())
 		.ok()
 		.and_then(|data| {
 			data.get("content")

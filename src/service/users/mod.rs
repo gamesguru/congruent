@@ -1405,6 +1405,8 @@ impl Service {
 		);
 
 		let key = (target_id, key_id);
+		let cross_signing_key = slipstream::json::Value::parse(&cross_signing_key.to_string())
+			.map_err(|e| err!(Database("failed to encode cross-signing key: {e}")))?;
 		self.db.keyid_key.put(key, Json(cross_signing_key));
 
 		self.mark_device_key_update(target_id).await;
@@ -1672,11 +1674,17 @@ impl Service {
 		let key = (target_user_id, target_device_id, count);
 		self.db.todeviceid_events.put(
 			key,
-			Json(json!({
-				"type": event_type,
-				"sender": sender,
-				"content": content,
-			})),
+			Json(
+				slipstream::json::Value::parse(
+					&json!({
+						"type": event_type,
+						"sender": sender,
+						"content": content,
+					})
+					.to_string(),
+				)
+				.map_err(|e| err!(Database("failed to encode to-device event: {e}")))?,
+			),
 		);
 	}
 
