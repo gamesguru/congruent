@@ -1247,8 +1247,8 @@ fn can_send_event(event: &impl Event, ple: Option<&impl Event>, user_level: Int)
 	let event_type_power_level = get_send_level(event.event_type(), event.state_key(), ple);
 
 	debug!(
-		required_level = i64::from(event_type_power_level),
-		user_level = i64::from(user_level),
+		required_level = event_type_power_level,
+		user_level = user_level,
 		state_key = ?event.state_key(),
 		power_level_event_id = ?ple.map(|e| e.event_id().as_str()),
 		"permissions factors",

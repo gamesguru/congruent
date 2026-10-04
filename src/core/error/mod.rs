@@ -157,6 +157,7 @@ impl Error {
 	}
 
 	/// Sanitizes public-facing errors that can leak sensitive information.
+	#[must_use]
 	pub fn sanitized_message(&self) -> String {
 		match self {
 			| Self::Database(..) => String::from("Database error occurred."),
@@ -166,6 +167,7 @@ impl Error {
 	}
 
 	/// Generate the error message string.
+	#[must_use]
 	pub fn message(&self) -> String {
 		match self {
 			| Self::Federation(origin, error) => format!("Answer from {origin}: {error}"),
@@ -180,6 +182,7 @@ impl Error {
 
 	/// Returns the Matrix error code / error kind
 	#[inline]
+	#[must_use]
 	pub fn kind(&self) -> slipstream::api::client::error::ErrorKind {
 		use slipstream::api::client::error::ErrorKind::{FeatureDisabled, Unknown};
 
@@ -194,6 +197,7 @@ impl Error {
 
 	/// Returns the HTTP error code or closest approximation based on error
 	/// variant.
+	#[must_use]
 	pub fn status_code(&self) -> http::StatusCode {
 		use http::StatusCode;
 
@@ -217,6 +221,7 @@ impl Error {
 	/// often used as a special case to eliminate a contained Option with a
 	/// Result where Ok(None) is instead Err(e) if e.is_not_found().
 	#[inline]
+	#[must_use]
 	pub fn is_not_found(&self) -> bool { self.status_code() == http::StatusCode::NOT_FOUND }
 }
 

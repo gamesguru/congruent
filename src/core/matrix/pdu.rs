@@ -66,7 +66,7 @@ where
 {
 	let json: serde_json::Value = serde_json::from_str(&slipstream::codec::to_string(value))
 		.map_err(serde::ser::Error::custom)?;
-	serde::Serialize::serialize(&json, serializer)
+	Serialize::serialize(&json, serializer)
 }
 
 fn serialize_codec_opt<S, T>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
@@ -76,7 +76,7 @@ where
 {
 	match value {
 		| Some(value) => serialize_codec(value, serializer),
-		| None => serde::Serialize::serialize(&Option::<()>::None, serializer),
+		| None => Serialize::serialize(&Option::<()>::None, serializer),
 	}
 }
 
@@ -193,7 +193,7 @@ impl Pdu {
 						"Invalid event_id for room hash derivation"
 					)))
 				})?;
-				pdu.room_id = Some(constructed_room_id.into());
+				pdu.room_id = Some(constructed_room_id);
 			} else if let Some(room_id) = room_id {
 				pdu.room_id = Some(room_id.to_owned());
 			} else {
@@ -252,11 +252,11 @@ impl rezzy::RawEvent for Pdu {
 
 	/// `Pdu::depth` (`UInt`) → `u64`
 	#[inline]
-	fn raw_depth(&self) -> u64 { self.depth.into() }
+	fn raw_depth(&self) -> u64 { self.depth }
 
 	/// `Pdu::origin_server_ts` (`UInt`) → milliseconds since epoch
 	#[inline]
-	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts }
 
 	/// `Pdu::rejected` is populated from metadata at fetch time.
 	#[inline]
@@ -284,7 +284,7 @@ impl rezzy::DagNode for Pdu {
 	fn event_id(&self) -> &OwnedEventId { &self.event_id }
 
 	#[inline]
-	fn depth(&self) -> u64 { self.depth.into() }
+	fn depth(&self) -> u64 { self.depth }
 
 	#[inline]
 	fn prev_events(&self) -> &[OwnedEventId] { &self.prev_events }

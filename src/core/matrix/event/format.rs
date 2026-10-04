@@ -41,7 +41,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -57,7 +57,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 			"content": content,
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id_or_hash().as_ref().map(|id| id.as_str()),
+			"room_id": event.room_id_or_hash().as_ref().map(slipstream::OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"type": event.kind().to_string(),
 		});
@@ -72,7 +72,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -88,7 +88,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			"content": content,
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id().map(|id| id.as_str()),
+			"room_id": event.room_id().map(slipstream::OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"type": event.kind().to_string(),
 		});
@@ -103,7 +103,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -118,7 +118,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 			"content": event.content(),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id_or_hash().as_ref().map(|id| id.as_str()),
+			"room_id": event.room_id_or_hash().as_ref().map(slipstream::OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
 			"type": event.kind().to_string(),
@@ -128,7 +128,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -152,7 +152,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -166,13 +166,13 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 		let json = json!({
 			"content": event.content(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id_or_hash().as_ref().map(|id| id.as_str()),
+			"room_id": event.room_id_or_hash().as_ref().map(slipstream::OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
 			"type": event.kind().to_string(),
 		});
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -191,7 +191,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<HierarchySpaceChildEvent> {
 			"type": event.kind().to_string(),
 		});
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -206,8 +206,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			"content": event.content(),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"redacts": event.redacts().map(|id| id.as_str()),
-			"room_id": event.room_id().map(|id| id.as_str()),
+			"redacts": event.redacts().map(slipstream::OwnedEventId::as_str),
+			"room_id": event.room_id().map(slipstream::OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
 			"type": event.kind().to_string(),
@@ -217,6 +217,6 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }

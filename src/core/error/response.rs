@@ -2,7 +2,6 @@ use bytes::BytesMut;
 use http::StatusCode;
 use http_body_util::Full;
 use slipstream::api::{
-	OutgoingResponse,
 	client::{
 		error::{ErrorBody, ErrorKind},
 		uiaa::UiaaResponse,

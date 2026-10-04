@@ -890,7 +890,7 @@ where
 		.inspect(|(event_id, (pl, _))| {
 			debug!(
 				event_id = event_id.as_str(),
-				power_level = i64::from(*pl),
+				power_level = (*pl),
 				"found the power level of an event's sender",
 			);
 		})
@@ -1251,7 +1251,7 @@ where
 			if let Some(room_id) = first.room_id_or_hash() {
 				let create_event_id_raw = room_id.as_str().replacen('!', "$", 1);
 				if let Ok(create_event_id) = EventId::parse(&create_event_id_raw) {
-					local_create_event = fetch_event(create_event_id.into()).await;
+					local_create_event = fetch_event(create_event_id).await;
 				}
 			}
 		}

@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use serde_json::Value;
 use slipstream::api::client::filter::{RoomEventFilter, UrlFilter};
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
+use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId,
 	events::{EventContent, MessageLikeEventType, StateEventType, TimelineEventType},

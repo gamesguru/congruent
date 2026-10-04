@@ -6,7 +6,7 @@ use std::{
 };
 
 use conduwuit_core::matrix::{Pdu, state_res::StateMap};
-use ruma::{OwnedEventId, RoomVersionId};
+use conduwuit_core::slipstream::{OwnedEventId, RoomVersionId};
 
 enum Mode {
 	/// Single JSONL file with DAG events, auto-detect heads
@@ -195,17 +195,17 @@ fn print_membership_counts(
 	let (mut joined, mut left, mut banned, mut invite, mut knock) = (0, 0, 0, 0, 0);
 	for id in resolved.values() {
 		if let Some(ev) = events_map.get(id)
-			&& ev.kind == ruma::events::TimelineEventType::RoomMember
+			&& ev.kind == conduwuit_core::slipstream::events::TimelineEventType::RoomMember
 			&& let Ok(member) = serde_json::from_str::<
-				ruma::events::room::member::RoomMemberEventContent,
+				conduwuit_core::slipstream::events::room::member::RoomMemberEventContent,
 			>(ev.content.get())
 		{
 			match member.membership {
-				| ruma::events::room::member::MembershipState::Join => joined += 1,
-				| ruma::events::room::member::MembershipState::Leave => left += 1,
-				| ruma::events::room::member::MembershipState::Ban => banned += 1,
-				| ruma::events::room::member::MembershipState::Invite => invite += 1,
-				| ruma::events::room::member::MembershipState::Knock => knock += 1,
+				| conduwuit_core::slipstream::events::room::member::MembershipState::Join => joined += 1,
+				| conduwuit_core::slipstream::events::room::member::MembershipState::Leave => left += 1,
+				| conduwuit_core::slipstream::events::room::member::MembershipState::Ban => banned += 1,
+				| conduwuit_core::slipstream::events::room::member::MembershipState::Invite => invite += 1,
+				| conduwuit_core::slipstream::events::room::member::MembershipState::Knock => knock += 1,
 				| _ => {},
 			}
 		}
@@ -645,7 +645,7 @@ fn resolve_via_rezzy(
 	// Convert back to StateMap
 	let mut resolved = HashMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.to_string().into();
+		let ty: conduwuit_core::slipstream::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::state_key::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);

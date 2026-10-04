@@ -1,4 +1,4 @@
-use serde_json::{Value as JsonValue, json, value::to_raw_value};
+use serde_json::Value as JsonValue;
 use slipstream::{RoomVersionId, canonical_json::redact_content_in_place};
 
 use crate::{Error, Result, err, implement};
@@ -13,7 +13,7 @@ pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: JsonValue) -> 
 		.ok_or_else(|| err!(Request(BadJson("event content must be an object"))))?;
 
 	redact_content_in_place(&mut content, room_version_id, self.kind.to_string())
-		.map_err(|e| Error::Redaction(self.sender.server_name().to_owned(), e))?;
+		.map_err(|e| Error::Redaction(self.sender.server_name(), e))?;
 
 	let reason = slipstream::canonical_json::from_json_str(&reason.to_string())
 		.expect("Failed to preserialize reason");

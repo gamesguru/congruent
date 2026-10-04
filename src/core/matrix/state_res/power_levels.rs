@@ -6,10 +6,6 @@ use slipstream::{
 	Int, OwnedUserId, UserId,
 	events::{TimelineEventType, room::power_levels::RoomPowerLevelsEventContent},
 	power_levels::{NotificationPowerLevels, default_power_level},
-	serde::{
-		deserialize_v1_powerlevel, vec_deserialize_int_powerlevel_values,
-		vec_deserialize_v1_powerlevel_values,
-	},
 };
 
 use super::{Result, RoomVersion};
