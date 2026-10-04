@@ -308,10 +308,9 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 		.ok_or_else(|| err!(Request(InvalidParam("PDU does not have a valid sender key"))))?;
 	let sender = &sender;
 
-	let sender_acl_check: OptionFuture<_> = sender
-		.server_name()
-		.ne(origin)
-		.then(|| self.acl_check(&sender.server_name(), room_id))
+	let sender_server = sender.server_name();
+	let sender_acl_check: OptionFuture<_> = (&sender_server != origin)
+		.then(|| self.acl_check(&sender_server, room_id))
 		.into();
 
 	let (meta_exists, is_disabled, (), ()) = try_join4(

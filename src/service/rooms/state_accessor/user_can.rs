@@ -200,7 +200,7 @@ pub async fn user_can_see_state_events(&self, user_id: &UserId, room_id: &RoomId
 		.services
 		.globals
 		.allow_local_users_to_bypass_history_visibility()
-		&& self.services.globals.server_name() == user_id.server_name()
+		&& self.services.globals.server_name() == &user_id.server_name()
 	{
 		return true;
 	}

@@ -427,13 +427,14 @@ async fn get_room_summary(
 		.is_world_readable(room_id)
 		.await;
 
+	let allowed_rooms: Vec<OwnedRoomId> = join_rule.allowed_rooms().collect();
 	let is_accessible_child = self
 		.is_accessible_child(
 			room_id,
 			&join_rule.clone().into(),
 			world_readable,
 			identifier,
-			join_rule.allowed_rooms(),
+			allowed_rooms.iter(),
 		)
 		.await;
 

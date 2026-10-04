@@ -77,7 +77,7 @@ impl Service {
 		let result = self.db.private_read_get(room_id, user_id).await?;
 
 		if let Some((_, event)) = result {
-			Ok(Raw::from_json_string(event.to_json().to_string())?)
+			Ok(Raw::from_json_string(slipstream::codec::to_string(&event.to_json()))?)
 		} else {
 			Err(err!(Database(warn!("No private read receipt was set in {room_id}"))))
 		}

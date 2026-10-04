@@ -1,4 +1,4 @@
-use conduwuit::{Event, PduEvent, Result, err};
+use conduwuit::{Event, PduEvent, Result, err, matrix::pdu::RawJson};
 use slipstream::{
 	UserId,
 	api::Direction,
@@ -20,7 +20,7 @@ impl super::Service {
 		&self,
 		user_id: &UserId,
 		pdu: &PduEvent,
-	) -> Result<Option<BundledMessageLikeRelations<Box<serde_json::value::RawValue>>>> {
+	) -> Result<Option<BundledMessageLikeRelations<RawJson>>> {
 		// Events that can never get bundled aggregations
 		if pdu.state_key().is_some() || Self::is_replacement_event(pdu) {
 			return Ok(None);
@@ -80,7 +80,7 @@ impl super::Service {
 			return Ok(None);
 		}
 
-		let mut bundled = BundledMessageLikeRelations::<Box<serde_json::value::RawValue>>::new();
+		let mut bundled = BundledMessageLikeRelations::<RawJson>::new();
 
 		// Handle m.replace relations - find the most recent valid one (lazy load
 		// original event)
@@ -111,14 +111,8 @@ impl super::Service {
 	}
 
 	/// Serialize a replacement event to the bundled format
-	fn serialize_replacement(pdu: &PduEvent) -> Result<Box<Box<serde_json::value::RawValue>>> {
-		let replacement_json = serde_json::to_string(pdu)
-			.map_err(|e| err!(Database("Failed to serialize replacement event: {e}")))?;
-
-		let raw_value = serde_json::value::RawValue::from_string(replacement_json)
-			.map_err(|e| err!(Database("Failed to create RawValue: {e}")))?;
-
-		Ok(Box::new(raw_value))
+	fn serialize_replacement(pdu: &PduEvent) -> Result<Box<RawJson>> {
+		Ok(Box::new(RawJson::from_value(pdu)))
 	}
 
 	/// Find the most recent valid replacement event based on origin_server_ts
@@ -184,8 +178,7 @@ impl super::Service {
 		let bundled_aggregations = self.get_bundled_aggregations(user_id, pdu).await?;
 
 		if let Some(aggregations) = bundled_aggregations {
-			let aggregations_json = serde_json::to_value(aggregations)
-				.map_err(|e| err!(Database("Failed to serialize bundled aggregations: {e}")))?;
+			let aggregations_json = slipstream::codec::to_value(&aggregations);
 
 			Self::add_bundled_aggregations_to_unsigned(pdu, aggregations_json)?;
 		}
@@ -196,22 +189,18 @@ impl super::Service {
 	/// Helper method to add bundled aggregations to a PDU's unsigned field
 	fn add_bundled_aggregations_to_unsigned(
 		pdu: &mut PduEvent,
-		aggregations_json: serde_json::Value,
+		aggregations_json: slipstream::json::Value,
 	) -> Result<()> {
-		use serde_json::{
-			Map, Value as JsonValue,
-			value::{RawValue as RawJsonValue, to_raw_value},
+		use slipstream::json::{Object as Map, Value as JsonValue};
+
+		let mut unsigned: Map = match pdu.unsigned.as_ref() {
+			| Some(unsigned) => slipstream::codec::from_str(unsigned.get())
+				.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?,
+			| None => Map::new(),
 		};
 
-		let mut unsigned: Map<String, JsonValue> = pdu
-			.unsigned
-			.as_deref()
-			.map(RawJsonValue::get)
-			.map_or_else(|| Ok(Map::new()), serde_json::from_str)
-			.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?;
-
 		let relations = unsigned
-			.entry("m.relations")
+			.entry("m.relations".to_owned())
 			.or_insert_with(|| JsonValue::Object(Map::new()))
 			.as_object_mut()
 			.ok_or_else(|| err!(Database("m.relations is not an object")))?;
@@ -220,7 +209,7 @@ impl super::Service {
 			relations.extend(aggregations_map);
 		}
 
-		pdu.unsigned = Some(to_raw_value(&unsigned)?);
+		pdu.unsigned = Some(RawJson::from_value(&unsigned));
 
 		Ok(())
 	}

@@ -151,7 +151,7 @@ impl crate::Service for Service {
 						if iterations == 0 {
 							tokio::task::yield_now().await;
 						}
-						if !self_flush.services.globals.server_is_ours(server) {
+						if !self_flush.services.globals.server_is_ours(&server) {
 							let mut entry = self_flush
 								.pending_updates
 								.entry(server.to_owned())
@@ -195,7 +195,7 @@ impl crate::Service for Service {
 				);
 
 				if !servers.is_empty() {
-					let server_refs = servers.iter().map(AsRef::as_ref);
+					let server_refs = servers.iter().cloned();
 					self_flush
 						.services
 						.sending
@@ -371,7 +371,7 @@ impl Service {
 	/// Schedules a presence timeout timer for the given user if applicable.
 	fn schedule_timeout(&self, user_id: &UserId, presence_state: &PresenceState) -> Result<()> {
 		if (self.timeout_remote_users || self.services.globals.user_is_local(user_id))
-			&& user_id != self.services.globals.server_user
+			&& user_id != &self.services.globals.server_user
 		{
 			let mut timeout = match presence_state {
 				| PresenceState::Online => self.services.server.config.presence_idle_timeout_s,
@@ -421,7 +421,7 @@ impl Service {
 				break;
 			}
 
-			if !self.services.globals.user_is_local(user_id)
+			if !self.services.globals.user_is_local(&user_id)
 				|| user_id == &self.services.globals.server_user
 			{
 				continue;
@@ -460,7 +460,7 @@ impl Service {
 	pub fn presence_since(
 		&self,
 		since: u64,
-	) -> impl Stream<Item = (&UserId, u64, &[u8])> + Send + '_ {
+	) -> impl Stream<Item = (OwnedUserId, u64, &[u8])> + Send + '_ {
 		self.db.presence_since(since)
 	}
 

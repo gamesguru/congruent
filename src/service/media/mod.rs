@@ -369,6 +369,7 @@ impl Service {
 		let mut deletion_count: usize = 0;
 
 		for mxc_uri in remote_mxcs {
+			let mxc_uri = OwnedMxcUri::from(mxc_uri.as_str());
 			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
 			else {
 				debug_warn!("Invalid MXC in database, skipping");

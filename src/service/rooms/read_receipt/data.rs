@@ -120,7 +120,7 @@ impl Data {
 						.and_then(|idx| key.get(idx))
 						== Some(&database::SEP)
 				{
-					let receipt = decode::<ReceiptEvent>(value)?;
+					let receipt = decode::<ReceiptEvent>(value).ok()?;
 					let (event_id, types) = receipt.content.0.into_iter().next()?;
 					let users = types.get(&ReceiptType::Read)?;
 					let receipt_data = users.get(user_id)?;
@@ -407,7 +407,7 @@ impl Data {
 
 				let mut json: CanonicalJsonObject = database::from_json_slice(value)?;
 				json.remove("room_id");
-				let event = slipstream::codec::to_string(&json)?;
+				let event = slipstream::codec::to_string(&json);
 
 				conduwuit::trace!(
 					"Yielding read receipt for user {} at count {} (since was {})",
@@ -438,7 +438,7 @@ impl Data {
 		let _guard = self.private_read_mutex.lock();
 		let mut receipts =
 			if let Ok(value) = self.roomuserid_privatereadreceipt.get_blocking(&key) {
-				decode::<PrivateReadReceipts>(&value).unwrap_or_else(|| {
+				decode::<PrivateReadReceipts>(&value).unwrap_or_else(|_| {
 					decode::<(u64, ReceiptEvent, u64)>(&value)
 						.map(|entry| {
 							BTreeMap::from([(private_read_thread_key(&entry.1, user_id), entry)])

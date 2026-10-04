@@ -7,7 +7,9 @@ use conduwuit::{
 use database::{Deserialized, Json, Map};
 use futures::Stream;
 use moka::sync::Cache;
-use slipstream::{UInt, UserId, events::presence::PresenceEvent, presence::PresenceState};
+use slipstream::{
+	OwnedUserId, UInt, UserId, events::presence::PresenceEvent, presence::PresenceState,
+};
 
 use super::Presence;
 use crate::{Dep, globals, users};
@@ -178,7 +180,7 @@ impl Data {
 	pub(super) fn presence_since(
 		&self,
 		since: u64,
-	) -> impl Stream<Item = (&UserId, u64, &[u8])> + Send + '_ {
+	) -> impl Stream<Item = (OwnedUserId, u64, &[u8])> + Send + '_ {
 		self.presenceid_presence
 			.raw_stream_from(&(since.saturating_add(1)).to_be_bytes())
 			.ignore_err()
@@ -199,7 +201,7 @@ fn presenceid_key(count: u64, user_id: &UserId) -> Vec<u8> {
 }
 
 #[inline]
-fn presenceid_parse(key: &[u8]) -> Result<(u64, &UserId)> {
+fn presenceid_parse(key: &[u8]) -> Result<(u64, OwnedUserId)> {
 	let (count, user_id) = key.split_at(8);
 	let user_id = user_id_from_bytes(user_id)?;
 	let count = utils::u64_from_u8(count);
@@ -208,9 +210,8 @@ fn presenceid_parse(key: &[u8]) -> Result<(u64, &UserId)> {
 }
 
 /// Parses a `UserId` from bytes.
-fn user_id_from_bytes(bytes: &[u8]) -> Result<&UserId> {
+fn user_id_from_bytes(bytes: &[u8]) -> Result<OwnedUserId> {
 	let str: &str = utils::string::str_from_bytes(bytes)?;
-	let user_id: &UserId = str.try_into()?;
 
-	Ok(user_id)
+	Ok(OwnedUserId::from(str))
 }

@@ -131,7 +131,8 @@ pub fn room_stream<'a>(
 			async move {
 				let pdu = self.get_pdu_outlier(&eid).await.ok()?;
 				// If metadata had a 0 short_room_id, we must check the actual PDU room_id
-				if meta_short_room_id == 0 && pdu.room_id() != Some(&*room_id) {
+				if meta_short_room_id == 0 && pdu.room_id().map(|r| r.as_str()) != Some(&*room_id)
+				{
 					return None;
 				}
 				Some((eid, pdu))
@@ -286,10 +287,10 @@ fn add_pdu_outlier_batch_impl<'a>(
 		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
 
 	if let Ok(parsed_pdu) =
-		serde_json::from_value::<PduEvent>(serde_json::to_value(&pdu).unwrap())
+		slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(pdu.clone()))
 	{
 		let short_room_id = room_id_from_pdu
-			.as_deref()
+			.as_ref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
 
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on

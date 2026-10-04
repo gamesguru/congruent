@@ -239,7 +239,7 @@ impl Service {
 		let edu = Edu::Typing(content);
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &edu).expect("Serialized Edu::Typing");
+		buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 		self.services.sending.send_edu_room(room_id, buf).await?;
 

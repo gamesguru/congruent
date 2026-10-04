@@ -479,7 +479,8 @@ where
 					.await;
 
 				for ((&miss_key, res), idx) in misses.iter().zip(db_results).zip(miss_indices) {
-					let val: Result<Id> = res.deserialized();
+					let val: Result<Id> =
+						res.and_then(|handle| database::from_json_slice(handle.as_ref()));
 
 					if let Ok(ref val) = val {
 						let owned = val.to_owned();

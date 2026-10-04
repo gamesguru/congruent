@@ -1625,11 +1625,14 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 		.stream()
 		.try_fold(
 			(0_usize, 0_usize),
-			async |(mut total, mut fixed), ((user, key), value)| -> Result<(usize, usize)> {
+			async |(mut total, mut fixed),
+			       ((user, key), value): KeyVal<'_>|
+			       -> Result<(usize, usize)> {
 				match from_slice::<Value>(value) {
 					// corrupted timezone field
 					| Err(_) if key == "us.cloke.msc4175.tz" => {
-						let new_value = slipstream::json::Value::String(String::from_utf8(value.to_vec())?);
+						let new_value =
+							slipstream::json::Value::String(String::from_utf8(value.to_vec())?);
 						useridprofilekey_value.put((user, key), Json(new_value));
 						fixed = fixed.saturating_add(1);
 					},
@@ -1685,12 +1688,13 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 					// was removed by the HAMT cutover, so we drop the bad entry — the
 					// leave event remains in the timeline and is recovered at runtime
 					// once the HAMT migration has run.
-					let repaired = match services.rooms.state.get_room_state_hamt(room_id).await {
+					let repaired = match services.rooms.state.get_room_state_hamt(&room_id).await
+					{
 						| Ok(root_handle) => services
 							.rooms
 							.state_accessor
 							.state_get_in_room_hamt(
-								room_id,
+								&room_id,
 								&root_handle,
 								&StateEventType::RoomMember,
 								user_id.as_str(),
@@ -1706,7 +1710,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 								|content| content.membership == MembershipState::Leave,
 							) =>
 						{
-							userroomid_leftstate.put((user_id, room_id), Json(leave));
+							userroomid_leftstate.put((&user_id, &room_id), Json(leave));
 							warn!(
 								%room_id,
 								%user_id,
@@ -1720,7 +1724,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 								"room cached as left has a corrupted leave event, removing \
 								 cache entry"
 							);
-							userroomid_leftstate.del((user_id, room_id));
+							userroomid_leftstate.del((&user_id, &room_id));
 						},
 					}
 				}

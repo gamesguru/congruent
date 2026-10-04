@@ -429,7 +429,7 @@ async fn add_derived_create_event(
 	let Ok(create_id) = EventId::parse(create_id.as_str()) else {
 		return true;
 	};
-	if exclude.is_some_and(|event_id| event_id == create_id) {
+	if exclude.is_some_and(|event_id| event_id == &create_id) {
 		return true;
 	}
 	let Ok(create_short) = self.services.short.get_shorteventid(&create_id).await else {
@@ -438,7 +438,7 @@ async fn add_derived_create_event(
 	if self
 		.services
 		.timeline
-		.get_pdu_in_room(Some(room_id), create_id)
+		.get_pdu_in_room(Some(room_id), &create_id)
 		.await
 		.is_err()
 	{

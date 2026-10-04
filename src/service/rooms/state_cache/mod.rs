@@ -390,8 +390,10 @@ pub fn active_local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
 ) -> impl Stream<Item = OwnedUserId> + Send + 'a {
-	self.local_users_in_room(room_id)
-		.filter(|user| self.services.users.is_active(user))
+	self.local_users_in_room(room_id).filter(move |user| {
+		let user = user.clone();
+		async move { self.services.users.is_active(&user).await }
+	})
 }
 
 /// Returns the number of users which are currently invited to a room
