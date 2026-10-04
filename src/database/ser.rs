@@ -3,18 +3,16 @@ use std::io::Write;
 use conduwuit::{Error, Result, debug::type_name, err, result::DebugInspect, utils::exchange};
 use serde::{Deserialize, Serialize, ser};
 
-use crate::util::unhandled;
+use crate::{dbkey::DbKey, util::unhandled};
 
 #[inline]
-pub fn serialize_to_vec<T: Serialize>(val: T) -> Result<Vec<u8>> {
-	serialize_to::<Vec<u8>, T>(val)
-}
+pub fn serialize_to_vec<T: DbKey>(val: T) -> Result<Vec<u8>> { serialize_to::<Vec<u8>, T>(val) }
 
 #[inline]
 pub fn serialize_to<B, T>(val: T) -> Result<B>
 where
 	B: Default + Write + AsRef<[u8]>,
-	T: Serialize,
+	T: DbKey,
 {
 	let mut buf = B::default();
 	serialize(&mut buf, val)?;
@@ -28,11 +26,12 @@ where
 pub fn serialize<'a, W, T>(out: &'a mut W, val: T) -> Result<&'a [u8]>
 where
 	W: Write + AsRef<[u8]> + 'a,
-	T: Serialize,
+	T: DbKey,
 {
 	let mut serializer = Serializer { out, depth: 0, sep: false, fin: false };
 
-	val.serialize(&mut serializer)
+	val.db_ser()
+		.serialize(&mut serializer)
 		.map_err(|error| err!(SerdeSer("{error}")))
 		.debug_inspect(|()| {
 			debug_assert_eq!(

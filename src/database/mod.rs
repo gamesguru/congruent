@@ -11,6 +11,7 @@ conduwuit::mod_dtor! {}
 #[cfg(test)]
 mod benches;
 mod cork;
+pub mod dbkey;
 mod de;
 mod deprecated_maps;
 mod deserialized;

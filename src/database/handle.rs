@@ -2,9 +2,9 @@ use std::{fmt, fmt::Debug, ops::Deref};
 
 use conduwuit::Result;
 use rocksdb::DBPinnableSlice;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Serialize, Serializer};
 
-use crate::{Deserialized, Slice, keyval::deserialize_val};
+use crate::{Deserialized, Slice, dbkey::DbDeOwned, keyval::deserialize_val};
 
 pub struct Handle<'a> {
 	val: DBPinnableSlice<'a>,
@@ -36,7 +36,7 @@ impl Deserialized for Result<Handle<'_>> {
 	fn map_de<T, U, F>(self, f: F) -> Result<U>
 	where
 		F: FnOnce(T) -> U,
-		T: for<'de> Deserialize<'de>,
+		T: DbDeOwned,
 	{
 		self?.map_de(f)
 	}
@@ -47,7 +47,7 @@ impl<'a> Deserialized for Result<&'a Handle<'a>> {
 	fn map_de<T, U, F>(self, f: F) -> Result<U>
 	where
 		F: FnOnce(T) -> U,
-		T: for<'de> Deserialize<'de>,
+		T: DbDeOwned,
 	{
 		self.and_then(|handle| handle.map_de(f))
 	}
@@ -58,7 +58,7 @@ impl<'a> Deserialized for &'a Handle<'a> {
 	fn map_de<T, U, F>(self, f: F) -> Result<U>
 	where
 		F: FnOnce(T) -> U,
-		T: for<'de> Deserialize<'de>,
+		T: DbDeOwned,
 	{
 		deserialize_val(self.as_ref()).map(f)
 	}

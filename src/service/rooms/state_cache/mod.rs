@@ -326,13 +326,13 @@ pub fn get_shared_rooms<'a>(
 pub fn room_members<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_joined
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Invalidate user visibility cache for all users in the room.
@@ -411,13 +411,13 @@ pub async fn room_invited_count(&self, room_id: &RoomId) -> Result<u64> {
 pub fn room_useroncejoined<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuseroncejoinedids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Returns an iterator over all invited members of a room.
@@ -426,13 +426,13 @@ pub fn room_useroncejoined<'a>(
 pub fn room_members_invited<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_invitecount
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 /// Returns an iterator over all knocked members of a room.
@@ -441,13 +441,13 @@ pub fn room_members_invited<'a>(
 pub fn room_members_knocked<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a UserId> + Send + 'a {
+) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomuserid_knockedcount
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, user_id): (Ignore, &UserId)| user_id)
+		.map(|(_, user_id): (Ignore, OwnedUserId)| user_id)
 }
 
 #[implement(Service)]

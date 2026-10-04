@@ -1,15 +1,14 @@
 use std::{convert::AsRef, fmt::Debug};
 
 use conduwuit::implement;
-use serde::Serialize;
 
-use crate::{keyval::KeyBuf, ser, util::or_else};
+use crate::{dbkey::DbKey, keyval::KeyBuf, ser, util::or_else};
 
 #[implement(super::Map)]
 #[inline]
 pub fn del<K>(&self, key: K)
 where
-	K: Serialize + Debug,
+	K: DbKey + Debug,
 {
 	let mut buf = KeyBuf::new();
 	let key = ser::serialize(&mut buf, key).expect("failed to serialize deletion key");

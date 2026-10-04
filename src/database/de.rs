@@ -6,7 +6,7 @@ use serde::{
 	de::{DeserializeSeed, Visitor},
 };
 
-use crate::util::unhandled;
+use crate::{dbkey::DbDe, util::unhandled};
 
 /// Deserialize into T from buffer.
 #[cfg_attr(
@@ -20,15 +20,17 @@ use crate::util::unhandled;
 )]
 pub(crate) fn from_slice<'a, T>(buf: &'a [u8]) -> Result<T>
 where
-	T: Deserialize<'a>,
+	T: DbDe<'a>,
 {
 	let mut deserializer = Deserializer { buf, pos: 0, rec: 0, seq: false };
 
-	T::deserialize(&mut deserializer).debug_inspect(|_| {
+	let de = <T::De as Deserialize<'a>>::deserialize(&mut deserializer).debug_inspect(|_| {
 		deserializer
 			.finished()
 			.expect("deserialization failed to consume trailing bytes");
-	})
+	})?;
+
+	T::from_de(de)
 }
 
 /// Deserialization state.

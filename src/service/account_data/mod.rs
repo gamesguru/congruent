@@ -9,7 +9,7 @@ use futures::{Stream, StreamExt, TryFutureExt};
 use serde::Deserialize;
 use serde_json::Value;
 use slipstream::{
-	RoomId, UserId,
+	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyRoomAccountDataEvent,
 		GlobalAccountDataEventType, RoomAccountDataEventType,
@@ -204,7 +204,7 @@ pub fn changes_since<'a>(
 	since: Option<u64>,
 	to: Option<u64>,
 ) -> impl Stream<Item = AnyRawAccountDataEvent> + Send + 'a {
-	type Key<'a> = (Option<&'a RoomId>, &'a UserId, u64, Ignore);
+	type Key = (Option<OwnedRoomId>, OwnedUserId, u64, Ignore);
 
 	// Skip the data that's exactly at since, because we sent that last time
 	// ...unless this is an initial sync, in which case send everything
@@ -214,10 +214,12 @@ pub fn changes_since<'a>(
 		.roomuserdataid_accountdata
 		.stream_from(&first_possible)
 		.ignore_err()
-		.ready_take_while(move |((room_id_, user_id_, count, _), _): &(Key<'_>, _)| {
-			room_id == *room_id_ && user_id == *user_id_ && to.is_none_or(|to| *count <= to)
+		.ready_take_while(move |((room_id_, user_id_, count, _), _): &(Key, _)| {
+			room_id == room_id_.as_deref()
+				&& user_id == user_id_
+				&& to.is_none_or(|to| *count <= to)
 		})
-		.ready_filter(move |(_, v): &(Key<'_>, &[u8])| {
+		.ready_filter(move |(_, v): &(Key, &[u8])| {
 			since.is_some() || !is_account_data_tombstone(v)
 		})
 		.map(move |(_, v)| {

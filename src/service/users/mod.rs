@@ -459,7 +459,7 @@ impl Service {
 	}
 
 	/// Returns an iterator over all users on this homeserver.
-	pub fn stream(&self) -> impl Stream<Item = &UserId> + Send {
+	pub fn stream(&self) -> impl Stream<Item = OwnedUserId> + Send {
 		self.db.userid_password.keys().ignore_err()
 	}
 
@@ -467,12 +467,12 @@ impl Service {
 	///
 	/// A user account is considered `local` if the length of it's password is
 	/// greater then zero.
-	pub fn list_local_users(&self) -> impl Stream<Item = &UserId> + Send + '_ {
+	pub fn list_local_users(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ {
 		self.db
 			.userid_password
 			.stream()
 			.ignore_err()
-			.ready_filter_map(|(u, p): (&UserId, &[u8])| (!p.is_empty()).then_some(u))
+			.ready_filter_map(|(u, p): (OwnedUserId, &[u8])| (!p.is_empty()).then_some(u))
 	}
 
 	/// Returns the origin of the user (password/LDAP/...).

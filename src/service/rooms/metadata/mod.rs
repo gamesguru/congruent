@@ -3,7 +3,7 @@ use std::sync::Arc;
 use conduwuit::{Result, implement, utils::stream::TryIgnore};
 use database::Map;
 use futures::{Stream, StreamExt};
-use slipstream::RoomId;
+use slipstream::{OwnedRoomId, RoomId};
 
 use crate::{Dep, rooms};
 
@@ -58,7 +58,7 @@ pub async fn exists(&self, room_id: &RoomId) -> bool {
 }
 
 #[implement(Service)]
-pub fn iter_ids(&self) -> impl Stream<Item = &RoomId> + Send + '_ {
+pub fn iter_ids(&self) -> impl Stream<Item = OwnedRoomId> + Send + '_ {
 	self.db.roomid_shortroomid.keys().ignore_err()
 }
 

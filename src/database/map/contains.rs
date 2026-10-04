@@ -7,9 +7,8 @@ use conduwuit::{
 	utils::{future::TryExtExt, result::FlatOk},
 };
 use futures::FutureExt;
-use serde::Serialize;
 
-use crate::{keyval::KeyBuf, ser};
+use crate::{dbkey::DbKey, keyval::KeyBuf, ser};
 
 /// Returns true if the map contains the key.
 /// - key is serialized into allocated buffer
@@ -21,7 +20,7 @@ pub fn contains<K>(
 	key: &K,
 ) -> impl Future<Output = bool> + Send + '_ + use<'_, K>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 {
 	let mut buf = KeyBuf::new();
 	self.bcontains(key, &mut buf)
@@ -37,7 +36,7 @@ pub fn acontains<const MAX: usize, K>(
 	key: &K,
 ) -> impl Future<Output = bool> + Send + '_ + use<'_, MAX, K>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 {
 	let mut buf = ArrayVec::<u8, MAX>::new();
 	self.bcontains(key, &mut buf)
@@ -54,7 +53,7 @@ pub fn bcontains<K, B>(
 	buf: &mut B,
 ) -> impl Future<Output = bool> + Send + '_ + use<'_, K, B>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 	B: Write + AsRef<[u8]>,
 {
 	let key = ser::serialize(buf, key).expect("failed to serialize query key");
