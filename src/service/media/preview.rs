@@ -12,9 +12,9 @@ use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
+use serde::Serialize;
 #[cfg(feature = "url_preview")]
 use slipstream::OwnedMxcUri;
-use serde::Serialize;
 use url::Url;
 
 use super::Service;
