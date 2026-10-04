@@ -6,7 +6,8 @@ use conduwuit::{Error, Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
-	OwnedUserId, ServerName, UserId, api::IncomingRequest,
+	OwnedUserId, ServerName, UserId,
+	api::{EndpointRequest, IncomingRequest},
 };
 
 use super::{auth, request, request::Request};
@@ -97,7 +98,7 @@ where
 
 impl<T> FromRequest<State, Body> for Args<T>
 where
-	T: IncomingRequest + Send + Sync + 'static,
+	T: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 {
 	type Rejection = Error;
 
