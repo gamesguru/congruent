@@ -1,4 +1,4 @@
-use conduwuit::{Err, Result, RoomVersion, debug_info, implement, matrix::Event};
+use conduwuit::{Err, Result, RoomVersion, debug_info, err, implement, matrix::Event};
 use slipstream::{
 	EventId, RoomId, UserId,
 	events::{

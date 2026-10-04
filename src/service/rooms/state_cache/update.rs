@@ -138,12 +138,13 @@ pub async fn update_membership(
 			// member event). Do not overwrite the complete state with that partial
 			// second summary.
 			let has_create = knock_state.iter().any(|event| {
-				serde_json::from_str::<serde_json::Value>(event.json().get())
+				event
+					.json()
 					.ok()
 					.and_then(|value| {
 						value
 							.get("type")
-							.and_then(serde_json::Value::as_str)
+							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
 					.as_deref()
@@ -152,12 +153,13 @@ pub async fn update_membership(
 			if !has_create {
 				if let Ok(previous) = self.knock_state(user_id, room_id).await {
 					if previous.iter().any(|event| {
-						serde_json::from_str::<serde_json::Value>(event.json().get())
+						event
+							.json()
 							.ok()
 							.and_then(|value| {
 								value
 									.get("type")
-									.and_then(serde_json::Value::as_str)
+									.and_then(|value| value.as_str())
 									.map(str::to_owned)
 							})
 							.as_deref()
@@ -168,12 +170,13 @@ pub async fn update_membership(
 				}
 			}
 			let has_create = knock_state.iter().any(|event| {
-				serde_json::from_str::<serde_json::Value>(event.json().get())
+				event
+					.json()
 					.ok()
 					.and_then(|value| {
 						value
 							.get("type")
-							.and_then(serde_json::Value::as_str)
+							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
 					.as_deref()

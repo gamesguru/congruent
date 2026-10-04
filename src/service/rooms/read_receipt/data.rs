@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
-	Err, Result, SyncMutex,
+	Err, Result, SyncMutex, err,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -44,7 +44,7 @@ type PrivateReadReceipts = BTreeMap<String, (u64, ReceiptEvent, u64)>;
 
 fn decode<T: CodecDeserialize>(bytes: &[u8]) -> Result<T> {
 	slipstream::codec::from_str(std::str::from_utf8(bytes)?)
-		.map_err(|e| Err!(Database("Failed to decode read receipt: {e}")))
+		.map_err(|e| err!(Database("Failed to decode read receipt: {e}")))
 }
 
 impl Data {

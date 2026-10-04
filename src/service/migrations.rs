@@ -1896,13 +1896,39 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 /// `status: EventStatus` field, used only to read pre-v21 rows during
 /// `db_lt_21`. Field order replicates the exact on-disk layout of the old
 /// struct so legacy rows deserialize correctly.
+mod owned_event_id_option {
+	use serde::{Deserialize, Deserializer, Serialize, Serializer};
+	use slipstream::OwnedEventId;
+
+	pub fn serialize<S>(value: &Option<OwnedEventId>, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		value
+			.as_ref()
+			.map(ToString::to_string)
+			.serialize(serializer)
+	}
+
+	pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<OwnedEventId>, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		Option::<String>::deserialize(deserializer)?
+			.map(|value| OwnedEventId::parse(&value).map_err(serde::de::Error::custom))
+			.transpose()
+	}
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 struct EventMetadataV20 {
 	short_room_id: u64,
 	is_outlier: bool,
 	origin_server_ts: slipstream::UInt,
 	depth: slipstream::UInt,
 	status: EventStatusV20,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
@@ -1916,6 +1942,7 @@ struct EventMetadataV20 {
 /// fields plus human-readable reason strings. Those rows must be accepted by
 /// v21 and their verdicts folded into the independent verdict maps.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(bound(deserialize = ""))]
 struct EventMetadataV19 {
 	short_room_id: u64,
 	is_outlier: bool,
@@ -1923,6 +1950,7 @@ struct EventMetadataV19 {
 	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
@@ -1938,6 +1966,7 @@ struct EventMetadataV19 {
 /// Pre-v19 layout. Some v19 databases retain rows written before the
 /// topological-depth, PDU-count, and reason-string fields were added.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[serde(bound(deserialize = ""))]
 struct EventMetadataV18 {
 	short_room_id: u64,
 	is_outlier: bool,
@@ -1945,6 +1974,7 @@ struct EventMetadataV18 {
 	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 }

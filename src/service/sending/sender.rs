@@ -924,7 +924,7 @@ impl Service {
 		let receipt_content = Edu::Receipt(ReceiptContent { receipts });
 
 		let mut buf = EduBuf::new();
-		buf.put_slice(slipstream::codec::to_string(&receipt_content).as_bytes());
+		buf.extend_from_slice(slipstream::codec::to_string(&receipt_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -1100,7 +1100,7 @@ impl Service {
 		let presence_content = Edu::Presence(PresenceContent { push: presence_updates });
 
 		let mut buf = EduBuf::new();
-		buf.put_slice(slipstream::codec::to_string(&presence_content).as_bytes());
+		buf.extend_from_slice(slipstream::codec::to_string(&presence_content).as_bytes());
 
 		(Some(buf), since.1)
 	}

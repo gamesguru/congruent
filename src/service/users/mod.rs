@@ -1929,7 +1929,7 @@ impl Service {
 			.qry(&key)
 			.await
 			.and_then(|handle| {
-				slipstream::json::Value::parse(str_from_bytes(handle.as_ref())?)
+				slipstream::json::Value::parse(utils::string::str_from_bytes(handle.as_ref())?)
 					.map_err(|e| err!(Database("Invalid profile key in database: {e}")))
 			})
 	}
@@ -1947,7 +1947,9 @@ impl Service {
 			.stream_prefix(&prefix)
 			.ignore_err()
 			.ready_filter_map(|((_, key), value): (KeyVal<'_>, _)| {
-				let value = slipstream::json::Value::parse(str_from_bytes(value).ok()?).ok()?;
+				let value =
+					slipstream::json::Value::parse(utils::string::str_from_bytes(value).ok()?)
+						.ok()?;
 				Some((key, value))
 			})
 	}
@@ -2008,10 +2010,8 @@ impl Service {
 			.stream_from(&first)
 			.ignore_err()
 			.ready_take_while(move |((stream_id, ..), _): &(Key, _)| *stream_id <= to)
-			.filter_map(|((stream_id, ..), value): (Key, serde_json::Value)| async move {
-				serde_json::from_value(value)
-					.ok()
-					.map(|update| (stream_id, update))
+			.filter_map(|((stream_id, ..), update): (Key, Json<ProfileUpdate>)| async move {
+				Some((stream_id, update.0))
 			})
 	}
 

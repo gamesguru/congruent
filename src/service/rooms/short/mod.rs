@@ -423,7 +423,7 @@ where
 		.aqry::<BUFSIZE, _>(&shorteventid)
 		.await?;
 	let bytes = handle.as_ref();
-	let event_id_str = str_from_bytes(bytes)?;
+	let event_id_str = utils::string::str_from_bytes(bytes)?;
 	let res = Id::from_json(&slipstream::json::Value::parse(event_id_str)?).map_err(|e| {
 		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
 	})?;
