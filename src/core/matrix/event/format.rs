@@ -41,7 +41,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -72,7 +72,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -103,7 +103,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -128,7 +128,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -152,7 +152,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -172,7 +172,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 			"type": event.kind().to_string(),
 		});
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -191,7 +191,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<HierarchySpaceChildEvent> {
 			"type": event.kind().to_string(),
 		});
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
 
@@ -217,6 +217,6 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			json["unsigned"] = json!(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Raw::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
 	}
 }
