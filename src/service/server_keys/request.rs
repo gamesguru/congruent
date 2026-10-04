@@ -125,18 +125,18 @@ pub async fn server_request(&self, target: &ServerName) -> Result<Raw<ServerSign
 	let response = self
 		.services
 		.sending
-		.send_federation_request(target, Request::new())
+		.send_federation_request(target, Request)
 		.await?;
 
 	// MSC4499: Check raw JSON for duplicate keys before serde_json dedup
 	check_no_duplicate_json_keys(
-		response.server_key.json().get(),
+		response.server_key.get(),
 		self.services.server.config.msc4499_strict_caching,
 	)?;
 
 	let server_signing_key: ServerSigningKeys = response
 		.server_key
-		.deserialize()
+		.deserialize_as()
 		.map_err(|e| conduwuit::err!(BadServerResponse("{e}")))?;
 
 	if server_signing_key.server_name != target {

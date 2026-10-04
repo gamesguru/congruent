@@ -970,7 +970,8 @@ impl Data {
 			let actual_room = pdu.room_id_or_hash();
 			if actual_room.as_ref() != Some(expected_room) {
 				return Err!(Database(
-					"PDU {event_id} does belong to room {actual_room} (expected {expected_room})"
+					"PDU {event_id} does belong to room {actual_room:?} (expected \
+					 {expected_room})"
 				));
 			}
 		}
@@ -1458,9 +1459,9 @@ impl Data {
 		self.eventid_pdu
 			.batch_raw_put(&mut batch, event_id_bytes, Json(pdu_json));
 
-		if let Ok(pdu) =
-			serde_json::from_value::<PduEvent>(serde_json::to_value(pdu_json).unwrap())
-		{
+		if let Ok(pdu) = slipstream::codec::from_value::<PduEvent>(
+			&slipstream::json::Value::Object(pdu_json.clone()),
+		) {
 			let existing_metadata =
 				if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await {
 					rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
@@ -2236,8 +2237,8 @@ impl Data {
 					.and_then(move |(_key, val)| async move {
 						let s = std::str::from_utf8(val)
 							.map_err(|e| err!(Database("Invalid event id utf8: {e:?}")))?;
-						let event_id = <&EventId>::try_from(s)
-							.map_err(|e| err!(Database("Invalid event id bytes: {e:?}")))?;
+						let event_id = OwnedEventId::from(s);
+						let event_id = &event_id;
 						self.services
 							.short
 							.get_shorteventid(event_id)

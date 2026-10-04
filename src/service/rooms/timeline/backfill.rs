@@ -8,7 +8,7 @@ use std::{
 	},
 };
 
-use conduwuit::{Err, Error, PduEvent, RoomVersion};
+use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
 	Result, debug, debug_warn, err, error, implement, info,
 	matrix::{
@@ -19,7 +19,6 @@ use conduwuit_core::{
 	validated, warn,
 };
 use futures::{FutureExt, StreamExt};
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
 	UInt,
@@ -101,7 +100,7 @@ pub async fn backfill_if_required(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	info!(
@@ -584,8 +583,8 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 /// aborting the whole reorder -- `backfill_pdu` already tolerates and
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
-fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
-	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
+fn topo_sort_backfill_batch(pdus: &[RawJsonValue]) -> Vec<RawJsonValue> {
+	let mut keyed: Vec<(u64, RawJsonValue)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
 		// Deliberately not `parse_incoming_pdu` here: this pass only ever reads
@@ -601,10 +600,9 @@ fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>
 		// syntactically-broken event here just can't contribute a depth, so it
 		// sorts as depth 0 and gets caught (and logged) by backfill_pdu's own
 		// parse when it's inserted.
-		let depth = serde_json::from_str::<CanonicalJsonObject>(pdu.get())
+		let depth = slipstream::codec::from_str::<CanonicalJsonObject>(pdu.get())
 			.ok()
-			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_integer))
-			.and_then(|d| u64::try_from(i64::from(d)).ok())
+			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_u64))
 			.unwrap_or_default();
 
 		keyed.push((depth, pdu.clone()));
@@ -664,7 +662,7 @@ async fn get_remote_pdu_limited(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	if !has_remote_servers
@@ -717,11 +715,13 @@ async fn get_remote_pdu_limited(
 			})
 			.await
 			.and_then(|response| {
-				serde_json::from_str::<CanonicalJsonObject>(response.pdu.get()).map_err(|e| {
-					err!(BadServerResponse(debug_warn!(
-						"Error parsing incoming event {e:?} from {backfill_server}"
-					)))
-				})
+				slipstream::codec::from_str::<CanonicalJsonObject>(response.pdu.get()).map_err(
+					|e| {
+						err!(BadServerResponse(debug_warn!(
+							"Error parsing incoming event {e:?} from {backfill_server}"
+						)))
+					},
+				)
 			});
 		let pdu = match value {
 			| Ok(value) => match self
@@ -813,7 +813,7 @@ async fn materialize_remote_history_limited(
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,
-	pdu: Box<RawJsonValue>,
+	pdu: RawJsonValue,
 	count: Option<u64>,
 ) -> Result<()> {
 	let (room_id, event_id, value) = self.services.event_handler.parse_incoming_pdu(&pdu).await?;
@@ -1030,10 +1030,9 @@ pub async fn promote_outlier_batch<'a>(
 
 	let value = self.get_outlier_pdu_json(event_id).await?;
 
-	let pdu: PduEvent = serde_json::from_value(
-		serde_json::to_value(&value).map_err(|e| err!(Database("Bad outlier JSON: {e:?}")))?,
-	)
-	.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
+	let pdu: PduEvent =
+		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
+			.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
 
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 
@@ -1327,9 +1326,8 @@ pub async fn promote_outliers_sorted(
 
 	let mut promoted = 0_usize;
 	for event_id_str in &sorted_ids {
-		let Ok(event_id) = <&EventId>::try_from(event_id_str.as_str()) else {
-			continue;
-		};
+		let event_id = OwnedEventId::from(event_id_str.as_str());
+		let event_id = event_id.as_ref();
 		match self.promote_outlier(room_id, event_id).await {
 			| Ok(PromoteOutlierOutcome::Queued) => {
 				promoted = promoted.saturating_add(1);

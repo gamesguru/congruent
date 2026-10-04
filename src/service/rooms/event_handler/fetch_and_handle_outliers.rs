@@ -366,9 +366,9 @@ where
 								.and_then(CanonicalJsonValue::as_array)
 							{
 								for auth_event in auth_events {
-									if let Ok(auth_event) = serde_json::from_value::<OwnedEventId>(
-										auth_event.clone().into(),
-									) {
+									if let Ok(auth_event) =
+										slipstream::codec::from_value::<OwnedEventId>(auth_event)
+									{
 										if self
 											.services
 											.pdu_metadata
@@ -487,8 +487,8 @@ where
 										{
 											for auth_event in auth_events {
 												if let Ok(aeid) =
-													serde_json::from_value::<OwnedEventId>(
-														auth_event.clone().into(),
+													slipstream::codec::from_value::<OwnedEventId>(
+														auth_event,
 													) {
 													next_auth_events.insert(aeid);
 												}
@@ -527,9 +527,7 @@ where
 			let origin_server_ts = fetched_info
 				.get(&event_id)
 				.and_then(|info| info.get("origin_server_ts"))
-				.and_then(CanonicalJsonValue::as_integer)
-				.map(i64::from)
-				.and_then(|i| slipstream::UInt::try_from(i).ok())
+				.and_then(CanonicalJsonValue::as_u64)
 				.unwrap_or(0);
 
 			future::ready(conduwuit_core::Result::Ok((

@@ -3,7 +3,7 @@ use std::future::ready;
 use conduwuit::{Event, PduCount, Result};
 use conduwuit_core::matrix::pdu::PduEvent;
 use futures::{StreamExt, pin_mut};
-use slipstream::{CanonicalJsonObject, EventId, RoomId};
+use slipstream::{CanonicalJsonObject, EventId, OwnedEventId, RoomId};
 
 /// Populates `unsigned.prev_content`, `unsigned.prev_sender`, and
 /// `unsigned.replaces_state` on a PDU's JSON from the given previous state
@@ -95,7 +95,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 						)
 						.await
 						.ok()
-						.filter(|prev| prev.event_id() != event_id)
+						.filter(|prev| prev.event_id() != &event_id)
 				} else {
 					None
 				};
@@ -155,11 +155,11 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 				let replaces = unsigned
 					.get("replaces_state")
 					.and_then(|v| v.as_str())
-					.and_then(|s| <&EventId>::try_from(s).ok())
-					.filter(|eid| **eid != event_id);
+					.map(OwnedEventId::from)
+					.filter(|eid| *eid != event_id);
 
 				match replaces {
-					| Some(prev_eid) => self.get_pdu(prev_eid).await.ok(),
+					| Some(prev_eid) => self.get_pdu(&prev_eid).await.ok(),
 					| None => {
 						skipped = skipped.saturating_add(1);
 						continue;

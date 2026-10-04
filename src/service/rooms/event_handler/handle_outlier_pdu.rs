@@ -878,7 +878,7 @@ where
 		while let Some(eid) = queue.pop() {
 			sorted_auth_chain.push(eid.clone());
 			for (other_eid, (_, other_pdu)) in &auth_chain_map {
-				if other_pdu.auth_events().any(|aid| aid == eid) {
+				if other_pdu.auth_events().any(|aid| aid == &eid) {
 					if let Some(deg) = in_degree.get_mut(other_eid) {
 						*deg = deg.saturating_sub(1);
 						if *deg == 0 {

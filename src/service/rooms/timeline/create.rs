@@ -5,14 +5,13 @@ use conduwuit_core::{
 	Err, Error, Result, err, implement,
 	matrix::{
 		event::{Event, gen_event_id},
-		pdu::{EventHash, PduBuilder, PduEvent},
+		pdu::{EventHash, PduBuilder, PduEvent, RawJson},
 		state_res::RoomVersion,
 	},
 	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
 	warn,
 };
 use futures::{StreamExt, TryStreamExt, future};
-use serde_json::value::{RawValue, to_raw_value};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
 	UserId,
@@ -53,17 +52,14 @@ pub fn pdu_fits(owned_obj: &mut CanonicalJsonObject) -> bool {
 		}
 	}
 	// Now check the full PDU size
-	match serde_json::to_string(owned_obj) {
-		| Ok(s) => s.len() <= 65535,
-		| Err(_) => false,
-	}
+	slipstream::codec::to_string(owned_obj).len() <= 65535
 }
 
 /// Pulls the room version ID out of the given (create) event.
 fn room_version_from_event(
 	room_id: OwnedRoomId,
 	event_type: &TimelineEventType,
-	content: &RawValue,
+	content: &RawJson,
 ) -> Result<RoomVersionId> {
 	if event_type == &TimelineEventType::RoomCreate {
 		let content: RoomCreateEventContent = slipstream::codec::from_str(content.get())?;
@@ -240,12 +236,17 @@ pub async fn create_event(
 				.room_state_get(room_id, &event_type.clone().to_string().into(), state_key)
 				.await
 			{
-				unsigned.insert("prev_content".to_owned(), prev_pdu.get_content_as_value());
-				unsigned
-					.insert("prev_sender".to_owned(), serde_json::to_value(prev_pdu.sender())?);
+				unsigned.insert(
+					"prev_content".to_owned(),
+					slipstream::json::Value::parse(prev_pdu.content().get()).unwrap_or_default(),
+				);
+				unsigned.insert(
+					"prev_sender".to_owned(),
+					slipstream::codec::Serialize::to_json(prev_pdu.sender()),
+				);
 				unsigned.insert(
 					"replaces_state".to_owned(),
-					serde_json::to_value(prev_pdu.event_id())?,
+					slipstream::codec::Serialize::to_json(prev_pdu.event_id()),
 				);
 			}
 		}
@@ -277,7 +278,7 @@ pub async fn create_event(
 		unsigned: if unsigned.is_empty() {
 			None
 		} else {
-			Some(to_raw_value(&unsigned)?)
+			Some(RawJson::from_value(&unsigned))
 		},
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
@@ -363,7 +364,8 @@ pub async fn create_hash_and_sign_event(
 			"Checking event in room {} with policy server",
 			pdu.room_id.as_ref().map_or("None", |id| id.as_str())
 		);
-		let policy_room_id = pdu.room_id_or_hash().as_ref().expect("has room ID");
+		let policy_room_id = pdu.room_id_or_hash();
+		let policy_room_id = policy_room_id.as_ref().expect("has room ID");
 		match self
 			.services
 			.event_handler
@@ -408,9 +410,7 @@ pub fn hash_sign_and_finalize(
 	room_version_id: &RoomVersionId,
 ) -> Result<CanonicalJsonObject> {
 	// Sort keys canonically and purge "placeholder" `event_id`
-	let mut pdu_json = utils::to_canonical_object(&*pdu).map_err(|e| {
-		err!(Request(BadJson(warn!("Failed to convert PDU to canonical JSON: {e}"))))
-	})?;
+	let mut pdu_json = pdu.to_canonical_object();
 	pdu_json.remove("event_id");
 
 	// Sign

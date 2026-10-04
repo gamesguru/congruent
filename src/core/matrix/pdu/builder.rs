@@ -48,6 +48,7 @@ pub struct Builder {
 	#[serde(deserialize_with = "deserialize_raw")]
 	pub content: RawJson,
 
+	#[serde(deserialize_with = "deserialize_unsigned")]
 	pub unsigned: Option<Unsigned>,
 
 	pub state_key: Option<StateKey>,
@@ -61,7 +62,19 @@ pub struct Builder {
 	pub timestamp: Option<MilliSecondsSinceUnixEpoch>,
 }
 
-type Unsigned = BTreeMap<String, serde_json::Value>;
+type Unsigned = BTreeMap<String, slipstream::json::Value>;
+
+fn deserialize_unsigned<'de, D>(deserializer: D) -> Result<Option<Unsigned>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+	value
+		.map(|value| {
+			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+		})
+		.transpose()
+}
 
 impl Builder {
 	pub fn state<S, T>(state_key: S, content: &T) -> Self

@@ -240,12 +240,10 @@ impl Service {
 	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		let requests = servers
-			.map(|server| {
-				(Destination::Federation(server.into()), SendingEvent::Pdu(pdu_id.to_owned()))
-			})
+			.map(|server| (Destination::Federation(server), SendingEvent::Pdu(pdu_id.to_owned())))
 			.collect::<Vec<_>>()
 			.await;
 
@@ -304,14 +302,11 @@ impl Service {
 	#[tracing::instrument(skip(self, servers, serialized), level = "debug")]
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		let requests = servers
 			.map(|server| {
-				(
-					Destination::Federation(server.to_owned()),
-					SendingEvent::Edu(serialized.clone()),
-				)
+				(Destination::Federation(server), SendingEvent::Edu(serialized.clone()))
 			})
 			.collect::<Vec<_>>()
 			.await;
@@ -401,10 +396,9 @@ impl Service {
 	#[tracing::instrument(skip(self, servers), level = "debug")]
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
-		S: Stream<Item = &'a ServerName> + Send + 'a,
+		S: Stream<Item = OwnedServerName> + Send + 'a,
 	{
 		servers
-			.map(ToOwned::to_owned)
 			.map(Destination::Federation)
 			.map(Ok)
 			.ready_try_for_each(|dest| {

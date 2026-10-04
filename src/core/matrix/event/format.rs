@@ -229,3 +229,11 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			.expect("Failed to serialize Event value")
 	}
 }
+
+impl<E: Event> From<Owned<E>> for Raw<json::Value> {
+	fn from(event: Owned<E>) -> Self { Ref(&event.0).into() }
+}
+
+impl<'a, E: Event> From<Ref<'a, E>> for Raw<json::Value> {
+	fn from(event: Ref<'a, E>) -> Self { Raw::<AnyTimelineEvent>::from(event).cast() }
+}

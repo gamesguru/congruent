@@ -24,14 +24,16 @@ where
 	type Batch = BTreeMap<OwnedServerName, BTreeSet<OwnedServerSigningKeyId>>;
 	type Signatures = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, String>>;
 
-	#[derive(serde::Deserialize)]
 	struct EventSignatures {
 		signatures: Option<Signatures>,
 	}
+	slipstream::codec_struct!(EventSignatures {
+		signatures: Option<Signatures> = ("signatures", omit),
+	});
 
 	let mut batch = Batch::new();
 	events
-		.filter_map(|event| serde_json::from_str::<EventSignatures>(event.get()).ok())
+		.filter_map(|event| slipstream::codec::from_str::<EventSignatures>(event.get()).ok())
 		.filter_map(|event| event.signatures)
 		.flat_map(IntoIterator::into_iter)
 		.for_each(|(server, sigs)| {

@@ -4,7 +4,7 @@ use conduwuit::{
 	warn,
 };
 use database::Ignore;
-use futures::{Stream, StreamExt, stream::iter};
+use futures::{Stream, StreamExt, future, stream::iter};
 use itertools::Itertools;
 use slipstream::{
 	OwnedServerName, RoomId, ServerName,
@@ -81,17 +81,18 @@ pub fn servers_invite_via<'a>(
 	&'a self,
 	room_id: &'a RoomId,
 ) -> impl Stream<Item = OwnedServerName> + Send + 'a {
-	// The value is a 0xFF-separated list of server names.
+	// The value is a 0xFF-separated list of server names; as before, only the
+	// last one is yielded per row.
 	self.db
 		.roomid_inviteviaservers
 		.stream_raw_prefix(room_id)
 		.ignore_err()
-		.flat_map(|(_, servers): (Ignore, &[u8])| {
-			let servers: Vec<OwnedServerName> = servers
+		.filter_map(|(_, servers): (Ignore, &[u8])| {
+			let server = servers
 				.split(|&b| b == 0xFF)
-				.filter_map(|server| std::str::from_utf8(server).ok())
-				.filter_map(|server| OwnedServerName::parse(server).ok())
-				.collect();
-			iter(servers)
+				.next_back()
+				.and_then(|server| std::str::from_utf8(server).ok())
+				.map(OwnedServerName::from);
+			future::ready(server)
 		})
 }

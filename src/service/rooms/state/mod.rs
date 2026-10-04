@@ -1036,7 +1036,7 @@ impl Service {
 		kind: &TimelineEventType,
 		sender: &UserId,
 		state_key: Option<&str>,
-		content: &serde_json::value::RawValue,
+		content: &conduwuit::matrix::pdu::RawJson,
 		room_version: &RoomVersion,
 		room_version_id: &RoomVersionId,
 	) -> Result<StateMap<PduEvent>> {

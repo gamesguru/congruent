@@ -2,10 +2,12 @@ use std::str::FromStr;
 
 use conduwuit::{
 	Err, Event, Result, err, implement,
-	matrix::event::{gen_event_id, gen_event_id_canonical_json},
+	matrix::{
+		event::{gen_event_id, gen_event_id_canonical_json},
+		pdu::RawJson as RawJsonValue,
+	},
 };
 use itertools::Itertools;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomVersionId,
 };
@@ -96,7 +98,7 @@ pub fn validate_pdu(&self, pdu: &CanonicalJsonObject) -> Result {
 
 #[implement(super::Service)]
 pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
-	let value = serde_json::from_str::<CanonicalJsonObject>(pdu.get()).map_err(|e| {
+	let value = slipstream::codec::from_str::<CanonicalJsonObject>(pdu.get()).map_err(|e| {
 		err!(BadServerResponse(debug_warn!("Error parsing incoming event {e:?}")))
 	})?;
 	let event_type = value

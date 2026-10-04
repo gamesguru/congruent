@@ -67,14 +67,14 @@ async fn should_rescind_invite(
 		return Ok(false); // Only leave and ban can rescind an invite
 	}
 
-	if target_user_id.server_name() != services.globals.server_name() {
+	if &target_user_id.server_name() != services.globals.server_name() {
 		return Ok(false);
 	}
 
 	// Does the target user have a pending invite?
 	let Ok(pending_invite_state) = services
 		.state_cache
-		.invite_state(target_user_id, room_id)
+		.invite_state(&target_user_id, room_id)
 		.await
 	else {
 		return Ok(false); // No pending invite, so nothing to rescind
@@ -301,15 +301,17 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	let origin_acl_check = self.acl_check(origin, room_id);
 
 	// Check room ACL on sender's server name
-	let sender: &UserId = value
+	let sender = value
 		.get("sender")
-		.try_into()
-		.map_err(|e| err!(Request(InvalidParam("PDU does not have a valid sender key: {e}"))))?;
+		.and_then(CanonicalJsonValue::as_str)
+		.map(OwnedUserId::from)
+		.ok_or_else(|| err!(Request(InvalidParam("PDU does not have a valid sender key"))))?;
+	let sender = &sender;
 
 	let sender_acl_check: OptionFuture<_> = sender
 		.server_name()
 		.ne(origin)
-		.then(|| self.acl_check(sender.server_name(), room_id))
+		.then(|| self.acl_check(&sender.server_name(), room_id))
 		.into();
 
 	let (meta_exists, is_disabled, (), ()) = try_join4(
@@ -342,14 +344,19 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.get("state_key")
 					.and_then(|v| v.as_str())
 					.unwrap_or_default();
-				let target_user = UserId::parse(state_key).unwrap_or(sender);
+				let target_user = UserId::parse(state_key);
+				let target_user = if target_user.as_str().is_empty() {
+					sender.clone()
+				} else {
+					target_user
+				};
 				debug_info!(
 					"Invite to {room_id} appears to have been rescinded by {sender}, marking \
 					 target {target_user} as left"
 				);
 				self.services
 					.state_cache
-					.mark_as_left(target_user, room_id, None)
+					.mark_as_left(&target_user, room_id, None)
 					.await;
 				// Store the leave/ban as an outlier so the remote server's
 				// retry finds it and doesn't loop with 404s.
@@ -497,7 +504,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					room_id,
 					event_id,
 					pdu.prev_events(),
-					Some(pdu.sender().server_name()),
+					Some(&pdu.sender().server_name()),
 				))
 				.await
 				{
@@ -772,7 +779,7 @@ pub async fn process_timeline_upgrade(
 			room_id,
 			event_id.as_ref(),
 			incoming_pdu.prev_events(),
-			Some(incoming_pdu.sender().server_name()),
+			Some(&incoming_pdu.sender().server_name()),
 		))
 		.await?
 	};

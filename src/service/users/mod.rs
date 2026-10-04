@@ -20,12 +20,10 @@ use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
-use serde_json::json;
-#[cfg(feature = "ldap")]
-use slipstream::OwnedRoomId;
 use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
-	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
+	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedRoomId, OwnedUserId, RoomId,
+	UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
 	codec::{Deserialize, Serialize},
 	encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
@@ -34,6 +32,7 @@ use slipstream::{
 		ignored_user_list::IgnoredUserListEvent,
 		invite_permission_config::{FilterLevel, InvitePermissionConfigEventContent},
 	},
+	json,
 	json::Value,
 	serde::Raw,
 	uint,
@@ -396,7 +395,7 @@ impl Service {
 	pub async fn deactivate_account(&self, user_id: &UserId) -> Result<()> {
 		// Remove all associated devices
 		self.all_device_ids(user_id)
-			.for_each(|device_id| self.remove_device(user_id, device_id))
+			.for_each(|device_id| async move { self.remove_device(user_id, &device_id).await })
 			.await;
 
 		// Set the password to "" to indicate a deactivated account. Hashes will never
@@ -536,9 +535,7 @@ impl Service {
 	/// Returns an iterator over all users on this homeserver (offered for
 	/// compatibility)
 	#[allow(clippy::iter_without_into_iter, clippy::iter_not_returning_iterator)]
-	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ {
-		self.stream().map(ToOwned::to_owned)
-	}
+	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ { self.stream() }
 
 	/// Returns an iterator over all users on this homeserver.
 	pub fn stream(&self) -> impl Stream<Item = OwnedUserId> + Send {
@@ -731,7 +728,7 @@ impl Service {
 	pub fn all_device_ids<'a>(
 		&'a self,
 		user_id: &'a UserId,
-	) -> impl Stream<Item = &'a DeviceId> + Send + 'a {
+	) -> impl Stream<Item = OwnedDeviceId> + Send + 'a {
 		let prefix = (user_id, Interfix);
 		self.db
 			.userdeviceid_metadata
@@ -742,7 +739,7 @@ impl Service {
 
 	/// Load the set of access tokens currently active for a device. The value
 	/// is stored as a JSON array of token strings (`Json(&tokens)` in
-	/// `set_token`), so it is read back through `serde_json::Value` rather than
+	/// `set_token`), so it is read back through `Value` rather than
 	/// the native binary format, which cannot represent a variable-length
 	/// sequence of strings.
 	async fn active_tokens(&self, user_id: &UserId, device_id: &DeviceId) -> Vec<String> {
@@ -1406,7 +1403,7 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
 		type KeyVal<'a> = ((OwnedUserId, u64, OwnedUserId), Ignore);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
@@ -1419,7 +1416,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, count, _), _): &KeyVal<'_>| {
-				user_id == *user_id_ && *count <= to
+				user_id == user_id_ && *count <= to
 			})
 			.map(move |((_, count, left_user), _): KeyVal<'_>| (left_user, count))
 	}
@@ -1430,7 +1427,7 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = &'a UserId> + Send + 'a {
+	) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 		self.user_keys_changed(user_id, from, to)
 			.map(|(user_id, ..)| user_id)
 	}
@@ -1441,7 +1438,7 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
 		type KeyVal<'a> = ((OwnedUserId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
@@ -1454,7 +1451,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, count), _): &KeyVal<'_>| {
-				user_id == *user_id_ && *count <= to
+				user_id == user_id_ && *count <= to
 			})
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
@@ -1465,7 +1462,7 @@ impl Service {
 		room_id: &'a RoomId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
 		type KeyVal<'a> = ((OwnedRoomId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
@@ -1478,7 +1475,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((room_id_, count), _): &KeyVal<'_>| {
-				room_id == *room_id_ && *count <= to
+				room_id == room_id_ && *count <= to
 			})
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
@@ -1499,7 +1496,7 @@ impl Service {
 			let mut server_rooms = self
 				.services
 				.state_cache
-				.server_rooms(user_id.server_name())
+				.server_rooms(&user_id.server_name())
 				.collect::<Vec<_>>()
 				.await;
 
@@ -1581,11 +1578,10 @@ impl Service {
 	where
 		F: Fn(&UserId) -> bool + Send + Sync,
 	{
-		let key: serde_json::Value = self.db.keyid_key.get(key_id).await.deserialized()?;
+		let key: Value = self.db.keyid_key.get(key_id).await.deserialized()?;
 
 		let cleaned = clean_signatures(key, sender_user, user_id, allowed_signatures)?;
-		let raw_value = serde_json::value::to_raw_value(&cleaned)?;
-		Ok(Raw::from_json(raw_value))
+		Ok(Raw::from_value(&cleaned))
 	}
 
 	pub async fn get_master_key<F>(
@@ -1633,7 +1629,7 @@ impl Service {
 		target_user_id: &UserId,
 		target_device_id: &DeviceId,
 		event_type: &str,
-		content: serde_json::Value,
+		content: Value,
 	) {
 		if event_type.starts_with("m.key.verification.") {
 			let tx_id = content
@@ -1658,17 +1654,11 @@ impl Service {
 		let key = (target_user_id, target_device_id, count);
 		self.db.todeviceid_events.put(
 			key,
-			Json(
-				slipstream::json::Value::parse(
-					&json!({
-						"type": event_type,
-						"sender": sender,
-						"content": content,
-					})
-					.to_string(),
-				)
-				.map_err(|e| err!(Database("failed to encode to-device event: {e}")))?,
-			),
+			Json(json!({
+				"type": event_type,
+				"sender": sender,
+				"content": content,
+			})),
 		);
 	}
 
@@ -1688,9 +1678,7 @@ impl Service {
 			.stream_from(&from)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
-				user_id == *user_id_
-					&& device_id == *device_id_
-					&& to.is_none_or(|to| *count <= to)
+				user_id == user_id_ && device_id == device_id_ && to.is_none_or(|to| *count <= to)
 			})
 			.map(|((_, _, count), event)| (count, event))
 	}
@@ -1721,9 +1709,9 @@ impl Service {
 			.stream_from(&from)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
-				user_id == *user_id_ && device_id == *device_id_ && *count <= until
+				user_id == user_id_ && device_id == device_id_ && *count <= until
 			})
-			.ready_for_each(|(key, _): (Key<'_>, serde_json::Value)| {
+			.ready_for_each(|(key, _): (Key<'_>, Value)| {
 				self.db.todeviceid_events.del(key);
 			})
 			.await;
@@ -1938,7 +1926,7 @@ impl Service {
 			.useridprofilekey_value
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.ready_filter_map(|((_, key), value): (KeyVal<'_>, _)| {
+			.ready_filter_map(|((_, key), value): KeyVal<'_>| {
 				let value =
 					slipstream::json::Value::parse(utils::string::str_from_bytes(value).ok()?)
 						.ok()?;
@@ -1951,13 +1939,10 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		profile_key: &str,
-		profile_key_value: Option<serde_json::Value>,
+		profile_key_value: Option<Value>,
 	) {
 		// Skip no-op writes so unchanged values don't append update records or
 		// advance the global count.
-		let profile_key_value: Option<Value> = profile_key_value.map(|v| {
-			slipstream::json::Value::parse(&serde_json::to_string(&v).unwrap()).unwrap()
-		});
 		if self.profile_key(user_id, profile_key).await.ok() == profile_key_value {
 			return;
 		}
@@ -2228,7 +2213,7 @@ pub fn parse_user_signing_key(user_signing_key: &Raw<CrossSigningKey>) -> Result
 	Ok(user_signing_key_id)
 }
 
-pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
+pub fn merge_signatures(new: &mut Value, old: &Value) {
 	// Normalize null/missing signatures in the new key to an empty object
 	// so old signatures can be merged in. Some servers (e.g. matrix.org)
 	// send signatures: `null` rather than `{}` which would cause
@@ -2281,11 +2266,11 @@ pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
 
 /// Ensure that a user only sees signatures from themselves and the target user
 fn clean_signatures<F>(
-	mut cross_signing_key: serde_json::Value,
+	mut cross_signing_key: Value,
 	sender_user: Option<&UserId>,
 	user_id: &UserId,
 	allowed_signatures: &F,
-) -> Result<serde_json::Value>
+) -> Result<Value>
 where
 	F: Fn(&UserId) -> bool + Send + Sync,
 {
@@ -2293,12 +2278,7 @@ where
 		.get_mut("signatures")
 		.and_then(|v| v.as_object_mut())
 	{
-		// Don't allocate for the full size of the current signatures, but require
-		// at most one resize if nothing is dropped
-		let new_capacity = signatures.len() / 2;
-		for (user, signature) in
-			mem::replace(signatures, serde_json::Map::with_capacity(new_capacity))
-		{
+		for (user, signature) in mem::replace(signatures, slipstream::json::Object::new()) {
 			let sid = <UserId>::try_from(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
 			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {
@@ -2325,7 +2305,7 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-	use serde_json::json;
+	use slipstream::json;
 
 	use super::merge_signatures;
 

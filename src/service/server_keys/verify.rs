@@ -1,7 +1,8 @@
 use conduwuit::{
-	Err, Result, debug_warn, implement, matrix::event::gen_event_id_canonical_json, trace,
+	Err, Result, debug_warn, implement,
+	matrix::{event::gen_event_id_canonical_json, pdu::RawJson as RawJsonValue},
+	trace,
 };
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedServerName, RoomVersionId,
 	ServerName, UserId, signatures::Verified,
@@ -226,14 +227,14 @@ pub async fn verify_event_at(
 		let signatures = event
 			.get("signatures")
 			.and_then(|v| v.as_object())
-			.map(|v| serde_json::to_string(v).unwrap_or_default())
+			.map(|v| slipstream::codec::to_string(v))
 			.unwrap_or_default();
 		// Canonical JSON actually fed into the signature check (post
 		// isolate_origin_signatures, pre our own event_id re-insertion) --
 		// needed to diff against what the origin actually signed when
 		// tracking down canonicalization-mismatch verification failures.
 		// Remove once that's resolved; this is deliberately temporary.
-		let canonical_json = serde_json::to_string(&event).unwrap_or_default();
+		let canonical_json = slipstream::codec::to_string(&event);
 		conduwuit::warn!(
 			"Signature verification failed for event {event_id} in {context}. Error: {e:?}. \
 			 Available keys: {keys:?}. Event signatures: {signatures}. Canonical JSON verified: \
@@ -266,12 +267,12 @@ pub fn concurrent_validate_and_add_events<'a, I>(
 	room_version: &'a RoomVersionId,
 ) -> impl Stream<Item = Result<(OwnedEventId, CanonicalJsonObject)>> + Send + 'a
 where
-	I: IntoIterator<Item = Box<RawJsonValue>> + Send + 'a,
+	I: IntoIterator<Item = RawJsonValue> + Send + 'a,
 	<I as IntoIterator>::IntoIter: Send,
 {
 	let server_keys_outer = self.clone();
 	futures::stream::iter(events)
-		.map(move |pdu: Box<RawJsonValue>| {
+		.map(move |pdu: RawJsonValue| {
 			let server_keys = server_keys_outer.clone();
 			let room_version_id = room_version.clone();
 			let runtime = server_keys.services.server.runtime().clone();

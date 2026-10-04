@@ -226,7 +226,7 @@ pub async fn build_and_append_pdu(
 	let num_sent = self
 		.services
 		.sending
-		.send_pdu_servers(servers.iter().map(AsRef::as_ref).stream(), &pdu_id)
+		.send_pdu_servers(servers.iter().cloned().stream(), &pdu_id)
 		.await?;
 
 	if num_sent > 0 {

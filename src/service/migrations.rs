@@ -1625,9 +1625,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 		.stream()
 		.try_fold(
 			(0_usize, 0_usize),
-			async |(mut total, mut fixed),
-			       ((user, key), value): KeyVal<'_>|
-			       -> Result<(usize, usize)> {
+			async |(mut total, mut fixed), ((user, key), value)| -> Result<(usize, usize)> {
 				match from_slice::<Value>(value) {
 					// corrupted timezone field
 					| Err(_) if key == "us.cloke.msc4175.tz" => {
@@ -1678,7 +1676,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 		.stream()
 		.try_fold(
 			0_usize,
-			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
+			async |mut total: usize, ((user_id, room_id), state)| -> Result<usize> {
 				if state.deserialize().is_err() {
 					// The cached leave event is corrupted. Try to reconstruct it from
 					// the room's current membership state when a HAMT root is already
@@ -1754,8 +1752,8 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 	// for each user invited to a room
 	let fixed =  userroomid_invitestate.stream()
 		// if they're a local user on this homeserver
-		.try_filter(|((user_id, _), _): &KeyVal| ready(services.globals.user_is_local(user_id)))
-		.and_then(async |((user_id, room_id), stripped_state): KeyVal| Ok::<_,
+		.try_filter(|((user_id, _), _)| ready(services.globals.user_is_local(user_id)))
+		.and_then(async |((user_id, room_id), stripped_state)| Ok::<_,
 			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize
 		().unwrap_or_else(|e| {
 			trace!("Failed to deserialize: {:?}", stripped_state.json());

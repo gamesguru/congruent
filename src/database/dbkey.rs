@@ -187,19 +187,19 @@ impl<'a, T: Deserialize<'a>> DbDe<'a> for Vec<T> {
 	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
 }
 
-impl<T: Serialize + Ord> DbKey for BTreeSet<T> {
+impl<T: codec::Serialize + Ord> DbKey for BTreeSet<T> {
 	type Ser<'a>
-		= &'a Self
+		= RawBytes
 	where
 		Self: 'a;
 
-	fn db_ser(&self) -> Self::Ser<'_> { self }
+	fn db_ser(&self) -> Self::Ser<'_> { RawBytes(codec::to_string(self).into_bytes()) }
 }
 
-impl<'a, T: Deserialize<'a> + Ord> DbDe<'a> for BTreeSet<T> {
-	type De = Self;
+impl<'a, T: codec::Deserialize + Ord> DbDe<'a> for BTreeSet<T> {
+	type De = RawBytesDe<'a>;
 
-	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
+	fn from_de(de: Self::De) -> Result<Self> { from_json_slice(de.0) }
 }
 
 impl<T: Serialize, const N: usize> DbKey for conduwuit::arrayvec::ArrayVec<T, N> {

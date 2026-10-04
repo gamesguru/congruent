@@ -198,7 +198,6 @@ impl Service {
 		self.services
 			.state_cache
 			.server_rooms(ours)
-			.map(ToOwned::to_owned) // Copy RoomId before concurrent loop (UAF )
 			.for_each_concurrent(concurrency, |room_id| async move {
 				// Step 1: Forward-fill missing events
 				if let Err(e) = self.check_room(&room_id, stale_threshold_ms).boxed().await {
@@ -228,9 +227,7 @@ impl Service {
 		stale_threshold_ms: u64,
 	) -> Result<()> {
 		let room_str = room_id.as_str();
-		if !room_str.bytes().all(|b| b.is_ascii_graphic())
-			|| <&slipstream::RoomId>::try_from(room_str).is_err()
-		{
+		if !room_str.bytes().all(|b| b.is_ascii_graphic()) || !room_str.starts_with('!') {
 			info!(
 				target: "forwardfill",
 				"Skipping room with invalid/corrupt ID ({} bytes): {:?}",
@@ -275,7 +272,7 @@ impl Service {
 			.services
 			.state_cache
 			.room_servers(room_id)
-			.ready_filter(|&s| {
+			.ready_filter(|s| {
 				!self.services.globals.server_is_ours(s)
 					&& !self
 						.services
@@ -301,7 +298,7 @@ impl Service {
 		if candidate_servers.len() < 5 {
 			if let Some(hs) = room_id
 				.server_name()
-				.filter(|s| !self.services.globals.server_is_ours(s))
+				.filter(|s| !self.services.globals.server_is_ours(&s))
 			{
 				let hs_owned = hs.to_owned();
 				if all_remote.contains(&hs_owned) && !candidate_servers.contains(&hs_owned) {
@@ -381,7 +378,7 @@ impl Service {
 				},
 			};
 
-			let event_stub = match serde_json::from_str::<slipstream::CanonicalJsonObject>(
+			let event_stub = match slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(
 				probe_response.get(),
 			) {
 				| Ok(s) => s,
@@ -399,13 +396,7 @@ impl Service {
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
-						.filter_map(|v| {
-							v.as_str().and_then(|s| {
-								<&slipstream::EventId>::try_from(s)
-									.ok()
-									.map(ToOwned::to_owned)
-							})
-						})
+						.filter_map(|v| v.as_str().map(slipstream::OwnedEventId::from))
 						.collect()
 				})
 				.unwrap_or_default();

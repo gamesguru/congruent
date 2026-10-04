@@ -50,7 +50,7 @@ where
 
 	let (state_pdu_ids, fetched_unknown_events): (
 		Vec<OwnedEventId>,
-		Vec<(OwnedEventId, Box<serde_json::value::RawValue>)>,
+		Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)>,
 	) = 'found: {
 		while let Some(server) = pool.next_scored(weights) {
 			let req = self.services.sending.send_federation_request(
@@ -89,8 +89,9 @@ where
 				.chain(state_ids_res.pdu_ids.iter());
 
 			for id in all_ids {
-				if !self.services.timeline.pdu_exists(id).await {
-					missing_ids.push(id.clone());
+				let id = OwnedEventId::from(id.as_str());
+				if !self.services.timeline.pdu_exists(&id).await {
+					missing_ids.push(id);
 				} else {
 					known_count = known_count.saturating_add(1);
 				}
@@ -111,7 +112,7 @@ where
 				let server = server.clone();
 				async move {
 					let req = slipstream::api::federation::event::get_event::v1::Request::new(
-						(*eid).to_owned(),
+						eid.clone(),
 						None,
 					);
 					match self
@@ -120,17 +121,15 @@ where
 						.send_federation_request(&server, req)
 						.await
 					{
-						| Ok(res) => Ok::<_, (OwnedEventId, conduwuit::Error)>((
-							(*eid).to_owned(),
-							res.pdu,
-						)),
-						| Err(e) => Err(((*eid).to_owned(), e)),
+						| Ok(res) =>
+							Ok::<_, (OwnedEventId, conduwuit::Error)>((eid.clone(), res.pdu)),
+						| Err(e) => Err((eid.clone(), e)),
 					}
 				}
 			});
 
 			let mut fetch_stream = futures::stream::iter(fetch_futures).buffer_unordered(20);
-			let mut fetched_events: Vec<(OwnedEventId, Box<serde_json::value::RawValue>)> =
+			let mut fetched_events: Vec<(OwnedEventId, conduwuit::matrix::pdu::RawJson)> =
 				Vec::new();
 			let mut failed_ids: Vec<OwnedEventId> = Vec::new();
 

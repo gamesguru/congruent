@@ -10,6 +10,7 @@ use bytes::BufMut;
 use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
+	matrix::pdu::RawJson as RawJsonValue,
 	result::LogErr,
 	trace,
 	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
@@ -21,7 +22,6 @@ use futures::{
 	join, pin_mut,
 	stream::FuturesUnordered,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
 	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
@@ -86,19 +86,21 @@ impl slipstream::api::OutgoingRequest for Msc4500SendTransactionRequest {
 		)?;
 		let (mut parts, body) = req.into_parts();
 
-		let mut json: serde_json::Value =
-			serde_json::from_slice(&body).map_err(slipstream::api::error::IntoHttpError::from)?;
+		let body_text = std::str::from_utf8(&body)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
+		let mut json = slipstream::json::Value::parse(body_text)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
 
 		if let Some(obj) = json.as_object_mut() {
 			if let Some(state_hashes) = self.state_hashes {
-				let state_hashes_val = serde_json::to_value(state_hashes)
-					.map_err(slipstream::api::error::IntoHttpError::from)?;
-				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
+				obj.insert(
+					"tk.nutra.msc4500.state_hashes".to_owned(),
+					slipstream::codec::Serialize::to_json(&state_hashes),
+				);
 			}
 		}
 
-		let new_body_bytes =
-			serde_json::to_vec(&json).map_err(slipstream::api::error::IntoHttpError::from)?;
+		let new_body_bytes = slipstream::codec::to_string(&json).into_bytes();
 
 		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
 			*cl = http::HeaderValue::from(new_body_bytes.len());
@@ -849,7 +851,7 @@ impl Service {
 			let keys_changed = self
 				.services
 				.users
-				.room_keys_changed(room_id, Some(since.0), None)
+				.room_keys_changed(&room_id, Some(since.0), None)
 				.ready_filter(|(user_id, _)| self.services.globals.user_is_local(user_id));
 
 			pin_mut!(keys_changed);
@@ -866,13 +868,8 @@ impl Service {
 		for users in all_changes.values() {
 			for user_id in users {
 				if !user_devices.contains_key(user_id) {
-					let devices: Vec<OwnedDeviceId> = self
-						.services
-						.users
-						.all_device_ids(user_id)
-						.map(ToOwned::to_owned)
-						.collect()
-						.await;
+					let devices: Vec<OwnedDeviceId> =
+						self.services.users.all_device_ids(user_id).collect().await;
 					user_devices.insert(user_id.clone(), devices);
 				}
 			}
@@ -963,9 +960,9 @@ impl Service {
 				break;
 			}
 			if self.services.globals.user_is_local(&user_id) {
-				let Ok(event) = slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(
-					read_receipt.json().get(),
-				) else {
+				let Ok(event) =
+					slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.get())
+				else {
 					continue;
 				};
 				let AnySyncEphemeralRoomEvent::Receipt(receipt) = event else {
@@ -977,12 +974,7 @@ impl Service {
 				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
 					continue;
 				};
-				collected.push((
-					user_id,
-					count,
-					read_receipt.json().get().to_owned(),
-					event_count,
-				));
+				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
 			}
 		}
 
@@ -1323,7 +1315,7 @@ impl Service {
 		)
 		.await;
 
-		let mut outbound_pdus: Vec<Box<RawJsonValue>> = Vec::with_capacity(source_pdus.len());
+		let mut outbound_pdus: Vec<RawJsonValue> = Vec::with_capacity(source_pdus.len());
 		for (_, pdu) in source_pdus {
 			outbound_pdus.push(self.convert_to_outgoing_federation_event(pdu).await);
 		}
@@ -1463,7 +1455,7 @@ impl Service {
 	pub async fn convert_to_outgoing_federation_event(
 		&self,
 		mut pdu_json: CanonicalJsonObject,
-	) -> Box<RawJsonValue> {
+	) -> RawJsonValue {
 		if let Some(unsigned) = pdu_json
 			.get_mut("unsigned")
 			.and_then(|val| val.as_object_mut())
@@ -1476,7 +1468,7 @@ impl Service {
 			.get("room_id")
 			.and_then(|val| RoomId::parse(val.as_str()?).ok())
 		{
-			match self.services.state.get_room_version(room_id).await {
+			match self.services.state.get_room_version(&room_id).await {
 				| Ok(room_version_id) => match room_version_id {
 					| RoomVersionId::V1 | RoomVersionId::V2 => {},
 					| _ => _ = pdu_json.remove("event_id"),
@@ -1494,7 +1486,7 @@ impl Service {
 		// valid serde_json::Value"), )
 		// .expect("Raw::from_value always works")
 
-		to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
+		RawJsonValue::from_value(&pdu_json)
 	}
 }
 
@@ -1537,7 +1529,7 @@ pub(crate) fn build_device_list_edus(
 					});
 
 					let mut buf = EduBuf::new();
-					buf.put_slice(slipstream::codec::to_string(&edu).as_bytes());
+					buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 					events.push(buf);
 				}
@@ -1570,7 +1562,7 @@ pub(crate) fn build_device_list_edus(
 				});
 
 				let mut buf = EduBuf::new();
-				buf.put_slice(slipstream::codec::to_string(&edu).as_bytes());
+				buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 				events.push(buf);
 			}

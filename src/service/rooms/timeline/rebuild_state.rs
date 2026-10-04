@@ -177,7 +177,7 @@ impl super::Service {
 			self.services.pdu_metadata.unmark_event_rejected(&eid);
 
 			if *pdu.kind() == TimelineEventType::RoomCreate {
-				if let Ok(create_content) = serde_json::from_str::<
+				if let Ok(create_content) = slipstream::codec::from_str::<
 					slipstream::events::room::create::RoomCreateEventContent,
 				>(pdu.content().get())
 				{

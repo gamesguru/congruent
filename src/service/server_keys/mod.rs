@@ -772,7 +772,17 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		return true;
 	}
 
-	type KeysMap<'a> = BTreeMap<&'a ServerSigningKeyId, &'a RawJsonValue>;
+	// Whether `keys` lists `key_id` under `verify_keys` or `old_verify_keys`.
+	let lists_key = |keys: &Raw<ServerSigningKeys>| -> bool {
+		let Ok(keys) = slipstream::json::Value::parse(keys.get()) else {
+			return false;
+		};
+		["verify_keys", "old_verify_keys"].into_iter().any(|field| {
+			keys.get(field)
+				.and_then(|map| map.get(key_id.as_str()))
+				.is_some()
+		})
+	};
 
 	let historical_key = historical_db_key(origin);
 
@@ -783,16 +793,8 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		.await
 		.deserialized::<Raw<ServerSigningKeys>>()
 	{
-		if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys") {
-			if verify_keys.contains_key(key_id) {
-				return true;
-			}
-		}
-
-		if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys") {
-			if old_verify_keys.contains_key(key_id) {
-				return true;
-			}
+		if lists_key(&keys) {
+			return true;
 		}
 	}
 
@@ -803,16 +805,8 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		.await
 		.deserialized::<Raw<ServerSigningKeys>>()
 	{
-		if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys") {
-			if verify_keys.contains_key(key_id) {
-				return true;
-			}
-		}
-
-		if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys") {
-			if old_verify_keys.contains_key(key_id) {
-				return true;
-			}
+		if lists_key(&keys) {
+			return true;
 		}
 	}
 

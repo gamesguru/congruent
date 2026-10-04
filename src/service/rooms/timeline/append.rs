@@ -390,9 +390,8 @@ where
 		.services
 		.state_cache
 		.active_local_users_in_room(room_id)
-		.map(ToOwned::to_owned)
 		// Don't notify the sender of their own events, and dont send from ignored users
-		.ready_filter(|user| *user != pdu.sender())
+		.ready_filter(|user| user != pdu.sender())
 		.filter_map(|recipient_user| async move {
 			(!self
 				.services
