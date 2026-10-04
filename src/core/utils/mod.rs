@@ -138,11 +138,27 @@ macro_rules! is_zero {
 #[macro_export]
 macro_rules! is_equal_to {
 	($val:ident) => {
-		|x| $val == *x
+		|x| $val == x
 	};
 
 	($val:expr_2021) => {
+		|x| $val == x
+	};
+
+	($val:expr_2021,ref) => {
+		|x| $val == x
+	};
+
+	($val:expr_2021,deref) => {
 		|x| $val == *x
+	};
+
+	($val:expr_2021,deref_both) => {
+		|x| *$val == *x
+	};
+
+	($val:expr_2021,cow) => {
+		|x| $val.as_ref() == *x
 	};
 }
 

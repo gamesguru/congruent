@@ -8,10 +8,7 @@ use std::{
 };
 
 use futures::future::ready;
-use serde_json::{
-	json,
-	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
-};
+use serde_json::{json, value::RawValue as RawJsonValue};
 use slipstream::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
 	RoomVersionId, UInt, UserId, event_id,
@@ -22,7 +19,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-	room_id, user_id,
+	int, room_id, uint, user_id,
 };
 
 use super::auth_types_for_event;
@@ -32,6 +29,12 @@ use crate::{
 };
 
 static SERVER_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
+
+fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(
+	value: &T,
+) -> Box<slipstream::json::Value> {
+	slipstream::json!(slipstream::codec::to_string(value)).into()
+}
 
 pub(crate) async fn do_check(
 	events: &[Pdu],
@@ -276,7 +279,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&json!({ "creator": alice() })),
 			&[],
 			&[],
 		);
@@ -300,7 +303,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&[cre.clone(), alice_mem.event_id().to_owned()],
 			&[alice_mem.event_id().to_owned()],
 		);
@@ -367,9 +370,9 @@ pub(crate) fn event_id(id: &str) -> OwnedEventId {
 }
 
 macro_rules! static_id {
-	($name:ident, $ty:ty, $make:expr) => {
+	($name:ident, $ty:ty, $($make:tt)+) => {
 		pub(crate) fn $name() -> &'static $ty {
-			static ID: LazyLock<$ty> = LazyLock::new(|| $make);
+			static ID: LazyLock<$ty> = LazyLock::new(|| $($make)+);
 			&ID
 		}
 	};
@@ -435,7 +438,7 @@ pub(crate) fn to_pdu_event<S>(
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: Box<slipstream::json::Value>,
 	auth_events: &[S],
 	prev_events: &[S],
 ) -> Pdu

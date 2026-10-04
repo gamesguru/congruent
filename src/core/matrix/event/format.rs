@@ -1,5 +1,6 @@
 use serde_json::json;
 use slipstream::{
+	OwnedRoomId,
 	events::{
 		AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
@@ -166,7 +167,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 		let json = json!({
 			"content": event.content(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id_or_hash().as_str(),
+			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
 			"type": event.kind().to_string(),

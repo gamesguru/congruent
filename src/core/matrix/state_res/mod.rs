@@ -1090,7 +1090,7 @@ where
 				return parsed_pl.users_default;
 			}
 		} else if let Some(creator_ev) = creator_event {
-			let mut is_creator = creator_ev.sender() == ev.sender();
+			let mut is_creator = creator_ev.sender().as_str() == ev.sender().as_str();
 			if let Ok(create_content) = slipstream::codec::from_str::<
 				slipstream::events::room::create::RoomCreateEventContent,
 			>(creator_ev.content().get())

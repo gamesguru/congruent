@@ -52,12 +52,16 @@ fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 }
 
 fn matches_sender<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	if filter.not_senders.iter().any(is_equal_to!(event.sender())) {
+	if filter
+		.not_senders
+		.iter()
+		.any(is_equal_to!(event.sender().as_str()))
+	{
 		return false;
 	}
 
 	if let Some(senders) = filter.senders.as_ref() {
-		if !senders.iter().any(is_equal_to!(event.sender())) {
+		if !senders.iter().any(is_equal_to!(event.sender().as_str())) {
 			return false;
 		}
 	}
@@ -68,12 +72,12 @@ fn matches_sender<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 fn matches_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	let kind = event.kind().to_cow_str();
 
-	if filter.not_types.iter().any(is_equal_to!(&kind)) {
+	if filter.not_types.iter().any(is_equal_to!(kind, cow)) {
 		return false;
 	}
 
 	if let Some(types) = filter.types.as_ref() {
-		if !types.iter().any(is_equal_to!(&kind)) {
+		if !types.iter().any(is_equal_to!(kind, cow)) {
 			return false;
 		}
 	}

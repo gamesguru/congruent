@@ -12,10 +12,7 @@ use std::{
 
 use futures::{future, future::ready};
 use maplit::{btreemap, hashmap, hashset};
-use serde_json::{
-	json,
-	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
-};
+use serde_json::{json, value::RawValue as RawJsonValue};
 use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, Signatures, UserId,
 	events::{
@@ -27,6 +24,10 @@ use slipstream::{
 	},
 	int, room_id, uint, user_id,
 };
+
+fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(value: &T) -> Box<RawJsonValue> {
+	RawJsonValue::from_string(slipstream::codec::to_string(value)).unwrap()
+}
 
 use crate::{
 	matrix::{Event, Pdu, pdu::EventHash},
@@ -356,9 +357,9 @@ fn event_id(id: &str) -> OwnedEventId {
 }
 
 macro_rules! static_id {
-	($name:ident, $ty:ty, $make:expr) => {
+	($name:ident, $ty:ty, $($make:tt)+) => {
 		fn $name() -> &'static $ty {
-			static ID: LazyLock<$ty> = LazyLock::new(|| $make);
+			static ID: LazyLock<$ty> = LazyLock::new(|| $($make)+);
 			&ID
 		}
 	};
