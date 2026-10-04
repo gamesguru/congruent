@@ -410,9 +410,10 @@ where
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {
-			let target_user_id = UserId::parse(state_key)?;
+			let target_user_id = UserId::parse(state_key)
+				.map_err(|e| err!(Request(InvalidParam("Invalid state key: {e}"))))?;
 
-			if self.services.users.is_active_local(target_user_id).await {
+			if self.services.users.is_active_local(&target_user_id).await {
 				push_target.insert(target_user_id.to_owned());
 			}
 		}
@@ -468,7 +469,7 @@ where
 	}
 
 	self.db
-		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_deref());
+		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_ref());
 
 	if *pdu.kind() == TimelineEventType::RoomTombstone {
 		if let Ok(tombstone) = pdu.get_content::<RoomTombstoneEventContent>() {

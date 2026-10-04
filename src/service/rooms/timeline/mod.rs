@@ -38,11 +38,94 @@ use conduwuit_core::{
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
-use serde::Deserialize;
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+	codec::{DeError, Deserialize as CodecDeserialize},
+	endpoint::body_field,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
+	json::Value,
 };
+
+// Update Relationships
+struct ExtractRelatesTo {
+	#[serde(rename = "m.relates_to")]
+	relates_to: Relation,
+}
+
+#[derive(Clone, Debug)]
+struct ExtractEventId {
+	event_id: OwnedEventId,
+}
+#[derive(Clone, Debug)]
+struct ExtractRelatesToEventId {
+	#[serde(rename = "m.relates_to")]
+	relates_to: ExtractEventId,
+}
+
+struct ExtractBody {
+	body: Option<String>,
+}
+
+/// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
+/// pointing at this event's parent. Distinct from `m.relates_to` above.
+#[derive(Debug)]
+pub(crate) struct Msc2836Relationship {
+	pub(crate) rel_type: String,
+	pub(crate) event_id: OwnedEventId,
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtractMsc2836Relationship {
+	#[serde(rename = "m.relationship")]
+	pub(crate) relationship: Option<Msc2836Relationship>,
+}
+
+impl CodecDeserialize for ExtractRelatesTo {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractRelatesToEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractBody {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self { body: body_field(Some(value), "body")? })
+	}
+}
+
+impl CodecDeserialize for Msc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			rel_type: body_field(Some(value), "rel_type")?,
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractMsc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relationship: body_field(Some(value), "m.relationship")?,
+		})
+	}
+}
 
 use self::data::Data;
 pub use self::{
