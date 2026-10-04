@@ -9,21 +9,29 @@ use http::{
 	header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue},
 };
 use slipstream::{
-	Mxc, OwnedServerName, OwnedUserId, ServerName, UserId,
-	api::client::error::{Error as SlipstreamError, ErrorKind},
+	Mxc, OwnedServerName, ServerName, UserId,
+	api::{
+		client::{
+			authenticated_media::{
+				get_content::v1 as auth_get_content,
+				get_content_thumbnail::v1 as auth_get_thumbnail,
+			},
+			error::{Error as SlipstreamError, ErrorKind},
+			media::{
+				get_content::v3 as client_get_content,
+				get_content_thumbnail::v3 as client_get_thumbnail,
+			},
+		},
+		federation::authenticated_media::{
+			Content, FileOrLocation, get_content::v1 as fed_get_content,
+			get_content_thumbnail::v1 as fed_get_thumbnail,
+		},
+	},
 	endpoint::OutgoingRequest,
 	http_headers::ContentDisposition,
 };
 
 use super::{Dim, FileMeta};
-
-/// Temporary stub for Slipstream's missing Content type
-#[derive(Debug)]
-struct Content {
-	file: Vec<u8>,
-	content_type: Option<String>,
-	content_disposition: Option<ContentDisposition>,
-}
 
 #[implement(super::Service)]
 pub async fn fetch_remote_thumbnail(
@@ -119,10 +127,23 @@ async fn fetch_thumbnail_authenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	// TODO: authenticated_media endpoint not yet available in Slipstream
-	// Fall back to unauthenticated immediately
-	self.fetch_thumbnail_unauthenticated(mxc, user, server, timeout_ms, dim)
-		.await
+	let request = fed_get_thumbnail::Request {
+		media_id: mxc.media_id.into(),
+		method: dim.method.clone().into(),
+		width: dim.width.into(),
+		height: dim.height.into(),
+		animated: true.into(),
+		timeout_ms,
+	};
+
+	let response: fed_get_thumbnail::Response =
+		self.federation_request(mxc, server, request).await?;
+
+	match response.content {
+		| FileOrLocation::File(content) =>
+			self.handle_thumbnail_file(mxc, user, dim, content).await,
+		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
+	}
 }
 
 #[implement(super::Service)]
@@ -133,10 +154,18 @@ async fn fetch_content_authenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	// TODO: authenticated_media endpoint not yet available in Slipstream
-	// Fall back to unauthenticated immediately
-	self.fetch_content_unauthenticated(mxc, user, server, timeout_ms)
-		.await
+	let request = fed_get_content::Request {
+		media_id: mxc.media_id.into(),
+		timeout_ms,
+	};
+
+	let response: fed_get_content::Response =
+		self.federation_request(mxc, server, request).await?;
+
+	match response.content {
+		| FileOrLocation::File(content) => self.handle_content_file(mxc, user, content).await,
+		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
+	}
 }
 
 #[allow(deprecated)]
@@ -149,9 +178,27 @@ async fn fetch_thumbnail_unauthenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	// TODO: client::media endpoint not yet available in Slipstream
-	// Return NotFound for now
-	Err(Error::Request(ErrorKind::NotFound, "media endpoint not implemented".into()))
+	let request = client_get_thumbnail::Request {
+		allow_remote: true,
+		allow_redirect: true,
+		animated: true.into(),
+		method: dim.method.clone().into(),
+		width: dim.width.into(),
+		height: dim.height.into(),
+		server_name: mxc.server_name.into(),
+		media_id: mxc.media_id.into(),
+		timeout_ms,
+	};
+
+	let response: client_get_thumbnail::Response =
+		self.federation_request(mxc, server, request).await?;
+
+	self.handle_thumbnail_file(mxc, user, dim, Content {
+		file: response.file,
+		content_type: response.content_type.map(Into::into),
+		content_disposition: response.content_disposition,
+	})
+	.await
 }
 
 #[allow(deprecated)]
@@ -163,9 +210,23 @@ async fn fetch_content_unauthenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	// TODO: client::media endpoint not yet available in Slipstream
-	// Return NotFound for now
-	Err(Error::Request(ErrorKind::NotFound, "media endpoint not implemented".into()))
+	let request = client_get_content::Request {
+		allow_remote: true,
+		allow_redirect: true,
+		server_name: mxc.server_name.into(),
+		media_id: mxc.media_id.into(),
+		timeout_ms,
+	};
+
+	let response: client_get_content::Response =
+		self.federation_request(mxc, server, request).await?;
+
+	self.handle_content_file(mxc, user, Content {
+		file: response.file,
+		content_type: response.content_type.map(Into::into),
+		content_disposition: response.content_disposition,
+	})
+	.await
 }
 
 #[implement(super::Service)]
@@ -260,9 +321,8 @@ async fn location_request(&self, location: &str) -> Result<FileMeta> {
 	let content_disposition = response
 		.headers()
 		.get(CONTENT_DISPOSITION)
-		.map(HeaderValue::as_bytes)
-		.map(TryFrom::try_from)
-		.and_then(Result::ok);
+		.and_then(|h| h.to_str().ok())
+		.and_then(|s| parse_content_disposition(s).ok());
 
 	response
 		.limit_read(
@@ -322,4 +382,26 @@ pub fn check_legacy_freeze(&self) -> Result<()> {
 	(!self.services.server.config.freeze_legacy_media)
 		.then_some(())
 		.ok_or(err!(Request(NotFound("Remote media is frozen."))))
+}
+
+/// Parse a Content-Disposition header into slipstream's ContentDisposition
+fn parse_content_disposition(s: &str) -> Result<ContentDisposition> {
+	let mut parts = s.split(';');
+	let disposition = parts.next().unwrap_or("").trim();
+
+	let disposition_type = match disposition {
+		| "attachment" => ContentDispositionType::Attachment,
+		| _ => ContentDispositionType::Inline,
+	};
+
+	let mut filename = None;
+	for part in parts {
+		let part = part.trim();
+		if let Some(value) = part.strip_prefix("filename=") {
+			filename = Some(value.trim_matches('"').to_owned());
+			break;
+		}
+	}
+
+	Ok(ContentDisposition::new(disposition_type).with_filename(filename))
 }

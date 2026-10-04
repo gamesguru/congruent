@@ -32,17 +32,14 @@ fn isolate_origin_signatures(
 	// For V1/V2, event_id is server-assigned (e.g. "$abc:example.com"),
 	// so that server's signature is also authoritative.
 	let event_id_server: Option<OwnedServerName> = match room_version {
-		| RoomVersionId::V1 | RoomVersionId::V2 => event
-			.get("event_id")
-			.and_then(|v| match v {
-				| CanonicalJsonValue::String(s) => {
-					// V1/V2 event_ids look like "$opaque:server.name"
-					s.split_once(':')
-						.and_then(|(_, srv)| ServerName::parse(srv).ok())
-				},
-				| _ => None,
-			})
-			.map(ToOwned::to_owned),
+		| RoomVersionId::V1 | RoomVersionId::V2 => event.get("event_id").and_then(|v| match v {
+			| CanonicalJsonValue::String(s) => {
+				// V1/V2 event_ids look like "$opaque:server.name"
+				s.split_once(':')
+					.and_then(|(_, srv)| ServerName::parse(srv).ok())
+			},
+			| _ => None,
+		}),
 		| _ => None,
 	};
 
@@ -54,13 +51,11 @@ fn isolate_origin_signatures(
 	// The `origin` field identifies the server that created/signed the event.
 	// For restricted joins, this differs from the sender (the resident server
 	// signs the join event on behalf of the joining user).
-	let origin_field_server: Option<OwnedServerName> = event
-		.get("origin")
-		.and_then(|v| match v {
+	let origin_field_server: Option<OwnedServerName> =
+		event.get("origin").and_then(|v| match v {
 			| CanonicalJsonValue::String(s) => ServerName::parse(s.as_str()).ok(),
 			| _ => None,
-		})
-		.map(ToOwned::to_owned);
+		});
 
 	// Build the set of origin servers to retain
 	let mut origin_servers: Vec<&ServerName> = vec![sender.as_ref()];

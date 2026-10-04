@@ -1630,9 +1630,7 @@ mod tests {
 	use slipstream::events::{
 		StateEventType, TimelineEventType,
 		room::{
-			join_rules::{
-				AllowRule, JoinRule, Restricted, RoomJoinRulesEventContent, RoomMembership,
-			},
+			join_rules::{JoinRule, RestrictedRule, RoomJoinRulesEventContent},
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	};
@@ -1841,9 +1839,15 @@ mod tests {
 			TimelineEventType::RoomJoinRules,
 			Some(""),
 			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Restricted(
-				Restricted::new(vec![AllowRule::RoomMembership(RoomMembership::new(
-					room_id().to_owned(),
-				))]),
+				RestrictedRule::new(vec![slipstream::json::Value::Object({
+					let mut obj = slipstream::json::Object::new();
+					obj.insert(
+						"type".into(),
+						slipstream::json::Value::String("m.room_membership".into()),
+					);
+					obj.insert("room_id".into(), room_id().to_json());
+					obj
+				})]),
 			)))
 			.unwrap(),
 			&["CREATE", "IMA", "IPOWER"],

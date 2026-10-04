@@ -10,8 +10,8 @@ use serde_json::{
 	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
 };
 use slipstream::{
-	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, ServerSignatures,
-	UserId, event_id,
+	Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
+	RoomVersionId, UInt, UserId,
 	events::{
 		TimelineEventType,
 		room::{
@@ -19,7 +19,6 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-	int, room_id, uint, user_id,
 };
 
 use super::auth_types_for_event;
