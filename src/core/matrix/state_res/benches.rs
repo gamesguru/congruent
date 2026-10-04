@@ -12,7 +12,6 @@ use std::{
 
 use futures::{future, future::ready};
 use maplit::{btreemap, hashmap, hashset};
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, Signatures, UserId,
 	events::{
@@ -26,7 +25,10 @@ use slipstream::{
 };
 
 use crate::{
-	matrix::{Event, Pdu, pdu::EventHash},
+	matrix::{
+		Event, Pdu,
+		pdu::{EventHash, RawJson},
+	},
 	state_res::{
 		self as state_res, Error, Result, StateMap,
 		test_utils::{to_raw_json_value, users_power_levels},
@@ -370,20 +372,19 @@ static_id!(charlie, UserId, user_id!("@charlie:foo"));
 static_id!(ella, UserId, user_id!("@ella:foo"));
 static_id!(room_id, RoomId, room_id!("!test:foo"));
 
-fn member_content(state: MembershipState) -> Box<RawJsonValue> {
-	RawJsonValue::from_string(slipstream::codec::to_string(&RoomMemberEventContent::new(state)))
-		.unwrap()
+fn member_content(state: MembershipState) -> RawJson {
+	RawJson::from_value(&RoomMemberEventContent::new(state))
 }
 
-fn member_content_ban() -> Box<RawJsonValue> { member_content(MembershipState::Ban) }
-fn member_content_join() -> Box<RawJsonValue> { member_content(MembershipState::Join) }
+fn member_content_ban() -> RawJson { member_content(MembershipState::Ban) }
+fn member_content_join() -> RawJson { member_content(MembershipState::Join) }
 
 fn to_pdu_event<S>(
 	id: &str,
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: RawJson,
 	auth_events: &[S],
 	prev_events: &[S],
 ) -> Pdu

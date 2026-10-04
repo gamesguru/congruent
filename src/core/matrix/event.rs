@@ -10,15 +10,18 @@ mod unsigned;
 use std::fmt::Debug;
 
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, value::RawValue as RawJsonValue};
+use serde_json::Value as JsonValue;
 use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, RoomId,
 	RoomVersionId, UserId, events::TimelineEventType,
 };
 
 pub use self::{filter::Matches, id::*, relation::RelationTypeEqual, type_ext::TypeExt};
-use super::{pdu::Pdu, state_key::StateKey};
-use crate::{Result, utils};
+use super::{
+	pdu::{Pdu, RawJson},
+	state_key::StateKey,
+};
+use crate::Result;
 
 /// Abstraction of a PDU so users can have their own PDU types.
 pub trait Event: Clone + Debug {
@@ -124,12 +127,14 @@ pub trait Event: Clone + Debug {
 	where
 		Self: Sized,
 	{
-		utils::to_canonical_object(self.into_pdu()).expect("failed to create Value::Object")
+		slipstream::codec::from_str(&slipstream::codec::to_string(&self.into_pdu()))
+			.expect("failed to create Value::Object")
 	}
 
 	#[inline]
 	fn to_canonical_object(&self) -> CanonicalJsonObject {
-		utils::to_canonical_object(self.as_pdu()).expect("failed to create Value::Object")
+		slipstream::codec::from_str(&slipstream::codec::to_string(self.as_pdu()))
+			.expect("failed to create Value::Object")
 	}
 
 	#[inline]
@@ -169,7 +174,7 @@ pub trait Event: Clone + Debug {
 	) -> impl DoubleEndedIterator<Item = &EventId> + ExactSizeIterator + Clone + Send + Debug + '_;
 
 	/// The event's content.
-	fn content(&self) -> &RawJsonValue;
+	fn content(&self) -> &RawJson;
 
 	/// The `EventId` of this event.
 	fn event_id(&self) -> &EventId;
@@ -204,7 +209,7 @@ pub trait Event: Clone + Debug {
 	fn kind(&self) -> &TimelineEventType;
 
 	/// Metadata container; peer-trusted only.
-	fn unsigned(&self) -> Option<&RawJsonValue>;
+	fn unsigned(&self) -> Option<&RawJson>;
 
 	/// Whether this event has been rejected (auth failure, soft-fail, or
 	/// admin rejection). Default is `false` (not rejected).

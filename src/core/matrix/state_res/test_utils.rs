@@ -8,7 +8,6 @@ use std::{
 };
 
 use futures::future::ready;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
 	RoomVersionId, UInt, UserId, event_id,
@@ -25,25 +24,26 @@ use slipstream::{
 use super::auth_types_for_event;
 use crate::{
 	Result, RoomVersion, info,
-	matrix::{Event, EventTypeExt, Pdu, StateMap, pdu::EventHash},
+	matrix::{
+		Event, EventTypeExt, Pdu, StateMap,
+		pdu::{EventHash, RawJson},
+	},
 };
 
 static SERVER_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(
-	value: &T,
-) -> Box<RawJsonValue> {
-	RawJsonValue::from_string(slipstream::codec::to_string(value)).unwrap()
+pub(crate) fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(value: &T) -> RawJson {
+	RawJson::from_value(value)
 }
 
 /// Raw `m.room.power_levels` content with the given user levels.
-pub(crate) fn users_power_levels(users: &[(&UserId, u32)]) -> Box<RawJsonValue> {
+pub(crate) fn users_power_levels(users: &[(&UserId, u32)]) -> RawJson {
 	let users = users
 		.iter()
 		.map(|(user, level)| format!("\"{user}\":{level}"))
 		.collect::<Vec<_>>()
 		.join(",");
-	RawJsonValue::from_string(format!("{{\"users\":{{{users}}}}}")).unwrap()
+	RawJson::from_json_string(format!("{{\"users\":{{{users}}}}}")).unwrap()
 }
 
 pub(crate) async fn do_check(
@@ -139,7 +139,7 @@ pub(crate) async fn do_check(
 
 			let event_map = &event_map;
 			let fetch = |id: OwnedEventId| ready(event_map.get(&id).cloned());
-			let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
+			// let exists = |id: OwnedEventId| ready(event_map.get(&id).is_some());
 			let auth_chain_fetch = |events: Vec<OwnedEventId>| {
 				ready(store.auth_event_ids(room_id(), events).unwrap_or_default())
 			};
@@ -169,7 +169,7 @@ pub(crate) async fn do_check(
 			fake_event.event_type(),
 			fake_event.sender(),
 			fake_event.state_key(),
-			&slipstream::json::Value::parse(fake_event.content().clone()),
+			&fake_event.content().json().unwrap(),
 			&RoomVersion::V6,
 		)
 		.unwrap();
@@ -395,26 +395,21 @@ static_id!(ella, UserId, user_id!("@ella:foo"));
 static_id!(zara, UserId, user_id!("@zara:foo"));
 static_id!(room_id, RoomId, room_id!("!test:foo"));
 
-fn member_content(state: MembershipState) -> Box<RawJsonValue> {
-	RawJsonValue::from_string(slipstream::codec::to_string(&RoomMemberEventContent::new(state)))
-		.unwrap()
+fn member_content(state: MembershipState) -> RawJson {
+	RawJson::from_value(&RoomMemberEventContent::new(state))
 }
 
-pub(crate) fn member_content_ban() -> Box<RawJsonValue> { member_content(MembershipState::Ban) }
-pub(crate) fn member_content_join() -> Box<RawJsonValue> { member_content(MembershipState::Join) }
-pub(crate) fn member_content_leave() -> Box<RawJsonValue> {
-	member_content(MembershipState::Leave)
-}
-pub(crate) fn member_content_invite() -> Box<RawJsonValue> {
-	member_content(MembershipState::Invite)
-}
+pub(crate) fn member_content_ban() -> RawJson { member_content(MembershipState::Ban) }
+pub(crate) fn member_content_join() -> RawJson { member_content(MembershipState::Join) }
+pub(crate) fn member_content_leave() -> RawJson { member_content(MembershipState::Leave) }
+pub(crate) fn member_content_invite() -> RawJson { member_content(MembershipState::Invite) }
 
 pub(crate) fn to_init_pdu_event(
 	id: &str,
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: RawJson,
 ) -> Pdu {
 	let ts = SERVER_TIMESTAMP.fetch_add(1, SeqCst);
 	let id = if id.contains('$') {
@@ -448,7 +443,7 @@ pub(crate) fn to_pdu_event<S>(
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<RawJsonValue>,
+	content: RawJson,
 	auth_events: &[S],
 	prev_events: &[S],
 ) -> Pdu

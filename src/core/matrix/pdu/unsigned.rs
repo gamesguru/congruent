@@ -1,13 +1,12 @@
 use std::borrow::Borrow;
 
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	MilliSecondsSinceUnixEpoch,
-	codec::{from_str, to_string, to_value},
+	codec::{from_str, to_value},
 	json::{Object, Value},
 };
 
-use super::Pdu;
+use super::{Pdu, RawJson};
 use crate::{Result, err, implement, result::LogErr};
 
 /// Set the `unsigned` field of the PDU using only information in the PDU.
@@ -38,9 +37,7 @@ impl Pdu {
 	}
 
 	fn set_unsigned_object(&mut self, object: Object) -> Result {
-		let raw = RawJsonValue::from_string(to_string(&Value::Object(object)))
-			.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?;
-		self.unsigned = Some(raw);
+		self.unsigned = Some(RawJson::from_value(&Value::Object(object)));
 
 		Ok(())
 	}

@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId,
 	events::{EventContent, MessageLikeEventType, StateEventType, TimelineEventType},
 };
 
-use super::StateKey;
+use super::{RawJson, StateKey};
 
 fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
@@ -31,6 +30,14 @@ where
 		.transpose()
 }
 
+fn deserialize_raw<'de, D>(deserializer: D) -> Result<RawJson, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	RawJson::from_json_string(value.to_string()).map_err(serde::de::Error::custom)
+}
+
 /// Build the start of a PDU in order to add it to the Database.
 #[derive(Debug, Deserialize)]
 pub struct Builder {
@@ -38,7 +45,8 @@ pub struct Builder {
 	#[serde(deserialize_with = "deserialize_codec")]
 	pub event_type: TimelineEventType,
 
-	pub content: Box<RawJsonValue>,
+	#[serde(deserialize_with = "deserialize_raw")]
+	pub content: RawJson,
 
 	pub unsigned: Option<Unsigned>,
 
@@ -63,10 +71,7 @@ impl Builder {
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: serde_json::value::RawValue::from_string(slipstream::codec::to_string(
-				content,
-			))
-			.expect("Builder failed to serialize state event content to RawValue"),
+			content: RawJson::from_value(content),
 			state_key: Some(state_key.into()),
 			..Self::default()
 		}
@@ -78,10 +83,7 @@ impl Builder {
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: serde_json::value::RawValue::from_string(slipstream::codec::to_string(
-				content,
-			))
-			.expect("Builder failed to serialize timeline event content to RawValue"),
+			content: RawJson::from_value(content),
 			..Self::default()
 		}
 	}
@@ -91,7 +93,7 @@ impl Default for Builder {
 	fn default() -> Self {
 		Self {
 			event_type: "m.room.message".into(),
-			content: Box::<RawJsonValue>::default(),
+			content: RawJson::empty_object(),
 			unsigned: None,
 			state_key: None,
 			redacts: None,

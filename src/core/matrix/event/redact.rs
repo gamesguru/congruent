@@ -1,8 +1,6 @@
-use serde::Deserialize;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{OwnedEventId, RoomVersionId, events::TimelineEventType};
 
-use super::Event;
+use super::{super::pdu::RawJson, Event};
 
 /// Copies the `redacts` property of the event to the `content` dict and
 /// vice-versa.
@@ -18,7 +16,7 @@ use super::Event;
 /// > redacts property to the content of m.room.redaction events in older
 /// > room versions when serving such events over the Client-Server API.
 #[must_use]
-pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, Box<RawJsonValue>) {
+pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, RawJson) {
 	if *event.event_type() != TimelineEventType::RoomRedaction {
 		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
 	}
@@ -41,10 +39,7 @@ pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, Box<RawJsonVal
 		);
 		return (
 			event.redacts().map(ToOwned::to_owned),
-			RawJsonValue::from_string(slipstream::codec::to_string(
-				&slipstream::canonical_json::Value::Object(content),
-			))
-			.expect("Must be valid, we only added redacts field"),
+			RawJson::from_value(&slipstream::canonical_json::Value::Object(content)),
 		);
 	}
 
@@ -57,11 +52,7 @@ pub(super) fn is_redacted<E: Event>(event: &E) -> bool {
 		return false;
 	};
 
-	let Ok(unsigned) = ExtractRedactedBecause::deserialize(unsigned) else {
-		return false;
-	};
-
-	unsigned.redacted_because.is_some()
+	matches!(unsigned.get_field::<slipstream::json::Value>("redacted_because"), Ok(Some(_)))
 }
 
 #[must_use]
@@ -82,9 +73,4 @@ pub(super) fn redacts_id<E: Event>(
 			event.redacts().map(ToOwned::to_owned),
 		| _ => event.redacts().map(ToOwned::to_owned),
 	}
-}
-
-#[derive(Deserialize)]
-struct ExtractRedactedBecause {
-	redacted_because: Option<serde::de::IgnoredAny>,
 }

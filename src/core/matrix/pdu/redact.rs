@@ -24,16 +24,12 @@ pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: &JsonValue) ->
 
 	let mut redacted_because = slipstream::canonical_json::Object::new();
 	redacted_because.insert("redacted_because".to_owned(), reason);
-	self.unsigned = serde_json::value::RawValue::from_string(slipstream::codec::to_string(
-		&slipstream::canonical_json::Value::Object(redacted_because),
-	))
-	.expect("Failed to serialize unsigned")
-	.into();
+	self.unsigned = Some(super::RawJson::from_value(&slipstream::canonical_json::Value::Object(
+		redacted_because,
+	)));
 
-	self.content = serde_json::value::RawValue::from_string(slipstream::codec::to_string(
-		&slipstream::canonical_json::Value::Object(content),
-	))
-	.expect("Failed to serialize content");
+	self.content =
+		super::RawJson::from_value(&slipstream::canonical_json::Value::Object(content));
 
 	Ok(())
 }

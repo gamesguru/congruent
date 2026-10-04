@@ -10,7 +10,6 @@ mod unsigned;
 
 use std::cmp::Ordering;
 
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
 	OwnedServerName, OwnedUserId, RoomId, UInt, UserId,
@@ -18,6 +17,9 @@ use slipstream::{
 	events::TimelineEventType,
 	json::{Object as JsonObject, Value as JsonValue},
 };
+
+/// Opaque JSON document kept as text; parse with `.json()` when needed.
+pub type RawJson = slipstream::serde::Raw<JsonValue>;
 
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,
@@ -42,7 +44,7 @@ pub struct Pdu {
 
 	pub kind: TimelineEventType,
 
-	pub content: Box<RawJsonValue>,
+	pub content: RawJson,
 
 	pub state_key: Option<StateKey>,
 
@@ -52,12 +54,12 @@ pub struct Pdu {
 
 	pub auth_events: Vec<OwnedEventId>,
 	pub redacts: Option<OwnedEventId>,
-	pub unsigned: Option<Box<RawJsonValue>>,
+	pub unsigned: Option<RawJson>,
 
 	pub hashes: EventHash,
 
 	// BTreeMap<Box<ServerName>, BTreeMap<ServerSigningKeyId, String>>
-	pub signatures: Option<Box<RawJsonValue>>,
+	pub signatures: Option<RawJson>,
 
 	/// Whether this event has been rejected (by auth check, soft-fail, or
 	/// admin action). Populated at fetch time from pdu_metadata DB;
@@ -172,7 +174,7 @@ impl rezzy::RawEvent for Pdu {
 	#[inline]
 	fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
 
-	/// `Pdu::content` (`Box<RawJsonValue>`) → raw JSON string
+	/// `Pdu::content` (`RawJson`) → raw JSON string
 	#[inline]
 	fn raw_content_json(&self) -> &str { self.content.get() }
 
@@ -242,7 +244,7 @@ macro_rules! impl_event_delegates {
 		}
 
 		#[inline]
-		fn content(&self) -> &RawJsonValue { &self.as_pdu().content }
+		fn content(&self) -> &RawJson { &self.as_pdu().content }
 
 		#[inline]
 		fn event_id(&self) -> &EventId { &self.as_pdu().event_id }
@@ -288,7 +290,7 @@ macro_rules! impl_event_delegates {
 		fn kind(&self) -> &TimelineEventType { &self.as_pdu().kind }
 
 		#[inline]
-		fn unsigned(&self) -> Option<&RawJsonValue> { self.as_pdu().unsigned.as_deref() }
+		fn unsigned(&self) -> Option<&RawJson> { self.as_pdu().unsigned.as_ref() }
 
 		#[inline]
 		fn rejected(&self) -> bool { self.as_pdu().rejected }
@@ -461,9 +463,7 @@ impl CodecDeserialize for Pdu {
 			.get("content")
 			.cloned()
 			.unwrap_or(JsonValue::Object(JsonObject::new()));
-		let content =
-			serde_json::value::RawValue::from_string(slipstream::codec::to_string(&content_val))
-				.map_err(|e| slipstream::codec::DeError(e.to_string()))?;
+		let content = RawJson::from_value(&content_val);
 		let state_key = obj
 			.get("state_key")
 			.and_then(|v| v.as_str())
@@ -484,16 +484,12 @@ impl CodecDeserialize for Pdu {
 			.get("redacts")
 			.map(|v| <OwnedEventId as CodecDeserialize>::from_json(v))
 			.transpose()?;
-		let unsigned = obj.get("unsigned").and_then(|v| {
-			serde_json::value::RawValue::from_string(slipstream::codec::to_string(v)).ok()
-		});
+		let unsigned = obj.get("unsigned").map(RawJson::from_value);
 		let hashes = <EventHash as CodecDeserialize>::from_json(
 			obj.get("hashes")
 				.ok_or_else(|| slipstream::codec::DeError::expected("hashes"))?,
 		)?;
-		let signatures = obj.get("signatures").and_then(|v| {
-			serde_json::value::RawValue::from_string(slipstream::codec::to_string(v)).ok()
-		});
+		let signatures = obj.get("signatures").map(RawJson::from_value);
 
 		Ok(Self {
 			event_id,

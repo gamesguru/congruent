@@ -1,6 +1,6 @@
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{CanonicalJsonObject, OwnedEventId, RoomVersionId};
 
+use super::super::pdu::RawJson;
 use crate::{Result, err, utils::pdu_json_canonical_strip};
 
 /// Generates a correct eventId for the incoming pdu.
@@ -8,7 +8,7 @@ use crate::{Result, err, utils::pdu_json_canonical_strip};
 /// Returns a tuple of the new `EventId` and the PDU as a `BTreeMap<String,
 /// CanonicalJsonValue>`.
 pub fn gen_event_id_canonical_json(
-	pdu: &RawJsonValue,
+	pdu: &RawJson,
 	room_version_id: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject)> {
 	let value = slipstream::canonical_json::from_json_str(pdu.get())

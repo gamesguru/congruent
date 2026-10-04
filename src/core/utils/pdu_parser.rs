@@ -92,19 +92,22 @@ mod tests {
 		let version = RoomVersionId::parse("12").unwrap();
 
 		let make_value = || {
-			slipstream::codec::from_str::<CanonicalJsonObject>(&json!({
-				"type": "m.room.create",
-				"sender": "@alice:example.org",
-				"origin_server_ts": 12345,
-				"content": { "creator": "@alice:example.org", "room_version": "12" },
-				"auth_events": [],
-				"prev_events": [],
-				"depth": 1,
-				"hashes": { "sha256": "fakehash" },
-				"signatures": {
-					"example.org": { "ed25519:1": "fakesig" }
-				}
-			}).to_string())
+			slipstream::codec::from_str::<CanonicalJsonObject>(
+				&json!({
+					"type": "m.room.create",
+					"sender": "@alice:example.org",
+					"origin_server_ts": 12345,
+					"content": { "creator": "@alice:example.org", "room_version": "12" },
+					"auth_events": [],
+					"prev_events": [],
+					"depth": 1,
+					"hashes": { "sha256": "fakehash" },
+					"signatures": {
+						"example.org": { "ed25519:1": "fakesig" }
+					}
+				})
+				.to_string(),
+			)
 			.unwrap()
 		};
 
@@ -141,21 +144,24 @@ mod tests {
 		let room_id = OwnedRoomId::from("!test:example.com");
 		let version = RoomVersionId::parse("12").unwrap();
 
-		let value: CanonicalJsonObject = slipstream::codec::from_str(&json!({
-			"type": "m.room.member",
-			"room_id": room_id.as_str(),
-			"sender": "@alice:example.org",
-			"state_key": "@alice:example.org",
-			"origin_server_ts": 12345,
-			"content": { "membership": "join" },
-			"auth_events": [],
-			"prev_events": [],
-			"depth": 1,
-			"hashes": { "sha256": "fakehash" },
-			"signatures": {
-				"example.org": { "ed25519:1": "fakesig" }
-			}
-		}).to_string())
+		let value: CanonicalJsonObject = slipstream::codec::from_str(
+			&json!({
+				"type": "m.room.member",
+				"room_id": room_id.as_str(),
+				"sender": "@alice:example.org",
+				"state_key": "@alice:example.org",
+				"origin_server_ts": 12345,
+				"content": { "membership": "join" },
+				"auth_events": [],
+				"prev_events": [],
+				"depth": 1,
+				"hashes": { "sha256": "fakehash" },
+				"signatures": {
+					"example.org": { "ed25519:1": "fakesig" }
+				}
+			})
+			.to_string(),
+		)
 		.unwrap();
 
 		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();

@@ -1,4 +1,3 @@
-use serde_json::json;
 use slipstream::{
 	OwnedRoomId,
 	events::{
@@ -6,6 +5,7 @@ use slipstream::{
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
 		space::child::HierarchySpaceChildEvent,
 	},
+	json,
 	serde::Raw,
 };
 
@@ -42,7 +42,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -73,7 +74,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -104,7 +106,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -129,7 +132,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -153,7 +157,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -173,7 +178,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 			"type": event.kind().to_string(),
 		});
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -192,7 +198,8 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<HierarchySpaceChildEvent> {
 			"type": event.kind().to_string(),
 		});
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -218,6 +225,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			json["unsigned"] = json!(unsigned);
 		}
 
-		Self::from_json_text(&json.to_string()).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }

@@ -109,7 +109,7 @@ mod tests {
 			origin: None,
 			origin_server_ts: uint!(0),
 			kind: TimelineEventType::RoomMessage,
-			content: serde_json::from_str("{}").unwrap(),
+			content: crate::matrix::pdu::RawJson::empty_object(),
 			state_key: None,
 			prev_events: vec![],
 			depth: uint!(0),
