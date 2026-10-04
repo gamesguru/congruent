@@ -382,7 +382,7 @@ where
 		}
 
 		let target_user =
-			<&UserId>::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
+			<UserId>::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
 
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
