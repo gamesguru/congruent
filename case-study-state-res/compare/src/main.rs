@@ -142,8 +142,9 @@ fn compare_against_baseline(
 	let output_file = File::open(baseline_path)
 		.unwrap_or_else(|e| panic!("Failed to open baseline {baseline_path}: {e}"));
 	let output_reader = BufReader::new(output_file);
+	let baseline_text = std::io::read_to_string(output_reader).expect("Failed to read baseline");
 	let baseline_ids: Vec<OwnedEventId> =
-		serde_json::from_reader(output_reader).expect("Failed to parse baseline");
+		conduwuit_core::slipstream::codec::from_str(&baseline_text).expect("Failed to parse baseline");
 
 	let baseline_set: HashSet<OwnedEventId> = baseline_ids.into_iter().collect();
 	let conduwuit_set: HashSet<OwnedEventId> = conduwuit_resolved.values().cloned().collect();
@@ -196,7 +197,7 @@ fn print_membership_counts(
 	for id in resolved.values() {
 		if let Some(ev) = events_map.get(id)
 			&& ev.kind == conduwuit_core::slipstream::events::TimelineEventType::RoomMember
-			&& let Ok(member) = serde_json::from_str::<
+			&& let Ok(member) = conduwuit_core::slipstream::codec::from_str::<
 				conduwuit_core::slipstream::events::room::member::RoomMemberEventContent,
 			>(ev.content.get())
 		{
@@ -206,7 +207,6 @@ fn print_membership_counts(
 				| conduwuit_core::slipstream::events::room::member::MembershipState::Ban => banned += 1,
 				| conduwuit_core::slipstream::events::room::member::MembershipState::Invite => invite += 1,
 				| conduwuit_core::slipstream::events::room::member::MembershipState::Knock => knock += 1,
-				| _ => {},
 			}
 		}
 	}
@@ -647,9 +647,8 @@ fn resolve_via_rezzy(
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
 		let ty: conduwuit_core::slipstream::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::state_key::StateKey = sk_str.into();
-		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
-			resolved.insert((ty, sk), eid);
-		}
+		let eid = OwnedEventId::try_from(eid_str.as_str());
+		resolved.insert((ty, sk), eid.unwrap());
 	}
 
 	resolved
