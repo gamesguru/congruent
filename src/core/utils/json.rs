@@ -18,7 +18,7 @@ pub fn to_canonical_object<T: serde::Serialize>(
 		| serde_json::Value::Object(map) => {
 			let encoded = serde_json::to_string(&map).map_err(SerDe)?;
 			let value =
-				slipstream::canonical_json::from_json_str::<slipstream::CanonicalJsonValue>(
+				slipstream::canonical_json::from_json_str(
 					&encoded,
 				)
 				.map_err(SerDe)?;
