@@ -514,7 +514,7 @@ pub(super) async fn get_remote_dag(
 	let mut max_depth = 0_u64;
 	let mut consecutive_errors = 0_usize;
 	let mut last_fetched_event: Option<OwnedEventId> = None;
-	let batch_size = slipstream::uint!(500);
+	let batch_size = 500;
 	let start_time = tokio::time::Instant::now();
 
 	let server_list_str = pool.display();

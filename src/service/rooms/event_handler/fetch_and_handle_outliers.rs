@@ -530,7 +530,7 @@ where
 				.and_then(CanonicalJsonValue::as_integer)
 				.map(i64::from)
 				.and_then(|i| slipstream::UInt::try_from(i).ok())
-				.unwrap_or_else(|| slipstream::uint!(0));
+				.unwrap_or(0);
 
 			future::ready(conduwuit_core::Result::Ok((
 				slipstream::int!(0),
