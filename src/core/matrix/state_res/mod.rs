@@ -1719,7 +1719,9 @@ fn is_power_event(event: &impl Event) -> bool {
 		| TimelineEventType::RoomJoinRules
 		| TimelineEventType::RoomCreate => event.state_key() == Some(""),
 		| TimelineEventType::RoomMember => {
-			if let Ok(content) = from_json_str::<RoomMemberEventContent>(event.content().get()) {
+			if let Ok(content) =
+				slipstream::codec::from_str::<RoomMemberEventContent>(event.content().get())
+			{
 				if [MembershipState::Leave, MembershipState::Ban].contains(&content.membership) {
 					return Some(event.sender().as_str()) != event.state_key();
 				}

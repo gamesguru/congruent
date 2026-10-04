@@ -18,13 +18,13 @@ pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: JsonValue) -> 
 	let reason = slipstream::canonical_json::from_json_str(&reason.to_string())
 		.expect("Failed to preserialize reason");
 
-	let redacted_because = json!({
-		"redacted_because": reason,
-	});
-
-	self.unsigned = to_raw_value(&redacted_because)
-		.expect("Failed to serialize unsigned")
-		.into();
+	let mut redacted_because = slipstream::canonical_json::Object::new();
+	redacted_because.insert("redacted_because".to_owned(), reason);
+	self.unsigned = serde_json::value::RawValue::from_string(slipstream::codec::to_string(
+		&slipstream::canonical_json::Value::Object(redacted_because),
+	))
+	.expect("Failed to serialize unsigned")
+	.into();
 
 	self.content = serde_json::value::RawValue::from_string(slipstream::codec::to_string(
 		&slipstream::canonical_json::Value::Object(content),

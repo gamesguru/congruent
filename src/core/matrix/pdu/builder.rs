@@ -58,13 +58,15 @@ type Unsigned = BTreeMap<String, serde_json::Value>;
 impl Builder {
 	pub fn state<S, T>(state_key: S, content: &T) -> Self
 	where
-		T: EventContent<EventType = StateEventType>,
+		T: EventContent<EventType = StateEventType> + slipstream::codec::Serialize,
 		S: Into<StateKey>,
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: to_raw_value(content)
-				.expect("Builder failed to serialize state event content to RawValue"),
+			content: serde_json::value::RawValue::from_string(slipstream::codec::to_string(
+				content,
+			))
+			.expect("Builder failed to serialize state event content to RawValue"),
 			state_key: Some(state_key.into()),
 			..Self::default()
 		}
@@ -72,12 +74,14 @@ impl Builder {
 
 	pub fn timeline<T>(content: &T) -> Self
 	where
-		T: EventContent<EventType = MessageLikeEventType>,
+		T: EventContent<EventType = MessageLikeEventType> + slipstream::codec::Serialize,
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: to_raw_value(content)
-				.expect("Builder failed to serialize timeline event content to RawValue"),
+			content: serde_json::value::RawValue::from_string(slipstream::codec::to_string(
+				content,
+			))
+			.expect("Builder failed to serialize timeline event content to RawValue"),
 			..Self::default()
 		}
 	}

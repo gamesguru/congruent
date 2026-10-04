@@ -58,12 +58,22 @@ where
 	vec_deserialize_v1_powerlevel_values_serde(deserializer)
 }
 
+fn deserialize_codec_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+where
+	D: Deserializer<'de>,
+	K: slipstream::codec::Deserialize + Ord,
+	V: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(D::Error::custom)
+}
+
 #[derive(Deserialize)]
 struct IntRoomPowerLevelsEventContent {
 	#[serde(default = "default_power_level")]
 	ban: Int,
 
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_codec_map")]
 	events: BTreeMap<TimelineEventType, Int>,
 
 	#[serde(default)]
@@ -81,7 +91,7 @@ struct IntRoomPowerLevelsEventContent {
 	#[serde(default = "default_power_level")]
 	state_default: Int,
 
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_codec_map")]
 	users: BTreeMap<OwnedUserId, Int>,
 
 	#[serde(default)]
@@ -164,7 +174,7 @@ fn deserialize_integer_power_levels(content: &str) -> Option<RoomPowerLevelsEven
 }
 
 fn deserialize_legacy_power_levels(content: &str) -> Option<RoomPowerLevelsEventContent> {
-	match from_json_str(content) {
+	match slipstream::codec::from_str(content) {
 		| Ok(content) => Some(content),
 		| Err(_) => {
 			error!(

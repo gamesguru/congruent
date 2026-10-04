@@ -43,9 +43,19 @@ impl<T> JsonRaw<T> {
 	}
 }
 
+fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
 // FIXME: field extracting could be bundled for `content`
 #[derive(Deserialize)]
 struct GetMembership {
+	#[serde(deserialize_with = "deserialize_codec")]
 	membership: MembershipState,
 }
 
@@ -666,7 +676,7 @@ where
 			.ok_or_else(|| serde_json::Error::missing_field("creator"))
 			.unwrap();
 
-		creator == user_id
+		creator == *user_id
 	} else {
 		false
 	}
@@ -726,7 +736,8 @@ where
 	};
 
 	let power_levels: RoomPowerLevelsEventContent = match &power_levels_event {
-		| Some(ev) => from_json_str(ev.content().get())?,
+		| Some(ev) => slipstream::codec::from_str(ev.content().get())
+			.map_err(|e| Error::InvalidPdu(e.to_string()))?,
 		| None => RoomPowerLevelsEventContent::default(),
 	};
 
@@ -763,7 +774,7 @@ where
 	trace!(?creators, "creators for room");
 
 	let join_rules = if let Some(jr) = &join_rules_event {
-		from_json_str::<RoomJoinRulesEventContent>(jr.content().get())?.join_rule
+		slipstream::codec::from_str::<RoomJoinRulesEventContent>(jr.content().get())?.join_rule
 	} else {
 		JoinRule::Invite
 	};
@@ -1464,8 +1475,10 @@ fn check_power_levels(
 		"kick",
 		"invite",
 	];
-	let old_state = serde_json::to_value(old_state).unwrap();
-	let new_state = serde_json::to_value(new_state).unwrap();
+	let old_state: serde_json::Value =
+		serde_json::from_str(&slipstream::codec::to_string(old_state)).unwrap();
+	let new_state: serde_json::Value =
+		serde_json::from_str(&slipstream::codec::to_string(new_state)).unwrap();
 	for lvl_name in &levels {
 		if let Some((old_lvl, new_lvl)) = get_deserialize_levels(&old_state, &new_state, lvl_name)
 		{
@@ -1537,7 +1550,7 @@ fn get_send_level(
 ) -> Int {
 	power_lvl
 		.and_then(|ple| {
-			from_json_str::<RoomPowerLevelsEventContent>(ple.content().get())
+			slipstream::codec::from_str::<RoomPowerLevelsEventContent>(ple.content().get())
 				.map(|content| {
 					content.events.get(e_type).copied().unwrap_or_else(|| {
 						if state_key.is_some() {
@@ -1585,11 +1598,12 @@ fn verify_third_party_invite(
 	// If any signature in signed matches any public key in the
 	// m.room.third_party_invite event, allow
 	#[allow(clippy::manual_let_else)]
-	let tpid_ev =
-		match from_json_str::<RoomThirdPartyInviteEventContent>(current_tpid.content().get()) {
-			| Ok(ev) => ev,
-			| Err(_) => return false,
-		};
+	let tpid_ev = match slipstream::codec::from_str::<RoomThirdPartyInviteEventContent>(
+		current_tpid.content().get(),
+	) {
+		| Ok(ev) => ev,
+		| Err(_) => return false,
+	};
 
 	#[allow(clippy::manual_let_else)]
 	let decoded_invite_token = match Base64::parse(&tp_id.signed.token) {
