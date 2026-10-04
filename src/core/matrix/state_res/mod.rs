@@ -1266,7 +1266,8 @@ where
 			event.event_type(),
 			event.sender(),
 			Some(state_key),
-			event.content(),
+			&slipstream::json::Value::parse(event.content().get())
+				.map_err(|e| crate::err!(Database("invalid event content: {e}")))?,
 			room_version,
 		) {
 			| Ok(types) => types,
@@ -1502,7 +1503,7 @@ where
 	// chains. Hitting `fetch_event(id).await` sequentially forces 300,000+ task
 	// context switches. By locally caching the PDU, the async state machine
 	// completes immediately and synchronously.
-	let mut local_cache: rustc_hash::FxHashMap<OwnedEventId, Option<E>> =
+	let local_cache: rustc_hash::FxHashMap<OwnedEventId, Option<E>> =
 		rustc_hash::FxHashMap::default();
 
 	macro_rules! get {

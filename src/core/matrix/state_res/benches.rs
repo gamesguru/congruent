@@ -12,7 +12,7 @@ use std::{
 
 use futures::{future, future::ready};
 use maplit::{btreemap, hashmap, hashset};
-use serde_json::{json, value::RawValue as RawJsonValue};
+use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, Signatures, UserId,
 	events::{
@@ -25,13 +25,12 @@ use slipstream::{
 	int, room_id, uint, user_id,
 };
 
-fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(value: &T) -> Box<RawJsonValue> {
-	RawJsonValue::from_string(slipstream::codec::to_string(value)).unwrap()
-}
-
 use crate::{
 	matrix::{Event, Pdu, pdu::EventHash},
-	state_res::{self as state_res, Error, Result, StateMap},
+	state_res::{
+		self as state_res, Error, Result, StateMap,
+		test_utils::{to_raw_json_value, users_power_levels},
+	},
 };
 
 static SERVER_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
@@ -258,7 +257,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
 			&[],
 			&[],
 		);
@@ -282,7 +281,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&[cre.clone(), alice_mem.event_id().to_owned()],
 			&[alice_mem.event_id().to_owned()],
 		);
@@ -439,7 +438,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
 			&[],
 			&[],
 		),
@@ -457,7 +456,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { alice(): 100 } })).unwrap(),
+			users_power_levels(&[(alice(), 100)]),
 			&["CREATE", "IMA"],
 			&["IMA"],
 		),
@@ -466,7 +465,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&["CREATE", "IMA", "IPOWER"],
 			&["IPOWER"],
 		),
@@ -493,7 +492,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomTopic,
 			Some(""),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -502,7 +501,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomTopic,
 			Some(""),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -521,7 +520,7 @@ fn BAN_STATE_SET() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { alice(): 100, bob(): 50 } })).unwrap(),
+			users_power_levels(&[(alice(), 100), (bob(), 50)]),
 			&["CREATE", "IMA", "IPOWER"], // auth_events
 			&["START"],                   // prev_events
 		),
@@ -530,7 +529,7 @@ fn BAN_STATE_SET() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { alice(): 100, bob(): 50 } })).unwrap(),
+			users_power_levels(&[(alice(), 100), (bob(), 50)]),
 			&["CREATE", "IMA", "IPOWER"],
 			&["END"],
 		),

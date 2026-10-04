@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::future::ready;
-use serde_json::{json, value::RawValue as RawJsonValue};
+use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
 	RoomVersionId, UInt, UserId, event_id,
@@ -30,10 +30,20 @@ use crate::{
 
 static SERVER_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 
-fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(
+pub(crate) fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(
 	value: &T,
-) -> Box<slipstream::json::Value> {
-	slipstream::json!(slipstream::codec::to_string(value)).into()
+) -> Box<RawJsonValue> {
+	RawJsonValue::from_string(slipstream::codec::to_string(value)).unwrap()
+}
+
+/// Raw `m.room.power_levels` content with the given user levels.
+pub(crate) fn users_power_levels(users: &[(&UserId, u32)]) -> Box<RawJsonValue> {
+	let users = users
+		.iter()
+		.map(|(user, level)| format!("\"{user}\":{level}"))
+		.collect::<Vec<_>>()
+		.join(",");
+	RawJsonValue::from_string(format!("{{\"users\":{{{users}}}}}")).unwrap()
 }
 
 pub(crate) async fn do_check(
@@ -159,7 +169,7 @@ pub(crate) async fn do_check(
 			fake_event.event_type(),
 			fake_event.sender(),
 			fake_event.state_key(),
-			fake_event.content(),
+			&slipstream::json::Value::parse(fake_event.content().clone()),
 			&RoomVersion::V6,
 		)
 		.unwrap();
@@ -279,7 +289,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })),
+			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
 			&[],
 			&[],
 		);
@@ -438,7 +448,7 @@ pub(crate) fn to_pdu_event<S>(
 	sender: &UserId,
 	ev_type: TimelineEventType,
 	state_key: Option<&str>,
-	content: Box<slipstream::json::Value>,
+	content: Box<RawJsonValue>,
 	auth_events: &[S],
 	prev_events: &[S],
 ) -> Pdu
@@ -491,7 +501,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
 			&[],
 			&[],
 		),
@@ -509,7 +519,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { alice(): 100 } })).unwrap(),
+			users_power_levels(&[(alice(), 100)]),
 			&["CREATE", "IMA"],
 			&["IMA"],
 		),
@@ -518,7 +528,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
 			&["CREATE", "IMA", "IPOWER"],
 			&["IPOWER"],
 		),
@@ -545,7 +555,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomMessage,
 			Some("dummy"),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -554,7 +564,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			charlie(),
 			TimelineEventType::RoomMessage,
 			Some("dummy"),
-			to_raw_json_value(&json!({})).unwrap(),
+			to_raw_json_value(&slipstream::json!({})),
 			&[],
 			&[],
 		),
@@ -572,7 +582,7 @@ pub(crate) fn INITIAL_EVENTS_CREATE_ROOM() -> HashMap<OwnedEventId, Pdu> {
 		alice(),
 		TimelineEventType::RoomCreate,
 		Some(""),
-		to_raw_json_value(&json!({ "creator": alice() })).unwrap(),
+		to_raw_json_value(&slipstream::json!({ "creator": alice() })),
 		&[],
 		&[],
 	)]

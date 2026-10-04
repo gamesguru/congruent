@@ -8,7 +8,7 @@ use serde::{
 	Deserialize,
 	de::{Error as _, IgnoredAny},
 };
-use serde_json::{from_str as from_json_str, value::RawValue as RawJsonValue};
+use serde_json::from_str as from_json_str;
 use slipstream::{
 	Int, OwnedUserId, RoomVersionId, UserId,
 	events::room::{
@@ -85,7 +85,7 @@ pub fn auth_types_for_event(
 	kind: &TimelineEventType,
 	sender: &UserId,
 	state_key: Option<&str>,
-	content: &RawJsonValue,
+	content: &slipstream::json::Value,
 	room_version: &RoomVersion,
 ) -> serde_json::Result<Vec<(StateEventType, StateKey)>> {
 	if kind == &TimelineEventType::RoomCreate {
@@ -114,7 +114,7 @@ pub fn auth_types_for_event(
 		}
 
 		if let Some(state_key) = state_key {
-			let content: RoomMemberContentFields = from_json_str(content.get())?;
+			let content: RoomMemberContentFields = from_json_str(content.as_str().unwrap_or(""))?;
 
 			if let Some(Ok(membership)) = content.membership.map(|m| m.deserialize_as()) {
 				if [MembershipState::Join, MembershipState::Invite, MembershipState::Knock]
@@ -1626,7 +1626,6 @@ fn verify_third_party_invite(
 
 #[cfg(test)]
 mod tests {
-	use serde_json::value::to_raw_value as to_raw_json_value;
 	use slipstream::events::{
 		StateEventType, TimelineEventType,
 		room::{
@@ -1643,6 +1642,7 @@ mod tests {
 			test_utils::{
 				INITIAL_EVENTS, INITIAL_EVENTS_CREATE_ROOM, alice, charlie, ella, event_id,
 				member_content_ban, member_content_join, room_id, to_pdu_event,
+				to_raw_json_value,
 			},
 		},
 	};
@@ -1839,17 +1839,21 @@ mod tests {
 			TimelineEventType::RoomJoinRules,
 			Some(""),
 			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Restricted(
-				RestrictedRule::new(vec![slipstream::json::Value::Object({
-					let mut obj = slipstream::json::Object::new();
-					obj.insert(
-						"type".into(),
-						slipstream::json::Value::String("m.room_membership".into()),
-					);
-					obj.insert("room_id".into(), room_id().to_json());
-					obj
-				})]),
-			)))
-			.unwrap(),
+				RestrictedRule {
+					allow: vec![slipstream::json::Value::Object({
+						let mut obj = slipstream::json::Object::new();
+						obj.insert(
+							"type".into(),
+							slipstream::json::Value::String("m.room_membership".into()),
+						);
+						obj.insert(
+							"room_id".into(),
+							slipstream::json::Value::String(room_id().to_string()),
+						);
+						obj
+					})],
+				},
+			))),
 			&["CREATE", "IMA", "IPOWER"],
 			&["IPOWER"],
 		);
@@ -1867,7 +1871,7 @@ mod tests {
 			ella(),
 			TimelineEventType::RoomMember,
 			Some(ella().as_str()),
-			to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)).unwrap(),
+			to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)),
 			&["CREATE", "IJR", "IPOWER", "new"],
 			&["new"],
 		);
@@ -1924,7 +1928,7 @@ mod tests {
 			alice(),
 			TimelineEventType::RoomJoinRules,
 			Some(""),
-			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Knock)).unwrap(),
+			to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Knock)),
 			&["CREATE", "IMA", "IPOWER"],
 			&["IPOWER"],
 		);
@@ -1939,7 +1943,7 @@ mod tests {
 			ella(),
 			TimelineEventType::RoomMember,
 			Some(ella().as_str()),
-			to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Knock)).unwrap(),
+			to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Knock)),
 			&[],
 			&["IMC"],
 		);

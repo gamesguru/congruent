@@ -10,7 +10,6 @@ mod unsigned;
 
 use std::cmp::Ordering;
 
-use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
@@ -31,93 +30,16 @@ pub use self::{
 use super::{Event, StateKey};
 use crate::Result;
 
-fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-	D: serde::Deserializer<'de>,
-	T: slipstream::codec::Deserialize,
-{
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
-}
-
-fn deserialize_codec_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-	D: serde::Deserializer<'de>,
-	T: slipstream::codec::Deserialize,
-{
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
-}
-
-fn deserialize_codec_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-	D: serde::Deserializer<'de>,
-	T: slipstream::codec::Deserialize,
-{
-	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-	value
-		.map(|value| {
-			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
-		})
-		.transpose()
-}
-
-fn serialize_codec<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-	S: serde::Serializer,
-	T: slipstream::codec::Serialize,
-{
-	let json: serde_json::Value = serde_json::from_str(&slipstream::codec::to_string(value))
-		.map_err(serde::ser::Error::custom)?;
-	Serialize::serialize(&json, serializer)
-}
-
-#[allow(clippy::ref_option)]
-fn serialize_codec_opt<S, T>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
-where
-	S: serde::Serializer,
-	T: slipstream::codec::Serialize,
-{
-	match value {
-		| Some(value) => serialize_codec(value, serializer),
-		| None => Serialize::serialize(&Option::<()>::None, serializer),
-	}
-}
-
-fn serialize_codec_vec<S, T>(value: &Vec<T>, serializer: S) -> Result<S::Ok, S::Error>
-where
-	S: serde::Serializer,
-	T: slipstream::codec::Serialize,
-{
-	serialize_codec(value, serializer)
-}
-
 /// Persistent Data Unit (Event)
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Debug)]
 pub struct Pdu {
-	#[serde(deserialize_with = "deserialize_codec")]
-	#[serde(serialize_with = "serialize_codec")]
 	pub event_id: OwnedEventId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(deserialize_with = "deserialize_codec_opt")]
-	#[serde(serialize_with = "serialize_codec_opt")]
 	pub room_id: Option<OwnedRoomId>,
-
-	#[serde(deserialize_with = "deserialize_codec")]
-	#[serde(serialize_with = "serialize_codec")]
 	pub sender: OwnedUserId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(deserialize_with = "deserialize_codec_opt")]
-	#[serde(serialize_with = "serialize_codec_opt")]
 	pub origin: Option<OwnedServerName>,
 
 	pub origin_server_ts: UInt,
 
-	#[serde(rename = "type")]
-	#[serde(deserialize_with = "deserialize_codec")]
-	#[serde(serialize_with = "serialize_codec")]
 	pub kind: TimelineEventType,
 
 	pub content: Box<RawJsonValue>,
@@ -125,39 +47,27 @@ pub struct Pdu {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<StateKey>,
 
-	#[serde(deserialize_with = "deserialize_codec_vec")]
-	#[serde(serialize_with = "serialize_codec_vec")]
 	pub prev_events: Vec<OwnedEventId>,
 
 	pub depth: UInt,
 
-	#[serde(deserialize_with = "deserialize_codec_vec")]
-	#[serde(serialize_with = "serialize_codec_vec")]
 	pub auth_events: Vec<OwnedEventId>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(deserialize_with = "deserialize_codec_opt")]
-	#[serde(serialize_with = "serialize_codec_opt")]
 	pub redacts: Option<OwnedEventId>,
-
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub unsigned: Option<Box<RawJsonValue>>,
 
 	pub hashes: EventHash,
 
 	// BTreeMap<Box<ServerName>, BTreeMap<ServerSigningKeyId, String>>
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub signatures: Option<Box<RawJsonValue>>,
 
 	/// Whether this event has been rejected (by auth check, soft-fail, or
 	/// admin action). Populated at fetch time from pdu_metadata DB;
 	/// not persisted in the event JSON itself.
-	#[serde(skip)]
 	pub rejected: bool,
 }
 
 /// Content hashes of a PDU.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct EventHash {
 	/// The SHA-256 hash.
 	pub sha256: String,
