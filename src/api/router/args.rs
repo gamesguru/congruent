@@ -49,7 +49,9 @@ pub(crate) fn authenticate_user<'a>(
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
 	Box::pin(async move {
 		let mut request = request::from(services, request).await?;
-		let json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
+	let json_body = std::str::from_utf8(&request.body)
+		.ok()
+		.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
 		let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
 		auth.sender_user
 			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
@@ -107,7 +109,9 @@ where
 		services: &State,
 	) -> Result<Self, Self::Rejection> {
 		let mut request = request::from(services, request).await?;
-		let mut json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
+		let mut json_body = std::str::from_utf8(&request.body)
+			.ok()
+			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
 
 		// if the body is not empty and not media, but json parsing failed, it is
 		// invalid JSON
