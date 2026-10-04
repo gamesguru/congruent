@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct EventMetadata {
 	pub short_room_id: u64,
 	pub is_outlier: bool,
-	pub origin_server_ts: ruma::UInt,
-	pub depth: ruma::UInt,
-	pub redacted_by: Option<ruma::OwnedEventId>,
+	pub origin_server_ts: slipstream::UInt,
+	pub depth: slipstream::UInt,
+	pub redacted_by: Option<slipstream::OwnedEventId>,
 	pub short_state_hash: Option<u64>,
 	#[serde(default)]
 	pub deprecated_local_topo_depth: u64,

@@ -21,7 +21,8 @@ use futures::{
 	join, pin_mut,
 	stream::FuturesUnordered,
 };
-use ruma::{
+use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
 	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
 	api::{
@@ -43,7 +44,6 @@ use ruma::{
 	serde::Raw,
 	uint,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::QueueItem};
 use crate::rooms::state_accessor::{
@@ -64,21 +64,21 @@ struct Msc4500SendTransactionRequest {
 	state_hashes: Option<StateHashes>,
 }
 
-impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
+impl slipstream::api::OutgoingRequest for Msc4500SendTransactionRequest {
 	type EndpointError =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::EndpointError;
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::EndpointError;
 	type IncomingResponse =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::IncomingResponse;
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::IncomingResponse;
 
-	const METADATA: ruma::api::Metadata =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::METADATA;
+	const METADATA: slipstream::api::Metadata =
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::METADATA;
 
 	fn try_into_http_request<T: Default + BufMut>(
 		self,
 		base_url: &str,
-		access_token: ruma::api::SendAccessToken<'_>,
-		considering_versions: &'_ [ruma::api::MatrixVersion],
-	) -> core::result::Result<http::Request<T>, ruma::api::error::IntoHttpError> {
+		access_token: slipstream::api::SendAccessToken<'_>,
+		considering_versions: &'_ [slipstream::api::MatrixVersion],
+	) -> core::result::Result<http::Request<T>, slipstream::api::error::IntoHttpError> {
 		let req = self.inner.try_into_http_request::<Vec<u8>>(
 			base_url,
 			access_token,
@@ -87,18 +87,18 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 		let (mut parts, body) = req.into_parts();
 
 		let mut json: serde_json::Value =
-			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
+			serde_json::from_slice(&body).map_err(slipstream::api::error::IntoHttpError::from)?;
 
 		if let Some(obj) = json.as_object_mut() {
 			if let Some(state_hashes) = self.state_hashes {
 				let state_hashes_val = serde_json::to_value(state_hashes)
-					.map_err(ruma::api::error::IntoHttpError::from)?;
+					.map_err(slipstream::api::error::IntoHttpError::from)?;
 				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
 			}
 		}
 
 		let new_body_bytes =
-			serde_json::to_vec(&json).map_err(ruma::api::error::IntoHttpError::from)?;
+			serde_json::to_vec(&json).map_err(slipstream::api::error::IntoHttpError::from)?;
 
 		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
 			*cl = http::HeaderValue::from(new_body_bytes.len());
@@ -1183,7 +1183,7 @@ impl Service {
 		match self
 			.send_appservice_request(
 				appservice,
-				ruma::api::appservice::event::push_events::v1::Request {
+				slipstream::api::appservice::event::push_events::v1::Request {
 					events: pdu_jsons,
 					txn_id: txn_id.into(),
 					ephemeral: edu_jsons,
@@ -1455,7 +1455,7 @@ impl Service {
 		}
 	}
 
-	/// This does not return a full `Pdu` it is only to satisfy ruma's types.
+	/// This does not return a full `Pdu` it is only to satisfy slipstream's types.
 	pub async fn convert_to_outgoing_federation_event(
 		&self,
 		mut pdu_json: CanonicalJsonObject,
@@ -1486,7 +1486,7 @@ impl Service {
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
 		// serde_json::from_str::<Raw<_>>(
-		//     ruma::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
+		//     slipstream::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
 		// valid serde_json::Value"), )
 		// .expect("Raw::from_value always works")
 
@@ -1628,7 +1628,7 @@ pub(crate) fn build_receipt_map(
 		};
 
 		let is_unthreaded =
-			matches!(receipt.thread, ruma::events::receipt::ReceiptThread::Unthreaded);
+			matches!(receipt.thread, slipstream::events::receipt::ReceiptThread::Unthreaded);
 		let receipt_data = ReceiptData {
 			data: receipt,
 			event_ids: vec![event_id.clone()],
@@ -1673,7 +1673,7 @@ mod tests {
 		sync::atomic::AtomicUsize,
 	};
 
-	use ruma::user_id;
+	use slipstream::user_id;
 
 	use super::*;
 
@@ -1864,7 +1864,10 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
 	}
 
@@ -1912,7 +1915,10 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
 	}
 

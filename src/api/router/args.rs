@@ -4,7 +4,7 @@ use axum::{body::Body, extract::FromRequest};
 use bytes::{BufMut, Bytes, BytesMut};
 use conduwuit::{Error, Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, ServerName, UserId, api::IncomingRequest,
 };
@@ -44,7 +44,7 @@ pub(crate) struct Args<T> {
 pub(crate) fn authenticate_user<'a>(
 	request: hyper::Request<Body>,
 	services: &'a State,
-	metadata: &'a ruma::api::Metadata,
+	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
 	Box::pin(async move {
 		let mut request = request::from(services, request).await?;

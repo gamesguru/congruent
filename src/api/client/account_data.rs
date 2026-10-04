@@ -5,7 +5,9 @@ use axum::{
 };
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
-use ruma::{
+use serde::Deserialize;
+use serde_json::{json, value::RawValue as RawJsonValue};
+use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
 		IncomingRequest,
@@ -20,8 +22,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde::Deserialize;
-use serde_json::{json, value::RawValue as RawJsonValue};
 
 use crate::{Ruma, router::authenticate_user};
 

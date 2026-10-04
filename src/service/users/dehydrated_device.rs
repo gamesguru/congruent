@@ -1,6 +1,7 @@
 use conduwuit::{Err, Result, implement, info, trace};
 use conduwuit_database::{Deserialized, Json};
-use ruma::{
+use serde::{Deserialize, Serialize};
+use slipstream::{
 	DeviceId, OwnedDeviceId, UserId,
 	api::client::dehydrated_device::{
 		DehydratedDeviceData, put_dehydrated_device::unstable::Request,
@@ -8,7 +9,6 @@ use ruma::{
 	encryption::DeviceKeys,
 	serde::Raw,
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DehydratedDevice {
@@ -173,7 +173,7 @@ pub async fn get_dehydrated_device(&self, user_id: &UserId) -> Result<Dehydrated
 		.map_err(|e| {
 			if e.is_not_found() {
 				conduwuit::Error::BadRequest(
-					ruma::api::client::error::ErrorKind::NotFound,
+					slipstream::api::client::error::ErrorKind::NotFound,
 					"No dehydrated device found.",
 				)
 			} else {

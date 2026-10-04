@@ -2,8 +2,8 @@ use std::collections::{HashSet, VecDeque};
 
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, debug, info, trace, utils::to_canonical_object, warn};
-use ruma::{OwnedEventId, api::federation::event::get_missing_events};
 use serde_json::{json, value::RawValue};
+use slipstream::{OwnedEventId, api::federation::event::get_missing_events};
 
 use super::AccessCheck;
 use crate::Ruma;
@@ -47,7 +47,7 @@ pub(crate) async fn get_missing_events_route(
 	let room_version = services.rooms.state.get_room_version(&body.room_id).await?;
 
 	let mut queue: VecDeque<OwnedEventId> = VecDeque::from(body.latest_events.clone());
-	let mut results: Vec<(OwnedEventId, Vec<OwnedEventId>, ruma::UInt, Box<RawValue>)> =
+	let mut results: Vec<(OwnedEventId, Vec<OwnedEventId>, slipstream::UInt, Box<RawValue>)> =
 		Vec::with_capacity(limit);
 	let mut seen: HashSet<OwnedEventId> = HashSet::from_iter(body.earliest_events.clone());
 
@@ -151,7 +151,7 @@ pub(crate) async fn get_missing_events_route(
 /// Only events present in the input set participate in the graph — external
 /// prev_events (e.g. `earliest_events`) are treated as implicit roots.
 pub(crate) fn topo_sort_events(
-	events: impl IntoIterator<Item = (OwnedEventId, Vec<OwnedEventId>, ruma::UInt)>,
+	events: impl IntoIterator<Item = (OwnedEventId, Vec<OwnedEventId>, slipstream::UInt)>,
 ) -> Vec<OwnedEventId> {
 	conduwuit::utils::kahns_sort::kahn_sort(events.into_iter().map(|(id, prevs, depth)| {
 		// get_missing_events tiebreaks by oldest first (smallest depth), then event_id.
@@ -165,13 +165,13 @@ pub(crate) fn topo_sort_events(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	use super::topo_sort_events;
 
 	fn eid(s: &str) -> OwnedEventId { format!("${s}:example.com").try_into().unwrap() }
 
-	fn depth(n: u64) -> ruma::UInt { ruma::UInt::new(n).unwrap() }
+	fn depth(n: u64) -> slipstream::UInt { slipstream::UInt::new(n).unwrap() }
 
 	/// Linear chain: A ← B ← C
 	/// Expected output: [A, B, C] (oldest first)

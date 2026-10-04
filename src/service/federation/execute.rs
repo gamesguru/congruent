@@ -8,7 +8,7 @@ use conduwuit::{
 use http::{HeaderValue, header::AUTHORIZATION};
 use ipaddress::IPAddress;
 use reqwest::{Client, Method, Request, Response, Url};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, ServerName, ServerSigningKeyId,
 	api::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
@@ -187,7 +187,7 @@ async fn into_http_response(
 	mem::swap(response.headers_mut(), headers);
 
 	// Some servers omit Content-Type (e.g. broken media endpoints). Default to
-	// application/octet-stream so ruma's response deserialization doesn't fail.
+	// application/octet-stream so slipstream's response deserialization doesn't fail.
 	if !headers.contains_key(http::header::CONTENT_TYPE) {
 		headers.insert(
 			http::header::CONTENT_TYPE,

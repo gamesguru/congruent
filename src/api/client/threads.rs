@@ -13,13 +13,13 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use http::StatusCode;
-use ruma::{
+use serde::Deserialize;
+use serde_json::{Value, json};
+use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
 	uint,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
 
 use crate::{Ruma, router::authenticate_user};
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use conduwuit::{Result, implement, utils::stream::TryIgnore};
 use database::Map;
 use futures::{Stream, StreamExt};
-use ruma::RoomId;
+use slipstream::RoomId;
 
 use crate::{Dep, rooms};
 

@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use conduwuit_core::SyncMutex;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Which disposition currently owns an event ID in [`PromotionClaims`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +79,7 @@ impl Default for PromotionClaims {
 mod tests {
 	use std::sync::Arc;
 
-	use ruma::owned_event_id;
+	use slipstream::owned_event_id;
 
 	use super::*;
 

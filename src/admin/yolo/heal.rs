@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use conduwuit_core::utils::stream::TryIgnore;
 use futures::{StreamExt, future::ready};
-use ruma::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, events::StateEventType};
+use slipstream::{OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, events::StateEventType};
 
 use crate::admin_command;
 
@@ -289,7 +289,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 #[admin_command]
 pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 	use futures::StreamExt;
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let ours = self.services.globals.server_name();
 	let mut corrupt = Vec::new();
@@ -634,7 +634,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 pub(super) async fn heal_receipts(&self) -> Result {
 	use std::collections::HashSet;
 
-	use ruma::events::receipt::ReceiptEvent;
+	use slipstream::events::receipt::ReceiptEvent;
 
 	self.write_str("Starting read receipt heal. This may take a moment...")
 		.await?;

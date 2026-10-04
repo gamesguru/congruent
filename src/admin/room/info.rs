@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::{Err, Result, utils::ReadyExt};
 use futures::StreamExt;
-use ruma::OwnedRoomId;
+use slipstream::OwnedRoomId;
 
 use crate::{admin_command, admin_command_dispatch};
 

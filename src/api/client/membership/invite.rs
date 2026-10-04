@@ -6,7 +6,8 @@ use conduwuit::{
 	warn,
 };
 use futures::FutureExt;
-use ruma::{
+use service::Services;
+use slipstream::{
 	RoomId, UserId,
 	api::{client::membership::invite_user, federation::membership::create_invite},
 	events::{
@@ -14,7 +15,6 @@ use ruma::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 use super::banned_room_check;
 use crate::Ruma;

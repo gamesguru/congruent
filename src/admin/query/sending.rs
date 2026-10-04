@@ -1,8 +1,8 @@
 use clap::Subcommand;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::{OwnedServerName, OwnedUserId};
 use service::sending::Destination;
+use slipstream::{OwnedServerName, OwnedUserId};
 
 use crate::Context;
 

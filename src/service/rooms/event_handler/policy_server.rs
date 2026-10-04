@@ -9,7 +9,8 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, debug, debug_error, debug_info, debug_warn, implement, trace,
 	warn,
 };
-use ruma::{
+use serde_json::value::RawValue;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, KeyId, RoomId, ServerName, SigningKeyId,
 	api::federation::room::{
 		policy_check::unstable::Request as PolicyCheckRequest,
@@ -17,7 +18,6 @@ use ruma::{
 	},
 	events::{StateEventType, room::policy::RoomPolicyEventContent},
 };
-use serde_json::value::RawValue;
 
 /// Asks a remote policy server if the event is allowed.
 ///
@@ -117,8 +117,10 @@ pub async fn ask_policy_server(
 		// "ed25519:policy_server"?
 		if let Some(CanonicalJsonValue::Object(sigs)) = pdu_json.get("signatures") {
 			if let Some(CanonicalJsonValue::Object(server_sigs)) = sigs.get(via.as_str()) {
-				let wanted_key_id: &KeyId<ruma::SigningKeyAlgorithm, ruma::Base64PublicKey> =
-					SigningKeyId::parse("ed25519:policy_server")?;
+				let wanted_key_id: &KeyId<
+					slipstream::SigningKeyAlgorithm,
+					slipstream::Base64PublicKey,
+				> = SigningKeyId::parse("ed25519:policy_server")?;
 				if let Some(CanonicalJsonValue::String(_sig_value)) =
 					server_sigs.get(wanted_key_id.as_str())
 				{
@@ -237,8 +239,10 @@ pub async fn fetch_policy_server_signature(
 		debug!("Policy server refused to sign event");
 		return Ok(false);
 	}
-	let sigs: ruma::Signatures<ruma::OwnedServerName, ruma::ServerSigningKeyVersion> =
-		response.signatures.unwrap();
+	let sigs: slipstream::Signatures<
+		slipstream::OwnedServerName,
+		slipstream::ServerSigningKeyVersion,
+	> = response.signatures.unwrap();
 	if !sigs.contains_key(via) {
 		debug_warn!(
 			"Policy server returned signatures, but did not include the expected server name \

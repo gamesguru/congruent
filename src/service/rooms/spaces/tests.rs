@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use ruma::{
+use slipstream::{
 	UInt,
 	api::federation::space::{SpaceHierarchyParentSummary, SpaceHierarchyParentSummaryInit},
 	owned_room_id, owned_server_name,
@@ -66,7 +66,7 @@ fn get_summary_children() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	let all = get_parent_children_via(&summary, false);
 	assert_eq!(all, vec![
@@ -113,7 +113,7 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	let chunk = summary_to_chunk(summary, true);
 	let children: Vec<_> = chunk
@@ -182,7 +182,7 @@ fn get_summary_children_sorted_by_order() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 	assert_eq!(
 		summary
 			.room_type
@@ -256,7 +256,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	assert_eq!(
 		summary

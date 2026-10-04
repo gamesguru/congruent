@@ -17,7 +17,9 @@ use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
-use ruma::{
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
 	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
@@ -30,8 +32,6 @@ use ruma::{
 	serde::Raw,
 	uint,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::{Dep, account_data, admin, appservice, globals, rooms};
 

@@ -16,7 +16,7 @@ use conduwuit_core::{
 pub use create::create_admin_room;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt};
 use loole::{Receiver, Sender};
-use ruma::{
+use slipstream::{
 	Mxc, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	events::{
 		Mentions,

@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use database::{Interfix, Map};
 use futures::{Stream, StreamExt};
-use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
+use slipstream::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 
 use crate::{
 	Dep,

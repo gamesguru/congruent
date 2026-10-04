@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use conduwuit::{Result, implement};
-use ruma::ServerName;
+use slipstream::ServerName;
 
 use crate::{Dep, config};
 

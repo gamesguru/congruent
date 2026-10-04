@@ -3,7 +3,7 @@ use std::future::ready;
 use conduwuit::{Event, PduCount, Result};
 use conduwuit_core::matrix::pdu::PduEvent;
 use futures::{StreamExt, pin_mut};
-use ruma::{CanonicalJsonObject, EventId, RoomId};
+use slipstream::{CanonicalJsonObject, EventId, RoomId};
 
 /// Populates `unsigned.prev_content`, `unsigned.prev_sender`, and
 /// `unsigned.replaces_state` on a PDU's JSON from the given previous state
@@ -14,10 +14,10 @@ pub fn update_unsigned_prev_content(
 	prev_state: &PduEvent,
 ) -> Result<()> {
 	let unsigned = pdu_json.entry("unsigned".to_owned()).or_insert_with(|| {
-		ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::default())
+		slipstream::CanonicalJsonValue::Object(std::collections::BTreeMap::default())
 	});
 
-	if let ruma::CanonicalJsonValue::Object(unsigned) = unsigned {
+	if let slipstream::CanonicalJsonValue::Object(unsigned) = unsigned {
 		// Idempotently remove old (possibly wrong/missing) fields
 		unsigned.remove("prev_content");
 		unsigned.remove("prev_sender");
@@ -27,7 +27,7 @@ pub fn update_unsigned_prev_content(
 
 		unsigned.insert(
 			"prev_content".to_owned(),
-			ruma::CanonicalJsonValue::Object(
+			slipstream::CanonicalJsonValue::Object(
 				conduwuit_core::utils::to_canonical_object(prev_content_value).map_err(|e| {
 					conduwuit::err!(Database(error!(
 						"Failed to convert prev_state to canonical JSON: {e}"
@@ -37,11 +37,11 @@ pub fn update_unsigned_prev_content(
 		);
 		unsigned.insert(
 			"prev_sender".to_owned(),
-			ruma::CanonicalJsonValue::String(prev_state.sender().to_string()),
+			slipstream::CanonicalJsonValue::String(prev_state.sender().to_string()),
 		);
 		unsigned.insert(
 			"replaces_state".to_owned(),
-			ruma::CanonicalJsonValue::String(prev_state.event_id().to_string()),
+			slipstream::CanonicalJsonValue::String(prev_state.event_id().to_string()),
 		);
 	}
 
@@ -65,7 +65,8 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 
 				let mut already_has_prev_content = false;
 				if let Ok(ref json) = pdu_json {
-					if let Some(ruma::CanonicalJsonValue::Object(unsigned)) = json.get("unsigned")
+					if let Some(slipstream::CanonicalJsonValue::Object(unsigned)) =
+						json.get("unsigned")
 					{
 						if unsigned.contains_key("prev_content") {
 							already_has_prev_content = true;
@@ -139,10 +140,10 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 		};
 
 		let unsigned = pdu_json.entry("unsigned".to_owned()).or_insert_with(|| {
-			ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::new())
+			slipstream::CanonicalJsonValue::Object(std::collections::BTreeMap::new())
 		});
 
-		let ruma::CanonicalJsonValue::Object(unsigned) = unsigned else {
+		let slipstream::CanonicalJsonValue::Object(unsigned) = unsigned else {
 			errors = errors.saturating_add(1);
 			continue;
 		};

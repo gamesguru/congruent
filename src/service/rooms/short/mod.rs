@@ -16,8 +16,8 @@ use futures::{
 	Stream, StreamExt,
 	stream::{self},
 };
-use ruma::{EventId, OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 use serde::Deserialize;
+use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::{Dep, globals};
 
@@ -670,7 +670,7 @@ mod tests {
 	use database::Database;
 	use figment::providers::Format;
 	use futures::stream::{self, StreamExt};
-	use ruma::{OwnedEventId, event_id, events::StateEventType};
+	use slipstream::{OwnedEventId, event_id, events::StateEventType};
 
 	use super::*;
 	use crate::Service as _;

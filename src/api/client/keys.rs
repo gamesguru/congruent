@@ -12,7 +12,9 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
-use ruma::{
+use serde_json::json;
+use service::uiaa::Identity;
+use slipstream::{
 	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
 	api::{
 		client::{
@@ -28,8 +30,6 @@ use ruma::{
 	encryption::CrossSigningKey,
 	serde::Raw,
 };
-use serde_json::json;
-use service::uiaa::Identity;
 
 use crate::Ruma;
 
@@ -150,7 +150,7 @@ pub(crate) async fn upload_keys_route(
 					&existing_device_keys_json,
 				);
 
-				let merged_keys: Raw<ruma::encryption::DeviceKeys> =
+				let merged_keys: Raw<slipstream::encryption::DeviceKeys> =
 					serde_json::from_value(new_device_keys_json)
 						.expect("Merged JSON must be valid Raw<DeviceKeys>");
 
@@ -711,8 +711,8 @@ where
 }
 
 fn add_unsigned_device_display_name(
-	keys: &mut Raw<ruma::encryption::DeviceKeys>,
-	metadata: ruma::api::client::device::Device,
+	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
+	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
 ) -> serde_json::Result<()> {
 	if let Some(display_name) = metadata.display_name {

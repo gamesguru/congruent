@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use conduwuit::debug;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Calculate new forward extremities after processing an incoming event.
 ///
@@ -70,7 +70,7 @@ where
 mod tests {
 	use std::future::ready;
 
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 

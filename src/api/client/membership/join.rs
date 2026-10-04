@@ -13,7 +13,12 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use service::{
+	Services,
+	appservice::RegistrationInfo,
+	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
+};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
 	RoomVersionId, UserId,
 	api::{
@@ -31,11 +36,6 @@ use ruma::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-};
-use service::{
-	Services,
-	appservice::RegistrationInfo,
-	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use tokio::join;
 
@@ -538,14 +538,17 @@ async fn join_room_by_id_helper_remote(
 		.boxed()
 		.await;
 
-	let remote_latest_events: Vec<ruma::OwnedEventId> = join_event
+	let remote_latest_events: Vec<slipstream::OwnedEventId> = join_event
 		.get("prev_events")
 		.and_then(|v| v.as_array())
 		.map(|arr| {
 			arr.iter()
 				.filter_map(|v| {
-					v.as_str()
-						.and_then(|s| <&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned))
+					v.as_str().and_then(|s| {
+						<&slipstream::EventId>::try_from(s)
+							.ok()
+							.map(ToOwned::to_owned)
+					})
 				})
 				.collect()
 		})
@@ -575,10 +578,10 @@ async fn join_room_by_id_helper_remote_process(
 	room_version_id: RoomVersionId,
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
-	event_id: ruma::OwnedEventId,
+	event_id: slipstream::OwnedEventId,
 	state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
-	remote_latest_events: Vec<ruma::OwnedEventId>,
+	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result {
 	info!("Parsing join event");
 	let parsed_join_pdu = Box::new(
@@ -598,7 +601,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response room_state");
 	let cork = services.db.cork_and_flush();
-	let mut outlier_event_ids: Vec<ruma::OwnedEventId> = Vec::new();
+	let mut outlier_event_ids: Vec<slipstream::OwnedEventId> = Vec::new();
 	let state = services
 		.server_keys
 		.concurrent_validate_and_add_events(send_join_response.room_state.state, &room_version_id)
@@ -686,7 +689,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response auth_chain");
 	let cork = services.db.cork_and_flush();
-	let auth_eids: Vec<ruma::OwnedEventId> = services
+	let auth_eids: Vec<slipstream::OwnedEventId> = services
 		.server_keys
 		.concurrent_validate_and_add_events(
 			send_join_response.room_state.auth_chain,
@@ -1370,7 +1373,7 @@ fn deprioritize(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedServerName;
+	use slipstream::OwnedServerName;
 
 	use super::*;
 
@@ -1411,7 +1414,7 @@ async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
-	event_id: &ruma::OwnedEventId,
+	event_id: &slipstream::OwnedEventId,
 ) -> Result<()> {
 	info!(
 		%room_id,

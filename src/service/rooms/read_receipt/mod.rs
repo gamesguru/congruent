@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{Result, debug, err, warn};
 use futures::Stream;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnySyncEphemeralRoomEvent, SyncEphemeralRoomEvent,
@@ -45,7 +45,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
-		target_thread: Option<&ruma::events::receipt::ReceiptThread>,
+		target_thread: Option<&slipstream::events::receipt::ReceiptThread>,
 	) -> Option<OwnedEventId> {
 		self.db
 			.readreceipt_get(room_id, user_id, target_thread)
@@ -118,7 +118,7 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
-		thread: Option<&ruma::events::receipt::ReceiptThread>,
+		thread: Option<&slipstream::events::receipt::ReceiptThread>,
 	) -> Result<u64> {
 		self.db
 			.private_read_get_count(room_id, user_id, thread)
@@ -137,8 +137,8 @@ fn aggregate_receipts<I>(
 ) -> BTreeMap<
 	OwnedEventId,
 	BTreeMap<
-		ruma::events::receipt::ReceiptType,
-		BTreeMap<OwnedUserId, ruma::events::receipt::Receipt>,
+		slipstream::events::receipt::ReceiptType,
+		BTreeMap<OwnedUserId, slipstream::events::receipt::Receipt>,
 	>,
 >
 where
@@ -146,7 +146,7 @@ where
 {
 	let mut json: BTreeMap<OwnedEventId, BTreeMap<_, BTreeMap<OwnedUserId, _>>> = BTreeMap::new();
 	let mut user_locations: BTreeMap<
-		(OwnedUserId, ruma::events::receipt::ReceiptType, Option<String>),
+		(OwnedUserId, slipstream::events::receipt::ReceiptType, Option<String>),
 		OwnedEventId,
 	> = BTreeMap::new();
 
@@ -161,7 +161,7 @@ where
 						for (user_id, new_receipt) in new_users {
 							let is_unthreaded = matches!(
 								new_receipt.thread,
-								ruma::events::receipt::ReceiptThread::Unthreaded
+								slipstream::events::receipt::ReceiptThread::Unthreaded
 							);
 
 							let location_key = (

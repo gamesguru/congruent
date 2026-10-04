@@ -2,7 +2,7 @@ use askama::{Template, filters::HtmlSafe};
 use base64::Engine;
 use conduwuit_core::result::FlatOk;
 use conduwuit_service::Services;
-use ruma::UserId;
+use slipstream::UserId;
 
 pub(super) mod form;
 

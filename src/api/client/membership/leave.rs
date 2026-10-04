@@ -8,7 +8,8 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
-use ruma::{
+use service::Services;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerName, RoomId, RoomVersionId, UserId,
 	api::{
 		client::membership::leave_room,
@@ -19,7 +20,6 @@ use ruma::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 use super::validate_remote_member_event_stub;
 use crate::Ruma;

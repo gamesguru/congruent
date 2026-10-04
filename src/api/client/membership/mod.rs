@@ -13,7 +13,8 @@ use std::net::IpAddr;
 use axum::extract::State;
 use conduwuit::{Err, Result, info, utils::stream::IterStream, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use service::Services;
+use slipstream::{
 	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
 	events::{
@@ -21,7 +22,6 @@ use ruma::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 pub(crate) use self::{
 	ban::ban_user_route,

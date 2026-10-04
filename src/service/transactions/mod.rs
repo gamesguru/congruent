@@ -15,7 +15,7 @@ use conduwuit::{
 	warn,
 };
 use database::{Handle, Map};
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedServerName, OwnedTransactionId, TransactionId, UserId,
 	api::client::error::ErrorKind::LimitExceeded,
 };
@@ -172,7 +172,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		device_id: Option<&DeviceId>,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		txn_id: &TransactionId,
 		data: &[u8],
 	) {
@@ -201,7 +201,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		device_id: Option<&DeviceId>,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		txn_id: &TransactionId,
 	) -> Result<Handle<'_>> {
 		let key = (user_id, device_id, room_id, txn_id);
@@ -227,7 +227,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		device_id: Option<&DeviceId>,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		txn_id: &TransactionId,
 	) -> Option<MutexMapGuard<Vec<u8>, ()>> {
 		let mut key = user_id.as_bytes().to_vec();

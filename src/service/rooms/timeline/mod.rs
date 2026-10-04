@@ -38,11 +38,11 @@ use conduwuit_core::{
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
-use ruma::{
+use serde::Deserialize;
+use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
 };
-use serde::Deserialize;
 
 use self::data::Data;
 pub use self::{
@@ -261,7 +261,7 @@ impl Service {
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 	) {
-		use ruma::events::TimelineEventType;
+		use slipstream::events::TimelineEventType;
 		if pdu.kind == TimelineEventType::RoomMessage {
 			if let Ok(content) = pdu.get_content::<ExtractBody>() {
 				if let Some(body) = &content.body {
@@ -503,7 +503,7 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 		timestamp: u64,
-		dir: ruma::api::Direction,
+		dir: slipstream::api::Direction,
 	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
 		self.db.pdus_by_timestamp(room_id, timestamp, dir)
 	}

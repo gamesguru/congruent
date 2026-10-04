@@ -12,7 +12,7 @@ use futures::{
 	FutureExt, future,
 	stream::{FuturesUnordered, StreamExt},
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedServerName,
 	RoomId, ServerName,
 	api::federation::{authorization::get_event_authorization, event::get_event},
@@ -35,7 +35,7 @@ pub async fn fetch_and_handle_outliers<'a, Pdu, Events>(
 	create_event: Option<&'a Pdu>,
 	room_id: &'a RoomId,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 	explicit_routing_servers: Option<Vec<OwnedServerName>>,
 ) -> Vec<(PduEvent, Option<BTreeMap<String, CanonicalJsonValue>>)>
 where
@@ -305,7 +305,7 @@ where
 												.and_then(|c| c.get("room_version"))
 												.and_then(|v| v.as_str())
 												.unwrap_or("1");
-											version = ruma::RoomVersionId::try_from(v).ok();
+											version = slipstream::RoomVersionId::try_from(v).ok();
 										}
 									}
 									match version {
@@ -529,12 +529,12 @@ where
 				.and_then(|info| info.get("origin_server_ts"))
 				.and_then(CanonicalJsonValue::as_integer)
 				.map(i64::from)
-				.and_then(|i| ruma::UInt::try_from(i).ok())
-				.unwrap_or_else(|| ruma::uint!(0));
+				.and_then(|i| slipstream::UInt::try_from(i).ok())
+				.unwrap_or_else(|| slipstream::uint!(0));
 
 			future::ready(conduwuit_core::Result::Ok((
-				ruma::int!(0),
-				ruma::MilliSecondsSinceUnixEpoch(origin_server_ts),
+				slipstream::int!(0),
+				slipstream::MilliSecondsSinceUnixEpoch(origin_server_ts),
 			)))
 		};
 

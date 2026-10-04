@@ -5,8 +5,8 @@ use std::{
 
 use conduwuit::utils::{ReadyExt, stream::TryExpect};
 use database::{Database, Deserialized, Json, Map};
-use ruma::{OwnedUserId, UserId};
 use serde::{Deserialize, Serialize};
+use slipstream::{OwnedUserId, UserId};
 
 pub(super) struct Data {
 	passwordresettoken_info: Arc<Map>,

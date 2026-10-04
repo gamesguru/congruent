@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, info};
 use futures::{StreamExt, pin_mut};
-use ruma::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event_by_timestamp};
+use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event_by_timestamp};
 
 use super::AccessCheck;
 use crate::Ruma;

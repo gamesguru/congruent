@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
 use data::Data;
 use regex::RegexSet;
-use ruma::{OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId};
+use slipstream::{
+	OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId,
+};
 
 use crate::service;
 

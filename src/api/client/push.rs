@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Error, Result, err};
 use conduwuit_service::Services;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue,
 	api::client::{
 		error::ErrorKind,
@@ -102,7 +102,7 @@ pub(crate) async fn get_pushrules_all_route(
 	// and update the stored server default push rules
 	#[allow(deprecated)]
 	{
-		use ruma::push::RuleKind::*;
+		use slipstream::push::RuleKind::*;
 		if global_ruleset
 			.get(Override, PredefinedOverrideRuleId::ContainsDisplayName.as_str())
 			.is_some()
@@ -191,7 +191,7 @@ pub(crate) async fn get_pushrules_global_route(
 	// and update the stored server default push rules
 	#[allow(deprecated)]
 	{
-		use ruma::push::RuleKind::*;
+		use slipstream::push::RuleKind::*;
 		if global_ruleset
 			.get(Override, PredefinedOverrideRuleId::ContainsDisplayName.as_str())
 			.is_some()
@@ -423,7 +423,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 		.content
 		.global
 		.get(body.kind.clone(), &body.rule_id)
-		.map(ruma::push::AnyPushRuleRef::enabled)
+		.map(slipstream::push::AnyPushRuleRef::enabled)
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
 	Ok(get_pushrule_enabled::v3::Response { enabled })
@@ -543,7 +543,7 @@ pub(crate) async fn set_pushers_route(
 /// so recreate it and return server default silently
 pub async fn recreate_push_rules_and_return(
 	services: &Services,
-	sender_user: &ruma::UserId,
+	sender_user: &slipstream::UserId,
 ) -> Result<get_pushrules_all::v3::Response> {
 	let ty = GlobalAccountDataEventType::PushRules;
 	let event = PushRulesEvent {

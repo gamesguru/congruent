@@ -9,7 +9,8 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, TryStreamExt};
-use ruma::{
+use serde_json::json;
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
 	api::client::state::{get_state_events, get_state_events_for_key, send_state_event},
 	events::{
@@ -25,7 +26,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde_json::json;
 
 use crate::{Ruma, RumaResponse};
 

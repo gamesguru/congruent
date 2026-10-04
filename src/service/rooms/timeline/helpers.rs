@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use conduwuit::{Err, Result, err, implement, matrix::pdu::PduBuilder};
-use ruma::{
+use serde_json::Value;
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, TransactionId, UserId,
 	events::{
 		AnyMessageLikeEventContent, AnyStateEventContent, MessageLikeEventType, StateEventType,
@@ -17,7 +18,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde_json::Value;
 
 use crate::rooms::state::RoomMutexGuard;
 

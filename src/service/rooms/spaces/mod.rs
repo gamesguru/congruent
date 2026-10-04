@@ -16,7 +16,7 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream::FuturesUnordered};
 use lru_cache::LruCache;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName, UserId,
 	api::{
 		client::space::SpaceHierarchyRoomsChunk,
@@ -707,8 +707,8 @@ async fn cache_insert(
 	cache.insert(room_id.clone(), Some(CachedSpaceHierarchySummary { summary }));
 }
 
-// Here because cannot implement `From` across ruma-federation-api and
-// ruma-client-api types
+// Here because cannot implement `From` across slipstream-federation-api and
+// slipstream-client-api types
 impl From<CachedSpaceHierarchySummary> for SpaceHierarchyRoomsChunk {
 	fn from(value: CachedSpaceHierarchySummary) -> Self {
 		let SpaceHierarchyParentSummary {
@@ -747,8 +747,8 @@ impl From<CachedSpaceHierarchySummary> for SpaceHierarchyRoomsChunk {
 	}
 }
 
-/// Here because cannot implement `From` across ruma-federation-api and
-/// ruma-client-api types
+/// Here because cannot implement `From` across slipstream-federation-api and
+/// slipstream-client-api types
 #[must_use]
 pub fn summary_to_chunk(
 	summary: SpaceHierarchyParentSummary,

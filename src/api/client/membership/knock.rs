@@ -13,7 +13,8 @@ use conduwuit::{
 	warn,
 };
 use futures::FutureExt;
-use ruma::{
+use service::{Services, rooms::state::RoomMutexGuard};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId,
 	RoomVersionId, UserId,
 	api::{
@@ -29,7 +30,6 @@ use ruma::{
 		},
 	},
 };
-use service::{Services, rooms::state::RoomMutexGuard};
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
 use crate::Ruma;

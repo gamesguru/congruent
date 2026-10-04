@@ -10,12 +10,12 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{
+use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use crate::Ruma;
 
@@ -60,7 +60,7 @@ async fn create_join_event(
 		.await;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {
-		use ruma::RoomVersionId::*;
+		use slipstream::RoomVersionId::*;
 
 		if matches!(room_version_id, V1 | V2 | V3 | V4 | V5 | V6 | V7) {
 			return Err!(Request(InvalidParam(
@@ -154,12 +154,12 @@ async fn create_join_event(
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,
-				&ruma::events::StateEventType::RoomName,
+				&slipstream::events::StateEventType::RoomName,
 			),
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,
-				&ruma::events::StateEventType::RoomCanonicalAlias,
+				&slipstream::events::StateEventType::RoomCanonicalAlias,
 			),
 		);
 		if has_name || has_canonical_alias {

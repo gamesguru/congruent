@@ -2,7 +2,7 @@
 //! `LeanEvent` and `StateProvider` interfaces.
 //!
 //! This enables using `rezzy::auth::check_auth` as a drop-in replacement
-//! for ruma's `state_res::event_auth::auth_check` throughout the codebase.
+//! for slipstream's `state_res::event_auth::auth_check` throughout the codebase.
 //!
 //! `Pdu` implements `rezzy::RawEvent` directly (in `pdu.rs`), so
 //! `ParsedEvent::new(&pdu)` gives you `DagNode + EventLike` with zero
@@ -12,9 +12,9 @@ use std::collections::HashMap;
 
 use conduwuit_core::matrix::{Event, PduEvent, state_key::StateKey, state_res::RoomVersion};
 use rezzy::{LeanEvent, StateResVersion, auth::StateProvider};
-use ruma::{RoomVersionId, events::StateEventType};
+use slipstream::{RoomVersionId, events::StateEventType};
 
-/// Map a ruma `RoomVersionId` to rezzy's `StateResVersion`.
+/// Map a slipstream `RoomVersionId` to rezzy's `StateResVersion`.
 ///
 /// Delegates to `RoomVersion::new()` which already has the canonical
 /// version→state_res mapping, then converts to rezzy's enum.
@@ -72,7 +72,7 @@ impl PduStateProvider {
 	/// Build a state provider from a HashMap keyed by `(StateEventType,
 	/// StateKey)`.
 	///
-	/// This is the format used by ruma's auth_check callsites.
+	/// This is the format used by slipstream's auth_check callsites.
 	#[must_use]
 	pub fn from_ruma_map(auth_events: &HashMap<(StateEventType, StateKey), PduEvent>) -> Self {
 		let events = auth_events
@@ -128,7 +128,7 @@ impl PduStateProvider {
 	/// checks (e.g. `rezzy::auth::user::user_can_invite`) where a pre-built
 	/// auth events map is not available.
 	pub async fn from_room_state(
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		state_accessor: &crate::rooms::state_accessor::Service,
 	) -> Self {
 		let mut events = HashMap::new();
@@ -175,7 +175,7 @@ impl StateProvider<String> for PduStateProvider {
 /// continuwuity-compatible `Result<bool>`.
 ///
 /// Returns `Ok(true)` if the event passes auth, `Ok(false)` if it fails.
-/// This matches ruma's `auth_check` return signature for drop-in
+/// This matches slipstream's `auth_check` return signature for drop-in
 /// compatibility.
 pub fn rezzy_auth_check<S: StateProvider<String>>(
 	pdu: &PduEvent,
@@ -208,7 +208,7 @@ impl RoomStateProvider {
 	/// Returns an error if the room version cannot be determined (missing
 	/// create event, DB corruption, or nonexistent room).
 	pub async fn new(
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		state_accessor: &crate::rooms::state_accessor::Service,
 	) -> conduwuit_core::Result<Self> {
 		let provider = PduStateProvider::from_room_state(room_id, state_accessor).await;
@@ -272,7 +272,7 @@ mod tests {
 
 	// -----------------------------------------------------------------
 	// Regression: rezzy_auth_check must return false (not panic) on
-	// completely empty state — matching the old ruma .unwrap_or(false)
+	// completely empty state — matching the old slipstream .unwrap_or(false)
 	// -----------------------------------------------------------------
 	// When check_current_state_auth encounters an error building the
 	// state provider (e.g. room version lookup fails during federation

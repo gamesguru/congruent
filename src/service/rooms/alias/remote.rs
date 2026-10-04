@@ -1,6 +1,6 @@
 use conduwuit::{Result, debug, error, implement};
 use federation::query::get_room_information::v1::Response;
-use ruma::{OwnedRoomId, OwnedServerName, RoomAliasId, ServerName, api::federation};
+use slipstream::{OwnedRoomId, OwnedServerName, RoomAliasId, ServerName, api::federation};
 
 #[implement(super::Service)]
 pub(super) async fn remote_resolve(

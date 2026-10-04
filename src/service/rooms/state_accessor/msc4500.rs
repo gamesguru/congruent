@@ -16,7 +16,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Pdu, RoomVersion, implement, matrix::Event};
 use futures::TryStreamExt;
 use rezzy::state::{LtHash, RedactionOverlay, ResolutionInputRecord, ResolutionInputs};
-use ruma::{
+use serde::Deserialize;
+use slipstream::{
 	EventId, OwnedEventId, RoomVersionId,
 	events::{
 		StateEventType, TimelineEventType,
@@ -26,7 +27,6 @@ use ruma::{
 		},
 	},
 };
-use serde::Deserialize;
 
 use crate::rooms::short::ShortEventId;
 
@@ -259,9 +259,9 @@ async fn msc4500_redaction_effective(
 #[implement(super::Service)]
 async fn msc4500_redact_power(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	root: &rezzy::hamt::RootHandle,
-	sender: &ruma::UserId,
+	sender: &slipstream::UserId,
 ) -> Option<bool> {
 	match self
 		.state_get_content_hamt::<RoomPowerLevelsEventContent>(

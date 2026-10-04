@@ -6,7 +6,7 @@ use conduwuit::{
 use database::Ignore;
 use futures::{Stream, StreamExt, stream::iter};
 use itertools::Itertools;
-use ruma::{
+use slipstream::{
 	OwnedServerName, RoomId, ServerName,
 	events::{StateEventType, room::power_levels::RoomPowerLevelsEventContent},
 	int,

@@ -14,8 +14,8 @@ use conduwuit::{
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
-use ruma::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use service::rooms::short::ShortEventId;
+use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use tracing::trace;
 
 use crate::client::TimelinePdus;

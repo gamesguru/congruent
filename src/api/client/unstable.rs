@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedRoomId,
 	api::{
 		client::{
@@ -122,7 +122,7 @@ pub(crate) async fn set_profile_key_route(
 		let Some(avatar_url) = profile_key_value.as_str() else {
 			return Err!(Request(BadJson("avatar_url must be a string")));
 		};
-		let mxc = ruma::OwnedMxcUri::from(avatar_url);
+		let mxc = slipstream::OwnedMxcUri::from(avatar_url);
 
 		let all_joined_rooms: Vec<OwnedRoomId> = services
 			.rooms
@@ -331,13 +331,13 @@ pub(crate) async fn get_room_dag_route(
 ) -> Result<impl axum::response::IntoResponse> {
 	use conduwuit::{Err, err};
 	use futures::StreamExt;
-	use ruma::OwnedRoomId;
+	use slipstream::OwnedRoomId;
 
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
-		== ruma::events::room::join_rules::JoinRule::Public;
+		== slipstream::events::room::join_rules::JoinRule::Public;
 
 	if !is_public {
 		// Extract token for private rooms
@@ -352,7 +352,7 @@ pub(crate) async fn get_room_dag_route(
 		// Validate user
 		let (user_id, _) = services.users.find_from_token(&token).await.map_err(|_| {
 			conduwuit::Error::Request(
-				ruma::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
+				slipstream::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
 				"Invalid access token.".into(),
 				http::StatusCode::UNAUTHORIZED,
 			)

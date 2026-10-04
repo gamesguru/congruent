@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::OwnedRoomId;
+use slipstream::OwnedRoomId;
 
 use crate::{Context, PAGE_SIZE, get_room_info};
 

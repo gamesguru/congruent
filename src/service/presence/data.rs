@@ -7,7 +7,7 @@ use conduwuit::{
 use database::{Deserialized, Json, Map};
 use futures::Stream;
 use moka::sync::Cache;
-use ruma::{UInt, UserId, events::presence::PresenceEvent, presence::PresenceState};
+use slipstream::{UInt, UserId, events::presence::PresenceEvent, presence::PresenceState};
 
 use super::Presence;
 use crate::{Dep, globals, users};
@@ -15,7 +15,7 @@ use crate::{Dep, globals, users};
 pub(crate) struct Data {
 	presenceid_presence: Arc<Map>,
 	userid_presenceid: Arc<Map>,
-	presence_cache: Cache<ruma::OwnedUserId, Arc<(u64, Presence)>>,
+	presence_cache: Cache<slipstream::OwnedUserId, Arc<(u64, Presence)>>,
 	services: Services,
 }
 

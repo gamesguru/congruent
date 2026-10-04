@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::api::client::room::aliases;
+use slipstream::api::client::room::aliases;
 
 use crate::Ruma;
 

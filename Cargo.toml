@@ -433,6 +433,9 @@ path = "../slipstream"
 # git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
 # branch = "dev"
 
+[workspace.dependencies.slipstream]
+path = "src/slipstream"
+
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
 rev = "61d9d23872197e9ace4a477f2617d5c9f50ecb23"

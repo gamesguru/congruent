@@ -12,7 +12,7 @@ use conduwuit::{
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt, future::join5, pin_mut};
 use moka::sync::Cache;
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, ServerName, UserId,
 	events::{AnyStrippedStateEvent, room::member::MembershipState},
 	serde::Raw,
@@ -717,7 +717,7 @@ pub async fn invite_sender(&self, user_id: &UserId, room_id: &RoomId) -> Result<
 }
 #[cfg(test)]
 mod serde_test3 {
-	use ruma::events::room::member::RoomMemberEventContent;
+	use slipstream::events::room::member::RoomMemberEventContent;
 	#[test]
 	fn test_serde() {
 		let s = r#"{"displayname":"user-2 🏳️‍⚧️","membership":"join"}"#;

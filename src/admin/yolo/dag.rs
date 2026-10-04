@@ -9,7 +9,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_missing_events},
@@ -514,7 +514,7 @@ pub(super) async fn get_remote_dag(
 	let mut max_depth = 0_u64;
 	let mut consecutive_errors = 0_usize;
 	let mut last_fetched_event: Option<OwnedEventId> = None;
-	let batch_size = ruma::uint!(500);
+	let batch_size = slipstream::uint!(500);
 	let start_time = tokio::time::Instant::now();
 
 	let server_list_str = pool.display();
@@ -548,7 +548,7 @@ pub(super) async fn get_remote_dag(
 			continue;
 		};
 
-		let request = ruma::api::federation::backfill::get_backfill::v1::Request {
+		let request = slipstream::api::federation::backfill::get_backfill::v1::Request {
 			room_id: room_id.clone(),
 			v: request_v.clone(),
 			limit: batch_size,
@@ -684,9 +684,9 @@ pub(super) async fn get_remote_dag(
 				continue;
 			}
 			info!("get-remote-dag: recovered {} PDUs via /event/ fallback!", fallback_pdus.len());
-			response = ruma::api::federation::backfill::get_backfill::v1::Response {
+			response = slipstream::api::federation::backfill::get_backfill::v1::Response {
 				origin: active_server.clone(),
-				origin_server_ts: ruma::MilliSecondsSinceUnixEpoch::now(),
+				origin_server_ts: slipstream::MilliSecondsSinceUnixEpoch::now(),
 				pdus: fallback_pdus,
 			};
 		}
@@ -721,7 +721,7 @@ pub(super) async fn get_remote_dag(
 
 			value.insert(
 				"event_id".to_owned(),
-				ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+				slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 			);
 
 			batch_pdus.push((event_id, value));
@@ -1026,7 +1026,7 @@ pub(super) async fn dag_merge_base(
 				.to_owned();
 
 			let make_join_request =
-				ruma::api::federation::membership::prepare_join_event::v1::Request {
+				slipstream::api::federation::membership::prepare_join_event::v1::Request {
 					room_id: room_id.clone(),
 					user_id,
 					ver: self.services.server.supported_room_versions().collect(),
@@ -1844,7 +1844,7 @@ pub(super) async fn dedup_room(&self, room_id: OwnedRoomId, dry_run: bool) -> Re
 		};
 
 		// Only strip event_id (DB events include it, federation events don't).
-		// ruma's reference_hash handles redaction + stripping signatures/unsigned
+		// slipstream's reference_hash handles redaction + stripping signatures/unsigned
 		// per the room version spec.
 		let mut hashable = json.clone();
 		hashable.remove("event_id");

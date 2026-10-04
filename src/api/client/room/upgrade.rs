@@ -6,7 +6,8 @@ use conduwuit::{
 	matrix::{StateKey, pdu::PduBuilder},
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use serde_json::{json, value::to_raw_value};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedUserId, RoomId, RoomVersionId,
 	api::client::{error::ErrorKind, room::upgrade_room},
 	events::{
@@ -20,7 +21,6 @@ use ruma::{
 	},
 	int,
 };
-use serde_json::{json, value::to_raw_value};
 
 use crate::router::Ruma;
 
@@ -162,7 +162,7 @@ pub(crate) async fn upgrade_room_route(
 			.map_err(|_| err!(Database("Found room with invalid m.room.create event.")))?;
 
 	// Use the m.room.tombstone event as the predecessor
-	let predecessor = Some(ruma::events::room::create::PreviousRoom::new(
+	let predecessor = Some(slipstream::events::room::create::PreviousRoom::new(
 		body.room_id.clone(),
 		tombstone_event_id,
 	));

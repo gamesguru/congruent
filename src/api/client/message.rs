@@ -22,7 +22,7 @@ use conduwuit_service::{
 	},
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture, pin_mut};
-use ruma::{
+use slipstream::{
 	DeviceId, RoomId, UserId,
 	api::{
 		Direction,

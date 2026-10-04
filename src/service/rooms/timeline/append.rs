@@ -11,7 +11,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, UserId,
 	events::{
 		GlobalAccountDataEventType, StateEventType, TimelineEventType,
@@ -29,7 +29,7 @@ use crate::appservice::NamespaceRegex;
 
 pub struct AppendPduContext<'a> {
 	pub state_lock: &'a RoomMutexGuard,
-	pub room_id: &'a ruma::RoomId,
+	pub room_id: &'a slipstream::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub advance_current_state: bool,
@@ -43,8 +43,8 @@ pub struct AppendPduContext<'a> {
 /// recomputation.
 pub(super) struct PduPushEval<'a> {
 	pub pdu: &'a PduEvent,
-	pub serialized: &'a ruma::serde::Raw<ruma::events::AnySyncTimelineEvent>,
-	pub room_id: &'a ruma::RoomId,
+	pub serialized: &'a slipstream::serde::Raw<slipstream::events::AnySyncTimelineEvent>,
+	pub room_id: &'a slipstream::RoomId,
 	pub rules_for_user: &'a Ruleset,
 	pub power_levels: &'a RoomPowerLevelsEventContent,
 	pub soft_fail: bool,
@@ -342,15 +342,18 @@ where
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(
-			ruma::events::receipt::ReceiptType::ReadPrivate,
-			BTreeMap::from_iter([(pdu.sender().to_owned(), ruma::events::receipt::Receipt {
-				ts: Some(ruma::MilliSecondsSinceUnixEpoch::now()),
-				thread: ruma::events::receipt::ReceiptThread::Unthreaded,
-			})]),
+			slipstream::events::receipt::ReceiptType::ReadPrivate,
+			BTreeMap::from_iter([(
+				pdu.sender().to_owned(),
+				slipstream::events::receipt::Receipt {
+					ts: Some(slipstream::MilliSecondsSinceUnixEpoch::now()),
+					thread: slipstream::events::receipt::ReceiptThread::Unthreaded,
+				},
+			)]),
 		)]),
 	)]);
-	let receipt_event = ruma::events::receipt::ReceiptEvent {
-		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+	let receipt_event = slipstream::events::receipt::ReceiptEvent {
+		content: slipstream::events::receipt::ReceiptEventContent(receipt_content),
 		room_id: room_id.to_owned(),
 	};
 
@@ -525,9 +528,10 @@ where
 					.await?;
 
 				if let Ok(content) =
-					pdu.get_content::<ruma::events::room::member::RoomMemberEventContent>()
+					pdu.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
 				{
-					if content.membership == ruma::events::room::member::MembershipState::Join
+					if content.membership
+						== slipstream::events::room::member::MembershipState::Join
 						&& !was_joined && self.services.globals.user_is_local(target_user_id)
 					{
 						self.services

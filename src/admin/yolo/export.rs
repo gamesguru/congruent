@@ -4,8 +4,8 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType};
 use serde_json::Value as JsonValue;
+use slipstream::{CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType};
 use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {

@@ -9,7 +9,7 @@ use conduwuit::{
 };
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
 	events::{
 		StateEventType,
@@ -344,7 +344,7 @@ impl Service {
 		&self,
 		room_alias: &RoomAliasId,
 	) -> Result<Option<OwnedRoomId>> {
-		use ruma::api::appservice::query::query_room_alias;
+		use slipstream::api::appservice::query::query_room_alias;
 
 		for appservice in self.services.appservice.read().await.values() {
 			if appservice.aliases.is_match(room_alias.as_str())

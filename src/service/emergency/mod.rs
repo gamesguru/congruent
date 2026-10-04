@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conduwuit::{Result, error, warn};
-use ruma::{
+use slipstream::{
 	events::{
 		GlobalAccountDataEvent, GlobalAccountDataEventType, push_rules::PushRulesEventContent,
 	},

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use conduwuit::{Result, implement, utils::stream::TryIgnore};
 use database::Map;
 use futures::Stream;
-use ruma::{RoomId, api::client::room::Visibility};
+use slipstream::{RoomId, api::client::room::Visibility};
 
 pub struct Service {
 	db: Data,

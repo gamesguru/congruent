@@ -2,8 +2,8 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, info, utils::math::usize_from_f64};
 use futures::StreamExt;
-use ruma::OwnedEventId;
 use serde::Serialize;
+use slipstream::OwnedEventId;
 use xxhash_rust::xxh3;
 
 /// Default active window: the W most recent events by topological depth.
@@ -96,7 +96,7 @@ pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 ) -> Result<impl axum::response::IntoResponse> {
-	let room_id = ruma::OwnedRoomId::try_from(room_id_str)
+	let room_id = slipstream::OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	// Verify we participate in this room
@@ -195,7 +195,7 @@ pub(crate) async fn get_room_digest_route(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	use super::{build_xxh3_bloom, compute_etag};
 

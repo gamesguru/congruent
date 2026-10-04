@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, info, utils::ReadyExt, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedRoomAliasId, continuwuity_admin_api::rooms,
 	events::room::message::RoomMessageEventContent,
 };

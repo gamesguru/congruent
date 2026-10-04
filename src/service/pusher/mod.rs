@@ -10,7 +10,7 @@ use conduwuit_core::{
 use conduwuit_database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt};
 use ipaddress::IPAddress;
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
 		IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,

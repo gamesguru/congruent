@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use database::Database;
 use futures::{Stream, StreamExt, TryFutureExt};
 use loole::{Receiver, Sender};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedUserId, UInt, UserId, events::presence::PresenceEvent,
 	presence::PresenceState,
 };
@@ -125,7 +125,7 @@ impl crate::Service for Service {
 				}
 
 				let mut room_users: std::collections::HashMap<
-					ruma::OwnedRoomId,
+					slipstream::OwnedRoomId,
 					Vec<OwnedUserId>,
 				> = std::collections::HashMap::new();
 

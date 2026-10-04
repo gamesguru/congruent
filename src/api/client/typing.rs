@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, utils, utils::math::Tried};
-use ruma::api::client::typing::create_typing_event;
+use slipstream::api::client::typing::create_typing_event;
 
 use crate::Ruma;
 
@@ -74,7 +74,7 @@ pub(crate) async fn create_typing_event_route(
 	if services.config.allow_local_presence {
 		services
 			.presence
-			.ping_presence(&body.user_id, &ruma::presence::PresenceState::Online)
+			.ping_presence(&body.user_id, &slipstream::presence::PresenceState::Online)
 			.await?;
 	}
 

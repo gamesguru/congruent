@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Map};
 use futures::Stream;
-use ruma::{OwnedServerName, ServerName, UserId};
+use slipstream::{OwnedServerName, ServerName, UserId};
 
 use super::{Destination, SendingEvent};
 use crate::{Dep, globals};

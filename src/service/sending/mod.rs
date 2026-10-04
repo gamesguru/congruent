@@ -21,7 +21,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
+use slipstream::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
 use tokio::{task, task::JoinSet};
 
 use self::data::Data;
@@ -97,7 +97,7 @@ impl crate::Service for Service {
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
-				ruma::MilliSecondsSinceUnixEpoch::now().get().into(),
+				slipstream::MilliSecondsSinceUnixEpoch::now().get().into(),
 			),
 			server: args.server.clone(),
 			services: Services {

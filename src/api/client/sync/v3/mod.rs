@@ -23,7 +23,8 @@ use futures::{
 	FutureExt, StreamExt, TryFutureExt,
 	future::{OptionFuture, join3, join4},
 };
-use ruma::{
+use service::rooms::lazy_loading::{self, MemberSet, Options as _};
+use slipstream::{
 	DeviceId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
 		OutgoingResponse,
@@ -45,7 +46,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use service::rooms::lazy_loading::{self, MemberSet, Options as _};
 
 use super::load_timeline;
 use crate::{
@@ -321,7 +321,7 @@ pub(crate) async fn sync_events_route(
 
 	// Presence update
 	if services.config.allow_local_presence
-		&& body.body.set_presence != ruma::presence::PresenceState::Offline
+		&& body.body.set_presence != slipstream::presence::PresenceState::Offline
 	{
 		services
 			.presence
@@ -943,10 +943,10 @@ pub(crate) async fn build_sync_events(
 	let mut val: serde_json::Value = serde_json::from_slice(
 		ruma_response
 			.try_into_http_response::<bytes::BytesMut>()
-			.expect("ruma response is valid")
+			.expect("slipstream response is valid")
 			.body(),
 	)
-	.expect("ruma response is valid JSON");
+	.expect("slipstream response is valid JSON");
 
 	// Manually insert state_after data for MSC4222 and inject missing ephemeral
 	// objects
@@ -991,7 +991,7 @@ pub(crate) async fn build_sync_events(
 		}
 	}
 
-	// ruma's Rooms::is_empty() ignores knock, so when only knocked rooms exist the
+	// slipstream's Rooms::is_empty() ignores knock, so when only knocked rooms exist the
 	// entire "rooms" key is omitted from the serialized output. Manually inject it
 	// so clients receive rooms.knock and the sync token advances.
 	if !knocked_rooms.is_empty() && val.get("rooms").is_none_or(|r| r.get("knock").is_none()) {
@@ -1124,7 +1124,7 @@ async fn collect_member_presence(
 	joined_rooms: &BTreeMap<OwnedRoomId, sync_events::v3::JoinedRoom>,
 	presence_updates: &mut PresenceUpdates,
 ) {
-	use ruma::events::{
+	use slipstream::events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
 	};
@@ -1197,7 +1197,7 @@ async fn collect_member_presence(
 /// it parses each one looking for `m.room.member` events with `membership:
 /// "join"` and collects the `state_key` (the user who joined).
 fn collect_timeline_join_users(
-	events: &[Raw<ruma::events::AnySyncTimelineEvent>],
+	events: &[Raw<slipstream::events::AnySyncTimelineEvent>],
 	users: &mut HashSet<OwnedUserId>,
 ) {
 	#[derive(serde::Deserialize)]

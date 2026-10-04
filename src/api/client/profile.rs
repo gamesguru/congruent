@@ -10,7 +10,7 @@ use futures::{
 	FutureExt, StreamExt, TryStreamExt,
 	future::{join, join3, join4},
 };
-use ruma::{
+use slipstream::{
 	OwnedMxcUri, OwnedRoomId, UserId,
 	api::{
 		client::profile::{

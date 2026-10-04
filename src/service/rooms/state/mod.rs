@@ -93,7 +93,7 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
 	events::{
 		AnyStrippedStateEvent, StateEventType, TimelineEventType,

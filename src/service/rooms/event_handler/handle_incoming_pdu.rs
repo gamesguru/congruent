@@ -11,7 +11,7 @@ use futures::{
 	FutureExt, TryFutureExt, TryStreamExt,
 	future::{OptionFuture, try_join4},
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, OwnedUserId, RoomId, ServerName, UserId,
 	events::{
 		StateEventType,
@@ -141,7 +141,7 @@ pub async fn handle_incoming_pdu<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 ) -> Result<Option<RawPduId>> {
 	// Prepare outlier value in case we need to soft-fail on timeout
 	let mut outlier_value = value.clone();
@@ -191,7 +191,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	event_id: &'a EventId,
 	value: BTreeMap<String, CanonicalJsonValue>,
 	is_timeline_event: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 ) -> Result<Option<RawPduId>> {
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
@@ -569,7 +569,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					}
 					inline_fetches = inline_fetches.saturating_add(1);
 
-					let request = ruma::api::federation::event::get_event::v1::Request {
+					let request = slipstream::api::federation::event::get_event::v1::Request {
 						event_id: missing_id.to_owned(),
 						include_unredacted_content: None,
 					};

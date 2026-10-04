@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	OwnedUserId, RoomId, UserId,
 	events::TimelineEventType::{
 		self, Beacon, CallInvite, PollStart, RoomEncrypted, RoomMessage, Sticker,
@@ -224,10 +224,10 @@ async fn load_timeline(
 	let mut prev_batch = if limited {
 		if pdus.len() > limit {
 			pdus.get(pdus.len().saturating_sub(limit))
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		} else {
 			pdus.front()
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		}
 	} else {
 		ending_count
@@ -326,7 +326,7 @@ async fn load_timeline(
 	// If there are no PDUs in this room's sync range, `prev_batch` must be
 	// `None`. Even though a non-limited (empty) window has an obvious "current
 	// position" we could point `prev_batch` at, a set `prev_batch` makes
-	// ruma's `Timeline::is_empty()` return false (it treats the presence of
+	// slipstream's `Timeline::is_empty()` return false (it treats the presence of
 	// `prev_batch` as content). That in turn makes `JoinedRoom::is_empty()`
 	// false, so the incremental-sync loop in v3 always re-includes unchanged
 	// rooms like this one on every poll, violating the "unchanged room should
@@ -397,12 +397,12 @@ pub(crate) async fn add_membership_to_unsigned(
 		// caused by the event itself... are included."
 		// For a user's own membership event, the state after the event is just the
 		// event itself.
-		serde_json::from_str::<ruma::events::room::member::RoomMemberEventContent>(
+		serde_json::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
 			pdu.content.get(),
 		)
-		.map_or(ruma::events::room::member::MembershipState::Leave, |c| c.membership)
+		.map_or(slipstream::events::room::member::MembershipState::Leave, |c| c.membership)
 	} else if pdu.kind == TimelineEventType::RoomCreate {
-		ruma::events::room::member::MembershipState::Leave
+		slipstream::events::room::member::MembershipState::Leave
 	} else {
 		services
 			.rooms

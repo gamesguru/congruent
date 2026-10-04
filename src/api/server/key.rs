@@ -5,7 +5,7 @@ use std::{
 
 use axum::{Json, extract::State, response::IntoResponse};
 use conduwuit::{Result, err, utils::timepoint_from_now};
-use ruma::{
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, Signatures,
 	api::{
 		OutgoingResponse,
@@ -92,7 +92,8 @@ async fn sign_signing_keys(
 	services: &crate::State,
 	server_keys: &Raw<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
-	let mut keys_obj: ruma::CanonicalJsonObject = serde_json::from_str(server_keys.json().get())?;
+	let mut keys_obj: slipstream::CanonicalJsonObject =
+		serde_json::from_str(server_keys.json().get())?;
 	services.server_keys.sign_json(&mut keys_obj)?;
 	let raw_value = serde_json::value::to_raw_value(&keys_obj)?;
 	Ok(Raw::from_json(raw_value))
@@ -113,9 +114,9 @@ fn select_server_key_response(
 
 async fn get_signing_keys_for(
 	services: &crate::State,
-	server_name: &ruma::ServerName,
+	server_name: &slipstream::ServerName,
 	minimum_valid_until_ts: Option<MilliSecondsSinceUnixEpoch>,
-	requested_key_ids: &[&ruma::ServerSigningKeyId],
+	requested_key_ids: &[&slipstream::ServerSigningKeyId],
 ) -> Result<Raw<ServerSigningKeys>> {
 	if services.globals.server_is_ours(server_name) {
 		return Raw::new(&get_our_signing_keys(services).await).map_err(Into::into);
@@ -223,7 +224,7 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 			.filter_map(|c| c.minimum_valid_until_ts)
 			.max();
 
-		let requested: Vec<&ruma::ServerSigningKeyId> =
+		let requested: Vec<&slipstream::ServerSigningKeyId> =
 			key_ids.keys().map(AsRef::as_ref).collect();
 
 		if let Ok(server_key) =
@@ -261,12 +262,12 @@ mod tests {
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
 	use http::{Request, StatusCode};
-	use ruma::{
+	use serde_json::Value;
+	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		serde::{Base64, Raw},
 	};
-	use serde_json::Value;
 	use tower::ServiceExt;
 
 	use super::select_server_key_response;

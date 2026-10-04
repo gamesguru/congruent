@@ -4,8 +4,8 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{Err, Result, utils};
 use hmac::{Hmac, KeyInit, Mac};
-use ruma::{SecondsSinceUnixEpoch, UserId, api::client::voip::get_turn_server_info};
 use sha1::Sha1;
+use slipstream::{SecondsSinceUnixEpoch, UserId, api::client::voip::get_turn_server_info};
 
 use crate::Ruma;
 

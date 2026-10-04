@@ -9,7 +9,8 @@ use conduwuit::{
 	utils::{hash, response::LimitReadExt},
 };
 use lettre::Address;
-use ruma::{
+use serde_json::value::RawValue;
+use slipstream::{
 	UserId,
 	api::client::{
 		error::{ErrorKind, StandardErrorBody},
@@ -19,7 +20,6 @@ use ruma::{
 		},
 	},
 };
-use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
 use crate::{Dep, client, config, globals, registration_tokens, threepid, users};

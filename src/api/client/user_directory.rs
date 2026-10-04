@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{future::BoolExt, stream::BroadbandExt},
 };
 use futures::{FutureExt, StreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	api::client::user_directory::search_users::{self},
 	events::room::join_rules::JoinRule,
 };

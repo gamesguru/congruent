@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt, warn};
 use database::{Batch, Json, serialize_key};
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType,

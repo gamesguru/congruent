@@ -100,8 +100,8 @@ fn strip_room_id_if_needed(
 ) -> bool {
 	let is_create = obj.get("type").and_then(|v| v.as_str()) == Some("m.room.create");
 
-	let room_version_id =
-		ruma::RoomVersionId::try_from(room_version).unwrap_or(ruma::RoomVersionId::V1);
+	let room_version_id = slipstream::RoomVersionId::try_from(room_version)
+		.unwrap_or(slipstream::RoomVersionId::V1);
 	let room_features = conduwuit_core::RoomVersion::new(&room_version_id)
 		.unwrap_or(conduwuit_core::RoomVersion::V1);
 
@@ -403,7 +403,7 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_audit_membership_drift() {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -463,11 +463,11 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Power levels event
-	use ruma::events::room::power_levels::RoomPowerLevelsEventContent;
+	use slipstream::events::room::power_levels::RoomPowerLevelsEventContent;
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
-		.insert(server_user.to_owned(), ruma::int!(100));
+		.insert(server_user.to_owned(), slipstream::int!(100));
 	services
 		.rooms
 		.timeline
@@ -481,7 +481,7 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Join rules event
-	use ruma::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
+	use slipstream::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 	services
 		.rooms
 		.timeline
@@ -520,7 +520,7 @@ async fn test_yolo_audit_membership_drift() {
 
 	// 1. Simulate user mismatch drift (user joined in state, but marked as left in
 	//    cache)
-	let user_id = ruma::user_id!("@user:test.conduwuit.local");
+	let user_id = slipstream::user_id!("@user:test.conduwuit.local");
 	services.users.create(user_id, None, None).await.unwrap();
 
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
@@ -649,7 +649,7 @@ async fn test_yolo_audit_membership_drift() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -705,14 +705,14 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.await
 		.unwrap();
 
-	use ruma::events::room::{
+	use slipstream::events::room::{
 		join_rules::{JoinRule, RoomJoinRulesEventContent},
 		power_levels::RoomPowerLevelsEventContent,
 	};
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
-		.insert(server_user.to_owned(), ruma::int!(100));
+		.insert(server_user.to_owned(), slipstream::int!(100));
 	services
 		.rooms
 		.timeline
@@ -736,7 +736,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.await
 		.unwrap();
 
-	let user_id = ruma::user_id!("@torn:test.conduwuit.local");
+	let user_id = slipstream::user_id!("@torn:test.conduwuit.local");
 	services.users.create(user_id, None, None).await.unwrap();
 	let event_id = services
 		.rooms
@@ -805,7 +805,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -913,7 +913,10 @@ async fn test_yolo_reorder_timeline() {
 		.get_pdu_json(&event_a)
 		.await
 		.unwrap();
-	json_a.insert("origin_server_ts".to_owned(), ruma::CanonicalJsonValue::Integer(2000.into()));
+	json_a.insert(
+		"origin_server_ts".to_owned(),
+		slipstream::CanonicalJsonValue::Integer(2000.into()),
+	);
 	let pdu_id_a = services.rooms.timeline.get_pdu_id(&event_a).await.unwrap();
 	services
 		.rooms
@@ -928,7 +931,10 @@ async fn test_yolo_reorder_timeline() {
 		.get_pdu_json(&event_b)
 		.await
 		.unwrap();
-	json_b.insert("origin_server_ts".to_owned(), ruma::CanonicalJsonValue::Integer(1000.into()));
+	json_b.insert(
+		"origin_server_ts".to_owned(),
+		slipstream::CanonicalJsonValue::Integer(1000.into()),
+	);
 	let pdu_id_b = services.rooms.timeline.get_pdu_id(&event_b).await.unwrap();
 	services
 		.rooms
@@ -1020,7 +1026,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		pdu::PduBuilder,
 	};
 	use futures::StreamExt;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -1169,9 +1175,9 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 async fn create_test_room_with_message(
 	services: &std::sync::Arc<service::Services>,
 	body: &str,
-) -> (ruma::OwnedRoomId, ruma::OwnedEventId) {
+) -> (slipstream::OwnedRoomId, slipstream::OwnedEventId) {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -1258,7 +1264,7 @@ fn topo_pducount_key_for_test(pdu_id: &conduwuit::matrix::pdu::RawId, depth: u64
 
 async fn seed_stale_topo_entry_for_test(
 	services: &std::sync::Arc<service::Services>,
-	event_id: &ruma::EventId,
+	event_id: &slipstream::EventId,
 ) {
 	let pdu_id = services.rooms.timeline.get_pdu_id(event_id).await.unwrap();
 	let metadata = services
@@ -1290,8 +1296,8 @@ async fn seed_stale_topo_entry_for_test(
 /// to make that assertion meaningful.
 async fn count_topo_occurrences_for_test(
 	services: &std::sync::Arc<service::Services>,
-	room_id: &ruma::RoomId,
-	event_id: &ruma::EventId,
+	room_id: &slipstream::RoomId,
+	event_id: &slipstream::EventId,
 ) -> usize {
 	use futures::StreamExt;
 
@@ -1313,7 +1319,7 @@ async fn count_topo_occurrences_for_test(
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	use futures::StreamExt;
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	let (services, _guard) =
 		setup_test_services("set_forward_extremities_excludes_ineligible").await;
@@ -1364,7 +1370,7 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	use futures::StreamExt;
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	let (services, _guard) =
 		setup_test_services("set_forward_extremities_all_ineligible_noop").await;
@@ -1479,7 +1485,7 @@ async fn test_busted_dag_resolution() {
 
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_BUSTED").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);
@@ -1629,7 +1635,7 @@ async fn test_unredacted_room_dag_resolution() {
 
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_UNREDACTED_ROOM").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);
@@ -1771,7 +1777,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_UNREDACTED_LOUNGE").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);
@@ -1934,14 +1940,15 @@ async fn test_unredacted_lounge_dag_resolution() {
 
 	eprintln!("[LOUNGE] Total resolved state entries: {}", resolved_state_pdus.len());
 
-	let resolved_state_ids: std::collections::HashSet<ruma::OwnedEventId> = resolved_state_pdus
-		.iter()
-		.map(|pdu| pdu.event_id().to_owned())
-		.collect();
+	let resolved_state_ids: std::collections::HashSet<slipstream::OwnedEventId> =
+		resolved_state_pdus
+			.iter()
+			.map(|pdu| pdu.event_id().to_owned())
+			.collect();
 
 	let mut mismatches = 0u32;
 	for id in &expected_present {
-		let eid = <&ruma::EventId>::try_from(*id).unwrap();
+		let eid = <&slipstream::EventId>::try_from(*id).unwrap();
 		if !resolved_state_ids.contains(eid) {
 			println!("MISMATCH: expected PRESENT but MISSING: {id}");
 			// Find what's in the same state key slot
@@ -1966,7 +1973,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	}
 
 	for id in &expected_absent {
-		let eid = <&ruma::EventId>::try_from(*id).unwrap();
+		let eid = <&slipstream::EventId>::try_from(*id).unwrap();
 		if resolved_state_ids.contains(eid) {
 			println!("MISMATCH: expected ABSENT but PRESENT: {id}");
 			mismatches += 1;
@@ -1982,7 +1989,7 @@ async fn test_nheko_dag_resolution() {
 
 	use conduwuit::matrix::Event;
 	use futures::StreamExt;
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_FILE").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);
@@ -2122,7 +2129,7 @@ async fn test_nheko_dag_resolution() {
 async fn test_yolo_heal_receipts() {
 	use conduwuit_database::Json;
 	use futures::StreamExt;
-	use ruma::{
+	use slipstream::{
 		RoomId, UserId,
 		events::receipt::{Receipt, ReceiptEvent, ReceiptEventContent, ReceiptType},
 	};
@@ -2134,13 +2141,15 @@ async fn test_yolo_heal_receipts() {
 	// 1. Manually insert duplicate receipts into the database
 	let mut content1 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users1 = std::collections::BTreeMap::new();
-	users1
-		.insert(user_id.into(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(1000_u32.into())));
+	users1.insert(
+		user_id.into(),
+		Receipt::new(slipstream::MilliSecondsSinceUnixEpoch(1000_u32.into())),
+	);
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
 	content1
 		.0
-		.insert(ruma::event_id!("$event1").to_owned(), types1);
+		.insert(slipstream::event_id!("$event1").to_owned(), types1);
 
 	let event1 = ReceiptEvent {
 		content: content1,
@@ -2149,13 +2158,15 @@ async fn test_yolo_heal_receipts() {
 
 	let mut content2 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users2 = std::collections::BTreeMap::new();
-	users2
-		.insert(user_id.into(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(2000_u32.into())));
+	users2.insert(
+		user_id.into(),
+		Receipt::new(slipstream::MilliSecondsSinceUnixEpoch(2000_u32.into())),
+	);
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
 	content2
 		.0
-		.insert(ruma::event_id!("$event2").to_owned(), types2);
+		.insert(slipstream::event_id!("$event2").to_owned(), types2);
 
 	let event2 = ReceiptEvent {
 		content: content2,
@@ -2205,7 +2216,7 @@ async fn test_yolo_heal_receipts() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_threaded_receipts_notification_counters() {
-	use ruma::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+	use slipstream::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
 
 	let (services, _guard) = setup_test_services("threaded_receipts").await;
 
@@ -2343,7 +2354,7 @@ async fn test_threaded_receipts_notification_counters() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -2420,7 +2431,7 @@ async fn test_yolo_rescue_room() {
 async fn test_knocking_dag_resolution() {
 	use std::path::Path;
 
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_KNOCKING").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);
@@ -2489,7 +2500,7 @@ async fn test_knocking_dag_resolution() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline_state_resolution() {
 	use conduwuit::pdu::PduBuilder;
-	use ruma::{
+	use slipstream::{
 		RoomId, RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
@@ -2582,8 +2593,9 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.timeline
 		.build_and_append_pdu(
 			PduBuilder {
-				timestamp: Some(ruma::MilliSecondsSinceUnixEpoch(
-					ruma::MilliSecondsSinceUnixEpoch::now().0 + ruma::UInt::from(1_000_u32),
+				timestamp: Some(slipstream::MilliSecondsSinceUnixEpoch(
+					slipstream::MilliSecondsSinceUnixEpoch::now().0
+						+ slipstream::UInt::from(1_000_u32),
 				)),
 				..PduBuilder::state(
 					String::new(),
@@ -2671,7 +2683,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let name_c: Option<RoomNameEventContent> = services
 		.rooms
 		.state_accessor
-		.state_get_content_hamt(&room_id, &root_c, &ruma::events::StateEventType::RoomName, "")
+		.state_get_content_hamt(
+			&room_id,
+			&root_c,
+			&slipstream::events::StateEventType::RoomName,
+			"",
+		)
 		.await
 		.ok();
 	assert_eq!(
@@ -2691,7 +2708,12 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	let name_m: Option<RoomNameEventContent> = services
 		.rooms
 		.state_accessor
-		.state_get_content_hamt(&room_id, &root_m, &ruma::events::StateEventType::RoomName, "")
+		.state_get_content_hamt(
+			&room_id,
+			&root_m,
+			&slipstream::events::StateEventType::RoomName,
+			"",
+		)
 		.await
 		.ok();
 	assert_eq!(
@@ -2705,7 +2727,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 async fn test_janian_dag_reorder_with_state() {
 	use std::path::Path;
 
-	use ruma::RoomId;
+	use slipstream::RoomId;
 
 	let dag_path_str = std::env::var("CONDUWUIT_TEST_DAG_JANIAN").unwrap_or_default();
 	let dag_path = Path::new(&dag_path_str);

@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug, info, warn};
 use futures::{StreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, ServerName,
 	api::{
 		Direction, client::room::get_event_by_timestamp,
@@ -82,7 +82,7 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 			if let Ok(create_event) = services
 				.rooms
 				.state_accessor
-				.room_state_get(room_id, &ruma::events::StateEventType::RoomCreate, "")
+				.room_state_get(room_id, &slipstream::events::StateEventType::RoomCreate, "")
 				.await
 			{
 				origin = Some(create_event.sender.server_name().to_owned());
@@ -252,7 +252,7 @@ fn federation_can_win(
 async fn federation_query(
 	services: &crate::State,
 	origin_server: &ServerName,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	ts: MilliSecondsSinceUnixEpoch,
 	dir: Direction,
 ) -> Option<get_event_by_timestamp::v1::Response> {

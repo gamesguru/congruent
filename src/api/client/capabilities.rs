@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use conduwuit::{Result, Server};
-use ruma::{
+use serde_json::json;
+use slipstream::{
 	RoomVersionId,
 	api::client::discovery::get_capabilities::{
 		self, Capabilities, GetLoginTokenCapability, RoomVersionStability,
 		RoomVersionsCapability, ThirdPartyIdChangesCapability,
 	},
 };
-use serde_json::json;
 
 use crate::Ruma;
 

@@ -15,7 +15,7 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
 };
 
@@ -407,7 +407,9 @@ impl Data {
 						if !json.contains_key("event_id") {
 							json.insert(
 								"event_id".into(),
-								ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+								slipstream::CanonicalJsonValue::String(
+									event_id.as_str().to_owned(),
+								),
 							);
 							self.eventid_pdu.raw_put(event_id_bytes, Json(&json));
 							fixed = fixed.saturating_add(1);
@@ -1251,8 +1253,8 @@ impl Data {
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
+		if let Some(slipstream::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
+			if let Ok(ts) = slipstream::UInt::try_from(i64::from(*ts)) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
@@ -1417,8 +1419,8 @@ impl Data {
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
+		if let Some(slipstream::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
+			if let Ok(ts) = slipstream::UInt::try_from(i64::from(*ts)) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
@@ -2407,11 +2409,11 @@ impl Data {
 	pub(super) async fn get_origin_server_ts(
 		&self,
 		event_id: &EventId,
-	) -> Result<ruma::MilliSecondsSinceUnixEpoch> {
+	) -> Result<slipstream::MilliSecondsSinceUnixEpoch> {
 		let bytes = self.eventid_metadata.get(event_id.as_bytes()).await?;
 		let meta = rooms::timeline::EventMetadata::from_bincode(&bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e:?}")))?;
-		Ok(ruma::MilliSecondsSinceUnixEpoch(meta.origin_server_ts))
+		Ok(slipstream::MilliSecondsSinceUnixEpoch(meta.origin_server_ts))
 	}
 
 	pub(super) fn pdus_by_timestamp<'a>(
@@ -2557,7 +2559,7 @@ mod tests {
 	use conduwuit::Result;
 	use conduwuit_core::matrix::pdu::{Count as PduCount, Id as PduId, RawId as RawPduId};
 	use rezzy::{HashMap, LeanEvent, verify_pagination};
-	use ruma::api::Direction;
+	use slipstream::api::Direction;
 
 	use super::Data;
 

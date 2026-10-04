@@ -8,7 +8,8 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, appservice::RegistrationInfo};
 use futures::FutureExt;
-use ruma::{
+use serde_json::{json, value::to_raw_value};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, Int, OwnedRoomAliasId, OwnedRoomId, OwnedUserId,
 	RoomId, RoomVersionId,
 	api::client::room::{self, create_room},
@@ -29,7 +30,6 @@ use ruma::{
 	int,
 	serde::{JsonObject, Raw},
 };
-use serde_json::{json, value::to_raw_value};
 
 use crate::{Ruma, client::invite_helper};
 
@@ -489,7 +489,10 @@ pub(crate) async fn create_room_route(
 			.await
 		{
 			| Err(e)
-				if matches!(e.kind(), ruma::api::client::error::ErrorKind::Forbidden { .. }) =>
+				if matches!(
+					e.kind(),
+					slipstream::api::client::error::ErrorKind::Forbidden { .. }
+				) =>
 			{
 				// Silently skip forbidden events
 				continue;

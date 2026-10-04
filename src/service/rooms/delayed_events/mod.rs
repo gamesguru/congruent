@@ -19,13 +19,13 @@ use database::{Deserialized, Json, Map};
 use futures::{StreamExt, join};
 use http::StatusCode;
 use loole::Sender;
-use ruma::{
+use serde::{Deserialize, Serialize};
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::error::{ErrorKind, StandardErrorBody},
 	events::TimelineEventType,
 	serde::Raw,
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,7 +68,7 @@ pub struct DelayedEventData {
 	pub content: Raw<AnyTimelineEventContent>,
 
 	/// The duration that the server should wait before sending this event
-	#[serde(with = "ruma::serde::duration::ms")]
+	#[serde(with = "slipstream::serde::duration::ms")]
 	pub delay: Duration,
 
 	/// The timestamp when the delayed event was scheduled or last restarted.

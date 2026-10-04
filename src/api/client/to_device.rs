@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{Error, Result};
 use conduwuit_service::sending::EduBuf;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	api::{
 		client::{error::ErrorKind, to_device::send_event_to_device},
 		federation::{self, transactions::edu::DirectDeviceContent},

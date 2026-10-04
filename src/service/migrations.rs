@@ -13,7 +13,8 @@ use conduwuit::{
 use database::{Deserialized, Json};
 use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use itertools::Itertools;
-use ruma::{
+use sha2::{Digest, Sha256};
+use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
@@ -23,7 +24,6 @@ use ruma::{
 	push::Ruleset,
 	serde::Raw,
 };
-use sha2::{Digest, Sha256};
 
 use crate::{
 	Services, media,
@@ -504,7 +504,7 @@ async fn migrate(services: &Services) -> Result<()> {
 
 const MIGRATE_READ_RECEIPTS_TO_SSOT_MARKER: &[u8] = b"migrate_read_receipts_to_ssot";
 async fn migrate_read_receipts(services: &Services) -> Result<()> {
-	use ruma::events::receipt::ReceiptEvent;
+	use slipstream::events::receipt::ReceiptEvent;
 
 	info!("Starting read receipt state map migration...");
 
@@ -619,13 +619,13 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 			legacy_key.push(0xFF);
 			legacy_key.extend_from_slice(user_id.as_bytes());
 
-			let event: ruma::events::receipt::ReceiptEvent =
+			let event: slipstream::events::receipt::ReceiptEvent =
 				if let Some(legacy_event_map) = &legacy_event_map {
 					if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
 						with_event = with_event.saturating_add(1);
 						serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
-							ruma::events::receipt::ReceiptEvent {
-								content: ruma::events::receipt::ReceiptEventContent(
+							slipstream::events::receipt::ReceiptEvent {
+								content: slipstream::events::receipt::ReceiptEventContent(
 									std::collections::BTreeMap::new(),
 								),
 								room_id: room_id.to_owned(),
@@ -633,8 +633,8 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 						})
 					} else {
 						count_only = count_only.saturating_add(1);
-						ruma::events::receipt::ReceiptEvent {
-							content: ruma::events::receipt::ReceiptEventContent(
+						slipstream::events::receipt::ReceiptEvent {
+							content: slipstream::events::receipt::ReceiptEventContent(
 								std::collections::BTreeMap::new(),
 							),
 							room_id: room_id.to_owned(),
@@ -642,8 +642,8 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 					}
 				} else {
 					count_only = count_only.saturating_add(1);
-					ruma::events::receipt::ReceiptEvent {
-						content: ruma::events::receipt::ReceiptEventContent(
+					slipstream::events::receipt::ReceiptEvent {
+						content: slipstream::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
 						room_id: room_id.to_owned(),
@@ -1910,8 +1910,8 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 struct EventMetadataV20 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	status: EventStatusV20,
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
@@ -1929,8 +1929,8 @@ struct EventMetadataV20 {
 struct EventMetadataV19 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
 	redacted_by: Option<OwnedEventId>,
@@ -1951,8 +1951,8 @@ struct EventMetadataV19 {
 struct EventMetadataV18 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
 	redacted_by: Option<OwnedEventId>,

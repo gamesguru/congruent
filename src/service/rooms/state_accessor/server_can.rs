@@ -1,6 +1,6 @@
 use conduwuit::{Event, implement};
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, UserId,
 	events::{
 		StateEventType, TimelineEventType,

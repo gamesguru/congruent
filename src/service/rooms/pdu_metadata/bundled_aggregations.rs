@@ -1,5 +1,5 @@
 use conduwuit::{Event, PduEvent, Result, err};
-use ruma::{
+use slipstream::{
 	UserId,
 	api::Direction,
 	events::relation::{BundledMessageLikeRelations, BundledReference, ReferenceChunk},
@@ -264,7 +264,7 @@ impl super::Service {
 	/// would be in the encrypted payload)
 	#[inline]
 	fn has_new_content_or_encrypted(event: &PduEvent) -> bool {
-		event.event_type() == &ruma::events::TimelineEventType::RoomEncrypted
+		event.event_type() == &slipstream::events::TimelineEventType::RoomEncrypted
 			|| event.get_content_as_value().get("m.new_content").is_some()
 	}
 }
@@ -278,8 +278,10 @@ enum RelationType<'a> {
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::pdu::{EventHash, PduEvent};
-	use ruma::{UInt, events::TimelineEventType, owned_event_id, owned_room_id, owned_user_id};
 	use serde_json::{Value as JsonValue, json, value::to_raw_value};
+	use slipstream::{
+		UInt, events::TimelineEventType, owned_event_id, owned_room_id, owned_user_id,
+	};
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {

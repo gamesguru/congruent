@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use conduwuit::{Result, PduEvent};
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 use futures::{Stream, StreamExt};
 use database::{Qry, Deserialized};
 use crate::rooms::timeline::data::Data;

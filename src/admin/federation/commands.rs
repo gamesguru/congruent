@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use conduwuit::{Err, Result, utils::response::LimitReadExt};
 use futures::StreamExt;
-use ruma::{OwnedRoomId, OwnedServerName, OwnedUserId};
+use slipstream::{OwnedRoomId, OwnedServerName, OwnedUserId};
 
 use crate::{admin_command, get_room_info};
 

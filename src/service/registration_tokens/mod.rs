@@ -9,7 +9,7 @@ use futures::{
 	Stream, StreamExt,
 	stream::{iter, once},
 };
-use ruma::OwnedUserId;
+use slipstream::OwnedUserId;
 
 use crate::{Dep, config, firstrun};
 

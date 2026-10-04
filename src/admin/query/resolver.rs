@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::{Err, Result, utils::time};
 use futures::StreamExt;
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 
 use crate::{admin_command, admin_command_dispatch};
 

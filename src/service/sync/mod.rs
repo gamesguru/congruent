@@ -10,7 +10,8 @@ use std::{
 use conduwuit::{Result, Server, SyncMutex};
 use database::Map;
 use moka::sync::Cache;
-use ruma::{
+use serde::{Deserialize, Serialize};
+use slipstream::{
 	OwnedDeviceId, OwnedRoomId, OwnedUserId,
 	api::client::sync::sync_events::{
 		self,
@@ -21,7 +22,6 @@ use ruma::{
 	events::StateEventType,
 	uint,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{Dep, rooms};
 

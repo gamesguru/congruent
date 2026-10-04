@@ -8,8 +8,8 @@ use conduwuit::{
 };
 use database::{Cbor, Deserialized, Map};
 use futures::{Stream, StreamExt, future::join};
-use ruma::ServerName;
 use serde::{Deserialize, Serialize};
+use slipstream::ServerName;
 
 use super::fed::FedDest;
 

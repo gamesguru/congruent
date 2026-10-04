@@ -6,7 +6,9 @@ use conduwuit::{
 };
 use database::{Deserialized, Handle, Ignore, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
-use ruma::{
+use serde::Deserialize;
+use serde_json::Value;
+use slipstream::{
 	RoomId, UserId,
 	events::{
 		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyRoomAccountDataEvent,
@@ -14,8 +16,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde::Deserialize;
-use serde_json::Value;
 
 use crate::{Dep, globals};
 

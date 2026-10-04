@@ -7,7 +7,7 @@ use conduwuit_core::{
 	utils::{IterStream, ReadyExt},
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedServerName, RoomId, UserId,
 	events::{
 		TimelineEventType,

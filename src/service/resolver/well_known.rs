@@ -40,7 +40,7 @@ pub(super) async fn request_well_known(&self, dest: &str) -> Result<Option<Strin
 		.as_str()
 		.unwrap_or_default();
 
-	if ruma::identifiers_validation::server_name::validate(m_server).is_err() {
+	if slipstream::identifiers_validation::server_name::validate(m_server).is_err() {
 		debug_error!("response content missing or invalid");
 		return Ok(None);
 	}

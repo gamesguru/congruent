@@ -3,7 +3,7 @@ use axum::{
 	extract::{FromRequest, State},
 };
 use conduwuit::{Err, Result};
-use ruma::api::{AuthScheme, Metadata, VersionHistory};
+use slipstream::api::{AuthScheme, Metadata, VersionHistory};
 
 use crate::router::authenticate_user;
 
@@ -40,7 +40,7 @@ impl GetAllDelayedEventsRequest {
 }
 
 pub(crate) struct DelayedEventUser {
-	pub(crate) user_id: ruma::OwnedUserId,
+	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
 impl FromRequest<crate::State, Body> for DelayedEventUser {
@@ -58,7 +58,7 @@ impl FromRequest<crate::State, Body> for DelayedEventUser {
 }
 
 pub(crate) struct AllDelayedEventsUser {
-	pub(crate) user_id: ruma::OwnedUserId,
+	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
 impl FromRequest<crate::State, Body> for AllDelayedEventsUser {

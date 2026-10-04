@@ -1,5 +1,5 @@
 use conduwuit::Result;
-use ruma::OwnedRoomId;
+use slipstream::OwnedRoomId;
 
 use crate::admin_command;
 
@@ -38,13 +38,13 @@ pub(super) async fn check_read_receipts_legacy(&self, room_id: OwnedRoomId) -> R
 	use std::fmt::Write;
 
 	use futures::StreamExt;
-	use ruma::{UserId, events::receipt::ReceiptEvent};
+	use slipstream::{UserId, events::receipt::ReceiptEvent};
 
 	let db = &self.services.db;
 	let old_map = db["readreceiptid_readreceipt"].clone();
 
 	let mut stream =
-		old_map.stream_raw_from::<(&ruma::RoomId, u64, &UserId), ReceiptEvent, _>(&[]);
+		old_map.stream_raw_from::<(&slipstream::RoomId, u64, &UserId), ReceiptEvent, _>(&[]);
 
 	let mut msg = String::new();
 	let mut found = false;

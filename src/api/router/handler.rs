@@ -7,7 +7,7 @@ use axum::{
 use conduwuit::Result;
 use futures::{Future, TryFutureExt};
 use http::Method;
-use ruma::api::IncomingRequest;
+use slipstream::api::IncomingRequest;
 
 use super::{Ruma, RumaResponse, State};
 

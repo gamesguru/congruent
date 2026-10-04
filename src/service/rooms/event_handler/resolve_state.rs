@@ -8,7 +8,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use ruma::{OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{OwnedEventId, RoomId, RoomVersionId};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
 
@@ -297,7 +297,7 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.to_string().into();
+		let ty: slipstream::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
@@ -315,7 +315,7 @@ fn sender_power_level_from_auth<F>(
 where
 	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 {
-	if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+	if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
 		return i64::MAX;
 	}
 
@@ -348,7 +348,7 @@ where
 			continue;
 		};
 
-		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
+		if auth_pdu.kind == slipstream::events::TimelineEventType::RoomCreate
 			&& auth_pdu.state_key.as_deref() == Some("")
 		{
 			create_pdu = Some(auth_pdu);
@@ -356,7 +356,7 @@ where
 		}
 
 		if pl_level.is_some()
-			|| auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+			|| auth_pdu.kind != slipstream::events::TimelineEventType::RoomPowerLevels
 			|| auth_pdu.state_key.as_deref() != Some("")
 		{
 			continue;
@@ -391,7 +391,7 @@ where
 		// `creator` content field is a pre-v11 concept and irrelevant here (see
 		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
 		let is_v12_creator = create_pdu.sender == pdu.sender
-			|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+			|| serde_json::from_str::<slipstream::events::room::create::RoomCreateEventContent>(
 				create_pdu.content.get(),
 			)
 			.is_ok_and(|create_content| {
@@ -416,7 +416,7 @@ where
 	// only the room's original creator gets an implicit power level of 100.
 	#[allow(deprecated)]
 	let is_pre_v12_creator = create_pdu.sender == pdu.sender
-		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
+		|| serde_json::from_str::<slipstream::events::room::create::RoomCreateEventContent>(
 			create_pdu.content.get(),
 		)
 		.is_ok_and(|create_content| {

@@ -9,7 +9,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{StreamExt, stream::FuturesUnordered};
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
 	api::federation::event::{
 		event_relationships as federation_event_relationships, get_missing_events,
@@ -265,15 +265,15 @@ where
 	// an extra map until the end of the function.
 	let candidate_entries: Vec<(
 		OwnedEventId,
-		ruma::CanonicalJsonObject,
+		slipstream::CanonicalJsonObject,
 		HashSet<OwnedEventId>,
-		ruma::UInt,
-		ruma::UInt,
+		slipstream::UInt,
+		slipstream::UInt,
 	)> = unknown_events
 		.into_iter()
 		.stream()
 		.broad_filter_map({
-			move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| async move {
+			move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| async move {
 				if let Some(CanonicalJsonValue::Object(mut unsigned_obj)) = val.remove("unsigned")
 				{
 					unsigned_obj.remove("prev_content");
@@ -347,7 +347,7 @@ fn deep_state_ids_anchor(
 
 #[cfg(test)]
 mod tests {
-	use ruma::event_id;
+	use slipstream::event_id;
 
 	use super::*;
 

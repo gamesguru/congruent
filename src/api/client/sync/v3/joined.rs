@@ -20,7 +20,7 @@ use futures::{
 	FutureExt, StreamExt,
 	future::{join, join3, join4, try_join, try_join3},
 };
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
@@ -379,7 +379,7 @@ async fn build_state_and_timeline(
 		.state_accessor
 		.get_room_type(room_id)
 		.await
-		.is_ok_and(|room_type| room_type == ruma::room::RoomType::Space);
+		.is_ok_and(|room_type| room_type == slipstream::room::RoomType::Space);
 
 	let limited = if pdus.is_empty() {
 		timeline_limited || ((joined_since_last_sync || user_has_join_event_in_sync) && !is_space)
@@ -409,7 +409,7 @@ async fn build_state_and_timeline(
 		.collect::<Vec<_>>()
 		.await;
 
-	let timeline_ids: HashSet<&ruma::EventId> = filtered_timeline_pdus
+	let timeline_ids: HashSet<&slipstream::EventId> = filtered_timeline_pdus
 		.iter()
 		.map(|pdu| &*pdu.event_id)
 		.collect();
@@ -700,7 +700,7 @@ async fn build_notification_counts(
 	BTreeMap<OwnedEventId, UnreadNotificationsCount>,
 )> {
 	// Counts must be computed on every poll, not just ones where the timeline
-	// advanced: ruma's `JoinedRoom::is_empty()` treats an absent/default
+	// advanced: slipstream's `JoinedRoom::is_empty()` treats an absent/default
 	// `unread_notifications` as "no unread notifications," and the outer sync
 	// loop omits any room for which `is_empty()` is true on an incremental
 	// sync. Gating this on "did anything change this poll" made a room's

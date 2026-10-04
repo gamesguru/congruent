@@ -1,6 +1,6 @@
 use conduwuit::Result;
 use regex::RegexSet;
-use ruma::api::appservice::Namespace;
+use slipstream::api::appservice::Namespace;
 
 /// Compiled regular expressions for a namespace
 #[derive(Clone, Debug)]

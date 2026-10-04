@@ -16,7 +16,7 @@ use futures::{
 	FutureExt, StreamExt, TryFutureExt,
 	future::{join, join4, join5},
 };
-use ruma::{
+use slipstream::{
 	OwnedRoomId, RoomId, ServerName, UInt, UserId,
 	api::{
 		client::{

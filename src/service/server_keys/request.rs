@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
 use conduwuit::{Err, Result, debug, debug_warn, implement};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{
 		ServerSigningKeys, get_remote_server_keys,

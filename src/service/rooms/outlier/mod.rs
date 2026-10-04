@@ -10,7 +10,9 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
+};
 
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 

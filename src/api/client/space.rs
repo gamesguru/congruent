@@ -9,7 +9,7 @@ use conduwuit_service::rooms::spaces::{
 	PaginationToken, SummaryAccessibility, get_parent_children_via, summary_to_chunk,
 };
 use futures::{StreamExt, future::OptionFuture};
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
 };
 

@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Ignore, Interfix, Map};
 use futures::{StreamExt, stream::select};
-use ruma::{EventId, OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+use slipstream::{EventId, OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
 
 use crate::{Dep, globals, rooms};
 

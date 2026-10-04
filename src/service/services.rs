@@ -184,7 +184,10 @@ impl Services {
 		if self.server.config.allow_local_presence {
 			_ = self
 				.presence
-				.ping_presence(&self.globals.server_user, &ruma::presence::PresenceState::Offline)
+				.ping_presence(
+					&self.globals.server_user,
+					&slipstream::presence::PresenceState::Offline,
+				)
 				.await;
 		}
 

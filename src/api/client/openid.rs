@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::extract::State;
 use conduwuit::{Err, Result, utils};
-use ruma::{api::client::account, authentication::TokenType};
+use slipstream::{api::client::account, authentication::TokenType};
 
 use super::TOKEN_LENGTH;
 use crate::Ruma;

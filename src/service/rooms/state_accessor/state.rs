@@ -6,14 +6,14 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
-use ruma::{
+use serde::Deserialize;
+use slipstream::{
 	EventId, OwnedEventId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use serde::Deserialize;
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
 

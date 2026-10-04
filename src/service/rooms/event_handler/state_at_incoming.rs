@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryBroadbandExt, TryWidebandExt},
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use ruma::{EventId, OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId};
 
 // TODO: if we know the prev_events of the incoming event we can avoid the
 #[implement(super::Service)]

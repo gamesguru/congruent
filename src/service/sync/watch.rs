@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use conduwuit::{implement, trace};
 use futures::{Future, FutureExt, StreamExt, stream::FuturesUnordered};
-use ruma::{DeviceId, UserId};
+use slipstream::{DeviceId, UserId};
 
 #[implement(super::Service)]
 pub async fn setup_watch<'a>(

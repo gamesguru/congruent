@@ -1,6 +1,6 @@
 use axum::{Json, extract::State, response::IntoResponse};
 use conduwuit::{Error, Result};
-use ruma::api::client::{
+use slipstream::api::client::{
 	discovery::{
 		discover_homeserver::{self, HomeserverInfo},
 		discover_support::{self, Contact},
@@ -42,9 +42,9 @@ pub(crate) async fn well_known_client(
 /// homeserver, implementing MSC4143.
 pub(crate) async fn get_rtc_transports(
 	State(services): State<crate::State>,
-	_body: Ruma<ruma::api::client::discovery::get_rtc_transports::Request>,
-) -> Result<ruma::api::client::discovery::get_rtc_transports::Response> {
-	Ok(ruma::api::client::discovery::get_rtc_transports::Response::new(
+	_body: Ruma<slipstream::api::client::discovery::get_rtc_transports::Request>,
+) -> Result<slipstream::api::client::discovery::get_rtc_transports::Response> {
+	Ok(slipstream::api::client::discovery::get_rtc_transports::Response::new(
 		services
 			.config
 			.matrix_rtc

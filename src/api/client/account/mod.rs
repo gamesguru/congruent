@@ -8,7 +8,8 @@ use conduwuit::{
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
-use ruma::{
+use service::{mailer::messages, uiaa::Identity};
+use slipstream::{
 	OwnedRoomId, OwnedUserId, UserId,
 	api::client::{
 		account::{
@@ -26,7 +27,6 @@ use ruma::{
 		},
 	},
 };
-use service::{mailer::messages, uiaa::Identity};
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
 use crate::Ruma;

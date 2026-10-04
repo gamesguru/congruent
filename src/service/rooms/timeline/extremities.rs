@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use conduwuit_core::{Result, info, warn};
 use futures::StreamExt;
 use roaring::RoaringBitmap;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;
@@ -197,7 +197,7 @@ impl Service {
 	/// Prune fork storms down to operationally relevant tips using tail-based
 	/// recalculation. This is a convenience wrapper around
 	/// `recalculate_extremities` with standardized logging.
-	pub async fn prune_extremities(&self, room_id: &ruma::RoomId, tail: usize) {
+	pub async fn prune_extremities(&self, room_id: &slipstream::RoomId, tail: usize) {
 		match self.recalculate_extremities(room_id, true).await {
 			| Ok((true, tips)) => info!(
 				%room_id, tail, tips,
@@ -223,7 +223,7 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn recalculate_extremities(
 		&self,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		update_db: bool,
 	) -> Result<(bool, usize)> {
 		let state_lock = self.services.state.mutex.lock(room_id).await;
@@ -413,7 +413,7 @@ impl Service {
 				.db
 				.get_origin_server_ts(eid)
 				.await
-				.unwrap_or_else(|_| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()));
+				.unwrap_or_else(|_| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()));
 			final_ts_map.insert(eid.clone(), ts);
 		}
 
@@ -421,7 +421,7 @@ impl Service {
 			final_ts_map
 				.get(eid)
 				.copied()
-				.unwrap_or_else(|| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()))
+				.unwrap_or_else(|| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()))
 		});
 
 		let num_true_extremities = final_extremities.len();
@@ -487,7 +487,7 @@ impl Service {
 #[cfg(test)]
 mod tests {
 	use HashMap;
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 

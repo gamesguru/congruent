@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, PduCount, Result, matrix::Event};
-use ruma::{
+use serde::Deserialize;
+use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId,
 	api::client::{read_marker::set_read_marker, receipt::create_receipt},
 	events::{
@@ -12,7 +13,6 @@ use ruma::{
 		relation::RelationType,
 	},
 };
-use serde::Deserialize;
 
 use crate::Ruma;
 
@@ -30,8 +30,10 @@ pub(crate) async fn set_read_marker_route(
 	let sender_user = body.sender_user();
 
 	if let Some(event) = &body.fully_read {
-		let fully_read_event = ruma::events::fully_read::FullyReadEvent {
-			content: ruma::events::fully_read::FullyReadEventContent { event_id: event.clone() },
+		let fully_read_event = slipstream::events::fully_read::FullyReadEvent {
+			content: slipstream::events::fully_read::FullyReadEventContent {
+				event_id: event.clone(),
+			},
 		};
 
 		services
@@ -49,7 +51,7 @@ pub(crate) async fn set_read_marker_route(
 	if services.config.allow_local_presence {
 		services
 			.presence
-			.ping_presence(sender_user, &ruma::presence::PresenceState::Online)
+			.ping_presence(sender_user, &slipstream::presence::PresenceState::Online)
 			.await?;
 	}
 
@@ -100,7 +102,7 @@ pub(crate) async fn create_receipt_route(
 	if services.config.allow_local_presence {
 		services
 			.presence
-			.ping_presence(sender_user, &ruma::presence::PresenceState::Online)
+			.ping_presence(sender_user, &slipstream::presence::PresenceState::Online)
 			.await?;
 	}
 
@@ -127,8 +129,8 @@ pub(crate) async fn create_receipt_route(
 
 	match body.receipt_type {
 		| create_receipt::v3::ReceiptType::FullyRead => {
-			let fully_read_event = ruma::events::fully_read::FullyReadEvent {
-				content: ruma::events::fully_read::FullyReadEventContent {
+			let fully_read_event = slipstream::events::fully_read::FullyReadEvent {
+				content: slipstream::events::fully_read::FullyReadEventContent {
 					event_id: body.event_id.clone(),
 				},
 			};
@@ -227,8 +229,8 @@ async fn receipt_event_is_in_thread(
 
 async fn update_read_receipt(
 	services: &crate::State,
-	sender_user: &ruma::UserId,
-	room_id: &ruma::RoomId,
+	sender_user: &slipstream::UserId,
+	room_id: &slipstream::RoomId,
 	event_id: &EventId,
 	thread: ReceiptThread,
 ) -> Result<()> {
@@ -280,20 +282,27 @@ async fn update_read_receipt(
 			event_id.to_owned(),
 			BTreeMap::from_iter([(
 				ReceiptType::Read,
-				BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
-					ts: Some(MilliSecondsSinceUnixEpoch::now()),
-					thread: thread.clone(),
-				})]),
+				BTreeMap::from_iter([(
+					sender_user.to_owned(),
+					slipstream::events::receipt::Receipt {
+						ts: Some(MilliSecondsSinceUnixEpoch::now()),
+						thread: thread.clone(),
+					},
+				)]),
 			)]),
 		)]);
 
 		services
 			.rooms
 			.read_receipt
-			.readreceipt_update(sender_user, room_id, &ruma::events::receipt::ReceiptEvent {
-				content: ruma::events::receipt::ReceiptEventContent(receipt_content),
-				room_id: room_id.to_owned(),
-			})
+			.readreceipt_update(
+				sender_user,
+				room_id,
+				&slipstream::events::receipt::ReceiptEvent {
+					content: slipstream::events::receipt::ReceiptEventContent(receipt_content),
+					room_id: room_id.to_owned(),
+				},
+			)
 			.await;
 
 		services
@@ -313,8 +322,8 @@ async fn update_read_receipt(
 
 async fn update_private_read_receipt(
 	services: &crate::State,
-	sender_user: &ruma::UserId,
-	room_id: &ruma::RoomId,
+	sender_user: &slipstream::UserId,
+	room_id: &slipstream::RoomId,
 	event_id: &EventId,
 	thread: ReceiptThread,
 ) -> Result<()> {
@@ -341,15 +350,18 @@ async fn update_private_read_receipt(
 		event_id.to_owned(),
 		BTreeMap::from_iter([(
 			ReceiptType::ReadPrivate,
-			BTreeMap::from_iter([(sender_user.to_owned(), ruma::events::receipt::Receipt {
-				ts: Some(MilliSecondsSinceUnixEpoch::now()),
-				thread: thread.clone(),
-			})]),
+			BTreeMap::from_iter([(
+				sender_user.to_owned(),
+				slipstream::events::receipt::Receipt {
+					ts: Some(MilliSecondsSinceUnixEpoch::now()),
+					thread: thread.clone(),
+				},
+			)]),
 		)]),
 	)]);
 
-	let receipt_event = ruma::events::receipt::ReceiptEvent {
-		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+	let receipt_event = slipstream::events::receipt::ReceiptEvent {
+		content: slipstream::events::receipt::ReceiptEventContent(receipt_content),
 		room_id: room_id.to_owned(),
 	};
 

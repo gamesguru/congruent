@@ -4,7 +4,7 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
-use ruma::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
+use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
 use tracing::debug;
 
 use crate::rooms::pdu_metadata::RejectionCode;

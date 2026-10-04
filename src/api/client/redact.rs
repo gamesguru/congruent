@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
-use ruma::{
+use slipstream::{
 	api::client::redact::redact_event, events::room::redaction::RoomRedactionEventContent,
 };
 

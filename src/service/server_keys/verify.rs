@@ -1,11 +1,11 @@
 use conduwuit::{
 	Err, Result, debug_warn, implement, matrix::event::gen_event_id_canonical_json, trace,
 };
-use ruma::{
+use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedServerName, RoomVersionId,
 	ServerName, UserId, signatures::Verified,
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 /// Extract the origin server(s) from an event and strip all non-origin
 /// signatures. Per the Matrix spec, only the origin server's signature is
@@ -47,7 +47,7 @@ fn isolate_origin_signatures(
 	};
 
 	let Some(ref sender) = sender_server else {
-		// Can't determine origin — return as-is, let ruma handle the failure
+		// Can't determine origin — return as-is, let slipstream handle the failure
 		return event.clone();
 	};
 
@@ -75,7 +75,7 @@ fn isolate_origin_signatures(
 		}
 	}
 
-	// For V8+ restricted joins, ruma requires a signature from the server of
+	// For V8+ restricted joins, slipstream requires a signature from the server of
 	// the user in `join_authorised_via_users_server`. We must retain it.
 	let authorized_server: Option<OwnedServerName> = match room_version {
 		| RoomVersionId::V1
@@ -222,7 +222,7 @@ pub async fn verify_event_at(
 
 	let keys = self.get_event_keys(&event, room_version).await?;
 
-	let result = ruma::signatures::verify_event(&keys, &event, room_version);
+	let result = slipstream::signatures::verify_event(&keys, &event, room_version);
 	if let Err(ref e) = result {
 		let event_id = event
 			.get("event_id")
@@ -257,7 +257,7 @@ pub async fn verify_json(
 ) -> Result {
 	let room_version = room_version.unwrap_or(&RoomVersionId::V12);
 	let keys = self.get_event_keys(event, room_version).await?;
-	ruma::signatures::verify_json(&keys, event.clone()).map_err(Into::into)
+	slipstream::signatures::verify_json(&keys, event.clone()).map_err(Into::into)
 }
 
 use std::sync::Arc;

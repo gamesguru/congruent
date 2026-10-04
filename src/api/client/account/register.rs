@@ -11,7 +11,9 @@ use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
-use ruma::{
+use serde_json::value::RawValue;
+use service::mailer::messages;
+use slipstream::{
 	OwnedUserId, UserId,
 	api::client::{
 		account::{
@@ -23,8 +25,6 @@ use ruma::{
 	events::{GlobalAccountDataEventType, room::message::RoomMessageEventContent},
 	push,
 };
-use serde_json::value::RawValue;
-use service::mailer::messages;
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
 use crate::Ruma;
@@ -223,8 +223,8 @@ pub(crate) async fn register_route(
 			None,
 			&user_id,
 			GlobalAccountDataEventType::PushRules.to_string().into(),
-			&serde_json::to_value(ruma::events::push_rules::PushRulesEvent {
-				content: ruma::events::push_rules::PushRulesEventContent {
+			&serde_json::to_value(slipstream::events::push_rules::PushRulesEvent {
+				content: slipstream::events::push_rules::PushRulesEventContent {
 					global: push::Ruleset::server_default(&user_id),
 				},
 			})?,

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use conduwuit::Result;
-use ruma::{
+use slipstream::{
 	api::client::tag::{create_tag, delete_tag, get_tags},
 	events::{
 		RoomAccountDataEventType,

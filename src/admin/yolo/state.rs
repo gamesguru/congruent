@@ -12,12 +12,12 @@ use conduwuit::{
 };
 use conduwuit_database::Batch;
 use futures::{StreamExt, TryStreamExt, pin_mut};
-use ruma::{
+use serde_json::Value as JsonValue;
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
 };
-use serde_json::Value as JsonValue;
 
 use super::dag::format_ts;
 use crate::admin_command;
@@ -1001,7 +1001,7 @@ pub(super) async fn set_state_event(
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {
-		if let Ok(user_id) = ruma::UserId::parse(&state_key) {
+		if let Ok(user_id) = slipstream::UserId::parse(&state_key) {
 			self.services
 				.rooms
 				.state_cache
@@ -1917,7 +1917,7 @@ pub(super) async fn audit_membership(
 mod tests {
 	use std::collections::HashMap;
 
-	use ruma::event_id;
+	use slipstream::event_id;
 
 	use super::*;
 

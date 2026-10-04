@@ -3,7 +3,7 @@ use conduwuit_core::{
 	matrix::event::Event,
 	utils::{self},
 };
-use ruma::EventId;
+use slipstream::EventId;
 
 use super::ExtractBody;
 use crate::rooms::short::ShortRoomId;
@@ -46,7 +46,7 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
 	let redacted_because = reason
-		.to_format::<ruma::serde::Raw<ruma::events::AnyTimelineEvent>>()
+		.to_format::<slipstream::serde::Raw<slipstream::events::AnyTimelineEvent>>()
 		.deserialize_as::<serde_json::Value>()
 		.unwrap_or_else(|_| reason.to_value());
 

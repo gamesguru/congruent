@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use roaring::RoaringTreemap;
-use ruma::{EventId, OwnedEventId, RoomId};
+use slipstream::{EventId, OwnedEventId, RoomId};
 
 use self::data::Data;
 use crate::{

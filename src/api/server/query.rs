@@ -5,7 +5,7 @@ use conduwuit::{Error, Result, err};
 use futures::StreamExt;
 use get_profile_information::v1::ProfileField;
 use rand::seq::SliceRandom;
-use ruma::{
+use slipstream::{
 	OwnedServerName,
 	api::{
 		client::error::ErrorKind,

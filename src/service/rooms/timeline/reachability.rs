@@ -5,7 +5,7 @@ use std::{
 
 use conduwuit_core::{Result, matrix::event::Event};
 use futures::{StreamExt, pin_mut};
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::Service;
 
@@ -149,7 +149,7 @@ impl Service {
 #[cfg(test)]
 mod tests {
 	use rezzy::Reachability;
-	use ruma::owned_event_id;
+	use slipstream::owned_event_id;
 
 	use super::*;
 

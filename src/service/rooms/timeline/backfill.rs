@@ -19,7 +19,8 @@ use conduwuit_core::{
 	validated, warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
 	UInt,
 	api::federation,
@@ -28,7 +29,6 @@ use ruma::{
 		room::{create::RoomCreateEventContent, power_levels::RoomPowerLevelsEventContent},
 	},
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 use super::{PromotionClaims, TopoToken};
 
@@ -1571,7 +1571,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 	&'a self,
 	room_id: &'a RoomId,
 	room_mods: I,
-) -> impl futures::Stream<Item = ruma::OwnedServerName> + Send + 'a {
+) -> impl futures::Stream<Item = slipstream::OwnedServerName> + Send + 'a {
 	let canonical_room_alias_server = once(
 		self.services
 			.state_accessor

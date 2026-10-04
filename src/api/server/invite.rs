@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::{self, hash::sha256},
 	warn,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, OwnedUserId, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
 	events::{
@@ -258,7 +258,7 @@ pub(crate) async fn create_invite_route(
 
 		for appservice in services.appservice.read().await.values() {
 			if appservice.is_user_match(&recipient_user) {
-				let request = ruma::api::appservice::event::push_events::v1::Request {
+				let request = slipstream::api::appservice::event::push_events::v1::Request {
 					events: vec![pdu.to_format()],
 					txn_id: general_purpose::URL_SAFE_NO_PAD
 						.encode(sha256::hash(pdu.event_id.as_bytes()))

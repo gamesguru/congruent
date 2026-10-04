@@ -3,7 +3,8 @@ use std::time::SystemTime;
 use axum::extract::State;
 use conduwuit::{Err, Result, err};
 use lettre::{Address, message::Mailbox};
-use ruma::{
+use service::{mailer::messages, uiaa::Identity};
+use slipstream::{
 	MilliSecondsSinceUnixEpoch,
 	api::client::account::{
 		ThirdPartyIdRemovalStatus, add_3pid, delete_3pid, get_3pids,
@@ -11,7 +12,6 @@ use ruma::{
 	},
 	thirdparty::{Medium, ThirdPartyIdentifierInit},
 };
-use service::{mailer::messages, uiaa::Identity};
 
 use crate::Ruma;
 

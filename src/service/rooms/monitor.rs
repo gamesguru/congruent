@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Event, Result, debug, info, utils::ReadyExt, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 
 use crate::service::Dep;
 
@@ -223,13 +223,13 @@ impl Service {
 
 	pub async fn check_room(
 		&self,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 
 		stale_threshold_ms: u64,
 	) -> Result<()> {
 		let room_str = room_id.as_str();
 		if !room_str.bytes().all(|b| b.is_ascii_graphic())
-			|| <&ruma::RoomId>::try_from(room_str).is_err()
+			|| <&slipstream::RoomId>::try_from(room_str).is_err()
 		{
 			info!(
 				target: "forwardfill",
@@ -360,7 +360,7 @@ impl Service {
 			);
 
 			let make_join_request =
-				ruma::api::federation::membership::prepare_join_event::v1::Request {
+				slipstream::api::federation::membership::prepare_join_event::v1::Request {
 					room_id: room_id.to_owned(),
 					user_id: user_id.clone(),
 					ver: self.services.server.supported_room_versions().collect(),
@@ -382,26 +382,29 @@ impl Service {
 				},
 			};
 
-			let event_stub =
-				match serde_json::from_str::<ruma::CanonicalJsonObject>(probe_response.get()) {
-					| Ok(s) => s,
-					| Err(e) => {
-						warn!(
-							target: "forwardfill",
-							"Invalid probe template from {target_server}: {e}"
-						);
-						continue; // Try next server
-					},
-				};
+			let event_stub = match serde_json::from_str::<slipstream::CanonicalJsonObject>(
+				probe_response.get(),
+			) {
+				| Ok(s) => s,
+				| Err(e) => {
+					warn!(
+						target: "forwardfill",
+						"Invalid probe template from {target_server}: {e}"
+					);
+					continue; // Try next server
+				},
+			};
 
-			let remote_latest_events: Vec<ruma::OwnedEventId> = event_stub
+			let remote_latest_events: Vec<slipstream::OwnedEventId> = event_stub
 				.get("prev_events")
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
 						.filter_map(|v| {
 							v.as_str().and_then(|s| {
-								<&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned)
+								<&slipstream::EventId>::try_from(s)
+									.ok()
+									.map(ToOwned::to_owned)
 							})
 						})
 						.collect()
@@ -432,7 +435,7 @@ impl Service {
 			);
 
 			// Fetch the missing extremities via /get_missing_events
-			let earliest_events: Vec<ruma::OwnedEventId> = self
+			let earliest_events: Vec<slipstream::OwnedEventId> = self
 				.services
 				.state
 				.get_forward_extremities(room_id)
@@ -440,7 +443,7 @@ impl Service {
 				.collect()
 				.await;
 
-			let request = ruma::api::federation::event::get_missing_events::v1::Request {
+			let request = slipstream::api::federation::event::get_missing_events::v1::Request {
 				room_id: room_id.to_owned(),
 				earliest_events: earliest_events.clone(),
 				latest_events: missing_latest.clone(),

@@ -6,8 +6,8 @@ use conduwuit::utils::{
 };
 use database::{Database, Deserialized, Json, Map};
 use futures::Stream;
-use ruma::OwnedUserId;
 use serde::{Deserialize, Serialize};
+use slipstream::OwnedUserId;
 
 pub(super) struct Data {
 	registrationtoken_info: Arc<Map>,

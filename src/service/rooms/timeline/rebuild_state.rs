@@ -11,7 +11,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedEventId, RoomId, RoomVersionId,
 	events::{StateEventType, TimelineEventType},
 };
@@ -178,7 +178,7 @@ impl super::Service {
 
 			if *pdu.kind() == TimelineEventType::RoomCreate {
 				if let Ok(create_content) = serde_json::from_str::<
-					ruma::events::room::create::RoomCreateEventContent,
+					slipstream::events::room::create::RoomCreateEventContent,
 				>(pdu.content().get())
 				{
 					room_version = create_content.room_version;

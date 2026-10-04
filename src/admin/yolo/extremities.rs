@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use conduwuit::{Result, matrix::Event};
 use futures::StreamExt;
-use ruma::{OwnedEventId, OwnedRoomOrAliasId};
+use slipstream::{OwnedEventId, OwnedRoomOrAliasId};
 
 use crate::admin_command;
 

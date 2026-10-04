@@ -25,7 +25,10 @@ use conduwuit_service::{
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::StatusCode;
 use itertools::Itertools;
-use ruma::{
+use service::transactions::{
+	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
+};
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
 	RoomId, ServerName, UInt, UserId,
 	api::{
@@ -47,9 +50,6 @@ use ruma::{
 	int,
 	serde::Raw,
 	to_device::DeviceIdOrAllDevices,
-};
-use service::transactions::{
-	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use tokio::sync::watch::{Receiver, Sender};
 use tracing::Instrument;
@@ -596,7 +596,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(ruma::CanonicalJsonValue::as_integer)
+			.and_then(slipstream::CanonicalJsonValue::as_integer)
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}

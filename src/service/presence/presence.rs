@@ -1,10 +1,10 @@
 use conduwuit::{Error, Result, utils};
-use ruma::{
+use serde::{Deserialize, Serialize};
+use slipstream::{
 	UInt, UserId,
 	events::presence::{PresenceEvent, PresenceEventContent},
 	presence::PresenceState,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::users;
 

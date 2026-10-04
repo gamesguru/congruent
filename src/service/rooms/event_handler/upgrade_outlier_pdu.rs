@@ -12,7 +12,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{StreamExt, future::ready};
-use ruma::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
+use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::timeline::RawPduId;
@@ -360,9 +360,9 @@ where
 		.get_forward_extremities(room_id)
 		.collect()
 		.await;
-	let prev_events: Vec<&ruma::EventId> = incoming_pdu.prev_events().collect();
+	let prev_events: Vec<&slipstream::EventId> = incoming_pdu.prev_events().collect();
 	let room_id_owned = room_id.to_owned();
-	let is_referenced = |event_id: &ruma::EventId| {
+	let is_referenced = |event_id: &slipstream::EventId| {
 		let eid = event_id.to_owned();
 		let rid = room_id_owned.clone();
 		async move {

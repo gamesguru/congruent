@@ -12,13 +12,13 @@ use conduwuit_core::{
 	warn,
 };
 use futures::{StreamExt, TryStreamExt, future};
-use ruma::{
+use serde_json::value::{RawValue, to_raw_value};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
 	UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	uint,
 };
-use serde_json::value::{RawValue, to_raw_value};
 
 use super::RoomMutexGuard;
 
@@ -252,7 +252,7 @@ pub async fn create_event(
 	}
 
 	let mut pdu = PduEvent {
-		event_id: ruma::event_id!("$thiswillbefilledinlater").into(),
+		event_id: slipstream::event_id!("$thiswillbefilledinlater").into(),
 		room_id: room_id.map(ToOwned::to_owned),
 		sender: sender.to_owned(),
 		origin: None,
@@ -420,7 +420,7 @@ pub fn hash_sign_and_finalize(
 		.hash_and_sign_event(&mut pdu_json, room_version_id)
 	{
 		return match e {
-			| Error::Signatures(ruma::signatures::Error::PduSize) => {
+			| Error::Signatures(slipstream::signatures::Error::PduSize) => {
 				Err!(Request(TooLarge("Message/PDU is too long (exceeds 65535 bytes)")))
 			},
 			| _ => Err!(Request(BadJson(warn!("Signing event failed: {e}")))),
@@ -439,7 +439,7 @@ pub fn hash_sign_and_finalize(
 
 #[cfg(test)]
 mod tests {
-	use ruma::{CanonicalJsonObject, CanonicalJsonValue};
+	use slipstream::{CanonicalJsonObject, CanonicalJsonValue};
 
 	use super::*;
 

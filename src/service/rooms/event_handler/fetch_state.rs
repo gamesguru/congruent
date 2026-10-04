@@ -9,7 +9,7 @@ use conduwuit::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, RoomId, ServerName, api::federation::event::get_room_state_ids,
 	events::StateEventType,
 };
@@ -110,7 +110,7 @@ where
 			let fetch_futures = missing_ids.into_iter().map(|eid| {
 				let server = server.clone();
 				async move {
-					let req = ruma::api::federation::event::get_event::v1::Request::new(
+					let req = slipstream::api::federation::event::get_event::v1::Request::new(
 						(*eid).to_owned(),
 						None,
 					);
@@ -210,13 +210,13 @@ where
 	);
 
 	// Concurrently parse and verify signatures (Pure CPU and network keys fetch)
-	let mut verified_events: HashMap<OwnedEventId, (PduEvent, ruma::CanonicalJsonObject)> =
+	let mut verified_events: HashMap<OwnedEventId, (PduEvent, slipstream::CanonicalJsonObject)> =
 		unknown_events
 			.into_iter()
 			.stream()
 			.broad_filter_map({
 				let room_version_id = room_version_id.clone();
-				move |(eid, mut val): (OwnedEventId, ruma::CanonicalJsonObject)| {
+				move |(eid, mut val): (OwnedEventId, slipstream::CanonicalJsonObject)| {
 					let room_version_id = room_version_id.clone();
 					async move {
 						let stashed_unsigned = val.remove("unsigned");
@@ -229,7 +229,7 @@ where
 								.bypassed_signature_events
 								.contains(&eid)
 						{
-							Ok(ruma::signatures::Verified::All)
+							Ok(slipstream::signatures::Verified::All)
 						} else {
 							self.services
 								.server_keys
@@ -243,14 +243,14 @@ where
 
 						match verification_result {
 							| Ok(
-								ruma::signatures::Verified::All
-								| ruma::signatures::Verified::Signatures,
+								slipstream::signatures::Verified::All
+								| slipstream::signatures::Verified::Signatures,
 							) => {
 								if matches!(
 									verification_result,
-									Ok(ruma::signatures::Verified::Signatures)
+									Ok(slipstream::signatures::Verified::Signatures)
 								) {
-									if let Err(e) = ruma::canonical_json::redact_in_place(
+									if let Err(e) = slipstream::canonical_json::redact_in_place(
 										&mut val,
 										&room_version_id,
 										None,
@@ -266,7 +266,7 @@ where
 											.await;
 										val.insert(
 											"event_id".to_owned(),
-											ruma::CanonicalJsonValue::String(
+											slipstream::CanonicalJsonValue::String(
 												eid.as_str().to_owned(),
 											),
 										);
@@ -279,20 +279,23 @@ where
 								}
 
 								// Re-attach unsigned for completeness
-								if let Some(ruma::CanonicalJsonValue::Object(unsigned_obj)) =
-									stashed_unsigned
+								if let Some(slipstream::CanonicalJsonValue::Object(
+									unsigned_obj,
+								)) = stashed_unsigned
 								{
 									if !unsigned_obj.is_empty() {
 										val.insert(
 											"unsigned".to_owned(),
-											ruma::CanonicalJsonValue::Object(unsigned_obj),
+											slipstream::CanonicalJsonValue::Object(unsigned_obj),
 										);
 									}
 								}
 
 								val.insert(
 									"event_id".to_owned(),
-									ruma::CanonicalJsonValue::String(eid.as_str().to_owned()),
+									slipstream::CanonicalJsonValue::String(
+										eid.as_str().to_owned(),
+									),
 								);
 
 								if let Ok(pdu) =
@@ -318,7 +321,9 @@ where
 									.await;
 								val.insert(
 									"event_id".to_owned(),
-									ruma::CanonicalJsonValue::String(eid.as_str().to_owned()),
+									slipstream::CanonicalJsonValue::String(
+										eid.as_str().to_owned(),
+									),
 								);
 								self.services
 									.outlier

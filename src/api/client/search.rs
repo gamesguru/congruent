@@ -9,7 +9,8 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, rooms::search::RoomQuery};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture};
-use ruma::{
+use search_events::v3::{Request, Response};
+use slipstream::{
 	OwnedRoomId, RoomId, UInt, UserId,
 	api::client::search::search_events::{
 		self,
@@ -18,7 +19,6 @@ use ruma::{
 	events::AnyStateEvent,
 	serde::Raw,
 };
-use search_events::v3::{Request, Response};
 
 use super::message::visibility_filter;
 use crate::Ruma;

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use conduwuit::Result;
-use ruma::api::client::thirdparty::get_protocols;
+use slipstream::api::client::thirdparty::get_protocols;
 
 use crate::{Ruma, RumaResponse};
 

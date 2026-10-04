@@ -14,14 +14,14 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::StreamExt;
-use ruma::{
+use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 	serde::Raw,
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
 };
-use serde_json::value::RawValue as RawJsonValue;
 use tokio::sync::RwLock;
 
 use crate::{Dep, globals, sending};
@@ -423,7 +423,7 @@ pub async fn add_signing_keys(
 			.collect();
 
 	// Helper to compute sha256 hex string for fingerprint logging
-	let get_fingerprint = |base64_key: &ruma::serde::Base64| -> String {
+	let get_fingerprint = |base64_key: &slipstream::serde::Base64| -> String {
 		use sha2::{Digest, Sha256};
 		let digest = Sha256::digest(base64_key.as_bytes());
 		let mut s = String::with_capacity(digest.len().saturating_mul(2));
@@ -742,7 +742,7 @@ pub async fn required_keys_exist(
 	object: &CanonicalJsonObject,
 	version: &RoomVersionId,
 ) -> bool {
-	use ruma::signatures::required_keys;
+	use slipstream::signatures::required_keys;
 
 	trace!(?object, "Checking required keys exist");
 	let Ok(required_keys) = required_keys(object, version) else {
@@ -955,7 +955,7 @@ fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 mod tests {
 	use std::collections::BTreeSet;
 
-	use ruma::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
+	use slipstream::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
 
 	use super::{
 		BTreeMap, OldVerifyKey, bounded_msc4499_backoff_secs, select_old_verify_keys_to_evict,

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use conduwuit::{Result, info, pdu::PduBuilder};
 use futures::FutureExt;
-use ruma::{
+use slipstream::{
 	RoomId, RoomVersionId,
 	events::room::{
 		canonical_alias::RoomCanonicalAliasEventContent,

@@ -10,7 +10,7 @@ use conduwuit::{
 };
 use database::{Json, Map};
 use futures::{Stream, StreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, OwnedUserId, RoomId, UserId,
 	events::{
 		AnySyncEphemeralRoomEvent,
@@ -66,7 +66,7 @@ impl Data {
 		room_id: &RoomId,
 		user_id: &UserId,
 		target_thread: Option<&ReceiptThread>,
-	) -> Option<ruma::OwnedEventId> {
+	) -> Option<slipstream::OwnedEventId> {
 		let key = roomuserid_key(room_id, user_id);
 		let target_thread_key = thread_key(target_thread);
 
@@ -182,7 +182,7 @@ impl Data {
 		content.insert(event_id, receipt_map);
 
 		Ok(Some((count, ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(content),
+			content: slipstream::events::receipt::ReceiptEventContent(content),
 			room_id: room_id.to_owned(),
 		})))
 	}
@@ -243,7 +243,7 @@ impl Data {
 		};
 
 		let mut existing_event = ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(BTreeMap::new()),
+			content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::new()),
 			room_id: room_id.to_owned(),
 		};
 		for (_, receipt_event) in existing_receipts.values() {
@@ -315,7 +315,7 @@ impl Data {
 			let thread = thread_key(Some(&new_receipt.thread));
 			let new_count = self.services.globals.next_count().unwrap();
 			let new_event = ReceiptEvent {
-				content: ruma::events::receipt::ReceiptEventContent(BTreeMap::from([(
+				content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::from([(
 					new_event_id,
 					BTreeMap::from([(
 						new_type,
@@ -537,9 +537,9 @@ impl Data {
 	async fn synthesize_msc4102_unthreaded(
 		&self,
 		user_id: &UserId,
-		new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
+		new_receipts: &[(slipstream::OwnedEventId, ReceiptType, Receipt, bool)],
 		existing_event: &ReceiptEvent,
-	) -> Vec<(ruma::OwnedEventId, ReceiptType, Receipt, bool)> {
+	) -> Vec<(slipstream::OwnedEventId, ReceiptType, Receipt, bool)> {
 		let mut synthetic = Vec::new();
 		for (new_event_id, new_type, new_receipt, _) in new_receipts {
 			if new_receipt.thread == ReceiptThread::Unthreaded {
@@ -635,7 +635,7 @@ impl Data {
 		&self,
 		room_id: &RoomId,
 		at_or_before: PduCount,
-	) -> Option<ruma::OwnedEventId> {
+	) -> Option<slipstream::OwnedEventId> {
 		let stream = self
 			.services
 			.timeline
@@ -701,7 +701,7 @@ fn combine_private_read_receipts(
 
 	(!content.is_empty()).then(|| {
 		(count, ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(content),
+			content: slipstream::events::receipt::ReceiptEventContent(content),
 			room_id: room_id.to_owned(),
 		})
 	})

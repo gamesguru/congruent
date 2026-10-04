@@ -1,5 +1,5 @@
 use askama::Template;
-use ruma::UserId;
+use slipstream::UserId;
 
 pub trait MessageTemplate: Template {
 	fn subject(&self) -> String;

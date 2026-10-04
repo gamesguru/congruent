@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
-use ruma::{
+use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, events::room::member::MembershipState,
 	serde::JsonObject,
 };

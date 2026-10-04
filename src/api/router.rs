@@ -478,12 +478,12 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
-/// ruma's `ResultRoomEvents::results` has `skip_serializing_if =
+/// slipstream's `ResultRoomEvents::results` has `skip_serializing_if =
 /// "Vec::is_empty"`, so an empty page of search results serializes with the
 /// `results` key dropped entirely rather than as `results: []`. Complement's
 /// `Can back-paginate search results` test (and the spec's implied contract)
 /// expects the key to always be present when `room_events` was requested.
-/// Patched here at the response-body level instead of in the vendored ruma
+/// Patched here at the response-body level instead of in the vendored slipstream
 /// crate, mirroring `inject_public_join_rule` above.
 async fn ensure_search_results_present(
 	res: axum::response::Response,
@@ -517,7 +517,7 @@ async fn ensure_search_results_present(
 	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
-/// ruma's `get_message_events::v3::Request::dir` is a required `Direction`
+/// slipstream's `get_message_events::v3::Request::dir` is a required `Direction`
 /// (no `Option`, no `#[serde(default)]`), matching the letter of the spec
 /// ("dir (Required)"). But Synapse treats it as optional and defaults to
 /// forwards when absent (`PaginationConfig.from_request`,
@@ -529,10 +529,10 @@ async fn ensure_search_results_present(
 /// request missing `dir` would otherwise 400 with `M_BAD_JSON` before our
 /// handler ever gets to run its own checks.
 ///
-/// Since this is a required *request* field (not a response shape ruma
+/// Since this is a required *request* field (not a response shape slipstream
 /// serializes for us), it can't be patched the same way as the
 /// response-side workarounds above -- there's no body to fix up after the
-/// fact, because ruma's deserializer rejects the request before our handler
+/// fact, because slipstream's deserializer rejects the request before our handler
 /// runs. Instead this injects a default `dir=f` into the query string
 /// ahead of extraction, mirroring Synapse's default.
 async fn default_messages_dir(

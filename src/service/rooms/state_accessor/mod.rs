@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conduwuit::{Result, Server, err};
-use ruma::{
+use slipstream::{
 	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
 		StateEventType,
@@ -38,7 +38,7 @@ pub struct Service {
 	services: Services,
 	msc4500_memo: conduwuit::SyncMutex<msc4500::CausalMemo>,
 	pub encrypted_rooms_cache:
-		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
+		conduwuit::SyncRwLock<std::collections::HashSet<slipstream::OwnedRoomId>>,
 }
 
 struct Services {

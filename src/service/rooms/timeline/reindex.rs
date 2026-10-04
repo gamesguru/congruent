@@ -10,7 +10,7 @@ use conduwuit_core::{
 };
 use futures::StreamExt;
 use roaring::RoaringTreemap;
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::{Service, metadata::EventMetadata};
 use crate::rooms::short::ShortEventId;

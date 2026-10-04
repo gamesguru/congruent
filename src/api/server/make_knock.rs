@@ -1,7 +1,7 @@
 use RoomVersionId::*;
 use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug_warn};
-use ruma::{
+use slipstream::{
 	RoomVersionId,
 	api::{client::error::ErrorKind, federation::knock::create_knock_event_template},
 	events::room::member::{MembershipState, RoomMemberEventContent},

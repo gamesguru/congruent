@@ -28,7 +28,9 @@ use futures::{
 	future::{OptionFuture, join3, try_join4},
 	pin_mut,
 };
-use ruma::{
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use slipstream::{
 	DeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::{
 		IncomingRequest, Metadata, OutgoingResponse,
@@ -49,8 +51,6 @@ use ruma::{
 	serde::Raw,
 	uint,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
 
 use super::share_encrypted_room;
 use crate::{
@@ -164,7 +164,7 @@ struct CompatRequest {
 
 	txn_id: Option<String>,
 
-	#[serde(with = "ruma::serde::duration::opt_ms", default)]
+	#[serde(with = "slipstream::serde::duration::opt_ms", default)]
 	timeout: Option<Duration>,
 
 	#[serde(default)]
@@ -204,7 +204,7 @@ struct CompatRoomSubscription {
 	)]
 	required_state: CompatRequiredState,
 
-	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
+	#[serde(default, skip_serializing_if = "slipstream::serde::is_default")]
 	timeline_limit: UInt,
 
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -220,7 +220,7 @@ struct CompatRoomDetails {
 	)]
 	required_state: CompatRequiredState,
 
-	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
+	#[serde(default, skip_serializing_if = "slipstream::serde::is_default")]
 	timeline_limit: UInt,
 }
 
@@ -1466,11 +1466,12 @@ where
 				None
 			},
 			avatar: match heroes_avatar {
-				| Some(heroes_avatar) => ruma::JsOption::Some(heroes_avatar),
+				| Some(heroes_avatar) => slipstream::JsOption::Some(heroes_avatar),
 				| _ => match services.rooms.state_accessor.get_avatar(room_id).await {
-					| ruma::JsOption::Some(avatar) => ruma::JsOption::from_option(avatar.url),
-					| ruma::JsOption::Null => ruma::JsOption::Null,
-					| ruma::JsOption::Undefined => ruma::JsOption::Undefined,
+					| slipstream::JsOption::Some(avatar) =>
+						slipstream::JsOption::from_option(avatar.url),
+					| slipstream::JsOption::Null => slipstream::JsOption::Null,
+					| slipstream::JsOption::Undefined => slipstream::JsOption::Undefined,
 				},
 			},
 			initial: (roomsince == &0).then_some(true),

@@ -4,8 +4,8 @@ use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
 use futures::TryStreamExt;
-use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 use serde::{Deserialize, Serialize};
+use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 
 use super::AccessCheck;
 
@@ -109,9 +109,9 @@ async fn verify_federation_request(
 	x_matrix: &XMatrix,
 	signature_uri: &str,
 ) -> Result<()> {
-	type Member = (String, ruma::CanonicalJsonValue);
-	type Object = ruma::CanonicalJsonObject;
-	type Value = ruma::CanonicalJsonValue;
+	type Member = (String, slipstream::CanonicalJsonValue);
+	type Object = slipstream::CanonicalJsonObject;
+	type Value = slipstream::CanonicalJsonValue;
 
 	let destination = services.globals.server_name();
 	if let Some(dest) = x_matrix.destination.as_deref() {
@@ -154,7 +154,7 @@ async fn verify_federation_request(
 
 	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
 	let keys: PubKeyMap = [(x_matrix.origin.as_str().into(), keys)].into();
-	ruma::signatures::verify_json(&keys, authorization).map_err(|e| {
+	slipstream::signatures::verify_json(&keys, authorization).map_err(|e| {
 		err!(Request(Forbidden(warn!(
 			"Failed to verify X-Matrix signatures from {}: {e}",
 			x_matrix.origin
@@ -167,7 +167,7 @@ async fn verify_federation_request(
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::utils::hash::lthash::serialize_lthash;
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	#[test]
 	fn test_serialize_empty_lthash() {

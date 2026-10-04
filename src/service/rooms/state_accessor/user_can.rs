@@ -1,5 +1,5 @@
 use conduwuit::{Err, Result, RoomVersion, debug_info, implement, matrix::Event};
-use ruma::{
+use slipstream::{
 	EventId, RoomId, UserId,
 	events::{
 		StateEventType, TimelineEventType,

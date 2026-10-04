@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	EventId, RoomId, UInt, UserId,
 	api::{
 		Direction,

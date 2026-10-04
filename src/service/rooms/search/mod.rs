@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use database::{Map, keyval::Val};
 use futures::{Stream, StreamExt};
-use ruma::{RoomId, UserId, api::client::search::search_events::v3::Criteria};
+use slipstream::{RoomId, UserId, api::client::search::search_events::v3::Criteria};
 
 use crate::{
 	Dep, rooms,

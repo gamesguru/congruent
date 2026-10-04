@@ -10,7 +10,8 @@ use futures::{
 	FutureExt, StreamExt,
 	future::{OptionFuture, join3},
 };
-use ruma::{
+use service::Services;
+use slipstream::{
 	OwnedServerName, RoomId, UserId,
 	api::{
 		client::room::get_summary,
@@ -19,7 +20,6 @@ use ruma::{
 	events::room::member::MembershipState,
 	space::SpaceRoomJoinRule::{self, *},
 };
-use service::Services;
 
 use crate::{Ruma, RumaResponse};
 

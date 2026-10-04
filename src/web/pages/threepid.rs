@@ -4,8 +4,8 @@ use axum::{
 	response::IntoResponse,
 	routing::get,
 };
-use ruma::OwnedSessionId;
 use serde::Deserialize;
+use slipstream::OwnedSessionId;
 
 use crate::{WebError, template};
 
