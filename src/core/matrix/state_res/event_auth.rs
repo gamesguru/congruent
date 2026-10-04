@@ -33,6 +33,7 @@ use super::{
 use crate::{debug, error, info, trace, warn};
 
 #[derive(Deserialize, Debug)]
+#[serde(transparent)]
 struct JsonRaw<T>(serde_json::Value, #[serde(skip)] PhantomData<T>);
 
 impl<T> JsonRaw<T> {
@@ -114,7 +115,8 @@ pub fn auth_types_for_event(
 		}
 
 		if let Some(state_key) = state_key {
-			let content: RoomMemberContentFields = from_json_str(content.as_str().unwrap_or(""))?;
+			let content: RoomMemberContentFields =
+				from_json_str(&slipstream::codec::to_string(content))?;
 
 			if let Some(Ok(membership)) = content.membership.map(|m| m.deserialize_as()) {
 				if [MembershipState::Join, MembershipState::Invite, MembershipState::Knock]

@@ -8,6 +8,8 @@
 //! those projections, and codec-encoded values become raw bytes. The byte
 //! encoding on disk is unchanged.
 
+use std::collections::BTreeSet;
+
 use conduwuit::{Error, Result, matrix::StateKey};
 use serde::{Deserialize, Serialize, Serializer};
 use slipstream::codec;
@@ -170,6 +172,51 @@ impl<'a, T: DbDe<'a>> DbDe<'a> for Option<T> {
 	type De = Option<T::De>;
 
 	fn from_de(de: Self::De) -> Result<Self> { de.map(T::from_de).transpose() }
+}
+
+impl<T: Serialize> DbKey for Vec<T> {
+	type Ser<'a>
+		= &'a Self
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self }
+}
+
+impl<'a, T: Deserialize<'a>> DbDe<'a> for Vec<T> {
+	type De = Self;
+
+	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
+}
+
+impl<T: Serialize> DbKey for BTreeSet<T> {
+	type Ser<'a>
+		= &'a Self
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self }
+}
+
+impl<'a, T: Deserialize<'a>> DbDe<'a> for BTreeSet<T> {
+	type De = Self;
+
+	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
+}
+
+impl<T: Serialize, const N: usize> DbKey for conduwuit::arrayvec::ArrayVec<T, N> {
+	type Ser<'a>
+		= &'a Self
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self }
+}
+
+impl<'a, T: Deserialize<'a>, const N: usize> DbDe<'a> for conduwuit::arrayvec::ArrayVec<T, N> {
+	type De = Self;
+
+	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
 }
 
 macro_rules! tuple_impls {
