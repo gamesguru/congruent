@@ -121,7 +121,9 @@ pub fn auth_types_for_event(
 				}
 
 				if membership == MembershipState::Invite {
-					if let Some(Ok(t_id)) = content.third_party_invite.map(|t| t.deserialize_as())
+					if let Some(Ok(t_id)) = content
+						.third_party_invite
+						.map(|t| t.deserialize_as::<ThirdPartyInvite>())
 					{
 						let key =
 							(StateEventType::RoomThirdPartyInvite, t_id.signed.token.into());
@@ -388,7 +390,7 @@ where
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
 			.as_ref()
-			.and_then(|u| u.deserialize_as().ok());
+			.and_then(|u| u.deserialize_as::<OwnedUserId>().ok());
 
 		let user_for_join_auth_event: OptionFuture<_> = user_for_join_auth
 			.as_ref()
@@ -633,9 +635,10 @@ where
 				return true;
 			}
 			if let Some(additional_creators) = content.additional_creators {
-				return additional_creators
-					.iter()
-					.any(|c| c.deserialize_as().is_ok_and(|c| c == *user_id));
+				return additional_creators.iter().any(|c| {
+					c.deserialize_as::<OwnedUserId>()
+						.is_ok_and(|c| c == *user_id)
+				});
 			}
 		}
 		false

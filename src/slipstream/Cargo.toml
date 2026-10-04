@@ -1,6 +1,6 @@
 [package]
 name = "slipstream"
-description = "slipstream: ruma facade that can swap individual items for mtx-slipstream"
+description = "Local Matrix types and codecs implemented by mtx-slipstream"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -8,11 +8,8 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-# Route selected items through mtx-slipstream instead of real ruma.
+# Compatibility surface implemented by mtx-slipstream.
 slipstream = []
 
 [dependencies]
-ruma.workspace = true
 mtx-slipstream = { path = "../../../slipstream" }
-serde.workspace = true
-serde_json.workspace = true

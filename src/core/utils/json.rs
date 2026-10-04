@@ -21,9 +21,10 @@ pub fn to_canonical_object<T: serde::Serialize>(
 				slipstream::canonical_json::from_json_str::<slipstream::CanonicalJsonValue>(
 					&encoded,
 				)
-				.map_err(|error| SerDe(error.to_string()))?;
-			slipstream::canonical_json::into_object(value)
-				.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
+				.map_err(SerDe)?;
+			slipstream::canonical_json::into_object(value).ok_or_else(|| {
+				SerDe(serde_json::Error::custom("serialized value was not an object"))
+			})
 		},
 		| _ => Err(SerDe(serde_json::Error::custom("Value must be an object"))),
 	}
