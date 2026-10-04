@@ -1,4 +1,3 @@
-use slipstream::OwnedRoomId;
 use std::{fmt::Debug, mem, sync::Arc};
 
 use bytes::BytesMut;
@@ -12,7 +11,7 @@ use conduwuit_database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt};
 use ipaddress::IPAddress;
 use slipstream::{
-	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
+	DeviceId, OwnedDeviceId, OwnedRoomId, RoomId, UInt, UserId,
 	api::{
 		IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::push::{Pusher, PusherKind, set_pusher},

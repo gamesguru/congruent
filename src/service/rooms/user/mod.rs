@@ -6,7 +6,9 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Ignore, Interfix, Map};
 use futures::{StreamExt, stream::select};
-use slipstream::{EventId, OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+use slipstream::{
+	EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId, events::receipt::ReceiptThread,
+};
 
 use crate::{Dep, globals, rooms};
 
@@ -284,13 +286,13 @@ pub async fn thread_notification_counts(
 }
 
 fn notification_kv(
-	(key, notifications): ((&UserId, &RoomId, OwnedEventId), u64),
+	(key, notifications): ((OwnedUserId, OwnedRoomId, OwnedEventId), u64),
 ) -> (OwnedEventId, (u64, u64)) {
 	(key.2, (notifications, 0))
 }
 
 fn highlight_kv(
-	(key, highlights): ((&UserId, &RoomId, OwnedEventId), u64),
+	(key, highlights): ((OwnedUserId, OwnedRoomId, OwnedEventId), u64),
 ) -> (OwnedEventId, (u64, u64)) {
 	(key.2, (0, highlights))
 }

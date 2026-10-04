@@ -1,6 +1,5 @@
 mod remote;
 
-use slipstream::OwnedRoomAliasId;
 use std::sync::Arc;
 
 use conduwuit::{
@@ -11,7 +10,8 @@ use conduwuit::{
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
 use slipstream::{
-	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
+	OwnedRoomAliasId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId,
+	RoomOrAliasId, UserId,
 	events::{
 		StateEventType,
 		room::{
@@ -243,7 +243,7 @@ impl Service {
 		let server_is_ours = self
 			.services
 			.globals
-			.server_is_ours(room_alias.server_name());
+			.server_is_ours(&room_alias.server_name());
 
 		if !server_is_ours {
 			// TODO: The spec advises servers may cache remote room aliases temporarily.
@@ -283,7 +283,7 @@ impl Service {
 	pub fn local_aliases_for_room<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-	) -> impl Stream<Item = &'a RoomAliasId> + Send + 'a {
+	) -> impl Stream<Item = OwnedRoomAliasId> + Send + 'a {
 		let prefix = (room_id, Interfix);
 		self.db
 			.aliasid_alias
@@ -379,10 +379,11 @@ impl Service {
 		room_alias: &RoomAliasId,
 		appservice_info: &Option<RegistrationInfo>,
 	) -> Result<()> {
+		let server_name = room_alias.server_name();
 		if !self
 			.services
 			.globals
-			.server_is_ours(room_alias.server_name())
+			.server_is_ours(&server_name)
 		{
 			return Err!(Request(InvalidParam("Alias is from another server.")));
 		}

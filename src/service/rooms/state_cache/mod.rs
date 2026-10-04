@@ -185,13 +185,13 @@ pub fn clear_appservice_in_room_cache(&self) { self.appservice_in_room_cache.wri
 pub fn room_servers<'a>(
 	&'a self,
 	room_id: &'a RoomId,
-) -> impl Stream<Item = &'a ServerName> + Send + 'a {
+) -> impl Stream<Item = OwnedServerName> + Send + 'a {
 	let prefix = (room_id, Interfix);
 	self.db
 		.roomserverids
 		.keys_prefix(&prefix)
 		.ignore_err()
-		.map(|(_, server): (Ignore, &ServerName)| server)
+		.map(|(_, server): (Ignore, OwnedServerName)| server)
 }
 
 #[implement(Service)]
@@ -230,7 +230,7 @@ pub async fn server_is_participant<'a>(
 pub fn server_rooms<'a>(
 	&'a self,
 	server: &'a ServerName,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	let prefix = (server, Interfix);
 	self.db
 		.serverroomids
@@ -485,7 +485,7 @@ pub async fn get_left_count(&self, room_id: &RoomId, user_id: &UserId) -> Result
 pub fn rooms_joined<'a>(
 	&'a self,
 	user_id: &'a UserId,
-) -> impl Stream<Item = &'a RoomId> + Send + 'a {
+) -> impl Stream<Item = OwnedRoomId> + Send + 'a {
 	let prefix = (user_id, Interfix);
 	self.db
 		.userroomid_joined

@@ -1,9 +1,11 @@
 pub(super) mod dehydrated_device;
 
-#[cfg(feature = "ldap")]
-use slipstream::OwnedRoomId;
-use std::collections::HashMap;
-use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
+use std::{
+	collections::{BTreeMap, HashMap},
+	mem,
+	net::IpAddr,
+	sync::Arc,
+};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
@@ -19,6 +21,8 @@ use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use serde_json::json;
+#[cfg(feature = "ldap")]
+use slipstream::OwnedRoomId;
 use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
 	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
@@ -84,6 +88,11 @@ impl Deserialize for UserSuspension {
 				.unwrap_or_default(),
 		})
 	}
+}
+
+/// Decode a codec-encoded JSON value stored as raw bytes.
+fn decode_json_slice<T: Deserialize>(bytes: &[u8]) -> Option<T> {
+	slipstream::codec::from_str(std::str::from_utf8(bytes).ok()?).ok()
 }
 
 /// A profile change retained for MSC4429 incremental sync.
@@ -289,16 +298,17 @@ impl Service {
 					.get_raw(None, recipient_user, kind)
 					.await
 				{
-					if let Ok(mut json) = raw.deserialized::<serde_json::Value>() {
+					if let Ok(mut json) = raw.deserialized::<Value>() {
 						if let Some(content_val) = json.get_mut("content") {
 							// MSC4155: Will ignore null fields
 							if let Some(obj) = content_val.as_object_mut() {
 								obj.retain(|_, v| !v.is_null());
 							}
 
-							if let Ok(parsed) = serde_json::from_value::<
-								InvitePermissionConfigEventContent,
-							>(content_val.clone())
+							if let Ok(parsed) =
+								slipstream::codec::from_value::<InvitePermissionConfigEventContent>(
+									content_val,
+								)
 							{
 								config_content = Some(parsed);
 								break;
@@ -609,7 +619,7 @@ impl Service {
 			self.record_profile_update(
 				user_id,
 				"displayname",
-				Some(serde_json::Value::String(displayname)),
+				Some(Value::String(displayname)),
 			);
 		} else {
 			self.db.userid_displayname.remove(user_id);
@@ -743,8 +753,8 @@ impl Service {
 	async fn active_tokens(&self, user_id: &UserId, device_id: &DeviceId) -> Vec<String> {
 		let key = (user_id, device_id);
 		match self.db.userdeviceid_token.qry(&key).await {
-			| Ok(handle) => match handle.deserialized::<serde_json::Value>() {
-				| Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+			| Ok(handle) => match handle.deserialized::<Json<Vec<String>>>() {
+				| Ok(Json(tokens)) => tokens,
 				| Err(_) => Vec::new(),
 			},
 			| Err(_) => Vec::new(),
@@ -847,8 +857,7 @@ impl Service {
 		// TestUploadKeyIdempotency / TestUploadKeyIdempotencyOverlap). Keys are
 		// stored as `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`, so we
 		// stream the user+device scope and compare the trailing key-id segment.
-		let expected_key_id =
-			serde_json::to_string(one_time_key_key).expect("DeviceKeyId always serializes");
+		let expected_key_id = slipstream::codec::to_string(one_time_key_key);
 		let mut key_prefix = user_id.as_bytes().to_vec();
 		key_prefix.push(0xFF);
 		key_prefix.extend_from_slice(device_id.as_bytes());
@@ -886,11 +895,7 @@ impl Service {
 		key.push(0xFF);
 		// TODO: Use DeviceKeyId::to_string when it's available (and update everything,
 		// because there are no wrapping quotation marks anymore)
-		key.extend_from_slice(
-			serde_json::to_string(one_time_key_key)
-				.expect("DeviceKeyId::to_string always works")
-				.as_bytes(),
-		);
+		key.extend_from_slice(slipstream::codec::to_string(one_time_key_key).as_bytes());
 
 		self.db
 			.onetimekeyid_onetimekeys
@@ -987,12 +992,12 @@ impl Service {
 				let parsed_key: Option<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>> = key
 					.rsplit(|&b| b == 0xFF)
 					.next()
-					.and_then(|key_json| serde_json::from_slice(key_json).ok());
+					.and_then(decode_json_slice);
 				let starts = parsed_key
 					.as_ref()
 					.is_some_and(|pk| pk.to_string().starts_with(&expected_algo_prefix));
 				std::future::ready(if let (Some(parsed_key), true) = (parsed_key, starts) {
-					let val = serde_json::from_slice(val).ok();
+					let val = decode_json_slice(val);
 					val.map(|val| (key.to_vec(), parsed_key, val))
 				} else {
 					None
@@ -1039,11 +1044,10 @@ impl Service {
 			// in the `/keys/claim` response so clients can tell it apart from a
 			// freshly-expiring one-time key. Clients do upload the flag, but we
 			// set it explicitly here to be robust (some SDKs omit it on upload).
-			let mut claim_key = fallback_key_value
-				.deserialize_as::<serde_json::Value>()
-				.unwrap_or_else(|_| serde_json::json!({}));
-			claim_key["fallback"] = serde_json::Value::Bool(true);
-			let claim_key = Raw::from_json(serde_json::value::to_raw_value(&claim_key)?);
+			let mut claim_key = slipstream::codec::from_str::<Value>(fallback_key_value.get())
+				.unwrap_or_else(|_| Value::Object(slipstream::json::Object::new()));
+			claim_key.insert("fallback".into(), Value::Bool(true));
+			let claim_key = Raw::from_value(&claim_key);
 
 			return Ok((fallback_key_id, claim_key));
 		}
@@ -1075,12 +1079,9 @@ impl Service {
 			.ignore_err()
 			.ready_for_each(|(key, _): (&[u8], &[u8])| {
 				let Some(one_time_key_id) =
-					key.rsplit(|&b| b == 0xFF).next().and_then(|key_json| {
-						serde_json::from_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>(
-							key_json,
-						)
-						.ok()
-					})
+					key.rsplit(|&b| b == 0xFF)
+						.next()
+						.and_then(decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>)
 				else {
 					tracing::warn!(
 						"count_one_time_keys: skipping unparsable key id for \
@@ -1186,8 +1187,8 @@ impl Service {
 
 		if let Some(master_key) = master_key {
 			let (master_key_key, _) = parse_master_key(user_id, master_key)?;
-			let mut master_key_val: serde_json::Value =
-				serde_json::from_str(master_key.json().get())
+			let mut master_key_val: Value =
+				slipstream::codec::from_str(master_key.get())
 					.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
 
 			info!(
@@ -1202,15 +1203,13 @@ impl Service {
 				.get(&master_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut master_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&master_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize master key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&master_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&master_key_val);
 
@@ -1232,8 +1231,8 @@ impl Service {
 
 		// Self-signing key
 		if let Some(self_signing_key) = self_signing_key {
-			let mut self_signing_key_val: serde_json::Value =
-				serde_json::from_str(self_signing_key.json().get()).map_err(|e| {
+			let mut self_signing_key_val: Value =
+				slipstream::codec::from_str(self_signing_key.get()).map_err(|e| {
 					err!(Database(debug_error!("Invalid self-signing key JSON: {e}")))
 				})?;
 
@@ -1269,15 +1268,13 @@ impl Service {
 				.get(&self_signing_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut self_signing_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&self_signing_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize self-signing key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&self_signing_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&self_signing_key_val);
 
@@ -1298,8 +1295,8 @@ impl Service {
 		}
 
 		if let Some(user_signing_key) = user_signing_key {
-			let mut user_signing_key_val: serde_json::Value =
-				serde_json::from_str(user_signing_key.json().get()).map_err(|e| {
+			let mut user_signing_key_val: Value =
+				slipstream::codec::from_str(user_signing_key.get()).map_err(|e| {
 					err!(Database(debug_error!("Invalid user-signing key JSON: {e}")))
 				})?;
 
@@ -1318,15 +1315,13 @@ impl Service {
 				.qry(&user_signing_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut user_signing_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&user_signing_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize user-signing key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&user_signing_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&user_signing_key_val);
 
@@ -1362,7 +1357,7 @@ impl Service {
 	) -> Result {
 		let key = (target_id, key_id);
 
-		let mut cross_signing_key: serde_json::Value = self
+		let mut cross_signing_key: Value = self
 			.db
 			.keyid_key
 			.qry(&key)
@@ -1374,20 +1369,20 @@ impl Service {
 		let signatures = cross_signing_key
 			.as_object_mut()
 			.ok_or_else(|| err!(Database(info!("key in keyid_key is not an object"))))?
-			.entry("signatures")
+			.entry("signatures".to_owned())
 			.or_insert_with(|| {
 				info!(
 					target: "cross_signing",
 					"Key {key_id} of {target_id} has no signatures field, initializing empty"
 				);
-				serde_json::json!({})
+				Value::Object(slipstream::json::Object::new())
 			})
 			.as_object_mut()
 			.ok_or_else(|| {
 				err!(Database(info!("key in keyid_key has invalid signatures field.")))
 			})?
 			.entry(sender_id.to_string())
-			.or_insert_with(|| serde_json::Map::new().into());
+			.or_insert_with(|| Value::Object(slipstream::json::Object::new()));
 
 		let sig_map = signatures.as_object_mut().ok_or_else(|| {
 			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
@@ -1406,8 +1401,6 @@ impl Service {
 		);
 
 		let key = (target_id, key_id);
-		let cross_signing_key = slipstream::json::Value::parse(&cross_signing_key.to_string())
-			.map_err(|e| err!(Database("failed to encode cross-signing key: {e}")))?;
 		self.db.keyid_key.put(key, Json(cross_signing_key));
 
 		self.mark_device_key_update(target_id).await;
@@ -2406,3 +2399,5 @@ mod tests {
 		);
 	}
 }
+
+database::codec_value_impls!(UserSuspension);

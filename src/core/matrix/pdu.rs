@@ -441,7 +441,7 @@ impl CodecDeserialize for Pdu {
 		)?;
 		let room_id = obj
 			.get("room_id")
-			.map(|v| <OwnedRoomId as CodecDeserialize>::from_json(v))
+			.map(<OwnedRoomId as CodecDeserialize>::from_json)
 			.transpose()?;
 		let sender = <OwnedUserId as CodecDeserialize>::from_json(
 			obj.get("sender")
@@ -449,11 +449,11 @@ impl CodecDeserialize for Pdu {
 		)?;
 		let origin = obj
 			.get("origin")
-			.map(|v| <OwnedServerName as CodecDeserialize>::from_json(v))
+			.map(<OwnedServerName as CodecDeserialize>::from_json)
 			.transpose()?;
 		let origin_server_ts = obj
 			.get("origin_server_ts")
-			.and_then(|v| v.as_u64())
+			.and_then(slipstream::json::Value::as_u64)
 			.ok_or_else(|| slipstream::codec::DeError::expected("origin_server_ts"))?;
 		let kind = <TimelineEventType as CodecDeserialize>::from_json(
 			obj.get("type")
@@ -474,7 +474,7 @@ impl CodecDeserialize for Pdu {
 		)?;
 		let depth = obj
 			.get("depth")
-			.and_then(|v| v.as_u64())
+			.and_then(slipstream::json::Value::as_u64)
 			.ok_or_else(|| slipstream::codec::DeError::expected("depth"))?;
 		let auth_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
 			obj.get("auth_events")
@@ -482,7 +482,7 @@ impl CodecDeserialize for Pdu {
 		)?;
 		let redacts = obj
 			.get("redacts")
-			.map(|v| <OwnedEventId as CodecDeserialize>::from_json(v))
+			.map(<OwnedEventId as CodecDeserialize>::from_json)
 			.transpose()?;
 		let unsigned = obj.get("unsigned").map(RawJson::from_value);
 		let hashes = <EventHash as CodecDeserialize>::from_json(

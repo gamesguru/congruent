@@ -8,7 +8,10 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Handle, Interfix, Map, Qry};
 use futures::{Stream, StreamExt, pin_mut};
-use slipstream::{DeviceId, OwnedUserId, RoomId, UserId, api::client::filter::LazyLoadOptions};
+use slipstream::{
+	DeviceId, OwnedDeviceId, OwnedRoomId, OwnedUserId, RoomId, UserId,
+	api::client::filter::LazyLoadOptions,
+};
 
 pub struct Service {
 	db: Data,
@@ -40,7 +43,7 @@ pub enum Status {
 }
 
 pub type MemberSet = HashSet<OwnedUserId>;
-type Key<'a> = (OwnedUserId, Option<OwnedDeviceId>, OwnedRoomId, OwnedUserId);
+type Key<'a> = (&'a UserId, Option<&'a DeviceId>, &'a RoomId, &'a UserId);
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {

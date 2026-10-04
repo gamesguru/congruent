@@ -82,7 +82,7 @@ pub fn add_age(&mut self) -> Result {
 pub fn add_relation(&mut self, name: &str, pdu: Option<&Pdu>) -> Result {
 	let mut unsigned = self.unsigned_object()?;
 
-	let pdu = pdu.map_or_else(|| Value::Object(Object::new()), |pdu| to_value(pdu));
+	let pdu = pdu.map_or_else(|| Value::Object(Object::new()), to_value);
 
 	if let Value::Object(relations) = unsigned
 		.entry("m.relations".into())

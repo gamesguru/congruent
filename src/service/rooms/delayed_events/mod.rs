@@ -733,3 +733,5 @@ impl Service {
 		}
 	}
 }
+
+database::codec_value_impls!(ScheduledDelayedEvent, FinalizedDelayedEvent);

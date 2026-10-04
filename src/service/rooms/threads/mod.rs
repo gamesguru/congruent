@@ -69,13 +69,37 @@ impl CodecDeserialize for ThreadRelation {
 	}
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct ThreadSubscription {
 	pub subscribed: bool,
 	pub automatic: bool,
 	pub bump_stamp: u64,
 	pub last_unsubscribed: u64,
 }
+
+impl CodecSerialize for ThreadSubscription {
+	fn to_json(&self) -> Value {
+		slipstream::json!({
+			"subscribed": self.subscribed,
+			"automatic": self.automatic,
+			"bump_stamp": self.bump_stamp,
+			"last_unsubscribed": self.last_unsubscribed,
+		})
+	}
+}
+
+impl CodecDeserialize for ThreadSubscription {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			subscribed: body_field(Some(value), "subscribed")?,
+			automatic: body_field(Some(value), "automatic")?,
+			bump_stamp: body_field(Some(value), "bump_stamp")?,
+			last_unsubscribed: body_field(Some(value), "last_unsubscribed")?,
+		})
+	}
+}
+
+conduwuit_database::codec_value_impls!(ThreadSubscription);
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
@@ -221,8 +245,10 @@ impl Service {
 			.ignore_err()
 			.ready_filter_map(
 				|(key, subscription): ((OwnedUserId, OwnedRoomId, OwnedEventId), &[u8])| {
-					let subscription =
-						serde_json::from_slice::<ThreadSubscription>(subscription).ok()?;
+					let subscription = slipstream::codec::from_str::<ThreadSubscription>(
+						std::str::from_utf8(subscription).ok()?,
+					)
+					.ok()?;
 					(subscription.subscribed && subscription.bump_stamp > since).then_some((
 						key.1,
 						key.2,

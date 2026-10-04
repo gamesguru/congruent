@@ -109,3 +109,5 @@ impl Data {
 	/// Remove a reset token.
 	pub(super) fn remove_token(&self, token: &str) { self.passwordresettoken_info.remove(token); }
 }
+
+database::codec_value_impls!(ResetTokenInfo);

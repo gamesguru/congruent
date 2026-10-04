@@ -6,15 +6,19 @@ use conduwuit::utils::{
 };
 use database::{Database, Deserialized, Json, Map};
 use futures::Stream;
-use serde::{Deserialize, Serialize};
-use slipstream::OwnedUserId;
+use slipstream::{
+	OwnedUserId,
+	codec::{DeError, Deserialize, Serialize},
+	endpoint::body_field,
+	json::{Object, Value},
+};
 
 pub(super) struct Data {
 	registrationtoken_info: Arc<Map>,
 }
 
 /// Metadata of a registration token.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct DatabaseTokenInfo {
 	/// The admin user who created this token.
 	pub creator: OwnedUserId,
@@ -59,11 +63,82 @@ impl std::fmt::Display for DatabaseTokenInfo {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub enum TokenExpires {
 	AfterUses(u64),
 	AfterTime(SystemTime),
 }
+
+impl Serialize for DatabaseTokenInfo {
+	fn to_json(&self) -> Value {
+		let mut obj = Object::new();
+		obj.insert("creator".into(), self.creator.to_json());
+		obj.insert("uses".into(), self.uses.to_json());
+		obj.insert(
+			"expires".into(),
+			self.expires
+				.as_ref()
+				.map_or(Value::Null, Serialize::to_json),
+		);
+		Value::Object(obj)
+	}
+}
+
+impl Deserialize for DatabaseTokenInfo {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		let expires = value
+			.as_object()
+			.and_then(|o| o.get("expires"))
+			.filter(|v| !v.is_null());
+		Ok(Self {
+			creator: body_field(Some(value), "creator")?,
+			uses: body_field(Some(value), "uses")?,
+			expires: expires.map(TokenExpires::from_json).transpose()?,
+		})
+	}
+}
+
+// Encoded like serde's externally tagged enum: {"AfterUses": n} or
+// {"AfterTime": {"secs_since_epoch": s, "nanos_since_epoch": n}}.
+impl Serialize for TokenExpires {
+	fn to_json(&self) -> Value {
+		let mut obj = Object::new();
+		match self {
+			| Self::AfterUses(uses) => {
+				obj.insert("AfterUses".into(), uses.to_json());
+			},
+			| Self::AfterTime(time) => {
+				let since = time
+					.duration_since(SystemTime::UNIX_EPOCH)
+					.unwrap_or_default();
+				let mut t = Object::new();
+				t.insert("secs_since_epoch".into(), since.as_secs().to_json());
+				t.insert("nanos_since_epoch".into(), since.subsec_nanos().to_json());
+				obj.insert("AfterTime".into(), Value::Object(t));
+			},
+		}
+		Value::Object(obj)
+	}
+}
+
+impl Deserialize for TokenExpires {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| DeError("expected object".into()))?;
+		if let Some(uses) = obj.get("AfterUses") {
+			return Ok(Self::AfterUses(u64::from_json(uses)?));
+		}
+		let time = obj
+			.get("AfterTime")
+			.ok_or_else(|| DeError("unknown TokenExpires variant".into()))?;
+		let secs: u64 = body_field(Some(time), "secs_since_epoch")?;
+		let nanos: u32 = body_field(Some(time), "nanos_since_epoch")?;
+		Ok(Self::AfterTime(SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos)))
+	}
+}
+
+database::codec_value_impls!(DatabaseTokenInfo);
 
 impl std::fmt::Display for TokenExpires {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,4 +1,3 @@
-use slipstream::OwnedRoomId;
 use std::{
 	collections::{HashMap, HashSet},
 	ops::Bound,
@@ -17,7 +16,8 @@ use conduwuit::{
 use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
 use slipstream::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
+	api::Direction,
 };
 
 use super::{PduId, RawPduId, backward_extremities};

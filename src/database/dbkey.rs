@@ -243,7 +243,7 @@ tuple_impls! {
 }
 
 /// Raw bytes that serialize without any framing.
-pub struct RawBytes(Vec<u8>);
+pub struct RawBytes(pub Vec<u8>);
 
 impl Serialize for RawBytes {
 	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -252,7 +252,7 @@ impl Serialize for RawBytes {
 }
 
 /// Raw bytes that deserialize from the remainder of the record.
-pub struct RawBytesDe<'a>(&'a [u8]);
+pub struct RawBytesDe<'a>(pub &'a [u8]);
 
 impl<'de> Deserialize<'de> for RawBytesDe<'de> {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -273,6 +273,53 @@ impl<'de> Deserialize<'de> for RawBytesDe<'de> {
 		}
 		deserializer.deserialize_bytes(Visit)
 	}
+}
+
+/// Implement [`DbKey`] and [`DbDe`] for types stored as codec-encoded JSON.
+#[macro_export]
+macro_rules! codec_value_impls {
+	($($t:ty),* $(,)?) => {$(
+		impl $crate::dbkey::DbKey for $t {
+			type Ser<'a> = $crate::dbkey::RawBytes where Self: 'a;
+
+			fn db_ser(&self) -> Self::Ser<'_> {
+				$crate::dbkey::RawBytes(::slipstream::codec::to_string(self).into_bytes())
+			}
+		}
+
+		impl<'a> $crate::dbkey::DbDe<'a> for $t {
+			type De = $crate::dbkey::RawBytesDe<'a>;
+
+			fn from_de(de: Self::De) -> ::conduwuit::Result<Self> {
+				let text = ::std::str::from_utf8(de.0)
+					.map_err(|e| ::conduwuit::Error::SerdeDe(e.to_string().into()))?;
+				::slipstream::codec::from_str(text)
+					.map_err(|e| ::conduwuit::Error::SerdeDe(e.to_string().into()))
+			}
+		}
+	)*};
+}
+
+codec_value_impls!(
+	conduwuit::matrix::Pdu,
+	slipstream::json::Value,
+	std::collections::BTreeMap<String, slipstream::json::Value>,
+	slipstream::device::Device,
+	slipstream::pusher::Pusher,
+	slipstream::filter::FilterDefinition,
+	slipstream::federation_api::discovery::ServerSigningKeys,
+);
+
+impl<T: Serialize, const N: usize> DbKey for [T; N]
+where
+	[T; N]: Serialize,
+{
+	type Ser<'a>
+		= &'a [T; N]
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self }
 }
 
 /// Values stored as codec-encoded JSON.
@@ -345,6 +392,38 @@ id_impls!(
 	slipstream::OwnedTransactionId,
 	slipstream::OwnedMxcUri,
 );
+
+impl<A, K> DbKey for slipstream::OwnedKeyId<A, K> {
+	type Ser<'a>
+		= &'a str
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self.as_str() }
+}
+
+impl<'a, A, K> DbDe<'a> for slipstream::OwnedKeyId<A, K> {
+	type De = &'a str;
+
+	fn from_de(de: Self::De) -> Result<Self> {
+		Self::parse(de).map_err(|e| Error::SerdeDe(e.to_string().into()))
+	}
+}
+
+impl DbKey for slipstream::OneTimeKeyAlgorithm {
+	type Ser<'a>
+		= &'a str
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { self.as_str() }
+}
+
+impl<'a> DbDe<'a> for slipstream::OneTimeKeyAlgorithm {
+	type De = &'a str;
+
+	fn from_de(de: Self::De) -> Result<Self> { Ok(Self::from(de)) }
+}
 
 impl DbKey for StateKey {
 	type Ser<'a>

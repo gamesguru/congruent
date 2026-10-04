@@ -208,3 +208,5 @@ pub async fn get_dehydrated_device(&self, user_id: &UserId) -> Result<Dehydrated
 			}
 		})
 }
+
+conduwuit_database::codec_value_impls!(DehydratedDevice);

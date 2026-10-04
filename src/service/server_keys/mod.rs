@@ -750,9 +750,15 @@ pub async fn required_keys_exist(
 		return false;
 	};
 	trace!(?required_keys, "Required keys to verify event");
-	required_keys
+	let keys: Vec<(OwnedServerName, OwnedServerSigningKeyId)> = required_keys
 		.iter()
-		.flat_map(|(server, key_ids)| key_ids.iter().map(move |key_id| (server, key_id)))
+		.flat_map(|(server, key_ids)| {
+			key_ids
+				.iter()
+				.map(move |key_id| (server.to_owned(), key_id.to_owned()))
+		})
+		.collect();
+	keys.iter()
 		.stream()
 		.all(|(server, key_id)| self.verify_key_exists(server, key_id))
 		.await
