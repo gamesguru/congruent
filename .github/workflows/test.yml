@@ -72,8 +72,8 @@ jobs:
 
       - name: Install pinned nightly toolchain (for fmt + llvm-cov)
         run: |
-          rustup toolchain install nightly-2026-08-20 --component rustfmt --component clippy --component llvm-tools-preview
-          rustup default nightly-2026-08-20
+          rustup toolchain install nightly --component rustfmt --component clippy --component llvm-tools-preview
+          rustup default nightly
           rustup component add rustfmt --toolchain nightly
 
       - name: Install cargo-llvm-cov
@@ -87,7 +87,7 @@ jobs:
 
       - name: Format
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-08-20
+          RUSTUP_TOOLCHAIN: nightly
         run: make format
 
       - name: Test
@@ -103,7 +103,7 @@ jobs:
       - name: Code Coverage
         continue-on-error: true
         run: |
-          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
+          cargo +nightly llvm-cov --lib --all-features \
             --codecov --output-path coverage.json
           cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
             --html --output-dir .coverage
