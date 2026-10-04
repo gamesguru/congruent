@@ -17,6 +17,9 @@ use slipstream::{
 	api::client::threads::get_threads::v1::IncludeThreads,
 	events::relation::{BundledThread, RelationType},
 	uint,
+	codec::{DeError, Deserialize as CodecDeserialize},
+	endpoint::body_field,
+	json::Value,
 };
 
 use crate::{Dep, globals, rooms, rooms::short::ShortRoomId};
@@ -40,16 +43,28 @@ pub(super) struct Data {
 /// Maximum relation hops walked when resolving thread membership.
 const MAX_THREAD_HOPS: usize = 3;
 
-#[derive(Deserialize)]
 struct ExtractThreadRelation {
-	#[serde(rename = "m.relates_to")]
 	relates_to: ThreadRelation,
 }
 
-#[derive(Deserialize)]
 struct ThreadRelation {
 	rel_type: RelationType,
 	event_id: OwnedEventId,
+}
+
+impl CodecDeserialize for ExtractThreadRelation {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self { relates_to: body_field(Some(value), "m.relates_to")? })
+	}
+}
+
+impl CodecDeserialize for ThreadRelation {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			rel_type: body_field(Some(value), "rel_type")?,
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

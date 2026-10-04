@@ -17,12 +17,6 @@ use slipstream::{
 	serde::Raw,
 };
 
-/// Decode account data from a database handle using slipstream codec.
-fn decode_account_data<T: Deserialize>(handle: &Handle<'_>) -> Result<T> {
-	let value = slipstream::json::Value::parse(str_from_bytes(handle.as_ref())?)?;
-	T::from_json(&value).map_err(|e| err!(Database("Failed to parse account data: {e:?}")))
-}
-
 use crate::{Dep, globals};
 
 pub struct Service {
