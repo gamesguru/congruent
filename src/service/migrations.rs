@@ -1921,7 +1921,6 @@ mod owned_event_id_option {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "", deserialize = ""))]
 struct EventMetadataV20 {
 	short_room_id: u64,
 	is_outlier: bool,
@@ -1942,7 +1941,6 @@ struct EventMetadataV20 {
 /// fields plus human-readable reason strings. Those rows must be accepted by
 /// v21 and their verdicts folded into the independent verdict maps.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(bound(deserialize = ""))]
 struct EventMetadataV19 {
 	short_room_id: u64,
 	is_outlier: bool,
@@ -1966,7 +1964,6 @@ struct EventMetadataV19 {
 /// Pre-v19 layout. Some v19 databases retain rows written before the
 /// topological-depth, PDU-count, and reason-string fields were added.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(bound(deserialize = ""))]
 struct EventMetadataV18 {
 	short_room_id: u64,
 	is_outlier: bool,
