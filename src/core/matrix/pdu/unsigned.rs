@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::BTreeMap};
 
-use ruma::MilliSecondsSinceUnixEpoch;
 use serde_json::value::{RawValue as RawJsonValue, Value as JsonValue, to_raw_value};
+use slipstream::MilliSecondsSinceUnixEpoch;
 
 use super::Pdu;
 use crate::{Result, err, implement, result::LogErr};
@@ -12,7 +12,7 @@ use crate::{Result, err, implement, result::LogErr};
 /// (eg. relations) This is for server-to-client events.
 /// Backfill handles this itself.
 #[implement(Pdu)]
-pub fn set_unsigned(&mut self, user_id: Option<&ruma::UserId>) {
+pub fn set_unsigned(&mut self, user_id: Option<&slipstream::UserId>) {
 	if Some(self.sender.borrow()) != user_id {
 		self.remove_transaction_id().log_err().ok();
 	}

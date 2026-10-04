@@ -1,5 +1,5 @@
-use ruma::{RoomVersionId, canonical_json::redact_content_in_place};
 use serde_json::{Value as JsonValue, json, value::to_raw_value};
+use slipstream::{RoomVersionId, canonical_json::redact_content_in_place};
 
 use crate::{Error, Result, err, implement};
 

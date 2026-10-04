@@ -1,4 +1,5 @@
-use ruma::{
+use serde_json::json;
+use slipstream::{
 	events::{
 		AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
@@ -6,7 +7,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde_json::json;
 
 use super::{Event, redact};
 

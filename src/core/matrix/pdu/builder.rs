@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use ruma::{
+use serde::Deserialize;
+use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId,
 	events::{EventContent, MessageLikeEventType, StateEventType, TimelineEventType},
 };
-use serde::Deserialize;
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::StateKey;
 

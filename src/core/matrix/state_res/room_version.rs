@@ -1,4 +1,4 @@
-use ruma::RoomVersionId;
+use slipstream::RoomVersionId;
 
 use super::{Error, Result};
 

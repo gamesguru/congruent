@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData, str::FromStr};
 
-use ruma::{CanonicalJsonError, CanonicalJsonObject};
+use slipstream::{CanonicalJsonError, CanonicalJsonObject};
 
 use crate::Result;
 
@@ -17,10 +17,12 @@ pub fn to_canonical_object<T: serde::Serialize>(
 	match serde_json::to_value(value).map_err(SerDe)? {
 		| serde_json::Value::Object(map) => {
 			let encoded = serde_json::to_string(&map).map_err(SerDe)?;
-			let value = ruma::CanonicalJsonValue::parse(&encoded)
+			let value =
+				slipstream::canonical_json::from_json_str::<slipstream::CanonicalJsonValue>(
+					&encoded,
+				)
 				.map_err(|error| SerDe(error.to_string()))?;
-			value
-				.into_object()
+			slipstream::canonical_json::into_object(value)
 				.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
 		},
 		| _ => Err(SerDe(serde_json::Error::custom("Value must be an object"))),

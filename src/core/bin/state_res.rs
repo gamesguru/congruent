@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader},
 };
 
-use ruma::{
+use slipstream::{
     RoomVersionId, StateEventType, EventId, OwnedEventId,
     events::StateEventType::RoomMember,
 };

@@ -9,12 +9,12 @@ mod unsigned;
 
 use std::fmt::Debug;
 
-use ruma::{
+use serde::Deserialize;
+use serde_json::{Value as JsonValue, value::RawValue as RawJsonValue};
+use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, RoomId,
 	RoomVersionId, UserId, events::TimelineEventType,
 };
-use serde::Deserialize;
-use serde_json::{Value as JsonValue, value::RawValue as RawJsonValue};
 
 pub use self::{filter::Matches, id::*, relation::RelationTypeEqual, type_ext::TypeExt};
 use super::{pdu::Pdu, state_key::StateKey};
@@ -167,7 +167,7 @@ pub trait Event: Clone + Debug {
 	fn origin_server_ts(&self) -> MilliSecondsSinceUnixEpoch;
 
 	/// The depth of this event.
-	fn depth(&self) -> ruma::UInt;
+	fn depth(&self) -> slipstream::UInt;
 
 	/// The events before this event.
 	fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_;

@@ -1,9 +1,9 @@
-use ruma::{
+use serde::Deserialize;
+use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
+use slipstream::{
 	OwnedEventId, RoomVersionId,
 	events::{TimelineEventType, room::redaction::RoomRedactionEventContent},
 };
-use serde::Deserialize;
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::Event;
 

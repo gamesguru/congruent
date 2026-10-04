@@ -4,7 +4,7 @@ mod tests {
 
 	use maplit::{hashmap, hashset};
 	use rand::seq::SliceRandom;
-	use ruma::{
+	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedEventId, RoomVersionId,
 		events::{
 			StateEventType, TimelineEventType,
@@ -71,7 +71,7 @@ mod tests {
 			vec![HashMap::new()], // unconflicted events
 			&fetcher,
 			None::<&fn(Vec<OwnedEventId>) -> std::future::Ready<Vec<PduEvent>>>,
-			None::<&fn(&ruma::EventId) -> bool>,
+			None::<&fn(&slipstream::EventId) -> bool>,
 		)
 		.await
 		.expect("iterative auth check failed on resolved events");
@@ -514,7 +514,7 @@ mod tests {
 		);
 	}
 
-	/// Ported from ruma-state-res `state_res::tests::test_mainline_sort`.
+	/// Ported from slipstream-state-res `state_res::tests::test_mainline_sort`.
 	/// Events connected to the mainline PL sort AFTER events with no PL
 	/// ancestor.
 	#[tokio::test]
@@ -539,7 +539,7 @@ mod tests {
 			let power_level = events
 				.iter()
 				.find(|(_, ev)| {
-					ev.event_type() == &ruma::events::TimelineEventType::RoomPowerLevels
+					ev.event_type() == &slipstream::events::TimelineEventType::RoomPowerLevels
 				})
 				.map(|(id, _)| id.clone());
 
@@ -561,7 +561,7 @@ mod tests {
 		}
 	}
 
-	/// Ported from ruma-state-res
+	/// Ported from slipstream-state-res
 	/// `state_res::tests::test_mainline_sort_no_pl_ancestor_sorts_first`.
 	/// Per spec §6.6.3.3: an event with i=∞ (no mainline ancestor) sorts BEFORE
 	/// all chain-rooted events.  Directly validates our `Option<usize>`
@@ -579,7 +579,7 @@ mod tests {
 		let to_sort: Vec<OwnedEventId> = ["IMA", "IJR", "IPOWER"]
 			.iter()
 			.map(|s| {
-				<&ruma::EventId>::try_from(format!("${s}:foo").as_str())
+				<&slipstream::EventId>::try_from(format!("${s}:foo").as_str())
 					.unwrap()
 					.to_owned()
 			})
@@ -587,7 +587,7 @@ mod tests {
 
 		let power_level = events
 			.iter()
-			.find(|(_, ev)| ev.event_type() == &ruma::events::TimelineEventType::RoomPowerLevels)
+			.find(|(_, ev)| ev.event_type() == &slipstream::events::TimelineEventType::RoomPowerLevels)
 			.map(|(id, _)| id.clone());
 
 		let sorted = super::mainline_sort(&to_sort, power_level, &fetcher)
@@ -607,12 +607,12 @@ mod tests {
 		);
 	}
 
-	/// Ported from ruma-state-res
+	/// Ported from slipstream-state-res
 	/// `state_res::tests::test_reverse_topological_power_sort`.
 	#[tokio::test]
 	async fn ruma_test_reverse_topological_power_sort() {
 		let eid = |s: &str| -> OwnedEventId {
-			<&ruma::EventId>::try_from(format!("${s}:foo").as_str())
+			<&slipstream::EventId>::try_from(format!("${s}:foo").as_str())
 				.unwrap()
 				.to_owned()
 		};
@@ -1496,7 +1496,7 @@ mod tests {
 	mod room_id_validation {
 		/// Simulates the validation logic from `monitor.rs::check_room`
 		fn is_valid_room_id(s: &str) -> bool {
-			s.bytes().all(|b| b.is_ascii_graphic()) && <&ruma::RoomId>::try_from(s).is_ok()
+			s.bytes().all(|b| b.is_ascii_graphic()) && <&slipstream::RoomId>::try_from(s).is_ok()
 		}
 
 		#[test]
@@ -1564,7 +1564,7 @@ mod tests {
 	#[tokio::test]
 	async fn synapse_v21_state_reset_replay_conflicted_subgraph() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -1772,7 +1772,7 @@ mod tests {
 	#[tokio::test]
 	async fn synapse_v21_state_reset_start_empty_set() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -1953,7 +1953,7 @@ mod tests {
 	#[tokio::test]
 	async fn synapse_v21_conflicted_subgraph_preserves_power_levels() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2179,7 +2179,7 @@ mod tests {
 	#[tokio::test]
 	async fn v12_pl_with_creator_in_users_survives_resolution() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2342,7 +2342,7 @@ mod tests {
 	#[tokio::test]
 	async fn v12_missing_create_event_does_not_panic() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2420,7 +2420,7 @@ mod tests {
 	#[tokio::test]
 	async fn v12_power_levels_update_after_joins() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2590,7 +2590,7 @@ mod tests {
 	#[tokio::test]
 	async fn v12_iterative_auth_check_finds_create_event() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2709,7 +2709,7 @@ mod tests {
 	#[tokio::test]
 	async fn v21_starts_from_empty_set_ban_survives() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -2884,7 +2884,7 @@ mod tests {
 	#[tokio::test]
 	async fn v21_includes_conflicted_subgraph_cascading_pl() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -3075,7 +3075,7 @@ mod tests {
 	#[tokio::test]
 	async fn v21_state_reset_prevented_by_empty_set() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -3236,7 +3236,7 @@ mod tests {
 	#[tokio::test]
 	async fn v21_unconflicted_state_survives_auth_check() {
 		use futures::future::ready;
-		use ruma::{EventId, OwnedEventId, OwnedRoomId};
+		use slipstream::{EventId, OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 
@@ -3381,7 +3381,7 @@ mod tests {
 		let jr_key = (StateEventType::RoomJoinRules, "".into());
 		assert!(resolved.contains_key(&jr_key), "join rules must survive v2.1 re-auth");
 use std::collections::{HashMap, HashSet};
-use ruma::{
+use slipstream::{
     events::{room::{join_rules::{JoinRule, RoomJoinRulesEventContent}, power_levels::RoomPowerLevelsEventContent}, StateEventType},
     EventId, OwnedEventId, OwnedRoomId, RoomVersionId, MilliSecondsSinceUnixEpoch
 };

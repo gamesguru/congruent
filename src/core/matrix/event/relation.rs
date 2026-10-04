@@ -1,5 +1,5 @@
-use ruma::events::relation::RelationType;
 use serde::Deserialize;
+use slipstream::events::relation::RelationType;
 
 use super::Event;
 

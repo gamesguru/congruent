@@ -5,7 +5,11 @@ use std::{
 };
 
 use futures::future::ready;
-use ruma::{
+use serde_json::{
+	json,
+	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
+};
+use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, ServerSignatures,
 	UserId, event_id,
 	events::{
@@ -16,10 +20,6 @@ use ruma::{
 		},
 	},
 	int, room_id, uint, user_id,
-};
-use serde_json::{
-	json,
-	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
 };
 
 use super::auth_types_for_event;

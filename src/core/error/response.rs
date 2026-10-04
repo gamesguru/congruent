@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use http::StatusCode;
 use http_body_util::Full;
-use ruma::api::{
+use slipstream::api::{
 	OutgoingResponse,
 	client::{
 		error::{ErrorBody, ErrorKind},
@@ -62,7 +62,7 @@ impl From<Error> for UiaaResponse {
 			message: error.message(),
 		};
 
-		Self::MatrixError(ruma::api::client::error::Error {
+		Self::MatrixError(slipstream::api::client::error::Error {
 			status_code: error.status_code(),
 			body,
 		})
@@ -119,7 +119,7 @@ pub(super) fn bad_request_code(kind: &ErrorKind) -> StatusCode {
 	}
 }
 
-pub(super) fn ruma_error_message(error: &ruma::api::client::error::Error) -> String {
+pub(super) fn ruma_error_message(error: &slipstream::api::client::error::Error) -> String {
 	if let ErrorBody::Standard { message, .. } = &error.body {
 		return message.clone();
 	}
@@ -127,7 +127,7 @@ pub(super) fn ruma_error_message(error: &ruma::api::client::error::Error) -> Str
 	format!("{error}")
 }
 
-pub(super) fn ruma_error_kind(e: &ruma::api::client::error::Error) -> &ErrorKind {
+pub(super) fn ruma_error_kind(e: &slipstream::api::client::error::Error) -> &ErrorKind {
 	e.error_kind().unwrap_or(&ErrorKind::Unknown)
 }
 

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use ruma::{
+use slipstream::{
     events::{room::{join_rules::{JoinRule, RoomJoinRulesEventContent}, power_levels::RoomPowerLevelsEventContent}, StateEventType},
     EventId, OwnedEventId, OwnedRoomId, RoomVersionId, MilliSecondsSinceUnixEpoch
 };

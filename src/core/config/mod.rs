@@ -18,11 +18,11 @@ use figment::providers::{Env, Format, Toml};
 pub use figment::{Figment, value::Value as FigmentValue};
 use lettre::message::Mailbox;
 use regex::RegexSet;
-use ruma::{
+use serde::{Deserialize, Serialize, de::IgnoredAny};
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
-use serde::{Deserialize, Serialize, de::IgnoredAny};
 use url::Url;
 
 use self::proxy::ProxyConfig;

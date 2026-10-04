@@ -1,4 +1,4 @@
-use ruma::events::{StateEventType, TimelineEventType};
+use slipstream::events::{StateEventType, TimelineEventType};
 
 use super::StateKey;
 

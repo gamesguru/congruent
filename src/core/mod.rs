@@ -15,7 +15,7 @@ pub mod utils;
 
 pub use ::arrayvec;
 pub use ::http;
-pub use ::ruma;
+pub use ::slipstream;
 pub use ::smallstr;
 pub use ::smallvec;
 pub use ::toml;

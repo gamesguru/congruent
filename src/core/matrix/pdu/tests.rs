@@ -10,7 +10,7 @@ fn backfilled_parse() {
 
 #[test]
 fn saturating_inc_backward() {
-	use ruma::api::Direction;
+	use slipstream::api::Direction;
 
 	// Normal count
 	let count = Count::Normal(10);
@@ -40,7 +40,7 @@ fn saturating_inc_backward() {
 /// this test was added to guard against.
 #[test]
 fn saturating_inc_forward() {
-	use ruma::api::Direction;
+	use slipstream::api::Direction;
 
 	// Normal count
 	let count = Count::Normal(10);
@@ -72,7 +72,7 @@ fn saturating_inc_forward() {
 /// exercise the `/members?at=` integration path directly.
 #[test]
 fn saturating_inc_matches_boundary_compensation_arithmetic() {
-	use ruma::api::Direction;
+	use slipstream::api::Direction;
 
 	// pdus_rev(until) excludes `until`; a caller wanting `at` included as the
 	// first (most recent) result must request pdus_rev(at + 1) so that

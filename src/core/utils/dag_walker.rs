@@ -1,6 +1,6 @@
 use std::{collections::HashSet, future::Future};
 
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 
 use crate::PduEvent;
 
@@ -94,13 +94,13 @@ mod tests {
 		sync::{Arc, Mutex},
 	};
 
-	use ruma::{EventId, event_id};
+	use slipstream::{EventId, event_id};
 
 	use super::*;
 
 	fn mock_pdu(id: &EventId, auth_events: Vec<OwnedEventId>) -> PduEvent {
 		// Minimal PduEvent for testing auth_events traversal
-		use ruma::{events::TimelineEventType, uint, user_id};
+		use slipstream::{events::TimelineEventType, uint, user_id};
 
 		PduEvent {
 			event_id: id.to_owned(),

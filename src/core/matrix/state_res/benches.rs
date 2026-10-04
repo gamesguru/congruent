@@ -9,7 +9,11 @@ use std::{
 
 use futures::{future, future::ready};
 use maplit::{btreemap, hashmap, hashset};
-use ruma::{
+use serde_json::{
+	json,
+	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
+};
+use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, RoomVersionId, Signatures, UserId,
 	events::{
 		StateEventType, TimelineEventType,
@@ -19,10 +23,6 @@ use ruma::{
 		},
 	},
 	int, room_id, uint, user_id,
-};
-use serde_json::{
-	json,
-	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
 };
 
 use crate::{

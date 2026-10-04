@@ -10,12 +10,12 @@ mod unsigned;
 
 use std::cmp::Ordering;
 
-use ruma::{
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
 	OwnedServerName, OwnedUserId, RoomId, UInt, UserId, events::TimelineEventType,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue as RawJsonValue;
 
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,
@@ -91,7 +91,7 @@ impl Pdu {
 	) -> Result<Self> {
 		json.insert(
 			"event_id".into(),
-			ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+			slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 		);
 		let mut pdu: Self = serde_json::from_value(serde_json::to_value(json)?)?;
 		pdu.event_id = event_id.to_owned();

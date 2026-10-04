@@ -23,7 +23,8 @@ use dashmap::DashMap;
 use futures::{
 	Future, FutureExt, Stream, StreamExt, TryStreamExt, future, stream::FuturesUnordered,
 };
-use ruma::{
+use serde_json::from_str as from_json_str;
+use slipstream::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomVersionId,
 	events::{
 		StateEventType, TimelineEventType,
@@ -31,7 +32,6 @@ use ruma::{
 	},
 	int,
 };
-use serde_json::from_str as from_json_str;
 use smallvec::SmallVec;
 use tokio::sync::OnceCell;
 
@@ -133,7 +133,7 @@ where
 		Arc::new(DashMap::new());
 	let parsed_pl_cache: Arc<DashMap<OwnedEventId, Arc<PowerLevelsContentFields>>> =
 		Arc::new(DashMap::new());
-	let sender_pl_cache: Arc<DashMap<(ruma::OwnedUserId, Option<OwnedEventId>), Int>> =
+	let sender_pl_cache: Arc<DashMap<(slipstream::OwnedUserId, Option<OwnedEventId>), Int>> =
 		Arc::new(DashMap::new());
 
 	let cached_fetch = |id: OwnedEventId| {
@@ -789,7 +789,7 @@ async fn reverse_topological_power_sort<E, F, Fut>(
 	fetch_event: &F,
 	global_pl_context: Option<&PowerLevelsContentFields>,
 	parsed_pl_cache: &DashMap<OwnedEventId, Arc<PowerLevelsContentFields>>,
-	sender_pl_cache: &DashMap<(ruma::OwnedUserId, Option<OwnedEventId>), Int>,
+	sender_pl_cache: &DashMap<(slipstream::OwnedUserId, Option<OwnedEventId>), Int>,
 ) -> Result<Vec<OwnedEventId>>
 where
 	F: Fn(OwnedEventId) -> Fut + Sync,
@@ -984,7 +984,7 @@ async fn get_power_level_for_sender<E, F, Fut>(
 	fetch_event: &F,
 	global_pl_context: Option<&PowerLevelsContentFields>,
 	parsed_pl_cache: &DashMap<OwnedEventId, Arc<PowerLevelsContentFields>>,
-	sender_pl_cache: &DashMap<(ruma::OwnedUserId, Option<OwnedEventId>), Int>,
+	sender_pl_cache: &DashMap<(slipstream::OwnedUserId, Option<OwnedEventId>), Int>,
 ) -> Int
 where
 	F: Fn(OwnedEventId) -> Fut + Sync,
@@ -1064,7 +1064,7 @@ where
 
 				// Check if sender is a v12 privileged room creator
 				let is_privileged_creator = creator_event.as_ref().is_some_and(|creator_ev| {
-					from_json_str::<ruma::events::room::create::RoomCreateEventContent>(
+					from_json_str::<slipstream::events::room::create::RoomCreateEventContent>(
 						creator_ev.content().get(),
 					)
 					.is_ok_and(|cc| {
@@ -1092,7 +1092,7 @@ where
 		} else if let Some(creator_ev) = creator_event {
 			let mut is_creator = creator_ev.sender() == ev.sender();
 			if let Ok(create_content) = from_json_str::<
-				ruma::events::room::create::RoomCreateEventContent,
+				slipstream::events::room::create::RoomCreateEventContent,
 			>(creator_ev.content().get())
 			{
 				#[allow(deprecated)]
@@ -1687,7 +1687,7 @@ async fn inject_privileged_creators<E, F, Fut>(
 	let Some(create_ev) = cached_fetch(create_id.clone()).await else {
 		return;
 	};
-	let Ok(cc) = from_json_str::<ruma::events::room::create::RoomCreateEventContent>(
+	let Ok(cc) = from_json_str::<slipstream::events::room::create::RoomCreateEventContent>(
 		create_ev.content().get(),
 	) else {
 		return;
@@ -1760,7 +1760,8 @@ mod tests {
 
 	use maplit::{hashmap, hashset};
 	use rand::seq::SliceRandom;
-	use ruma::{
+	use serde_json::{json, value::to_raw_value as to_raw_json_value};
+	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedEventId, RoomVersionId,
 		events::{
 			StateEventType, TimelineEventType,
@@ -1768,7 +1769,6 @@ mod tests {
 		},
 		int, uint,
 	};
-	use serde_json::{json, value::to_raw_value as to_raw_json_value};
 
 	use super::{
 		StateMap, is_power_event,
@@ -1827,7 +1827,7 @@ mod tests {
 			vec![HashMap::new()], // unconflicted events
 			&fetcher,
 			None::<&fn(Vec<OwnedEventId>) -> std::future::Ready<Vec<PduEvent>>>,
-			None::<&fn(&ruma::EventId) -> bool>,
+			None::<&fn(&slipstream::EventId) -> bool>,
 		)
 		.await
 		.expect("iterative auth check failed on resolved events");
@@ -2592,8 +2592,8 @@ mod tests {
 	#[tokio::test]
 	async fn synapse_v21_conflicted_subgraph_preserves_power_levels() {
 		use futures::future::ready;
-		use ruma::{OwnedEventId, OwnedRoomId};
 		use serde_json::json;
+		use slipstream::{OwnedEventId, OwnedRoomId};
 
 		use super::test_utils::*;
 

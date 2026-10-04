@@ -1,4 +1,4 @@
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomId, RoomVersionId};
 
 use crate::{PduEvent, Result};
 
@@ -43,8 +43,8 @@ pub fn parse_and_clean_pdu(
 
 #[cfg(test)]
 mod tests {
-	use ruma::{events::TimelineEventType, room_id, room_version_id};
 	use serde_json::json;
+	use slipstream::{events::TimelineEventType, room_id, room_version_id};
 
 	use super::*;
 	use crate::matrix::event::gen_event_id;

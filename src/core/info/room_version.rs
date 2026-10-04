@@ -2,7 +2,7 @@
 
 use std::{iter::once, sync::LazyLock};
 
-use ruma::{RoomVersionId, api::client::discovery::get_capabilities::RoomVersionStability};
+use slipstream::{RoomVersionId, api::client::discovery::get_capabilities::RoomVersionStability};
 
 use crate::{at, is_equal_to};
 

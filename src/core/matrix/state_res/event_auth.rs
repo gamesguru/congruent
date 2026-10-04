@@ -4,7 +4,12 @@ use futures::{
 	Future,
 	future::{OptionFuture, join, join3},
 };
-use ruma::{
+use serde::{
+	Deserialize,
+	de::{Error as _, IgnoredAny},
+};
+use serde_json::{from_str as from_json_str, value::RawValue as RawJsonValue};
+use slipstream::{
 	Int, OwnedUserId, RoomVersionId, UserId,
 	events::room::{
 		create::RoomCreateEventContent,
@@ -16,11 +21,6 @@ use ruma::{
 	int,
 	serde::{Base64, Raw},
 };
-use serde::{
-	Deserialize,
-	de::{Error as _, IgnoredAny},
-};
-use serde_json::{from_str as from_json_str, value::RawValue as RawJsonValue};
 
 use super::{
 	Error, Event, Result, StateEventType, StateKey, TimelineEventType,
@@ -49,7 +49,7 @@ struct RoomCreateContentFields {
 	room_version: Option<Raw<RoomVersionId>>,
 	creator: Option<Raw<IgnoredAny>>,
 	additional_creators: Option<Vec<Raw<OwnedUserId>>>,
-	#[serde(rename = "m.federate", default = "ruma::serde::default_true")]
+	#[serde(rename = "m.federate", default = "slipstream::serde::default_true")]
 	federate: bool,
 }
 
@@ -106,7 +106,7 @@ pub fn auth_types_for_event(
 
 					if let Some(Ok(u)) = content
 						.join_authorised_via_users_server
-						.map(|m| m.deserialize_as())
+						.map(|m| m.deserialize_as::<OwnedUserId>())
 					{
 						let key = (StateEventType::RoomMember, u.as_str().into());
 						if !auth_types.contains(&key) {
@@ -121,7 +121,8 @@ pub fn auth_types_for_event(
 				}
 
 				if membership == MembershipState::Invite {
-					if let Some(Ok(t_id)) = content.third_party_invite.map(|t| t.deserialize_as()) {
+					if let Some(Ok(t_id)) = content.third_party_invite.map(|t| t.deserialize_as())
+					{
 						let key =
 							(StateEventType::RoomThirdPartyInvite, t_id.signed.token.into());
 						if !auth_types.contains(&key) {
@@ -242,7 +243,7 @@ where
 	/*
 	// TODO: In the past this code was commented as it caused problems with Synapse. This is no
 	// longer the case. This needs to be implemented.
-	// See also: https://github.com/ruma/ruma/pull/2064
+	// See also: https://github.com/slipstream/slipstream/pull/2064
 	//
 	// 2. Reject if auth_events
 	// a. auth_events cannot have duplicate keys since it's a BTree
@@ -382,7 +383,7 @@ where
 		}
 
 		let target_user =
-			<UserId>::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
+			<&UserId>::try_from(state_key).map_err(|e| Error::InvalidPdu(format!("{e}")))?;
 
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
@@ -1541,7 +1542,7 @@ fn verify_third_party_invite(
 	current_third_party_invite: Option<&impl Event>,
 ) -> bool {
 	// 1. Check for user being banned happens before this is called
-	// checking for mxid and token keys is done by ruma when deserializing
+	// checking for mxid and token keys is done by slipstream when deserializing
 
 	// The state key must match the invitee
 	if target_user != Some(&tp_id.signed.mxid) {
@@ -1593,7 +1594,8 @@ fn verify_third_party_invite(
 
 #[cfg(test)]
 mod tests {
-	use ruma::events::{
+	use serde_json::value::to_raw_value as to_raw_json_value;
+	use slipstream::events::{
 		StateEventType, TimelineEventType,
 		room::{
 			join_rules::{
@@ -1602,7 +1604,6 @@ mod tests {
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	};
-	use serde_json::value::to_raw_value as to_raw_json_value;
 
 	use crate::{
 		matrix::{Event, EventTypeExt, Pdu as PduEvent},

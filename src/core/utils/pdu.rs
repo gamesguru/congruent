@@ -1,4 +1,4 @@
-use ruma::CanonicalJsonObject;
+use slipstream::CanonicalJsonObject;
 
 /// Strips internal database keys and injected fields from a PDU's JSON
 /// representation so it can be hashed or verified according to Matrix canonical
@@ -18,7 +18,7 @@ pub fn pdu_json_canonical_strip(event: &mut CanonicalJsonObject) {
 mod tests {
 	use std::collections::BTreeMap;
 
-	use ruma::CanonicalJsonValue;
+	use slipstream::CanonicalJsonValue;
 
 	use super::*;
 
