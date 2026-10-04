@@ -9,10 +9,33 @@ use slipstream::{
 
 use super::StateKey;
 
+fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_codec_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+	value
+		.map(|value| {
+			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+		})
+		.transpose()
+}
+
 /// Build the start of a PDU in order to add it to the Database.
 #[derive(Debug, Deserialize)]
 pub struct Builder {
 	#[serde(rename = "type")]
+	#[serde(deserialize_with = "deserialize_codec")]
 	pub event_type: TimelineEventType,
 
 	pub content: Box<RawJsonValue>,
@@ -21,10 +44,12 @@ pub struct Builder {
 
 	pub state_key: Option<StateKey>,
 
+	#[serde(deserialize_with = "deserialize_codec_opt")]
 	pub redacts: Option<OwnedEventId>,
 
 	/// For timestamped messaging, should only be used for appservices.
 	/// Will be set to current time if None
+	#[serde(deserialize_with = "deserialize_codec_opt")]
 	pub timestamp: Option<MilliSecondsSinceUnixEpoch>,
 }
 

@@ -3,6 +3,14 @@ use slipstream::events::relation::RelationType;
 
 use super::Event;
 
+fn deserialize_relation_type<'de, D>(deserializer: D) -> Result<RelationType, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
 pub trait RelationTypeEqual<E: Event> {
 	fn relation_type_equal(&self, event: &E) -> bool;
 }
@@ -15,6 +23,7 @@ struct ExtractRelatesToEventId {
 
 #[derive(Clone, Debug, Deserialize)]
 struct ExtractRelType {
+	#[serde(deserialize_with = "deserialize_relation_type")]
 	rel_type: RelationType,
 }
 
