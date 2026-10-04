@@ -82,7 +82,8 @@ mod tests {
 
 		let expected = gen_event_id(
 			&slipstream::canonical_json::into_object(
-				slipstream::canonical_json::from_json_str(canonical).expect("valid canonical JSON"),
+				slipstream::canonical_json::from_json_str(canonical)
+					.expect("valid canonical JSON"),
 			)
 			.expect("canonical JSON object"),
 			&room_version,

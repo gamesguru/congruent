@@ -228,7 +228,7 @@ impl Pdu {
 
 		// Validate the PDU belongs to the expected room if one is specified
 		if let Some(expected_room) = room_id {
-			if pdu.room_id_or_hash() != *expected_room {
+			if pdu.room_id_or_hash().as_ref() != Some(expected_room) {
 				return Err(crate::err!(Request(InvalidParam(
 					"PDU {event_id} does not belong to room {expected_room}"
 				))));

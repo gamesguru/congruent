@@ -32,16 +32,18 @@ impl<E: Event> Matches<E> for &RoomEventFilter {
 }
 
 fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	let room_id = event.room_id_or_hash();
+	let Some(room_id) = event.room_id_or_hash() else {
+		return false;
+	};
 
 	if !filter.not_rooms.is_empty() {
-		if filter.not_rooms.iter().any(is_equal_to!(&room_id)) {
+		if filter.not_rooms.iter().any(is_equal_to!(room_id)) {
 			return false;
 		}
 	}
 
 	if let Some(rooms) = filter.rooms.as_ref() {
-		if !rooms.iter().any(is_equal_to!(&room_id)) {
+		if !rooms.iter().any(is_equal_to!(room_id)) {
 			return false;
 		}
 	}

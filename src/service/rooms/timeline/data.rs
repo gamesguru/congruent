@@ -967,7 +967,7 @@ impl Data {
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
-			if actual_room != *expected_room {
+			if actual_room.as_ref() != Some(expected_room) {
 				return Err!(Database(
 					"PDU {event_id} does belong to room {actual_room} (expected {expected_room})"
 				));
@@ -1954,7 +1954,10 @@ impl Data {
 			{
 				return Err(conduwuit::err!(Database(
 					"PDU belongs to room {} (expected {expected_room})",
-					pdu.room_id_or_hash().expect("just checked")
+					pdu.room_id_or_hash()
+						.as_ref()
+						.map(OwnedRoomId::as_str)
+						.unwrap_or("none")
 				)));
 			}
 		}

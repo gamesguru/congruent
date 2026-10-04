@@ -363,7 +363,7 @@ pub async fn create_hash_and_sign_event(
 			"Checking event in room {} with policy server",
 			pdu.room_id.as_ref().map_or("None", |id| id.as_str())
 		);
-		let policy_room_id = pdu.room_id_or_hash().expect("has room ID");
+		let policy_room_id = pdu.room_id_or_hash().as_ref().expect("has room ID");
 		match self
 			.services
 			.event_handler

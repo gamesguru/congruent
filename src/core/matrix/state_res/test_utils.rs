@@ -1,7 +1,10 @@
 use std::{
 	borrow::Borrow,
 	collections::{BTreeMap, HashMap, HashSet},
-	sync::atomic::{AtomicU64, Ordering::SeqCst},
+	sync::{
+		LazyLock,
+		atomic::{AtomicU64, Ordering::SeqCst},
+	},
 };
 
 use futures::future::ready;
@@ -10,8 +13,8 @@ use serde_json::{
 	value::{RawValue as RawJsonValue, to_raw_value as to_raw_json_value},
 };
 use slipstream::{
-	Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
-	RoomVersionId, UInt, UserId,
+	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
+	RoomVersionId, UInt, UserId, event_id,
 	events::{
 		TimelineEventType,
 		room::{
@@ -19,6 +22,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
+	room_id, user_id,
 };
 
 use super::auth_types_for_event;
@@ -203,10 +207,10 @@ pub(crate) async fn do_check(
 		expected_state.insert(key, node);
 	}
 
-	let start_state = state_at_event.get(event_id!("$START:foo")).unwrap();
+	let start_state = state_at_event.get(&event_id!("$START:foo")).unwrap();
 
 	let end_state = state_at_event
-		.get(event_id!("$END:foo"))
+		.get(&event_id!("$END:foo"))
 		.unwrap()
 		.iter()
 		.filter(|(k, v)| {
@@ -362,32 +366,34 @@ pub(crate) fn event_id(id: &str) -> OwnedEventId {
 	format!("${id}:foo").try_into().unwrap()
 }
 
-pub(crate) fn alice() -> &'static UserId { user_id!("@alice:foo") }
-
-pub(crate) fn bob() -> &'static UserId { user_id!("@bob:foo") }
-
-pub(crate) fn charlie() -> &'static UserId { user_id!("@charlie:foo") }
-
-pub(crate) fn ella() -> &'static UserId { user_id!("@ella:foo") }
-
-pub(crate) fn zara() -> &'static UserId { user_id!("@zara:foo") }
-
-pub(crate) fn room_id() -> &'static RoomId { room_id!("!test:foo") }
-
-pub(crate) fn member_content_ban() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Ban)).unwrap()
+macro_rules! static_id {
+	($name:ident, $ty:ty, $make:expr) => {
+		pub(crate) fn $name() -> &'static $ty {
+			static ID: LazyLock<$ty> = LazyLock::new(|| $make);
+			&ID
+		}
+	};
 }
 
-pub(crate) fn member_content_join() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)).unwrap()
+static_id!(alice, UserId, user_id!("@alice:foo"));
+static_id!(bob, UserId, user_id!("@bob:foo"));
+static_id!(charlie, UserId, user_id!("@charlie:foo"));
+static_id!(ella, UserId, user_id!("@ella:foo"));
+static_id!(zara, UserId, user_id!("@zara:foo"));
+static_id!(room_id, RoomId, room_id!("!test:foo"));
+
+fn member_content(state: MembershipState) -> Box<RawJsonValue> {
+	RawJsonValue::from_string(slipstream::codec::to_string(&RoomMemberEventContent::new(state)))
+		.unwrap()
 }
 
+pub(crate) fn member_content_ban() -> Box<RawJsonValue> { member_content(MembershipState::Ban) }
+pub(crate) fn member_content_join() -> Box<RawJsonValue> { member_content(MembershipState::Join) }
 pub(crate) fn member_content_leave() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Leave)).unwrap()
+	member_content(MembershipState::Leave)
 }
-
 pub(crate) fn member_content_invite() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Invite)).unwrap()
+	member_content(MembershipState::Invite)
 }
 
 pub(crate) fn to_init_pdu_event(

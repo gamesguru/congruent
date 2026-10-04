@@ -138,11 +138,11 @@ macro_rules! is_zero {
 #[macro_export]
 macro_rules! is_equal_to {
 	($val:ident) => {
-		|x| x == $val
+		|x| $val == *x
 	};
 
 	($val:expr_2021) => {
-		|x| x == $val
+		|x| $val == *x
 	};
 }
 

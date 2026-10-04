@@ -446,7 +446,7 @@ impl Service {
 				let mut notify = Notification::new(d);
 
 				notify.event_id = Some(event.event_id().to_owned());
-				notify.room_id = Some(event.room_id_or_hash().expect("has room ID"));
+				notify.room_id = event.room_id_or_hash().map(OwnedRoomId::to_owned);
 				if http
 					.data
 					.get("org.matrix.msc4076.disable_badge_count")
@@ -482,7 +482,7 @@ impl Service {
 					notify.sender_display_name =
 						self.services.users.displayname(event.sender()).await.ok();
 
-					let notice_room_id = event.room_id_or_hash().expect("has room ID");
+					let notice_room_id = event.room_id_or_hash().as_ref().expect("has room ID");
 					notify.room_name = self
 						.services
 						.state_accessor

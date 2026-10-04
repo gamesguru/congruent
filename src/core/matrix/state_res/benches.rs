@@ -4,7 +4,10 @@ extern crate test;
 use std::{
 	borrow::Borrow,
 	collections::{HashMap, HashSet},
-	sync::atomic::{AtomicU64, Ordering::SeqCst},
+	sync::{
+		LazyLock,
+		atomic::{AtomicU64, Ordering::SeqCst},
+	},
 };
 
 use futures::{future, future::ready};
@@ -352,23 +355,28 @@ fn event_id(id: &str) -> OwnedEventId {
 	format!("${}:foo", id).try_into().unwrap()
 }
 
-fn alice() -> &'static UserId { user_id!("@alice:foo") }
-
-fn bob() -> &'static UserId { user_id!("@bob:foo") }
-
-fn charlie() -> &'static UserId { user_id!("@charlie:foo") }
-
-fn ella() -> &'static UserId { user_id!("@ella:foo") }
-
-fn room_id() -> &'static RoomId { room_id!("!test:foo") }
-
-fn member_content_ban() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Ban)).unwrap()
+macro_rules! static_id {
+	($name:ident, $ty:ty, $make:expr) => {
+		fn $name() -> &'static $ty {
+			static ID: LazyLock<$ty> = LazyLock::new(|| $make);
+			&ID
+		}
+	};
 }
 
-fn member_content_join() -> Box<RawJsonValue> {
-	to_raw_json_value(&RoomMemberEventContent::new(MembershipState::Join)).unwrap()
+static_id!(alice, UserId, user_id!("@alice:foo"));
+static_id!(bob, UserId, user_id!("@bob:foo"));
+static_id!(charlie, UserId, user_id!("@charlie:foo"));
+static_id!(ella, UserId, user_id!("@ella:foo"));
+static_id!(room_id, RoomId, room_id!("!test:foo"));
+
+fn member_content(state: MembershipState) -> Box<RawJsonValue> {
+	RawJsonValue::from_string(slipstream::codec::to_string(&RoomMemberEventContent::new(state)))
+		.unwrap()
 }
+
+fn member_content_ban() -> Box<RawJsonValue> { member_content(MembershipState::Ban) }
+fn member_content_join() -> Box<RawJsonValue> { member_content(MembershipState::Join) }
 
 fn to_pdu_event<S>(
 	id: &str,
