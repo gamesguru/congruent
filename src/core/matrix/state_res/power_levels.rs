@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as DeError};
 use serde_json::{Error, from_str as from_json_str};
 use slipstream::{
 	Int, OwnedUserId, UserId,
@@ -14,6 +14,44 @@ use slipstream::{
 
 use super::{Result, RoomVersion};
 use crate::error;
+
+fn deserialize_v1_powerlevel_serde<'de, D>(deserializer: D) -> Result<Int, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::serde::deserialize_v1_powerlevel(&value).map_err(D::Error::custom)
+}
+
+fn vec_deserialize_v1_powerlevel_values_serde<'de, D>(
+	deserializer: D,
+) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	let object = value
+		.as_object()
+		.ok_or_else(|| D::Error::custom("expected power-level object"))?;
+	object
+		.iter()
+		.map(|(user, value)| {
+			let user = OwnedUserId::from(user.as_str());
+			let level =
+				slipstream::serde::deserialize_v1_powerlevel(value).map_err(D::Error::custom)?;
+			Ok((user, level))
+		})
+		.collect()
+}
+
+fn vec_deserialize_int_powerlevel_values_serde<'de, D>(
+	deserializer: D,
+) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	vec_deserialize_v1_powerlevel_values_serde(deserializer)
+}
 
 #[derive(Deserialize)]
 struct IntRoomPowerLevelsEventContent {
@@ -134,10 +172,10 @@ fn deserialize_legacy_power_levels(content: &str) -> Option<RoomPowerLevelsEvent
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_v1_powerlevel_values")]
+	#[serde(default, deserialize_with = "vec_deserialize_v1_powerlevel_values_serde")]
 	pub(crate) users: Vec<(OwnedUserId, Int)>,
 
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) users_default: Int,
 }
 
@@ -157,7 +195,7 @@ impl PowerLevelsContentFields {
 
 #[derive(Deserialize)]
 struct IntPowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_int_powerlevel_values")]
+	#[serde(default, deserialize_with = "vec_deserialize_int_powerlevel_values_serde")]
 	users: Vec<(OwnedUserId, Int)>,
 
 	#[serde(default)]
@@ -197,7 +235,7 @@ fn deserialize_legacy_power_levels_content_fields(
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentInvite {
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) invite: Int,
 }
 
@@ -227,7 +265,10 @@ pub(crate) fn deserialize_power_levels_content_invite(
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentRedact {
-	#[serde(default = "default_power_level", deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(
+		default = "default_power_level",
+		deserialize_with = "deserialize_v1_powerlevel_serde"
+	)]
 	pub(crate) redact: Int,
 }
 

@@ -282,7 +282,7 @@ where
 		from_json_str(room_create_event.content().get())?;
 	if room_create_content
 		.room_version
-		.is_some_and(|v| v.deserialize_as().is_err())
+		.is_some_and(|v| v.deserialize_as::<RoomVersionId>().is_err())
 	{
 		warn!(
 			create_event_id = %room_create_event.event_id(),
