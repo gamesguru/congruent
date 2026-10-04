@@ -71,7 +71,10 @@ impl std::fmt::Display for ValidTokenSource {
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
-		let registration_tokens_from_file = args.server.config.registration_token_file
+		let registration_tokens_from_file = args
+			.server
+			.config
+			.registration_token_file
 			.clone()
 			// If the token file option was set, read the path it points to
 			.map(std::fs::read_to_string)

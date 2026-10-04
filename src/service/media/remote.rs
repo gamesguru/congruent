@@ -91,13 +91,14 @@ fn should_fallback_to_unauthenticated(
 				|| matches!(
 					error.status_code(),
 					StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT
-				) || matches!(
-				error,
-				Error::Reqwest(_)
-					| Error::Federation(_, _)
-					| Error::FederationTimeout(_)
-					| Error::FederationConnection(_)
-			),
+				)
+				|| matches!(
+					error,
+					Error::Reqwest(_)
+						| Error::Federation(_, _)
+						| Error::FederationTimeout(_)
+						| Error::FederationConnection(_)
+				),
 		| _ => false,
 	}
 }

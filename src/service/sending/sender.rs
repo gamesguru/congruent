@@ -676,17 +676,24 @@ impl Service {
 		statuses
 			.entry(dest.clone()) // TODO: can we avoid cloning?
 			.and_modify(|e| match e {
-				TransactionStatus::Failed(tries, time) => {
+				| TransactionStatus::Failed(tries, time) => {
 					// Fail if a request has failed recently (exponential backoff)
 					let min = self.server.config.sender_retry_backoff_base;
 					let max = self.server.config.sender_retry_backoff_limit;
-					if continue_exponential_backoff_secs(min, max, time.elapsed(), tries.saturating_sub(1))
-						&& !matches!(dest, Destination::Appservice(_))
+					if continue_exponential_backoff_secs(
+						min,
+						max,
+						time.elapsed(),
+						tries.saturating_sub(1),
+					) && !matches!(dest, Destination::Appservice(_))
 					{
 						allow = false;
 
-						let min_dur = Duration::from_secs(min)
-							.saturating_mul(1_u32.checked_shl(tries.saturating_sub(1)).unwrap_or(u32::MAX));
+						let min_dur = Duration::from_secs(min).saturating_mul(
+							1_u32
+								.checked_shl(tries.saturating_sub(1))
+								.unwrap_or(u32::MAX),
+						);
 						let min_dur = std::cmp::min(min_dur, Duration::from_secs(max));
 						let remaining = min_dur.saturating_sub(time.elapsed());
 						self.reschedule_flush(dest.clone(), remaining);
@@ -695,10 +702,10 @@ impl Service {
 						*e = TransactionStatus::Retrying(*tries);
 					}
 				},
-				TransactionStatus::Running | TransactionStatus::Retrying(_) => {
+				| TransactionStatus::Running | TransactionStatus::Retrying(_) => {
 					allow = false; // already running
 				},
-				TransactionStatus::Cooldown(time) => {
+				| TransactionStatus::Cooldown(time) => {
 					if !has_pdu && time.elapsed() < Duration::from_millis(300) {
 						allow = false;
 					} else {

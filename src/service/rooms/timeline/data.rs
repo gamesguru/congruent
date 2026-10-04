@@ -1575,9 +1575,9 @@ impl Data {
 					// Clone raw bytes to owned before async resolve to avoid
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-					.and_then(move |(key, val)| async move {
-						self.resolve_pdu((&key, &val)).await
-					})
+					.and_then(
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+					)
 			})
 			.inspect_err(|e| conduwuit::warn!("pdus_rev count_to_id failed: {e}"))
 			.try_flatten_stream()
@@ -1609,9 +1609,9 @@ impl Data {
 					// Clone raw bytes to owned before async resolve to avoid
 					// RocksDB cursor invalidation through try_buffered
 					.map_ok(|(key, val)| (key.to_vec(), val.to_vec()))
-					.and_then(move |(key, val)| async move {
-						self.resolve_pdu((&key, &val)).await
-					})
+					.and_then(
+						move |(key, val)| async move { self.resolve_pdu((&key, &val)).await },
+					)
 			})
 			.try_flatten_stream()
 	}
@@ -2153,9 +2153,11 @@ impl Data {
 
 				let pdu_id = Self::topo_key_to_pdu_id(&topo_key);
 				let json_bytes = self.eventid_pdu.get(&event_id_bytes).await?;
-				let (pdu_count, pdu) = Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
+				let (pdu_count, pdu) =
+					Self::parse_json_slice(None, (pdu_id.as_ref(), json_bytes.as_ref()))?;
 				let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
-				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes) else {
+				let Ok(metadata) = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
+				else {
 					conduwuit::debug!(
 						target: "pagination_debug",
 						event_id = %String::from_utf8_lossy(&event_id_bytes),
@@ -2463,8 +2465,8 @@ impl Data {
 					// Extract PDU count via key lookup (shortroomid, timestamp, count)
 					.ready_filter_map(|res| {
 						let (k, _) = match res {
-							Ok(kv) => kv,
-							Err(e) => return Some(Err(e)),
+							| Ok(kv) => kv,
+							| Err(e) => return Some(Err(e)),
 						};
 
 						if k.len() != 25 {
@@ -2492,18 +2494,16 @@ impl Data {
 					// Using PDU count, fetch full PDU event object
 					.filter_map(move |count| async move {
 						let count = match count {
-							Ok(c) => c,
-							Err(e) => return Some(Err(e)),
+							| Ok(c) => c,
+							| Err(e) => return Some(Err(e)),
 						};
 						let pdu_id = PduId { shortroomid: short, shorteventid: count };
 						match self.get_pdu_from_id_in_room(None, &pdu_id.into()).await {
-							Ok(pdu) => Some(Ok(pdu)),
-							Err(e) if e.is_not_found() => Some(Err(err!(
-								Database(
-									"Timestamp index points to missing PDU {pdu_id:?}: {e}"
-								)
-							))),
-							Err(e) => Some(Err(e)),
+							| Ok(pdu) => Some(Ok(pdu)),
+							| Err(e) if e.is_not_found() => Some(Err(err!(Database(
+								"Timestamp index points to missing PDU {pdu_id:?}: {e}"
+							)))),
+							| Err(e) => Some(Err(e)),
 						}
 					})
 					.boxed()

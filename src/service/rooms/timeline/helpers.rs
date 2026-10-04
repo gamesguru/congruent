@@ -303,7 +303,8 @@ async fn allowed_to_send_state_event(
 						.services
 						.state_cache
 						.is_joined(state_key, room_id)
-						.await && membership_content.membership == MembershipState::Join
+						.await
+						&& membership_content.membership == MembershipState::Join
 					{
 						membership_content.join_authorized_via_users_server = None;
 						*json = Raw::<AnyStateEventContent>::from_json_string(

@@ -774,13 +774,14 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		}) || self
-		.services
-		.rooms
-		.state_accessor
-		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-		.await
-		.is_ok_and(|event| event.sender() == user_id);
+		})
+		|| self
+			.services
+			.rooms
+			.state_accessor
+			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+			.await
+			.is_ok_and(|event| event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
