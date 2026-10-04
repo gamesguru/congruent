@@ -346,7 +346,7 @@ where
 			BTreeMap::from_iter([(
 				pdu.sender().to_owned(),
 				slipstream::events::receipt::Receipt {
-					ts: Some(slipstream::MilliSecondsSinceUnixEpoch::now()),
+					ts: Some(slipstream::MilliSecondsSinceUnixEpoch::now().get()),
 					thread: slipstream::events::receipt::ReceiptThread::Unthreaded,
 				},
 			)]),
@@ -503,8 +503,9 @@ where
 		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
-				let target_user_id =
-					UserId::parse(state_key).expect("This state_key was previously validated");
+				let target_user_id = UserId::parse(state_key).map_err(|e| {
+					err!(Request(InvalidParam(format!("Invalid state key: {e}"))))
+				})?;
 
 				// Capture whether the target was already joined *before* this event. A
 				// membership event whose membership stays `join` (e.g. a display name or
@@ -517,12 +518,12 @@ where
 				// join. Callers that installed such a state pass the pre-install sample; all
 				// others fall back to the cache.
 				let was_joined = match was_joined_before_state_install {
-					| Some((sampled_user_id, was_joined)) if sampled_user_id == target_user_id =>
+					| Some((sampled_user_id, was_joined)) if *sampled_user_id == target_user_id =>
 						was_joined,
 					| _ =>
 						self.services
 							.state_cache
-							.is_joined(target_user_id, room_id)
+							.is_joined(&target_user_id, room_id)
 							.await,
 				};
 
@@ -531,7 +532,7 @@ where
 				// knock event for auth
 				self.services
 					.state_cache
-					.update_membership(room_id, target_user_id, pdu, true)
+					.update_membership(room_id, &target_user_id, pdu, true)
 					.await?;
 
 				if let Ok(content) =
@@ -540,11 +541,11 @@ where
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
 						&& !was_joined
-						&& self.services.globals.user_is_local(target_user_id)
+						&& self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users
-							.mark_device_key_update(target_user_id)
+							.mark_device_key_update(&target_user_id)
 							.await;
 					}
 				}
