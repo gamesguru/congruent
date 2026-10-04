@@ -1,9 +1,6 @@
 use serde::Deserialize;
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
-use slipstream::{
-	OwnedEventId, RoomVersionId,
-	events::{TimelineEventType, room::redaction::RoomRedactionEventContent},
-};
+use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{OwnedEventId, RoomVersionId, events::TimelineEventType};
 
 use super::Event;
 
@@ -26,19 +23,28 @@ pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, Box<RawJsonVal
 		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
 	}
 
-	let Ok(mut content) = event.get_content::<RoomRedactionEventContent>() else {
+	let Ok(value) = slipstream::canonical_json::from_json_str(event.content().get()) else {
+		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
+	};
+	let Some(mut content) = slipstream::canonical_json::into_object(value) else {
 		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
 	};
 
-	if let Some(redacts) = content.redacts {
-		return (Some(redacts), event.content().to_owned());
+	if let Some(redacts) = content.get("redacts").and_then(|value| value.as_str()) {
+		return (redacts.parse().ok(), event.content().to_owned());
 	}
 
 	if let Some(redacts) = event.redacts().map(ToOwned::to_owned) {
-		content.redacts = Some(redacts);
+		content.insert(
+			"redacts".to_owned(),
+			slipstream::canonical_json::Value::String(redacts.to_string()),
+		);
 		return (
 			event.redacts().map(ToOwned::to_owned),
-			to_raw_value(&content).expect("Must be valid, we only added redacts field"),
+			RawJsonValue::from_string(slipstream::codec::to_string(
+				&slipstream::canonical_json::Value::Object(content),
+			))
+			.expect("Must be valid, we only added redacts field"),
 		);
 	}
 
@@ -74,11 +80,7 @@ pub(super) fn redacts_id<E: Event>(
 			event.redacts().map(ToOwned::to_owned),
 		| _ if crate::info::room_version::is_msc3389(room_version) =>
 			event.redacts().map(ToOwned::to_owned),
-		| _ =>
-			event
-				.get_content::<RoomRedactionEventContent>()
-				.ok()?
-				.redacts,
+		| _ => event.redacts().map(ToOwned::to_owned),
 	}
 }
 
