@@ -12,7 +12,7 @@ MAKEFLAGS += --no-print-directory
 # `?=`) is required: Make auto-imports already-exported shell variables as if
 # they were `?=`-defined, so a plain `?=` would keep a bad inherited value
 # instead of replacing it. Bump this in lockstep with rust-toolchain.toml.
-RUSTUP_TOOLCHAIN ?=
+RUSTUP_TOOLCHAIN ?= 1.98.1
 export RUSTUP_TOOLCHAIN
 
 # [CONFIG] source .env if it exists
