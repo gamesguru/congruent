@@ -327,7 +327,7 @@ impl Service {
 			| Err(_) => None,
 		};
 
-		let last_active_ago = UInt::new(0);
+		let last_active_ago = Some(0);
 		let currently_active = *new_state == PresenceState::Online;
 		let _cork = self.services.db.cork();
 		self.db
@@ -422,7 +422,7 @@ impl Service {
 			}
 
 			if !self.services.globals.user_is_local(user_id)
-				|| user_id == self.services.globals.server_user
+				|| user_id == &self.services.globals.server_user
 			{
 				continue;
 			}
@@ -488,8 +488,7 @@ impl Service {
 		if let Ok((_count, ref presence)) = raw {
 			presence_state = presence.state.clone();
 			let now = utils::millis_since_unix_epoch();
-			last_active_ago =
-				Some(UInt::new_saturating(now.saturating_sub(presence.last_active_ts)));
+			last_active_ago = Some(now.saturating_sub(presence.last_active_ts));
 			status_msg.clone_from(&presence.status_msg);
 		}
 

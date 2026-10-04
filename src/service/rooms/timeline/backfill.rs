@@ -1439,8 +1439,8 @@ fn topo_sort_by_prev_events(
 ) -> Vec<OwnedEventId> {
 	use std::collections::VecDeque;
 
-	let mut children: HashMap<&EventId, Vec<&EventId>> = HashMap::new();
-	let mut in_degree: HashMap<&EventId, usize> = pdus.keys().map(|id| (&**id, 0)).collect();
+	let mut children: HashMap<&OwnedEventId, Vec<&OwnedEventId>> = HashMap::new();
+	let mut in_degree: HashMap<&OwnedEventId, usize> = pdus.keys().map(|id| (id, 0)).collect();
 
 	for (event_id, (_, pdu)) in pdus {
 		for prev_id in pdu.prev_events() {
@@ -1451,13 +1451,13 @@ fn topo_sort_by_prev_events(
 		}
 	}
 
-	let mut queue: VecDeque<&EventId> = in_degree
+	let mut queue: VecDeque<&OwnedEventId> = in_degree
 		.iter()
 		.filter_map(|(id, count)| (*count == 0).then_some(*id))
 		.collect();
 
 	let mut ordered = Vec::with_capacity(pdus.len());
-	let mut visited: HashSet<&EventId> = HashSet::with_capacity(pdus.len());
+	let mut visited: HashSet<&OwnedEventId> = HashSet::with_capacity(pdus.len());
 	while let Some(event_id) = queue.pop_front() {
 		if !visited.insert(event_id) {
 			continue;
@@ -1478,7 +1478,7 @@ fn topo_sort_by_prev_events(
 		// this code exists to heal already-corrupted rooms). Append whatever
 		// is left over so nothing is silently dropped.
 		for event_id in pdus.keys() {
-			if !visited.contains(&**event_id) {
+			if !visited.contains(event_id) {
 				ordered.push(event_id.clone());
 			}
 		}

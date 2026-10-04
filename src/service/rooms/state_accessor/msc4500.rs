@@ -316,7 +316,7 @@ pub async fn msc4500_point_digests(
 
 	let mut primary = LtHash::default();
 	let mut selected: Vec<(String, String, OwnedEventId)> = Vec::new();
-	let mut by_id: HashMap<&EventId, &Pdu> = HashMap::new();
+	let mut by_id: HashMap<&OwnedEventId, &Pdu> = HashMap::new();
 	for state_pdu in &state {
 		let Some(state_key) = state_pdu.state_key() else {
 			continue;
@@ -338,13 +338,13 @@ pub async fn msc4500_point_digests(
 		}
 	}
 
-	let mut redacted: HashSet<&EventId> = HashSet::new();
+	let mut redacted: HashSet<&OwnedEventId> = HashSet::new();
 	for (redaction_id, target_id) in &past {
 		// Only a target selected at this point can contribute.
-		let Some(target) = by_id.get(&**target_id) else {
+		let Some(target) = by_id.get(target_id) else {
 			continue;
 		};
-		let redaction = if &**redaction_id == pdu.event_id() {
+		let redaction = if redaction_id == pdu.event_id() {
 			pdu.clone()
 		} else {
 			self.services.timeline.get_pdu(redaction_id).await.ok()?
@@ -819,7 +819,7 @@ mod causal_tests {
 		// The same selected state, evaluated for each branch.
 		let selected = vec![("m.room.name".to_owned(), String::new(), id("T"))];
 		let digest = |set: &RedactionSet| {
-			let targets: HashSet<&EventId> = set.values().map(AsRef::as_ref).collect();
+			let targets: HashSet<&OwnedEventId> = set.values().collect();
 			redaction_overlay_digest(&selected, &targets)
 		};
 		assert_ne!(digest(&x), digest(&y));

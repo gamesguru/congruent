@@ -1022,8 +1022,8 @@ impl Service {
 		let max_extremities = self.services.globals.max_forward_extremities();
 		let start = eligible.len().saturating_sub(max_extremities);
 		for event_id in &eligible[start..] {
-			let key = (room_id, &**event_id);
-			self.db.roomid_pduleaves.put_raw(key, &**event_id);
+			let key = (room_id, event_id);
+			self.db.roomid_pduleaves.put_raw(key, event_id);
 		}
 	}
 
