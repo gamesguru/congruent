@@ -503,9 +503,8 @@ where
 		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
-				let target_user_id = UserId::parse(state_key).map_err(|e| {
-					err!(Request(InvalidParam(format!("Invalid state key: {e}"))))
-				})?;
+				let target_user_id = UserId::parse(state_key)
+					.map_err(|e| err!(Request(InvalidParam("Invalid state key: {e}"))))?;
 
 				// Capture whether the target was already joined *before* this event. A
 				// membership event whose membership stays `join` (e.g. a display name or
