@@ -39,7 +39,7 @@ use conduwuit_core::{
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
 use slipstream::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	codec::{DeError, Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	endpoint::body_field,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},

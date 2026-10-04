@@ -12,6 +12,7 @@ use database::{Json, Map};
 use futures::{Stream, StreamExt};
 use slipstream::{
 	CanonicalJsonObject, OwnedUserId, RoomId, UserId,
+	codec::Deserialize as CodecDeserialize,
 	events::{
 		AnySyncEphemeralRoomEvent,
 		receipt::{Receipt, ReceiptEvent, ReceiptThread, ReceiptType},
@@ -40,6 +41,10 @@ struct Services {
 pub(super) type ReceiptItem = (OwnedUserId, u64, Raw<AnySyncEphemeralRoomEvent>);
 type PublicReadReceipts = BTreeMap<String, (u64, ReceiptEvent)>;
 type PrivateReadReceipts = BTreeMap<String, (u64, ReceiptEvent, u64)>;
+
+fn decode<T: CodecDeserialize>(bytes: &[u8]) -> Option<T> {
+	slipstream::codec::from_str(std::str::from_utf8(bytes).ok()?).ok()
+}
 
 impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
@@ -76,14 +81,13 @@ impl Data {
 		// found a matching receipt here; otherwise fall through to the legacy
 		// stream-index scan below.
 		if let Ok(value) = self.roomuserid_readreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PublicReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PublicReadReceipts>(&value) {
 				if let Some((_, receipt_event)) = receipts.get(&target_thread_key) {
 					return receipt_event.content.0.keys().next().cloned();
 				}
 			}
 
-			if let Ok((_, receipt_event)) = serde_json::from_slice::<(u64, ReceiptEvent)>(&value)
-			{
+			if let Ok((_, receipt_event)) = decode::<(u64, ReceiptEvent)>(&value) {
 				for (event_id, receipts) in receipt_event.content.0 {
 					if let Some(users) = receipts.get(&ReceiptType::Read) {
 						if let Some(receipt) = users.get(user_id) {
@@ -115,7 +119,7 @@ impl Data {
 						.and_then(|idx| key.get(idx))
 						== Some(&database::SEP)
 				{
-					let receipt = serde_json::from_slice::<ReceiptEvent>(value).ok()?;
+					let receipt = decode::<ReceiptEvent>(value)?;
 					let (event_id, types) = receipt.content.0.into_iter().next()?;
 					let users = types.get(&ReceiptType::Read)?;
 					let receipt_data = users.get(user_id)?;
@@ -138,12 +142,11 @@ impl Data {
 		let key = roomuserid_key(room_id, user_id);
 
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				return Ok(combine_private_read_receipts(room_id, receipts));
 			}
 
-			if let Ok((count, event, _update_count)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
+			if let Ok((count, event, _update_count)) = decode::<(u64, ReceiptEvent, u64)>(&value)
 			{
 				if event.content.0.is_empty() {
 					return self
@@ -220,11 +223,9 @@ impl Data {
 
 		let mut existing_receipts = if let Ok(value) = self.roomuserid_readreceipt.get(&key).await
 		{
-			if let Ok(receipts) = serde_json::from_slice::<PublicReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PublicReadReceipts>(&value) {
 				receipts
-			} else if let Ok((old_count, old_event)) =
-				serde_json::from_slice::<(u64, ReceiptEvent)>(&value)
-			{
+			} else if let Ok((old_count, old_event)) = decode::<(u64, ReceiptEvent)>(&value) {
 				let thread = old_event
 					.content
 					.0
@@ -436,8 +437,8 @@ impl Data {
 		let _guard = self.private_read_mutex.lock();
 		let mut receipts =
 			if let Ok(value) = self.roomuserid_privatereadreceipt.get_blocking(&key) {
-				serde_json::from_slice::<PrivateReadReceipts>(&value).unwrap_or_else(|_| {
-					serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
+				decode::<PrivateReadReceipts>(&value).unwrap_or_else(|| {
+					decode::<(u64, ReceiptEvent, u64)>(&value)
 						.map(|entry| {
 							BTreeMap::from([(private_read_thread_key(&entry.1, user_id), entry)])
 						})
@@ -469,15 +470,13 @@ impl Data {
 	) -> Result<u64> {
 		let key = roomuserid_key(room_id, user_id);
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				if let Some((count, ..)) = receipts.get(&thread_key(thread)) {
 					return Ok(*count);
 				}
 			}
 
-			if let Ok((count, event, _)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
-			{
+			if let Ok((count, event, _)) = decode::<(u64, ReceiptEvent, u64)>(&value) {
 				if private_read_thread_key(&event, user_id) == thread_key(thread) {
 					return Ok(count);
 				}
@@ -498,7 +497,7 @@ impl Data {
 	) -> u64 {
 		let key = roomuserid_key(room_id, user_id);
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				return receipts
 					.values()
 					.map(|(_, _, update_count)| *update_count)
@@ -506,9 +505,7 @@ impl Data {
 					.unwrap_or(0);
 			}
 
-			if let Ok((_, _, update_count)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
-			{
+			if let Ok((_, _, update_count)) = decode::<(u64, ReceiptEvent, u64)>(&value) {
 				return update_count;
 			}
 		}

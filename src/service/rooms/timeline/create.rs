@@ -66,7 +66,7 @@ fn room_version_from_event(
 	content: &RawValue,
 ) -> Result<RoomVersionId> {
 	if event_type == &TimelineEventType::RoomCreate {
-		let content: RoomCreateEventContent = serde_json::from_str(content.get())?;
+		let content: RoomCreateEventContent = slipstream::codec::from_str(content.get())?;
 		Ok(content.room_version)
 	} else {
 		Err(Error::InconsistentRoomState(

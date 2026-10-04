@@ -391,9 +391,9 @@ where
 		// `creator` content field is a pre-v11 concept and irrelevant here (see
 		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
 		let is_v12_creator = create_pdu.sender == pdu.sender
-			|| serde_json::from_str::<slipstream::events::room::create::RoomCreateEventContent>(
-				create_pdu.content.get(),
-			)
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
 			.is_ok_and(|create_content| {
 				create_content
 					.additional_creators
@@ -415,16 +415,17 @@ where
 	// Pre-v12 fallback: with no power-levels event found in the auth chain,
 	// only the room's original creator gets an implicit power level of 100.
 	#[allow(deprecated)]
-	let is_pre_v12_creator = create_pdu.sender == pdu.sender
-		|| serde_json::from_str::<slipstream::events::room::create::RoomCreateEventContent>(
-			create_pdu.content.get(),
-		)
-		.is_ok_and(|create_content| {
-			create_content
-				.creator
-				.as_ref()
-				.is_some_and(|creator| creator == &pdu.sender)
-		});
+	let is_pre_v12_creator =
+		create_pdu.sender == pdu.sender
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
+			.is_ok_and(|create_content| {
+				create_content
+					.creator
+					.as_ref()
+					.is_some_and(|creator| creator == &pdu.sender)
+			});
 
 	if is_pre_v12_creator { 100 } else { 0 }
 }

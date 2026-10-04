@@ -35,7 +35,7 @@ use slipstream::{
 
 use crate::{Dep, account_data, admin, appservice, globals, rooms};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UserSuspension {
 	/// Whether the user is currently suspended
 	pub suspended: bool,
