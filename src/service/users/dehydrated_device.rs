@@ -160,7 +160,7 @@ pub(super) async fn remove_dehydrated_device(
 	};
 
 	if let Some(maybe_device_id) = maybe_device_id {
-		if &device_id != maybe_device_id {
+		if device_id != maybe_device_id {
 			return Err!(Request(NotFound("Not the user's dehydrated device.")));
 		}
 	}

@@ -1294,11 +1294,11 @@ pub async fn promote_outliers_sorted(
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 			content: rezzy::JsonValue::parse(pdu.content.get())
 				.expect("PDU content must be valid JSON"),
-			origin_server_ts: u64::from(pdu.origin_server_ts),
+			origin_server_ts: pdu.origin_server_ts,
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 			power_level: 0,
-			depth: u64::from(pdu.depth),
+			depth: pdu.depth,
 			..Default::default()
 		};
 		events_map.insert(event_id.to_string(), lean);
@@ -1589,7 +1589,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 			.await,
 	)
 	.filter_map(Result::ok)
-	.map(|alias| alias.server_name().to_owned())
+	.map(|alias| alias.server_name())
 	.stream();
 
 	room_mods

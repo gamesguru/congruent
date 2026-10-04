@@ -131,7 +131,7 @@ pub fn room_stream<'a>(
 			async move {
 				let pdu = self.get_pdu_outlier(&eid).await.ok()?;
 				// If metadata had a 0 short_room_id, we must check the actual PDU room_id
-				if meta_short_room_id == 0 && pdu.room_id().map(|r| r.as_str()) != Some(&*room_id)
+				if meta_short_room_id == 0 && pdu.room_id().map(OwnedRoomId::as_str) != Some(&*room_id)
 				{
 					return None;
 				}

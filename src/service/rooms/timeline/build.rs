@@ -33,9 +33,7 @@ pub async fn build_and_append_pdu(
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
 
-	let room_id = room_id
-		.map(ToOwned::to_owned)
-		.unwrap_or_else(|| pdu.room_id_or_hash().expect("built PDU has a room ID"));
+	let room_id = room_id.map_or_else(|| pdu.room_id_or_hash().expect("built PDU has a room ID"), ToOwned::to_owned);
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}
@@ -203,7 +201,7 @@ pub async fn build_and_append_pdu(
 				event_id = %pdu.event_id(), %state_key_uid,
 				"build_and_append_pdu: inserting affected user's server as destination"
 			);
-			servers.insert(state_key_uid.server_name().to_owned());
+			servers.insert(state_key_uid.server_name());
 		} else {
 			debug!(
 				target: "membership_destination_debug",

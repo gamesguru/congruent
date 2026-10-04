@@ -315,7 +315,7 @@ where
 	let mut entries = HashMap::with_capacity(candidate_entries.len());
 	for (eid, val, prev_events, depth, origin_server_ts) in candidate_entries {
 		graph.insert(eid.clone(), prev_events);
-		entries.insert(eid.clone(), (0_u64.into(), depth.into(), origin_server_ts.into()));
+		entries.insert(eid.clone(), (0_u64.into(), depth, origin_server_ts));
 		candidate_events.insert(eid, val);
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);

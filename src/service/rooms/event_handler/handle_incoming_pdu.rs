@@ -67,7 +67,7 @@ async fn should_rescind_invite(
 		return Ok(false); // Only leave and ban can rescind an invite
 	}
 
-	if &target_user_id.server_name() != services.globals.server_name() {
+	if target_user_id.server_name() != services.globals.server_name() {
 		return Ok(false);
 	}
 
@@ -309,7 +309,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	let sender = &sender;
 
 	let sender_server = sender.server_name();
-	let sender_acl_check: OptionFuture<_> = (&sender_server != origin)
+	let sender_acl_check: OptionFuture<_> = (sender_server != origin)
 		.then(|| self.acl_check(&sender_server, room_id))
 		.into();
 

@@ -126,7 +126,7 @@ impl Data {
 		event_ids: &[OwnedEventId],
 	) -> Vec<Result<rooms::timeline::EventMetadata>> {
 		self.eventid_metadata
-			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.get_batch(futures::stream::iter(event_ids.iter().map(OwnedEventId::as_bytes)))
 			.map(|res| {
 				res.and_then(|handle| {
 					rooms::timeline::EventMetadata::from_bincode(&handle)
@@ -338,8 +338,8 @@ impl Data {
 				None
 			};
 
-			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts.into());
-			let depth = meta_opt.as_ref().map_or(0, |m| m.depth.into());
+			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts);
+			let depth = meta_opt.as_ref().map_or(0, |m| m.depth);
 
 			entries.insert(event_id.clone(), (*count, depth, ts));
 
@@ -501,14 +501,14 @@ impl Data {
 		let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
 		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
-		Ok(meta.depth.into())
+		Ok(meta.depth)
 	}
 
 	pub(super) fn remove_topo_pducount(&self, pdu_id: &RawPduId, event_id_bytes: &[u8]) {
 		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
 			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
 				self.roomid_topologicalorder_pducount
-					.remove(&Self::topo_pducount_key(pdu_id, meta.depth.into()));
+					.remove(&Self::topo_pducount_key(pdu_id, meta.depth));
 			}
 		}
 	}
@@ -549,7 +549,7 @@ impl Data {
 			.get_blocking(event_id_bytes)
 			.ok()
 			.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
-			.map(|meta| meta.depth.into());
+			.map(|meta| meta.depth);
 		self.remove_stream_and_topo_pducount_from_batch(batch, pdu_id, event_id_bytes, depth);
 	}
 
@@ -720,7 +720,7 @@ impl Data {
 				.get_blocking(event_id.as_bytes())
 				.ok()
 				.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
-				.map(|meta| meta.depth.into());
+				.map(|meta| meta.depth);
 			self.remove_stream_and_topo_pducount_from_batch(
 				batch,
 				&pduid,
@@ -997,7 +997,7 @@ impl Data {
 		// Batch fetch from eventid_pduid
 		let pdu_ids: Vec<Result<database::Handle<'_>>> = self
 			.eventid_pduid
-			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.get_batch(futures::stream::iter(event_ids.iter().map(OwnedEventId::as_bytes)))
 			.collect()
 			.await;
 
@@ -1217,15 +1217,15 @@ impl Data {
 		self.room_pducount_eventid
 			.batch_put(batch, pdu_id, event_id_bytes);
 
-		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ts) = json.get("origin_server_ts").and_then(|v| v.as_i64()) {
+		if let Some(ts) = json.get("origin_server_ts").and_then(slipstream::json::Value::as_i64) {
 			if let Ok(ts) = slipstream::UInt::try_from(ts) {
 				let ts_key =
-					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+					pack_timestamp_key(pdu_id.shortroomid(), ts, pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
@@ -1237,7 +1237,7 @@ impl Data {
 			depth: pdu.depth(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-			deprecated_local_topo_depth: pdu.depth().into(),
+			deprecated_local_topo_depth: pdu.depth(),
 			pdu_count: Some(count.into_unsigned()),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
@@ -1314,7 +1314,7 @@ impl Data {
 			}
 		}
 
-		let depth = u64::from(pdu.depth());
+		let depth = pdu.depth();
 		for prev_id in backward_extremities::missing_prev_events(&pdu.prev_events, |id| {
 			known_locally.contains(id)
 		}) {
@@ -1383,15 +1383,15 @@ impl Data {
 		self.room_pducount_eventid
 			.batch_put(batch, pdu_id, event_id_bytes);
 
-		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ts) = json.get("origin_server_ts").and_then(|v| v.as_i64()) {
+		if let Some(ts) = json.get("origin_server_ts").and_then(slipstream::json::Value::as_i64) {
 			if let Ok(ts) = slipstream::UInt::try_from(ts) {
 				let ts_key =
-					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+					pack_timestamp_key(pdu_id.shortroomid(), ts, pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
@@ -1403,7 +1403,7 @@ impl Data {
 			depth: pdu.depth(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-			deprecated_local_topo_depth: pdu.depth().into(),
+			deprecated_local_topo_depth: pdu.depth(),
 			pdu_count: match pdu_id.pdu_count() {
 				| PduCount::Normal(x) => Some(x),
 				| PduCount::Backfilled(_) => None,
@@ -1469,7 +1469,7 @@ impl Data {
 					None
 				};
 
-			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 			self.roomid_topologicalorder_pducount.batch_put(
 				&mut batch,
 				&topo_key,
@@ -1483,7 +1483,7 @@ impl Data {
 				depth: pdu.depth(),
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-				deprecated_local_topo_depth: pdu.depth().into(),
+				deprecated_local_topo_depth: pdu.depth(),
 				pdu_count: match pdu_id.pdu_count() {
 					| PduCount::Normal(x) => Some(x),
 					| PduCount::Backfilled(_) => None,
@@ -1944,7 +1944,7 @@ impl Data {
 					"parse_json_slice failed: {e}. JSON: {}",
 					String::from_utf8_lossy(pdu)
 				);
-				return Err(e.into());
+				return Err(e);
 			},
 		};
 
@@ -1958,8 +1958,7 @@ impl Data {
 					"PDU belongs to room {} (expected {expected_room})",
 					pdu.room_id_or_hash()
 						.as_ref()
-						.map(OwnedRoomId::as_str)
-						.unwrap_or("none")
+						.map_or("none", OwnedRoomId::as_str)
 				)));
 			}
 		}

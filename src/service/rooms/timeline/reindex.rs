@@ -189,7 +189,7 @@ impl Service {
 						depth: pdu.depth(),
 						redacted_by: pdu.redacts().map(ToOwned::to_owned),
 						short_state_hash: None,
-						deprecated_local_topo_depth: pdu.depth().into(),
+						deprecated_local_topo_depth: pdu.depth(),
 						pdu_count: match count {
 							| PduCount::Normal(x) => Some(*x),
 							| PduCount::Backfilled(_) => None,

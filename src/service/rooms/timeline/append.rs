@@ -413,7 +413,7 @@ where
 				.map_err(|e| err!(Request(InvalidParam("Invalid state key: {e}"))))?;
 
 			if self.services.users.is_active_local(&target_user_id).await {
-				push_target.insert(target_user_id.to_owned());
+				push_target.insert(target_user_id.clone());
 			}
 		}
 	}
@@ -643,7 +643,7 @@ where
 				.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 			{
 				let appservice_uid = appservice.registration.sender_localpart.as_str();
-				if state_key_uid == &appservice_uid {
+				if state_key_uid == appservice_uid {
 					self.services
 						.sending
 						.send_pdu_appservice(appservice.registration.id.clone(), pdu_id)?;
@@ -721,7 +721,7 @@ pub(super) async fn evaluate_pdu_for_user(
 	// Skip push notifications for historical events (backfilled, rescued,
 	// or heavily delayed federation events) to avoid notification storms.
 	let now = utils::millis_since_unix_epoch();
-	let is_historical = now.saturating_sub(pdu.origin_server_ts().0.into()) > 10 * 60 * 1000;
+	let is_historical = now.saturating_sub(pdu.origin_server_ts().0) > 10 * 60 * 1000;
 	if is_historical {
 		trace!("Event {} is historical, skipping push notifications", pdu.event_id());
 		return (false, false);

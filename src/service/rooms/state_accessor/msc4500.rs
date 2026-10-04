@@ -470,7 +470,7 @@ pub async fn msc4500_resolution_inputs_digest(
 		}
 		let node = cache.get(&id)?.as_ref()?;
 
-		let auth: Vec<&str> = node.auth_events.iter().map(|e| e.as_str()).collect();
+		let auth: Vec<&str> = node.auth_events.iter().map(OwnedEventId::as_str).collect();
 		inputs.insert(&ResolutionInputRecord {
 			event_id: node.event_id.as_str(),
 			event_type: &node.kind,
@@ -634,7 +634,7 @@ impl Deserialize for StateHashEntry {
 			}),
 			limited: obj
 				.get("limited")
-				.and_then(|v| v.as_bool())
+				.and_then(slipstream::json::Value::as_bool)
 				.unwrap_or(false),
 		})
 	}

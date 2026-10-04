@@ -28,7 +28,7 @@ fn isolate_origin_signatures(
 			| CanonicalJsonValue::String(s) => UserId::parse(s.as_str()).ok(),
 			| _ => None,
 		})
-		.map(|user_id| user_id.server_name().to_owned());
+		.map(|user_id| user_id.server_name());
 
 	// For V1/V2, event_id is server-assigned (e.g. "$abc:example.com"),
 	// so that server's signature is also authoritative.
@@ -59,7 +59,7 @@ fn isolate_origin_signatures(
 		});
 
 	// Build the set of origin servers to retain
-	let mut origin_servers: Vec<&ServerName> = vec![sender.as_ref()];
+	let mut origin_servers: Vec<&ServerName> = vec![sender];
 	if let Some(ref eid_server) = event_id_server {
 		if eid_server != sender {
 			origin_servers.push(eid_server.as_ref());
@@ -87,7 +87,7 @@ fn isolate_origin_signatures(
 			.and_then(|c| c.get("join_authorised_via_users_server"))
 			.and_then(|v| v.as_str())
 			.and_then(|s| UserId::parse(s).ok())
-			.map(|u| u.server_name().to_owned()),
+			.map(|u| u.server_name()),
 	};
 	if let Some(ref auth_server) = authorized_server {
 		if !origin_servers.iter().any(|s| *s == auth_server.as_str()) {
@@ -227,7 +227,7 @@ pub async fn verify_event_at(
 		let signatures = event
 			.get("signatures")
 			.and_then(|v| v.as_object())
-			.map(|v| slipstream::codec::to_string(v))
+			.map(slipstream::codec::to_string)
 			.unwrap_or_default();
 		// Canonical JSON actually fed into the signature check (post
 		// isolate_origin_signatures, pre our own event_id re-insertion) --

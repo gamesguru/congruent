@@ -349,7 +349,7 @@ impl ServerPool {
 				self.servers.len(),
 				self.servers
 					.iter()
-					.map(|s| s.as_str())
+					.map(OwnedServerName::as_str)
 					.collect::<Vec<_>>()
 					.join(", ")
 			)

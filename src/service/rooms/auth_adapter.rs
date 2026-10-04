@@ -51,8 +51,8 @@ pub fn pdu_to_lean<E: Event>(pdu: &E) -> LeanEvent<String> {
 		content,
 		prev_events: pdu.prev_events().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events().map(|id| format!("{id}")).collect(),
-		origin_server_ts: pdu.origin_server_ts().get().into(),
-		depth: pdu.depth().into(),
+		origin_server_ts: pdu.origin_server_ts().get(),
+		depth: pdu.depth(),
 		..Default::default()
 	}
 }

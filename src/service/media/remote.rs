@@ -125,7 +125,7 @@ async fn fetch_thumbnail_authenticated(
 ) -> Result<FileMeta> {
 	let request = fed_get_thumbnail::Request {
 		media_id: mxc.media_id.into(),
-		method: dim.method.clone().into(),
+		method: dim.method.into(),
 		width: dim.width.into(),
 		height: dim.height.into(),
 		animated: true.into(),
@@ -178,7 +178,7 @@ async fn fetch_thumbnail_unauthenticated(
 		allow_remote: true,
 		allow_redirect: true,
 		animated: true.into(),
-		method: dim.method.clone().into(),
+		method: dim.method.into(),
 		width: dim.width.into(),
 		height: dim.height.into(),
 		server_name: mxc.server_name.into(),
@@ -191,7 +191,7 @@ async fn fetch_thumbnail_unauthenticated(
 
 	self.handle_thumbnail_file(mxc, user, dim, Content {
 		file: response.file,
-		content_type: response.content_type.map(Into::into),
+		content_type: response.content_type,
 		content_disposition: response.content_disposition,
 	})
 	.await
@@ -219,7 +219,7 @@ async fn fetch_content_unauthenticated(
 
 	self.handle_content_file(mxc, user, Content {
 		file: response.file,
-		content_type: response.content_type.map(Into::into),
+		content_type: response.content_type,
 		content_disposition: response.content_disposition,
 	})
 	.await
@@ -250,7 +250,7 @@ async fn handle_thumbnail_file(
 	.await
 	.map(|()| FileMeta {
 		content: Some(content.file),
-		content_type: content.content_type.map(Into::into),
+		content_type: content.content_type,
 		content_disposition: Some(content_disposition),
 	})
 }
@@ -278,7 +278,7 @@ async fn handle_content_file(
 	.await
 	.map(|()| FileMeta {
 		content: Some(content.file),
-		content_type: content.content_type.map(Into::into),
+		content_type: content.content_type,
 		content_disposition: Some(content_disposition),
 	})
 }

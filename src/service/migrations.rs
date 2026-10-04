@@ -628,7 +628,7 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 								content: slipstream::events::receipt::ReceiptEventContent(
 									std::collections::BTreeMap::new(),
 								),
-								room_id: room_id.to_owned(),
+								room_id: room_id.clone(),
 							}
 						})
 					} else {
@@ -637,7 +637,7 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 							content: slipstream::events::receipt::ReceiptEventContent(
 								std::collections::BTreeMap::new(),
 							),
-							room_id: room_id.to_owned(),
+							room_id: room_id.clone(),
 						}
 					}
 				} else {
@@ -646,7 +646,7 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 						content: slipstream::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
-						room_id: room_id.to_owned(),
+						room_id: room_id.clone(),
 					}
 				};
 
@@ -1121,7 +1121,7 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 				count_bytes.copy_from_slice(&pdu_id_bytes[8..16]);
 			}
 
-			let global_depth: u64 = meta.depth.into();
+			let global_depth: u64 = meta.depth;
 			let stream_ordering =
 				i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
 			let timeline_key = conduwuit::pdu::TimelineKey::new(global_depth, stream_ordering);
@@ -1760,7 +1760,7 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 		// if they're a local user on this homeserver
 		.try_filter(|((user_id, _), _): &InviteKeyVal| ready(services.globals.user_is_local(user_id)))
 		.and_then(async |((user_id, room_id), stripped_state): InviteKeyVal| Ok::<_,
-			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize_as::<Vec<Raw<AnyStrippedStateEvent>>>
+			conduwuit::Error>((user_id.clone(), room_id.clone(), stripped_state.deserialize_as::<Vec<Raw<AnyStrippedStateEvent>>>
 		().unwrap_or_else(|e| {
 			trace!("Failed to deserialize: {:?}", stripped_state.get());
 			warn!(

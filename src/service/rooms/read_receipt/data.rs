@@ -203,7 +203,7 @@ impl Data {
 				if let Some(receipt) = users.get(user_id) {
 					new_receipts.push((
 						event_id.clone(),
-						receipt_type.clone(),
+						*receipt_type,
 						receipt.clone(),
 						false,
 					));
@@ -256,7 +256,7 @@ impl Data {
 						.0
 						.entry(event_id.clone())
 						.or_default()
-						.entry(receipt_type.clone())
+						.entry(*receipt_type)
 						.or_default()
 						.extend(users.clone());
 				}
@@ -402,8 +402,7 @@ impl Data {
 				let user_id_bytes = &key[count_end.saturating_add(1)..];
 				let user_id_str = conduwuit::utils::str_from_bytes(user_id_bytes)?;
 				let user_id = OwnedUserId::parse(user_id_str)
-					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?
-					.to_owned();
+					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?;
 
 				let mut json: CanonicalJsonObject = database::from_json_slice(value)?;
 				json.remove("room_id");
@@ -576,7 +575,7 @@ impl Data {
 
 				let mut unthreaded = new_receipt.clone();
 				unthreaded.thread = ReceiptThread::Unthreaded;
-				synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+				synthetic.push((target_event_id, *new_type, unthreaded, true));
 				continue;
 			}
 
@@ -622,7 +621,7 @@ impl Data {
 
 			let mut unthreaded = new_receipt.clone();
 			unthreaded.thread = ReceiptThread::Unthreaded;
-			synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+			synthetic.push((target_event_id, *new_type, unthreaded, true));
 		}
 		synthetic
 	}
@@ -690,7 +689,7 @@ fn combine_private_read_receipts(
 				content
 					.entry(event_id.clone())
 					.or_insert_with(BTreeMap::new)
-					.entry(receipt_type.clone())
+					.entry(receipt_type)
 					.or_insert_with(BTreeMap::new)
 					.extend(users);
 			}

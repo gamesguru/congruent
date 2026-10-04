@@ -31,7 +31,7 @@ pub async fn get_event_keys(
 	// to prevent bypassing the expiry check via crafted events.
 	let origin_server_ts = object
 		.get("origin_server_ts")
-		.and_then(|v| v.as_i64())
+		.and_then(slipstream::json::Value::as_i64)
 		.and_then(|ts| u64::try_from(ts).ok())
 		.map(MilliSecondsSinceUnixEpoch)
 		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;

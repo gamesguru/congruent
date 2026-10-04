@@ -257,7 +257,7 @@ impl Service {
 			.try_into()
 			.expect("time overflow");
 
-		if now.saturating_sub(latest_pdu.origin_server_ts().get().into()) < stale_threshold_ms {
+		if now.saturating_sub(latest_pdu.origin_server_ts().get()) < stale_threshold_ms {
 			return Ok(());
 		}
 
@@ -298,9 +298,9 @@ impl Service {
 		if candidate_servers.len() < 5 {
 			if let Some(hs) = room_id
 				.server_name()
-				.filter(|s| !self.services.globals.server_is_ours(&s))
+				.filter(|s| !self.services.globals.server_is_ours(s))
 			{
-				let hs_owned = hs.to_owned();
+				let hs_owned = hs;
 				if all_remote.contains(&hs_owned) && !candidate_servers.contains(&hs_owned) {
 					candidate_servers.push(hs_owned);
 				}
@@ -336,7 +336,7 @@ impl Service {
 				.active_local_users_in_room(room_id)
 				.boxed();
 			match users.next().await {
-				| Some(u) => u.to_owned(),
+				| Some(u) => u.clone(),
 				| None => {
 					info!(
 						target: "forwardfill",
@@ -352,7 +352,7 @@ impl Service {
 			info!(
 				target: "forwardfill",
 				"Room {room_id} is stagnant (latest PDU was {}ms ago). Probing {target_server} for extremities via {user_id}...",
-				now.saturating_sub(latest_pdu.origin_server_ts().get().into())
+				now.saturating_sub(latest_pdu.origin_server_ts().get())
 			);
 
 			let make_join_request =

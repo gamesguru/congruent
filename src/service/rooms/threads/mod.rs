@@ -411,7 +411,7 @@ impl Service {
 	) -> Result {
 		let users = participants
 			.iter()
-			.map(|user| user.as_bytes())
+			.map(OwnedUserId::as_bytes)
 			.collect::<Vec<_>>()
 			.join(&[0xFF][..]);
 

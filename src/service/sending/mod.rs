@@ -97,7 +97,7 @@ impl crate::Service for Service {
 			stats: stats::FederationStats::default(),
 			dead_servers: std::sync::RwLock::new(std::collections::HashSet::new()),
 			next_txn_id: std::sync::atomic::AtomicU64::new(
-				slipstream::MilliSecondsSinceUnixEpoch::now().get().into(),
+				slipstream::MilliSecondsSinceUnixEpoch::now().get(),
 			),
 			server: args.server.clone(),
 			services: Services {

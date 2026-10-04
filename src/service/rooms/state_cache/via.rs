@@ -26,7 +26,7 @@ pub async fn add_servers_invite_via(&self, room_id: &RoomId, servers: Vec<OwnedS
 
 	let servers = servers
 		.iter()
-		.map(|server| server.as_bytes())
+		.map(OwnedServerName::as_bytes)
 		.collect_vec()
 		.join(&[0xFF][..]);
 
@@ -53,12 +53,12 @@ pub async fn servers_route_via(&self, room_id: &RoomId) -> Result<Vec<OwnedServe
 				.iter()
 				.max_by_key(|(_, power)| *power)
 				.and_then(|x| (x.1 >= &int!(50)).then_some(x))
-				.map(|(user, _power)| user.server_name().to_owned())
+				.map(|(user, _power)| user.server_name())
 		});
 
 	let mut servers: Vec<OwnedServerName> = self
 		.room_members(room_id)
-		.counts_by(|user| user.server_name().to_owned())
+		.counts_by(|user| user.server_name())
 		.await
 		.into_iter()
 		.sorted_by_key(|(_, users)| *users)

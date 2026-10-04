@@ -179,7 +179,7 @@ pub async fn create_event(
 				let content_val = rezzy::JsonValue::parse(content.get())
 					.expect("PDU content must be valid JSON");
 				let auth_types = rezzy::auth::auth_types_for_event(
-					&event_type.to_string(),
+					event_type.as_ref(),
 					sender.as_str(),
 					state_key.as_deref(),
 					&content_val,
@@ -253,7 +253,7 @@ pub async fn create_event(
 	}
 
 	let mut pdu = PduEvent {
-		event_id: slipstream::event_id!("$thiswillbefilledinlater").into(),
+		event_id: slipstream::event_id!("$thiswillbefilledinlater"),
 		room_id: room_id.map(ToOwned::to_owned),
 		sender: sender.to_owned(),
 		origin: None,
@@ -263,7 +263,7 @@ pub async fn create_event(
 					.try_into()
 					.expect("u64 fits into UInt")
 			},
-			|ts| ts.get(),
+			slipstream::MilliSecondsSinceUnixEpoch::get,
 		),
 		kind: event_type,
 		content,
@@ -369,7 +369,7 @@ pub async fn create_hash_and_sign_event(
 		match self
 			.services
 			.event_handler
-			.ask_policy_server(&pdu, &mut pdu_json, &policy_room_id, false)
+			.ask_policy_server(&pdu, &mut pdu_json, policy_room_id, false)
 			.await
 		{
 			| Ok(true) => {},

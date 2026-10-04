@@ -312,7 +312,7 @@ impl Service {
 			let mxc = OwnedMxcUri::from(mxc_s);
 			if (mxc
 				.server_name()
-				.is_ok_and(|server| &server == self.services.globals.server_name())
+				.is_ok_and(|server| server == self.services.globals.server_name())
 				&& !yes_i_want_to_delete_local_media)
 				|| !mxc.is_valid()
 			{

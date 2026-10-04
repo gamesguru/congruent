@@ -509,14 +509,14 @@ impl Service {
 						.get_eventid_from_short::<OwnedEventId>(old)
 						.await?;
 					lattice.replace(
-						&event_type.to_string(),
+						event_type.as_ref(),
 						state_key,
 						old_id.as_str(),
 						new_pdu.event_id().as_str(),
 					);
 				} else {
 					lattice.insert(
-						&event_type.to_string(),
+						event_type.as_ref(),
 						state_key,
 						new_pdu.event_id().as_str(),
 					);
@@ -917,7 +917,7 @@ impl Service {
 		self.db
 			.roomid_pduleaves
 			.keys_prefix(&prefix)
-			.map_ok(|(_, event_id): (Ignore, OwnedEventId)| event_id.to_owned())
+			.map_ok(|(_, event_id): (Ignore, OwnedEventId)| event_id)
 			.ignore_err()
 	}
 
@@ -1055,7 +1055,7 @@ impl Service {
 			rezzy::StateResVersion::V2
 		};
 		let auth_types_raw = rezzy::auth::auth_types_for_event(
-			&kind.to_string(),
+			kind.as_ref(),
 			sender.as_str(),
 			state_key,
 			&content_val,

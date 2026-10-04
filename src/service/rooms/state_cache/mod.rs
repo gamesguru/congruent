@@ -358,7 +358,7 @@ pub async fn invalidate_server_visibility(&self, user_id: &UserId, room_id: &Roo
 	self.room_servers(room_id)
 		.ready_for_each(|server| {
 			self.server_visibility_cache
-				.invalidate(&(server.to_owned(), user_id.to_owned()));
+				.invalidate(&(server, user_id.to_owned()));
 		})
 		.await;
 }
@@ -511,7 +511,7 @@ pub fn rooms_invited<'a>(
 		.userroomid_invitestate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
 		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.ignore_err()
 }
@@ -532,7 +532,7 @@ pub fn rooms_knocked<'a>(
 		.userroomid_knockedstate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
 		.map(|(room_id, state)| Ok((room_id, database::from_json_slice(state)?)))
 		.inspect(|res| {
 			if let Err(e) = res {
@@ -598,7 +598,7 @@ pub fn rooms_left<'a>(
 		.userroomid_leftstate
 		.stream_prefix(&prefix)
 		.ignore_err()
-		.map(|((_, room_id), state): KeyVal<'_>| (room_id.to_owned(), state))
+		.map(|((_, room_id), state): KeyVal<'_>| (room_id, state))
 		.map(|(room_id, state)| Ok((room_id, state.deserialize()?)))
 		.ignore_err()
 }

@@ -48,7 +48,7 @@ impl Deserialize for ResetTokenInfo {
 			.ok_or_else(|| slipstream::codec::DeError::expected("object"))?;
 		let issued_at = object
 			.get("issued_at")
-			.and_then(|v| v.as_u64())
+			.and_then(slipstream::json::Value::as_u64)
 			.ok_or_else(|| slipstream::codec::DeError::expected("issued_at"))?;
 		Ok(Self {
 			user: OwnedUserId::from_json(

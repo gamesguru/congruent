@@ -441,12 +441,12 @@ fn pdu_to_lean(
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
-		origin_server_ts: pdu.origin_server_ts.into(),
+		origin_server_ts: pdu.origin_server_ts,
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
-		depth: u64::from(pdu.depth),
+		depth: pdu.depth,
 		..Default::default()
 	}
 }

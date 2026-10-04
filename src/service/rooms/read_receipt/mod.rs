@@ -165,7 +165,7 @@ where
 
 							let location_key = (
 								user_id.clone(),
-								receipt_type.clone(),
+								receipt_type,
 								new_receipt.thread.as_str().map(ToOwned::to_owned),
 							);
 
@@ -202,7 +202,7 @@ where
 							let event_receipts =
 								json.entry(event_id.clone()).or_insert_with(BTreeMap::new);
 							let users = event_receipts
-								.entry(receipt_type.clone())
+								.entry(receipt_type)
 								.or_insert_with(BTreeMap::new);
 
 							// MSC4102: "When a server is combining receipts into an EDU, if there

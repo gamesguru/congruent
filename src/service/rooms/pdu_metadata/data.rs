@@ -306,7 +306,7 @@ impl Data {
 			.filter_map(|(key, rel_type)| async move {
 				let child_bytes = key.rsplit(|&b| b == database::SEP).next()?;
 				let child = string_from_bytes(child_bytes).ok()?;
-				let child = EventId::parse(&child).ok()?.to_owned();
+				let child = EventId::parse(&child).ok()?;
 				let rel_type = string_from_bytes(rel_type).ok()?;
 				Some((child, rel_type))
 			})

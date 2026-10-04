@@ -136,7 +136,7 @@ where
 	let start_time = Instant::now();
 	self.federation_handletime
 		.write()
-		.insert(room_id.into(), ((*prev_id).to_owned(), start_time));
+		.insert(room_id.into(), ((*prev_id).clone(), start_time));
 
 	defer! {{
 		if self.services.server.running() {

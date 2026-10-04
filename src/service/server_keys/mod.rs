@@ -306,7 +306,7 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 	self.verify_keys
 		.iter()
 		.next()
-		.map(|(id, key)| (id.as_ref(), key))
+		.map(|(id, key)| (id, key))
 		.expect("missing active verify_key")
 }
 

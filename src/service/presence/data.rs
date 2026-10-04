@@ -111,7 +111,7 @@ impl Data {
 
 		let last_active_ts = match last_active_ago {
 			| None => now,
-			| Some(last_active_ago) => now.saturating_sub(last_active_ago.into()),
+			| Some(last_active_ago) => now.saturating_sub(last_active_ago),
 		};
 
 		// TODO: tighten for state flicker?

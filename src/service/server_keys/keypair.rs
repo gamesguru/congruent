@@ -54,7 +54,7 @@ fn create(db: &Arc<Database>) -> Result<(String, Vec<u8>)> {
 	let id = utils::rand::string(8);
 	debug_info!("Generated new Ed25519 keypair: {id:?}");
 
-	let value: (String, Vec<u8>) = (id, keypair.to_vec());
+	let value: (String, Vec<u8>) = (id, keypair);
 	db["global"].raw_put(b"keypair", &value);
 
 	Ok(value)

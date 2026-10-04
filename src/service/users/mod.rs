@@ -2,7 +2,6 @@ pub(super) mod dehydrated_device;
 
 use std::{
 	collections::{BTreeMap, HashMap},
-	mem,
 	net::IpAddr,
 	sync::Arc,
 };
@@ -68,11 +67,11 @@ impl Deserialize for UserSuspension {
 		Ok(Self {
 			suspended: obj
 				.get("suspended")
-				.and_then(|v| v.as_bool())
+				.and_then(Value::as_bool)
 				.unwrap_or(false),
 			suspended_at: obj
 				.get("suspended_at")
-				.and_then(|v| v.as_u64())
+				.and_then(Value::as_u64)
 				.unwrap_or(0),
 			suspended_by: obj
 				.get("suspended_by")
@@ -408,7 +407,7 @@ impl Service {
 			user_id,
 			Json(UserSuspension {
 				suspended: true,
-				suspended_at: MilliSecondsSinceUnixEpoch::now().get().into(),
+				suspended_at: MilliSecondsSinceUnixEpoch::now().get(),
 				suspended_by: suspending_user.to_string(),
 			}),
 		);
@@ -430,7 +429,7 @@ impl Service {
 			.deserialized::<UserSuspension>()
 			.unwrap_or_else(|_| UserSuspension {
 				suspended: true,
-				suspended_at: MilliSecondsSinceUnixEpoch::now().get().into(),
+				suspended_at: MilliSecondsSinceUnixEpoch::now().get(),
 				suspended_by: locking_user.to_string(),
 			});
 
@@ -2270,7 +2269,7 @@ where
 		.get_mut("signatures")
 		.and_then(|v| v.as_object_mut())
 	{
-		for (user, signature) in mem::replace(signatures, json::Object::new()) {
+		for (user, signature) in std::mem::take(signatures) {
 			let sid = <UserId>::try_from(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
 			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {

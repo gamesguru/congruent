@@ -152,7 +152,7 @@ pub async fn get_global<T>(&self, user_id: &UserId, kind: GlobalAccountDataEvent
 where
 	T: Deserialize,
 {
-	let handle = self.get_raw(None, user_id, &kind.to_string()).await?;
+	let handle = self.get_raw(None, user_id, kind.as_ref()).await?;
 	decode_account_data(&handle)
 }
 
@@ -168,7 +168,7 @@ where
 	T: Deserialize,
 {
 	let handle = self
-		.get_raw(Some(room_id), user_id, &kind.to_string())
+		.get_raw(Some(room_id), user_id, kind.as_ref())
 		.await?;
 	decode_account_data(&handle)
 }
@@ -196,7 +196,7 @@ pub async fn get_raw(
 	if data
 		.get("content")
 		.and_then(Value::as_object)
-		.is_some_and(|o| o.is_empty())
+		.is_some_and(std::collections::BTreeMap::is_empty)
 	{
 		return Err!(Request(NotFound("Data not found (tombstoned).")));
 	}
@@ -258,7 +258,7 @@ fn is_account_data_tombstone(data: &[u8]) -> bool {
 		.and_then(|data| {
 			data.get("content")
 				.and_then(Value::as_object)
-				.map(|o| o.is_empty())
+				.map(std::collections::BTreeMap::is_empty)
 		})
 		.unwrap_or(false)
 }

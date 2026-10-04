@@ -511,7 +511,7 @@ async fn get_room_summary(
 		room_version,
 		room_id: room_id.to_owned(),
 		num_joined_members: num_joined_members.try_into().unwrap_or_default(),
-		allowed_room_ids: join_rule.allowed_rooms().map(Into::into).collect(),
+		allowed_room_ids: join_rule.allowed_rooms().collect(),
 		join_rule: join_rule.clone().into(),
 	};
 

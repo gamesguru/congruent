@@ -68,12 +68,12 @@ fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
-		origin_server_ts: pdu.origin_server_ts.into(),
+		origin_server_ts: pdu.origin_server_ts,
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
-		depth: u64::from(pdu.depth),
+		depth: pdu.depth,
 		..Default::default()
 	}
 }
@@ -171,7 +171,7 @@ impl super::Service {
 			let state_key = pdu
 				.state_key()
 				.map(|sk| (pdu.kind().to_string(), sk.to_owned()));
-			let depth = u64::from(pdu.depth());
+			let depth = pdu.depth();
 
 			// Timeline events are authoritative; clear any stale rejection flags.
 			self.services.pdu_metadata.unmark_event_rejected(&eid);
@@ -604,8 +604,7 @@ impl super::Service {
 						// Look up parent's root by string key to avoid OwnedEventId parsing
 						let parent_eid: OwnedEventId = parent_event_id
 							.as_str()
-							.try_into()
-							.expect("parent_event_id from rezzy should be a valid event ID");
+							.into();
 						let result = event_root
 							.get(&parent_eid)
 							.cloned()

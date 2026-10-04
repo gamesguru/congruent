@@ -255,7 +255,7 @@ pub async fn fetch_policy_server_signature(
 		);
 		return Ok(false);
 	}
-	let keypairs = sigs.get(via).unwrap();
+	let keypairs = &sigs[via];
 	let wanted_key_id = KeyId::parse("ed25519:policy_server")?;
 	if !keypairs.contains_key(&wanted_key_id) {
 		debug_warn!(

@@ -378,7 +378,7 @@ async fn get_auth_chain_inner(
 			let mut legacy_short_ids = self
 				.services
 				.short
-				.multi_get_or_create_shorteventid(new_auth_events.iter().map(|id| id.as_ref()))
+				.multi_get_or_create_shorteventid(new_auth_events.iter())
 				.zip(futures::stream::iter(new_auth_events.clone()))
 				.boxed();
 

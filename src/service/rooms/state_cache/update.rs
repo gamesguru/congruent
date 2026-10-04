@@ -205,7 +205,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 
 	self.room_members(room_id)
 		.ready_for_each(|joined| {
-			joined_servers.insert(joined.server_name().to_owned());
+			joined_servers.insert(joined.server_name());
 			joinedcount = joinedcount.saturating_add(1);
 		})
 		.await;
@@ -234,7 +234,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 				return;
 			}
 
-			removed_servers.push(old_joined_server.to_owned());
+			removed_servers.push(old_joined_server.clone());
 			// Server not in room anymore
 			let roomserver_id = (room_id, old_joined_server.clone());
 			let serverroom_id = (old_joined_server, room_id);
@@ -261,7 +261,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 			self.room_members(room_id)
 				.ready_for_each(|user_id| {
 					self.server_visibility_cache
-						.invalidate(&(removed_server.clone(), user_id.to_owned()));
+						.invalidate(&(removed_server.clone(), user_id));
 				})
 				.await;
 		}
@@ -277,7 +277,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 			self.room_members(room_id)
 				.ready_for_each(|user_id| {
 					self.server_visibility_cache
-						.invalidate(&(server.clone(), user_id.to_owned()));
+						.invalidate(&(server.clone(), user_id));
 				})
 				.await;
 		}
@@ -611,7 +611,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 
 	let leave_origin_server_ts = leave_pdu
 		.as_ref()
-		.map(|leave_pdu| leave_pdu.origin_server_ts().0.into());
+		.map(|leave_pdu| leave_pdu.origin_server_ts().0);
 	let preserve_newer_invite =
 		if let Some(leave_pdu) = leave_pdu.as_ref() {
 			self.left_state(user_id, room_id)
@@ -1104,7 +1104,7 @@ pub async fn update_caches_for_state_delta(
 					},
 					| Err(e) if e.is_not_found() => {
 						// The user has no member event in the new state at all.
-						users_to_mark_left.push(target_user_id.to_owned());
+						users_to_mark_left.push(target_user_id.clone());
 					},
 					| Err(e) => return Err(e),
 				}

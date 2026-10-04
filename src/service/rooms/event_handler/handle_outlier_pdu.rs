@@ -197,7 +197,7 @@ where
 					.get("sender")
 					.and_then(|v| v.as_str())
 					.and_then(|s| slipstream::UserId::parse(s).ok())
-					.map(|u| u.server_name().to_owned());
+					.map(|u| u.server_name());
 
 				let mut recovered = false;
 				if let Some(ref server) = sender_server {

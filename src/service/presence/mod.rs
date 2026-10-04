@@ -138,7 +138,7 @@ impl crate::Service for Service {
 							tokio::task::yield_now().await;
 						}
 						room_users
-							.entry(room_id.to_owned())
+							.entry(room_id.clone())
 							.or_default()
 							.push(user_id.clone());
 					}
@@ -154,7 +154,7 @@ impl crate::Service for Service {
 						if !self_flush.services.globals.server_is_ours(&server) {
 							let mut entry = self_flush
 								.pending_updates
-								.entry(server.to_owned())
+								.entry(server.clone())
 								.or_default();
 
 							for user_id in &user_ids {
@@ -422,7 +422,7 @@ impl Service {
 			}
 
 			if !self.services.globals.user_is_local(&user_id)
-				|| user_id == &self.services.globals.server_user
+				|| user_id == self.services.globals.server_user
 			{
 				continue;
 			}
@@ -438,7 +438,7 @@ impl Service {
 				continue;
 			}
 
-			let user_id = user_id.to_owned();
+			let user_id = user_id.clone();
 
 			presence.state = PresenceState::Offline;
 			presence.currently_active = false;
@@ -492,7 +492,7 @@ impl Service {
 			status_msg.clone_from(&presence.status_msg);
 		}
 
-		let new_state = match (&presence_state, last_active_ago.map(u64::from)) {
+		let new_state = match (&presence_state, last_active_ago) {
 			| (PresenceState::Online, Some(ago)) if ago >= self.idle_timeout =>
 				Some(PresenceState::Unavailable),
 			| (PresenceState::Unavailable, Some(ago)) if ago >= self.offline_timeout =>

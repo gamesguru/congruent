@@ -860,7 +860,7 @@ impl Service {
 				if count > since.1 {
 					break;
 				}
-				all_changes.entry(count).or_default().insert(user_id.into());
+				all_changes.entry(count).or_default().insert(user_id);
 			}
 		}
 
