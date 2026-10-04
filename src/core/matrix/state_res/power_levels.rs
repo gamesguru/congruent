@@ -20,7 +20,10 @@ where
 	D: Deserializer<'de>,
 {
 	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::serde::deserialize_v1_powerlevel(&value).map_err(D::Error::custom)
+	value
+		.as_i64()
+		.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+		.ok_or_else(|| D::Error::custom("expected power level"))
 }
 
 fn vec_deserialize_v1_powerlevel_values_serde<'de, D>(
@@ -37,8 +40,10 @@ where
 		.iter()
 		.map(|(user, value)| {
 			let user = OwnedUserId::from(user.as_str());
-			let level =
-				slipstream::serde::deserialize_v1_powerlevel(value).map_err(D::Error::custom)?;
+			let level = value
+				.as_i64()
+				.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+				.ok_or_else(|| D::Error::custom("expected power level"))?;
 			Ok((user, level))
 		})
 		.collect()

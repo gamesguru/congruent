@@ -377,7 +377,7 @@ where
 		if content
 			.membership
 			.as_ref()
-			.and_then(|m| m.deserialize_as().ok())
+			.and_then(|m| m.deserialize_as::<MembershipState>().ok())
 			.is_none()
 		{
 			warn!("no valid membership field found for m.room.member event content");
