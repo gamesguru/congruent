@@ -100,7 +100,7 @@ pub async fn notary_request(
 
 	let request = Request {
 		server_name: target.into(),
-		minimum_valid_until_ts: self.minimum_valid_ts(),
+		minimum_valid_until_ts: Some(self.minimum_valid_ts()),
 	};
 
 	let notary_response = self

@@ -200,10 +200,14 @@ pub(crate) async fn get_remote_server_keys_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_remote_server_keys::v2::Request>,
 ) -> Result<get_remote_server_keys::v2::Response> {
+	// Spec: if `minimum_valid_until_ts` is not supplied, the notary MUST use the
+	// current time.
+	let minimum_valid_until_ts = body
+		.minimum_valid_until_ts
+		.unwrap_or_else(MilliSecondsSinceUnixEpoch::now);
 	let server_key =
-		get_signing_keys_for(&services, &body.server_name, Some(body.minimum_valid_until_ts), &[
-		])
-		.await?;
+		get_signing_keys_for(&services, &body.server_name, Some(minimum_valid_until_ts), &[])
+			.await?;
 	let signed_key = sign_signing_keys(&services, &server_key).await?;
 
 	Ok(get_remote_server_keys::v2::Response { server_keys: vec![signed_key] })
