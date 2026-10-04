@@ -536,7 +536,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 				None,
 				&user_id,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&push_rules.to_json()?,
+				&push_rules.to_json(),
 			)
 			.await?;
 	}

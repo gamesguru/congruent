@@ -47,7 +47,7 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let redacted_because = reason
 		.to_format::<slipstream::serde::Raw<slipstream::events::AnyTimelineEvent>>()
-		.deserialize_as::<serde_json::Value>()
+		.deserialize_as::<slipstream::json::Value>()
 		.unwrap_or_else(|_| reason.to_value());
 
 	pdu.redact(&room_version, redacted_because)?;

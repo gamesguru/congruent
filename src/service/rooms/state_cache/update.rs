@@ -5,6 +5,7 @@ use database::{Batch, Json, serialize_key};
 use futures::{StreamExt, TryStreamExt};
 use slipstream::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
+	codec::Serialize,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType,
 		StateEventType, TimelineEventType,
@@ -111,8 +112,7 @@ pub async fn update_membership(
 									None,
 									user_id,
 									GlobalAccountDataEventType::Direct.to_string().into(),
-									&serde_json::to_value(&direct_event)
-										.expect("to json always works"),
+									&direct_event.to_json(),
 								)
 								.await?;
 						}

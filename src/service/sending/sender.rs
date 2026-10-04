@@ -924,8 +924,7 @@ impl Service {
 		let receipt_content = Edu::Receipt(ReceiptContent { receipts });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &receipt_content)
-			.expect("Failed to serialize Receipt EDU to JSON vec");
+		buf.put_slice(slipstream::codec::to_string(&receipt_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -965,9 +964,9 @@ impl Service {
 				break;
 			}
 			if self.services.globals.user_is_local(&user_id) {
-				let Ok(event) =
-					serde_json::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.json().get())
-				else {
+				let Ok(event) = slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(
+					read_receipt.json().get(),
+				) else {
 					continue;
 				};
 				let AnySyncEphemeralRoomEvent::Receipt(receipt) = event else {
@@ -1101,8 +1100,7 @@ impl Service {
 		let presence_content = Edu::Presence(PresenceContent { push: presence_updates });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &presence_content)
-			.expect("failed to serialize Presence EDU to JSON");
+		buf.put_slice(slipstream::codec::to_string(&presence_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -1540,8 +1538,7 @@ pub(crate) fn build_device_list_edus(
 					});
 
 					let mut buf = EduBuf::new();
-					serde_json::to_writer(&mut buf, &edu)
-						.expect("failed to serialize device list update to JSON");
+					buf.put_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 					events.push(buf);
 				}
@@ -1574,8 +1571,7 @@ pub(crate) fn build_device_list_edus(
 				});
 
 				let mut buf = EduBuf::new();
-				serde_json::to_writer(&mut buf, &edu)
-					.expect("failed to serialize device list update to JSON");
+				buf.put_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 				events.push(buf);
 			}
@@ -1611,7 +1607,8 @@ pub(crate) fn build_receipt_map(
 			continue;
 		}
 
-		let Ok(event) = serde_json::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
+		let Ok(event) =
+			slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
 		else {
 			continue;
 		};

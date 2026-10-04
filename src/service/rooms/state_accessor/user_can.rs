@@ -46,7 +46,8 @@ pub async fn user_can_redact(
 		.room_state_get(room_id, &StateEventType::RoomCreate, "")
 		.await?;
 	let create_content: RoomCreateEventContent =
-		serde_json::from_str(room_create.content().get())?;
+		slipstream::codec::from_str(room_create.content().get())
+			.map_err(|e| err!(Database("Failed to decode room create content: {e}")))?;
 	let room_features = RoomVersion::new(&create_content.room_version)?;
 	if room_features.explicitly_privilege_room_creators {
 		let sender_owned = sender.to_owned();
