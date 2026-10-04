@@ -15,7 +15,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
 use slipstream::{
-	OwnedEventId, OwnedUserId, RoomId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
@@ -1744,8 +1744,7 @@ const FIXED_LOCAL_INVITE_STATE_MARKER: &str = "fix_local_invite_state";
 async fn fix_local_invite_state(services: &Services) -> Result {
 	// Clean up the effects of !1249 by caching stripped state for invites
 
-	type KeyVal<'a> = (Key<'a>, Raw<Vec<AnyStrippedStateEvent>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type KeyVal = ((OwnedUserId, OwnedRoomId), Raw<Vec<AnyStrippedStateEvent>>);
 
 	let db = &services.db;
 	let cork = db.cork_and_sync();
@@ -1754,8 +1753,8 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 	// for each user invited to a room
 	let fixed =  userroomid_invitestate.stream()
 		// if they're a local user on this homeserver
-		.try_filter(|((user_id, _), _): &KeyVal<'_>| ready(services.globals.user_is_local(user_id)))
-		.and_then(async |((user_id, room_id), stripped_state): KeyVal<'_>| Ok::<_,
+		.try_filter(|((user_id, _), _): &KeyVal| ready(services.globals.user_is_local(user_id)))
+		.and_then(async |((user_id, room_id), stripped_state): KeyVal| Ok::<_,
 			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize
 		().unwrap_or_else(|e| {
 			trace!("Failed to deserialize: {:?}", stripped_state.json());
