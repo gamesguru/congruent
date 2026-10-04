@@ -122,7 +122,10 @@ pub(super) async fn auth(
 		}
 	}
 
-	let authentication = if request.parts.uri.path().contains("/login") {
+	let authentication = if matches!(
+		request.parts.uri.path(),
+		"/_matrix/client/r0/login" | "/_matrix/client/v3/login"
+	) {
 		AuthScheme::None
 	} else {
 		metadata.authentication
