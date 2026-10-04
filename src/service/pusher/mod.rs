@@ -300,7 +300,9 @@ impl Service {
 	{
 		let mut notify = None;
 		let mut tweaks = Vec::new();
-		let room_id = event.room_id_or_hash().expect("event has a room ID");
+		let Some(room_id) = event.room_id_or_hash() else {
+			return Err!(Request(InvalidParam("Event has no room ID")));
+		};
 
 		let power_levels: RoomPowerLevelsEventContent = self
 			.services
@@ -444,6 +446,9 @@ impl Service {
 
 				let d = vec![device];
 				let mut notify = Notification::new(d);
+				let Some(room_id) = event.room_id_or_hash() else {
+					return Err!(Request(InvalidParam("Event has no room ID")));
+				};
 
 				notify.event_id = Some(event.event_id().to_owned());
 				notify.room_id = Some(room_id.clone());
@@ -482,13 +487,7 @@ impl Service {
 					notify.sender_display_name =
 						self.services.users.displayname(event.sender()).await.ok();
 
-					let notice_room_id = event.room_id_or_hash().as_ref().expect("has room ID");
-					notify.room_name = self
-						.services
-						.state_accessor
-						.get_name(&notice_room_id)
-						.await
-						.ok();
+					notify.room_name = self.services.state_accessor.get_name(&room_id).await.ok();
 
 					notify.room_alias = self
 						.services

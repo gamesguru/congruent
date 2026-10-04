@@ -473,7 +473,9 @@ impl Service {
 			return Ok(());
 		};
 
-		let room_id = pdu.room_id_or_hash().expect("event has a room ID");
+		let Some(room_id) = pdu.room_id_or_hash() else {
+			return Err!(Request(BadJson("Reply event has no room ID")));
+		};
 		let response_sender = if self.is_admin_room(&room_id).await {
 			&self.services.globals.server_user
 		} else {
