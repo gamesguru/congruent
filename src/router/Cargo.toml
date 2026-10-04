@@ -103,6 +103,7 @@ conduwuit-core.workspace = true
 conduwuit-macros.workspace = true
 conduwuit-service.workspace = true
 conduwuit-web.workspace = true
+slipstream.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 futures.workspace = true

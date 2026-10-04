@@ -101,6 +101,7 @@ tracing-subscriber.workspace = true
 tracing.workspace = true
 regex.workspace = true
 rezzy.workspace = true
+slipstream.workspace = true
 
 [dev-dependencies]
 figment.workspace = true
