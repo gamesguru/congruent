@@ -86,12 +86,21 @@ pub trait Event: Clone + Debug {
 	}
 
 	#[inline]
-	fn get_content<T>(&self) -> Result<T>
+	fn get_content_serde<T>(&self) -> Result<T>
 	where
 		for<'de> T: Deserialize<'de>,
 		Self: Sized,
 	{
 		content::get::<T, _>(self)
+	}
+
+	#[inline]
+	fn get_content<T>(&self) -> Result<T>
+	where
+		T: slipstream::codec::Deserialize,
+		Self: Sized,
+	{
+		content::get_codec::<T, _>(self)
 	}
 
 	#[inline]

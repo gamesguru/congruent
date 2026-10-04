@@ -4,7 +4,7 @@ use slipstream::{RoomVersionId, canonical_json::redact_content_in_place};
 use crate::{Error, Result, err, implement};
 
 #[implement(super::Pdu)]
-pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: JsonValue) -> Result {
+pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: &JsonValue) -> Result {
 	self.unsigned = None;
 
 	let content = slipstream::canonical_json::from_json_str(self.content.get())

@@ -30,7 +30,7 @@ struct ExtractRelType {
 impl<E: Event> RelationTypeEqual<E> for RelationType {
 	fn relation_type_equal(&self, event: &E) -> bool {
 		event
-			.get_content()
+			.get_content_serde()
 			.map(|c: ExtractRelatesToEventId| c.relates_to.rel_type)
 			.is_ok_and(|r| r == *self)
 	}

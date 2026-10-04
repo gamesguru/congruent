@@ -64,7 +64,7 @@ impl crate::Server {
 	#[inline]
 	pub fn supported_room_versions(&self) -> impl Iterator<Item = RoomVersionId> + '_ {
 		Self::available_room_versions()
-			.filter(|(_, stability)| self.supported_stability(stability))
+			.filter(|(_, stability)| self.supported_stability(*stability))
 			.map(at!(0))
 	}
 
@@ -74,8 +74,8 @@ impl crate::Server {
 	}
 
 	#[inline]
-	fn supported_stability(&self, stability: &RoomVersionStability) -> bool {
-		self.config.allow_unstable_room_versions || *stability == RoomVersionStability::Stable
+	fn supported_stability(&self, stability: RoomVersionStability) -> bool {
+		self.config.allow_unstable_room_versions || stability == RoomVersionStability::Stable
 	}
 }
 

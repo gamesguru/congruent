@@ -69,6 +69,7 @@ where
 	Serialize::serialize(&json, serializer)
 }
 
+#[allow(clippy::ref_option)]
 fn serialize_codec_opt<S, T>(value: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
 where
 	S: serde::Serializer,
@@ -170,7 +171,7 @@ impl Pdu {
 			slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 		);
 		let mut pdu: Self = serde_json::from_str(&slipstream::codec::to_string(&json))?;
-		pdu.event_id = event_id.to_owned();
+		event_id.clone_into(&mut pdu.event_id);
 
 		if pdu.kind.to_string().chars().count() > 255 {
 			return Err(crate::err!(Request(InvalidParam("Event type is too long"))));
