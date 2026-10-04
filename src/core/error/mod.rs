@@ -96,6 +96,8 @@ pub enum Error {
 	BadServerResponse(Cow<'static, str>),
 	#[error(transparent)]
 	CanonicalJson(#[from] slipstream::CanonicalJsonError),
+	#[error(transparent)]
+	DeserializeError(#[from] slipstream::codec::DeError),
 	#[error("There was a problem with the '{0}' directive in your configuration: {1}")]
 	Config(&'static str, Cow<'static, str>),
 	#[error("Conflict: {0}")]

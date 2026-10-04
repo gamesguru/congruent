@@ -191,27 +191,30 @@ pub async fn backfill_if_required(
 		}
 	}
 
-	let room_mods = users.iter().filter_map(|(user_id, level)| {
-		let remote_powered =
-			level > &power_levels.users_default && !self.services.globals.user_is_local(user_id);
-		let creator = if room_version.explicitly_privilege_room_creators {
-			create_event.sender() == user_id
-				|| create_event_content
-					.additional_creators
-					.as_ref()
-					.is_some_and(|c| c.contains(user_id))
-		} else {
-			false
-		};
+	let room_mods: Vec<slipstream::OwnedServerName> = users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			let remote_powered = level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id);
+			let creator = if room_version.explicitly_privilege_room_creators {
+				create_event.sender() == user_id
+					|| create_event_content
+						.additional_creators
+						.as_ref()
+						.is_some_and(|c| c.contains(user_id))
+			} else {
+				false
+			};
 
-		if remote_powered || creator {
-			debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
-			Some(user_id.server_name())
-		} else {
-			debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
-			None
-		}
-	});
+			if remote_powered || creator {
+				debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
+				Some(user_id.server_name())
+			} else {
+				debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
+				None
+			}
+		})
+		.collect();
 
 	// Iterative backfill loop: after each successful /backfill response, re-scan
 	// for new backward extremities created by the newly inserted events'
@@ -375,7 +378,7 @@ pub async fn backfill_if_required(
 		);
 
 		let mut servers = self
-			.get_backfill_servers(room_id, room_mods.clone())
+			.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
 			.await
 			.boxed();
 		let mut federated_room = false;
@@ -684,15 +687,24 @@ async fn get_remote_pdu_limited(
 		.await
 		.unwrap_or_default();
 
-	let room_mods = power_levels.users.iter().filter_map(|(user_id, level)| {
-		if level > &power_levels.users_default && !self.services.globals.user_is_local(user_id) {
-			Some(user_id.server_name())
-		} else {
-			None
-		}
-	});
+	let room_mods: Vec<slipstream::OwnedServerName> = power_levels
+		.users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			if level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id)
+			{
+				Some(user_id.server_name())
+			} else {
+				None
+			}
+		})
+		.collect();
 
-	let mut servers = self.get_backfill_servers(room_id, room_mods).await.boxed();
+	let mut servers = self
+		.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
+		.await
+		.boxed();
 
 	while let Some(ref backfill_server) = servers.next().await {
 		info!("Asking {backfill_server} for event {}", event_id);

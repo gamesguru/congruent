@@ -1253,8 +1253,8 @@ impl Data {
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(slipstream::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = slipstream::UInt::try_from(i64::from(*ts)) {
+		if let Some(ts) = json.get("origin_server_ts").and_then(|v| v.as_i64()) {
+			if let Ok(ts) = slipstream::UInt::try_from(ts) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
@@ -1419,8 +1419,8 @@ impl Data {
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(slipstream::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = slipstream::UInt::try_from(i64::from(*ts)) {
+		if let Some(ts) = json.get("origin_server_ts").and_then(|v| v.as_i64()) {
+			if let Ok(ts) = slipstream::UInt::try_from(ts) {
 				let ts_key =
 					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);

@@ -2320,6 +2320,101 @@ mod tests {
 		assert_eq!(DATABASE_VERSION, 24);
 	}
 
+	#[test]
+	fn legacy_event_metadata_v20_bincode_round_trips() {
+		let original = EventMetadataV20 {
+			short_room_id: 7,
+			is_outlier: false,
+			origin_server_ts: 42,
+			depth: 11,
+			status: EventStatusV20::Pending,
+			redacted_by: Some(OwnedEventId::parse("$legacy:event").unwrap()),
+			short_state_hash: Some(9),
+			deprecated_local_topo_depth: 3,
+			pdu_count: Some(2),
+		};
+		let bytes = bincode::serialize(&original).unwrap();
+		let decoded: EventMetadataV20 = bincode::deserialize(&bytes).unwrap();
+		assert_eq!(decoded.redacted_by, original.redacted_by);
+		assert_eq!(decoded.short_room_id, original.short_room_id);
+		assert_eq!(decoded.pdu_count, original.pdu_count);
+	}
+
+	#[test]
+	fn legacy_event_metadata_v18_v19_decode_string_event_ids() {
+		#[derive(serde::Serialize)]
+		struct V18 {
+			short_room_id: u64,
+			is_outlier: bool,
+			origin_server_ts: u64,
+			depth: u64,
+			soft_failed: bool,
+			rejected: bool,
+			redacted_by: Option<String>,
+			short_state_hash: Option<u64>,
+		}
+		#[derive(serde::Serialize)]
+		struct V19 {
+			short_room_id: u64,
+			is_outlier: bool,
+			origin_server_ts: u64,
+			depth: u64,
+			soft_failed: bool,
+			rejected: bool,
+			redacted_by: Option<String>,
+			short_state_hash: Option<u64>,
+			deprecated_local_topo_depth: u64,
+			pdu_count: Option<u64>,
+			_soft_fail_reason: String,
+			_rejection_reason: String,
+		}
+
+		let id = Some("$legacy:event".to_owned());
+		let v18 = bincode::serialize(&V18 {
+			short_room_id: 1,
+			is_outlier: false,
+			origin_server_ts: 2,
+			depth: 3,
+			soft_failed: false,
+			rejected: false,
+			redacted_by: id.clone(),
+			short_state_hash: None,
+		})
+		.unwrap();
+		let v19 = bincode::serialize(&V19 {
+			short_room_id: 1,
+			is_outlier: false,
+			origin_server_ts: 2,
+			depth: 3,
+			soft_failed: false,
+			rejected: false,
+			redacted_by: id,
+			short_state_hash: None,
+			deprecated_local_topo_depth: 0,
+			pdu_count: None,
+			_soft_fail_reason: String::new(),
+			_rejection_reason: String::new(),
+		})
+		.unwrap();
+
+		assert_eq!(
+			bincode::deserialize::<EventMetadataV18>(&v18)
+				.unwrap()
+				.redacted_by
+				.unwrap()
+				.as_str(),
+			"$legacy:event"
+		);
+		assert_eq!(
+			bincode::deserialize::<EventMetadataV19>(&v19)
+				.unwrap()
+				.redacted_by
+				.unwrap()
+				.as_str(),
+			"$legacy:event"
+		);
+	}
+
 	fn diff(parent: Option<u64>, added: &[u64], removed: &[u64]) -> StateDiff {
 		let key = |n: u64| {
 			let mut k = [0_u8; 16];

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use conduwuit::{
 	Err, Result, debug, debug_info, err,
-	utils::{ReadyExt, str_from_bytes, stream::TryIgnore, string_from_bytes},
+	utils::{ReadyExt, stream::TryIgnore, string::str_from_bytes, string_from_bytes},
 };
 use database::{Database, Interfix, Map};
 use futures::StreamExt;

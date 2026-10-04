@@ -401,7 +401,7 @@ impl Data {
 
 				let user_id_bytes = &key[count_end.saturating_add(1)..];
 				let user_id_str = conduwuit::utils::str_from_bytes(user_id_bytes)?;
-				let user_id = <&UserId>::try_from(user_id_str)
+				let user_id = OwnedUserId::parse(user_id_str)
 					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?
 					.to_owned();
 

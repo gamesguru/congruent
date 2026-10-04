@@ -304,7 +304,7 @@ fn parse_servercurrentevent(key: &[u8], value: &[u8]) -> Result<(Destination, Se
 		let mut parts = key[1..].splitn(3, |&b| b == 0xFF);
 
 		let user = parts.next().expect("splitn always returns one element");
-		let user_string = utils::str_from_bytes(user)
+		let user_string = utils::string::str_from_bytes(user)
 			.map_err(|_| Error::bad_database("Invalid user string in servercurrentevent"))?;
 		let user_id = UserId::parse(user_string)
 			.map_err(|_| Error::bad_database("Invalid user id in servercurrentevent"))?;

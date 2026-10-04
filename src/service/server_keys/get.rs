@@ -31,13 +31,10 @@ pub async fn get_event_keys(
 	// to prevent bypassing the expiry check via crafted events.
 	let origin_server_ts = object
 		.get("origin_server_ts")
-		.and_then(|v| match v {
-			| slipstream::CanonicalJsonValue::Integer(ts) => {
-				let uint = slipstream::UInt::new(u64::try_from(i128::from(*ts)).ok()?)?;
-				Some(MilliSecondsSinceUnixEpoch(uint))
-			},
-			| _ => None,
-		})
+		.and_then(|v| v.as_i64())
+		.and_then(|ts| u64::try_from(ts).ok())
+		.map(slipstream::UInt)
+		.map(MilliSecondsSinceUnixEpoch)
 		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;
 
 	let mut keys = PubKeyMap::new();
@@ -49,7 +46,7 @@ pub async fn get_event_keys(
 				origin_server_ts,
 			)
 			.await;
-		keys.insert(server.to_string(), pubkeys);
+		keys.insert(server.to_owned(), pubkeys);
 	}
 
 	Ok(keys)

@@ -209,8 +209,7 @@ fn derive_room_id(
 ) -> Option<OwnedRoomId> {
 	pdu.get("room_id")
 		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| <&RoomId>::try_from(r).ok())
-		.map(ToOwned::to_owned)
+		.and_then(|r| OwnedRoomId::parse(r).ok())
 		.or_else(|| room_id.map(ToOwned::to_owned))
 		.or_else(|| {
 			let is_create =

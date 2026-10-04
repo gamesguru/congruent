@@ -237,7 +237,7 @@ pub fn server_rooms<'a>(
 		.keys_prefix(&prefix)
 		.ignore_err()
 		.map(|(_, room_id): (Ignore, &RoomId)| room_id)
-		.ready_filter(|room_id| <&RoomId>::try_from(room_id.as_str()).is_ok())
+		.ready_filter(|room_id| RoomId::parse(room_id.as_str()).is_ok())
 }
 
 /// Expose raw keys for the clean_corrupt_rooms command

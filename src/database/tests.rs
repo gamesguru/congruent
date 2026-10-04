@@ -4,7 +4,7 @@ use std::fmt::Debug;
 
 use conduwuit::{
 	arrayvec::ArrayVec,
-	slipstream::{EventId, RoomId, UserId, serde::Raw},
+	slipstream::{EventId, OwnedRoomId, OwnedUserId, RoomId, UserId, serde::Raw},
 };
 use serde::Serialize;
 
@@ -165,15 +165,15 @@ async fn recursive_multi_get_traversal() {
 
 #[test]
 fn ser_str() {
-	let user_id: &UserId = "@user:example.com".try_into().unwrap();
+	let user_id = "@user:example.com".parse::<OwnedUserId>().unwrap();
 	let s = serialize_to_vec(&user_id).expect("failed to serialize user_id");
 	assert_eq!(&s, user_id.as_bytes());
 }
 
 #[test]
 fn ser_tuple() {
-	let user_id: &UserId = "@user:example.com".try_into().unwrap();
-	let room_id: &RoomId = "!room:example.com".try_into().unwrap();
+	let user_id = "@user:example.com".parse::<OwnedUserId>().unwrap();
+	let room_id = "!room:example.com".parse::<OwnedRoomId>().unwrap();
 
 	let mut a = user_id.as_bytes().to_vec();
 	a.push(0xFF);

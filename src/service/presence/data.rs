@@ -209,7 +209,7 @@ fn presenceid_parse(key: &[u8]) -> Result<(u64, &UserId)> {
 
 /// Parses a `UserId` from bytes.
 fn user_id_from_bytes(bytes: &[u8]) -> Result<&UserId> {
-	let str: &str = utils::str_from_bytes(bytes)?;
+	let str: &str = utils::string::str_from_bytes(bytes)?;
 	let user_id: &UserId = str.try_into()?;
 
 	Ok(user_id)
