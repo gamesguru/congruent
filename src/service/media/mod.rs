@@ -187,7 +187,7 @@ impl Service {
 		let mut deletion_count: usize = 0;
 
 		for mxc in mxcs {
-			let Ok(mxc) = mxc.as_str().try_into().inspect_err(|e| {
+			let Ok(mxc) = mxc.as_str().parse().inspect_err(|e| {
 				debug_error!(%mxc, "Failed to parse MXC URI from database: {e}");
 			}) else {
 				continue;
@@ -366,7 +366,7 @@ impl Service {
 		let mut deletion_count: usize = 0;
 
 		for mxc in remote_mxcs {
-			let Ok(mxc) = mxc.as_str().try_into() else {
+			let Ok(mxc) = mxc.as_str().parse() else {
 				debug_warn!("Invalid MXC in database, skipping");
 				continue;
 			};

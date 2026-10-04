@@ -236,7 +236,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 
 			removed_servers.push(old_joined_server.to_owned());
 			// Server not in room anymore
-			let roomserver_id = (room_id, old_joined_server);
+			let roomserver_id = (room_id, old_joined_server.clone());
 			let serverroom_id = (old_joined_server, room_id);
 
 			self.db.roomserverids.del(roomserver_id);

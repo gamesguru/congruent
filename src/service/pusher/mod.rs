@@ -300,7 +300,7 @@ impl Service {
 	{
 		let mut notify = None;
 		let mut tweaks = Vec::new();
-		let room_id = event.room_id_or_hash();
+		let room_id = event.room_id_or_hash().expect("event has a room ID");
 
 		let power_levels: RoomPowerLevelsEventContent = self
 			.services
@@ -446,7 +446,7 @@ impl Service {
 				let mut notify = Notification::new(d);
 
 				notify.event_id = Some(event.event_id().to_owned());
-				notify.room_id = event.room_id_or_hash();
+				notify.room_id = Some(room_id.clone());
 				if http
 					.data
 					.get("org.matrix.msc4076.disable_badge_count")
