@@ -122,6 +122,8 @@ pub enum Error {
 	Mxc(#[from] slipstream::MxcUriError),
 	#[error(transparent)]
 	Mxid(#[from] slipstream::IdParseError),
+	#[error(transparent)]
+	MatrixIdParse(#[from] slipstream::MatrixIdParseError),
 	#[error("from {0}: {1}")]
 	Redaction(slipstream::OwnedServerName, slipstream::canonical_json::RedactionError),
 	#[error("{0}: {1}")]

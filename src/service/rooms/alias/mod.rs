@@ -271,7 +271,11 @@ impl Service {
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn resolve_local_alias(&self, alias: &RoomAliasId) -> Result<OwnedRoomId> {
-		self.db.alias_roomid.get(alias.alias()).await.deserialized()
+		self.db
+			.alias_roomid
+			.get(alias.as_str())
+			.await
+			.deserialized()
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]

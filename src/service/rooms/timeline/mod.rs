@@ -48,7 +48,7 @@ use slipstream::{
 
 // Update Relationships
 struct ExtractRelatesTo {
-	#[serde(rename = "m.relates_to")]
+	// JSON key: `m.relates_to`
 	relates_to: Relation,
 }
 
@@ -58,7 +58,7 @@ struct ExtractEventId {
 }
 #[derive(Clone, Debug)]
 struct ExtractRelatesToEventId {
-	#[serde(rename = "m.relates_to")]
+	// JSON key: `m.relates_to`
 	relates_to: ExtractEventId,
 }
 
@@ -76,8 +76,8 @@ pub(crate) struct Msc2836Relationship {
 
 #[derive(Debug)]
 pub(crate) struct ExtractMsc2836Relationship {
-	#[serde(rename = "m.relationship")]
-	pub(crate) relationship: Option<Msc2836Relationship>,
+	// JSON key: `m.relationship`
+	relationship: Option<Msc2836Relationship>,
 }
 
 impl CodecDeserialize for ExtractRelatesTo {

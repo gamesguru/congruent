@@ -210,7 +210,7 @@ impl Service {
 				body: "Output was too large to send as text.".to_owned(),
 				formatted: None,
 				filename: Some("output.md".to_owned()),
-				source: MediaSource::Plain(file),
+				source: MediaSource::Plain(file.to_string()),
 				info: Some(metadata),
 			};
 			RoomMessageEventContent::new(MessageType::File(content))

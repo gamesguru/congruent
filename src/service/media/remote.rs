@@ -8,17 +8,16 @@ use http::{
 	StatusCode,
 	header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue},
 };
-use ruma::{
-	Mxc, ServerName, UserId,
+use slipstream::{
+	Mxc, OwnedServerName, OwnedUserId, ServerName, UserId,
 	api::{
-		OutgoingRequest,
 		client::{
 			error::ErrorKind::{Forbidden, NotFound, Unauthorized, Unrecognized},
 			media,
 		},
-		federation,
 		federation::authenticated_media::{Content, FileOrLocation},
 	},
+	endpoint::OutgoingRequest,
 };
 
 use super::{Dim, FileMeta};
@@ -84,8 +83,13 @@ fn should_fallback_to_unauthenticated(
 	allow_broad_fallback: bool,
 ) -> bool {
 	match result {
-		| Err(Error::Request(Unrecognized | NotFound | Forbidden { .. } | Unauthorized, ..)) =>
-			true,
+		| Err(Error::Request(
+			ErrorKind::Unrecognized
+			| ErrorKind::NotFound
+			| ErrorKind::Forbidden { .. }
+			| ErrorKind::Unauthorized,
+			..,
+		)) => true,
 		| Err(error) if allow_broad_fallback =>
 			error.status_code().is_server_error()
 				|| matches!(

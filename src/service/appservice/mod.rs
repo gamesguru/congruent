@@ -153,7 +153,8 @@ impl Service {
 		let appservice_user_id = UserId::parse_with_server_name(
 			registration.sender_localpart.as_str(),
 			self.services.globals.server_name(),
-		)?;
+		)
+		.map_err(|e| err!(Request(InvalidParam("Invalid appservice user ID: {e}"))))?;
 
 		if !self.services.users.exists(&appservice_user_id).await {
 			self.services

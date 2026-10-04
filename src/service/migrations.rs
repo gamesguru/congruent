@@ -2713,7 +2713,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 				services.db["state_hamt_root_lattices"]
 					.insert(&root_handle.structural_hash, lattice.to_bytes());
 				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
-				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
+				services.db["roomid_roothandle"].insert(room_id.as_str().as_bytes(), &data);
 			},
 		}
 	}

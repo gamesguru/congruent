@@ -765,7 +765,9 @@ impl Service {
 		_mutex_lock: &RoomMutexGuard,
 	) {
 		let data = root_handle_to_bytes(root_handle);
-		self.db.roomid_roothandle.insert(room_id.as_bytes(), &data);
+		self.db
+			.roomid_roothandle
+			.insert(room_id.as_str().as_bytes(), &data);
 	}
 
 	/// Returns the room's current HAMT RootHandle.
