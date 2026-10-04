@@ -87,7 +87,6 @@ key_leaf!(
 	[u8],
 	[u32],
 	[u64],
-	Vec<u8>,
 	bool,
 	u8,
 	u16,
@@ -107,7 +106,6 @@ key_leaf!(
 );
 de_leaf!(
 	String,
-	Vec<u8>,
 	bool,
 	u8,
 	u16,
@@ -189,7 +187,7 @@ impl<'a, T: Deserialize<'a>> DbDe<'a> for Vec<T> {
 	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
 }
 
-impl<T: Serialize> DbKey for BTreeSet<T> {
+impl<T: Serialize + Ord> DbKey for BTreeSet<T> {
 	type Ser<'a>
 		= &'a Self
 	where
@@ -198,7 +196,7 @@ impl<T: Serialize> DbKey for BTreeSet<T> {
 	fn db_ser(&self) -> Self::Ser<'_> { self }
 }
 
-impl<'a, T: Deserialize<'a>> DbDe<'a> for BTreeSet<T> {
+impl<'a, T: Deserialize<'a> + Ord> DbDe<'a> for BTreeSet<T> {
 	type De = Self;
 
 	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }

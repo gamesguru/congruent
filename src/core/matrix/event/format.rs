@@ -91,7 +91,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			"content": content,
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"room_id": event.room_id().map(slipstream::OwnedRoomId::as_str),
+			"room_id": event.room_id().map(OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"type": event.kind().to_string(),
 		});
@@ -215,7 +215,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"redacts": event.redacts().map(slipstream::OwnedEventId::as_str),
-			"room_id": event.room_id().map(slipstream::OwnedRoomId::as_str),
+			"room_id": event.room_id().map(OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
 			"type": event.kind().to_string(),
