@@ -16,8 +16,9 @@ use futures::{
 	Stream, StreamExt,
 	stream::{self},
 };
-use serde::Deserialize;
-use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
+use slipstream::{
+	EventId, OwnedEventId, RoomId, RoomVersionId, codec::Deserialize, events::StateEventType,
+};
 
 use crate::{Dep, globals};
 
@@ -404,27 +405,28 @@ pub async fn get_shortstatekey(
 #[implement(Service)]
 pub async fn get_eventid_from_short<Id>(&self, shorteventid: ShortEventId) -> Result<Id>
 where
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
+	Id: Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	const BUFSIZE: usize = size_of::<ShortEventId>();
 
 	if let Some(cached) = self.shorteventid_eventid_cache.get(&shorteventid) {
-		let s = serde_json::to_vec(&cached)
+		let s = slipstream::codec::to_string(cached)
 			.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))?;
-		return serde_json::from_slice::<Id>(&s)
+		return slipstream::codec::from_str::<Id>(&s)
 			.map_err(|e| err!(Database("Failed to deserialize EventId from cache: {e:?}")));
 	}
 
-	let res: Id = self
+	let handle = self
 		.db
 		.shorteventid_eventid
 		.aqry::<BUFSIZE, _>(&shorteventid)
-		.await
-		.deserialized()
-		.map_err(|e| {
-			err!(Database("Failed to find EventId from short {shorteventid:?}: {e:?}"))
-		})?;
+		.await?;
+	let bytes = handle.as_ref();
+	let event_id_str = str_from_bytes(bytes)?;
+	let res = Id::from_json(&slipstream::json::Value::parse(event_id_str)?).map_err(|e| {
+		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
+	})?;
 
 	let owned = res.to_owned();
 	let event_id: &EventId = owned.borrow();

@@ -17,7 +17,7 @@ pub async fn room_state_get_content<T>(
 	state_key: &str,
 ) -> Result<T>
 where
-	T: for<'de> Deserialize<'de>,
+	T: Deserialize,
 {
 	self.room_state_get(room_id, event_type, state_key)
 		.await

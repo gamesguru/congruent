@@ -251,6 +251,25 @@ impl<'a, T: codec::Deserialize> DbDe<'a> for Json<T> {
 	}
 }
 
+/// Raw Slipstream JSON values are stored directly as their UTF-8 JSON bytes.
+impl<T> DbKey for slipstream::serde::Raw<T> {
+	type Ser<'a>
+		= RawBytes
+	where
+		Self: 'a;
+
+	fn db_ser(&self) -> Self::Ser<'_> { RawBytes(self.0.as_bytes().to_vec()) }
+}
+
+impl<'a, T> DbDe<'a> for slipstream::serde::Raw<T> {
+	type De = RawBytesDe<'a>;
+
+	fn from_de(de: Self::De) -> Result<Self> {
+		let text = std::str::from_utf8(de.0).map_err(|e| Error::SerdeDe(e.to_string().into()))?;
+		Ok(Self(text.to_owned(), core::marker::PhantomData))
+	}
+}
+
 /// Identifiers are stored as their plain string form.
 macro_rules! id_impls {
 	($($t:ty),* $(,)?) => {$(
