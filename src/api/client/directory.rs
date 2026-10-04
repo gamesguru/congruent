@@ -332,9 +332,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 
 	all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
-	let total_room_count_estimate = UInt::try_from(all_rooms.len())
-		.unwrap_or_else(|_| uint!(0))
-		.into();
+	let total_room_count_estimate = UInt::try_from(all_rooms.len()).unwrap_or(uint!(0)).into();
 
 	let chunk: Vec<_> = all_rooms.into_iter().skip(num_since).take(limit).collect();
 
@@ -465,7 +463,7 @@ async fn public_rooms_chunk(services: &Services, room_id: OwnedRoomId) -> Public
 			.map(TryInto::try_into)
 			.map(Result::ok)
 			.flat_ok()
-			.unwrap_or_else(|| uint!(0)),
+			.unwrap_or(uint!(0)),
 		room_id,
 		room_type,
 		topic,

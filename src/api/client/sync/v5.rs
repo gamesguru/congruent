@@ -1501,7 +1501,7 @@ where
 					.await
 					.unwrap_or(0)
 					.try_into()
-					.unwrap_or_else(|_| uint!(0)),
+					.unwrap_or(uint!(0)),
 			),
 			invited_count: Some(
 				services
@@ -1511,7 +1511,7 @@ where
 					.await
 					.unwrap_or(0)
 					.try_into()
-					.unwrap_or_else(|_| uint!(0)),
+					.unwrap_or(uint!(0)),
 			),
 			num_live,
 			bump_stamp: timestamp,

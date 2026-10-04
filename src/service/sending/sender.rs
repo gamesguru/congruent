@@ -1052,10 +1052,7 @@ impl Service {
 				presence: presence_event.content.presence,
 				currently_active: presence_event.content.currently_active.unwrap_or(false),
 				status_msg: presence_event.content.status_msg,
-				last_active_ago: presence_event
-					.content
-					.last_active_ago
-					.unwrap_or_else(|| uint!(0)),
+				last_active_ago: presence_event.content.last_active_ago.unwrap_or(uint!(0)),
 			};
 
 			presence_updates.push(update);
@@ -1522,7 +1519,7 @@ pub(crate) fn build_device_list_edus(
 						user_id: user_id.clone(),
 						device_id: device_id.clone(),
 						device_display_name: Some("Placeholder".to_owned()),
-						stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+						stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 						prev_id: Vec::new(),
 						deleted: None,
 						keys: None,
@@ -1555,7 +1552,7 @@ pub(crate) fn build_device_list_edus(
 					user_id,
 					device_id: device_id!("placeholder").to_owned(),
 					device_display_name: Some("Placeholder".to_owned()),
-					stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+					stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 					prev_id: Vec::new(),
 					deleted: None,
 					keys: None,

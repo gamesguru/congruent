@@ -365,7 +365,7 @@ impl Service {
 			.await
 			.unwrap_or(1)
 			.try_into()
-			.unwrap_or_else(|_| uint!(0));
+			.unwrap_or(uint!(0));
 
 		let user_display_name = self
 			.services
