@@ -77,8 +77,8 @@ mod tests {
 		})
 		.to_string();
 
-		let value: CanonicalJsonObject = serde_json::from_str(&raw_json).unwrap();
-		let (eid, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+		let value: CanonicalJsonObject = slipstream::codec::from_str(&raw_json).unwrap();
+		let (eid, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();
 
 		assert_eq!(eid.as_str(), "$test_event");
 		assert!(!clean_val.contains_key("__shortstatehash"));
@@ -92,7 +92,7 @@ mod tests {
 		let version = RoomVersionId::parse("12").unwrap();
 
 		let make_value = || {
-			serde_json::from_value::<CanonicalJsonObject>(json!({
+			slipstream::codec::from_str::<CanonicalJsonObject>(&json!({
 				"type": "m.room.create",
 				"sender": "@alice:example.org",
 				"origin_server_ts": 12345,
@@ -104,7 +104,7 @@ mod tests {
 				"signatures": {
 					"example.org": { "ed25519:1": "fakesig" }
 				}
-			}))
+			}).to_string())
 			.unwrap()
 		};
 
@@ -141,7 +141,7 @@ mod tests {
 		let room_id = OwnedRoomId::from("!test:example.com");
 		let version = RoomVersionId::parse("12").unwrap();
 
-		let value: CanonicalJsonObject = serde_json::from_value(json!({
+		let value: CanonicalJsonObject = slipstream::codec::from_str(&json!({
 			"type": "m.room.member",
 			"room_id": room_id.as_str(),
 			"sender": "@alice:example.org",
@@ -155,10 +155,10 @@ mod tests {
 			"signatures": {
 				"example.org": { "ed25519:1": "fakesig" }
 			}
-		}))
+		}).to_string())
 		.unwrap();
 
-		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();
 
 		assert!(clean_val.contains_key("room_id"), "non-create events must retain room_id");
 		assert_eq!(

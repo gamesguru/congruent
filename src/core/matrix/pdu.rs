@@ -44,7 +44,6 @@ pub struct Pdu {
 
 	pub content: Box<RawJsonValue>,
 
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<StateKey>,
 
 	pub prev_events: Vec<OwnedEventId>,
@@ -104,7 +103,7 @@ impl Pdu {
 			"event_id".into(),
 			slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 		);
-		let mut pdu: Self = serde_json::from_str(&slipstream::codec::to_string(&json))?;
+		let mut pdu: Self = slipstream::codec::from_str(&slipstream::codec::to_string(&json))?;
 		event_id.clone_into(&mut pdu.event_id);
 
 		if pdu.kind.to_string().chars().count() > 255 {

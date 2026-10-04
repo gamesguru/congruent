@@ -137,12 +137,14 @@ pub trait Event: Clone + Debug {
 	where
 		Self: Sized,
 	{
-		serde_json::to_value(self.into_pdu()).expect("failed to create JSON Value")
+		serde_json::from_str(&slipstream::codec::to_string(&self.into_pdu()))
+			.expect("failed to create JSON Value")
 	}
 
 	#[inline]
 	fn to_value(&self) -> JsonValue {
-		serde_json::to_value(self.as_pdu()).expect("failed to create JSON Value")
+		serde_json::from_str(&slipstream::codec::to_string(self.as_pdu()))
+			.expect("failed to create JSON Value")
 	}
 
 	#[inline]
