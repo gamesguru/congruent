@@ -52,16 +52,12 @@ fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 }
 
 fn matches_sender<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	if filter
-		.not_senders
-		.iter()
-		.any(is_equal_to!(event.sender().as_str()))
-	{
+	if filter.not_senders.iter().any(is_equal_to!(event.sender())) {
 		return false;
 	}
 
 	if let Some(senders) = filter.senders.as_ref() {
-		if !senders.iter().any(is_equal_to!(event.sender().as_str())) {
+		if !senders.iter().any(is_equal_to!(event.sender())) {
 			return false;
 		}
 	}
