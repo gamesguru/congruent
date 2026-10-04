@@ -95,7 +95,7 @@ pub fn auth_types_for_event(
 		if let Some(state_key) = state_key {
 			let content: RoomMemberContentFields = from_json_str(content.get())?;
 
-			if let Some(Ok(membership)) = content.membership.map(|m| m.deserialize()) {
+			if let Some(Ok(membership)) = content.membership.map(|m| m.deserialize_as()) {
 				if [MembershipState::Join, MembershipState::Invite, MembershipState::Knock]
 					.contains(&membership)
 				{
@@ -106,7 +106,7 @@ pub fn auth_types_for_event(
 
 					if let Some(Ok(u)) = content
 						.join_authorised_via_users_server
-						.map(|m| m.deserialize())
+						.map(|m| m.deserialize_as())
 					{
 						let key = (StateEventType::RoomMember, u.as_str().into());
 						if !auth_types.contains(&key) {
@@ -121,7 +121,7 @@ pub fn auth_types_for_event(
 				}
 
 				if membership == MembershipState::Invite {
-					if let Some(Ok(t_id)) = content.third_party_invite.map(|t| t.deserialize()) {
+					if let Some(Ok(t_id)) = content.third_party_invite.map(|t| t.deserialize_as()) {
 						let key =
 							(StateEventType::RoomThirdPartyInvite, t_id.signed.token.into());
 						if !auth_types.contains(&key) {
@@ -213,7 +213,7 @@ where
 		let content: RoomCreateContentFields = from_json_str(incoming_event.content().get())?;
 		if content
 			.room_version
-			.is_some_and(|v| v.deserialize().is_err())
+			.is_some_and(|v| v.deserialize_as().is_err())
 		{
 			warn!("unsupported room version found in m.room.create event");
 			return Ok(false);
@@ -279,7 +279,7 @@ where
 		from_json_str(room_create_event.content().get())?;
 	if room_create_content
 		.room_version
-		.is_some_and(|v| v.deserialize().is_err())
+		.is_some_and(|v| v.deserialize_as().is_err())
 	{
 		warn!(
 			create_event_id = %room_create_event.event_id(),
@@ -374,7 +374,7 @@ where
 		if content
 			.membership
 			.as_ref()
-			.and_then(|m| m.deserialize().ok())
+			.and_then(|m| m.deserialize_as().ok())
 			.is_none()
 		{
 			warn!("no valid membership field found for m.room.member event content");
@@ -387,7 +387,7 @@ where
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
 			.as_ref()
-			.and_then(|u| u.deserialize().ok());
+			.and_then(|u| u.deserialize_as().ok());
 
 		let user_for_join_auth_event: OptionFuture<_> = user_for_join_auth
 			.as_ref()
@@ -456,7 +456,7 @@ where
 		);
 		return Err(Error::InvalidPdu("Missing membership field".to_owned()));
 	};
-	let membership_state = membership_state.deserialize()?;
+	let membership_state = membership_state.deserialize_as()?;
 
 	if !matches!(membership_state, MembershipState::Join) {
 		warn!(
@@ -500,7 +500,7 @@ where
 				.is_some_and(|creators| {
 					creators
 						.iter()
-						.any(|c| c.deserialize().is_ok_and(|c| c == *sender))
+						.any(|c| c.deserialize_as().is_ok_and(|c| c == *sender))
 				}) {
 			trace!("privileging room creator or additional creator");
 			// This user is the room creator or an additional creator, give them max power
@@ -555,7 +555,7 @@ where
 		if room_version.explicitly_privilege_room_creators {
 			creators.insert(create_event.sender().to_owned());
 			for creator in room_create_content.additional_creators.iter().flatten() {
-				creators.insert(creator.deserialize()?);
+				creators.insert(creator.deserialize_as()?);
 			}
 		}
 		match check_power_levels(
@@ -634,7 +634,7 @@ where
 			if let Some(additional_creators) = content.additional_creators {
 				return additional_creators
 					.iter()
-					.any(|c| c.deserialize().is_ok_and(|c| c == *user_id));
+					.any(|c| c.deserialize_as().is_ok_and(|c| c == *user_id));
 			}
 		}
 		false
@@ -730,7 +730,7 @@ where
 		// Int::MAX. Same case for target.
 		if let Some(additional_creators) = &create_content.additional_creators {
 			for c in additional_creators {
-				if let Ok(c) = c.deserialize() {
+				if let Ok(c) = c.deserialize_as() {
 					creators.insert(c);
 				}
 			}
@@ -963,7 +963,7 @@ where
 		| MembershipState::Invite => {
 			// If content has third_party_invite key
 			trace!("starting target_membership=invite check");
-			match third_party_invite.and_then(|i| i.deserialize().ok()) {
+			match third_party_invite.and_then(|i| i.deserialize_as().ok()) {
 				| Some(tp_id) =>
 					if target_user_current_membership == MembershipState::Ban {
 						warn!(?target_user_membership_event_id, "Can't invite banned user");
