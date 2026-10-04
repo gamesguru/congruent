@@ -28,22 +28,58 @@ pub use self::{
 use super::{Event, StateKey};
 use crate::Result;
 
+fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_codec_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_codec_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+	value
+		.map(|value| {
+			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+		})
+		.transpose()
+}
+
 /// Persistent Data Unit (Event)
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct Pdu {
+	#[serde(deserialize_with = "deserialize_codec")]
 	pub event_id: OwnedEventId,
 
 	#[serde(skip_serializing_if = "Option::is_none")]
+	#[serde(deserialize_with = "deserialize_codec_opt")]
 	pub room_id: Option<OwnedRoomId>,
 
+	#[serde(deserialize_with = "deserialize_codec")]
 	pub sender: OwnedUserId,
 
 	#[serde(skip_serializing_if = "Option::is_none")]
+	#[serde(deserialize_with = "deserialize_codec_opt")]
 	pub origin: Option<OwnedServerName>,
 
 	pub origin_server_ts: UInt,
 
 	#[serde(rename = "type")]
+	#[serde(deserialize_with = "deserialize_codec")]
 	pub kind: TimelineEventType,
 
 	pub content: Box<RawJsonValue>,
@@ -51,13 +87,16 @@ pub struct Pdu {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<StateKey>,
 
+	#[serde(deserialize_with = "deserialize_codec_vec")]
 	pub prev_events: Vec<OwnedEventId>,
 
 	pub depth: UInt,
 
+	#[serde(deserialize_with = "deserialize_codec_vec")]
 	pub auth_events: Vec<OwnedEventId>,
 
 	#[serde(skip_serializing_if = "Option::is_none")]
+	#[serde(deserialize_with = "deserialize_codec_opt")]
 	pub redacts: Option<OwnedEventId>,
 
 	#[serde(default, skip_serializing_if = "Option::is_none")]
