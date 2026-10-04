@@ -15,11 +15,11 @@ use serde_json::json;
 use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::threads::get_threads::v1::IncludeThreads,
-	events::relation::{BundledThread, RelationType},
-	uint,
 	codec::{DeError, Deserialize as CodecDeserialize},
 	endpoint::body_field,
+	events::relation::{BundledThread, RelationType},
 	json::Value,
+	uint,
 };
 
 use crate::{Dep, globals, rooms, rooms::short::ShortRoomId};
@@ -54,7 +54,9 @@ struct ThreadRelation {
 
 impl CodecDeserialize for ExtractThreadRelation {
 	fn from_json(value: &Value) -> Result<Self, DeError> {
-		Ok(Self { relates_to: body_field(Some(value), "m.relates_to")? })
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
 	}
 }
 

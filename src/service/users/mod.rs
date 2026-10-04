@@ -17,18 +17,18 @@ use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
 	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
+	codec::{Deserialize, Serialize},
 	encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
 	events::{
 		AnyToDeviceEvent, GlobalAccountDataEventType,
 		ignored_user_list::IgnoredUserListEvent,
 		invite_permission_config::{FilterLevel, InvitePermissionConfigEventContent},
 	},
+	json::Value,
 	serde::Raw,
 	uint,
 };
@@ -45,12 +45,83 @@ pub struct UserSuspension {
 	pub suspended_by: String,
 }
 
+impl Serialize for UserSuspension {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("suspended".into(), slipstream::json::Value::Bool(self.suspended));
+		obj.insert(
+			"suspended_at".into(),
+			slipstream::json::Value::Number(slipstream::json::Number::from(self.suspended_at)),
+		);
+		obj.insert(
+			"suspended_by".into(),
+			slipstream::json::Value::String(self.suspended_by.clone()),
+		);
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for UserSuspension {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			suspended: obj
+				.get("suspended")
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false),
+			suspended_at: obj
+				.get("suspended_at")
+				.and_then(|v| v.as_u64())
+				.unwrap_or(0),
+			suspended_by: obj
+				.get("suspended_by")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.unwrap_or_default(),
+		})
+	}
+}
+
 /// A profile change retained for MSC4429 incremental sync.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProfileUpdate {
 	pub user_id: OwnedUserId,
 	pub field: String,
-	pub value: Option<serde_json::Value>,
+	pub value: Option<Value>,
+}
+
+impl Serialize for ProfileUpdate {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("user_id".into(), self.user_id.to_json());
+		obj.insert("field".into(), slipstream::json::Value::String(self.field.clone()));
+		if let Some(ref v) = self.value {
+			obj.insert("value".into(), v.clone());
+		}
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for ProfileUpdate {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			user_id: OwnedUserId::from_json(
+				obj.get("user_id")
+					.ok_or_else(|| slipstream::codec::DeError("missing user_id".into()))?,
+			)?,
+			field: obj
+				.get("field")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.ok_or_else(|| slipstream::codec::DeError("missing field".into()))?,
+			value: obj.get("value").cloned(),
+		})
+	}
 }
 
 pub struct Service {
@@ -1850,24 +1921,23 @@ impl Service {
 	}
 
 	/// Gets a specific user profile key
-	pub async fn profile_key(
-		&self,
-		user_id: &UserId,
-		profile_key: &str,
-	) -> Result<serde_json::Value> {
+	pub async fn profile_key(&self, user_id: &UserId, profile_key: &str) -> Result<Value> {
 		let key = (user_id, profile_key);
 		self.db
 			.useridprofilekey_value
 			.qry(&key)
 			.await
-			.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+			.and_then(|handle| {
+				slipstream::json::Value::parse(str_from_bytes(handle.as_ref())?)
+					.map_err(|e| err!(Database("Invalid profile key in database: {e}")))
+			})
 	}
 
 	/// Gets all the user's profile keys and values in an iterator
 	pub fn all_profile_keys<'a>(
 		&'a self,
 		user_id: &'a UserId,
-	) -> impl Stream<Item = (String, serde_json::Value)> + 'a + Send {
+	) -> impl Stream<Item = (String, Value)> + 'a + Send {
 		type KeyVal<'a> = ((Ignore, String), &'a [u8]);
 
 		let prefix = (user_id, Interfix);
@@ -1875,8 +1945,10 @@ impl Service {
 			.useridprofilekey_value
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.map(|((_, key), value): KeyVal<'_>| Ok((key, serde_json::from_slice(value)?)))
-			.ignore_err()
+			.ready_filter_map(|((_, key), value): (KeyVal<'_>, _)| {
+				let value = slipstream::json::Value::parse(str_from_bytes(value).ok()?).ok()?;
+				Some((key, value))
+			})
 	}
 
 	/// Sets a new profile key value, removes the key if value is None
@@ -1888,6 +1960,9 @@ impl Service {
 	) {
 		// Skip no-op writes so unchanged values don't append update records or
 		// advance the global count.
+		let profile_key_value: Option<Value> = profile_key_value.map(|v| {
+			slipstream::json::Value::parse(&serde_json::to_string(&v).unwrap()).unwrap()
+		});
 		if self.profile_key(user_id, profile_key).await.ok() == profile_key_value {
 			return;
 		}
@@ -1905,12 +1980,7 @@ impl Service {
 		self.record_profile_update(user_id, profile_key, update_value);
 	}
 
-	fn record_profile_update(
-		&self,
-		user_id: &UserId,
-		profile_key: &str,
-		value: Option<serde_json::Value>,
-	) {
+	fn record_profile_update(&self, user_id: &UserId, profile_key: &str, value: Option<Value>) {
 		if let Ok(stream_id) = self.services.globals.next_count() {
 			self.db.userprofileupdate_value.put(
 				(stream_id, user_id.to_owned(), profile_key.to_owned()),
@@ -2236,9 +2306,9 @@ where
 		for (user, signature) in
 			mem::replace(signatures, serde_json::Map::with_capacity(new_capacity))
 		{
-			let sid = <&UserId>::try_from(user.as_str())
+			let sid = <UserId>::try_from(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
-			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(sid) {
+			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {
 				signatures.insert(user, signature);
 			} else {
 				info!(

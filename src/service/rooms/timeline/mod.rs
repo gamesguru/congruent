@@ -40,7 +40,7 @@ use conduwuit_core::{
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
-	codec::{DeError, Deserialize as CodecDeserialize},
+	codec::{DeError, Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	endpoint::body_field,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
 	json::Value,
@@ -496,7 +496,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 		.services
 		.users
 		.list_local_users()
-		.map(|user_id: &UserId| user_id.to_owned())
+		.map(|user_id: OwnedUserId| user_id)
 		.collect::<Vec<_>>()
 		.await;
 
@@ -536,7 +536,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 				None,
 				&user_id,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(push_rules)?,
+				&push_rules.to_json()?,
 			)
 			.await?;
 	}

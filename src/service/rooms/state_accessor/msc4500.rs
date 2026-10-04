@@ -16,9 +16,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Pdu, RoomVersion, implement, matrix::Event};
 use futures::TryStreamExt;
 use rezzy::state::{LtHash, RedactionOverlay, ResolutionInputRecord, ResolutionInputs};
-use serde::Deserialize;
 use slipstream::{
 	EventId, OwnedEventId, RoomVersionId,
+	codec::{Deserialize, Serialize},
 	events::{
 		StateEventType, TimelineEventType,
 		room::{
@@ -499,10 +499,53 @@ pub const ALGORITHM_WITH_INPUTS: &str =
 /// The `state_hashes` object of a `/send` transaction.
 ///
 /// One `algorithm` governs every entry; `entries` is keyed by PDU ID.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug)]
 pub struct StateHashes {
 	pub algorithm: String,
 	pub entries: BTreeMap<OwnedEventId, StateHashEntry>,
+}
+
+impl Serialize for StateHashes {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("algorithm".into(), slipstream::json::Value::String(self.algorithm.clone()));
+		let entries: slipstream::json::Object = self
+			.entries
+			.iter()
+			.map(|(k, v)| (k.as_str().into(), v.to_json()))
+			.collect();
+		obj.insert("entries".into(), slipstream::json::Value::Object(entries));
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for StateHashes {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			algorithm: obj
+				.get("algorithm")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.unwrap_or_default(),
+			entries: obj
+				.get("entries")
+				.and_then(|v| v.as_object())
+				.map(|entries| {
+					entries
+						.iter()
+						.filter_map(|(k, v)| {
+							OwnedEventId::parse(k).ok().and_then(|eid| {
+								StateHashEntry::from_json(v).ok().map(|e| (eid, e))
+							})
+						})
+						.collect()
+				})
+				.unwrap_or_default(),
+		})
+	}
 }
 
 impl StateHashes {
@@ -524,20 +567,77 @@ impl StateHashes {
 /// omits both `after` fields. `resolution_inputs_before` is omitted under the
 /// base algorithm; under the input algorithm it is a string, or `null` when
 /// the sender has no assertion for that component.
-#[derive(Clone, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StateHashEntry {
-	#[serde(default)]
 	pub before: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub after: Option<String>,
-	#[serde(default)]
 	pub redactions_before: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub redactions_after: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub resolution_inputs_before: Option<Option<String>>,
-	#[serde(default, skip_serializing_if = "is_false")]
 	pub limited: bool,
+}
+
+impl Serialize for StateHashEntry {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		if let Some(ref v) = self.before {
+			obj.insert("before".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.after {
+			obj.insert("after".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.redactions_before {
+			obj.insert("redactions_before".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.redactions_after {
+			obj.insert("redactions_after".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(v) = &self.resolution_inputs_before {
+			if let Some(inner) = v {
+				obj.insert(
+					"resolution_inputs_before".into(),
+					slipstream::json::Value::String(inner.clone()),
+				);
+			} else {
+				obj.insert("resolution_inputs_before".into(), slipstream::json::Value::Null);
+			}
+		}
+		if self.limited {
+			obj.insert("limited".into(), slipstream::json::Value::Bool(true));
+		}
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for StateHashEntry {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			before: obj.get("before").and_then(|v| v.as_str()).map(String::from),
+			after: obj.get("after").and_then(|v| v.as_str()).map(String::from),
+			redactions_before: obj
+				.get("redactions_before")
+				.and_then(|v| v.as_str())
+				.map(String::from),
+			redactions_after: obj
+				.get("redactions_after")
+				.and_then(|v| v.as_str())
+				.map(String::from),
+			resolution_inputs_before: obj.get("resolution_inputs_before").and_then(|v| {
+				if v.is_null() {
+					Some(None)
+				} else {
+					v.as_str().map(String::from).map(Some)
+				}
+			}),
+			limited: obj
+				.get("limited")
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false),
+		})
+	}
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]

@@ -10,17 +10,20 @@ use http::{
 };
 use slipstream::{
 	Mxc, OwnedServerName, OwnedUserId, ServerName, UserId,
-	api::{
-		client::{
-			error::ErrorKind::{Forbidden, NotFound, Unauthorized, Unrecognized},
-			media,
-		},
-		federation::authenticated_media::{Content, FileOrLocation},
-	},
+	api::client::error::{Error as SlipstreamError, ErrorKind},
 	endpoint::OutgoingRequest,
+	http_headers::ContentDisposition,
 };
 
 use super::{Dim, FileMeta};
+
+/// Temporary stub for Slipstream's missing Content type
+#[derive(Debug)]
+struct Content {
+	file: Vec<u8>,
+	content_type: Option<String>,
+	content_disposition: Option<ContentDisposition>,
+}
 
 #[implement(super::Service)]
 pub async fn fetch_remote_thumbnail(
@@ -116,24 +119,10 @@ async fn fetch_thumbnail_authenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	use federation::authenticated_media::get_content_thumbnail::v1::{Request, Response};
-
-	let request = Request {
-		media_id: mxc.media_id.into(),
-		method: dim.method.clone().into(),
-		width: dim.width.into(),
-		height: dim.height.into(),
-		animated: true.into(),
-		timeout_ms,
-	};
-
-	let Response { content, .. } = self.federation_request(mxc, server, request).await?;
-
-	match content {
-		| FileOrLocation::File(content) =>
-			self.handle_thumbnail_file(mxc, user, dim, content).await,
-		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
-	}
+	// TODO: authenticated_media endpoint not yet available in Slipstream
+	// Fall back to unauthenticated immediately
+	self.fetch_thumbnail_unauthenticated(mxc, user, server, timeout_ms, dim)
+		.await
 }
 
 #[implement(super::Service)]
@@ -144,19 +133,10 @@ async fn fetch_content_authenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	use federation::authenticated_media::get_content::v1::{Request, Response};
-
-	let request = Request {
-		media_id: mxc.media_id.into(),
-		timeout_ms,
-	};
-
-	let Response { content, .. } = self.federation_request(mxc, server, request).await?;
-
-	match content {
-		| FileOrLocation::File(content) => self.handle_content_file(mxc, user, content).await,
-		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
-	}
+	// TODO: authenticated_media endpoint not yet available in Slipstream
+	// Fall back to unauthenticated immediately
+	self.fetch_content_unauthenticated(mxc, user, server, timeout_ms)
+		.await
 }
 
 #[allow(deprecated)]
@@ -169,27 +149,9 @@ async fn fetch_thumbnail_unauthenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	use media::get_content_thumbnail::v3::{Request, Response};
-
-	let request = Request {
-		allow_remote: true,
-		allow_redirect: true,
-		animated: true.into(),
-		method: dim.method.clone().into(),
-		width: dim.width.into(),
-		height: dim.height.into(),
-		server_name: mxc.server_name.into(),
-		media_id: mxc.media_id.into(),
-		timeout_ms,
-	};
-
-	let Response {
-		file, content_type, content_disposition, ..
-	} = self.federation_request(mxc, server, request).await?;
-
-	let content = Content { file, content_type, content_disposition };
-
-	self.handle_thumbnail_file(mxc, user, dim, content).await
+	// TODO: client::media endpoint not yet available in Slipstream
+	// Return NotFound for now
+	Err(Error::Request(ErrorKind::NotFound, "media endpoint not implemented".into()))
 }
 
 #[allow(deprecated)]
@@ -201,23 +163,9 @@ async fn fetch_content_unauthenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	use media::get_content::v3::{Request, Response};
-
-	let request = Request {
-		allow_remote: true,
-		allow_redirect: true,
-		server_name: mxc.server_name.into(),
-		media_id: mxc.media_id.into(),
-		timeout_ms,
-	};
-
-	let Response {
-		file, content_type, content_disposition, ..
-	} = self.federation_request(mxc, server, request).await?;
-
-	let content = Content { file, content_type, content_disposition };
-
-	self.handle_content_file(mxc, user, content).await
+	// TODO: client::media endpoint not yet available in Slipstream
+	// Return NotFound for now
+	Err(Error::Request(ErrorKind::NotFound, "media endpoint not implemented".into()))
 }
 
 #[implement(super::Service)]

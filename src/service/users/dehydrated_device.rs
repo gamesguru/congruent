@@ -1,22 +1,49 @@
 use conduwuit::{Err, Result, implement, info, trace};
 use conduwuit_database::{Deserialized, Json};
-use serde::{Deserialize, Serialize};
 use slipstream::{
 	DeviceId, OwnedDeviceId, UserId,
 	api::client::dehydrated_device::{
 		DehydratedDeviceData, put_dehydrated_device::unstable::Request,
 	},
+	codec::{Deserialize, Serialize},
 	encryption::DeviceKeys,
 	serde::Raw,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct DehydratedDevice {
 	/// Unique ID of the device.
 	pub device_id: OwnedDeviceId,
 
 	/// Contains serialized and encrypted private data.
 	pub device_data: Raw<DehydratedDeviceData>,
+}
+
+impl Serialize for DehydratedDevice {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("device_id".into(), self.device_id.to_json());
+		obj.insert("device_data".into(), self.device_data.to_json());
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for DehydratedDevice {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			device_id: OwnedDeviceId::from_json(
+				obj.get("device_id")
+					.ok_or_else(|| slipstream::codec::DeError("missing device_id".into()))?,
+			)?,
+			device_data: Raw::<DehydratedDeviceData>::from_json(
+				obj.get("device_data")
+					.ok_or_else(|| slipstream::codec::DeError("missing device_data".into()))?,
+			)?,
+		})
+	}
 }
 
 /// Creates or recreates the user's dehydrated device.

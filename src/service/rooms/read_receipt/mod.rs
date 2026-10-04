@@ -6,6 +6,7 @@ use conduwuit::{Result, debug, err, warn};
 use futures::Stream;
 use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,
+	codec::Serialize as CodecSerialize,
 	events::{
 		AnySyncEphemeralRoomEvent, SyncEphemeralRoomEvent,
 		receipt::{ReceiptEvent, ReceiptEventContent},
@@ -76,9 +77,7 @@ impl Service {
 		let result = self.db.private_read_get(room_id, user_id).await?;
 
 		if let Some((_, event)) = result {
-			let raw_event =
-				serde_json::value::to_raw_value(&event).expect("receipt created manually");
-			Ok(Raw::from_json(raw_event))
+			Ok(Raw::from_json_string(event.to_json().to_string())?)
 		} else {
 			Err(err!(Database(warn!("No private read receipt was set in {room_id}"))))
 		}
