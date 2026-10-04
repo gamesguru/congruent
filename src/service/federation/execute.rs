@@ -59,6 +59,7 @@ pub async fn execute_on<T>(
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
+	T::EndpointError: std::fmt::Debug,
 {
 	if !self.services.server.config.allow_federation {
 		return Err!(debug!("Federation is disabled."));

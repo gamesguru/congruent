@@ -202,7 +202,7 @@ impl Service {
 			let size_u64: u64 = message_content.body().len().try_into().unwrap_or(0);
 			let metadata = FileInfo {
 				mimetype: Some("text/markdown".to_owned()),
-				size: Some(UInt::new_saturating(size_u64)),
+				size: Some(size_u64),
 				thumbnail_info: None,
 				thumbnail_source: None,
 			};
@@ -211,7 +211,7 @@ impl Service {
 				formatted: None,
 				filename: Some("output.md".to_owned()),
 				source: MediaSource::Plain(file),
-				info: Some(Box::new(metadata)),
+				info: Some(metadata),
 			};
 			RoomMessageEventContent::new(MessageType::File(content))
 		} else {

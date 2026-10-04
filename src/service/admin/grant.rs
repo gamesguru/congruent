@@ -50,7 +50,7 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 		debug_info!("Inviting local user {user_id} to admin room {room_id}");
 		Box::pin(self.services.timeline.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(user_id),
+				user_id.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Invite),
 			),
 			server_user,
@@ -62,7 +62,7 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 		debug_info!("Force joining local user {user_id} to admin room {room_id}");
 		Box::pin(self.services.timeline.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(user_id),
+				user_id.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
 			user_id,

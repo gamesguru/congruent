@@ -27,6 +27,27 @@ use slipstream::{
 	serde::Raw,
 };
 
+mod duration_ms {
+	use std::time::Duration;
+
+	use serde::{Deserializer, Serializer, de::Error};
+
+	pub fn serialize<S>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		serializer.serialize_u64(value.as_millis().try_into().unwrap_or(u64::MAX))
+	}
+
+	pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		let millis = u64::deserialize(deserializer)?;
+		Ok(Duration::from_millis(millis))
+	}
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateAction {
@@ -68,7 +89,7 @@ pub struct DelayedEventData {
 	pub content: Raw<AnyTimelineEventContent>,
 
 	/// The duration that the server should wait before sending this event
-	#[serde(with = "slipstream::serde::duration::ms")]
+	#[serde(with = "duration_ms")]
 	pub delay: Duration,
 
 	/// The timestamp when the delayed event was scheduled or last restarted.

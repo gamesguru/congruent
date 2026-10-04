@@ -62,7 +62,7 @@ impl Service {
 			.await?;
 
 		let (ruleset, pwd_set) = match self.services.config.emergency_password {
-			| Some(_) => (Ruleset::server_default(server_user), true),
+			| Some(_) => (Ruleset::server_default(server_user.as_str()), true),
 			| None => (Ruleset::new(), false),
 		};
 

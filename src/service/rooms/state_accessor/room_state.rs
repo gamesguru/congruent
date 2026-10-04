@@ -6,8 +6,7 @@ use conduwuit::{
 	utils::stream::ReadyExt,
 };
 use futures::{Stream, StreamExt, TryFutureExt};
-use serde::Deserialize;
-use slipstream::{EventId, RoomId, events::StateEventType};
+use slipstream::{EventId, RoomId, codec::Deserialize, events::StateEventType};
 
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
 #[implement(super::Service)]

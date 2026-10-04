@@ -76,7 +76,7 @@ pub async fn create_admin_room(services: &Services) -> Result {
 		.timeline
 		.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(server_user),
+				server_user.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
 			server_user,

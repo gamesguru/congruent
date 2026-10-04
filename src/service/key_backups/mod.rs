@@ -96,7 +96,7 @@ pub async fn update_backup<'a>(
 	self.db.backupid_etag.put(key, count);
 	self.db
 		.backupid_algorithm
-		.put_raw(key, backup_metadata.json().get());
+		.put_raw(key, backup_metadata.get());
 
 	Ok(version)
 }
@@ -161,9 +161,7 @@ pub async fn add_key(
 	self.db.backupid_etag.put(key, count);
 
 	let key = (user_id, version, room_id, session_id);
-	self.db
-		.backupkeyid_backup
-		.put_raw(key, key_data.json().get());
+	self.db.backupkeyid_backup.put_raw(key, key_data.get());
 
 	Ok(())
 }

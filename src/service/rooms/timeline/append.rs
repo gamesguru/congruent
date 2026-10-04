@@ -427,7 +427,7 @@ where
 			.get_global(user, GlobalAccountDataEventType::PushRules)
 			.await
 			.map_or_else(
-				|_| Ruleset::server_default(user),
+				|_| Ruleset::server_default(user.as_str()),
 				|ev: PushRulesEvent| ev.content.global,
 			);
 

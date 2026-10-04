@@ -599,13 +599,13 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 			let room_id_bytes = &key[..sep];
 			let user_id_bytes = &key[sep.saturating_add(1)..];
 
-			let Ok(room_id) = <&RoomId>::try_from(
+			let Ok(room_id) = <RoomId>::try_from(
 				conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
-			let Ok(user_id) = <&UserId>::try_from(
+			let Ok(user_id) = <UserId>::try_from(
 				conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);
@@ -1001,7 +1001,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 		let short_event_ids = services
 			.rooms
 			.short
-			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| &**event_id))
+			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| event_id))
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1009,7 +1009,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 		let mut prev_ranges = Vec::with_capacity(entries.len());
 		for (_, prev_events) in &entries {
 			let start = prev_event_ids.len();
-			prev_event_ids.extend(prev_events.iter().map(|event_id| &**event_id));
+			prev_event_ids.extend(prev_events.iter());
 			prev_ranges.push(start..prev_event_ids.len());
 		}
 		let prev_short_ids = services
@@ -1266,7 +1266,6 @@ async fn db_lt_12(services: &Services) -> Result<()> {
 	for username in &services
 		.users
 		.list_local_users()
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedUserId>>()
 		.await
 	{
@@ -1346,7 +1345,6 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 	for username in &services
 		.users
 		.list_local_users()
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedUserId>>()
 		.await
 	{
@@ -1365,7 +1363,7 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 			.await
 			.expect("Username is invalid");
 
-		let user_default_rules = Ruleset::server_default(&user);
+		let user_default_rules = Ruleset::server_default(user.as_str());
 		account_data
 			.content
 			.global
@@ -1437,13 +1435,7 @@ async fn retroactively_fix_bad_data_from_roomuserid_joined(services: &Services) 
 	let db = &services.db;
 	let _cork = db.cork_and_sync();
 
-	let room_ids = services
-		.rooms
-		.metadata
-		.iter_ids()
-		.map(ToOwned::to_owned)
-		.collect::<Vec<_>>()
-		.await;
+	let room_ids = services.rooms.metadata.iter_ids().collect::<Vec<_>>().await;
 
 	for room_id in &room_ids {
 		debug_info!("Fixing room {room_id}");
@@ -1452,7 +1444,6 @@ async fn retroactively_fix_bad_data_from_roomuserid_joined(services: &Services) 
 			.rooms
 			.state_cache
 			.room_members(room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 
@@ -2660,7 +2651,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
 		match services.db["roomid_shortstatehash"]
-			.get(room_id)
+			.get(&room_id)
 			.await
 			.deserialized()
 		{
@@ -2702,7 +2693,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 				let structural_key = crate::rooms::state_hamt::room_structural_key(
 					&services.globals.server_secret,
-					room_id,
+					&room_id,
 				);
 
 				let (root_handle, root_node) =
@@ -2801,7 +2792,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	for room_id in room_ids {
 		let structural_key = crate::rooms::state_hamt::room_structural_key(
 			&services.globals.server_secret,
-			room_id,
+			&room_id,
 		);
 		let empty_lattice = rezzy::state::LtHash::default();
 		let (empty_root, empty_node) =
@@ -2817,7 +2808,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.
-		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(room_id));
+		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(&room_id));
 		let mut current_root = empty_root;
 		let mut event_batch = conduwuit_database::Batch::new();
 		let mut batched = 0_usize;
