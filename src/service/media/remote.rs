@@ -28,7 +28,7 @@ use slipstream::{
 		},
 	},
 	endpoint::OutgoingRequest,
-	http_headers::ContentDisposition,
+	http_headers::{ContentDisposition, ContentDispositionType},
 };
 
 use super::{Dim, FileMeta};

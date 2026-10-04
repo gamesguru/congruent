@@ -204,7 +204,7 @@ impl Pdu {
 
 		// Validate the PDU belongs to the expected room if one is specified
 		if let Some(expected_room) = room_id {
-			if pdu.room_id_or_hash().as_ref() != Some(expected_room) {
+			if pdu.room_id_or_hash() != *expected_room {
 				return Err(crate::err!(Request(InvalidParam(
 					"PDU {event_id} does not belong to room {expected_room}"
 				))));
@@ -340,10 +340,9 @@ macro_rules! impl_event_delegates {
 			}
 			if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
 				let constructed_hash = self.as_pdu().event_id.as_str().replace('$', "!");
-				return RoomId::parse(&constructed_hash).ok();
-			} else {
-				return Err(crate::err!(Request(InvalidParam("Room missing create or version."))));
+				return OwnedRoomId::from(constructed_hash);
 			}
+			panic!("PDU has no room_id and is not a room create event");
 		}
 
 		#[inline]

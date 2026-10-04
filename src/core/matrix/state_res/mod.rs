@@ -1246,11 +1246,10 @@ where
 	// so we only do it once for the entire batch instead of once per event.
 	if room_version.room_ids_as_hashes {
 		if let Some(first) = events_to_check.first() {
-			if let Some(room_id) = first.room_id_or_hash() {
-				let create_event_id_raw = room_id.as_str().replacen('!', "$", 1);
-				if let Ok(create_event_id) = EventId::parse(&create_event_id_raw) {
-					local_create_event = fetch_event(create_event_id).await;
-				}
+			let room_id = first.room_id_or_hash();
+			let create_event_id_raw = room_id.as_str().replacen('!', "$", 1);
+			if let Ok(create_event_id) = EventId::parse(&create_event_id_raw) {
+				local_create_event = fetch_event(create_event_id).await;
 			}
 		}
 	}

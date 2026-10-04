@@ -35,20 +35,13 @@ fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	let room_id = event.room_id_or_hash();
 
 	if !filter.not_rooms.is_empty() {
-		if let Some(ref rid) = room_id {
-			if filter.not_rooms.iter().any(is_equal_to!(&**rid)) {
-				return false;
-			}
+		if filter.not_rooms.iter().any(is_equal_to!(&room_id)) {
+			return false;
 		}
 	}
 
 	if let Some(rooms) = filter.rooms.as_ref() {
-		if let Some(ref rid) = room_id {
-			if !rooms.iter().any(is_equal_to!(&**rid)) {
-				return false;
-			}
-		} else if !rooms.is_empty() {
-			// If we have a filter but the event (e.g. v12 create) has no room_id
+		if !rooms.iter().any(is_equal_to!(&room_id)) {
 			return false;
 		}
 	}

@@ -432,7 +432,7 @@ pub fn hash_sign_and_finalize(
 
 	// Rehydrate the persisted event from the finalized JSON so the stored PDU
 	// carries the same hashes/signatures as the canonical representation.
-	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_deref())?;
+	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_ref())?;
 
 	Ok(pdu_json)
 }
