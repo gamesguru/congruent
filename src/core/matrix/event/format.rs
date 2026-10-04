@@ -31,7 +31,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 		});
 
 		if let Some(redacts) = redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
@@ -63,7 +63,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 		});
 
 		if let Some(redacts) = redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
@@ -94,7 +94,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 		});
 
 		if let Some(redacts) = &redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
@@ -206,7 +206,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 			"content": event.content(),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
-			"redacts": event.redacts(),
+			"redacts": event.redacts().map(|id| id.as_str()),
 			"room_id": event.room_id().map(|id| id.as_str()),
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
