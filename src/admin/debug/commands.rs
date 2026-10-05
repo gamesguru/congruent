@@ -625,7 +625,8 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	}
 	writeln!(out, "Type: {}", pdu.kind())?;
 	if pdu.kind() == &slipstream::events::TimelineEventType::RoomMember {
-		if let Ok(content) = serde_json::from_str::<serde_json::Value>(pdu.content().get()) {
+		if let Ok(content) = serde_json::from_str::<slipstream::json::Value>(pdu.content().get())
+		{
 			if let Some(membership) = content.get("membership").and_then(|m| m.as_str()) {
 				writeln!(out, "Membership: {membership}")?;
 			}
@@ -795,7 +796,7 @@ pub(crate) async fn force_set_state(
 	} else {
 		let mut found = None;
 		for pdu in &pdus {
-			if let Ok(val) = serde_json::from_str::<serde_json::Value>(pdu.get()) {
+			if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(pdu.get()) {
 				if val.get("type").and_then(|v| v.as_str()) == Some("m.room.create") {
 					if let Some(ver) = val
 						.get("content")
@@ -1026,8 +1027,8 @@ async fn fetch_and_load_state(
 	input: Option<&String>,
 	output: Option<&String>,
 ) -> Result<(
-	Vec<Box<serde_json::value::RawValue>>,
-	Vec<Box<serde_json::value::RawValue>>,
+	Vec<Box<slipstream::serde::RawJsonValue>>,
+	Vec<Box<slipstream::serde::RawJsonValue>>,
 	HashMap<u64, OwnedEventId>,
 )> {
 	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -1035,13 +1036,13 @@ async fn fetch_and_load_state(
 
 	// Load state from file, federation, or local database
 	let (pdus, auth_chain): (
-		Vec<Box<serde_json::value::RawValue>>,
-		Vec<Box<serde_json::value::RawValue>>,
+		Vec<Box<slipstream::serde::RawJsonValue>>,
+		Vec<Box<slipstream::serde::RawJsonValue>>,
 	) = if let Some(path) = input {
 		info!("Loading state from file: {path}");
 		let data = std::fs::read_to_string(path)
 			.map_err(|e| err!(Database("Failed to read input file: {e:?}")))?;
-		let parsed: serde_json::Value = serde_json::from_str(&data)
+		let parsed: slipstream::json::Value = serde_json::from_str(&data)
 			.map_err(|e| err!(Database("Failed to parse input file: {e:?}")))?;
 		let pdus_val = parsed
 			.get("pdus")
@@ -1049,10 +1050,10 @@ async fn fetch_and_load_state(
 		let auth_val = parsed
 			.get("auth_chain")
 			.ok_or(err!(Database("Missing 'auth_chain' key in input file")))?;
-		let pdus: Vec<Box<serde_json::value::RawValue>> =
+		let pdus: Vec<Box<slipstream::serde::RawJsonValue>> =
 			serde_json::from_value(pdus_val.clone())
 				.map_err(|e| err!(Database("Failed to parse PDUs: {e:?}")))?;
-		let auth_chain: Vec<Box<serde_json::value::RawValue>> =
+		let auth_chain: Vec<Box<slipstream::serde::RawJsonValue>> =
 			serde_json::from_value(auth_val.clone())
 				.map_err(|e| err!(Database("Failed to parse auth chain: {e:?}")))?;
 		info!(
@@ -1062,8 +1063,8 @@ async fn fetch_and_load_state(
 		);
 		(pdus, auth_chain)
 	} else if !server_names.is_empty() {
-		let mut all_pdus: Vec<Box<serde_json::value::RawValue>> = Vec::new();
-		let mut all_auth: Vec<Box<serde_json::value::RawValue>> = Vec::new();
+		let mut all_pdus: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
+		let mut all_auth: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
 
 		for server_name in server_names {
 			info!("Fetching room state from {server_name} at event {at_event_id_str}...");
@@ -1091,7 +1092,7 @@ async fn fetch_and_load_state(
 						};
 						let dump_path = format!("{path}{suffix}");
 						info!("Dumping federation state response to {dump_path}");
-						let dump = serde_json::json!({
+						let dump = slipstream::json!({
 							"room_id": room_id,
 							"server_name": server_name,
 							"event_id": at_event_id_str,
@@ -1164,7 +1165,7 @@ async fn validate_and_extract_state(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	pdus: &[Box<serde_json::value::RawValue>],
+	pdus: &[Box<slipstream::serde::RawJsonValue>],
 	skip_sig_verify: bool,
 	state: &mut HashMap<u64, OwnedEventId>,
 ) -> Result<(usize, usize)> {
@@ -1302,7 +1303,7 @@ async fn validate_and_add_auth_chain(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	auth_chain: &[Box<serde_json::value::RawValue>],
+	auth_chain: &[Box<slipstream::serde::RawJsonValue>],
 	skip_sig_verify: bool,
 ) -> Result<(usize, usize, usize)> {
 	info!("Going through auth_chain response");

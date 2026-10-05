@@ -714,10 +714,11 @@ fn add_unsigned_device_display_name(
 	include_display_names: bool,
 ) -> serde_json::Result<()> {
 	if let Some(display_name) = metadata.display_name {
-		let mut object = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()?;
+		let mut object =
+			keys.deserialize_as::<slipstream::json::Object<String, slipstream::json::Value>>()?;
 
 		let unsigned = object.entry("unsigned").or_insert_with(|| json!({}));
-		if let serde_json::Value::Object(unsigned_object) = unsigned {
+		if let slipstream::json::Value::Object(unsigned_object) = unsigned {
 			if include_display_names {
 				unsigned_object.insert("device_display_name".to_owned(), display_name.into());
 			} else {

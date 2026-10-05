@@ -24,7 +24,7 @@ use tokio::sync::watch::{Receiver, Sender};
 use crate::{Dep, config};
 
 pub type TxnKey = (OwnedServerName, OwnedTransactionId);
-pub type WrappedTransactionResponse = Option<Result<serde_json::Value, TransactionError>>;
+pub type WrappedTransactionResponse = Option<Result<slipstream::json::Value, TransactionError>>;
 
 /// Errors that can occur during federation transaction processing.
 #[derive(Debug, Clone)]
@@ -56,7 +56,7 @@ const CLEANUP_INTERVAL_SECS: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub struct CachedTxnResponse {
-	pub response: serde_json::Value,
+	pub response: slipstream::json::Value,
 	pub created: SystemTime,
 }
 
@@ -74,7 +74,7 @@ enum TxnState {
 /// Result of atomically checking or starting a federation transaction.
 pub enum FederationTxnState {
 	/// Transaction already completed and cached
-	Cached(serde_json::Value),
+	Cached(slipstream::json::Value),
 
 	/// Transaction is currently being processed by another request.
 	/// Wait on this receiver for the result.
@@ -315,7 +315,7 @@ impl Service {
 		&self,
 		key: TxnKey,
 		sender: Sender<WrappedTransactionResponse>,
-		response: serde_json::Value,
+		response: slipstream::json::Value,
 	) {
 		// Check if cleanup might be needed before acquiring the lock
 		let should_try_cleanup = self.should_try_cleanup();

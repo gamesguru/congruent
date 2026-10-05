@@ -68,7 +68,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	if body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -155,7 +155,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -338,20 +338,20 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let mut response_json = serde_json::json!({
+	let mut response_json = slipstream::json!({
 		"pdus": results
 			.into_iter()
 			.map(|(e, r)| {
-				let mut obj = serde_json::Map::new();
+				let mut obj = slipstream::json::Object::new();
 				if let Err(err) = r {
 					obj.insert(
 						"error".to_owned(),
-						serde_json::Value::String(error::sanitized_message(err)),
+						slipstream::json::Value::String(error::sanitized_message(err)),
 					);
 				}
-				(e.to_string(), serde_json::Value::Object(obj))
+				(e.to_string(), slipstream::json::Value::Object(obj))
 			})
-			.collect::<serde_json::Map<_, _>>(),
+			.collect::<slipstream::json::Object<_, _>>(),
 	});
 
 	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
@@ -364,7 +364,7 @@ async fn process_inbound_transaction(
 async fn inject_state_hash_mismatches(
 	services: &crate::State,
 	body: &Ruma<send_transaction_message::v1::Request>,
-	response_json: &mut serde_json::Value,
+	response_json: &mut slipstream::json::Value,
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
@@ -467,7 +467,7 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let mut mismatch = serde_json::json!({
+		let mut mismatch = slipstream::json!({
 			"algorithm": state_hashes.algorithm,
 			"expected_after": local.after.primary,
 			"received_after": after,
@@ -475,8 +475,8 @@ async fn inject_state_hash_mismatches(
 			"received_redactions_after": redactions_after,
 		});
 		if check_inputs {
-			mismatch["expected_resolution_inputs_before"] = serde_json::json!(local_inputs);
-			mismatch["received_resolution_inputs_before"] = serde_json::json!(received_inputs);
+			mismatch["expected_resolution_inputs_before"] = slipstream::json!(local_inputs);
+			mismatch["received_resolution_inputs_before"] = slipstream::json!(received_inputs);
 		}
 		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
 	}

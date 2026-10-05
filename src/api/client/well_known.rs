@@ -134,7 +134,7 @@ pub(crate) async fn syncv3_client_server_json(
 		},
 	};
 
-	Ok(Json(serde_json::json!({
+	Ok(Json(slipstream::json!({
 		"server": server_url,
 		"version": conduwuit::version(),
 	})))

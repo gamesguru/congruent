@@ -224,7 +224,7 @@ pub(crate) async fn get_profile_key_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_profile_key::unstable::Request>,
 ) -> Result<get_profile_key::unstable::Response> {
-	let mut profile_key_value: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+	let mut profile_key_value: BTreeMap<String, slipstream::json::Value> = BTreeMap::new();
 
 	if !services.globals.user_is_local(&body.user_id) {
 		// Create and update our local copy of the user
@@ -310,7 +310,8 @@ use std::{
 
 use tokio::sync::RwLock;
 
-type DagCacheMap = std::collections::HashMap<OwnedRoomId, (Instant, Vec<serde_json::Value>)>;
+type DagCacheMap =
+	std::collections::HashMap<OwnedRoomId, (Instant, Vec<slipstream::json::Value>)>;
 
 static DAG_CACHE: LazyLock<RwLock<DagCacheMap>> =
 	LazyLock::new(|| RwLock::new(DagCacheMap::new()));
@@ -386,7 +387,7 @@ pub(crate) async fn get_room_dag_route(
 			break;
 		}
 
-		let mut obj: serde_json::Map<String, serde_json::Value> =
+		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
 			serde_json::from_value(serde_json::to_value(&pdu)?)?;
 
 		if let Ok(root_handle) = services
@@ -402,13 +403,16 @@ pub(crate) async fn get_room_dag_route(
 					.try_into()
 					.expect("structural hash is at least 8 bytes"),
 			);
-			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(fingerprint));
+			obj.insert("__shortstatehash".to_owned(), slipstream::json::Value::from(fingerprint));
 		}
 
 		// Add event_id in case PduEvent serialization omits it (V3+ rooms)
-		obj.insert("event_id".to_owned(), serde_json::Value::String(pdu.event_id.to_string()));
+		obj.insert(
+			"event_id".to_owned(),
+			slipstream::json::Value::String(pdu.event_id.to_string()),
+		);
 
-		events.push(serde_json::Value::Object(obj));
+		events.push(slipstream::json::Value::Object(obj));
 		count = count.saturating_add(1);
 	}
 

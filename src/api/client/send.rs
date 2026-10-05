@@ -63,7 +63,7 @@ fn cached_send_txn_response(
 }
 
 fn delay_id_response(delay_id: &str) -> axum::response::Response {
-	axum::Json(serde_json::json!({
+	axum::Json(slipstream::json!({
 		"delay_id": delay_id,
 	}))
 	.into_response()

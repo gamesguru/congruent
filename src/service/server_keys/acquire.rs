@@ -6,10 +6,10 @@ use std::{
 
 use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, warn};
 use futures::{StreamExt, stream::FuturesUnordered};
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
-	api::federation::discovery::ServerSigningKeys, serde::Raw,
+	api::federation::discovery::ServerSigningKeys,
+	serde::{Raw, RawJsonValue},
 };
 
 use super::key_exists;

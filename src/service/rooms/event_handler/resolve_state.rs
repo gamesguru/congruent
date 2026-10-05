@@ -362,9 +362,9 @@ where
 			continue;
 		}
 
-		let content_val: serde_json::Value =
-			serde_json::from_str(auth_pdu.content.get()).unwrap_or(serde_json::Value::Null);
-		let parse_intlike = |value: &serde_json::Value| {
+		let content_val: slipstream::json::Value =
+			serde_json::from_str(auth_pdu.content.get()).unwrap_or(slipstream::json::Value::Null);
+		let parse_intlike = |value: &slipstream::json::Value| {
 			value
 				.as_i64()
 				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
@@ -372,7 +372,7 @@ where
 
 		let level = content_val
 			.get("users")
-			.and_then(serde_json::Value::as_object)
+			.and_then(slipstream::json::Value::as_object)
 			.and_then(|users| users.get(pdu.sender.as_str()))
 			.and_then(parse_intlike)
 			.or_else(|| content_val.get("users_default").and_then(parse_intlike))

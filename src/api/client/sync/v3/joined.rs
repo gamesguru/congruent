@@ -166,7 +166,8 @@ async fn build_ephemeral(
 			if is_ignored {
 				None
 			} else {
-				let mut json: serde_json::Value = serde_json::from_str(edu.json().get()).ok()?;
+				let mut json: slipstream::json::Value =
+					serde_json::from_str(edu.json().get()).ok()?;
 				if let Some(obj) = json.as_object_mut() {
 					obj.remove("room_id");
 				}

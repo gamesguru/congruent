@@ -950,7 +950,7 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 				continue;
 			};
 
-			let content: serde_json::Value = pdu.get_content_as_value();
+			let content = pdu.get_content_as_value();
 			let membership = content
 				.get("membership")
 				.and_then(|v| v.as_str())

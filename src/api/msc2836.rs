@@ -13,10 +13,10 @@ use conduwuit::{Err, Event, PduEvent, Result, err};
 use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
 use serde::Deserialize;
-use serde_json::value::RawValue as RawJsonValue;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
 	api::federation::event::event_relationships as federation_event_relationships,
+	serde::RawJsonValue,
 };
 
 pub(crate) enum Requester<'a> {
@@ -602,6 +602,7 @@ pub(crate) async fn to_raw_json_with_children(
 	}
 
 	serde_json::value::to_raw_value(&value).unwrap_or_else(|_| {
-		serde_json::value::RawValue::from_string("{}".to_owned()).expect("static JSON is valid")
+		slipstream::serde::RawJsonValue::from_string("{}".to_owned())
+			.expect("static JSON is valid")
 	})
 }

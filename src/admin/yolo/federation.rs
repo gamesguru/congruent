@@ -51,7 +51,7 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = serde_json::json!({
+		let dump = slipstream::json!({
 			"room_id": room_id,
 			"server_name": server_name,
 			"event_id": event_id.to_string(),
@@ -96,7 +96,7 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = serde_json::json!({
+		let dump = slipstream::json!({
 			"server_name": server_name,
 			"event_id": event_id.to_string(),
 			"pdu": response.pdu,
@@ -163,7 +163,7 @@ pub(super) async fn fetch_pdu(
 	// If the room's state is completely missing and we happen
 	// to be fetching the `m.room.create` event to rescue it, we MUST extract the
 	// real version from the PDU itself. Otherwise, canonicalization fails.
-	if let Ok(val) = serde_json::from_str::<serde_json::Value>(response.pdu.get()) {
+	if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(response.pdu.get()) {
 		if val.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
 			if let Some(v_str) = val
 				.get("content")

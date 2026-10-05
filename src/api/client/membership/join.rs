@@ -1107,7 +1107,7 @@ async fn join_room_by_id_helper_local(
 
 	let mut content = serde_json::to_value(content).expect("failed to serialize member event");
 	if let Some(CanonicalJsonValue::Object(custom)) = json_body {
-		if let serde_json::Value::Object(ref mut map) = content {
+		if let slipstream::json::Value::Object(ref mut map) = content {
 			for (k, v) in custom {
 				if !["reason", "third_party_signed", "server_name"].contains(&k.as_str()) {
 					map.entry(k.clone())

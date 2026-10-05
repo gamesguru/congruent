@@ -12,11 +12,11 @@ use conduwuit::{
 };
 use conduwuit_database::Batch;
 use futures::{StreamExt, TryStreamExt, pin_mut};
-use serde_json::Value as JsonValue;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
+	json::Value as JsonValue,
 };
 
 use super::dag::format_ts;
@@ -1018,9 +1018,9 @@ pub(super) async fn set_state_event(
 	let membership = if event_type == StateEventType::RoomMember {
 		pdu.content
 			.get()
-			.parse::<serde_json::Value>()
+			.parse::<slipstream::json::Value>()
 			.ok()
-			.and_then(|c: serde_json::Value| {
+			.and_then(|c: slipstream::json::Value| {
 				c.get("membership")
 					.and_then(|m| m.as_str().map(String::from))
 			})

@@ -32,11 +32,11 @@ pub(super) async fn request_well_known(&self, dest: &str) -> Result<Option<Strin
 	};
 	trace!("response text: {text:?}");
 
-	let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+	let body: slipstream::json::Value = slipstream::codec::from_str(&text).unwrap_or_default();
 
 	let m_server = body
 		.get("m.server")
-		.unwrap_or(&serde_json::Value::Null)
+		.unwrap_or(&slipstream::json::Value::Null)
 		.as_str()
 		.unwrap_or_default();
 

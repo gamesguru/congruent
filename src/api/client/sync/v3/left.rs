@@ -10,13 +10,12 @@ use conduwuit::{
 	},
 };
 use futures::{StreamExt, future::join};
-use serde_json::value::RawValue;
 use service::{Services, rooms::lazy_loading::MemberSet};
 use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::Raw,
+	serde::{Raw, RawJsonValue},
 	uint,
 };
 

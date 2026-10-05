@@ -471,11 +471,11 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+	if let Ok(mut json) = serde_json::from_slice::<slipstream::json::Value>(&bytes) {
 		if let Some(chunk) = json.get_mut("chunk").and_then(|c| c.as_array_mut()) {
 			for room in chunk {
 				if room.get("join_rule").is_none() {
-					room["join_rule"] = serde_json::json!("public");
+					room["join_rule"] = slipstream::json!("public");
 				}
 			}
 		}
@@ -508,7 +508,7 @@ async fn ensure_search_results_present(
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+	if let Ok(mut json) = serde_json::from_slice::<slipstream::json::Value>(&bytes) {
 		if let Some(room_events) = json
 			.get_mut("search_categories")
 			.and_then(|c| c.get_mut("room_events"))
@@ -516,7 +516,7 @@ async fn ensure_search_results_present(
 		{
 			room_events
 				.entry("results")
-				.or_insert_with(|| serde_json::json!([]));
+				.or_insert_with(|| slipstream::json!([]));
 		}
 		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
 			return axum::response::Response::from_parts(

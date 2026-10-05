@@ -623,7 +623,8 @@ pub async fn user_membership(
 		| (true, ..) => Some(MembershipState::Join),
 		| (_, true, ..) => {
 			if let Ok(Some(pdu)) = self.left_state(user_id, room_id).await {
-				if let Ok(content) = serde_json::from_str::<serde_json::Value>(pdu.content.get())
+				if let Ok(content) =
+					slipstream::codec::from_str::<slipstream::json::Value>(pdu.content.get())
 				{
 					if content.get("membership").and_then(|m| m.as_str()) == Some("ban") {
 						return Some(MembershipState::Ban);

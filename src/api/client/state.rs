@@ -66,7 +66,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		return Ok(axum::Json(serde_json::json!({
+		return Ok(axum::Json(slipstream::json!({
 			"delay_id": delay_id,
 		}))
 		.into_response());

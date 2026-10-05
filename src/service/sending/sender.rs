@@ -1480,7 +1480,7 @@ impl Service {
 		// size and return a Result<Raw<...>>
 		// serde_json::from_str::<Raw<_>>(
 		//     slipstream::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
-		// valid serde_json::Value"), )
+		// valid slipstream::json::Value"), )
 		// .expect("Raw::from_value always works")
 
 		RawJsonValue::from_value(&pdu_json)
@@ -1760,7 +1760,7 @@ mod tests {
 	fn test_build_receipt_map_under_limit() {
 		let mut receipts = Vec::new();
 		let user_id = user_id!("@alice:example.com").to_owned();
-		let json = serde_json::json!({
+		let json = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1788,7 +1788,7 @@ mod tests {
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
 			let user_id = <OwnedUserId as TryFrom<&str>>::try_from(user_id_str.as_str()).unwrap();
-			let json = serde_json::json!({
+			let json = slipstream::json!({
 				"type": "m.receipt",
 				"content": {
 					"$event1": {
@@ -1818,7 +1818,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1834,7 +1834,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_threaded.to_string()));
 
 		// 2. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1869,7 +1869,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1884,7 +1884,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_unthreaded.to_string()));
 
 		// 2. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1920,7 +1920,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// An out-of-order receipt with a higher stream count comes first.
-		let json_late = serde_json::json!({
+		let json_late = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1935,7 +1935,7 @@ mod tests {
 		receipts.push((user_id.clone(), 30, json_late.to_string()));
 
 		// The in-range receipt should still be considered even though it appears later.
-		let json_in_range = serde_json::json!({
+		let json_in_range = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event2": {

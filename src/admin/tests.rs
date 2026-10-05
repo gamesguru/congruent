@@ -95,7 +95,7 @@ fn yolo_view_extremities_with_room() {
 /// import/export. V11: strips room_id from all non-create events (MSC3820)
 /// V12+: strips room_id from ALL events including create (MSC4291)
 fn strip_room_id_if_needed(
-	obj: &mut serde_json::Map<String, serde_json::Value>,
+	obj: &mut slipstream::json::Object<String, slipstream::json::Value>,
 	room_version: &str,
 ) -> bool {
 	let is_create = obj.get("type").and_then(|v| v.as_str()) == Some("m.room.create");
@@ -114,7 +114,7 @@ fn strip_room_id_if_needed(
 
 #[test]
 fn v12_create_event_strips_room_id() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -124,27 +124,29 @@ fn v12_create_event_strips_room_id() {
 
 #[test]
 fn v12_non_create_event_keeps_room_id() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "12"));
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v11_non_create_event_keeps_room_id() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "11"));
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v11_create_event_keeps_room_id() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -154,7 +156,7 @@ fn v11_create_event_keeps_room_id() {
 
 #[test]
 fn v10_create_event_keeps_room_id() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -164,10 +166,11 @@ fn v10_create_event_keeps_room_id() {
 
 #[test]
 fn v12_create_event_without_room_id_is_noop() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.create","content":{"creator":"@alice:example.org"}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.create","content":{"creator":"@alice:example.org"}}"#,
+		)
+		.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "12"));
 }
 
@@ -175,7 +178,10 @@ fn v12_create_event_without_room_id_is_noop() {
 
 /// Helper: simulates the import field-stripping pipeline.
 /// Strips diagnostic fields and applies room_id transformations.
-fn strip_import_fields(obj: &mut serde_json::Map<String, serde_json::Value>, room_version: &str) {
+fn strip_import_fields(
+	obj: &mut slipstream::json::Object<String, slipstream::json::Value>,
+	room_version: &str,
+) {
 	// Diagnostic fields injected during export
 	obj.remove("__shortstatehash");
 	obj.remove("prev_state_events");
@@ -187,7 +193,7 @@ fn strip_import_fields(obj: &mut serde_json::Map<String, serde_json::Value>, roo
 /// Helper: checks whether an event's auth_events list references the create
 /// event.
 fn auth_events_reference_create(
-	obj: &serde_json::Map<String, serde_json::Value>,
+	obj: &slipstream::json::Object<String, slipstream::json::Value>,
 	create_event_id: &str,
 ) -> bool {
 	obj.get("auth_events")
@@ -197,7 +203,7 @@ fn auth_events_reference_create(
 
 #[test]
 fn import_strips_diagnostic_fields() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.message","room_id":"!abc:example.org","__shortstatehash":12345,"prev_state_events":[],"state_jump_pointers":[],"content":{}}"#,
 	)
 	.unwrap();
@@ -214,17 +220,18 @@ fn import_strips_diagnostic_fields() {
 #[test]
 fn v11_event_keeps_room_id_in_wire_format() {
 	// In v11, room_id IS part of the wire format.
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 	strip_import_fields(&mut obj, "11");
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v12_create_event_full_import_pipeline() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","__shortstatehash":999,"content":{"room_version":"12"},"auth_events":[],"prev_events":[]}"#,
 	)
 	.unwrap();
@@ -237,17 +244,18 @@ fn v12_create_event_full_import_pipeline() {
 
 #[test]
 fn v12_non_create_event_keeps_room_id_after_import() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 	strip_import_fields(&mut obj, "12");
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v12_auth_events_must_not_reference_create() {
-	let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.member","auth_events":["$power_levels","$join_rules"],"content":{}}"#,
 	)
 	.unwrap();
@@ -256,7 +264,7 @@ fn v12_auth_events_must_not_reference_create() {
 
 #[test]
 fn v12_auth_events_rejects_explicit_create_reference() {
-	let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels"],"content":{}}"#,
 	)
 	.unwrap();
@@ -265,7 +273,7 @@ fn v12_auth_events_rejects_explicit_create_reference() {
 
 #[test]
 fn v10_auth_events_must_reference_create() {
-	let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels","$join_rules"],"content":{}}"#,
 	)
 	.unwrap();
@@ -274,7 +282,7 @@ fn v10_auth_events_must_reference_create() {
 
 #[test]
 fn v12_create_event_has_empty_auth_events() {
-	let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
 		r#"{"type":"m.room.create","auth_events":[],"content":{"room_version":"12"}}"#,
 	)
 	.unwrap();
@@ -285,10 +293,11 @@ fn v12_create_event_has_empty_auth_events() {
 #[test]
 fn strip_preserves_older_versions() {
 	for version in &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] {
-		let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+			serde_json::from_str(
+				r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+			)
+			.unwrap();
 		strip_room_id_if_needed(&mut obj, version);
 		assert!(
 			obj.contains_key("room_id"),
@@ -299,10 +308,11 @@ fn strip_preserves_older_versions() {
 
 #[test]
 fn strip_v12_create_removes() {
-	let mut obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{}}"#,
-	)
-	.unwrap();
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
+		serde_json::from_str(
+			r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 	strip_room_id_if_needed(&mut obj, "12");
 	assert!(!obj.contains_key("room_id"), "room_id must be removed for V12 create events");
 }

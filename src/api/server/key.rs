@@ -266,10 +266,10 @@ mod tests {
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
 	use http::{Request, StatusCode};
-	use serde_json::Value;
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
+		json::Value,
 		serde::{Base64, Raw},
 	};
 	use tower::ServiceExt;

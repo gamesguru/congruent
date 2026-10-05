@@ -734,7 +734,8 @@ mod wire_tests {
 
 	#[test]
 	fn inputs_null_absent_and_present_all_parse() {
-		let parse = |v: serde_json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse =
+			|v: slipstream::json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
 		let base =
 			json!({"before":"b","after":"a","redactions_before":"rb","redactions_after":"ra"});
 
@@ -751,7 +752,8 @@ mod wire_tests {
 
 	#[test]
 	fn malformed_or_limited_entries_defer() {
-		let parse = |v: serde_json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse =
+			|v: slipstream::json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
 		// Omitting a redaction digest is malformed, not an empty overlay.
 		assert!(
 			parse(json!({"before":"b","after":"a","redactions_before":"rb"}))

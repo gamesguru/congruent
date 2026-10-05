@@ -191,7 +191,7 @@ fn catch_panic(
 	};
 
 	error!("{details:#}");
-	let body = serde_json::json!({
+	let body = slipstream::json!({
 		"errcode": "M_UNKNOWN",
 		"error": "M_UNKNOWN: Internal server error occurred",
 		"details": details,

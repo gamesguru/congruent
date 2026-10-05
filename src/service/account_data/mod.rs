@@ -117,12 +117,10 @@ pub async fn delete(
 		self.db.roomuserdataid_accountdata.remove(&prev);
 	}
 
-	let data = serde_json::json!({
+	let data = slipstream::json!({
 		"type": event_type,
 		"content": {},
 	});
-	let data = Value::parse(&data.to_string())
-		.map_err(|e| err!(Database("failed to encode empty account data: {e}")))?;
 
 	let count = self.services.globals.next_count().unwrap();
 	let roomuserdataid = (room_id, user_id, count, event_type);

@@ -11,7 +11,6 @@ use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
-use serde_json::value::RawValue;
 use service::mailer::messages;
 use slipstream::{
 	OwnedUserId, UserId,
@@ -24,6 +23,7 @@ use slipstream::{
 	},
 	events::{GlobalAccountDataEventType, room::message::RoomMessageEventContent},
 	push,
+	serde::RawJsonValue,
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
@@ -422,7 +422,7 @@ pub(crate) async fn register_route(
 async fn create_registration_uiaa_session(
 	services: &Services,
 ) -> Result<(Vec<AuthFlow>, Box<RawValue>)> {
-	let mut params = HashMap::<String, serde_json::Value>::new();
+	let mut params = HashMap::<String, slipstream::json::Value>::new();
 
 	let open_registration = services
 		.config
@@ -466,7 +466,7 @@ async fn create_registration_uiaa_session(
 
 				params.insert(
 					AuthType::ReCaptcha.as_str().to_owned(),
-					serde_json::json!({
+					slipstream::json!({
 						"public_key": pubkey,
 					}),
 				);
@@ -499,7 +499,7 @@ async fn create_registration_uiaa_session(
 
 			params.insert(
 				AuthType::Terms.as_str().to_owned(),
-				serde_json::json!({
+				slipstream::json!({
 					"policies": terms,
 				}),
 			);

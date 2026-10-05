@@ -63,7 +63,7 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 pub(crate) async fn update_delayed_event_route(
 	State(services): State<crate::State>,
 	axum::extract::Path((delay_id, action)): axum::extract::Path<(String, String)>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	let action = match action.as_str() {
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
 		| "send" => service::rooms::delayed_events::UpdateAction::Send,
@@ -77,12 +77,12 @@ pub(crate) async fn update_delayed_event_route(
 		.update_delayed_event(delay_id, action)
 		.await?;
 
-	Ok(axum::Json(serde_json::json!({})))
+	Ok(axum::Json(slipstream::json!({})))
 }
 
 pub(crate) async fn update_delayed_event_without_action_route(
 	axum::extract::Path(_delay_id): axum::extract::Path<String>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	Err!(Request(NotFound("Invalid action.")))
 }
 
@@ -90,14 +90,14 @@ pub(crate) async fn get_delayed_event_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(delay_id): axum::extract::Path<String>,
 	user: DelayedEventUser,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	let data = services
 		.rooms
 		.delayed_events
 		.get_delayed_event(&user.user_id, delay_id)
 		.await?;
 
-	Ok(axum::Json(serde_json::json!({
+	Ok(axum::Json(slipstream::json!({
 		"delayed_event": data,
 	})))
 }
@@ -105,7 +105,7 @@ pub(crate) async fn get_delayed_event_route(
 pub(crate) async fn get_all_delayed_events_route(
 	State(services): State<crate::State>,
 	user: AllDelayedEventsUser,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	let mut data = services
 		.rooms
 		.delayed_events
@@ -119,7 +119,7 @@ pub(crate) async fn get_all_delayed_events_route(
 			.and_then(|ts| ts.checked_add(event.delay))
 	});
 
-	Ok(axum::Json(serde_json::json!({
+	Ok(axum::Json(slipstream::json!({
 		"delayed_events": data,
 	})))
 }

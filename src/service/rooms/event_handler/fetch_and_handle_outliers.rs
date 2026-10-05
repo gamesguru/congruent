@@ -295,8 +295,9 @@ where
 								| None => {
 									let mut version = None;
 									if let Ok(json) =
-										serde_json::from_str::<serde_json::Value>(res.pdu.get())
-									{
+										slipstream::codec::from_str::<slipstream::json::Value>(
+											res.pdu.get(),
+										) {
 										if json.get("type").and_then(|t| t.as_str())
 											== Some("m.room.create")
 										{
