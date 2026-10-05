@@ -115,10 +115,13 @@ fn blurhash_an_image(
 	image: &image::DynamicImage,
 	blurhash_config: BlurhashConfig,
 ) -> Result<String, BlurhashingError> {
-	Ok(blurhash::encode_image(
+	let rgba = image.to_rgba8();
+	Ok(blurhash::encode(
 		blurhash_config.components_x,
 		blurhash_config.components_y,
-		&image.to_rgba8(),
+		rgba.width(),
+		rgba.height(),
+		rgba.as_raw(),
 	)?)
 }
 

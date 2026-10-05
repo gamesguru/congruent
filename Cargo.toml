@@ -207,10 +207,7 @@ features = [
 [workspace.dependencies.blurhash]
 version = "0.2.3"
 default-features = false
-features = [
-    "fast-linear-to-srgb",
-    "image",
-]
+features = ["fast-linear-to-srgb"]
 
 # logging
 [workspace.dependencies.log]
