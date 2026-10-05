@@ -63,6 +63,6 @@ pub(crate) async fn turn_server_route(
 		username,
 		password,
 		uris: services.globals.turn_uris().to_vec(),
-		ttl: Duration::from_secs(services.globals.turn_ttl()),
+		ttl: services.globals.turn_ttl(),
 	})
 }

@@ -69,7 +69,7 @@ pub(crate) async fn send_transaction_message_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
 ) -> Result<axum::Json<slipstream::json::Value>> {
-	if body.origin() != body.body.origin {
+	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
 		)));

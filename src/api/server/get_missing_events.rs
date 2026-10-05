@@ -92,7 +92,7 @@ pub(crate) async fn get_missing_events_route(
 			debug!(%next_event_id, origin = %body.origin(), "redacting event origin cannot see");
 			pdu.redact(
 				&room_version,
-				slipstream::json::Value::Object(slipstream::json::Object::new()),
+				&slipstream::json::Value::Object(slipstream::json::Object::new()),
 			)?;
 		}
 
