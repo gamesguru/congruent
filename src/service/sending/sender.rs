@@ -1788,7 +1788,7 @@ mod tests {
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
 			let user_id = OwnedUserId::parse(user_id_str.as_str()).unwrap();
-			let json = slipstream::json!({
+			let json = serde_json::json!({
 				"type": "m.receipt",
 				"content": {
 					"$event1": {

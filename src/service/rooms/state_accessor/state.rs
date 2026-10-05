@@ -6,7 +6,6 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
-use serde::Deserialize;
 use slipstream::{
 	EventId, OwnedEventId, RoomId, UserId,
 	events::{
