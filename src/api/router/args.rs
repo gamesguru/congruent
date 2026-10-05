@@ -82,6 +82,9 @@ where
 	}
 
 	#[inline]
+	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> { self.sender_device.as_deref() }
+
+	#[inline]
 	pub(crate) fn origin(&self) -> &ServerName {
 		self.origin
 			.as_ref()

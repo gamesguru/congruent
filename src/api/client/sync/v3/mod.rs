@@ -48,11 +48,11 @@ use slipstream::{
 use super::load_timeline;
 use crate::{
 	Ruma, RumaResponse,
-	json_util::{empty_events, single_field},
 	client::{
 		is_ignored_invite,
 		sync::v3::{joined::load_joined_room, left::load_left_room},
 	},
+	json_util::{empty_events, single_field},
 };
 
 /// The default maximum number of events to return in the `timeline` key of

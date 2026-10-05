@@ -12,10 +12,10 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
-use serde_json::json;
 use service::uiaa::Identity;
 use slipstream::{
 	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
+	codec,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -31,7 +31,7 @@ use slipstream::{
 	serde::Raw,
 };
 
-use crate::Ruma;
+use crate::{ObjectBuilder, Ruma};
 
 /// # `POST /_matrix/client/r0/keys/upload`
 ///
@@ -140,10 +140,8 @@ pub(crate) async fn upload_keys_route(
 					"Merging cross-signing signatures for re-uploaded exact copy of keys"
 				);
 
-				let mut new_device_keys_json =
-					serde_json::to_value(device_keys).expect("device_keys must be valid JSON");
-				let existing_device_keys_json = serde_json::to_value(&existing_keys)
-					.expect("existing_keys must be valid JSON");
+				let mut new_device_keys_json = codec::to_value(&device_keys);
+				let existing_device_keys_json = codec::to_value(&existing_keys);
 
 				conduwuit_service::users::merge_signatures(
 					&mut new_device_keys_json,
@@ -151,8 +149,7 @@ pub(crate) async fn upload_keys_route(
 				);
 
 				let merged_keys: Raw<slipstream::encryption::DeviceKeys> =
-					serde_json::from_value(new_device_keys_json)
-						.expect("Merged JSON must be valid Raw<DeviceKeys>");
+					Raw::from_value(&new_device_keys_json);
 
 				services
 					.users
@@ -376,15 +373,9 @@ pub(crate) async fn upload_signatures_route(
 
 	for (user_id, keys) in &body.signed_keys {
 		for (key_id, key) in keys {
-			let Ok(key) = serde_json::to_value(key).inspect_err(|e| {
-				info!(
-					target: "cross_signing",
-					"Invalid key in JSON from {} for {} / {}: {}",
-					sender_user, user_id, key_id, e
-				);
-			}) else {
-				continue;
-			};
+			// `codec::to_value` is infallible, so the old serialization-failure
+			// branch is unreachable.
+			let key = codec::to_value(key);
 
 			let Some(signatures) = key.get("signatures") else {
 				continue;
@@ -665,8 +656,9 @@ where
 							);
 						}
 					}
-					let json = serde_json::to_value(master_key).expect("to_value always works");
-					let raw = serde_json::from_value(json).expect("Raw::from_value always works");
+					// The old conversion inferred `Option<Raw<..>>` from this
+					// call site's parameter type.
+					let raw = Some(Raw::<CrossSigningKey>::from_value(&master_key));
 
 					if let Err(e) = services
 						.users
@@ -694,7 +686,7 @@ where
 				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
-				failures.insert(server.to_string(), json!({ "error": e.to_string() }));
+				failures.insert(server.to_string(), failure_value(e));
 			},
 		}
 	}
@@ -708,28 +700,37 @@ where
 	})
 }
 
+/// The `{ "error": "..." }` body every `failures` entry carries.
+fn failure_value(e: impl std::fmt::Display) -> slipstream::json::Value {
+	let mut builder = ObjectBuilder::new();
+
+	builder.field("error", &e.to_string());
+
+	builder.finish()
+}
 fn add_unsigned_device_display_name(
 	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
 	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
-) -> serde_json::Result<()> {
+) -> Result<(), slipstream::codec::DeError> {
 	if let Some(display_name) = metadata.display_name {
 		let mut object =
 			keys.deserialize_as::<slipstream::json::Object<String, slipstream::json::Value>>()?;
 
-		let unsigned = object.entry("unsigned").or_insert_with(|| json!({}));
+		let unsigned = object
+			.entry("unsigned")
+			.or_insert_with(|| slipstream::json::Value::Object(slipstream::json::Object::new()));
 		if let slipstream::json::Value::Object(unsigned_object) = unsigned {
-			if include_display_names {
-				unsigned_object.insert("device_display_name".to_owned(), display_name.into());
+			let device_display_name = if include_display_names {
+				slipstream::json::Value::String(display_name)
 			} else {
-				unsigned_object.insert(
-					"device_display_name".to_owned(),
-					Some(metadata.device_id.as_str().to_owned()).into(),
-				);
-			}
+				slipstream::json::Value::String(metadata.device_id.as_str().to_owned())
+			};
+
+			unsigned_object.insert("device_display_name".to_owned(), device_display_name);
 		}
 
-		*keys = Raw::from_json(serde_json::value::to_raw_value(&object)?);
+		*keys = Raw::from_value(&object);
 	}
 
 	Ok(())
@@ -806,7 +807,7 @@ pub(crate) async fn claim_keys_helper(
 					}
 				},
 			| Err(e) => {
-				failures.insert(server.to_string(), json!({"error": e.to_string()}));
+				failures.insert(server.to_string(), failure_value(e));
 			},
 		}
 	}

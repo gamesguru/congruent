@@ -84,7 +84,7 @@ pub(crate) async fn send_message_event_route(
 	body: Ruma<send_message_event::v3::Request>,
 ) -> Result<axum::response::Response> {
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 	let appservice_info = body.appservice_info.as_ref();
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
@@ -92,7 +92,7 @@ pub(crate) async fn send_message_event_route(
 
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), client_ip)
+		.update_device_last_seen(sender_user, body.sender_device_opt(), client_ip)
 		.await;
 
 	if let Some(delay) = body.delay {

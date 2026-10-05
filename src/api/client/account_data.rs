@@ -5,8 +5,6 @@ use axum::{
 };
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
-use serde::Deserialize;
-use serde_json::{json, value::RawValue as RawJsonValue};
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
@@ -16,10 +14,13 @@ use slipstream::{
 			set_room_account_data,
 		},
 	},
+	codec::{DeError, Deserialize as CodecDeserialize, from_str},
+	endpoint::body_field,
 	events::{
 		AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent,
 		RoomAccountDataEventType,
 	},
+	json::Value as JsonValue,
 	serde::Raw,
 };
 
@@ -34,18 +35,12 @@ pub(crate) async fn set_global_account_data_route(
 ) -> Result<set_global_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot set account data for other users.")));
 	}
 
-	set_account_data(
-		&services,
-		None,
-		&body.user_id,
-		&body.event_type.to_string(),
-		body.data.json(),
-	)
-	.await?;
+	set_account_data(&services, None, &body.user_id, &body.event_type.to_string(), &body.data)
+		.await?;
 
 	Ok(set_global_account_data::v3::Response {})
 }
@@ -59,7 +54,7 @@ pub(crate) async fn set_room_account_data_route(
 ) -> Result<set_room_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot set account data for other users.")));
 	}
 
@@ -68,7 +63,7 @@ pub(crate) async fn set_room_account_data_route(
 		Some(&body.room_id),
 		&body.user_id,
 		&body.event_type.to_string(),
-		body.data.json(),
+		&body.data,
 	)
 	.await?;
 
@@ -84,11 +79,11 @@ pub(crate) async fn get_global_account_data_route(
 ) -> Result<get_global_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: ExtractGlobalEventContent = services
+	let account_data: Extract<AnyGlobalAccountDataEventContent> = services
 		.account_data
 		.get_global(&body.user_id, body.event_type.clone())
 		.await
@@ -106,11 +101,11 @@ pub(crate) async fn get_room_account_data_route(
 ) -> Result<get_room_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: ExtractRoomEventContent = services
+	let account_data: Extract<AnyRoomAccountDataEventContent> = services
 		.account_data
 		.get_room(&body.room_id, &body.user_id, body.event_type.clone())
 		.await
@@ -131,13 +126,13 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != user_id {
+	if sender_user != &*user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 
 	delete_account_data(&services, None, &user_id, &event_type).await?;
 
-	Ok(Json(json!({})))
+	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())))
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -152,13 +147,13 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != user_id {
+	if sender_user != &*user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 
 	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;
 
-	Ok(Json(json!({})))
+	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())))
 }
 
 async fn set_account_data(
@@ -166,7 +161,7 @@ async fn set_account_data(
 	room_id: Option<&RoomId>,
 	sender_user: &UserId,
 	event_type_s: &str,
-	data: &RawJsonValue,
+	data: &Raw<slipstream::json::Value>,
 ) -> Result {
 	if event_type_s == RoomAccountDataEventType::FullyRead.to_cow_str() {
 		return Err!(Request(BadJson(
@@ -175,7 +170,7 @@ async fn set_account_data(
 		)));
 	}
 
-	let data: slipstream::json::Value = serde_json::from_str(data.get())
+	let data: slipstream::json::Value = from_str(data.get())
 		.map_err(|e| err!(Request(BadJson(warn!("Invalid JSON provided: {e}")))))?;
 
 	if data
@@ -185,17 +180,13 @@ async fn set_account_data(
 		return delete_account_data(services, room_id, sender_user, event_type_s).await;
 	}
 
+	let mut event = slipstream::ObjectBuilder::new();
+	event.field("type", &event_type_s);
+	event.field("content", &data);
+
 	services
 		.account_data
-		.update(
-			room_id,
-			sender_user,
-			event_type_s.into(),
-			&json!({
-				"type": event_type_s,
-				"content": data,
-			}),
-		)
+		.update(room_id, sender_user, event_type_s.into(), &event.finish())
 		.await
 }
 
@@ -218,12 +209,21 @@ async fn delete_account_data(
 		.await
 }
 
-#[derive(Deserialize)]
-struct ExtractRoomEventContent {
-	content: Raw<AnyRoomAccountDataEventContent>,
+/// Wraps stored account data so the inner content can be handed back to the
+/// API response untouched.
+///
+/// `Raw<T>` re-serializes as the raw text it was decoded from, so `content`
+/// passes through byte-for-byte rather than being rebuilt from the typed event.
+/// Decoded through the codec (not serde), because
+/// [`conduwuit_service::account_data`] takes `T: codec::Deserialize`.
+struct Extract<T> {
+	content: Raw<T>,
 }
 
-#[derive(Deserialize)]
-struct ExtractGlobalEventContent {
-	content: Raw<AnyGlobalAccountDataEventContent>,
+impl<T: CodecDeserialize> CodecDeserialize for Extract<T> {
+	fn from_json(value: &JsonValue) -> Result<Self, DeError> {
+		Ok(Self {
+			content: body_field(Some(value), "content")?,
+		})
+	}
 }

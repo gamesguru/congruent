@@ -77,7 +77,7 @@ pub(crate) async fn get_message_events_route(
 ) -> Result<get_message_events::v3::Response> {
 	debug_assert!(IGNORED_MESSAGE_TYPES.is_sorted(), "IGNORED_MESSAGE_TYPES is not sorted");
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 	let room_id = &body.room_id;
 	let filter = &body.filter;
 
