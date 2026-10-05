@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use conduwuit::{Result, Server};
-use serde_json::json;
 use slipstream::{
 	RoomVersionId,
 	api::client::discovery::get_capabilities::{
@@ -11,7 +10,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, json_util::single_field};
 
 /// # `GET /_matrix/client/v3/capabilities`
 ///
@@ -48,11 +47,11 @@ pub(crate) async fn get_capabilities_route(
 	};
 
 	// MSC4133 capability
-	capabilities.set("uk.tcpip.msc4133.profile_fields", json!({"enabled": true}))?;
+	capabilities.set("uk.tcpip.msc4133.profile_fields", single_field("enabled", &true))?;
 
 	capabilities.set(
 		"org.matrix.msc4267.forget_forced_upon_leave",
-		json!({"enabled": services.config.forget_forced_upon_leave}),
+		single_field("enabled", &services.config.forget_forced_upon_leave),
 	)?;
 
 	if services
@@ -61,7 +60,10 @@ pub(crate) async fn get_capabilities_route(
 		.await
 	{
 		// Advertise suspension API
-		capabilities.set("uk.timedout.msc4323", json!({"suspend": true, "lock": false}))?;
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("suspend", &true);
+		object.field("lock", &false);
+		capabilities.set("uk.timedout.msc4323", object.finish())?;
 	}
 
 	Ok(get_capabilities::v3::Response { capabilities })

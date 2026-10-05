@@ -14,7 +14,6 @@ use conduwuit::{
 use futures::StreamExt;
 use http::StatusCode;
 use serde::Deserialize;
-use serde_json::{Value, json};
 use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
@@ -22,7 +21,7 @@ use slipstream::{
 	uint,
 };
 
-use crate::{Ruma, router::authenticate_user};
+use crate::{Ruma, json_util::single_field, router::authenticate_user};
 
 #[derive(Deserialize)]
 struct ThreadSubscriptionBody {
@@ -165,7 +164,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.put_subscription(&sender_user, &room_id, &thread_id, automatic)
 		.await?;
 
-	Ok(Json(json!({})).into_response())
+	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())).into_response())
 }
 
 pub(crate) async fn get_thread_subscription_msc4306_route(
@@ -195,7 +194,7 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		return Err!(Request(NotFound("Thread subscription not found.")));
 	};
 
-	Ok(Json(json!({ "automatic": subscription.automatic })).into_response())
+	Ok(Json(single_field("automatic", &subscription.automatic)).into_response())
 }
 
 pub(crate) async fn delete_thread_subscription_msc4306_route(
@@ -220,16 +219,16 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.threads
 		.delete_subscription(&sender_user, &room_id, &thread_id)?;
 
-	Ok(Json(json!({})).into_response())
+	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())).into_response())
 }
 
 fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
 	(
 		status,
-		Json(Value::Object(
+		Json(slipstream::json::Value::Object(
 			[
-				("errcode".to_owned(), Value::String(errcode.to_owned())),
-				("error".to_owned(), Value::String(error.to_owned())),
+				("errcode".to_owned(), slipstream::json::Value::String(errcode.to_owned())),
+				("error".to_owned(), slipstream::json::Value::String(error.to_owned())),
 			]
 			.into_iter()
 			.collect(),

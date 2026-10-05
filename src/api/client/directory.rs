@@ -28,6 +28,7 @@ use slipstream::{
 		},
 		federation,
 	},
+	codec,
 	directory::{Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter},
 	events::{
 		StateEventType,
@@ -387,7 +388,7 @@ async fn user_can_publish_room(
 		.explicitly_privilege_room_creators
 	{
 		let create_content: RoomCreateEventContent =
-			serde_json::from_str(create_event.content().get())
+			codec::from_str(create_event.content().get())
 				.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
 		let is_creator = create_content
 			.additional_creators

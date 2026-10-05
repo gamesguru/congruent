@@ -14,6 +14,7 @@ use slipstream::{
 		},
 		federation,
 	},
+	codec,
 	presence::PresenceState,
 };
 
@@ -387,8 +388,7 @@ pub(crate) async fn get_room_dag_route(
 			break;
 		}
 
-		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-			serde_json::from_value(serde_json::to_value(&pdu)?)?;
+		let mut obj: slipstream::json::Object = codec::from_str(&codec::to_string(&pdu))?;
 
 		if let Ok(root_handle) = services
 			.rooms
