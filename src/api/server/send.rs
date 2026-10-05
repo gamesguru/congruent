@@ -624,7 +624,7 @@ async fn build_local_dag(
 			.to_string()
 			.parse::<u64>()
 			.ok()
-			.and_then(UInt::try_from)
+			.and_then(|value| UInt::try_from(value).ok())
 			.unwrap_or_default();
 		Ok((int!(0), MilliSecondsSinceUnixEpoch(ts)))
 	})

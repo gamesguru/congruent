@@ -478,11 +478,14 @@ fn create_dummy_leave_event(
 	SyncContext { syncing_user, .. }: SyncContext<'_>,
 	room_id: &RoomId,
 ) -> PduEvent {
-	// TODO: because this event ID is random, it could cause caching issues with
-	// clients. perhaps a database table could be created to hold these dummy
-	// events, or they could be stored as outliers?
+	// Keep each synthetic event ID unique so clients do not merge dummy events
+	// from different rooms or sync responses.
 	PduEvent {
-		event_id: EventId::parse(format!("$leave:{}", services.globals.server_name()))
+		event_id: EventId::parse(format!(
+			"${}:{}",
+			utils::random_string(18),
+			services.globals.server_name()
+		))
 			.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
