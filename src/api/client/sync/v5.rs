@@ -1622,15 +1622,12 @@ async fn collect_thread_subscriptions_extension(
 			let subscriptions = subscriptions
 				.into_iter()
 				.map(|(thread_id, subscription)| {
-					(
-						thread_id.to_string(),
-						{
-							let mut object = slipstream::ObjectBuilder::new();
-							object.field("automatic", &subscription.automatic);
-							object.field("bump_stamp", &subscription.bump_stamp);
-							object.finish()
-						},
-					)
+					(thread_id.to_string(), {
+						let mut object = slipstream::ObjectBuilder::new();
+						object.field("automatic", &subscription.automatic);
+						object.field("bump_stamp", &subscription.bump_stamp);
+						object.finish()
+					})
 				})
 				.collect::<Object>();
 

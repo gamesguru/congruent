@@ -44,7 +44,8 @@ pub(crate) async fn send_event_to_device_route(
 				let count = services.globals.next_count()?;
 
 				let mut buf = EduBuf::new();
-				let edu = federation::transactions::edu::Edu::DirectToDevice(DirectDeviceContent {
+				let edu =
+					federation::transactions::edu::Edu::DirectToDevice(DirectDeviceContent {
 						sender: sender_user.to_owned(),
 						ev_type: body.event_type.clone(),
 						message_id: count.to_string().into(),

@@ -14,8 +14,8 @@ use slipstream::{
 			get_remote_server_keys_batch, get_server_keys,
 		},
 	},
-	serde::Raw,
 	codec,
+	serde::Raw,
 };
 
 use crate::Ruma;
@@ -93,7 +93,8 @@ async fn sign_signing_keys(
 	services: &crate::State,
 	server_keys: &Raw<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
-	let mut keys_obj: slipstream::CanonicalJsonObject = codec::from_str(server_keys.json().get())?;
+	let mut keys_obj: slipstream::CanonicalJsonObject =
+		codec::from_str(server_keys.json().get())?;
 	services.server_keys.sign_json(&mut keys_obj)?;
 	Ok(Raw::from_value(&keys_obj))
 }

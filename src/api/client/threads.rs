@@ -17,9 +17,8 @@ use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
 	codec::{DeError, Deserialize as CodecDeserialize},
-	endpoint::body_field,
+	endpoint::{EndpointRequest, body_field},
 	json::Value,
-	endpoint::EndpointRequest,
 	uint,
 };
 
@@ -31,7 +30,9 @@ struct ThreadSubscriptionBody {
 
 impl CodecDeserialize for ThreadSubscriptionBody {
 	fn from_json(value: &Value) -> Result<Self, DeError> {
-		Ok(Self { automatic: body_field(Some(value), "automatic")? })
+		Ok(Self {
+			automatic: body_field(Some(value), "automatic")?,
+		})
 	}
 }
 
@@ -114,7 +115,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 	let body = slipstream::codec::from_str::<ThreadSubscriptionBody>(
 		std::str::from_utf8(&body).unwrap_or_default(),
 	)
-		.unwrap_or(ThreadSubscriptionBody { automatic: None });
+	.unwrap_or(ThreadSubscriptionBody { automatic: None });
 
 	if !services
 		.rooms
