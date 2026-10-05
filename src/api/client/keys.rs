@@ -15,7 +15,6 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use service::uiaa::Identity;
 use slipstream::{
 	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
-	codec,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -27,11 +26,12 @@ use slipstream::{
 		},
 		federation,
 	},
+	codec,
 	encryption::CrossSigningKey,
 	serde::Raw,
 };
 
-use crate::{ObjectBuilder, Ruma};
+use crate::{Ruma, json_util::single_field};
 
 /// # `POST /_matrix/client/r0/keys/upload`
 ///
@@ -366,7 +366,7 @@ pub(crate) async fn upload_signatures_route(
 ) -> Result<upload_signatures::v3::Response> {
 	if body.signed_keys.is_empty() {
 		debug!("Empty signed_keys sent in key signature upload");
-		return Ok(upload_signatures::v3::Response::new());
+		return Ok(upload_signatures::v3::Response { failures: BTreeMap::new() });
 	}
 
 	let sender_user = body.sender_user();
@@ -381,7 +381,7 @@ pub(crate) async fn upload_signatures_route(
 				continue;
 			};
 
-			let Some(sender_user_val) = signatures.get(sender_user.to_string()) else {
+			let Some(sender_user_val) = signatures.get(sender_user.as_str()) else {
 				continue;
 			};
 
@@ -702,23 +702,19 @@ where
 
 /// The `{ "error": "..." }` body every `failures` entry carries.
 fn failure_value(e: impl std::fmt::Display) -> slipstream::json::Value {
-	let mut builder = ObjectBuilder::new();
-
-	builder.field("error", &e.to_string());
-
-	builder.finish()
+	single_field("error", &e.to_string())
 }
+
 fn add_unsigned_device_display_name(
 	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
 	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
 ) -> Result<(), slipstream::codec::DeError> {
 	if let Some(display_name) = metadata.display_name {
-		let mut object =
-			keys.deserialize_as::<slipstream::json::Object<String, slipstream::json::Value>>()?;
+		let mut object = keys.deserialize_as::<slipstream::json::Object>()?;
 
 		let unsigned = object
-			.entry("unsigned")
+			.entry("unsigned".to_owned())
 			.or_insert_with(|| slipstream::json::Value::Object(slipstream::json::Object::new()));
 		if let slipstream::json::Value::Object(unsigned_object) = unsigned {
 			let device_display_name = if include_display_names {

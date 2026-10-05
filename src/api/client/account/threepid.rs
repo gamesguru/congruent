@@ -130,7 +130,7 @@ pub(crate) async fn add_3pid_route(
 		.associate_localpart_email(sender_user.localpart(), &email)
 		.await?;
 
-	Ok(add_3pid::v3::Response::new())
+	Ok(add_3pid::v3::Response {})
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/delete`

@@ -29,6 +29,7 @@ use slipstream::{
 		federation::{self, event::event_relationships as federation_event_relationships},
 	},
 	canonical_json::to_canonical_value,
+	codec,
 	events::{
 		StateEventType,
 		room::{
@@ -36,6 +37,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
+	serde::Raw,
 };
 use tokio::join;
 
@@ -365,7 +367,7 @@ async fn join_room_by_id_helper_remote(
 	}
 
 	let mut join_event_stub: CanonicalJsonObject =
-		serde_json::from_str(make_join_response.event.get()).map_err(|e| {
+		codec::from_str(make_join_response.event.get()).map_err(|e| {
 			err!(BadServerResponse(warn!(
 				"Invalid make_join event json received from server: {e:?}"
 			)))
@@ -1105,13 +1107,12 @@ async fn join_room_by_id_helper_local(
 		..RoomMemberEventContent::new(MembershipState::Join)
 	};
 
-	let mut content = serde_json::to_value(content).expect("failed to serialize member event");
+	let mut content = codec::to_value(&content);
 	if let Some(CanonicalJsonValue::Object(custom)) = json_body {
 		if let slipstream::json::Value::Object(ref mut map) = content {
 			for (k, v) in custom {
 				if !["reason", "third_party_signed", "server_name"].contains(&k.as_str()) {
-					map.entry(k.clone())
-						.or_insert_with(|| serde_json::to_value(v).expect("valid json"));
+					map.entry(k.clone()).or_insert_with(|| v.clone());
 				}
 			}
 		}
@@ -1119,7 +1120,7 @@ async fn join_room_by_id_helper_local(
 
 	let builder = PduBuilder {
 		event_type: StateEventType::RoomMember.into(),
-		content: serde_json::value::to_raw_value(&content).expect("valid JSON"),
+		content: Raw::from_value(&content),
 		state_key: Some(sender_user.to_string().into()),
 		..Default::default()
 	};

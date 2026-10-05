@@ -23,11 +23,10 @@ use slipstream::{
 			server_acl::RoomServerAclEventContent,
 		},
 	},
-	json,
 	serde::Raw,
 };
 
-use crate::{Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse, json_util::single_field};
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
 ///
@@ -66,10 +65,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		return Ok(axum::Json(slipstream::json!({
-			"delay_id": delay_id,
-		}))
-		.into_response());
+		return Ok(axum::Json(single_field("delay_id", &delay_id)).into_response());
 	}
 
 	let event_id = send_state_event_for_key_helper(
@@ -242,16 +238,16 @@ pub(crate) async fn get_state_events_for_key_route(
 				.expect("Failed to represent Event content as JsonValue")
 		}),
 		event: event_format.then(|| {
-			json!({
-				"content": event.content(),
-				"event_id": event.event_id(),
-				"origin_server_ts": event.origin_server_ts(),
-				"room_id": event.room_id_or_hash(),
-				"sender": event.sender(),
-				"state_key": event.state_key(),
-				"type": event.kind(),
-				"unsigned": event.unsigned(),
-			})
+			let mut object = slipstream::ObjectBuilder::new();
+			object.field("content", &event.content());
+			object.field("event_id", &event.event_id());
+			object.field("origin_server_ts", &event.origin_server_ts());
+			object.field("room_id", &event.room_id_or_hash());
+			object.field("sender", &event.sender());
+			object.field("state_key", &event.state_key());
+			object.field("type", &event.kind());
+			object.field("unsigned", &event.unsigned());
+			object.finish()
 		}),
 	})
 }

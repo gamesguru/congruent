@@ -3,7 +3,7 @@ use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
 use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
-use crate::{Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse, json_util::single_field};
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
 const SEND_TXN_DELAY_ID_PREFIX: &[u8] = b"\xFFdelay_id:";
@@ -63,10 +63,7 @@ fn cached_send_txn_response(
 }
 
 fn delay_id_response(delay_id: &str) -> axum::response::Response {
-	axum::Json(slipstream::json!({
-		"delay_id": delay_id,
-	}))
-	.into_response()
+	axum::Json(single_field("delay_id", &delay_id)).into_response()
 }
 
 /// # `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}`

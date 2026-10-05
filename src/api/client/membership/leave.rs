@@ -15,6 +15,7 @@ use slipstream::{
 		client::membership::leave_room,
 		federation::{self},
 	},
+	codec,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -388,14 +389,13 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 		)));
 	}
 
-	let mut leave_event_stub = serde_json::from_str::<CanonicalJsonObject>(
-		make_leave_response.event.get(),
-	)
-	.map_err(|e| {
-		err!(BadServerResponse(warn!(
-			"Invalid make_leave event json received from {remote_server} for {room_id}: {e:?}"
-		)))
-	})?;
+	let mut leave_event_stub =
+		codec::from_str::<CanonicalJsonObject>(make_leave_response.event.get()).map_err(|e| {
+			err!(BadServerResponse(warn!(
+				"Invalid make_leave event json received from {remote_server} for {room_id}: \
+				 {e:?}"
+			)))
+		})?;
 
 	validate_remote_member_event_stub(
 		&MembershipState::Leave,

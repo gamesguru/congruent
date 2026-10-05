@@ -5,7 +5,7 @@ use axum::{
 use conduwuit::{Err, Result};
 use slipstream::api::Metadata;
 
-use crate::router::authenticate_user;
+use crate::{json_util::single_field, router::authenticate_user};
 
 pub(crate) struct GetDelayedEventRequest;
 
@@ -77,7 +77,7 @@ pub(crate) async fn update_delayed_event_route(
 		.update_delayed_event(delay_id, action)
 		.await?;
 
-	Ok(axum::Json(slipstream::json!({})))
+	Ok(axum::Json(slipstream::json::Value::Object(slipstream::json::Object::new())))
 }
 
 pub(crate) async fn update_delayed_event_without_action_route(
@@ -97,9 +97,7 @@ pub(crate) async fn get_delayed_event_route(
 		.get_delayed_event(&user.user_id, delay_id)
 		.await?;
 
-	Ok(axum::Json(slipstream::json!({
-		"delayed_event": data,
-	})))
+	Ok(axum::Json(single_field("delayed_event", &data)))
 }
 
 pub(crate) async fn get_all_delayed_events_route(
@@ -119,7 +117,5 @@ pub(crate) async fn get_all_delayed_events_route(
 			.checked_add(event.delay)
 	});
 
-	Ok(axum::Json(slipstream::json!({
-		"delayed_events": data,
-	})))
+	Ok(axum::Json(single_field("delayed_events", &data)))
 }

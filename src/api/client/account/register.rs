@@ -21,9 +21,9 @@ use slipstream::{
 		},
 		uiaa::{AuthFlow, AuthType},
 	},
+	codec,
 	events::{GlobalAccountDataEventType, room::message::RoomMessageEventContent},
 	push,
-	serde::RawJsonValue,
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
@@ -223,7 +223,7 @@ pub(crate) async fn register_route(
 			None,
 			&user_id,
 			GlobalAccountDataEventType::PushRules.to_string().into(),
-			&serde_json::to_value(slipstream::events::push_rules::PushRulesEvent {
+			&codec::to_value(&slipstream::events::push_rules::PushRulesEvent {
 				content: slipstream::events::push_rules::PushRulesEventContent {
 					global: push::Ruleset::server_default(&user_id),
 				},
@@ -421,7 +421,7 @@ pub(crate) async fn register_route(
 /// registering a new account.
 async fn create_registration_uiaa_session(
 	services: &Services,
-) -> Result<(Vec<AuthFlow>, Box<RawJsonValue>)> {
+) -> Result<(Vec<AuthFlow>, slipstream::json::Value)> {
 	let mut params = HashMap::<String, slipstream::json::Value>::new();
 
 	let open_registration = services
@@ -464,12 +464,9 @@ async fn create_registration_uiaa_session(
 				// ReCaptcha is configured for untrusted registrations
 				untrusted_flow.stages.push(AuthType::ReCaptcha);
 
-				params.insert(
-					AuthType::ReCaptcha.as_str().to_owned(),
-					slipstream::json!({
-						"public_key": pubkey,
-					}),
-				);
+				let mut object = slipstream::ObjectBuilder::new();
+				object.field("public_key", pubkey);
+				params.insert(AuthType::ReCaptcha.as_str().to_owned(), object.finish());
 			}
 		}
 
@@ -487,8 +484,7 @@ async fn create_registration_uiaa_session(
 		// Require all users to agree to the terms and conditions, if configured
 		let terms = &services.config.registration_terms;
 		if !terms.is_empty() {
-			let mut terms =
-				serde_json::to_value(terms.clone()).expect("failed to serialize terms");
+			let mut terms = codec::to_value(terms);
 
 			// Insert a dummy `version` field
 			for (_, documents) in terms.as_object_mut().unwrap() {
@@ -497,12 +493,9 @@ async fn create_registration_uiaa_session(
 				documents.insert("version".to_owned(), "latest".into());
 			}
 
-			params.insert(
-				AuthType::Terms.as_str().to_owned(),
-				slipstream::json!({
-					"policies": terms,
-				}),
-			);
+			let mut object = slipstream::ObjectBuilder::new();
+			object.field("policies", &terms);
+			params.insert(AuthType::Terms.as_str().to_owned(), object.finish());
 
 			for flow in &mut flows {
 				flow.stages.insert(0, AuthType::Terms);
@@ -525,7 +518,7 @@ async fn create_registration_uiaa_session(
 		flows
 	};
 
-	let params = serde_json::value::to_raw_value(&params).expect("params should be valid JSON");
+	let params = slipstream::json::Value::Object(params.into_iter().collect());
 
 	Ok((flows, params))
 }

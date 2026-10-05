@@ -22,6 +22,7 @@ use slipstream::{
 		federation::{self},
 	},
 	canonical_json::to_canonical_value,
+	codec,
 	events::{
 		StateEventType,
 		room::{
@@ -342,12 +343,10 @@ async fn knock_room_helper_local(
 		));
 	}
 
-	let mut knock_event_stub = serde_json::from_str::<CanonicalJsonObject>(
-		make_knock_response.event.get(),
-	)
-	.map_err(|e| {
-		err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
-	})?;
+	let mut knock_event_stub =
+		codec::from_str::<CanonicalJsonObject>(make_knock_response.event.get()).map_err(|e| {
+			err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
+		})?;
 
 	validate_remote_member_event_stub(
 		&MembershipState::Knock,
@@ -483,7 +482,7 @@ async fn knock_room_helper_remote(
 	}
 
 	let mut knock_event_stub: CanonicalJsonObject =
-		serde_json::from_str(make_knock_response.event.get()).map_err(|e| {
+		codec::from_str(make_knock_response.event.get()).map_err(|e| {
 			err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
 		})?;
 
@@ -560,7 +559,7 @@ async fn knock_room_helper_remote(
 	let state = send_knock_response
 		.knock_room_state
 		.iter()
-		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.get()))
+		.map(|event| codec::from_str::<CanonicalJsonObject>(event.get()))
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -576,12 +575,11 @@ async fn knock_room_helper_remote(
 			continue;
 		};
 
-		let Ok(state_key) = serde_json::from_value::<String>(state_key.clone().into()) else {
+		let Ok(state_key) = <String as codec::Deserialize>::from_json(state_key) else {
 			debug_warn!("send_knock stripped state event has invalid state_key: {event:?}");
 			continue;
 		};
-		let Ok(event_type) = serde_json::from_value::<StateEventType>(event_type.clone().into())
-		else {
+		let Ok(event_type) = <StateEventType as codec::Deserialize>::from_json(event_type) else {
 			debug_warn!("send_knock stripped state event has invalid event type: {event:?}");
 			continue;
 		};
