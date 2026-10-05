@@ -471,7 +471,10 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<slipstream::json::Value>(&bytes) {
+	if let Ok(mut json) = std::str::from_utf8(&bytes)
+		.ok()
+		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
+	{
 		if let Some(chunk) = json.get_mut("chunk").and_then(|c| c.as_array_mut()) {
 			for room in chunk {
 				if room.get("join_rule").is_none() {
@@ -479,7 +482,8 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 				}
 			}
 		}
-		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+		{
+			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
 			return axum::response::Response::from_parts(
 				parts,
 				axum::body::Body::from(modified_bytes),
@@ -508,17 +512,21 @@ async fn ensure_search_results_present(
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = serde_json::from_slice::<slipstream::json::Value>(&bytes) {
+	if let Ok(mut json) = std::str::from_utf8(&bytes)
+		.ok()
+		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
+	{
 		if let Some(room_events) = json
 			.get_mut("search_categories")
 			.and_then(|c| c.get_mut("room_events"))
 			.and_then(|r| r.as_object_mut())
 		{
 			room_events
-				.entry("results")
+				.entry("results".to_owned())
 				.or_insert_with(|| slipstream::json!([]));
 		}
-		if let Ok(modified_bytes) = serde_json::to_vec(&json) {
+		{
+			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
 			return axum::response::Response::from_parts(
 				parts,
 				axum::body::Body::from(modified_bytes),
