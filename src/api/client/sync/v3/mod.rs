@@ -48,6 +48,7 @@ use slipstream::{
 use super::load_timeline;
 use crate::{
 	Ruma, RumaResponse,
+	json_util::{empty_events, single_field},
 	client::{
 		is_ignored_invite,
 		sync::v3::{joined::load_joined_room, left::load_left_room},
@@ -143,7 +144,7 @@ async fn msc4429_profile_updates(
 				}
 			}
 			if !fields.is_empty() {
-				users.insert(target.to_string(), slipstream::json!({"profile_updates": fields}));
+				users.insert(target.to_string(), single_field("profile_updates", &fields));
 			}
 		}
 	} else {
@@ -169,7 +170,9 @@ async fn msc4429_profile_updates(
 			}
 			if let Some(fields) = users
 				.entry(target.to_string())
-				.or_insert_with(|| slipstream::json!({"profile_updates": {}}))
+				.or_insert_with(|| {
+					single_field("profile_updates", &slipstream::json::Object::new())
+				})
 				.get_mut("profile_updates")
 				.and_then(slipstream::json::Value::as_object_mut)
 			{
@@ -902,10 +905,10 @@ pub(crate) async fn build_sync_events(
 	}
 
 	let device_lists_json = (!device_list_updates.is_empty()).then(|| {
-		slipstream::json!({
-			"changed": device_list_updates.changed.iter().collect::<Vec<_>>(),
-			"left": device_list_updates.left.iter().collect::<Vec<_>>(),
-		})
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("changed", &device_list_updates.changed.iter().collect::<Vec<_>>());
+		object.field("left", &device_list_updates.left.iter().collect::<Vec<_>>());
+		object.finish()
 	});
 
 	let ruma_response = sync_events::v3::Response {
@@ -943,7 +946,7 @@ pub(crate) async fn build_sync_events(
 		// inject state_after
 		for (room_id, state_after) in joined_state_after {
 			if let Some(room) = join.get_mut(room_id.as_str()) {
-				let state_after_obj = slipstream::json!({ "events": state_after });
+				let state_after_obj = single_field("events", &state_after);
 				room.as_object_mut()
 					.unwrap()
 					.insert("state_after".to_owned(), state_after_obj.clone());
@@ -957,11 +960,11 @@ pub(crate) async fn build_sync_events(
 		for (_room_id, room_val) in join.as_object_mut().unwrap() {
 			let room = room_val.as_object_mut().unwrap();
 			if !room.contains_key("ephemeral") {
-				room.insert("ephemeral".to_owned(), slipstream::json!({ "events": [] }));
+				room.insert("ephemeral".to_owned(), empty_events());
 			}
 
 			if is_initial_sync && !room.contains_key("account_data") {
-				room.insert("account_data".to_owned(), slipstream::json!({ "events": [] }));
+				room.insert("account_data".to_owned(), empty_events());
 			}
 		}
 	}
@@ -969,7 +972,7 @@ pub(crate) async fn build_sync_events(
 	if let Some(leave) = val.get_mut("rooms").and_then(|r| r.get_mut("leave")) {
 		for (room_id, state_after) in left_state_after {
 			if let Some(room) = leave.get_mut(room_id.as_str()) {
-				let state_after_obj = slipstream::json!({ "events": state_after });
+				let state_after_obj = single_field("events", &state_after);
 				room.as_object_mut()
 					.unwrap()
 					.insert("state_after".to_owned(), state_after_obj.clone());
@@ -987,7 +990,9 @@ pub(crate) async fn build_sync_events(
 		let knock_val = slipstream::codec::to_value(&knocked_rooms);
 		let rooms_obj = val.as_object_mut().and_then(|o| {
 			o.entry("rooms".to_owned())
-				.or_insert_with(|| slipstream::json!({}))
+				.or_insert_with(|| {
+					slipstream::json::Value::Object(slipstream::json::Object::new())
+				})
 				.as_object_mut()
 		});
 		if let Some(rooms) = rooms_obj {
@@ -1049,7 +1054,7 @@ pub(crate) async fn build_sync_events(
 				{
 					users.insert(
 						state_key.to_owned(),
-						slipstream::json!({"profile_updates": null}),
+						single_field("profile_updates", &slipstream::json::Value::Null),
 					);
 				}
 			}
@@ -1084,7 +1089,7 @@ pub(crate) async fn build_sync_events(
 					{
 						users.insert(
 							state_key.to_owned(),
-							slipstream::json!({"profile_updates": null}),
+							single_field("profile_updates", &slipstream::json::Value::Null),
 						);
 					}
 				}
