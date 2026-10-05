@@ -282,7 +282,7 @@ async fn remote_room_summary_hierarchy_response(
 		)));
 	}
 
-	let request = get_hierarchy::v1::Request::new(room_id.to_owned());
+	let request = get_hierarchy::v1::Request::new(room_id.to_owned(), false);
 
 	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
 		debug!("Fetching room summary for {room_id} from server {server}");
