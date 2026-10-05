@@ -26,7 +26,7 @@ use slipstream::{
 	serde::Raw,
 };
 
-use crate::{Ruma, RumaResponse, json_util::single_field};
+use crate::{Ruma, RumaResponse, json_util::{json_response, single_field}};
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
 ///
@@ -65,7 +65,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		return Ok(axum::Json(single_field("delay_id", &delay_id)).into_response());
+		return Ok(json_response(single_field("delay_id", &delay_id)));
 	}
 
 	let event_id = send_state_event_for_key_helper(

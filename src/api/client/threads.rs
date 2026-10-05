@@ -1,8 +1,7 @@
 use axum::{
-	Json,
 	body::{Body, to_bytes},
 	extract::{Path, State},
-	response::{IntoResponse, Response},
+	response::Response,
 };
 use conduwuit::{
 	Err, Result, at, debug_warn,
@@ -22,7 +21,7 @@ use slipstream::{
 	uint,
 };
 
-use crate::{Ruma, json_util::single_field, router::authenticate_user};
+use crate::{Ruma, json_util::{json_response, single_field}, router::authenticate_user};
 
 struct ThreadSubscriptionBody {
 	automatic: Option<OwnedEventId>,
@@ -174,7 +173,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.put_subscription(&sender_user, &room_id, &thread_id, automatic)
 		.await?;
 
-	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())).into_response())
+	Ok(json_response(slipstream::json::Value::Object(slipstream::json::Object::new())))
 }
 
 pub(crate) async fn get_thread_subscription_msc4306_route(
@@ -204,7 +203,7 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		return Err!(Request(NotFound("Thread subscription not found.")));
 	};
 
-	Ok(Json(single_field("automatic", &subscription.automatic)).into_response())
+	Ok(json_response(single_field("automatic", &subscription.automatic)))
 }
 
 pub(crate) async fn delete_thread_subscription_msc4306_route(
@@ -229,20 +228,18 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.threads
 		.delete_subscription(&sender_user, &room_id, &thread_id)?;
 
-	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())).into_response())
+	Ok(json_response(slipstream::json::Value::Object(slipstream::json::Object::new())))
 }
 
 fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
-	(
-		status,
-		Json(slipstream::json::Value::Object(
-			[
-				("errcode".to_owned(), slipstream::json::Value::String(errcode.to_owned())),
-				("error".to_owned(), slipstream::json::Value::String(error.to_owned())),
-			]
-			.into_iter()
-			.collect(),
-		)),
-	)
-		.into_response()
+	let mut response = json_response(slipstream::json::Value::Object(
+		[
+			("errcode".to_owned(), slipstream::json::Value::String(errcode.to_owned())),
+			("error".to_owned(), slipstream::json::Value::String(error.to_owned())),
+		]
+		.into_iter()
+		.collect(),
+	));
+	*response.status_mut() = status;
+	response
 }

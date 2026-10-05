@@ -13,6 +13,13 @@ pub(crate) fn empty_events() -> slipstream::json::Value {
 	single_field("events", &Vec::<slipstream::json::Value>::new())
 }
 
+pub(crate) fn json_response(value: slipstream::json::Value) -> axum::response::Response {
+	axum::http::Response::builder()
+		.header(axum::http::header::CONTENT_TYPE, "application/json")
+		.body(axum::body::Body::from(slipstream::codec::to_string(&value)))
+		.expect("static JSON response builder is valid")
+}
+
 #[cfg(test)]
 mod tests {
 	#[test]
