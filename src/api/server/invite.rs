@@ -113,9 +113,7 @@ pub(crate) async fn create_invite_route(
 	let content: RoomMemberEventContent = codec::from_value(
 		signed_event
 			.get("content")
-			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?
-			.clone()
-			.into(),
+			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
 
@@ -129,19 +127,20 @@ pub(crate) async fn create_invite_route(
 	// Ensure the sending user isn't a lying bozo
 	let sender_server = signed_event
 		.get("sender")
-		.try_into()
-		.map(UserId::server_name)
-		.map_err(|e| err!(Request(InvalidParam("Invalid sender property: {e}"))))?;
-	if sender_server != body.origin() {
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|sender| UserId::parse(sender).ok())
+		.map(|sender| sender.server_name())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid sender property."))))?;
+	if &sender_server != body.origin() {
 		return Err!(Request(Forbidden("Sender's server does not match the origin server.",)));
 	}
 
 	// Ensure the target user belongs to this server
-	let recipient_user: OwnedUserId = signed_event
+	let recipient_user = signed_event
 		.get("state_key")
-		.try_into()
-		.map(UserId::to_owned)
-		.map_err(|e| err!(Request(InvalidParam("Invalid state_key property: {e}"))))?;
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|state_key| UserId::parse(state_key).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid state_key property."))))?;
 
 	if !services
 		.globals
@@ -168,10 +167,11 @@ pub(crate) async fn create_invite_route(
 	// Add event_id back
 	signed_event.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.to_string()));
 
-	let sender_user: &UserId = signed_event
+	let sender_user = signed_event
 		.get("sender")
-		.try_into()
-		.map_err(|e| err!(Request(InvalidParam("Invalid sender property: {e}"))))?;
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|sender| UserId::parse(sender).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid sender property."))))?;
 
 	if services.rooms.metadata.is_banned(&body.room_id).await
 		&& !services.users.is_admin(&recipient_user).await
@@ -224,7 +224,7 @@ pub(crate) async fn create_invite_route(
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 
-	let pdu: PduEvent = codec::from_value(event.into())
+	let pdu: PduEvent = codec::from_value(&rezzy::JsonValue::Object(event))
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 
 	invite_state.push(pdu.to_format());

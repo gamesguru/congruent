@@ -31,8 +31,8 @@ pub(crate) async fn well_known_client(
 			.config
 			.matrix_rtc
 			.effective_foci(&services.config.well_known.rtc_focus_server_urls)
-			.into_iter()
-			.map(|focus| slipstream::codec::to_value(&focus))
+			.iter()
+			.cloned()
 			.collect(),
 	})
 }
@@ -51,7 +51,9 @@ pub(crate) async fn get_rtc_transports(
 			.config
 			.matrix_rtc
 			.effective_foci(&services.config.well_known.rtc_focus_server_urls)
-			.to_vec(),
+			.iter()
+			.map(slipstream::codec::to_value)
+			.collect(),
 	))
 }
 

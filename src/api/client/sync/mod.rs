@@ -370,7 +370,7 @@ async fn shares_a_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_any(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
+		.ready_any(|room_id| ignore_room.is_none_or(|ignored| *ignored != room_id))
 		.await
 }
 

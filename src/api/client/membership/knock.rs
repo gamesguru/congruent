@@ -668,7 +668,13 @@ async fn knock_room_helper_remote(
 	services.rooms.state_cache.mark_as_knocked(
 		sender_user,
 		room_id,
-		Some(send_knock_response.knock_room_state.clone()),
+		Some(
+			send_knock_response
+				.knock_room_state
+				.iter()
+				.map(Raw::cast)
+				.collect(),
+		),
 	);
 
 	info!("Successfully set final room state for new room");

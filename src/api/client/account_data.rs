@@ -83,13 +83,15 @@ pub(crate) async fn get_global_account_data_route(
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: Extract<AnyGlobalAccountDataEventContent> = services
+	let account_data: JsonValue = services
 		.account_data
-		.get_global(&body.user_id, body.event_type.clone())
+		.get_global::<JsonValue>(&body.user_id, body.event_type.clone())
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_global_account_data::v3::Response { account_data: account_data.content })
+	Ok(get_global_account_data::v3::Response {
+		account_data: Raw::from_value(&account_data),
+	})
 }
 
 /// # `GET /_matrix/client/r0/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -105,13 +107,15 @@ pub(crate) async fn get_room_account_data_route(
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: Extract<AnyRoomAccountDataEventContent> = services
+	let account_data: JsonValue = services
 		.account_data
-		.get_room(&body.room_id, &body.user_id, body.event_type.clone())
+		.get_room::<JsonValue>(&body.room_id, &body.user_id, body.event_type.clone())
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_room_account_data::v3::Response { account_data: account_data.content })
+	Ok(get_room_account_data::v3::Response {
+		account_data: Raw::from_value(&account_data),
+	})
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/account_data/{type}`

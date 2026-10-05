@@ -110,7 +110,9 @@ pub(crate) async fn get_keys_route(
 			.failures
 			.into_iter()
 			.filter_map(|(server, failure)| {
-				slipstream::OwnedServerName::parse(server).ok().map(|server| (server, failure))
+				slipstream::OwnedServerName::parse(server)
+					.ok()
+					.map(|server| (server, failure))
 			})
 			.collect(),
 	})
@@ -143,7 +145,9 @@ pub(crate) async fn claim_keys_route(
 			.failures
 			.into_iter()
 			.filter_map(|(server, failure)| {
-				slipstream::OwnedServerName::parse(server).ok().map(|server| (server, failure))
+				slipstream::OwnedServerName::parse(server)
+					.ok()
+					.map(|server| (server, failure))
 			})
 			.collect(),
 	})

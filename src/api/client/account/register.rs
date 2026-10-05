@@ -484,7 +484,24 @@ async fn create_registration_uiaa_session(
 		// Require all users to agree to the terms and conditions, if configured
 		let terms = &services.config.registration_terms;
 		if !terms.is_empty() {
-			let mut terms = codec::to_value(terms);
+			let mut policies = slipstream::json::Object::new();
+			for (language, documents) in terms {
+				let mut translated = slipstream::json::Object::new();
+				for (name, document) in documents {
+					let mut value = slipstream::json::Object::new();
+					value.insert(
+						"name".to_owned(),
+						slipstream::json::Value::String(document.name.clone()),
+					);
+					value.insert(
+						"url".to_owned(),
+						slipstream::json::Value::String(document.url.clone()),
+					);
+					translated.insert(name.clone(), value.into());
+				}
+				policies.insert(language.clone(), translated.into());
+			}
+			let mut terms = slipstream::json::Value::Object(policies);
 
 			// Insert a dummy `version` field
 			for (_, documents) in terms.as_object_mut().unwrap() {

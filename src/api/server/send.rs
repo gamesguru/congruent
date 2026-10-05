@@ -1110,7 +1110,8 @@ async fn handle_edu_device_list_update(
 		return;
 	};
 
-	let incoming_keys = inject_device_display_name(incoming_keys, device_display_name.as_ref());
+	let incoming_keys =
+		inject_device_display_name(incoming_keys.cast(), device_display_name.as_ref());
 
 	let existing_keys = services
 		.users
@@ -1301,7 +1302,7 @@ async fn handle_edu_direct_to_device_event(
 					services.users.add_to_device_event(
 						sender,
 						target_user_id,
-						target_device_id,
+						&target_device_id,
 						ev_type,
 						event.clone(),
 					)
@@ -1329,7 +1330,13 @@ async fn handle_edu_signing_key_update(
 
 	services
 		.users
-		.add_cross_signing_keys(&user_id, &master_key, &self_signing_key, &None, true)
+		.add_cross_signing_keys(
+			&user_id,
+			&master_key.as_ref().map(Raw::cast),
+			&self_signing_key.as_ref().map(Raw::cast),
+			&None,
+			true,
+		)
 		.await
 		.log_err()
 		.ok();

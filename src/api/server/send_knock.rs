@@ -62,5 +62,7 @@ pub(crate) async fn create_knock_event_v1_route(
 		Some(knock_room_state.clone()),
 	);
 
-	Ok(send_knock::v1::Response { knock_room_state })
+	Ok(send_knock::v1::Response {
+		knock_room_state: knock_room_state.into_iter().map(Raw::cast).collect(),
+	})
 }

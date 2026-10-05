@@ -222,9 +222,8 @@ pub(crate) async fn get_context_route(
 		.ready_filter_map(|((event_type, state_key), event_id)| {
 			if filter.lazy_load_options.is_enabled()
 				&& event_type == StateEventType::RoomMember
-				&& state_key
-					.as_str()
-					.and_then(|value| UserId::parse(value).ok())
+				&& UserId::parse(state_key)
+					.ok()
 					.is_some_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
 			{
 				return None;
