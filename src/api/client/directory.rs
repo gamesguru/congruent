@@ -19,11 +19,8 @@ use futures::{
 use slipstream::{
 	OwnedRoomId, RoomId, ServerName, UInt, UserId,
 	api::{
-		client::{
-			directory::{
-				get_public_rooms, get_public_rooms_filtered, get_room_visibility,
-				set_room_visibility,
-			},
+		client::directory::{
+			get_public_rooms, get_public_rooms_filtered, get_room_visibility, set_room_visibility,
 		},
 		federation,
 	},
