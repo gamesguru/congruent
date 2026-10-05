@@ -1,10 +1,9 @@
-use serde_json::Value as JsonValue;
 use slipstream::{RoomVersionId, canonical_json::redact_content_in_place};
 
 use crate::{Error, Result, err, implement};
 
 #[implement(super::Pdu)]
-pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: &JsonValue) -> Result {
+pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: &slipstream::json::Value) -> Result {
 	self.unsigned = None;
 
 	let content =
@@ -19,7 +18,7 @@ pub fn redact(&mut self, room_version_id: &RoomVersionId, reason: &JsonValue) ->
 		.map_err(|e| Error::Redaction(self.sender.server_name(), e))?;
 
 	let reason =
-		slipstream::codec::from_str::<slipstream::canonical_json::Value>(&reason.to_string())
+		slipstream::codec::from_str::<slipstream::canonical_json::Value>(&slipstream::codec::to_string(reason))
 			.expect("Failed to preserialize reason");
 
 	let mut redacted_because = slipstream::canonical_json::Object::new();

@@ -24,12 +24,13 @@ use slipstream::{
 				get_public_rooms, get_public_rooms_filtered, get_room_visibility,
 				set_room_visibility,
 			},
-			room,
 		},
 		federation,
 	},
 	codec,
-	directory::{Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter, Visibility},
+	directory::{
+		Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter, Visibility,
+	},
 	events::{
 		StateEventType,
 		room::{
@@ -193,9 +194,6 @@ pub(crate) async fn set_room_visibility_route(
 			info!("{sender_user} made {0} public to the room directory", body.room_id);
 		},
 		| Visibility::Private => services.rooms.directory.set_not_public(&body.room_id),
-		| _ => {
-			return Err!(Request(InvalidParam("Room visibility type is not supported.",)));
-		},
 	}
 
 	Ok(set_room_visibility::v3::Response {})

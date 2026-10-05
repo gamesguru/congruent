@@ -21,10 +21,7 @@ pub(crate) async fn put_dehydrated_device_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<put_dehydrated_device::Request>,
 ) -> Result<put_dehydrated_device::Response> {
-	let sender_user = body
-		.sender_user
-		.as_deref()
-		.expect("AccessToken authentication required");
+	let sender_user = body.sender_user();
 
 	let device_id = body.body.device_id.clone();
 

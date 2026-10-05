@@ -164,6 +164,9 @@ pub(crate) async fn get_alias_route(
 
 	Ok(get_alias::v3::Response {
 		room_id,
-		servers: servers.into_iter().map(|server| server.to_string()).collect(),
+		servers: servers
+			.into_iter()
+			.map(|server| server.to_string())
+			.collect(),
 	})
 }

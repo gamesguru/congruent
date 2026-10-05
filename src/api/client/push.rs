@@ -326,7 +326,6 @@ pub(crate) async fn set_pushrule_route(
 				ErrorKind::InvalidParam,
 				"The before rule has a higher priority than the after rule.",
 			),
-			| _ => Error::BadRequest(ErrorKind::InvalidParam, "Invalid data."),
 		};
 
 		return Err(err);
@@ -522,7 +521,6 @@ pub(crate) async fn delete_pushrule_route(
 			),
 			| RemovePushRuleError::NotFound =>
 				Error::BadRequest(ErrorKind::NotFound, "Push rule not found."),
-			| _ => Error::BadRequest(ErrorKind::InvalidParam, "Invalid data."),
 		};
 
 		return Err(err);

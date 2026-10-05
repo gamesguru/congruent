@@ -176,11 +176,10 @@ pub(crate) async fn get_room_digest_route(
 	response.field("depth_range", &(min_depth, max_depth));
 	response.field("origin_server_ts_range", &(min_ts, max_ts));
 
-	let mut response = crate::api::json_util::json_response(response.finish());
-	response.headers_mut().insert(
-		http::header::ETAG,
-		etag.parse().expect("ETag must be a valid header value"),
-	);
+	let mut response = crate::json_util::json_response(response.finish());
+	response
+		.headers_mut()
+		.insert(http::header::ETAG, etag.parse().expect("ETag must be a valid header value"));
 	Ok(response)
 }
 

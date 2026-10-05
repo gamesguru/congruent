@@ -40,7 +40,7 @@ pub(crate) async fn get_server_keys_route(
 
 	services.server_keys.sign_json(&mut response)?;
 
-	Ok(crate::api::json_util::json_response(codec::to_value(&response)))
+	Ok(crate::json_util::json_response(codec::to_value(&response)))
 }
 
 fn valid_until_ts() -> MilliSecondsSinceUnixEpoch {

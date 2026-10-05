@@ -548,7 +548,7 @@ async fn join_room_by_id_helper_remote(
 			arr.iter()
 				.filter_map(|v| {
 					v.as_str().and_then(|s| {
-						<&slipstream::EventId>::try_from(s)
+						<slipstream::EventId>::try_from(s)
 							.ok()
 							.map(ToOwned::to_owned)
 					})

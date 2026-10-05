@@ -232,7 +232,7 @@ async fn create_join_event(
 			let retained_state_id_set = &retained_state_id_set;
 			async move {
 				match event_id {
-					| Ok(event_id) if retained_state_id_set.contains(*event_id) => None,
+					| Ok(event_id) if retained_state_id_set.contains(&event_id) => None,
 					| other => Some(other),
 				}
 			}
