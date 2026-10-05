@@ -560,7 +560,7 @@ async fn knock_room_helper_remote(
 	let state = send_knock_response
 		.knock_room_state
 		.iter()
-		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.clone().into_json().get()))
+		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.get()))
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();

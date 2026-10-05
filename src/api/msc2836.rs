@@ -602,7 +602,7 @@ pub(crate) async fn to_raw_json_with_children(
 	}
 
 	serde_json::value::to_raw_value(&value).unwrap_or_else(|_| {
-		slipstream::serde::RawJsonValue::from_string("{}".to_owned())
+		slipstream::serde::RawJsonValue::from_json_string("{}".to_owned())
 			.expect("static JSON is valid")
 	})
 }

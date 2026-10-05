@@ -210,7 +210,7 @@ pub(crate) async fn create_invite_route(
 		.is_some_and(|is_direct| is_direct.as_bool() == Some(true));
 	let invite_state_values = invite_state
 		.iter()
-		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
+		.map(|event| rezzy::JsonValue::parse(event.get()))
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
