@@ -1,7 +1,7 @@
 use std::{mem, ops::Deref};
 
 use axum::{body::Body, extract::FromRequest};
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use conduwuit::{Error, Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
 use slipstream::{
@@ -70,21 +70,21 @@ where
 	#[inline]
 	pub(crate) fn sender_user(&self) -> &UserId {
 		self.sender_user
-			.as_deref()
+			.as_ref()
 			.expect("user must be authenticated for this handler")
 	}
 
 	#[inline]
 	pub(crate) fn sender_device(&self) -> &DeviceId {
 		self.sender_device
-			.as_deref()
+			.as_ref()
 			.expect("user must be authenticated and device identified")
 	}
 
 	#[inline]
 	pub(crate) fn origin(&self) -> &ServerName {
 		self.origin
-			.as_deref()
+			.as_ref()
 			.expect("server must be authenticated for this handler")
 	}
 }
@@ -214,7 +214,5 @@ fn take_body(request: &mut Request, json_body: Option<&mut CanonicalJsonValue>) 
 		return mem::take(&mut request.body);
 	};
 
-	let mut buf = BytesMut::new().writer();
-	serde_json::to_writer(&mut buf, &json_body).expect("value serialization can't fail");
-	buf.into_inner().freeze()
+	Bytes::from(slipstream::codec::to_string(&json_body))
 }

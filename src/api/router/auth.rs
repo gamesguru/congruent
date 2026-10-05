@@ -384,7 +384,7 @@ fn auth_server_checks(services: &Services, x_matrix: &XMatrix) -> Result<()> {
 			.moderation
 			.is_remote_server_forbidden(&x_matrix.origin),
 		&x_matrix.origin,
-		x_matrix.destination.as_deref(),
+		x_matrix.destination.as_ref(),
 	)
 }
 

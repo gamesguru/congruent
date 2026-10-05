@@ -12,7 +12,6 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use conduwuit::{Err, Event, PduEvent, Result, err};
 use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
-use serde::Deserialize;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
 	api::federation::event::event_relationships as federation_event_relationships, serde::Raw,
@@ -72,25 +71,23 @@ impl Params {
 	}
 }
 
-#[derive(Deserialize)]
-struct RelationshipContent {
-	rel_type: String,
-	event_id: OwnedEventId,
-}
-
-#[derive(Deserialize)]
-struct ExtractRelationship {
-	#[serde(rename = "m.relationship")]
-	relationship: Option<RelationshipContent>,
-}
-
-#[derive(Deserialize, Default)]
+struct RelationshipContent { rel_type: String, event_id: OwnedEventId }
+slipstream::codec_struct!(RelationshipContent {
+	rel_type: String = ("rel_type"),
+	event_id: OwnedEventId = ("event_id"),
+});
+struct ExtractRelationship { relationship: Option<RelationshipContent> }
+slipstream::codec_struct!(ExtractRelationship {
+	relationship: Option<RelationshipContent> = ("m.relationship", omit),
+});
 struct ExtractChildrenUnsigned {
-	#[serde(default)]
 	children: BTreeMap<String, u64>,
-	#[serde(default)]
 	children_hash: Option<String>,
 }
+slipstream::codec_struct!(ExtractChildrenUnsigned {
+	children: BTreeMap<String, u64> = ("children", omit),
+	children_hash: Option<String> = ("children_hash", omit),
+});
 
 fn parent_of(pdu: &PduEvent) -> Option<(OwnedEventId, String)> {
 	pdu.get_content::<ExtractRelationship>()
@@ -103,8 +100,7 @@ fn reported_children(
 	value: &slipstream::CanonicalJsonObject,
 ) -> Option<(BTreeMap<String, u64>, String)> {
 	let unsigned = value.get("unsigned")?;
-	let unsigned = serde_json::to_value(unsigned).ok()?;
-	let unsigned = serde_json::from_value::<ExtractChildrenUnsigned>(unsigned).ok()?;
+	let unsigned = slipstream::codec::from_value::<ExtractChildrenUnsigned>(unsigned).ok()?;
 	Some((unsigned.children, unsigned.children_hash?))
 }
 
