@@ -79,12 +79,12 @@ pub(crate) async fn request_3pid_management_token_via_email_route(
 				user_id: body.sender_user_opt(),
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::from(body.client_secret.clone()),
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_3pid_management_token_via_email::v3::Response { sid: session })
+	Ok(request_3pid_management_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/msisdn/requestToken`
@@ -119,9 +119,11 @@ pub(crate) async fn add_3pid_route(
 		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
 		.await?;
 
+	let sid = slipstream::OwnedSessionId::from(body.sid.clone());
+	let client_secret = slipstream::OwnedClientSecret::from(body.client_secret.clone());
 	let email = services
 		.threepid
-		.consume_valid_session(&body.sid, &body.client_secret)
+		.consume_valid_session(&sid, &client_secret)
 		.await
 		.map_err(|message| err!(Request(ThreepidAuthFailed("{message}"))))?;
 

@@ -224,8 +224,8 @@ pub(crate) async fn get_context_route(
 				&& event_type == StateEventType::RoomMember
 				&& state_key
 					.as_str()
-					.try_into()
-					.is_ok_and(|user_id: &UserId| !lazy_loading_witnessed.contains(user_id))
+					.and_then(|value| UserId::parse(value).ok())
+					.is_some_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
 			{
 				return None;
 			}

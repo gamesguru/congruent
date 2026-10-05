@@ -64,7 +64,7 @@ pub(crate) async fn get_public_rooms_filtered_route(
 
 	let response = get_public_rooms_filtered_helper(
 		&services,
-		body.server.as_deref(),
+		body.server.as_ref(),
 		body.limit,
 		body.since.as_deref(),
 		&body.filter,
@@ -97,7 +97,7 @@ pub(crate) async fn get_public_rooms_route(
 
 	let response = get_public_rooms_filtered_helper(
 		&services,
-		body.server.as_deref(),
+		body.server.as_ref(),
 		body.limit,
 		body.since.as_deref(),
 		&Filter::default(),

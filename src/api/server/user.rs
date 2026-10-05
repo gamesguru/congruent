@@ -106,7 +106,13 @@ pub(crate) async fn get_keys_route(
 		device_keys: result.device_keys,
 		master_keys: result.master_keys,
 		self_signing_keys: result.self_signing_keys,
-		failures: result.failures,
+		failures: result
+			.failures
+			.into_iter()
+			.filter_map(|(server, failure)| {
+				slipstream::OwnedServerName::parse(server).ok().map(|server| (server, failure))
+			})
+			.collect(),
 	})
 }
 
@@ -133,6 +139,12 @@ pub(crate) async fn claim_keys_route(
 
 	Ok(claim_keys::v1::Response {
 		one_time_keys: result.one_time_keys,
-		failures: result.failures,
+		failures: result
+			.failures
+			.into_iter()
+			.filter_map(|(server, failure)| {
+				slipstream::OwnedServerName::parse(server).ok().map(|server| (server, failure))
+			})
+			.collect(),
 	})
 }

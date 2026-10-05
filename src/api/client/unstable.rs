@@ -232,7 +232,7 @@ pub(crate) async fn get_profile_key_route(
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None, // we want the full user's profile to update locally as well

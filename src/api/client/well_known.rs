@@ -31,7 +31,9 @@ pub(crate) async fn well_known_client(
 			.config
 			.matrix_rtc
 			.effective_foci(&services.config.well_known.rtc_focus_server_urls)
-			.to_vec(),
+			.into_iter()
+			.map(|focus| slipstream::codec::to_value(&focus))
+			.collect(),
 	})
 }
 
@@ -88,7 +90,7 @@ pub(crate) async fn well_known_support(
 		contacts.push(Contact {
 			role: role_value.clone(),
 			email_address: email_address.clone(),
-			matrix_id: matrix_id.clone(),
+			matrix_id: matrix_id.as_ref().map(ToString::to_string),
 			pgp_key: pgp_key.clone(),
 		});
 	}
@@ -105,7 +107,7 @@ pub(crate) async fn well_known_support(
 			contacts.push(Contact {
 				role: role_value.clone(),
 				email_address: None,
-				matrix_id: Some(user_id.to_owned()),
+				matrix_id: Some(user_id.to_string()),
 				pgp_key: None,
 			});
 		}

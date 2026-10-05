@@ -631,10 +631,10 @@ pub(crate) async fn request_registration_token_via_email_route(
 				server_name: services.config.server_name.as_ref(),
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::from(body.client_secret.clone()),
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_registration_token_via_email::v3::Response { sid: session })
+	Ok(request_registration_token_via_email::v3::Response { sid: session.to_string() })
 }

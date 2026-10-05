@@ -56,7 +56,7 @@ pub(crate) async fn knock_room_route(
 				&services,
 				sender_user,
 				Some(&room_id),
-				room_id.server_name(),
+				room_id.server_name().as_ref(),
 				client,
 			)
 			.await?;
@@ -76,12 +76,13 @@ pub(crate) async fn knock_room_route(
 			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
 				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
+			let alias_server_name = room_alias.server_name();
 
 			banned_room_check(
 				&services,
 				sender_user,
 				Some(&room_id),
-				Some(room_alias.server_name()),
+				Some(&alias_server_name),
 				client,
 			)
 			.await?;

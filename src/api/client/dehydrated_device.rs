@@ -21,13 +21,13 @@ pub(crate) async fn put_dehydrated_device_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<put_dehydrated_device::Request>,
 ) -> Result<put_dehydrated_device::Response> {
-	let sender_user = body.sender_user();
+	let sender_user = body.sender_user().to_owned();
 
 	let device_id = body.body.device_id.clone();
 
 	services
 		.users
-		.set_dehydrated_device(sender_user, body.body)
+		.set_dehydrated_device(&sender_user, body.body)
 		.await?;
 
 	Ok(put_dehydrated_device::Response { device_id })

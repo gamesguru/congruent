@@ -228,12 +228,12 @@ pub(crate) async fn request_password_change_token_via_email_route(
 				user_id: &user_id,
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::from(body.client_secret.clone()),
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_password_change_token_via_email::v3::Response { sid: session })
+	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `GET /_matrix/client/v3/account/whoami`
