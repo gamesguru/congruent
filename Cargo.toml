@@ -428,7 +428,7 @@ branch = "alpha"
 
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
-git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
+git = "https://gitlab.com/Wombat-Foundation/mtx-slipstream.git"
 branch = "dev"
 
 [workspace.dependencies.rust-rocksdb]
