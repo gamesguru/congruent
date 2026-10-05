@@ -25,7 +25,7 @@ fn descriptor_cf_options(
 	config: &Config,
 	cache: Option<&Cache>,
 ) -> Result<Options> {
-	set_compression(&mut desc, config);
+	set_compression(&mut desc, config)?;
 	set_table_options(&mut opts, &desc, cache)?;
 
 	opts.set_min_write_buffer_number(1);
@@ -112,15 +112,20 @@ fn set_table_options(opts: &mut Options, desc: &Descriptor, cache: Option<&Cache
 	Ok(())
 }
 
-fn set_compression(desc: &mut Descriptor, config: &Config) {
+fn set_compression(desc: &mut Descriptor, config: &Config) -> Result<()> {
+	// Only the zstd codec is compiled in, so anything else would produce a
+	// database that cannot be read back rather than a working configuration.
 	desc.compression = match config.rocksdb_compression_algo.as_ref() {
-		| "snappy" => CompressionType::Snappy,
-		| "zlib" => CompressionType::Zlib,
-		| "bz2" => CompressionType::Bz2,
-		| "lz4" => CompressionType::Lz4,
-		| "lz4hc" => CompressionType::Lz4hc,
+		| "zstd" => CompressionType::Zstd,
 		| "none" => CompressionType::None,
-		| _ => CompressionType::Zstd,
+		| value => {
+			return Err(err!(Config(
+				"rocksdb_compression_algo",
+				"Unsupported compression algorithm '{value}'. This build only compiles in zstd, \
+				 supported values are 'zstd' or 'none'. A database written with another codec \
+				 can not be read back by this build."
+			)));
+		},
 	};
 
 	let can_override_level = config.rocksdb_compression_level == SENTINEL_COMPRESSION_LEVEL
@@ -141,6 +146,8 @@ fn set_compression(desc: &mut Descriptor, config: &Config) {
 	if !config.rocksdb_bottommost_compression {
 		desc.bottommost_level = None;
 	}
+
+	Ok(())
 }
 
 fn fifo_options(desc: &Descriptor) -> FifoCompactOptions {

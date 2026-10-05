@@ -1291,12 +1291,12 @@ pub struct Config {
 
 	/// Type of RocksDB database compression to use.
 	///
-	/// Available options are "zstd", "bz2", "lz4", or "none".
+	/// Available options are "zstd" or "none".
 	///
-	/// It is best to use ZSTD as an overall good balance between
-	/// speed/performance, storage, IO amplification, and CPU usage. For more
-	/// performance but less compression (more storage used) and less CPU usage,
-	/// use LZ4.
+	/// Only zstd is compiled in; it is an overall good balance between
+	/// speed/performance, storage, IO amplification, and CPU usage. Note that a
+	/// database written with any other codec can not be read back by this
+	/// build, so this may not be changed on an existing database.
 	///
 	/// For more details, see:
 	/// https://github.com/facebook/rocksdb/wiki/Compression

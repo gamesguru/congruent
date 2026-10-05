@@ -422,11 +422,13 @@ branch = "alpha"
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
 rev = "61d9d23872197e9ace4a477f2617d5c9f50ecb23"
 default-features = false
+# Only zstd is compiled in: the other codecs (lz4, bzip2, zlib) each pull a
+# separate C build for a marginal win, and RocksDB records the codec per data
+# block, so an existing database is only readable with the codec it was written
+# with. See `rocksdb_compression_algo`.
 features = [
     "multi-threaded-cf",
-    "lz4",
     "zstd",
-    "bzip2",
 ]
 
 [workspace.dependencies.sha2]

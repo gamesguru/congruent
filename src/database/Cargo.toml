@@ -46,7 +46,6 @@ release_max_log_level = [
 ]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
-	"rust-rocksdb/zstd",
 ]
 bindgen-static = [
     "rust-rocksdb/mt_static"
