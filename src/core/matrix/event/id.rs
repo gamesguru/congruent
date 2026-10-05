@@ -27,7 +27,7 @@ pub fn gen_event_id(
 	room_version_id: &RoomVersionId,
 ) -> Result<OwnedEventId> {
 	let reference_hash = slipstream::signatures::reference_hash(value, room_version_id)?;
-	let event_id: OwnedEventId = format!("${reference_hash}").try_into()?;
+	let event_id = OwnedEventId::parse(format!("${reference_hash}"))?;
 
 	Ok(event_id)
 }
