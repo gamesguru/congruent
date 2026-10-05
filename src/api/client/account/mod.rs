@@ -120,9 +120,9 @@ pub(crate) async fn change_password_route(
 		services
 			.uiaa
 			.authenticate(
-				&body.auth,
+				&Some(body.auth.clone()),
 				vec![AuthFlow::new(vec![AuthType::Password])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				Some(Identity::from_user_id(user_id)),
 			)
 			.await?
@@ -135,9 +135,9 @@ pub(crate) async fn change_password_route(
 		services
 			.uiaa
 			.authenticate(
-				&body.auth,
+				&Some(body.auth.clone()),
 				vec![AuthFlow::new(vec![AuthType::EmailIdentity])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				None,
 			)
 			.await?

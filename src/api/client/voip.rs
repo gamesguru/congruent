@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{Err, Result, utils};
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
-use slipstream::{SecondsSinceUnixEpoch, UserId, api::client::voip::get_turn_server_info};
+use slipstream::{MilliSecondsSinceUnixEpoch, SecondsSinceUnixEpoch, UserId, api::client::voip::get_turn_server_info};
 
 use crate::Ruma;
 
@@ -63,6 +63,6 @@ pub(crate) async fn turn_server_route(
 		username,
 		password,
 		uris: services.globals.turn_uris().to_vec(),
-		ttl: Duration::from_secs(services.globals.turn_ttl()),
+		ttl: MilliSecondsSinceUnixEpoch::from(Duration::from_secs(services.globals.turn_ttl())),
 	})
 }

@@ -76,7 +76,7 @@ where
 
 	#[inline]
 	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> {
-		self.sender_user.as_ref().map(|id| id.as_ref())
+		self.sender_user.as_ref()
 	}
 
 	#[inline]
@@ -88,7 +88,7 @@ where
 
 	#[inline]
 	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> {
-		self.sender_device.as_ref().map(|id| id.as_ref())
+		self.sender_device.as_ref()
 	}
 
 	#[inline]
@@ -100,7 +100,7 @@ where
 
 	#[inline]
 	pub(crate) fn origin_opt(&self) -> Option<&ServerName> {
-		self.origin.as_ref().map(|id| id.as_ref())
+		self.origin.as_ref()
 	}
 }
 
