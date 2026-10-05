@@ -19,6 +19,9 @@ use slipstream::{
 
 use crate::{Dep, globals};
 
+#[cfg(test)]
+mod tests;
+
 pub struct Service {
 	services: Services,
 	db: Data,

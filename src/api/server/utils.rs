@@ -241,7 +241,7 @@ pub(super) async fn verify_send_membership(
 			value
 				.get("content")
 				.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?,
-	)
+		)
 		.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
 
 	if content.membership != expected_membership {

@@ -110,7 +110,13 @@ impl super::Service {
 		Ok(Some(bundled))
 	}
 
-	/// Serialize a replacement event to the bundled format
+	/// Serialize a replacement event to the bundled format.
+	///
+	/// The event is emitted through the `Pdu` codec as canonical JSON: keys
+	/// sorted, compact, nested raw fields re-serialized. The original
+	/// whitespace and key order are intentionally not preserved (the previous
+	/// serde output followed struct declaration order); clients and signature
+	/// checks only depend on the canonical form.
 	fn serialize_replacement(pdu: &PduEvent) -> Result<Box<RawJson>> {
 		Ok(Box::new(RawJson::from_value(pdu)))
 	}

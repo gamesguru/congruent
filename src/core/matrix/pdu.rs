@@ -429,6 +429,24 @@ impl CodecSerialize for Pdu {
 	}
 }
 
+/// Largest value of the old serde-era `UInt` (2^53 - 1, JS-safe integer).
+const UINT_MAX: u64 = 9_007_199_254_740_991;
+
+/// Field lookup treating an explicit `null` as absent, as the previous serde
+/// derive did for `Option` fields.
+fn present<'a>(obj: &'a JsonObject, key: &str) -> Option<&'a JsonValue> {
+	obj.get(key)
+		.filter(|value| !matches!(value, JsonValue::Null))
+}
+
+/// Required `UInt` field, limited to the range the serde-era type accepted.
+fn uint(obj: &JsonObject, key: &'static str) -> Result<u64, slipstream::codec::DeError> {
+	present(obj, key)
+		.and_then(slipstream::json::Value::as_u64)
+		.filter(|value| *value <= UINT_MAX)
+		.ok_or_else(|| slipstream::codec::DeError::expected(key))
+}
+
 impl CodecDeserialize for Pdu {
 	fn from_json(value: &JsonValue) -> Result<Self, slipstream::codec::DeError> {
 		let obj = value
@@ -439,57 +457,52 @@ impl CodecDeserialize for Pdu {
 			obj.get("event_id")
 				.ok_or_else(|| slipstream::codec::DeError::expected("event_id"))?,
 		)?;
-		let room_id = obj
-			.get("room_id")
+		let room_id = present(obj, "room_id")
 			.map(<OwnedRoomId as CodecDeserialize>::from_json)
 			.transpose()?;
 		let sender = <OwnedUserId as CodecDeserialize>::from_json(
 			obj.get("sender")
 				.ok_or_else(|| slipstream::codec::DeError::expected("sender"))?,
 		)?;
-		let origin = obj
-			.get("origin")
+		let origin = present(obj, "origin")
 			.map(<OwnedServerName as CodecDeserialize>::from_json)
 			.transpose()?;
-		let origin_server_ts = obj
-			.get("origin_server_ts")
-			.and_then(slipstream::json::Value::as_u64)
-			.ok_or_else(|| slipstream::codec::DeError::expected("origin_server_ts"))?;
+		let origin_server_ts = uint(obj, "origin_server_ts")?;
 		let kind = <TimelineEventType as CodecDeserialize>::from_json(
 			obj.get("type")
 				.ok_or_else(|| slipstream::codec::DeError::expected("type"))?,
 		)?;
-		let content_val = obj
-			.get("content")
-			.cloned()
-			.unwrap_or(JsonValue::Object(JsonObject::new()));
-		let content = RawJson::from_value(&content_val);
-		let state_key = obj
-			.get("state_key")
-			.and_then(|v| v.as_str())
-			.map(StateKey::from);
+		// `content` has no default: a missing (or null) content is an error.
+		let content_val = present(obj, "content")
+			.ok_or_else(|| slipstream::codec::DeError::expected("content"))?;
+		let content = RawJson::from_value(content_val);
+		// A present `state_key` must be a string; silently dropping a malformed
+		// one would turn a state event into a timeline event.
+		let state_key = present(obj, "state_key")
+			.map(|v| {
+				v.as_str()
+					.map(StateKey::from)
+					.ok_or_else(|| slipstream::codec::DeError::expected("state_key string"))
+			})
+			.transpose()?;
 		let prev_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
 			obj.get("prev_events")
 				.ok_or_else(|| slipstream::codec::DeError::expected("prev_events"))?,
 		)?;
-		let depth = obj
-			.get("depth")
-			.and_then(slipstream::json::Value::as_u64)
-			.ok_or_else(|| slipstream::codec::DeError::expected("depth"))?;
+		let depth = uint(obj, "depth")?;
 		let auth_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
 			obj.get("auth_events")
 				.ok_or_else(|| slipstream::codec::DeError::expected("auth_events"))?,
 		)?;
-		let redacts = obj
-			.get("redacts")
+		let redacts = present(obj, "redacts")
 			.map(<OwnedEventId as CodecDeserialize>::from_json)
 			.transpose()?;
-		let unsigned = obj.get("unsigned").map(RawJson::from_value);
+		let unsigned = present(obj, "unsigned").map(RawJson::from_value);
 		let hashes = <EventHash as CodecDeserialize>::from_json(
 			obj.get("hashes")
 				.ok_or_else(|| slipstream::codec::DeError::expected("hashes"))?,
 		)?;
-		let signatures = obj.get("signatures").map(RawJson::from_value);
+		let signatures = present(obj, "signatures").map(RawJson::from_value);
 
 		Ok(Self {
 			event_id,
