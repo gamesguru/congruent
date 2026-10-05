@@ -426,6 +426,14 @@ features = ["reconcile"]
 git = "https://gitlab.com/gamesguru/rezzy.git"
 branch = "alpha"
 
+# Unify rezzy with the sibling checkout slipstream builds against; two copies
+# make `rezzy_json::Value` two distinct types. Every crate from the git URL
+# (including `rezzy-recon`) must be patched or a third copy stays in the graph.
+[patch."https://gitlab.com/gamesguru/rezzy.git"]
+rezzy = { path = "../rezzy" }
+rezzy-json = { path = "../rezzy/rezzy-json" }
+rezzy-recon = { path = "../rezzy/rezzy-recon" }
+
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
 # Temporary local override while the compatibility namespace is being built.
