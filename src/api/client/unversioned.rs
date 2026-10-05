@@ -92,7 +92,7 @@ pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("name", &conduwuit::version::name());
 	object.field("version", &conduwuit::version::version());
-	Ok(Json(object.finish()))
+	Ok(crate::json_util::json_response(object.finish()))
 }
 
 /// # `GET /_conduwuit/local_user_count`
@@ -107,5 +107,5 @@ pub(crate) async fn conduwuit_local_user_count(
 
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("count", &user_count);
-	Ok(Json(object.finish()))
+	Ok(crate::json_util::json_response(object.finish()))
 }

@@ -18,7 +18,6 @@ use slipstream::{
 	presence::PresenceState,
 };
 
-
 use super::{update_avatar_url, update_displayname};
 use crate::{
 	Ruma,
@@ -426,7 +425,7 @@ pub(crate) async fn get_room_dag_route(
 		.await
 		.insert(room_id.clone(), (Instant::now(), events.clone()));
 
-	Ok(axum::Json(events))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Array(events)))
 }
 
 /// # `POST /_matrix/client/unstable/event_relationships`

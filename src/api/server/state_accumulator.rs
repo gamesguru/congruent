@@ -93,7 +93,7 @@ pub(crate) async fn get_state_accumulator_route(
 	response.field("n_state_events", &n_state_events);
 	response.field("digest", &digest);
 
-	Ok(Json(response.finish()))
+	Ok(crate::json_util::json_response(response.finish()))
 }
 
 async fn verify_federation_request(

@@ -137,5 +137,5 @@ pub(crate) async fn syncv3_client_server_json(
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("server", &server_url);
 	object.field("version", &conduwuit::version());
-	Ok(Json(object.finish()))
+	Ok(crate::json_util::json_response(object.finish()))
 }

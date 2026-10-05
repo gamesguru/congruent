@@ -16,8 +16,7 @@ use futures::FutureExt;
 use service::{Services, rooms::state::RoomMutexGuard};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomAliasId, OwnedRoomId,
-	OwnedServerName, RoomId,
-	RoomVersionId, UserId,
+	OwnedServerName, RoomId, RoomVersionId, UserId,
 	api::{
 		client::knock::knock_room,
 		federation::{self},
