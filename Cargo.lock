@@ -3547,7 +3547,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "ed25519-consensus",
- "headers",
  "http",
  "rand_core 0.6.4",
  "rezzy",
