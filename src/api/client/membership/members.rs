@@ -5,7 +5,7 @@ use conduwuit::{
 };
 use futures::{StreamExt, TryStreamExt, future::join};
 use slipstream::{
-	OwnedEventId,
+	OwnedEventId, OwnedUserId,
 	api::client::membership::{
 		get_member_events::{self, v3::MembershipEventFilter},
 		joined_members,
@@ -178,7 +178,7 @@ pub(crate) async fn joined_members_route(
 		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
 
-	let room_members = services
+	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services
 		.rooms
 		.state_cache
 		.room_members(&body.room_id)

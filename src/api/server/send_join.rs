@@ -314,6 +314,7 @@ pub(crate) async fn create_join_event_v1_route(
 		.boxed()
 		.await?;
 	let transformed = create_join_event::v1::RoomState {
+		origin: body.origin().to_string(),
 		auth_chain: room_state.auth_chain,
 		state: room_state.state,
 		event: room_state.event,

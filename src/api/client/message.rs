@@ -45,7 +45,6 @@ const IGNORED_MESSAGE_TYPES: &[TimelineEventType] = &[
 	Audio,
 	CallInvite,
 	Emote,
-	File,
 	Image,
 	KeyVerificationStart,
 	Location,
