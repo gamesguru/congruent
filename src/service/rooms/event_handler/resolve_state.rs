@@ -363,7 +363,8 @@ where
 		}
 
 		let content_val: slipstream::json::Value =
-			serde_json::from_str(auth_pdu.content.get()).unwrap_or(slipstream::json::Value::Null);
+			slipstream::codec::from_str(auth_pdu.content.get())
+				.unwrap_or(slipstream::json::Value::Null);
 		let parse_intlike = |value: &slipstream::json::Value| {
 			value
 				.as_i64()

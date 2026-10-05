@@ -1,7 +1,7 @@
 pub(super) mod dehydrated_device;
 
 use std::{
-	collections::{BTreeMap, HashMap},
+	collections::BTreeMap,
 	net::IpAddr,
 	sync::Arc,
 };
