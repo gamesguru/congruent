@@ -43,7 +43,7 @@ pub(crate) async fn third_party_route(
 		);
 	}
 
-	Ok(get_3pids::v3::Response::new(threepids))
+	Ok(get_3pids::v3::Response { threepids })
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/email/requestToken`
@@ -84,7 +84,7 @@ pub(crate) async fn request_3pid_management_token_via_email_route(
 		)
 		.await?;
 
-	Ok(request_3pid_management_token_via_email::v3::Response::new(session))
+	Ok(request_3pid_management_token_via_email::v3::Response { sid: session })
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/msisdn/requestToken`

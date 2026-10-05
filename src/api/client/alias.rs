@@ -162,5 +162,5 @@ pub(crate) async fn get_alias_route(
 		return Err!(Request(NotFound("Room with alias not found.")));
 	};
 
-	Ok(get_alias::v3::Response::new(room_id, servers))
+	Ok(get_alias::v3::Response { room_id, servers })
 }

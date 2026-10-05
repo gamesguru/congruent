@@ -482,7 +482,8 @@ fn create_dummy_leave_event(
 	// clients. perhaps a database table could be created to hold these dummy
 	// events, or they could be stored as outliers?
 	PduEvent {
-		event_id: EventId::new(services.globals.server_name()),
+		event_id: EventId::parse(format!("$leave:{}", services.globals.server_name()))
+			.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
 		origin_server_ts: utils::millis_since_unix_epoch()

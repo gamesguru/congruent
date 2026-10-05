@@ -636,5 +636,5 @@ pub(crate) async fn request_registration_token_via_email_route(
 		)
 		.await?;
 
-	Ok(request_registration_token_via_email::v3::Response::new(session))
+	Ok(request_registration_token_via_email::v3::Response { sid: session })
 }

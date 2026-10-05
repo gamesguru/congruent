@@ -31,5 +31,5 @@ pub(crate) async fn list_rooms(
 		.collect()
 		.await;
 	rooms.sort();
-	Ok(rooms::list::v1::Response::new(rooms))
+	Ok(rooms::list::v1::Response { rooms })
 }

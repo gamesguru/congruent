@@ -607,7 +607,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(slipstream::CanonicalJsonValue::as_integer)
+			.and_then(|value| value.as_i64())
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
@@ -624,7 +624,7 @@ async fn build_local_dag(
 			.to_string()
 			.parse::<u64>()
 			.ok()
-			.and_then(UInt::new)
+			.and_then(UInt::try_from)
 			.unwrap_or_default();
 		Ok((int!(0), MilliSecondsSinceUnixEpoch(ts)))
 	})

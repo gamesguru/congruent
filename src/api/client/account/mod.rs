@@ -230,7 +230,7 @@ pub(crate) async fn request_password_change_token_via_email_route(
 		)
 		.await?;
 
-	Ok(request_password_change_token_via_email::v3::Response::new(session))
+	Ok(request_password_change_token_via_email::v3::Response { sid: session })
 }
 
 /// # `GET /_matrix/client/v3/account/whoami`

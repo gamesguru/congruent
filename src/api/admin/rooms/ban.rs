@@ -112,7 +112,7 @@ pub(crate) async fn ban_room(
 			services.admin.send_message(msg).await.ok();
 		}
 
-		Ok(rooms::ban::v1::Response::new(evicted, failed_evicted, aliases))
+		Ok(rooms::ban::v1::Response { evicted, failed_evicted, aliases })
 	} else {
 		// Don't unban if not banned
 		if !services.rooms.metadata.is_banned(&body.room_id).await {
@@ -125,6 +125,10 @@ pub(crate) async fn ban_room(
 			.admin
 			.notice(&format!("{sender_user} unbanned {}", body.room_id))
 			.await;
-		Ok(rooms::ban::v1::Response::new(Vec::new(), Vec::new(), Vec::new()))
+		Ok(rooms::ban::v1::Response {
+			evicted: Vec::new(),
+			failed_evicted: Vec::new(),
+			aliases: Vec::new(),
+		})
 	}
 }

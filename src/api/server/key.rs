@@ -93,8 +93,8 @@ async fn sign_signing_keys(
 	services: &crate::State,
 	server_keys: &Raw<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
-	let mut keys_obj: slipstream::CanonicalJsonObject =
-		codec::from_str(server_keys.json().get())?;
+	let json = server_keys.json()?;
+	let mut keys_obj: slipstream::CanonicalJsonObject = codec::from_value(&json)?;
 	services.server_keys.sign_json(&mut keys_obj)?;
 	Ok(Raw::from_value(&keys_obj))
 }
