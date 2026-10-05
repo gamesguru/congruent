@@ -1299,13 +1299,20 @@ async fn handle_edu_direct_to_device_event(
 				.users
 				.all_device_ids(target_user_id)
 				.for_each(|target_device_id| {
-					services.users.add_to_device_event(
-						sender,
-						target_user_id,
-						&target_device_id,
-						ev_type,
-						event.clone(),
-					)
+					let target_device_id = target_device_id.clone();
+					let event = event.clone();
+					async move {
+						services
+							.users
+							.add_to_device_event(
+								sender,
+								target_user_id,
+								&target_device_id,
+								ev_type,
+								event,
+							)
+							.await;
+					}
 				})
 				.await;
 		},

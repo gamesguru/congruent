@@ -268,7 +268,7 @@ pub(crate) async fn get_message_events_route(
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
 		device_id: sender_device
-			.or_else(|| appservice_device.as_deref())
+			.or_else(|| appservice_device.as_ref())
 			.or_else(|| {
 				warn!(
 					"No device_id provided and no appservice registration found, this should be \

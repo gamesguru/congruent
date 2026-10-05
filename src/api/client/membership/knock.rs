@@ -23,6 +23,7 @@ use slipstream::{
 	},
 	canonical_json::to_canonical_value,
 	codec,
+	serde::Raw,
 	events::{
 		StateEventType,
 		room::{

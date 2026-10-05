@@ -43,7 +43,7 @@ pub(crate) async fn send_event_to_device_route(
 						DeviceIdOrAllDevices::DeviceId(device_id.clone()),
 					| DeviceIdOrAllDevices::AllDevices => DeviceIdOrAllDevices::AllDevices,
 				};
-				map.insert(target_device_id, event.clone());
+				map.insert(target_device_id, event.clone().cast());
 				let mut messages = BTreeMap::new();
 				messages.insert(target_user_id.clone(), map);
 				let count = services.globals.next_count()?;

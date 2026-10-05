@@ -186,7 +186,7 @@ pub(crate) async fn create_invite_route(
 
 	let recipient_filter_level = services
 		.users
-		.invite_filter_level(sender_user, &recipient_user)
+		.invite_filter_level(&sender_user, &recipient_user)
 		.await;
 
 	if matches!(recipient_filter_level, FilterLevel::Block) {
@@ -245,7 +245,7 @@ pub(crate) async fn create_invite_route(
 			.mark_as_invited(
 				&recipient_user,
 				&body.room_id,
-				sender_user,
+				&sender_user,
 				Some(invite_state),
 				body.via.clone(),
 			)
