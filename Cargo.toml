@@ -263,7 +263,6 @@ features = [
     "time",
     "rt-multi-thread",
     "io-util",
-    "tracing",
 ]
 
 [workspace.dependencies.tokio-metrics]
