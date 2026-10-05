@@ -1,5 +1,23 @@
 
 ###############################
+Mon 2026/10/05
+###############################
+
+## Compile-time optimization priorities
+
+Timing report: `target/cargo-timings/cargo-timing-20261005T192502012Z-08726ca2a0852d50.html`.
+
+- Ruma feature generation is the largest structural cost: `ruma-events` (~42s), `ruma-client-api` (~32s), `ruma-macros` (~18s), and `ruma-common` (~14s). Audit the large unstable/compat feature surface before removing foundational crates.
+- `bindgen` plus `clang-sys` costs ~37s combined: gate unconditional RocksDB binding generation when shipped bindings are valid, removing the libclang requirement.
+- Avoid duplicate `syn` versions (~14s + ~13s), `tokio` variants (~15s + ~11s), `axum` variants (~9s + ~7s), and TOML/TOML-edit versions (~30s combined) through feature/version unification.
+- `askama` costs ~16s each for parser and derive; replacement is a larger template rewrite.
+- `moxcms` costs ~19s; investigate whether image-processing features can be made optional before replacing it.
+- `tracing` itself is not a meaningful target (~0.8s per unit); `tracing-subscriber` is ~4s and `tracing-core` is ~3s across variants. Keep the logging stack.
+- Tokio costs ~27s across two variants, but is foundational; unify feature variants rather than replacing it.
+- Keep Axum and Serde: they are foundational and not practical pruning targets.
+- Keep ICU/IDNA for internationalized server names unless compatibility is intentionally sacrificed.
+
+###############################
 Sat 2026/10/03
 ###############################
 
