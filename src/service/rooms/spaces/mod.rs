@@ -224,18 +224,17 @@ async fn get_summary_and_children_federation(
 	user_id: &UserId,
 	via: &[OwnedServerName],
 ) -> Result<Option<SummaryAccessibility>> {
-	let request = federation::space::get_hierarchy::v1::Request {
-		room_id: current_room.to_owned(),
-		suggested_only,
-	};
-
 	let mut requests: FuturesUnordered<_> = via
 		.iter()
 		.take(3)
 		.map(|server| {
+			let request = federation::space::get_hierarchy::v1::Request {
+				room_id: current_room.to_owned(),
+				suggested_only,
+			};
 			self.services
 				.sending
-				.send_federation_request(server, request.clone())
+				.send_federation_request(server, request)
 		})
 		.collect();
 

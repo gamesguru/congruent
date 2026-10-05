@@ -58,7 +58,7 @@ enum TransactionStatus {
 	Cooldown(Instant),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Msc4500SendTransactionRequest {
 	inner: send_transaction_message::v1::Request,
 	state_hashes: Option<StateHashes>,
