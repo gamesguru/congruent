@@ -10,6 +10,7 @@ use slipstream::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
+			relations::event_relationships,
 		},
 		federation,
 	},
@@ -17,8 +18,6 @@ use slipstream::{
 	presence::PresenceState,
 };
 
-// TODO(Slipstream): provide the client-path MSC2836 endpoint. The federation
-// endpoint has different metadata and authentication and must not be aliased.
 
 use super::{update_avatar_url, update_displayname};
 use crate::{
