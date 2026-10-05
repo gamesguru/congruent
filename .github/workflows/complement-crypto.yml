@@ -193,15 +193,11 @@ jobs:
 
       - name: Build JS SDK bundle (for //go:embed dist)
         if: contains(matrix.client_matrix, 'j')
-        run: |
-          cd complement-crypto-src
-          corepack enable
-          # Pinned to a fork commit carrying the fix for matrix-js-sdk#4291 (crypto
-          # membership is refreshed after /invite instead of waiting for /sync).
-          # The script feeds its arg straight into `yarn add`, so use the git URL
-          # form with a commit SHA (see rebuild_js_sdk.sh --help). Keep this in
-          # step with MATRIX_JS_SDK_SOURCE in the justfile.
-          ./rebuild_js_sdk.sh "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#83a0ea4a082fcb5e90378a8b161a6c67192088c8"
+        # Pinned to a fork commit carrying the fix for matrix-js-sdk#4291 (crypto
+        # membership is refreshed after /invite instead of waiting for /sync).
+        # Built from the pnpm lockfile by the justfile recipe; the pin lives in
+        # MATRIX_JS_SDK_SOURCE there.
+        run: just crypto-js-bundle
 
       # rs / js+rs variants consume a PREBUILT matrix-rust-sdk FFI (libmatrix_sdk_ffi.so
       # plus the generated Go bindings) from C10Y_CRYPTO_RUST_SDK_URL instead of
