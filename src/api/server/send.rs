@@ -68,7 +68,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
 	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -96,7 +96,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(axum::Json(response))
+			Ok(crate::json_util::json_response(response))
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -155,7 +155,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -168,7 +168,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(axum::Json(response)),
+		| Some(Ok(response)) => Ok(crate::json_util::json_response(response)),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,

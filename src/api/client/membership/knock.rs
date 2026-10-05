@@ -23,7 +23,6 @@ use slipstream::{
 	},
 	canonical_json::to_canonical_value,
 	codec,
-	serde::Raw,
 	events::{
 		StateEventType,
 		room::{
@@ -31,6 +30,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
+	serde::Raw,
 };
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};

@@ -123,9 +123,11 @@ pub(crate) async fn get_room_account_data_route(
 /// Removes some account data for the sender user.
 pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
-	Path((user_id, event_type)): Path<(OwnedUserId, String)>,
+	Path((user_id, event_type)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
+	let user_id = OwnedUserId::parse(user_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
 			.await?;
@@ -136,7 +138,9 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 
 	delete_account_data(&services, None, &user_id, &event_type).await?;
 
-	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Object(
+		slipstream::json::Object::new(),
+	)))
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -144,9 +148,13 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 /// Removes some room account data for the sender user.
 pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
-	Path((user_id, room_id, event_type)): Path<(OwnedUserId, OwnedRoomId, String)>,
+	Path((user_id, room_id, event_type)): Path<(String, String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
+	let user_id = OwnedUserId::parse(user_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
 			.await?;
@@ -157,7 +165,9 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 
 	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;
 
-	Ok(Json(slipstream::json::Value::Object(slipstream::json::Object::new())))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Object(
+		slipstream::json::Object::new(),
+	)))
 }
 
 async fn set_account_data(

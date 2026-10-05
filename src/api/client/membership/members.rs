@@ -164,7 +164,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
 	if !services
 		.rooms
 		.state_cache
@@ -199,7 +199,7 @@ pub(crate) async fn joined_members_route(
 	}
 	let mut response = slipstream::ObjectBuilder::new();
 	response.field("joined", &joined);
-	Ok(Json(response.finish()))
+	Ok(crate::json_util::json_response(response.finish()))
 }
 
 struct RoomMemberResponse {

@@ -4,7 +4,7 @@ use axum::{
 	response::Response,
 };
 use conduwuit::{
-	Err, Result, at, debug_warn,
+	Err, Result, at, debug_warn, err,
 	matrix::{
 		Event,
 		pdu::{PduCount, PduEvent},
@@ -105,9 +105,13 @@ pub(crate) async fn get_threads_route(
 
 pub(crate) async fn put_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let (parts, body) = request.into_parts();
 	let body = to_bytes(body, services.server.config.max_request_size)
 		.await
@@ -182,9 +186,13 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 
 pub(crate) async fn get_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
 
@@ -212,9 +220,13 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 
 pub(crate) async fn delete_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
 

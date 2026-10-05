@@ -90,14 +90,17 @@ pub(crate) async fn send_event_to_device_route(
 					services
 						.users
 						.all_device_ids(target_user_id)
-						.for_each(|target_device_id| {
-							services.users.add_to_device_event(
-								sender_user,
-								target_user_id,
-								&target_device_id,
-								event_type,
-								event.clone(),
-							)
+						.for_each(|target_device_id| async move {
+							services
+								.users
+								.add_to_device_event(
+									sender_user,
+									target_user_id,
+									&target_device_id,
+									event_type,
+									event.clone(),
+								)
+								.await;
 						})
 						.await;
 				},

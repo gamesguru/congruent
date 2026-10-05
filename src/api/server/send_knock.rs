@@ -2,7 +2,7 @@ use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
 use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, codec,
-	events::room::member::MembershipState, serde::{JsonObject, Raw},
+	events::room::member::MembershipState, serde::JsonObject,
 };
 
 use crate::Ruma;
@@ -63,6 +63,6 @@ pub(crate) async fn create_knock_event_v1_route(
 	);
 
 	Ok(send_knock::v1::Response {
-		knock_room_state: knock_room_state.into_iter().map(Raw::cast).collect(),
+		knock_room_state: knock_room_state.into_iter().map(|raw| raw.cast()).collect(),
 	})
 }
