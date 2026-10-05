@@ -276,13 +276,6 @@ profile-runtime-cpu-dev *args:
     cargo flamegraph --root --dev --features local_profiling --bin conduwuit -- {{ args }}
     @echo "Flamegraph saved to flamegraph.svg"
 
-# --- Async & I/O Profiling ---
-
-# Run with tokio-console instrumentation active
-profile-runtime-async *args:
-    @echo "Run 'tokio-console' in a separate terminal"
-    env RUSTFLAGS="--cfg tokio_unstable ${RUSTFLAGS:-}" cargo run --features local_profiling --bin conduwuit -- {{ args }}
-
 # --- Memory Profiling (jemalloc) ---
 
 # Run release build and dump jemalloc heap profiles

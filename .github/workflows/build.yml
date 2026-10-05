@@ -70,24 +70,12 @@ on:
         description: "Feature: jemalloc"
         type: boolean
         default: false
-      feat_journald:
-        description: "Feature: journald"
-        type: boolean
-        default: false
       feat_ldap:
         description: "Feature: ldap"
         type: boolean
         default: false
-      feat_otlp_telemetry:
-        description: "Feature: otlp_telemetry"
-        type: boolean
-        default: false
       feat_release_max_log_level:
         description: "Feature: release_max_log_level"
-        type: boolean
-        default: false
-      feat_sentry_telemetry:
-        description: "Feature: sentry_telemetry"
         type: boolean
         default: false
       feat_standard:
@@ -96,10 +84,6 @@ on:
         default: false
       feat_systemd:
         description: "Feature: systemd"
-        type: boolean
-        default: false
-      feat_tokio_console:
-        description: "Feature: tokio_console"
         type: boolean
         default: false
       feat_tokio_metrics:
@@ -212,14 +196,10 @@ jobs:
             [ "${{ inputs.feat_http3 }}" == "true" ] && F+=("http3")
             [ "${{ inputs.feat_io_uring }}" == "true" ] && F+=("io_uring")
             [ "${{ inputs.feat_jemalloc }}" == "true" ] && F+=("jemalloc")
-            [ "${{ inputs.feat_journald }}" == "true" ] && F+=("journald")
             [ "${{ inputs.feat_ldap }}" == "true" ] && F+=("ldap")
-            [ "${{ inputs.feat_otlp_telemetry }}" == "true" ] && F+=("otlp_telemetry")
             [ "${{ inputs.feat_release_max_log_level }}" == "true" ] && F+=("release_max_log_level")
-            [ "${{ inputs.feat_sentry_telemetry }}" == "true" ] && F+=("sentry_telemetry")
             [ "${{ inputs.feat_standard }}" == "true" ] && F+=("standard")
             [ "${{ inputs.feat_systemd }}" == "true" ] && F+=("systemd")
-            [ "${{ inputs.feat_tokio_console }}" == "true" ] && F+=("tokio_console")
             [ "${{ inputs.feat_tokio_metrics }}" == "true" ] && F+=("tokio_metrics")
             [ "${{ inputs.feat_url_preview }}" == "true" ] && F+=("url_preview")
             FEATURES=$(IFS=,; echo "${F[*]}")

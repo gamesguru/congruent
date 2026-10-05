@@ -9,19 +9,12 @@ use conduwuit_core::{
 };
 use tokio::{runtime, sync::Mutex};
 
-use crate::logging::TracingFlameGuard;
-
 /// Server runtime state; complete
 pub(crate) struct Server {
 	/// Server runtime state; public portion
 	pub(crate) server: Arc<conduwuit_core::Server>,
 
 	pub(crate) services: Mutex<Option<Arc<conduwuit_service::Services>>>,
-
-	_tracing_flame_guard: TracingFlameGuard,
-
-	#[cfg(feature = "sentry_telemetry")]
-	_sentry_guard: Option<::sentry::ClientInitGuard>,
 
 	#[cfg(all(conduwuit_mods, feature = "conduwuit_mods"))]
 	// Module instances; TODO: move to mods::loaded mgmt vector
@@ -35,13 +28,9 @@ impl Server {
 	) -> Result<Arc<Self>, Error> {
 		let _runtime_guard = runtime.map(runtime::Handle::enter);
 
-		let (tracing_reload_handle, tracing_flame_guard, capture) =
-			crate::logging::init(&config)?;
+		let (tracing_reload_handle, capture) = crate::logging::init(&config)?;
 
 		config.check()?;
-
-		#[cfg(feature = "sentry_telemetry")]
-		let sentry_guard = crate::sentry::init(&config);
 
 		#[cfg(unix)]
 		sys::maximize_fd_limit()
@@ -65,11 +54,6 @@ impl Server {
 			})),
 
 			services: None.into(),
-
-			_tracing_flame_guard: tracing_flame_guard,
-
-			#[cfg(feature = "sentry_telemetry")]
-			_sentry_guard: sentry_guard,
 
 			#[cfg(all(conduwuit_mods, feature = "conduwuit_mods"))]
 			mods: tokio::sync::RwLock::new(Vec::new()),

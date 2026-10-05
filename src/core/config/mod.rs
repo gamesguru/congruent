@@ -964,24 +964,6 @@ pub struct Config {
 	/// display: nested
 	pub smtp: Option<SmtpConfig>,
 
-	/// If the 'perf_measurements' compile-time feature is enabled, enables
-	/// collecting folded stack trace profile of tracing spans using
-	/// tracing_flame. The resulting profile can be visualized with inferno[1],
-	/// speedscope[2], or a number of other tools.
-	///
-	/// [1]: https://github.com/jonhoo/inferno
-	/// [2]: www.speedscope.app
-	#[serde(default)]
-	pub tracing_flame: bool,
-
-	/// default: "info"
-	#[serde(default = "default_tracing_flame_filter")]
-	pub tracing_flame_filter: String,
-
-	/// default: "./tracing.folded"
-	#[serde(default = "default_tracing_flame_output_path")]
-	pub tracing_flame_output_path: String,
-
 	#[cfg(not(doctest))]
 	/// Examples:
 	///
@@ -1126,24 +1108,6 @@ pub struct Config {
 	/// default: false
 	#[serde(default)]
 	pub log_thread_ids: bool,
-
-	/// Enable journald logging on Unix platforms
-	///
-	/// When enabled, log output will be sent to the systemd journal
-	/// This is only supported on Unix platforms
-	///
-	/// default: false
-	#[cfg(target_family = "unix")]
-	#[serde(default)]
-	pub log_to_journald: bool,
-
-	/// The syslog identifier to use with journald logging
-	///
-	/// Only used when journald logging is enabled
-	///
-	/// Defaults to the binary name
-	#[cfg(target_family = "unix")]
-	pub journald_identifier: Option<String>,
 
 	/// OpenID token expiration/TTL in seconds.
 	///
@@ -2154,63 +2118,6 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub admins_from_room: bool,
 
-	/// Sentry.io crash/panic reporting, performance monitoring/metrics, etc.
-	/// This is NOT enabled by default.
-	#[serde(default)]
-	pub sentry: bool,
-
-	/// Sentry reporting URL, if a custom one is desired.
-	///
-	/// display: sensitive
-	/// default: ""
-	#[serde(default = "default_sentry_endpoint")]
-	pub sentry_endpoint: Option<Url>,
-
-	/// Report your continuwuity server_name in Sentry.io crash reports and
-	/// metrics.
-	#[serde(default)]
-	pub sentry_send_server_name: bool,
-
-	/// Performance monitoring/tracing sample rate for Sentry.io.
-	///
-	/// Note that too high values may impact performance, and can be disabled by
-	/// setting it to 0.0 (0%) This value is read as a percentage to Sentry,
-	/// represented as a decimal. Defaults to 15% of traces (0.15)
-	///
-	/// default: 0.15
-	#[serde(default = "default_sentry_traces_sample_rate")]
-	pub sentry_traces_sample_rate: f32,
-
-	/// Whether to attach a stacktrace to Sentry reports.
-	#[serde(default)]
-	pub sentry_attach_stacktrace: bool,
-
-	/// Send panics to Sentry. This is true by default, but Sentry has to be
-	/// enabled. The global `sentry` config option must be enabled to send any
-	/// data.
-	#[serde(default = "true_fn")]
-	pub sentry_send_panic: bool,
-
-	/// Send errors to sentry. This is true by default, but sentry has to be
-	/// enabled. This option is only effective in release-mode; forced to false
-	/// in debug-mode.
-	#[serde(default = "true_fn")]
-	pub sentry_send_error: bool,
-
-	/// Controls the tracing log level for Sentry to send things like
-	/// breadcrumbs and transactions
-	///
-	/// default: "info"
-	#[serde(default = "default_sentry_filter")]
-	pub sentry_filter: String,
-
-	/// Enable the tokio-console. This option is only relevant to developers.
-	///
-	///    For more information, see:
-	/// https://continuwuity.org/development.html#debugging-with-tokio-console
-	#[serde(default)]
-	pub tokio_console: bool,
-
 	#[serde(default)]
 	pub test: BTreeSet<String>,
 
@@ -3102,15 +3009,6 @@ fn default_state_hamt_node_sweep_interval_secs() -> u64 { 60 * 60 * 6 }
 
 fn default_transaction_id_cache_max_entries() -> usize { 8192 }
 
-fn default_tracing_flame_filter() -> String {
-	cfg!(debug_assertions)
-		.then_some("trace,h2=off")
-		.unwrap_or("info")
-		.to_owned()
-}
-
-fn default_tracing_flame_output_path() -> String { "./tracing.folded".to_owned() }
-
 fn default_trusted_servers() -> Vec<OwnedServerName> {
 	vec![OwnedServerName::try_from("matrix.org").unwrap()]
 }
@@ -3220,13 +3118,7 @@ fn default_url_preview_timeout() -> u64 { 120 }
 
 fn default_new_user_displayname_suffix() -> String { "🏳️‍⚧️".to_owned() }
 
-fn default_sentry_endpoint() -> Option<Url> { None }
-
 fn default_user_agent() -> String { "$PROJECT_NAME/$PROJECT_VERSION_FULL".to_owned() }
-
-fn default_sentry_traces_sample_rate() -> f32 { 0.15 }
-
-fn default_sentry_filter() -> String { "info".to_owned() }
 
 fn default_startup_netburst_keep() -> i64 { 50 }
 

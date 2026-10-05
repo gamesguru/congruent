@@ -14,7 +14,6 @@ mod mods;
 mod panic;
 mod restart;
 mod runtime;
-mod sentry;
 mod server;
 mod signal;
 

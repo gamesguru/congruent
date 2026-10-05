@@ -223,8 +223,6 @@ default-features = false
 version = "0.3.20"
 default-features = false
 features = ["env-filter", "std", "tracing", "tracing-log", "ansi", "fmt"]
-[workspace.dependencies.tracing-journald]
-version = "0.3.1"
 [workspace.dependencies.tracing-core]
 version = "0.1.34"
 default-features = false
@@ -445,32 +443,7 @@ default-features = false
 version = "0.11.0"
 default-features = false
 
-# flamegraphs etc for performance measurements and monitoring
-[workspace.dependencies.tracing-flame]
-version = "0.2.0"
 
-
-
-# optional sentry metrics for crash/panic reporting
-[workspace.dependencies.sentry]
-version = "0.47.0"
-default-features = false
-features = [
-    "backtrace",
-    "contexts",
-    "debug-images",
-    "panic",
-    "tower",
-    "tower-http",
-    "tracing",
-    "reqwest",
-    "log",
-]
-
-[workspace.dependencies.sentry-tracing]
-version = "0.47.0"
-[workspace.dependencies.sentry-tower]
-version = "0.47.0"
 
 # jemalloc usage
 [workspace.dependencies.tikv-jemalloc-sys]
@@ -494,9 +467,6 @@ git = "https://forgejo.ellis.link/continuwuation/jemallocator"
 rev = "82af58d6a13ddd5dcdc7d4e91eae3b63292995b8"
 default-features = false
 features = ["use_std"]
-
-[workspace.dependencies.console-subscriber]
-version = "0.5"
 
 [workspace.dependencies.nix]
 version = "0.31.0"

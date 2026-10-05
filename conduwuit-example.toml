@@ -789,24 +789,6 @@
 #
 #default_room_version = "12"
 
-# If the 'perf_measurements' compile-time feature is enabled, enables
-# collecting folded stack trace profile of tracing spans using
-# tracing_flame. The resulting profile can be visualized with inferno[1],
-# speedscope[2], or a number of other tools.
-#
-# [1]: https://github.com/jonhoo/inferno
-# [2]: www.speedscope.app
-#
-#tracing_flame = false
-
-# This item is undocumented. Please contribute documentation for it.
-#
-#tracing_flame_filter = "info"
-
-# This item is undocumented. Please contribute documentation for it.
-#
-#tracing_flame_output_path = "./tracing.folded"
-
 # Examples:
 #
 # - No proxy (default):
@@ -932,21 +914,6 @@
 # Toggles the display of ThreadId in tracing log output.
 #
 #log_thread_ids = false
-
-# Enable journald logging on Unix platforms
-#
-# When enabled, log output will be sent to the systemd journal
-# This is only supported on Unix platforms
-#
-#log_to_journald = false
-
-# The syslog identifier to use with journald logging
-#
-# Only used when journald logging is enabled
-#
-# Defaults to the binary name
-#
-#journald_identifier =
 
 # OpenID token expiration/TTL in seconds.
 #
@@ -1858,56 +1825,6 @@
 # admins_list.
 #
 #admins_from_room = true
-
-# Sentry.io crash/panic reporting, performance monitoring/metrics, etc.
-# This is NOT enabled by default.
-#
-#sentry = false
-
-# Sentry reporting URL, if a custom one is desired.
-#
-#sentry_endpoint = ""
-
-# Report your continuwuity server_name in Sentry.io crash reports and
-# metrics.
-#
-#sentry_send_server_name = false
-
-# Performance monitoring/tracing sample rate for Sentry.io.
-#
-# Note that too high values may impact performance, and can be disabled by
-# setting it to 0.0 (0%) This value is read as a percentage to Sentry,
-# represented as a decimal. Defaults to 15% of traces (0.15)
-#
-#sentry_traces_sample_rate = 0.15
-
-# Whether to attach a stacktrace to Sentry reports.
-#
-#sentry_attach_stacktrace = false
-
-# Send panics to Sentry. This is true by default, but Sentry has to be
-# enabled. The global `sentry` config option must be enabled to send any
-# data.
-#
-#sentry_send_panic = true
-
-# Send errors to sentry. This is true by default, but sentry has to be
-# enabled. This option is only effective in release-mode; forced to false
-# in debug-mode.
-#
-#sentry_send_error = true
-
-# Controls the tracing log level for Sentry to send things like
-# breadcrumbs and transactions
-#
-#sentry_filter = "info"
-
-# Enable the tokio-console. This option is only relevant to developers.
-#
-#    For more information, see:
-# https://continuwuity.org/development.html#debugging-with-tokio-console
-#
-#tokio_console = false
 
 # This item is undocumented. Please contribute documentation for it.
 #

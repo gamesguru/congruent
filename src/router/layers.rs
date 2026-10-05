@@ -38,9 +38,6 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 	let server = &services.server;
 	let layers = ServiceBuilder::new();
 
-	#[cfg(feature = "sentry_telemetry")]
-	let layers = layers.layer(sentry_tower::NewSentryLayer::<http::Request<_>>::new_from_top());
-
 	#[cfg(any(
 		feature = "zstd_compression",
 		feature = "gzip_compression",

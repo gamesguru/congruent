@@ -35,13 +35,6 @@ pub fn check(config: &Config) -> Result {
 	warn_deprecated(config);
 	warn_unknown_key(config);
 
-	if config.sentry && config.sentry_endpoint.is_none() {
-		return Err!(Config(
-			"sentry_endpoint",
-			"Sentry cannot be enabled without an endpoint set"
-		));
-	}
-
 	if cfg!(all(feature = "hardened_malloc", feature = "jemalloc", not(target_env = "msvc"))) {
 		debug_warn!(
 			"hardened_malloc and jemalloc compile-time features are both enabled, this causes \

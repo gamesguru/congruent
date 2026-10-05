@@ -67,9 +67,7 @@ full = [
     "standard",
     "console",
     "element_hacks",
-    "journald",
     "ldap",
-    "sentry_telemetry",
     "systemd",
     "url_preview",
     # "hardened_malloc", # Conflicts with jemalloc
@@ -77,8 +75,6 @@ full = [
 
 local_profiling = [
     "jemalloc_prof",
-    "perf_measurements",
-    "tokio_console",
     "tokio_metrics",
 ]
 
@@ -143,11 +139,6 @@ ldap = [
 media_thumbnail = [
 	"conduwuit-service/media_thumbnail",
 ]
-perf_measurements = [
-	"dep:tracing-flame",
-	"conduwuit-core/perf_measurements",
-	"conduwuit-core/sentry_telemetry",
-]
 # increases performance, reduces build times, and reduces binary size by not compiling or
 # genreating code for log level filters that users will generally not use (debug and trace)
 release_max_log_level = [
@@ -162,26 +153,12 @@ release_max_log_level = [
 	"conduwuit-router/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
 ]
-sentry_telemetry = [
-	"dep:sentry",
-	"dep:sentry-tracing",
-	"conduwuit-core/sentry_telemetry",
-	"conduwuit-router/sentry_telemetry",
-]
 systemd = [
 	"conduwuit-router/systemd",
 	"conduwuit-service/systemd"
 ]
-journald = [ # This is a stub on non-unix platforms
-	"dep:tracing-journald",
-]
 
 
-# enable the tokio_console server ncompatible with release_max_log_level
-tokio_console = [
-	"dep:console-subscriber",
-	"tokio/tracing",
-]
 tokio_metrics = [
     "conduwuit-core/tokio_metrics",
     "conduwuit-admin/tokio_metrics",
@@ -223,21 +200,12 @@ conduwuit-macros.workspace = true
 clap.workspace = true
 const-str.workspace = true
 ctor.workspace = true
-console-subscriber.optional = true
-console-subscriber.workspace = true
 log.workspace = true
-sentry-tracing.optional = true
-sentry-tracing.workspace = true
-sentry.optional = true
-sentry.workspace = true
 tokio.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true
-tracing-flame.optional = true
-tracing-flame.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
-tracing-journald = { workspace = true, optional = true }
 parking_lot.workspace = true
 reqwest = { workspace = true, default-features = false }
 rustls = { workspace = true, default-features = false }
