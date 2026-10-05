@@ -426,24 +426,10 @@ features = ["reconcile"]
 git = "https://gitlab.com/gamesguru/rezzy.git"
 branch = "alpha"
 
-# Unify rezzy with the sibling checkout slipstream builds against; two copies
-# make `rezzy_json::Value` two distinct types. Every crate from the git URL
-# (including `rezzy-recon`) must be patched or a third copy stays in the graph.
-[patch."https://gitlab.com/gamesguru/rezzy.git"]
-rezzy = { path = "../rezzy" }
-rezzy-json = { path = "../rezzy/rezzy-json" }
-rezzy-recon = { path = "../rezzy/rezzy-recon" }
-
 [workspace.dependencies.mtx-slipstream]
 package = "mtx-slipstream"
-# Temporary local override while the compatibility namespace is being built.
-path = "../slipstream"
-# git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
-# branch = "dev"
-
-[workspace.dependencies.slipstream]
-package = "conduwuit_slipstream"
-path = "src/slipstream"
+git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
+branch = "dev"
 
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
@@ -671,6 +657,10 @@ rev = "09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
 #
 # Our crates
 #
+
+[workspace.dependencies.slipstream]
+package = "conduwuit_slipstream"
+path = "src/slipstream"
 
 [workspace.dependencies.conduwuit-mtxdb]
 package = "conduwuit_mtxdb"

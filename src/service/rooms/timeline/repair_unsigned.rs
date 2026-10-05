@@ -29,7 +29,7 @@ pub fn update_unsigned_prev_content(
 			"prev_content".to_owned(),
 			slipstream::CanonicalJsonValue::Object(
 				conduwuit_core::utils::to_canonical_object(
-					slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(
+                    slipstream::codec::from_str::<CanonicalJsonObject>(
 						&serde_json::to_string(&prev_content_value)?,
 					)
 					.map_err(|e| {
