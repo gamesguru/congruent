@@ -168,7 +168,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<Json<Response>> {
+) -> Result<Json<slipstream::json::Value>> {
 	if !services
 		.rooms
 		.state_cache
@@ -194,20 +194,21 @@ pub(crate) async fn joined_members_route(
 		.collect()
 		.await;
 
-	Ok(Json(Response { joined: room_members }))
+	let mut joined = slipstream::json::Object::new();
+	for (user_id, member) in room_members {
+		let mut value = slipstream::ObjectBuilder::new();
+		value.field("display_name", &member.display_name);
+		value.field("avatar_url", &member.avatar_url);
+		joined.insert(user_id.to_string(), value.finish());
+	}
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("joined", &joined);
+	Ok(Json(response.finish()))
 }
 
-slipstream::codec_struct! {
-	RoomMemberResponse {
-		display_name: Option<String> = ("display_name", omit),
-		avatar_url: Option<slipstream::OwnedMxcUri> = ("avatar_url", omit),
-	}
-}
-
-slipstream::codec_struct! {
-	Response {
-		joined: std::collections::BTreeMap<slipstream::OwnedUserId, RoomMemberResponse> = ("joined"),
-	}
+struct RoomMemberResponse {
+	display_name: Option<String>,
+	avatar_url: Option<slipstream::OwnedMxcUri>,
 }
 
 fn membership_filter<Pdu: Event>(

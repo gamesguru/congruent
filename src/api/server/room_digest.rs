@@ -2,7 +2,6 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, info, utils::math::usize_from_f64};
 use futures::StreamExt;
-use serde::Serialize;
 use slipstream::OwnedEventId;
 use xxhash_rust::xxh3;
 
@@ -21,19 +20,6 @@ const BITS_PER_ELEMENT: f64 = 6.235;
 ///
 /// Returns a compact Bloom filter digest of the server's event graph for
 /// divergence detection (MSC0F01: Gossip-Based Federation Room Reconciliation).
-slipstream::codec_struct! {
-	RoomDigestResponse {
-		digest: String = ("digest"),
-		digest_type: String = ("digest_type"),
-		digest_bits: u32 = ("digest_bits"),
-		digest_window: u32 = ("digest_window"),
-		event_count: u64 = ("event_count"),
-		extremity_event_ids: Vec<OwnedEventId> = ("extremity_event_ids"),
-		depth_range: (u64, u64) = ("depth_range"),
-		origin_server_ts_range: (u64, u64) = ("origin_server_ts_range"),
-	}
-}
-
 /// Build an XXH3-128 double-hashed Bloom filter over a set of event IDs.
 ///
 /// Uses the construction from MSC0F01:
@@ -180,18 +166,17 @@ pub(crate) async fn get_room_digest_route(
 	// Compute ETag for conditional request support
 	let etag = compute_etag(&mut extremity_event_ids, event_count);
 
-	let response = RoomDigestResponse {
-		digest,
-		digest_type: "xxh3_bloom".to_owned(),
-		digest_bits,
-		digest_window: u32::try_from(window_event_ids.len()).unwrap_or(u32::MAX),
-		event_count,
-		extremity_event_ids,
-		depth_range: (min_depth, max_depth),
-		origin_server_ts_range: (min_ts, max_ts),
-	};
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("digest", &digest);
+	response.field("digest_type", &"xxh3_bloom");
+	response.field("digest_bits", &digest_bits);
+	response.field("digest_window", &u32::try_from(window_event_ids.len()).unwrap_or(u32::MAX));
+	response.field("event_count", &event_count);
+	response.field("extremity_event_ids", &extremity_event_ids);
+	response.field("depth_range", &(min_depth, max_depth));
+	response.field("origin_server_ts_range", &(min_ts, max_ts));
 
-	Ok(([(http::header::ETAG, etag)], axum::Json(response)))
+	Ok(([(http::header::ETAG, etag)], axum::Json(response.finish())))
 }
 
 #[cfg(test)]

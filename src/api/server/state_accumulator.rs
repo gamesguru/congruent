@@ -4,7 +4,7 @@ use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
 use futures::TryStreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 
 use super::AccessCheck;
@@ -12,16 +12,6 @@ use super::AccessCheck;
 #[derive(Deserialize)]
 pub(crate) struct StateAccumulatorQuery {
 	pub event_id: String,
-}
-
-slipstream::codec_struct! {
-	StateAccumulatorResponse {
-		event_id: OwnedEventId = ("event_id"),
-		algorithm: String = ("algorithm"),
-		lattice: String = ("lattice"),
-		n_state_events: u64 = ("n_state_events"),
-		digest: String = ("digest"),
-	}
 }
 
 pub(crate) async fn get_state_accumulator_route(
@@ -96,15 +86,14 @@ pub(crate) async fn get_state_accumulator_route(
 	}
 	let (lattice_b64, digest) = serialize_lthash(&lattice);
 
-	let response = StateAccumulatorResponse {
-		event_id,
-		algorithm: "lthash16-blake3-v1".to_owned(),
-		lattice: lattice_b64,
-		n_state_events,
-		digest,
-	};
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("event_id", &event_id);
+	response.field("algorithm", &"lthash16-blake3-v1");
+	response.field("lattice", &lattice_b64);
+	response.field("n_state_events", &n_state_events);
+	response.field("digest", &digest);
 
-	Ok(Json(response))
+	Ok(Json(response.finish()))
 }
 
 async fn verify_federation_request(
