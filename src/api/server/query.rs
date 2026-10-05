@@ -33,7 +33,6 @@ pub(crate) async fn get_room_information_route(
 		.rooms
 		.state_cache
 		.room_servers(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -73,7 +72,7 @@ pub(crate) async fn get_profile_information_route(
 		));
 	}
 
-	if !services.globals.server_is_ours(body.user_id.server_name()) {
+	if !services.globals.server_is_ours(&body.user_id.server_name()) {
 		return Err(Error::BadRequest(
 			ErrorKind::InvalidParam,
 			"User does not belong to this server.",

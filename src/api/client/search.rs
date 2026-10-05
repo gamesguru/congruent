@@ -85,14 +85,7 @@ async fn category_room_events(
 		.map(IntoIterator::into_iter)
 		.map(IterStream::stream)
 		.map_or_else(
-			|| {
-				services
-					.rooms
-					.state_cache
-					.rooms_joined(sender_user)
-					.map(ToOwned::to_owned)
-					.boxed()
-			},
+			|| services.rooms.state_cache.rooms_joined(sender_user).boxed(),
 			StreamExt::boxed,
 		);
 

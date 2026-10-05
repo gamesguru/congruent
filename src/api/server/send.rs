@@ -913,7 +913,7 @@ async fn handle_edu_typing(
 	if services
 		.rooms
 		.event_handler
-		.acl_check(typing.user_id.server_name(), &typing.room_id)
+		.acl_check(&typing.user_id.server_name(), &typing.room_id)
 		.await
 		.is_err()
 	{
@@ -1035,7 +1035,7 @@ async fn handle_edu_device_list_update(
 
 		let Ok(response) = services
 			.sending
-			.send_federation_request(user_id.server_name(), request)
+			.send_federation_request(&user_id.server_name(), request)
 			.await
 		else {
 			// The EDU only carried a stream position, so we need a follow-up

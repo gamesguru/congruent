@@ -165,7 +165,6 @@ pub(crate) async fn select_authorising_user(
 		.rooms
 		.state_cache
 		.local_users_in_room(room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 

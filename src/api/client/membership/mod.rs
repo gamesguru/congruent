@@ -52,7 +52,6 @@ pub(crate) async fn joined_rooms_route(
 			.rooms
 			.state_cache
 			.rooms_joined(body.sender_user())
-			.map(ToOwned::to_owned)
 			.collect()
 			.await,
 	})
@@ -78,7 +77,7 @@ pub(crate) async fn banned_room_check(
 	if let Some(room_id) = room_id {
 		let room_banned = services.rooms.metadata.is_banned(room_id).await;
 		let server_banned = room_id.server_name().is_some_and(|server_name| {
-			services.moderation.is_remote_server_forbidden(server_name)
+			services.moderation.is_remote_server_forbidden(&server_name)
 		});
 		if room_banned || server_banned {
 			warn!(
@@ -257,11 +256,7 @@ pub(crate) async fn fetch_join_knock_servers(
 	from_alias: bool,
 ) -> Vec<OwnedServerName> {
 	if servers.is_empty() || from_alias {
-		let addl_via_servers = services
-			.rooms
-			.state_cache
-			.servers_invite_via(room_id)
-			.map(ToOwned::to_owned);
+		let addl_via_servers = services.rooms.state_cache.servers_invite_via(room_id);
 
 		let addl_state_servers = services
 			.rooms
@@ -272,9 +267,9 @@ pub(crate) async fn fetch_join_knock_servers(
 
 		let mut addl_servers: Vec<_> = addl_state_servers
 			.iter()
-			.filter_map(|event| event.get_field("sender").ok().flatten())
-			.filter_map(|sender: &str| UserId::parse(sender).ok())
-			.map(|user| user.server_name().to_owned())
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
+			.map(|user| user.server_name())
 			.stream()
 			.chain(addl_via_servers)
 			.collect()

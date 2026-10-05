@@ -479,7 +479,7 @@ where
 	let type_ignored = IGNORED_MESSAGE_TYPES.binary_search(event.kind()).is_ok();
 	let server_ignored = services
 		.moderation
-		.is_remote_server_ignored(sender_user.server_name());
+		.is_remote_server_ignored(&sender_user.server_name());
 	let user_ignored = services
 		.users
 		.user_is_ignored(sender_user, recipient_user)

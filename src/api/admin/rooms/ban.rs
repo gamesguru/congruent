@@ -36,7 +36,6 @@ pub(crate) async fn ban_room(
 			.rooms
 			.state_cache
 			.room_members(&body.room_id)
-			.map(ToOwned::to_owned)
 			.ready_filter(|user| services.globals.user_is_local(user))
 			.boxed();
 		let mut evicted = Vec::new();
@@ -63,7 +62,6 @@ pub(crate) async fn ban_room(
 			.rooms
 			.alias
 			.local_aliases_for_room(&body.room_id)
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 		for alias in &aliases {

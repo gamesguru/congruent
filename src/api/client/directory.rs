@@ -286,7 +286,6 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 		.rooms
 		.directory
 		.public_rooms()
-		.map(ToOwned::to_owned)
 		.wide_then(|room_id| public_rooms_chunk(services, room_id))
 		.ready_filter_map(|chunk| {
 			if !filter.room_types.is_empty()

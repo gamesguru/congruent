@@ -64,7 +64,6 @@ pub(crate) async fn get_room_summary(
 			.rooms
 			.state_cache
 			.room_servers(&room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {
@@ -271,7 +270,6 @@ async fn remote_room_summary_hierarchy_response(
 			.rooms
 			.state_cache
 			.room_servers(room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {

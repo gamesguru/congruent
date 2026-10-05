@@ -31,7 +31,6 @@ pub(crate) async fn get_room_aliases_route(
 			.rooms
 			.alias
 			.local_aliases_for_room(&body.room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await,
 	})

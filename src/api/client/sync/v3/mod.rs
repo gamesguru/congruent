@@ -603,7 +603,6 @@ pub(crate) async fn build_sync_events(
 		.rooms
 		.state_cache
 		.rooms_joined(syncing_user)
-		.map(ToOwned::to_owned)
 		.map(|room_id| async move {
 			let joined_room = load_joined_room(services, context, room_id.clone()).await;
 
@@ -840,7 +839,6 @@ pub(crate) async fn build_sync_events(
 	let keys_changed = services
 		.users
 		.keys_changed(syncing_user, last_sync_end_count, None)
-		.map(ToOwned::to_owned)
 		.collect::<HashSet<_>>();
 
 	let to_device_events = services
@@ -883,7 +881,6 @@ pub(crate) async fn build_sync_events(
 				.users
 				.device_list_left(syncing_user, last_sync_end_count, Some(current_count))
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
@@ -1084,7 +1081,7 @@ pub(crate) async fn build_sync_events(
 					if !services
 						.rooms
 						.state_cache
-						.user_sees_user(syncing_user, target)
+						.user_sees_user(syncing_user, &target)
 						.await
 					{
 						users.insert(
@@ -1164,7 +1161,6 @@ async fn collect_member_presence(
 					.rooms
 					.state_cache
 					.room_members(room_id)
-					.map(ToOwned::to_owned)
 					.ready_for_each(|uid| {
 						extra_users.insert(uid);
 					})
@@ -1248,7 +1244,7 @@ async fn process_presence_updates(
 		.filter_map(|(user_id, _, presence_bytes)| {
 			services
 				.presence
-				.from_json_bytes_to_event(presence_bytes, user_id)
+				.from_json_bytes_to_event(presence_bytes, &user_id)
 				.map_ok(move |event| (user_id, event))
 				.ok()
 		})

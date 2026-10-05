@@ -22,7 +22,7 @@ pub(crate) async fn list_rooms(
 		.metadata
 		.iter_ids()
 		.filter_map(|room_id| async move {
-			if !services.rooms.metadata.is_banned(room_id).await {
+			if !services.rooms.metadata.is_banned(&room_id).await {
 				Some(room_id.to_owned())
 			} else {
 				None

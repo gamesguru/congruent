@@ -1023,18 +1023,10 @@ async fn build_heroes(
 	const MAX_HERO_COUNT: usize = 5;
 
 	// fetch joined members from the state cache first
-	let joined_members_stream = services
-		.rooms
-		.state_cache
-		.room_members(room_id)
-		.map(ToOwned::to_owned);
+	let joined_members_stream = services.rooms.state_cache.room_members(room_id);
 
 	// then fetch invited members
-	let invited_members_stream = services
-		.rooms
-		.state_cache
-		.room_members_invited(room_id)
-		.map(ToOwned::to_owned);
+	let invited_members_stream = services.rooms.state_cache.room_members_invited(room_id);
 
 	// then as a last resort fetch every membership event
 	let all_members_stream = services
@@ -1101,7 +1093,6 @@ async fn build_device_list_updates(
 		.users
 		.room_keys_changed(room_id, last_sync_end_count, None)
 		.map(at!(0))
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 

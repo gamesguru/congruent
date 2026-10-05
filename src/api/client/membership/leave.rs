@@ -42,11 +42,7 @@ pub(crate) async fn leave_room_route(
 // Make a user leave all their joined rooms, rescinds knocks, forgets all rooms,
 // and ignores errors
 pub async fn leave_all_rooms(services: &Services, user_id: &UserId) {
-	let rooms_joined = services
-		.rooms
-		.state_cache
-		.rooms_joined(user_id)
-		.map(ToOwned::to_owned);
+	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
 
 	let rooms_invited = services
 		.rooms
@@ -177,7 +173,6 @@ pub async fn leave_room(
 						.state_cache
 						.room_servers(room_id)
 						.ready_filter(|server| !services.globals.server_is_ours(server))
-						.map(ToOwned::to_owned)
 						.collect::<Vec<_>>()
 						.await;
 
@@ -289,7 +284,6 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 			.rooms
 			.state_cache
 			.servers_invite_via(room_id)
-			.map(ToOwned::to_owned)
 			.collect::<HashSet<OwnedServerName>>()
 			.await,
 	);
@@ -304,8 +298,8 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 			servers.extend(
 				invite_state
 					.iter()
-					.filter_map(|event| event.get_field("sender").ok().flatten())
-					.filter_map(|sender: &str| UserId::parse(sender).ok())
+					.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+					.filter_map(|sender| UserId::parse(&sender).ok())
 					.map(|user| user.server_name().to_owned()),
 			);
 		},
@@ -320,10 +314,12 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 					servers.extend(
 						knock_state
 							.iter()
-							.filter_map(|event| event.get_field("sender").ok().flatten())
-							.filter_map(|sender: &str| UserId::parse(sender).ok())
+							.filter_map(|event| {
+								event.get_field::<String>("sender").ok().flatten()
+							})
+							.filter_map(|sender| UserId::parse(&sender).ok())
 							.filter_map(|sender| {
-								if !services.globals.user_is_local(sender) {
+								if !services.globals.user_is_local(&sender) {
 									Some(sender.server_name().to_owned())
 								} else {
 									None

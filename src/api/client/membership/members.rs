@@ -182,7 +182,6 @@ pub(crate) async fn joined_members_route(
 		.rooms
 		.state_cache
 		.room_members(&body.room_id)
-		.map(ToOwned::to_owned)
 		.broad_then(|user_id| async move {
 			let (display_name, avatar_url) = join(
 				services.users.displayname(&user_id).ok(),

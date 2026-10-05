@@ -146,7 +146,7 @@ async fn pick_server(
 			.room_servers(room_id)
 			.filter(|s| { futures::future::ready(!services.globals.server_is_ours(s)) })
 	);
-	servers.next().await.map(ToOwned::to_owned)
+	servers.next().await
 }
 
 /// Persists events fetched via a federated `/event_relationships` response

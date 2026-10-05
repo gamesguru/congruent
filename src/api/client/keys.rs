@@ -452,7 +452,6 @@ pub(crate) async fn get_key_changes_route(
 		services
 			.users
 			.keys_changed(sender_user, Some(from), Some(to))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await,
 	);
@@ -463,9 +462,8 @@ pub(crate) async fn get_key_changes_route(
 		device_list_updates.extend(
 			services
 				.users
-				.room_keys_changed(room_id, Some(from), Some(to))
+				.room_keys_changed(&room_id, Some(from), Some(to))
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
@@ -511,10 +509,10 @@ where
 			let mut devices = services.users.all_device_ids(user_id).boxed();
 
 			while let Some(device_id) = devices.next().await {
-				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
+				if let Ok(mut keys) = services.users.get_device_keys(user_id, &device_id).await {
 					let metadata = services
 						.users
-						.get_device_metadata(user_id, device_id)
+						.get_device_metadata(user_id, &device_id)
 						.await
 						.map_err(|_| {
 							err!(Database("all_device_keys contained nonexistent device."))
@@ -598,7 +596,7 @@ where
 			let fed_timeout = timeout.min(Duration::from_secs(3));
 			let response = tokio::time::timeout(
 				fed_timeout,
-				services.sending.send_federation_request(server, request),
+				services.sending.send_federation_request(&server, request),
 			)
 			.await
 			// Need to flatten the Result<Result<V, E>, E> into Result<V, E>
@@ -783,7 +781,7 @@ pub(crate) async fn claim_keys_helper(
 			let response = tokio::time::timeout(
 				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
-					server,
+					&server,
 					federation::keys::claim_keys::v1::Request {
 						one_time_keys: one_time_keys_input_fed,
 					},

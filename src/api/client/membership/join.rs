@@ -78,7 +78,6 @@ pub(crate) async fn join_room_by_id_route(
 		.rooms
 		.state_cache
 		.servers_invite_via(&body.room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	servers.extend(
@@ -89,8 +88,8 @@ pub(crate) async fn join_room_by_id_route(
 			.await
 			.unwrap_or_default()
 			.iter()
-			.filter_map(|event| event.get_field("sender").ok().flatten())
-			.filter_map(|sender: &str| UserId::parse(sender).ok())
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
 			.map(|user| user.server_name().to_owned()),
 	);
 
@@ -1141,7 +1140,6 @@ async fn join_room_by_id_helper_local(
 		.state_cache
 		.room_servers(room_id)
 		.ready_filter(|server| !services.globals.server_is_ours(server))
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 
@@ -1203,7 +1201,6 @@ async fn join_restricted_via_remote(
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|server| !services.globals.server_is_ours(server))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 

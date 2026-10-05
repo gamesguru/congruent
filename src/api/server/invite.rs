@@ -75,7 +75,7 @@ pub(crate) async fn create_invite_route(
 	}
 
 	if let Some(server) = body.room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
+		if services.moderation.is_remote_server_forbidden(&server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
 		}
 	}
@@ -144,7 +144,7 @@ pub(crate) async fn create_invite_route(
 
 	if !services
 		.globals
-		.server_is_ours(recipient_user.server_name())
+		.server_is_ours(&recipient_user.server_name())
 	{
 		return Err!(Request(InvalidParam("User does not belong to this homeserver.")));
 	}
@@ -153,7 +153,7 @@ pub(crate) async fn create_invite_route(
 	services
 		.rooms
 		.event_handler
-		.acl_check(recipient_user.server_name(), &body.room_id)
+		.acl_check(&recipient_user.server_name(), &body.room_id)
 		.await?;
 
 	services

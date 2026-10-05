@@ -797,7 +797,6 @@ async fn build_sync_events_v5(
 		.rooms
 		.state_cache
 		.rooms_joined(sender_user)
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedRoomId>>();
 
 	let all_invited_rooms = services
@@ -1416,7 +1415,7 @@ where
 				services
 					.rooms
 					.state_accessor
-					.get_member(room_id, user_id)
+					.get_member(room_id, &user_id)
 					.map_ok(|memberevent| sync_events::v5::response::Hero {
 						user_id: user_id.into(),
 						name: memberevent.displayname,
@@ -2004,7 +2003,7 @@ async fn new_encrypted_room_members(
 		// Only send keys if the sender doesn't share an encrypted room with the target
 		// already
 		.filter_map(|user_id| async move {
-			(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
+			(!share_encrypted_room(services, sender_user, &user_id, Some(room_id)).await)
 				.then(|| user_id.to_owned())
 		})
 		.collect::<Vec<_>>()
@@ -2036,7 +2035,6 @@ where
 		services
 			.users
 			.keys_changed(sender_user, Some(globalsince), None)
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await,
 	);
@@ -2152,7 +2150,7 @@ where
 								if !share_encrypted_room(
 									services,
 									sender_user,
-									user_id,
+									&user_id,
 									Some(room_id),
 								)
 								.await
@@ -2187,7 +2185,6 @@ where
 				.users
 				.room_keys_changed(room_id, Some(globalsince), None)
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
