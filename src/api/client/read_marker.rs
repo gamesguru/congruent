@@ -172,7 +172,7 @@ pub(crate) async fn create_receipt_route(
 		},
 		| _ => {
 			return Err!(Request(InvalidParam(warn!(
-				"Received unknown read receipt type: {}",
+				"Received unknown read receipt type: {:?}",
 				&body.receipt_type
 			))));
 		},

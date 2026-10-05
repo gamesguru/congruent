@@ -75,7 +75,7 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> { self.sender_user.as_deref() }
+	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> { self.sender_user.as_ref().map(|id| id.as_ref()) }
 
 	#[inline]
 	pub(crate) fn sender_device(&self) -> &DeviceId {
@@ -85,7 +85,7 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> { self.sender_device.as_deref() }
+	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> { self.sender_device.as_ref().map(|id| id.as_ref()) }
 
 	#[inline]
 	pub(crate) fn origin(&self) -> &ServerName {
@@ -95,7 +95,7 @@ where
 	}
 
 	#[inline]
-	pub(crate) fn origin_opt(&self) -> Option<&ServerName> { self.origin.as_deref() }
+	pub(crate) fn origin_opt(&self) -> Option<&ServerName> { self.origin.as_ref().map(|id| id.as_ref()) }
 }
 
 impl<T> Deref for Args<T>
@@ -223,5 +223,5 @@ fn take_body(request: &mut Request, json_body: Option<&mut CanonicalJsonValue>) 
 		return mem::take(&mut request.body);
 	};
 
-	Bytes::from(slipstream::codec::to_string(&json_body))
+	Bytes::from(slipstream::codec::to_string(json_body))
 }

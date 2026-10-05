@@ -107,7 +107,8 @@ pub(crate) async fn get_member_events_route(
 				.ok();
 			info!(
 				target: "membership_debug",
-				"/members: departed user {sender_user} in {room_id}, leave_root={root:?}"
+				"/members: departed user {sender_user} in {room_id}, leave_root_present={}"
+				root.is_some(),
 			);
 			(root, Some(leave_pdu))
 		} else {

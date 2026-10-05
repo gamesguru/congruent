@@ -155,11 +155,6 @@ pub(crate) async fn get_media_preview_legacy_route(
 	Ok(get_media_preview::v3::Response {
 		data: slipstream::serde::Raw::from_value(&preview),
 	})
-	.map_err(|error| {
-		err!(Request(Unknown(
-			debug_error!(%sender_user, %url, "Failed to parse URL preview: {error}")
-		)))
-	})
 }
 
 /// # `GET /_matrix/media/v1/preview_url`

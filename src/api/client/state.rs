@@ -134,7 +134,8 @@ pub(crate) async fn get_state_events_route(
 		let root = leave_roothandle(&services, sender_user, room_id).await;
 		info!(
 			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_root={root:?}"
+			"/state: departed user {sender_user} in {room_id}, leave_root_present={}"
+			root.is_some(),
 		);
 		root
 	} else {
@@ -199,8 +200,9 @@ pub(crate) async fn get_state_events_for_key_route(
 		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
 			info!(
 				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={root:?}",
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root_present={}",
 				body.event_type
+				,root.is_some()
 			);
 			services
 				.rooms

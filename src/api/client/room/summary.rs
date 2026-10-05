@@ -154,7 +154,7 @@ async fn local_room_summary_response(
 			&join_rule.clone().into(),
 			guest_can_join,
 			world_readable,
-			join_rule.allowed_rooms(),
+			join_rule.allowed_rooms().map(|room_id| room_id.as_ref()),
 			sender_user,
 		)
 		.await?;

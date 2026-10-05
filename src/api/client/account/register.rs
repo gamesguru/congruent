@@ -227,7 +227,7 @@ pub(crate) async fn register_route(
 				content: slipstream::events::push_rules::PushRulesEventContent {
 					global: push::Ruleset::server_default(&user_id),
 				},
-			})?,
+			}),
 		)
 		.await?;
 
