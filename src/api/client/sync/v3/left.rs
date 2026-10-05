@@ -486,7 +486,7 @@ fn create_dummy_leave_event(
 			utils::random_string(18),
 			services.globals.server_name()
 		))
-			.expect("synthetic leave event ID must be valid"),
+		.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
 		origin_server_ts: utils::millis_since_unix_epoch()

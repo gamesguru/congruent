@@ -131,5 +131,8 @@ pub(crate) async fn claim_keys_route(
 	let result =
 		claim_keys_helper(&services, &body.one_time_keys, Duration::from_secs(0)).await?;
 
-	Ok(claim_keys::v1::Response { one_time_keys: result.one_time_keys, failures: result.failures })
+	Ok(claim_keys::v1::Response {
+		one_time_keys: result.one_time_keys,
+		failures: result.failures,
+	})
 }

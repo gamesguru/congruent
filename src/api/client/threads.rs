@@ -21,7 +21,11 @@ use slipstream::{
 	uint,
 };
 
-use crate::{Ruma, json_util::{json_response, single_field}, router::authenticate_user};
+use crate::{
+	Ruma,
+	json_util::{json_response, single_field},
+	router::authenticate_user,
+};
 
 struct ThreadSubscriptionBody {
 	automatic: Option<OwnedEventId>,

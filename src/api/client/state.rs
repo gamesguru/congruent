@@ -26,7 +26,10 @@ use slipstream::{
 	serde::Raw,
 };
 
-use crate::{Ruma, RumaResponse, json_util::{json_response, single_field}};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, single_field},
+};
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
 ///

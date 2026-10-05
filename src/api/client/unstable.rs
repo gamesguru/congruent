@@ -10,9 +10,9 @@ use slipstream::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
-			relations::event_relationships,
 		},
 		federation,
+		federation::event::event_relationships,
 	},
 	codec,
 	presence::PresenceState,

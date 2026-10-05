@@ -18,8 +18,8 @@ use crate::{Ruma, json_util::single_field};
 /// of this server.
 pub(crate) async fn get_capabilities_route(
 	State(services): State<crate::State>,
-	body: Ruma<get_capabilities::v3::Request>,
-) -> Result<get_capabilities::v3::Response> {
+	body: Ruma<get_capabilities::Request>,
+) -> Result<get_capabilities::Response> {
 	let available: BTreeMap<RoomVersionId, RoomVersionStability> =
 		Server::available_room_versions()
 			.filter(|(version, _)| services.server.supported_room_version(version))
@@ -66,5 +66,5 @@ pub(crate) async fn get_capabilities_route(
 		capabilities.set("uk.timedout.msc4323", object.finish())?;
 	}
 
-	Ok(get_capabilities::v3::Response { capabilities })
+	Ok(get_capabilities::Response { capabilities })
 }

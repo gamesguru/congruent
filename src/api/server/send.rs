@@ -350,7 +350,7 @@ async fn process_inbound_transaction(
 			}
 			(e.to_string(), slipstream::json::Value::Object(obj))
 		})
-		.collect::<slipstream::json::Object<_, _>>();
+		.collect::<slipstream::json::Object>();
 	let mut response_builder = slipstream::ObjectBuilder::new();
 	response_builder.field("pdus", &pdus);
 	let mut response_json = response_builder.finish();

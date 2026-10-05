@@ -8,7 +8,7 @@ use conduwuit_service::Services;
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
-		IncomingRequest,
+		EndpointRequest, IncomingRequest,
 		client::config::{
 			get_global_account_data, get_room_account_data, set_global_account_data,
 			set_room_account_data,

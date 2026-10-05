@@ -3,7 +3,10 @@ use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
 use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
-use crate::{Ruma, RumaResponse, json_util::{json_response, single_field}};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, single_field},
+};
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
 const SEND_TXN_DELAY_ID_PREFIX: &[u8] = b"\xFFdelay_id:";

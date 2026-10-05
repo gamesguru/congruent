@@ -500,8 +500,9 @@ async fn fetch_roothandles(
 	let last_sync_end_root_handle = next_root;
 
 	trace!(
-		"fetch_roothandles: room={room_id} last_count={last_sync_end_count:?} \
-		 current={current_root_handle:?} last_end={last_sync_end_root_handle:?}",
+		"fetch_roothandles: room={room_id} last_count={last_sync_end_count:?} current=fetched \
+		 last_end_present={}",
+		last_sync_end_root_handle.is_some(),
 	);
 
 	Ok(RootHandles {
@@ -916,7 +917,7 @@ async fn check_joined_since_last_sync(
 			warn!(
 				%room_id,
 				user_joined_since_last_sync = syncing_user.as_str(),
-				?last_sync_end_root_handle,
+				last_sync_end_root_handle_present = last_sync_end_root_handle.is_some(),
 				last_sync_end_count,
 				current_count,
 				membership = ?membership_during_previous_sync,
