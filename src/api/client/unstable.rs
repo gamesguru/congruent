@@ -465,6 +465,6 @@ pub(crate) async fn get_event_relationships_route(
 	Ok(event_relationships::unstable::Response {
 		events: raw_events,
 		next_batch: None,
-		limited,
+		limited: Some(limited),
 	})
 }

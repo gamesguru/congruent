@@ -464,7 +464,9 @@ pub(crate) async fn logout_all_route(
 	services
 		.users
 		.all_device_ids(sender_user)
-		.for_each(|device_id| services.users.remove_device(sender_user, &device_id))
+		.for_each(|device_id| async move {
+			services.users.remove_device(sender_user, &device_id).await;
+		})
 		.await;
 	services
 		.pusher
