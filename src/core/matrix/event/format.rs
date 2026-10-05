@@ -1,11 +1,11 @@
 use slipstream::{
 	OwnedRoomId,
+	canonical_json::json,
 	events::{
 		AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
 		space::child::HierarchySpaceChildEvent,
 	},
-	json,
 	serde::Raw,
 };
 

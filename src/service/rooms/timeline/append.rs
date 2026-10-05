@@ -215,12 +215,21 @@ where
 					unsigned.insert(
 						"prev_content".to_owned(),
 						CanonicalJsonValue::Object(
-							utils::to_canonical_object(prev_state.get_content_as_value())
+							utils::to_canonical_object(
+								slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(
+									&serde_json::to_string(&prev_state.get_content_as_value())?,
+								)
 								.map_err(|e| {
 									err!(Database(error!(
-										"Failed to convert prev_state to canonical JSON: {e}",
+										"Failed to convert prev_state content: {e}"
 									)))
 								})?,
+							)
+							.map_err(|e| {
+								err!(Database(error!(
+									"Failed to convert prev_state to canonical JSON: {e}",
+								)))
+							})?,
 						),
 					);
 					unsigned.insert(

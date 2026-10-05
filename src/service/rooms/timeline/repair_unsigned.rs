@@ -28,7 +28,17 @@ pub fn update_unsigned_prev_content(
 		unsigned.insert(
 			"prev_content".to_owned(),
 			slipstream::CanonicalJsonValue::Object(
-				conduwuit_core::utils::to_canonical_object(prev_content_value).map_err(|e| {
+				conduwuit_core::utils::to_canonical_object(
+					slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(
+						&serde_json::to_string(&prev_content_value)?,
+					)
+					.map_err(|e| {
+						conduwuit::err!(Database(error!(
+							"Failed to convert prev_state content: {e}"
+						)))
+					})?,
+				)
+				.map_err(|e| {
 					conduwuit::err!(Database(error!(
 						"Failed to convert prev_state to canonical JSON: {e}"
 					)))

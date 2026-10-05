@@ -4,25 +4,20 @@ use slipstream::{CanonicalJsonError, CanonicalJsonObject};
 
 use crate::Result;
 
-/// Fallible conversion from any value that implements `Serialize` to a
+/// Fallible conversion from any value that implements Slipstream's `Serialize` to a
 /// `CanonicalJsonObject`.
 ///
-/// `value` must serialize to an `serde_json::Value::Object`.
-pub fn to_canonical_object<T: serde::Serialize>(
+/// `value` must serialize to a JSON object.
+pub fn to_canonical_object<T: slipstream::codec::Serialize>(
 	value: T,
 ) -> Result<CanonicalJsonObject, CanonicalJsonError> {
 	use CanonicalJsonError::SerDe;
 
-	match serde_json::to_value(value).map_err(|e| SerDe(e.to_string()))? {
-		| serde_json::Value::Object(map) => {
-			let encoded = serde_json::to_string(&map).map_err(|e| SerDe(e.to_string()))?;
-			let value = slipstream::canonical_json::from_json_str(&encoded)
-				.map_err(|e| SerDe(e.to_string()))?;
-			slipstream::canonical_json::into_object(value)
-				.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
-		},
-		| _ => Err(SerDe("Value must be an object".to_owned())),
-	}
+	let encoded = slipstream::codec::to_string(&value);
+	let value =
+		slipstream::canonical_json::from_json_str(&encoded).map_err(|e| SerDe(e.to_string()))?;
+	slipstream::canonical_json::into_object(value)
+		.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
 }
 
 pub fn deserialize_from_str<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>

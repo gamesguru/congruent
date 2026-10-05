@@ -13,14 +13,13 @@ pub(crate) async fn create_typing_event_route(
 	ClientIp(ip): ClientIp,
 	body: Ruma<create_typing_event::v3::Request>,
 ) -> Result<create_typing_event::v3::Response> {
-	use create_typing_event::v3::Typing;
 	let sender_user = body.sender_user();
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), ip)
+		.update_device_last_seen(sender_user, body.sender_device.as_ref(), ip)
 		.await;
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if *sender_user != body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update typing status of other users.")));
 	}
 
@@ -34,9 +33,9 @@ pub(crate) async fn create_typing_event_route(
 	}
 	if services.config.allow_local_typing && !services.users.is_suspended(sender_user).await? {
 		match body.state {
-			| Typing::Yes(duration) => {
+			| create_typing_event::v3::Typing::Yes(timeout) => {
 				let duration = utils::clamp(
-					duration.as_millis().try_into().unwrap_or(u64::MAX),
+					timeout.as_millis().try_into().unwrap_or(u64::MAX),
 					services
 						.server
 						.config
@@ -60,7 +59,7 @@ pub(crate) async fn create_typing_event_route(
 					)
 					.await?;
 			},
-			| _ => {
+			| create_typing_event::v3::Typing::No => {
 				services
 					.rooms
 					.typing
