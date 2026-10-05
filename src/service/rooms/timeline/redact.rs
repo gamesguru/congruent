@@ -10,7 +10,7 @@ use crate::rooms::short::ShortRoomId;
 pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	&self,
 	event_id: &EventId,
-	reason: &Pdu,
+	_reason: &Pdu,
 	shortroomid: ShortRoomId,
 ) -> Result {
 	// TODO: Don't reserialize, keep original json
@@ -41,7 +41,7 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
-	let reason: slipstream::json::Value = slipstream::codec::to_value(reason.as_pdu());
+	let reason = slipstream::json::Value::Object(slipstream::json::Object::new());
 	pdu.redact(&room_version, &reason)?;
 
 	let obj = pdu.to_canonical_object();

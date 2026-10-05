@@ -261,18 +261,18 @@ pub(crate) async fn get_message_events_route(
 		}
 	}
 
+	let appservice_device = body
+		.appservice_info
+		.as_ref()
+		.map(|registration| OwnedDeviceId::from(registration.registration.id.clone()));
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
-		device_id: sender_device.or_else(|| {
-			if let Some(registration) = body.appservice_info.as_ref() {
-				Some(<&DeviceId>::from(registration.registration.id.as_str()))
-			} else {
+		device_id: sender_device.or_else(|| appservice_device.as_deref()).or_else(|| {
 				warn!(
 					"No device_id provided and no appservice registration found, this should be \
 					 unreachable"
 				);
 				None
-			}
 		}),
 		room_id,
 		token: Some(from.pdu_count.into_unsigned()),

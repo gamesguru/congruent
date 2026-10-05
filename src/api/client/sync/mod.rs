@@ -348,7 +348,7 @@ async fn share_encrypted_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_filter(|room_id| Some(room_id) != ignore_room.as_ref())
+		.ready_filter(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
 		.broad_any(|other_room_id| async move {
 			services
 				.rooms
@@ -370,7 +370,7 @@ async fn shares_a_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_any(|room_id| Some(room_id) != ignore_room.as_ref())
+		.ready_any(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
 		.await
 }
 

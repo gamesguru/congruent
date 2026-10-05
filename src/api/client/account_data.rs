@@ -14,7 +14,7 @@ use slipstream::{
 			set_room_account_data,
 		},
 	},
-	codec::{DeError, Deserialize as CodecDeserialize, from_str},
+	codec::{DeError, Deserialize as CodecDeserialize},
 	endpoint::body_field,
 	events::{
 		AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent,
@@ -161,7 +161,7 @@ async fn set_account_data(
 	room_id: Option<&RoomId>,
 	sender_user: &UserId,
 	event_type_s: &str,
-	data: &Raw<slipstream::json::Value>,
+	data: &slipstream::json::Value,
 ) -> Result {
 	if event_type_s == RoomAccountDataEventType::FullyRead.to_cow_str() {
 		return Err!(Request(BadJson(
@@ -170,8 +170,7 @@ async fn set_account_data(
 		)));
 	}
 
-	let data: slipstream::json::Value = from_str(data.get())
-		.map_err(|e| err!(Request(BadJson(warn!("Invalid JSON provided: {e}")))))?;
+	let data = data.clone();
 
 	if data
 		.as_object()
