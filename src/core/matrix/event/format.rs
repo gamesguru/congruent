@@ -1,6 +1,6 @@
+use rezzy::json;
 use slipstream::{
 	OwnedRoomId,
-	canonical_json::json,
 	events::{
 		AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
@@ -10,6 +10,10 @@ use slipstream::{
 };
 
 use super::{Event, redact};
+
+fn raw_json<T>(raw: &Raw<T>) -> slipstream::json::Value {
+	slipstream::codec::from_str(raw.get()).expect("event raw JSON must be valid")
+}
 
 pub struct Owned<E: Event>(pub(super) E);
 
@@ -24,7 +28,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
+			"content": raw_json(&content),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"sender": event.sender().as_str(),
@@ -39,7 +43,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 		}
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))
@@ -56,7 +60,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
+			"content": raw_json(&content),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
@@ -71,7 +75,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 			json["state_key"] = json!(state_key);
 		}
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))
@@ -88,7 +92,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
+			"content": raw_json(&content),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"room_id": event.room_id().map(OwnedRoomId::as_str),
@@ -103,7 +107,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 			json["state_key"] = json!(state_key);
 		}
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))
@@ -119,7 +123,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
+			"content": raw_json(event.content()),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
@@ -129,7 +133,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))
@@ -145,7 +149,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
+			"content": raw_json(event.content()),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"sender": event.sender().as_str(),
@@ -154,7 +158,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))
@@ -170,7 +174,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let json = json!({
-			"content": event.content(),
+			"content": raw_json(event.content()),
 			"origin_server_ts": event.origin_server_ts().0,
 			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
 			"sender": event.sender().as_str(),
@@ -191,7 +195,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<HierarchySpaceChildEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let json = json!({
-			"content": event.content(),
+			"content": raw_json(event.content()),
 			"origin_server_ts": event.origin_server_ts().0,
 			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
@@ -211,7 +215,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
+			"content": raw_json(event.content()),
 			"event_id": event.event_id().as_str(),
 			"origin_server_ts": event.origin_server_ts().0,
 			"redacts": event.redacts().map(slipstream::OwnedEventId::as_str),
@@ -222,7 +226,7 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
 		Self::from_json_text(&slipstream::codec::to_string(&json))

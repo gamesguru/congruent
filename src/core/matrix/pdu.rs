@@ -391,10 +391,7 @@ impl CodecSerialize for Pdu {
 		if let Some(origin) = &self.origin {
 			obj.insert("origin".into(), <OwnedServerName as CodecSerialize>::to_json(origin));
 		}
-		obj.insert(
-			"origin_server_ts".into(),
-			slipstream::canonical_json::json!(self.origin_server_ts),
-		);
+		obj.insert("origin_server_ts".into(), rezzy::json!(self.origin_server_ts));
 		obj.insert("type".into(), <TimelineEventType as CodecSerialize>::to_json(&self.kind));
 		// content is stored as raw JSON bytes - we need to parse it
 		if let Ok(content_val) = slipstream::codec::from_str::<JsonValue>(self.content.get()) {
@@ -407,7 +404,7 @@ impl CodecSerialize for Pdu {
 			"prev_events".into(),
 			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.prev_events),
 		);
-		obj.insert("depth".into(), slipstream::canonical_json::json!(self.depth));
+		obj.insert("depth".into(), rezzy::json!(self.depth));
 		obj.insert(
 			"auth_events".into(),
 			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.auth_events),
