@@ -45,7 +45,7 @@ use slipstream::{
 			},
 		},
 	},
-	codec::{self, Deserialize, Serialize},
+	codec,
 	encryption::DeviceKeys,
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
@@ -136,7 +136,7 @@ pub(crate) async fn send_transaction_message_route(
 					let edus_stream = edus
 						.into_iter()
 						.map(|edu| edu.get().to_owned())
-						.map(|json_str| serde_json::from_str(&json_str))
+						.map(|json_str| codec::from_str::<Edu>(&json_str))
 						.filter_map(Result::ok)
 						.stream();
 
@@ -198,7 +198,7 @@ async fn process_inbound_transaction(
 		.edus
 		.iter()
 		.map(|edu| edu.get())
-		.map(serde_json::from_str)
+		.map(|json_str| codec::from_str::<Edu>(json_str))
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -207,7 +207,7 @@ async fn process_inbound_transaction(
 	let pdu_ids: Vec<_> = body
 		.pdus
 		.iter()
-		.filter_map(|pdu| serde_json::from_str::<serde_json::Value>(pdu.get()).ok())
+		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
 		.filter_map(|pdu| {
 			pdu.get("event_id")
 				.and_then(|e| e.as_str())
@@ -375,7 +375,7 @@ async fn inject_state_hash_mismatches(
 		return;
 	};
 
-	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes.clone().into()) else {
+	let Ok(state_hashes) = codec::from_value::<StateHashes>(hashes) else {
 		return;
 	};
 
@@ -1274,7 +1274,7 @@ async fn handle_edu_direct_to_device_event(
 	sender: &UserId,
 	target_device_id_maybe: DeviceIdOrAllDevices,
 	ev_type: &str,
-	event: serde_json::Value,
+	event: Value,
 ) {
 	match target_device_id_maybe {
 		| DeviceIdOrAllDevices::DeviceId(ref target_device_id) => {

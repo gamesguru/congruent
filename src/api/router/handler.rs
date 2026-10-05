@@ -47,7 +47,7 @@ macro_rules! ruma_handler {
 				let router = self.add_route(router, Req::METADATA.path);
 				if let Some((prefix, suffix)) = Req::METADATA.path.split_once("/_matrix/client/v3/") {
 					let legacy = format!("{prefix}/_matrix/client/r0/{suffix}");
-					self.add_route(router, Box::leak(legacy.into_boxed_str()))
+					self.add_route(router, &legacy)
 				} else {
 					router
 				}
