@@ -302,7 +302,7 @@ impl Data {
 				break; // crossed into normal range
 			}
 			if let Ok(s) = std::str::from_utf8(val) {
-				if let Ok(event_id) = OwnedEventId::try_from(s) {
+				if let Ok(event_id) = OwnedEventId::parse(s) {
 					all_event_ids.push((count, event_id));
 				}
 			}
@@ -318,7 +318,7 @@ impl Data {
 			let pdu_id = RawPduId::from(key);
 			let count = pdu_id.pdu_count();
 			if let Ok(s) = std::str::from_utf8(val) {
-				if let Ok(event_id) = OwnedEventId::try_from(s) {
+				if let Ok(event_id) = OwnedEventId::parse(s) {
 					all_event_ids.push((count, event_id));
 				}
 			}
@@ -397,7 +397,7 @@ impl Data {
 
 		while let Some((event_id_bytes, pdu_id_bytes)) = iter.try_next().await? {
 			if let Ok(event_id_str) = std::str::from_utf8(event_id_bytes) {
-				if let Ok(event_id) = OwnedEventId::try_from(event_id_str) {
+				if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
 					let _pdu_id: RawPduId = pdu_id_bytes.into();
 					if let Ok(mut json) = self
 						.eventid_pdu

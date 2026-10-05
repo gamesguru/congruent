@@ -411,7 +411,7 @@ mod tests {
 		// Build 10 events all referencing A
 		let event_ids: Vec<OwnedEventId> = (1..=10)
 			.map(|i| format!("$e{i}:example.org"))
-			.map(|s| OwnedEventId::try_from(s).unwrap())
+			.map(|s| OwnedEventId::parse(s).unwrap())
 			.collect();
 
 		// Simulate: after all 10 are processed, all are extremities

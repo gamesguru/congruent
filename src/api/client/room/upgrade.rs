@@ -173,7 +173,7 @@ pub(crate) async fn upgrade_room_route(
 			| Some(CanonicalJsonValue::Array(arr)) => arr
 				.iter()
 				.filter_map(|v| match v {
-					| CanonicalJsonValue::String(s) => OwnedUserId::try_from(s.as_str()).ok(),
+					| CanonicalJsonValue::String(s) => OwnedUserId::parse(s.as_str()).ok(),
 					| _ => None,
 				})
 				.collect(),

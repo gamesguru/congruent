@@ -921,7 +921,7 @@ impl super::Service {
 		for ((ty_str, sk_str), eid_str) in resolved_lean {
 			let ty: StateEventType = ty_str.to_string().into();
 			let sk: StateKey = sk_str.into();
-			if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
+			if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 				resolved.insert((ty, sk), eid);
 			}
 		}

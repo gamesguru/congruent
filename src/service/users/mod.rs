@@ -1852,7 +1852,7 @@ impl Service {
 		let user_string = utils::string_from_bytes(user_bytes)
 			.map_err(|e| err!(Database("User ID in openid_userid is invalid unicode. {e}")))?;
 
-		OwnedUserId::try_from(user_string)
+		OwnedUserId::parse(user_string)
 			.map_err(|e| err!(Database("User ID in openid_userid is invalid. {e}")))
 	}
 
@@ -2267,7 +2267,7 @@ where
 		.and_then(|v| v.as_object_mut())
 	{
 		for (user, signature) in std::mem::take(signatures) {
-			let sid = <UserId>::try_from(user.as_str())
+			let sid = <UserId>::parse(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
 			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {
 				signatures.insert(user, signature);

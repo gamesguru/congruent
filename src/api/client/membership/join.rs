@@ -138,7 +138,7 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let (servers, room_id) = match OwnedRoomId::try_from(body.room_id_or_alias.clone()) {
+	let (servers, room_id) = match OwnedRoomId::parse(body.room_id_or_alias.clone()) {
 		| Ok(room_id) => {
 			banned_room_check(
 				&services,
@@ -388,7 +388,7 @@ async fn join_room_by_id_helper_remote(
 			.and_then(|s| s.as_object())
 			.and_then(|o| o.get("join_authorised_via_users_server"))
 			.and_then(|v| v.as_str())
-			.and_then(|s| OwnedUserId::try_from(s).ok())
+			.and_then(|s| OwnedUserId::parse(s).ok())
 	} else {
 		None
 	};

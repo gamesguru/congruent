@@ -182,7 +182,7 @@ where
 		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 	{
 		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
-			let event_id = OwnedEventId::try_from(id.as_str()).ok()?;
+			let event_id = OwnedEventId::parse(id.as_str()).ok()?;
 
 			if let Some(cached_arc) = self.global_cache.get(&event_id) {
 				let local_arc = self.arena.alloc(cached_arc);
@@ -299,7 +299,7 @@ where
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
 		let ty: slipstream::events::StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
-		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
+		if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
 		}
 	}

@@ -599,13 +599,13 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 			let room_id_bytes = &key[..sep];
 			let user_id_bytes = &key[sep.saturating_add(1)..];
 
-			let Ok(room_id) = <RoomId>::try_from(
+			let Ok(room_id) = <RoomId>::parse(
 				conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
-			let Ok(user_id) = <UserId>::try_from(
+			let Ok(user_id) = <UserId>::parse(
 				conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);

@@ -36,9 +36,9 @@ pub(crate) async fn get_state_accumulator_route(
 		.map_or("/", http::uri::PathAndQuery::as_str)
 		.to_owned();
 
-	let room_id = OwnedRoomId::try_from(room_id_str)
+	let room_id = OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
-	let event_id = OwnedEventId::try_from(query.event_id.as_str())
+	let event_id = OwnedEventId::parse(query.event_id.as_str())
 		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 
 	verify_federation_request(&services, &x_matrix, &signature_uri).await?;

@@ -784,7 +784,7 @@ mod wire_tests {
 mod causal_tests {
 	use super::*;
 
-	fn id(s: &str) -> OwnedEventId { OwnedEventId::try_from(format!("${s}")).unwrap() }
+	fn id(s: &str) -> OwnedEventId { OwnedEventId::parse(format!("${s}")).unwrap() }
 
 	fn node(prevs: &[&str], redaction_of: Option<&str>) -> DagNode {
 		DagNode {

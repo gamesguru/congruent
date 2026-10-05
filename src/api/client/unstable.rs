@@ -333,7 +333,7 @@ pub(crate) async fn get_room_dag_route(
 	use futures::StreamExt;
 	use slipstream::OwnedRoomId;
 
-	let room_id = OwnedRoomId::try_from(room_id_str)
+	let room_id = OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await

@@ -946,7 +946,7 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 			if *pdu.kind() != TimelineEventType::RoomMember {
 				continue;
 			}
-			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
+			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::parse) else {
 				continue;
 			};
 

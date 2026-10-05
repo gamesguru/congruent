@@ -1297,7 +1297,7 @@ impl Service {
 			let Some(event_id) = pdu
 				.get("event_id")
 				.and_then(|id| id.as_str())
-				.and_then(|id| OwnedEventId::try_from(id).ok())
+				.and_then(|id| OwnedEventId::parse(id).ok())
 			else {
 				continue;
 			};
@@ -1787,7 +1787,7 @@ mod tests {
 		let mut receipts = Vec::new();
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
-			let user_id = <OwnedUserId as TryFrom<&str>>::try_from(user_id_str.as_str()).unwrap();
+			let user_id = OwnedUserId::parse(user_id_str.as_str()).unwrap();
 			let json = slipstream::json!({
 				"type": "m.receipt",
 				"content": {

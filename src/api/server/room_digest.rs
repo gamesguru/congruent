@@ -97,7 +97,7 @@ pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 ) -> Result<impl axum::response::IntoResponse> {
-	let room_id = slipstream::OwnedRoomId::try_from(room_id_str)
+	let room_id = slipstream::OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	// Verify we participate in this room

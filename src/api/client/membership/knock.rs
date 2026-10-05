@@ -49,7 +49,7 @@ pub(crate) async fn knock_room_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let (servers, room_id) = match OwnedRoomId::try_from(body.room_id_or_alias.clone()) {
+	let (servers, room_id) = match OwnedRoomId::parse(body.room_id_or_alias.clone()) {
 		| Ok(room_id) => {
 			banned_room_check(
 				&services,

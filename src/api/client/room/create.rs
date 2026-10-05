@@ -207,7 +207,7 @@ pub(crate) async fn create_room_route(
 					for item in arr {
 						match item {
 							| CanonicalJsonValue::String(s) => {
-								let user = OwnedUserId::try_from(s.as_str()).map_err(|_| {
+								let user = OwnedUserId::parse(s.as_str()).map_err(|_| {
 									err!(Request(BadJson(
 										"additional_creators contains an invalid user ID: {s}"
 									)))
