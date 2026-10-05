@@ -105,7 +105,10 @@ url.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-rustls = { workspace = true, features = ["aws_lc_rs"] }
+# The route tests make reqwest-driven calls, which need a TLS crypto provider
+# installed. `ring` is enabled here (test-only) so they have a deterministic
+# provider regardless of which providers the library's consumers select.
+rustls = { workspace = true, features = ["ring"] }
 
 [lints]
 workspace = true

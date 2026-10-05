@@ -21,11 +21,6 @@ path = "mod.rs"
 ignored = ["const-str", "ctor"]
 
 [features]
-# TLS crypto providers are opt-in so this library stays provider-agnostic for
-# its consumers. The `setup_test_services` tests install the selected provider
-# (see state/tests.rs); a provider is only expected when one of these features
-# is enabled, mirroring how the `conduwuit` binary selects one (src/main).
-aws_lc_rs = ["rustls/aws_lc_rs"]
 blurhashing = ["dep:blurhash", "dep:image"]
 brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]
 console = ["dep:rustyline-async", "dep:termimad"]
@@ -55,6 +50,10 @@ release_max_log_level = [
 	"tracing/max_level_trace",
 	"tracing/release_max_level_info",
 ]
+# TLS crypto providers are opt-in so this library stays provider-agnostic for
+# its consumers. The `setup_test_services` tests install the selected provider
+# (see state/tests.rs); a provider is only expected when this feature is
+# enabled, mirroring how the `conduwuit` binary selects one (src/main).
 ring = ["rustls/ring"]
 systemd = ["dep:sd-notify"]
 url_preview = ["dep:image", "dep:webpage"]
@@ -128,10 +127,9 @@ figment = { workspace = true, features = ["toml"] }
 # Tests spawn a reqwest-driven server, which needs a TLS crypto provider
 # installed. `ring` is enabled here (test-only) so the state tests have a
 # deterministic provider regardless of which providers the library's own
-# optional `ring`/`aws_lc_rs` features select. Enabling it on the dev
-# dependency does not leak a provider onto the library's consumers.
+# optional `ring` feature selects. Enabling it on the dev dependency does not
+# leak a provider onto the library's consumers.
 rustls = { workspace = true, features = ["ring"] }
-criterion.workspace = true
 
 [[bench]]
 name = "hamt"

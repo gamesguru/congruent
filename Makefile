@@ -96,7 +96,7 @@ vars: ##H Print debug info
 
 .PHONY: macro
 macro: ##H See macro expansion costs
-	cargo +nightly rustc -- -Zmacro-stats
+	cargo +nightly rustc -p conduwuit --bin conduwuit -- -Zmacro-stats
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

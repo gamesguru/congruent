@@ -40,7 +40,7 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	// The test server drives HTTP via reqwest, which requires a TLS crypto
 	// provider. `rustls` is a dev-dependency built with the `ring` feature (see
 	// Cargo.toml), so this is unconditional and independent of which provider
-	// the library's optional `ring`/`aws_lc_rs` features select for consumers.
+	// the library's optional `ring` feature selects for consumers.
 	let _ = rustls::crypto::ring::default_provider().install_default();
 	let lock = DB_TEST_MUTEX.lock().await;
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
