@@ -111,7 +111,7 @@ pub async fn room_state_get(
 /// Returns a single PDU from `room_id` at the given HAMT root with key
 /// (`event_type`, `state_key`).
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
+#[tracing::instrument(skip(self, root_handle), level = "debug")]
 pub async fn room_state_get_hamt_at_root(
 	&self,
 	room_id: &RoomId,

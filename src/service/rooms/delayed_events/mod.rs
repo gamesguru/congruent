@@ -260,7 +260,10 @@ pub struct ScheduledDelayedEvent {
 
 /// Encodes a `Duration` like serde does: `{"secs":_,"nanos":_}`.
 fn duration_to_json(value: &Duration) -> slipstream::json::Value {
-	slipstream::json!({ "secs": value.as_secs(), "nanos": value.subsec_nanos() })
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("secs", &value.as_secs());
+	object.field("nanos", &value.subsec_nanos());
+	object.finish()
 }
 
 fn duration_from_json(
@@ -281,10 +284,10 @@ fn system_time_to_json(value: &SystemTime) -> slipstream::json::Value {
 	let since = value
 		.duration_since(SystemTime::UNIX_EPOCH)
 		.unwrap_or_default();
-	slipstream::json!({
-		"secs_since_epoch": since.as_secs(),
-		"nanos_since_epoch": since.subsec_nanos(),
-	})
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("secs_since_epoch", &since.as_secs());
+	object.field("nanos_since_epoch", &since.subsec_nanos());
+	object.finish()
 }
 
 fn system_time_from_json(

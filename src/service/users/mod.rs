@@ -1640,14 +1640,11 @@ impl Service {
 		);
 
 		let key = (target_user_id, target_device_id, count);
-		self.db.todeviceid_events.put(
-			key,
-			Json(json!({
-				"type": event_type,
-				"sender": sender,
-				"content": content,
-			})),
-		);
+		let mut event = slipstream::ObjectBuilder::new();
+		event.field("type", &event_type);
+		event.field("sender", &sender);
+		event.field("content", &content);
+		self.db.todeviceid_events.put(key, Json(event.finish()));
 	}
 
 	pub fn get_to_device_events<'a>(
@@ -2207,10 +2204,10 @@ pub fn merge_signatures(new: &mut Value, old: &Value) {
 	if let Some(obj) = new.as_object_mut() {
 		match obj.get("signatures") {
 			| Some(v) if !v.is_object() => {
-				obj.insert("signatures".to_owned(), json!({}));
+				obj.insert("signatures".to_owned(), Value::Object(BTreeMap::new()));
 			},
 			| None => {
-				obj.insert("signatures".to_owned(), json!({}));
+				obj.insert("signatures".to_owned(), Value::Object(BTreeMap::new()));
 			},
 			| _ => {},
 		}
@@ -2224,7 +2221,7 @@ pub fn merge_signatures(new: &mut Value, old: &Value) {
 			if let Some(sigs) = sigs.as_object() {
 				let Some(new_user_sigs) = new_sigs
 					.entry(user.clone())
-					.or_insert_with(|| json!({}))
+					.or_insert_with(|| Value::Object(BTreeMap::new()))
 					.as_object_mut()
 				else {
 					warn!(

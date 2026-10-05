@@ -752,7 +752,7 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
+	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,

@@ -77,12 +77,12 @@ pub struct ThreadSubscription {
 
 impl CodecSerialize for ThreadSubscription {
 	fn to_json(&self) -> Value {
-		slipstream::json!({
-			"subscribed": self.subscribed,
-			"automatic": self.automatic,
-			"bump_stamp": self.bump_stamp,
-			"last_unsubscribed": self.last_unsubscribed,
-		})
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("subscribed", &self.subscribed);
+		object.field("automatic", &self.automatic);
+		object.field("bump_stamp", &self.bump_stamp);
+		object.field("last_unsubscribed", &self.last_unsubscribed);
+		object.finish()
 	}
 }
 
@@ -310,8 +310,9 @@ impl Service {
 
 				let content = relations.to_json();
 
-				unsigned
-					.insert("m.relations".to_owned(), slipstream::json!({ "m.thread": content }));
+				let mut relation = slipstream::ObjectBuilder::new();
+				relation.field("m.thread", &content);
+				unsigned.insert("m.relations".to_owned(), relation.finish());
 			} else {
 				// New thread
 				let relations = BundledThread {
@@ -322,8 +323,9 @@ impl Service {
 
 				let content = relations.to_json();
 
-				unsigned
-					.insert("m.relations".to_owned(), slipstream::json!({ "m.thread": content }));
+				let mut relation = slipstream::ObjectBuilder::new();
+				relation.field("m.thread", &content);
+				unsigned.insert("m.relations".to_owned(), relation.finish());
 			}
 
 			self.services

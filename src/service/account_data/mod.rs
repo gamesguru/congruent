@@ -117,10 +117,10 @@ pub async fn delete(
 		self.db.roomuserdataid_accountdata.remove(&prev);
 	}
 
-	let data = slipstream::json!({
-		"type": event_type,
-		"content": {},
-	});
+	let mut data = slipstream::ObjectBuilder::new();
+	data.field("type", &event_type);
+	data.field("content", &slipstream::json::Object::new());
+	let data = data.finish();
 
 	let count = self.services.globals.next_count().unwrap();
 	let roomuserdataid = (room_id, user_id, count, event_type);

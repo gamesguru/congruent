@@ -217,7 +217,7 @@ impl Service {
 		self.authenticate(
 			auth,
 			vec![AuthFlow::new(vec![AuthType::Password])],
-			slipstream::json!({}),
+			slipstream::json::Value::Object(slipstream::json::Object::new()),
 			identity,
 		)
 		.await
