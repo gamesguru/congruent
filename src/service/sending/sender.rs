@@ -1452,7 +1452,7 @@ impl Service {
 	pub async fn convert_to_outgoing_federation_event(
 		&self,
 		mut pdu_json: CanonicalJsonObject,
-	) -> RawJsonValue {
+	) -> slipstream::serde::Raw<slipstream::json::Value> {
 		if let Some(unsigned) = pdu_json
 			.get_mut("unsigned")
 			.and_then(|val| val.as_object_mut())
@@ -1483,7 +1483,7 @@ impl Service {
 		// valid slipstream::json::Value"), )
 		// .expect("Raw::from_value always works")
 
-		RawJsonValue::from_value(&pdu_json)
+		slipstream::serde::Raw::from_value(&pdu_json)
 	}
 }
 

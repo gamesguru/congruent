@@ -8,8 +8,7 @@ use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, w
 use futures::{StreamExt, stream::FuturesUnordered};
 use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
-	api::federation::discovery::ServerSigningKeys,
-	serde::{Raw, RawJsonValue},
+	api::federation::discovery::ServerSigningKeys, serde::Raw,
 };
 
 use super::key_exists;
@@ -19,7 +18,7 @@ type Batch = BTreeMap<OwnedServerName, Vec<OwnedServerSigningKeyId>>;
 #[implement(super::Service)]
 pub async fn acquire_events_pubkeys<'a, I>(&self, events: I)
 where
-	I: Iterator<Item = &'a Box<RawJsonValue>> + Send,
+	I: Iterator<Item = &'a Raw<slipstream::json::Value>> + Send,
 {
 	type Batch = BTreeMap<OwnedServerName, BTreeSet<OwnedServerSigningKeyId>>;
 	type Signatures = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, String>>;

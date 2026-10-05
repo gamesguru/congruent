@@ -471,7 +471,7 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = std::str::from_utf8(&bytes)
+	if let Some(mut json) = std::str::from_utf8(&bytes)
 		.ok()
 		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
 	{
@@ -512,7 +512,7 @@ async fn ensure_search_results_present(
 		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
 	};
 
-	if let Ok(mut json) = std::str::from_utf8(&bytes)
+	if let Some(mut json) = std::str::from_utf8(&bytes)
 		.ok()
 		.and_then(|text| slipstream::codec::from_str::<slipstream::json::Value>(text).ok())
 	{

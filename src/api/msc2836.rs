@@ -15,8 +15,7 @@ use futures::StreamExt;
 use serde::Deserialize;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
-	api::federation::event::event_relationships as federation_event_relationships,
-	serde::RawJsonValue,
+	api::federation::event::event_relationships as federation_event_relationships, serde::Raw,
 };
 
 pub(crate) enum Requester<'a> {
@@ -159,7 +158,7 @@ async fn persist_federation_events(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	raws: Vec<Box<RawJsonValue>>,
+	raws: Vec<Raw<slipstream::json::Value>>,
 ) -> Vec<PduEvent> {
 	type PendingEvent = (
 		OwnedEventId,
@@ -575,7 +574,7 @@ pub(crate) async fn resolve(
 pub(crate) async fn to_raw_json_with_children(
 	services: &Services,
 	pdu: &PduEvent,
-) -> Box<RawJsonValue> {
+) -> Raw<slipstream::json::Value> {
 	let (counts, hash) = services
 		.rooms
 		.pdu_metadata

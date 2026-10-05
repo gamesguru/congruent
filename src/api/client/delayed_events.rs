@@ -116,7 +116,7 @@ pub(crate) async fn get_all_delayed_events_route(
 		event
 			.running_since
 			.to_system_time()
-			.and_then(|ts| ts.checked_add(event.delay))
+			.checked_add(event.delay)
 	});
 
 	Ok(axum::Json(slipstream::json!({

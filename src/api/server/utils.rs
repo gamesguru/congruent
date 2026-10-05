@@ -143,7 +143,7 @@ pub(super) async fn verify_send_membership(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &slipstream::serde::RawJsonValue,
+	pdu: &slipstream::serde::Raw<slipstream::json::Value>,
 	expected_membership: slipstream::events::room::member::MembershipState,
 ) -> Result<(
 	slipstream::OwnedEventId,
