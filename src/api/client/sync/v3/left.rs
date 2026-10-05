@@ -489,7 +489,7 @@ fn create_dummy_leave_event(
 			.try_into()
 			.expect("Timestamp is valid js_int value"),
 		kind: TimelineEventType::RoomMember,
-		content: RawValue::from_string(r#"{"membership": "leave"}"#.to_owned()).unwrap(),
+		content: Raw::from_json_text(r#"{"membership": "leave"}"#)?,
 		state_key: Some(syncing_user.as_str().into()),
 		unsigned: None,
 		// The following keys are dropped on conversion

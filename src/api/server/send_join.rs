@@ -10,11 +10,11 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
+	serde::Raw,
 };
 
 use crate::Ruma;
@@ -25,7 +25,7 @@ async fn create_join_event(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &RawJsonValue,
+	pdu: &Raw<slipstream::json::Value>,
 	omit_members: bool,
 ) -> Result<create_join_event::v2::RoomState> {
 	let (event_id, mut value, content, room_version_id, _sender, state_key) =
@@ -269,7 +269,7 @@ async fn create_join_event(
 	Ok(create_join_event::v2::RoomState {
 		auth_chain,
 		state,
-		event: to_raw_value(&CanonicalJsonValue::Object(value)).ok(),
+		event: Some(Raw::from_value(&CanonicalJsonValue::Object(value))),
 		members_omitted: omit_members,
 		servers_in_room,
 	})

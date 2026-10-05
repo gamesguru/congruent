@@ -396,7 +396,7 @@ pub(crate) async fn add_membership_to_unsigned(
 		// caused by the event itself... are included."
 		// For a user's own membership event, the state after the event is just the
 		// event itself.
-		serde_json::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
+		slipstream::codec::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
 			pdu.content.get(),
 		)
 		.map_or(slipstream::events::room::member::MembershipState::Leave, |c| c.membership)

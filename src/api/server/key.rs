@@ -15,6 +15,7 @@ use slipstream::{
 		},
 	},
 	serde::Raw,
+	codec,
 };
 
 use crate::Ruma;
@@ -35,7 +36,7 @@ pub(crate) async fn get_server_keys_route(
 	let mut response = get_server_keys::v2::Response::new(server_key)
 		.try_into_http_response::<Vec<u8>>()
 		.map(|mut response| take(response.body_mut()))
-		.and_then(|body| serde_json::from_slice(&body).map_err(Into::into))?;
+		.and_then(|body| slipstream::codec::from_str(std::str::from_utf8(&body)?))?;
 
 	services.server_keys.sign_json(&mut response)?;
 
@@ -92,11 +93,9 @@ async fn sign_signing_keys(
 	services: &crate::State,
 	server_keys: &Raw<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
-	let mut keys_obj: slipstream::CanonicalJsonObject =
-		serde_json::from_str(server_keys.json().get())?;
+	let mut keys_obj: slipstream::CanonicalJsonObject = codec::from_str(server_keys.json().get())?;
 	services.server_keys.sign_json(&mut keys_obj)?;
-	let raw_value = serde_json::value::to_raw_value(&keys_obj)?;
-	Ok(Raw::from_json(raw_value))
+	Ok(Raw::from_value(&keys_obj))
 }
 
 fn select_server_key_response(

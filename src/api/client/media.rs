@@ -300,9 +300,10 @@ pub(crate) async fn get_media_preview_route(
 			)))
 		})?;
 
-	serde_json::value::to_raw_value(&preview)
-		.map(get_media_preview::v1::Response::from_raw_value)
-		.map_err(|error| {
+	Ok(get_media_preview::v1::Response::from_raw_value(
+		slipstream::serde::Raw::from_value(&preview),
+	))
+	.map_err(|error| {
 			err!(Request(Unknown(
 				debug_error!(%sender_user, %url, "Failed to parse URL preview: {error}")
 			)))

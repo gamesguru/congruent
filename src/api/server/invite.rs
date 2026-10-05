@@ -10,6 +10,7 @@ use conduwuit::{
 use slipstream::{
 	CanonicalJsonValue, OwnedUserId, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
+	codec,
 	events::{
 		invite_permission_config::FilterLevel,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -109,7 +110,7 @@ pub(crate) async fn create_invite_route(
 		)));
 	}
 
-	let content: RoomMemberEventContent = serde_json::from_value(
+	let content: RoomMemberEventContent = codec::from_value(
 		signed_event
 			.get("content")
 			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?
@@ -202,7 +203,7 @@ pub(crate) async fn create_invite_route(
 	}
 
 	let mut invite_state = body.invite_room_state.clone();
-	let mut event: JsonObject = serde_json::from_str(body.event.get())
+	let mut event: JsonObject = codec::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 	let is_direct_invite = event
 		.get("content")
@@ -223,7 +224,7 @@ pub(crate) async fn create_invite_route(
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 
-	let pdu: PduEvent = serde_json::from_value(event.into())
+	let pdu: PduEvent = codec::from_value(event.into())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 
 	invite_state.push(pdu.to_format());

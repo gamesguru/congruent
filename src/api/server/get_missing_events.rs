@@ -2,8 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, debug, info, trace, utils::to_canonical_object, warn};
-use serde_json::{json, value::RawValue};
-use slipstream::{OwnedEventId, api::federation::event::get_missing_events};
+use slipstream::{OwnedEventId, api::federation::event::get_missing_events, serde::Raw};
 
 use super::AccessCheck;
 use crate::Ruma;
@@ -47,7 +46,7 @@ pub(crate) async fn get_missing_events_route(
 	let room_version = services.rooms.state.get_room_version(&body.room_id).await?;
 
 	let mut queue: VecDeque<OwnedEventId> = VecDeque::from(body.latest_events.clone());
-	let mut results: Vec<(OwnedEventId, Vec<OwnedEventId>, slipstream::UInt, Box<RawValue>)> =
+	let mut results: Vec<(OwnedEventId, Vec<OwnedEventId>, slipstream::UInt, Raw<slipstream::json::Value>)> =
 		Vec::with_capacity(limit);
 	let mut seen: HashSet<OwnedEventId> = HashSet::from_iter(body.earliest_events.clone());
 
@@ -87,7 +86,7 @@ pub(crate) async fn get_missing_events_route(
 			.await
 		{
 			debug!(%next_event_id, origin = %body.origin(), "redacting event origin cannot see");
-			pdu.redact(&room_version, json!({}))?;
+			pdu.redact(&room_version, slipstream::json::Value::Object(slipstream::json::Object::new()))?;
 		}
 
 		trace!(
@@ -129,7 +128,7 @@ pub(crate) async fn get_missing_events_route(
 			.map(|(id, prevs, depth, _)| (id.clone(), prevs.clone(), *depth)),
 	);
 
-	let mut event_map: std::collections::BTreeMap<OwnedEventId, Box<RawValue>> = results
+	let mut event_map: std::collections::BTreeMap<OwnedEventId, Raw<slipstream::json::Value>> = results
 		.into_iter()
 		.map(|(id, _, _, raw)| (id, raw))
 		.collect();

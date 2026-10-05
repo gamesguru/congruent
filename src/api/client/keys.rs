@@ -686,7 +686,7 @@ where
 				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
-				failures.insert(server.to_string(), failure_value(e));
+				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}
 	}
@@ -698,11 +698,6 @@ where
 		self_signing_keys,
 		user_signing_keys,
 	})
-}
-
-/// The `{ "error": "..." }` body every `failures` entry carries.
-fn failure_value(e: impl std::fmt::Display) -> slipstream::json::Value {
-	single_field("error", &e.to_string())
 }
 
 fn add_unsigned_device_display_name(
@@ -803,7 +798,7 @@ pub(crate) async fn claim_keys_helper(
 					}
 				},
 			| Err(e) => {
-				failures.insert(server.to_string(), failure_value(e));
+				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}
 	}

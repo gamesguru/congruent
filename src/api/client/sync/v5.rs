@@ -1624,10 +1624,12 @@ async fn collect_thread_subscriptions_extension(
 				.map(|(thread_id, subscription)| {
 					(
 						thread_id.to_string(),
-						slipstream::json!({
-							"automatic": subscription.automatic,
-							"bump_stamp": subscription.bump_stamp,
-						}),
+						{
+							let mut object = slipstream::ObjectBuilder::new();
+							object.field("automatic", &subscription.automatic);
+							object.field("bump_stamp", &subscription.bump_stamp);
+							object.finish()
+						},
 					)
 				})
 				.collect::<Object>();
@@ -1637,10 +1639,12 @@ async fn collect_thread_subscriptions_extension(
 		.collect::<Object>();
 
 	if subscribed.is_empty() {
-		return Ok(Some(slipstream::json!({})));
+		return Ok(Some(slipstream::json::Value::Object(slipstream::json::Object::new())));
 	}
 
-	Ok(Some(slipstream::json!({ "subscribed": subscribed })))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("subscribed", &subscribed);
+	Ok(Some(object.finish()))
 }
 
 fn membership_state_to_str(membership: &MembershipState) -> &str {

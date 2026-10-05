@@ -513,10 +513,16 @@ pub(crate) async fn create_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: TimelineEventType::RoomTopic,
-					content: slipstream::serde::RawJsonValue::from_value(&json!({
-						"topic": topic,
-						"m.topic": { "m.text": [{ "body": topic }] },
-					})),
+					content: {
+						let mut object = slipstream::ObjectBuilder::new();
+						object.field("topic", topic);
+						let mut text = slipstream::ObjectBuilder::new();
+						text.field("body", topic);
+						let mut topic_object = slipstream::ObjectBuilder::new();
+						topic_object.field("m.text", &vec![text.finish()]);
+						object.field("m.topic", &topic_object.finish());
+						slipstream::serde::Raw::from_value(&object.finish())
+					},
 					state_key: Some(StateKey::new()),
 					..Default::default()
 				},

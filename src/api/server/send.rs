@@ -338,21 +338,22 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let mut response_json = slipstream::json!({
-		"pdus": results
-			.into_iter()
-			.map(|(e, r)| {
-				let mut obj = slipstream::json::Object::new();
-				if let Err(err) = r {
-					obj.insert(
-						"error".to_owned(),
-						slipstream::json::Value::String(error::sanitized_message(err)),
-					);
-				}
-				(e.to_string(), slipstream::json::Value::Object(obj))
-			})
-			.collect::<slipstream::json::Object<_, _>>(),
-	});
+	let pdus = results
+		.into_iter()
+		.map(|(e, r)| {
+			let mut obj = slipstream::json::Object::new();
+			if let Err(err) = r {
+				obj.insert(
+					"error".to_owned(),
+					slipstream::json::Value::String(error::sanitized_message(err)),
+				);
+			}
+			(e.to_string(), slipstream::json::Value::Object(obj))
+		})
+		.collect::<slipstream::json::Object<_, _>>();
+	let mut response_builder = slipstream::ObjectBuilder::new();
+	response_builder.field("pdus", &pdus);
+	let mut response_json = response_builder.finish();
 
 	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
 
@@ -467,16 +468,24 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let mut mismatch = slipstream::json!({
-			"algorithm": state_hashes.algorithm,
-			"expected_after": local.after.primary,
-			"received_after": after,
-			"expected_redactions_after": local.after.redactions,
-			"received_redactions_after": redactions_after,
-		});
+		let mut mismatch_builder = slipstream::ObjectBuilder::new();
+		mismatch_builder.field("algorithm", &state_hashes.algorithm);
+		mismatch_builder.field("expected_after", &local.after.primary);
+		mismatch_builder.field("received_after", &after);
+		mismatch_builder.field("expected_redactions_after", &local.after.redactions);
+		mismatch_builder.field("received_redactions_after", &redactions_after);
+		let mut mismatch = mismatch_builder.finish();
 		if check_inputs {
-			mismatch["expected_resolution_inputs_before"] = slipstream::json!(local_inputs);
-			mismatch["received_resolution_inputs_before"] = slipstream::json!(received_inputs);
+			if let slipstream::json::Value::Object(object) = &mut mismatch {
+				object.insert(
+					"expected_resolution_inputs_before".to_owned(),
+					slipstream::codec::to_value(&local_inputs),
+				);
+				object.insert(
+					"received_resolution_inputs_before".to_owned(),
+					slipstream::codec::to_value(&received_inputs),
+				);
+			}
 		}
 		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
 	}

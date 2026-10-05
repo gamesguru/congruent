@@ -134,8 +134,8 @@ pub(crate) async fn syncv3_client_server_json(
 		},
 	};
 
-	Ok(Json(slipstream::json!({
-		"server": server_url,
-		"version": conduwuit::version(),
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("server", &server_url);
+	object.field("version", &conduwuit::version());
+	Ok(Json(object.finish()))
 }

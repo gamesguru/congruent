@@ -89,10 +89,10 @@ pub(crate) async fn get_supported_versions_route(
 /// Conduwuit-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
 pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
-	Ok(Json(slipstream::json!({
-		"name": conduwuit::version::name(),
-		"version": conduwuit::version::version(),
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("name", &conduwuit::version::name());
+	object.field("version", &conduwuit::version::version());
+	Ok(Json(object.finish()))
 }
 
 /// # `GET /_conduwuit/local_user_count`
@@ -105,7 +105,7 @@ pub(crate) async fn conduwuit_local_user_count(
 ) -> Result<impl IntoResponse> {
 	let user_count = services.users.list_local_users().count().await;
 
-	Ok(Json(slipstream::json!({
-		"count": user_count
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("count", &user_count);
+	Ok(Json(object.finish()))
 }

@@ -2,7 +2,7 @@ use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
 use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, events::room::member::MembershipState,
-	serde::JsonObject,
+	codec, serde::JsonObject,
 };
 
 use crate::Ruma;
@@ -28,12 +28,12 @@ pub(crate) async fn create_knock_event_v1_route(
 		return Err!(Request(Forbidden("Room version does not support knocking.")));
 	}
 
-	let mut event: JsonObject = serde_json::from_str(body.pdu.get())
+	let mut event: JsonObject = codec::from_str(body.pdu.get())
 		.map_err(|e| err!(Request(InvalidParam("Invalid knock event PDU: {e}"))))?;
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 
-	let pdu: PduEvent = serde_json::from_value(event.into())
+	let pdu: PduEvent = codec::Deserialize::from_json(&event.into())
 		.map_err(|e| err!(Request(InvalidParam("Invalid knock event PDU: {e}"))))?;
 
 	super::utils::handle_and_send_incoming_pdu(

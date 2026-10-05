@@ -13,19 +13,26 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use http::StatusCode;
-use serde::Deserialize;
 use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
+	codec::{DeError, Deserialize as CodecDeserialize},
+	endpoint::body_field,
+	json::Value,
 	endpoint::EndpointRequest,
 	uint,
 };
 
 use crate::{Ruma, json_util::single_field, router::authenticate_user};
 
-#[derive(Deserialize)]
 struct ThreadSubscriptionBody {
 	automatic: Option<OwnedEventId>,
+}
+
+impl CodecDeserialize for ThreadSubscriptionBody {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self { automatic: body_field(Some(value), "automatic")? })
+	}
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/threads`
@@ -104,7 +111,9 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 	let request = hyper::Request::from_parts(parts, Body::empty());
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
-	let body = serde_json::from_slice::<ThreadSubscriptionBody>(&body)
+	let body = slipstream::codec::from_str::<ThreadSubscriptionBody>(
+		std::str::from_utf8(&body).unwrap_or_default(),
+	)
 		.unwrap_or(ThreadSubscriptionBody { automatic: None });
 
 	if !services
