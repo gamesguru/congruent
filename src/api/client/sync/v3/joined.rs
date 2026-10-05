@@ -22,11 +22,11 @@ use futures::{
 };
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
-	codec::Deserialize,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
 	},
+	codec::Deserialize,
 	events::{
 		AnyRawAccountDataEvent, AnySyncStateEvent, StateEventType,
 		TimelineEventType::*,

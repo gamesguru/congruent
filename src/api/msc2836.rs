@@ -71,12 +71,17 @@ impl Params {
 	}
 }
 
-struct RelationshipContent { rel_type: String, event_id: OwnedEventId }
+struct RelationshipContent {
+	rel_type: String,
+	event_id: OwnedEventId,
+}
 slipstream::codec_struct!(RelationshipContent {
 	rel_type: String = ("rel_type"),
 	event_id: OwnedEventId = ("event_id"),
 });
-struct ExtractRelationship { relationship: Option<RelationshipContent> }
+struct ExtractRelationship {
+	relationship: Option<RelationshipContent>,
+}
 slipstream::codec_struct!(ExtractRelationship {
 	relationship: Option<RelationshipContent> = ("m.relationship", omit),
 });
@@ -168,7 +173,8 @@ async fn persist_federation_events(
 
 	let mut pending: Vec<PendingEvent> = Vec::new();
 	for raw in &raws {
-		let Ok(mut value) = serde_json::from_str::<slipstream::CanonicalJsonObject>(raw.get())
+		let Ok(mut value) =
+			slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(raw.get())
 		else {
 			continue;
 		};
@@ -583,10 +589,7 @@ pub(crate) async fn to_raw_json_with_children(
 			slipstream::CanonicalJsonValue::Object(slipstream::CanonicalJsonObject::new())
 		});
 		if let slipstream::CanonicalJsonValue::Object(unsigned) = unsigned {
-			if let Some(counts_value) = serde_json::to_value(&counts)
-				.ok()
-				.and_then(|v| slipstream::CanonicalJsonValue::try_from(v).ok())
-			{
+			if let Some(counts_value) = Some(slipstream::codec::to_value(&counts)) {
 				unsigned.insert("children".to_owned(), counts_value);
 				unsigned.insert(
 					"children_hash".to_owned(),
@@ -596,8 +599,5 @@ pub(crate) async fn to_raw_json_with_children(
 		}
 	}
 
-	serde_json::value::to_raw_value(&value).unwrap_or_else(|_| {
-		slipstream::serde::RawJsonValue::from_json_string("{}".to_owned())
-			.expect("static JSON is valid")
-	})
+	Raw::from_value(&value)
 }
