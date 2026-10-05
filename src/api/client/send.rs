@@ -130,7 +130,7 @@ pub(crate) async fn send_message_event_route(
 		let event = service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),
 			state_key: None,
-			content: body.body.body.cast_ref().clone(),
+			content: slipstream::serde::Raw::from_json_text(body.body.body.get())?,
 			user_id: sender_user.to_owned(),
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
