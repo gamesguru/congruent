@@ -22,6 +22,7 @@ use futures::{
 };
 use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
+	codec::Deserialize,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
@@ -166,13 +167,11 @@ async fn build_ephemeral(
 			if is_ignored {
 				None
 			} else {
-				let mut json: slipstream::json::Value =
-					serde_json::from_str(edu.json().get()).ok()?;
+				let mut json = edu.json().ok()?;
 				if let Some(obj) = json.as_object_mut() {
 					obj.remove("room_id");
 				}
-				let raw = serde_json::value::to_raw_value(&json).ok()?;
-				Some(Raw::from_json(raw))
+				Some(Raw::from_json(&json).ok()?)
 			}
 		})
 		.collect::<Vec<_>>()
@@ -410,7 +409,7 @@ async fn build_state_and_timeline(
 		.collect::<Vec<_>>()
 		.await;
 
-	let timeline_ids: HashSet<&slipstream::EventId> = filtered_timeline_pdus
+	let timeline_ids: HashSet<&str> = filtered_timeline_pdus
 		.iter()
 		.map(|pdu| &*pdu.event_id)
 		.collect();

@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::{IncomingRequest, client::threads::get_threads},
+	endpoint::EndpointRequest,
 	uint,
 };
 

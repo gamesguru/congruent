@@ -290,7 +290,7 @@ pub(super) async fn load_left_room(
 		}
 	}
 
-	let timeline_ids: std::collections::HashSet<&EventId> =
+	let timeline_ids: std::collections::HashSet<&str> =
 		raw_timeline_pdus.iter().map(|pdu| &*pdu.event_id).collect();
 
 	let raw_state_events: Vec<Raw<AnySyncStateEvent>> = state_events

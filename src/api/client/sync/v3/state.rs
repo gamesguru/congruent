@@ -64,8 +64,8 @@ pub(super) async fn build_state_initial(
 				included in `lazily_loaded_members` or for the user requesting the sync.
 				*/
 				let event_is_redundant = event_type == StateEventType::RoomMember
-					&& state_key.as_str().try_into().is_ok_and(|user_id: &UserId| {
-						sender_user != user_id && !lazily_loaded_members.contains(user_id)
+					&& state_key.as_str().try_into().is_ok_and(|user_id: UserId| {
+						*sender_user != user_id && !lazily_loaded_members.contains(&user_id)
 					});
 
 				event_is_redundant.or_some(event_id)
