@@ -234,7 +234,7 @@ pub(crate) async fn get_state_events_for_key_route(
 	Ok(get_state_events_for_key::v3::Response {
 		content: event_format.or(|| {
 			event
-				.get_content::<json::Value>()
+				.get_content::<slipstream::json::Value>()
 				.expect("Failed to represent Event content as JsonValue")
 		}),
 		event: event_format.then(|| {
