@@ -132,11 +132,6 @@ pub(crate) async fn get_state_events_route(
 	// For departed users, serve state frozen at the point they left
 	let leave_root = if !is_joined {
 		let root = leave_roothandle(&services, sender_user, room_id).await;
-		info!(
-			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_root_present={}"
-			root.is_some(),
-		);
 		root
 	} else {
 		None
@@ -198,12 +193,6 @@ pub(crate) async fn get_state_events_for_key_route(
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
 		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
-			info!(
-				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_root_present={}",
-				body.event_type
-				,root.is_some()
-			);
 			services
 				.rooms
 				.state_accessor

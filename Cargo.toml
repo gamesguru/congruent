@@ -431,7 +431,6 @@ package = "mtx-slipstream"
 # git = "https://gitlab.com/Wombat-Foundation/mtx-slipstream.git"
 git = "file:///run/media/shane/shane4tb-ent/repos/slipstream"
 branch = "dev"
-features = ["x-matrix"]
 
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"

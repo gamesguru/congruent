@@ -102,5 +102,12 @@ pub(crate) async fn get_tags_route(
 			content: TagEventContent { tags: BTreeMap::new() },
 		});
 
-	Ok(get_tags::v3::Response { tags: tags_event.content.tags })
+	Ok(get_tags::v3::Response {
+		tags: tags_event
+			.content
+			.tags
+			.into_iter()
+			.map(|(tag, info)| (tag.to_string(), info))
+			.collect(),
+	})
 }

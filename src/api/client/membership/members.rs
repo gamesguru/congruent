@@ -105,11 +105,6 @@ pub(crate) async fn get_member_events_route(
 				.pdu_roothandle_before_event(leave_pdu.event_id())
 				.await
 				.ok();
-			info!(
-				target: "membership_debug",
-				"/members: departed user {sender_user} in {room_id}, leave_root_present={}"
-				root.is_some(),
-			);
 			(root, Some(leave_pdu))
 		} else {
 			(None, None)

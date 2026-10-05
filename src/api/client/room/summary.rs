@@ -148,13 +148,14 @@ async fn local_room_summary_response(
 	// Synapse allows server admins to bypass visibility checks.
 	// That seems neat so we'll copy that behaviour.
 	if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
+		let allowed: Vec<_> = join_rule.allowed_rooms().collect();
 		user_can_see_summary(
 			services,
 			room_id,
 			&join_rule.clone().into(),
 			guest_can_join,
 			world_readable,
-			join_rule.allowed_rooms().map(|room_id| room_id.as_ref()),
+			allowed.iter(),
 			sender_user,
 		)
 		.await?;

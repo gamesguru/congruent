@@ -38,7 +38,7 @@ pub(crate) async fn send_event_to_device_route(
 		for (target_device_id_maybe, event) in map {
 			if !services.globals.user_is_local(target_user_id) {
 				let mut map = BTreeMap::new();
-				map.insert(target_device_id_maybe.clone(), event.clone());
+				map.insert((*target_device_id_maybe).clone(), event.clone());
 				let mut messages = BTreeMap::new();
 				messages.insert(target_user_id.clone(), map);
 				let count = services.globals.next_count()?;

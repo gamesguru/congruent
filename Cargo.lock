@@ -3543,7 +3543,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+file:///run/media/shane/shane4tb-ent/repos/slipstream?branch=dev#27c0cd62044a7f4e5e5369702aed9daa9ec737de"
+source = "git+file:///run/media/shane/shane4tb-ent/repos/slipstream?branch=dev#ccbc216470af1c9f5c6387203ab5c2d9f2824435"
 dependencies = [
  "base64 0.23.1",
  "bytes",

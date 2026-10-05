@@ -272,12 +272,12 @@ async fn auth_appservice(
 	// The device_id can be provided via `device_id` or
 	// `org.matrix.msc3202.device_id` query parameter.
 	let sender_device = if let Some(ref device_id_str) = request.query.device_id {
-		let device_id: &DeviceId = device_id_str.as_str().into();
+		let device_id = OwnedDeviceId::from(device_id_str.clone());
 
 		// Verify the device exists for this user
 		if services
 			.users
-			.get_device_metadata(&user_id, device_id)
+			.get_device_metadata(&user_id, &device_id)
 			.await
 			.is_err()
 		{
@@ -354,7 +354,7 @@ async fn auth_server(
 		.await
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
-	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
+	let keys: PubKeys = [(x_matrix.key.clone(), key.key)].into();
 	let keys: PubKeyMap = [(origin.as_str().into(), keys)].into();
 	if let Err(e) = slipstream::signatures::verify_json(&keys, authorization) {
 		debug_error!("Failed to verify federation request from {origin}: {e}");

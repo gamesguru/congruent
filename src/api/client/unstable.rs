@@ -369,7 +369,9 @@ pub(crate) async fn get_room_dag_route(
 
 	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
 		if ts.elapsed() < Duration::from_secs(2) {
-			return Ok(axum::Json(cached_events.clone()));
+			return Ok(crate::json_util::json_response(
+				slipstream::json::Value::Array(cached_events.clone()),
+			));
 		}
 	}
 
