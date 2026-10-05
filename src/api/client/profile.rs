@@ -38,7 +38,7 @@ pub(crate) async fn set_displayname_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -131,7 +131,7 @@ pub(crate) async fn set_avatar_url_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 

@@ -41,7 +41,7 @@ pub(crate) async fn get_mutual_rooms_route(
 ) -> Result<mutual_rooms::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user == body.user_id {
+	if sender_user == &*body.user_id {
 		return Err!(Request(Unknown("You cannot request rooms in common with yourself.")));
 	}
 
@@ -73,7 +73,7 @@ pub(crate) async fn set_profile_key_route(
 ) -> Result<set_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -165,7 +165,7 @@ pub(crate) async fn delete_profile_key_route(
 ) -> Result<delete_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
