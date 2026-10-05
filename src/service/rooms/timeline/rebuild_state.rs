@@ -763,7 +763,12 @@ impl super::Service {
 		// Early exit: no conflicts means all states agree
 		if conflicted_eids.is_empty() {
 			eprintln!("[resolve_fork] 0 conflicts, early exit");
-			return fork_states[0].clone();
+			return fork_states[0]
+				.iter()
+				.map(|((ty, key), event_id)| {
+					((StateEventType::from(ty.as_str()), key.clone()), event_id.clone())
+				})
+				.collect();
 		}
 
 		eprintln!(

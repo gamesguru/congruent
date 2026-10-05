@@ -424,7 +424,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = topo_sort_backfill_batch(&pdus);
+					let pdus = topo_sort_backfill_batch(pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -583,7 +583,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 /// aborting the whole reorder -- `backfill_pdu` already tolerates and
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
-fn topo_sort_backfill_batch(pdus: &[RawJsonValue]) -> Vec<RawJsonValue> {
+fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
 	let mut keyed: Vec<(u64, RawJsonValue)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
@@ -605,7 +605,7 @@ fn topo_sort_backfill_batch(pdus: &[RawJsonValue]) -> Vec<RawJsonValue> {
 			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_u64))
 			.unwrap_or_default();
 
-		keyed.push((depth, pdu.clone()));
+		keyed.push((depth, pdu));
 	}
 
 	// Newest-first (descending depth): `backfill_pdu` hands out

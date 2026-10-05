@@ -2545,7 +2545,11 @@ impl Clone for WellKnownConfig {
 			support_email: self.support_email.clone(),
 			support_mxid: self.support_mxid.clone(),
 			support_pgp_key: self.support_pgp_key.clone(),
-			rtc_focus_server_urls: self.rtc_focus_server_urls.iter().map(clone_slipstream).collect(),
+			rtc_focus_server_urls: self
+				.rtc_focus_server_urls
+				.iter()
+				.map(clone_slipstream)
+				.collect(),
 		}
 	}
 }
@@ -2598,7 +2602,9 @@ pub struct MatrixRtcConfig {
 
 impl Clone for MatrixRtcConfig {
 	fn clone(&self) -> Self {
-		Self { foci: self.foci.iter().map(clone_slipstream).collect() }
+		Self {
+			foci: self.foci.iter().map(clone_slipstream).collect(),
+		}
 	}
 }
 

@@ -32,7 +32,6 @@ use slipstream::{
 	},
 	int,
 };
-use crate::utils::OwnedEventType;
 use smallvec::SmallVec;
 use tokio::sync::OnceCell;
 
@@ -47,7 +46,10 @@ use crate::{
 	matrix::{Event, StateKey},
 	state_res::room_version::StateResolutionVersion,
 	trace,
-	utils::stream::{BroadbandExt, IterStream, ReadyExt, TryWidebandExt, WidebandExt},
+	utils::{
+		OwnedEventType,
+		stream::{BroadbandExt, IterStream, ReadyExt, TryWidebandExt, WidebandExt},
+	},
 	warn,
 };
 

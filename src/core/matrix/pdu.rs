@@ -30,8 +30,7 @@ pub use self::{
 	topo::TopoToken,
 };
 use super::{Event, StateKey};
-use crate::utils::OwnedEventType;
-use crate::Result;
+use crate::{Result, utils::OwnedEventType};
 
 /// Persistent Data Unit (Event)
 #[derive(Debug)]

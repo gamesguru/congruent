@@ -8,7 +8,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use slipstream::{OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
 
@@ -17,6 +17,14 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 /// like rebuild_state.
 pub(crate) type PduCache =
 	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+
+fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
+	map.iter()
+		.map(|((ty, key), event_id)| {
+			((StateEventType::from(ty.as_str()), key.clone()), event_id.clone())
+		})
+		.collect()
+}
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "resolve", level = "debug", skip_all)]
@@ -145,7 +153,7 @@ where
 		return Ok(StateMap::new());
 	}
 	if num_maps == 1 {
-		return Ok(state_sets_vec[0].clone());
+		return Ok(copy_state_map(state_sets_vec[0]));
 	}
 
 	let lean_state_sets: Vec<rezzy::SharedState<String>> = state_sets_vec

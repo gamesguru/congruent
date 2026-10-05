@@ -59,10 +59,7 @@ impl From<Error> for UiaaResponse {
 		let kind = error.into_kind();
 		let body = ErrorBody::Standard { kind, message };
 
-		Self::MatrixError(slipstream::api::client::error::Error {
-			status_code,
-			body,
-		})
+		Self::MatrixError(slipstream::api::client::error::Error { status_code, body })
 	}
 }
 
