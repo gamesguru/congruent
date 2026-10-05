@@ -168,6 +168,11 @@ check:   ##H Run cargo check
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
 
+.PHONY: macro
+macro: ##H See macro expansion costs
+	cargo +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+
+
 .PHONY: lint
 lint:   ##H Lint code
 	@echo "Lint code? PROFILE='$(PROFILE)'"
