@@ -54,13 +54,13 @@ impl From<Error> for UiaaResponse {
 			return Self::AuthResponse(uiaainfo);
 		}
 
-		let body = ErrorBody::Standard {
-			kind: error.kind(),
-			message: error.message(),
-		};
+		let message = error.message();
+		let status_code = error.status_code();
+		let kind = error.into_kind();
+		let body = ErrorBody::Standard { kind, message };
 
 		Self::MatrixError(slipstream::api::client::error::Error {
-			status_code: error.status_code(),
+			status_code,
 			body,
 		})
 	}

@@ -187,15 +187,29 @@ impl Error {
 	/// Returns the Matrix error code / error kind
 	#[inline]
 	#[must_use]
-	pub fn kind(&self) -> slipstream::api::client::error::ErrorKind {
+	pub fn kind(&self) -> &slipstream::api::client::error::ErrorKind {
 		use slipstream::api::client::error::ErrorKind::{FeatureDisabled, Unknown};
 
 		match self {
-			| Self::Federation(_, error) | Self::Ruma(error) =>
-				response::ruma_error_kind(error).clone(),
-			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind.clone(),
-			| Self::FeatureDisabled(..) => FeatureDisabled,
-			| _ => Unknown,
+			| Self::Federation(_, error) | Self::Ruma(error) => response::ruma_error_kind(error),
+			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind,
+			| Self::FeatureDisabled(..) => &FeatureDisabled,
+			| _ => &Unknown,
+		}
+	}
+
+	#[must_use]
+	pub fn into_kind(self) -> slipstream::api::client::error::ErrorKind {
+		use slipstream::api::client::error::{ErrorBody, ErrorKind};
+
+		match self {
+			| Self::Federation(_, error) | Self::Ruma(error) => match error.body {
+				| ErrorBody::Standard { kind, .. } => kind,
+				| ErrorBody::Other => ErrorKind::Unknown,
+			},
+			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind,
+			| Self::FeatureDisabled(..) => ErrorKind::FeatureDisabled,
+			| _ => ErrorKind::Unknown,
 		}
 	}
 

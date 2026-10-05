@@ -60,6 +60,14 @@ where
 		.transpose()
 }
 
+fn clone_slipstream<T>(value: &T) -> T
+where
+	T: slipstream::codec::Serialize + slipstream::codec::Deserialize,
+{
+	slipstream::codec::from_value(&slipstream::codec::to_value(value))
+		.expect("valid Slipstream value must round-trip")
+}
+
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
@@ -2467,7 +2475,7 @@ pub struct TlsConfig {
 }
 
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.well_known")]
 pub struct WellKnownConfig {
 	/// The server URL that the client well-known file will serve. This should
@@ -2527,6 +2535,21 @@ pub struct WellKnownConfig {
 	pub rtc_focus_server_urls: Vec<RtcFocusInfo>,
 }
 
+impl Clone for WellKnownConfig {
+	fn clone(&self) -> Self {
+		Self {
+			client: self.client.clone(),
+			server: self.server.clone(),
+			support_page: self.support_page.clone(),
+			support_role: self.support_role.as_ref().map(clone_slipstream),
+			support_email: self.support_email.clone(),
+			support_mxid: self.support_mxid.clone(),
+			support_pgp_key: self.support_pgp_key.clone(),
+			rtc_focus_server_urls: self.rtc_focus_server_urls.iter().map(clone_slipstream).collect(),
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Default)]
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.blurhashing")]
@@ -2552,7 +2575,7 @@ pub struct BlurhashConfig {
 	pub blurhash_max_raw_size: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.matrix_rtc")]
 pub struct MatrixRtcConfig {
 	/// A list of MatrixRTC foci (transports) which will be served via the
@@ -2571,6 +2594,12 @@ pub struct MatrixRtcConfig {
 	/// default: []
 	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub foci: Vec<RtcFocusInfo>,
+}
+
+impl Clone for MatrixRtcConfig {
+	fn clone(&self) -> Self {
+		Self { foci: self.foci.iter().map(clone_slipstream).collect() }
+	}
 }
 
 impl MatrixRtcConfig {

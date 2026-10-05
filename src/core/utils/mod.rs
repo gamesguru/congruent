@@ -37,7 +37,7 @@ pub use self::{
 	future::{BoolExt as FutureBoolExt, OptionStream, TryExtExt as TryFutureExtExt},
 	hash::sha256::delimited as calculate_hash,
 	html::Escape as HtmlEscape,
-	json::{deserialize_from_str, to_canonical_object},
+	json::{OwnedEventType, clone_raw, deserialize_from_str, to_canonical_object},
 	math::clamp,
 	mutex_map::{Guard as MutexMapGuard, MutexMap},
 	pdu::pdu_json_canonical_strip,

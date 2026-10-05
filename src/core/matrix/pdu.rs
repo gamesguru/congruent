@@ -30,10 +30,11 @@ pub use self::{
 	topo::TopoToken,
 };
 use super::{Event, StateKey};
+use crate::utils::OwnedEventType;
 use crate::Result;
 
 /// Persistent Data Unit (Event)
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Pdu {
 	pub event_id: OwnedEventId,
 	pub room_id: Option<OwnedRoomId>,
@@ -65,6 +66,29 @@ pub struct Pdu {
 	/// admin action). Populated at fetch time from pdu_metadata DB;
 	/// not persisted in the event JSON itself.
 	pub rejected: bool,
+}
+
+impl Clone for Pdu {
+	fn clone(&self) -> Self {
+		Self {
+			event_id: self.event_id.clone(),
+			room_id: self.room_id.clone(),
+			sender: self.sender.clone(),
+			origin: self.origin.clone(),
+			origin_server_ts: self.origin_server_ts,
+			kind: self.kind.owned_event_type(),
+			content: crate::utils::clone_raw(&self.content),
+			state_key: self.state_key.clone(),
+			prev_events: self.prev_events.clone(),
+			depth: self.depth,
+			auth_events: self.auth_events.clone(),
+			redacts: self.redacts.clone(),
+			unsigned: self.unsigned.as_ref().map(crate::utils::clone_raw),
+			hashes: self.hashes.clone(),
+			signatures: self.signatures.as_ref().map(crate::utils::clone_raw),
+			rejected: self.rejected,
+		}
+	}
 }
 
 /// Content hashes of a PDU.

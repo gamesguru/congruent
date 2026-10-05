@@ -32,6 +32,7 @@ use slipstream::{
 	},
 	int,
 };
+use crate::utils::OwnedEventType;
 use smallvec::SmallVec;
 use tokio::sync::OnceCell;
 
@@ -54,6 +55,12 @@ use crate::{
 /// `EventId`.
 pub type StateMap<T> = HashMap<TypeStateKey, T>;
 pub type StateMapItem<T> = (TypeStateKey, T);
+
+fn copy_state_map<T: Clone>(map: &StateMap<T>) -> StateMap<T> {
+	map.iter()
+		.map(|(key, value)| ((key.0.owned_event_type(), key.1.clone()), value.clone()))
+		.collect()
+}
 pub type TypeStateKey = (StateEventType, StateKey);
 
 type Result<T, E = Error> = crate::Result<T, E>;
@@ -211,7 +218,8 @@ where
 			}
 			(csg, HashMap::new())
 		} else {
-			(HashSet::new(), unconflicted.clone())
+			let copied = copy_state_map(&unconflicted);
+			(HashSet::new(), copied)
 		};
 
 	// `all_conflicted` contains unique items
@@ -380,7 +388,7 @@ where
 		let partially_resolved_pl_state = iterative_auth_check(
 			&room_version,
 			sorted_pl_events.iter().stream().map(AsRef::as_ref),
-			vec![initial_state.clone()],
+			vec![copy_state_map(&initial_state)],
 			&cached_fetch,
 			event_batch_fetch,
 			Some(&is_cached),
@@ -604,10 +612,10 @@ where
 	for (k, v) in occurrences {
 		for (id, occurrence_count) in v {
 			if occurrence_count == state_set_count {
-				unconflicted_state.insert((k.0.clone(), k.1.clone()), id.clone());
+				unconflicted_state.insert((k.0.owned_event_type(), k.1.clone()), id.clone());
 			} else {
 				conflicted_state
-					.entry((k.0.clone(), k.1.clone()))
+					.entry((k.0.owned_event_type(), k.1.clone()))
 					.and_modify(|x: &mut Vec<_>| x.push(id.clone()))
 					.or_insert_with(|| vec![id.clone()]);
 			}
@@ -1356,7 +1364,7 @@ where
 				.await;
 
 			for (key, event) in supplemental {
-				auth_state.push((key, event));
+				auth_state.push(((key.0.owned_event_type(), key.1.clone()), event));
 			}
 		}
 
@@ -1749,12 +1757,15 @@ impl EventTypeExt for TimelineEventType {
 	}
 }
 
-impl<T> EventTypeExt for &T
-where
-	T: EventTypeExt + Clone,
-{
+impl EventTypeExt for &StateEventType {
 	fn with_state_key(self, state_key: impl Into<StateKey>) -> (StateEventType, StateKey) {
-		self.to_owned().with_state_key(state_key)
+		(StateEventType::from(self.as_str()), state_key.into())
+	}
+}
+
+impl EventTypeExt for &TimelineEventType {
+	fn with_state_key(self, state_key: impl Into<StateKey>) -> (StateEventType, StateKey) {
+		(StateEventType::from(self.as_str()), state_key.into())
 	}
 }
 #[cfg(test)]

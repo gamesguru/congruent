@@ -15,7 +15,7 @@ impl TypeExt for StateEventType {
 
 impl TypeExt for &StateEventType {
 	fn with_state_key(self, state_key: impl Into<StateKey>) -> (StateEventType, StateKey) {
-		(self.clone(), state_key.into())
+		(StateEventType::from(self.as_str()), state_key.into())
 	}
 }
 
@@ -27,6 +27,6 @@ impl TypeExt for TimelineEventType {
 
 impl TypeExt for &TimelineEventType {
 	fn with_state_key(self, state_key: impl Into<StateKey>) -> (StateEventType, StateKey) {
-		(self.clone().into(), state_key.into())
+		(StateEventType::from(self.as_str()), state_key.into())
 	}
 }

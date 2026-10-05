@@ -18,18 +18,27 @@ use super::{super::pdu::RawJson, Event};
 #[must_use]
 pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, RawJson) {
 	if *event.event_type() != TimelineEventType::RoomRedaction {
-		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
+		return (
+			event.redacts().map(ToOwned::to_owned),
+			crate::utils::clone_raw(event.content()),
+		);
 	}
 
 	let Ok(value) = slipstream::canonical_json::from_json_str(event.content().get()) else {
-		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
+		return (
+			event.redacts().map(ToOwned::to_owned),
+			crate::utils::clone_raw(event.content()),
+		);
 	};
 	let Some(mut content) = slipstream::canonical_json::into_object(value) else {
-		return (event.redacts().map(ToOwned::to_owned), event.content().to_owned());
+		return (
+			event.redacts().map(ToOwned::to_owned),
+			crate::utils::clone_raw(event.content()),
+		);
 	};
 
 	if let Some(redacts) = content.get("redacts").and_then(|value| value.as_str()) {
-		return (Some(OwnedEventId::from(redacts)), event.content().to_owned());
+		return (Some(OwnedEventId::from(redacts)), crate::utils::clone_raw(event.content()));
 	}
 
 	if let Some(redacts) = event.redacts().map(ToOwned::to_owned) {
@@ -43,7 +52,7 @@ pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, RawJson) {
 		);
 	}
 
-	(event.redacts().map(ToOwned::to_owned), event.content().to_owned())
+	(event.redacts().map(ToOwned::to_owned), crate::utils::clone_raw(event.content()))
 }
 
 #[must_use]

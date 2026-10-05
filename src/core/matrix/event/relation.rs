@@ -15,13 +15,13 @@ pub trait RelationTypeEqual<E: Event> {
 	fn relation_type_equal(&self, event: &E) -> bool;
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ExtractRelatesToEventId {
 	#[serde(rename = "m.relates_to")]
 	relates_to: ExtractRelType,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ExtractRelType {
 	#[serde(deserialize_with = "deserialize_relation_type")]
 	rel_type: RelationType,
