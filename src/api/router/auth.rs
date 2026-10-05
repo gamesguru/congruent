@@ -30,6 +30,7 @@ use slipstream::{
 		},
 		federation::{authentication::XMatrix, openid::get_openid_userinfo},
 	},
+	endpoint::EndpointRequest,
 };
 use tracing::info;
 

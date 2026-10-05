@@ -640,9 +640,6 @@ impl Deserialize for StateHashEntry {
 	}
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_false(b: &bool) -> bool { !*b }
-
 impl StateHashEntry {
 	/// An explicit deferral: the sender cannot resolve this DAG point.
 	#[must_use]
@@ -693,16 +690,16 @@ impl StateHashEntry {
 
 #[cfg(test)]
 mod wire_tests {
-	use serde_json::json;
+	use conduwuit::slipstream::{codec, json};
 
 	use super::*;
 
 	#[test]
 	fn limited_entry_nulls_before_and_omits_after() {
-		let base = serde_json::to_value(StateHashEntry::limited(false)).unwrap();
+		let base = codec::to_value(&StateHashEntry::limited(false));
 		assert_eq!(base, json!({"before": null, "redactions_before": null, "limited": true}));
 
-		let with_inputs = serde_json::to_value(StateHashEntry::limited(true)).unwrap();
+		let with_inputs = codec::to_value(&StateHashEntry::limited(true));
 		assert_eq!(
 			with_inputs,
 			json!({
@@ -725,7 +722,7 @@ mod wire_tests {
 			None,
 		);
 		assert_eq!(
-			serde_json::to_value(&entry).unwrap(),
+			codec::to_value(&entry),
 			json!({"before": "b", "after": "a", "redactions_before": "rb", "redactions_after": "ra"})
 		);
 		assert!(entry.required_digests().is_some());
@@ -734,8 +731,7 @@ mod wire_tests {
 
 	#[test]
 	fn inputs_null_absent_and_present_all_parse() {
-		let parse =
-			|v: slipstream::json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse = |v: json::Value| codec::from_value::<StateHashEntry>(&v).unwrap();
 		let base =
 			json!({"before":"b","after":"a","redactions_before":"rb","redactions_after":"ra"});
 
@@ -752,8 +748,7 @@ mod wire_tests {
 
 	#[test]
 	fn malformed_or_limited_entries_defer() {
-		let parse =
-			|v: slipstream::json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse = |v: json::Value| codec::from_value::<StateHashEntry>(&v).unwrap();
 		// Omitting a redaction digest is malformed, not an empty overlay.
 		assert!(
 			parse(json!({"before":"b","after":"a","redactions_before":"rb"}))

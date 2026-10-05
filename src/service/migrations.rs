@@ -1749,8 +1749,6 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 
 	// Clean up the effects of !1249 by caching stripped state for invites
 
-	type KeyVal = ((OwnedUserId, OwnedRoomId), Raw<Vec<AnyStrippedStateEvent>>);
-
 	let db = &services.db;
 	let cork = db.cork_and_sync();
 	let userroomid_invitestate = services.db["userroomid_invitestate"].clone();

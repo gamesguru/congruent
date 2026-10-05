@@ -1042,6 +1042,7 @@ dependencies = [
  "conduwuit_database",
  "conduwuit_macros",
  "conduwuit_service",
+ "conduwuit_slipstream",
  "const-str",
  "ctor",
  "figment",
@@ -1053,7 +1054,6 @@ dependencies = [
  "rustls",
  "serde-saphyr",
  "serde_json",
- "slipstream",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -1072,6 +1072,7 @@ dependencies = [
  "conduwuit_core",
  "conduwuit_macros",
  "conduwuit_service",
+ "conduwuit_slipstream",
  "const-str",
  "ctor",
  "futures",
@@ -1090,7 +1091,6 @@ dependencies = [
  "serde_html_form",
  "serde_json",
  "sha1 0.11.0",
- "slipstream",
  "tokio",
  "tower",
  "tracing",
@@ -1122,6 +1122,7 @@ dependencies = [
  "chrono",
  "clap",
  "conduwuit_macros",
+ "conduwuit_slipstream",
  "const-str",
  "core_affinity",
  "ctor",
@@ -1157,7 +1158,6 @@ dependencies = [
  "serde_json",
  "serde_regex",
  "sha2 0.11.0",
- "slipstream",
  "smallstr",
  "smallvec",
  "thiserror",
@@ -1180,6 +1180,7 @@ dependencies = [
  "async-channel",
  "conduwuit_core",
  "conduwuit_macros",
+ "conduwuit_slipstream",
  "const-str",
  "ctor",
  "figment",
@@ -1190,7 +1191,6 @@ dependencies = [
  "rust-rocksdb",
  "serde",
  "serde_json",
- "slipstream",
  "tokio",
  "tracing",
 ]
@@ -1230,6 +1230,7 @@ dependencies = [
  "conduwuit_core",
  "conduwuit_macros",
  "conduwuit_service",
+ "conduwuit_slipstream",
  "conduwuit_web",
  "const-str",
  "ctor",
@@ -1244,7 +1245,6 @@ dependencies = [
  "sentry",
  "sentry-tower",
  "serde_json",
- "slipstream",
  "tokio",
  "tower",
  "tower-http",
@@ -1264,6 +1264,7 @@ dependencies = [
  "conduwuit_core",
  "conduwuit_database",
  "conduwuit_macros",
+ "conduwuit_slipstream",
  "const-str",
  "ctor",
  "dashmap",
@@ -1297,7 +1298,6 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2 0.11.0",
- "slipstream",
  "termimad",
  "tokio",
  "tracing",
@@ -1305,6 +1305,13 @@ dependencies = [
  "url",
  "webpage",
  "yansi",
+]
+
+[[package]]
+name = "conduwuit_slipstream"
+version = "0.5.10"
+dependencies = [
+ "mtx-slipstream",
 ]
 
 [[package]]
@@ -1316,11 +1323,11 @@ dependencies = [
  "base64 0.22.1",
  "conduwuit_core",
  "conduwuit_service",
+ "conduwuit_slipstream",
  "futures",
  "memory-serve",
  "rand 0.10.3",
  "serde",
- "slipstream",
  "thiserror",
  "tower-http",
  "tower-sec-fetch",
@@ -4849,7 +4856,7 @@ dependencies = [
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#c26dd8ca5ffc3ec785e2a1d4791d7cc26e2c2df3"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#28af64c9b3168e84565f0e3ee245b5bcec948519"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4872,7 +4879,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#c26dd8ca5ffc3ec785e2a1d4791d7cc26e2c2df3"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#28af64c9b3168e84565f0e3ee245b5bcec948519"
 dependencies = [
  "ryu",
  "simd-json",
@@ -4881,7 +4888,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#c26dd8ca5ffc3ec785e2a1d4791d7cc26e2c2df3"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#28af64c9b3168e84565f0e3ee245b5bcec948519"
 dependencies = [
  "base64 0.22.1",
  "sha2 0.10.9",
@@ -5622,13 +5629,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slipstream"
-version = "0.5.10"
-dependencies = [
- "mtx-slipstream",
-]
 
 [[package]]
 name = "smallstr"

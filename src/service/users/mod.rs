@@ -1,5 +1,7 @@
 pub(super) mod dehydrated_device;
 
+#[cfg(feature = "ldap")]
+use std::collections::HashMap;
 use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
 
 #[cfg(feature = "ldap")]

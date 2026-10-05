@@ -434,6 +434,7 @@ path = "../slipstream"
 # branch = "dev"
 
 [workspace.dependencies.slipstream]
+package = "conduwuit_slipstream"
 path = "src/slipstream"
 
 [workspace.dependencies.rust-rocksdb]
