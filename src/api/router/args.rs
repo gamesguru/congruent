@@ -75,6 +75,9 @@ where
 	}
 
 	#[inline]
+	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> { self.sender_user.as_deref() }
+
+	#[inline]
 	pub(crate) fn sender_device(&self) -> &DeviceId {
 		self.sender_device
 			.as_ref()
@@ -90,6 +93,9 @@ where
 			.as_ref()
 			.expect("server must be authenticated for this handler")
 	}
+
+	#[inline]
+	pub(crate) fn origin_opt(&self) -> Option<&ServerName> { self.origin.as_deref() }
 }
 
 impl<T> Deref for Args<T>

@@ -252,7 +252,7 @@ pub(crate) async fn whoami_route(
 		&& body.appservice_info.is_none();
 	Ok(whoami::v3::Response {
 		user_id: body.sender_user().to_owned(),
-		device_id: body.sender_device.clone(),
+		device_id: body.sender_device_opt().cloned(),
 		is_guest,
 	})
 }

@@ -96,7 +96,7 @@ pub(crate) async fn get_keys_route(
 		&services,
 		None,
 		&body.device_keys,
-		|u| Some(u.server_name()) == body.origin.as_deref(),
+		|u| Some(u.server_name()) == body.origin_opt(),
 		services.globals.allow_device_name_federation(),
 		Duration::from_secs(0),
 	)

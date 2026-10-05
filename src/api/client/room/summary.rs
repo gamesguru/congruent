@@ -74,7 +74,7 @@ pub(crate) async fn get_room_summary(
 		return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 	}
 
-	room_summary_response(&services, &room_id, &servers, body.sender_user.as_deref())
+	room_summary_response(&services, &room_id, &servers, body.sender_user_opt())
 		.boxed()
 		.await
 }
