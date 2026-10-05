@@ -305,7 +305,7 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: slipstream::events::StateEventType = ty_str.to_string().into();
+		let ty: StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
 		if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);

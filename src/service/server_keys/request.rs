@@ -37,15 +37,15 @@ where
 	use get_remote_server_keys_batch::v2::Request;
 	type RumaBatch = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, QueryCriteria>>;
 
-	let criteria = QueryCriteria {
-		minimum_valid_until_ts: Some(self.minimum_valid_ts()),
-	};
-
 	let mut server_keys = batch.fold(RumaBatch::new(), |mut batch, (server, key_ids)| {
 		batch
 			.entry(server.into())
 			.or_default()
-			.extend(key_ids.map(|key_id| (key_id.into(), criteria.clone())));
+			.extend(key_ids.map(|key_id| {
+				(key_id.into(), QueryCriteria {
+					minimum_valid_until_ts: Some(self.minimum_valid_ts()),
+				})
+			}));
 
 		batch
 	});
