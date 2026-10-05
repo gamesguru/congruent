@@ -412,3 +412,14 @@ pub(crate) async fn add_membership_to_unsigned(
 
 	pdu.set_membership(membership.as_str()).log_err().ok();
 }
+
+/// A `200` response whose body is the given JSON value.
+pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::Response {
+	use axum::response::IntoResponse;
+
+	(
+		[(axum::http::header::CONTENT_TYPE, "application/json")],
+		slipstream::codec::to_string(value),
+	)
+		.into_response()
+}

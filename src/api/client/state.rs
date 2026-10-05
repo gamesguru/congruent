@@ -10,7 +10,6 @@ use conduwuit::{
 use conduwuit_service::Services;
 use futures::{FutureExt, TryStreamExt};
 use slipstream::{
-	json,
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
 	api::client::state::{get_state_events, get_state_events_for_key, send_state_event},
 	events::{
@@ -24,6 +23,7 @@ use slipstream::{
 			server_acl::RoomServerAclEventContent,
 		},
 	},
+	json,
 	serde::Raw,
 };
 
@@ -317,9 +317,9 @@ async fn send_state_event_for_key_helper(
 		.await
 	{
 		if existing_event.sender() == sender {
-			if let Ok(existing_content) =
-				slipstream::codec::from_str::<slipstream::json::Value>(existing_event.content().get())
-			{
+			if let Ok(existing_content) = slipstream::codec::from_str::<slipstream::json::Value>(
+				existing_event.content().get(),
+			) {
 				if let Ok(new_content) =
 					slipstream::codec::from_str::<slipstream::json::Value>(json.get())
 				{
@@ -605,13 +605,14 @@ async fn allowed_to_send_state_event(
 				.room_state_get(room_id, &StateEventType::RoomCreate, "")
 				.await;
 			if let Ok(room_create) = room_create {
-				if let Ok(create_content) =
-					slipstream::codec::from_str::<RoomCreateEventContent>(room_create.content().get())
-				{
+				if let Ok(create_content) = slipstream::codec::from_str::<RoomCreateEventContent>(
+					room_create.content().get(),
+				) {
 					let room_features = RoomVersion::new(&create_content.room_version);
 					if let Ok(room_features) = room_features {
 						if room_features.explicitly_privilege_room_creators
-							&& let Ok(mut pl_content) = json.deserialize_as::<slipstream::json::Value>()
+							&& let Ok(mut pl_content) =
+								json.deserialize_as::<slipstream::json::Value>()
 							&& let Some(pl_obj) = pl_content.as_object_mut()
 						{
 							let mut creators = vec![room_create.sender().as_str().to_owned()];

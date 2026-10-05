@@ -8,7 +8,6 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, appservice::RegistrationInfo};
 use futures::FutureExt;
-use slipstream::json;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, Int, OwnedRoomAliasId, OwnedRoomId, OwnedUserId,
 	RoomId, RoomVersionId,
@@ -27,7 +26,7 @@ use slipstream::{
 			power_levels::RoomPowerLevelsEventContent,
 		},
 	},
-	int,
+	int, json,
 	serde::{JsonObject, Raw},
 };
 
@@ -172,15 +171,9 @@ pub(crate) async fn create_room_route(
 				})?;
 
 			if !room_features.use_room_create_sender {
-				content.insert(
-					"creator".into(),
-					slipstream::codec::to_value(&sender_user),
-				);
+				content.insert("creator".into(), slipstream::codec::to_value(&sender_user));
 			}
-			content.insert(
-				"room_version".into(),
-				json::Value::from(room_version.as_str()),
-			);
+			content.insert("room_version".into(), json::Value::from(room_version.as_str()));
 			content
 		},
 		| None => {
@@ -191,10 +184,9 @@ pub(crate) async fn create_room_route(
 			} else {
 				RoomCreateEventContent::new_v12()
 			};
-			let mut content =
-				slipstream::codec::from_str::<CanonicalJsonObject>(
-					slipstream::serde::RawJsonValue::from_value(&content).get(),
-				)?;
+			let mut content = slipstream::codec::from_str::<CanonicalJsonObject>(
+				slipstream::serde::RawJsonValue::from_value(&content).get(),
+			)?;
 			content.insert("room_version".into(), json::Value::from(room_version.as_str()));
 			content
 		},
@@ -595,48 +587,34 @@ fn default_power_levels_content(
 		| RoomPreset::PrivateChat | RoomPreset::TrustedPrivateChat => 0,
 		| _ => 50,
 	};
-	power_levels_content["invite"] =
-		json::Value::from(invite_level);
+	power_levels_content["invite"] = json::Value::from(invite_level);
 
 	// secure proper defaults of sensitive/dangerous permissions that moderators
 	// (power level 50) should not have easy access to
-	power_levels_content["events"]["m.room.power_levels"] =
-		json::Value::from(100);
-	power_levels_content["events"]["m.room.server_acl"] =
-		json::Value::from(100);
-	power_levels_content["events"]["m.room.tombstone"] =
-		json::Value::from(100);
-	power_levels_content["events"]["m.room.encryption"] =
-		json::Value::from(100);
-	power_levels_content["events"]["m.room.history_visibility"] =
-		json::Value::from(100);
+	power_levels_content["events"]["m.room.power_levels"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.server_acl"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.tombstone"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.encryption"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.history_visibility"] = json::Value::from(100);
 
 	// always allow users to respond (not post new) to polls. this is primarily
 	// useful in read-only announcement rooms that post a public poll.
-	power_levels_content["events"]["org.matrix.msc3381.poll.response"] =
-		json::Value::from(0);
-	power_levels_content["events"]["m.poll.response"] =
-		json::Value::from(0);
+	power_levels_content["events"]["org.matrix.msc3381.poll.response"] = json::Value::from(0);
+	power_levels_content["events"]["m.poll.response"] = json::Value::from(0);
 
 	// synapse does this too. clients do not expose these permissions. it prevents
 	// default users from calling public rooms, for obvious reasons.
 	if *visibility == room::Visibility::Public {
-		power_levels_content["events"]["m.call.invite"] =
-			json::Value::from(50);
-		power_levels_content["events"]["m.call"] =
-			json::Value::from(50);
-		power_levels_content["events"]["m.call.member"] =
-			json::Value::from(50);
-		power_levels_content["events"]["org.matrix.msc3401.call"] =
-			json::Value::from(50);
-		power_levels_content["events"]["org.matrix.msc3401.call.member"] =
-			json::Value::from(50);
+		power_levels_content["events"]["m.call.invite"] = json::Value::from(50);
+		power_levels_content["events"]["m.call"] = json::Value::from(50);
+		power_levels_content["events"]["m.call.member"] = json::Value::from(50);
+		power_levels_content["events"]["org.matrix.msc3401.call"] = json::Value::from(50);
+		power_levels_content["events"]["org.matrix.msc3401.call.member"] = json::Value::from(50);
 	}
 
 	if !creators.is_empty() {
 		// MSC4289 requires privileged-creator rooms to default tombstones to PL150
-		power_levels_content["events"]["m.room.tombstone"] =
-			json::Value::from(150);
+		power_levels_content["events"]["m.room.tombstone"] = json::Value::from(150);
 	}
 
 	if let Some(power_level_content_override) = power_level_content_override {

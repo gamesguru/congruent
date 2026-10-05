@@ -19,6 +19,7 @@ use slipstream::{
 	},
 	codec::{Deserialize, Serialize},
 	directory::RoomTypeFilter,
+	endpoint::Input,
 	events::StateEventType,
 	uint,
 };
@@ -105,62 +106,22 @@ impl Serialize for CompatListFilters {
 
 impl Deserialize for CompatListFilters {
 	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
-		let obj = value
-			.as_object()
-			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		let input = Input::new(&[], &[], Some(value));
+		// Like the serde derive this replaces: wrong types are errors, and
+		// `is_invited` is accepted as a spelling of `is_invite`.
+		let is_invite = match input.body::<Option<bool>>("is_invite")? {
+			| Some(is_invite) => Some(is_invite),
+			| None => input.body::<Option<bool>>("is_invited")?,
+		};
 		Ok(Self {
-			is_dm: obj.get("is_dm").and_then(slipstream::json::Value::as_bool),
-			is_encrypted: obj
-				.get("is_encrypted")
-				.and_then(slipstream::json::Value::as_bool),
-			is_invite: obj
-				.get("is_invite")
-				.and_then(slipstream::json::Value::as_bool),
-			room_types: obj
-				.get("room_types")
-				.and_then(|v| v.as_array())
-				.map(|arr| {
-					arr.iter()
-						.filter_map(|v| RoomTypeFilter::from_json(v).ok())
-						.collect()
-				})
-				.unwrap_or_default(),
-			not_room_types: obj
-				.get("not_room_types")
-				.and_then(|v| v.as_array())
-				.map(|arr| {
-					arr.iter()
-						.filter_map(|v| RoomTypeFilter::from_json(v).ok())
-						.collect()
-				})
-				.unwrap_or_default(),
-			tags: obj
-				.get("tags")
-				.and_then(|v| v.as_array())
-				.map(|arr| {
-					arr.iter()
-						.filter_map(|v| v.as_str().map(String::from))
-						.collect()
-				})
-				.unwrap_or_default(),
-			not_tags: obj
-				.get("not_tags")
-				.and_then(|v| v.as_array())
-				.map(|arr| {
-					arr.iter()
-						.filter_map(|v| v.as_str().map(String::from))
-						.collect()
-				})
-				.unwrap_or_default(),
-			spaces: obj
-				.get("spaces")
-				.and_then(|v| v.as_array())
-				.map(|arr| {
-					arr.iter()
-						.filter_map(|v| OwnedRoomId::from_json(v).ok())
-						.collect()
-				})
-				.unwrap_or_default(),
+			is_dm: input.body("is_dm")?,
+			is_encrypted: input.body("is_encrypted")?,
+			is_invite,
+			room_types: input.body_or_default("room_types")?,
+			not_room_types: input.body_or_default("not_room_types")?,
+			tags: input.body_or_default("tags")?,
+			not_tags: input.body_or_default("not_tags")?,
+			spaces: input.body_or_default("spaces")?,
 		})
 	}
 }
