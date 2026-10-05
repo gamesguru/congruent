@@ -15,7 +15,8 @@ use conduwuit::{
 use futures::FutureExt;
 use service::{Services, rooms::state::RoomMutexGuard};
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomAliasId, OwnedRoomId,
+	OwnedServerName, RoomId,
 	RoomVersionId, UserId,
 	api::{
 		client::knock::knock_room,
@@ -72,7 +73,9 @@ pub(crate) async fn knock_room_route(
 
 			(servers, room_id)
 		},
-		| Err(room_alias) => {
+		| Err(_) => {
+			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
+				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
 
 			banned_room_check(

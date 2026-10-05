@@ -19,7 +19,8 @@ use service::{
 	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId,
 	RoomVersionId, UserId,
 	api::{
 		client::{
@@ -163,7 +164,9 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 
 			(servers, room_id)
 		},
-		| Err(room_alias) => {
+		| Err(_) => {
+			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
+				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
 
 			banned_room_check(
