@@ -67,10 +67,13 @@ pub(super) async fn compare_room_state(
 	let response = match self
 		.services
 		.sending
-		.send_federation_request(server, get_room_state_ids::v1::Request {
-			room_id: room_id.clone(),
-			event_id: at_event_id.clone(),
-		})
+		.send_federation_request(
+			server,
+			get_room_state_ids::v1::Request {
+				room_id: room_id.clone(),
+				event_id: at_event_id.clone(),
+			},
+		)
 		.await
 	{
 		| Ok(r) => r,
@@ -119,11 +122,10 @@ pub(super) async fn compare_room_state(
 				.get_outlier_pdu_json(&event_id)
 				.await
 			{
-				let pdu_res = serde_json::to_value(&json)
-					.map_err(|e| e.to_string())
-					.and_then(|v| {
-						serde_json::from_value::<PduEvent>(v).map_err(|e| e.to_string())
-					});
+				let pdu_res = slipstream::codec::from_value::<PduEvent>(
+					&slipstream::json::Value::Object(json.clone()),
+				)
+				.map_err(|e| e.to_string());
 				match pdu_res {
 					| Ok(pdu) => return Ok(Some((pdu, false))),
 					| Err(e) => {
@@ -156,7 +158,7 @@ pub(super) async fn compare_room_state(
 			};
 			let legacy_state_event_id =
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
-					serde_json::from_str::<JsonValue>(response.pdu.get())
+					slipstream::codec::from_str::<JsonValue>(response.pdu.get())
 						.ok()
 						.and_then(|json| {
 							json.get("event_id")
@@ -282,7 +284,7 @@ pub(super) async fn compare_room_state(
 		}
 		// Store metadata for richer diff output
 		{
-			let content: JsonValue = pdu.get_content_as_value();
+			let content: JsonValue = crate::utils::content_value(&pdu);
 			let membership = content
 				.get("membership")
 				.and_then(|v| v.as_str())
@@ -293,7 +295,7 @@ pub(super) async fn compare_room_state(
 
 		if pdu.kind == TimelineEventType::RoomMember {
 			if let Some(state_key) = &pdu.state_key {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -365,7 +367,7 @@ pub(super) async fn compare_room_state(
 				);
 
 				if tip_pdu.kind == TimelineEventType::RoomMember {
-					let content: JsonValue = tip_pdu.get_content_as_value();
+					let content: JsonValue = crate::utils::content_value(&tip_pdu);
 					match content.get("membership").and_then(|v| v.as_str()) {
 						| Some("join") => {
 							remote_joined.insert(state_key.to_string());
@@ -412,7 +414,7 @@ pub(super) async fn compare_room_state(
 			local_state.insert((event_type.to_string(), state_key.to_string()), eid.clone());
 			// Store metadata for richer diff output
 			{
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -422,7 +424,7 @@ pub(super) async fn compare_room_state(
 			};
 
 			if event_type == StateEventType::RoomMember {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -592,10 +594,13 @@ pub(super) async fn compare_room_state(
 			let response = match self
 				.services
 				.sending
-				.send_federation_request(cmp_server, get_room_state_ids::v1::Request {
-					room_id: room_id.clone(),
-					event_id: at_event_id.clone(),
-				})
+				.send_federation_request(
+					cmp_server,
+					get_room_state_ids::v1::Request {
+						room_id: room_id.clone(),
+						event_id: at_event_id.clone(),
+					},
+				)
 				.await
 			{
 				| Ok(r) => r,
@@ -630,7 +635,7 @@ pub(super) async fn compare_room_state(
 
 					// Store metadata for richer diff output
 					if !event_meta.contains_key(&event_id) {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -641,7 +646,7 @@ pub(super) async fn compare_room_state(
 					}
 
 					if pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -700,7 +705,7 @@ pub(super) async fn compare_room_state(
 				server_state.insert(key.clone(), at_event_id.clone());
 				if let Some(ref tip_pdu) = tip_pdu_opt {
 					if tip_pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = tip_pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&tip_pdu);
 						match content.get("membership").and_then(|v| v.as_str()) {
 							| Some("join") => {
 								cmp_joined.insert(key.1.clone());
@@ -868,9 +873,9 @@ pub(super) async fn set_state_event(
 				.get_outlier_pdu_json(&event_id)
 				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
-			serde_json::from_value::<PduEvent>(
-				serde_json::to_value(&json).map_err(|e| err!(Request(InvalidParam("{e}"))))?,
-			)
+			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(
+				json.clone(),
+			))
 			.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
 		},
 	};
@@ -1005,7 +1010,7 @@ pub(super) async fn set_state_event(
 			self.services
 				.rooms
 				.state_cache
-				.update_membership(&room_id, user_id, &pdu, false)
+				.update_membership(&room_id, &user_id, &pdu, false)
 				.await?;
 		}
 		self.services
@@ -1090,7 +1095,7 @@ pub(super) async fn audit_membership(
 			continue;
 		};
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1134,7 +1139,7 @@ pub(super) async fn audit_membership(
 			continue;
 		}
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1200,7 +1205,9 @@ pub(super) async fn audit_membership(
 				| Some((st_membership, st_event))
 					if st_event != tl_event
 						&& (st_membership == "leave" || st_membership == "ban") =>
-					true,
+				{
+					true
+				},
 				// User in timeline but absent from state
 				| None if tl_membership == "join" || tl_membership == "invite" => true,
 				| _ => false,
@@ -1417,7 +1424,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1431,7 +1437,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members_invited(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1620,7 +1625,7 @@ pub(super) async fn audit_membership(
 						.services
 						.rooms
 						.state_cache
-						.update_membership(&room_id, user_id, &pdu, false)
+						.update_membership(&room_id, &user_id, &pdu, false)
 						.await
 						.is_ok()
 					{
@@ -1667,10 +1672,13 @@ pub(super) async fn audit_membership(
 		match self
 			.services
 			.sending
-			.send_federation_request(server, get_room_state::v1::Request {
-				room_id: room_id.clone(),
-				event_id: latest_event_id.clone(),
-			})
+			.send_federation_request(
+				server,
+				get_room_state::v1::Request {
+					room_id: room_id.clone(),
+					event_id: latest_event_id.clone(),
+				},
+			)
 			.await
 		{
 			| Ok(response) => {
@@ -1728,7 +1736,7 @@ pub(super) async fn audit_membership(
 					}
 
 					if let Some(state_key) = pdu.state_key() {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -1745,7 +1753,7 @@ pub(super) async fn audit_membership(
 				{
 					if tip_pdu.kind == TimelineEventType::RoomMember {
 						if let Some(state_key) = tip_pdu.state_key() {
-							let content: JsonValue = tip_pdu.get_content_as_value();
+							let content: JsonValue = crate::utils::content_value(&tip_pdu);
 
 							let membership = content
 								.get("membership")

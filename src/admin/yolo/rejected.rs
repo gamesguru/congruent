@@ -99,7 +99,6 @@ pub(super) async fn unreject_room(
 			.rooms
 			.metadata
 			.iter_ids()
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await
 	} else if let Some(r) = room_id {

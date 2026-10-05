@@ -104,11 +104,11 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 			slipstream::events::GlobalAccountDataEventType::PushRules
 				.to_string()
 				.into(),
-			&serde_json::to_value(slipstream::events::push_rules::PushRulesEvent {
+			&slipstream::codec::to_value(&slipstream::events::push_rules::PushRulesEvent {
 				content: slipstream::events::push_rules::PushRulesEventContent {
 					global: slipstream::push::Ruleset::server_default(&user_id),
 				},
-			})?,
+			}),
 		)
 		.await?;
 
@@ -294,7 +294,15 @@ pub(super) async fn reset_password(
 		self.services
 			.users
 			.all_device_ids(&user_id)
-			.for_each(|device_id| self.services.users.remove_device(&user_id, device_id))
+			.for_each(|device_id: slipstream::OwnedDeviceId| {
+				let user_id = &user_id;
+				async move {
+					self.services
+						.users
+						.remove_device(&user_id, &device_id)
+						.await;
+				}
+			})
 			.await;
 		write!(self, "\nAll existing sessions have been logged out.").await?;
 	}
@@ -439,7 +447,7 @@ pub(super) async fn list_joined_rooms(&self, user_id: String) -> Result {
 		.rooms
 		.state_cache
 		.rooms_joined(&user_id)
-		.then(|room_id| get_room_info(self.services, room_id))
+		.then(|room_id| async move { get_room_info(self.services, &room_id).await })
 		.collect()
 		.await;
 
@@ -636,7 +644,6 @@ pub(super) async fn force_join_all_local_users(
 		.services
 		.users
 		.list_local_users()
-		.map(UserId::to_owned)
 		.collect::<Vec<_>>()
 		.await
 	{
@@ -774,14 +781,13 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		})
-		|| self
-			.services
-			.rooms
-			.state_accessor
-			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-			.await
-			.is_ok_and(|event| event.sender() == user_id);
+		}) || self
+		.services
+		.rooms
+		.state_accessor
+		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+		.await
+		.is_ok_and(|event| *event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
@@ -852,7 +858,7 @@ pub(super) async fn put_room_tag(
 			Some(&room_id),
 			&user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event).expect("to json value always works"),
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -888,7 +894,7 @@ pub(super) async fn delete_room_tag(
 			Some(&room_id),
 			&user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event).expect("to json value always works"),
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -1084,7 +1090,12 @@ pub(super) async fn logout(&self, user_id: String) -> Result {
 	self.services
 		.users
 		.all_device_ids(&user_id)
-		.for_each(|device_id| self.services.users.remove_device(&user_id, device_id))
+		.for_each(|device_id| {
+			let user_id = &user_id;
+			async move {
+				self.services.users.remove_device(user_id, &device_id).await;
+			}
+		})
 		.await;
 	self.write_str(&format!("User {user_id} has been logged out from all devices."))
 		.await
@@ -1143,12 +1154,14 @@ pub(super) async fn get_email(&self, user_id: String) -> Result {
 		.get_email_for_localpart(user_id.localpart())
 		.await
 	{
-		| Some(email) =>
+		| Some(email) => {
 			self.write_str(&format!("{user_id} has the associated email address {email}."))
-				.await,
-		| None =>
+				.await
+		},
+		| None => {
 			self.write_str(&format!("{user_id} has no associated email address."))
-				.await,
+				.await
+		},
 	}
 }
 
@@ -1171,9 +1184,10 @@ pub(super) async fn get_user_by_email(&self, email: String) -> Result {
 			self.write_str(&format!("{email} belongs to {user_id}."))
 				.await
 		},
-		| None =>
+		| None => {
 			self.write_str(&format!("No user has {email} as their email address."))
-				.await,
+				.await
+		},
 	}
 }
 
@@ -1197,11 +1211,12 @@ pub(super) async fn change_email(&self, user_id: String, email: Option<String>) 
 		.await;
 
 	match (current_email, new_email) {
-		| (None, None) =>
+		| (None, None) => {
 			self.write_str(&format!(
 				"{user_id} already had no associated email. No changes have been made."
 			))
-			.await,
+			.await
+		},
 		| (current_email, Some(new_email)) => {
 			self.services
 				.threepid
@@ -1252,7 +1267,7 @@ pub(super) async fn bump_device_lists(&self, user_id: String) -> Result {
 		let users: Vec<_> = self.services.users.list_local_users().collect().await;
 		let count = users.len();
 		for user in users {
-			self.services.users.mark_device_key_update(user).await;
+			self.services.users.mark_device_key_update(&user).await;
 		}
 		self.write_str(&format!("Bumped device list updates for all {count} local users."))
 			.await

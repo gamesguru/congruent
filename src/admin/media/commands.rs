@@ -6,7 +6,7 @@ use conduwuit::{
 	warn,
 };
 use conduwuit_service::media::Dim;
-use ruma::{Mxc, OwnedEventId, OwnedMxcUri, OwnedServerName};
+use slipstream::{Mxc, OwnedEventId, OwnedMxcUri, OwnedServerName};
 
 use crate::{admin_command, utils::parse_local_user_id};
 
@@ -24,9 +24,13 @@ pub(super) async fn delete(
 
 	if let Some(mxc) = mxc {
 		trace!("Got MXC URL: {mxc}");
+		let (server_name, media_id) = crate::utils::split_mxc(mxc.as_str())?;
 		self.services
 			.media
-			.delete(&mxc.as_str().try_into()?)
+			.delete(&Mxc {
+				server_name: &server_name,
+				media_id: &media_id,
+			})
 			.await?;
 
 		return self
@@ -147,10 +151,14 @@ pub(super) async fn delete(
 		let mut mxc_deletion_count: usize = 0;
 
 		for mxc_url in mxc_urls {
+			let (server_name, media_id) = crate::utils::split_mxc(&mxc_url)?;
 			match self
 				.services
 				.media
-				.delete(&mxc_url.as_str().try_into()?)
+				.delete(&Mxc {
+					server_name: &server_name,
+					media_id: &media_id,
+				})
 				.await
 			{
 				| Ok(()) => {
@@ -196,14 +204,17 @@ pub(super) async fn delete_list(&self) -> Result {
 		.to_vec()
 		.drain(1..self.body.len().checked_sub(1).unwrap())
 		.filter_map(|mxc_s| {
-			mxc_s
-				.try_into()
+			crate::utils::split_mxc(mxc_s)
 				.inspect_err(|e| {
 					debug_warn!("Failed to parse user-provided MXC URI: {e}");
 					failed_parsed_mxcs = failed_parsed_mxcs.saturating_add(1);
 				})
 				.ok()
 		})
+		.collect::<Vec<_>>();
+	let mxc_list = mxc_list
+		.iter()
+		.map(|(server_name, media_id)| Mxc { server_name, media_id })
 		.collect::<Vec<Mxc<'_>>>();
 
 	let mut mxc_deletion_count: usize = 0;
@@ -310,14 +321,18 @@ pub(super) async fn delete_all_from_server(
 		};
 
 		if mxc_server_name != server_name
-			|| (self.services.globals.server_is_ours(mxc_server_name)
+			|| (self.services.globals.server_is_ours(&mxc_server_name)
 				&& !yes_i_want_to_delete_local_media)
 		{
 			trace!("skipping MXC URI {mxc}");
 			continue;
 		}
 
-		let mxc: Mxc<'_> = mxc.as_str().try_into()?;
+		let (mxc_server, mxc_media) = crate::utils::split_mxc(mxc.as_str())?;
+		let mxc = Mxc {
+			server_name: &mxc_server,
+			media_id: &mxc_media,
+		};
 
 		match self.services.media.delete(&mxc).await {
 			| Ok(()) => {
@@ -336,7 +351,11 @@ pub(super) async fn delete_all_from_server(
 
 #[admin_command]
 pub(super) async fn get_file_info(&self, mxc: OwnedMxcUri) -> Result {
-	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
+	let (mxc_server, mxc_media) = crate::utils::split_mxc(mxc.as_str())?;
+	let mxc = Mxc {
+		server_name: &mxc_server,
+		media_id: &mxc_media,
+	};
 	let metadata = self.services.media.get_metadata(&mxc).await;
 
 	self.write_str(&format!("```\n{metadata:#?}\n```")).await
@@ -349,12 +368,16 @@ pub(super) async fn get_remote_file(
 	server: Option<OwnedServerName>,
 	timeout: u32,
 ) -> Result {
-	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
+	let (mxc_server, mxc_media) = crate::utils::split_mxc(mxc.as_str())?;
+	let mxc = Mxc {
+		server_name: &mxc_server,
+		media_id: &mxc_media,
+	};
 	let timeout = Duration::from_millis(timeout.into());
 	let mut result = self
 		.services
 		.media
-		.fetch_remote_content(&mxc, None, server.as_deref(), timeout)
+		.fetch_remote_content(&mxc, None, server.as_ref(), timeout)
 		.await?;
 
 	// Grab the length of the content before clearing it to not flood the output
@@ -374,13 +397,17 @@ pub(super) async fn get_remote_thumbnail(
 	width: u32,
 	height: u32,
 ) -> Result {
-	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
+	let (mxc_server, mxc_media) = crate::utils::split_mxc(mxc.as_str())?;
+	let mxc = Mxc {
+		server_name: &mxc_server,
+		media_id: &mxc_media,
+	};
 	let timeout = Duration::from_millis(timeout.into());
 	let dim = Dim::new(width, height, None);
 	let mut result = self
 		.services
 		.media
-		.fetch_remote_thumbnail(&mxc, None, server.as_deref(), timeout, &dim)
+		.fetch_remote_thumbnail(&mxc, None, server.as_ref(), timeout, &dim)
 		.await?;
 
 	// Grab the length of the content before clearing it to not flood the output

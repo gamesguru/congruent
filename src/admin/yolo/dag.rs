@@ -273,7 +273,7 @@ pub(super) async fn get_room_dag(
 					.services
 					.rooms
 					.state_accessor
-					.state_get_id_hamt::<Box<EventId>>(
+					.state_get_id_hamt::<EventId>(
 						&room_id,
 						room_root.as_ref().expect("room fingerprint implies a root"),
 						&last_type.to_string().into(),
@@ -437,14 +437,15 @@ pub(super) async fn get_remote_dag(
 
 	let room_version = match self.services.rooms.state.get_room_version(&room_id).await {
 		| Ok(v) => v,
-		| Err(_e) =>
+		| Err(_e) => {
 			if let Some(v) = room_version {
 				v
 			} else {
 				return Err!(Request(InvalidParam(
 					"Local room version missing. You must specify --room-version explicitly."
 				)));
-			},
+			}
+		},
 	};
 
 	// Build server pool: primary + auto-discovered EMA-ranked room servers
@@ -496,7 +497,7 @@ pub(super) async fn get_remote_dag(
 	}
 
 	let safe_room_id = room_id.to_string().replace('!', "").replace(':', "_");
-	let server_str = server.as_ref().map_or("auto", |s| s.as_str());
+	let server_str = server.as_ref().map_or("auto", |s| s);
 	let path = format!("/tmp/remote-dag-{safe_room_id}-v{room_version}-{server_str}.jsonl");
 	let file = tokio::fs::File::create(&path)
 		.await
@@ -659,10 +660,13 @@ pub(super) async fn get_remote_dag(
 					if let Ok(res) = self
 						.services
 						.sending
-						.send_federation_request(fallback_server, get_event::v1::Request {
-							event_id: event_id.clone(),
-							include_unredacted_content: None,
-						})
+						.send_federation_request(
+							fallback_server,
+							get_event::v1::Request {
+								event_id: event_id.clone(),
+								include_unredacted_content: None,
+							},
+						)
 						.await
 					{
 						if Some(fallback_server) != server.as_ref() {
@@ -733,7 +737,9 @@ pub(super) async fn get_remote_dag(
 			}
 			seen.insert(event_id.clone());
 
-			let json = serde_json::to_string(&value).ok();
+			let json = Some(slipstream::codec::to_string(&slipstream::json::Value::Object(
+				value.clone(),
+			)));
 			let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) else {
 				continue;
 			};
@@ -1041,18 +1047,16 @@ pub(super) async fn dag_merge_base(
 
 			let event_stub_raw = response.event;
 
-			let event_stub: CanonicalJsonObject = serde_json::from_str(event_stub_raw.get())
-				.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
+			let event_stub: CanonicalJsonObject =
+				slipstream::codec::from_str(event_stub_raw.get())
+					.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
 
 			let remote_tips: Vec<OwnedEventId> = event_stub
 				.get("prev_events")
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
-						.filter_map(|v| {
-							v.as_str()
-								.and_then(|s| <&EventId>::try_from(s).ok().map(ToOwned::to_owned))
-						})
+						.filter_map(|v| v.as_str().and_then(|s| EventId::parse(s).ok()))
 						.collect()
 				})
 				.unwrap_or_default();
@@ -1122,7 +1126,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (A-side, \
 						 #{fetched_events})"
@@ -1159,7 +1163,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (B-side, \
 						 #{fetched_events})"
@@ -1418,21 +1422,23 @@ pub(super) async fn audit_auth_chain(
 			.get_room_state_hamt(&room_id)
 			.await
 		{
-			| Ok(room_root) =>
+			| Ok(room_root) => {
 				self.services
 					.rooms
 					.state_accessor
 					.state_full_ids_hamt(&room_root)
 					.map_ok(|(_, id)| id)
 					.try_collect()
-					.await?,
-			| Err(_) =>
+					.await?
+			},
+			| Err(_) => {
 				self.services
 					.rooms
 					.state
 					.get_forward_extremities(&room_id)
 					.collect()
-					.await,
+					.await
+			},
 		}
 	};
 
@@ -1681,13 +1687,16 @@ pub(super) async fn fetch_missing_events(
 			let res = self
 				.services
 				.sending
-				.send_federation_request(server, get_missing_events::v1::Request {
-					room_id: room_id.clone(),
-					earliest_events: vec![], // Walk as far back as limit allows
-					latest_events: current_targets.clone(),
-					limit: 100_u32.into(),
-					min_depth: 0_u32.into(),
-				})
+				.send_federation_request(
+					server,
+					get_missing_events::v1::Request {
+						room_id: room_id.clone(),
+						earliest_events: vec![], // Walk as far back as limit allows
+						latest_events: current_targets.clone(),
+						limit: 100_u32.into(),
+						min_depth: 0_u32.into(),
+					},
+				)
 				.await;
 
 			self.services
@@ -1706,7 +1715,7 @@ pub(super) async fn fetch_missing_events(
 						if let Ok((event_id, value)) = self
 							.services
 							.server_keys
-							.validate_and_add_event_id(raw.as_ref(), &room_version)
+							.validate_and_add_event_id(&raw, &room_version)
 							.await
 						{
 							if self
@@ -1715,8 +1724,12 @@ pub(super) async fn fetch_missing_events(
 								.outlier
 								.get_pdu_outlier(&event_id)
 								.await
-								.is_err()
-								&& !self.services.rooms.timeline.pdu_exists(&event_id).await
+								.is_err() && !self
+								.services
+								.rooms
+								.timeline
+								.pdu_exists(&event_id)
+								.await
 							{
 								self.services
 									.rooms
@@ -1739,13 +1752,12 @@ pub(super) async fn fetch_missing_events(
 											.outlier
 											.get_pdu_outlier(prev)
 											.await
-											.is_err()
-											&& !self
-												.services
-												.rooms
-												.timeline
-												.pdu_exists(prev)
-												.await
+											.is_err() && !self
+											.services
+											.rooms
+											.timeline
+											.pdu_exists(prev)
+											.await
 										{
 											next_targets.insert(prev.to_owned());
 										}

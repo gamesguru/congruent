@@ -68,7 +68,6 @@ pub(super) async fn process(subcommand: PusherCommand, context: &Context<'_>) ->
 			let pushers = services
 				.pusher
 				.get_pushkeys(&user_id)
-				.map(ToOwned::to_owned)
 				.broad_filter_map(async |pushkey| {
 					services
 						.pusher

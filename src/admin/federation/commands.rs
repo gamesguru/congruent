@@ -96,14 +96,14 @@ pub(super) async fn fetch_support_well_known(&self, server_name: OwnedServerName
 		);
 	}
 
-	let json: slipstream::json::Value = match serde_json::from_str(&text) {
+	let json: slipstream::json::Value = match slipstream::codec::from_str(&text) {
 		| Ok(json) => json,
 		| Err(_) => {
 			return Err!("Response text/body is not valid JSON.",);
 		},
 	};
 
-	let pretty_json: String = match serde_json::to_string_pretty(&json) {
+	let pretty_json: String = match crate::utils::to_string_pretty(&json) {
 		| Ok(json) => json,
 		| Err(_) => {
 			return Err!("Response text/body is not valid JSON.",);
@@ -132,7 +132,7 @@ pub(super) async fn remote_user_in_rooms(&self, user_id: OwnedUserId) -> Result 
 		.rooms
 		.state_cache
 		.rooms_joined(&user_id)
-		.then(|room_id| get_room_info(self.services, room_id))
+		.then(|room_id| async move { get_room_info(self.services, &room_id).await })
 		.collect()
 		.await;
 
@@ -189,9 +189,10 @@ pub(super) async fn sending_queue(
 
 	if destinations.is_empty() {
 		return match server {
-			| Some(server) =>
+			| Some(server) => {
 				self.write_str(&format!("Sending queue is empty for {server}."))
-					.await,
+					.await
+			},
 			| None => self.write_str("Sending queue is empty.").await,
 		};
 	}

@@ -199,13 +199,9 @@ pub(super) async fn compact(
 ) -> Result {
 	use conduwuit_database::compact::Options;
 
-	let default_all_maps: Option<_> = map.is_none().then(|| {
-		self.services
-			.db
-			.keys()
-			.map(Deref::deref)
-			.map(ToOwned::to_owned)
-	});
+	let default_all_maps: Option<_> = map
+		.is_none()
+		.then(|| self.services.db.keys().map(|k| (*k).to_owned()));
 
 	let maps: Vec<_> = map
 		.unwrap_or_default()

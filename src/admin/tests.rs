@@ -1,13 +1,19 @@
 #![cfg(test)]
 
 #[test]
-fn get_help_short() { get_help_inner("-h"); }
+fn get_help_short() {
+	get_help_inner("-h");
+}
 
 #[test]
-fn get_help_long() { get_help_inner("--help"); }
+fn get_help_long() {
+	get_help_inner("--help");
+}
 
 #[test]
-fn get_help_subcommand() { get_help_inner("help"); }
+fn get_help_subcommand() {
+	get_help_inner("help");
+}
 
 fn get_help_inner(input: &str) {
 	use clap::Parser;
@@ -36,7 +42,9 @@ fn parse_yolo(args: &[&str]) -> Result<crate::admin::AdminCommand, clap::Error> 
 }
 
 #[test]
-fn yolo_list_outliers_basic() { parse_yolo(&["yolo", "list-outliers"]).unwrap(); }
+fn yolo_list_outliers_basic() {
+	parse_yolo(&["yolo", "list-outliers"]).unwrap();
+}
 
 #[test]
 fn yolo_list_outliers_with_room() {
@@ -82,7 +90,9 @@ fn yolo_view_extremities_requires_room_or_all() {
 }
 
 #[test]
-fn yolo_view_extremities_all() { parse_yolo(&["yolo", "view-extremities", "--all"]).unwrap(); }
+fn yolo_view_extremities_all() {
+	parse_yolo(&["yolo", "view-extremities", "--all"]).unwrap();
+}
 
 #[test]
 fn yolo_view_extremities_with_room() {
@@ -114,7 +124,7 @@ fn strip_room_id_if_needed(
 
 #[test]
 fn v12_create_event_strips_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -125,7 +135,7 @@ fn v12_create_event_strips_room_id() {
 #[test]
 fn v12_non_create_event_keeps_room_id() {
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
 		)
 		.unwrap();
@@ -136,7 +146,7 @@ fn v12_non_create_event_keeps_room_id() {
 #[test]
 fn v11_non_create_event_keeps_room_id() {
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
 		)
 		.unwrap();
@@ -146,7 +156,7 @@ fn v11_non_create_event_keeps_room_id() {
 
 #[test]
 fn v11_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -156,7 +166,7 @@ fn v11_create_event_keeps_room_id() {
 
 #[test]
 fn v10_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -167,7 +177,7 @@ fn v10_create_event_keeps_room_id() {
 #[test]
 fn v12_create_event_without_room_id_is_noop() {
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.create","content":{"creator":"@alice:example.org"}}"#,
 		)
 		.unwrap();
@@ -203,7 +213,7 @@ fn auth_events_reference_create(
 
 #[test]
 fn import_strips_diagnostic_fields() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.message","room_id":"!abc:example.org","__shortstatehash":12345,"prev_state_events":[],"state_jump_pointers":[],"content":{}}"#,
 	)
 	.unwrap();
@@ -221,7 +231,7 @@ fn import_strips_diagnostic_fields() {
 fn v11_event_keeps_room_id_in_wire_format() {
 	// In v11, room_id IS part of the wire format.
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
 		)
 		.unwrap();
@@ -231,7 +241,7 @@ fn v11_event_keeps_room_id_in_wire_format() {
 
 #[test]
 fn v12_create_event_full_import_pipeline() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","__shortstatehash":999,"content":{"room_version":"12"},"auth_events":[],"prev_events":[]}"#,
 	)
 	.unwrap();
@@ -245,7 +255,7 @@ fn v12_create_event_full_import_pipeline() {
 #[test]
 fn v12_non_create_event_keeps_room_id_after_import() {
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
 		)
 		.unwrap();
@@ -255,25 +265,27 @@ fn v12_non_create_event_keeps_room_id_after_import() {
 
 #[test]
 fn v12_auth_events_must_not_reference_create() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","auth_events":["$power_levels","$join_rules"],"content":{}}"#,
-	)
-	.unwrap();
+	let obj: slipstream::json::Object<String, slipstream::json::Value> =
+		slipstream::codec::from_str(
+			r#"{"type":"m.room.member","auth_events":["$power_levels","$join_rules"],"content":{}}"#,
+		)
+		.unwrap();
 	assert!(!auth_events_reference_create(&obj, "$create_event"));
 }
 
 #[test]
 fn v12_auth_events_rejects_explicit_create_reference() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels"],"content":{}}"#,
-	)
-	.unwrap();
+	let obj: slipstream::json::Object<String, slipstream::json::Value> =
+		slipstream::codec::from_str(
+			r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels"],"content":{}}"#,
+		)
+		.unwrap();
 	assert!(auth_events_reference_create(&obj, "$create_event"));
 }
 
 #[test]
 fn v10_auth_events_must_reference_create() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
+	let obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
 		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels","$join_rules"],"content":{}}"#,
 	)
 	.unwrap();
@@ -282,10 +294,11 @@ fn v10_auth_events_must_reference_create() {
 
 #[test]
 fn v12_create_event_has_empty_auth_events() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> = serde_json::from_str(
-		r#"{"type":"m.room.create","auth_events":[],"content":{"room_version":"12"}}"#,
-	)
-	.unwrap();
+	let obj: slipstream::json::Object<String, slipstream::json::Value> =
+		slipstream::codec::from_str(
+			r#"{"type":"m.room.create","auth_events":[],"content":{"room_version":"12"}}"#,
+		)
+		.unwrap();
 	let auth = obj.get("auth_events").and_then(|v| v.as_array()).unwrap();
 	assert!(auth.is_empty(), "create event must have empty auth_events");
 }
@@ -294,7 +307,7 @@ fn v12_create_event_has_empty_auth_events() {
 fn strip_preserves_older_versions() {
 	for version in &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] {
 		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
 			)
 			.unwrap();
@@ -309,7 +322,7 @@ fn strip_preserves_older_versions() {
 #[test]
 fn strip_v12_create_removes() {
 	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		serde_json::from_str(
+		slipstream::codec::from_str(
 			r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{}}"#,
 		)
 		.unwrap();
@@ -443,12 +456,15 @@ async fn test_yolo_audit_membership_drift() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -687,12 +703,15 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -847,12 +866,15 @@ async fn test_yolo_reorder_timeline() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -1078,12 +1100,15 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -1215,12 +1240,15 @@ async fn create_test_room_with_message(
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -2543,12 +2571,15 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomCreateEventContent {
-				federate: true,
-				predecessor: None,
-				room_version: RoomVersionId::V11,
-				..RoomCreateEventContent::new_v11()
-			}),
+			PduBuilder::state(
+				String::new(),
+				&RoomCreateEventContent {
+					federate: true,
+					predecessor: None,
+					room_version: RoomVersionId::V11,
+					..RoomCreateEventContent::new_v11()
+				},
+			),
 			server_user,
 			Some(&room_id),
 			&state_lock,

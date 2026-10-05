@@ -521,9 +521,13 @@ async fn event_statehash(map: &Arc<Map>, statediff: &Bits, counter: u64) -> (u64
 		.await
 }
 
-fn short_of(bytes: &[u8]) -> Option<u64> { bytes.try_into().ok().map(u64::from_be_bytes) }
+fn short_of(bytes: &[u8]) -> Option<u64> {
+	bytes.try_into().ok().map(u64::from_be_bytes)
+}
 
-fn count_bits(bits: &[u64]) -> u64 { bits.iter().map(|word| u64::from(word.count_ones())).sum() }
+fn count_bits(bits: &[u64]) -> u64 {
+	bits.iter().map(|word| u64::from(word.count_ones())).sum()
+}
 
 /// `popcount(bits)` over the bits `0..=counter`, matching
 /// [`masked_diff_count`].

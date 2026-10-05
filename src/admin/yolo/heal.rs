@@ -222,7 +222,8 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 		.await
 		.map_err(|_| err!("PDU not found in database."))?;
 
-	let pdu: PduEvent = serde_json::from_value(serde_json::to_value(&pdu_json)?)?;
+	let pdu: PduEvent =
+		slipstream::codec::from_value(&slipstream::json::Value::Object(pdu_json.clone()))?;
 	let room_id = pdu
 		.room_id()
 		.ok_or_else(|| err!("PDU has no room_id."))?
@@ -343,14 +344,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 	// A repair implies the scan that finds the drift.
 	let full = deep || fix;
 
-	let room_ids: Vec<_> = self
-		.services
-		.rooms
-		.metadata
-		.iter_ids()
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
+	let room_ids: Vec<_> = self.services.rooms.metadata.iter_ids().collect().await;
 
 	let n_rooms = room_ids.len();
 	self.write_str(&format!("Scanning {n_rooms} rooms...\n"))
@@ -657,7 +651,7 @@ pub(super) async fn heal_receipts(&self) -> Result {
 		let room_id_bytes = parts[0];
 		let room_id_str = String::from_utf8_lossy(room_id_bytes).to_string();
 
-		let Ok(receipt) = serde_json::from_slice::<ReceiptEvent>(value) else {
+		let Ok(receipt) = slipstream::codec::from_slice::<ReceiptEvent>(value) else {
 			continue;
 		};
 
@@ -670,7 +664,7 @@ pub(super) async fn heal_receipts(&self) -> Result {
 					let sig = (
 						room_id_str.clone(),
 						user_id.to_string(),
-						receipt_type.to_string(),
+						format!("{receipt_type:?}"),
 						thread,
 					);
 
@@ -707,14 +701,7 @@ pub(super) async fn reindex_short(
 	let rebuild_topo = !skip_topo;
 
 	if all {
-		let rooms: Vec<OwnedRoomId> = self
-			.services
-			.rooms
-			.metadata
-			.iter_ids()
-			.map(ToOwned::to_owned)
-			.collect()
-			.await;
+		let rooms: Vec<OwnedRoomId> = self.services.rooms.metadata.iter_ids().collect().await;
 
 		self.write_str(&format!("Reindexing derived data for {} rooms...\n", rooms.len()))
 			.await?;
