@@ -1099,7 +1099,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key) {
 			timeline_membership.insert(user_id, (membership, event_id));
 		}
 
@@ -1143,7 +1143,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key.as_str()) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key.as_str()) {
 			state_membership.insert(user_id, (membership, event_id));
 		}
 	}
@@ -1186,7 +1186,7 @@ pub(super) async fn audit_membership(
 				.unwrap_or("leave")
 				.to_owned();
 			let event_id = pdu.event_id().to_string();
-			if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+			if let Ok(user_id) = OwnedUserId::parse(state_key) {
 				tl_membership_pass.insert(user_id, (membership, event_id));
 			}
 		}
@@ -1207,7 +1207,7 @@ pub(super) async fn audit_membership(
 			};
 
 			if is_divergent && clean {
-				if let Ok(event_id) = OwnedEventId::try_from(tl_event.as_str()) {
+				if let Ok(event_id) = OwnedEventId::parse(tl_event.as_str()) {
 					// Demote timeline -> outlier atomically under the room's insert
 					// lock. add_pdu_outlier's "already in timeline" guard checks the
 					// *existing* eventid_metadata entry, which for an event still in
