@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-#[cfg(feature = "otlp_telemetry")]
-use conduwuit_core::warn;
 use conduwuit_core::{
 	Result,
 	config::Config,
@@ -9,10 +7,6 @@ use conduwuit_core::{
 	log::{ConsoleFormat, ConsoleWriter, LogLevelReloadHandles, capture, fmt_span},
 	result::UnwrapOrErr,
 };
-#[cfg(feature = "otlp_telemetry")]
-use opentelemetry::trace::TracerProvider;
-#[cfg(feature = "otlp_telemetry")]
-use opentelemetry_otlp::WithExportConfig;
 use tracing_subscriber::{EnvFilter, Layer, Registry, fmt, layer::SubscriberExt, reload};
 
 #[cfg(feature = "perf_measurements")]
@@ -72,57 +66,6 @@ pub(crate) fn init(
 
 		reload_handles.add("sentry", Box::new(sentry_reload_handle));
 		subscriber.with(sentry_layer.with_filter(sentry_reload_filter))
-	};
-
-	#[cfg(feature = "otlp_telemetry")]
-	let subscriber = {
-		let otlp_filter = EnvFilter::try_new(&config.otlp_filter)
-			.map_err(|e| err!(Config("otlp_filter", "{e}.")))?;
-
-		let otlp_layer = config.allow_otlp.then(|| {
-			opentelemetry::global::set_text_map_propagator(
-				opentelemetry_sdk::propagation::TraceContextPropagator::new(),
-			);
-
-			let exporter = match config.otlp_protocol.as_str() {
-				| "grpc" => opentelemetry_otlp::SpanExporter::builder()
-					.with_tonic()
-					.with_protocol(opentelemetry_otlp::Protocol::Grpc) // TODO: build from env when 0.32 is released
-					.build()
-					.expect("Failed to create OTLP gRPC exporter"),
-				| "http" => opentelemetry_otlp::SpanExporter::builder()
-					.with_http()
-					.build()
-					.expect("Failed to create OTLP HTTP exporter"),
-				| protocol => {
-					warn!(
-						"Invalid OTLP protocol '{}', falling back to HTTP. Valid options are \
-						 'http' or 'grpc'.",
-						protocol
-					);
-					opentelemetry_otlp::SpanExporter::builder()
-						.with_http()
-						.build()
-						.expect("Failed to create OTLP HTTP exporter")
-				},
-			};
-
-			let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-				.with_batch_exporter(exporter)
-				.build();
-
-			let tracer = provider.tracer(conduwuit_core::name());
-
-			let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
-			let (otlp_reload_filter, otlp_reload_handle) =
-				reload::Layer::new(otlp_filter.clone());
-			reload_handles.add("otlp", Box::new(otlp_reload_handle));
-
-			Some(telemetry.with_filter(otlp_reload_filter))
-		});
-
-		subscriber.with(otlp_layer)
 	};
 
 	#[cfg(feature = "perf_measurements")]

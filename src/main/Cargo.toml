@@ -69,7 +69,6 @@ full = [
     "element_hacks",
     "journald",
     "ldap",
-    "otlp_telemetry",
     "sentry_telemetry",
     "systemd",
     "url_preview",
@@ -144,15 +143,8 @@ ldap = [
 media_thumbnail = [
 	"conduwuit-service/media_thumbnail",
 ]
-otlp_telemetry = [
-	"dep:opentelemetry",
-	"dep:tracing-opentelemetry",
-	"dep:opentelemetry_sdk",
-	"dep:opentelemetry-otlp",
-]
 perf_measurements = [
 	"dep:tracing-flame",
-	"otlp_telemetry",
 	"conduwuit-core/perf_measurements",
 	"conduwuit-core/sentry_telemetry",
 ]
@@ -234,12 +226,6 @@ ctor.workspace = true
 console-subscriber.optional = true
 console-subscriber.workspace = true
 log.workspace = true
-opentelemetry.optional = true
-opentelemetry.workspace = true
-opentelemetry-otlp.optional = true
-opentelemetry-otlp.workspace = true
-opentelemetry_sdk.optional = true
-opentelemetry_sdk.workspace = true
 sentry-tracing.optional = true
 sentry-tracing.workspace = true
 sentry.optional = true
@@ -249,8 +235,6 @@ rustyline-async.optional = true
 rustyline-async.workspace = true
 tracing-flame.optional = true
 tracing-flame.workspace = true
-tracing-opentelemetry.optional = true
-tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 tracing-journald = { workspace = true, optional = true }

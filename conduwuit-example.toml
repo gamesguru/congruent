@@ -789,25 +789,6 @@
 #
 #default_room_version = "12"
 
-# Enable OpenTelemetry OTLP tracing export. This replaces the deprecated
-# Jaeger exporter. Traces will be sent via OTLP to a collector (such as
-# Jaeger) that supports the OpenTelemetry Protocol.
-#
-# Configure your OTLP endpoint using the OTEL_EXPORTER_OTLP_ENDPOINT
-# environment variable (defaults to http://localhost:4318).
-#
-#allow_otlp = false
-
-# Filter for OTLP tracing spans. This controls which spans are exported
-# to the OTLP collector.
-#
-#otlp_filter = "info"
-
-# Protocol to use for OTLP tracing export. Options are "http" or "grpc".
-# The HTTP protocol uses port 4318 by default, while gRPC uses port 4317.
-#
-#otlp_protocol = "http"
-
 # If the 'perf_measurements' compile-time feature is enabled, enables
 # collecting folded stack trace profile of tracing spans using
 # tracing_flame. The resulting profile can be visualized with inferno[1],
