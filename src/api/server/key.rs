@@ -399,19 +399,15 @@ database_path = "{}"
 		let merged =
 			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
 
-		services.db["server_signingkeys"].raw_put(
-			origin.as_bytes(),
-			serde_json::to_vec(&raw).expect("raw JSON should serialize"),
-		);
+		services.db["server_signingkeys"]
+			.raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
 		let historical_key = {
 			let mut key = origin.as_bytes().to_vec();
 			key.extend_from_slice(b"\0historical");
 			key
 		};
-		services.db["server_signingkeys"].raw_put(
-			&historical_key,
-			serde_json::to_vec(&merged).expect("merged JSON should serialize"),
-		);
+		services.db["server_signingkeys"]
+			.raw_put(&historical_key, slipstream::codec::to_string(&merged).into_bytes());
 
 		let (state, guard) = conduwuit_service::state::create(services.clone());
 		let router = crate::router::build(Router::new(), &services.server).with_state(state);
@@ -431,7 +427,10 @@ database_path = "{}"
 		let body = to_bytes(response.into_body(), usize::MAX)
 			.await
 			.expect("response body should read");
-		let json: Value = serde_json::from_slice(&body).expect("response should be valid JSON");
+		let json: Value = slipstream::codec::from_str(
+			std::str::from_utf8(&body).expect("response should be UTF-8"),
+		)
+		.expect("response should be valid JSON");
 		let old_key = &json["server_keys"][0]["old_verify_keys"]["ed25519:historical"];
 		assert_eq!(old_key["key"], STANDARD.encode(b"BBB"));
 
