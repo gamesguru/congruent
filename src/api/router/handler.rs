@@ -44,15 +44,23 @@ macro_rules! ruma_handler {
 			$( $tx: FromRequestParts<State> + Send + Sync + 'static, )*
 		{
 			fn add_routes(&'static self, router: Router<State>) -> Router<State> {
-				Req::METADATA
-					.history
-					.all_paths()
-					.fold(router, |router, path| self.add_route(router, path))
+				let router = self.add_route(router, Req::METADATA.path);
+				if let Some((prefix, suffix)) = Req::METADATA.path.split_once("/_matrix/client/v3/") {
+					let legacy = format!("{prefix}/_matrix/client/r0/{suffix}");
+					self.add_route(router, Box::leak(legacy.into_boxed_str()))
+				} else {
+					router
+				}
 			}
 
 			fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State> {
 				let action = |$($tx,)* req| self($($tx,)* req).map_ok(RumaResponse);
-				let method = method_to_filter(&Req::METADATA.method);
+				let method = method_to_filter(
+					&Req::METADATA
+						.method
+						.parse()
+						.expect("endpoint metadata contains a valid HTTP method"),
+				);
 				router.route(path, on(method, action))
 			}
 		}

@@ -45,10 +45,12 @@ use slipstream::{
 			},
 		},
 	},
+	codec::{self, Deserialize, Serialize},
 	encryption::DeviceKeys,
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
-	serde::Raw,
+	json::Value,
+	serde::{JsonObject, Raw},
 	to_device::DeviceIdOrAllDevices,
 };
 use tokio::sync::watch::{Receiver, Sender};
@@ -133,7 +135,7 @@ pub(crate) async fn send_transaction_message_route(
 				services.server.runtime().spawn(async move {
 					let edus_stream = edus
 						.into_iter()
-						.map(|edu| edu.into_json().get().to_owned())
+						.map(|edu| edu.get().to_owned())
 						.map(|json_str| serde_json::from_str(&json_str))
 						.filter_map(Result::ok)
 						.stream();
@@ -195,7 +197,7 @@ async fn process_inbound_transaction(
 	let edus = body
 		.edus
 		.iter()
-		.map(|edu| edu.json().get())
+		.map(|edu| edu.get())
 		.map(serde_json::from_str)
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
@@ -1128,8 +1130,7 @@ fn inject_device_display_name(
 	mut keys: Raw<DeviceKeys>,
 	display_name: Option<&String>,
 ) -> Raw<DeviceKeys> {
-	let Ok(mut object) = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()
-	else {
+	let Ok(mut object) = keys.deserialize_as::<JsonObject>() else {
 		return keys;
 	};
 
@@ -1138,9 +1139,9 @@ fn inject_device_display_name(
 	match display_name {
 		| Some(name) => {
 			let unsigned = object
-				.entry("unsigned")
-				.or_insert_with(|| serde_json::json!({}));
-			if let serde_json::Value::Object(unsigned_object) = unsigned {
+				.entry("unsigned".to_owned())
+				.or_insert_with(|| Value::Object(JsonObject::new()));
+			if let Value::Object(unsigned_object) = unsigned {
 				if unsigned_object
 					.get("device_display_name")
 					.and_then(|v| v.as_str())
@@ -1151,19 +1152,16 @@ fn inject_device_display_name(
 				}
 			}
 		},
-		| None => {
-			if let Some(serde_json::Value::Object(unsigned_object)) = object.get_mut("unsigned") {
+		| None =>
+			if let Some(Value::Object(unsigned_object)) = object.get_mut("unsigned") {
 				if unsigned_object.remove("device_display_name").is_some() {
 					modified = true;
 				}
-			}
-		},
+			},
 	}
 
 	if modified {
-		if let Ok(raw) = serde_json::value::to_raw_value(&object) {
-			keys = Raw::from_json(raw);
-		}
+		keys = Raw::from_value(&object);
 	}
 
 	keys
@@ -1175,8 +1173,8 @@ fn remote_device_keys_differ(
 ) -> bool {
 	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
 		| (Ok(existing_keys), Ok(incoming_keys)) =>
-			serde_json::to_value(existing_keys).ok() != serde_json::to_value(incoming_keys).ok(),
-		| _ => existing_keys.json().get() != incoming_keys.json().get(),
+			codec::to_value(&existing_keys) != codec::to_value(&incoming_keys),
+		| _ => existing_keys.get() != incoming_keys.get(),
 	}
 }
 

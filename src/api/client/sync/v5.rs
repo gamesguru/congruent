@@ -323,7 +323,7 @@ fn parse_ranges(value: &Value) -> Result<CompatRanges, DeError> {
 			.map(parse_range_entry)
 			.collect::<Result<_, _>>()
 			.or_else(|_| parse_range_entry(value).map(|entry| vec![entry])),
-		| Value::Object(entries) =>
+		| Value::Object(entries) => {
 			parse_range_entry(value)
 				.map(|entry| vec![entry])
 				.or_else(|_| {
@@ -332,7 +332,8 @@ fn parse_ranges(value: &Value) -> Result<CompatRanges, DeError> {
 						.values()
 						.map(parse_range_entry)
 						.collect::<Result<_, _>>()
-				}),
+				})
+		},
 		| _ => Err(invalid()),
 	}
 }

@@ -11,7 +11,7 @@ use super::AccessCheck;
 
 #[derive(Deserialize)]
 pub(crate) struct StateAccumulatorQuery {
-	pub event_id: OwnedEventId,
+	pub event_id: String,
 }
 
 slipstream::codec_struct! {
@@ -38,6 +38,8 @@ pub(crate) async fn get_state_accumulator_route(
 
 	let room_id = OwnedRoomId::try_from(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let event_id = OwnedEventId::try_from(query.event_id.as_str())
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 
 	verify_federation_request(&services, &x_matrix, &signature_uri).await?;
 
@@ -53,7 +55,7 @@ pub(crate) async fn get_state_accumulator_route(
 	info!(
 		origin = x_matrix.origin.as_str(),
 		room_id = %room_id,
-		event_id = %query.event_id,
+		event_id = %event_id,
 		"Serving MSC4500 state accumulator request"
 	);
 
@@ -61,7 +63,7 @@ pub(crate) async fn get_state_accumulator_route(
 	let pdu = services
 		.rooms
 		.timeline
-		.get_pdu(&query.event_id)
+		.get_pdu(&event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
@@ -72,7 +74,7 @@ pub(crate) async fn get_state_accumulator_route(
 	let shorteventid = services
 		.rooms
 		.short
-		.get_or_create_shorteventid(&query.event_id)
+		.get_or_create_shorteventid(&event_id)
 		.await;
 
 	let root_handle = services
@@ -95,7 +97,7 @@ pub(crate) async fn get_state_accumulator_route(
 	let (lattice_b64, digest) = serialize_lthash(&lattice);
 
 	let response = StateAccumulatorResponse {
-		event_id: query.event_id,
+		event_id,
 		algorithm: "lthash16-blake3-v1".to_owned(),
 		lattice: lattice_b64,
 		n_state_events,
