@@ -159,7 +159,6 @@ impl crate::Service for Service {
 
 fn base(config: &Config) -> Result<reqwest::ClientBuilder> {
 	let mut builder = reqwest::Client::builder()
-		.hickory_dns(true)
 		.connect_timeout(Duration::from_secs(config.request_conn_timeout))
 		.read_timeout(Duration::from_secs(config.request_timeout))
 		.timeout(Duration::from_secs(config.request_total_timeout))
