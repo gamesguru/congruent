@@ -186,7 +186,6 @@ pub async fn update_membership(
 				self.mark_as_knocked(user_id, room_id, Some(knock_state));
 			}
 		},
-		| _ => {},
 	}
 
 	if update_joined_count {

@@ -151,6 +151,5 @@ pub async fn server_can_see_event(
 
 			false
 		},
-		| _ => false,
 	}
 }

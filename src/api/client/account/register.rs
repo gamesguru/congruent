@@ -421,7 +421,7 @@ pub(crate) async fn register_route(
 /// registering a new account.
 async fn create_registration_uiaa_session(
 	services: &Services,
-) -> Result<(Vec<AuthFlow>, Box<RawValue>)> {
+) -> Result<(Vec<AuthFlow>, Box<RawJsonValue>)> {
 	let mut params = HashMap::<String, slipstream::json::Value>::new();
 
 	let open_registration = services
