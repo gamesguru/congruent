@@ -29,7 +29,7 @@ use slipstream::{
 		federation,
 	},
 	codec,
-	directory::{Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter},
+	directory::{Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter, Visibility},
 	events::{
 		StateEventType,
 		room::{
@@ -152,7 +152,7 @@ pub(crate) async fn set_room_visibility_route(
 	}
 
 	match &body.visibility {
-		| room::Visibility::Public => {
+		| Visibility::Public => {
 			if services.server.config.lockdown_public_room_directory
 				&& !services.users.is_admin(sender_user).await
 				&& body.appservice_info.is_none()
@@ -192,7 +192,7 @@ pub(crate) async fn set_room_visibility_route(
 			}
 			info!("{sender_user} made {0} public to the room directory", body.room_id);
 		},
-		| room::Visibility::Private => services.rooms.directory.set_not_public(&body.room_id),
+		| Visibility::Private => services.rooms.directory.set_not_public(&body.room_id),
 		| _ => {
 			return Err!(Request(InvalidParam("Room visibility type is not supported.",)));
 		},
@@ -215,9 +215,9 @@ pub(crate) async fn get_room_visibility_route(
 
 	Ok(get_room_visibility::v3::Response {
 		visibility: if services.rooms.directory.is_public_room(&body.room_id).await {
-			room::Visibility::Public
+			Visibility::Public
 		} else {
-			room::Visibility::Private
+			Visibility::Private
 		},
 	})
 }

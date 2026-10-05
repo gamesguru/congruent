@@ -3,7 +3,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{extract::State, response::IntoResponse};
 use conduwuit::{Result, err, utils::timepoint_from_now};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, Signatures,
@@ -40,7 +40,7 @@ pub(crate) async fn get_server_keys_route(
 
 	services.server_keys.sign_json(&mut response)?;
 
-	Ok(Json(response))
+	Ok(crate::api::json_util::json_response(codec::to_value(&response)))
 }
 
 fn valid_until_ts() -> MilliSecondsSinceUnixEpoch {
