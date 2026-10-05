@@ -55,7 +55,7 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 		conduwuit::warn!("MSC4499 (Observation Mode): {msg} — allowing payload");
 	}
 
-	let value: serde_json::Value = match serde_json::from_str(raw) {
+	let value: slipstream::json::Value = match slipstream::codec::from_str(raw) {
 		| Ok(val) => val,
 		| Err(e) =>
 			if strict {

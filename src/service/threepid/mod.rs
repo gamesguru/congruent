@@ -5,7 +5,7 @@ use database::{Deserialized, Map};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use lettre::{Address, message::Mailbox};
 use nonzero_ext::nonzero;
-use ruma::{
+use slipstream::{
 	ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId, api::client::error::ErrorKind,
 };
 

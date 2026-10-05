@@ -9,8 +9,9 @@ use conduwuit::{
 };
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
-use ruma::{
-	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
+use slipstream::{
+	OwnedRoomAliasId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId,
+	RoomOrAliasId, UserId,
 	events::{
 		StateEventType,
 		room::{
@@ -75,8 +76,8 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can set this alias")));
 		}
@@ -108,8 +109,8 @@ impl Service {
 		alias: &RoomAliasId,
 		user_id: &UserId,
 	) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can remove this alias")));
 		}
@@ -150,7 +151,7 @@ impl Service {
 
 		if room_version.explicitly_privilege_room_creators {
 			let create_content: RoomCreateEventContent =
-				serde_json::from_str(create_event.content().get())
+				slipstream::codec::from_str(create_event.content().get())
 					.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
 			let user_owned = user_id.to_owned();
 			if create_event.sender() == user_id
@@ -217,18 +218,17 @@ impl Service {
 		servers: Option<Vec<OwnedServerName>>,
 	) -> Result<(OwnedRoomId, Vec<OwnedServerName>)> {
 		if room.is_room_id() {
-			let room_id: &RoomId = room.try_into().expect("valid RoomId");
+			let room_id = OwnedRoomId::parse(room.as_str()).expect("valid RoomId");
 			let mut s = servers.unwrap_or_default();
 			if let Some(server_name) = room_id.server_name() {
-				let owned_server_name = server_name.to_owned();
-				if !s.contains(&owned_server_name) {
-					s.push(owned_server_name);
+				if !s.contains(&server_name) {
+					s.push(server_name);
 				}
 			}
-			Ok((room_id.to_owned(), s))
+			Ok((room_id, s))
 		} else {
-			let alias: &RoomAliasId = room.try_into().expect("valid RoomAliasId");
-			self.resolve_alias(alias).await
+			let alias = OwnedRoomAliasId::parse(room.as_str()).expect("valid RoomAliasId");
+			self.resolve_alias(&alias).await
 		}
 	}
 
@@ -242,7 +242,7 @@ impl Service {
 		let server_is_ours = self
 			.services
 			.globals
-			.server_is_ours(room_alias.server_name());
+			.server_is_ours(&room_alias.server_name());
 
 		if !server_is_ours {
 			// TODO: The spec advises servers may cache remote room aliases temporarily.
@@ -260,7 +260,6 @@ impl Service {
 				.services
 				.state_cache
 				.room_servers(&room_id)
-				.map(ToOwned::to_owned)
 				.collect()
 				.await;
 			return Ok((room_id, servers));
@@ -271,29 +270,33 @@ impl Service {
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn resolve_local_alias(&self, alias: &RoomAliasId) -> Result<OwnedRoomId> {
-		self.db.alias_roomid.get(alias.alias()).await.deserialized()
+		self.db
+			.alias_roomid
+			.get(alias.as_str())
+			.await
+			.deserialized()
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn local_aliases_for_room<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-	) -> impl Stream<Item = &'a RoomAliasId> + Send + 'a {
+	) -> impl Stream<Item = OwnedRoomAliasId> + Send + 'a {
 		let prefix = (room_id, Interfix);
 		self.db
 			.aliasid_alias
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.map(|(_, alias): (Ignore, &RoomAliasId)| alias)
+			.map(|(_, alias): (Ignore, OwnedRoomAliasId)| alias)
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn all_local_aliases(&self) -> impl Stream<Item = (&RoomId, &str)> + Send + '_ {
+	pub fn all_local_aliases(&self) -> impl Stream<Item = (OwnedRoomId, String)> + Send + '_ {
 		self.db
 			.alias_roomid
 			.stream()
 			.ignore_err()
-			.map(|(alias_localpart, room_id): (&str, &RoomId)| (room_id, alias_localpart))
+			.map(|(alias_localpart, room_id): (String, OwnedRoomId)| (room_id, alias_localpart))
 	}
 
 	async fn user_can_remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<bool> {
@@ -344,7 +347,7 @@ impl Service {
 		&self,
 		room_alias: &RoomAliasId,
 	) -> Result<Option<OwnedRoomId>> {
-		use ruma::api::appservice::query::query_room_alias;
+		use slipstream::api::appservice::query::query_room_alias;
 
 		for appservice in self.services.appservice.read().await.values() {
 			if appservice.aliases.is_match(room_alias.as_str())
@@ -374,11 +377,8 @@ impl Service {
 		room_alias: &RoomAliasId,
 		appservice_info: &Option<RegistrationInfo>,
 	) -> Result<()> {
-		if !self
-			.services
-			.globals
-			.server_is_ours(room_alias.server_name())
-		{
+		let server_name = room_alias.server_name();
+		if !self.services.globals.server_is_ours(&server_name) {
 			return Err!(Request(InvalidParam("Alias is from another server.")));
 		}
 

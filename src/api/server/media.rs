@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, utils::content_disposition::make_content_disposition};
 use conduwuit_service::media::{Dim, FileMeta};
-use ruma::{
+use slipstream::{
 	Mxc,
 	api::federation::authenticated_media::{
 		Content, ContentMetadata, FileOrLocation, get_content, get_content_thumbnail,

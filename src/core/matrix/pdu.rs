@@ -10,12 +10,16 @@ mod unsigned;
 
 use std::cmp::Ordering;
 
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
-	OwnedServerName, OwnedUserId, RoomId, UInt, UserId, events::TimelineEventType,
+	OwnedServerName, OwnedUserId, RoomId, UInt, UserId,
+	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
+	events::TimelineEventType,
+	json::{Object as JsonObject, Value as JsonValue},
 };
-use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue as RawJsonValue;
+
+/// Opaque JSON document kept as text; parse with `.json()` when needed.
+pub type RawJson = slipstream::serde::Raw<JsonValue>;
 
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,
@@ -26,29 +30,22 @@ pub use self::{
 	topo::TopoToken,
 };
 use super::{Event, StateKey};
-use crate::Result;
+use crate::{Result, utils::OwnedEventType};
 
 /// Persistent Data Unit (Event)
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Debug)]
 pub struct Pdu {
 	pub event_id: OwnedEventId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub room_id: Option<OwnedRoomId>,
-
 	pub sender: OwnedUserId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub origin: Option<OwnedServerName>,
 
 	pub origin_server_ts: UInt,
 
-	#[serde(rename = "type")]
 	pub kind: TimelineEventType,
 
-	pub content: Box<RawJsonValue>,
+	pub content: RawJson,
 
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<StateKey>,
 
 	pub prev_events: Vec<OwnedEventId>,
@@ -56,31 +53,69 @@ pub struct Pdu {
 	pub depth: UInt,
 
 	pub auth_events: Vec<OwnedEventId>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub redacts: Option<OwnedEventId>,
-
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub unsigned: Option<Box<RawJsonValue>>,
+	pub unsigned: Option<RawJson>,
 
 	pub hashes: EventHash,
 
 	// BTreeMap<Box<ServerName>, BTreeMap<ServerSigningKeyId, String>>
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub signatures: Option<Box<RawJsonValue>>,
+	pub signatures: Option<RawJson>,
 
 	/// Whether this event has been rejected (by auth check, soft-fail, or
 	/// admin action). Populated at fetch time from pdu_metadata DB;
 	/// not persisted in the event JSON itself.
-	#[serde(skip)]
 	pub rejected: bool,
 }
 
+impl Clone for Pdu {
+	fn clone(&self) -> Self {
+		Self {
+			event_id: self.event_id.clone(),
+			room_id: self.room_id.clone(),
+			sender: self.sender.clone(),
+			origin: self.origin.clone(),
+			origin_server_ts: self.origin_server_ts,
+			kind: self.kind.owned_event_type(),
+			content: crate::utils::clone_raw(&self.content),
+			state_key: self.state_key.clone(),
+			prev_events: self.prev_events.clone(),
+			depth: self.depth,
+			auth_events: self.auth_events.clone(),
+			redacts: self.redacts.clone(),
+			unsigned: self.unsigned.as_ref().map(crate::utils::clone_raw),
+			hashes: self.hashes.clone(),
+			signatures: self.signatures.as_ref().map(crate::utils::clone_raw),
+			rejected: self.rejected,
+		}
+	}
+}
+
 /// Content hashes of a PDU.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct EventHash {
 	/// The SHA-256 hash.
 	pub sha256: String,
+}
+
+impl CodecSerialize for EventHash {
+	fn to_json(&self) -> JsonValue {
+		let mut obj = JsonObject::new();
+		obj.insert("sha256".into(), JsonValue::String(self.sha256.clone()));
+		JsonValue::Object(obj)
+	}
+}
+
+impl CodecDeserialize for EventHash {
+	fn from_json(value: &JsonValue) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError::expected("EventHash object"))?;
+		let sha256 = obj
+			.get("sha256")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| slipstream::codec::DeError::expected("sha256"))?;
+		Ok(Self { sha256: sha256.to_owned() })
+	}
 }
 
 impl Pdu {
@@ -91,10 +126,10 @@ impl Pdu {
 	) -> Result<Self> {
 		json.insert(
 			"event_id".into(),
-			ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+			slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 		);
-		let mut pdu: Self = serde_json::from_value(serde_json::to_value(json)?)?;
-		pdu.event_id = event_id.to_owned();
+		let mut pdu: Self = slipstream::codec::from_str(&slipstream::codec::to_string(&json))?;
+		event_id.clone_into(&mut pdu.event_id);
 
 		if pdu.kind.to_string().chars().count() > 255 {
 			return Err(crate::err!(Request(InvalidParam("Event type is too long"))));
@@ -117,7 +152,7 @@ impl Pdu {
 						"Invalid event_id for room hash derivation"
 					)))
 				})?;
-				pdu.room_id = Some(constructed_room_id.into());
+				pdu.room_id = Some(constructed_room_id);
 			} else if let Some(room_id) = room_id {
 				pdu.room_id = Some(room_id.to_owned());
 			} else {
@@ -127,7 +162,7 @@ impl Pdu {
 
 		// Validate the PDU belongs to the expected room if one is specified
 		if let Some(expected_room) = room_id {
-			if pdu.room_id_or_hash().as_deref() != Some(expected_room) {
+			if pdu.room_id_or_hash().as_ref() != Some(expected_room) {
 				return Err(crate::err!(Request(InvalidParam(
 					"PDU {event_id} does not belong to room {expected_room}"
 				))));
@@ -162,7 +197,7 @@ impl rezzy::RawEvent for Pdu {
 	#[inline]
 	fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
 
-	/// `Pdu::content` (`Box<RawJsonValue>`) → raw JSON string
+	/// `Pdu::content` (`RawJson`) → raw JSON string
 	#[inline]
 	fn raw_content_json(&self) -> &str { self.content.get() }
 
@@ -176,11 +211,11 @@ impl rezzy::RawEvent for Pdu {
 
 	/// `Pdu::depth` (`UInt`) → `u64`
 	#[inline]
-	fn raw_depth(&self) -> u64 { self.depth.into() }
+	fn raw_depth(&self) -> u64 { self.depth }
 
 	/// `Pdu::origin_server_ts` (`UInt`) → milliseconds since epoch
 	#[inline]
-	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
+	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts }
 
 	/// `Pdu::rejected` is populated from metadata at fetch time.
 	#[inline]
@@ -208,7 +243,7 @@ impl rezzy::DagNode for Pdu {
 	fn event_id(&self) -> &OwnedEventId { &self.event_id }
 
 	#[inline]
-	fn depth(&self) -> u64 { self.depth.into() }
+	fn depth(&self) -> u64 { self.depth }
 
 	#[inline]
 	fn prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
@@ -228,11 +263,11 @@ macro_rules! impl_event_delegates {
 		+ Send
 		+ std::fmt::Debug
 		+ '_ {
-			self.as_pdu().auth_events.iter().map(AsRef::as_ref)
+			self.as_pdu().auth_events.iter()
 		}
 
 		#[inline]
-		fn content(&self) -> &RawJsonValue { &self.as_pdu().content }
+		fn content(&self) -> &RawJson { &self.as_pdu().content }
 
 		#[inline]
 		fn event_id(&self) -> &EventId { &self.as_pdu().event_id }
@@ -247,26 +282,26 @@ macro_rules! impl_event_delegates {
 
 		#[inline]
 		fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-			self.as_pdu().prev_events.iter().map(AsRef::as_ref)
+			self.as_pdu().prev_events.iter()
 		}
 
 		#[inline]
-		fn redacts(&self) -> Option<&EventId> { self.as_pdu().redacts.as_deref() }
+		fn redacts(&self) -> Option<&EventId> { self.as_pdu().redacts.as_ref() }
 
 		#[inline]
-		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_deref() }
+		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_ref() }
 
-		#[inline]
-		fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
-			if let Some(room_id) = &self.as_pdu().room_id {
-				return Some(room_id.clone());
-			}
-			if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
-				let constructed_hash = self.as_pdu().event_id.as_str().replace('$', "!");
-				return RoomId::parse(&constructed_hash).ok().map(ToOwned::to_owned);
-			}
-			None
+#[inline]
+	fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
+		if let Some(room_id) = &self.as_pdu().room_id {
+			return Some(room_id.clone());
 		}
+		if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
+			let constructed_hash = self.as_pdu().event_id.as_str().replace('$', "!");
+			return Some(OwnedRoomId::from(constructed_hash));
+		}
+		None
+	}
 
 		#[inline]
 		fn sender(&self) -> &UserId { &self.as_pdu().sender }
@@ -278,7 +313,7 @@ macro_rules! impl_event_delegates {
 		fn kind(&self) -> &TimelineEventType { &self.as_pdu().kind }
 
 		#[inline]
-		fn unsigned(&self) -> Option<&RawJsonValue> { self.as_pdu().unsigned.as_deref() }
+		fn unsigned(&self) -> Option<&RawJson> { self.as_pdu().unsigned.as_ref() }
 
 		#[inline]
 		fn rejected(&self) -> bool { self.as_pdu().rejected }
@@ -365,4 +400,153 @@ impl Ord for Pdu {
 /// Ordering determined by the Pdu's ID, not the memory representations.
 impl PartialOrd for Pdu {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl CodecSerialize for Pdu {
+	fn to_json(&self) -> JsonValue {
+		let mut obj = JsonObject::new();
+
+		obj.insert("event_id".into(), <OwnedEventId as CodecSerialize>::to_json(&self.event_id));
+		if let Some(room_id) = &self.room_id {
+			obj.insert("room_id".into(), <OwnedRoomId as CodecSerialize>::to_json(room_id));
+		}
+		obj.insert("sender".into(), <OwnedUserId as CodecSerialize>::to_json(&self.sender));
+		if let Some(origin) = &self.origin {
+			obj.insert("origin".into(), <OwnedServerName as CodecSerialize>::to_json(origin));
+		}
+		obj.insert(
+			"origin_server_ts".into(),
+			<u64 as CodecSerialize>::to_json(&self.origin_server_ts),
+		);
+		obj.insert("type".into(), <TimelineEventType as CodecSerialize>::to_json(&self.kind));
+		// content is stored as raw JSON bytes - we need to parse it
+		if let Ok(content_val) = slipstream::codec::from_str::<JsonValue>(self.content.get()) {
+			obj.insert("content".into(), content_val);
+		}
+		if let Some(state_key) = &self.state_key {
+			obj.insert("state_key".into(), JsonValue::String(state_key.as_str().to_owned()));
+		}
+		obj.insert(
+			"prev_events".into(),
+			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.prev_events),
+		);
+		obj.insert("depth".into(), <u64 as CodecSerialize>::to_json(&self.depth));
+		obj.insert(
+			"auth_events".into(),
+			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.auth_events),
+		);
+		if let Some(redacts) = &self.redacts {
+			obj.insert("redacts".into(), <OwnedEventId as CodecSerialize>::to_json(redacts));
+		}
+		if let Some(unsigned) = &self.unsigned {
+			if let Ok(unsigned_val) = slipstream::codec::from_str::<JsonValue>(unsigned.get()) {
+				obj.insert("unsigned".into(), unsigned_val);
+			}
+		}
+		obj.insert("hashes".into(), <EventHash as CodecSerialize>::to_json(&self.hashes));
+		if let Some(signatures) = &self.signatures {
+			if let Ok(sig_val) = slipstream::codec::from_str::<JsonValue>(signatures.get()) {
+				obj.insert("signatures".into(), sig_val);
+			}
+		}
+		// rejected is not serialized as it's runtime-only
+
+		JsonValue::Object(obj)
+	}
+}
+
+/// Largest value of the old serde-era `UInt` (2^53 - 1, JS-safe integer).
+const UINT_MAX: u64 = 9_007_199_254_740_991;
+
+/// Field lookup treating an explicit `null` as absent, as the previous serde
+/// derive did for `Option` fields.
+fn present<'a>(obj: &'a JsonObject, key: &str) -> Option<&'a JsonValue> {
+	obj.get(key)
+		.filter(|value| !matches!(value, JsonValue::Null))
+}
+
+/// Required `UInt` field, limited to the range the serde-era type accepted.
+fn uint(obj: &JsonObject, key: &'static str) -> Result<u64, slipstream::codec::DeError> {
+	present(obj, key)
+		.and_then(slipstream::json::Value::as_u64)
+		.filter(|value| *value <= UINT_MAX)
+		.ok_or_else(|| slipstream::codec::DeError::expected(key))
+}
+
+impl CodecDeserialize for Pdu {
+	fn from_json(value: &JsonValue) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError::expected("Pdu object"))?;
+
+		let event_id = <OwnedEventId as CodecDeserialize>::from_json(
+			obj.get("event_id")
+				.ok_or_else(|| slipstream::codec::DeError::expected("event_id"))?,
+		)?;
+		let room_id = present(obj, "room_id")
+			.map(<OwnedRoomId as CodecDeserialize>::from_json)
+			.transpose()?;
+		let sender = <OwnedUserId as CodecDeserialize>::from_json(
+			obj.get("sender")
+				.ok_or_else(|| slipstream::codec::DeError::expected("sender"))?,
+		)?;
+		let origin = present(obj, "origin")
+			.map(<OwnedServerName as CodecDeserialize>::from_json)
+			.transpose()?;
+		let origin_server_ts = uint(obj, "origin_server_ts")?;
+		let kind = <TimelineEventType as CodecDeserialize>::from_json(
+			obj.get("type")
+				.ok_or_else(|| slipstream::codec::DeError::expected("type"))?,
+		)?;
+		// `content` has no default: a missing (or null) content is an error.
+		let content_val = present(obj, "content")
+			.ok_or_else(|| slipstream::codec::DeError::expected("content"))?;
+		let content = RawJson::from_value(content_val);
+		// A present `state_key` must be a string; silently dropping a malformed
+		// one would turn a state event into a timeline event.
+		let state_key = present(obj, "state_key")
+			.map(|v| {
+				v.as_str()
+					.map(StateKey::from)
+					.ok_or_else(|| slipstream::codec::DeError::expected("state_key string"))
+			})
+			.transpose()?;
+		let prev_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
+			obj.get("prev_events")
+				.ok_or_else(|| slipstream::codec::DeError::expected("prev_events"))?,
+		)?;
+		let depth = uint(obj, "depth")?;
+		let auth_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
+			obj.get("auth_events")
+				.ok_or_else(|| slipstream::codec::DeError::expected("auth_events"))?,
+		)?;
+		let redacts = present(obj, "redacts")
+			.map(<OwnedEventId as CodecDeserialize>::from_json)
+			.transpose()?;
+		let unsigned = present(obj, "unsigned").map(RawJson::from_value);
+		let hashes = <EventHash as CodecDeserialize>::from_json(
+			obj.get("hashes")
+				.ok_or_else(|| slipstream::codec::DeError::expected("hashes"))?,
+		)?;
+		let signatures = present(obj, "signatures").map(RawJson::from_value);
+
+		Ok(Self {
+			event_id,
+			room_id,
+			sender,
+			origin,
+			origin_server_ts,
+			kind,
+			content,
+			state_key,
+			prev_events,
+			depth,
+			auth_events,
+			redacts,
+			unsigned,
+			hashes,
+			signatures,
+			rejected: false,
+		})
+	}
 }

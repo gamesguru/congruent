@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{Error, Result};
 use conduwuit_service::sending::EduBuf;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	api::{
 		client::{error::ErrorKind, to_device::send_event_to_device},
 		federation::{self, transactions::edu::DirectDeviceContent},
@@ -57,7 +57,7 @@ pub(crate) async fn send_event_to_device_route(
 
 				services
 					.sending
-					.send_reliable_edu_server(target_user_id.server_name(), buf)?;
+					.send_reliable_edu_server(&target_user_id.server_name(), buf)?;
 
 				continue;
 			}
@@ -91,7 +91,7 @@ pub(crate) async fn send_event_to_device_route(
 							services.users.add_to_device_event(
 								sender_user,
 								target_user_id,
-								target_device_id,
+								&target_device_id,
 								event_type,
 								event.clone(),
 							)

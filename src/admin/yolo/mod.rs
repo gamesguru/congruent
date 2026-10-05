@@ -14,7 +14,7 @@ mod timeline;
 
 use clap::{Args, Subcommand};
 use conduwuit::Result;
-use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId};
+use slipstream::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId};
 
 use crate::admin_command_dispatch;
 
@@ -350,7 +350,7 @@ pub enum YoloCommand {
 
 		/// Override the room version instead of guessing it if missing.
 		#[arg(long)]
-		room_version: Option<ruma::RoomVersionId>,
+		room_version: Option<slipstream::RoomVersionId>,
 
 		/// Additional servers to fan out to (rotates on dead-end/429)
 		#[arg(long = "also")]
@@ -485,7 +485,7 @@ pub enum YoloCommand {
 		force: bool,
 		/// Override the room version instead of guessing it if missing.
 		#[arg(long)]
-		room_version: Option<ruma::RoomVersionId>,
+		room_version: Option<slipstream::RoomVersionId>,
 	},
 
 	/// Make a raw federation API request to a remote server and print/save

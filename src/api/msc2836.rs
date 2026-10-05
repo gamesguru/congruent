@@ -12,12 +12,10 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use conduwuit::{Err, Event, PduEvent, Result, err};
 use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
-	api::federation::event::event_relationships as federation_event_relationships,
+	api::federation::event::event_relationships as federation_event_relationships, serde::Raw,
 };
-use serde::Deserialize;
-use serde_json::value::RawValue as RawJsonValue;
 
 pub(crate) enum Requester<'a> {
 	Client(&'a UserId),
@@ -73,25 +71,28 @@ impl Params {
 	}
 }
 
-#[derive(Deserialize)]
 struct RelationshipContent {
 	rel_type: String,
 	event_id: OwnedEventId,
 }
-
-#[derive(Deserialize)]
+slipstream::codec_struct!(RelationshipContent {
+	rel_type: String = ("rel_type"),
+	event_id: OwnedEventId = ("event_id"),
+});
 struct ExtractRelationship {
-	#[serde(rename = "m.relationship")]
 	relationship: Option<RelationshipContent>,
 }
-
-#[derive(Deserialize, Default)]
+slipstream::codec_struct!(ExtractRelationship {
+	relationship: Option<RelationshipContent> = ("m.relationship", omit),
+});
 struct ExtractChildrenUnsigned {
-	#[serde(default)]
 	children: BTreeMap<String, u64>,
-	#[serde(default)]
 	children_hash: Option<String>,
 }
+slipstream::codec_struct!(ExtractChildrenUnsigned {
+	children: BTreeMap<String, u64> = ("children", omit),
+	children_hash: Option<String> = ("children_hash", omit),
+});
 
 fn parent_of(pdu: &PduEvent) -> Option<(OwnedEventId, String)> {
 	pdu.get_content::<ExtractRelationship>()
@@ -101,11 +102,10 @@ fn parent_of(pdu: &PduEvent) -> Option<(OwnedEventId, String)> {
 }
 
 fn reported_children(
-	value: &ruma::CanonicalJsonObject,
+	value: &slipstream::CanonicalJsonObject,
 ) -> Option<(BTreeMap<String, u64>, String)> {
 	let unsigned = value.get("unsigned")?;
-	let unsigned = serde_json::to_value(unsigned).ok()?;
-	let unsigned = serde_json::from_value::<ExtractChildrenUnsigned>(unsigned).ok()?;
+	let unsigned = slipstream::codec::from_value::<ExtractChildrenUnsigned>(unsigned).ok()?;
 	Some((unsigned.children, unsigned.children_hash?))
 }
 
@@ -113,7 +113,7 @@ async fn can_see(
 	services: &Services,
 	requester: &Requester<'_>,
 	room_id: &RoomId,
-	event_id: &ruma::EventId,
+	event_id: &slipstream::EventId,
 ) -> bool {
 	match requester {
 		| Requester::Client(user_id) =>
@@ -135,7 +135,10 @@ async fn can_see(
 	}
 }
 
-async fn pick_server(services: &Services, room_id: &RoomId) -> Option<ruma::OwnedServerName> {
+async fn pick_server(
+	services: &Services,
+	room_id: &RoomId,
+) -> Option<slipstream::OwnedServerName> {
 	let mut servers = std::pin::pin!(
 		services
 			.rooms
@@ -143,7 +146,7 @@ async fn pick_server(services: &Services, room_id: &RoomId) -> Option<ruma::Owne
 			.room_servers(room_id)
 			.filter(|s| { futures::future::ready(!services.globals.server_is_ours(s)) })
 	);
-	servers.next().await.map(ToOwned::to_owned)
+	servers.next().await
 }
 
 /// Persists events fetched via a federated `/event_relationships` response
@@ -156,10 +159,13 @@ async fn persist_federation_events(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	raws: Vec<Box<RawJsonValue>>,
+	raws: Vec<Raw<slipstream::json::Value>>,
 ) -> Vec<PduEvent> {
-	type PendingEvent =
-		(OwnedEventId, ruma::CanonicalJsonObject, Option<(BTreeMap<String, u64>, String)>);
+	type PendingEvent = (
+		OwnedEventId,
+		slipstream::CanonicalJsonObject,
+		Option<(BTreeMap<String, u64>, String)>,
+	);
 
 	let Ok(room_version) = services.rooms.state.get_room_version(room_id).await else {
 		return Vec::new();
@@ -167,7 +173,9 @@ async fn persist_federation_events(
 
 	let mut pending: Vec<PendingEvent> = Vec::new();
 	for raw in &raws {
-		let Ok(mut value) = serde_json::from_str::<ruma::CanonicalJsonObject>(raw.get()) else {
+		let Ok(mut value) =
+			slipstream::codec::from_str::<slipstream::CanonicalJsonObject>(raw.get())
+		else {
 			continue;
 		};
 		// Room versions 3+ derive event IDs from the reference hash and do
@@ -238,7 +246,7 @@ async fn persist_federation_events(
 /// Fetches `event_id` (and whatever else the remote server chooses to
 /// include, e.g. its ancestor chain) via a minimal federated
 /// `/event_relationships` request, persisting anything returned.
-async fn fetch_missing(services: &Services, room_id: &RoomId, event_id: &ruma::EventId) {
+async fn fetch_missing(services: &Services, room_id: &RoomId, event_id: &slipstream::EventId) {
 	let Some(dest) = pick_server(services, room_id).await else {
 		return;
 	};
@@ -312,7 +320,7 @@ async fn walk_down(
 	services: &Services,
 	requester: &Requester<'_>,
 	room_id: &RoomId,
-	anchor_id: &ruma::EventId,
+	anchor_id: &slipstream::EventId,
 	max_depth: i64,
 	max_breadth: i64,
 	depth_first: bool,
@@ -568,7 +576,7 @@ pub(crate) async fn resolve(
 pub(crate) async fn to_raw_json_with_children(
 	services: &Services,
 	pdu: &PduEvent,
-) -> Box<RawJsonValue> {
+) -> Raw<slipstream::json::Value> {
 	let (counts, hash) = services
 		.rooms
 		.pdu_metadata
@@ -578,21 +586,18 @@ pub(crate) async fn to_raw_json_with_children(
 	let mut value = pdu.to_canonical_object();
 	if !counts.is_empty() {
 		let unsigned = value.entry("unsigned".to_owned()).or_insert_with(|| {
-			ruma::CanonicalJsonValue::Object(ruma::CanonicalJsonObject::new())
+			slipstream::CanonicalJsonValue::Object(slipstream::CanonicalJsonObject::new())
 		});
-		if let ruma::CanonicalJsonValue::Object(unsigned) = unsigned {
-			if let Some(counts_value) = serde_json::to_value(&counts)
-				.ok()
-				.and_then(|v| ruma::CanonicalJsonValue::try_from(v).ok())
-			{
+		if let slipstream::CanonicalJsonValue::Object(unsigned) = unsigned {
+			if let Some(counts_value) = Some(slipstream::codec::to_value(&counts)) {
 				unsigned.insert("children".to_owned(), counts_value);
-				unsigned
-					.insert("children_hash".to_owned(), ruma::CanonicalJsonValue::String(hash));
+				unsigned.insert(
+					"children_hash".to_owned(),
+					slipstream::CanonicalJsonValue::String(hash),
+				);
 			}
 		}
 	}
 
-	serde_json::value::to_raw_value(&value).unwrap_or_else(|_| {
-		serde_json::value::RawValue::from_string("{}".to_owned()).expect("static JSON is valid")
-	})
+	Raw::from_value(&value)
 }

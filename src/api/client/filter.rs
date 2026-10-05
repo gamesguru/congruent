@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Result, err};
-use ruma::api::client::filter::{create_filter, get_filter};
+use slipstream::api::client::filter::{create_filter, get_filter};
 
 use crate::Ruma;
 

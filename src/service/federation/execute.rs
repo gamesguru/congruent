@@ -8,8 +8,8 @@ use conduwuit::{
 use http::{HeaderValue, header::AUTHORIZATION};
 use ipaddress::IPAddress;
 use reqwest::{Client, Method, Request, Response, Url};
-use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, ServerName, ServerSigningKeyId,
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
 	api::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::error::Error as RumaError,
@@ -59,6 +59,7 @@ pub async fn execute_on<T>(
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
+	T::EndpointError: Debug,
 {
 	if !self.services.server.config.allow_federation {
 		return Err!(debug!("Federation is disabled."));
@@ -187,7 +188,7 @@ async fn into_http_response(
 	mem::swap(response.headers_mut(), headers);
 
 	// Some servers omit Content-Type (e.g. broken media endpoints). Default to
-	// application/octet-stream so ruma's response deserialization doesn't fail.
+	// application/octet-stream so slipstream's response deserialization doesn't fail.
 	if !headers.contains_key(http::header::CONTENT_TYPE) {
 		headers.insert(
 			http::header::CONTENT_TYPE,
@@ -262,8 +263,10 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		.expect("http::Request missing path_and_query");
 
 	let mut req: Object = if !body.is_empty() {
-		let content: CanonicalJsonValue =
-			serde_json::from_slice(body).expect("failed to serialize body");
+		let content: CanonicalJsonValue = slipstream::codec::from_str(
+			std::str::from_utf8(body).expect("request body is not valid UTF-8"),
+		)
+		.expect("failed to serialize body");
 
 		let authorization: [Member; 5] = [
 			("content".into(), content),
@@ -295,12 +298,12 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		.and_then(|object| object[origin.as_str()].as_object())
 		.expect("origin signatures object");
 
-	let key: &ServerSigningKeyId = signatures
+	let key: OwnedServerSigningKeyId = signatures
 		.keys()
 		.next()
-		.map(|k| k.as_str().try_into())
-		.expect("at least one signature from this origin")
-		.expect("keyid is json string");
+		.map(|k| OwnedServerSigningKeyId::from(k.as_str()))
+		.expect("at least one signature from this origin");
+	let key = &key;
 
 	let sig: Base64 = signatures
 		.values()

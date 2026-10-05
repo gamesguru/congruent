@@ -6,7 +6,9 @@ use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
 use data::Data;
 use regex::RegexSet;
-use ruma::{OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId};
+use slipstream::{
+	OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId,
+};
 
 use crate::service;
 
@@ -65,8 +67,7 @@ impl crate::Service for Service {
 			db,
 			server: args.server.clone(),
 			bad_event_ratelimiter: Arc::new(SyncRwLock::new(HashMap::new())),
-			admin_alias: OwnedRoomAliasId::try_from(format!("#admins:{}", args.server.name))
-				.expect("#admins:server_name is valid alias name"),
+			admin_alias: OwnedRoomAliasId::from(format!("#admins:{}", args.server.name)),
 			server_user: UserId::parse_with_server_name(
 				String::from("conduit"),
 				&args.server.name,
@@ -81,7 +82,7 @@ impl crate::Service for Service {
 		let (ber_count, ber_bytes) = self.bad_event_ratelimiter.read().iter().fold(
 			(0_usize, 0_usize),
 			|(mut count, mut bytes), (event_id, _)| {
-				bytes = bytes.saturating_add(event_id.capacity());
+				bytes = bytes.saturating_add(event_id.as_str().len());
 				bytes = bytes.saturating_add(size_of::<RateLimitState>());
 				count = count.saturating_add(1);
 				(count, bytes)
@@ -458,7 +459,7 @@ impl Service {
 	/// checks if `user_id` is local to us via server_name comparison
 	#[inline]
 	pub fn user_is_local(&self, user_id: &UserId) -> bool {
-		self.server_is_ours(user_id.server_name())
+		self.server_is_ours(&user_id.server_name())
 	}
 
 	#[inline]

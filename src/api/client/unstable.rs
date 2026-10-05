@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedRoomId,
 	api::{
 		client::{
@@ -50,7 +50,6 @@ pub(crate) async fn get_mutual_rooms_route(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, &body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -122,7 +121,7 @@ pub(crate) async fn set_profile_key_route(
 		let Some(avatar_url) = profile_key_value.as_str() else {
 			return Err!(Request(BadJson("avatar_url must be a string")));
 		};
-		let mxc = ruma::OwnedMxcUri::from(avatar_url);
+		let mxc = slipstream::OwnedMxcUri::from(avatar_url);
 
 		let all_joined_rooms: Vec<OwnedRoomId> = services
 			.rooms
@@ -225,7 +224,7 @@ pub(crate) async fn get_profile_key_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_profile_key::unstable::Request>,
 ) -> Result<get_profile_key::unstable::Response> {
-	let mut profile_key_value: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+	let mut profile_key_value: BTreeMap<String, slipstream::json::Value> = BTreeMap::new();
 
 	if !services.globals.user_is_local(&body.user_id) {
 		// Create and update our local copy of the user
@@ -311,7 +310,8 @@ use std::{
 
 use tokio::sync::RwLock;
 
-type DagCacheMap = std::collections::HashMap<OwnedRoomId, (Instant, Vec<serde_json::Value>)>;
+type DagCacheMap =
+	std::collections::HashMap<OwnedRoomId, (Instant, Vec<slipstream::json::Value>)>;
 
 static DAG_CACHE: LazyLock<RwLock<DagCacheMap>> =
 	LazyLock::new(|| RwLock::new(DagCacheMap::new()));
@@ -331,13 +331,13 @@ pub(crate) async fn get_room_dag_route(
 ) -> Result<impl axum::response::IntoResponse> {
 	use conduwuit::{Err, err};
 	use futures::StreamExt;
-	use ruma::OwnedRoomId;
+	use slipstream::OwnedRoomId;
 
-	let room_id = OwnedRoomId::try_from(room_id_str)
+	let room_id = OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
-		== ruma::events::room::join_rules::JoinRule::Public;
+		== slipstream::events::room::join_rules::JoinRule::Public;
 
 	if !is_public {
 		// Extract token for private rooms
@@ -352,7 +352,7 @@ pub(crate) async fn get_room_dag_route(
 		// Validate user
 		let (user_id, _) = services.users.find_from_token(&token).await.map_err(|_| {
 			conduwuit::Error::Request(
-				ruma::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
+				slipstream::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
 				"Invalid access token.".into(),
 				http::StatusCode::UNAUTHORIZED,
 			)
@@ -387,7 +387,7 @@ pub(crate) async fn get_room_dag_route(
 			break;
 		}
 
-		let mut obj: serde_json::Map<String, serde_json::Value> =
+		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
 			serde_json::from_value(serde_json::to_value(&pdu)?)?;
 
 		if let Ok(root_handle) = services
@@ -403,13 +403,16 @@ pub(crate) async fn get_room_dag_route(
 					.try_into()
 					.expect("structural hash is at least 8 bytes"),
 			);
-			obj.insert("__shortstatehash".to_owned(), serde_json::Value::from(fingerprint));
+			obj.insert("__shortstatehash".to_owned(), slipstream::json::Value::from(fingerprint));
 		}
 
 		// Add event_id in case PduEvent serialization omits it (V3+ rooms)
-		obj.insert("event_id".to_owned(), serde_json::Value::String(pdu.event_id.to_string()));
+		obj.insert(
+			"event_id".to_owned(),
+			slipstream::json::Value::String(pdu.event_id.to_string()),
+		);
 
-		events.push(serde_json::Value::Object(obj));
+		events.push(slipstream::json::Value::Object(obj));
 		count = count.saturating_add(1);
 	}
 

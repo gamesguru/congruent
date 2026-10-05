@@ -1,26 +1,75 @@
 use std::collections::BTreeMap;
 
-use ruma::{
+use serde::{Deserialize, Deserializer, de::Error as DeError};
+use serde_json::{Error, from_str as from_json_str};
+use slipstream::{
 	Int, OwnedUserId, UserId,
 	events::{TimelineEventType, room::power_levels::RoomPowerLevelsEventContent},
 	power_levels::{NotificationPowerLevels, default_power_level},
-	serde::{
-		deserialize_v1_powerlevel, vec_deserialize_int_powerlevel_values,
-		vec_deserialize_v1_powerlevel_values,
-	},
 };
-use serde::Deserialize;
-use serde_json::{Error, from_str as from_json_str};
 
 use super::{Result, RoomVersion};
 use crate::error;
+
+fn deserialize_v1_powerlevel_serde<'de, D>(deserializer: D) -> Result<Int, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	value
+		.as_i64()
+		.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+		.ok_or_else(|| D::Error::custom("expected power level"))
+}
+
+fn vec_deserialize_v1_powerlevel_values_serde<'de, D>(
+	deserializer: D,
+) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	let object = value
+		.as_object()
+		.ok_or_else(|| D::Error::custom("expected power-level object"))?;
+	object
+		.iter()
+		.map(|(user, value)| {
+			let user = OwnedUserId::from(user.as_str());
+			let level = value
+				.as_i64()
+				.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+				.ok_or_else(|| D::Error::custom("expected power level"))?;
+			Ok((user, level))
+		})
+		.collect()
+}
+
+fn vec_deserialize_int_powerlevel_values_serde<'de, D>(
+	deserializer: D,
+) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	vec_deserialize_v1_powerlevel_values_serde(deserializer)
+}
+
+fn deserialize_codec_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+where
+	D: Deserializer<'de>,
+	K: slipstream::codec::Deserialize + Ord,
+	V: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(D::Error::custom)
+}
 
 #[derive(Deserialize)]
 struct IntRoomPowerLevelsEventContent {
 	#[serde(default = "default_power_level")]
 	ban: Int,
 
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_codec_map")]
 	events: BTreeMap<TimelineEventType, Int>,
 
 	#[serde(default)]
@@ -38,7 +87,7 @@ struct IntRoomPowerLevelsEventContent {
 	#[serde(default = "default_power_level")]
 	state_default: Int,
 
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_codec_map")]
 	users: BTreeMap<OwnedUserId, Int>,
 
 	#[serde(default)]
@@ -121,7 +170,7 @@ fn deserialize_integer_power_levels(content: &str) -> Option<RoomPowerLevelsEven
 }
 
 fn deserialize_legacy_power_levels(content: &str) -> Option<RoomPowerLevelsEventContent> {
-	match from_json_str(content) {
+	match slipstream::codec::from_str(content) {
 		| Ok(content) => Some(content),
 		| Err(_) => {
 			error!(
@@ -134,10 +183,10 @@ fn deserialize_legacy_power_levels(content: &str) -> Option<RoomPowerLevelsEvent
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_v1_powerlevel_values")]
+	#[serde(default, deserialize_with = "vec_deserialize_v1_powerlevel_values_serde")]
 	pub(crate) users: Vec<(OwnedUserId, Int)>,
 
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) users_default: Int,
 }
 
@@ -157,7 +206,7 @@ impl PowerLevelsContentFields {
 
 #[derive(Deserialize)]
 struct IntPowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_int_powerlevel_values")]
+	#[serde(default, deserialize_with = "vec_deserialize_int_powerlevel_values_serde")]
 	users: Vec<(OwnedUserId, Int)>,
 
 	#[serde(default)]
@@ -197,7 +246,7 @@ fn deserialize_legacy_power_levels_content_fields(
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentInvite {
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) invite: Int,
 }
 
@@ -227,7 +276,10 @@ pub(crate) fn deserialize_power_levels_content_invite(
 
 #[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentRedact {
-	#[serde(default = "default_power_level", deserialize_with = "deserialize_v1_powerlevel")]
+	#[serde(
+		default = "default_power_level",
+		deserialize_with = "deserialize_v1_powerlevel_serde"
+	)]
 	pub(crate) redact: Int,
 }
 

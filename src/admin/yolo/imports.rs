@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result, err, info, warn};
 use conduwuit_service::rooms::event_handler::AuthRecoveryStage;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, OwnedEventId, OwnedRoomId, RoomVersionId, events::StateEventType,
 };
 
@@ -42,7 +42,7 @@ pub(super) async fn import_pdus(
 			let r_id = first_pdu
 				.get("room_id")
 				.and_then(|v| v.as_str())
-				.and_then(|s| ruma::RoomId::parse(s).ok());
+				.and_then(|s| slipstream::RoomId::parse(s).ok());
 			r_id.map(ToOwned::to_owned)
 				.or_else(|| {
 					let is_create =
@@ -120,15 +120,15 @@ pub(super) async fn import_pdus(
 
 				let is_outlier = value
 					.get("__outlier")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 				let is_soft_failed = value
 					.get("__soft_failed")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 				let is_rejected = value
 					.get("__rejected")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 
 				let (eid, value, pdu_event) =
@@ -170,7 +170,7 @@ pub(super) async fn import_pdus(
 		.map(
 			<[(
 				OwnedEventId,
-				std::collections::BTreeMap<String, ruma::CanonicalJsonValue>,
+				std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
 				conduwuit::Pdu,
 				bool,
 				bool,
@@ -211,7 +211,7 @@ pub(super) async fn import_pdus(
 						{
 							raw_val.remove("event_id");
 						}
-						let raw = match serde_json::value::RawValue::from_string(
+						let raw = match slipstream::serde::RawJsonValue::from_json_string(
 							serde_json::to_string(&raw_val)
 								.map_err(|e| e.to_string())
 								.unwrap_or_default(),
@@ -405,7 +405,7 @@ pub(super) async fn import_outliers(&self, jsonl: String) -> Result {
 
 		let event_id = pdu
 			.get("event_id")
-			.and_then(ruma::CanonicalJsonValue::as_str)
+			.and_then(slipstream::CanonicalJsonValue::as_str)
 			.and_then(|id| OwnedEventId::parse(id).ok())
 			.ok_or_else(|| err!("Missing or invalid event_id in PDU JSON"))?;
 

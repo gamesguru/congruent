@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use conduwuit::{implement, trace};
 use futures::{Future, FutureExt, StreamExt, stream::FuturesUnordered};
-use ruma::{DeviceId, UserId};
+use slipstream::{DeviceId, UserId};
 
 #[implement(super::Service)]
 pub async fn setup_watch<'a>(
@@ -41,7 +41,7 @@ pub async fn setup_watch<'a>(
 
 	// Collect joined rooms into a HashSet for O(1) lookups
 	let rooms_joined_stream = self.services.state_cache.rooms_joined(user_id);
-	let joined_rooms: HashSet<_> = rooms_joined_stream.map(ToOwned::to_owned).collect().await;
+	let joined_rooms: HashSet<_> = rooms_joined_stream.collect().await;
 
 	// Exactly ONE typing watcher for the entire sync loop
 	if !joined_rooms.is_empty() {

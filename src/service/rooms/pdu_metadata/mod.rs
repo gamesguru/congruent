@@ -5,8 +5,8 @@ use std::sync::Arc;
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use conduwuit::{Result, debug, matrix::PduCount, warn};
 use futures::{StreamExt, future::try_join};
-use ruma::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 use sha2::{Digest, Sha256};
+use slipstream::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
 
 use self::data::Data;
 use crate::{

@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use conduwuit::{Err, Result, debug_error, debug_warn, err, implement, trace};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, RoomVersionId, ServerName,
 	ServerSigningKeyId, api::federation::discovery::VerifyKey,
 };
@@ -14,7 +14,7 @@ pub async fn get_event_keys(
 	object: &CanonicalJsonObject,
 	version: &RoomVersionId,
 ) -> Result<PubKeyMap> {
-	use ruma::signatures::required_keys;
+	use slipstream::signatures::required_keys;
 
 	let required = match required_keys(object, version) {
 		| Ok(required) => required,
@@ -31,25 +31,17 @@ pub async fn get_event_keys(
 	// to prevent bypassing the expiry check via crafted events.
 	let origin_server_ts = object
 		.get("origin_server_ts")
-		.and_then(|v| match v {
-			| ruma::CanonicalJsonValue::Integer(ts) => {
-				let uint = ruma::UInt::new(u64::try_from(i128::from(*ts)).ok()?)?;
-				Some(MilliSecondsSinceUnixEpoch(uint))
-			},
-			| _ => None,
-		})
+		.and_then(slipstream::json::Value::as_i64)
+		.and_then(|ts| u64::try_from(ts).ok())
+		.map(MilliSecondsSinceUnixEpoch)
 		.ok_or_else(|| err!(BadServerResponse("Event missing or malformed origin_server_ts")))?;
 
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
 		let pubkeys = self
-			.get_pubkeys_for_event(
-				server.borrow(),
-				key_ids.iter().map(Borrow::borrow),
-				origin_server_ts,
-			)
+			.get_pubkeys_for_event(server, key_ids.iter().map(Borrow::borrow), origin_server_ts)
 			.await;
-		keys.insert(server.to_string(), pubkeys);
+		keys.insert(server.to_owned(), pubkeys);
 	}
 
 	Ok(keys)

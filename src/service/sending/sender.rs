@@ -10,6 +10,7 @@ use bytes::BufMut;
 use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
+	matrix::pdu::RawJson as RawJsonValue,
 	result::LogErr,
 	trace,
 	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
@@ -21,7 +22,7 @@ use futures::{
 	join, pin_mut,
 	stream::FuturesUnordered,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
 	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
 	api::{
@@ -43,7 +44,6 @@ use ruma::{
 	serde::Raw,
 	uint,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::QueueItem};
 use crate::rooms::state_accessor::{
@@ -58,27 +58,27 @@ enum TransactionStatus {
 	Cooldown(Instant),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Msc4500SendTransactionRequest {
 	inner: send_transaction_message::v1::Request,
 	state_hashes: Option<StateHashes>,
 }
 
-impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
+impl slipstream::api::OutgoingRequest for Msc4500SendTransactionRequest {
 	type EndpointError =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::EndpointError;
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::EndpointError;
 	type IncomingResponse =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::IncomingResponse;
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::IncomingResponse;
 
-	const METADATA: ruma::api::Metadata =
-		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::METADATA;
+	const METADATA: slipstream::api::Metadata =
+		<send_transaction_message::v1::Request as slipstream::api::OutgoingRequest>::METADATA;
 
 	fn try_into_http_request<T: Default + BufMut>(
 		self,
 		base_url: &str,
-		access_token: ruma::api::SendAccessToken<'_>,
-		considering_versions: &'_ [ruma::api::MatrixVersion],
-	) -> core::result::Result<http::Request<T>, ruma::api::error::IntoHttpError> {
+		access_token: slipstream::api::SendAccessToken<'_>,
+		considering_versions: &'_ [slipstream::api::MatrixVersion],
+	) -> core::result::Result<http::Request<T>, slipstream::api::error::IntoHttpError> {
 		let req = self.inner.try_into_http_request::<Vec<u8>>(
 			base_url,
 			access_token,
@@ -86,19 +86,21 @@ impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
 		)?;
 		let (mut parts, body) = req.into_parts();
 
-		let mut json: serde_json::Value =
-			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
+		let body_text = std::str::from_utf8(&body)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
+		let mut json = slipstream::json::Value::parse(body_text)
+			.map_err(|e| slipstream::api::error::IntoHttpError(e.to_string()))?;
 
 		if let Some(obj) = json.as_object_mut() {
 			if let Some(state_hashes) = self.state_hashes {
-				let state_hashes_val = serde_json::to_value(state_hashes)
-					.map_err(ruma::api::error::IntoHttpError::from)?;
-				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
+				obj.insert(
+					"tk.nutra.msc4500.state_hashes".to_owned(),
+					slipstream::codec::Serialize::to_json(&state_hashes),
+				);
 			}
 		}
 
-		let new_body_bytes =
-			serde_json::to_vec(&json).map_err(ruma::api::error::IntoHttpError::from)?;
+		let new_body_bytes = slipstream::codec::to_string(&json).into_bytes();
 
 		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
 			*cl = http::HeaderValue::from(new_body_bytes.len());
@@ -849,7 +851,7 @@ impl Service {
 			let keys_changed = self
 				.services
 				.users
-				.room_keys_changed(room_id, Some(since.0), None)
+				.room_keys_changed(&room_id, Some(since.0), None)
 				.ready_filter(|(user_id, _)| self.services.globals.user_is_local(user_id));
 
 			pin_mut!(keys_changed);
@@ -858,7 +860,7 @@ impl Service {
 				if count > since.1 {
 					break;
 				}
-				all_changes.entry(count).or_default().insert(user_id.into());
+				all_changes.entry(count).or_default().insert(user_id);
 			}
 		}
 
@@ -866,13 +868,8 @@ impl Service {
 		for users in all_changes.values() {
 			for user_id in users {
 				if !user_devices.contains_key(user_id) {
-					let devices: Vec<OwnedDeviceId> = self
-						.services
-						.users
-						.all_device_ids(user_id)
-						.map(ToOwned::to_owned)
-						.collect()
-						.await;
+					let devices: Vec<OwnedDeviceId> =
+						self.services.users.all_device_ids(user_id).collect().await;
 					user_devices.insert(user_id.clone(), devices);
 				}
 			}
@@ -901,7 +898,6 @@ impl Service {
 			.services
 			.state_cache
 			.server_rooms(server_name)
-			.map(ToOwned::to_owned)
 			.broad_filter_map(|room_id| {
 				let num = Arc::clone(&num);
 				async move {
@@ -924,8 +920,7 @@ impl Service {
 		let receipt_content = Edu::Receipt(ReceiptContent { receipts });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &receipt_content)
-			.expect("Failed to serialize Receipt EDU to JSON vec");
+		buf.extend_from_slice(slipstream::codec::to_string(&receipt_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -966,7 +961,7 @@ impl Service {
 			}
 			if self.services.globals.user_is_local(&user_id) {
 				let Ok(event) =
-					serde_json::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.json().get())
+					slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(read_receipt.get())
 				else {
 					continue;
 				};
@@ -979,12 +974,7 @@ impl Service {
 				let Ok(event_count) = self.services.timeline.get_pdu_count(event_id).await else {
 					continue;
 				};
-				collected.push((
-					user_id,
-					count,
-					read_receipt.json().get().to_owned(),
-					event_count,
-				));
+				collected.push((user_id, count, read_receipt.get().to_owned(), event_count));
 			}
 		}
 
@@ -1062,10 +1052,7 @@ impl Service {
 				presence: presence_event.content.presence,
 				currently_active: presence_event.content.currently_active.unwrap_or(false),
 				status_msg: presence_event.content.status_msg,
-				last_active_ago: presence_event
-					.content
-					.last_active_ago
-					.unwrap_or_else(|| uint!(0)),
+				last_active_ago: presence_event.content.last_active_ago.unwrap_or(uint!(0)),
 			};
 
 			presence_updates.push(update);
@@ -1101,8 +1088,7 @@ impl Service {
 		let presence_content = Edu::Presence(PresenceContent { push: presence_updates });
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &presence_content)
-			.expect("failed to serialize Presence EDU to JSON");
+		buf.extend_from_slice(slipstream::codec::to_string(&presence_content).as_bytes());
 
 		(Some(buf), since.1)
 	}
@@ -1168,7 +1154,7 @@ impl Service {
 				},
 				| SendingEvent::Edu(edu) =>
 					if appservice.receive_ephemeral {
-						if let Ok(edu) = serde_json::from_slice(edu) {
+						if let Ok(edu) = database::from_json_slice(edu) {
 							edu_jsons.push(edu);
 						}
 					},
@@ -1190,7 +1176,7 @@ impl Service {
 		match self
 			.send_appservice_request(
 				appservice,
-				ruma::api::appservice::event::push_events::v1::Request {
+				slipstream::api::appservice::event::push_events::v1::Request {
 					events: pdu_jsons,
 					txn_id: txn_id.into(),
 					ephemeral: edu_jsons,
@@ -1311,7 +1297,7 @@ impl Service {
 			let Some(event_id) = pdu
 				.get("event_id")
 				.and_then(|id| id.as_str())
-				.and_then(|id| OwnedEventId::try_from(id).ok())
+				.and_then(|id| OwnedEventId::parse(id).ok())
 			else {
 				continue;
 			};
@@ -1326,7 +1312,7 @@ impl Service {
 		)
 		.await;
 
-		let mut outbound_pdus: Vec<Box<RawJsonValue>> = Vec::with_capacity(source_pdus.len());
+		let mut outbound_pdus: Vec<RawJsonValue> = Vec::with_capacity(source_pdus.len());
 		for (_, pdu) in source_pdus {
 			outbound_pdus.push(self.convert_to_outgoing_federation_event(pdu).await);
 		}
@@ -1338,7 +1324,7 @@ impl Service {
 				| _ => None,
 			})
 			.map(|edu_buf| {
-				let res = serde_json::from_slice(edu_buf);
+				let res = database::from_json_slice(edu_buf);
 				if let Err(ref e) = res {
 					tracing::error!(
 						"Failed to deserialize EDU: {} - JSON: {}",
@@ -1462,11 +1448,11 @@ impl Service {
 		}
 	}
 
-	/// This does not return a full `Pdu` it is only to satisfy ruma's types.
+	/// This does not return a full `Pdu` it is only to satisfy slipstream's types.
 	pub async fn convert_to_outgoing_federation_event(
 		&self,
 		mut pdu_json: CanonicalJsonObject,
-	) -> Box<RawJsonValue> {
+	) -> Raw<slipstream::json::Value> {
 		if let Some(unsigned) = pdu_json
 			.get_mut("unsigned")
 			.and_then(|val| val.as_object_mut())
@@ -1479,7 +1465,7 @@ impl Service {
 			.get("room_id")
 			.and_then(|val| RoomId::parse(val.as_str()?).ok())
 		{
-			match self.services.state.get_room_version(room_id).await {
+			match self.services.state.get_room_version(&room_id).await {
 				| Ok(room_version_id) => match room_version_id {
 					| RoomVersionId::V1 | RoomVersionId::V2 => {},
 					| _ => _ = pdu_json.remove("event_id"),
@@ -1493,11 +1479,11 @@ impl Service {
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
 		// serde_json::from_str::<Raw<_>>(
-		//     ruma::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
-		// valid serde_json::Value"), )
+		//     slipstream::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
+		// valid slipstream::json::Value"), )
 		// .expect("Raw::from_value always works")
 
-		to_raw_value(&pdu_json).expect("CanonicalJson is valid serde_json::Value")
+		Raw::from_value(&pdu_json)
 	}
 }
 
@@ -1533,15 +1519,14 @@ pub(crate) fn build_device_list_edus(
 						user_id: user_id.clone(),
 						device_id: device_id.clone(),
 						device_display_name: Some("Placeholder".to_owned()),
-						stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+						stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 						prev_id: Vec::new(),
 						deleted: None,
 						keys: None,
 					});
 
 					let mut buf = EduBuf::new();
-					serde_json::to_writer(&mut buf, &edu)
-						.expect("failed to serialize device list update to JSON");
+					buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 					events.push(buf);
 				}
@@ -1567,15 +1552,14 @@ pub(crate) fn build_device_list_edus(
 					user_id,
 					device_id: device_id!("placeholder").to_owned(),
 					device_display_name: Some("Placeholder".to_owned()),
-					stream_id: UInt::try_from(count).unwrap_or_else(|_| uint!(1)),
+					stream_id: UInt::try_from(count).unwrap_or(uint!(1)),
 					prev_id: Vec::new(),
 					deleted: None,
 					keys: None,
 				});
 
 				let mut buf = EduBuf::new();
-				serde_json::to_writer(&mut buf, &edu)
-					.expect("failed to serialize device list update to JSON");
+				buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 				events.push(buf);
 			}
@@ -1611,7 +1595,8 @@ pub(crate) fn build_receipt_map(
 			continue;
 		}
 
-		let Ok(event) = serde_json::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
+		let Ok(event) =
+			slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(&read_receipt_json)
 		else {
 			continue;
 		};
@@ -1635,7 +1620,7 @@ pub(crate) fn build_receipt_map(
 		};
 
 		let is_unthreaded =
-			matches!(receipt.thread, ruma::events::receipt::ReceiptThread::Unthreaded);
+			matches!(receipt.thread, slipstream::events::receipt::ReceiptThread::Unthreaded);
 		let receipt_data = ReceiptData {
 			data: receipt,
 			event_ids: vec![event_id.clone()],
@@ -1680,7 +1665,7 @@ mod tests {
 		sync::atomic::AtomicUsize,
 	};
 
-	use ruma::user_id;
+	use slipstream::user_id;
 
 	use super::*;
 
@@ -1775,7 +1760,7 @@ mod tests {
 	fn test_build_receipt_map_under_limit() {
 		let mut receipts = Vec::new();
 		let user_id = user_id!("@alice:example.com").to_owned();
-		let json = serde_json::json!({
+		let json = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1802,7 +1787,7 @@ mod tests {
 		let mut receipts = Vec::new();
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
-			let user_id = <OwnedUserId as TryFrom<&str>>::try_from(user_id_str.as_str()).unwrap();
+			let user_id = OwnedUserId::parse(user_id_str.as_str()).unwrap();
 			let json = serde_json::json!({
 				"type": "m.receipt",
 				"content": {
@@ -1833,7 +1818,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1849,7 +1834,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_threaded.to_string()));
 
 		// 2. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1871,7 +1856,10 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
 	}
 
@@ -1881,7 +1869,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// 1. Unthreaded receipt
-		let json_unthreaded = serde_json::json!({
+		let json_unthreaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1896,7 +1884,7 @@ mod tests {
 		receipts.push((user_id.clone(), 11, json_unthreaded.to_string()));
 
 		// 2. Threaded receipt
-		let json_threaded = serde_json::json!({
+		let json_threaded = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1919,7 +1907,10 @@ mod tests {
 		assert_eq!(num.load(Ordering::Relaxed), 1);
 
 		let data = &map.read[&user_id];
-		assert!(matches!(data.data.thread, ruma::events::receipt::ReceiptThread::Unthreaded));
+		assert!(matches!(
+			data.data.thread,
+			slipstream::events::receipt::ReceiptThread::Unthreaded
+		));
 		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
 	}
 
@@ -1929,7 +1920,7 @@ mod tests {
 		let user_id = user_id!("@alice:example.com").to_owned();
 
 		// An out-of-order receipt with a higher stream count comes first.
-		let json_late = serde_json::json!({
+		let json_late = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event1": {
@@ -1944,7 +1935,7 @@ mod tests {
 		receipts.push((user_id.clone(), 30, json_late.to_string()));
 
 		// The in-range receipt should still be considered even though it appears later.
-		let json_in_range = serde_json::json!({
+		let json_in_range = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
 				"$event2": {

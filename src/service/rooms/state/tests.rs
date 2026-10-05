@@ -9,11 +9,8 @@ use conduwuit_core::{
 	matrix::{Event, PduEvent},
 };
 use figment::providers::Format;
-use ruma::{
-	CanonicalJsonObject, EventId, RoomId,
-	events::{AnyStrippedStateEvent, StateEventType},
-	owned_event_id, owned_room_id,
-	serde::Raw,
+use slipstream::{
+	CanonicalJsonObject, EventId, RoomId, events::StateEventType, owned_event_id, owned_room_id,
 };
 
 use crate::Services;
@@ -77,25 +74,31 @@ fn create_dummy_pdu(
 	state_key: &str,
 ) -> PduEvent {
 	let mut json = CanonicalJsonObject::new();
-	json.insert("room_id".into(), ruma::CanonicalJsonValue::String(room_id.as_str().to_owned()));
+	json.insert(
+		"room_id".into(),
+		slipstream::CanonicalJsonValue::String(room_id.as_str().to_owned()),
+	);
 	json.insert(
 		"sender".into(),
-		ruma::CanonicalJsonValue::String("@alice:test.conduwuit.local".to_owned()),
+		slipstream::CanonicalJsonValue::String("@alice:test.conduwuit.local".to_owned()),
 	);
-	json.insert("type".into(), ruma::CanonicalJsonValue::String(event_type.to_owned()));
-	json.insert("state_key".into(), ruma::CanonicalJsonValue::String(state_key.to_owned()));
+	json.insert("type".into(), slipstream::CanonicalJsonValue::String(event_type.to_owned()));
+	json.insert("state_key".into(), slipstream::CanonicalJsonValue::String(state_key.to_owned()));
 	json.insert(
 		"content".into(),
-		ruma::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
+		slipstream::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
 	);
-	json.insert("origin_server_ts".into(), ruma::CanonicalJsonValue::Integer(123_456_789.into()));
-	json.insert("depth".into(), ruma::CanonicalJsonValue::Integer(1.into()));
-	json.insert("prev_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
-	json.insert("auth_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
+	json.insert(
+		"origin_server_ts".into(),
+		slipstream::CanonicalJsonValue::Number(123_456_789_u64.into()),
+	);
+	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
+	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
+	json.insert("auth_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
 
 	let mut hashes = CanonicalJsonObject::new();
-	hashes.insert("sha256".into(), ruma::CanonicalJsonValue::String("dummy".to_owned()));
-	json.insert("hashes".into(), ruma::CanonicalJsonValue::Object(hashes));
+	hashes.insert("sha256".into(), slipstream::CanonicalJsonValue::String("dummy".to_owned()));
+	json.insert("hashes".into(), slipstream::CanonicalJsonValue::Object(hashes));
 
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create pdu")
 }

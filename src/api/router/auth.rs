@@ -13,7 +13,11 @@ use futures::{
 	},
 	pin_mut,
 };
-use ruma::{
+use service::{
+	Services,
+	server_keys::{PubKeyMap, PubKeys},
+};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, UserId,
 	api::{
@@ -26,10 +30,7 @@ use ruma::{
 		},
 		federation::{authentication::XMatrix, openid::get_openid_userinfo},
 	},
-};
-use service::{
-	Services,
-	server_keys::{PubKeyMap, PubKeys},
+	endpoint::EndpointRequest,
 };
 use tracing::info;
 
@@ -56,9 +57,9 @@ pub(super) async fn auth(
 	json_body: Option<&CanonicalJsonValue>,
 	metadata: &Metadata,
 ) -> Result<Auth> {
-	let expected_login_metadata = &ruma::api::client::session::login::v3::Request::METADATA;
+	let expected_login_metadata = &slipstream::api::client::session::login::v3::Request::METADATA;
 	let expected_ping_metadata =
-		&ruma::api::client::appservice::request_ping::v1::Request::METADATA;
+		&slipstream::api::client::appservice::request_ping::v1::Request::METADATA;
 
 	let stack_var = 0_u8;
 	if request.parts.uri.path().contains("/login") {
@@ -122,7 +123,10 @@ pub(super) async fn auth(
 		}
 	}
 
-	let authentication = if request.parts.uri.path().contains("/login") {
+	let authentication = if matches!(
+		request.parts.uri.path(),
+		"/_matrix/client/r0/login" | "/_matrix/client/v3/login"
+	) {
 		AuthScheme::None
 	} else {
 		metadata.authentication
@@ -166,8 +170,8 @@ pub(super) async fn auth(
 				// Only /logout and /logout/all are allowed for locked users
 				if !matches!(
 					metadata,
-					&ruma::api::client::session::logout::v3::Request::METADATA
-						| &ruma::api::client::session::logout_all::v3::Request::METADATA
+					&slipstream::api::client::session::logout::v3::Request::METADATA
+						| &slipstream::api::client::session::logout_all::v3::Request::METADATA
 				) {
 					return Err(Error::BadRequest(
 						ErrorKind::UserLocked,
@@ -352,7 +356,7 @@ async fn auth_server(
 
 	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
 	let keys: PubKeyMap = [(origin.as_str().into(), keys)].into();
-	if let Err(e) = ruma::signatures::verify_json(&keys, authorization) {
+	if let Err(e) = slipstream::signatures::verify_json(&keys, authorization) {
 		debug_error!("Failed to verify federation request from {origin}: {e}");
 		if request.parts.uri.to_string().contains('@') {
 			warn!(
@@ -380,16 +384,16 @@ fn auth_server_checks(services: &Services, x_matrix: &XMatrix) -> Result<()> {
 			.moderation
 			.is_remote_server_forbidden(&x_matrix.origin),
 		&x_matrix.origin,
-		x_matrix.destination.as_deref(),
+		x_matrix.destination.as_ref(),
 	)
 }
 
 fn auth_server_checks_impl(
 	allow_federation: bool,
-	server_name: &ruma::ServerName,
+	server_name: &slipstream::ServerName,
 	is_forbidden: bool,
-	x_matrix_origin: &ruma::ServerName,
-	x_matrix_destination: Option<&ruma::ServerName>,
+	x_matrix_origin: &slipstream::ServerName,
+	x_matrix_destination: Option<&slipstream::ServerName>,
 ) -> Result<()> {
 	if !allow_federation {
 		return Err!(Config("allow_federation", "Federation is disabled."));
@@ -470,7 +474,7 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 
 #[cfg(test)]
 mod tests {
-	use ruma::server_name;
+	use slipstream::server_name;
 
 	use super::*;
 

@@ -13,7 +13,9 @@ use futures::{
 	FutureExt, StreamExt, TryFutureExt, TryStreamExt,
 	future::{OptionFuture, join, join3, try_join3},
 };
-use ruma::{OwnedEventId, UserId, api::client::context::get_context, events::StateEventType};
+use slipstream::{
+	OwnedEventId, UserId, api::client::context::get_context, events::StateEventType,
+};
 
 use crate::{
 	Ruma,

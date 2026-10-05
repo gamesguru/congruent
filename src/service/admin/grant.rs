@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use conduwuit::{
 	Err, Result, debug_info, debug_warn, error, implement, matrix::pdu::PduBuilder, warn,
 };
-use ruma::{
+use slipstream::{
 	RoomId, UserId,
 	events::{
 		RoomAccountDataEventType, StateEventType,
@@ -50,7 +50,7 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 		debug_info!("Inviting local user {user_id} to admin room {room_id}");
 		Box::pin(self.services.timeline.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(user_id),
+				user_id.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Invite),
 			),
 			server_user,
@@ -62,7 +62,7 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 		debug_info!("Force joining local user {user_id} to admin room {room_id}");
 		Box::pin(self.services.timeline.build_and_append_pdu(
 			PduBuilder::state(
-				String::from(user_id),
+				user_id.to_string(),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
 			user_id,
@@ -142,7 +142,7 @@ async fn set_room_tag(&self, room_id: &RoomId, user_id: &UserId, tag: &str) -> R
 			Some(room_id),
 			user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(event)?,
+			&slipstream::codec::to_value(&event),
 		)
 		.await
 }

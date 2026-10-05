@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader},
 };
 
-use ruma::{
+use slipstream::{
     RoomVersionId, StateEventType, EventId, OwnedEventId,
     events::StateEventType::RoomMember,
 };
@@ -25,7 +25,7 @@ async fn main() {
         let line = line.unwrap();
         let val: Value = serde_json::from_str(&line).unwrap();
 
-        let event_id: OwnedEventId = val["event_id"].as_str().unwrap().try_into().unwrap();
+        let event_id = OwnedEventId::parse(val["event_id"].as_str().unwrap()).unwrap();
 
         // Very basic parsing just to fetch it
         // To properly use conduwuit_core::matrix::state_res we need PduEvent

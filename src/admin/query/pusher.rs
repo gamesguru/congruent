@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{IterStream, stream::BroadbandExt},
 };
 use futures::StreamExt;
-use ruma::{OwnedDeviceId, OwnedUserId};
+use slipstream::{OwnedDeviceId, OwnedUserId};
 
 use crate::Context;
 

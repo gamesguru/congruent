@@ -20,8 +20,8 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Result, Server, debug, error, utils::response::LimitReadExt, warn};
 use database::{Deserialized, Map};
-use ruma::events::{Mentions, room::message::RoomMessageEventContent};
 use serde::Deserialize;
+use slipstream::events::{Mentions, room::message::RoomMessageEventContent};
 use tokio::{
 	sync::Notify,
 	time::{MissedTickBehavior, interval},

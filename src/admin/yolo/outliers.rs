@@ -5,7 +5,7 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 };
 use futures::{StreamExt, future::ready};
-use ruma::{OwnedEventId, OwnedRoomOrAliasId, OwnedUserId};
+use slipstream::{OwnedEventId, OwnedRoomOrAliasId, OwnedUserId};
 
 use crate::admin_command;
 

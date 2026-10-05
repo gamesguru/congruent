@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
-use ruma::{
+use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, events::room::member::MembershipState,
 	serde::JsonObject,
 };
@@ -38,7 +38,7 @@ pub(crate) async fn create_knock_event_v1_route(
 
 	super::utils::handle_and_send_incoming_pdu(
 		&services,
-		sender.server_name(),
+		&sender.server_name(),
 		&body.room_id,
 		&event_id,
 		value,

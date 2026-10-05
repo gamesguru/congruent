@@ -2,8 +2,8 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, info, utils::math::usize_from_f64};
 use futures::StreamExt;
-use ruma::OwnedEventId;
 use serde::Serialize;
+use slipstream::OwnedEventId;
 use xxhash_rust::xxh3;
 
 /// Default active window: the W most recent events by topological depth.
@@ -21,16 +21,17 @@ const BITS_PER_ELEMENT: f64 = 6.235;
 ///
 /// Returns a compact Bloom filter digest of the server's event graph for
 /// divergence detection (MSC0F01: Gossip-Based Federation Room Reconciliation).
-#[derive(Serialize)]
-pub(crate) struct RoomDigestResponse {
-	pub digest: String,
-	pub digest_type: String,
-	pub digest_bits: u32,
-	pub digest_window: u32,
-	pub event_count: u64,
-	pub extremity_event_ids: Vec<OwnedEventId>,
-	pub depth_range: (u64, u64),
-	pub origin_server_ts_range: (u64, u64),
+slipstream::codec_struct! {
+	RoomDigestResponse {
+		digest: String = ("digest"),
+		digest_type: String = ("digest_type"),
+		digest_bits: u32 = ("digest_bits"),
+		digest_window: u32 = ("digest_window"),
+		event_count: u64 = ("event_count"),
+		extremity_event_ids: Vec<OwnedEventId> = ("extremity_event_ids"),
+		depth_range: (u64, u64) = ("depth_range"),
+		origin_server_ts_range: (u64, u64) = ("origin_server_ts_range"),
+	}
 }
 
 /// Build an XXH3-128 double-hashed Bloom filter over a set of event IDs.
@@ -96,7 +97,7 @@ pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 ) -> Result<impl axum::response::IntoResponse> {
-	let room_id = ruma::OwnedRoomId::try_from(room_id_str)
+	let room_id = slipstream::OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
 	// Verify we participate in this room
@@ -195,7 +196,7 @@ pub(crate) async fn get_room_digest_route(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	use super::{build_xxh3_bloom, compute_etag};
 

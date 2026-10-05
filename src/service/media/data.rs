@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use conduwuit::{
 	Err, Result, debug, debug_info, err,
-	utils::{ReadyExt, str_from_bytes, stream::TryIgnore, string_from_bytes},
+	utils::{ReadyExt, stream::TryIgnore, string::str_from_bytes, string_from_bytes},
 };
 use database::{Database, Interfix, Map};
 use futures::StreamExt;
-use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
+use slipstream::{Mxc, OwnedMxcUri, OwnedUserId, UserId, http_headers::ContentDisposition};
 
 use super::{preview::UrlPreviewData, thumbnail::Dim};
 
@@ -148,8 +148,8 @@ impl Data {
 		self.mediaid_user
 			.stream()
 			.ignore_err()
-			.ready_filter_map(|(key, user): (&str, &UserId)| {
-				(user == user_id).then(|| key.into())
+			.ready_filter_map(|(key, user): (&str, OwnedUserId)| {
+				(user == *user_id).then(|| key.into())
 			})
 			.collect()
 			.await

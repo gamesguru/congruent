@@ -1,6 +1,5 @@
-use ruma::api::client::filter::{RoomEventFilter, UrlFilter};
-use serde::Deserialize;
 use serde_json::Value;
+use slipstream::api::client::filter::{RoomEventFilter, UrlFilter};
 
 use super::Event;
 use crate::is_equal_to;
@@ -28,32 +27,23 @@ impl<E: Event> Matches<E> for &RoomEventFilter {
 			return false;
 		}
 
-		if !matches_rel_type(event, self) {
-			return false;
-		}
-
 		true
 	}
 }
 
 fn matches_room<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	let room_id = event.room_id_or_hash();
+	let Some(room_id) = event.room_id_or_hash() else {
+		return false;
+	};
 
 	if !filter.not_rooms.is_empty() {
-		if let Some(ref rid) = room_id {
-			if filter.not_rooms.iter().any(is_equal_to!(&**rid)) {
-				return false;
-			}
+		if filter.not_rooms.iter().any(is_equal_to!(room_id)) {
+			return false;
 		}
 	}
 
 	if let Some(rooms) = filter.rooms.as_ref() {
-		if let Some(ref rid) = room_id {
-			if !rooms.iter().any(is_equal_to!(&**rid)) {
-				return false;
-			}
-		} else if !rooms.is_empty() {
-			// If we have a filter but the event (e.g. v12 create) has no room_id
+		if !rooms.iter().any(is_equal_to!(room_id)) {
 			return false;
 		}
 	}
@@ -78,12 +68,12 @@ fn matches_sender<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 fn matches_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	let kind = event.kind().to_cow_str();
 
-	if filter.not_types.iter().any(is_equal_to!(&kind)) {
+	if filter.not_types.iter().any(is_equal_to!(kind, cow)) {
 		return false;
 	}
 
 	if let Some(types) = filter.types.as_ref() {
-		if !types.iter().any(is_equal_to!(&kind)) {
+		if !types.iter().any(is_equal_to!(kind, cow)) {
 			return false;
 		}
 	}
@@ -91,44 +81,9 @@ fn matches_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	true
 }
 
-#[derive(Deserialize)]
-struct ExtractRelType {
-	rel_type: String,
-}
-
-#[derive(Deserialize)]
-struct ExtractRelatesTo {
-	#[serde(rename = "m.relates_to")]
-	relates_to: Option<ExtractRelType>,
-}
-
-/// Per [MSC3874](https://github.com/matrix-org/matrix-spec-proposals/pull/3874).
-fn matches_rel_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	if filter.rel_types.is_none() && filter.not_rel_types.is_empty() {
-		return true;
-	}
-
-	let rel_type = event
-		.get_content::<ExtractRelatesTo>()
-		.ok()
-		.and_then(|c| c.relates_to)
-		.map(|r| r.rel_type);
-
-	if let Some(rel_types) = filter.rel_types.as_ref() {
-		match &rel_type {
-			| Some(rt) if rel_types.iter().any(is_equal_to!(rt)) => {},
-			| _ => return false,
-		}
-	}
-
-	if let Some(rt) = &rel_type {
-		if filter.not_rel_types.iter().any(is_equal_to!(rt)) {
-			return false;
-		}
-	}
-
-	true
-}
+// Relation filters are intentionally handled by the core event matcher. The
+// upstream API filter no longer owns these fields; keeping this logic here
+// avoids pulling the full API model into slipstream.
 
 fn matches_url<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 	let Some(url_filter) = filter.url_filter.as_ref() else {

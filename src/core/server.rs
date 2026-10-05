@@ -6,7 +6,7 @@ use std::{
 	time::SystemTime,
 };
 
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 use tokio::{runtime, sync::broadcast};
 
 use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};

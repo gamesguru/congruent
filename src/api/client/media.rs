@@ -10,7 +10,7 @@ use conduwuit_service::{
 	Services,
 	media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta, MXC_LENGTH},
 };
-use ruma::{
+use slipstream::{
 	Mxc, UserId,
 	api::client::{
 		authenticated_media::{
@@ -176,7 +176,9 @@ pub(crate) async fn get_content_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {
@@ -235,7 +237,9 @@ pub(crate) async fn get_content_as_filename_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {

@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
 use futures::{StreamExt, TryStreamExt, future::join};
-use ruma::{
+use slipstream::{
 	OwnedEventId,
 	api::client::membership::{
 		get_member_events::{self, v3::MembershipEventFilter},
@@ -80,7 +80,7 @@ pub(crate) async fn get_member_events_route(
 
 		let chunk = all_pdus
 			.into_iter()
-			.filter(|pdu| *pdu.kind() == ruma::events::TimelineEventType::RoomMember)
+			.filter(|pdu| *pdu.kind() == slipstream::events::TimelineEventType::RoomMember)
 			.filter_map(|pdu| membership_filter(pdu, membership, not_membership))
 			.map(Event::into_format)
 			.collect();
@@ -182,7 +182,6 @@ pub(crate) async fn joined_members_route(
 		.rooms
 		.state_cache
 		.room_members(&body.room_id)
-		.map(ToOwned::to_owned)
 		.broad_then(|user_id| async move {
 			let (display_name, avatar_url) = join(
 				services.users.displayname(&user_id).ok(),
@@ -198,15 +197,17 @@ pub(crate) async fn joined_members_route(
 	Ok(Json(Response { joined: room_members }))
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct RoomMemberResponse {
-	pub(crate) display_name: Option<String>,
-	pub(crate) avatar_url: Option<ruma::OwnedMxcUri>,
+slipstream::codec_struct! {
+	RoomMemberResponse {
+		display_name: Option<String> = ("display_name", omit),
+		avatar_url: Option<slipstream::OwnedMxcUri> = ("avatar_url", omit),
+	}
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct Response {
-	pub(crate) joined: std::collections::BTreeMap<ruma::OwnedUserId, RoomMemberResponse>,
+slipstream::codec_struct! {
+	Response {
+		joined: std::collections::BTreeMap<slipstream::OwnedUserId, RoomMemberResponse> = ("joined"),
+	}
 }
 
 fn membership_filter<Pdu: Event>(

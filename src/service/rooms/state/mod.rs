@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
 use async_trait::async_trait;
 use conduwuit::{RoomVersion, debug, matrix::StateKey};
 use conduwuit_core::{
-	Event, PduEvent, Result, err,
+	Event, PduEvent, Result, err, info,
 	state_res::StateMap,
 	utils::{
 		IterStream, MutexMap, MutexMapGuard, ReadyExt,
@@ -93,7 +93,7 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
 	events::{
 		AnyStrippedStateEvent, StateEventType, TimelineEventType,
@@ -174,7 +174,7 @@ impl crate::Service for Service {
 		Ok(())
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
 
 impl Service {
@@ -509,17 +509,13 @@ impl Service {
 						.get_eventid_from_short::<OwnedEventId>(old)
 						.await?;
 					lattice.replace(
-						&event_type.to_string(),
+						event_type.as_ref(),
 						state_key,
 						old_id.as_str(),
 						new_pdu.event_id().as_str(),
 					);
 				} else {
-					lattice.insert(
-						&event_type.to_string(),
-						state_key,
-						new_pdu.event_id().as_str(),
-					);
+					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
 				for (hash, bytes) in created {
 					self.services
@@ -756,7 +752,7 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
+	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
@@ -765,7 +761,9 @@ impl Service {
 		_mutex_lock: &RoomMutexGuard,
 	) {
 		let data = root_handle_to_bytes(root_handle);
-		self.db.roomid_roothandle.insert(room_id.as_bytes(), &data);
+		self.db
+			.roomid_roothandle
+			.insert(room_id.as_str().as_bytes(), &data);
 	}
 
 	/// Returns the room's current HAMT RootHandle.
@@ -782,6 +780,7 @@ impl Service {
 			return Ok(version);
 		}
 
+		info!(target: "rooms", "Could not get room_version by direct lookup for {}", room_id);
 		// Try the current room state snapshot first.
 		if let Ok(content) = self
 			.services
@@ -798,6 +797,7 @@ impl Service {
 			return Ok(version);
 		}
 
+		warn!(target: "rooms", "Could not get room_version via state for {}", room_id);
 		// Fallback: the create event might be an outlier (not in the state
 		// snapshot). Scan outliers for this room to find it.
 		let mut outlier_stream = Box::pin(self.services.timeline.room_outlier_stream(room_id));
@@ -811,8 +811,8 @@ impl Service {
 			}
 		}
 
-		Err(conduwuit::err!(Request(NotFound(
-			"No create event found for room (checked state + outliers)"
+		Err(err!(Request(NotFound(
+			"No create event found for room (checked db, state, and outliers)"
 		))))
 	}
 
@@ -913,7 +913,7 @@ impl Service {
 		self.db
 			.roomid_pduleaves
 			.keys_prefix(&prefix)
-			.map_ok(|(_, event_id): (Ignore, &EventId)| event_id.to_owned())
+			.map_ok(|(_, event_id): (Ignore, OwnedEventId)| event_id)
 			.ignore_err()
 	}
 
@@ -1018,8 +1018,8 @@ impl Service {
 		let max_extremities = self.services.globals.max_forward_extremities();
 		let start = eligible.len().saturating_sub(max_extremities);
 		for event_id in &eligible[start..] {
-			let key = (room_id, &**event_id);
-			self.db.roomid_pduleaves.put_raw(key, &**event_id);
+			let key = (room_id, event_id);
+			self.db.roomid_pduleaves.put_raw(key, event_id);
 		}
 	}
 
@@ -1032,7 +1032,7 @@ impl Service {
 		kind: &TimelineEventType,
 		sender: &UserId,
 		state_key: Option<&str>,
-		content: &serde_json::value::RawValue,
+		content: &conduwuit::matrix::pdu::RawJson,
 		room_version: &RoomVersion,
 		room_version_id: &RoomVersionId,
 	) -> Result<StateMap<PduEvent>> {
@@ -1051,7 +1051,7 @@ impl Service {
 			rezzy::StateResVersion::V2
 		};
 		let auth_types_raw = rezzy::auth::auth_types_for_event(
-			&kind.to_string(),
+			kind.as_ref(),
 			sender.as_str(),
 			state_key,
 			&content_val,

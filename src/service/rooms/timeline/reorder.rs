@@ -5,7 +5,7 @@ use conduwuit_core::{
 	matrix::pdu::{PduCount, PduId, RawPduId},
 	warn,
 };
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::Service;
 
@@ -312,7 +312,7 @@ mod tests {
 
 	use conduwuit::utils::timeline_sorter::sort_timeline_events;
 	use conduwuit_core::PduCount;
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	/// Compute position-based depths from a Kahn's sort result.
 	/// This mirrors the logic in reorder_timeline /

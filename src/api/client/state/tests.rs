@@ -1,4 +1,4 @@
-use ruma::{
+use slipstream::{
 	events::{AnyStateEventContent, room::member::RoomMemberEventContent},
 	serde::Raw,
 };

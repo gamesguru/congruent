@@ -18,16 +18,55 @@ use figment::providers::{Env, Format, Toml};
 pub use figment::{Figment, value::Value as FigmentValue};
 use lettre::message::Mailbox;
 use regex::RegexSet;
-use ruma::{
+use serde::{Deserialize, Serialize, de::IgnoredAny};
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
-use serde::{Deserialize, Serialize, de::IgnoredAny};
 use url::Url;
 
 use self::proxy::ProxyConfig;
 pub use self::{check::check, manager::Manager};
 use crate::{Result, err, error::Error, utils::sys};
+
+fn deserialize_slipstream<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_slipstream_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = serde_json::Value::deserialize(deserializer)?;
+	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_slipstream_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: slipstream::codec::Deserialize,
+{
+	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+	value
+		.map(|value| {
+			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+		})
+		.transpose()
+}
+
+fn clone_slipstream<T>(value: &T) -> T
+where
+	T: slipstream::codec::Serialize + slipstream::codec::Deserialize,
+{
+	slipstream::codec::from_value(&slipstream::codec::to_value(value))
+		.expect("valid Slipstream value must round-trip")
+}
 
 /// All the config options for continuwuity.
 #[allow(clippy::struct_excessive_bools)]
@@ -81,6 +120,7 @@ pub struct Config {
 	/// WIPE.
 	///
 	/// example: "continuwuity.org"
+	#[serde(deserialize_with = "deserialize_slipstream")]
 	pub server_name: OwnedServerName,
 
 	/// The default address (IPv4 or IPv6) continuwuity will listen on.
@@ -955,6 +995,7 @@ pub struct Config {
 	///
 	/// default: "12"
 	#[serde(default = "default_default_room_version")]
+	#[serde(deserialize_with = "deserialize_slipstream")]
 	pub default_room_version: RoomVersionId,
 
 	/// display: nested
@@ -1008,6 +1049,7 @@ pub struct Config {
 	///
 	/// default: ["matrix.org"]
 	#[serde(default = "default_trusted_servers")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub trusted_servers: Vec<OwnedServerName>,
 
 	/// Whether to query the servers listed in trusted_servers first or query
@@ -1197,6 +1239,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub auto_join_rooms: Vec<OwnedRoomOrAliasId>,
 
 	/// Config option to automatically deactivate the account of any user who
@@ -1808,6 +1851,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub deprioritize_joins_through_servers: Vec<OwnedServerName>,
 
 	/// Send messages from users that the user has ignored to the client.
@@ -1903,6 +1947,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default = "Vec::new")]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub bypassed_signature_events: Vec<OwnedEventId>,
 
 	/// Vector list of URLs allowed to send requests to for URL previews.
@@ -2109,6 +2154,7 @@ pub struct Config {
 	///
 	/// default: []
 	#[serde(default)]
+	#[serde(deserialize_with = "deserialize_slipstream_vec")]
 	pub admins_list: Vec<OwnedUserId>,
 
 	/// Defines whether those within the admin room are added to the
@@ -2313,7 +2359,7 @@ pub struct TlsConfig {
 }
 
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::bare_urls)]
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.well_known")]
 pub struct WellKnownConfig {
 	/// The server URL that the client well-known file will serve. This should
@@ -2327,6 +2373,7 @@ pub struct WellKnownConfig {
 	/// should not be a URL.
 	///
 	/// example: "matrix.example.com:443"
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub server: Option<OwnedServerName>,
 
 	/// URL to a support page for the server, which will be served as part of
@@ -2338,6 +2385,7 @@ pub struct WellKnownConfig {
 	/// MSC1929 server support endpoint at /.well-known/matrix/support.
 	///
 	/// default: "m.role.admin"
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub support_role: Option<ContactRole>,
 
 	/// Email address for server support contacts, to be served as part of the
@@ -2351,6 +2399,7 @@ pub struct WellKnownConfig {
 	///
 	/// If no email or mxid is specified, all of the server's admins will be
 	/// listed.
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub support_mxid: Option<OwnedUserId>,
 
 	/// PGP key URI for server support contacts, to be served as part of the
@@ -2366,8 +2415,27 @@ pub struct WellKnownConfig {
 	/// Please migrate to the new `[global.matrix_rtc]` config section.
 	///
 	/// default: []
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub rtc_focus_server_urls: Vec<RtcFocusInfo>,
+}
+
+impl Clone for WellKnownConfig {
+	fn clone(&self) -> Self {
+		Self {
+			client: self.client.clone(),
+			server: self.server.clone(),
+			support_page: self.support_page.clone(),
+			support_role: self.support_role.as_ref().map(clone_slipstream),
+			support_email: self.support_email.clone(),
+			support_mxid: self.support_mxid.clone(),
+			support_pgp_key: self.support_pgp_key.clone(),
+			rtc_focus_server_urls: self
+				.rtc_focus_server_urls
+				.iter()
+				.map(clone_slipstream)
+				.collect(),
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Default)]
@@ -2395,7 +2463,7 @@ pub struct BlurhashConfig {
 	pub blurhash_max_raw_size: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default)]
 #[config_example_generator(filename = "conduwuit-example.toml", section = "global.matrix_rtc")]
 pub struct MatrixRtcConfig {
 	/// A list of MatrixRTC foci (transports) which will be served via the
@@ -2412,8 +2480,16 @@ pub struct MatrixRtcConfig {
 	/// To disable, set this to an empty list (`[]`).
 	///
 	/// default: []
-	#[serde(default)]
+	#[serde(default, deserialize_with = "deserialize_slipstream_vec")]
 	pub foci: Vec<RtcFocusInfo>,
+}
+
+impl Clone for MatrixRtcConfig {
+	fn clone(&self) -> Self {
+		Self {
+			foci: self.foci.iter().map(clone_slipstream).collect(),
+		}
+	}
 }
 
 impl MatrixRtcConfig {
@@ -2596,6 +2672,7 @@ pub struct MeowlnirConfig {
 	pub secret: Option<String>,
 
 	/// The management room for which to send requests
+	#[serde(deserialize_with = "deserialize_slipstream_opt")]
 	pub management_room: Option<OwnedRoomId>,
 
 	/// If enabled run all federated join attempts (both federated and local)

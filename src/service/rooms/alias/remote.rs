@@ -1,6 +1,6 @@
 use conduwuit::{Result, debug, error, implement};
 use federation::query::get_room_information::v1::Response;
-use ruma::{OwnedRoomId, OwnedServerName, RoomAliasId, ServerName, api::federation};
+use slipstream::{OwnedRoomId, OwnedServerName, RoomAliasId, ServerName, api::federation};
 
 #[implement(super::Service)]
 pub(super) async fn remote_resolve(
@@ -9,7 +9,7 @@ pub(super) async fn remote_resolve(
 ) -> Result<(OwnedRoomId, Vec<OwnedServerName>)> {
 	debug!("Asking {} to resolve {room_alias:?}", room_alias.server_name());
 	match self
-		.remote_request(room_alias, room_alias.server_name())
+		.remote_request(room_alias, &room_alias.server_name())
 		.await
 	{
 		| Err(e) => {

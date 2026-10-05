@@ -4,7 +4,7 @@ use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug, debug_info, info, warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, RoomVersionId, UserId,
 	api::{client::error::ErrorKind, federation::membership::prepare_join_event},
 	events::{
@@ -165,7 +165,6 @@ pub(crate) async fn select_authorising_user(
 		.rooms
 		.state_cache
 		.local_users_in_room(room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 

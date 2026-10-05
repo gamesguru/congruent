@@ -9,6 +9,10 @@ pub enum Error {
 	#[error(transparent)]
 	SerdeJson(#[from] JsonError),
 
+	/// A slipstream codec conversion error.
+	#[error(transparent)]
+	Codec(#[from] slipstream::codec::DeError),
+
 	/// The given option or version is unsupported.
 	#[error("Unsupported room version: {0}")]
 	Unsupported(String),

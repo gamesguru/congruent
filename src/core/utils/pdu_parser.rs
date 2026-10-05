@@ -1,4 +1,4 @@
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, RoomId, RoomVersionId};
 
 use crate::{PduEvent, Result};
 
@@ -43,16 +43,16 @@ pub fn parse_and_clean_pdu(
 
 #[cfg(test)]
 mod tests {
-	use ruma::{events::TimelineEventType, room_id, room_version_id};
 	use serde_json::json;
+	use slipstream::{OwnedRoomId, RoomVersionId, events::TimelineEventType};
 
 	use super::*;
 	use crate::matrix::event::gen_event_id;
 
 	#[test]
 	fn test_parse_and_clean_pdu() {
-		let room_id = room_id!("!test:example.com");
-		let version = room_version_id!("10"); // V3+ strips room_id
+		let room_id = OwnedRoomId::from("!test:example.com");
+		let version = RoomVersionId::parse("10").unwrap(); // V3+ strips room_id
 
 		let raw_json = json!({
 			"event_id": "$test_event",
@@ -77,8 +77,8 @@ mod tests {
 		})
 		.to_string();
 
-		let value: CanonicalJsonObject = serde_json::from_str(&raw_json).unwrap();
-		let (eid, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+		let value: CanonicalJsonObject = slipstream::codec::from_str(&raw_json).unwrap();
+		let (eid, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();
 
 		assert_eq!(eid.as_str(), "$test_event");
 		assert!(!clean_val.contains_key("__shortstatehash"));
@@ -89,22 +89,25 @@ mod tests {
 
 	#[test]
 	fn v12_create_event_hashes_after_room_id_stripping() {
-		let version = room_version_id!("12");
+		let version = RoomVersionId::parse("12").unwrap();
 
 		let make_value = || {
-			serde_json::from_value::<CanonicalJsonObject>(json!({
-				"type": "m.room.create",
-				"sender": "@alice:example.org",
-				"origin_server_ts": 12345,
-				"content": { "creator": "@alice:example.org", "room_version": "12" },
-				"auth_events": [],
-				"prev_events": [],
-				"depth": 1,
-				"hashes": { "sha256": "fakehash" },
-				"signatures": {
-					"example.org": { "ed25519:1": "fakesig" }
-				}
-			}))
+			slipstream::codec::from_str::<CanonicalJsonObject>(
+				&json!({
+					"type": "m.room.create",
+					"sender": "@alice:example.org",
+					"origin_server_ts": 12345,
+					"content": { "creator": "@alice:example.org", "room_version": "12" },
+					"auth_events": [],
+					"prev_events": [],
+					"depth": 1,
+					"hashes": { "sha256": "fakehash" },
+					"signatures": {
+						"example.org": { "ed25519:1": "fakesig" }
+					}
+				})
+				.to_string(),
+			)
 			.unwrap()
 		};
 
@@ -138,27 +141,30 @@ mod tests {
 
 	#[test]
 	fn v12_non_create_event_keeps_room_id_before_hashing() {
-		let room_id = room_id!("!test:example.com");
-		let version = room_version_id!("12");
+		let room_id = OwnedRoomId::from("!test:example.com");
+		let version = RoomVersionId::parse("12").unwrap();
 
-		let value: CanonicalJsonObject = serde_json::from_value(json!({
-			"type": "m.room.member",
-			"room_id": room_id.as_str(),
-			"sender": "@alice:example.org",
-			"state_key": "@alice:example.org",
-			"origin_server_ts": 12345,
-			"content": { "membership": "join" },
-			"auth_events": [],
-			"prev_events": [],
-			"depth": 1,
-			"hashes": { "sha256": "fakehash" },
-			"signatures": {
-				"example.org": { "ed25519:1": "fakesig" }
-			}
-		}))
+		let value: CanonicalJsonObject = slipstream::codec::from_str(
+			&json!({
+				"type": "m.room.member",
+				"room_id": room_id.as_str(),
+				"sender": "@alice:example.org",
+				"state_key": "@alice:example.org",
+				"origin_server_ts": 12345,
+				"content": { "membership": "join" },
+				"auth_events": [],
+				"prev_events": [],
+				"depth": 1,
+				"hashes": { "sha256": "fakehash" },
+				"signatures": {
+					"example.org": { "ed25519:1": "fakesig" }
+				}
+			})
+			.to_string(),
+		)
 		.unwrap();
 
-		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, room_id, &version).unwrap();
+		let (event_id, clean_val, pdu) = parse_and_clean_pdu(value, &room_id, &version).unwrap();
 
 		assert!(clean_val.contains_key("room_id"), "non-create events must retain room_id");
 		assert_eq!(

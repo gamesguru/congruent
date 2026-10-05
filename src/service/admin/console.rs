@@ -7,8 +7,8 @@ use conduwuit::{
 	log::is_systemd_mode,
 };
 use futures::future::{AbortHandle, Abortable};
-use ruma::events::room::message::RoomMessageEventContent;
 use rustyline_async::{Readline, ReadlineError, ReadlineEvent};
+use slipstream::events::room::message::RoomMessageEventContent;
 use termimad::MadSkin;
 use tokio::task::JoinHandle;
 

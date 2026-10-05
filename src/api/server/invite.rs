@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::{self, hash::sha256},
 	warn,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, OwnedUserId, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
 	events::{
@@ -75,7 +75,7 @@ pub(crate) async fn create_invite_route(
 	}
 
 	if let Some(server) = body.room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
+		if services.moderation.is_remote_server_forbidden(&server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
 		}
 	}
@@ -144,7 +144,7 @@ pub(crate) async fn create_invite_route(
 
 	if !services
 		.globals
-		.server_is_ours(recipient_user.server_name())
+		.server_is_ours(&recipient_user.server_name())
 	{
 		return Err!(Request(InvalidParam("User does not belong to this homeserver.")));
 	}
@@ -153,7 +153,7 @@ pub(crate) async fn create_invite_route(
 	services
 		.rooms
 		.event_handler
-		.acl_check(recipient_user.server_name(), &body.room_id)
+		.acl_check(&recipient_user.server_name(), &body.room_id)
 		.await?;
 
 	services
@@ -210,7 +210,7 @@ pub(crate) async fn create_invite_route(
 		.is_some_and(|is_direct| is_direct.as_bool() == Some(true));
 	let invite_state_values = invite_state
 		.iter()
-		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
+		.map(|event| rezzy::JsonValue::parse(event.get()))
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
@@ -258,7 +258,7 @@ pub(crate) async fn create_invite_route(
 
 		for appservice in services.appservice.read().await.values() {
 			if appservice.is_user_match(&recipient_user) {
-				let request = ruma::api::appservice::event::push_events::v1::Request {
+				let request = slipstream::api::appservice::event::push_events::v1::Request {
 					events: vec![pdu.to_format()],
 					txn_id: general_purpose::URL_SAFE_NO_PAD
 						.encode(sha256::hash(pdu.event_id.as_bytes()))

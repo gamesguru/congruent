@@ -15,7 +15,7 @@ use conduwuit::{
 };
 use futures::{FutureExt, StreamExt};
 use lettre::Address;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, UserId,
 	events::{
 		RoomAccountDataEventType, StateEventType,
@@ -101,12 +101,12 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 		.update(
 			None,
 			&user_id,
-			ruma::events::GlobalAccountDataEventType::PushRules
+			slipstream::events::GlobalAccountDataEventType::PushRules
 				.to_string()
 				.into(),
-			&serde_json::to_value(ruma::events::push_rules::PushRulesEvent {
-				content: ruma::events::push_rules::PushRulesEventContent {
-					global: ruma::push::Ruleset::server_default(&user_id),
+			&serde_json::to_value(slipstream::events::push_rules::PushRulesEvent {
+				content: slipstream::events::push_rules::PushRulesEventContent {
+					global: slipstream::push::Ruleset::server_default(&user_id),
 				},
 			})?,
 		)

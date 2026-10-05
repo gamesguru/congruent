@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use conduwuit::{Err, Result, err, implement, matrix::pdu::PduBuilder};
-use ruma::{
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, TransactionId, UserId,
 	events::{
 		AnyMessageLikeEventContent, AnyStateEventContent, MessageLikeEventType, StateEventType,
@@ -17,7 +17,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde_json::Value;
 
 use crate::rooms::state::RoomMutexGuard;
 
@@ -32,14 +31,13 @@ pub async fn send_message_event_helper(
 	content: &Raw<AnyMessageLikeEventContent>,
 	txn_id: Option<&TransactionId>,
 	timestamp: Option<MilliSecondsSinceUnixEpoch>,
-	mut unsigned: Option<BTreeMap<String, Value>>,
+	mut unsigned: Option<BTreeMap<String, slipstream::json::Value>>,
 ) -> Result<OwnedEventId> {
 	// let json: &mut Raw<AnyMessageLikeEventContent> = &mut json.clone();
 	self.allowed_to_send_message_event(room_id, event_type)
 		.await?;
 
-	let content = serde_json::from_str(content.json().get())
-		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
+	let content = content.cast();
 
 	if let Some(txn_id) = txn_id {
 		unsigned
@@ -98,14 +96,13 @@ pub async fn send_state_event_for_key_helper(
 	content: &Raw<AnyStateEventContent>,
 	state_key: &str,
 	timestamp: Option<MilliSecondsSinceUnixEpoch>,
-	unsigned: Option<BTreeMap<String, Value>>,
+	unsigned: Option<BTreeMap<String, slipstream::json::Value>>,
 ) -> Result<OwnedEventId> {
 	let mut content: Raw<AnyStateEventContent> = content.clone();
 	self.allowed_to_send_state_event(room_id, event_type, state_key, &mut content)
 		.await?;
 
-	let content = serde_json::from_str(content.json().get())
-		.map_err(|e| err!(Request(BadJson("Invalid JSON body: {e}"))))?;
+	let content = content.cast();
 
 	let event_id = Box::pin(self.build_and_append_pdu(
 		PduBuilder {
@@ -302,13 +299,13 @@ async fn allowed_to_send_state_event(
 					if self
 						.services
 						.state_cache
-						.is_joined(state_key, room_id)
+						.is_joined(&state_key, room_id)
 						.await
 						&& membership_content.membership == MembershipState::Join
 					{
 						membership_content.join_authorized_via_users_server = None;
 						*json = Raw::<AnyStateEventContent>::from_json_string(
-							serde_json::to_string(&membership_content)?,
+							slipstream::codec::to_string(&membership_content),
 						)?;
 						return Ok(());
 					}

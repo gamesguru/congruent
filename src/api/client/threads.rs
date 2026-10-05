@@ -13,13 +13,14 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use http::StatusCode;
-use ruma::{
-	OwnedEventId, OwnedRoomId,
-	api::{IncomingRequest, client::threads::get_threads},
-	uint,
-};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use slipstream::{
+	OwnedEventId, OwnedRoomId,
+	api::{IncomingRequest, client::threads::get_threads},
+	endpoint::EndpointRequest,
+	uint,
+};
 
 use crate::{Ruma, router::authenticate_user};
 
@@ -36,7 +37,7 @@ pub(crate) async fn get_threads_route(
 	// Use limit or else 10, with maximum 100
 	let limit = body
 		.limit
-		.unwrap_or_else(|| uint!(10))
+		.unwrap_or(uint!(10))
 		.try_into()
 		.unwrap_or(10)
 		.min(100);

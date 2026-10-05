@@ -6,7 +6,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{OwnedRoomId, OwnedRoomOrAliasId, RoomAliasId, RoomId, RoomOrAliasId};
+use slipstream::{OwnedRoomId, OwnedRoomOrAliasId, RoomAliasId, RoomId, RoomOrAliasId};
 
 use crate::{admin_command, admin_command_dispatch, get_room_info};
 

@@ -1,5 +1,5 @@
-use conduwuit::{Err, Result, RoomVersion, debug_info, implement, matrix::Event};
-use ruma::{
+use conduwuit::{Err, Result, RoomVersion, debug_info, err, implement, matrix::Event};
+use slipstream::{
 	EventId, RoomId, UserId,
 	events::{
 		StateEventType, TimelineEventType,
@@ -46,7 +46,8 @@ pub async fn user_can_redact(
 		.room_state_get(room_id, &StateEventType::RoomCreate, "")
 		.await?;
 	let create_content: RoomCreateEventContent =
-		serde_json::from_str(room_create.content().get())?;
+		slipstream::codec::from_str(room_create.content().get())
+			.map_err(|e| err!(Database("Failed to decode room create content: {e}")))?;
 	let room_features = RoomVersion::new(&create_content.room_version)?;
 	if room_features.explicitly_privilege_room_creators {
 		let sender_owned = sender.to_owned();
@@ -123,7 +124,7 @@ pub async fn user_can_see_event(
 			.services
 			.globals
 			.allow_local_users_to_bypass_history_visibility()
-		&& self.services.globals.server_name() == user_id.server_name()
+		&& user_id.server_name() == self.services.globals.server_name()
 	{
 		return true;
 	}
@@ -174,7 +175,7 @@ pub async fn user_can_see_event(
 				.await
 		},
 		| HistoryVisibility::WorldReadable => true,
-		| HistoryVisibility::Shared | _ => {
+		| HistoryVisibility::Shared => {
 			// Shared: visible if user was ever a member of the room.
 			// Per spec §11.5 rule 3: "If the user's membership was join at
 			// any point after the event, allow."
@@ -199,7 +200,7 @@ pub async fn user_can_see_state_events(&self, user_id: &UserId, room_id: &RoomId
 		.services
 		.globals
 		.allow_local_users_to_bypass_history_visibility()
-		&& self.services.globals.server_name() == user_id.server_name()
+		&& self.services.globals.server_name() == &user_id.server_name()
 	{
 		return true;
 	}

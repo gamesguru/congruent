@@ -12,12 +12,12 @@ use conduwuit::{
 };
 use conduwuit_database::Batch;
 use futures::{StreamExt, TryStreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state, get_room_state_ids},
 	events::{StateEventType, TimelineEventType},
+	json::Value as JsonValue,
 };
-use serde_json::Value as JsonValue;
 
 use super::dag::format_ts;
 use crate::admin_command;
@@ -1001,7 +1001,7 @@ pub(super) async fn set_state_event(
 
 	// Rebuild membership cache if this is a member event
 	if event_type == StateEventType::RoomMember {
-		if let Ok(user_id) = ruma::UserId::parse(&state_key) {
+		if let Ok(user_id) = slipstream::UserId::parse(&state_key) {
 			self.services
 				.rooms
 				.state_cache
@@ -1018,9 +1018,9 @@ pub(super) async fn set_state_event(
 	let membership = if event_type == StateEventType::RoomMember {
 		pdu.content
 			.get()
-			.parse::<serde_json::Value>()
+			.parse::<slipstream::json::Value>()
 			.ok()
-			.and_then(|c: serde_json::Value| {
+			.and_then(|c: slipstream::json::Value| {
 				c.get("membership")
 					.and_then(|m| m.as_str().map(String::from))
 			})
@@ -1099,7 +1099,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key) {
 			timeline_membership.insert(user_id, (membership, event_id));
 		}
 
@@ -1143,7 +1143,7 @@ pub(super) async fn audit_membership(
 
 		let event_id = pdu.event_id().to_string();
 
-		if let Ok(user_id) = OwnedUserId::try_from(state_key.as_str()) {
+		if let Ok(user_id) = OwnedUserId::parse(state_key.as_str()) {
 			state_membership.insert(user_id, (membership, event_id));
 		}
 	}
@@ -1186,7 +1186,7 @@ pub(super) async fn audit_membership(
 				.unwrap_or("leave")
 				.to_owned();
 			let event_id = pdu.event_id().to_string();
-			if let Ok(user_id) = OwnedUserId::try_from(state_key) {
+			if let Ok(user_id) = OwnedUserId::parse(state_key) {
 				tl_membership_pass.insert(user_id, (membership, event_id));
 			}
 		}
@@ -1207,7 +1207,7 @@ pub(super) async fn audit_membership(
 			};
 
 			if is_divergent && clean {
-				if let Ok(event_id) = OwnedEventId::try_from(tl_event.as_str()) {
+				if let Ok(event_id) = OwnedEventId::parse(tl_event.as_str()) {
 					// Demote timeline -> outlier atomically under the room's insert
 					// lock. add_pdu_outlier's "already in timeline" guard checks the
 					// *existing* eventid_metadata entry, which for an event still in
@@ -1917,7 +1917,7 @@ pub(super) async fn audit_membership(
 mod tests {
 	use std::collections::HashMap;
 
-	use ruma::event_id;
+	use slipstream::event_id;
 
 	use super::*;
 

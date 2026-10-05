@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use conduwuit::{Err, Event, Pdu, Result, implement, info, is_not_empty, utils::ReadyExt, warn};
 use database::{Batch, Json, serialize_key};
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedUserId, RoomId, UserId,
+	codec::Serialize,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, RoomAccountDataEventType,
 		StateEventType, TimelineEventType,
@@ -111,8 +112,7 @@ pub async fn update_membership(
 									None,
 									user_id,
 									GlobalAccountDataEventType::Direct.to_string().into(),
-									&serde_json::to_value(&direct_event)
-										.expect("to json always works"),
+									&direct_event.to_json(),
 								)
 								.await?;
 						}
@@ -138,12 +138,13 @@ pub async fn update_membership(
 			// member event). Do not overwrite the complete state with that partial
 			// second summary.
 			let has_create = knock_state.iter().any(|event| {
-				serde_json::from_str::<serde_json::Value>(event.json().get())
+				event
+					.json()
 					.ok()
 					.and_then(|value| {
 						value
 							.get("type")
-							.and_then(serde_json::Value::as_str)
+							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
 					.as_deref()
@@ -152,12 +153,13 @@ pub async fn update_membership(
 			if !has_create {
 				if let Ok(previous) = self.knock_state(user_id, room_id).await {
 					if previous.iter().any(|event| {
-						serde_json::from_str::<serde_json::Value>(event.json().get())
+						event
+							.json()
 							.ok()
 							.and_then(|value| {
 								value
 									.get("type")
-									.and_then(serde_json::Value::as_str)
+									.and_then(|value| value.as_str())
 									.map(str::to_owned)
 							})
 							.as_deref()
@@ -168,12 +170,13 @@ pub async fn update_membership(
 				}
 			}
 			let has_create = knock_state.iter().any(|event| {
-				serde_json::from_str::<serde_json::Value>(event.json().get())
+				event
+					.json()
 					.ok()
 					.and_then(|value| {
 						value
 							.get("type")
-							.and_then(serde_json::Value::as_str)
+							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
 					.as_deref()
@@ -183,7 +186,6 @@ pub async fn update_membership(
 				self.mark_as_knocked(user_id, room_id, Some(knock_state));
 			}
 		},
-		| _ => {},
 	}
 
 	if update_joined_count {
@@ -202,7 +204,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 
 	self.room_members(room_id)
 		.ready_for_each(|joined| {
-			joined_servers.insert(joined.server_name().to_owned());
+			joined_servers.insert(joined.server_name());
 			joinedcount = joinedcount.saturating_add(1);
 		})
 		.await;
@@ -227,13 +229,13 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 	let mut removed_servers = Vec::new();
 	self.room_servers(room_id)
 		.ready_for_each(|old_joined_server| {
-			if joined_servers.remove(old_joined_server) {
+			if joined_servers.remove(&old_joined_server) {
 				return;
 			}
 
-			removed_servers.push(old_joined_server.to_owned());
+			removed_servers.push(old_joined_server.clone());
 			// Server not in room anymore
-			let roomserver_id = (room_id, old_joined_server);
+			let roomserver_id = (room_id, old_joined_server.clone());
 			let serverroom_id = (old_joined_server, room_id);
 
 			self.db.roomserverids.del(roomserver_id);
@@ -258,7 +260,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 			self.room_members(room_id)
 				.ready_for_each(|user_id| {
 					self.server_visibility_cache
-						.invalidate(&(removed_server.clone(), user_id.to_owned()));
+						.invalidate(&(removed_server.clone(), user_id));
 				})
 				.await;
 		}
@@ -274,7 +276,7 @@ pub async fn update_joined_count(&self, room_id: &RoomId) {
 			self.room_members(room_id)
 				.ready_for_each(|user_id| {
 					self.server_visibility_cache
-						.invalidate(&(server.clone(), user_id.to_owned()));
+						.invalidate(&(server.clone(), user_id));
 				})
 				.await;
 		}
@@ -597,11 +599,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 		target: "knock_debug",
 		"mark_as_left called for user_id={} room_id={}", user_id, room_id
 	);
-	let prior_members = self
-		.room_members(room_id)
-		.map(ToOwned::to_owned)
-		.collect::<Vec<_>>()
-		.await;
+	let prior_members = self.room_members(room_id).collect::<Vec<_>>().await;
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
@@ -617,7 +615,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 
 	let leave_origin_server_ts = leave_pdu
 		.as_ref()
-		.map(|leave_pdu| leave_pdu.origin_server_ts().0.into());
+		.map(|leave_pdu| leave_pdu.origin_server_ts().0);
 	let preserve_newer_invite =
 		if let Some(leave_pdu) = leave_pdu.as_ref() {
 			self.left_state(user_id, room_id)
@@ -930,16 +928,8 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 	let mut members_synced = 0_usize;
 	let mut state_joined: HashSet<OwnedUserId> = HashSet::new();
 	let mut state_invited: HashSet<OwnedUserId> = HashSet::new();
-	let cached_joined: HashSet<OwnedUserId> = self
-		.room_members(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
-	let cached_invited: HashSet<OwnedUserId> = self
-		.room_members_invited(room_id)
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
+	let cached_joined: HashSet<OwnedUserId> = self.room_members(room_id).collect().await;
+	let cached_invited: HashSet<OwnedUserId> = self.room_members_invited(room_id).collect().await;
 
 	let room_root_opt = self.services.state.get_room_state_hamt(room_id).await.ok();
 
@@ -963,11 +953,11 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 			if *pdu.kind() != TimelineEventType::RoomMember {
 				continue;
 			}
-			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::try_from) else {
+			let Some(Ok(uid)) = pdu.state_key().map(OwnedUserId::parse) else {
 				continue;
 			};
 
-			let content: serde_json::Value = pdu.get_content_as_value();
+			let content = pdu.get_content_as_value();
 			let membership = content
 				.get("membership")
 				.and_then(|v| v.as_str())
@@ -1121,7 +1111,7 @@ pub async fn update_caches_for_state_delta(
 					},
 					| Err(e) if e.is_not_found() => {
 						// The user has no member event in the new state at all.
-						users_to_mark_left.push(target_user_id.to_owned());
+						users_to_mark_left.push(target_user_id.clone());
 					},
 					| Err(e) => return Err(e),
 				}
@@ -1164,7 +1154,7 @@ pub async fn update_caches_for_state_delta(
 					);
 					continue;
 				};
-				self.update_membership(room_id, target_user_id, &pdu, false)
+				self.update_membership(room_id, &target_user_id, &pdu, false)
 					.await?;
 				// Membership changes can affect restricted-room accessibility.
 				self.services

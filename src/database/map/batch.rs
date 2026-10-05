@@ -8,10 +8,9 @@
 
 use conduwuit::implement;
 use rocksdb::WriteBatchWithTransaction;
-use serde::Serialize;
 
 use super::Map;
-use crate::{keyval::ValBuf, ser, util::or_else};
+use crate::{dbkey::DbKey, keyval::ValBuf, ser, util::or_else};
 
 /// A write batch that remembers which `Map`+key pairs it touched, so the
 /// corresponding watchers get woken automatically when the batch is
@@ -59,7 +58,7 @@ where
 pub fn batch_raw_put<'a, K, V>(&'a self, batch: &mut Batch<'a>, key: K, val: V)
 where
 	K: AsRef<[u8]>,
-	V: Serialize,
+	V: DbKey,
 {
 	let mut val_buf = ValBuf::new();
 	let val = ser::serialize(&mut val_buf, val).expect("failed to serialize batch insertion val");

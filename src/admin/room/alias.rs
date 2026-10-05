@@ -3,7 +3,7 @@ use std::fmt::Write;
 use clap::Subcommand;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::{OwnedRoomAliasId, OwnedRoomId};
+use slipstream::{OwnedRoomAliasId, OwnedRoomId};
 
 use crate::Context;
 

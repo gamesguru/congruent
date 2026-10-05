@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Error, Result, err};
 use conduwuit_service::Services;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue,
 	api::client::{
 		error::ErrorKind,
@@ -23,37 +23,44 @@ use ruma::{
 
 use crate::Ruma;
 
+fn array_mut(value: &mut slipstream::json::Value) -> Option<&mut Vec<slipstream::json::Value>> {
+	match value {
+		| slipstream::json::Value::Array(items) => Some(items),
+		| _ => None,
+	}
+}
+
 fn normalize_poll_push_rules(ruleset: Ruleset) -> Result<Ruleset> {
-	let mut value = serde_json::to_value(ruleset)?;
+	let mut value = slipstream::codec::to_value(&ruleset);
 	for kind in ["override", "underride"] {
-		let Some(rules) = value
-			.get_mut(kind)
-			.and_then(serde_json::Value::as_array_mut)
-		else {
+		let Some(rules) = value.get_mut(kind).and_then(array_mut) else {
 			continue;
 		};
 		for rule in rules {
 			if !rule
 				.get("rule_id")
-				.and_then(serde_json::Value::as_str)
+				.and_then(slipstream::json::Value::as_str)
 				.is_some_and(|id| id.starts_with(".org.matrix.msc3930."))
 			{
 				continue;
 			}
-			let Some(conditions) = rule
-				.get_mut("conditions")
-				.and_then(serde_json::Value::as_array_mut)
-			else {
+			let Some(conditions) = rule.get_mut("conditions").and_then(array_mut) else {
 				continue;
 			};
 			for condition in conditions {
-				if condition.get("kind").and_then(serde_json::Value::as_str)
+				if condition
+					.get("kind")
+					.and_then(slipstream::json::Value::as_str)
 					== Some("event_property_is")
-					&& condition.get("key").and_then(serde_json::Value::as_str) == Some("type")
+					&& condition
+						.get("key")
+						.and_then(slipstream::json::Value::as_str)
+						== Some("type")
 				{
 					let Some(pattern) = condition.get("value").cloned() else { continue };
-					if pattern.is_string() {
-						condition["kind"] = serde_json::Value::String("event_match".to_owned());
+					if matches!(pattern, slipstream::json::Value::String(_)) {
+						condition["kind"] =
+							slipstream::json::Value::String("event_match".to_owned());
 						condition["pattern"] = pattern;
 						condition
 							.as_object_mut()
@@ -64,7 +71,7 @@ fn normalize_poll_push_rules(ruleset: Ruleset) -> Result<Ruleset> {
 			}
 		}
 	}
-	Ok(serde_json::from_value(value)?)
+	Ok(slipstream::codec::from_value(&value)?)
 }
 
 /// # `GET /_matrix/client/r0/pushrules/`
@@ -91,7 +98,7 @@ pub(crate) async fn get_pushrules_all_route(
 	};
 
 	let account_data_content =
-		serde_json::from_value::<PushRulesEventContent>(content_value.into()).map_err(|e| {
+		slipstream::codec::from_value::<PushRulesEventContent>(&content_value).map_err(|e| {
 			err!(Database(warn!("Invalid push rules account data event in database: {e}")))
 		})?;
 
@@ -102,7 +109,7 @@ pub(crate) async fn get_pushrules_all_route(
 	// and update the stored server default push rules
 	#[allow(deprecated)]
 	{
-		use ruma::push::RuleKind::*;
+		use slipstream::push::RuleKind::*;
 		if global_ruleset
 			.get(Override, PredefinedOverrideRuleId::ContainsDisplayName.as_str())
 			.is_some()
@@ -132,7 +139,12 @@ pub(crate) async fn get_pushrules_all_route(
 
 			services
 				.account_data
-				.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(event)?)
+				.update(
+					None,
+					sender_user,
+					ty.to_string().into(),
+					&slipstream::codec::to_value(&event),
+				)
 				.await?;
 		}
 	};
@@ -172,7 +184,12 @@ pub(crate) async fn get_pushrules_global_route(
 
 		services
 			.account_data
-			.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(event)?)
+			.update(
+				None,
+				sender_user,
+				ty.to_string().into(),
+				&slipstream::codec::to_value(&event),
+			)
 			.await?;
 
 		return Ok(get_pushrules_global_scope::v3::Response {
@@ -181,7 +198,7 @@ pub(crate) async fn get_pushrules_global_route(
 	};
 
 	let account_data_content =
-		serde_json::from_value::<PushRulesEventContent>(content_value.into()).map_err(|e| {
+		slipstream::codec::from_value::<PushRulesEventContent>(&content_value).map_err(|e| {
 			err!(Database(warn!("Invalid push rules account data event in database: {e}")))
 		})?;
 
@@ -191,7 +208,7 @@ pub(crate) async fn get_pushrules_global_route(
 	// and update the stored server default push rules
 	#[allow(deprecated)]
 	{
-		use ruma::push::RuleKind::*;
+		use slipstream::push::RuleKind::*;
 		if global_ruleset
 			.get(Override, PredefinedOverrideRuleId::ContainsDisplayName.as_str())
 			.is_some()
@@ -220,10 +237,9 @@ pub(crate) async fn get_pushrules_global_route(
 					None,
 					sender_user,
 					GlobalAccountDataEventType::PushRules.to_string().into(),
-					&serde_json::to_value(PushRulesEvent {
+					&slipstream::codec::to_value(&PushRulesEvent {
 						content: PushRulesEventContent { global: global_ruleset.clone() },
-					})
-					.expect("to json always works"),
+					}),
 				)
 				.await?;
 		}
@@ -319,7 +335,12 @@ pub(crate) async fn set_pushrule_route(
 	let ty = GlobalAccountDataEventType::PushRules;
 	services
 		.account_data
-		.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(account_data)?)
+		.update(
+			None,
+			sender_user,
+			ty.to_string().into(),
+			&slipstream::codec::to_value(&account_data),
+		)
 		.await?;
 
 	Ok(set_pushrule::v3::Response {})
@@ -388,7 +409,12 @@ pub(crate) async fn set_pushrule_actions_route(
 	let ty = GlobalAccountDataEventType::PushRules;
 	services
 		.account_data
-		.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(account_data)?)
+		.update(
+			None,
+			sender_user,
+			ty.to_string().into(),
+			&slipstream::codec::to_value(&account_data),
+		)
 		.await?;
 
 	Ok(set_pushrule_actions::v3::Response {})
@@ -423,7 +449,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 		.content
 		.global
 		.get(body.kind.clone(), &body.rule_id)
-		.map(ruma::push::AnyPushRuleRef::enabled)
+		.map(slipstream::push::AnyPushRuleRef::enabled)
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
 	Ok(get_pushrule_enabled::v3::Response { enabled })
@@ -457,7 +483,12 @@ pub(crate) async fn set_pushrule_enabled_route(
 	let ty = GlobalAccountDataEventType::PushRules;
 	services
 		.account_data
-		.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(account_data)?)
+		.update(
+			None,
+			sender_user,
+			ty.to_string().into(),
+			&slipstream::codec::to_value(&account_data),
+		)
 		.await?;
 
 	Ok(set_pushrule_enabled::v3::Response {})
@@ -500,7 +531,12 @@ pub(crate) async fn delete_pushrule_route(
 	let ty = GlobalAccountDataEventType::PushRules;
 	services
 		.account_data
-		.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(account_data)?)
+		.update(
+			None,
+			sender_user,
+			ty.to_string().into(),
+			&slipstream::codec::to_value(&account_data),
+		)
 		.await?;
 
 	Ok(delete_pushrule::v3::Response {})
@@ -543,7 +579,7 @@ pub(crate) async fn set_pushers_route(
 /// so recreate it and return server default silently
 pub async fn recreate_push_rules_and_return(
 	services: &Services,
-	sender_user: &ruma::UserId,
+	sender_user: &slipstream::UserId,
 ) -> Result<get_pushrules_all::v3::Response> {
 	let ty = GlobalAccountDataEventType::PushRules;
 	let event = PushRulesEvent {
@@ -554,7 +590,7 @@ pub async fn recreate_push_rules_and_return(
 
 	services
 		.account_data
-		.update(None, sender_user, ty.to_string().into(), &serde_json::to_value(event)?)
+		.update(None, sender_user, ty.to_string().into(), &slipstream::codec::to_value(&event))
 		.await?;
 
 	Ok(get_pushrules_all::v3::Response {

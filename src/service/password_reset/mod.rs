@@ -4,7 +4,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use conduwuit::{Err, Result, utils};
 use data::{Data, ResetTokenInfo};
-use ruma::OwnedUserId;
+use slipstream::OwnedUserId;
 
 use crate::{Dep, globals, users};
 

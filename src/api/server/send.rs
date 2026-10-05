@@ -25,7 +25,10 @@ use conduwuit_service::{
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use http::StatusCode;
 use itertools::Itertools;
-use ruma::{
+use service::transactions::{
+	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
+};
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
 	RoomId, ServerName, UInt, UserId,
 	api::{
@@ -42,14 +45,13 @@ use ruma::{
 			},
 		},
 	},
+	codec,
 	encryption::DeviceKeys,
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
-	serde::Raw,
+	json::Value,
+	serde::{JsonObject, Raw},
 	to_device::DeviceIdOrAllDevices,
-};
-use service::transactions::{
-	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use tokio::sync::watch::{Receiver, Sender};
 use tracing::Instrument;
@@ -66,7 +68,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	if body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -133,8 +135,8 @@ pub(crate) async fn send_transaction_message_route(
 				services.server.runtime().spawn(async move {
 					let edus_stream = edus
 						.into_iter()
-						.map(|edu| edu.into_json().get().to_owned())
-						.map(|json_str| serde_json::from_str(&json_str))
+						.map(|edu| edu.get().to_owned())
+						.map(|json_str| codec::from_str::<Edu>(&json_str))
 						.filter_map(Result::ok)
 						.stream();
 
@@ -153,7 +155,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::Json<slipstream::json::Value>> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -195,8 +197,8 @@ async fn process_inbound_transaction(
 	let edus = body
 		.edus
 		.iter()
-		.map(|edu| edu.json().get())
-		.map(serde_json::from_str)
+		.map(|edu| edu.get())
+		.map(|json_str| codec::from_str::<Edu>(json_str))
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -205,7 +207,7 @@ async fn process_inbound_transaction(
 	let pdu_ids: Vec<_> = body
 		.pdus
 		.iter()
-		.filter_map(|pdu| serde_json::from_str::<serde_json::Value>(pdu.get()).ok())
+		.filter_map(|pdu| codec::from_str::<Value>(pdu.get()).ok())
 		.filter_map(|pdu| {
 			pdu.get("event_id")
 				.and_then(|e| e.as_str())
@@ -336,20 +338,20 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let mut response_json = serde_json::json!({
+	let mut response_json = slipstream::json!({
 		"pdus": results
 			.into_iter()
 			.map(|(e, r)| {
-				let mut obj = serde_json::Map::new();
+				let mut obj = slipstream::json::Object::new();
 				if let Err(err) = r {
 					obj.insert(
 						"error".to_owned(),
-						serde_json::Value::String(error::sanitized_message(err)),
+						slipstream::json::Value::String(error::sanitized_message(err)),
 					);
 				}
-				(e.to_string(), serde_json::Value::Object(obj))
+				(e.to_string(), slipstream::json::Value::Object(obj))
 			})
-			.collect::<serde_json::Map<_, _>>(),
+			.collect::<slipstream::json::Object<_, _>>(),
 	});
 
 	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
@@ -362,7 +364,7 @@ async fn process_inbound_transaction(
 async fn inject_state_hash_mismatches(
 	services: &crate::State,
 	body: &Ruma<send_transaction_message::v1::Request>,
-	response_json: &mut serde_json::Value,
+	response_json: &mut slipstream::json::Value,
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
@@ -373,7 +375,7 @@ async fn inject_state_hash_mismatches(
 		return;
 	};
 
-	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes.clone().into()) else {
+	let Ok(state_hashes) = codec::from_value::<StateHashes>(hashes) else {
 		return;
 	};
 
@@ -465,7 +467,7 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let mut mismatch = serde_json::json!({
+		let mut mismatch = slipstream::json!({
 			"algorithm": state_hashes.algorithm,
 			"expected_after": local.after.primary,
 			"received_after": after,
@@ -473,8 +475,8 @@ async fn inject_state_hash_mismatches(
 			"received_redactions_after": redactions_after,
 		});
 		if check_inputs {
-			mismatch["expected_resolution_inputs_before"] = serde_json::json!(local_inputs);
-			mismatch["received_resolution_inputs_before"] = serde_json::json!(received_inputs);
+			mismatch["expected_resolution_inputs_before"] = slipstream::json!(local_inputs);
+			mismatch["received_resolution_inputs_before"] = slipstream::json!(received_inputs);
 		}
 		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
 	}
@@ -596,7 +598,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(ruma::CanonicalJsonValue::as_integer)
+			.and_then(slipstream::CanonicalJsonValue::as_integer)
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
@@ -913,7 +915,7 @@ async fn handle_edu_typing(
 	if services
 		.rooms
 		.event_handler
-		.acl_check(typing.user_id.server_name(), &typing.room_id)
+		.acl_check(&typing.user_id.server_name(), &typing.room_id)
 		.await
 		.is_err()
 	{
@@ -1035,7 +1037,7 @@ async fn handle_edu_device_list_update(
 
 		let Ok(response) = services
 			.sending
-			.send_federation_request(user_id.server_name(), request)
+			.send_federation_request(&user_id.server_name(), request)
 			.await
 		else {
 			// The EDU only carried a stream position, so we need a follow-up
@@ -1128,8 +1130,7 @@ fn inject_device_display_name(
 	mut keys: Raw<DeviceKeys>,
 	display_name: Option<&String>,
 ) -> Raw<DeviceKeys> {
-	let Ok(mut object) = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()
-	else {
+	let Ok(mut object) = keys.deserialize_as::<JsonObject>() else {
 		return keys;
 	};
 
@@ -1138,9 +1139,9 @@ fn inject_device_display_name(
 	match display_name {
 		| Some(name) => {
 			let unsigned = object
-				.entry("unsigned")
-				.or_insert_with(|| serde_json::json!({}));
-			if let serde_json::Value::Object(unsigned_object) = unsigned {
+				.entry("unsigned".to_owned())
+				.or_insert_with(|| Value::Object(JsonObject::new()));
+			if let Value::Object(unsigned_object) = unsigned {
 				if unsigned_object
 					.get("device_display_name")
 					.and_then(|v| v.as_str())
@@ -1151,19 +1152,16 @@ fn inject_device_display_name(
 				}
 			}
 		},
-		| None => {
-			if let Some(serde_json::Value::Object(unsigned_object)) = object.get_mut("unsigned") {
+		| None =>
+			if let Some(Value::Object(unsigned_object)) = object.get_mut("unsigned") {
 				if unsigned_object.remove("device_display_name").is_some() {
 					modified = true;
 				}
-			}
-		},
+			},
 	}
 
 	if modified {
-		if let Ok(raw) = serde_json::value::to_raw_value(&object) {
-			keys = Raw::from_json(raw);
-		}
+		keys = Raw::from_value(&object);
 	}
 
 	keys
@@ -1175,8 +1173,8 @@ fn remote_device_keys_differ(
 ) -> bool {
 	match (existing_keys.deserialize(), incoming_keys.deserialize()) {
 		| (Ok(existing_keys), Ok(incoming_keys)) =>
-			serde_json::to_value(existing_keys).ok() != serde_json::to_value(incoming_keys).ok(),
-		| _ => existing_keys.json().get() != incoming_keys.json().get(),
+			codec::to_value(&existing_keys) != codec::to_value(&incoming_keys),
+		| _ => existing_keys.get() != incoming_keys.get(),
 	}
 }
 
@@ -1276,7 +1274,7 @@ async fn handle_edu_direct_to_device_event(
 	sender: &UserId,
 	target_device_id_maybe: DeviceIdOrAllDevices,
 	ev_type: &str,
-	event: serde_json::Value,
+	event: Value,
 ) {
 	match target_device_id_maybe {
 		| DeviceIdOrAllDevices::DeviceId(ref target_device_id) => {

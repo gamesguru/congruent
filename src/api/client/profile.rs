@@ -10,7 +10,7 @@ use futures::{
 	FutureExt, StreamExt, TryStreamExt,
 	future::{join, join3, join4},
 };
-use ruma::{
+use slipstream::{
 	OwnedMxcUri, OwnedRoomId, UserId,
 	api::{
 		client::profile::{
@@ -46,7 +46,6 @@ pub(crate) async fn set_displayname_route(
 		.rooms
 		.state_cache
 		.rooms_joined(&body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -140,7 +139,6 @@ pub(crate) async fn set_avatar_url_route(
 		.rooms
 		.state_cache
 		.rooms_joined(&body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 

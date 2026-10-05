@@ -7,7 +7,7 @@ use askama::Template;
 use async_trait::async_trait;
 use conduwuit::{Result, info, utils::ReadyExt};
 use futures::{FutureExt, StreamExt};
-use ruma::{UserId, events::room::message::RoomMessageEventContent};
+use slipstream::{UserId, events::room::message::RoomMessageEventContent};
 
 use crate::{
 	Dep, admin, config, globals,

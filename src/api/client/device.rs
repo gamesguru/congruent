@@ -2,13 +2,13 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, err, utils};
 use futures::StreamExt;
-use ruma::{
+use service::uiaa::Identity;
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedDeviceId,
 	api::client::device::{
 		self, delete_device, delete_devices, get_device, get_devices, update_device,
 	},
 };
-use service::uiaa::Identity;
 
 use crate::{Ruma, client::DEVICE_ID_LENGTH};
 

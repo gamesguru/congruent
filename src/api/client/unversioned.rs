@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axum::{Json, extract::State, response::IntoResponse};
 use conduwuit::Result;
 use futures::StreamExt;
-use ruma::api::client::discovery::get_supported_versions;
+use slipstream::api::client::discovery::get_supported_versions;
 
 use crate::Ruma;
 
@@ -89,7 +89,7 @@ pub(crate) async fn get_supported_versions_route(
 /// Conduwuit-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
 pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
-	Ok(Json(serde_json::json!({
+	Ok(Json(slipstream::json!({
 		"name": conduwuit::version::name(),
 		"version": conduwuit::version::version(),
 	})))
@@ -105,7 +105,7 @@ pub(crate) async fn conduwuit_local_user_count(
 ) -> Result<impl IntoResponse> {
 	let user_count = services.users.list_local_users().count().await;
 
-	Ok(Json(serde_json::json!({
+	Ok(Json(slipstream::json!({
 		"count": user_count
 	})))
 }

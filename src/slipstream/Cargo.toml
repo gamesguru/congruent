@@ -1,0 +1,18 @@
+[package]
+name = "conduwuit_slipstream"
+description = "Local Matrix types and codecs implemented by mtx-slipstream"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+name = "slipstream"
+
+[features]
+# Compatibility surface implemented by mtx-slipstream.
+slipstream = []
+
+[dependencies]
+mtx-slipstream = { path = "../../../slipstream" }

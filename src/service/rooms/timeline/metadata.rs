@@ -1,13 +1,40 @@
 use conduwuit::matrix::pdu::PduCount;
 use serde::{Deserialize, Serialize};
 
+/// Stores an optional event ID as a plain optional string, which is what the
+/// bincode records on disk contain.
+mod opt_event_id {
+	use serde::{Deserialize, Deserializer, Serialize, Serializer};
+	use slipstream::OwnedEventId;
+
+	pub(super) fn serialize<S: Serializer>(
+		value: &Option<OwnedEventId>,
+		serializer: S,
+	) -> Result<S::Ok, S::Error> {
+		value
+			.as_ref()
+			.map(OwnedEventId::as_str)
+			.serialize(serializer)
+	}
+
+	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+		deserializer: D,
+	) -> Result<Option<OwnedEventId>, D::Error> {
+		Ok(
+			Option::<String>::deserialize(deserializer)?
+				.map(|id| OwnedEventId::from(id.as_str())),
+		)
+	}
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct EventMetadata {
 	pub short_room_id: u64,
 	pub is_outlier: bool,
-	pub origin_server_ts: ruma::UInt,
-	pub depth: ruma::UInt,
-	pub redacted_by: Option<ruma::OwnedEventId>,
+	pub origin_server_ts: slipstream::UInt,
+	pub depth: slipstream::UInt,
+	#[serde(with = "opt_event_id")]
+	pub redacted_by: Option<slipstream::OwnedEventId>,
 	pub short_state_hash: Option<u64>,
 	#[serde(default)]
 	pub deprecated_local_topo_depth: u64,

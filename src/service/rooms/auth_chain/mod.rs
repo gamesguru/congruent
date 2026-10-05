@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use roaring::RoaringTreemap;
-use ruma::{EventId, OwnedEventId, RoomId};
+use slipstream::{EventId, OwnedEventId, RoomId};
 
 use self::data::Data;
 use crate::{
@@ -378,7 +378,7 @@ async fn get_auth_chain_inner(
 			let mut legacy_short_ids = self
 				.services
 				.short
-				.multi_get_or_create_shorteventid(new_auth_events.iter().map(|id| &**id))
+				.multi_get_or_create_shorteventid(new_auth_events.iter())
 				.zip(futures::stream::iter(new_auth_events.clone()))
 				.boxed();
 
@@ -429,16 +429,16 @@ async fn add_derived_create_event(
 	let Ok(create_id) = EventId::parse(create_id.as_str()) else {
 		return true;
 	};
-	if exclude.is_some_and(|event_id| event_id == create_id) {
+	if exclude.is_some_and(|event_id| event_id == &create_id) {
 		return true;
 	}
-	let Ok(create_short) = self.services.short.get_shorteventid(create_id).await else {
+	let Ok(create_short) = self.services.short.get_shorteventid(&create_id).await else {
 		return true;
 	};
 	if self
 		.services
 		.timeline
-		.get_pdu_in_room(Some(room_id), create_id)
+		.get_pdu_in_room(Some(room_id), &create_id)
 		.await
 		.is_err()
 	{

@@ -13,7 +13,8 @@ use conduwuit::{
 	warn,
 };
 use futures::FutureExt;
-use ruma::{
+use service::{Services, rooms::state::RoomMutexGuard};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId,
 	RoomVersionId, UserId,
 	api::{
@@ -29,7 +30,6 @@ use ruma::{
 		},
 	},
 };
-use service::{Services, rooms::state::RoomMutexGuard};
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
 use crate::Ruma;
@@ -49,7 +49,7 @@ pub(crate) async fn knock_room_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let (servers, room_id) = match OwnedRoomId::try_from(body.room_id_or_alias.clone()) {
+	let (servers, room_id) = match OwnedRoomId::parse(body.room_id_or_alias.clone()) {
 		| Ok(room_id) => {
 			banned_room_check(
 				&services,
@@ -363,7 +363,7 @@ async fn knock_room_helper_local(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			utils::millis_since_unix_epoch()
 				.try_into()
 				.expect("Timestamp is valid js_int value"),
@@ -493,7 +493,7 @@ async fn knock_room_helper_remote(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			utils::millis_since_unix_epoch()
 				.try_into()
 				.expect("Timestamp is valid js_int value"),
@@ -560,7 +560,7 @@ async fn knock_room_helper_remote(
 	let state = send_knock_response
 		.knock_room_state
 		.iter()
-		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.clone().into_json().get()))
+		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.get()))
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();

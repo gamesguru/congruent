@@ -13,7 +13,12 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use service::{
+	Services,
+	appservice::RegistrationInfo,
+	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
+};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
 	RoomVersionId, UserId,
 	api::{
@@ -31,11 +36,6 @@ use ruma::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-};
-use service::{
-	Services,
-	appservice::RegistrationInfo,
-	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use tokio::join;
 
@@ -78,7 +78,6 @@ pub(crate) async fn join_room_by_id_route(
 		.rooms
 		.state_cache
 		.servers_invite_via(&body.room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	servers.extend(
@@ -89,8 +88,8 @@ pub(crate) async fn join_room_by_id_route(
 			.await
 			.unwrap_or_default()
 			.iter()
-			.filter_map(|event| event.get_field("sender").ok().flatten())
-			.filter_map(|sender: &str| UserId::parse(sender).ok())
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
 			.map(|user| user.server_name().to_owned()),
 	);
 
@@ -139,7 +138,7 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
-	let (servers, room_id) = match OwnedRoomId::try_from(body.room_id_or_alias.clone()) {
+	let (servers, room_id) = match OwnedRoomId::parse(body.room_id_or_alias.clone()) {
 		| Ok(room_id) => {
 			banned_room_check(
 				&services,
@@ -389,14 +388,14 @@ async fn join_room_by_id_helper_remote(
 			.and_then(|s| s.as_object())
 			.and_then(|o| o.get("join_authorised_via_users_server"))
 			.and_then(|v| v.as_str())
-			.and_then(|s| OwnedUserId::try_from(s).ok())
+			.and_then(|s| OwnedUserId::parse(s).ok())
 	} else {
 		None
 	};
 
 	join_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			utils::millis_since_unix_epoch()
 				.try_into()
 				.expect("Timestamp is valid js_int value"),
@@ -538,14 +537,17 @@ async fn join_room_by_id_helper_remote(
 		.boxed()
 		.await;
 
-	let remote_latest_events: Vec<ruma::OwnedEventId> = join_event
+	let remote_latest_events: Vec<slipstream::OwnedEventId> = join_event
 		.get("prev_events")
 		.and_then(|v| v.as_array())
 		.map(|arr| {
 			arr.iter()
 				.filter_map(|v| {
-					v.as_str()
-						.and_then(|s| <&ruma::EventId>::try_from(s).ok().map(ToOwned::to_owned))
+					v.as_str().and_then(|s| {
+						<&slipstream::EventId>::try_from(s)
+							.ok()
+							.map(ToOwned::to_owned)
+					})
 				})
 				.collect()
 		})
@@ -575,10 +577,10 @@ async fn join_room_by_id_helper_remote_process(
 	room_version_id: RoomVersionId,
 	remote_server: OwnedServerName,
 	join_event: CanonicalJsonObject,
-	event_id: ruma::OwnedEventId,
+	event_id: slipstream::OwnedEventId,
 	state_lock: RoomMutexGuard,
 	send_join_response: federation::membership::create_join_event::v2::Response,
-	remote_latest_events: Vec<ruma::OwnedEventId>,
+	remote_latest_events: Vec<slipstream::OwnedEventId>,
 ) -> Result {
 	info!("Parsing join event");
 	let parsed_join_pdu = Box::new(
@@ -598,7 +600,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response room_state");
 	let cork = services.db.cork_and_flush();
-	let mut outlier_event_ids: Vec<ruma::OwnedEventId> = Vec::new();
+	let mut outlier_event_ids: Vec<slipstream::OwnedEventId> = Vec::new();
 	let state = services
 		.server_keys
 		.concurrent_validate_and_add_events(send_join_response.room_state.state, &room_version_id)
@@ -686,7 +688,7 @@ async fn join_room_by_id_helper_remote_process(
 
 	info!("Going through send_join response auth_chain");
 	let cork = services.db.cork_and_flush();
-	let auth_eids: Vec<ruma::OwnedEventId> = services
+	let auth_eids: Vec<slipstream::OwnedEventId> = services
 		.server_keys
 		.concurrent_validate_and_add_events(
 			send_join_response.room_state.auth_chain,
@@ -1105,7 +1107,7 @@ async fn join_room_by_id_helper_local(
 
 	let mut content = serde_json::to_value(content).expect("failed to serialize member event");
 	if let Some(CanonicalJsonValue::Object(custom)) = json_body {
-		if let serde_json::Value::Object(ref mut map) = content {
+		if let slipstream::json::Value::Object(ref mut map) = content {
 			for (k, v) in custom {
 				if !["reason", "third_party_signed", "server_name"].contains(&k.as_str()) {
 					map.entry(k.clone())
@@ -1138,7 +1140,6 @@ async fn join_room_by_id_helper_local(
 		.state_cache
 		.room_servers(room_id)
 		.ready_filter(|server| !services.globals.server_is_ours(server))
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 
@@ -1200,7 +1201,6 @@ async fn join_restricted_via_remote(
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|server| !services.globals.server_is_ours(server))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1370,7 +1370,7 @@ fn deprioritize(
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedServerName;
+	use slipstream::OwnedServerName;
 
 	use super::*;
 
@@ -1411,7 +1411,7 @@ async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
 	room_id: &RoomId,
-	event_id: &ruma::OwnedEventId,
+	event_id: &slipstream::OwnedEventId,
 ) -> Result<()> {
 	info!(
 		%room_id,

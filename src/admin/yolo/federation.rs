@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result, err, info, matrix::pdu::PduEvent};
 use futures::{StreamExt, pin_mut};
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 	events::StateEventType,
@@ -51,7 +51,7 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = serde_json::json!({
+		let dump = slipstream::json!({
 			"room_id": room_id,
 			"server_name": server_name,
 			"event_id": event_id.to_string(),
@@ -96,7 +96,7 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = serde_json::json!({
+		let dump = slipstream::json!({
 			"server_name": server_name,
 			"event_id": event_id.to_string(),
 			"pdu": response.pdu,
@@ -163,7 +163,7 @@ pub(super) async fn fetch_pdu(
 	// If the room's state is completely missing and we happen
 	// to be fetching the `m.room.create` event to rescue it, we MUST extract the
 	// real version from the PDU itself. Otherwise, canonicalization fails.
-	if let Ok(val) = serde_json::from_str::<serde_json::Value>(response.pdu.get()) {
+	if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(response.pdu.get()) {
 		if val.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
 			if let Some(v_str) = val
 				.get("content")
@@ -192,7 +192,10 @@ pub(super) async fn fetch_pdu(
 	let (event_id, value) = if skip_auth {
 		let (eid, mut val) =
 			conduwuit::matrix::event::gen_event_id_canonical_json(&response.pdu, &room_version)?;
-		val.insert("event_id".into(), ruma::CanonicalJsonValue::String(eid.as_str().into()));
+		val.insert(
+			"event_id".into(),
+			slipstream::CanonicalJsonValue::String(eid.as_str().into()),
+		);
 		info!("fetch_pdu: skip_auth mode, generated event_id={eid}");
 		(eid, val)
 	} else {
@@ -231,7 +234,7 @@ pub(super) async fn fetch_pdu(
 		return self.write_str(&msg).await;
 	}
 
-	let create_event = if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+	let create_event = if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
 		// We're fetching the create event itself -- use it as its own create_event
 		// to avoid the catch-22 of needing the create event to insert the create event.
 		pdu.clone()
@@ -281,7 +284,7 @@ pub(super) async fn resend_receipts(
 ) -> Result {
 	use std::collections::BTreeMap;
 
-	use ruma::{
+	use slipstream::{
 		OwnedEventId,
 		api::federation::transactions::edu::{Edu, ReceiptContent, ReceiptData, ReceiptMap},
 		events::{AnySyncEphemeralRoomEvent, receipt::ReceiptType},
@@ -290,7 +293,7 @@ pub(super) async fn resend_receipts(
 	// Collect latest receipt per local user in this room
 	let mut latest_receipts: BTreeMap<
 		OwnedUserId,
-		(OwnedEventId, ruma::events::receipt::Receipt),
+		(OwnedEventId, slipstream::events::receipt::Receipt),
 	> = BTreeMap::new();
 
 	let receipts = self
@@ -385,7 +388,7 @@ pub(super) async fn fetch_state_ids(
 	server: OwnedServerName,
 	event_id: OwnedEventId,
 ) -> Result {
-	use ruma::api::federation::event::{get_event, get_room_state_ids};
+	use slipstream::api::federation::event::{get_event, get_room_state_ids};
 	self.bail_restricted()?;
 
 	let room_version = self
@@ -459,7 +462,7 @@ pub(super) async fn fetch_state_ids(
 				) {
 					val.insert(
 						"event_id".into(),
-						ruma::CanonicalJsonValue::String(eid.as_str().into()),
+						slipstream::CanonicalJsonValue::String(eid.as_str().into()),
 					);
 					self.services
 						.rooms

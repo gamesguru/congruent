@@ -11,6 +11,7 @@ conduwuit::mod_dtor! {}
 #[cfg(test)]
 mod benches;
 mod cork;
+pub mod dbkey;
 mod de;
 mod deprecated_maps;
 mod deserialized;
@@ -32,6 +33,7 @@ use std::{ops::Index, sync::Arc};
 use conduwuit::{Result, Server, err};
 
 pub use self::{
+	dbkey::from_json_slice,
 	de::{Ignore, IgnoreAll},
 	deserialized::Deserialized,
 	handle::Handle,

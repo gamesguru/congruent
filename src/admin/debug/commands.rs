@@ -20,12 +20,12 @@ use conduwuit::{
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use lettre::message::Mailbox;
-use ruma::{
+use service::rooms::short::{ShortEventId, ShortRoomId};
+use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 };
-use service::rooms::short::{ShortEventId, ShortRoomId};
 use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
@@ -74,7 +74,7 @@ pub(super) async fn parse_pdu(&self) -> Result {
 	let string = self.body[1..self.body.len().saturating_sub(1)].join("\n");
 	match serde_json::from_str(&string) {
 		| Err(e) => return Err!("Invalid json in command body: {e}"),
-		| Ok(value) => match ruma::signatures::reference_hash(&value, &RoomVersionId::V6) {
+		| Ok(value) => match slipstream::signatures::reference_hash(&value, &RoomVersionId::V6) {
 			| Err(e) => return Err!("Could not parse PDU JSON: {e:?}"),
 			| Ok(hash) => {
 				let event_id = OwnedEventId::parse(format!("${hash}"));
@@ -408,7 +408,7 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		.sending
 		.send_federation_request(
 			&server,
-			ruma::api::federation::discovery::get_server_version::v1::Request {},
+			slipstream::api::federation::discovery::get_server_version::v1::Request {},
 		)
 		.await
 	{
@@ -521,7 +521,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	use std::fmt::Write;
 
 	use conduwuit::matrix::{Event, EventTypeExt, RoomVersion};
-	use ruma::signatures::Verified;
+	use slipstream::signatures::Verified;
 
 	let pdu = self.services.rooms.timeline.get_pdu(&event_id).await?;
 	let mut event = self.services.rooms.timeline.get_pdu_json(&event_id).await?;
@@ -584,7 +584,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 				.services
 				.rooms
 				.state_accessor
-				.room_state_get(room_id, &ruma::events::StateEventType::RoomCreate, "")
+				.room_state_get(room_id, &slipstream::events::StateEventType::RoomCreate, "")
 				.await
 				.ok();
 
@@ -624,8 +624,9 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 		writeln!(out, "Room: {room_id}")?;
 	}
 	writeln!(out, "Type: {}", pdu.kind())?;
-	if pdu.kind() == &ruma::events::TimelineEventType::RoomMember {
-		if let Ok(content) = serde_json::from_str::<serde_json::Value>(pdu.content().get()) {
+	if pdu.kind() == &slipstream::events::TimelineEventType::RoomMember {
+		if let Ok(content) = serde_json::from_str::<slipstream::json::Value>(pdu.content().get())
+		{
 			if let Some(membership) = content.get("membership").and_then(|m| m.as_str()) {
 				writeln!(out, "Membership: {membership}")?;
 			}
@@ -795,7 +796,7 @@ pub(crate) async fn force_set_state(
 	} else {
 		let mut found = None;
 		for pdu in &pdus {
-			if let Ok(val) = serde_json::from_str::<serde_json::Value>(pdu.get()) {
+			if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(pdu.get()) {
 				if val.get("type").and_then(|v| v.as_str()) == Some("m.room.create") {
 					if let Some(ver) = val
 						.get("content")
@@ -1020,14 +1021,14 @@ pub(crate) async fn force_set_state(
 #[admin_command]
 async fn fetch_and_load_state(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	server_names: &[OwnedServerName],
 	at_event_id: &EventId,
 	input: Option<&String>,
 	output: Option<&String>,
 ) -> Result<(
-	Vec<Box<serde_json::value::RawValue>>,
-	Vec<Box<serde_json::value::RawValue>>,
+	Vec<Box<slipstream::serde::RawJsonValue>>,
+	Vec<Box<slipstream::serde::RawJsonValue>>,
 	HashMap<u64, OwnedEventId>,
 )> {
 	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -1035,13 +1036,13 @@ async fn fetch_and_load_state(
 
 	// Load state from file, federation, or local database
 	let (pdus, auth_chain): (
-		Vec<Box<serde_json::value::RawValue>>,
-		Vec<Box<serde_json::value::RawValue>>,
+		Vec<Box<slipstream::serde::RawJsonValue>>,
+		Vec<Box<slipstream::serde::RawJsonValue>>,
 	) = if let Some(path) = input {
 		info!("Loading state from file: {path}");
 		let data = std::fs::read_to_string(path)
 			.map_err(|e| err!(Database("Failed to read input file: {e:?}")))?;
-		let parsed: serde_json::Value = serde_json::from_str(&data)
+		let parsed: slipstream::json::Value = serde_json::from_str(&data)
 			.map_err(|e| err!(Database("Failed to parse input file: {e:?}")))?;
 		let pdus_val = parsed
 			.get("pdus")
@@ -1049,10 +1050,10 @@ async fn fetch_and_load_state(
 		let auth_val = parsed
 			.get("auth_chain")
 			.ok_or(err!(Database("Missing 'auth_chain' key in input file")))?;
-		let pdus: Vec<Box<serde_json::value::RawValue>> =
+		let pdus: Vec<Box<slipstream::serde::RawJsonValue>> =
 			serde_json::from_value(pdus_val.clone())
 				.map_err(|e| err!(Database("Failed to parse PDUs: {e:?}")))?;
-		let auth_chain: Vec<Box<serde_json::value::RawValue>> =
+		let auth_chain: Vec<Box<slipstream::serde::RawJsonValue>> =
 			serde_json::from_value(auth_val.clone())
 				.map_err(|e| err!(Database("Failed to parse auth chain: {e:?}")))?;
 		info!(
@@ -1062,8 +1063,8 @@ async fn fetch_and_load_state(
 		);
 		(pdus, auth_chain)
 	} else if !server_names.is_empty() {
-		let mut all_pdus: Vec<Box<serde_json::value::RawValue>> = Vec::new();
-		let mut all_auth: Vec<Box<serde_json::value::RawValue>> = Vec::new();
+		let mut all_pdus: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
+		let mut all_auth: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
 
 		for server_name in server_names {
 			info!("Fetching room state from {server_name} at event {at_event_id_str}...");
@@ -1091,7 +1092,7 @@ async fn fetch_and_load_state(
 						};
 						let dump_path = format!("{path}{suffix}");
 						info!("Dumping federation state response to {dump_path}");
-						let dump = serde_json::json!({
+						let dump = slipstream::json!({
 							"room_id": room_id,
 							"server_name": server_name,
 							"event_id": at_event_id_str,
@@ -1162,9 +1163,9 @@ async fn fetch_and_load_state(
 #[admin_command]
 async fn validate_and_extract_state(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	pdus: &[Box<serde_json::value::RawValue>],
+	pdus: &[Box<slipstream::serde::RawJsonValue>],
 	skip_sig_verify: bool,
 	state: &mut HashMap<u64, OwnedEventId>,
 ) -> Result<(usize, usize)> {
@@ -1206,7 +1207,7 @@ async fn validate_and_extract_state(
 				|(event_id, mut value)| {
 					value.insert(
 						"event_id".into(),
-						ruma::CanonicalJsonValue::String(event_id.as_str().into()),
+						slipstream::CanonicalJsonValue::String(event_id.as_str().into()),
 					);
 					(event_id, value)
 				},
@@ -1243,15 +1244,15 @@ async fn validate_and_extract_state(
 		// Extract fields directly from canonical JSON — avoids PduEvent
 		// deserialization failures for events with oversized IDs (>255 bytes).
 		let event_type_str = value.get("type").and_then(|v| match v {
-			| ruma::CanonicalJsonValue::String(s) => Some(s.clone()),
+			| slipstream::CanonicalJsonValue::String(s) => Some(s.clone()),
 			| _ => None,
 		});
 		let state_key_opt = value.get("state_key").and_then(|v| match v {
-			| ruma::CanonicalJsonValue::String(s) => Some(s.clone()),
+			| slipstream::CanonicalJsonValue::String(s) => Some(s.clone()),
 			| _ => None,
 		});
 		let pdu_room_id = value.get("room_id").and_then(|v| match v {
-			| ruma::CanonicalJsonValue::String(s) => Some(s.clone()),
+			| slipstream::CanonicalJsonValue::String(s) => Some(s.clone()),
 			| _ => None,
 		});
 
@@ -1300,9 +1301,9 @@ async fn validate_and_extract_state(
 #[admin_command]
 async fn validate_and_add_auth_chain(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	auth_chain: &[Box<serde_json::value::RawValue>],
+	auth_chain: &[Box<slipstream::serde::RawJsonValue>],
 	skip_sig_verify: bool,
 ) -> Result<(usize, usize, usize)> {
 	info!("Going through auth_chain response");
@@ -1361,7 +1362,7 @@ async fn validate_and_add_auth_chain(
 					|(event_id, mut value)| {
 						value.insert(
 							"event_id".into(),
-							ruma::CanonicalJsonValue::String(event_id.as_str().into()),
+							slipstream::CanonicalJsonValue::String(event_id.as_str().into()),
 						);
 						(event_id, value)
 					},
@@ -1408,7 +1409,7 @@ async fn validate_and_add_auth_chain(
 #[admin_command]
 async fn dry_run_comparison(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	state: &HashMap<u64, OwnedEventId>,
 	validated: usize,
 	dropped: usize,
@@ -1497,7 +1498,7 @@ async fn dry_run_comparison(
 #[admin_command]
 async fn reject_conflicting_state(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	at_event_id: &EventId,
 	remote_eids: &HashSet<OwnedEventId>,
 ) {
@@ -1571,7 +1572,7 @@ async fn rebuild_membership_cache_inner(&self, room_id: OwnedRoomId) {
 #[admin_command]
 async fn promote_sync_anchor(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 	state_lock: &conduwuit_service::rooms::state::RoomMutexGuard,
 ) {

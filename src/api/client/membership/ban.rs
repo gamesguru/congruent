@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
-use ruma::{
+use slipstream::{
 	api::client::membership::ban_user,
 	events::room::member::{MembershipState, RoomMemberEventContent},
 };

@@ -10,7 +10,8 @@ use futures::{
 	FutureExt, StreamExt,
 	future::{OptionFuture, join3},
 };
-use ruma::{
+use service::Services;
+use slipstream::{
 	OwnedServerName, RoomId, UserId,
 	api::{
 		client::room::get_summary,
@@ -19,7 +20,6 @@ use ruma::{
 	events::room::member::MembershipState,
 	space::SpaceRoomJoinRule::{self, *},
 };
-use service::Services;
 
 use crate::{Ruma, RumaResponse};
 
@@ -64,7 +64,6 @@ pub(crate) async fn get_room_summary(
 			.rooms
 			.state_cache
 			.room_servers(&room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {
@@ -271,7 +270,6 @@ async fn remote_room_summary_hierarchy_response(
 			.rooms
 			.state_cache
 			.room_servers(room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {

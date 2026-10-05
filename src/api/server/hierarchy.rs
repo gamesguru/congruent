@@ -7,7 +7,7 @@ use conduwuit_service::rooms::spaces::{
 	Identifier, SummaryAccessibility, get_parent_children_via,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::api::federation::space::get_hierarchy;
+use slipstream::api::federation::space::get_hierarchy;
 
 use crate::Ruma;
 

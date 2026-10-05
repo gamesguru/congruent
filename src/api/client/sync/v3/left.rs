@@ -10,15 +10,14 @@ use conduwuit::{
 	},
 };
 use futures::{StreamExt, future::join};
-use ruma::{
+use service::{Services, rooms::lazy_loading::MemberSet};
+use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::Raw,
+	serde::{Raw, RawJsonValue},
 	uint,
 };
-use serde_json::value::RawValue;
-use service::{Services, rooms::lazy_loading::MemberSet};
 
 use crate::client::{
 	TimelinePdus, ignored_filter,
@@ -291,7 +290,7 @@ pub(super) async fn load_left_room(
 		}
 	}
 
-	let timeline_ids: std::collections::HashSet<&EventId> =
+	let timeline_ids: std::collections::HashSet<&str> =
 		raw_timeline_pdus.iter().map(|pdu| &*pdu.event_id).collect();
 
 	let raw_state_events: Vec<Raw<AnySyncStateEvent>> = state_events

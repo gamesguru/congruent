@@ -6,7 +6,7 @@ mod moderation;
 
 use clap::Subcommand;
 use conduwuit::Result;
-use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+use slipstream::{OwnedRoomId, OwnedRoomOrAliasId};
 
 use self::{
 	alias::RoomAliasCommand, directory::RoomDirectoryCommand, info::RoomInfoCommand,

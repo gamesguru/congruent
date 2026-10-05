@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
-use ruma::{
+use slipstream::{
 	api::client::alias::{create_alias, delete_alias, get_alias},
 	events::{StateEventType, room::canonical_alias::RoomCanonicalAliasEventContent},
 };

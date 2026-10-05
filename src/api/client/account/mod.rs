@@ -8,7 +8,8 @@ use conduwuit::{
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
-use ruma::{
+use service::{mailer::messages, uiaa::Identity};
+use slipstream::{
 	OwnedRoomId, OwnedUserId, UserId,
 	api::client::{
 		account::{
@@ -26,7 +27,6 @@ use ruma::{
 		},
 	},
 };
-use service::{mailer::messages, uiaa::Identity};
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
 use crate::Ruma;
@@ -161,7 +161,7 @@ pub(crate) async fn change_password_route(
 			.users
 			.all_device_ids(&sender_user)
 			.ready_filter(|id| *id != body.sender_device())
-			.for_each(|id| services.users.remove_device(&sender_user, id))
+			.for_each(|id| services.users.remove_device(&sender_user, &id))
 			.await;
 
 		// Remove all pushers except the ones associated with this session

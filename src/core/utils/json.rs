@@ -1,23 +1,41 @@
 use std::{fmt, marker::PhantomData, str::FromStr};
 
-use ruma::{CanonicalJsonError, CanonicalJsonObject, canonical_json::try_from_json_map};
+use slipstream::{CanonicalJsonError, CanonicalJsonObject};
 
 use crate::Result;
 
-/// Fallible conversion from any value that implements `Serialize` to a
+pub trait OwnedEventType: Sized {
+	fn owned_event_type(&self) -> Self;
+}
+
+impl OwnedEventType for slipstream::events::StateEventType {
+	fn owned_event_type(&self) -> Self { Self::from(self.as_str()) }
+}
+
+impl OwnedEventType for slipstream::events::TimelineEventType {
+	fn owned_event_type(&self) -> Self { Self::from(self.as_str()) }
+}
+
+/// Clone a Slipstream raw JSON value without requiring `Raw<T>: Clone`.
+#[must_use]
+pub fn clone_raw<T>(raw: &slipstream::serde::Raw<T>) -> slipstream::serde::Raw<T> {
+	slipstream::serde::Raw(raw.0.clone(), PhantomData)
+}
+
+/// Fallible conversion from any value that implements Slipstream's `Serialize` to a
 /// `CanonicalJsonObject`.
 ///
-/// `value` must serialize to an `serde_json::Value::Object`.
-pub fn to_canonical_object<T: serde::Serialize>(
+/// `value` must serialize to a JSON object.
+pub fn to_canonical_object<T: slipstream::codec::Serialize>(
 	value: T,
 ) -> Result<CanonicalJsonObject, CanonicalJsonError> {
 	use CanonicalJsonError::SerDe;
-	use serde::ser::Error;
 
-	match serde_json::to_value(value).map_err(SerDe)? {
-		| serde_json::Value::Object(map) => try_from_json_map(map),
-		| _ => Err(SerDe(serde_json::Error::custom("Value must be an object"))),
-	}
+	let encoded = slipstream::codec::to_string(&value);
+	let value =
+		slipstream::canonical_json::from_json_str(&encoded).map_err(|e| SerDe(e.to_string()))?;
+	slipstream::canonical_json::into_object(value)
+		.ok_or_else(|| SerDe("serialized value was not an object".to_owned()))
 }
 
 pub fn deserialize_from_str<'de, D, T, E>(deserializer: D) -> Result<T, D::Error>

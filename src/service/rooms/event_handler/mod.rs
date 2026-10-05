@@ -30,7 +30,7 @@ use conduwuit::{
 };
 use futures::StreamExt;
 pub use handle_outlier_pdu::AuthRecoveryStage;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId,
 	events::room::create::RoomCreateEventContent,
 };
@@ -147,7 +147,7 @@ impl Service {
 	pub async fn build_federation_server_list(
 		&self,
 		room_id: &RoomId,
-		origin: &ruma::ServerName,
+		origin: &slipstream::ServerName,
 		room_server_cap: usize,
 	) -> Vec<OwnedServerName> {
 		self.build_federation_server_list_with_sender(room_id, origin, None, room_server_cap)
@@ -160,8 +160,8 @@ impl Service {
 	pub async fn build_federation_server_list_with_sender(
 		&self,
 		room_id: &RoomId,
-		origin: &ruma::ServerName,
-		event_sender_server: Option<&ruma::ServerName>,
+		origin: &slipstream::ServerName,
+		event_sender_server: Option<&slipstream::ServerName>,
 		room_server_cap: usize,
 	) -> Vec<OwnedServerName> {
 		let mut room_servers: Vec<OwnedServerName> = self
@@ -169,7 +169,6 @@ impl Service {
 			.state_cache
 			.room_servers(room_id)
 			.ready_filter(|s| !self.services.globals.server_is_ours(s))
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 
@@ -226,7 +225,12 @@ impl Service {
 		servers
 	}
 
-	pub fn update_peer_stats(&self, server: &ruma::ServerName, success: bool, latency: Duration) {
+	pub fn update_peer_stats(
+		&self,
+		server: &slipstream::ServerName,
+		success: bool,
+		latency: Duration,
+	) {
 		let latency_ms = u32::try_from(latency.as_millis()).unwrap_or(u32::MAX);
 		let stats = self.peer_scorer.entry(server.to_owned()).or_default();
 		if success {
@@ -254,7 +258,7 @@ impl Service {
 	pub async fn build_server_pool(
 		&self,
 		room_id: &RoomId,
-		primary: &ruma::ServerName,
+		primary: &slipstream::ServerName,
 		room_server_cap: usize,
 	) -> server_pool::ServerPool {
 		let ranked = self

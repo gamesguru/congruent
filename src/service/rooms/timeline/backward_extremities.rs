@@ -27,7 +27,7 @@
 //!   finally arrives, so we know which `roomid_depth_missingeventid` entry to
 //!   delete without a scan.
 
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Packs the read-path key: `[shortroomid][depth][event_id]`.
 pub(super) fn pack_depth_key(shortroomid: [u8; 8], depth: u64, event_id: &EventId) -> Vec<u8> {
@@ -76,7 +76,7 @@ pub(super) fn missing_prev_events(
 
 #[cfg(test)]
 mod tests {
-	use ruma::owned_event_id;
+	use slipstream::owned_event_id;
 
 	use super::*;
 

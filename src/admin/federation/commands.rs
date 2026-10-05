@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use conduwuit::{Err, Result, utils::response::LimitReadExt};
 use futures::StreamExt;
-use ruma::{OwnedRoomId, OwnedServerName, OwnedUserId};
+use slipstream::{OwnedRoomId, OwnedServerName, OwnedUserId};
 
 use crate::{admin_command, get_room_info};
 
@@ -96,7 +96,7 @@ pub(super) async fn fetch_support_well_known(&self, server_name: OwnedServerName
 		);
 	}
 
-	let json: serde_json::Value = match serde_json::from_str(&text) {
+	let json: slipstream::json::Value = match serde_json::from_str(&text) {
 		| Ok(json) => json,
 		| Err(_) => {
 			return Err!("Response text/body is not valid JSON.",);

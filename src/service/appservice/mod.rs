@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use conduwuit::{Err, Result, err, utils::stream::IterStream};
 use database::Map;
 use futures::{Future, FutureExt, Stream, TryStreamExt};
-use ruma::{RoomAliasId, RoomId, UserId, api::appservice::Registration};
+use slipstream::{RoomAliasId, RoomId, UserId, api::appservice::Registration};
 use tokio::sync::{RwLock, RwLockReadGuard};
 
 pub use self::{namespace_regex::NamespaceRegex, registration_info::RegistrationInfo};
@@ -30,6 +30,20 @@ struct Data {
 }
 
 type Registrations = BTreeMap<String, RegistrationInfo>;
+
+/// Parses an appservice registration from its YAML representation.
+pub fn registration_from_yaml(yaml: &str) -> Result<Registration> {
+	let value: serde_json::Value = serde_saphyr::from_str(yaml)?;
+	slipstream::codec::from_str(&serde_json::to_string(&value)?)
+		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
+}
+
+/// Renders an appservice registration as YAML.
+pub fn registration_to_yaml(registration: &Registration) -> Result<String> {
+	let value: serde_json::Value =
+		serde_json::from_str(&slipstream::codec::to_string(registration))?;
+	Ok(serde_saphyr::to_string(&value)?)
+}
 
 #[async_trait]
 impl crate::Service for Service {
@@ -70,24 +84,22 @@ impl crate::Service for Service {
 										"Failed to read appservice file {path:?}: {e:?}"
 									);
 								},
-								| Ok(content) => {
-									match serde_saphyr::from_str::<Registration>(&content) {
-										| Err(e) => {
-											conduwuit::error!(
-												"Failed to parse appservice YAML from {path:?}: \
-												 {e:?}"
-											);
-										},
-										| Ok(registration) => {
-											self.db
-												.id_appserviceregistrations
-												.insert(&registration.id, &content);
-											conduwuit::info!(
-												"Auto-registered appservice {} from {path:?}",
-												registration.id
-											);
-										},
-									}
+								| Ok(content) => match registration_from_yaml(&content) {
+									| Err(e) => {
+										conduwuit::error!(
+											"Failed to parse appservice YAML from {path:?}: \
+											 {e:?}"
+										);
+									},
+									| Ok(registration) => {
+										self.db
+											.id_appserviceregistrations
+											.insert(&registration.id, &content);
+										conduwuit::info!(
+											"Auto-registered appservice {} from {path:?}",
+											registration.id
+										);
+									},
 								},
 							}
 						}
@@ -153,7 +165,8 @@ impl Service {
 		let appservice_user_id = UserId::parse_with_server_name(
 			registration.sender_localpart.as_str(),
 			self.services.globals.server_name(),
-		)?;
+		)
+		.map_err(|e| err!(Request(InvalidParam("Invalid appservice user ID: {e}"))))?;
 
 		if !self.services.users.exists(&appservice_user_id).await {
 			self.services
@@ -318,7 +331,7 @@ impl Service {
 			.id_appserviceregistrations
 			.get(id)
 			.await
-			.and_then(|ref bytes| serde_saphyr::from_slice(bytes).map_err(Into::into))
+			.and_then(|ref bytes| registration_from_yaml(&String::from_utf8_lossy(bytes)))
 			.map_err(|e| {
 				self.db.id_appserviceregistrations.remove(id);
 				err!(Database("Invalid appservice {id:?} registration: {e:?}. Removed."))

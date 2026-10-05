@@ -10,7 +10,9 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::{FutureExt, Stream, StreamExt};
-use ruma::{CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, RoomId,
+};
 
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
@@ -77,7 +79,7 @@ pub fn stream_keys(&self) -> impl Stream<Item = OwnedEventId> + Send + '_ {
 		.raw_stream()
 		.ignore_err()
 		.ready_filter_map(|(key, val)| {
-			let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
+			let eid = OwnedEventId::parse(std::str::from_utf8(key).ok()?).ok()?;
 			let meta = rooms::timeline::EventMetadata::from_bincode(val).ok()?;
 			meta.is_outlier.then_some(eid)
 		})
@@ -112,7 +114,7 @@ pub fn room_stream<'a>(
 				.raw_stream()
 				.ignore_err()
 				.ready_filter_map(move |(key, val)| {
-					let eid = OwnedEventId::try_from(std::str::from_utf8(key).ok()?).ok()?;
+					let eid = OwnedEventId::parse(std::str::from_utf8(key).ok()?).ok()?;
 					let meta: rooms::timeline::EventMetadata = bincode::deserialize(val).ok()?;
 					if !meta.is_outlier {
 						return None;
@@ -129,7 +131,9 @@ pub fn room_stream<'a>(
 			async move {
 				let pdu = self.get_pdu_outlier(&eid).await.ok()?;
 				// If metadata had a 0 short_room_id, we must check the actual PDU room_id
-				if meta_short_room_id == 0 && pdu.room_id() != Some(&*room_id) {
+				if meta_short_room_id == 0
+					&& pdu.room_id().map(OwnedRoomId::as_str) != Some(&*room_id)
+				{
 					return None;
 				}
 				Some((eid, pdu))
@@ -207,8 +211,7 @@ fn derive_room_id(
 ) -> Option<OwnedRoomId> {
 	pdu.get("room_id")
 		.and_then(CanonicalJsonValue::as_str)
-		.and_then(|r| <&RoomId>::try_from(r).ok())
-		.map(ToOwned::to_owned)
+		.and_then(|r| OwnedRoomId::parse(r).ok())
 		.or_else(|| room_id.map(ToOwned::to_owned))
 		.or_else(|| {
 			let is_create =
@@ -285,10 +288,10 @@ fn add_pdu_outlier_batch_impl<'a>(
 		.batch_raw_put(batch, event_id.as_bytes(), Json(&pdu));
 
 	if let Ok(parsed_pdu) =
-		serde_json::from_value::<PduEvent>(serde_json::to_value(&pdu).unwrap())
+		slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(pdu.clone()))
 	{
 		let short_room_id = room_id_from_pdu
-			.as_deref()
+			.as_ref()
 			.map_or(0, |rid| self.services.short.get_or_create_shortroomid_blocking(rid));
 
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on

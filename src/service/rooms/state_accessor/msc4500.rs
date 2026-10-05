@@ -16,8 +16,9 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Pdu, RoomVersion, implement, matrix::Event};
 use futures::TryStreamExt;
 use rezzy::state::{LtHash, RedactionOverlay, ResolutionInputRecord, ResolutionInputs};
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, RoomVersionId,
+	codec::{Deserialize, Serialize},
 	events::{
 		StateEventType, TimelineEventType,
 		room::{
@@ -26,7 +27,6 @@ use ruma::{
 		},
 	},
 };
-use serde::Deserialize;
 
 use crate::rooms::short::ShortEventId;
 
@@ -147,11 +147,11 @@ pub(super) fn fold_redaction_sets(
 #[must_use]
 pub(super) fn redaction_overlay_digest(
 	selected: &[(String, String, OwnedEventId)],
-	redacted: &HashSet<&EventId>,
+	redacted: &HashSet<&OwnedEventId>,
 ) -> String {
 	let mut overlay = RedactionOverlay::default();
 	for (kind, state_key, id) in selected {
-		if redacted.contains(&**id) {
+		if redacted.contains(id) {
 			overlay.insert(kind, state_key, id.as_str());
 		}
 	}
@@ -259,9 +259,9 @@ async fn msc4500_redaction_effective(
 #[implement(super::Service)]
 async fn msc4500_redact_power(
 	&self,
-	room_id: &ruma::RoomId,
+	room_id: &slipstream::RoomId,
 	root: &rezzy::hamt::RootHandle,
-	sender: &ruma::UserId,
+	sender: &slipstream::UserId,
 ) -> Option<bool> {
 	match self
 		.state_get_content_hamt::<RoomPowerLevelsEventContent>(
@@ -316,7 +316,7 @@ pub async fn msc4500_point_digests(
 
 	let mut primary = LtHash::default();
 	let mut selected: Vec<(String, String, OwnedEventId)> = Vec::new();
-	let mut by_id: HashMap<&EventId, &Pdu> = HashMap::new();
+	let mut by_id: HashMap<&OwnedEventId, &Pdu> = HashMap::new();
 	for state_pdu in &state {
 		let Some(state_key) = state_pdu.state_key() else {
 			continue;
@@ -338,13 +338,13 @@ pub async fn msc4500_point_digests(
 		}
 	}
 
-	let mut redacted: HashSet<&EventId> = HashSet::new();
+	let mut redacted: HashSet<&OwnedEventId> = HashSet::new();
 	for (redaction_id, target_id) in &past {
 		// Only a target selected at this point can contribute.
-		let Some(target) = by_id.get(&**target_id) else {
+		let Some(target) = by_id.get(target_id) else {
 			continue;
 		};
-		let redaction = if &**redaction_id == pdu.event_id() {
+		let redaction = if redaction_id == pdu.event_id() {
 			pdu.clone()
 		} else {
 			self.services.timeline.get_pdu(redaction_id).await.ok()?
@@ -470,7 +470,7 @@ pub async fn msc4500_resolution_inputs_digest(
 		}
 		let node = cache.get(&id)?.as_ref()?;
 
-		let auth: Vec<&str> = node.auth_events.iter().map(|e| e.as_str()).collect();
+		let auth: Vec<&str> = node.auth_events.iter().map(OwnedEventId::as_str).collect();
 		inputs.insert(&ResolutionInputRecord {
 			event_id: node.event_id.as_str(),
 			event_type: &node.kind,
@@ -499,10 +499,53 @@ pub const ALGORITHM_WITH_INPUTS: &str =
 /// The `state_hashes` object of a `/send` transaction.
 ///
 /// One `algorithm` governs every entry; `entries` is keyed by PDU ID.
-#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug)]
 pub struct StateHashes {
 	pub algorithm: String,
 	pub entries: BTreeMap<OwnedEventId, StateHashEntry>,
+}
+
+impl Serialize for StateHashes {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("algorithm".into(), slipstream::json::Value::String(self.algorithm.clone()));
+		let entries: slipstream::json::Object = self
+			.entries
+			.iter()
+			.map(|(k, v)| (k.as_str().into(), v.to_json()))
+			.collect();
+		obj.insert("entries".into(), slipstream::json::Value::Object(entries));
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for StateHashes {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			algorithm: obj
+				.get("algorithm")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.unwrap_or_default(),
+			entries: obj
+				.get("entries")
+				.and_then(|v| v.as_object())
+				.map(|entries| {
+					entries
+						.iter()
+						.filter_map(|(k, v)| {
+							OwnedEventId::parse(k).ok().and_then(|eid| {
+								StateHashEntry::from_json(v).ok().map(|e| (eid, e))
+							})
+						})
+						.collect()
+				})
+				.unwrap_or_default(),
+		})
+	}
 }
 
 impl StateHashes {
@@ -524,24 +567,78 @@ impl StateHashes {
 /// omits both `after` fields. `resolution_inputs_before` is omitted under the
 /// base algorithm; under the input algorithm it is a string, or `null` when
 /// the sender has no assertion for that component.
-#[derive(Clone, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StateHashEntry {
-	#[serde(default)]
 	pub before: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub after: Option<String>,
-	#[serde(default)]
 	pub redactions_before: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub redactions_after: Option<String>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub resolution_inputs_before: Option<Option<String>>,
-	#[serde(default, skip_serializing_if = "is_false")]
 	pub limited: bool,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_false(b: &bool) -> bool { !*b }
+impl Serialize for StateHashEntry {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		if let Some(ref v) = self.before {
+			obj.insert("before".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.after {
+			obj.insert("after".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.redactions_before {
+			obj.insert("redactions_before".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(ref v) = self.redactions_after {
+			obj.insert("redactions_after".into(), slipstream::json::Value::String(v.clone()));
+		}
+		if let Some(v) = &self.resolution_inputs_before {
+			if let Some(inner) = v {
+				obj.insert(
+					"resolution_inputs_before".into(),
+					slipstream::json::Value::String(inner.clone()),
+				);
+			} else {
+				obj.insert("resolution_inputs_before".into(), slipstream::json::Value::Null);
+			}
+		}
+		if self.limited {
+			obj.insert("limited".into(), slipstream::json::Value::Bool(true));
+		}
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for StateHashEntry {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			before: obj.get("before").and_then(|v| v.as_str()).map(String::from),
+			after: obj.get("after").and_then(|v| v.as_str()).map(String::from),
+			redactions_before: obj
+				.get("redactions_before")
+				.and_then(|v| v.as_str())
+				.map(String::from),
+			redactions_after: obj
+				.get("redactions_after")
+				.and_then(|v| v.as_str())
+				.map(String::from),
+			resolution_inputs_before: obj.get("resolution_inputs_before").and_then(|v| {
+				if v.is_null() {
+					Some(None)
+				} else {
+					v.as_str().map(String::from).map(Some)
+				}
+			}),
+			limited: obj
+				.get("limited")
+				.and_then(slipstream::json::Value::as_bool)
+				.unwrap_or(false),
+		})
+	}
+}
 
 impl StateHashEntry {
 	/// An explicit deferral: the sender cannot resolve this DAG point.
@@ -593,16 +690,16 @@ impl StateHashEntry {
 
 #[cfg(test)]
 mod wire_tests {
-	use serde_json::json;
+	use conduwuit::slipstream::{codec, json};
 
 	use super::*;
 
 	#[test]
 	fn limited_entry_nulls_before_and_omits_after() {
-		let base = serde_json::to_value(StateHashEntry::limited(false)).unwrap();
+		let base = codec::to_value(&StateHashEntry::limited(false));
 		assert_eq!(base, json!({"before": null, "redactions_before": null, "limited": true}));
 
-		let with_inputs = serde_json::to_value(StateHashEntry::limited(true)).unwrap();
+		let with_inputs = codec::to_value(&StateHashEntry::limited(true));
 		assert_eq!(
 			with_inputs,
 			json!({
@@ -625,7 +722,7 @@ mod wire_tests {
 			None,
 		);
 		assert_eq!(
-			serde_json::to_value(&entry).unwrap(),
+			codec::to_value(&entry),
 			json!({"before": "b", "after": "a", "redactions_before": "rb", "redactions_after": "ra"})
 		);
 		assert!(entry.required_digests().is_some());
@@ -634,7 +731,7 @@ mod wire_tests {
 
 	#[test]
 	fn inputs_null_absent_and_present_all_parse() {
-		let parse = |v: serde_json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse = |v: json::Value| codec::from_value::<StateHashEntry>(&v).unwrap();
 		let base =
 			json!({"before":"b","after":"a","redactions_before":"rb","redactions_after":"ra"});
 
@@ -651,7 +748,7 @@ mod wire_tests {
 
 	#[test]
 	fn malformed_or_limited_entries_defer() {
-		let parse = |v: serde_json::Value| serde_json::from_value::<StateHashEntry>(v).unwrap();
+		let parse = |v: json::Value| codec::from_value::<StateHashEntry>(&v).unwrap();
 		// Omitting a redaction digest is malformed, not an empty overlay.
 		assert!(
 			parse(json!({"before":"b","after":"a","redactions_before":"rb"}))
@@ -682,7 +779,7 @@ mod wire_tests {
 mod causal_tests {
 	use super::*;
 
-	fn id(s: &str) -> OwnedEventId { OwnedEventId::try_from(format!("${s}")).unwrap() }
+	fn id(s: &str) -> OwnedEventId { OwnedEventId::parse(format!("${s}")).unwrap() }
 
 	fn node(prevs: &[&str], redaction_of: Option<&str>) -> DagNode {
 		DagNode {
@@ -719,7 +816,7 @@ mod causal_tests {
 		// The same selected state, evaluated for each branch.
 		let selected = vec![("m.room.name".to_owned(), String::new(), id("T"))];
 		let digest = |set: &RedactionSet| {
-			let targets: HashSet<&EventId> = set.values().map(AsRef::as_ref).collect();
+			let targets: HashSet<&OwnedEventId> = set.values().collect();
 			redaction_overlay_digest(&selected, &targets)
 		};
 		assert_ne!(digest(&x), digest(&y));

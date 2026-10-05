@@ -1,7 +1,7 @@
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
-use ruma::{OwnedEventId, api::client::message::send_message_event};
+use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
 use crate::{Ruma, RumaResponse};
 
@@ -63,7 +63,7 @@ fn cached_send_txn_response(
 }
 
 fn delay_id_response(delay_id: &str) -> axum::response::Response {
-	axum::Json(serde_json::json!({
+	axum::Json(slipstream::json!({
 		"delay_id": delay_id,
 	}))
 	.into_response()

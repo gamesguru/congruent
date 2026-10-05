@@ -4,7 +4,7 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
-use ruma::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
+use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
 use tracing::debug;
 
 use crate::rooms::pdu_metadata::RejectionCode;
@@ -136,7 +136,7 @@ where
 	let start_time = Instant::now();
 	self.federation_handletime
 		.write()
-		.insert(room_id.into(), ((*prev_id).to_owned(), start_time));
+		.insert(room_id.into(), ((*prev_id).clone(), start_time));
 
 	defer! {{
 		if self.services.server.running() {

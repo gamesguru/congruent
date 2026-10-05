@@ -2,7 +2,7 @@ mod commands;
 
 use clap::Subcommand;
 use conduwuit::Result;
-use ruma::{OwnedRoomId, OwnedServerName, OwnedUserId};
+use slipstream::{OwnedRoomId, OwnedServerName, OwnedUserId};
 
 use crate::admin_command_dispatch;
 

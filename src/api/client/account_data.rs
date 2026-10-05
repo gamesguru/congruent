@@ -5,7 +5,9 @@ use axum::{
 };
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
-use ruma::{
+use serde::Deserialize;
+use serde_json::{json, value::RawValue as RawJsonValue};
+use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
 		IncomingRequest,
@@ -20,8 +22,6 @@ use ruma::{
 	},
 	serde::Raw,
 };
-use serde::Deserialize;
-use serde_json::{json, value::RawValue as RawJsonValue};
 
 use crate::{Ruma, router::authenticate_user};
 
@@ -126,7 +126,7 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, event_type)): Path<(OwnedUserId, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<slipstream::json::Value>> {
 	let sender_user =
 		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
 			.await?;
@@ -147,7 +147,7 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, room_id, event_type)): Path<(OwnedUserId, OwnedRoomId, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<Json<slipstream::json::Value>> {
 	let sender_user =
 		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
 			.await?;
@@ -175,10 +175,13 @@ async fn set_account_data(
 		)));
 	}
 
-	let data: serde_json::Value = serde_json::from_str(data.get())
+	let data: slipstream::json::Value = serde_json::from_str(data.get())
 		.map_err(|e| err!(Request(BadJson(warn!("Invalid JSON provided: {e}")))))?;
 
-	if data.as_object().is_some_and(serde_json::Map::is_empty) {
+	if data
+		.as_object()
+		.is_some_and(slipstream::json::Object::is_empty)
+	{
 		return delete_account_data(services, room_id, sender_user, event_type_s).await;
 	}
 

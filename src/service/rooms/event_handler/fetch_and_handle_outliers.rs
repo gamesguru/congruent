@@ -12,7 +12,7 @@ use futures::{
 	FutureExt, future,
 	stream::{FuturesUnordered, StreamExt},
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedServerName,
 	RoomId, ServerName,
 	api::federation::{authorization::get_event_authorization, event::get_event},
@@ -35,7 +35,7 @@ pub async fn fetch_and_handle_outliers<'a, Pdu, Events>(
 	create_event: Option<&'a Pdu>,
 	room_id: &'a RoomId,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 	explicit_routing_servers: Option<Vec<OwnedServerName>>,
 ) -> Vec<(PduEvent, Option<BTreeMap<String, CanonicalJsonValue>>)>
 where
@@ -295,8 +295,9 @@ where
 								| None => {
 									let mut version = None;
 									if let Ok(json) =
-										serde_json::from_str::<serde_json::Value>(res.pdu.get())
-									{
+										slipstream::codec::from_str::<slipstream::json::Value>(
+											res.pdu.get(),
+										) {
 										if json.get("type").and_then(|t| t.as_str())
 											== Some("m.room.create")
 										{
@@ -305,7 +306,7 @@ where
 												.and_then(|c| c.get("room_version"))
 												.and_then(|v| v.as_str())
 												.unwrap_or("1");
-											version = ruma::RoomVersionId::try_from(v).ok();
+											version = slipstream::RoomVersionId::try_from(v).ok();
 										}
 									}
 									match version {
@@ -366,9 +367,9 @@ where
 								.and_then(CanonicalJsonValue::as_array)
 							{
 								for auth_event in auth_events {
-									if let Ok(auth_event) = serde_json::from_value::<OwnedEventId>(
-										auth_event.clone().into(),
-									) {
+									if let Ok(auth_event) =
+										slipstream::codec::from_value::<OwnedEventId>(auth_event)
+									{
 										if self
 											.services
 											.pdu_metadata
@@ -487,8 +488,8 @@ where
 										{
 											for auth_event in auth_events {
 												if let Ok(aeid) =
-													serde_json::from_value::<OwnedEventId>(
-														auth_event.clone().into(),
+													slipstream::codec::from_value::<OwnedEventId>(
+														auth_event,
 													) {
 													next_auth_events.insert(aeid);
 												}
@@ -527,14 +528,12 @@ where
 			let origin_server_ts = fetched_info
 				.get(&event_id)
 				.and_then(|info| info.get("origin_server_ts"))
-				.and_then(CanonicalJsonValue::as_integer)
-				.map(i64::from)
-				.and_then(|i| ruma::UInt::try_from(i).ok())
-				.unwrap_or_else(|| ruma::uint!(0));
+				.and_then(CanonicalJsonValue::as_u64)
+				.unwrap_or(0);
 
 			future::ready(conduwuit_core::Result::Ok((
-				ruma::int!(0),
-				ruma::MilliSecondsSinceUnixEpoch(origin_server_ts),
+				slipstream::int!(0),
+				slipstream::MilliSecondsSinceUnixEpoch(origin_server_ts),
 			)))
 		};
 

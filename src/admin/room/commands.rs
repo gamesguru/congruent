@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result};
 use futures::{FutureExt, StreamExt};
-use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+use slipstream::{OwnedRoomId, OwnedRoomOrAliasId};
 
 use crate::{PAGE_SIZE, admin_command, get_room_info};
 
@@ -94,7 +94,7 @@ pub(super) async fn bump(
 	self.bail_restricted()?;
 
 	if all {
-		let skip_set: std::collections::HashSet<&ruma::RoomId> =
+		let skip_set: std::collections::HashSet<&slipstream::RoomId> =
 			skip.iter().map(AsRef::as_ref).collect();
 		let ours = self.services.globals.server_name();
 		let rooms = self.services.rooms.state_cache.server_rooms(ours);

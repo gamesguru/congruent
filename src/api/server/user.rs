@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::extract::State;
 use conduwuit::{Error, Result};
 use futures::{FutureExt, StreamExt, TryFutureExt};
-use ruma::api::{
+use slipstream::api::{
 	client::error::ErrorKind,
 	federation::{
 		device::get_devices::{self, v1::UserDevice},

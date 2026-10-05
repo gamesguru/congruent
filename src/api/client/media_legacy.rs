@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
-use ruma::{
+use slipstream::{
 	Mxc,
 	api::client::media::{
 		create_content, create_content_async, create_mxc_uri, get_content,
@@ -78,7 +78,10 @@ pub(crate) async fn create_content_async_route(
 	{
 		| Ok(()) => {},
 		| Err(e)
-			if matches!(e.kind(), ruma::api::client::error::ErrorKind::CannotOverwriteMedia) =>
+			if matches!(
+				e.kind(),
+				slipstream::api::client::error::ErrorKind::CannotOverwriteMedia
+			) =>
 		{
 			return Err(e);
 		},
@@ -237,7 +240,9 @@ pub(crate) async fn get_content_legacy_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {
@@ -326,7 +331,9 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {

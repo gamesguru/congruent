@@ -1,6 +1,6 @@
-use ruma::{CanonicalJsonObject, OwnedEventId, RoomVersionId};
-use serde_json::value::RawValue as RawJsonValue;
+use slipstream::{CanonicalJsonObject, OwnedEventId, RoomVersionId};
 
+use super::super::pdu::RawJson;
 use crate::{Result, err, utils::pdu_json_canonical_strip};
 
 /// Generates a correct eventId for the incoming pdu.
@@ -8,11 +8,13 @@ use crate::{Result, err, utils::pdu_json_canonical_strip};
 /// Returns a tuple of the new `EventId` and the PDU as a `BTreeMap<String,
 /// CanonicalJsonValue>`.
 pub fn gen_event_id_canonical_json(
-	pdu: &RawJsonValue,
+	pdu: &RawJson,
 	room_version_id: &RoomVersionId,
 ) -> Result<(OwnedEventId, CanonicalJsonObject)> {
-	let value: CanonicalJsonObject = serde_json::from_str(pdu.get())
+	let value = slipstream::canonical_json::from_json_str(pdu.get())
 		.map_err(|e| err!(BadServerResponse(warn!("Error parsing incoming event: {e:?}"))))?;
+	let value = slipstream::canonical_json::into_object(value)
+		.ok_or_else(|| err!(BadServerResponse(warn!("incoming event is not an object"))))?;
 
 	let event_id = gen_event_id(&value, room_version_id)?;
 
@@ -24,8 +26,8 @@ pub fn gen_event_id(
 	value: &CanonicalJsonObject,
 	room_version_id: &RoomVersionId,
 ) -> Result<OwnedEventId> {
-	let reference_hash = ruma::signatures::reference_hash(value, room_version_id)?;
-	let event_id: OwnedEventId = format!("${reference_hash}").try_into()?;
+	let reference_hash = slipstream::signatures::reference_hash(value, room_version_id)?;
+	let event_id = OwnedEventId::parse(format!("${reference_hash}"))?;
 
 	Ok(event_id)
 }
@@ -39,8 +41,10 @@ pub fn gen_event_id_from_bytes(
 	let raw_str = std::str::from_utf8(raw_bytes)
 		.map_err(|e| err!(Database("stored PDU is not valid UTF-8: {e}")))?;
 
-	let mut value: CanonicalJsonObject = serde_json::from_str(raw_str)
+	let value = slipstream::canonical_json::from_json_str(raw_str)
 		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
+	let mut value = slipstream::canonical_json::into_object(value)
+		.ok_or_else(|| err!(Database("stored PDU is not an object")))?;
 	pdu_json_canonical_strip(&mut value);
 
 	gen_event_id(&value, room_version_id)
@@ -77,7 +81,11 @@ mod tests {
 		}"#;
 
 		let expected = gen_event_id(
-			&serde_json::from_str(canonical).expect("valid canonical JSON"),
+			&slipstream::canonical_json::into_object(
+				slipstream::canonical_json::from_json_str(canonical)
+					.expect("valid canonical JSON"),
+			)
+			.expect("canonical JSON object"),
 			&room_version,
 		)
 		.expect("event id");

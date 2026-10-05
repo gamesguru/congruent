@@ -12,7 +12,9 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
-use ruma::{
+use serde_json::json;
+use service::uiaa::Identity;
+use slipstream::{
 	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
 	api::{
 		client::{
@@ -28,8 +30,6 @@ use ruma::{
 	encryption::CrossSigningKey,
 	serde::Raw,
 };
-use serde_json::json;
-use service::uiaa::Identity;
 
 use crate::Ruma;
 
@@ -150,7 +150,7 @@ pub(crate) async fn upload_keys_route(
 					&existing_device_keys_json,
 				);
 
-				let merged_keys: Raw<ruma::encryption::DeviceKeys> =
+				let merged_keys: Raw<slipstream::encryption::DeviceKeys> =
 					serde_json::from_value(new_device_keys_json)
 						.expect("Merged JSON must be valid Raw<DeviceKeys>");
 
@@ -452,7 +452,6 @@ pub(crate) async fn get_key_changes_route(
 		services
 			.users
 			.keys_changed(sender_user, Some(from), Some(to))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await,
 	);
@@ -463,9 +462,8 @@ pub(crate) async fn get_key_changes_route(
 		device_list_updates.extend(
 			services
 				.users
-				.room_keys_changed(room_id, Some(from), Some(to))
+				.room_keys_changed(&room_id, Some(from), Some(to))
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
@@ -511,10 +509,10 @@ where
 			let mut devices = services.users.all_device_ids(user_id).boxed();
 
 			while let Some(device_id) = devices.next().await {
-				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
+				if let Ok(mut keys) = services.users.get_device_keys(user_id, &device_id).await {
 					let metadata = services
 						.users
-						.get_device_metadata(user_id, device_id)
+						.get_device_metadata(user_id, &device_id)
 						.await
 						.map_err(|_| {
 							err!(Database("all_device_keys contained nonexistent device."))
@@ -598,7 +596,7 @@ where
 			let fed_timeout = timeout.min(Duration::from_secs(3));
 			let response = tokio::time::timeout(
 				fed_timeout,
-				services.sending.send_federation_request(server, request),
+				services.sending.send_federation_request(&server, request),
 			)
 			.await
 			// Need to flatten the Result<Result<V, E>, E> into Result<V, E>
@@ -711,15 +709,16 @@ where
 }
 
 fn add_unsigned_device_display_name(
-	keys: &mut Raw<ruma::encryption::DeviceKeys>,
-	metadata: ruma::api::client::device::Device,
+	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
+	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
 ) -> serde_json::Result<()> {
 	if let Some(display_name) = metadata.display_name {
-		let mut object = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()?;
+		let mut object =
+			keys.deserialize_as::<slipstream::json::Object<String, slipstream::json::Value>>()?;
 
 		let unsigned = object.entry("unsigned").or_insert_with(|| json!({}));
-		if let serde_json::Value::Object(unsigned_object) = unsigned {
+		if let slipstream::json::Value::Object(unsigned_object) = unsigned {
 			if include_display_names {
 				unsigned_object.insert("device_display_name".to_owned(), display_name.into());
 			} else {
@@ -783,7 +782,7 @@ pub(crate) async fn claim_keys_helper(
 			let response = tokio::time::timeout(
 				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
-					server,
+					&server,
 					federation::keys::claim_keys::v1::Request {
 						one_time_keys: one_time_keys_input_fed,
 					},

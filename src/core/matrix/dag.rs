@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 
 use super::Event;
 

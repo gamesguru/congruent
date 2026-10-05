@@ -7,10 +7,10 @@ use conduwuit_core::{
 	utils::{stream::TryIgnore, string_from_bytes},
 	warn,
 };
-use conduwuit_database::{Deserialized, Ignore, Interfix, Json, Map};
+use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
 use ipaddress::IPAddress;
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
 		IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
@@ -133,7 +133,7 @@ impl Service {
 
 				let pushkey = data.pusher.ids.pushkey.as_str();
 				let key = (sender, pushkey);
-				self.db.senderkey_pusher.put(key, Json(pusher));
+				self.db.senderkey_pusher.put(key, &data.pusher);
 				self.db.pushkey_deviceid.insert(pushkey, sender_device);
 			},
 			| set_pusher::v3::PusherAction::Delete(ids) => {
@@ -301,8 +301,7 @@ impl Service {
 		let mut notify = None;
 		let mut tweaks = Vec::new();
 		let Some(room_id) = event.room_id_or_hash() else {
-			// This only affects v12+ create events
-			return Ok(());
+			return Err!(Request(InvalidParam("Event has no room ID")));
 		};
 
 		let power_levels: RoomPowerLevelsEventContent = self
@@ -366,7 +365,7 @@ impl Service {
 			.await
 			.unwrap_or(1)
 			.try_into()
-			.unwrap_or_else(|_| uint!(0));
+			.unwrap_or(uint!(0));
 
 		let user_display_name = self
 			.services
@@ -447,9 +446,12 @@ impl Service {
 
 				let d = vec![device];
 				let mut notify = Notification::new(d);
+				let Some(room_id) = event.room_id_or_hash() else {
+					return Err!(Request(InvalidParam("Event has no room ID")));
+				};
 
 				notify.event_id = Some(event.event_id().to_owned());
-				notify.room_id = Some(event.room_id_or_hash().expect("has room ID"));
+				notify.room_id = Some(room_id.clone());
 				if http
 					.data
 					.get("org.matrix.msc4076.disable_badge_count")
@@ -475,7 +477,7 @@ impl Service {
 					}
 					notify.sender = Some(event.sender().to_owned());
 					notify.event_type = Some(event.kind().to_owned());
-					notify.content = serde_json::value::to_raw_value(event.content()).ok();
+					notify.content = Some(event.content().clone());
 
 					if *event.kind() == TimelineEventType::RoomMember {
 						notify.user_is_target =
@@ -485,18 +487,12 @@ impl Service {
 					notify.sender_display_name =
 						self.services.users.displayname(event.sender()).await.ok();
 
-					let notice_room_id = event.room_id_or_hash().expect("has room ID");
-					notify.room_name = self
-						.services
-						.state_accessor
-						.get_name(&notice_room_id)
-						.await
-						.ok();
+					notify.room_name = self.services.state_accessor.get_name(&room_id).await.ok();
 
 					notify.room_alias = self
 						.services
 						.state_accessor
-						.get_canonical_alias(&notice_room_id)
+						.get_canonical_alias(&room_id)
 						.await
 						.ok();
 				}

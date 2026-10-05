@@ -8,17 +8,23 @@ use http::{
 	StatusCode,
 	header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValue},
 };
-use ruma::{
+use slipstream::{
 	Mxc, ServerName, UserId,
 	api::{
-		OutgoingRequest,
 		client::{
-			error::ErrorKind::{Forbidden, NotFound, Unauthorized, Unrecognized},
-			media,
+			error::ErrorKind,
+			media::{
+				get_content::v3 as client_get_content,
+				get_content_thumbnail::v3 as client_get_thumbnail,
+			},
 		},
-		federation,
-		federation::authenticated_media::{Content, FileOrLocation},
+		federation::authenticated_media::{
+			Content, FileOrLocation, get_content::v1 as fed_get_content,
+			get_content_thumbnail::v1 as fed_get_thumbnail,
+		},
 	},
+	endpoint::OutgoingRequest,
+	http_headers::{ContentDisposition, ContentDispositionType},
 };
 
 use super::{Dim, FileMeta};
@@ -84,8 +90,13 @@ fn should_fallback_to_unauthenticated(
 	allow_broad_fallback: bool,
 ) -> bool {
 	match result {
-		| Err(Error::Request(Unrecognized | NotFound | Forbidden { .. } | Unauthorized, ..)) =>
-			true,
+		| Err(Error::Request(
+			ErrorKind::Unrecognized
+			| ErrorKind::NotFound
+			| ErrorKind::Forbidden { .. }
+			| ErrorKind::Unauthorized,
+			..,
+		)) => true,
 		| Err(error) if allow_broad_fallback =>
 			error.status_code().is_server_error()
 				|| matches!(
@@ -112,20 +123,19 @@ async fn fetch_thumbnail_authenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	use federation::authenticated_media::get_content_thumbnail::v1::{Request, Response};
-
-	let request = Request {
+	let request = fed_get_thumbnail::Request {
 		media_id: mxc.media_id.into(),
-		method: dim.method.clone().into(),
+		method: dim.method.into(),
 		width: dim.width.into(),
 		height: dim.height.into(),
 		animated: true.into(),
 		timeout_ms,
 	};
 
-	let Response { content, .. } = self.federation_request(mxc, server, request).await?;
+	let response: fed_get_thumbnail::Response =
+		self.federation_request(mxc, server, request).await?;
 
-	match content {
+	match response.content {
 		| FileOrLocation::File(content) =>
 			self.handle_thumbnail_file(mxc, user, dim, content).await,
 		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
@@ -140,16 +150,15 @@ async fn fetch_content_authenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	use federation::authenticated_media::get_content::v1::{Request, Response};
-
-	let request = Request {
+	let request = fed_get_content::Request {
 		media_id: mxc.media_id.into(),
 		timeout_ms,
 	};
 
-	let Response { content, .. } = self.federation_request(mxc, server, request).await?;
+	let response: fed_get_content::Response =
+		self.federation_request(mxc, server, request).await?;
 
-	match content {
+	match response.content {
 		| FileOrLocation::File(content) => self.handle_content_file(mxc, user, content).await,
 		| FileOrLocation::Location(location) => self.handle_location(mxc, user, &location).await,
 	}
@@ -165,13 +174,11 @@ async fn fetch_thumbnail_unauthenticated(
 	timeout_ms: Duration,
 	dim: &Dim,
 ) -> Result<FileMeta> {
-	use media::get_content_thumbnail::v3::{Request, Response};
-
-	let request = Request {
+	let request = client_get_thumbnail::Request {
 		allow_remote: true,
 		allow_redirect: true,
 		animated: true.into(),
-		method: dim.method.clone().into(),
+		method: dim.method.into(),
 		width: dim.width.into(),
 		height: dim.height.into(),
 		server_name: mxc.server_name.into(),
@@ -179,13 +186,15 @@ async fn fetch_thumbnail_unauthenticated(
 		timeout_ms,
 	};
 
-	let Response {
-		file, content_type, content_disposition, ..
-	} = self.federation_request(mxc, server, request).await?;
+	let response: client_get_thumbnail::Response =
+		self.federation_request(mxc, server, request).await?;
 
-	let content = Content { file, content_type, content_disposition };
-
-	self.handle_thumbnail_file(mxc, user, dim, content).await
+	self.handle_thumbnail_file(mxc, user, dim, Content {
+		file: response.file,
+		content_type: response.content_type,
+		content_disposition: response.content_disposition,
+	})
+	.await
 }
 
 #[allow(deprecated)]
@@ -197,9 +206,7 @@ async fn fetch_content_unauthenticated(
 	server: Option<&ServerName>,
 	timeout_ms: Duration,
 ) -> Result<FileMeta> {
-	use media::get_content::v3::{Request, Response};
-
-	let request = Request {
+	let request = client_get_content::Request {
 		allow_remote: true,
 		allow_redirect: true,
 		server_name: mxc.server_name.into(),
@@ -207,13 +214,15 @@ async fn fetch_content_unauthenticated(
 		timeout_ms,
 	};
 
-	let Response {
-		file, content_type, content_disposition, ..
-	} = self.federation_request(mxc, server, request).await?;
+	let response: client_get_content::Response =
+		self.federation_request(mxc, server, request).await?;
 
-	let content = Content { file, content_type, content_disposition };
-
-	self.handle_content_file(mxc, user, content).await
+	self.handle_content_file(mxc, user, Content {
+		file: response.file,
+		content_type: response.content_type,
+		content_disposition: response.content_disposition,
+	})
+	.await
 }
 
 #[implement(super::Service)]
@@ -241,7 +250,7 @@ async fn handle_thumbnail_file(
 	.await
 	.map(|()| FileMeta {
 		content: Some(content.file),
-		content_type: content.content_type.map(Into::into),
+		content_type: content.content_type,
 		content_disposition: Some(content_disposition),
 	})
 }
@@ -269,7 +278,7 @@ async fn handle_content_file(
 	.await
 	.map(|()| FileMeta {
 		content: Some(content.file),
-		content_type: content.content_type.map(Into::into),
+		content_type: content.content_type,
 		content_disposition: Some(content_disposition),
 	})
 }
@@ -308,9 +317,8 @@ async fn location_request(&self, location: &str) -> Result<FileMeta> {
 	let content_disposition = response
 		.headers()
 		.get(CONTENT_DISPOSITION)
-		.map(HeaderValue::as_bytes)
-		.map(TryFrom::try_from)
-		.and_then(Result::ok);
+		.and_then(|h| h.to_str().ok())
+		.and_then(|s| parse_content_disposition(s).ok());
 
 	response
 		.limit_read(
@@ -370,4 +378,26 @@ pub fn check_legacy_freeze(&self) -> Result<()> {
 	(!self.services.server.config.freeze_legacy_media)
 		.then_some(())
 		.ok_or(err!(Request(NotFound("Remote media is frozen."))))
+}
+
+/// Parse a Content-Disposition header into slipstream's ContentDisposition
+fn parse_content_disposition(s: &str) -> Result<ContentDisposition> {
+	let mut parts = s.split(';');
+	let disposition = parts.next().unwrap_or("").trim();
+
+	let disposition_type = match disposition {
+		| "attachment" => ContentDispositionType::Attachment,
+		| _ => ContentDispositionType::Inline,
+	};
+
+	let mut filename = None;
+	for part in parts {
+		let part = part.trim();
+		if let Some(value) = part.strip_prefix("filename=") {
+			filename = Some(value.trim_matches('"').to_owned());
+			break;
+		}
+	}
+
+	Ok(ContentDisposition::new(disposition_type).with_filename(filename))
 }

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::extract::State;
 use conduwuit::{Err, Result};
-use ruma::api::client::presence::{get_presence, set_presence};
+use slipstream::api::client::presence::{get_presence, set_presence};
 
 use crate::Ruma;
 
@@ -78,7 +78,7 @@ pub(crate) async fn get_presence_route(
 			};
 
 			Ok(get_presence::v3::Response {
-				// TODO: Should ruma just use the presenceeventcontent type here?
+				// TODO: Should slipstream just use the presenceeventcontent type here?
 				status_msg,
 				currently_active: presence.content.currently_active,
 				last_active_ago,
@@ -89,7 +89,7 @@ pub(crate) async fn get_presence_route(
 			// No presence set yet — return a default offline presence per spec.
 			// The spec doesn't mandate 404 here; returning offline is reasonable.
 			Ok(get_presence::v3::Response {
-				presence: ruma::presence::PresenceState::Offline,
+				presence: slipstream::presence::PresenceState::Offline,
 				status_msg: None,
 				currently_active: None,
 				last_active_ago: None,

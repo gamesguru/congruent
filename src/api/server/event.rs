@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::{Err, Event, Result, err, info};
-use ruma::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event};
+use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event};
 
 use super::AccessCheck;
 use crate::Ruma;

@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["case-study-state-res/compare", "src/*", "xtask/"]
+members = ["src/*", "xtask/"]
 default-members = ["src/*"]
-exclude = ["ruwuma", "ruma-upstream", "mtx-slipstream"]
+exclude = ["ruwuma", "ruma-upstream"]
 
 [workspace.package]
 authors = ["Continuwuity Team and contributors <team@continuwuity.org>"]
@@ -215,6 +215,7 @@ default-features = false
 [workspace.dependencies.tracing]
 version = "0.1.41"
 default-features = false
+features = ["attributes"]
 [workspace.dependencies.tracing-subscriber]
 version = "0.3.20"
 default-features = false
@@ -418,6 +419,11 @@ features = ["reconcile"]
 git = "https://gitlab.com/gamesguru/rezzy.git"
 branch = "alpha"
 
+[workspace.dependencies.mtx-slipstream]
+package = "mtx-slipstream"
+git = "https://gitlab.com/gamesguru/mtx-slipstream.git"
+branch = "dev"
+
 [workspace.dependencies.rust-rocksdb]
 git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
 rev = "61d9d23872197e9ace4a477f2617d5c9f50ecb23"
@@ -496,7 +502,9 @@ version = "0.1"
 [workspace.dependencies.syn]
 version = "2.0"
 default-features = false
-features = ["full", "extra-traits"]
+# `parsing`/`printing`/`proc-macro`/`derive`/`clone-impls` were previously
+# enabled transitively by ruma-macros; conduwuit_macros needs them directly.
+features = ["full", "extra-traits", "derive", "parsing", "printing", "proc-macro", "clone-impls"]
 
 [workspace.dependencies.quote]
 version = "1.0"
@@ -594,18 +602,13 @@ rev = "7c7a9dea35382743a63837cdd1d977efdb8f1b8a"
 git = "https://forgejo.ellis.link/continuwuation/hyper-util"
 rev = "09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
 
-# adds org.matrix.msc3874.rel_types/not_rel_types to RoomEventFilter (MSC3874); until upstreamed.
-[patch."https://forgejo.ellis.link/continuwuation/ruwuma"]
-ruma = { path = "ruwuma/crates/ruma" }
-
 #
 # Our crates
 #
 
-[workspace.dependencies.mtx-slipstream]
-package = "mtx-slipstream"
-path = "mtx-slipstream"
-default-features = false
+[workspace.dependencies.slipstream]
+package = "conduwuit_slipstream"
+path = "src/slipstream"
 
 [workspace.dependencies.conduwuit-mtxdb]
 package = "conduwuit_mtxdb"

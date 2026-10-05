@@ -3,9 +3,8 @@ use std::{
 	time::Duration,
 };
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::extract::State;
 use axum_client_ip::ClientIp;
-use bytes::BytesMut;
 use conduwuit::{
 	Err, Error, Result, at, err, error, extract_variant, is_equal_to,
 	matrix::{Event, TypeStateKey, pdu::PduCount},
@@ -28,14 +27,15 @@ use futures::{
 	future::{OptionFuture, join3, try_join4},
 	pin_mut,
 };
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::{
-		IncomingRequest, Metadata, OutgoingResponse,
+		EndpointRequest,
 		client::sync::sync_events::{self, DeviceLists, UnreadNotificationsCount},
-		error::FromHttpRequestError,
 	},
+	codec::{DeError, Deserialize},
 	directory::RoomTypeFilter,
+	endpoint::EndpointResponse,
 	events::{
 		AnyRawAccountDataEvent, AnySyncEphemeralRoomEvent, AnySyncStateEvent,
 		GlobalAccountDataEventType, RoomAccountDataEventType, StateEventType, TimelineEventType,
@@ -45,14 +45,13 @@ use ruma::{
 		tag::TagEvent,
 		typing::TypingEventContent,
 	},
+	json::{Object, Value},
 	presence::PresenceState,
 	serde::Raw,
 	uint,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
 
-use super::share_encrypted_room;
+use super::{json_response, share_encrypted_room};
 use crate::{
 	Ruma,
 	client::{
@@ -66,7 +65,7 @@ type KnownRooms = BTreeMap<String, BTreeMap<OwnedRoomId, u64>>;
 type RoomExtras = BTreeMap<OwnedRoomId, RoomExtra>;
 type CompatRanges = Vec<(UInt, UInt)>;
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 struct CompatRequiredState {
 	include: Vec<(StateEventType, String)>,
 	// `None` means the request didn't specify `exclude` for this selector (sticky:
@@ -156,72 +155,103 @@ struct BuildContext<'a> {
 	persist_cache: bool,
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Default)]
 struct CompatRequest {
 	pos: Option<String>,
-
 	conn_id: Option<String>,
-
 	txn_id: Option<String>,
-
-	#[serde(with = "ruma::serde::duration::opt_ms", default)]
 	timeout: Option<Duration>,
-
-	#[serde(default)]
 	set_presence: PresenceState,
-
-	#[serde(default)]
 	lists: BTreeMap<String, CompatList>,
-
-	#[serde(default)]
 	room_subscriptions: BTreeMap<OwnedRoomId, CompatRoomSubscription>,
-
-	#[serde(default)]
 	extensions: sync_events::v5::request::Extensions,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct CompatList {
-	#[serde(default, alias = "range", deserialize_with = "deserialize_ranges")]
 	ranges: CompatRanges,
-
-	#[serde(flatten)]
 	room_details: CompatRoomDetails,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	include_heroes: Option<bool>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	filters: Option<CompatListFilters>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct CompatRoomSubscription {
-	#[serde(
-		default,
-		skip_serializing_if = "CompatRequiredState::is_empty",
-		deserialize_with = "deserialize_required_state"
-	)]
 	required_state: CompatRequiredState,
-
-	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
 	timeline_limit: UInt,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	include_heroes: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 struct CompatRoomDetails {
-	#[serde(
-		default,
-		skip_serializing_if = "CompatRequiredState::is_empty",
-		deserialize_with = "deserialize_required_state"
-	)]
 	required_state: CompatRequiredState,
-
-	#[serde(default, skip_serializing_if = "ruma::serde::is_default")]
 	timeline_limit: UInt,
+}
+
+fn expect_object(value: &Value) -> Result<&Object, DeError> {
+	value
+		.as_object()
+		.ok_or_else(|| DeError("expected a JSON object".to_owned()))
+}
+
+/// The named field, or its default when the key is absent. A key that is
+/// present must parse, including `null`, as with the serde `default`
+/// attribute this replaces.
+fn field<T: Deserialize + Default>(object: &Object, key: &str) -> Result<T, DeError> {
+	object
+		.get(key)
+		.map_or_else(|| Ok(T::default()), T::from_json)
+}
+
+impl Deserialize for CompatRequest {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		let object = expect_object(value)?;
+		Ok(Self {
+			pos: field(object, "pos")?,
+			conn_id: field(object, "conn_id")?,
+			txn_id: field(object, "txn_id")?,
+			timeout: field::<Option<UInt>>(object, "timeout")?.map(Duration::from_millis),
+			set_presence: field(object, "set_presence")?,
+			lists: field(object, "lists")?,
+			room_subscriptions: field(object, "room_subscriptions")?,
+			extensions: field(object, "extensions")?,
+		})
+	}
+}
+
+fn required_state_field(object: &Object) -> Result<CompatRequiredState, DeError> {
+	object
+		.get("required_state")
+		.map_or_else(|| Ok(CompatRequiredState::default()), parse_required_state)
+}
+
+impl Deserialize for CompatList {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		let object = expect_object(value)?;
+		Ok(Self {
+			ranges: object
+				.get("ranges")
+				.or_else(|| object.get("range"))
+				.map_or_else(|| Ok(CompatRanges::default()), parse_ranges)?,
+			room_details: CompatRoomDetails {
+				required_state: required_state_field(object)?,
+				timeline_limit: field(object, "timeline_limit")?,
+			},
+			include_heroes: field(object, "include_heroes")?,
+			filters: field(object, "filters")?,
+		})
+	}
+}
+
+impl Deserialize for CompatRoomSubscription {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		let object = expect_object(value)?;
+		Ok(Self {
+			required_state: required_state_field(object)?,
+			timeline_limit: field(object, "timeline_limit")?,
+			include_heroes: field(object, "include_heroes")?,
+		})
+	}
 }
 
 impl From<CompatRequest> for sync_events::v5::Request {
@@ -267,164 +297,135 @@ impl From<CompatRequest> for sync_events::v5::Request {
 	}
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CompatRangeEntry {
-	Tuple((UInt, UInt)),
-	Map {
-		start: UInt,
-		end: UInt,
-	},
-}
-
-fn deserialize_ranges<'de, D>(deserializer: D) -> Result<CompatRanges, D::Error>
-where
-	D: serde::Deserializer<'de>,
-{
-	#[derive(Deserialize)]
-	#[serde(untagged)]
-	enum CompatRangesRepr {
-		List(Vec<CompatRangeEntry>),
-		Single(CompatRangeEntry),
-		Keyed(BTreeMap<String, CompatRangeEntry>),
+fn parse_range_entry(value: &Value) -> Result<(UInt, UInt), DeError> {
+	match value {
+		| Value::Array(_) => <(UInt, UInt)>::from_json(value),
+		| Value::Object(object) => {
+			let start = object
+				.get("start")
+				.ok_or_else(|| DeError("missing field `start`".to_owned()))?;
+			let end = object
+				.get("end")
+				.ok_or_else(|| DeError("missing field `end`".to_owned()))?;
+			Ok((UInt::from_json(start)?, UInt::from_json(end)?))
+		},
+		| _ => Err(DeError("expected a range".to_owned())),
 	}
-
-	let entries = match CompatRangesRepr::deserialize(deserializer)? {
-		| CompatRangesRepr::List(entries) => entries,
-		| CompatRangesRepr::Single(entry) => vec![entry],
-		| CompatRangesRepr::Keyed(entries) => entries.into_values().collect(),
-	};
-
-	Ok(entries
-		.into_iter()
-		.map(|entry| match entry {
-			| CompatRangeEntry::Tuple(range) => range,
-			| CompatRangeEntry::Map { start, end } => (start, end),
-		})
-		.collect())
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CompatRequiredStateEntry {
-	Tuple((StateEventType, String)),
-	Map {
-		#[serde(rename = "type", alias = "event_type")]
-		event_type: StateEventType,
-		state_key: String,
-	},
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CompatRequiredStateObject {
-	#[serde(default)]
-	include: Vec<CompatRequiredStateEntry>,
-
-	// No `#[serde(default)]`: `Option` already defaults to `None` when the key is
-	// absent, which is what lets us distinguish "exclude omitted" from "exclude
-	// explicitly `[]`" for sticky-exclude semantics (see `CompatRequiredState`).
-	exclude: Option<Vec<CompatRequiredStateEntry>>,
-
-	#[serde(default)]
-	lazy_members: bool,
-}
-
-fn deserialize_required_state<'de, D>(deserializer: D) -> Result<CompatRequiredState, D::Error>
-where
-	D: serde::Deserializer<'de>,
-{
-	use serde::de::Error as _;
-
-	#[derive(Deserialize)]
-	#[serde(untagged)]
-	enum CompatRequiredStateScalarRepr {
-		List(Vec<CompatRequiredStateEntry>),
-		Single(CompatRequiredStateEntry),
-	}
-
-	let value = Value::deserialize(deserializer)?;
-
-	let include = match value {
+/// Accepts a list of ranges, one range, or an object of ranges keyed by
+/// anything, in that order of preference.
+fn parse_ranges(value: &Value) -> Result<CompatRanges, DeError> {
+	let invalid = || DeError("data did not match any variant of CompatRangesRepr".to_owned());
+	match value {
+		| Value::Array(entries) => entries
+			.iter()
+			.map(parse_range_entry)
+			.collect::<Result<_, _>>()
+			.or_else(|_| parse_range_entry(value).map(|entry| vec![entry])),
 		| Value::Object(entries) => {
-			let reserved = ["include", "exclude", "lazy_members"];
-			let has_reserved = entries.keys().any(|key| reserved.contains(&key.as_str()));
-
-			if has_reserved {
-				let object =
-					serde_json::from_value::<CompatRequiredStateObject>(Value::Object(entries))
-						.map_err(D::Error::custom)?;
-				return Ok(compat_required_state_object_into_tuples(object));
-			}
-
-			if let Ok(entries) = serde_json::from_value::<
-				BTreeMap<String, CompatRequiredStateEntry>,
-			>(Value::Object(entries.clone()))
-			{
-				entries
-					.into_values()
-					.map(compat_required_state_entry_into_tuple)
-					.collect()
-			} else {
-				serde_json::from_value::<BTreeMap<StateEventType, Vec<String>>>(Value::Object(
-					entries,
-				))
-				.map_err(D::Error::custom)?
-				.into_iter()
-				.flat_map(|(event_type, state_keys)| {
-					state_keys
-						.into_iter()
-						.map(move |state_key| (event_type.clone(), state_key))
+			parse_range_entry(value)
+				.map(|entry| vec![entry])
+				.or_else(|_| {
+					// `BTreeMap` iteration is key-ordered, matching the collected map.
+					entries
+						.values()
+						.map(parse_range_entry)
+						.collect::<Result<_, _>>()
 				})
-				.collect()
-			}
 		},
-		| value => match serde_json::from_value::<CompatRequiredStateScalarRepr>(value)
-			.map_err(D::Error::custom)?
-		{
-			| CompatRequiredStateScalarRepr::List(entries) => entries
-				.into_iter()
-				.map(compat_required_state_entry_into_tuple)
-				.collect(),
-			| CompatRequiredStateScalarRepr::Single(entry) => {
-				vec![compat_required_state_entry_into_tuple(entry)]
-			},
-		},
-	};
-
-	Ok(CompatRequiredState { include, exclude: None })
+		| _ => Err(invalid()),
+	}
 }
 
-fn compat_required_state_object_into_tuples(
-	object: CompatRequiredStateObject,
-) -> CompatRequiredState {
-	let mut include = object
-		.include
-		.into_iter()
-		.map(compat_required_state_entry_into_tuple)
-		.collect::<Vec<_>>();
+fn parse_required_state_entry(value: &Value) -> Result<(StateEventType, String), DeError> {
+	match value {
+		| Value::Array(_) => <(StateEventType, String)>::from_json(value),
+		| Value::Object(object) => {
+			let event_type = object
+				.get("type")
+				.or_else(|| object.get("event_type"))
+				.ok_or_else(|| DeError("missing field `type`".to_owned()))?;
+			let state_key = object
+				.get("state_key")
+				.ok_or_else(|| DeError("missing field `state_key`".to_owned()))?;
+			Ok((StateEventType::from_json(event_type)?, String::from_json(state_key)?))
+		},
+		| _ => Err(DeError("expected a required_state entry".to_owned())),
+	}
+}
 
-	if object.lazy_members {
+fn parse_required_state_entries(value: &Value) -> Result<Vec<(StateEventType, String)>, DeError> {
+	match value {
+		| Value::Array(entries) => entries.iter().map(parse_required_state_entry).collect(),
+		| _ => Err(DeError("expected a list of required_state entries".to_owned())),
+	}
+}
+
+/// The stable `{include, exclude, lazy_members}` form; unknown keys are
+/// rejected.
+fn parse_required_state_object(object: &Object) -> Result<CompatRequiredState, DeError> {
+	if let Some(key) = object
+		.keys()
+		.find(|key| !["include", "exclude", "lazy_members"].contains(&key.as_str()))
+	{
+		return Err(DeError(format!("unknown field `{key}`")));
+	}
+
+	let mut include = object
+		.get("include")
+		.map_or_else(|| Ok(Vec::new()), parse_required_state_entries)?;
+
+	if field::<bool>(object, "lazy_members")? {
 		include.push((StateEventType::RoomMember, "$LAZY".to_owned()));
 	}
 
-	let exclude = object.exclude.map(|entries| {
-		entries
-			.into_iter()
-			.map(compat_required_state_entry_into_tuple)
-			.collect::<Vec<_>>()
-	});
+	// `None` when `exclude` is absent or null, so omission stays distinct from
+	// an explicit `[]` (see `CompatRequiredState`).
+	let exclude = match object.get("exclude") {
+		| None | Some(Value::Null) => None,
+		| Some(entries) => Some(parse_required_state_entries(entries)?),
+	};
 
-	CompatRequiredState { include, exclude }
+	Ok(CompatRequiredState { include, exclude })
 }
 
-fn compat_required_state_entry_into_tuple(
-	entry: CompatRequiredStateEntry,
-) -> (StateEventType, String) {
-	match entry {
-		| CompatRequiredStateEntry::Tuple(state) => state,
-		| CompatRequiredStateEntry::Map { event_type, state_key } => (event_type, state_key),
-	}
+/// Accepts the stable object form, an object of entries, an object keyed by
+/// event type, a list of entries, or a single entry.
+fn parse_required_state(value: &Value) -> Result<CompatRequiredState, DeError> {
+	let include = match value {
+		| Value::Object(entries) => {
+			let reserved = ["include", "exclude", "lazy_members"];
+			if entries.keys().any(|key| reserved.contains(&key.as_str())) {
+				return parse_required_state_object(entries);
+			}
+
+			let entries_by_key = entries
+				.iter()
+				.map(|(key, entry)| Ok((key.clone(), parse_required_state_entry(entry)?)))
+				.collect::<Result<BTreeMap<String, _>, DeError>>();
+
+			if let Ok(entries) = entries_by_key {
+				entries.into_values().collect()
+			} else {
+				BTreeMap::<StateEventType, Vec<String>>::from_json(value)?
+					.into_iter()
+					.flat_map(|(event_type, state_keys)| {
+						state_keys
+							.into_iter()
+							.map(move |state_key| (event_type.clone(), state_key))
+					})
+					.collect()
+			}
+		},
+		| value => parse_required_state_entries(value)
+			.or_else(|_| parse_required_state_entry(value).map(|entry| vec![entry]))
+			.map_err(|_| {
+				DeError("data did not match any variant of required_state".to_owned())
+			})?,
+	};
+
+	Ok(CompatRequiredState { include, exclude: None })
 }
 
 fn required_state_excludes(
@@ -445,24 +446,24 @@ pub(crate) struct CompatSyncRequest {
 	thread_subscriptions_enabled: bool,
 }
 
-impl IncomingRequest for CompatSyncRequest {
-	type EndpointError = <sync_events::v5::Request as IncomingRequest>::EndpointError;
-	type OutgoingResponse = <sync_events::v5::Request as IncomingRequest>::OutgoingResponse;
+impl EndpointRequest for CompatSyncRequest {
+	type Response = <sync_events::v5::Request as EndpointRequest>::Response;
 
-	const METADATA: Metadata = <sync_events::v5::Request as IncomingRequest>::METADATA;
+	const METADATA: slipstream::api::Metadata =
+		<sync_events::v5::Request as EndpointRequest>::METADATA;
 
-	fn try_from_http_request<B, S>(
-		req: http::Request<B>,
-		path_args: &[S],
-	) -> std::result::Result<Self, FromHttpRequestError>
-	where
-		B: AsRef<[u8]>,
-		S: AsRef<str>,
-	{
-		let (parts, body) = req.into_parts();
-		let body = body.as_ref();
-		let thread_subscriptions_enabled = serde_json::from_slice::<Value>(body)
-			.ok()
+	fn path_args(&self) -> Vec<String> { self.request.path_args() }
+
+	fn query(&self) -> Vec<(String, String)> { self.request.query() }
+
+	fn body(&self) -> Option<Value> { self.request.body() }
+
+	fn from_parts(
+		path: &[String],
+		query: &[(String, String)],
+		body: Option<&Value>,
+	) -> Result<Self, DeError> {
+		let thread_subscriptions_enabled = body
 			.and_then(|body| {
 				body.get("extensions")
 					.and_then(|extensions| {
@@ -472,62 +473,66 @@ impl IncomingRequest for CompatSyncRequest {
 					.and_then(Value::as_bool)
 			})
 			.unwrap_or(false);
-		let (request, list_filters, required_state_excludes, set_presence) = if body.is_empty() {
-			(
-				sync_events::v5::Request::default(),
-				BTreeMap::new(),
-				CompatRequiredStateExcludes::default(),
-				PresenceState::Online,
-			)
-		} else {
-			let compat = serde_json::from_slice::<CompatRequest>(body)?;
-			let set_presence = compat.set_presence.clone();
-			let list_filters = compat
-				.lists
-				.iter()
-				.filter_map(|(list_id, list)| {
-					list.filters
-						.clone()
-						.map(|filters| (list_id.clone(), filters))
-				})
-				.collect();
-			// Only carry a list/subscription's exclude into the sticky-override map if
-			// the request actually specified `exclude` (`Some`, even if empty) --
-			// that's what lets an explicit `"exclude": []` clear a previously cached
-			// sticky exclusion instead of being indistinguishable from omission.
-			let required_state_excludes = CompatRequiredStateExcludes {
-				lists: compat
+		let (request, list_filters, required_state_excludes, set_presence) =
+			if let Some(body) = body {
+				let compat = CompatRequest::from_json(body)?;
+				let set_presence = compat.set_presence.clone();
+				let list_filters = compat
 					.lists
 					.iter()
 					.filter_map(|(list_id, list)| {
-						list.room_details
-							.required_state
-							.exclude
+						list.filters
 							.clone()
-							.map(|exclude| (list_id.clone(), exclude))
+							.map(|filters| (list_id.clone(), filters))
 					})
-					.collect(),
-				room_subscriptions: compat
-					.room_subscriptions
-					.iter()
-					.filter_map(|(room_id, room)| {
-						room.required_state
-							.exclude
-							.clone()
-							.map(|exclude| (room_id.clone(), exclude))
-					})
-					.collect(),
+					.collect();
+				// Only carry a list/subscription's exclude into the sticky-override map if
+				// the request actually specified `exclude` (`Some`, even if empty) --
+				// that's what lets an explicit `"exclude": []` clear a previously cached
+				// sticky exclusion instead of being indistinguishable from omission.
+				let required_state_excludes = CompatRequiredStateExcludes {
+					lists: compat
+						.lists
+						.iter()
+						.filter_map(|(list_id, list)| {
+							list.room_details
+								.required_state
+								.exclude
+								.clone()
+								.map(|exclude| (list_id.clone(), exclude))
+						})
+						.collect(),
+					room_subscriptions: compat
+						.room_subscriptions
+						.iter()
+						.filter_map(|(room_id, room)| {
+							room.required_state
+								.exclude
+								.clone()
+								.map(|exclude| (room_id.clone(), exclude))
+						})
+						.collect(),
+				};
+				(
+					sync_events::v5::Request::from(compat),
+					list_filters,
+					required_state_excludes,
+					set_presence,
+				)
+			} else {
+				(
+					sync_events::v5::Request::default(),
+					BTreeMap::new(),
+					CompatRequiredStateExcludes::default(),
+					PresenceState::Online,
+				)
 			};
-			(
-				sync_events::v5::Request::from(compat),
-				list_filters,
-				required_state_excludes,
-				set_presence,
-			)
-		};
 
-		let req = http::Request::from_parts(parts, bytes::Bytes::from_static(b"{}"));
-		let mut parsed = sync_events::v5::Request::try_from_http_request(req, path_args)?;
+		let mut parsed = sync_events::v5::Request::from_parts(
+			path,
+			query,
+			Some(&Value::Object(Object::new())),
+		)?;
 
 		if request.pos.is_some() {
 			parsed.pos = request.pos;
@@ -797,7 +802,6 @@ async fn build_sync_events_v5(
 		.rooms
 		.state_cache
 		.rooms_joined(sender_user)
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedRoomId>>();
 
 	let all_invited_rooms = services
@@ -1412,17 +1416,18 @@ where
 			.state_cache
 			.room_members(room_id)
 			.ready_filter(|member| *member != sender_user)
-			.filter_map(|user_id| {
+			.filter_map(|user_id| async move {
 				services
 					.rooms
 					.state_accessor
-					.get_member(room_id, user_id)
+					.get_member(room_id, &user_id)
 					.map_ok(|memberevent| sync_events::v5::response::Hero {
-						user_id: user_id.into(),
+						user_id: user_id.clone(),
 						name: memberevent.displayname,
 						avatar: memberevent.avatar_url,
 					})
 					.ok()
+					.await
 			})
 			.take(5)
 			.collect()
@@ -1466,11 +1471,12 @@ where
 				None
 			},
 			avatar: match heroes_avatar {
-				| Some(heroes_avatar) => ruma::JsOption::Some(heroes_avatar),
+				| Some(heroes_avatar) => slipstream::JsOption::Some(heroes_avatar),
 				| _ => match services.rooms.state_accessor.get_avatar(room_id).await {
-					| ruma::JsOption::Some(avatar) => ruma::JsOption::from_option(avatar.url),
-					| ruma::JsOption::Null => ruma::JsOption::Null,
-					| ruma::JsOption::Undefined => ruma::JsOption::Undefined,
+					| slipstream::JsOption::Some(avatar) =>
+						slipstream::JsOption::from_option(avatar.url),
+					| slipstream::JsOption::Null => slipstream::JsOption::Null,
+					| slipstream::JsOption::Undefined => slipstream::JsOption::Undefined,
 				},
 			},
 			initial: (roomsince == &0).then_some(true),
@@ -1500,7 +1506,7 @@ where
 					.await
 					.unwrap_or(0)
 					.try_into()
-					.unwrap_or_else(|_| uint!(0)),
+					.unwrap_or(uint!(0)),
 			),
 			invited_count: Some(
 				services
@@ -1510,7 +1516,7 @@ where
 					.await
 					.unwrap_or(0)
 					.try_into()
-					.unwrap_or_else(|_| uint!(0)),
+					.unwrap_or(uint!(0)),
 			),
 			num_live,
 			bump_stamp: timestamp,
@@ -1545,22 +1551,19 @@ fn sync_events_v5_json_response(
 	room_extras: RoomExtras,
 	thread_subscriptions_extension: Option<Value>,
 ) -> Result<axum::response::Response> {
-	let response = response
-		.try_into_http_response::<BytesMut>()
-		.map_err(|e| err!(Database("failed to serialize sync v5 response: {e}")))?;
-	let mut value = serde_json::from_slice::<Value>(response.body())?;
+	let mut value = response.to_body();
 	if let Some(thread_subscriptions) = thread_subscriptions_extension {
 		value
 			.as_object_mut()
 			.expect("sync response is a JSON object")
-			.entry("extensions")
-			.or_insert_with(|| Value::Object(Map::default()))
+			.entry("extensions".to_owned())
+			.or_insert_with(|| Value::Object(Object::new()))
 			.as_object_mut()
 			.expect("sync response extensions is a JSON object")
 			.insert("io.element.msc4308.thread_subscriptions".to_owned(), thread_subscriptions);
 	}
 	let Some(rooms) = value.get_mut("rooms").and_then(Value::as_object_mut) else {
-		return Ok(Json(value).into_response());
+		return Ok(json_response(&value));
 	};
 
 	for (room_id, extra) in room_extras {
@@ -1586,14 +1589,17 @@ fn sync_events_v5_json_response(
 			room.insert("timeline_events".to_owned(), timeline);
 		}
 
-		room.insert("lists".to_owned(), serde_json::to_value(extra.lists)?);
+		room.insert(
+			"lists".to_owned(),
+			Value::Array(extra.lists.into_iter().map(Value::String).collect()),
+		);
 
 		if extra.expanded_timeline {
 			room.insert("expanded_timeline".to_owned(), Value::Bool(true));
 		}
 	}
 
-	Ok(Json(value).into_response())
+	Ok(json_response(&value))
 }
 
 async fn collect_thread_subscriptions_extension(
@@ -1618,23 +1624,23 @@ async fn collect_thread_subscriptions_extension(
 				.map(|(thread_id, subscription)| {
 					(
 						thread_id.to_string(),
-						json!({
+						slipstream::json!({
 							"automatic": subscription.automatic,
 							"bump_stamp": subscription.bump_stamp,
 						}),
 					)
 				})
-				.collect::<Map<_, _>>();
+				.collect::<Object>();
 
 			(room_id.to_string(), Value::Object(subscriptions))
 		})
-		.collect::<Map<_, _>>();
+		.collect::<Object>();
 
 	if subscribed.is_empty() {
-		return Ok(Some(json!({})));
+		return Ok(Some(slipstream::json!({})));
 	}
 
-	Ok(Some(json!({ "subscribed": subscribed })))
+	Ok(Some(slipstream::json!({ "subscribed": subscribed })))
 }
 
 fn membership_state_to_str(membership: &MembershipState) -> &str {
@@ -1644,7 +1650,6 @@ fn membership_state_to_str(membership: &MembershipState) -> &str {
 		| MembershipState::Join => "join",
 		| MembershipState::Knock => "knock",
 		| MembershipState::Leave => "leave",
-		| _ => membership.as_ref(),
 	}
 }
 
@@ -1999,11 +2004,11 @@ async fn new_encrypted_room_members(
 		.state_cache
 		.room_members(room_id)
 		// Don't send key updates from the sender to the sender
-		.ready_filter(|user_id| sender_user != *user_id)
+		.ready_filter(|user_id| sender_user != user_id)
 		// Only send keys if the sender doesn't share an encrypted room with the target
 		// already
 		.filter_map(|user_id| async move {
-			(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
+			(!share_encrypted_room(services, sender_user, &user_id, Some(room_id)).await)
 				.then(|| user_id.to_owned())
 		})
 		.collect::<Vec<_>>()
@@ -2035,7 +2040,6 @@ where
 		services
 			.users
 			.keys_changed(sender_user, Some(globalsince), None)
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await,
 	);
@@ -2151,7 +2155,7 @@ where
 								if !share_encrypted_room(
 									services,
 									sender_user,
-									user_id,
+									&user_id,
 									Some(room_id),
 								)
 								.await
@@ -2186,7 +2190,6 @@ where
 				.users
 				.room_keys_changed(room_id, Some(globalsince), None)
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
@@ -2483,15 +2486,25 @@ async fn direct_rooms_for_user(
 mod tests {
 	use super::*;
 
-	#[derive(Debug, Deserialize)]
+	#[derive(Debug)]
 	struct RequiredStateFixture {
-		#[serde(deserialize_with = "deserialize_required_state")]
 		required_state: CompatRequiredState,
+	}
+
+	impl Deserialize for RequiredStateFixture {
+		fn from_json(value: &Value) -> Result<Self, DeError> {
+			let required_state = expect_object(value)?
+				.get("required_state")
+				.ok_or_else(|| DeError("missing field `required_state`".to_owned()))?;
+			Ok(Self {
+				required_state: parse_required_state(required_state)?,
+			})
+		}
 	}
 
 	#[test]
 	fn required_state_accepts_event_type_map() {
-		let fixture: RequiredStateFixture = serde_json::from_str(
+		let fixture: RequiredStateFixture = slipstream::codec::from_str(
 			r#"{"required_state":{"m.room.name":[""],"m.room.member":["$LAZY"]}}"#,
 		)
 		.expect("event-type keyed required_state should deserialize");
@@ -2505,7 +2518,7 @@ mod tests {
 
 	#[test]
 	fn required_state_accepts_stable_include_object() {
-		let fixture: RequiredStateFixture = serde_json::from_str(
+		let fixture: RequiredStateFixture = slipstream::codec::from_str(
 			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}],"lazy_members":true}}"#,
 		)
 		.expect("stable include/lazy_members required_state should deserialize");
@@ -2519,7 +2532,7 @@ mod tests {
 
 	#[test]
 	fn required_state_accepts_stable_exclude_object() {
-		let fixture: RequiredStateFixture = serde_json::from_str(
+		let fixture: RequiredStateFixture = slipstream::codec::from_str(
 			r#"{"required_state":{"include":[{"type":"*","state_key":"*"}],"exclude":[{"type":"m.room.member","state_key":"*"}]}}"#,
 		)
 		.expect("stable exclude required_state should deserialize");
@@ -2533,13 +2546,13 @@ mod tests {
 
 	#[test]
 	fn required_state_distinguishes_omitted_from_explicit_empty_exclude() {
-		let fixture: RequiredStateFixture = serde_json::from_str(
+		let fixture: RequiredStateFixture = slipstream::codec::from_str(
 			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}]}}"#,
 		)
 		.expect("required_state without exclude should deserialize");
 		assert_eq!(fixture.required_state.exclude, None, "omitted exclude must be None");
 
-		let fixture: RequiredStateFixture = serde_json::from_str(
+		let fixture: RequiredStateFixture = slipstream::codec::from_str(
 			r#"{"required_state":{"include":[{"type":"m.room.name","state_key":""}],"exclude":[]}}"#,
 		)
 		.expect("required_state with explicit empty exclude should deserialize");
@@ -2553,7 +2566,7 @@ mod tests {
 	#[test]
 	fn required_state_accepts_exclude_only_object() {
 		let fixture: RequiredStateFixture =
-			serde_json::from_str(r#"{"required_state":{"exclude":[]}}"#)
+			slipstream::codec::from_str(r#"{"required_state":{"exclude":[]}}"#)
 				.expect("exclude-only required_state object should deserialize");
 
 		assert_eq!(fixture.required_state.include, Vec::new());
@@ -2562,7 +2575,7 @@ mod tests {
 
 	#[test]
 	fn required_state_rejects_unknown_object_keys() {
-		serde_json::from_str::<RequiredStateFixture>(
+		slipstream::codec::from_str::<RequiredStateFixture>(
 			r#"{"required_state":{"include":[],"bogus":[]}}"#,
 		)
 		.expect_err("unknown required_state object keys should be rejected");
@@ -2570,12 +2583,69 @@ mod tests {
 
 	#[test]
 	fn stable_list_accepts_singular_range() {
-		let request: CompatRequest = serde_json::from_str(
+		let request: CompatRequest = slipstream::codec::from_str(
 			r#"{"lists":{"all":{"timeline_limit":1,"required_state":{"include":[]},"range":[0,0]}}}"#,
 		)
 		.expect("stable singular range should deserialize");
 
 		assert_eq!(request.lists["all"].ranges, vec![(uint!(0), uint!(0))]);
+	}
+
+	#[test]
+	fn empty_and_object_bodies_are_defaults_but_null_is_rejected() {
+		let none = CompatSyncRequest::from_parts(&[], &[], None).unwrap();
+		assert!(matches!(none.set_presence, PresenceState::Online));
+		assert!(none.request.lists.is_empty());
+		let empty = Value::Object(Object::new());
+		let object = CompatSyncRequest::from_parts(&[], &[], Some(&empty)).unwrap();
+		assert!(object.request.lists.is_empty() && !object.thread_subscriptions_enabled);
+		// As with the serde struct this replaces, a literal `null` body is an error.
+		assert!(CompatSyncRequest::from_parts(&[], &[], Some(&Value::Null)).is_err());
+	}
+
+	fn ranges_of(json: &str) -> Result<CompatRanges, DeError> {
+		let request: CompatRequest = slipstream::codec::from_str(json)?;
+		Ok(request.lists["l"].ranges.clone())
+	}
+
+	#[test]
+	fn ranges_accept_every_shape() {
+		let one = vec![(uint!(0), uint!(10))];
+		for body in [
+			r#"{"lists":{"l":{"ranges":[[0,10]]}}}"#,
+			r#"{"lists":{"l":{"ranges":[0,10]}}}"#,
+			r#"{"lists":{"l":{"range":[0,10]}}}"#,
+			r#"{"lists":{"l":{"ranges":{"start":0,"end":10}}}}"#,
+			r#"{"lists":{"l":{"ranges":[{"start":0,"end":10}]}}}"#,
+			r#"{"lists":{"l":{"ranges":{"a":[0,10]}}}}"#,
+			r#"{"lists":{"l":{"ranges":{"a":{"start":0,"end":10}}}}}"#,
+		] {
+			assert_eq!(ranges_of(body).unwrap(), one, "{body}");
+		}
+		assert_eq!(ranges_of(r#"{"lists":{"l":{"ranges":[]}}}"#).unwrap(), vec![]);
+		assert_eq!(ranges_of(r#"{"lists":{"l":{}}}"#).unwrap(), vec![]);
+		// Keyed ranges come back in key order.
+		assert_eq!(
+			ranges_of(r#"{"lists":{"l":{"ranges":{"b":[5,6],"a":[0,1]}}}}"#).unwrap(),
+			vec![(uint!(0), uint!(1)), (uint!(5), uint!(6))]
+		);
+		// `ranges` wins over the `range` alias.
+		assert_eq!(
+			ranges_of(r#"{"lists":{"l":{"ranges":[[1,2]],"range":[7,8]}}}"#).unwrap(),
+			vec![(uint!(1), uint!(2))]
+		);
+	}
+
+	#[test]
+	fn ranges_reject_malformed_shapes() {
+		for body in [
+			r#"{"lists":{"l":{"ranges":null}}}"#,
+			r#"{"lists":{"l":{"ranges":"0-10"}}}"#,
+			r#"{"lists":{"l":{"ranges":[0,1,2]}}}"#,
+			r#"{"lists":{"l":{"ranges":{"start":0}}}}"#,
+		] {
+			assert!(ranges_of(body).is_err(), "{body}");
+		}
 	}
 
 	#[test]

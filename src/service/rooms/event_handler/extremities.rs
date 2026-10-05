@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use conduwuit::debug;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Calculate new forward extremities after processing an incoming event.
 ///
@@ -35,7 +35,7 @@ where
 
 	for event_id in current_extremities {
 		// Remove extremities that are referenced by the incoming event's prev_events
-		if prev_events.iter().any(|&pe| pe == event_id) {
+		if prev_events.iter().any(|pe| **pe == event_id) {
 			continue;
 		}
 
@@ -70,7 +70,7 @@ where
 mod tests {
 	use std::future::ready;
 
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 
@@ -411,7 +411,7 @@ mod tests {
 		// Build 10 events all referencing A
 		let event_ids: Vec<OwnedEventId> = (1..=10)
 			.map(|i| format!("$e{i}:example.org"))
-			.map(|s| OwnedEventId::try_from(s).unwrap())
+			.map(|s| OwnedEventId::parse(s).unwrap())
 			.collect();
 
 		// Simulate: after all 10 are processed, all are extremities

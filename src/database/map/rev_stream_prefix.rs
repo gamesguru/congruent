@@ -2,9 +2,11 @@ use std::{convert::AsRef, fmt::Debug, sync::Arc};
 
 use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt, TryStreamExt, future};
-use serde::{Deserialize, Serialize};
 
-use crate::keyval::{KeyVal, result_deserialize, serialize_key};
+use crate::{
+	dbkey::{DbDe, DbKey},
+	keyval::{KeyVal, result_deserialize, serialize_key},
+};
 
 /// Iterate key-value entries in the map where the key matches a prefix.
 ///
@@ -16,9 +18,9 @@ pub fn rev_stream_prefix<'a, K, V, P>(
 	prefix: &P,
 ) -> impl Stream<Item = Result<KeyVal<'a, K, V>>> + Send + use<'a, K, V, P>
 where
-	P: Serialize + ?Sized + Debug,
-	K: Deserialize<'a> + Send,
-	V: Deserialize<'a> + Send,
+	P: DbKey + ?Sized + Debug,
+	K: DbDe<'a> + Send,
+	V: DbDe<'a> + Send,
 {
 	self.rev_stream_prefix_raw(prefix)
 		.map(result_deserialize::<K, V>)
@@ -35,7 +37,7 @@ pub fn rev_stream_prefix_raw<P>(
 	prefix: &P,
 ) -> impl Stream<Item = Result<KeyVal<'_>>> + Send + use<'_, P>
 where
-	P: Serialize + ?Sized + Debug,
+	P: DbKey + ?Sized + Debug,
 {
 	let key = serialize_key(prefix).expect("failed to serialize query key");
 	self.rev_raw_stream_from(&key)
@@ -53,8 +55,8 @@ pub fn rev_stream_raw_prefix<'a, K, V, P>(
 ) -> impl Stream<Item = Result<KeyVal<'a, K, V>>> + Send + 'a
 where
 	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
-	K: Deserialize<'a> + Send + 'a,
-	V: Deserialize<'a> + Send + 'a,
+	K: DbDe<'a> + Send + 'a,
+	V: DbDe<'a> + Send + 'a,
 {
 	self.rev_raw_stream_prefix(prefix)
 		.map(result_deserialize::<K, V>)

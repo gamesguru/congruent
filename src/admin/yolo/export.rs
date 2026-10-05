@@ -4,8 +4,10 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType};
-use serde_json::Value as JsonValue;
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType,
+	json::Value as JsonValue,
+};
 use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {
@@ -56,8 +58,8 @@ pub(super) async fn decorate_pdu_for_export(
 	pdu_json: &CanonicalJsonObject,
 	pdu_opt: Option<&PduEvent>,
 	is_outlier: bool,
-) -> Result<(serde_json::Map<String, JsonValue>, bool, Option<u64>)> {
-	let mut obj: serde_json::Map<String, JsonValue> =
+) -> Result<(slipstream::json::Object<String, JsonValue>, bool, Option<u64>)> {
+	let mut obj: slipstream::json::Object<String, JsonValue> =
 		serde_json::from_value(serde_json::to_value(pdu_json)?)?;
 
 	if is_outlier {

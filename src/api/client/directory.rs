@@ -16,7 +16,7 @@ use futures::{
 	FutureExt, StreamExt, TryFutureExt,
 	future::{join, join4, join5},
 };
-use ruma::{
+use slipstream::{
 	OwnedRoomId, RoomId, ServerName, UInt, UserId,
 	api::{
 		client::{
@@ -286,7 +286,6 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 		.rooms
 		.directory
 		.public_rooms()
-		.map(ToOwned::to_owned)
 		.wide_then(|room_id| public_rooms_chunk(services, room_id))
 		.ready_filter_map(|chunk| {
 			if !filter.room_types.is_empty()
@@ -332,9 +331,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 
 	all_rooms.sort_by_key(|r| std::cmp::Reverse(r.num_joined_members));
 
-	let total_room_count_estimate = UInt::try_from(all_rooms.len())
-		.unwrap_or_else(|_| uint!(0))
-		.into();
+	let total_room_count_estimate = UInt::try_from(all_rooms.len()).unwrap_or(uint!(0)).into();
 
 	let chunk: Vec<_> = all_rooms.into_iter().skip(num_since).take(limit).collect();
 
@@ -465,7 +462,7 @@ async fn public_rooms_chunk(services: &Services, room_id: OwnedRoomId) -> Public
 			.map(TryInto::try_into)
 			.map(Result::ok)
 			.flat_ok()
-			.unwrap_or_else(|| uint!(0)),
+			.unwrap_or(uint!(0)),
 		room_id,
 		room_type,
 		topic,

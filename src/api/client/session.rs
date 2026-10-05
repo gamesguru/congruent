@@ -11,7 +11,8 @@ use conduwuit_core::{debug_error, debug_warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
 use lettre::Address;
-use ruma::{
+use service::uiaa::Identity;
+use slipstream::{
 	OwnedUserId, UserId,
 	api::client::{
 		error::ErrorKind,
@@ -30,7 +31,6 @@ use ruma::{
 		uiaa::UserIdentifier,
 	},
 };
-use service::uiaa::Identity;
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH};
 use crate::Ruma;
@@ -464,7 +464,7 @@ pub(crate) async fn logout_all_route(
 	services
 		.users
 		.all_device_ids(sender_user)
-		.for_each(|device_id| services.users.remove_device(sender_user, device_id))
+		.for_each(|device_id| services.users.remove_device(sender_user, &device_id))
 		.await;
 	services
 		.pusher

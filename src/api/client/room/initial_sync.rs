@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{BoolExt, stream::TryTools},
 };
 use futures::{FutureExt, TryStreamExt, future::try_join4};
-use ruma::api::client::room::initial_sync::v3::{PaginationChunk, Request, Response};
+use slipstream::api::client::room::initial_sync::v3::{PaginationChunk, Request, Response};
 
 use crate::Ruma;
 

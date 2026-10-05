@@ -10,18 +10,19 @@ use std::{
 use conduwuit::{Result, Server, SyncMutex};
 use database::Map;
 use moka::sync::Cache;
-use ruma::{
+use slipstream::{
 	OwnedDeviceId, OwnedRoomId, OwnedUserId,
 	api::client::sync::sync_events::{
 		self,
 		v4::{ExtensionsConfig, SyncRequestList},
 		v5::{self, request as v5_request},
 	},
+	codec::{Deserialize, Serialize},
 	directory::RoomTypeFilter,
+	endpoint::Input,
 	events::StateEventType,
 	uint,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{Dep, rooms};
 
@@ -29,32 +30,100 @@ use crate::{Dep, rooms};
 /// sliding sync. Kept here so they can be cached alongside the rest of a
 /// snake-cased connection's sticky parameters and survive follow-up requests
 /// that omit `lists` entirely.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 pub struct CompatListFilters {
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub is_dm: Option<bool>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub is_encrypted: Option<bool>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(alias = "is_invited")]
 	pub is_invite: Option<bool>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub room_types: Vec<RoomTypeFilter>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub not_room_types: Vec<RoomTypeFilter>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub tags: Vec<String>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub not_tags: Vec<String>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub spaces: Vec<OwnedRoomId>,
+}
+
+impl Serialize for CompatListFilters {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		if let Some(v) = self.is_dm {
+			obj.insert("is_dm".into(), slipstream::json::Value::Bool(v));
+		}
+		if let Some(v) = self.is_encrypted {
+			obj.insert("is_encrypted".into(), slipstream::json::Value::Bool(v));
+		}
+		if let Some(v) = self.is_invite {
+			obj.insert("is_invite".into(), slipstream::json::Value::Bool(v));
+		}
+		if !self.room_types.is_empty() {
+			obj.insert(
+				"room_types".into(),
+				slipstream::json::Value::Array(
+					self.room_types.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		if !self.not_room_types.is_empty() {
+			obj.insert(
+				"not_room_types".into(),
+				slipstream::json::Value::Array(
+					self.not_room_types.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		if !self.tags.is_empty() {
+			obj.insert(
+				"tags".into(),
+				slipstream::json::Value::Array(
+					self.tags
+						.iter()
+						.map(|t| slipstream::json::Value::String(t.clone()))
+						.collect(),
+				),
+			);
+		}
+		if !self.not_tags.is_empty() {
+			obj.insert(
+				"not_tags".into(),
+				slipstream::json::Value::Array(
+					self.not_tags
+						.iter()
+						.map(|t| slipstream::json::Value::String(t.clone()))
+						.collect(),
+				),
+			);
+		}
+		if !self.spaces.is_empty() {
+			obj.insert(
+				"spaces".into(),
+				slipstream::json::Value::Array(
+					self.spaces.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for CompatListFilters {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let input = Input::new(&[], &[], Some(value));
+		// Like the serde derive this replaces: wrong types are errors, and
+		// `is_invited` is accepted as a spelling of `is_invite`.
+		let is_invite = match input.body::<Option<bool>>("is_invite")? {
+			| Some(is_invite) => Some(is_invite),
+			| None => input.body::<Option<bool>>("is_invited")?,
+		};
+		Ok(Self {
+			is_dm: input.body("is_dm")?,
+			is_encrypted: input.body("is_encrypted")?,
+			is_invite,
+			room_types: input.body_or_default("room_types")?,
+			not_room_types: input.body_or_default("not_room_types")?,
+			tags: input.body_or_default("tags")?,
+			not_tags: input.body_or_default("not_tags")?,
+			spaces: input.body_or_default("spaces")?,
+		})
+	}
 }
 
 impl From<&v5_request::ListFilters> for CompatListFilters {

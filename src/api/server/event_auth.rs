@@ -3,7 +3,9 @@ use std::{borrow::Borrow, iter::once};
 use axum::extract::State;
 use conduwuit::{Err, Error, Event, Result, info, utils::stream::ReadyExt};
 use futures::StreamExt;
-use ruma::api::{client::error::ErrorKind, federation::authorization::get_event_authorization};
+use slipstream::api::{
+	client::error::ErrorKind, federation::authorization::get_event_authorization,
+};
 
 use super::AccessCheck;
 use crate::Ruma;

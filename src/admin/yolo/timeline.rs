@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 
 use conduwuit::{Result, err, matrix::Event};
 use futures::StreamExt;
-use ruma::{OwnedEventId, OwnedRoomId};
+use slipstream::{OwnedEventId, OwnedRoomId};
 
 use super::ReorderTimelineOptions;
 use crate::admin_command;

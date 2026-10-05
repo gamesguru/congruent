@@ -12,9 +12,9 @@ use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
-#[cfg(feature = "url_preview")]
-use ruma::OwnedMxcUri;
 use serde::Serialize;
+#[cfg(feature = "url_preview")]
+use slipstream::OwnedMxcUri;
 use url::Url;
 
 use super::Service;
@@ -175,7 +175,7 @@ pub async fn download_image(
 ) -> Result<UrlPreviewData> {
 	use conduwuit::utils::random_string;
 	use image::{ImageFormat, ImageReader, imageops::FilterType};
-	use ruma::Mxc;
+	use slipstream::Mxc;
 
 	let mut preview_data = preview_data.unwrap_or_default();
 
@@ -306,7 +306,7 @@ pub async fn download_audio(
 pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	use conduwuit::utils::random_string;
 	use http::header::CONTENT_TYPE;
-	use ruma::Mxc;
+	use slipstream::Mxc;
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 

@@ -8,7 +8,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
-use ruma::{OwnedEventId, RoomId, RoomVersionId};
+use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
 
@@ -17,6 +17,14 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 /// like rebuild_state.
 pub(crate) type PduCache =
 	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+
+fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
+	map.iter()
+		.map(|((ty, key), event_id)| {
+			((StateEventType::from(ty.as_str()), key.clone()), event_id.clone())
+		})
+		.collect()
+}
 
 #[implement(super::Service)]
 #[tracing::instrument(name = "resolve", level = "debug", skip_all)]
@@ -145,7 +153,7 @@ where
 		return Ok(StateMap::new());
 	}
 	if num_maps == 1 {
-		return Ok(state_sets_vec[0].clone());
+		return Ok(copy_state_map(state_sets_vec[0]));
 	}
 
 	let lean_state_sets: Vec<rezzy::SharedState<String>> = state_sets_vec
@@ -182,7 +190,7 @@ where
 		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 	{
 		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
-			let event_id = OwnedEventId::try_from(id.as_str()).ok()?;
+			let event_id = OwnedEventId::parse(id.as_str()).ok()?;
 
 			if let Some(cached_arc) = self.global_cache.get(&event_id) {
 				let local_arc = self.arena.alloc(cached_arc);
@@ -297,9 +305,9 @@ where
 	// Convert back to Ruma StateMap
 	let mut resolved = StateMap::new();
 	for ((ty_str, sk_str), eid_str) in resolved_lean {
-		let ty: ruma::events::StateEventType = ty_str.to_string().into();
+		let ty: StateEventType = ty_str.to_string().into();
 		let sk: conduwuit_core::matrix::StateKey = sk_str.into();
-		if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
+		if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 			resolved.insert((ty, sk), eid);
 		}
 	}
@@ -315,7 +323,7 @@ fn sender_power_level_from_auth<F>(
 where
 	F: FnMut(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
 {
-	if pdu.kind == ruma::events::TimelineEventType::RoomCreate {
+	if pdu.kind == slipstream::events::TimelineEventType::RoomCreate {
 		return i64::MAX;
 	}
 
@@ -348,7 +356,7 @@ where
 			continue;
 		};
 
-		if auth_pdu.kind == ruma::events::TimelineEventType::RoomCreate
+		if auth_pdu.kind == slipstream::events::TimelineEventType::RoomCreate
 			&& auth_pdu.state_key.as_deref() == Some("")
 		{
 			create_pdu = Some(auth_pdu);
@@ -356,15 +364,16 @@ where
 		}
 
 		if pl_level.is_some()
-			|| auth_pdu.kind != ruma::events::TimelineEventType::RoomPowerLevels
+			|| auth_pdu.kind != slipstream::events::TimelineEventType::RoomPowerLevels
 			|| auth_pdu.state_key.as_deref() != Some("")
 		{
 			continue;
 		}
 
-		let content_val: serde_json::Value =
-			serde_json::from_str(auth_pdu.content.get()).unwrap_or(serde_json::Value::Null);
-		let parse_intlike = |value: &serde_json::Value| {
+		let content_val: slipstream::json::Value =
+			slipstream::codec::from_str(auth_pdu.content.get())
+				.unwrap_or(slipstream::json::Value::Null);
+		let parse_intlike = |value: &slipstream::json::Value| {
 			value
 				.as_i64()
 				.or_else(|| value.as_str().and_then(|s| s.parse().ok()))
@@ -372,7 +381,7 @@ where
 
 		let level = content_val
 			.get("users")
-			.and_then(serde_json::Value::as_object)
+			.and_then(slipstream::json::Value::as_object)
 			.and_then(|users| users.get(pdu.sender.as_str()))
 			.and_then(parse_intlike)
 			.or_else(|| content_val.get("users_default").and_then(parse_intlike))
@@ -391,9 +400,9 @@ where
 		// `creator` content field is a pre-v11 concept and irrelevant here (see
 		// `state_res::event_auth`'s identical v12 check on `sender_power_level`).
 		let is_v12_creator = create_pdu.sender == pdu.sender
-			|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
-				create_pdu.content.get(),
-			)
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
 			.is_ok_and(|create_content| {
 				create_content
 					.additional_creators
@@ -415,16 +424,17 @@ where
 	// Pre-v12 fallback: with no power-levels event found in the auth chain,
 	// only the room's original creator gets an implicit power level of 100.
 	#[allow(deprecated)]
-	let is_pre_v12_creator = create_pdu.sender == pdu.sender
-		|| serde_json::from_str::<ruma::events::room::create::RoomCreateEventContent>(
-			create_pdu.content.get(),
-		)
-		.is_ok_and(|create_content| {
-			create_content
-				.creator
-				.as_ref()
-				.is_some_and(|creator| creator == &pdu.sender)
-		});
+	let is_pre_v12_creator =
+		create_pdu.sender == pdu.sender
+			|| slipstream::codec::from_str::<
+				slipstream::events::room::create::RoomCreateEventContent,
+			>(create_pdu.content.get())
+			.is_ok_and(|create_content| {
+				create_content
+					.creator
+					.as_ref()
+					.is_some_and(|creator| creator == &pdu.sender)
+			});
 
 	if is_pre_v12_creator { 100 } else { 0 }
 }
@@ -440,12 +450,12 @@ fn pdu_to_lean(
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
-		origin_server_ts: pdu.origin_server_ts.into(),
+		origin_server_ts: pdu.origin_server_ts,
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
-		depth: u64::from(pdu.depth),
+		depth: pdu.depth,
 		..Default::default()
 	}
 }

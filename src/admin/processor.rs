@@ -14,16 +14,16 @@ use conduwuit::{
 };
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
 use regex::Regex;
-use ruma::{
+use service::{
+	Services,
+	admin::{CommandInput, CommandOutput, ProcessorFuture, ProcessorResult},
+};
+use slipstream::{
 	EventId,
 	events::{
 		relation::InReplyTo,
 		room::message::{Relation::Reply, RoomMessageEventContent},
 	},
-};
-use service::{
-	Services,
-	admin::{CommandInput, CommandOutput, ProcessorFuture, ProcessorResult},
 };
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};

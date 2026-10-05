@@ -3,7 +3,7 @@ use std::{borrow::Borrow, iter::once};
 use axum::extract::State;
 use conduwuit::{Result, at, err, info, utils::IterStream};
 use futures::{FutureExt, TryStreamExt};
-use ruma::{OwnedEventId, api::federation::event::get_room_state};
+use slipstream::{OwnedEventId, api::federation::event::get_room_state};
 
 use super::AccessCheck;
 use crate::Ruma;

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use conduwuit::{
-	Err, Result, SyncMutex,
+	Err, Result, SyncMutex, err,
 	matrix::{
 		event::Event,
 		pdu::{PduCount, PduId, RawPduId},
@@ -10,8 +10,9 @@ use conduwuit::{
 };
 use database::{Json, Map};
 use futures::{Stream, StreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, OwnedUserId, RoomId, UserId,
+	codec::Deserialize as CodecDeserialize,
 	events::{
 		AnySyncEphemeralRoomEvent,
 		receipt::{Receipt, ReceiptEvent, ReceiptThread, ReceiptType},
@@ -41,6 +42,11 @@ pub(super) type ReceiptItem = (OwnedUserId, u64, Raw<AnySyncEphemeralRoomEvent>)
 type PublicReadReceipts = BTreeMap<String, (u64, ReceiptEvent)>;
 type PrivateReadReceipts = BTreeMap<String, (u64, ReceiptEvent, u64)>;
 
+fn decode<T: CodecDeserialize>(bytes: &[u8]) -> Result<T> {
+	slipstream::codec::from_str(std::str::from_utf8(bytes)?)
+		.map_err(|e| err!(Database("Failed to decode read receipt: {e}")))
+}
+
 impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
@@ -66,7 +72,7 @@ impl Data {
 		room_id: &RoomId,
 		user_id: &UserId,
 		target_thread: Option<&ReceiptThread>,
-	) -> Option<ruma::OwnedEventId> {
+	) -> Option<slipstream::OwnedEventId> {
 		let key = roomuserid_key(room_id, user_id);
 		let target_thread_key = thread_key(target_thread);
 
@@ -76,14 +82,13 @@ impl Data {
 		// found a matching receipt here; otherwise fall through to the legacy
 		// stream-index scan below.
 		if let Ok(value) = self.roomuserid_readreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PublicReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PublicReadReceipts>(&value) {
 				if let Some((_, receipt_event)) = receipts.get(&target_thread_key) {
 					return receipt_event.content.0.keys().next().cloned();
 				}
 			}
 
-			if let Ok((_, receipt_event)) = serde_json::from_slice::<(u64, ReceiptEvent)>(&value)
-			{
+			if let Ok((_, receipt_event)) = decode::<(u64, ReceiptEvent)>(&value) {
 				for (event_id, receipts) in receipt_event.content.0 {
 					if let Some(users) = receipts.get(&ReceiptType::Read) {
 						if let Some(receipt) = users.get(user_id) {
@@ -115,7 +120,7 @@ impl Data {
 						.and_then(|idx| key.get(idx))
 						== Some(&database::SEP)
 				{
-					let receipt = serde_json::from_slice::<ReceiptEvent>(value).ok()?;
+					let receipt = decode::<ReceiptEvent>(value).ok()?;
 					let (event_id, types) = receipt.content.0.into_iter().next()?;
 					let users = types.get(&ReceiptType::Read)?;
 					let receipt_data = users.get(user_id)?;
@@ -138,12 +143,11 @@ impl Data {
 		let key = roomuserid_key(room_id, user_id);
 
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				return Ok(combine_private_read_receipts(room_id, receipts));
 			}
 
-			if let Ok((count, event, _update_count)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
+			if let Ok((count, event, _update_count)) = decode::<(u64, ReceiptEvent, u64)>(&value)
 			{
 				if event.content.0.is_empty() {
 					return self
@@ -182,7 +186,7 @@ impl Data {
 		content.insert(event_id, receipt_map);
 
 		Ok(Some((count, ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(content),
+			content: slipstream::events::receipt::ReceiptEventContent(content),
 			room_id: room_id.to_owned(),
 		})))
 	}
@@ -197,12 +201,7 @@ impl Data {
 		for (event_id, receipts) in &event.content.0 {
 			for (receipt_type, users) in receipts {
 				if let Some(receipt) = users.get(user_id) {
-					new_receipts.push((
-						event_id.clone(),
-						receipt_type.clone(),
-						receipt.clone(),
-						false,
-					));
+					new_receipts.push((event_id.clone(), *receipt_type, receipt.clone(), false));
 				}
 			}
 		}
@@ -220,11 +219,9 @@ impl Data {
 
 		let mut existing_receipts = if let Ok(value) = self.roomuserid_readreceipt.get(&key).await
 		{
-			if let Ok(receipts) = serde_json::from_slice::<PublicReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PublicReadReceipts>(&value) {
 				receipts
-			} else if let Ok((old_count, old_event)) =
-				serde_json::from_slice::<(u64, ReceiptEvent)>(&value)
-			{
+			} else if let Ok((old_count, old_event)) = decode::<(u64, ReceiptEvent)>(&value) {
 				let thread = old_event
 					.content
 					.0
@@ -243,7 +240,7 @@ impl Data {
 		};
 
 		let mut existing_event = ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(BTreeMap::new()),
+			content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::new()),
 			room_id: room_id.to_owned(),
 		};
 		for (_, receipt_event) in existing_receipts.values() {
@@ -254,7 +251,7 @@ impl Data {
 						.0
 						.entry(event_id.clone())
 						.or_default()
-						.entry(receipt_type.clone())
+						.entry(*receipt_type)
 						.or_default()
 						.extend(users.clone());
 				}
@@ -315,7 +312,7 @@ impl Data {
 			let thread = thread_key(Some(&new_receipt.thread));
 			let new_count = self.services.globals.next_count().unwrap();
 			let new_event = ReceiptEvent {
-				content: ruma::events::receipt::ReceiptEventContent(BTreeMap::from([(
+				content: slipstream::events::receipt::ReceiptEventContent(BTreeMap::from([(
 					new_event_id,
 					BTreeMap::from([(
 						new_type,
@@ -399,13 +396,12 @@ impl Data {
 
 				let user_id_bytes = &key[count_end.saturating_add(1)..];
 				let user_id_str = conduwuit::utils::str_from_bytes(user_id_bytes)?;
-				let user_id = <&UserId>::try_from(user_id_str)
-					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?
-					.to_owned();
+				let user_id = OwnedUserId::parse(user_id_str)
+					.map_err(|_| conduwuit::Error::bad_database("Invalid user ID"))?;
 
-				let mut json: CanonicalJsonObject = serde_json::from_slice(value)?;
+				let mut json: CanonicalJsonObject = database::from_json_slice(value)?;
 				json.remove("room_id");
-				let event = serde_json::value::to_raw_value(&json)?;
+				let event = slipstream::codec::to_string(&json);
 
 				conduwuit::trace!(
 					"Yielding read receipt for user {} at count {} (since was {})",
@@ -414,7 +410,7 @@ impl Data {
 					since
 				);
 
-				Ok((user_id, count, Raw::from_json(event)))
+				Ok((user_id, count, Raw::from_json_text(&event)?))
 			})
 			.ignore_err()
 	}
@@ -436,8 +432,8 @@ impl Data {
 		let _guard = self.private_read_mutex.lock();
 		let mut receipts =
 			if let Ok(value) = self.roomuserid_privatereadreceipt.get_blocking(&key) {
-				serde_json::from_slice::<PrivateReadReceipts>(&value).unwrap_or_else(|_| {
-					serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
+				decode::<PrivateReadReceipts>(&value).unwrap_or_else(|_| {
+					decode::<(u64, ReceiptEvent, u64)>(&value)
 						.map(|entry| {
 							BTreeMap::from([(private_read_thread_key(&entry.1, user_id), entry)])
 						})
@@ -469,15 +465,13 @@ impl Data {
 	) -> Result<u64> {
 		let key = roomuserid_key(room_id, user_id);
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				if let Some((count, ..)) = receipts.get(&thread_key(thread)) {
 					return Ok(*count);
 				}
 			}
 
-			if let Ok((count, event, _)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
-			{
+			if let Ok((count, event, _)) = decode::<(u64, ReceiptEvent, u64)>(&value) {
 				if private_read_thread_key(&event, user_id) == thread_key(thread) {
 					return Ok(count);
 				}
@@ -498,7 +492,7 @@ impl Data {
 	) -> u64 {
 		let key = roomuserid_key(room_id, user_id);
 		if let Ok(value) = self.roomuserid_privatereadreceipt.get(&key).await {
-			if let Ok(receipts) = serde_json::from_slice::<PrivateReadReceipts>(&value) {
+			if let Ok(receipts) = decode::<PrivateReadReceipts>(&value) {
 				return receipts
 					.values()
 					.map(|(_, _, update_count)| *update_count)
@@ -506,9 +500,7 @@ impl Data {
 					.unwrap_or(0);
 			}
 
-			if let Ok((_, _, update_count)) =
-				serde_json::from_slice::<(u64, ReceiptEvent, u64)>(&value)
-			{
+			if let Ok((_, _, update_count)) = decode::<(u64, ReceiptEvent, u64)>(&value) {
 				return update_count;
 			}
 		}
@@ -537,9 +529,9 @@ impl Data {
 	async fn synthesize_msc4102_unthreaded(
 		&self,
 		user_id: &UserId,
-		new_receipts: &[(ruma::OwnedEventId, ReceiptType, Receipt, bool)],
+		new_receipts: &[(slipstream::OwnedEventId, ReceiptType, Receipt, bool)],
 		existing_event: &ReceiptEvent,
-	) -> Vec<(ruma::OwnedEventId, ReceiptType, Receipt, bool)> {
+	) -> Vec<(slipstream::OwnedEventId, ReceiptType, Receipt, bool)> {
 		let mut synthetic = Vec::new();
 		for (new_event_id, new_type, new_receipt, _) in new_receipts {
 			if new_receipt.thread == ReceiptThread::Unthreaded {
@@ -578,7 +570,7 @@ impl Data {
 
 				let mut unthreaded = new_receipt.clone();
 				unthreaded.thread = ReceiptThread::Unthreaded;
-				synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+				synthetic.push((target_event_id, *new_type, unthreaded, true));
 				continue;
 			}
 
@@ -624,7 +616,7 @@ impl Data {
 
 			let mut unthreaded = new_receipt.clone();
 			unthreaded.thread = ReceiptThread::Unthreaded;
-			synthetic.push((target_event_id, new_type.clone(), unthreaded, true));
+			synthetic.push((target_event_id, *new_type, unthreaded, true));
 		}
 		synthetic
 	}
@@ -635,7 +627,7 @@ impl Data {
 		&self,
 		room_id: &RoomId,
 		at_or_before: PduCount,
-	) -> Option<ruma::OwnedEventId> {
+	) -> Option<slipstream::OwnedEventId> {
 		let stream = self
 			.services
 			.timeline
@@ -692,7 +684,7 @@ fn combine_private_read_receipts(
 				content
 					.entry(event_id.clone())
 					.or_insert_with(BTreeMap::new)
-					.entry(receipt_type.clone())
+					.entry(receipt_type)
 					.or_insert_with(BTreeMap::new)
 					.extend(users);
 			}
@@ -701,7 +693,7 @@ fn combine_private_read_receipts(
 
 	(!content.is_empty()).then(|| {
 		(count, ReceiptEvent {
-			content: ruma::events::receipt::ReceiptEventContent(content),
+			content: slipstream::events::receipt::ReceiptEventContent(content),
 			room_id: room_id.to_owned(),
 		})
 	})
