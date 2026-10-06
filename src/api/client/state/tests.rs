@@ -10,7 +10,7 @@ fn test_strip_room_member() -> Result<()> {
 	//Test setup
 	let body = r#"
 		{
-			"avatar_url": "Something",
+			"avatar_url": "mxc://example.org/Something",
 			"displayname": "Someone",
 			"join_authorized_via_users_server": "@someone:domain.tld",
 			"membership": "join"
@@ -32,7 +32,7 @@ fn test_strip_room_member() -> Result<()> {
 	println!("JSON (modified): {result}");
 	assert_eq!(
 		result,
-		r#"{"avatar_url":"Something","displayname":"Someone","membership":"join"}"#
+		r#"{"avatar_url":"mxc://example.org/Something","displayname":"Someone","membership":"join"}"#
 	);
 
 	Ok(())
