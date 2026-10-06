@@ -747,7 +747,7 @@ PROFILE := env_var_or_default("PROFILE", "release")
 
 # matrix-js-sdk source that the Complement-Crypto tester image embeds. Keep the
 # default pinned for reproducible local bundles; override it when needed.
-MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#1ea51700dd8e4899ba2bfc69255ac0f7f0e4e3af")
+MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea")
 
 # Full matrix-js-sdk spec consumed by complement-crypto's build recipes: a
 # `matrix-js-sdk@<url>#<sha>` or `matrix-js-sdk@file:/abs/path`. Defaults to
