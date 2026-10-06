@@ -1631,8 +1631,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 				match from_slice::<Value>(value) {
 					// corrupted timezone field
 					| Err(_) if key == "us.cloke.msc4175.tz" => {
-						let new_value =
-							Value::String(String::from_utf8(value.to_vec())?);
+						let new_value = Value::String(String::from_utf8(value.to_vec())?);
 						useridprofilekey_value.put((user, key), Json(new_value));
 						fixed = fixed.saturating_add(1);
 					},

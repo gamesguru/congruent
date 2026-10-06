@@ -12,7 +12,7 @@ impl<E: Event> RelationTypeEqual<E> for RelationType {
 			.get_content_as_value()
 			.get("m.relates_to")
 			.and_then(|relates_to| relates_to.get("rel_type"))
-			.and_then(|rel_type| slipstream::codec::from_value::<RelationType>(rel_type).ok())
+			.and_then(|rel_type| slipstream::codec::from_value::<Self>(rel_type).ok())
 			.is_some_and(|r| r == *self)
 	}
 }

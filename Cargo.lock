@@ -1237,7 +1237,6 @@ dependencies = [
  "sd-notify",
  "sentry",
  "sentry-tower",
- "serde_json",
  "tokio",
  "tower",
  "tower-http",
