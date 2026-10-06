@@ -2063,7 +2063,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomJoinRules,
 				Some(""),
-				to_raw_json_value(&json!({"creator": alice().as_str(), "room_version": "12",})),
+				to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Private)),
 			),
 			to_init_pdu_event(
 				"ME",

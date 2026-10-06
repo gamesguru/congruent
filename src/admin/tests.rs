@@ -2135,7 +2135,7 @@ async fn test_yolo_heal_receipts() {
 	// 1. Manually insert duplicate receipts into the database
 	let mut content1 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users1 = std::collections::BTreeMap::new();
-	users1.insert(user_id.into(), Receipt {
+	users1.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(1000_u32)),
 		thread: Default::default(),
 	});
@@ -2152,7 +2152,7 @@ async fn test_yolo_heal_receipts() {
 
 	let mut content2 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users2 = std::collections::BTreeMap::new();
-	users2.insert(user_id.into(), Receipt {
+	users2.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(2000_u32)),
 		thread: Default::default(),
 	});

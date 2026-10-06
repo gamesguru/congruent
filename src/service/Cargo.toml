@@ -132,10 +132,5 @@ figment = { workspace = true, features = ["toml"] }
 # dependency does not leak a provider onto the library's consumers.
 rustls = { workspace = true, features = ["ring"] }
 
-[[bench]]
-name = "hamt"
-path = "../../benches/hamt.rs"
-harness = false
-
 [lints]
 workspace = true

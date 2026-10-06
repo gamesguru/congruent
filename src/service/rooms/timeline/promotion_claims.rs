@@ -84,7 +84,7 @@ mod tests {
 	#[test]
 	fn promotion_claims_are_exclusive() {
 		let claims = Arc::new(PromotionClaims::new());
-		let event_id = slipstream::OwnedEventId::from("$test_event:example.org");
+		let event_id = OwnedEventId::from("$test_event:example.org");
 
 		assert!(claims.try_claim_promotion(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));
@@ -96,7 +96,7 @@ mod tests {
 	#[test]
 	fn duplicate_promotion_claim_is_refused() {
 		let claims = PromotionClaims::new();
-		let event_id = slipstream::OwnedEventId::from("$dup:example.org");
+		let event_id = OwnedEventId::from("$dup:example.org");
 		assert!(claims.try_claim_promotion(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));
 	}

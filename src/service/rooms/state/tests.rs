@@ -202,7 +202,7 @@ fn test_root_handle_serialization_round_trip() {
 
 #[test]
 fn test_root_handle_rejects_truncated_value() {
-	let handle = super::root_handle_from_bytes(&[0; 32]).unwrap_err();
+	let handle = super::root_handle_from_bytes(&[0; 32]).err().unwrap();
 	assert!(
 		handle.to_string().contains("invalid length"),
 		"expected a length error, got {handle}"
