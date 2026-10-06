@@ -1793,7 +1793,9 @@ impl Service {
 		let filter_id = utils::random_string(4);
 
 		let key = (user_id, &filter_id);
-		self.db.userfilterid_filter.put(key, Json(filter));
+		self.db
+			.userfilterid_filter
+			.put(key, Json(conduwuit_database::dbkey::compact_filter(filter)));
 
 		filter_id
 	}

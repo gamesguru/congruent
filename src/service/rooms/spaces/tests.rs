@@ -3,7 +3,7 @@ use std::str::FromStr;
 use slipstream::{
 	UInt,
 	api::federation::space::{SpaceHierarchyParentSummary, SpaceHierarchyParentSummaryInit},
-	owned_room_id, owned_server_name,
+	owned_server_name,
 	space::SpaceRoomJoinRule,
 };
 
@@ -13,7 +13,8 @@ use crate::rooms::spaces::{PaginationToken, get_parent_children_via, summary_to_
 fn get_summary_children() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::from("!root:example.org")
+			.expect("valid Matrix identifier"),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
@@ -70,21 +71,28 @@ fn get_summary_children() {
 
 	let all = get_parent_children_via(&summary, false);
 	assert_eq!(all, vec![
-		(owned_room_id!("!foo:example.org"), vec![owned_server_name!("example.org")]),
-		(owned_room_id!("!bar:example.org"), vec![owned_server_name!("example.org")]),
-		(owned_room_id!("!baz:example.org"), vec![owned_server_name!("example.org")])
+		(slipstream::OwnedRoomId::from("!foo:example.org"), vec![
+			slipstream::OwnedServerName::from("example.org").expect("valid Matrix identifier")
+		]),
+		(slipstream::OwnedRoomId::from("!bar:example.org"), vec![
+			slipstream::OwnedServerName::from("example.org").expect("valid Matrix identifier")
+		]),
+		(slipstream::OwnedRoomId::from("!baz:example.org"), vec![
+			slipstream::OwnedServerName::from("example.org").expect("valid Matrix identifier")
+		])
 	]);
 	let suggested = get_parent_children_via(&summary, true);
-	assert_eq!(suggested, vec![(owned_room_id!("!bar:example.org"), vec![owned_server_name!(
-		"example.org"
-	)])]);
+	assert_eq!(suggested, vec![(slipstream::OwnedRoomId::from("!bar:example.org"), vec![
+		owned_server_name!("example.org")
+	])]);
 }
 
 #[test]
 fn summary_chunk_filters_children_state_for_suggested_only() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::from("!root:example.org")
+			.expect("valid Matrix identifier"),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
@@ -122,14 +130,17 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
 		.map(|child| child.deserialize().unwrap().state_key)
 		.collect();
 
-	assert_eq!(children, vec![owned_room_id!("!suggested:example.org")]);
+	assert_eq!(children, vec![
+		slipstream::OwnedRoomId::from("!suggested:example.org").expect("valid Matrix identifier")
+	]);
 }
 
 #[test]
 fn get_summary_children_sorted_by_order() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::from("!root:example.org")
+			.expect("valid Matrix identifier"),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
@@ -207,7 +218,8 @@ fn get_summary_children_sorted_by_order() {
 fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::from("!root:example.org")
+			.expect("valid Matrix identifier"),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,

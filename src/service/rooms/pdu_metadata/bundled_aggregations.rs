@@ -274,15 +274,18 @@ enum RelationType<'a> {
 mod tests {
 	use conduwuit_core::pdu::{EventHash, PduEvent};
 	use serde_json::{Value as JsonValue, json, value::to_raw_value};
-	use slipstream::{
-		UInt, events::TimelineEventType, owned_event_id, owned_room_id, owned_user_id,
-	};
+	use slipstream::{UInt, events::TimelineEventType};
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {
-			event_id: owned_event_id!("$test:example.com"),
-			room_id: Some(owned_room_id!("!test:example.com")),
-			sender: owned_user_id!("@test:example.com"),
+			event_id: slipstream::OwnedEventId::from("$test:example.com")
+				.expect("valid Matrix identifier"),
+			room_id: Some(
+				slipstream::OwnedRoomId::from("!test:example.com")
+					.expect("valid Matrix identifier"),
+			),
+			sender: slipstream::OwnedUserId::from("@test:example.com")
+				.expect("valid Matrix identifier"),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: TimelineEventType::RoomMessage,
 			content: to_raw_value(&json!({"msgtype": "m.text", "body": "test"})).unwrap(),

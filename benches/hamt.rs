@@ -21,7 +21,8 @@ fn bench_hamt_construction(c: &mut Criterion) {
 
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::from("!bench_room:test.local").expect("valid Matrix identifier");
 
 	for &size in &sizes {
 		group.throughput(Throughput::Elements(size));
@@ -52,7 +53,8 @@ fn bench_hamt_point_lookups(c: &mut Criterion) {
 
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::from("!bench_room:test.local").expect("valid Matrix identifier");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	for &size in &sizes {
@@ -99,7 +101,8 @@ fn bench_hamt_delta_isolation(c: &mut Criterion) {
 	let base_size: u64 = 50_000;
 	let delta_sizes = [1, 10, 100, 1_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::from("!bench_room:test.local").expect("valid Matrix identifier");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	let base_entries: Vec<(u64, u64)> = (0..base_size)
@@ -171,7 +174,8 @@ fn bench_lthash(c: &mut Criterion) {
 		group.throughput(Throughput::Elements(count));
 
 		group.bench_with_input(BenchmarkId::new("lthash_checksum", count), &count, |b, _| {
-			let event_id = ruma::owned_event_id!("$bench_event:test.local");
+			let event_id = ruma::slipstream::OwnedEventId::from("$bench_event:test.local")
+				.expect("valid Matrix identifier");
 			b.iter(|| {
 				let mut hash = rezzy::LtHash::ZERO;
 				for i in 0..count {

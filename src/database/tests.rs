@@ -9,7 +9,9 @@ use conduwuit::{
 use serde::Serialize;
 
 use crate::{
-	Ignore, Interfix, de, ser,
+	Ignore, Interfix,
+	dbkey::compact_filter,
+	de, ser,
 	ser::{Json, serialize_to_vec},
 };
 
@@ -257,8 +259,8 @@ fn ser_complex() {
 	assert_eq!(a, b);
 }
 
-/// The codec writes every filter field, where the historical encoding omitted
-/// defaults. Rows written either way must decode to the same filter.
+/// Defaults are omitted from stored filters, as in rows written before the
+/// codec migration.
 #[test]
 fn ser_json() {
 	use conduwuit::slipstream::filter::FilterDefinition;
@@ -268,12 +270,25 @@ fn ser_json() {
 		..Default::default()
 	};
 
-	let serialized = serialize_to_vec(Json(&filter)).expect("failed to serialize value");
+	let serialized =
+		serialize_to_vec(Json(compact_filter(&filter))).expect("failed to serialize value");
+	assert_eq!(String::from_utf8_lossy(&serialized), r#"{"event_fields":["content.body"]}"#);
+
 	let decoded: Json<FilterDefinition> = de::from_slice(&serialized).expect("failed to decode");
 	assert_eq!(decoded.0.event_fields, filter.event_fields);
 
-	let again = serialize_to_vec(&decoded).expect("failed to serialize again");
+	let again =
+		serialize_to_vec(Json(compact_filter(&decoded.0))).expect("failed to serialize again");
 	assert_eq!(serialized, again, "re-encoding is not stable");
+}
+
+#[test]
+fn ser_json_filter_default_is_empty_object() {
+	use conduwuit::slipstream::filter::FilterDefinition;
+
+	let serialized =
+		serialize_to_vec(Json(compact_filter(&FilterDefinition::default()))).expect("serialize");
+	assert_eq!(String::from_utf8_lossy(&serialized), "{}");
 }
 
 #[test]
@@ -334,6 +349,9 @@ fn json_filter_legacy_row_decodes() {
 	let stored = br#"{"event_fields":["content.body"]}"#;
 	let filter: Json<FilterDefinition> = de::from_slice(stored).expect("failed to deserialize");
 	assert_eq!(filter.0.event_fields, Some(vec!["content.body".to_owned()]));
+
+	let again = serialize_to_vec(Json(compact_filter(&filter.0))).expect("failed to serialize");
+	assert_eq!(&again[..], &stored[..], "legacy row did not re-encode byte-identically");
 }
 
 #[test]

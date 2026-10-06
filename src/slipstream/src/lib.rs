@@ -2,6 +2,12 @@
 
 pub use mtx_slipstream::*;
 
+/// Builds a Slipstream JSON value from JSON-like literal syntax.
+#[macro_export]
+macro_rules! json {
+	($($tokens:tt)*) => { rezzy::json!($($tokens)*) };
+}
+
 /// Slipstream's serde-free value codec.
 pub mod codec {
 	pub use mtx_slipstream::codec::*;
