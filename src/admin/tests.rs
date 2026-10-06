@@ -94,10 +94,7 @@ fn yolo_view_extremities_with_room() {
 /// Helper: simulates the V11+/V12+ room_id stripping logic used in
 /// import/export. V11: strips room_id from all non-create events (MSC3820)
 /// V12+: strips room_id from ALL events including create (MSC4291)
-fn strip_room_id_if_needed(
-	obj: &mut slipstream::json::Object<String, slipstream::json::Value>,
-	room_version: &str,
-) -> bool {
+fn strip_room_id_if_needed(obj: &mut slipstream::json::Object, room_version: &str) -> bool {
 	let is_create = obj.get("type").and_then(|v| v.as_str()) == Some("m.room.create");
 
 	let room_version_id = slipstream::RoomVersionId::try_from(room_version)
@@ -114,7 +111,7 @@ fn strip_room_id_if_needed(
 
 #[test]
 fn v12_create_event_strips_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -124,29 +121,27 @@ fn v12_create_event_strips_room_id() {
 
 #[test]
 fn v12_non_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+	)
+	.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "12"));
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v11_non_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+	)
+	.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "11"));
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v11_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -156,7 +151,7 @@ fn v11_create_event_keeps_room_id() {
 
 #[test]
 fn v10_create_event_keeps_room_id() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{"creator":"@alice:example.org"}}"#,
 	)
 	.unwrap();
@@ -166,11 +161,10 @@ fn v10_create_event_keeps_room_id() {
 
 #[test]
 fn v12_create_event_without_room_id_is_noop() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.create","content":{"creator":"@alice:example.org"}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.create","content":{"creator":"@alice:example.org"}}"#,
+	)
+	.unwrap();
 	assert!(!strip_room_id_if_needed(&mut obj, "12"));
 }
 
@@ -178,10 +172,7 @@ fn v12_create_event_without_room_id_is_noop() {
 
 /// Helper: simulates the import field-stripping pipeline.
 /// Strips diagnostic fields and applies room_id transformations.
-fn strip_import_fields(
-	obj: &mut slipstream::json::Object<String, slipstream::json::Value>,
-	room_version: &str,
-) {
+fn strip_import_fields(obj: &mut slipstream::json::Object, room_version: &str) {
 	// Diagnostic fields injected during export
 	obj.remove("__shortstatehash");
 	obj.remove("prev_state_events");
@@ -192,10 +183,7 @@ fn strip_import_fields(
 
 /// Helper: checks whether an event's auth_events list references the create
 /// event.
-fn auth_events_reference_create(
-	obj: &slipstream::json::Object<String, slipstream::json::Value>,
-	create_event_id: &str,
-) -> bool {
+fn auth_events_reference_create(obj: &slipstream::json::Object, create_event_id: &str) -> bool {
 	obj.get("auth_events")
 		.and_then(|v| v.as_array())
 		.is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(create_event_id)))
@@ -203,7 +191,7 @@ fn auth_events_reference_create(
 
 #[test]
 fn import_strips_diagnostic_fields() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.message","room_id":"!abc:example.org","__shortstatehash":12345,"prev_state_events":[],"state_jump_pointers":[],"content":{}}"#,
 	)
 	.unwrap();
@@ -220,18 +208,17 @@ fn import_strips_diagnostic_fields() {
 #[test]
 fn v11_event_keeps_room_id_in_wire_format() {
 	// In v11, room_id IS part of the wire format.
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+	)
+	.unwrap();
 	strip_import_fields(&mut obj, "11");
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v12_create_event_full_import_pipeline() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.create","room_id":"!abc:example.org","__shortstatehash":999,"content":{"room_version":"12"},"auth_events":[],"prev_events":[]}"#,
 	)
 	.unwrap();
@@ -244,38 +231,35 @@ fn v12_create_event_full_import_pipeline() {
 
 #[test]
 fn v12_non_create_event_keeps_room_id_after_import() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+	)
+	.unwrap();
 	strip_import_fields(&mut obj, "12");
 	assert!(obj.contains_key("room_id"));
 }
 
 #[test]
 fn v12_auth_events_must_not_reference_create() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","auth_events":["$power_levels","$join_rules"],"content":{}}"#,
-		)
-		.unwrap();
+	let obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","auth_events":["$power_levels","$join_rules"],"content":{}}"#,
+	)
+	.unwrap();
 	assert!(!auth_events_reference_create(&obj, "$create_event"));
 }
 
 #[test]
 fn v12_auth_events_rejects_explicit_create_reference() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels"],"content":{}}"#,
-		)
-		.unwrap();
+	let obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels"],"content":{}}"#,
+	)
+	.unwrap();
 	assert!(auth_events_reference_create(&obj, "$create_event"));
 }
 
 #[test]
 fn v10_auth_events_must_reference_create() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> = slipstream::codec::from_str(
+	let obj: slipstream::json::Object = slipstream::codec::from_str(
 		r#"{"type":"m.room.member","auth_events":["$create_event","$power_levels","$join_rules"],"content":{}}"#,
 	)
 	.unwrap();
@@ -284,11 +268,10 @@ fn v10_auth_events_must_reference_create() {
 
 #[test]
 fn v12_create_event_has_empty_auth_events() {
-	let obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.create","auth_events":[],"content":{"room_version":"12"}}"#,
-		)
-		.unwrap();
+	let obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.create","auth_events":[],"content":{"room_version":"12"}}"#,
+	)
+	.unwrap();
 	let auth = obj.get("auth_events").and_then(|v| v.as_array()).unwrap();
 	assert!(auth.is_empty(), "create event must have empty auth_events");
 }
@@ -296,11 +279,10 @@ fn v12_create_event_has_empty_auth_events() {
 #[test]
 fn strip_preserves_older_versions() {
 	for version in &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"] {
-		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-			slipstream::codec::from_str(
-				r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
-			)
-			.unwrap();
+		let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+			r#"{"type":"m.room.member","room_id":"!abc:example.org","content":{}}"#,
+		)
+		.unwrap();
 		strip_room_id_if_needed(&mut obj, version);
 		assert!(
 			obj.contains_key("room_id"),
@@ -311,11 +293,10 @@ fn strip_preserves_older_versions() {
 
 #[test]
 fn strip_v12_create_removes() {
-	let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-		slipstream::codec::from_str(
-			r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{}}"#,
-		)
-		.unwrap();
+	let mut obj: slipstream::json::Object = slipstream::codec::from_str(
+		r#"{"type":"m.room.create","room_id":"!abc:example.org","content":{}}"#,
+	)
+	.unwrap();
 	strip_room_id_if_needed(&mut obj, "12");
 	assert!(!obj.contains_key("room_id"), "room_id must be removed for V12 create events");
 }
@@ -534,7 +515,7 @@ async fn test_yolo_audit_membership_drift() {
 	// 1. Simulate user mismatch drift (user joined in state, but marked as left in
 	//    cache)
 	let user_id = slipstream::user_id!("@user:test.conduwuit.local");
-	services.users.create(user_id, None, None).await.unwrap();
+	services.users.create(&user_id, None, None).await.unwrap();
 
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 	services
@@ -545,7 +526,7 @@ async fn test_yolo_audit_membership_drift() {
 				String::from(user_id.as_str()),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
-			user_id,
+			&user_id,
 			Some(&room_id),
 			&state_lock,
 		)
@@ -557,7 +538,7 @@ async fn test_yolo_audit_membership_drift() {
 	services
 		.rooms
 		.state_cache
-		.mark_as_left_silent(user_id, &room_id)
+		.mark_as_left_silent(&user_id, &room_id)
 		.await;
 	services
 		.rooms
@@ -750,7 +731,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.unwrap();
 
 	let user_id = slipstream::user_id!("@torn:test.conduwuit.local");
-	services.users.create(user_id, None, None).await.unwrap();
+	services.users.create(&user_id, None, None).await.unwrap();
 	let event_id = services
 		.rooms
 		.timeline
@@ -759,7 +740,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 				String::from(user_id.as_str()),
 				&RoomMemberEventContent::new(MembershipState::Join),
 			),
-			user_id,
+			&user_id,
 			Some(&room_id),
 			&state_lock,
 		)
@@ -1572,7 +1553,7 @@ async fn test_busted_dag_resolution() {
 	let latest_pdu = services
 		.rooms
 		.timeline
-		.latest_pdu_in_room(room_id)
+		.latest_pdu_in_room(&room_id)
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
@@ -1582,11 +1563,11 @@ async fn test_busted_dag_resolution() {
 		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
-	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1635,7 +1616,7 @@ async fn test_busted_dag_resolution() {
 	let exts_count = services
 		.rooms
 		.state
-		.get_forward_extremities(room_id)
+		.get_forward_extremities(&room_id)
 		.count()
 		.await;
 	println!("Busted DAG resolved. Final forward extremities count: {exts_count}");
@@ -1723,7 +1704,7 @@ async fn test_unredacted_room_dag_resolution() {
 	let latest_pdu = services
 		.rooms
 		.timeline
-		.latest_pdu_in_room(room_id)
+		.latest_pdu_in_room(&room_id)
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
@@ -1733,11 +1714,11 @@ async fn test_unredacted_room_dag_resolution() {
 		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
-	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1777,7 +1758,7 @@ async fn test_unredacted_room_dag_resolution() {
 	let exts_count = services
 		.rooms
 		.state
-		.get_forward_extremities(room_id)
+		.get_forward_extremities(&room_id)
 		.count()
 		.await;
 	println!("Unredacted Room DAG resolved. Final forward extremities count: {exts_count}");
@@ -1869,7 +1850,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let root_handle = services
 		.rooms
 		.state
-		.get_room_state_hamt(room_id)
+		.get_room_state_hamt(&room_id)
 		.await
 		.expect("rebuild-state should have set room state root");
 	let best_entries = services
@@ -1915,7 +1896,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let exts_count = services
 		.rooms
 		.state
-		.get_forward_extremities(room_id)
+		.get_forward_extremities(&room_id)
 		.count()
 		.await;
 	eprintln!("[LOUNGE] forward extremities: {exts_count}");
@@ -1961,11 +1942,11 @@ async fn test_unredacted_lounge_dag_resolution() {
 
 	let mut mismatches = 0u32;
 	for id in &expected_present {
-		let eid = <&slipstream::EventId>::try_from(*id).unwrap();
-		if !resolved_state_ids.contains(eid) {
+		let eid = <slipstream::EventId>::try_from(*id).unwrap();
+		if !resolved_state_ids.contains(&eid) {
 			println!("MISMATCH: expected PRESENT but MISSING: {id}");
 			// Find what's in the same state key slot
-			if let Ok(pdu) = services.rooms.timeline.get_pdu(eid).await {
+			if let Ok(pdu) = services.rooms.timeline.get_pdu(&eid).await {
 				let ty = pdu.kind().to_string();
 				let sk = pdu.state_key().unwrap_or("(none)");
 				println!("  type={ty}, state_key={sk}");
@@ -1986,8 +1967,8 @@ async fn test_unredacted_lounge_dag_resolution() {
 	}
 
 	for id in &expected_absent {
-		let eid = <&slipstream::EventId>::try_from(*id).unwrap();
-		if resolved_state_ids.contains(eid) {
+		let eid = <slipstream::EventId>::try_from(*id).unwrap();
+		if resolved_state_ids.contains(&eid) {
 			println!("MISMATCH: expected ABSENT but PRESENT: {id}");
 			mismatches += 1;
 		}
@@ -2077,7 +2058,7 @@ async fn test_nheko_dag_resolution() {
 	let latest_pdu = services
 		.rooms
 		.timeline
-		.latest_pdu_in_room(room_id)
+		.latest_pdu_in_room(&room_id)
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
@@ -2087,11 +2068,11 @@ async fn test_nheko_dag_resolution() {
 		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
-	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -2131,7 +2112,7 @@ async fn test_nheko_dag_resolution() {
 	let exts_count = services
 		.rooms
 		.state
-		.get_forward_extremities(room_id)
+		.get_forward_extremities(&room_id)
 		.count()
 		.await;
 	println!("Nheko Room DAG resolved. Final forward extremities count: {exts_count}");
@@ -2154,10 +2135,10 @@ async fn test_yolo_heal_receipts() {
 	// 1. Manually insert duplicate receipts into the database
 	let mut content1 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users1 = std::collections::BTreeMap::new();
-	users1.insert(
-		user_id.into(),
-		Receipt::new(slipstream::MilliSecondsSinceUnixEpoch(1000_u32.into())),
-	);
+	users1.insert(user_id.into(), Receipt {
+		ts: Some(slipstream::UInt::from(1000_u32)),
+		thread: Default::default(),
+	});
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
 	content1
@@ -2171,10 +2152,10 @@ async fn test_yolo_heal_receipts() {
 
 	let mut content2 = ReceiptEventContent(std::collections::BTreeMap::new());
 	let mut users2 = std::collections::BTreeMap::new();
-	users2.insert(
-		user_id.into(),
-		Receipt::new(slipstream::MilliSecondsSinceUnixEpoch(2000_u32.into())),
-	);
+	users2.insert(user_id.into(), Receipt {
+		ts: Some(slipstream::UInt::from(2000_u32)),
+		thread: Default::default(),
+	});
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
 	content2
@@ -2705,7 +2686,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.await
 		.ok();
 	assert_eq!(
-		name_c.as_ref().map(|c| c.name.as_str()),
+		name_c.as_ref().and_then(|c| c.name.as_deref()),
 		Some("Name A"),
 		"Branch 2 message should not leak concurrent Branch 1 state changes"
 	);
@@ -2730,7 +2711,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.await
 		.ok();
 	assert_eq!(
-		name_m.as_ref().map(|c| c.name.as_str()),
+		name_m.as_ref().and_then(|c| c.name.as_deref()),
 		Some("Name B"),
 		"Merge event state snapshot should resolve conflict to Name B"
 	);

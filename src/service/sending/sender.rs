@@ -1858,7 +1858,7 @@ mod tests {
 			data.data.thread,
 			slipstream::events::receipt::ReceiptThread::Unthreaded
 		));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]
@@ -1909,7 +1909,7 @@ mod tests {
 			data.data.thread,
 			slipstream::events::receipt::ReceiptThread::Unthreaded
 		));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]

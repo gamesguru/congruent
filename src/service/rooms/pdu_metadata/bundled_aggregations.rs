@@ -273,8 +273,9 @@ enum RelationType<'a> {
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::pdu::{EventHash, PduEvent};
-	use serde_json::{Value as JsonValue, json, value::to_raw_value};
-	use slipstream::{UInt, events::TimelineEventType};
+	use slipstream::{
+		UInt, events::TimelineEventType, json, json::Value as JsonValue, sswire::Raw,
+	};
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {
@@ -283,13 +284,13 @@ mod tests {
 			sender: slipstream::OwnedUserId::from("@test:example.com"),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: TimelineEventType::RoomMessage,
-			content: to_raw_value(&json!({"msgtype": "m.text", "body": "test"})).unwrap(),
+			content: Raw::from_value(&json!({"msgtype": "m.text", "body": "test"})),
 			state_key: None,
 			prev_events: vec![],
 			depth: UInt::from(1_u32),
 			auth_events: vec![],
 			redacts: None,
-			unsigned: unsigned_content.map(|content| to_raw_value(&content).unwrap()),
+			unsigned: unsigned_content.map(|content| Raw::from_value(&content)),
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
@@ -328,11 +329,12 @@ mod tests {
 		assert!(pdu.unsigned.is_some(), "Unsigned field should be created");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
 		assert!(unsigned.get("m.relations").is_some(), "m.relations should exist");
 		assert_eq!(
-			unsigned["m.relations"], aggregations,
+			unsigned.get("m.relations").unwrap(),
+			&aggregations,
 			"Relations should match the aggregations"
 		);
 	}
@@ -359,16 +361,21 @@ mod tests {
 		assert!(result.is_ok(), "Should succeed when overwriting same relation type");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
-		let relations = &unsigned["m.relations"];
+		let relations = unsigned.get("m.relations").unwrap();
 
 		assert_eq!(
-			relations["m.replace"], new_aggregations["m.replace"],
+			relations.get("m.replace").unwrap(),
+			new_aggregations.get("m.replace").unwrap(),
 			"m.replace should be updated"
 		);
 		assert_eq!(
-			relations["m.replace"]["event_id"], "$replace:example.com",
+			relations
+				.get("m.replace")
+				.and_then(|v| v.get("event_id"))
+				.and_then(JsonValue::as_str),
+			Some("$replace:example.com"),
 			"Should have new event_id"
 		);
 
@@ -399,10 +406,14 @@ mod tests {
 		assert!(result.is_ok(), "Should succeed while preserving other fields");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
 		// Verify all existing fields are preserved
-		assert_eq!(unsigned["age"], 98765, "age should be preserved");
+		assert_eq!(
+			unsigned.get("age").and_then(JsonValue::as_i64),
+			Some(98765),
+			"age should be preserved"
+		);
 		assert!(unsigned.get("prev_content").is_some(), "prev_content should be preserved");
 		assert!(
 			unsigned.get("redacted_because").is_some(),
@@ -410,7 +421,7 @@ mod tests {
 		);
 
 		// Verify relations were merged correctly
-		let relations = &unsigned["m.relations"];
+		let relations = unsigned.get("m.relations").unwrap();
 		assert!(
 			relations.get("m.annotation").is_some(),
 			"Existing m.annotation should be preserved"
@@ -423,7 +434,7 @@ mod tests {
 		// Test case: Invalid JSON in existing unsigned should result in error
 		let mut pdu = create_test_pdu(None);
 		// Manually set invalid unsigned data
-		pdu.unsigned = Some(to_raw_value(&"invalid json").unwrap());
+		pdu.unsigned = Some(Raw::from_value(&"invalid json"));
 
 		let aggregations = create_bundled_aggregations();
 		let result =
@@ -448,7 +459,7 @@ mod tests {
 			sender: sender.try_into().unwrap(),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: event_type,
-			content: to_raw_value(&content).unwrap(),
+			content: Raw::from_value(&content),
 			state_key: state_key.map(Into::into),
 			prev_events: vec![],
 			depth: UInt::from(1_u32),

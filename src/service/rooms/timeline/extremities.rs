@@ -534,7 +534,7 @@ mod tests {
 
 		let sorted = vec![a, b, c, d.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*d];
+		let expected: Vec<&EventId> = vec![&d];
 		assert_eq!(tips, expected);
 	}
 
@@ -553,7 +553,7 @@ mod tests {
 		let mut tips = calculate_true_extremities(&graph, &sorted);
 		tips.sort();
 
-		let mut expected: Vec<&EventId> = vec![&*b, &*y];
+		let mut expected: Vec<&EventId> = vec![&b, &y];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -569,7 +569,7 @@ mod tests {
 
 		let sorted = vec![a.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*a];
+		let expected: Vec<&EventId> = vec![&a];
 		assert_eq!(tips, expected);
 	}
 
@@ -589,7 +589,7 @@ mod tests {
 		// Because B is in `sorted` and nothing in `graph` lists B as a parent, B must
 		// be a tip. A is also a tip because nothing lists it as a parent.
 		tips.sort();
-		let mut expected: Vec<&EventId> = vec![&*a, &*b];
+		let mut expected: Vec<&EventId> = vec![&a, &b];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -608,7 +608,7 @@ mod tests {
 		let tips = calculate_true_extremities(&graph, &sorted);
 
 		// Fallback returns the last element in `sorted`
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -657,7 +657,7 @@ mod tests {
 		let sorted = vec![a, b.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
 
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -679,7 +679,7 @@ mod tests {
 
 		// Even though C was first in the array, A and B are in has_children.
 		// The algorithm correctly identifies C as the sole extremity.
-		let expected: Vec<&EventId> = vec![&*c];
+		let expected: Vec<&EventId> = vec![&c];
 		assert_eq!(tips, expected);
 	}
 
@@ -778,7 +778,7 @@ mod tests {
 		let e4 = event_id!("$4").to_owned();
 
 		// newly discovered true extremity
-		let true_exts = vec![&*e1];
+		let true_exts = vec![&e1];
 
 		// current tips in DB
 		let current_set: HashSet<OwnedEventId> = vec![e2.clone(), e3.clone(), e4.clone()]

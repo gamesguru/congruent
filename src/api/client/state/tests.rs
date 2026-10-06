@@ -23,12 +23,12 @@ fn test_strip_room_member() -> Result<()> {
 
 	//Begin Test
 	membership_content.join_authorized_via_users_server = None;
-	*json = Raw::<AnyStateEventContent>::from_json_string(serde_json::to_string(
+	*json = Raw::<AnyStateEventContent>::from_json_string(slipstream::codec::to_string(
 		&membership_content,
-	)?)?;
+	))?;
 
 	//Compare result
-	let result = json.json().get();
+	let result = json.get();
 	println!("JSON (modified): {result}");
 	assert_eq!(
 		result,

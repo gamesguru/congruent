@@ -1787,8 +1787,8 @@ mod tests {
 		room_version::RoomVersion,
 		test_utils::{
 			INITIAL_EVENTS, TestStore, alice, bob, charlie, do_check, ella, event_id,
-			member_content_ban, member_content_join, room_id, to_init_pdu_event, to_pdu_event,
-			zara,
+			member_content_ban, member_content_join, power_users, room_id, to_init_pdu_event,
+			to_pdu_event, zara,
 		},
 	};
 	use crate::{
@@ -1898,7 +1898,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"MA",
@@ -1919,7 +1919,7 @@ mod tests {
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 		];
 
@@ -1955,7 +1955,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -1969,14 +1969,14 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 0 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 0)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T3",
@@ -2020,7 +2020,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -2063,7 +2063,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomJoinRules,
 				Some(""),
-				to_raw_json_value(&json!({"creator": alice(), "room_version": "12",})),
+				to_raw_json_value(&json!({"creator": alice().as_str(), "room_version": "12",})),
 			),
 			to_init_pdu_event(
 				"ME",
@@ -2096,25 +2096,21 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(
-					&json!({ "users": { (alice()): 100, (bob()): 50, (charlie()): 50 } }),
-				),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50), (charlie(), 50)])),
 			),
 			to_init_pdu_event(
 				"PC",
 				charlie(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(
-					&json!({ "users": { (alice()): 100, (bob()): 50, (charlie()): 0 } }),
-				),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50), (charlie(), 0)])),
 			),
 		];
 
@@ -2147,7 +2143,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -2161,14 +2157,14 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 0 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 0)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T3",
@@ -2405,7 +2401,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 				&["CREATE", "IMA", "IPOWER"], // auth_events
 				&["START"],                   // prev_events
 			),
@@ -2414,7 +2410,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 				&["CREATE", "IMA", "IPOWER"],
 				&["END"],
 			),
@@ -2619,7 +2615,7 @@ mod tests {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice(), "room_version": "12" })),
+			to_raw_json_value(&json!({ "creator": alice().as_str(), "room_version": "12" })),
 			&[],
 			&[],
 		);
@@ -2686,7 +2682,7 @@ mod tests {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { (bob()): 50 } })),
+			to_raw_json_value(&power_users(&[(bob(), 50)])),
 			&["S21C_MA", "S21C_PL1"],
 			&["S21C_MC"],
 		);
@@ -2697,7 +2693,7 @@ mod tests {
 			bob(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { (bob()): 50, (charlie()): 50 } })),
+			to_raw_json_value(&power_users(&[(bob(), 50), (charlie(), 50)])),
 			&["S21C_MB", "S21C_PL2"],
 			&["S21C_PL2"],
 		);

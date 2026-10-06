@@ -473,15 +473,13 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 
 #[cfg(test)]
 mod tests {
-	use slipstream::server_name;
-
 	use super::*;
 
 	#[test]
 	fn test_auth_server_checks_impl_missing_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, None);
+		let server_name = OwnedServerName::from("local.com");
+		let origin = OwnedServerName::from("remote.com");
+		let result = auth_server_checks_impl(true, &server_name, false, &origin, None);
 		assert!(
 			result.is_ok(),
 			"Missing destination should be allowed for backwards compatibility"
@@ -490,18 +488,20 @@ mod tests {
 
 	#[test]
 	fn test_auth_server_checks_impl_valid_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, Some(server_name));
+		let server_name = OwnedServerName::from("local.com");
+		let origin = OwnedServerName::from("remote.com");
+		let result =
+			auth_server_checks_impl(true, &server_name, false, &origin, Some(&server_name));
 		assert!(result.is_ok(), "Valid destination should be allowed");
 	}
 
 	#[test]
 	fn test_auth_server_checks_impl_invalid_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let wrong_dest = server_name!("wrong.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, Some(wrong_dest));
+		let server_name = OwnedServerName::from("local.com");
+		let origin = OwnedServerName::from("remote.com");
+		let wrong_dest = OwnedServerName::from("wrong.com");
+		let result =
+			auth_server_checks_impl(true, &server_name, false, &origin, Some(&wrong_dest));
 		assert!(result.is_err(), "Invalid destination should be rejected");
 	}
 }

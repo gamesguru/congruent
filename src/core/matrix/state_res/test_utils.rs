@@ -36,6 +36,17 @@ pub(crate) fn to_raw_json_value<T: slipstream::codec::Serialize + ?Sized>(value:
 	RawJson::from_value(value)
 }
 
+/// `{"users": {...}}` power-level content with the given user levels.
+pub(crate) fn power_users(users: &[(&OwnedUserId, i64)]) -> slipstream::json::Value {
+	let users = users
+		.iter()
+		.map(|(user, level)| (user.to_string(), slipstream::json::Value::from(*level)))
+		.collect::<slipstream::json::Object>();
+	let mut object = slipstream::json::Object::new();
+	object.insert("users".to_owned(), slipstream::json::Value::Object(users));
+	slipstream::json::Value::Object(object)
+}
+
 /// Raw `m.room.power_levels` content with the given user levels.
 pub(crate) fn users_power_levels(users: &[(&UserId, u32)]) -> RawJson {
 	let users = users
@@ -289,7 +300,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		);
@@ -496,7 +507,7 @@ pub(crate) fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		),
@@ -577,7 +588,7 @@ pub(crate) fn INITIAL_EVENTS_CREATE_ROOM() -> HashMap<OwnedEventId, Pdu> {
 		alice(),
 		TimelineEventType::RoomCreate,
 		Some(""),
-		to_raw_json_value(&slipstream::json!({ "creator": alice() })),
+		to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 		&[],
 		&[],
 	)]

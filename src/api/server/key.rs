@@ -433,8 +433,17 @@ database_path = "{}"
 			std::str::from_utf8(&body).expect("response should be UTF-8"),
 		)
 		.expect("response should be valid JSON");
-		let old_key = &json["server_keys"][0]["old_verify_keys"]["ed25519:historical"];
-		assert_eq!(old_key["key"], STANDARD.encode(b"BBB"));
+		let old_key = json
+			.get("server_keys")
+			.and_then(|keys| keys.as_array())
+			.and_then(|keys| keys.first())
+			.and_then(|key| key.get("old_verify_keys"))
+			.and_then(|keys| keys.get("ed25519:historical"))
+			.expect("historical key should be present");
+		assert_eq!(
+			old_key.get("key").and_then(|key| key.as_str()),
+			Some(STANDARD.encode(b"BBB").as_str())
+		);
 
 		drop(guard);
 		_ = fs::remove_dir_all(&temp_root);
