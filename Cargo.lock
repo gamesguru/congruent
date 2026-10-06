@@ -3540,7 +3540,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#504e16d29174f9a6099c7c2434febbcc5a4c4968"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#ab993cd734d40e1ac48adf8f9590189a76c55d2b"
 dependencies = [
  "base64 0.23.1",
  "bytes",
