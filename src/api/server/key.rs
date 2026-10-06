@@ -267,6 +267,7 @@ mod tests {
 		config::Config,
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
+	use figment::providers::Format;
 	use http::{Request, StatusCode};
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
@@ -389,7 +390,7 @@ database_path = "{}"
 		let db_path = temp_root.join("db");
 		write_test_config(&config_path, &db_path);
 
-		let figment = Config::load(&[config_path]).expect("test config should load");
+		let figment = figment::Figment::new().merge(figment::providers::Toml::file(&config_path));
 		let config = Config::new(&figment).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
 		let services = conduwuit_service::Services::build(server.clone())
