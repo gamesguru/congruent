@@ -3540,7 +3540,7 @@ dependencies = [
 [[package]]
 name = "mtx-slipstream"
 version = "0.1.0"
-source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#86c540108f8795f6dd8b9f3e192da26e80f17ae7"
+source = "git+https://gitlab.com/Wombat-Foundation/mtx-slipstream.git?branch=dev#0a7349803c42cdc44b5f1633ddffec1ea0159e99"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -4788,7 +4788,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#061632646482713ded66c71406f56dcf1090c528"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#d5171b5cf9d5a52b9c985850d9e32dc3f21394bb"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -4803,7 +4803,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#061632646482713ded66c71406f56dcf1090c528"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#d5171b5cf9d5a52b9c985850d9e32dc3f21394bb"
 dependencies = [
  "ryu",
 ]
@@ -4811,7 +4811,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#061632646482713ded66c71406f56dcf1090c528"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#d5171b5cf9d5a52b9c985850d9e32dc3f21394bb"
 dependencies = [
  "base64 0.23.1",
  "sha2 0.11.0",
