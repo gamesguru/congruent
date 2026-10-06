@@ -364,16 +364,14 @@ where
 	let pdu_event = match PduEvent::from_id_val(event_id, incoming_pdu.clone(), Some(room_id)) {
 		| Ok(pdu) => pdu,
 		| Err(e) => {
-			// Persist as a rejected outlier to preserve the DAG chain.
-			// This prevents future valid events that reference this event from
-			// failing with MissingAuthEvents.
+			// Do not persist structurally invalid JSON as an outlier.  Keeping it
+			// in the outlier table makes later missing-event recovery believe the
+			// event has been fetched and suppresses a retry, even though the event
+			// can never be parsed or used.  The rejection marker is sufficient for
+			// dependent events to report the malformed predecessor.
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-				.await;
-			self.services
-				.outlier
-				.add_pdu_outlier(event_id, &incoming_pdu, Some(room_id))
 				.await;
 			return Err!(Request(BadJson(debug_warn!("Event is not a valid PDU: {e}"))));
 		},
