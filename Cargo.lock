@@ -1090,8 +1090,6 @@ dependencies = [
  "rustls",
  "sd-notify",
  "serde_json",
- "sentry",
- "sentry-tower",
  "tokio",
  "tower",
  "tower-http",

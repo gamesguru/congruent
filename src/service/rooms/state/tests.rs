@@ -9,7 +9,12 @@ use conduwuit_core::{
 	matrix::{Event, PduEvent},
 };
 use figment::providers::Format;
-use slipstream::{CanonicalJsonObject, EventId, RoomId, events::StateEventType};
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, OwnedRoomId, OwnedUserId,
+	RoomId,
+	events::{AnyStrippedStateEvent, StateEventType},
+	sswire::Raw,
+};
 
 use crate::Services;
 
@@ -112,29 +117,29 @@ fn create_member_pdu(
 	origin_server_ts: u64,
 ) -> PduEvent {
 	let mut content = CanonicalJsonObject::new();
-	content.insert("membership".into(), ruma::CanonicalJsonValue::String(membership.to_owned()));
+	content.insert("membership".into(), CanonicalJsonValue::String(membership.to_owned()));
 
 	let mut json = CanonicalJsonObject::new();
-	json.insert("room_id".into(), ruma::CanonicalJsonValue::String(room_id.as_str().to_owned()));
-	json.insert("sender".into(), ruma::CanonicalJsonValue::String(sender.to_owned()));
-	json.insert("type".into(), ruma::CanonicalJsonValue::String("m.room.member".to_owned()));
-	json.insert("state_key".into(), ruma::CanonicalJsonValue::String(state_key.to_owned()));
-	json.insert("content".into(), ruma::CanonicalJsonValue::Object(content));
+	json.insert("room_id".into(), CanonicalJsonValue::String(room_id.as_str().to_owned()));
+	json.insert("sender".into(), CanonicalJsonValue::String(sender.to_owned()));
+	json.insert("type".into(), CanonicalJsonValue::String("m.room.member".to_owned()));
+	json.insert("state_key".into(), CanonicalJsonValue::String(state_key.to_owned()));
+	json.insert("content".into(), CanonicalJsonValue::Object(content));
 	json.insert(
 		"origin_server_ts".into(),
-		ruma::CanonicalJsonValue::Integer(
+		CanonicalJsonValue::Number(
 			origin_server_ts
 				.try_into()
 				.expect("Timestamp is valid js_int value"),
 		),
 	);
-	json.insert("depth".into(), ruma::CanonicalJsonValue::Integer(1.into()));
-	json.insert("prev_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
-	json.insert("auth_events".into(), ruma::CanonicalJsonValue::Array(Vec::new()));
+	json.insert("depth".into(), CanonicalJsonValue::Number(1.into()));
+	json.insert("prev_events".into(), CanonicalJsonValue::Array(Vec::new()));
+	json.insert("auth_events".into(), CanonicalJsonValue::Array(Vec::new()));
 
 	let mut hashes = CanonicalJsonObject::new();
-	hashes.insert("sha256".into(), ruma::CanonicalJsonValue::String("dummy".to_owned()));
-	json.insert("hashes".into(), ruma::CanonicalJsonValue::Object(hashes));
+	hashes.insert("sha256".into(), CanonicalJsonValue::String("dummy".to_owned()));
+	json.insert("hashes".into(), CanonicalJsonValue::Object(hashes));
 
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create member pdu")
 }
@@ -693,13 +698,13 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stale_leave_does_not_delete_newer_invite() {
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = owned_room_id!("!invite-race:test.conduwuit.local");
-	let alice = ruma::owned_user_id!("@alice:test.conduwuit.local");
-	let inviter = ruma::owned_user_id!("@bob:test.conduwuit.local");
+	let room_id = OwnedRoomId::parse("!invite-race:test.conduwuit.local").unwrap();
+	let alice = OwnedUserId::parse("@alice:test.conduwuit.local").unwrap();
+	let inviter = OwnedUserId::parse("@bob:test.conduwuit.local").unwrap();
 
 	let leave = create_member_pdu(
 		&room_id,
-		&owned_event_id!("$leave:test.conduwuit.local"),
+		&OwnedEventId::parse("$leave:test.conduwuit.local").unwrap(),
 		inviter.as_str(),
 		alice.as_str(),
 		"leave",
@@ -707,7 +712,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 	);
 	let invite = create_member_pdu(
 		&room_id,
-		&owned_event_id!("$invite:test.conduwuit.local"),
+		&OwnedEventId::parse("$invite:test.conduwuit.local").unwrap(),
 		inviter.as_str(),
 		alice.as_str(),
 		"invite",

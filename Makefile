@@ -94,11 +94,6 @@ vars: ##H Print debug info
 		printf "$(STYLE_CYAN)%-25s$(STYLE_RESET) %s\n" "VERSION" \
 		"$$(cargo run $(CARGO_FLAGS) -p conduwuit_git_info --bin version --quiet)"
 
-.PHONY: macro
-macro: ##H See macro expansion costs
-	cargo +nightly rustc -p conduwuit --bin conduwuit -- -Zmacro-stats
-
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Development commands
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
