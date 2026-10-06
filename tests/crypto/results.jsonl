@@ -124,8 +124,8 @@
 {"Action":"pass","Test":"TestUnprocessedToDeviceMessagesArentLostOnRestart"}
 {"Action":"pass","Test":"TestUnprocessedToDeviceMessagesArentLostOnRestart/js"}
 {"Action":"pass","Test":"TestUnprocessedToDeviceMessagesArentLostOnRestart/rust"}
-{"Action":"fail","Test":"TestVerificationSAS"}
+{"Action":"pass","Test":"TestVerificationSAS"}
 {"Action":"pass","Test":"TestVerificationSAS/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestVerificationSAS/{js_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestVerificationSAS/{rust_hs1}|{js_hs1}"}
+{"Action":"pass","Test":"TestVerificationSAS/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestVerificationSAS/{rust_hs1}|{rust_hs1}"}
