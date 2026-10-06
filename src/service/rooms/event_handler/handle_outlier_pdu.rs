@@ -206,7 +206,7 @@ where
 							%event_id,
 							"Hash mismatch, fetching pristine copy from {server}"
 						);
-						if let Ok(res) = self
+						if let Some(res_pdu) = self
 							.services
 							.timeline
 							.without_cork(|| {
@@ -219,10 +219,12 @@ where
 								)
 							})
 							.await
+							.ok()
+							.and_then(|r| r.pdus.into_iter().next())
 						{
 							if let Ok((eid, clean_val)) =
 								conduwuit::matrix::event::gen_event_id_canonical_json(
-									&res.pdu,
+									&res_pdu,
 									&room_version_id,
 								) {
 								if eid == *event_id {
@@ -251,7 +253,7 @@ where
 
 				if recovered {
 					// Re-fetch since we can't move clean_val out of the nested scope
-					if let Ok(res) = self
+					if let Some(res_pdu) = self
 						.services
 						.timeline
 						.without_cork(|| {
@@ -264,10 +266,12 @@ where
 							)
 						})
 						.await
+						.ok()
+						.and_then(|r| r.pdus.into_iter().next())
 					{
 						if let Ok((_, clean_val)) =
 							conduwuit::matrix::event::gen_event_id_canonical_json(
-								&res.pdu,
+								&res_pdu,
 								&room_version_id,
 							) {
 							clean_val

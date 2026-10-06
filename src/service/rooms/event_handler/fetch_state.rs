@@ -124,8 +124,14 @@ where
 						.send_federation_request(&server, req)
 						.await
 					{
-						| Ok(res) =>
-							Ok::<_, (OwnedEventId, conduwuit::Error)>((eid.clone(), res.pdu)),
+						| Ok(res) => match res.pdus.into_iter().next() {
+							| Some(pdu) =>
+								Ok::<_, (OwnedEventId, conduwuit::Error)>((eid.clone(), pdu)),
+							| None => Err((
+								eid.clone(),
+								err!(Request(NotFound("Empty pdus in get_event response"))),
+							)),
+						},
 						| Err(e) => Err((eid.clone(), e)),
 					}
 				}

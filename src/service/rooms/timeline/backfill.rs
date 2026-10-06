@@ -715,13 +715,14 @@ async fn get_remote_pdu_limited(
 			})
 			.await
 			.and_then(|response| {
-				slipstream::codec::from_str::<CanonicalJsonObject>(response.pdu.get()).map_err(
-					|e| {
-						err!(BadServerResponse(debug_warn!(
-							"Error parsing incoming event {e:?} from {backfill_server}"
-						)))
-					},
-				)
+				let raw_pdu = response.pdus.first().ok_or_else(|| {
+					err!(BadServerResponse("Empty pdus from {backfill_server}"))
+				})?;
+				slipstream::codec::from_str::<CanonicalJsonObject>(raw_pdu.get()).map_err(|e| {
+					err!(BadServerResponse(debug_warn!(
+						"Error parsing incoming event {e:?} from {backfill_server}"
+					)))
+				})
 			});
 		let pdu = match value {
 			| Ok(value) => match self
