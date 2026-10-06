@@ -24,8 +24,10 @@ pub(crate) use self::{
 	v5::{sync_events_unstable_msc3575_route, sync_events_v5_route},
 };
 
+/// Must stay sorted by `TimelineEventType`'s `Ord` (variant declaration order,
+/// not the wire string): it is searched with `binary_search`.
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
-	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
+	&[RoomMessage, RoomEncrypted, Beacon, CallInvite, PollStart, Sticker];
 
 #[derive(Default)]
 pub(crate) struct TimelinePdus {
