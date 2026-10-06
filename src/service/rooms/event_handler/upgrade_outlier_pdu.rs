@@ -198,6 +198,9 @@ where
 				// A redaction of an event we don't have yet is accepted: whether the
 				// sender may redact it can only be judged once the target arrives, so
 				// soft-failing it here would drop a valid redaction.
+				// TODO: If pending-redaction tracking is added, bound its per-room
+				// entries and age. The current path stores no additional pending index;
+				// the bound is needed for the future target-to-redaction lookup.
 				self.services.timeline.get_pdu(&redact_id).await.is_ok()
 					&& !self
 						.services

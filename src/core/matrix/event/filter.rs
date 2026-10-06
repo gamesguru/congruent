@@ -89,33 +89,7 @@ fn matches_type<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 /// it never matches a `rel_types` filter, and always passes `not_rel_types`.
 /// An absent `rel_types` applies no filter; an empty one matches nothing.
 fn matches_relation<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
-	if filter.rel_types.is_none() && filter.not_rel_types.is_empty() {
-		return true;
-	}
-
-	let content = event.get_content_as_value();
-	let rel_type = content
-		.get("m.relates_to")
-		.and_then(|relates_to| relates_to.get("rel_type"))
-		.and_then(slipstream::json::Value::as_str);
-
-	if let Some(rel_types) = filter.rel_types.as_ref() {
-		if !rel_type.is_some_and(|rel_type| rel_types.iter().any(|wanted| wanted == rel_type)) {
-			return false;
-		}
-	}
-
-	if let Some(rel_type) = rel_type {
-		if filter
-			.not_rel_types
-			.iter()
-			.any(|excluded| excluded == rel_type)
-		{
-			return false;
-		}
-	}
-
-	true
+	filter.matches_relation(&event.get_content_as_value())
 }
 
 fn matches_url<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
