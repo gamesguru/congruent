@@ -37,8 +37,7 @@ pub(crate) async fn get_devices_route(
 			.users
 			.get_devicelist_version(user_id)
 			.await
-			.unwrap_or(0)
-			.try_into()?,
+			.unwrap_or(0),
 		devices: services
 			.users
 			.all_devices_metadata(user_id)

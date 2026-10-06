@@ -100,8 +100,8 @@ async fn msc4429_profile_updates(
 	}
 
 	let mut users = slipstream::json::Object::new();
+	let mut latest = HashMap::new();
 	if since.is_none() {
-		let mut latest = HashMap::new();
 		services
 			.users
 			.profile_updates(None, current_count)

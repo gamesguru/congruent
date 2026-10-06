@@ -1044,7 +1044,7 @@ async fn build_heroes(
 		.ignore_err()
 		.ready_filter_map(|(event_type, state_key)| {
 			if event_type == StateEventType::RoomMember {
-				state_key.to_string().try_into().ok()
+				UserId::parse(state_key).ok()
 			} else {
 				None
 			}

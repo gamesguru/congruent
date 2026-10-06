@@ -762,7 +762,7 @@ async fn sync_events_v5_route_inner(
 			.update_snake_sync_pos(&snake_key, response.pos.parse().unwrap_or(globalsince));
 	}
 	sync_events_v5_json_response(
-		response,
+		&response,
 		room_extras,
 		collect_thread_subscriptions_extension(
 			services,
@@ -1477,16 +1477,8 @@ where
 			is_dm: None,
 			invite_state,
 			unread_notifications: UnreadNotificationsCount {
-				highlight_count: Some(
-					highlight_count
-						.try_into()
-						.expect("notification count can't go that high"),
-				),
-				notification_count: Some(
-					notification_count
-						.try_into()
-						.expect("notification count can't go that high"),
-				),
+				highlight_count: Some(highlight_count),
+				notification_count: Some(notification_count),
 			},
 			timeline: room_events,
 			required_state,
@@ -1498,9 +1490,7 @@ where
 					.state_cache
 					.room_joined_count(room_id)
 					.await
-					.unwrap_or(0)
-					.try_into()
-					.unwrap_or(uint!(0)),
+					.unwrap_or(0),
 			),
 			invited_count: Some(
 				services
@@ -1508,9 +1498,7 @@ where
 					.state_cache
 					.room_invited_count(room_id)
 					.await
-					.unwrap_or(0)
-					.try_into()
-					.unwrap_or(uint!(0)),
+					.unwrap_or(0),
 			),
 			num_live,
 			bump_stamp: timestamp,
@@ -1541,7 +1529,7 @@ fn effective_timeline_limit(
 }
 
 fn sync_events_v5_json_response(
-	response: sync_events::v5::Response,
+	response: &sync_events::v5::Response,
 	room_extras: RoomExtras,
 	thread_subscriptions_extension: Option<Value>,
 ) -> Result<axum::response::Response> {

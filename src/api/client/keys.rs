@@ -495,8 +495,8 @@ where
 			continue;
 		}
 
+		let mut container = BTreeMap::new();
 		if device_ids.is_empty() {
-			let mut container = BTreeMap::new();
 			let mut devices = services.users.all_device_ids(user_id).boxed();
 
 			while let Some(device_id) = devices.next().await {
@@ -518,7 +518,6 @@ where
 
 			device_keys.insert(user_id.to_owned(), container);
 		} else {
-			let mut container = BTreeMap::new();
 			for device_id in device_ids {
 				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
 					let metadata = services

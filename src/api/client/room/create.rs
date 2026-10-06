@@ -348,8 +348,8 @@ pub(crate) async fn create_room_route(
 
 	let power_levels_content = default_power_levels_content(
 		body.power_level_content_override.as_ref(),
-		&body.visibility,
-		&preset,
+		body.visibility,
+		preset,
 		power_levels_to_grant,
 		creators,
 	)?;
@@ -574,8 +574,8 @@ pub(crate) async fn create_room_route(
 /// creates the power_levels_content for the PDU builder
 fn default_power_levels_content(
 	power_level_content_override: Option<&Raw<RoomPowerLevelsEventContent>>,
-	visibility: &room::Visibility,
-	preset: &create_room::v3::RoomPreset,
+	visibility: room::Visibility,
+	preset: create_room::v3::RoomPreset,
 	users: BTreeMap<OwnedUserId, Int>,
 	creators: Vec<OwnedUserId>,
 ) -> Result<json::Value> {
@@ -610,7 +610,7 @@ fn default_power_levels_content(
 
 	// synapse does this too. clients do not expose these permissions. it prevents
 	// default users from calling public rooms, for obvious reasons.
-	if *visibility == room::Visibility::Public {
+	if visibility == room::Visibility::Public {
 		power_levels_content["events"]["m.call.invite"] = json::Value::from(50);
 		power_levels_content["events"]["m.call"] = json::Value::from(50);
 		power_levels_content["events"]["m.call.member"] = json::Value::from(50);

@@ -489,9 +489,7 @@ fn create_dummy_leave_event(
 		.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
-		origin_server_ts: utils::millis_since_unix_epoch()
-			.try_into()
-			.expect("Timestamp is valid js_int value"),
+		origin_server_ts: utils::millis_since_unix_epoch(),
 		kind: TimelineEventType::RoomMember,
 		content: Raw::from_json_text(r#"{"membership": "leave"}"#)
 			.expect("static synthetic leave content is valid JSON"),

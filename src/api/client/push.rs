@@ -30,8 +30,8 @@ fn array_mut(value: &mut slipstream::json::Value) -> Option<&mut Vec<slipstream:
 	}
 }
 
-fn normalize_poll_push_rules(ruleset: Ruleset) -> Result<Ruleset> {
-	let mut value = slipstream::codec::to_value(&ruleset);
+fn normalize_poll_push_rules(ruleset: &Ruleset) -> Result<Ruleset> {
+	let mut value = slipstream::codec::to_value(ruleset);
 	for kind in ["override", "underride"] {
 		let Some(rules) = value.get_mut(kind).and_then(array_mut) else {
 			continue;
@@ -103,7 +103,7 @@ pub(crate) async fn get_pushrules_all_route(
 		})?;
 
 	let mut global_ruleset = account_data_content.global;
-	global_ruleset = normalize_poll_push_rules(global_ruleset)?;
+	global_ruleset = normalize_poll_push_rules(&global_ruleset)?;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	// and update the stored server default push rules
@@ -274,7 +274,7 @@ pub(crate) async fn get_pushrule_route(
 		.map_err(|_| err!(Request(NotFound("PushRules event not found."))))?;
 
 	let mut global = event.content.global;
-	global = normalize_poll_push_rules(global)?;
+	global = normalize_poll_push_rules(&global)?;
 	let rule = global.get(body.kind, &body.rule_id).map(Into::into);
 
 	if let Some(rule) = rule {

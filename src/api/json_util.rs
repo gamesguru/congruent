@@ -14,9 +14,12 @@ pub(crate) fn empty_events() -> slipstream::json::Value {
 }
 
 pub(crate) fn json_response(value: slipstream::json::Value) -> axum::response::Response {
+	let body = slipstream::codec::to_string(&value);
+	// Release the JSON tree before constructing the response body to reduce peak memory use.
+	drop(value);
 	http::Response::builder()
 		.header(http::header::CONTENT_TYPE, "application/json")
-		.body(axum::body::Body::from(slipstream::codec::to_string(&value)))
+		.body(axum::body::Body::from(body))
 		.expect("static JSON response builder is valid")
 }
 
