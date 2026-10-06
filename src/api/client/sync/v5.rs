@@ -1395,9 +1395,7 @@ where
 			if fallback_timestamp.is_none_or(|time| time <= ts) {
 				fallback_timestamp = Some(ts);
 			}
-			if DEFAULT_BUMP_TYPES.contains(&pdu.kind)
-				&& timestamp.is_none_or(|time| time <= ts)
-			{
+			if DEFAULT_BUMP_TYPES.contains(&pdu.kind) && timestamp.is_none_or(|time| time <= ts) {
 				timestamp = Some(ts);
 			}
 		}
