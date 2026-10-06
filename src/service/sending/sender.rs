@@ -1262,8 +1262,6 @@ impl Service {
 					.notification_count(&user_id, &room_id)
 					.await
 					.saturating_add(thread_total_notifications)
-					.try_into()
-					.expect("notification count can't go that high")
 			} else {
 				uint!(0)
 			};

@@ -334,7 +334,7 @@ impl Service {
 			.set_presence(user_id, new_state, Some(currently_active), last_active_ago, status_msg)
 			.await?;
 
-		self.schedule_timeout(user_id, new_state)?;
+		self.schedule_timeout(user_id, *new_state)?;
 		self.notify_presence_change(user_id).log_err().ok();
 
 		Ok(())
@@ -362,14 +362,14 @@ impl Service {
 			.set_presence(user_id, presence_state, currently_active, last_active_ago, status_msg)
 			.await?;
 
-		self.schedule_timeout(user_id, presence_state)?;
+		self.schedule_timeout(user_id, *presence_state)?;
 		self.notify_presence_change(user_id).log_err().ok();
 
 		Ok(())
 	}
 
 	/// Schedules a presence timeout timer for the given user if applicable.
-	fn schedule_timeout(&self, user_id: &UserId, presence_state: &PresenceState) -> Result<()> {
+	fn schedule_timeout(&self, user_id: &UserId, presence_state: PresenceState) -> Result<()> {
 		if (self.timeout_remote_users || self.services.globals.user_is_local(user_id))
 			&& user_id != &self.services.globals.server_user
 		{
@@ -486,7 +486,7 @@ impl Service {
 		let raw = self.db.get_presence_raw(user_id).await;
 
 		if let Ok((_count, ref presence)) = raw {
-			presence_state = presence.state.clone();
+			presence_state = presence.state;
 			let now = utils::millis_since_unix_epoch();
 			last_active_ago = Some(now.saturating_sub(presence.last_active_ts));
 			status_msg.clone_from(&presence.status_msg);
@@ -511,7 +511,7 @@ impl Service {
 				.set_presence(user_id, &new_state, Some(false), last_active_ago, status_msg)
 				.await?;
 
-			self.schedule_timeout(user_id, &new_state)?;
+			self.schedule_timeout(user_id, new_state)?;
 
 			// We notify for idle/offline transitions so remote servers eventually
 			// see the updated presence state. We have capped the outbound concurrent

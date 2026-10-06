@@ -99,7 +99,7 @@ impl Presence {
 		PresenceEvent {
 			sender: user_id.to_owned(),
 			content: PresenceEventContent {
-				presence: self.state.clone(),
+				presence: self.state,
 				status_msg: self.status_msg.clone(),
 				currently_active: Some(self.currently_active),
 				last_active_ago,

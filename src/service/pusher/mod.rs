@@ -363,9 +363,7 @@ impl Service {
 			.state_cache
 			.room_joined_count(room_id)
 			.await
-			.unwrap_or(1)
-			.try_into()
-			.unwrap_or(uint!(0));
+			.unwrap_or(1);
 
 		let user_display_name = self
 			.services
@@ -452,11 +450,10 @@ impl Service {
 
 				notify.event_id = Some(event.event_id().to_owned());
 				notify.room_id = Some(room_id.clone());
-				if http
+				if !http
 					.data
-					.get("org.matrix.msc4076.disable_badge_count")
-					.is_none()
-					&& http.data.get("disable_badge_count").is_none()
+					.contains_key("org.matrix.msc4076.disable_badge_count")
+					&& !http.data.contains_key("disable_badge_count")
 				{
 					notify.counts = NotificationCounts::new(unread, uint!(0));
 				} else {

@@ -19,7 +19,7 @@ pub(super) fn init(db: &Arc<Database>) -> Result<(Box<Ed25519KeyPair>, VerifyKey
 	};
 
 	let id = format!("ed25519:{}", keypair.version());
-	let verify_keys: VerifyKeys = [(id.try_into()?, verify_key)].into();
+	let verify_keys: VerifyKeys = [(id.into(), verify_key)].into();
 
 	Ok((keypair, verify_keys))
 }

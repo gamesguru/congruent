@@ -1903,6 +1903,7 @@ mod owned_event_id_option {
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
 	use slipstream::OwnedEventId;
 
+	#[allow(clippy::ref_option)]
 	pub(super) fn serialize<S>(
 		value: &Option<OwnedEventId>,
 		serializer: S,
