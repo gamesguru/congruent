@@ -192,7 +192,7 @@ test:   ##H Run tests
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		NO_SCCACHE=$(NO_SCCACHE) \
-		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
+		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS) -- --nocapture
 
 .PHONY: cov
 cov:    ##H Run tests with llvm-cov coverage (text summary)

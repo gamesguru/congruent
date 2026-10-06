@@ -186,6 +186,10 @@ pub fn rezzy_auth_check<S: StateProvider<String>>(
 	match rezzy::auth::check_auth(&lean, state, version, None) {
 		| Ok(()) => true,
 		| Err(e) => {
+			eprintln!(
+				"rezzy auth check failed: {e}; type={}, sender={}, state_key={:?}, content={}",
+				lean.event_type, lean.sender, lean.state_key, lean.content,
+			);
 			tracing::error!("rezzy auth check failed: {e}");
 			false
 		},
