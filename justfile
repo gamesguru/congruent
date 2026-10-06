@@ -627,14 +627,15 @@ e2ee args=".*":
     # `build-output` lines plus a `fail` action carrying `FailedBuild`; surface
     # both so the cause is the first thing printed.
     if [ "$go_test_exit" -ne 0 ]; then
-        build_err="$(jq -r 'select(.Action == "build-output") | .Output' "$LOG_FILE" 2>/dev/null || true)"
+        # A failed build sets `FailedBuild`; `build-output` alone can be benign
+        # linker noise (e.g. DT_TEXTREL warnings from the cgo/PIE link), so only
+        # treat it as a build failure when a package actually failed to build.
         failed_build="$(jq -r 'select(.FailedBuild) | .FailedBuild' "$LOG_FILE" 2>/dev/null | sort -u || true)"
-        if [ -n "$build_err" ] || [ -n "$failed_build" ]; then
+        if [ -n "$failed_build" ]; then
+            build_err="$(jq -r 'select(.Action == "build-output") | .Output' "$LOG_FILE" 2>/dev/null || true)"
             echo ""
             echo "==================== BUILD FAILURE ===================="
-            if [ -n "$failed_build" ]; then
-                echo "failed package(s): $(printf '%s ' $failed_build)"
-            fi
+            echo "failed package(s): $(printf '%s ' $failed_build)"
             if [ -n "$build_err" ]; then
                 printf '%s' "$build_err"
             fi
