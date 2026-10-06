@@ -217,7 +217,9 @@ where
 						CanonicalJsonValue::Object(
 							utils::to_canonical_object(
 								slipstream::codec::from_str::<CanonicalJsonObject>(
-									&serde_json::to_string(&prev_state.get_content_as_value())?,
+									&slipstream::codec::to_string(
+										&prev_state.get_content_as_value(),
+									),
 								)
 								.map_err(|e| {
 									err!(Database(error!(

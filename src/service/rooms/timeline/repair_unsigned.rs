@@ -29,9 +29,9 @@ pub fn update_unsigned_prev_content(
 			"prev_content".to_owned(),
 			slipstream::CanonicalJsonValue::Object(
 				conduwuit_core::utils::to_canonical_object(
-					slipstream::codec::from_str::<CanonicalJsonObject>(&serde_json::to_string(
-						&prev_content_value,
-					)?)
+					slipstream::codec::from_str::<CanonicalJsonObject>(
+						&slipstream::codec::to_string(&prev_content_value),
+					)
 					.map_err(|e| {
 						conduwuit::err!(Database(error!(
 							"Failed to convert prev_state content: {e}"

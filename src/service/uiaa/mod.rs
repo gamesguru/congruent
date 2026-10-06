@@ -81,9 +81,10 @@ impl Service {
 			)));
 		}
 
-		let response = serde_json::from_str::<RecaptchaVerifyResponse>(&body)?;
+		let response = slipstream::codec::from_str::<slipstream::json::Value>(&body)
+			.map_err(|e| err!(BadServerResponse("Invalid ReCaptcha response: {e}")))?;
 
-		if response.success {
+		if matches!(response.get("success"), Some(slipstream::json::Value::Bool(true))) {
 			Ok(())
 		} else {
 			Err(err!(BadServerResponse("ReCaptcha response was rejected")))
@@ -95,11 +96,6 @@ const RECAPTCHA_SITEVERIFY_URL: &str = "https://www.google.com/recaptcha/api/sit
 
 /// Generous bound on the siteverify reply, which is a small JSON object.
 const RECAPTCHA_MAX_RESPONSE_SIZE: u64 = 4096;
-
-#[derive(serde::Deserialize)]
-struct RecaptchaVerifyResponse {
-	success: bool,
-}
 
 struct UiaaSession {
 	info: UiaaInfo,

@@ -1,4 +1,3 @@
-use serde_json::Value;
 use slipstream::api::client::filter::{RoomEventFilter, UrlFilter};
 
 use super::Event;
@@ -90,11 +89,11 @@ fn matches_url<E: Event>(event: &E, filter: &RoomEventFilter) -> bool {
 		return true;
 	};
 
-	//TODO: might be better to use Ruma's Raw rather than serde here
 	let url = event
 		.get_content_as_value()
 		.get("url")
-		.is_some_and(Value::is_string);
+		.and_then(|url| url.as_str())
+		.is_some();
 
 	match url_filter {
 		| UrlFilter::EventsWithUrl => url,
