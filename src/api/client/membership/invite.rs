@@ -45,7 +45,7 @@ pub(crate) async fn invite_user_route(
 		&services,
 		sender_user,
 		Some(&body.room_id),
-		body.room_id.server_name(),
+		body.room_id.server_name().as_ref(),
 		client,
 	)
 	.await?;
@@ -168,7 +168,7 @@ pub(crate) async fn invite_helper(
 			.sending
 			.send_federation_request(&recipient_user.server_name(), create_invite::v2::Request {
 				room_id: room_id.to_owned(),
-				event_id: (*pdu.event_id).to_owned(),
+				event_id: pdu.event_id.clone(),
 				room_version: room_version_id.clone(),
 				event: services
 					.sending

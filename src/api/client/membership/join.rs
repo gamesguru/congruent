@@ -19,8 +19,8 @@ use service::{
 	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId,
-	RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId, RoomVersionId, UserId,
 	api::{
 		client::{
 			error::ErrorKind,
@@ -29,6 +29,7 @@ use slipstream::{
 		federation::{self, event::event_relationships as federation_event_relationships},
 	},
 	canonical_json::to_canonical_value,
+	codec,
 	events::{
 		StateEventType,
 		room::{
@@ -36,6 +37,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
+	sswire::Raw,
 };
 use tokio::join;
 
@@ -68,7 +70,7 @@ pub(crate) async fn join_room_by_id_route(
 		&services,
 		sender_user,
 		Some(&body.room_id),
-		body.room_id.server_name(),
+		body.room_id.server_name().as_ref(),
 		client,
 	)
 	.await?;
@@ -90,11 +92,11 @@ pub(crate) async fn join_room_by_id_route(
 			.iter()
 			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
 			.filter_map(|sender| UserId::parse(&sender).ok())
-			.map(|user| user.server_name().to_owned()),
+			.map(|user| user.server_name()),
 	);
 
 	if let Some(server) = body.room_id.server_name() {
-		servers.push(server.into());
+		servers.push(server);
 	}
 
 	servers.sort_unstable();
@@ -144,7 +146,7 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 				&services,
 				sender_user,
 				Some(&room_id),
-				room_id.server_name(),
+				room_id.server_name().as_ref(),
 				client,
 			)
 			.boxed()
@@ -161,14 +163,17 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 
 			(servers, room_id)
 		},
-		| Err(room_alias) => {
+		| Err(_) => {
+			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
+				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
+			let alias_server_name = room_alias.server_name();
 
 			banned_room_check(
 				&services,
 				sender_user,
 				Some(&room_id),
-				Some(room_alias.server_name()),
+				Some(&alias_server_name),
 				client,
 			)
 			.await?;
@@ -365,7 +370,7 @@ async fn join_room_by_id_helper_remote(
 	}
 
 	let mut join_event_stub: CanonicalJsonObject =
-		serde_json::from_str(make_join_response.event.get()).map_err(|e| {
+		codec::from_str(make_join_response.event.get()).map_err(|e| {
 			err!(BadServerResponse(warn!(
 				"Invalid make_join event json received from server: {e:?}"
 			)))
@@ -395,11 +400,7 @@ async fn join_room_by_id_helper_remote(
 
 	join_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	let mut content = to_canonical_value(RoomMemberEventContent {
 		displayname: services.users.displayname(sender_user).boxed().await.ok(),
@@ -543,11 +544,8 @@ async fn join_room_by_id_helper_remote(
 		.map(|arr| {
 			arr.iter()
 				.filter_map(|v| {
-					v.as_str().and_then(|s| {
-						<&slipstream::EventId>::try_from(s)
-							.ok()
-							.map(ToOwned::to_owned)
-					})
+					v.as_str()
+						.and_then(|id| <slipstream::EventId>::parse(id).ok())
 				})
 				.collect()
 		})
@@ -664,7 +662,7 @@ async fn join_room_by_id_helper_remote_process(
 			.get_statekey_from_short(shortstatekey)
 			.await
 		{
-			lattice.insert(&kind.to_string(), state_key.as_str(), event_id.as_str());
+			lattice.insert(kind.as_ref(), state_key.as_str(), event_id.as_str());
 		}
 	}
 
@@ -1105,13 +1103,12 @@ async fn join_room_by_id_helper_local(
 		..RoomMemberEventContent::new(MembershipState::Join)
 	};
 
-	let mut content = serde_json::to_value(content).expect("failed to serialize member event");
+	let mut content = codec::to_value(&content);
 	if let Some(CanonicalJsonValue::Object(custom)) = json_body {
 		if let slipstream::json::Value::Object(ref mut map) = content {
 			for (k, v) in custom {
 				if !["reason", "third_party_signed", "server_name"].contains(&k.as_str()) {
-					map.entry(k.clone())
-						.or_insert_with(|| serde_json::to_value(v).expect("valid json"));
+					map.entry(k.clone()).or_insert_with(|| v.clone());
 				}
 			}
 		}
@@ -1119,7 +1116,7 @@ async fn join_room_by_id_helper_local(
 
 	let builder = PduBuilder {
 		event_type: StateEventType::RoomMember.into(),
-		content: serde_json::value::to_raw_value(&content).expect("valid JSON"),
+		content: Raw::from_value(&content),
 		state_key: Some(sender_user.to_string().into()),
 		..Default::default()
 	};

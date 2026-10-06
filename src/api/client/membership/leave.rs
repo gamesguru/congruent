@@ -15,6 +15,7 @@ use slipstream::{
 		client::membership::leave_room,
 		federation::{self},
 	},
+	codec,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
@@ -300,7 +301,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 					.iter()
 					.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
 					.filter_map(|sender| UserId::parse(&sender).ok())
-					.map(|user| user.server_name().to_owned()),
+					.map(|user| user.server_name()),
 			);
 		},
 		| _ => {
@@ -320,7 +321,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 							.filter_map(|sender| UserId::parse(&sender).ok())
 							.filter_map(|sender| {
 								if !services.globals.user_is_local(&sender) {
-									Some(sender.server_name().to_owned())
+									Some(sender.server_name())
 								} else {
 									None
 								}
@@ -333,7 +334,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	}
 
 	if let Some(room_id_server_name) = room_id.server_name() {
-		servers.insert(room_id_server_name.to_owned());
+		servers.insert(room_id_server_name);
 	}
 	if servers.is_empty() {
 		return Err!(BadServerResponse(warn!(
@@ -388,14 +389,13 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 		)));
 	}
 
-	let mut leave_event_stub = serde_json::from_str::<CanonicalJsonObject>(
-		make_leave_response.event.get(),
-	)
-	.map_err(|e| {
-		err!(BadServerResponse(warn!(
-			"Invalid make_leave event json received from {remote_server} for {room_id}: {e:?}"
-		)))
-	})?;
+	let mut leave_event_stub =
+		codec::from_str::<CanonicalJsonObject>(make_leave_response.event.get()).map_err(|e| {
+			err!(BadServerResponse(warn!(
+				"Invalid make_leave event json received from {remote_server} for {room_id}: \
+				 {e:?}"
+			)))
+		})?;
 
 	validate_remote_member_event_stub(
 		&MembershipState::Leave,
@@ -412,11 +412,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	);
 	leave_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	// Inject the reason key into the event content dict if it exists
 	if let Some(reason) = reason {

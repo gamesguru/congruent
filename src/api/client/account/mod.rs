@@ -122,7 +122,7 @@ pub(crate) async fn change_password_route(
 			.authenticate(
 				&body.auth,
 				vec![AuthFlow::new(vec![AuthType::Password])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				Some(Identity::from_user_id(user_id)),
 			)
 			.await?
@@ -137,7 +137,7 @@ pub(crate) async fn change_password_route(
 			.authenticate(
 				&body.auth,
 				vec![AuthFlow::new(vec![AuthType::EmailIdentity])],
-				Box::default(),
+				slipstream::json::Value::Object(slipstream::json::Object::new()),
 				None,
 			)
 			.await?
@@ -161,7 +161,10 @@ pub(crate) async fn change_password_route(
 			.users
 			.all_device_ids(&sender_user)
 			.ready_filter(|id| *id != body.sender_device())
-			.for_each(|id| services.users.remove_device(&sender_user, &id))
+			.for_each(|id| {
+				let sender_user = sender_user.clone();
+				async move { services.users.remove_device(&sender_user, &id).await }
+			})
 			.await;
 
 		// Remove all pushers except the ones associated with this session
@@ -225,12 +228,13 @@ pub(crate) async fn request_password_change_token_via_email_route(
 				user_id: &user_id,
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_password_change_token_via_email::v3::Response::new(session))
+	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `GET /_matrix/client/v3/account/whoami`
@@ -252,7 +256,7 @@ pub(crate) async fn whoami_route(
 		&& body.appservice_info.is_none();
 	Ok(whoami::v3::Response {
 		user_id: body.sender_user().to_owned(),
-		device_id: body.sender_device.clone(),
+		device_id: body.sender_device_opt().cloned(),
 		is_guest,
 	})
 }

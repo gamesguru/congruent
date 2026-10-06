@@ -14,7 +14,7 @@ use slipstream::{
 		GlobalAccountDataEventType, RoomAccountDataEventType,
 	},
 	json::Value,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, globals};

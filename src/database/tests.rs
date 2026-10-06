@@ -4,14 +4,14 @@ use std::fmt::Debug;
 
 use conduwuit::{
 	arrayvec::ArrayVec,
-	slipstream::{
-		OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, UserId, serde::Raw,
-	},
+	slipstream::{OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, sswire::Raw},
 };
 use serde::Serialize;
 
 use crate::{
-	Ignore, Interfix, de, ser,
+	Ignore, Interfix,
+	dbkey::compact_filter,
+	de, ser,
 	ser::{Json, serialize_to_vec},
 };
 
@@ -236,7 +236,7 @@ fn ser_complex() {
 	}
 
 	let mxc = Mxc {
-		server_name: OwnedServerName::from("example.com"),
+		server_name: &OwnedServerName::parse("example.com").unwrap(),
 		media_id: "AbCdEfGhIjK",
 	};
 
@@ -259,90 +259,107 @@ fn ser_complex() {
 	assert_eq!(a, b);
 }
 
+/// Defaults are omitted from stored filters, as in rows written before the
+/// codec migration.
 #[test]
 fn ser_json() {
-	use conduwuit::slipstream::api::client::filter::FilterDefinition;
+	use conduwuit::slipstream::filter::FilterDefinition;
 
 	let filter = FilterDefinition {
 		event_fields: Some(vec!["content.body".to_owned()]),
 		..Default::default()
 	};
 
-	let serialized = serialize_to_vec(Json(&filter)).expect("failed to serialize value");
+	let serialized =
+		serialize_to_vec(Json(compact_filter(&filter))).expect("failed to serialize value");
+	assert_eq!(String::from_utf8_lossy(&serialized), r#"{"event_fields":["content.body"]}"#);
 
-	let s = String::from_utf8_lossy(&serialized);
-	assert_eq!(&s, r#"{"event_fields":["content.body"]}"#);
+	let decoded: Json<FilterDefinition> = de::from_slice(&serialized).expect("failed to decode");
+	assert_eq!(decoded.0.event_fields, filter.event_fields);
+
+	let again =
+		serialize_to_vec(Json(compact_filter(&decoded.0))).expect("failed to serialize again");
+	assert_eq!(serialized, again, "re-encoding is not stable");
 }
 
 #[test]
-fn ser_json_value() {
-	use conduwuit::slipstream::api::client::filter::FilterDefinition;
+fn ser_json_filter_default_is_empty_object() {
+	use conduwuit::slipstream::filter::FilterDefinition;
 
-	let filter = FilterDefinition {
-		event_fields: Some(vec!["content.body".to_owned()]),
-		..Default::default()
-	};
+	let serialized =
+		serialize_to_vec(Json(compact_filter(&FilterDefinition::default()))).expect("serialize");
+	assert_eq!(String::from_utf8_lossy(&serialized), "{}");
+}
 
-	let value = conduwuit::slipstream::codec::to_value(&filter);
+#[test]
+fn ser_json_object() {
+	use conduwuit::slipstream::json::Value;
+
+	let value = Value::parse(r#"{"sender":"@foo:example.com","content":{"foo":"bar"}}"#)
+		.expect("failed to parse value");
 	let serialized = serialize_to_vec(Json(value)).expect("failed to serialize value");
 
-	let s = String::from_utf8_lossy(&serialized);
-	assert_eq!(&s, r#"{"event_fields":["content.body"]}"#);
-}
-
-#[test]
-fn ser_json_macro() {
-	use serde_json::json;
-
-	#[derive(Serialize)]
-	struct Foo {
-		foo: String,
-	}
-
-	let content = Foo { foo: "bar".to_owned() };
-	let content = serde_json::to_value(content).expect("failed to serialize content");
-	let sender: OwnedUserId = "@foo:example.com".try_into().unwrap();
-	let serialized = serialize_to_vec(Json(json!({
-		"content": content,
-		"sender": sender,
-	})))
-	.expect("failed to serialize value");
-
+	// Objects are key-sorted, matching the historical serde_json encoding.
 	let s = String::from_utf8_lossy(&serialized);
 	assert_eq!(&s, r#"{"content":{"foo":"bar"},"sender":"@foo:example.com"}"#);
 }
 
 #[test]
-fn ser_json_raw() {
-	use conduwuit::slipstream::api::client::filter::FilterDefinition;
+fn ser_raw_json_text() {
+	let text = r#"{"event_fields":["content.body"]}"#;
+	let a = serialize_to_vec(text).expect("failed to serialize raw text");
+	assert_eq!(String::from_utf8_lossy(&a), text);
+}
 
-	let filter = FilterDefinition {
-		event_fields: Some(vec!["content.body".to_owned()]),
-		..Default::default()
-	};
+/// Stored `Json` values must decode and re-encode to identical bytes, since
+/// that is the on-disk format of existing databases.
+#[test]
+fn json_value_roundtrip() {
+	use conduwuit::slipstream::json::Value;
 
-	let value =
-		serde_json::value::to_raw_value(&filter).expect("failed to serialize to raw value");
-	let a = serialize_to_vec(value.get()).expect("failed to serialize raw value");
-	let s = String::from_utf8_lossy(&a);
-	assert_eq!(&s, r#"{"event_fields":["content.body"]}"#);
+	let cases: &[&str] = &[
+		r#"null"#,
+		r#"true"#,
+		r#"-12"#,
+		r#"18446744073709551615"#,
+		r#"1.5"#,
+		r#""plain""#,
+		r#""quote\" slash/ \\ tab\t nl\n""#,
+		r#""héllo ☃ \ud83d\ude00""#,
+		r#"[]"#,
+		r#"{}"#,
+		r#"{"a":[1,2,{"b":null}],"c":{"d":"e"}}"#,
+		r#"{"users":{"@a:x":100,"@b:x":0},"events":{}}"#,
+	];
+
+	for case in cases {
+		let value: Json<Value> = de::from_slice(case.as_bytes()).expect("failed to deserialize");
+		let first = serialize_to_vec(&value).expect("failed to serialize");
+		let again: Json<Value> = de::from_slice(&first).expect("failed to deserialize again");
+		let second = serialize_to_vec(&again).expect("failed to serialize again");
+		assert_eq!(first, second, "re-encoding is not stable for {case}");
+		assert_eq!(value.0, again.0, "value changed across round-trip for {case}");
+	}
 }
 
 #[test]
-#[cfg_attr(debug_assertions, should_panic(expected = "you can skip serialization instead"))]
-fn ser_json_raw_json() {
-	use conduwuit::slipstream::api::client::filter::FilterDefinition;
+fn json_filter_legacy_row_decodes() {
+	use conduwuit::slipstream::filter::FilterDefinition;
 
-	let filter = FilterDefinition {
-		event_fields: Some(vec!["content.body".to_owned()]),
-		..Default::default()
-	};
+	let stored = br#"{"event_fields":["content.body"]}"#;
+	let filter: Json<FilterDefinition> = de::from_slice(stored).expect("failed to deserialize");
+	assert_eq!(filter.0.event_fields, Some(vec!["content.body".to_owned()]));
 
-	let value =
-		serde_json::value::to_raw_value(&filter).expect("failed to serialize to raw value");
-	let a = serialize_to_vec(Json(value)).expect("failed to serialize json value");
-	let s = String::from_utf8_lossy(&a);
-	assert_eq!(&s, r#"{"event_fields":["content.body"]}"#);
+	let again = serialize_to_vec(Json(compact_filter(&filter.0))).expect("failed to serialize");
+	assert_eq!(&again[..], &stored[..], "legacy row did not re-encode byte-identically");
+}
+
+#[test]
+fn json_malformed_is_error() {
+	use conduwuit::slipstream::json::Value;
+
+	assert!(de::from_slice::<Json<Value>>(b"{not json").is_err());
+	assert!(de::from_slice::<Json<Value>>(&[0xFF, 0xFE]).is_err());
 }
 
 #[test]
@@ -423,33 +440,9 @@ fn de_tuple_ignore() {
 
 #[test]
 fn de_json_array() {
-	let a = &["foo", "bar", "baz"];
-	let s = serde_json::to_vec(a).expect("failed to serialize to JSON array");
-
-	let b: Raw<Vec<Raw<String>>> = de::from_slice(&s).expect("failed to deserialize");
-
-	let d: Vec<String> =
-		serde_json::from_str(b.json().get()).expect("failed to deserialize JSON");
-
-	for (i, a) in a.iter().enumerate() {
-		assert_eq!(*a, d[i]);
-	}
-}
-
-#[test]
-fn de_json_raw_array() {
-	let a = &["foo", "bar", "baz"];
-	let s = serde_json::to_vec(a).expect("failed to serialize to JSON array");
-
-	let b: Raw<Vec<Raw<String>>> = de::from_slice(&s).expect("failed to deserialize");
-
-	let c: Vec<Raw<String>> =
-		serde_json::from_str(b.json().get()).expect("failed to deserialize JSON");
-
-	for (i, a) in a.iter().enumerate() {
-		let c = serde_json::to_value(c[i].json()).expect("failed to deserialize JSON to string");
-		assert_eq!(*a, c);
-	}
+	let s = br#"["foo","bar","baz"]"#;
+	let b: Raw<Vec<Raw<String>>> = de::from_slice(s).expect("failed to deserialize");
+	assert_eq!(b.0.as_bytes(), s);
 }
 
 #[test]
@@ -493,14 +486,6 @@ fn de_array() {
 	assert_eq!(arv[0], a, "deserialized arv [0] does not match");
 	assert_eq!(arv[1], b, "deserialized arv [1] does not match");
 
-	let arr: [u64; 2] = de::from_slice::<[u64; 2]>(v.as_slice())
-		.map(TryInto::try_into)
-		.expect("failed to deserialize to array")
-		.expect("failed to deserialize into");
-
-	assert_eq!(arr[0], a, "deserialized arr [0] does not match");
-	assert_eq!(arr[1], b, "deserialized arr [1] does not match");
-
 	let vec: Vec<u64> = de::from_slice(v.as_slice()).expect("failed to deserialize to vec");
 
 	assert_eq!(vec[0], a, "deserialized vec [0] does not match");
@@ -526,7 +511,7 @@ fn de_complex() {
 	v.extend_from_slice(room_id.as_bytes());
 
 	let arr: &[u64] = &[a, b];
-	let key = (user_id, arr, room_id);
+	let key = (user_id.clone(), arr, room_id.clone());
 	let s = serialize_to_vec(&key).expect("failed to serialize");
 
 	assert_eq!(&s, &v, "serialization does not match");

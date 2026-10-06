@@ -46,7 +46,7 @@ async fn handle_command(services: Arc<Services>, command: CommandInput) -> Proce
 		.catch_unwind()
 		.await
 		.map_err(Error::from_panic)
-		.unwrap_or_else(|error| handle_panic(&error, reply_id.as_deref()))
+		.unwrap_or_else(|error| handle_panic(&error, reply_id.as_ref()))
 }
 
 async fn process_command(services: Arc<Services>, input: CommandInput) -> ProcessorResult {
@@ -59,7 +59,7 @@ async fn process_command(services: Arc<Services>, input: CommandInput) -> Proces
 		services: &services,
 		body: &body,
 		timer: SystemTime::now(),
-		_reply_id: input.reply_id.as_deref(),
+		_reply_id: input.reply_id.as_ref(),
 		sender: input.sender.as_deref(),
 		output: BufWriter::new(Vec::new()).into(),
 		source: input.source,
@@ -83,14 +83,14 @@ async fn process_command(services: Arc<Services>, input: CommandInput) -> Proces
 	match result {
 		| Ok(()) if logs.is_empty() => Ok(Some(reply(
 			RoomMessageEventContent::notice_markdown(output),
-			input.reply_id.as_deref(),
+			input.reply_id.as_ref(),
 		))),
 
 		| Ok(()) => {
 			logs.write_str(output.as_str()).expect("output buffer");
 			Ok(Some(reply(
 				RoomMessageEventContent::notice_markdown(logs),
-				input.reply_id.as_deref(),
+				input.reply_id.as_ref(),
 			)))
 		},
 		| Err(error) => {
@@ -99,7 +99,7 @@ async fn process_command(services: Arc<Services>, input: CommandInput) -> Proces
 
 			Err(Box::new(reply(
 				RoomMessageEventContent::notice_markdown(logs),
-				input.reply_id.as_deref(),
+				input.reply_id.as_ref(),
 			)))
 		},
 	}
@@ -195,7 +195,7 @@ fn parse<'a>(
 				.replace("server.name", services.globals.server_name().as_str());
 			Err(Box::new(reply(
 				RoomMessageEventContent::notice_plain(message),
-				input.reply_id.as_deref(),
+				input.reply_id.as_ref(),
 			)))
 		},
 	}

@@ -286,7 +286,7 @@ impl Service {
 			)
 			.await
 		{
-			| Ok(()) => Ok(mxc.to_string().into()),
+			| Ok(()) => Ok(OwnedMxcUri::parse(mxc.to_string())?),
 			| Err(e) => {
 				error!("Failed to upload text to file: {e}");
 				Err!(Request(Unknown("Failed to upload text to file")))

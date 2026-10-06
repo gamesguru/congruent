@@ -52,7 +52,7 @@ async fn ban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 	let admin_room_alias = &self.services.globals.admin_alias;
 
 	if let Ok(admin_room_id) = self.services.admin.get_admin_room().await {
-		if room.to_string().eq(&admin_room_id) || room.to_string().eq(admin_room_alias) {
+		if room == admin_room_id.as_str() || room == admin_room_alias.as_str() {
 			return Err!("Not allowed to ban the admin room.");
 		}
 	}
@@ -65,7 +65,6 @@ async fn ban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.map(ToOwned::to_owned)
 		.ready_filter(|user| self.services.globals.user_is_local(user))
 		.boxed();
 
@@ -89,7 +88,6 @@ async fn ban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 		.rooms
 		.alias
 		.local_aliases_for_room(&room_id)
-		.map(ToOwned::to_owned)
 		.for_each(|local_alias| async move {
 			self.services
 				.rooms
@@ -131,17 +129,16 @@ async fn ban_list_of_rooms(&self) -> Result {
 	let mut room_ids: Vec<OwnedRoomId> = Vec::new();
 
 	for &room in &rooms_s {
-		match <&RoomOrAliasId>::try_from(room) {
+		match RoomOrAliasId::parse(room) {
 			| Ok(room_alias_or_id) => {
 				if let Ok(admin_room_id) = self.services.admin.get_admin_room().await {
-					if room.to_owned().eq(&admin_room_id) || room.to_owned().eq(admin_room_alias)
-					{
+					if room == admin_room_id.as_str() || room == admin_room_alias.as_str() {
 						warn!("User specified admin room in bulk ban list, ignoring");
 						continue;
 					}
 				}
 
-				match resolve_room_id(self.services, room_alias_or_id).await {
+				match resolve_room_id(self.services, &room_alias_or_id).await {
 					| Ok(room_id) => room_ids.push(room_id),
 					| Err(e) => {
 						warn!(
@@ -172,7 +169,6 @@ async fn ban_list_of_rooms(&self) -> Result {
 			.rooms
 			.state_cache
 			.room_members(&room_id)
-			.map(ToOwned::to_owned)
 			.ready_filter(|user| self.services.globals.user_is_local(user))
 			.boxed();
 
@@ -197,7 +193,6 @@ async fn ban_list_of_rooms(&self) -> Result {
 			.rooms
 			.alias
 			.local_aliases_for_room(&room_id)
-			.map(ToOwned::to_owned)
 			.for_each(|local_alias| async move {
 				self.services
 					.rooms
@@ -236,9 +231,9 @@ async fn unban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 		};
 
 		debug!("Room specified is a room ID, unbanning room ID");
-		self.services.rooms.metadata.ban_room(room_id, false);
+		self.services.rooms.metadata.ban_room(&room_id, false);
 
-		room_id.to_owned()
+		room_id.clone()
 	} else if room.is_room_alias_id() {
 		let room_alias = match RoomAliasId::parse(&room) {
 			| Ok(room_alias) => room_alias,
@@ -260,7 +255,7 @@ async fn unban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 			.services
 			.rooms
 			.alias
-			.resolve_local_alias(room_alias)
+			.resolve_local_alias(&room_alias)
 			.await
 		{
 			| Ok(room_id) => room_id,
@@ -270,7 +265,7 @@ async fn unban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 					 room ID over federation"
 				);
 
-				match self.services.rooms.alias.resolve_alias(room_alias).await {
+				match self.services.rooms.alias.resolve_alias(&room_alias).await {
 					| Ok((room_id, servers)) => {
 						debug!(
 							%room_id,
@@ -320,7 +315,7 @@ async fn list_banned_rooms(&self, no_details: bool) -> Result {
 	let mut rooms = room_ids
 		.iter()
 		.stream()
-		.then(|room_id| get_room_info(self.services, room_id))
+		.then(|room_id| async move { get_room_info(self.services, room_id).await })
 		.collect::<Vec<_>>()
 		.await;
 
@@ -362,7 +357,7 @@ async fn resolve_room_id(
 		};
 
 		debug!("Room specified is a room ID, resolving room ID");
-		Ok(room_id.to_owned())
+		Ok(room_id)
 	} else if room.is_room_alias_id() {
 		let room_alias = match RoomAliasId::parse(room) {
 			| Ok(room_alias) => room_alias,
@@ -380,7 +375,7 @@ async fn resolve_room_id(
 			 locally, if not using get_alias_helper to fetch room ID remotely"
 		);
 
-		match services.rooms.alias.resolve_alias(room_alias).await {
+		match services.rooms.alias.resolve_alias(&room_alias).await {
 			| Ok((room_id, servers)) => {
 				debug!(
 					%room_id,

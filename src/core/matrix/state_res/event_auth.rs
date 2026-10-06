@@ -1,16 +1,12 @@
-use std::{collections::BTreeSet, marker::PhantomData};
+use std::collections::BTreeSet;
 
 use futures::{
 	Future,
 	future::{OptionFuture, join, join3},
 };
-use serde::{
-	Deserialize,
-	de::{Error as _, IgnoredAny},
-};
-use serde_json::from_str as from_json_str;
 use slipstream::{
 	Int, OwnedUserId, RoomVersionId, UserId,
+	codec::DeError,
 	events::room::{
 		create::RoomCreateEventContent,
 		join_rules::{JoinRule, RoomJoinRulesEventContent},
@@ -19,11 +15,13 @@ use slipstream::{
 		third_party_invite::RoomThirdPartyInviteEventContent,
 	},
 	int,
-	serde::Base64,
+	json::Value,
+	sswire::Base64,
 };
 
 use super::{
 	Error, Event, Result, StateEventType, StateKey, TimelineEventType,
+	content::{decode, object, optional, required},
 	power_levels::{
 		deserialize_power_levels, deserialize_power_levels_content_fields,
 		deserialize_power_levels_content_invite, deserialize_power_levels_content_redact,
@@ -32,47 +30,61 @@ use super::{
 };
 use crate::{debug, error, info, trace, warn};
 
-#[derive(Deserialize, Debug)]
-#[serde(transparent)]
-struct JsonRaw<T>(serde_json::Value, #[serde(skip)] PhantomData<T>);
+fn membership_of(content: &str) -> Result<MembershipState, DeError> {
+	decode(required(&object(content)?, "membership")?)
+}
 
-impl<T> JsonRaw<T> {
-	fn deserialize_as<U: slipstream::codec::Deserialize>(
-		&self,
-	) -> Result<U, slipstream::codec::DeError> {
-		slipstream::codec::from_str(&self.0.to_string())
+#[derive(Debug)]
+struct RoomMemberContentFields {
+	membership: Option<Value>,
+	join_authorised_via_users_server: Option<Value>,
+}
+
+impl RoomMemberContentFields {
+	fn parse(content: &str) -> Result<Self, DeError> {
+		let content = object(content)?;
+		Ok(Self {
+			membership: optional(&content, "membership").cloned(),
+			join_authorised_via_users_server: optional(
+				&content,
+				"join_authorised_via_users_server",
+			)
+			.cloned(),
+		})
 	}
 }
 
-fn deserialize_codec<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-	D: serde::Deserializer<'de>,
-	T: slipstream::codec::Deserialize,
-{
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
-}
-
-// FIXME: field extracting could be bundled for `content`
-#[derive(Deserialize)]
-struct GetMembership {
-	#[serde(deserialize_with = "deserialize_codec")]
-	membership: MembershipState,
-}
-
-#[derive(Deserialize, Debug)]
-struct RoomMemberContentFields {
-	membership: Option<JsonRaw<MembershipState>>,
-	join_authorised_via_users_server: Option<JsonRaw<OwnedUserId>>,
-}
-
-#[derive(Deserialize)]
 struct RoomCreateContentFields {
-	room_version: Option<JsonRaw<RoomVersionId>>,
-	creator: Option<JsonRaw<IgnoredAny>>,
-	additional_creators: Option<Vec<JsonRaw<OwnedUserId>>>,
-	#[serde(rename = "m.federate", default = "slipstream::serde::default_true")]
+	room_version: Option<Value>,
+	creator: Option<Value>,
+	additional_creators: Option<Vec<Value>>,
 	federate: bool,
+}
+
+impl RoomCreateContentFields {
+	fn parse(content: &str) -> Result<Self, DeError> {
+		let content = object(content)?;
+		let additional_creators = match optional(&content, "additional_creators") {
+			| None => None,
+			| Some(value) => Some(
+				value
+					.as_array()
+					.ok_or_else(|| DeError::expected("array"))?
+					.clone(),
+			),
+		};
+		let federate = match content.get("m.federate") {
+			| None => true,
+			| Some(value) => value.as_bool().ok_or_else(|| DeError::expected("bool"))?,
+		};
+
+		Ok(Self {
+			room_version: optional(&content, "room_version").cloned(),
+			creator: optional(&content, "creator").cloned(),
+			additional_creators,
+			federate,
+		})
+	}
 }
 
 /// For the given event `kind` what are the relevant auth events that are needed
@@ -86,9 +98,9 @@ pub fn auth_types_for_event(
 	kind: &TimelineEventType,
 	sender: &UserId,
 	state_key: Option<&str>,
-	content: &slipstream::json::Value,
+	content: &Value,
 	room_version: &RoomVersion,
-) -> serde_json::Result<Vec<(StateEventType, StateKey)>> {
+) -> Result<Vec<(StateEventType, StateKey)>, DeError> {
 	if kind == &TimelineEventType::RoomCreate {
 		return Ok(vec![]);
 	}
@@ -107,18 +119,16 @@ pub fn auth_types_for_event(
 	};
 
 	if kind == &TimelineEventType::RoomMember {
-		#[derive(Deserialize)]
-		struct RoomMemberContentFields {
-			membership: Option<JsonRaw<MembershipState>>,
-			third_party_invite: Option<JsonRaw<ThirdPartyInvite>>,
-			join_authorised_via_users_server: Option<JsonRaw<OwnedUserId>>,
-		}
-
 		if let Some(state_key) = state_key {
-			let content: RoomMemberContentFields =
-				from_json_str(&slipstream::codec::to_string(content))?;
+			if content.as_object().is_none() {
+				return Err(DeError::expected("object"));
+			}
+			let membership = optional(content, "membership").map(decode::<MembershipState>);
+			let third_party_invite = optional(content, "third_party_invite");
+			let join_authorised_via_users_server =
+				optional(content, "join_authorised_via_users_server");
 
-			if let Some(Ok(membership)) = content.membership.map(|m| m.deserialize_as()) {
+			if let Some(Ok(membership)) = membership {
 				if [MembershipState::Join, MembershipState::Invite, MembershipState::Knock]
 					.contains(&membership)
 				{
@@ -127,9 +137,8 @@ pub fn auth_types_for_event(
 						auth_types.push(key);
 					}
 
-					if let Some(Ok(u)) = content
-						.join_authorised_via_users_server
-						.map(|m| m.deserialize_as::<OwnedUserId>())
+					if let Some(Ok(u)) =
+						join_authorised_via_users_server.map(decode::<OwnedUserId>)
 					{
 						let key = (StateEventType::RoomMember, u.as_str().into());
 						if !auth_types.contains(&key) {
@@ -144,10 +153,7 @@ pub fn auth_types_for_event(
 				}
 
 				if membership == MembershipState::Invite {
-					if let Some(Ok(t_id)) = content
-						.third_party_invite
-						.map(|t| t.deserialize_as::<ThirdPartyInvite>())
-					{
+					if let Some(Ok(t_id)) = third_party_invite.map(decode::<ThirdPartyInvite>) {
 						let key =
 							(StateEventType::RoomThirdPartyInvite, t_id.signed.token.into());
 						if !auth_types.contains(&key) {
@@ -236,10 +242,10 @@ where
 		}
 
 		// If content.room_version is present and is not a recognized version, reject
-		let content: RoomCreateContentFields = from_json_str(incoming_event.content().get())?;
+		let content = RoomCreateContentFields::parse(incoming_event.content().get())?;
 		if content
 			.room_version
-			.is_some_and(|v| v.deserialize_as::<RoomVersionId>().is_err())
+			.is_some_and(|v| decode::<RoomVersionId>(&v).is_err())
 		{
 			warn!("unsupported room version found in m.room.create event");
 			return Ok(false);
@@ -301,11 +307,10 @@ where
 	let room_create_event = create_event.clone();
 
 	// Get the content of the room create event, used later.
-	let room_create_content: RoomCreateContentFields =
-		from_json_str(room_create_event.content().get())?;
+	let room_create_content = RoomCreateContentFields::parse(room_create_event.content().get())?;
 	if room_create_content
 		.room_version
-		.is_some_and(|v| v.deserialize_as::<RoomVersionId>().is_err())
+		.is_some_and(|v| decode::<RoomVersionId>(&v).is_err())
 	{
 		warn!(
 			create_event_id = %room_create_event.event_id(),
@@ -396,23 +401,26 @@ where
 			| Some(s) => s,
 		};
 
-		let content: RoomMemberContentFields = from_json_str(incoming_event.content().get())?;
+		let content = RoomMemberContentFields::parse(incoming_event.content().get())?;
 		if content
 			.membership
 			.as_ref()
-			.and_then(|m| m.deserialize_as::<MembershipState>().ok())
+			.and_then(|m| decode::<MembershipState>(m).ok())
 			.is_none()
 		{
 			warn!("no valid membership field found for m.room.member event content");
 			return Ok(false);
 		}
 
-		let target_user = UserId::from(state_key);
+		let Ok(target_user) = UserId::parse(state_key) else {
+			warn!("m.room.member state_key is not a valid user ID");
+			return Ok(false);
+		};
 
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
 			.as_ref()
-			.and_then(|u| u.deserialize_as::<OwnedUserId>().ok());
+			.and_then(|u| decode::<OwnedUserId>(u).ok());
 
 		let user_for_join_auth_event: OptionFuture<_> = user_for_join_auth
 			.as_ref()
@@ -428,8 +436,8 @@ where
 			join3(join_rules_event, target_user_member_event, user_for_join_auth_event).await;
 
 		let user_for_join_auth_membership = user_for_join_auth_event
-			.and_then(|mem| from_json_str::<GetMembership>(mem?.content().get()).ok())
-			.map_or(MembershipState::Leave, |mem| mem.membership);
+			.and_then(|mem| membership_of(mem?.content().get()).ok())
+			.unwrap_or(MembershipState::Leave);
 
 		if !valid_membership_change(
 			room_version,
@@ -472,8 +480,8 @@ where
 		return Ok(false);
 	}
 
-	let sender_membership_event_content: RoomMemberContentFields =
-		from_json_str(sender_member_event.content().get())?;
+	let sender_membership_event_content =
+		RoomMemberContentFields::parse(sender_member_event.content().get())?;
 	let Some(membership_state) = sender_membership_event_content.membership else {
 		warn!(
 			?sender_membership_event_content,
@@ -481,7 +489,7 @@ where
 		);
 		return Err(Error::InvalidPdu("Missing membership field".to_owned()));
 	};
-	let membership_state = membership_state.deserialize_as()?;
+	let membership_state = decode(&membership_state)?;
 
 	if !matches!(membership_state, MembershipState::Join) {
 		warn!(
@@ -525,10 +533,9 @@ where
 				.additional_creators
 				.as_ref()
 				.is_some_and(|creators| {
-					creators.iter().any(|c| {
-						c.deserialize_as::<OwnedUserId>()
-							.is_ok_and(|c| c == *sender)
-					})
+					creators
+						.iter()
+						.any(|c| decode::<OwnedUserId>(c).is_ok_and(|c| c == *sender))
 				}) {
 			trace!("privileging room creator or additional creator");
 			// This user is the room creator or an additional creator, give them max power
@@ -583,7 +590,7 @@ where
 		if room_version.explicitly_privilege_room_creators {
 			creators.insert(create_event.sender().to_owned());
 			for creator in room_create_content.additional_creators.iter().flatten() {
-				creators.insert(creator.deserialize_as()?);
+				creators.insert(decode(creator)?);
 			}
 		}
 		match check_power_levels(
@@ -655,15 +662,14 @@ where
 
 		// Fallback to checking the create event content directly if the BTreeSet is
 		// incomplete
-		if let Ok(content) = from_json_str::<RoomCreateContentFields>(ce.content().get()) {
+		if let Ok(content) = RoomCreateContentFields::parse(ce.content().get()) {
 			if ce.sender() == user_id {
 				return true;
 			}
 			if let Some(additional_creators) = content.additional_creators {
-				return additional_creators.iter().any(|c| {
-					c.deserialize_as::<OwnedUserId>()
-						.is_ok_and(|c| c == *user_id)
-				});
+				return additional_creators
+					.iter()
+					.any(|c| decode::<OwnedUserId>(c).is_ok_and(|c| c == *user_id));
 			}
 		}
 		false
@@ -674,7 +680,7 @@ where
 		let creator = slipstream::codec::from_str::<RoomCreateEventContent>(ce.content().get())
 			.unwrap()
 			.creator
-			.ok_or_else(|| serde_json::Error::missing_field("creator"))
+			.ok_or_else(|| DeError(String::from("missing field `creator`")))
 			.unwrap();
 
 		creator == *user_id
@@ -714,25 +720,20 @@ where
 	E: Event + Send + Sync,
 	for<'a> &'a E: Event + Send,
 {
-	#[derive(Deserialize)]
-	struct GetThirdPartyInvite {
-		third_party_invite: Option<JsonRaw<ThirdPartyInvite>>,
-	}
-	let create_content = from_json_str::<RoomCreateContentFields>(create_room.content().get())?;
+	let create_content = RoomCreateContentFields::parse(create_room.content().get())?;
 	let content = current_event.content();
 
-	let target_membership = from_json_str::<GetMembership>(content.get())?.membership;
-	let third_party_invite =
-		from_json_str::<GetThirdPartyInvite>(content.get())?.third_party_invite;
+	let target_membership = membership_of(content.get())?;
+	let third_party_invite = optional(&object(content.get())?, "third_party_invite").cloned();
 
 	let sender_membership = match &sender_membership_event {
-		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())?.membership,
+		| Some(pdu) => membership_of(pdu.content().get())?,
 		| None => MembershipState::Leave,
 	};
 	let sender_is_joined = sender_membership == MembershipState::Join;
 
 	let target_user_current_membership = match &target_user_membership_event {
-		| Some(pdu) => from_json_str::<GetMembership>(pdu.content().get())?.membership,
+		| Some(pdu) => membership_of(pdu.content().get())?,
 		| None => MembershipState::Leave,
 	};
 
@@ -760,7 +761,7 @@ where
 		// Int::MAX. Same case for target.
 		if let Some(additional_creators) = &create_content.additional_creators {
 			for c in additional_creators {
-				if let Ok(c) = c.deserialize_as() {
+				if let Ok(c) = decode(c) {
 					creators.insert(c);
 				}
 			}
@@ -993,7 +994,7 @@ where
 		| MembershipState::Invite => {
 			// If content has third_party_invite key
 			trace!("starting target_membership=invite check");
-			match third_party_invite.and_then(|i| i.deserialize_as().ok()) {
+			match third_party_invite.and_then(|i| decode(&i).ok()) {
 				| Some(tp_id) =>
 					if target_user_current_membership == MembershipState::Ban {
 						warn!(?target_user_membership_event_id, "Can't invite banned user");
@@ -1476,10 +1477,8 @@ fn check_power_levels(
 		"kick",
 		"invite",
 	];
-	let old_state: serde_json::Value =
-		serde_json::from_str(&slipstream::codec::to_string(old_state)).unwrap();
-	let new_state: serde_json::Value =
-		serde_json::from_str(&slipstream::codec::to_string(new_state)).unwrap();
+	let old_state = slipstream::codec::to_value(old_state);
+	let new_state = slipstream::codec::to_value(new_state);
 	for lvl_name in &levels {
 		if let Some((old_lvl, new_lvl)) = get_deserialize_levels(&old_state, &new_state, lvl_name)
 		{
@@ -1503,15 +1502,8 @@ fn check_power_levels(
 	Some(true)
 }
 
-fn get_deserialize_levels(
-	old: &serde_json::Value,
-	new: &serde_json::Value,
-	name: &str,
-) -> Option<(Int, Int)> {
-	Some((
-		serde_json::from_value(old.get(name)?.clone()).ok()?,
-		serde_json::from_value(new.get(name)?.clone()).ok()?,
-	))
+fn get_deserialize_levels(old: &Value, new: &Value, name: &str) -> Option<(Int, Int)> {
+	Some((decode(old.get(name)?).ok()?, decode(new.get(name)?).ok()?))
 }
 
 /// Does the event redacting come from a user with enough power to redact the

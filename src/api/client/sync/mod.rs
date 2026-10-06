@@ -38,10 +38,10 @@ impl TimelinePdus {
 	pub(crate) fn members(&self) -> impl Iterator<Item = OwnedUserId> + '_ {
 		self.pdus.iter().flat_map(|(_, pdu)| {
 			let mut users = vec![pdu.sender.clone()];
-			if pdu.event_type().to_string() == "m.room.member" {
+			if pdu.event_type() == "m.room.member" {
 				if let Some(state_key) = &pdu.state_key {
 					if let Ok(user_id) = UserId::parse(state_key.as_str()) {
-						users.push(user_id.to_owned());
+						users.push(user_id);
 					}
 				}
 			}
@@ -348,7 +348,7 @@ async fn share_encrypted_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_filter(|&room_id| Some(room_id) != ignore_room)
+		.ready_filter(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
 		.broad_any(|other_room_id| async move {
 			services
 				.rooms
@@ -370,7 +370,7 @@ async fn shares_a_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_any(|room_id| Some(room_id) != ignore_room)
+		.ready_any(|room_id| ignore_room.is_none_or(|ignored| *ignored != room_id))
 		.await
 }
 
@@ -396,7 +396,7 @@ pub(crate) async fn add_membership_to_unsigned(
 		// caused by the event itself... are included."
 		// For a user's own membership event, the state after the event is just the
 		// event itself.
-		serde_json::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
+		slipstream::codec::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
 			pdu.content.get(),
 		)
 		.map_or(slipstream::events::room::member::MembershipState::Leave, |c| c.membership)
@@ -418,7 +418,7 @@ pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::
 	use axum::response::IntoResponse;
 
 	(
-		[(axum::http::header::CONTENT_TYPE, "application/json")],
+		[(http::header::CONTENT_TYPE, "application/json")],
 		slipstream::codec::to_string(value),
 	)
 		.into_response()

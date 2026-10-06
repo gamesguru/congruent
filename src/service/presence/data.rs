@@ -213,5 +213,5 @@ fn presenceid_parse(key: &[u8]) -> Result<(u64, OwnedUserId)> {
 fn user_id_from_bytes(bytes: &[u8]) -> Result<OwnedUserId> {
 	let str: &str = utils::string::str_from_bytes(bytes)?;
 
-	Ok(OwnedUserId::from(str))
+	Ok(OwnedUserId::parse(str)?)
 }

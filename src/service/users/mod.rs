@@ -31,7 +31,7 @@ use slipstream::{
 	},
 	json,
 	json::Value,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -1793,7 +1793,9 @@ impl Service {
 		let filter_id = utils::random_string(4);
 
 		let key = (user_id, &filter_id);
-		self.db.userfilterid_filter.put(key, Json(filter));
+		self.db
+			.userfilterid_filter
+			.put(key, Json(conduwuit_database::dbkey::compact_filter(filter)));
 
 		filter_id
 	}
@@ -2310,9 +2312,9 @@ mod tests {
 			}
 		});
 
-		let before = serde_json::to_vec(&new).unwrap();
+		let before = slipstream::codec::to_string(&new).into_bytes();
 		merge_signatures(&mut new, &old);
-		let after = serde_json::to_vec(&new).unwrap();
+		let after = slipstream::codec::to_string(&new).into_bytes();
 
 		assert_eq!(before, after, "Merging identical signatures must be a no-op");
 	}
@@ -2342,8 +2344,8 @@ mod tests {
 		});
 
 		merge_signatures(&mut new, &old);
-		let serialized_old = serde_json::to_vec(&old).unwrap();
-		let serialized_new = serde_json::to_vec(&new).unwrap();
+		let serialized_old = slipstream::codec::to_string(&old).into_bytes();
+		let serialized_new = slipstream::codec::to_string(&new).into_bytes();
 
 		assert_eq!(
 			serialized_old, serialized_new,

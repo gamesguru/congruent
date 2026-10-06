@@ -8,7 +8,7 @@ use slipstream::{
 		get_remote_server_keys_batch::{self, v2::QueryCriteria},
 		get_server_keys,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::validate::check_no_duplicate_json_keys;
@@ -37,15 +37,15 @@ where
 	use get_remote_server_keys_batch::v2::Request;
 	type RumaBatch = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, QueryCriteria>>;
 
-	let criteria = QueryCriteria {
-		minimum_valid_until_ts: Some(self.minimum_valid_ts()),
-	};
-
 	let mut server_keys = batch.fold(RumaBatch::new(), |mut batch, (server, key_ids)| {
 		batch
 			.entry(server.into())
 			.or_default()
-			.extend(key_ids.map(|key_id| (key_id.into(), criteria.clone())));
+			.extend(key_ids.map(|key_id| {
+				(key_id.into(), QueryCriteria {
+					minimum_valid_until_ts: Some(self.minimum_valid_ts()),
+				})
+			}));
 
 		batch
 	});
@@ -128,7 +128,7 @@ pub async fn server_request(&self, target: &ServerName) -> Result<Raw<ServerSign
 		.send_federation_request(target, Request)
 		.await?;
 
-	// MSC4499: Check raw JSON for duplicate keys before serde_json dedup
+	// MSC4499: Check raw JSON for duplicate keys before the parser dedups
 	check_no_duplicate_json_keys(
 		response.server_key.get(),
 		self.services.server.config.msc4499_strict_caching,

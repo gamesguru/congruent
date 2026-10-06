@@ -7,6 +7,7 @@ mod opt_event_id {
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
 	use slipstream::OwnedEventId;
 
+	#[allow(clippy::ref_option)]
 	pub(super) fn serialize<S: Serializer>(
 		value: &Option<OwnedEventId>,
 		serializer: S,
@@ -20,10 +21,9 @@ mod opt_event_id {
 	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
 		deserializer: D,
 	) -> Result<Option<OwnedEventId>, D::Error> {
-		Ok(
-			Option::<String>::deserialize(deserializer)?
-				.map(|id| OwnedEventId::from(id.as_str())),
-		)
+		Option::<String>::deserialize(deserializer)?
+			.map(|id| OwnedEventId::parse(id).map_err(serde::de::Error::custom))
+			.transpose()
 	}
 }
 

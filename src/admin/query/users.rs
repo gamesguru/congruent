@@ -275,7 +275,6 @@ async fn list_devices(&self, user_id: OwnedUserId) -> Result {
 		.services
 		.users
 		.all_device_ids(&user_id)
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 

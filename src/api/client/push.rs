@@ -30,8 +30,8 @@ fn array_mut(value: &mut slipstream::json::Value) -> Option<&mut Vec<slipstream:
 	}
 }
 
-fn normalize_poll_push_rules(ruleset: Ruleset) -> Result<Ruleset> {
-	let mut value = slipstream::codec::to_value(&ruleset);
+fn normalize_poll_push_rules(ruleset: &Ruleset) -> Result<Ruleset> {
+	let mut value = slipstream::codec::to_value(ruleset);
 	for kind in ["override", "underride"] {
 		let Some(rules) = value.get_mut(kind).and_then(array_mut) else {
 			continue;
@@ -103,7 +103,7 @@ pub(crate) async fn get_pushrules_all_route(
 		})?;
 
 	let mut global_ruleset = account_data_content.global;
-	global_ruleset = normalize_poll_push_rules(global_ruleset)?;
+	global_ruleset = normalize_poll_push_rules(&global_ruleset)?;
 
 	// remove old deprecated mentions push rules as per MSC4210
 	// and update the stored server default push rules
@@ -274,8 +274,8 @@ pub(crate) async fn get_pushrule_route(
 		.map_err(|_| err!(Request(NotFound("PushRules event not found."))))?;
 
 	let mut global = event.content.global;
-	global = normalize_poll_push_rules(global)?;
-	let rule = global.get(body.kind.clone(), &body.rule_id).map(Into::into);
+	global = normalize_poll_push_rules(&global)?;
+	let rule = global.get(body.kind, &body.rule_id).map(Into::into);
 
 	if let Some(rule) = rule {
 		Ok(get_pushrule::v3::Response { rule })
@@ -326,7 +326,6 @@ pub(crate) async fn set_pushrule_route(
 				ErrorKind::InvalidParam,
 				"The before rule has a higher priority than the after rule.",
 			),
-			| _ => Error::BadRequest(ErrorKind::InvalidParam, "Invalid data."),
 		};
 
 		return Err(err);
@@ -374,7 +373,7 @@ pub(crate) async fn get_pushrule_actions_route(
 	let actions = event
 		.content
 		.global
-		.get(body.kind.clone(), &body.rule_id)
+		.get(body.kind, &body.rule_id)
 		.map(|rule| rule.actions().to_owned())
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
@@ -400,7 +399,7 @@ pub(crate) async fn set_pushrule_actions_route(
 	if account_data
 		.content
 		.global
-		.set_actions(body.kind.clone(), &body.rule_id, body.actions.clone())
+		.set_actions(body.kind, &body.rule_id, body.actions.clone())
 		.is_err()
 	{
 		return Err!(Request(NotFound("Push rule not found.")));
@@ -448,7 +447,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 	let enabled = event
 		.content
 		.global
-		.get(body.kind.clone(), &body.rule_id)
+		.get(body.kind, &body.rule_id)
 		.map(slipstream::push::AnyPushRuleRef::enabled)
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
@@ -474,7 +473,7 @@ pub(crate) async fn set_pushrule_enabled_route(
 	if account_data
 		.content
 		.global
-		.set_enabled(body.kind.clone(), &body.rule_id, body.enabled)
+		.set_enabled(body.kind, &body.rule_id, body.enabled)
 		.is_err()
 	{
 		return Err!(Request(NotFound("Push rule not found.")));
@@ -510,11 +509,7 @@ pub(crate) async fn delete_pushrule_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("PushRules event not found."))))?;
 
-	if let Err(error) = account_data
-		.content
-		.global
-		.remove(body.kind.clone(), &body.rule_id)
-	{
+	if let Err(error) = account_data.content.global.remove(body.kind, &body.rule_id) {
 		let err = match error {
 			| RemovePushRuleError::ServerDefault => Error::BadRequest(
 				ErrorKind::InvalidParam,
@@ -522,7 +517,6 @@ pub(crate) async fn delete_pushrule_route(
 			),
 			| RemovePushRuleError::NotFound =>
 				Error::BadRequest(ErrorKind::NotFound, "Push rule not found."),
-			| _ => Error::BadRequest(ErrorKind::InvalidParam, "Invalid data."),
 		};
 
 		return Err(err);

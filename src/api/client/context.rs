@@ -43,7 +43,8 @@ pub(crate) async fn get_context_route(
 	let (sender_user, sender_device) = sender;
 	let room_id = &body.room_id;
 	let event_id = &body.event_id;
-	let filter = &body.filter;
+	let default_filter = slipstream::filter::RoomEventFilter::default();
+	let filter = body.filter.as_ref().unwrap_or(&default_filter);
 
 	if !services.rooms.metadata.exists(room_id).await {
 		return Err!(Request(Forbidden("Room does not exist to this server")));
@@ -90,7 +91,7 @@ pub(crate) async fn get_context_route(
 
 	let base_count = base_id.pdu_count();
 	let base_token = TopoToken {
-		depth: u64::from(base_pdu.depth()),
+		depth: base_pdu.depth(),
 		pdu_count: base_count,
 	};
 
@@ -221,10 +222,8 @@ pub(crate) async fn get_context_route(
 		.ready_filter_map(|((event_type, state_key), event_id)| {
 			if filter.lazy_load_options.is_enabled()
 				&& event_type == StateEventType::RoomMember
-				&& state_key
-					.as_str()
-					.try_into()
-					.is_ok_and(|user_id: &UserId| !lazy_loading_witnessed.contains(user_id))
+				&& UserId::parse(state_key)
+					.is_ok_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
 			{
 				return None;
 			}
@@ -258,14 +257,14 @@ pub(crate) async fn get_context_route(
 		.map(at!(0))
 		.or(Some(base_token))
 		.as_ref()
-		.map(|t| format!("{t}"));
+		.and_then(|t| OwnedEventId::parse(format!("{t}")).ok());
 	let end = events_after
 		.last()
 		.map(at!(0))
 		.or(next_token)
 		.or(Some(base_token))
 		.as_ref()
-		.map(|t| format!("{t}"));
+		.and_then(|t| OwnedEventId::parse(format!("{t}")).ok());
 	info!(
 		%room_id,
 		%event_id,

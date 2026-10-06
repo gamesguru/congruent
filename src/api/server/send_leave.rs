@@ -5,7 +5,7 @@ use conduwuit::Result;
 use conduwuit_service::Services;
 use slipstream::{
 	RoomId, ServerName, api::federation::membership::create_leave_event,
-	events::room::member::MembershipState, serde::RawJsonValue,
+	events::room::member::MembershipState, sswire::RawJsonValue,
 };
 
 use crate::Ruma;

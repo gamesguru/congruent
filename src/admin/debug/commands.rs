@@ -72,13 +72,15 @@ pub(super) async fn parse_pdu(&self) -> Result {
 	}
 
 	let string = self.body[1..self.body.len().saturating_sub(1)].join("\n");
-	match serde_json::from_str(&string) {
+	match slipstream::codec::from_str(&string) {
 		| Err(e) => return Err!("Invalid json in command body: {e}"),
 		| Ok(value) => match slipstream::signatures::reference_hash(&value, &RoomVersionId::V6) {
 			| Err(e) => return Err!("Could not parse PDU JSON: {e:?}"),
 			| Ok(hash) => {
 				let event_id = OwnedEventId::parse(format!("${hash}"));
-				match serde_json::from_value::<PduEvent>(serde_json::to_value(value)?) {
+				match slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(
+					value.clone(),
+				)) {
 					| Err(e) => return Err!("EventId: {event_id:?}\nCould not parse event: {e}"),
 					| Ok(pdu) => write!(self, "EventId: {event_id:?}\n{pdu:#?}"),
 				}
@@ -121,7 +123,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 	} else {
 		return Err!("PDU not found locally.");
 	};
-	let text = serde_json::to_string_pretty(&pdu_json)?;
+	let text = crate::utils::to_string_pretty(&pdu_json)?;
 
 	let mut status = String::new();
 	if in_timeline && in_outlier {
@@ -221,7 +223,7 @@ pub(super) async fn get_short_pdu(
 	match pdu_json {
 		| Err(_) => return Err!("PDU not found locally."),
 		| Ok(json) => {
-			let json_text = serde_json::to_string_pretty(&json)?;
+			let json_text = crate::utils::to_string_pretty(&json)?;
 			write!(self, "```json\n{json_text}\n```")
 		},
 	}
@@ -261,10 +263,7 @@ pub(super) async fn get_remote_pdu_list(&self, server: OwnedServerName, force: b
 
 	for event_id in list {
 		if force {
-			match self
-				.get_remote_pdu(event_id.to_owned(), server.clone())
-				.await
-			{
+			match self.get_remote_pdu(event_id.clone(), server.clone()).await {
 				| Err(e) => {
 					failed_count = failed_count.saturating_add(1);
 					self.services
@@ -279,7 +278,7 @@ pub(super) async fn get_remote_pdu_list(&self, server: OwnedServerName, force: b
 				},
 			}
 		} else {
-			self.get_remote_pdu(event_id.to_owned(), server.clone())
+			self.get_remote_pdu(event_id.clone(), server.clone())
 				.await?;
 			success_count = success_count.saturating_add(1);
 		}
@@ -320,8 +319,8 @@ pub(super) async fn get_remote_pdu(
 			);
 		},
 		| Ok(response) => {
-			let json: CanonicalJsonObject =
-				serde_json::from_str(response.pdu.get()).map_err(|e| {
+			let json: CanonicalJsonObject = slipstream::codec::from_str(response.pdu.get())
+				.map_err(|e| {
 					warn!(
 						"Requested event ID {event_id} from server but failed to convert from \
 						 RawValue to CanonicalJsonObject (malformed event/response?): {e}"
@@ -353,7 +352,7 @@ pub(super) async fn get_remote_pdu(
 				vec![(event_id, value, room_id)]
 			};
 
-			let text = serde_json::to_string_pretty(&json)?;
+			let text = crate::utils::to_string_pretty(&json)?;
 			let msg = "Got PDU from specified server:";
 			write!(self, "{msg}. Event body:\n```json\n{text}\n```")
 		},
@@ -417,7 +416,8 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		},
 		| Ok(response) => {
 			let ping_time = timer.elapsed();
-			let json_text_res = serde_json::to_string_pretty(&response.server);
+			let json_text_res =
+				Ok::<_, slipstream::codec::DeError>(format!("{:#?}", response.server));
 
 			let out = if let Ok(json) = json_text_res {
 				format!("Got response which took {ping_time:?} time:\n```json\n{json}\n```")
@@ -437,7 +437,9 @@ pub(super) async fn force_device_list_updates(&self) -> Result {
 	self.services
 		.users
 		.stream()
-		.for_each(|user_id| self.services.users.mark_device_key_update(user_id))
+		.for_each(|user_id| async move {
+			self.services.users.mark_device_key_update(&user_id).await;
+		})
 		.await;
 
 	write!(self, "Marked all devices for all users as having new keys to update").await
@@ -506,7 +508,7 @@ pub(super) async fn verify_json(&self) -> Result {
 	}
 
 	let string = self.body[1..self.body.len().checked_sub(1).unwrap()].join("\n");
-	match serde_json::from_str::<CanonicalJsonObject>(&string) {
+	match slipstream::codec::from_str::<CanonicalJsonObject>(&string) {
 		| Err(e) => return Err!("Invalid json: {e}"),
 		| Ok(value) => match self.services.server_keys.verify_json(&value, None).await {
 			| Err(e) => return Err!("Signature verification failed: {e}"),
@@ -625,7 +627,8 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	}
 	writeln!(out, "Type: {}", pdu.kind())?;
 	if pdu.kind() == &slipstream::events::TimelineEventType::RoomMember {
-		if let Ok(content) = serde_json::from_str::<slipstream::json::Value>(pdu.content().get())
+		if let Ok(content) =
+			slipstream::codec::from_str::<slipstream::json::Value>(pdu.content().get())
 		{
 			if let Some(membership) = content.get("membership").and_then(|m| m.as_str()) {
 				writeln!(out, "Membership: {membership}")?;
@@ -796,7 +799,7 @@ pub(crate) async fn force_set_state(
 	} else {
 		let mut found = None;
 		for pdu in &pdus {
-			if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(pdu.get()) {
+			if let Ok(val) = slipstream::codec::from_str::<slipstream::json::Value>(pdu.get()) {
 				if val.get("type").and_then(|v| v.as_str()) == Some("m.room.create") {
 					if let Some(ver) = val
 						.get("content")
@@ -1027,8 +1030,8 @@ async fn fetch_and_load_state(
 	input: Option<&String>,
 	output: Option<&String>,
 ) -> Result<(
-	Vec<Box<slipstream::serde::RawJsonValue>>,
-	Vec<Box<slipstream::serde::RawJsonValue>>,
+	Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
+	Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
 	HashMap<u64, OwnedEventId>,
 )> {
 	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -1036,13 +1039,13 @@ async fn fetch_and_load_state(
 
 	// Load state from file, federation, or local database
 	let (pdus, auth_chain): (
-		Vec<Box<slipstream::serde::RawJsonValue>>,
-		Vec<Box<slipstream::serde::RawJsonValue>>,
+		Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
+		Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
 	) = if let Some(path) = input {
 		info!("Loading state from file: {path}");
 		let data = std::fs::read_to_string(path)
 			.map_err(|e| err!(Database("Failed to read input file: {e:?}")))?;
-		let parsed: slipstream::json::Value = serde_json::from_str(&data)
+		let parsed: slipstream::json::Value = slipstream::codec::from_str(&data)
 			.map_err(|e| err!(Database("Failed to parse input file: {e:?}")))?;
 		let pdus_val = parsed
 			.get("pdus")
@@ -1050,11 +1053,11 @@ async fn fetch_and_load_state(
 		let auth_val = parsed
 			.get("auth_chain")
 			.ok_or(err!(Database("Missing 'auth_chain' key in input file")))?;
-		let pdus: Vec<Box<slipstream::serde::RawJsonValue>> =
-			serde_json::from_value(pdus_val.clone())
+		let pdus: Vec<slipstream::sswire::Raw<slipstream::json::Value>> =
+			slipstream::codec::from_value(pdus_val)
 				.map_err(|e| err!(Database("Failed to parse PDUs: {e:?}")))?;
-		let auth_chain: Vec<Box<slipstream::serde::RawJsonValue>> =
-			serde_json::from_value(auth_val.clone())
+		let auth_chain: Vec<slipstream::sswire::Raw<slipstream::json::Value>> =
+			slipstream::codec::from_value(auth_val)
 				.map_err(|e| err!(Database("Failed to parse auth chain: {e:?}")))?;
 		info!(
 			"Loaded {} state PDUs and {} auth chain events from file",
@@ -1063,8 +1066,8 @@ async fn fetch_and_load_state(
 		);
 		(pdus, auth_chain)
 	} else if !server_names.is_empty() {
-		let mut all_pdus: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
-		let mut all_auth: Vec<Box<slipstream::serde::RawJsonValue>> = Vec::new();
+		let mut all_pdus: Vec<slipstream::sswire::Raw<slipstream::json::Value>> = Vec::new();
+		let mut all_auth: Vec<slipstream::sswire::Raw<slipstream::json::Value>> = Vec::new();
 
 		for server_name in server_names {
 			info!("Fetching room state from {server_name} at event {at_event_id_str}...");
@@ -1092,16 +1095,18 @@ async fn fetch_and_load_state(
 						};
 						let dump_path = format!("{path}{suffix}");
 						info!("Dumping federation state response to {dump_path}");
-						let dump = slipstream::json!({
-							"room_id": room_id,
-							"server_name": server_name,
-							"event_id": at_event_id_str,
-							"pdus": resp.pdus,
-							"auth_chain": resp.auth_chain,
-						});
+						let dump = {
+							let mut object = slipstream::ObjectBuilder::new();
+							object.field("room_id", &room_id);
+							object.field("server_name", &server_name);
+							object.field("event_id", &at_event_id_str);
+							object.field("pdus", &resp.pdus);
+							object.field("auth_chain", &resp.auth_chain);
+							object.finish()
+						};
 						if let Err(e) = std::fs::write(
 							&dump_path,
-							serde_json::to_string_pretty(&dump).unwrap_or_default(),
+							crate::utils::to_string_pretty(&dump).unwrap_or_default(),
 						) {
 							warn!("Failed to write output file {dump_path}: {e}");
 						}
@@ -1165,7 +1170,7 @@ async fn validate_and_extract_state(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	pdus: &[Box<slipstream::serde::RawJsonValue>],
+	pdus: &[slipstream::sswire::Raw<slipstream::json::Value>],
 	skip_sig_verify: bool,
 	state: &mut HashMap<u64, OwnedEventId>,
 ) -> Result<(usize, usize)> {
@@ -1303,7 +1308,7 @@ async fn validate_and_add_auth_chain(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	auth_chain: &[Box<slipstream::serde::RawJsonValue>],
+	auth_chain: &[slipstream::sswire::Raw<slipstream::json::Value>],
 	skip_sig_verify: bool,
 ) -> Result<(usize, usize, usize)> {
 	info!("Going through auth_chain response");
@@ -1591,7 +1596,7 @@ async fn promote_sync_anchor(
 		.state_accessor
 		.state_full_pdus_hamt(root_handle.clone())
 		.map(|pdu| {
-			let ts: u64 = pdu.origin_server_ts().0.into();
+			let ts: u64 = pdu.origin_server_ts().0;
 			let eid = pdu.event_id().to_owned();
 			(ts, eid)
 		})
@@ -1673,7 +1678,7 @@ pub(super) async fn get_signing_keys(
 			.server_keys
 			.server_request(&server_name)
 			.await?;
-		format!("```json\n{}\n```", signing_keys.json().get())
+		format!("```json\n{}\n```", signing_keys.get())
 	} else {
 		let signing_keys = self
 			.services

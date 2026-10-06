@@ -172,6 +172,11 @@ check:   ##H Run cargo check
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
 
+.PHONY: macro
+macro: ##H See macro expansion costs
+	cargo +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+
+
 .PHONY: lint
 lint:   ##H Lint code
 	@echo "Lint code? PROFILE='$(PROFILE)'"
@@ -191,7 +196,7 @@ test:   ##H Run tests
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		NO_SCCACHE=$(NO_SCCACHE) \
-		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS)
+		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS) -- --nocapture
 
 .PHONY: cov
 cov:    ##H Run tests with llvm-cov coverage (text summary)

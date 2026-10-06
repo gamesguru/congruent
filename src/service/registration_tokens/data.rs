@@ -134,7 +134,10 @@ impl Deserialize for TokenExpires {
 			.ok_or_else(|| DeError("unknown TokenExpires variant".into()))?;
 		let secs: u64 = body_field(Some(time), "secs_since_epoch")?;
 		let nanos: u32 = body_field(Some(time), "nanos_since_epoch")?;
-		Ok(Self::AfterTime(SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos)))
+		SystemTime::UNIX_EPOCH
+			.checked_add(std::time::Duration::new(secs, nanos))
+			.map(Self::AfterTime)
+			.ok_or_else(|| DeError::expected("time"))
 	}
 }
 

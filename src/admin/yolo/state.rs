@@ -119,11 +119,10 @@ pub(super) async fn compare_room_state(
 				.get_outlier_pdu_json(&event_id)
 				.await
 			{
-				let pdu_res = serde_json::to_value(&json)
-					.map_err(|e| e.to_string())
-					.and_then(|v| {
-						serde_json::from_value::<PduEvent>(v).map_err(|e| e.to_string())
-					});
+				let pdu_res = slipstream::codec::from_value::<PduEvent>(
+					&slipstream::json::Value::Object(json),
+				)
+				.map_err(|e| e.to_string());
 				match pdu_res {
 					| Ok(pdu) => return Ok(Some((pdu, false))),
 					| Err(e) => {
@@ -156,7 +155,7 @@ pub(super) async fn compare_room_state(
 			};
 			let legacy_state_event_id =
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
-					serde_json::from_str::<JsonValue>(response.pdu.get())
+					slipstream::codec::from_str::<JsonValue>(response.pdu.get())
 						.ok()
 						.and_then(|json| {
 							json.get("event_id")
@@ -276,13 +275,13 @@ pub(super) async fn compare_room_state(
 		}
 
 		let event_id = pdu.event_id().to_owned();
-		event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+		event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 		if let Some(state_key) = &pdu.state_key {
 			remote_state.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
 		}
 		// Store metadata for richer diff output
 		{
-			let content: JsonValue = pdu.get_content_as_value();
+			let content: JsonValue = crate::utils::content_value(&pdu);
 			let membership = content
 				.get("membership")
 				.and_then(|v| v.as_str())
@@ -293,7 +292,7 @@ pub(super) async fn compare_room_state(
 
 		if pdu.kind == TimelineEventType::RoomMember {
 			if let Some(state_key) = &pdu.state_key {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -333,7 +332,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts = u64::from(pdu.origin_server_ts);
+						let ts = pdu.origin_server_ts;
 						conflict_entries.push((
 							server.to_string(),
 							event_id.to_string(),
@@ -365,7 +364,7 @@ pub(super) async fn compare_room_state(
 				);
 
 				if tip_pdu.kind == TimelineEventType::RoomMember {
-					let content: JsonValue = tip_pdu.get_content_as_value();
+					let content: JsonValue = crate::utils::content_value(&tip_pdu);
 					match content.get("membership").and_then(|v| v.as_str()) {
 						| Some("join") => {
 							remote_joined.insert(state_key.to_string());
@@ -408,11 +407,11 @@ pub(super) async fn compare_room_state(
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
 			local_state_ids.insert(eid.clone());
-			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0.into());
+			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0);
 			local_state.insert((event_type.to_string(), state_key.to_string()), eid.clone());
 			// Store metadata for richer diff output
 			{
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -422,7 +421,7 @@ pub(super) async fn compare_room_state(
 			};
 
 			if event_type == StateEventType::RoomMember {
-				let content: JsonValue = pdu.get_content_as_value();
+				let content: JsonValue = crate::utils::content_value(&pdu);
 				let membership = content
 					.get("membership")
 					.and_then(|v| v.as_str())
@@ -450,7 +449,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts: u64 = pdu.origin_server_ts().0.into();
+						let ts: u64 = pdu.origin_server_ts().0;
 						conflict_entries.push((
 							"local".to_owned(),
 							eid.to_string(),
@@ -472,7 +471,7 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			missing_locally
@@ -497,7 +496,7 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			extra_locally
@@ -623,14 +622,14 @@ pub(super) async fn compare_room_state(
 					verify_errors = verify_errors.saturating_add(1);
 				}
 				let event_id = pdu.event_id().to_owned();
-				event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+				event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 				if let Some(state_key) = &pdu.state_key {
 					server_state
 						.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
 
 					// Store metadata for richer diff output
 					if !event_meta.contains_key(&event_id) {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -641,7 +640,7 @@ pub(super) async fn compare_room_state(
 					}
 
 					if pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -681,7 +680,7 @@ pub(super) async fn compare_room_state(
 									.and_then(|v| v.as_str())
 									.unwrap_or("(none)")
 									.to_owned();
-								let ts = u64::from(pdu.origin_server_ts);
+								let ts = pdu.origin_server_ts;
 								conflict_entries.push((
 									cmp_server.to_string(),
 									event_id.to_string(),
@@ -700,7 +699,7 @@ pub(super) async fn compare_room_state(
 				server_state.insert(key.clone(), at_event_id.clone());
 				if let Some(ref tip_pdu) = tip_pdu_opt {
 					if tip_pdu.kind == TimelineEventType::RoomMember {
-						let content: JsonValue = tip_pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&tip_pdu);
 						match content.get("membership").and_then(|v| v.as_str()) {
 							| Some("join") => {
 								cmp_joined.insert(key.1.clone());
@@ -734,7 +733,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_first.push((
@@ -752,7 +751,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_cmp.push((
@@ -868,10 +867,8 @@ pub(super) async fn set_state_event(
 				.get_outlier_pdu_json(&event_id)
 				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
-			serde_json::from_value::<PduEvent>(
-				serde_json::to_value(&json).map_err(|e| err!(Request(InvalidParam("{e}"))))?,
-			)
-			.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
+			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(json))
+				.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
 		},
 	};
 
@@ -1005,7 +1002,7 @@ pub(super) async fn set_state_event(
 			self.services
 				.rooms
 				.state_cache
-				.update_membership(&room_id, user_id, &pdu, false)
+				.update_membership(&room_id, &user_id, &pdu, false)
 				.await?;
 		}
 		self.services
@@ -1090,7 +1087,7 @@ pub(super) async fn audit_membership(
 			continue;
 		};
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1134,7 +1131,7 @@ pub(super) async fn audit_membership(
 			continue;
 		}
 
-		let content: JsonValue = pdu.get_content_as_value();
+		let content: JsonValue = crate::utils::content_value(&pdu);
 		let membership = content
 			.get("membership")
 			.and_then(|v| v.as_str())
@@ -1417,7 +1414,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1431,7 +1427,6 @@ pub(super) async fn audit_membership(
 		.rooms
 		.state_cache
 		.room_members_invited(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 	info!(
@@ -1728,7 +1723,7 @@ pub(super) async fn audit_membership(
 					}
 
 					if let Some(state_key) = pdu.state_key() {
-						let content: JsonValue = pdu.get_content_as_value();
+						let content: JsonValue = crate::utils::content_value(&pdu);
 						let membership = content
 							.get("membership")
 							.and_then(|v| v.as_str())
@@ -1745,7 +1740,7 @@ pub(super) async fn audit_membership(
 				{
 					if tip_pdu.kind == TimelineEventType::RoomMember {
 						if let Some(state_key) = tip_pdu.state_key() {
-							let content: JsonValue = tip_pdu.get_content_as_value();
+							let content: JsonValue = crate::utils::content_value(&tip_pdu);
 
 							let membership = content
 								.get("membership")
@@ -1805,7 +1800,7 @@ pub(super) async fn audit_membership(
 									.await
 									.ok()
 									.map_or(u64::MAX, |p| {
-										let ms = u64::from(p.origin_server_ts);
+										let ms = p.origin_server_ts;
 										now_secs.saturating_sub(ms / 1000)
 									})
 							} else {
@@ -1849,7 +1844,7 @@ pub(super) async fn audit_membership(
 								.await
 								.ok()
 								.map_or(u64::MAX, |p| {
-									let ms = u64::from(p.origin_server_ts);
+									let ms = p.origin_server_ts;
 									now_secs.saturating_sub(ms / 1000)
 								})
 						} else {

@@ -1,4 +1,4 @@
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{extract::State, response::IntoResponse};
 use conduwuit::{Error, Result};
 use slipstream::api::client::{
 	discovery::{
@@ -49,7 +49,9 @@ pub(crate) async fn get_rtc_transports(
 			.config
 			.matrix_rtc
 			.effective_foci(&services.config.well_known.rtc_focus_server_urls)
-			.to_vec(),
+			.iter()
+			.map(slipstream::codec::to_value)
+			.collect(),
 	))
 }
 
@@ -88,7 +90,7 @@ pub(crate) async fn well_known_support(
 		contacts.push(Contact {
 			role: role_value.clone(),
 			email_address: email_address.clone(),
-			matrix_id: matrix_id.clone(),
+			matrix_id: matrix_id.as_ref().map(ToString::to_string),
 			pgp_key: pgp_key.clone(),
 		});
 	}
@@ -105,7 +107,7 @@ pub(crate) async fn well_known_support(
 			contacts.push(Contact {
 				role: role_value.clone(),
 				email_address: None,
-				matrix_id: Some(user_id.to_owned()),
+				matrix_id: Some(user_id.to_string()),
 				pgp_key: None,
 			});
 		}
@@ -134,8 +136,8 @@ pub(crate) async fn syncv3_client_server_json(
 		},
 	};
 
-	Ok(Json(slipstream::json!({
-		"server": server_url,
-		"version": conduwuit::version(),
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("server", &server_url);
+	object.field("version", &conduwuit::version());
+	Ok(crate::json_util::json_response(object.finish()))
 }

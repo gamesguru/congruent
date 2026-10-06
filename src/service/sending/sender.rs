@@ -41,7 +41,7 @@ use slipstream::{
 		receipt::ReceiptType,
 	},
 	push,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -1178,7 +1178,8 @@ impl Service {
 				appservice,
 				slipstream::api::appservice::event::push_events::v1::Request {
 					events: pdu_jsons,
-					txn_id: txn_id.into(),
+					txn_id: slipstream::OwnedTransactionId::parse(txn_id)
+						.expect("base64 transaction hash is a valid transaction ID"),
 					ephemeral: edu_jsons,
 					to_device: Vec::new(), // TODO
 				},
@@ -1262,8 +1263,6 @@ impl Service {
 					.notification_count(&user_id, &room_id)
 					.await
 					.saturating_add(thread_total_notifications)
-					.try_into()
-					.expect("notification count can't go that high")
 			} else {
 				uint!(0)
 			};
@@ -1393,7 +1392,8 @@ impl Service {
 		// identify a transaction).
 		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
 		let request = send_transaction_message::v1::Request {
-			transaction_id: txn_id.clone().into(),
+			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
+				.expect("numeric transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
 			pdus: outbound_pdus,
@@ -1479,7 +1479,7 @@ impl Service {
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
 		// serde_json::from_str::<Raw<_>>(
-		//     slipstream::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
+		//     slipstream::sswire::to_canonical_json_string(pdu_json).expect("CanonicalJson is
 		// valid slipstream::json::Value"), )
 		// .expect("Raw::from_value always works")
 
@@ -1860,7 +1860,7 @@ mod tests {
 			data.data.thread,
 			slipstream::events::receipt::ReceiptThread::Unthreaded
 		));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]
@@ -1911,7 +1911,7 @@ mod tests {
 			data.data.thread,
 			slipstream::events::receipt::ReceiptThread::Unthreaded
 		));
-		assert_eq!(data.data.ts.map(|t| t.0.into()), Some(12345_u64));
+		assert_eq!(data.data.ts, Some(12345_u64));
 	}
 
 	#[test]

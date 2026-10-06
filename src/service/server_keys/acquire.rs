@@ -8,7 +8,7 @@ use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, w
 use futures::{StreamExt, stream::FuturesUnordered};
 use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
-	api::federation::discovery::ServerSigningKeys, serde::Raw,
+	api::federation::discovery::ServerSigningKeys, sswire::Raw,
 };
 
 use super::key_exists;

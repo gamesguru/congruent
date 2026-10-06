@@ -9,7 +9,7 @@ use futures::StreamExt;
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::backup::{BackupAlgorithm, KeyBackupData, RoomKeyBackup},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, globals};

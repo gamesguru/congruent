@@ -24,7 +24,7 @@ use slipstream::{
 	api::client::error::{ErrorKind, StandardErrorBody},
 	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	events::TimelineEventType,
-	serde::Raw,
+	sswire::Raw,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -299,7 +299,9 @@ fn system_time_from_json(
 	let nanos = value
 		.get("nanos_since_epoch")
 		.ok_or_else(|| slipstream::codec::DeError::expected("nanos_since_epoch"))?;
-	Ok(SystemTime::UNIX_EPOCH + Duration::new(u64::from_json(secs)?, u32::from_json(nanos)?))
+	SystemTime::UNIX_EPOCH
+		.checked_add(Duration::new(u64::from_json(secs)?, u32::from_json(nanos)?))
+		.ok_or_else(|| slipstream::codec::DeError::expected("time"))
 }
 
 impl CodecSerialize for ScheduledDelayedEvent {

@@ -9,11 +9,9 @@ mod unsigned;
 
 use std::fmt::Debug;
 
-use serde::Deserialize;
-use serde_json::Value as JsonValue;
 use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, RoomId,
-	RoomVersionId, UserId, events::TimelineEventType,
+	RoomVersionId, UserId, events::TimelineEventType, json::Value as JsonValue,
 };
 
 pub use self::{filter::Matches, id::*, relation::RelationTypeEqual, type_ext::TypeExt};
@@ -46,24 +44,6 @@ pub trait Event: Clone + Debug {
 	}
 
 	#[inline]
-	fn contains_unsigned_property<T>(&self, property: &str, is_type: T) -> bool
-	where
-		T: FnOnce(&JsonValue) -> bool,
-		Self: Sized,
-	{
-		unsigned::contains_unsigned_property::<T, _>(self, property, is_type)
-	}
-
-	#[inline]
-	fn get_unsigned_property<T>(&self, property: &str) -> Result<T>
-	where
-		T: for<'de> Deserialize<'de>,
-		Self: Sized,
-	{
-		unsigned::get_unsigned_property::<T, _>(self, property)
-	}
-
-	#[inline]
 	fn get_unsigned_as_value(&self) -> JsonValue
 	where
 		Self: Sized,
@@ -72,29 +52,11 @@ pub trait Event: Clone + Debug {
 	}
 
 	#[inline]
-	fn get_unsigned<T>(&self) -> Result<T>
-	where
-		T: for<'de> Deserialize<'de>,
-		Self: Sized,
-	{
-		unsigned::get_unsigned::<T, _>(self)
-	}
-
-	#[inline]
 	fn get_content_as_value(&self) -> JsonValue
 	where
 		Self: Sized,
 	{
 		content::as_value(self)
-	}
-
-	#[inline]
-	fn get_content_serde<T>(&self) -> Result<T>
-	where
-		for<'de> T: Deserialize<'de>,
-		Self: Sized,
-	{
-		content::get::<T, _>(self)
 	}
 
 	#[inline]
@@ -142,13 +104,13 @@ pub trait Event: Clone + Debug {
 	where
 		Self: Sized,
 	{
-		serde_json::from_str(&slipstream::codec::to_string(&self.into_pdu()))
+		slipstream::codec::from_str(&slipstream::codec::to_string(&self.into_pdu()))
 			.expect("failed to create JSON Value")
 	}
 
 	#[inline]
 	fn to_value(&self) -> JsonValue {
-		serde_json::from_str(&slipstream::codec::to_string(self.as_pdu()))
+		slipstream::codec::from_str(&slipstream::codec::to_string(self.as_pdu()))
 			.expect("failed to create JSON Value")
 	}
 

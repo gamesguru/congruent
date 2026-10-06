@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result};
+use conduwuit::{Err, Result, err};
 use futures::{FutureExt, StreamExt};
 use slipstream::{
 	OwnedRoomId,
@@ -14,6 +14,7 @@ use slipstream::{
 		},
 		federation,
 	},
+	codec,
 	presence::PresenceState,
 };
 
@@ -38,7 +39,7 @@ pub(crate) async fn get_mutual_rooms_route(
 ) -> Result<mutual_rooms::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user == body.user_id {
+	if sender_user == &*body.user_id {
 		return Err!(Request(Unknown("You cannot request rooms in common with yourself.")));
 	}
 
@@ -70,7 +71,7 @@ pub(crate) async fn set_profile_key_route(
 ) -> Result<set_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -121,7 +122,8 @@ pub(crate) async fn set_profile_key_route(
 		let Some(avatar_url) = profile_key_value.as_str() else {
 			return Err!(Request(BadJson("avatar_url must be a string")));
 		};
-		let mxc = slipstream::OwnedMxcUri::from(avatar_url);
+		let mxc = slipstream::OwnedMxcUri::parse(avatar_url)
+			.map_err(|_| err!(Request(InvalidParam("avatar_url must be a valid MXC URI"))))?;
 
 		let all_joined_rooms: Vec<OwnedRoomId> = services
 			.rooms
@@ -162,7 +164,7 @@ pub(crate) async fn delete_profile_key_route(
 ) -> Result<delete_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -231,7 +233,7 @@ pub(crate) async fn get_profile_key_route(
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None, // we want the full user's profile to update locally as well
@@ -368,7 +370,9 @@ pub(crate) async fn get_room_dag_route(
 
 	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
 		if ts.elapsed() < Duration::from_secs(2) {
-			return Ok(axum::Json(cached_events.clone()));
+			return Ok(crate::json_util::json_response(slipstream::json::Value::Array(
+				cached_events.clone(),
+			)));
 		}
 	}
 
@@ -387,8 +391,7 @@ pub(crate) async fn get_room_dag_route(
 			break;
 		}
 
-		let mut obj: slipstream::json::Object<String, slipstream::json::Value> =
-			serde_json::from_value(serde_json::to_value(&pdu)?)?;
+		let mut obj: slipstream::json::Object = codec::from_str(&codec::to_string(&pdu))?;
 
 		if let Ok(root_handle) = services
 			.rooms
@@ -425,7 +428,7 @@ pub(crate) async fn get_room_dag_route(
 		.await
 		.insert(room_id.clone(), (Instant::now(), events.clone()));
 
-	Ok(axum::Json(events))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Array(events)))
 }
 
 /// # `POST /_matrix/client/unstable/event_relationships`

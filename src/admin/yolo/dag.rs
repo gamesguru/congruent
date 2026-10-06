@@ -42,11 +42,7 @@ pub(super) async fn get_room_dag(
 			.filter_map(|res: Result<(_, PduEvent)>| {
 				futures::future::ready(match res {
 					| Ok((_, pdu)) => Some(Ok(pdu.event_id().to_owned())),
-					| Err(
-						conduwuit::Error::SerdeDe(_)
-						| conduwuit::Error::Json(_)
-						| conduwuit::Error::CanonicalJson(_),
-					) => {
+					| Err(conduwuit::Error::SerdeDe(_) | conduwuit::Error::CanonicalJson(_)) => {
 						warn!("get_room_dag --topo: skipping undecodable topo row");
 						None
 					},
@@ -114,8 +110,8 @@ pub(super) async fn get_room_dag(
 			if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id).await {
 				let pdu_result = self.services.rooms.timeline.get_pdu(&event_id).await;
 				if let Ok(ref pdu) = pdu_result {
-					let ts: u64 = pdu.origin_server_ts().0.into();
-					let depth: u64 = pdu.depth.into();
+					let ts: u64 = pdu.origin_server_ts().0;
+					let depth: u64 = pdu.depth;
 					if let Some(pts) = prev_ts {
 						if ts < pts {
 							chronological_breaks.push((i, event_id.clone(), ts, pts));
@@ -273,7 +269,7 @@ pub(super) async fn get_room_dag(
 					.services
 					.rooms
 					.state_accessor
-					.state_get_id_hamt::<Box<EventId>>(
+					.state_get_id_hamt::<EventId>(
 						&room_id,
 						room_root.as_ref().expect("room fingerprint implies a root"),
 						&last_type.to_string().into(),
@@ -496,7 +492,7 @@ pub(super) async fn get_remote_dag(
 	}
 
 	let safe_room_id = room_id.to_string().replace('!', "").replace(':', "_");
-	let server_str = server.as_ref().map_or("auto", |s| s.as_str());
+	let server_str = server.as_ref().map_or("auto", |s| s);
 	let path = format!("/tmp/remote-dag-{safe_room_id}-v{room_version}-{server_str}.jsonl");
 	let file = tokio::fs::File::create(&path)
 		.await
@@ -733,7 +729,9 @@ pub(super) async fn get_remote_dag(
 			}
 			seen.insert(event_id.clone());
 
-			let json = serde_json::to_string(&value).ok();
+			let json = Some(slipstream::codec::to_string(&slipstream::json::Value::Object(
+				value.clone(),
+			)));
 			let Ok(pdu) = PduEvent::from_id_val(&event_id, value, Some(room_id.as_ref())) else {
 				continue;
 			};
@@ -749,7 +747,7 @@ pub(super) async fn get_remote_dag(
 
 			total_prev_events = total_prev_events
 				.saturating_add(u64::try_from(pdu.prev_events().count()).unwrap_or(0));
-			let depth: u64 = pdu.depth.into();
+			let depth: u64 = pdu.depth;
 			min_depth = min_depth.min(depth);
 			max_depth = max_depth.max(depth);
 			total = total.saturating_add(1);
@@ -1022,8 +1020,7 @@ pub(super) async fn dag_merge_base(
 				.boxed()
 				.next()
 				.await
-				.ok_or_else(|| err!("No active local users in room {room_id}"))?
-				.to_owned();
+				.ok_or_else(|| err!("No active local users in room {room_id}"))?;
 
 			let make_join_request =
 				slipstream::api::federation::membership::prepare_join_event::v1::Request {
@@ -1041,18 +1038,16 @@ pub(super) async fn dag_merge_base(
 
 			let event_stub_raw = response.event;
 
-			let event_stub: CanonicalJsonObject = serde_json::from_str(event_stub_raw.get())
-				.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
+			let event_stub: CanonicalJsonObject =
+				slipstream::codec::from_str(event_stub_raw.get())
+					.map_err(|e| err!("Invalid make_join template from {server}: {e}"))?;
 
 			let remote_tips: Vec<OwnedEventId> = event_stub
 				.get("prev_events")
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
-						.filter_map(|v| {
-							v.as_str()
-								.and_then(|s| <&EventId>::try_from(s).ok().map(ToOwned::to_owned))
-						})
+						.filter_map(|v| v.as_str().and_then(|s| EventId::parse(s).ok()))
 						.collect()
 				})
 				.unwrap_or_default();
@@ -1122,7 +1117,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (A-side, \
 						 #{fetched_events})"
@@ -1159,7 +1154,7 @@ pub(super) async fn dag_merge_base(
 				| Some(p) => Some(p),
 				| None if federate => {
 					fetched_events = fetched_events.saturating_add(1);
-					let srv = server.as_deref().map_or("local", |s| s.as_str());
+					let srv = server.as_deref().map_or("local", |s| s);
 					info!(
 						"dag-merge-base: fetching {current} from {srv} (B-side, \
 						 #{fetched_events})"
@@ -1276,8 +1271,8 @@ pub(super) async fn dag_merge_base(
 
 		let max_len = path_a.len().max(path_b.len());
 		for i in 0..max_len {
-			let left = path_a.get(i).map(|id| short(id)).unwrap_or_default();
-			let right = path_b.get(i).map(|id| short(id)).unwrap_or_default();
+			let left = path_a.get(i).map(&short).unwrap_or_default();
+			let right = path_b.get(i).map(&short).unwrap_or_default();
 
 			// Check if this is the merge base
 			let is_mb_left = path_a.get(i).is_some_and(|id| id == mb);
@@ -1448,7 +1443,6 @@ pub(super) async fn audit_auth_chain(
 		state_ids.extend(outlier_ids);
 	}
 
-	let mut state_ids = state_ids;
 	if state_ids.is_empty() {
 		if let Ok(latest) = self
 			.services
@@ -1706,7 +1700,7 @@ pub(super) async fn fetch_missing_events(
 						if let Ok((event_id, value)) = self
 							.services
 							.server_keys
-							.validate_and_add_event_id(raw.as_ref(), &room_version)
+							.validate_and_add_event_id(&raw, &room_version)
 							.await
 						{
 							if self

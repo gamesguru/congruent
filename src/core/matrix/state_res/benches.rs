@@ -259,7 +259,7 @@ impl TestStore<Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		);
@@ -439,7 +439,7 @@ fn INITIAL_EVENTS() -> HashMap<OwnedEventId, Pdu> {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&slipstream::json!({ "creator": alice() })),
+			to_raw_json_value(&slipstream::json!({ "creator": alice().as_str() })),
 			&[],
 			&[],
 		),

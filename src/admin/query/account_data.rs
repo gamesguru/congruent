@@ -41,7 +41,7 @@ async fn changes_since(
 	let results: Vec<_> = self
 		.services
 		.account_data
-		.changes_since(room_id.as_deref(), &user_id, Some(since), None)
+		.changes_since(room_id.as_ref(), &user_id, Some(since), None)
 		.collect()
 		.await;
 	let query_time = timer.elapsed();
@@ -61,7 +61,7 @@ async fn account_data_get(
 	let results = self
 		.services
 		.account_data
-		.get_raw(room_id.as_deref(), &user_id, &kind)
+		.get_raw(room_id.as_ref(), &user_id, &kind)
 		.await;
 	let query_time = timer.elapsed();
 

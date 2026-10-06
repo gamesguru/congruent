@@ -95,7 +95,6 @@ reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 serde_html_form.workspace = true
-serde_json.workspace = true
 serde.workspace = true
 sha1.workspace = true
 tokio.workspace = true
@@ -109,6 +108,7 @@ xxhash-rust.workspace = true
 # installed. `ring` is enabled here (test-only) so they have a deterministic
 # provider regardless of which providers the library's consumers select.
 rustls = { workspace = true, features = ["ring"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -38,7 +38,7 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 	let stream = services
 		.rooms
 		.timeline
-		.pdus_by_timestamp(room_id, ts.0.into(), dir);
+		.pdus_by_timestamp(room_id, ts.0, dir);
 	pin_mut!(stream);
 
 	let mut local_result = None;
@@ -85,7 +85,7 @@ pub(crate) async fn get_room_event_by_timestamp_route(
 				.room_state_get(room_id, &slipstream::events::StateEventType::RoomCreate, "")
 				.await
 			{
-				origin = Some(create_event.sender.server_name().to_owned());
+				origin = Some(create_event.sender.server_name());
 			}
 		}
 
@@ -175,9 +175,9 @@ fn pick_closer(
 ) -> Result<get_event_by_timestamp::v1::Response> {
 	match (local, federation) {
 		| (Some(l), Some(f)) => {
-			let target_u64 = u64::from(target.0);
-			let l_ts = u64::from(l.origin_server_ts.0);
-			let f_ts = u64::from(f.origin_server_ts.0);
+			let target_u64 = target.0;
+			let l_ts = l.origin_server_ts.0;
+			let f_ts = f.origin_server_ts.0;
 
 			let l_dist = l_ts.abs_diff(target_u64);
 			let f_dist = f_ts.abs_diff(target_u64);
@@ -233,9 +233,9 @@ fn federation_can_win(
 		return true;
 	};
 
-	let target_u64 = u64::from(target.0);
-	let local_ts = u64::from(local.origin_server_ts.0);
-	let fed_ts = u64::from(federation.origin_server_ts.0);
+	let target_u64 = target.0;
+	let local_ts = local.origin_server_ts.0;
+	let fed_ts = federation.origin_server_ts.0;
 	let local_dist = local_ts.abs_diff(target_u64);
 	let fed_dist = fed_ts.abs_diff(target_u64);
 

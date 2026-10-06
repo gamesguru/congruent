@@ -15,4 +15,7 @@ name = "slipstream"
 slipstream = []
 
 [dependencies]
-mtx-slipstream = { path = "../../../slipstream" }
+mtx-slipstream.workspace = true
+
+[lints]
+workspace = true

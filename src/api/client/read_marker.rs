@@ -3,15 +3,17 @@ use std::collections::BTreeMap;
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, PduCount, Result, matrix::Event};
-use serde::Deserialize;
 use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId,
 	api::client::{read_marker::set_read_marker, receipt::create_receipt},
+	codec::{DeError, Deserialize as CodecDeserialize},
+	endpoint::body_field,
 	events::{
 		RoomAccountDataEventType,
 		receipt::{ReceiptThread, ReceiptType},
 		relation::RelationType,
 	},
+	sswire::Raw,
 };
 
 use crate::Ruma;
@@ -42,7 +44,7 @@ pub(crate) async fn set_read_marker_route(
 				Some(&body.room_id),
 				sender_user,
 				RoomAccountDataEventType::FullyRead,
-				&serde_json::to_value(fully_read_event)?,
+				&slipstream::codec::to_value(&fully_read_event),
 			)
 			.await?;
 	}
@@ -95,7 +97,7 @@ pub(crate) async fn create_receipt_route(
 	let sender_user = body.sender_user();
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), client_ip)
+		.update_device_last_seen(sender_user, body.sender_device_opt(), client_ip)
 		.await;
 
 	// ping presence
@@ -107,7 +109,7 @@ pub(crate) async fn create_receipt_route(
 	}
 
 	// MSC3771: thread_id MUST NOT be provided with `m.fully_read`.
-	if matches!(&body.receipt_type, create_receipt::v3::ReceiptType::FullyRead)
+	if matches!(&body.receipt_type, ReceiptType::FullyRead)
 		&& !matches!(body.thread, ReceiptThread::Unthreaded)
 	{
 		return Err!(Request(InvalidParam(
@@ -122,13 +124,13 @@ pub(crate) async fn create_receipt_route(
 
 	// MSC3771: event_id must belong to the thread the receipt targets.
 	if let ReceiptThread::Thread(root) = &body.thread {
-		if !receipt_event_is_in_thread(&services, &body.event_id, &root).await {
+		if !receipt_event_is_in_thread(&services, &body.event_id, root).await {
 			return Err!(Request(InvalidParam("event_id is not related to the given thread_id")));
 		}
 	}
 
 	match body.receipt_type {
-		| create_receipt::v3::ReceiptType::FullyRead => {
+		| ReceiptType::FullyRead => {
 			let fully_read_event = slipstream::events::fully_read::FullyReadEvent {
 				content: slipstream::events::fully_read::FullyReadEventContent {
 					event_id: body.event_id.clone(),
@@ -140,11 +142,11 @@ pub(crate) async fn create_receipt_route(
 					Some(&body.room_id),
 					sender_user,
 					RoomAccountDataEventType::FullyRead,
-					&serde_json::to_value(fully_read_event)?,
+					&slipstream::codec::to_value(&fully_read_event),
 				)
 				.await?;
 		},
-		| create_receipt::v3::ReceiptType::Read => {
+		| ReceiptType::Read => {
 			if services.config.allow_local_read_receipts
 				&& !services.users.is_suspended(sender_user).await?
 			{
@@ -158,7 +160,7 @@ pub(crate) async fn create_receipt_route(
 				.await?;
 			}
 		},
-		| create_receipt::v3::ReceiptType::ReadPrivate => {
+		| ReceiptType::ReadPrivate => {
 			update_private_read_receipt(
 				&services,
 				sender_user,
@@ -168,27 +170,28 @@ pub(crate) async fn create_receipt_route(
 			)
 			.await?;
 		},
-		| _ => {
-			return Err!(Request(InvalidParam(warn!(
-				"Received unknown read receipt type: {}",
-				&body.receipt_type
-			))));
-		},
 	}
 
 	Ok(create_receipt::v3::Response {})
 }
 
-#[derive(Deserialize)]
-struct ExtractThreadRelation {
-	#[serde(rename = "m.relates_to")]
-	relates_to: ThreadRelation,
-}
-
-#[derive(Deserialize)]
+/// A single `m.relates_to` hop, read out of an event's raw content.
+///
+/// `m.relates_to` is nested one level below the event content, so this walks
+/// the decoded value rather than deserializing the whole content into a
+/// derived struct. `rel_type` is required for a thread relation.
 struct ThreadRelation {
 	rel_type: RelationType,
 	event_id: OwnedEventId,
+}
+
+impl CodecDeserialize for ThreadRelation {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, DeError> {
+		Ok(Self {
+			rel_type: body_field(Some(value), "rel_type")?,
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
 }
 
 const MAX_THREAD_HOPS: usize = 3;
@@ -212,15 +215,26 @@ async fn receipt_event_is_in_thread(
 		let Ok(pdu) = services.rooms.timeline.get_pdu(&current).await else {
 			return false;
 		};
-		let Ok(content) = pdu.get_content::<ExtractThreadRelation>() else {
+		// `m.relates_to` is required for a thread relation.
+		let Ok(relates_to) = pdu.get_content::<Raw<slipstream::json::Value>>() else {
+			return false;
+		};
+		let Some(relates_to) = relates_to
+			.get_field::<slipstream::json::Value>("m.relates_to")
+			.ok()
+			.flatten()
+		else {
+			return false;
+		};
+		let Ok(relation) = <ThreadRelation as CodecDeserialize>::from_json(&relates_to) else {
 			return false;
 		};
 
-		if content.relates_to.rel_type == RelationType::Thread {
-			return content.relates_to.event_id == thread_root;
+		if relation.rel_type == RelationType::Thread {
+			return relation.event_id == thread_root;
 		}
 
-		current = content.relates_to.event_id;
+		current = relation.event_id;
 		hops = hops.saturating_add(1);
 	}
 
@@ -285,7 +299,7 @@ async fn update_read_receipt(
 				BTreeMap::from_iter([(
 					sender_user.to_owned(),
 					slipstream::events::receipt::Receipt {
-						ts: Some(MilliSecondsSinceUnixEpoch::now()),
+						ts: Some(MilliSecondsSinceUnixEpoch::now().get()),
 						thread: thread.clone(),
 					},
 				)]),
@@ -353,7 +367,7 @@ async fn update_private_read_receipt(
 			BTreeMap::from_iter([(
 				sender_user.to_owned(),
 				slipstream::events::receipt::Receipt {
-					ts: Some(MilliSecondsSinceUnixEpoch::now()),
+					ts: Some(MilliSecondsSinceUnixEpoch::now().get()),
 					thread: thread.clone(),
 				},
 			)]),

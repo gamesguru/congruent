@@ -15,13 +15,14 @@ use conduwuit::{
 use futures::FutureExt;
 use service::{Services, rooms::state::RoomMutexGuard};
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName, RoomId,
-	RoomVersionId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomAliasId, OwnedRoomId,
+	OwnedServerName, RoomId, RoomVersionId, UserId,
 	api::{
 		client::knock::knock_room,
 		federation::{self},
 	},
 	canonical_json::to_canonical_value,
+	codec,
 	events::{
 		StateEventType,
 		room::{
@@ -29,6 +30,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
+	sswire::Raw,
 };
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
@@ -55,7 +57,7 @@ pub(crate) async fn knock_room_route(
 				&services,
 				sender_user,
 				Some(&room_id),
-				room_id.server_name(),
+				room_id.server_name().as_ref(),
 				client,
 			)
 			.await?;
@@ -71,14 +73,17 @@ pub(crate) async fn knock_room_route(
 
 			(servers, room_id)
 		},
-		| Err(room_alias) => {
+		| Err(_) => {
+			let room_alias = OwnedRoomAliasId::parse(body.room_id_or_alias.clone())
+				.map_err(|_| err!(Request(InvalidParam("Invalid room alias."))))?;
 			let (room_id, servers) = services.rooms.alias.resolve_alias(&room_alias).await?;
+			let alias_server_name = room_alias.server_name();
 
 			banned_room_check(
 				&services,
 				sender_user,
 				Some(&room_id),
-				Some(room_alias.server_name()),
+				Some(&alias_server_name),
 				client,
 			)
 			.await?;
@@ -342,12 +347,10 @@ async fn knock_room_helper_local(
 		));
 	}
 
-	let mut knock_event_stub = serde_json::from_str::<CanonicalJsonObject>(
-		make_knock_response.event.get(),
-	)
-	.map_err(|e| {
-		err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
-	})?;
+	let mut knock_event_stub =
+		codec::from_str::<CanonicalJsonObject>(make_knock_response.event.get()).map_err(|e| {
+			err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
+		})?;
 
 	validate_remote_member_event_stub(
 		&MembershipState::Knock,
@@ -363,11 +366,7 @@ async fn knock_room_helper_local(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	knock_event_stub.insert(
 		"content".to_owned(),
@@ -483,7 +482,7 @@ async fn knock_room_helper_remote(
 	}
 
 	let mut knock_event_stub: CanonicalJsonObject =
-		serde_json::from_str(make_knock_response.event.get()).map_err(|e| {
+		codec::from_str(make_knock_response.event.get()).map_err(|e| {
 			err!(BadServerResponse("Invalid make_knock event json received from server: {e:?}"))
 		})?;
 
@@ -493,11 +492,7 @@ async fn knock_room_helper_remote(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	knock_event_stub.insert(
 		"content".to_owned(),
@@ -560,7 +555,7 @@ async fn knock_room_helper_remote(
 	let state = send_knock_response
 		.knock_room_state
 		.iter()
-		.map(|event| serde_json::from_str::<CanonicalJsonObject>(event.get()))
+		.map(|event| codec::from_str::<CanonicalJsonObject>(event.get()))
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -576,12 +571,11 @@ async fn knock_room_helper_remote(
 			continue;
 		};
 
-		let Ok(state_key) = serde_json::from_value::<String>(state_key.clone().into()) else {
+		let Ok(state_key) = <String as codec::Deserialize>::from_json(state_key) else {
 			debug_warn!("send_knock stripped state event has invalid state_key: {event:?}");
 			continue;
 		};
-		let Ok(event_type) = serde_json::from_value::<StateEventType>(event_type.clone().into())
-		else {
+		let Ok(event_type) = <StateEventType as codec::Deserialize>::from_json(event_type) else {
 			debug_warn!("send_knock stripped state event has invalid event type: {event:?}");
 			continue;
 		};
@@ -667,7 +661,13 @@ async fn knock_room_helper_remote(
 	services.rooms.state_cache.mark_as_knocked(
 		sender_user,
 		room_id,
-		Some(send_knock_response.knock_room_state.clone()),
+		Some(
+			send_knock_response
+				.knock_room_state
+				.iter()
+				.map(Raw::cast)
+				.collect(),
+		),
 	);
 
 	info!("Successfully set final room state for new room");

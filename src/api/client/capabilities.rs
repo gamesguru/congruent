@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use conduwuit::{Result, Server};
-use serde_json::json;
 use slipstream::{
 	RoomVersionId,
 	api::client::discovery::get_capabilities::{
@@ -11,7 +10,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, json_util::single_field};
 
 /// # `GET /_matrix/client/v3/capabilities`
 ///
@@ -19,8 +18,8 @@ use crate::Ruma;
 /// of this server.
 pub(crate) async fn get_capabilities_route(
 	State(services): State<crate::State>,
-	body: Ruma<get_capabilities::v3::Request>,
-) -> Result<get_capabilities::v3::Response> {
+	body: Ruma<get_capabilities::Request>,
+) -> Result<get_capabilities::Response> {
 	let available: BTreeMap<RoomVersionId, RoomVersionStability> =
 		Server::available_room_versions()
 			.filter(|(version, _)| services.server.supported_room_version(version))
@@ -35,8 +34,10 @@ pub(crate) async fn get_capabilities_route(
 			.expect("server must advertise at least one room version")
 	};
 
-	let mut capabilities = Capabilities::default();
-	capabilities.room_versions = RoomVersionsCapability { available, default };
+	let mut capabilities = Capabilities {
+		room_versions: RoomVersionsCapability { available, default },
+		..Default::default()
+	};
 
 	// Only allow 3pid changes if SMTP is configured
 	capabilities.thirdparty_id_changes = ThirdPartyIdChangesCapability {
@@ -48,11 +49,11 @@ pub(crate) async fn get_capabilities_route(
 	};
 
 	// MSC4133 capability
-	capabilities.set("uk.tcpip.msc4133.profile_fields", json!({"enabled": true}))?;
+	capabilities.set("uk.tcpip.msc4133.profile_fields", single_field("enabled", &true))?;
 
 	capabilities.set(
 		"org.matrix.msc4267.forget_forced_upon_leave",
-		json!({"enabled": services.config.forget_forced_upon_leave}),
+		single_field("enabled", &services.config.forget_forced_upon_leave),
 	)?;
 
 	if services
@@ -61,8 +62,11 @@ pub(crate) async fn get_capabilities_route(
 		.await
 	{
 		// Advertise suspension API
-		capabilities.set("uk.timedout.msc4323", json!({"suspend": true, "lock": false}))?;
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("suspend", &true);
+		object.field("lock", &false);
+		capabilities.set("uk.timedout.msc4323", object.finish())?;
 	}
 
-	Ok(get_capabilities::v3::Response { capabilities })
+	Ok(get_capabilities::Response { capabilities })
 }

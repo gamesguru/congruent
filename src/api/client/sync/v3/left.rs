@@ -15,7 +15,7 @@ use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::{Raw, RawJsonValue},
+	sswire::Raw,
 	uint,
 };
 
@@ -478,18 +478,21 @@ fn create_dummy_leave_event(
 	SyncContext { syncing_user, .. }: SyncContext<'_>,
 	room_id: &RoomId,
 ) -> PduEvent {
-	// TODO: because this event ID is random, it could cause caching issues with
-	// clients. perhaps a database table could be created to hold these dummy
-	// events, or they could be stored as outliers?
+	// Keep each synthetic event ID unique so clients do not merge dummy events
+	// from different rooms or sync responses.
 	PduEvent {
-		event_id: EventId::new(services.globals.server_name()),
+		event_id: EventId::parse(format!(
+			"${}:{}",
+			utils::random_string(18),
+			services.globals.server_name()
+		))
+		.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
-		origin_server_ts: utils::millis_since_unix_epoch()
-			.try_into()
-			.expect("Timestamp is valid js_int value"),
+		origin_server_ts: utils::millis_since_unix_epoch(),
 		kind: TimelineEventType::RoomMember,
-		content: RawValue::from_string(r#"{"membership": "leave"}"#.to_owned()).unwrap(),
+		content: Raw::from_json_text(r#"{"membership": "leave"}"#)
+			.expect("static synthetic leave content is valid JSON"),
 		state_key: Some(syncing_user.as_str().into()),
 		unsigned: None,
 		// The following keys are dropped on conversion

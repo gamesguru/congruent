@@ -2,9 +2,44 @@
 
 pub use mtx_slipstream::*;
 
+/// Builds a Slipstream JSON value from JSON-like literal syntax.
+#[macro_export]
+macro_rules! json {
+	({ "users": { ($key:expr): $value:expr $(,)? } }) => {{
+		let mut users = rezzy::json::Object::new();
+		users.insert(($key).to_string(), rezzy::json!($value));
+		let mut object = rezzy::json::Object::new();
+		object.insert("users".to_owned(), rezzy::json::Value::Object(users));
+		rezzy::json::Value::Object(object)
+	}};
+	({ "users": { ($key1:expr): $value1:expr, ($key2:expr): $value2:expr $(,)? } }) => {{
+		let mut users = rezzy::json::Object::new();
+		users.insert(($key1).to_string(), rezzy::json!($value1));
+		users.insert(($key2).to_string(), rezzy::json!($value2));
+		let mut object = rezzy::json::Object::new();
+		object.insert("users".to_owned(), rezzy::json::Value::Object(users));
+		rezzy::json::Value::Object(object)
+	}};
+	({ "users": { ($key1:expr): $value1:expr, ($key2:expr): $value2:expr, ($key3:expr): $value3:expr $(,)? } }) => {{
+		let mut users = rezzy::json::Object::new();
+		users.insert(($key1).to_string(), rezzy::json!($value1));
+		users.insert(($key2).to_string(), rezzy::json!($value2));
+		users.insert(($key3).to_string(), rezzy::json!($value3));
+		let mut object = rezzy::json::Object::new();
+		object.insert("users".to_owned(), rezzy::json::Value::Object(users));
+		rezzy::json::Value::Object(object)
+	}};
+	($($tokens:tt)*) => { rezzy::json!($($tokens)*) };
+}
+
 /// Slipstream's serde-free value codec.
 pub mod codec {
 	pub use mtx_slipstream::codec::*;
+}
+
+/// Slipstream's wire-format types and serde bridge.
+pub mod sswire {
+	pub use mtx_slipstream::sswire::*;
 }
 
 /// Small, macro-free builder for JSON objects backed by Slipstream's codec.
@@ -57,6 +92,7 @@ pub mod canonical_json {
 		Value::parse(input).map_err(|error| mtx_slipstream::codec::DeError(error.to_string()))
 	}
 
+	#[must_use]
 	pub fn into_object(value: Value) -> Option<Object> {
 		match value {
 			| Value::Object(object) => Some(object),

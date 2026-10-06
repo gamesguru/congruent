@@ -1,6 +1,6 @@
 use slipstream::{
 	events::{AnyStateEventContent, room::member::RoomMemberEventContent},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::*;
@@ -10,7 +10,7 @@ fn test_strip_room_member() -> Result<()> {
 	//Test setup
 	let body = r#"
 		{
-			"avatar_url": "Something",
+			"avatar_url": "mxc://example.org/Something",
 			"displayname": "Someone",
 			"join_authorized_via_users_server": "@someone:domain.tld",
 			"membership": "join"
@@ -23,16 +23,16 @@ fn test_strip_room_member() -> Result<()> {
 
 	//Begin Test
 	membership_content.join_authorized_via_users_server = None;
-	*json = Raw::<AnyStateEventContent>::from_json_string(serde_json::to_string(
+	*json = Raw::<AnyStateEventContent>::from_json_string(slipstream::codec::to_string(
 		&membership_content,
-	)?)?;
+	))?;
 
 	//Compare result
-	let result = json.json().get();
+	let result = json.get();
 	println!("JSON (modified): {result}");
 	assert_eq!(
 		result,
-		r#"{"avatar_url":"Something","displayname":"Someone","membership":"join"}"#
+		r#"{"avatar_url":"mxc://example.org/Something","displayname":"Someone","membership":"join"}"#
 	);
 
 	Ok(())

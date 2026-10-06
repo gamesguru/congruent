@@ -2,7 +2,7 @@
 
 use conduwuit_core::{Err, Result, err};
 use service::Services;
-use slipstream::{OwnedRoomId, OwnedUserId, RoomId, UserId};
+use slipstream::{OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, UserId};
 
 pub(crate) fn escape_html(s: &str) -> String {
 	s.replace('&', "&amp;")
@@ -64,4 +64,29 @@ pub(crate) async fn parse_active_local_user_id(
 	}
 
 	Ok(user_id)
+}
+
+/// Pretty-printed JSON through Slipstream's codec.
+pub(crate) fn to_string_pretty<T>(value: &T) -> Result<String, slipstream::codec::DeError>
+where
+	T: slipstream::codec::Serialize + ?Sized,
+{
+	Ok(rezzy::json::write_string_pretty(&slipstream::codec::to_value(value)).unwrap_or_default())
+}
+
+/// Splits an `mxc://server/media_id` URI into owned parts.
+pub(crate) fn split_mxc(uri: &str) -> Result<(OwnedServerName, String)> {
+	let parts = uri
+		.strip_prefix("mxc://")
+		.and_then(|rest| rest.split_once('/'))
+		.filter(|(server, media_id)| !server.is_empty() && !media_id.is_empty());
+	match parts {
+		| Some((server, media_id)) => Ok((OwnedServerName::parse(server)?, media_id.to_owned())),
+		| None => conduwuit::Err!("Invalid MXC URI {uri}."),
+	}
+}
+
+/// Event content as a Slipstream JSON value.
+pub(crate) fn content_value<E: conduwuit::matrix::Event>(event: &E) -> slipstream::json::Value {
+	slipstream::codec::from_str(event.content().get()).unwrap_or(slipstream::json::Value::Null)
 }

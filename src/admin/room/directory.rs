@@ -43,7 +43,7 @@ pub(super) async fn process(command: RoomDirectoryCommand, context: &Context<'_>
 				.rooms
 				.directory
 				.public_rooms()
-				.then(|room_id| get_room_info(services, room_id))
+				.then(|room_id| async move { get_room_info(services, &room_id).await })
 				.collect()
 				.await;
 

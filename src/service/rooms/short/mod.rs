@@ -829,7 +829,7 @@ mod tests {
 		let event2 = event_id!("$event2:test.conduwuit.local");
 
 		// Multi create/get
-		let stream = service.multi_get_or_create_shorteventid(vec![event1, event2].into_iter());
+		let stream = service.multi_get_or_create_shorteventid(vec![&event1, &event2].into_iter());
 		let mut stream = std::pin::pin!(stream);
 		let short1 = stream.next().await.unwrap();
 		let short2 = stream.next().await.unwrap();

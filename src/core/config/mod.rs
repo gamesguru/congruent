@@ -34,8 +34,8 @@ where
 	D: serde::Deserializer<'de>,
 	T: slipstream::codec::Deserialize,
 {
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+	let value = crate::utils::SerdeValue::deserialize(deserializer)?.0;
+	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
 }
 
 fn deserialize_slipstream_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -43,8 +43,8 @@ where
 	D: serde::Deserializer<'de>,
 	T: slipstream::codec::Deserialize,
 {
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+	let value = crate::utils::SerdeValue::deserialize(deserializer)?.0;
+	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
 }
 
 fn deserialize_slipstream_opt<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -52,10 +52,10 @@ where
 	D: serde::Deserializer<'de>,
 	T: slipstream::codec::Deserialize,
 {
-	let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+	let value = Option::<crate::utils::SerdeValue>::deserialize(deserializer)?;
 	value
-		.map(|value| {
-			slipstream::codec::from_str(&value.to_string()).map_err(serde::de::Error::custom)
+		.map(|crate::utils::SerdeValue(value)| {
+			slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
 		})
 		.transpose()
 }

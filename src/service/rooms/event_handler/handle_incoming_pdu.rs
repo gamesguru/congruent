@@ -304,7 +304,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 	let sender = value
 		.get("sender")
 		.and_then(CanonicalJsonValue::as_str)
-		.map(OwnedUserId::from)
+		.and_then(|sender| OwnedUserId::parse(sender).ok())
 		.ok_or_else(|| err!(Request(InvalidParam("PDU does not have a valid sender key"))))?;
 	let sender = &sender;
 

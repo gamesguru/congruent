@@ -19,7 +19,7 @@ pub(crate) async fn create_typing_event_route(
 		.update_device_last_seen(sender_user, body.sender_device.as_ref(), ip)
 		.await;
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update typing status of other users.")));
 	}
 

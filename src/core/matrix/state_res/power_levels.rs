@@ -1,150 +1,103 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer, de::Error as DeError};
-use serde_json::{Error, from_str as from_json_str};
 use slipstream::{
 	Int, OwnedUserId, UserId,
+	codec::DeError,
 	events::{TimelineEventType, room::power_levels::RoomPowerLevelsEventContent},
+	json::Value,
 	power_levels::{NotificationPowerLevels, default_power_level},
 };
 
-use super::{Result, RoomVersion};
+use super::{
+	Result, RoomVersion,
+	content::{decode, object},
+};
 use crate::error;
 
-fn deserialize_v1_powerlevel_serde<'de, D>(deserializer: D) -> Result<Int, D::Error>
-where
-	D: Deserializer<'de>,
-{
-	let value = serde_json::Value::deserialize(deserializer)?;
-	value
-		.as_i64()
-		.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-		.ok_or_else(|| D::Error::custom("expected power level"))
+/// How strictly power level values are read.
+#[derive(Clone, Copy)]
+enum Mode {
+	/// Integers only (room versions with integer power levels).
+	Integer,
+	/// Integers or integer strings (legacy room versions).
+	Legacy,
 }
 
-fn vec_deserialize_v1_powerlevel_values_serde<'de, D>(
-	deserializer: D,
-) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
-where
-	D: Deserializer<'de>,
-{
-	let value = serde_json::Value::deserialize(deserializer)?;
-	let object = value
+fn level(value: &Value, mode: Mode) -> Result<Int, DeError> {
+	match mode {
+		| Mode::Integer => value.as_i64(),
+		| Mode::Legacy => value
+			.as_i64()
+			.or_else(|| value.as_str().and_then(|value| value.parse().ok())),
+	}
+	.ok_or_else(|| DeError::expected("power level"))
+}
+
+/// A power level that takes `default` when the field is absent.
+fn level_or(content: &Value, key: &str, default: Int, mode: Mode) -> Result<Int, DeError> {
+	content
+		.get(key)
+		.map_or(Ok(default), |value| level(value, mode))
+}
+
+/// The `users` map as a vec sorted by user ID. Values are always read
+/// leniently, as strings were accepted here even for integer power levels.
+fn users(content: &Value) -> Result<Vec<(OwnedUserId, Int)>, DeError> {
+	let Some(users) = content.get("users") else {
+		return Ok(Vec::new());
+	};
+	let object = users
 		.as_object()
-		.ok_or_else(|| D::Error::custom("expected power-level object"))?;
+		.ok_or_else(|| DeError::expected("power-level object"))?;
+
 	object
 		.iter()
 		.map(|(user, value)| {
-			let user = OwnedUserId::from(user.as_str());
-			let level = value
-				.as_i64()
-				.or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-				.ok_or_else(|| D::Error::custom("expected power level"))?;
-			Ok((user, level))
+			let user = OwnedUserId::parse(user.as_str())
+				.map_err(|_| DeError::expected("user ID key"))?;
+			Ok((user, level(value, Mode::Legacy)?))
 		})
 		.collect()
 }
 
-fn vec_deserialize_int_powerlevel_values_serde<'de, D>(
-	deserializer: D,
-) -> Result<Vec<(OwnedUserId, Int)>, D::Error>
+fn map_or_default<K, V>(content: &Value, key: &str) -> Result<BTreeMap<K, V>, DeError>
 where
-	D: Deserializer<'de>,
-{
-	vec_deserialize_v1_powerlevel_values_serde(deserializer)
-}
-
-fn deserialize_codec_map<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
-where
-	D: Deserializer<'de>,
 	K: slipstream::codec::Deserialize + Ord,
 	V: slipstream::codec::Deserialize,
 {
-	let value = serde_json::Value::deserialize(deserializer)?;
-	slipstream::codec::from_str(&value.to_string()).map_err(D::Error::custom)
+	content.get(key).map_or_else(|| Ok(BTreeMap::new()), decode)
 }
 
-#[derive(Deserialize)]
-struct IntRoomPowerLevelsEventContent {
-	#[serde(default = "default_power_level")]
-	ban: Int,
+fn int_room_power_levels(content: &str) -> Result<RoomPowerLevelsEventContent, DeError> {
+	let content = object(content)?;
+	let mode = Mode::Integer;
 
-	#[serde(default, deserialize_with = "deserialize_codec_map")]
-	events: BTreeMap<TimelineEventType, Int>,
+	let notifications = match content.get("notifications") {
+		| None => default_power_level(),
+		| Some(notifications) => {
+			if notifications.as_object().is_none() {
+				return Err(DeError::expected("notifications object"));
+			}
+			level_or(notifications, "room", default_power_level(), mode)?
+		},
+	};
 
-	#[serde(default)]
-	events_default: Int,
+	let mut pl = RoomPowerLevelsEventContent::new();
+	pl.ban = level_or(&content, "ban", default_power_level(), mode)?;
+	pl.events = map_or_default::<TimelineEventType, Int>(&content, "events")?;
+	pl.events_default = level_or(&content, "events_default", 0, mode)?;
+	pl.invite = level_or(&content, "invite", 0, mode)?;
+	pl.kick = level_or(&content, "kick", default_power_level(), mode)?;
+	pl.redact = level_or(&content, "redact", default_power_level(), mode)?;
+	pl.state_default = level_or(&content, "state_default", default_power_level(), mode)?;
+	pl.users = map_or_default::<OwnedUserId, Int>(&content, "users")?;
+	pl.users_default = level_or(&content, "users_default", 0, mode)?;
 
-	#[serde(default)]
-	invite: Int,
+	let mut notif = NotificationPowerLevels::new();
+	notif.room = notifications;
+	pl.notifications = notif;
 
-	#[serde(default = "default_power_level")]
-	kick: Int,
-
-	#[serde(default = "default_power_level")]
-	redact: Int,
-
-	#[serde(default = "default_power_level")]
-	state_default: Int,
-
-	#[serde(default, deserialize_with = "deserialize_codec_map")]
-	users: BTreeMap<OwnedUserId, Int>,
-
-	#[serde(default)]
-	users_default: Int,
-
-	#[serde(default)]
-	notifications: IntNotificationPowerLevels,
-}
-
-impl From<IntRoomPowerLevelsEventContent> for RoomPowerLevelsEventContent {
-	fn from(int_pl: IntRoomPowerLevelsEventContent) -> Self {
-		let IntRoomPowerLevelsEventContent {
-			ban,
-			events,
-			events_default,
-			invite,
-			kick,
-			redact,
-			state_default,
-			users,
-			users_default,
-			notifications,
-		} = int_pl;
-
-		let mut pl = Self::new();
-		pl.ban = ban;
-		pl.events = events;
-		pl.events_default = events_default;
-		pl.invite = invite;
-		pl.kick = kick;
-		pl.redact = redact;
-		pl.state_default = state_default;
-		pl.users = users;
-		pl.users_default = users_default;
-		pl.notifications = notifications.into();
-
-		pl
-	}
-}
-
-#[derive(Deserialize)]
-struct IntNotificationPowerLevels {
-	#[serde(default = "default_power_level")]
-	room: Int,
-}
-
-impl Default for IntNotificationPowerLevels {
-	fn default() -> Self { Self { room: default_power_level() } }
-}
-
-impl From<IntNotificationPowerLevels> for NotificationPowerLevels {
-	fn from(int_notif: IntNotificationPowerLevels) -> Self {
-		let mut notif = Self::new();
-		notif.room = int_notif.room;
-
-		notif
-	}
+	Ok(pl)
 }
 
 #[inline]
@@ -160,8 +113,8 @@ pub(crate) fn deserialize_power_levels(
 }
 
 fn deserialize_integer_power_levels(content: &str) -> Option<RoomPowerLevelsEventContent> {
-	match from_json_str::<IntRoomPowerLevelsEventContent>(content) {
-		| Ok(content) => Some(content.into()),
+	match int_room_power_levels(content) {
+		| Ok(content) => Some(content),
 		| Err(_) => {
 			error!("m.room.power_levels event is not valid with integer values");
 			None
@@ -181,16 +134,25 @@ fn deserialize_legacy_power_levels(content: &str) -> Option<RoomPowerLevelsEvent
 	}
 }
 
-#[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_v1_powerlevel_values_serde")]
 	pub(crate) users: Vec<(OwnedUserId, Int)>,
 
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) users_default: Int,
 }
 
 impl PowerLevelsContentFields {
+	/// Reads the fields leniently (integers or integer strings).
+	pub(crate) fn parse(content: &str) -> Result<Self, DeError> {
+		Self::from_content(&object(content)?, Mode::Legacy)
+	}
+
+	fn from_content(content: &Value, mode: Mode) -> Result<Self, DeError> {
+		Ok(Self {
+			users: users(content)?,
+			users_default: level_or(content, "users_default", 0, mode)?,
+		})
+	}
+
 	pub(crate) fn get_user_power(&self, user_id: &UserId) -> Option<&Int> {
 		let comparator = |item: &(OwnedUserId, Int)| {
 			let item: &UserId = &item.0;
@@ -204,105 +166,51 @@ impl PowerLevelsContentFields {
 	}
 }
 
-#[derive(Deserialize)]
-struct IntPowerLevelsContentFields {
-	#[serde(default, deserialize_with = "vec_deserialize_int_powerlevel_values_serde")]
-	users: Vec<(OwnedUserId, Int)>,
-
-	#[serde(default)]
-	users_default: Int,
-}
-
-impl From<IntPowerLevelsContentFields> for PowerLevelsContentFields {
-	fn from(pl: IntPowerLevelsContentFields) -> Self {
-		let IntPowerLevelsContentFields { users, users_default } = pl;
-		Self { users, users_default }
-	}
-}
-
 #[inline]
 pub(crate) fn deserialize_power_levels_content_fields(
 	content: &str,
 	room_version: &RoomVersion,
-) -> Result<PowerLevelsContentFields, Error> {
-	if room_version.integer_power_levels {
-		deserialize_integer_power_levels_content_fields(content)
+) -> Result<PowerLevelsContentFields, DeError> {
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
 	} else {
-		deserialize_legacy_power_levels_content_fields(content)
-	}
+		Mode::Legacy
+	};
+	PowerLevelsContentFields::from_content(&object(content)?, mode)
 }
 
-fn deserialize_integer_power_levels_content_fields(
-	content: &str,
-) -> Result<PowerLevelsContentFields, Error> {
-	from_json_str::<IntPowerLevelsContentFields>(content).map(Into::into)
-}
-
-fn deserialize_legacy_power_levels_content_fields(
-	content: &str,
-) -> Result<PowerLevelsContentFields, Error> {
-	from_json_str(content)
-}
-
-#[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentInvite {
-	#[serde(default, deserialize_with = "deserialize_v1_powerlevel_serde")]
 	pub(crate) invite: Int,
-}
-
-#[derive(Deserialize)]
-struct IntPowerLevelsContentInvite {
-	#[serde(default)]
-	invite: Int,
-}
-
-impl From<IntPowerLevelsContentInvite> for PowerLevelsContentInvite {
-	fn from(pl: IntPowerLevelsContentInvite) -> Self {
-		let IntPowerLevelsContentInvite { invite } = pl;
-		Self { invite }
-	}
 }
 
 pub(crate) fn deserialize_power_levels_content_invite(
 	content: &str,
 	room_version: &RoomVersion,
-) -> Result<PowerLevelsContentInvite, Error> {
-	if room_version.integer_power_levels {
-		from_json_str::<IntPowerLevelsContentInvite>(content).map(Into::into)
+) -> Result<PowerLevelsContentInvite, DeError> {
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
 	} else {
-		from_json_str(content)
-	}
+		Mode::Legacy
+	};
+	Ok(PowerLevelsContentInvite {
+		invite: level_or(&object(content)?, "invite", 0, mode)?,
+	})
 }
 
-#[derive(Deserialize)]
 pub(crate) struct PowerLevelsContentRedact {
-	#[serde(
-		default = "default_power_level",
-		deserialize_with = "deserialize_v1_powerlevel_serde"
-	)]
 	pub(crate) redact: Int,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct IntPowerLevelsContentRedact {
-	#[serde(default = "default_power_level")]
-	redact: Int,
-}
-
-impl From<IntPowerLevelsContentRedact> for PowerLevelsContentRedact {
-	fn from(pl: IntPowerLevelsContentRedact) -> Self {
-		let IntPowerLevelsContentRedact { redact } = pl;
-		Self { redact }
-	}
 }
 
 pub(crate) fn deserialize_power_levels_content_redact(
 	content: &str,
 	room_version: &RoomVersion,
-) -> Result<PowerLevelsContentRedact, Error> {
-	if room_version.integer_power_levels {
-		from_json_str::<IntPowerLevelsContentRedact>(content).map(Into::into)
+) -> Result<PowerLevelsContentRedact, DeError> {
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
 	} else {
-		from_json_str(content)
-	}
+		Mode::Legacy
+	};
+	Ok(PowerLevelsContentRedact {
+		redact: level_or(&object(content)?, "redact", default_power_level(), mode)?,
+	})
 }

@@ -34,8 +34,8 @@ pub(crate) async fn get_relating_events_with_rel_type_and_event_type_route(
 		body.rel_type.clone().into(),
 		body.from.as_deref(),
 		body.to.as_deref(),
-		body.limit,
-		body.recurse,
+		Some(body.limit),
+		body.recurse.unwrap_or(false),
 		body.dir,
 	)
 	.await
@@ -61,8 +61,8 @@ pub(crate) async fn get_relating_events_with_rel_type_route(
 		body.rel_type.clone().into(),
 		body.from.as_deref(),
 		body.to.as_deref(),
-		body.limit,
-		body.recurse,
+		Some(body.limit),
+		body.recurse.unwrap_or(false),
 		body.dir,
 	)
 	.await

@@ -55,8 +55,6 @@ pub enum Error {
 	#[error("Join error: {0}")]
 	JoinError(#[from] tokio::task::JoinError),
 	#[error(transparent)]
-	Json(#[from] serde_json::Error),
-	#[error(transparent)]
 	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]
 	JsTryFromInt(#[from] slipstream::JsTryFromIntError), // js_int re-export
@@ -223,7 +221,7 @@ impl Error {
 			| Self::Federation(_, error) | Self::Ruma(error) => error.status_code,
 			| Self::Request(kind, _, code) => response::status_code(kind, *code),
 			| Self::BadRequest(kind, ..) => response::bad_request_code(kind),
-			| Self::FeatureDisabled(..) => response::bad_request_code(&self.kind()),
+			| Self::FeatureDisabled(..) => response::bad_request_code(self.kind()),
 			| Self::Reqwest(error) => error.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
 			| Self::Conflict(_) => StatusCode::CONFLICT,
 			| Self::Io(error) => response::io_error_code(error.kind()),

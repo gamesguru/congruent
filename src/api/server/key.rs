@@ -3,7 +3,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{extract::State, response::IntoResponse};
 use conduwuit::{Result, err, utils::timepoint_from_now};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, Signatures,
@@ -14,7 +14,8 @@ use slipstream::{
 			get_remote_server_keys_batch, get_server_keys,
 		},
 	},
-	serde::Raw,
+	codec,
+	sswire::Raw,
 };
 
 use crate::Ruma;
@@ -32,14 +33,16 @@ pub(crate) async fn get_server_keys_route(
 ) -> Result<impl IntoResponse> {
 	let server_key = get_our_signing_keys(&services).await;
 	let server_key = Raw::new(&server_key)?;
-	let mut response = get_server_keys::v2::Response::new(server_key)
+	let response = get_server_keys::v2::Response::new(server_key)
 		.try_into_http_response::<Vec<u8>>()
-		.map(|mut response| take(response.body_mut()))
-		.and_then(|body| serde_json::from_slice(&body).map_err(Into::into))?;
+		.map(|mut response| take(response.body_mut()))?;
+	let body = std::str::from_utf8(&response)
+		.map_err(|_| err!(Request(BadJson("Invalid UTF-8 in signing-key response."))))?;
+	let mut response = codec::from_str(body)?;
 
 	services.server_keys.sign_json(&mut response)?;
 
-	Ok(Json(response))
+	Ok(crate::json_util::json_response(codec::to_value(&response)))
 }
 
 fn valid_until_ts() -> MilliSecondsSinceUnixEpoch {
@@ -92,11 +95,10 @@ async fn sign_signing_keys(
 	services: &crate::State,
 	server_keys: &Raw<ServerSigningKeys>,
 ) -> Result<Raw<ServerSigningKeys>> {
-	let mut keys_obj: slipstream::CanonicalJsonObject =
-		serde_json::from_str(server_keys.json().get())?;
+	let json = server_keys.json()?;
+	let mut keys_obj: slipstream::CanonicalJsonObject = codec::from_value(&json)?;
 	services.server_keys.sign_json(&mut keys_obj)?;
-	let raw_value = serde_json::value::to_raw_value(&keys_obj)?;
-	Ok(Raw::from_json(raw_value))
+	Ok(Raw::from_value(&keys_obj))
 }
 
 fn select_server_key_response(
@@ -250,7 +252,6 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 mod tests {
 	use std::{
 		fs,
-		path::PathBuf,
 		sync::Arc,
 		time::{SystemTime, UNIX_EPOCH},
 	};
@@ -270,7 +271,7 @@ mod tests {
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		json::Value,
-		serde::{Base64, Raw},
+		sswire::{Base64, Raw},
 	};
 	use tower::ServiceExt;
 
@@ -310,27 +311,6 @@ mod tests {
 			old_verify_keys,
 			signatures: Signatures::new(),
 		}
-	}
-
-	fn write_test_config(config_path: &PathBuf, db_path: &PathBuf) {
-		fs::create_dir_all(
-			config_path
-				.parent()
-				.expect("test config path should have a parent"),
-		)
-		.expect("test config dir should be creatable");
-		fs::write(
-			config_path,
-			format!(
-				r#"
-[global]
-server_name = "example.com"
-database_path = "{}"
-"#,
-				db_path.display()
-			),
-		)
-		.expect("test config should be writable");
 	}
 
 	fn test_log() -> Log {
@@ -383,11 +363,11 @@ database_path = "{}"
 				.as_nanos()
 		));
 
-		let config_path = temp_root.join("config.toml");
 		let db_path = temp_root.join("db");
-		write_test_config(&config_path, &db_path);
 
-		let figment = Config::load(&[config_path]).expect("test config should load");
+		let figment = conduwuit_core::config::Figment::new()
+			.merge(("server_name", "example.com"))
+			.merge(("database_path", db_path.to_string_lossy().into_owned()));
 		let config = Config::new(&figment).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
 		let services = conduwuit_service::Services::build(server.clone())
@@ -399,19 +379,15 @@ database_path = "{}"
 		let merged =
 			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
 
-		services.db["server_signingkeys"].raw_put(
-			origin.as_bytes(),
-			serde_json::to_vec(&raw).expect("raw JSON should serialize"),
-		);
+		services.db["server_signingkeys"]
+			.raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
 		let historical_key = {
 			let mut key = origin.as_bytes().to_vec();
 			key.extend_from_slice(b"\0historical");
 			key
 		};
-		services.db["server_signingkeys"].raw_put(
-			&historical_key,
-			serde_json::to_vec(&merged).expect("merged JSON should serialize"),
-		);
+		services.db["server_signingkeys"]
+			.raw_put(&historical_key, slipstream::codec::to_string(&merged).into_bytes());
 
 		let (state, guard) = conduwuit_service::state::create(services.clone());
 		let router = crate::router::build(Router::new(), &services.server).with_state(state);
@@ -431,9 +407,21 @@ database_path = "{}"
 		let body = to_bytes(response.into_body(), usize::MAX)
 			.await
 			.expect("response body should read");
-		let json: Value = serde_json::from_slice(&body).expect("response should be valid JSON");
-		let old_key = &json["server_keys"][0]["old_verify_keys"]["ed25519:historical"];
-		assert_eq!(old_key["key"], STANDARD.encode(b"BBB"));
+		let json: Value = slipstream::codec::from_str(
+			std::str::from_utf8(&body).expect("response should be UTF-8"),
+		)
+		.expect("response should be valid JSON");
+		let old_key = json
+			.get("server_keys")
+			.and_then(|keys| keys.as_array())
+			.and_then(|keys| keys.first())
+			.and_then(|key| key.get("old_verify_keys"))
+			.and_then(|keys| keys.get("ed25519:historical"))
+			.expect("historical key should be present");
+		assert_eq!(
+			old_key.get("key").and_then(|key| key.as_str()),
+			Some(STANDARD.encode(b"BBB").as_str())
+		);
 
 		drop(guard);
 		_ = fs::remove_dir_all(&temp_root);

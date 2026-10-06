@@ -188,11 +188,11 @@ fn catch_panic(
 	};
 
 	error!("{details:#}");
-	let body = slipstream::json!({
-		"errcode": "M_UNKNOWN",
-		"error": "M_UNKNOWN: Internal server error occurred",
-		"details": details,
-	});
+	let mut body = slipstream::ObjectBuilder::new();
+	body.field("errcode", "M_UNKNOWN");
+	body.field("error", "M_UNKNOWN: Internal server error occurred");
+	body.field("details", &details);
+	let body = body.finish();
 
 	http::Response::builder()
 		.status(StatusCode::INTERNAL_SERVER_ERROR)

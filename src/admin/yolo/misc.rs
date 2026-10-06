@@ -43,13 +43,13 @@ pub(super) async fn check_read_receipts_legacy(&self, room_id: OwnedRoomId) -> R
 	let db = &self.services.db;
 	let old_map = db["readreceiptid_readreceipt"].clone();
 
-	let mut stream =
-		old_map.stream_raw_from::<(&slipstream::RoomId, u64, &UserId), ReceiptEvent, _>(&[]);
+	let mut stream = old_map.stream_raw_from::<(slipstream::RoomId, u64, UserId), &[u8], _>(&[]);
 
 	let mut msg = String::new();
 	let mut found = false;
-	while let Some(Ok(((room, count, user), event))) = stream.next().await {
+	while let Some(Ok(((room, count, user), value))) = stream.next().await {
 		if room == room_id {
+			let event = slipstream::codec::from_slice::<ReceiptEvent>(value);
 			found = true;
 			let _ =
 				writeln!(msg, "Legacy Receipt -> Count: {count}, User: {user}, Event: {event:?}");

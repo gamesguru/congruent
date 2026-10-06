@@ -14,7 +14,7 @@ use slipstream::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::error::Error as RumaError,
 	},
-	serde::Base64,
+	sswire::Base64,
 };
 
 use crate::resolver::actual::ActualDest;
@@ -301,7 +301,7 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 	let key: OwnedServerSigningKeyId = signatures
 		.keys()
 		.next()
-		.map(|k| OwnedServerSigningKeyId::from(k.as_str()))
+		.and_then(|k| OwnedServerSigningKeyId::parse(k.as_str()).ok())
 		.expect("at least one signature from this origin");
 	let key = &key;
 

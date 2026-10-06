@@ -41,7 +41,7 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 
 	let room_version = self.services.state.get_room_version(&room_id).await?;
 
-	let reason = reason.to_value();
+	let reason = slipstream::codec::to_value(reason.as_pdu());
 	pdu.redact(&room_version, &reason)?;
 
 	let obj = pdu.to_canonical_object();

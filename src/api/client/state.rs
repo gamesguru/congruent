@@ -3,7 +3,7 @@ mod tests;
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, RoomVersion, err, info,
+	Err, Result, RoomVersion, err,
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
@@ -23,11 +23,13 @@ use slipstream::{
 			server_acl::RoomServerAclEventContent,
 		},
 	},
-	json,
-	serde::Raw,
+	sswire::Raw,
 };
 
-use crate::{Ruma, RumaResponse};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, single_field},
+};
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
 ///
@@ -66,10 +68,7 @@ pub(crate) async fn send_state_event_for_key_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		return Ok(axum::Json(slipstream::json!({
-			"delay_id": delay_id,
-		}))
-		.into_response());
+		return Ok(json_response(single_field("delay_id", &delay_id)));
 	}
 
 	let event_id = send_state_event_for_key_helper(
@@ -132,12 +131,7 @@ pub(crate) async fn get_state_events_route(
 
 	// For departed users, serve state frozen at the point they left
 	let leave_root = if !is_joined {
-		let root = leave_roothandle(&services, sender_user, room_id).await;
-		info!(
-			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_root={root:?}"
-		);
-		root
+		leave_roothandle(&services, sender_user, room_id).await
 	} else {
 		None
 	};
@@ -198,11 +192,6 @@ pub(crate) async fn get_state_events_for_key_route(
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
 		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
-			info!(
-				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={root:?}",
-				body.event_type
-			);
 			services
 				.rooms
 				.state_accessor
@@ -238,20 +227,20 @@ pub(crate) async fn get_state_events_for_key_route(
 	Ok(get_state_events_for_key::v3::Response {
 		content: event_format.or(|| {
 			event
-				.get_content::<json::Value>()
+				.get_content::<slipstream::json::Value>()
 				.expect("Failed to represent Event content as JsonValue")
 		}),
 		event: event_format.then(|| {
-			json!({
-				"content": event.content(),
-				"event_id": event.event_id(),
-				"origin_server_ts": event.origin_server_ts(),
-				"room_id": event.room_id_or_hash(),
-				"sender": event.sender(),
-				"state_key": event.state_key(),
-				"type": event.kind(),
-				"unsigned": event.unsigned(),
-			})
+			let mut object = slipstream::ObjectBuilder::new();
+			object.field("content", &event.content());
+			object.field("event_id", &event.event_id());
+			object.field("origin_server_ts", &event.origin_server_ts());
+			object.field("room_id", &event.room_id_or_hash());
+			object.field("sender", &event.sender());
+			object.field("state_key", &event.state_key());
+			object.field("type", &event.kind());
+			object.field("unsigned", &event.unsigned());
+			object.finish()
 		}),
 	})
 }

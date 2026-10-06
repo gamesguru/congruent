@@ -17,10 +17,7 @@ use service::Services;
 use slipstream::{
 	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
-	events::{
-		StaticEventContent,
-		room::member::{MembershipState, RoomMemberEventContent},
-	},
+	events::room::member::{MembershipState, RoomMemberEventContent},
 };
 
 pub(crate) use self::{
@@ -277,7 +274,7 @@ pub(crate) async fn fetch_join_knock_servers(
 
 		if !from_alias {
 			if let Some(server) = room_id.server_name() {
-				addl_servers.push(server.to_owned());
+				addl_servers.push(server);
 			}
 		}
 

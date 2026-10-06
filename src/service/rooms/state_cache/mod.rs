@@ -15,7 +15,7 @@ use moka::sync::Cache;
 use slipstream::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, ServerName, UserId,
 	events::{AnyStrippedStateEvent, room::member::MembershipState},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, account_data, appservice::RegistrationInfo, config, globals, rooms, users};
@@ -730,7 +730,7 @@ mod serde_test3 {
 	#[test]
 	fn test_serde() {
 		let s = r#"{"displayname":"user-2 🏳️‍⚧️","membership":"join"}"#;
-		match serde_json::from_str::<RoomMemberEventContent>(s) {
+		match slipstream::codec::from_str::<RoomMemberEventContent>(s) {
 			| Ok(c) => println!("Success: {:?}", c.membership),
 			| Err(e) => panic!("Error: {}", e),
 		}

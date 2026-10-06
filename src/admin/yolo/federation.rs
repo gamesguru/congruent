@@ -51,15 +51,23 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = slipstream::json!({
-			"room_id": room_id,
-			"server_name": server_name,
-			"event_id": event_id.to_string(),
-			"pdus": response.pdus,
-			"auth_chain": response.auth_chain,
-		});
+		let dump = {
+			let mut object = slipstream::ObjectBuilder::new();
 
-		let pretty = serde_json::to_string_pretty(&dump).unwrap_or_default();
+			object.field("room_id", &room_id);
+
+			object.field("server_name", &server_name);
+
+			object.field("event_id", &event_id.to_string());
+
+			object.field("pdus", &response.pdus);
+
+			object.field("auth_chain", &response.auth_chain);
+
+			object.finish()
+		};
+
+		let pretty = crate::utils::to_string_pretty(&dump).unwrap_or_default();
 
 		if let Some(ref path) = output {
 			std::fs::write(path, &pretty)
@@ -96,13 +104,19 @@ pub(super) async fn federation_request(
 			})
 			.await?;
 
-		let dump = slipstream::json!({
-			"server_name": server_name,
-			"event_id": event_id.to_string(),
-			"pdu": response.pdu,
-		});
+		let dump = {
+			let mut object = slipstream::ObjectBuilder::new();
 
-		let pretty = serde_json::to_string_pretty(&dump).unwrap_or_default();
+			object.field("server_name", &server_name);
+
+			object.field("event_id", &event_id.to_string());
+
+			object.field("pdu", &response.pdu);
+
+			object.finish()
+		};
+
+		let pretty = crate::utils::to_string_pretty(&dump).unwrap_or_default();
 
 		if let Some(ref path) = output {
 			std::fs::write(path, &pretty)
@@ -163,7 +177,7 @@ pub(super) async fn fetch_pdu(
 	// If the room's state is completely missing and we happen
 	// to be fetching the `m.room.create` event to rescue it, we MUST extract the
 	// real version from the PDU itself. Otherwise, canonicalization fails.
-	if let Ok(val) = serde_json::from_str::<slipstream::json::Value>(response.pdu.get()) {
+	if let Ok(val) = slipstream::codec::from_str::<slipstream::json::Value>(response.pdu.get()) {
 		if val.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
 			if let Some(v_str) = val
 				.get("content")
@@ -305,12 +319,12 @@ pub(super) async fn resend_receipts(
 	pin_mut!(receipts);
 	while let Some((user_id, _count, raw_receipt)) = receipts.next().await {
 		// Only resend our local users' receipts
-		if !self.services.globals.server_is_ours(user_id.server_name()) {
+		if !self.services.globals.server_is_ours(&user_id.server_name()) {
 			continue;
 		}
 
 		let Ok(event) =
-			serde_json::from_str::<AnySyncEphemeralRoomEvent>(raw_receipt.json().get())
+			slipstream::codec::from_str::<AnySyncEphemeralRoomEvent>(raw_receipt.get())
 		else {
 			continue;
 		};
@@ -355,8 +369,7 @@ pub(super) async fn resend_receipts(
 	let edu = Edu::Receipt(ReceiptContent { receipts: receipts_content });
 
 	let mut buf = conduwuit_service::sending::EduBuf::new();
-	serde_json::to_writer(&mut buf, &edu)
-		.map_err(|e| err!("Failed to serialize receipt EDU: {e}"))?;
+	buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 	// Send to specific server or all participating servers
 	if let Some(ref target_server) = server {

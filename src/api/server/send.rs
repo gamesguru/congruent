@@ -50,7 +50,7 @@ use slipstream::{
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
 	json::Value,
-	serde::{JsonObject, Raw},
+	sswire::{JsonObject, Raw},
 	to_device::DeviceIdOrAllDevices,
 };
 use tokio::sync::watch::{Receiver, Sender};
@@ -68,8 +68,8 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::Json<slipstream::json::Value>> {
-	if body.origin() != body.body.origin {
+) -> Result<axum::response::Response> {
+	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
 		)));
@@ -96,7 +96,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(axum::Json(response))
+			Ok(crate::json_util::json_response(response))
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -155,7 +155,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -168,7 +168,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(axum::Json(response)),
+		| Some(Ok(response)) => Ok(crate::json_util::json_response(response)),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,
@@ -197,8 +197,8 @@ async fn process_inbound_transaction(
 	let edus = body
 		.edus
 		.iter()
-		.map(|edu| edu.get())
-		.map(|json_str| codec::from_str::<Edu>(json_str))
+		.map(Raw::get)
+		.map(codec::from_str::<Edu>)
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -338,21 +338,19 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let mut response_json = slipstream::json!({
-		"pdus": results
-			.into_iter()
-			.map(|(e, r)| {
-				let mut obj = slipstream::json::Object::new();
-				if let Err(err) = r {
-					obj.insert(
-						"error".to_owned(),
-						slipstream::json::Value::String(error::sanitized_message(err)),
-					);
-				}
-				(e.to_string(), slipstream::json::Value::Object(obj))
-			})
-			.collect::<slipstream::json::Object<_, _>>(),
-	});
+	let pdus = results
+		.into_iter()
+		.map(|(e, r)| {
+			let mut obj = slipstream::json::Object::new();
+			if let Err(err) = r {
+				obj.insert("error".to_owned(), Value::String(error::sanitized_message(err)));
+			}
+			(e.to_string(), Value::Object(obj))
+		})
+		.collect::<slipstream::json::Object>();
+	let mut response_builder = slipstream::ObjectBuilder::new();
+	response_builder.field("pdus", &pdus);
+	let mut response_json = response_builder.finish();
 
 	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
 
@@ -364,7 +362,7 @@ async fn process_inbound_transaction(
 async fn inject_state_hash_mismatches(
 	services: &crate::State,
 	body: &Ruma<send_transaction_message::v1::Request>,
-	response_json: &mut slipstream::json::Value,
+	response_json: &mut Value,
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
@@ -467,16 +465,24 @@ async fn inject_state_hash_mismatches(
 			continue;
 		}
 
-		let mut mismatch = slipstream::json!({
-			"algorithm": state_hashes.algorithm,
-			"expected_after": local.after.primary,
-			"received_after": after,
-			"expected_redactions_after": local.after.redactions,
-			"received_redactions_after": redactions_after,
-		});
+		let mut mismatch_builder = slipstream::ObjectBuilder::new();
+		mismatch_builder.field("algorithm", &state_hashes.algorithm);
+		mismatch_builder.field("expected_after", &local.after.primary);
+		mismatch_builder.field("received_after", &after);
+		mismatch_builder.field("expected_redactions_after", &local.after.redactions);
+		mismatch_builder.field("received_redactions_after", &redactions_after);
+		let mut mismatch = mismatch_builder.finish();
 		if check_inputs {
-			mismatch["expected_resolution_inputs_before"] = slipstream::json!(local_inputs);
-			mismatch["received_resolution_inputs_before"] = slipstream::json!(received_inputs);
+			if let Value::Object(object) = &mut mismatch {
+				object.insert(
+					"expected_resolution_inputs_before".to_owned(),
+					codec::to_value(&local_inputs),
+				);
+				object.insert(
+					"received_resolution_inputs_before".to_owned(),
+					codec::to_value(&received_inputs),
+				);
+			}
 		}
 		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
 	}
@@ -598,7 +604,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(slipstream::CanonicalJsonValue::as_integer)
+			.and_then(rezzy::JsonValue::as_i64)
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
@@ -615,7 +621,7 @@ async fn build_local_dag(
 			.to_string()
 			.parse::<u64>()
 			.ok()
-			.and_then(UInt::new)
+			.and_then(|value| UInt::try_from(value).ok())
 			.unwrap_or_default();
 		Ok((int!(0), MilliSecondsSinceUnixEpoch(ts)))
 	})
@@ -987,7 +993,7 @@ async fn handle_edu_device_list_update(
 
 	info!(%user_id, %origin, "Received DeviceListUpdate event");
 
-	let incoming_stream_id = u64::from(stream_id);
+	let incoming_stream_id = stream_id;
 	let last_seen_stream_id = services.users.remote_device_list_stream_id(&user_id).await;
 
 	if incoming_stream_id <= last_seen_stream_id {
@@ -996,7 +1002,7 @@ async fn handle_edu_device_list_update(
 
 	if prev_id
 		.iter()
-		.map(|prev| u64::from(*prev))
+		.copied()
 		.any(|prev| prev > last_seen_stream_id && prev != incoming_stream_id)
 	{
 		// TODO: Synapse keeps a richer pending-update pipeline keyed by prev_id, which
@@ -1055,7 +1061,7 @@ async fn handle_edu_device_list_update(
 			return;
 		};
 
-		let fetched_stream_id = u64::from(response.stream_id);
+		let fetched_stream_id = response.stream_id;
 		if fetched_stream_id <= last_seen_stream_id {
 			return;
 		}
@@ -1101,7 +1107,8 @@ async fn handle_edu_device_list_update(
 		return;
 	};
 
-	let incoming_keys = inject_device_display_name(incoming_keys, device_display_name.as_ref());
+	let incoming_keys =
+		inject_device_display_name(incoming_keys.cast(), device_display_name.as_ref());
 
 	let existing_keys = services
 		.users
@@ -1210,7 +1217,7 @@ async fn handle_edu_direct_to_device(
 	}
 
 	// process messages concurrently for different users
-	let ev_type = ev_type.to_string();
+	let ev_type = ev_type.clone();
 	messages
 		.into_iter()
 		.stream()
@@ -1289,13 +1296,19 @@ async fn handle_edu_direct_to_device_event(
 				.users
 				.all_device_ids(target_user_id)
 				.for_each(|target_device_id| {
-					services.users.add_to_device_event(
-						sender,
-						target_user_id,
-						target_device_id,
-						ev_type,
-						event.clone(),
-					)
+					let event = event.clone();
+					async move {
+						services
+							.users
+							.add_to_device_event(
+								sender,
+								target_user_id,
+								&target_device_id,
+								ev_type,
+								event,
+							)
+							.await;
+					}
 				})
 				.await;
 		},
@@ -1320,7 +1333,13 @@ async fn handle_edu_signing_key_update(
 
 	services
 		.users
-		.add_cross_signing_keys(&user_id, &master_key, &self_signing_key, &None, true)
+		.add_cross_signing_keys(
+			&user_id,
+			&master_key.as_ref().map(Raw::cast),
+			&self_signing_key.as_ref().map(Raw::cast),
+			&None,
+			true,
+		)
 		.await
 		.log_err()
 		.ok();

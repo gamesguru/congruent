@@ -51,6 +51,55 @@ pub struct UrlPreviewData {
 	pub audio_size: Option<usize>,
 }
 
+impl slipstream::codec::Serialize for UrlPreviewData {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut object = slipstream::ObjectBuilder::new();
+		if let Some(value) = &self.title {
+			object.field("og:title", value);
+		}
+		if let Some(value) = &self.description {
+			object.field("og:description", value);
+		}
+		if let Some(value) = &self.og_type {
+			object.field("og:type", value);
+		}
+		if let Some(value) = &self.og_url {
+			object.field("og:url", value);
+		}
+		if let Some(value) = &self.image {
+			object.field("og:image", value);
+		}
+		if let Some(value) = &self.image_size {
+			object.field("matrix:image:size", value);
+		}
+		if let Some(value) = &self.image_width {
+			object.field("og:image:width", value);
+		}
+		if let Some(value) = &self.image_height {
+			object.field("og:image:height", value);
+		}
+		if let Some(value) = &self.video {
+			object.field("og:video", value);
+		}
+		if let Some(value) = &self.video_size {
+			object.field("matrix:video:size", value);
+		}
+		if let Some(value) = &self.video_width {
+			object.field("og:video:width", value);
+		}
+		if let Some(value) = &self.video_height {
+			object.field("og:video:height", value);
+		}
+		if let Some(value) = &self.audio {
+			object.field("og:audio", value);
+		}
+		if let Some(value) = &self.audio_size {
+			object.field("matrix:audio:size", value);
+		}
+		object.finish()
+	}
+}
+
 #[implement(Service)]
 pub fn remove_url_preview(&self, url: &str) -> Result<()> {
 	// TODO: also remove the downloaded image
@@ -353,7 +402,7 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	self.create(&mxc, None, None, content_type.as_deref(), &media)
 		.await?;
 
-	Ok((OwnedMxcUri::from(mxc.to_string()), media.len()))
+	Ok((OwnedMxcUri::parse(mxc.to_string())?, media.len()))
 }
 
 #[cfg(not(feature = "url_preview"))]

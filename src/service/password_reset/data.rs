@@ -28,10 +28,13 @@ impl Serialize for ResetTokenInfo {
 				(
 					"issued_at".into(),
 					slipstream::json::Value::Number(slipstream::json::Number::from(
-						self.issued_at
-							.duration_since(SystemTime::UNIX_EPOCH)
-							.unwrap_or_default()
-							.as_millis() as u64,
+						u64::try_from(
+							self.issued_at
+								.duration_since(SystemTime::UNIX_EPOCH)
+								.unwrap_or_default()
+								.as_millis(),
+						)
+						.unwrap_or(u64::MAX),
 					)),
 				),
 			]
@@ -56,7 +59,9 @@ impl Deserialize for ResetTokenInfo {
 					.get("user")
 					.ok_or_else(|| slipstream::codec::DeError::expected("user"))?,
 			)?,
-			issued_at: SystemTime::UNIX_EPOCH + Duration::from_millis(issued_at),
+			issued_at: SystemTime::UNIX_EPOCH
+				.checked_add(Duration::from_millis(issued_at))
+				.ok_or_else(|| slipstream::codec::DeError::expected("issued_at"))?,
 		})
 	}
 }

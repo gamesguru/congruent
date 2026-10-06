@@ -32,7 +32,7 @@ use slipstream::{
 		TimelineEventType::*,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -500,8 +500,9 @@ async fn fetch_roothandles(
 	let last_sync_end_root_handle = next_root;
 
 	trace!(
-		"fetch_roothandles: room={room_id} last_count={last_sync_end_count:?} \
-		 current={current_root_handle:?} last_end={last_sync_end_root_handle:?}",
+		"fetch_roothandles: room={room_id} last_count={last_sync_end_count:?} current=fetched \
+		 last_end_present={}",
+		last_sync_end_root_handle.is_some(),
 	);
 
 	Ok(RootHandles {
@@ -916,7 +917,7 @@ async fn check_joined_since_last_sync(
 			warn!(
 				%room_id,
 				user_joined_since_last_sync = syncing_user.as_str(),
-				?last_sync_end_root_handle,
+				last_sync_end_root_handle_present = last_sync_end_root_handle.is_some(),
 				last_sync_end_count,
 				current_count,
 				membership = ?membership_during_previous_sync,
@@ -1043,7 +1044,7 @@ async fn build_heroes(
 		.ignore_err()
 		.ready_filter_map(|(event_type, state_key)| {
 			if event_type == StateEventType::RoomMember {
-				state_key.to_string().try_into().ok()
+				UserId::parse(state_key).ok()
 			} else {
 				None
 			}
@@ -1083,7 +1084,7 @@ async fn build_device_list_updates(
 			.state_cache
 			.room_members(room_id)
 			.ready_for_each(|user_id| {
-				device_list_updates.changed.insert(user_id.to_owned());
+				device_list_updates.changed.insert(user_id);
 			})
 			.await;
 	}

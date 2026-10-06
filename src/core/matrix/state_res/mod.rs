@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(warnings))]
 
+mod content;
 pub(crate) mod error;
 pub mod event_auth;
 mod power_levels;
@@ -23,7 +24,6 @@ use dashmap::DashMap;
 use futures::{
 	Future, FutureExt, Stream, StreamExt, TryStreamExt, future, stream::FuturesUnordered,
 };
-use serde_json::from_str as from_json_str;
 use slipstream::{
 	EventId, Int, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomVersionId,
 	events::{
@@ -404,9 +404,7 @@ where
 		if let Some(pl_event_id) = partially_resolved_pl_state.get(&power_levels_ty_sk) {
 			debug!(%pl_event_id, "selected global PL event");
 			if let Some(pl_event) = cached_fetch(pl_event_id.clone()).await {
-				if let Ok(mut c) =
-					from_json_str::<PowerLevelsContentFields>(pl_event.content().get())
-				{
+				if let Ok(mut c) = PowerLevelsContentFields::parse(pl_event.content().get()) {
 					// For v12+ rooms, creators are stripped from the PL users map
 					// but need Int::MAX during state resolution sorting. Auth events
 					// also omit the create event (MSC4291), so the only reliable
@@ -429,9 +427,7 @@ where
 			if let Some(pl_event_id) = unconflicted_pl {
 				debug!(%pl_event_id, "PL is unconflicted; using as global PL context");
 				if let Some(pl_event) = cached_fetch(pl_event_id.clone()).await {
-					if let Ok(mut c) =
-						from_json_str::<PowerLevelsContentFields>(pl_event.content().get())
-					{
+					if let Ok(mut c) = PowerLevelsContentFields::parse(pl_event.content().get()) {
 						if room_version.explicitly_privilege_room_creators {
 							inject_privileged_creators(&mut c, &unconflicted, &cached_fetch)
 								.await;
@@ -1056,11 +1052,12 @@ where
 				.entry(pl_id.clone())
 				.or_insert_with(|| {
 					Arc::new(
-						from_json_str::<PowerLevelsContentFields>(pl_ev.content().get())
-							.unwrap_or_else(|_| PowerLevelsContentFields {
+						PowerLevelsContentFields::parse(pl_ev.content().get()).unwrap_or_else(
+							|_| PowerLevelsContentFields {
 								users_default: int!(0),
 								users: Vec::new(),
-							}),
+							},
+						),
 					)
 				})
 				.value()
@@ -1790,8 +1787,8 @@ mod tests {
 		room_version::RoomVersion,
 		test_utils::{
 			INITIAL_EVENTS, TestStore, alice, bob, charlie, do_check, ella, event_id,
-			member_content_ban, member_content_join, room_id, to_init_pdu_event, to_pdu_event,
-			zara,
+			member_content_ban, member_content_join, power_users, room_id, to_init_pdu_event,
+			to_pdu_event, zara,
 		},
 	};
 	use crate::{
@@ -1901,7 +1898,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"MA",
@@ -1922,7 +1919,7 @@ mod tests {
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 		];
 
@@ -1958,7 +1955,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -1972,14 +1969,14 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 0 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 0)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T3",
@@ -2023,7 +2020,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -2066,7 +2063,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomJoinRules,
 				Some(""),
-				to_raw_json_value(&json!({"creator": alice(), "room_version": "12",})),
+				to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Private)),
 			),
 			to_init_pdu_event(
 				"ME",
@@ -2099,25 +2096,21 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(
-					&json!({ "users": { (alice()): 100, (bob()): 50, (charlie()): 50 } }),
-				),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50), (charlie(), 50)])),
 			),
 			to_init_pdu_event(
 				"PC",
 				charlie(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(
-					&json!({ "users": { (alice()): 100, (bob()): 50, (charlie()): 0 } }),
-				),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50), (charlie(), 0)])),
 			),
 		];
 
@@ -2150,7 +2143,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T2",
@@ -2164,14 +2157,14 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 0 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 0)])),
 			),
 			to_init_pdu_event(
 				"PB",
 				bob(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 			),
 			to_init_pdu_event(
 				"T3",
@@ -2408,7 +2401,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 				&["CREATE", "IMA", "IPOWER"], // auth_events
 				&["START"],                   // prev_events
 			),
@@ -2417,7 +2410,7 @@ mod tests {
 				alice(),
 				TimelineEventType::RoomPowerLevels,
 				Some(""),
-				to_raw_json_value(&json!({ "users": { (alice()): 100, (bob()): 50 } })),
+				to_raw_json_value(&power_users(&[(alice(), 100), (bob(), 50)])),
 				&["CREATE", "IMA", "IPOWER"],
 				&["END"],
 			),
@@ -2622,7 +2615,7 @@ mod tests {
 			alice(),
 			TimelineEventType::RoomCreate,
 			Some(""),
-			to_raw_json_value(&json!({ "creator": alice(), "room_version": "12" })),
+			to_raw_json_value(&json!({ "creator": alice().as_str(), "room_version": "12" })),
 			&[],
 			&[],
 		);
@@ -2689,7 +2682,7 @@ mod tests {
 			alice(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { (bob()): 50 } })),
+			to_raw_json_value(&power_users(&[(bob(), 50)])),
 			&["S21C_MA", "S21C_PL1"],
 			&["S21C_MC"],
 		);
@@ -2700,7 +2693,7 @@ mod tests {
 			bob(),
 			TimelineEventType::RoomPowerLevels,
 			Some(""),
-			to_raw_json_value(&json!({ "users": { (bob()): 50, (charlie()): 50 } })),
+			to_raw_json_value(&power_users(&[(bob(), 50), (charlie(), 50)])),
 			&["S21C_MB", "S21C_PL2"],
 			&["S21C_PL2"],
 		);

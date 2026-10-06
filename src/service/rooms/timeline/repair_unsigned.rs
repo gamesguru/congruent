@@ -29,9 +29,9 @@ pub fn update_unsigned_prev_content(
 			"prev_content".to_owned(),
 			slipstream::CanonicalJsonValue::Object(
 				conduwuit_core::utils::to_canonical_object(
-					slipstream::codec::from_str::<CanonicalJsonObject>(&serde_json::to_string(
-						&prev_content_value,
-					)?)
+					slipstream::codec::from_str::<CanonicalJsonObject>(
+						&slipstream::codec::to_string(&prev_content_value),
+					)
 					.map_err(|e| {
 						conduwuit::err!(Database(error!(
 							"Failed to convert prev_state content: {e}"
@@ -165,7 +165,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 				let replaces = unsigned
 					.get("replaces_state")
 					.and_then(|v| v.as_str())
-					.map(OwnedEventId::from)
+					.and_then(|id| OwnedEventId::parse(id).ok())
 					.filter(|eid| *eid != event_id);
 
 				match replaces {

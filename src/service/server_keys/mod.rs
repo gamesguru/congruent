@@ -18,8 +18,8 @@ use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
-	serde::Raw,
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
+	sswire::Raw,
 };
 use tokio::sync::RwLock;
 
@@ -306,7 +306,6 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 	self.verify_keys
 		.iter()
 		.next()
-		.map(|(id, key)| (id, key))
 		.expect("missing active verify_key")
 }
 
@@ -422,7 +421,7 @@ pub async fn add_signing_keys(
 			.collect();
 
 	// Helper to compute sha256 hex string for fingerprint logging
-	let get_fingerprint = |base64_key: &slipstream::serde::Base64| -> String {
+	let get_fingerprint = |base64_key: &slipstream::sswire::Base64| -> String {
 		use sha2::{Digest, Sha256};
 		let digest = Sha256::digest(base64_key.as_bytes());
 		let mut s = String::with_capacity(digest.len().saturating_mul(2));
@@ -954,7 +953,7 @@ fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 mod tests {
 	use std::collections::BTreeSet;
 
-	use slipstream::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
+	use slipstream::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, sswire::Base64};
 
 	use super::{
 		BTreeMap, OldVerifyKey, bounded_msc4499_backoff_secs, select_old_verify_keys_to_evict,

@@ -50,7 +50,7 @@ pub(crate) async fn create_alias_route(
 		.alias
 		.set_alias(&body.room_alias, &body.room_id, sender_user)?;
 
-	Ok(create_alias::v3::Response::new())
+	Ok(create_alias::v3::Response {})
 }
 
 /// # `DELETE /_matrix/client/v3/directory/room/{roomAlias}`
@@ -146,7 +146,7 @@ pub(crate) async fn delete_alias_route(
 
 	drop(state_lock);
 
-	Ok(delete_alias::v3::Response::new())
+	Ok(delete_alias::v3::Response {})
 }
 
 /// # `GET /_matrix/client/v3/directory/room/{roomAlias}`
@@ -162,5 +162,11 @@ pub(crate) async fn get_alias_route(
 		return Err!(Request(NotFound("Room with alias not found.")));
 	};
 
-	Ok(get_alias::v3::Response::new(room_id, servers))
+	Ok(get_alias::v3::Response {
+		room_id,
+		servers: servers
+			.into_iter()
+			.map(|server| server.to_string())
+			.collect(),
+	})
 }

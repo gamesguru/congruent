@@ -1,7 +1,6 @@
 use std::{collections::HashMap, hint::black_box, sync::Arc, time::Instant};
 
 use conduwuit_service::rooms::state_hamt::room_structural_key;
-use ruma::owned_room_id;
 
 type Node = rezzy::hamt::HamtNode<u64, u64>;
 type NodeMap = HashMap<rezzy::hamt::StructuralHash, Arc<Node>>;
@@ -43,7 +42,7 @@ fn measure(group: &str, case: &str, elements: u64, iters: u64, mut f: impl FnMut
 fn bench_hamt_construction(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 	let lattice = rezzy::state::LtHash::default();
 
@@ -67,7 +66,7 @@ fn bench_hamt_construction(measure_iters: bool) {
 fn bench_hamt_point_lookups(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	for &size in &sizes {
@@ -109,7 +108,7 @@ fn bench_hamt_delta_isolation(measure_iters: bool) {
 	let base_size: u64 = 50_000;
 	let delta_sizes: [u64; 4] = [1, 10, 100, 1_000];
 	let server_secret = [7_u8; 32];
-	let room_id = owned_room_id!("!bench_room:test.local");
+	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	let base_entries: Vec<(u64, u64)> = (0..base_size)

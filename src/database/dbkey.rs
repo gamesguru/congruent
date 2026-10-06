@@ -344,7 +344,7 @@ impl<'a, T: codec::Deserialize> DbDe<'a> for Json<T> {
 }
 
 /// Raw Slipstream JSON values are stored directly as their UTF-8 JSON bytes.
-impl<T> DbKey for slipstream::serde::Raw<T> {
+impl<T> DbKey for slipstream::sswire::Raw<T> {
 	type Ser<'a>
 		= RawBytes
 	where
@@ -353,7 +353,7 @@ impl<T> DbKey for slipstream::serde::Raw<T> {
 	fn db_ser(&self) -> Self::Ser<'_> { RawBytes(self.0.as_bytes().to_vec()) }
 }
 
-impl<'a, T> DbDe<'a> for slipstream::serde::Raw<T> {
+impl<'a, T> DbDe<'a> for slipstream::sswire::Raw<T> {
 	type De = RawBytesDe<'a>;
 
 	fn from_de(de: Self::De) -> Result<Self> {
@@ -508,4 +508,35 @@ impl DbKey for slipstream::Mxc<'_> {
 pub fn from_json_slice<T: codec::Deserialize>(bytes: &[u8]) -> Result<T> {
 	let text = std::str::from_utf8(bytes).map_err(|e| Error::SerdeDe(e.to_string().into()))?;
 	codec::from_str(text).map_err(|e| Error::SerdeDe(e.to_string().into()))
+}
+
+/// Drop object members that equal the corresponding default, recursively.
+fn prune_defaults(value: &mut slipstream::json::Value, default: &slipstream::json::Value) {
+	use slipstream::json::Value;
+
+	let (Value::Object(object), Value::Object(defaults)) = (value, default) else {
+		return;
+	};
+
+	object.retain(|key, child| {
+		let Some(default) = defaults.get(key) else {
+			return true;
+		};
+		if *child == *default {
+			return false;
+		}
+		prune_defaults(child, default);
+		!(matches!(child, Value::Object(o) if o.is_empty())
+			&& matches!(default, Value::Object(_)))
+	});
+}
+
+/// Filters are stored compactly, omitting every field that holds its default,
+/// exactly as rows written before the codec migration. Both forms decode.
+#[must_use]
+pub fn compact_filter(filter: &slipstream::filter::FilterDefinition) -> slipstream::json::Value {
+	let mut value = codec::to_value(filter);
+	let default = codec::to_value(&slipstream::filter::FilterDefinition::default());
+	prune_defaults(&mut value, &default);
+	value
 }

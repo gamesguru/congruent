@@ -23,7 +23,7 @@ pub(crate) async fn list_rooms(
 		.iter_ids()
 		.filter_map(|room_id| async move {
 			if !services.rooms.metadata.is_banned(&room_id).await {
-				Some(room_id.to_owned())
+				Some(room_id.clone())
 			} else {
 				None
 			}
@@ -31,5 +31,5 @@ pub(crate) async fn list_rooms(
 		.collect()
 		.await;
 	rooms.sort();
-	Ok(rooms::list::v1::Response::new(rooms))
+	Ok(rooms::list::v1::Response { rooms })
 }

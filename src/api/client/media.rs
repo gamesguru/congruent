@@ -81,7 +81,7 @@ pub(crate) async fn create_content_route(
 	});
 
 	Ok(create_content::v3::Response {
-		content_uri: mxc.to_string().into(),
+		content_uri: slipstream::OwnedMxcUri::parse(mxc.to_string())?,
 		blurhash: blurhash.flatten(),
 	})
 }
@@ -102,7 +102,7 @@ pub(crate) async fn get_content_thumbnail_route(
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let user = body.sender_user();
 
-	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
+	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -134,7 +134,7 @@ pub(crate) async fn get_content_thumbnail_route(
 
 	Ok(get_content_thumbnail::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,
@@ -193,7 +193,7 @@ pub(crate) async fn get_content_route(
 
 	Ok(get_content::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,
@@ -254,7 +254,7 @@ pub(crate) async fn get_content_as_filename_route(
 
 	Ok(get_content_as_filename::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,
@@ -300,13 +300,9 @@ pub(crate) async fn get_media_preview_route(
 			)))
 		})?;
 
-	serde_json::value::to_raw_value(&preview)
-		.map(get_media_preview::v1::Response::from_raw_value)
-		.map_err(|error| {
-			err!(Request(Unknown(
-				debug_error!(%sender_user, %url, "Failed to parse URL preview: {error}")
-			)))
-		})
+	Ok(get_media_preview::v1::Response {
+		data: slipstream::sswire::Raw::from_value(&preview),
+	})
 }
 
 pub(super) async fn fetch_thumbnail(

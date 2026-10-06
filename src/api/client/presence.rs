@@ -17,7 +17,7 @@ pub(crate) async fn set_presence_route(
 		return Err!(Request(Forbidden("Presence is disabled on this server")));
 	}
 
-	if body.sender_user() != body.user_id && body.appservice_info.is_none() {
+	if body.sender_user() != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(InvalidParam("Not allowed to set presence of other users")));
 	}
 
@@ -43,7 +43,7 @@ pub(crate) async fn get_presence_route(
 	}
 
 	let mut presence_event = None;
-	let has_shared_rooms = body.sender_user() == body.user_id
+	let has_shared_rooms = body.sender_user() == &*body.user_id
 		|| services
 			.rooms
 			.state_cache
@@ -71,10 +71,7 @@ pub(crate) async fn get_presence_route(
 
 			let last_active_ago = match presence.content.currently_active {
 				| Some(true) => None,
-				| _ => presence
-					.content
-					.last_active_ago
-					.map(|millis| Duration::from_millis(millis.into())),
+				| _ => presence.content.last_active_ago.map(Duration::from_millis),
 			};
 
 			Ok(get_presence::v3::Response {

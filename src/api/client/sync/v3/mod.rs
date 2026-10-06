@@ -42,7 +42,7 @@ use slipstream::{
 		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyStrippedStateEvent,
 		presence::{PresenceEvent, PresenceEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::load_timeline;
@@ -52,6 +52,7 @@ use crate::{
 		is_ignored_invite,
 		sync::v3::{joined::load_joined_room, left::load_left_room},
 	},
+	json_util::{empty_events, single_field},
 };
 
 /// The default maximum number of events to return in the `timeline` key of
@@ -99,8 +100,8 @@ async fn msc4429_profile_updates(
 	}
 
 	let mut users = slipstream::json::Object::new();
+	let mut latest = HashMap::new();
 	if since.is_none() {
-		let mut latest = HashMap::new();
 		services
 			.users
 			.profile_updates(None, current_count)
@@ -143,7 +144,7 @@ async fn msc4429_profile_updates(
 				}
 			}
 			if !fields.is_empty() {
-				users.insert(target.to_string(), slipstream::json!({"profile_updates": fields}));
+				users.insert(target.to_string(), single_field("profile_updates", &fields));
 			}
 		}
 	} else {
@@ -169,7 +170,9 @@ async fn msc4429_profile_updates(
 			}
 			if let Some(fields) = users
 				.entry(target.to_string())
-				.or_insert_with(|| slipstream::json!({"profile_updates": {}}))
+				.or_insert_with(|| {
+					single_field("profile_updates", &slipstream::json::Object::new())
+				})
 				.get_mut("profile_updates")
 				.and_then(slipstream::json::Value::as_object_mut)
 			{
@@ -902,10 +905,10 @@ pub(crate) async fn build_sync_events(
 	}
 
 	let device_lists_json = (!device_list_updates.is_empty()).then(|| {
-		slipstream::json!({
-			"changed": device_list_updates.changed.iter().collect::<Vec<_>>(),
-			"left": device_list_updates.left.iter().collect::<Vec<_>>(),
-		})
+		let mut object = slipstream::ObjectBuilder::new();
+		object.field("changed", &device_list_updates.changed.iter().collect::<Vec<_>>());
+		object.field("left", &device_list_updates.left.iter().collect::<Vec<_>>());
+		object.finish()
 	});
 
 	let ruma_response = sync_events::v3::Response {
@@ -943,7 +946,7 @@ pub(crate) async fn build_sync_events(
 		// inject state_after
 		for (room_id, state_after) in joined_state_after {
 			if let Some(room) = join.get_mut(room_id.as_str()) {
-				let state_after_obj = slipstream::json!({ "events": state_after });
+				let state_after_obj = single_field("events", &state_after);
 				room.as_object_mut()
 					.unwrap()
 					.insert("state_after".to_owned(), state_after_obj.clone());
@@ -954,14 +957,14 @@ pub(crate) async fn build_sync_events(
 		}
 
 		// inject missing ephemeral to satisfy complement
-		for (_room_id, room_val) in join.as_object_mut().unwrap() {
+		for room_val in join.as_object_mut().unwrap().values_mut() {
 			let room = room_val.as_object_mut().unwrap();
 			if !room.contains_key("ephemeral") {
-				room.insert("ephemeral".to_owned(), slipstream::json!({ "events": [] }));
+				room.insert("ephemeral".to_owned(), empty_events());
 			}
 
 			if is_initial_sync && !room.contains_key("account_data") {
-				room.insert("account_data".to_owned(), slipstream::json!({ "events": [] }));
+				room.insert("account_data".to_owned(), empty_events());
 			}
 		}
 	}
@@ -969,7 +972,7 @@ pub(crate) async fn build_sync_events(
 	if let Some(leave) = val.get_mut("rooms").and_then(|r| r.get_mut("leave")) {
 		for (room_id, state_after) in left_state_after {
 			if let Some(room) = leave.get_mut(room_id.as_str()) {
-				let state_after_obj = slipstream::json!({ "events": state_after });
+				let state_after_obj = single_field("events", &state_after);
 				room.as_object_mut()
 					.unwrap()
 					.insert("state_after".to_owned(), state_after_obj.clone());
@@ -987,7 +990,9 @@ pub(crate) async fn build_sync_events(
 		let knock_val = slipstream::codec::to_value(&knocked_rooms);
 		let rooms_obj = val.as_object_mut().and_then(|o| {
 			o.entry("rooms".to_owned())
-				.or_insert_with(|| slipstream::json!({}))
+				.or_insert_with(|| {
+					slipstream::json::Value::Object(slipstream::json::Object::new())
+				})
 				.as_object_mut()
 		});
 		if let Some(rooms) = rooms_obj {
@@ -1049,7 +1054,7 @@ pub(crate) async fn build_sync_events(
 				{
 					users.insert(
 						state_key.to_owned(),
-						slipstream::json!({"profile_updates": null}),
+						single_field("profile_updates", &slipstream::json::Value::Null),
 					);
 				}
 			}
@@ -1084,7 +1089,7 @@ pub(crate) async fn build_sync_events(
 					{
 						users.insert(
 							state_key.to_owned(),
-							slipstream::json!({"profile_updates": null}),
+							single_field("profile_updates", &slipstream::json::Value::Null),
 						);
 					}
 				}
@@ -1236,7 +1241,7 @@ fn collect_timeline_join_users(
 					if content.membership == "join" {
 						if let Some(ref state_key) = helper.state_key {
 							if let Ok(user_id) = UserId::parse(state_key) {
-								users.insert(user_id.to_owned());
+								users.insert(user_id.clone());
 							}
 						}
 					}
@@ -1273,7 +1278,7 @@ async fn process_presence_updates(
 				.ok()
 				.await
 		})
-		.map(|(user_id, event)| (user_id.to_owned(), event.content))
+		.map(|(user_id, event)| (user_id, event.content))
 		.collect()
 		.await
 }

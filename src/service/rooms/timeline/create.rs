@@ -116,7 +116,7 @@ pub async fn create_event(
 		| None => {
 			trace!("No room ID, assuming room creation");
 			room_version_from_event(
-				RoomId::new(self.services.globals.server_name()),
+				OwnedRoomId::new_v1(self.services.globals.server_name()),
 				&event_type.clone(),
 				&content.clone(),
 			)?
@@ -258,11 +258,7 @@ pub async fn create_event(
 		sender: sender.to_owned(),
 		origin: None,
 		origin_server_ts: timestamp.map_or_else(
-			|| {
-				utils::millis_since_unix_epoch()
-					.try_into()
-					.expect("u64 fits into UInt")
-			},
+			utils::millis_since_unix_epoch,
 			slipstream::MilliSecondsSinceUnixEpoch::get,
 		),
 		kind: event_type,

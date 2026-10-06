@@ -185,7 +185,10 @@ pub(super) async fn rescue_room(
 
 		self.write_str(&format!(
 			"\nHealing state from {:?} (force-set-state --overwrite)...",
-			heal_from.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+			heal_from
+				.iter()
+				.map(OwnedServerName::as_str)
+				.collect::<Vec<_>>()
 		))
 		.await?;
 
@@ -222,7 +225,8 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 		.await
 		.map_err(|_| err!("PDU not found in database."))?;
 
-	let pdu: PduEvent = serde_json::from_value(serde_json::to_value(&pdu_json)?)?;
+	let pdu: PduEvent =
+		slipstream::codec::from_value(&slipstream::json::Value::Object(pdu_json.clone()))?;
 	let room_id = pdu
 		.room_id()
 		.ok_or_else(|| err!("PDU has no room_id."))?
@@ -262,7 +266,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 	let origin = pdu
 		.origin
 		.clone()
-		.unwrap_or_else(|| pdu.sender.server_name().to_owned());
+		.unwrap_or_else(|| pdu.sender.server_name());
 
 	// Lenient path: falls back to current room state when no server can
 	// provide /state_ids for this historical event.
@@ -303,7 +307,7 @@ pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 
 		let valid = s.starts_with('!') && s.len() <= 255 && RoomId::parse(s).is_ok();
 		if !valid && s.starts_with('!') {
-			corrupt.push(room_id.to_owned());
+			corrupt.push(room_id.clone());
 		}
 	}
 
@@ -343,14 +347,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 	// A repair implies the scan that finds the drift.
 	let full = deep || fix;
 
-	let room_ids: Vec<_> = self
-		.services
-		.rooms
-		.metadata
-		.iter_ids()
-		.map(ToOwned::to_owned)
-		.collect()
-		.await;
+	let room_ids: Vec<_> = self.services.rooms.metadata.iter_ids().collect().await;
 
 	let n_rooms = room_ids.len();
 	self.write_str(&format!("Scanning {n_rooms} rooms...\n"))
@@ -497,7 +494,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 			futures::pin_mut!(pdus);
 			let mut prev_ts = None;
 			while let Some((_count, pdu)) = pdus.next().await {
-				let ts: u64 = pdu.origin_server_ts().0.into();
+				let ts: u64 = pdu.origin_server_ts().0;
 				if let Some(pts) = prev_ts {
 					if ts < pts {
 						timeline_breaks = timeline_breaks.saturating_add(1);
@@ -657,7 +654,7 @@ pub(super) async fn heal_receipts(&self) -> Result {
 		let room_id_bytes = parts[0];
 		let room_id_str = String::from_utf8_lossy(room_id_bytes).to_string();
 
-		let Ok(receipt) = serde_json::from_slice::<ReceiptEvent>(value) else {
+		let Ok(receipt) = slipstream::codec::from_slice::<ReceiptEvent>(value) else {
 			continue;
 		};
 
@@ -670,7 +667,7 @@ pub(super) async fn heal_receipts(&self) -> Result {
 					let sig = (
 						room_id_str.clone(),
 						user_id.to_string(),
-						receipt_type.to_string(),
+						format!("{receipt_type:?}"),
 						thread,
 					);
 
@@ -707,14 +704,7 @@ pub(super) async fn reindex_short(
 	let rebuild_topo = !skip_topo;
 
 	if all {
-		let rooms: Vec<OwnedRoomId> = self
-			.services
-			.rooms
-			.metadata
-			.iter_ids()
-			.map(ToOwned::to_owned)
-			.collect()
-			.await;
+		let rooms: Vec<OwnedRoomId> = self.services.rooms.metadata.iter_ids().collect().await;
 
 		self.write_str(&format!("Reindexing derived data for {} rooms...\n", rooms.len()))
 			.await?;

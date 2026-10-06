@@ -19,16 +19,15 @@ use futures::{
 use slipstream::{
 	OwnedRoomId, RoomId, ServerName, UInt, UserId,
 	api::{
-		client::{
-			directory::{
-				get_public_rooms, get_public_rooms_filtered, get_room_visibility,
-				set_room_visibility,
-			},
-			room,
+		client::directory::{
+			get_public_rooms, get_public_rooms_filtered, get_room_visibility, set_room_visibility,
 		},
 		federation,
 	},
-	directory::{Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter},
+	codec,
+	directory::{
+		Filter, PublicRoomJoinRule, PublicRoomsChunk, RoomNetwork, RoomTypeFilter, Visibility,
+	},
 	events::{
 		StateEventType,
 		room::{
@@ -65,7 +64,7 @@ pub(crate) async fn get_public_rooms_filtered_route(
 
 	let response = get_public_rooms_filtered_helper(
 		&services,
-		body.server.as_deref(),
+		body.server.as_ref(),
 		body.limit,
 		body.since.as_deref(),
 		&body.filter,
@@ -98,7 +97,7 @@ pub(crate) async fn get_public_rooms_route(
 
 	let response = get_public_rooms_filtered_helper(
 		&services,
-		body.server.as_deref(),
+		body.server.as_ref(),
 		body.limit,
 		body.since.as_deref(),
 		&Filter::default(),
@@ -151,7 +150,7 @@ pub(crate) async fn set_room_visibility_route(
 	}
 
 	match &body.visibility {
-		| room::Visibility::Public => {
+		| Visibility::Public => {
 			if services.server.config.lockdown_public_room_directory
 				&& !services.users.is_admin(sender_user).await
 				&& body.appservice_info.is_none()
@@ -191,10 +190,7 @@ pub(crate) async fn set_room_visibility_route(
 			}
 			info!("{sender_user} made {0} public to the room directory", body.room_id);
 		},
-		| room::Visibility::Private => services.rooms.directory.set_not_public(&body.room_id),
-		| _ => {
-			return Err!(Request(InvalidParam("Room visibility type is not supported.",)));
-		},
+		| Visibility::Private => services.rooms.directory.set_not_public(&body.room_id),
 	}
 
 	Ok(set_room_visibility::v3::Response {})
@@ -214,9 +210,9 @@ pub(crate) async fn get_room_visibility_route(
 
 	Ok(get_room_visibility::v3::Response {
 		visibility: if services.rooms.directory.is_public_room(&body.room_id).await {
-			room::Visibility::Public
+			Visibility::Public
 		} else {
-			room::Visibility::Private
+			Visibility::Private
 		},
 	})
 }
@@ -291,7 +287,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 			if !filter.room_types.is_empty()
 				&& !filter
 					.room_types
-					.contains(&RoomTypeFilter::from(chunk.room_type.clone()))
+					.contains(&RoomTypeFilter::from(chunk.room_type))
 			{
 				return None;
 			}
@@ -387,7 +383,7 @@ async fn user_can_publish_room(
 		.explicitly_privilege_room_creators
 	{
 		let create_content: RoomCreateEventContent =
-			serde_json::from_str(create_event.content().get())
+			codec::from_str(create_event.content().get())
 				.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
 		let is_creator = create_content
 			.additional_creators

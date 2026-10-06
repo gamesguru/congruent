@@ -1,26 +1,21 @@
 use axum::{
-	Json,
 	body::Body,
 	extract::{Path, State},
 };
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
-use serde::Deserialize;
-use serde_json::{json, value::RawValue as RawJsonValue};
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
-		IncomingRequest,
+		EndpointRequest,
 		client::config::{
 			get_global_account_data, get_room_account_data, set_global_account_data,
 			set_room_account_data,
 		},
 	},
-	events::{
-		AnyGlobalAccountDataEventContent, AnyRoomAccountDataEventContent,
-		RoomAccountDataEventType,
-	},
-	serde::Raw,
+	events::RoomAccountDataEventType,
+	json::Value as JsonValue,
+	sswire::Raw,
 };
 
 use crate::{Ruma, router::authenticate_user};
@@ -34,18 +29,12 @@ pub(crate) async fn set_global_account_data_route(
 ) -> Result<set_global_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot set account data for other users.")));
 	}
 
-	set_account_data(
-		&services,
-		None,
-		&body.user_id,
-		&body.event_type.to_string(),
-		body.data.json(),
-	)
-	.await?;
+	set_account_data(&services, None, &body.user_id, body.event_type.as_ref(), &body.data)
+		.await?;
 
 	Ok(set_global_account_data::v3::Response {})
 }
@@ -59,7 +48,7 @@ pub(crate) async fn set_room_account_data_route(
 ) -> Result<set_room_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot set account data for other users.")));
 	}
 
@@ -67,8 +56,8 @@ pub(crate) async fn set_room_account_data_route(
 		&services,
 		Some(&body.room_id),
 		&body.user_id,
-		&body.event_type.to_string(),
-		body.data.json(),
+		body.event_type.as_ref(),
+		&body.data,
 	)
 	.await?;
 
@@ -84,17 +73,19 @@ pub(crate) async fn get_global_account_data_route(
 ) -> Result<get_global_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: ExtractGlobalEventContent = services
+	let account_data: JsonValue = services
 		.account_data
-		.get_global(&body.user_id, body.event_type.clone())
+		.get_global::<JsonValue>(&body.user_id, body.event_type.clone())
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_global_account_data::v3::Response { account_data: account_data.content })
+	Ok(get_global_account_data::v3::Response {
+		account_data: Raw::from_value(&account_data),
+	})
 }
 
 /// # `GET /_matrix/client/r0/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -106,17 +97,19 @@ pub(crate) async fn get_room_account_data_route(
 ) -> Result<get_room_account_data::v3::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot get account data of other users.")));
 	}
 
-	let account_data: ExtractRoomEventContent = services
+	let account_data: JsonValue = services
 		.account_data
-		.get_room(&body.room_id, &body.user_id, body.event_type.clone())
+		.get_room::<JsonValue>(&body.room_id, &body.user_id, body.event_type.clone())
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_room_account_data::v3::Response { account_data: account_data.content })
+	Ok(get_room_account_data::v3::Response {
+		account_data: Raw::from_value(&account_data),
+	})
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/account_data/{type}`
@@ -124,20 +117,24 @@ pub(crate) async fn get_room_account_data_route(
 /// Removes some account data for the sender user.
 pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
-	Path((user_id, event_type)): Path<(OwnedUserId, String)>,
+	Path((user_id, event_type)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
+	let user_id = OwnedUserId::parse(user_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != user_id {
+	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 
 	delete_account_data(&services, None, &user_id, &event_type).await?;
 
-	Ok(Json(json!({})))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Object(
+		slipstream::json::Object::new(),
+	)))
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -145,20 +142,26 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 /// Removes some room account data for the sender user.
 pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
-	Path((user_id, room_id, event_type)): Path<(OwnedUserId, OwnedRoomId, String)>,
+	Path((user_id, room_id, event_type)): Path<(String, String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Json<slipstream::json::Value>> {
+) -> Result<axum::response::Response> {
+	let user_id = OwnedUserId::parse(user_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != user_id {
+	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 
 	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;
 
-	Ok(Json(json!({})))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Object(
+		slipstream::json::Object::new(),
+	)))
 }
 
 async fn set_account_data(
@@ -166,7 +169,7 @@ async fn set_account_data(
 	room_id: Option<&RoomId>,
 	sender_user: &UserId,
 	event_type_s: &str,
-	data: &RawJsonValue,
+	data: &slipstream::json::Value,
 ) -> Result {
 	if event_type_s == RoomAccountDataEventType::FullyRead.to_cow_str() {
 		return Err!(Request(BadJson(
@@ -175,8 +178,7 @@ async fn set_account_data(
 		)));
 	}
 
-	let data: slipstream::json::Value = serde_json::from_str(data.get())
-		.map_err(|e| err!(Request(BadJson(warn!("Invalid JSON provided: {e}")))))?;
+	let data = data.clone();
 
 	if data
 		.as_object()
@@ -185,17 +187,13 @@ async fn set_account_data(
 		return delete_account_data(services, room_id, sender_user, event_type_s).await;
 	}
 
+	let mut event = slipstream::ObjectBuilder::new();
+	event.field("type", &event_type_s);
+	event.field("content", &data);
+
 	services
 		.account_data
-		.update(
-			room_id,
-			sender_user,
-			event_type_s.into(),
-			&json!({
-				"type": event_type_s,
-				"content": data,
-			}),
-		)
+		.update(room_id, sender_user, event_type_s.into(), &event.finish())
 		.await
 }
 
@@ -216,14 +214,4 @@ async fn delete_account_data(
 		.account_data
 		.delete(room_id, sender_user, event_type_s)
 		.await
-}
-
-#[derive(Deserialize)]
-struct ExtractRoomEventContent {
-	content: Raw<AnyRoomAccountDataEventContent>,
-}
-
-#[derive(Deserialize)]
-struct ExtractGlobalEventContent {
-	content: Raw<AnyGlobalAccountDataEventContent>,
 }

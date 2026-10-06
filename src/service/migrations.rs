@@ -22,7 +22,7 @@ use slipstream::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 	push::Ruleset,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{
@@ -1612,7 +1612,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 	// profile fields with raw strings instead of quoted JSON ones.
 	// This migration fixes that.
 
-	use serde_json::{Value, from_slice};
+	use slipstream::{codec::from_slice, json::Value};
 	type KeyVal<'a> = ((OwnedUserId, String), &'a [u8]);
 
 	info!("Fixing corrupted `us.cloke.msc4175.tz` fields...");
@@ -1631,8 +1631,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 				match from_slice::<Value>(value) {
 					// corrupted timezone field
 					| Err(_) if key == "us.cloke.msc4175.tz" => {
-						let new_value =
-							slipstream::json::Value::String(String::from_utf8(value.to_vec())?);
+						let new_value = Value::String(String::from_utf8(value.to_vec())?);
 						useridprofilekey_value.put((user, key), Json(new_value));
 						fixed = fixed.saturating_add(1);
 					},
@@ -1903,6 +1902,7 @@ mod owned_event_id_option {
 	use serde::{Deserialize, Deserializer, Serialize, Serializer};
 	use slipstream::OwnedEventId;
 
+	#[allow(clippy::ref_option)]
 	pub(super) fn serialize<S>(
 		value: &Option<OwnedEventId>,
 		serializer: S,

@@ -7,7 +7,7 @@ use slipstream::{
 	},
 	codec::{Deserialize, Serialize},
 	encryption::DeviceKeys,
-	serde::Raw,
+	sswire::Raw,
 };
 
 #[derive(Clone, Debug)]

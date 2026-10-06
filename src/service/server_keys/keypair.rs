@@ -3,7 +3,8 @@ use std::sync::Arc;
 use conduwuit::{Result, debug, debug_info, err, error, utils, utils::string_from_bytes};
 use database::Database;
 use slipstream::{
-	api::federation::discovery::VerifyKey, serde::Base64, signatures::Ed25519KeyPair,
+	OwnedServerSigningKeyId, api::federation::discovery::VerifyKey, signatures::Ed25519KeyPair,
+	sswire::Base64,
 };
 
 use super::VerifyKeys;
@@ -19,7 +20,7 @@ pub(super) fn init(db: &Arc<Database>) -> Result<(Box<Ed25519KeyPair>, VerifyKey
 	};
 
 	let id = format!("ed25519:{}", keypair.version());
-	let verify_keys: VerifyKeys = [(id.try_into()?, verify_key)].into();
+	let verify_keys: VerifyKeys = [(OwnedServerSigningKeyId::parse(id)?, verify_key)].into();
 
 	Ok((keypair, verify_keys))
 }

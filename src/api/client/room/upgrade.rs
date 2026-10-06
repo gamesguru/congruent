@@ -2,7 +2,7 @@ use std::cmp::max;
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Error, Event, Result, RoomVersion, debug, err, info,
+	Err, Error, Event, Result, RoomVersion, debug, err,
 	matrix::{StateKey, pdu::PduBuilder},
 };
 use futures::{FutureExt, StreamExt};
@@ -86,7 +86,7 @@ pub(crate) async fn upgrade_room_route(
 		.create_hash_and_sign_event(
 			PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
 				body: "This room has been replaced".to_owned(),
-				replacement_room: RoomId::new(services.globals.server_name()),
+				replacement_room: slipstream::OwnedRoomId::new_v1(services.globals.server_name()),
 			}),
 			sender_user,
 			Some(&body.room_id),
@@ -105,14 +105,14 @@ pub(crate) async fn upgrade_room_route(
 	// Create a replacement room
 	let room_features = RoomVersion::new(&body.new_version)?;
 	let replacement_room_owned = if !room_features.room_ids_as_hashes {
-		Some(RoomId::new(services.globals.server_name()))
+		Some(slipstream::OwnedRoomId::new_v1(services.globals.server_name()))
 	} else {
 		None
 	};
 	let replacement_room: Option<&RoomId> = replacement_room_owned.as_ref().map(AsRef::as_ref);
 	let replacement_room_tmp = match replacement_room {
 		| Some(v) => v,
-		| None => &RoomId::new(services.globals.server_name()),
+		| None => &slipstream::OwnedRoomId::new_v1(services.globals.server_name()),
 	};
 
 	let _short_id = services
@@ -220,7 +220,7 @@ pub(crate) async fn upgrade_room_route(
 
 	// Validate creation event content
 	if slipstream::codec::from_str::<CanonicalJsonObject>(
-		slipstream::serde::RawJsonValue::from_value(&create_event_content).get(),
+		slipstream::sswire::RawJsonValue::from_value(&create_event_content).get(),
 	)
 	.is_err()
 	{
@@ -233,7 +233,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomCreate,
-				content: slipstream::serde::RawJsonValue::from_value(&create_event_content),
+				content: slipstream::sswire::RawJsonValue::from_value(&create_event_content),
 				unsigned: None,
 				state_key: Some(StateKey::new()),
 				redacts: None,
@@ -261,7 +261,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomMember,
-				content: slipstream::serde::RawJsonValue::from_value(&RoomMemberEventContent {
+				content: slipstream::sswire::RawJsonValue::from_value(&RoomMemberEventContent {
 					membership: MembershipState::Join,
 					displayname: services.users.displayname(sender_user).await.ok(),
 					avatar_url: services.users.avatar_url(sender_user).await.ok(),
@@ -321,7 +321,7 @@ pub(crate) async fn upgrade_room_route(
 				}
 
 				event_content =
-					slipstream::serde::RawJsonValue::from_value(&power_levels_event_content);
+					slipstream::sswire::RawJsonValue::from_value(&power_levels_event_content);
 			}
 
 			services
@@ -461,7 +461,7 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: slipstream::serde::RawJsonValue::from_value(
+					content: slipstream::sswire::RawJsonValue::from_value(
 						&RedactedSpaceChildEventContent {},
 					),
 					state_key: Some(body.room_id.clone().as_str().into()),
@@ -485,9 +485,9 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: slipstream::serde::RawJsonValue::from_value(
+					content: slipstream::sswire::RawJsonValue::from_value(
 						&SpaceChildEventContent {
-							via: vec![sender_user.server_name().to_owned()],
+							via: vec![sender_user.server_name().clone()],
 							order: child.order,
 							suggested: child.suggested,
 						},

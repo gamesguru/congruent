@@ -42,7 +42,7 @@ pub(crate) async fn update_tag_route(
 			Some(&body.room_id),
 			sender_user,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event)?,
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -76,7 +76,7 @@ pub(crate) async fn delete_tag_route(
 			Some(&body.room_id),
 			sender_user,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(tags_event)?,
+			&slipstream::codec::to_value(&tags_event),
 		)
 		.await?;
 
@@ -102,5 +102,12 @@ pub(crate) async fn get_tags_route(
 			content: TagEventContent { tags: BTreeMap::new() },
 		});
 
-	Ok(get_tags::v3::Response { tags: tags_event.content.tags })
+	Ok(get_tags::v3::Response {
+		tags: tags_event
+			.content
+			.tags
+			.into_iter()
+			.map(|(tag, info)| (tag.to_string(), info))
+			.collect(),
+	})
 }

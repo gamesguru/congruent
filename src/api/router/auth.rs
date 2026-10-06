@@ -18,10 +18,9 @@ use service::{
 	server_keys::{PubKeyMap, PubKeys},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
-	OwnedUserId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedDeviceId, OwnedServerName, OwnedUserId, UserId,
 	api::{
-		AuthScheme, IncomingRequest, Metadata,
+		AuthScheme, Metadata,
 		client::{
 			directory::get_public_rooms,
 			error::ErrorKind,
@@ -272,12 +271,13 @@ async fn auth_appservice(
 	// The device_id can be provided via `device_id` or
 	// `org.matrix.msc3202.device_id` query parameter.
 	let sender_device = if let Some(ref device_id_str) = request.query.device_id {
-		let device_id: &DeviceId = device_id_str.as_str().into();
+		let device_id = OwnedDeviceId::parse(device_id_str)
+			.map_err(|_| err!(Request(InvalidParam("Invalid device_id"))))?;
 
 		// Verify the device exists for this user
 		if services
 			.users
-			.get_device_metadata(&user_id, device_id)
+			.get_device_metadata(&user_id, &device_id)
 			.await
 			.is_err()
 		{
@@ -286,7 +286,7 @@ async fn auth_appservice(
 			)));
 		}
 
-		Some(device_id.to_owned())
+		Some(device_id.clone())
 	} else {
 		None
 	};
@@ -321,7 +321,7 @@ async fn auth_server(
 		.to_string();
 
 	let signature: [Member; 1] =
-		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
+		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
 
 	let signatures: [Member; 1] = [(origin.as_str().into(), Value::Object(signature.into()))];
 
@@ -354,8 +354,8 @@ async fn auth_server(
 		.await
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
-	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
-	let keys: PubKeyMap = [(origin.as_str().into(), keys)].into();
+	let keys: PubKeys = [(x_matrix.key.clone(), key.key)].into();
+	let keys: PubKeyMap = [(origin.to_owned(), keys)].into();
 	if let Err(e) = slipstream::signatures::verify_json(&keys, authorization) {
 		debug_error!("Failed to verify federation request from {origin}: {e}");
 		if request.parts.uri.to_string().contains('@') {
@@ -474,15 +474,13 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 
 #[cfg(test)]
 mod tests {
-	use slipstream::server_name;
-
 	use super::*;
 
 	#[test]
 	fn test_auth_server_checks_impl_missing_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, None);
+		let server_name = OwnedServerName::parse("local.com").unwrap();
+		let origin = OwnedServerName::parse("remote.com").unwrap();
+		let result = auth_server_checks_impl(true, &server_name, false, &origin, None);
 		assert!(
 			result.is_ok(),
 			"Missing destination should be allowed for backwards compatibility"
@@ -491,18 +489,20 @@ mod tests {
 
 	#[test]
 	fn test_auth_server_checks_impl_valid_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, Some(server_name));
+		let server_name = OwnedServerName::parse("local.com").unwrap();
+		let origin = OwnedServerName::parse("remote.com").unwrap();
+		let result =
+			auth_server_checks_impl(true, &server_name, false, &origin, Some(&server_name));
 		assert!(result.is_ok(), "Valid destination should be allowed");
 	}
 
 	#[test]
 	fn test_auth_server_checks_impl_invalid_destination() {
-		let server_name = server_name!("local.com");
-		let origin = server_name!("remote.com");
-		let wrong_dest = server_name!("wrong.com");
-		let result = auth_server_checks_impl(true, server_name, false, origin, Some(wrong_dest));
+		let server_name = OwnedServerName::parse("local.com").unwrap();
+		let origin = OwnedServerName::parse("remote.com").unwrap();
+		let wrong_dest = OwnedServerName::parse("wrong.com").unwrap();
+		let result =
+			auth_server_checks_impl(true, &server_name, false, &origin, Some(&wrong_dest));
 		assert!(result.is_err(), "Invalid destination should be rejected");
 	}
 }

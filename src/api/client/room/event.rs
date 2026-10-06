@@ -52,8 +52,8 @@ pub(crate) async fn get_room_event_route(
 		debug_warn!("Failed to add bundled aggregations to event: {e}");
 	}
 
-	event.set_unsigned(body.sender_user.as_deref());
-	if let Some(sender_user) = body.sender_user.as_deref() {
+	event.set_unsigned(body.sender_user_opt());
+	if let Some(sender_user) = body.sender_user_opt() {
 		add_membership_to_unsigned(services, sender_user, &mut event).await;
 	}
 

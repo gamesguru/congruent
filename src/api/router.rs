@@ -478,7 +478,7 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		if let Some(chunk) = json.get_mut("chunk").and_then(|c| c.as_array_mut()) {
 			for room in chunk {
 				if room.get("join_rule").is_none() {
-					room["join_rule"] = slipstream::json!("public");
+					room["join_rule"] = slipstream::json::Value::String("public".into());
 				}
 			}
 		}
@@ -523,7 +523,7 @@ async fn ensure_search_results_present(
 		{
 			room_events
 				.entry("results".to_owned())
-				.or_insert_with(|| slipstream::json!([]));
+				.or_insert_with(|| slipstream::json::Value::Array(Vec::new()));
 		}
 		{
 			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();

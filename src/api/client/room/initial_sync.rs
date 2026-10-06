@@ -49,8 +49,8 @@ pub(crate) async fn room_initial_sync_route(
 		.pdus_rev(room_id, std::ops::Bound::Unbounded)
 		.try_take(limit)
 		.and_then(async |mut pdu| {
-			pdu.1.set_unsigned(body.sender_user.as_deref());
-			if let Some(sender_user) = body.sender_user.as_deref() {
+			pdu.1.set_unsigned(body.sender_user_opt());
+			if let Some(sender_user) = body.sender_user_opt() {
 				if let Err(e) = services
 					.rooms
 					.pdu_metadata
@@ -91,7 +91,7 @@ pub(crate) async fn room_initial_sync_route(
 		account_data: None,
 		state: state.into(),
 		messages: messages.chunk.is_empty().or_some(messages),
-		visibility: visibility.into(),
+		visibility,
 		membership,
 	})
 }

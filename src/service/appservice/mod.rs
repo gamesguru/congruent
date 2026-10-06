@@ -33,16 +33,15 @@ type Registrations = BTreeMap<String, RegistrationInfo>;
 
 /// Parses an appservice registration from its YAML representation.
 pub fn registration_from_yaml(yaml: &str) -> Result<Registration> {
-	let value: serde_json::Value = serde_saphyr::from_str(yaml)?;
-	slipstream::codec::from_str(&serde_json::to_string(&value)?)
+	let value = serde_saphyr::from_str::<conduwuit::utils::SerdeValue>(yaml)?.0;
+	slipstream::codec::from_value(&value)
 		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
 }
 
 /// Renders an appservice registration as YAML.
 pub fn registration_to_yaml(registration: &Registration) -> Result<String> {
-	let value: serde_json::Value =
-		serde_json::from_str(&slipstream::codec::to_string(registration))?;
-	Ok(serde_saphyr::to_string(&value)?)
+	let value = slipstream::codec::to_value(registration);
+	Ok(serde_saphyr::to_string(&conduwuit::utils::SerdeValueRef(&value))?)
 }
 
 #[async_trait]

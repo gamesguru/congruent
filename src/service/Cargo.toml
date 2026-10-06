@@ -103,7 +103,6 @@ rustyline-async.optional = true
 rustyline-async.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
-serde_json.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
 hmac.workspace = true
@@ -123,6 +122,7 @@ sd-notify.optional  = true
 sd-notify.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 figment = { workspace = true, features = ["toml"] }
 # Tests spawn a reqwest-driven server, which needs a TLS crypto provider
 # installed. `ring` is enabled here (test-only) so the state tests have a
@@ -130,11 +130,6 @@ figment = { workspace = true, features = ["toml"] }
 # optional `ring` feature selects. Enabling it on the dev dependency does not
 # leak a provider onto the library's consumers.
 rustls = { workspace = true, features = ["ring"] }
-
-[[bench]]
-name = "hamt"
-path = "../../benches/hamt.rs"
-harness = false
 
 [lints]
 workspace = true

@@ -43,7 +43,7 @@ pub struct AppendPduContext<'a> {
 /// recomputation.
 pub(super) struct PduPushEval<'a> {
 	pub pdu: &'a PduEvent,
-	pub serialized: &'a slipstream::serde::Raw<slipstream::events::AnySyncTimelineEvent>,
+	pub serialized: &'a slipstream::sswire::Raw<slipstream::events::AnySyncTimelineEvent>,
 	pub room_id: &'a slipstream::RoomId,
 	pub rules_for_user: &'a Ruleset,
 	pub power_levels: &'a RoomPowerLevelsEventContent,
@@ -217,7 +217,9 @@ where
 						CanonicalJsonValue::Object(
 							utils::to_canonical_object(
 								slipstream::codec::from_str::<CanonicalJsonObject>(
-									&serde_json::to_string(&prev_state.get_content_as_value())?,
+									&slipstream::codec::to_string(
+										&prev_state.get_content_as_value(),
+									),
 								)
 								.map_err(|e| {
 									err!(Database(error!(
