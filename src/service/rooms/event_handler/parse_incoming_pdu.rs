@@ -96,11 +96,76 @@ pub fn validate_pdu(&self, pdu: &CanonicalJsonObject) -> Result {
 	Ok(())
 }
 
+/// Best-effort room version for a room this server has no state for, for
+/// example one where it only holds an invite (the PDU may be a rescind).
+///
+/// The invite's stripped state includes the create event, which names the
+/// version. Failing that, only room versions 1 and 2 carry their own
+/// `event_id` on the wire, so its presence says which family the event is in.
+#[implement(super::Service)]
+async fn room_version_without_room_state(
+	&self,
+	room_id: &slipstream::RoomId,
+	pdu: &CanonicalJsonObject,
+) -> RoomVersionId {
+	let invitee = pdu
+		.get("state_key")
+		.and_then(CanonicalJsonValue::as_str)
+		.and_then(|state_key| slipstream::OwnedUserId::parse(state_key).ok());
+
+	if let Some(invitee) = invitee {
+		if let Ok(invite_state) = self
+			.services
+			.state_cache
+			.invite_state(&invitee, room_id)
+			.await
+		{
+			for event in invite_state {
+				let is_create = event
+					.get_field::<String>("type")
+					.ok()
+					.flatten()
+					.is_some_and(|kind| kind == "m.room.create");
+				if !is_create {
+					continue;
+				}
+				let version = event
+					.get_field::<slipstream::json::Value>("content")
+					.ok()
+					.flatten()
+					.and_then(|content| {
+						content
+							.get("room_version")
+							.and_then(slipstream::json::Value::as_str)
+							.map(str::to_owned)
+					})
+					// An omitted `room_version` means version 1.
+					.map_or(Some(RoomVersionId::V1), |version| {
+						RoomVersionId::from_str(&version).ok()
+					});
+				if let Some(version) = version {
+					return version;
+				}
+			}
+		}
+	}
+
+	if pdu.contains_key("event_id") {
+		RoomVersionId::V1
+	} else {
+		// Hash-derived event IDs; the newest widely used format.
+		RoomVersionId::V11
+	}
+}
+
 #[implement(super::Service)]
 pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
-	let value = slipstream::codec::from_str::<CanonicalJsonObject>(pdu.get()).map_err(|e| {
-		err!(BadServerResponse(debug_warn!("Error parsing incoming event {e:?}")))
-	})?;
+	let value = slipstream::canonical_json::into_object(
+		slipstream::canonical_json::from_json_str(pdu.get()).map_err(|e| {
+			err!(BadServerResponse(debug_warn!("Error parsing incoming event {e:?}")))
+		})?,
+	)
+	.ok_or_else(|| err!(Request(BadJson("Incoming event must be a JSON object"))))?;
 	let event_type = value
 		.get("type")
 		.and_then(CanonicalJsonValue::as_str)
@@ -135,12 +200,10 @@ pub async fn parse_incoming_pdu(&self, pdu: &RawJsonValue) -> Result<Parsed> {
 		},
 	};
 
-	let room_version_id = self
-		.services
-		.state
-		.get_room_version(&room_id)
-		.await
-		.unwrap_or(RoomVersionId::V1);
+	let room_version_id = match self.services.state.get_room_version(&room_id).await {
+		| Ok(room_version_id) => room_version_id,
+		| Err(_) => self.room_version_without_room_state(&room_id, &value).await,
+	};
 	let (event_id, value) = gen_event_id_canonical_json(pdu, &room_version_id).map_err(|e| {
 		err!(Request(InvalidParam(warn!(
 			"Could not convert event to canonical json: {e}. Raw PDU: {}",

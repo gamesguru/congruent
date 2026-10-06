@@ -490,7 +490,7 @@ pub async fn msc4500_resolution_inputs_digest(
 }
 
 /// Algorithm identifier for the primary and redaction digests.
-pub const ALGORITHM: &str = "lthash16-blake3-v1+redactions-blake3-v1";
+pub const ALGORITHM: &str = "lthash16-v1";
 
 /// Algorithm identifier that additionally commits the resolution-input set.
 pub const ALGORITHM_WITH_INPUTS: &str =

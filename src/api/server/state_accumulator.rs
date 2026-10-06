@@ -88,7 +88,7 @@ pub(crate) async fn get_state_accumulator_route(
 
 	let mut response = slipstream::ObjectBuilder::new();
 	response.field("event_id", &event_id);
-	response.field("algorithm", &"lthash16-blake3-v1");
+	response.field("algorithm", &"lthash16-v1");
 	response.field("lattice", &lattice_b64);
 	response.field("n_state_events", &n_state_events);
 	response.field("digest", &digest);
