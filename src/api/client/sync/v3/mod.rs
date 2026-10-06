@@ -930,11 +930,10 @@ pub(crate) async fn build_sync_events(
 				.map(|event| {
 					let mut object = slipstream::json::Object::new();
 					object.insert("type".into(), "m.presence".into());
-					object.insert("sender".into(), event.sender.to_json());
-					object.insert("content".into(), event.content.to_json());
+					object.insert("sender".into(), slipstream::codec::to_value(&event.sender));
+					object.insert("content".into(), slipstream::codec::to_value(&event.content));
 					Raw::from_value(&slipstream::json::Value::Object(object))
 				})
-				.filter_map(Result::ok)
 				.collect(),
 		},
 		account_data: GlobalAccountData { events: account_data },
