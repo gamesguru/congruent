@@ -86,7 +86,7 @@ pub(crate) async fn upgrade_room_route(
 		.create_hash_and_sign_event(
 			PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
 				body: "This room has been replaced".to_owned(),
-				replacement_room: conduwuit::utils::random_room_id(services.globals.server_name()),
+				replacement_room: conduwuit::utils::room_id_v11(services.globals.server_name()),
 			}),
 			sender_user,
 			Some(&body.room_id),
@@ -105,14 +105,14 @@ pub(crate) async fn upgrade_room_route(
 	// Create a replacement room
 	let room_features = RoomVersion::new(&body.new_version)?;
 	let replacement_room_owned = if !room_features.room_ids_as_hashes {
-		Some(conduwuit::utils::random_room_id(services.globals.server_name()))
+		Some(conduwuit::utils::room_id_v11(services.globals.server_name()))
 	} else {
 		None
 	};
 	let replacement_room: Option<&RoomId> = replacement_room_owned.as_ref().map(AsRef::as_ref);
 	let replacement_room_tmp = match replacement_room {
 		| Some(v) => v,
-		| None => &conduwuit::utils::random_room_id(services.globals.server_name()),
+		| None => &conduwuit::utils::room_id_v11(services.globals.server_name()),
 	};
 
 	let _short_id = services

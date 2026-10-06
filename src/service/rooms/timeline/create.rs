@@ -116,7 +116,7 @@ pub async fn create_event(
 		| None => {
 			trace!("No room ID, assuming room creation");
 			room_version_from_event(
-				conduwuit::utils::random_room_id(self.services.globals.server_name()),
+				utils::room_id_v11(self.services.globals.server_name()),
 				&event_type.clone(),
 				&content.clone(),
 			)?
@@ -135,9 +135,6 @@ pub async fn create_event(
 				.await,
 		| None => Vec::new(),
 	};
-	if let Some(room_id) = room_id {
-		eprintln!("prev_events for {event_type} in {room_id}: {prev_events:?}");
-	}
 
 	let mut auth_events: HashMap<(StateEventType, SmallString<[u8; 48]>), PduEvent> =
 		match room_id {

@@ -398,7 +398,7 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 async fn test_yolo_audit_membership_drift() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -406,7 +406,7 @@ async fn test_yolo_audit_membership_drift() {
 	};
 	let (services, _guard) = setup_test_services("yolo").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -644,7 +644,7 @@ async fn test_yolo_audit_membership_drift() {
 async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -652,7 +652,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	};
 	let (services, _guard) = setup_test_services("demote_torn").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -800,7 +800,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -809,7 +809,7 @@ async fn test_yolo_reorder_timeline() {
 	};
 	let (services, _guard) = setup_test_services("reorder").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -1021,7 +1021,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	};
 	use futures::StreamExt;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -1043,7 +1043,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 
 	let (services, _guard) = setup_test_services("dedup").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let shortroomid = services
 		.rooms
 		.short
@@ -1172,7 +1172,7 @@ async fn create_test_room_with_message(
 ) -> (slipstream::OwnedRoomId, slipstream::OwnedEventId) {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -1180,7 +1180,7 @@ async fn create_test_room_with_message(
 		},
 	};
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	services
 		.rooms
 		.short
@@ -2124,12 +2124,12 @@ async fn test_yolo_heal_receipts() {
 	use conduwuit_database::Json;
 	use futures::StreamExt;
 	use slipstream::{
-		RoomId, UserId,
+		UserId,
 		events::receipt::{Receipt, ReceiptEvent, ReceiptEventContent, ReceiptType},
 	};
 	let (services, _guard) = setup_test_services("heal_receipts").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let user_id = UserId::parse("@user:test.conduwuit.local").unwrap();
 
 	// 1. Manually insert duplicate receipts into the database
@@ -2210,11 +2210,11 @@ async fn test_yolo_heal_receipts() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_threaded_receipts_notification_counters() {
-	use slipstream::{OwnedEventId, RoomId, UserId, events::receipt::ReceiptThread};
+	use slipstream::{OwnedEventId, UserId, events::receipt::ReceiptThread};
 
 	let (services, _guard) = setup_test_services("threaded_receipts").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
 	let thread_a: OwnedEventId = "$thread-a:test.conduwuit.local".try_into().unwrap();
 	let thread_b: OwnedEventId = "$thread-b:test.conduwuit.local".try_into().unwrap();
@@ -2348,24 +2348,20 @@ async fn test_threaded_receipts_notification_counters() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
-	use slipstream::{
-		RoomId,
-		events::room::{
-			create::RoomCreateEventContent,
-			member::{MembershipState, RoomMemberEventContent},
-		},
+	use slipstream::events::room::{
+		create::RoomCreateEventContent,
+		member::{MembershipState, RoomMemberEventContent},
 	};
 	let (services, _guard) = setup_test_services("rescue_room").await;
+	service::admin::create_admin_room(&services).await.unwrap();
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let server_user = services.globals.server_user.as_ref();
 	services
 		.users
 		.create(server_user, None, None)
 		.await
 		.unwrap();
-
-	let _admin_room = services.admin.get_admin_room().await.unwrap();
 
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
 
@@ -2495,7 +2491,7 @@ async fn test_knocking_dag_resolution() {
 async fn test_yolo_reorder_timeline_state_resolution() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
-		RoomId, RoomVersionId,
+		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
 			member::{MembershipState, RoomMemberEventContent},
@@ -2505,7 +2501,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	};
 	let (services, _guard) = setup_test_services("reorder_state_res").await;
 
-	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
+	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short

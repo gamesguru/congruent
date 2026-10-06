@@ -19,7 +19,11 @@ pub fn string(length: usize) -> String {
 		.collect()
 }
 
-pub fn room_id(server_name: &slipstream::OwnedServerName) -> slipstream::OwnedRoomId {
+/// Generates a fresh random legacy (room version 1-11) room ID,
+/// `!<opaque_id>:<server_name>`, where `opaque_id` is a random string.
+/// Room version 12+ IDs are derived from the create event hash instead.
+#[must_use]
+pub fn room_id_v11(server_name: &slipstream::OwnedServerName) -> slipstream::OwnedRoomId {
 	slipstream::OwnedRoomId::parse(format!("!{}:{server_name}", string(18)))
 		.expect("generated room ID must be valid")
 }

@@ -1214,8 +1214,8 @@ where
 		let mut timestamp: Option<_> = None;
 		let mut invite_state = None;
 		let (timeline_pdus, limited, prev_batch);
-		let new_room_id: &RoomId = (*room_id).as_ref();
-		if all_invited_rooms.clone().any(is_equal_to!(new_room_id)) {
+		let room_id_v11: &RoomId = (*room_id).as_ref();
+		if all_invited_rooms.clone().any(is_equal_to!(room_id_v11)) {
 			// TODO: figure out a timestamp we can use for remote invites
 			invite_state = services
 				.rooms
