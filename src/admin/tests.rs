@@ -2682,7 +2682,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.await
 		.ok();
 	assert_eq!(
-		name_c.as_ref().and_then(|c| c.name.as_deref()),
+		name_c.as_ref().map(|c| c.name.as_str()),
 		Some("Name A"),
 		"Branch 2 message should not leak concurrent Branch 1 state changes"
 	);
@@ -2707,7 +2707,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.await
 		.ok();
 	assert_eq!(
-		name_m.as_ref().and_then(|c| c.name.as_deref()),
+		name_m.as_ref().map(|c| c.name.as_str()),
 		Some("Name B"),
 		"Merge event state snapshot should resolve conflict to Name B"
 	);

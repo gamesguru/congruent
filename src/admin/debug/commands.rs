@@ -319,8 +319,11 @@ pub(super) async fn get_remote_pdu(
 			);
 		},
 		| Ok(response) => {
-			let json: CanonicalJsonObject = slipstream::codec::from_str(response.pdu.get())
-				.map_err(|e| {
+			let Some(raw_pdu) = response.pdus.first() else {
+				return Err!("Remote server returned an empty pdus list");
+			};
+			let json: CanonicalJsonObject =
+				slipstream::codec::from_str(raw_pdu.get()).map_err(|e| {
 					warn!(
 						"Requested event ID {event_id} from server but failed to convert from \
 						 RawValue to CanonicalJsonObject (malformed event/response?): {e}"
@@ -330,13 +333,13 @@ pub(super) async fn get_remote_pdu(
 					)))
 				})?;
 
-			trace!("Attempting to parse PDU: {:?}", &response.pdu);
+			trace!("Attempting to parse PDU: {:?}", raw_pdu);
 			let _parsed_pdu = {
 				let parsed_result = self
 					.services
 					.rooms
 					.event_handler
-					.parse_incoming_pdu(&response.pdu)
+					.parse_incoming_pdu(raw_pdu)
 					.boxed()
 					.await;
 
@@ -344,7 +347,7 @@ pub(super) async fn get_remote_pdu(
 					| Ok(t) => t,
 					| Err(e) => {
 						warn!("Failed to parse PDU: {e}");
-						info!("Full PDU: {:?}", &response.pdu);
+						info!("Full PDU: {:?}", raw_pdu);
 						return Err!("Failed to parse PDU remote server {server} sent us: {e}");
 					},
 				};
