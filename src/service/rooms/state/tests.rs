@@ -669,12 +669,13 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		.await
 		.expect("second sweep");
 	assert_eq!(root.structural_hash, live[0].structural_hash);
-	let node = services
+	let state = services
 		.rooms
-		.state_hamt
-		.store
-		.get_node(&root.structural_hash);
-	assert!(node.is_ok(), "live root node must survive the sweep");
+		.state_accessor
+		.load_full_state_hamt(&root)
+		.await
+		.expect("live root state must survive the sweep");
+	assert_eq!(state.len(), 51, "live root state must remain readable");
 }
 
 /// A leave re-applied after a newer invite must not delete that invite.
