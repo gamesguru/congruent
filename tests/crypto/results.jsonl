@@ -61,9 +61,9 @@
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
+{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestResolveNamespace"}
@@ -72,11 +72,11 @@
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughMessages/{rust_hs1}|{rust_hs1}"}
-{"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughTime"}
+{"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughTime"}
 {"Action":"skip","Test":"TestRoomKeyIsCycledAfterEnoughTime/{js_hs1}|{js_hs1}"}
 {"Action":"skip","Test":"TestRoomKeyIsCycledAfterEnoughTime/{js_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughTime/{rust_hs1}|{js_hs1}"}
-{"Action":"fail","Test":"TestRoomKeyIsCycledAfterEnoughTime/{rust_hs1}|{rust_hs1}"}
+{"Action":"pass","Test":"TestRoomKeyIsCycledAfterEnoughTime/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnDeviceLogout"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnDeviceLogout/{js_hs1}|{js_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsCycledOnDeviceLogout/{js_hs1}|{rust_hs1}"}

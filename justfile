@@ -533,7 +533,11 @@ e2ee args=".*":
 
     # Build the per-shard anchored `-run` regexes. Top-level tests only, anchored
     # with ^...$ so `TestRoomKeyIsCycledAfterEnoughMessages` doesn't sweep up its
-    # later-in-alpha sibling. Targeted runs (args != `.*`) run as a single shard.
+    # later-in-alpha sibling. Targeted runs (args != `.*`) run as a single shard,
+    # and `args` is a regex (the default is `.*`), so pass it through unchanged --
+    # don't rewrite its metacharacters. The targeted pattern is only start-anchored
+    # so a plain prefix (e.g. `TestRoomKeyIsCycledAfterEnough`) matches every test
+    # beginning with it.
     SHARD_PATTERNS=()
     if [ "$run_suffix" = "all" ]; then
         total=${#ALL_TESTS[@]}
@@ -551,7 +555,7 @@ e2ee args=".*":
             SHARD_PATTERNS+=("^(${joined})$")
         done
     else
-        SHARD_PATTERNS+=("^($(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9_]/|/g'))$")
+        SHARD_PATTERNS+=("^({{ args }})")
     fi
     num_shards=${#SHARD_PATTERNS[@]}
 
@@ -616,6 +620,28 @@ e2ee args=".*":
         [ -f "$shard_results" ] && cat "$shard_results" >>"$RESULTS_FILE"
         [ -f "$shard_log" ] && cat "$shard_log" >>"$LOG_FILE"
     done
+
+    # A compile/setup failure produces no pass/fail rows, so without this the
+    # run just reports "0 pass / 0 fail" and hides the real error (for example
+    # generated bindings that do not compile). go test -json emits
+    # `build-output` lines plus a `fail` action carrying `FailedBuild`; surface
+    # both so the cause is the first thing printed.
+    if [ "$go_test_exit" -ne 0 ]; then
+        build_err="$(jq -r 'select(.Action == "build-output") | .Output' "$LOG_FILE" 2>/dev/null || true)"
+        failed_build="$(jq -r 'select(.FailedBuild) | .FailedBuild' "$LOG_FILE" 2>/dev/null | sort -u || true)"
+        if [ -n "$build_err" ] || [ -n "$failed_build" ]; then
+            echo ""
+            echo "==================== BUILD FAILURE ===================="
+            if [ -n "$failed_build" ]; then
+                echo "failed package(s): $(printf '%s ' $failed_build)"
+            fi
+            if [ -n "$build_err" ]; then
+                printf '%s' "$build_err"
+            fi
+            echo "======================================================"
+            echo ""
+        fi
+    fi
 
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
