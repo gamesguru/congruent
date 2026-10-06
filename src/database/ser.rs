@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use conduwuit::{Error, Result, debug::type_name, err, result::DebugInspect, utils::exchange};
+use conduwuit::{Error, Result, err, result::DebugInspect, utils::exchange};
 use serde::{Deserialize, Serialize, ser};
 
 use crate::{dbkey::DbKey, util::unhandled};
@@ -51,7 +51,7 @@ pub(crate) struct Serializer<'a, W: Write> {
 }
 
 /// Newtype for JSON serialization.
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Json<T>(pub T);
 
 /// Newtype for CBOR serialization.
@@ -158,8 +158,8 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 
 	fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
 		unhandled!(
-			"serialize Map not implemented; did you mean to use database::Json() around your \
-			 serde_json::Value?"
+			"serialize Map not implemented; did you mean to use database::Json() around a \
+			 slipstream::json::Value?"
 		)
 	}
 
@@ -185,13 +185,7 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 	where
 		T: Serialize + ?Sized,
 	{
-		debug_assert!(
-			name != "Json" || type_name::<T>() != "alloc::boxed::Box<serde_json::raw::RawValue>",
-			"serializing a Json(RawValue); you can skip serialization instead"
-		);
-
 		match name {
-			| "Json" => serde_json::to_writer(&mut *self.out, value).map_err(Into::into),
 			| "Cbor" => {
 				use minicbor::encode::write::Writer;
 				use minicbor_serde::Serializer;

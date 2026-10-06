@@ -7,8 +7,8 @@ const MAX_JSON_SCAN_DEPTH: usize = 128;
 /// MSC4499: Scan raw JSON bytes for duplicate keys within `verify_keys` and
 /// `old_verify_keys` objects. Returns Err if any duplicate keys are found.
 ///
-/// This must run on the raw bytes BEFORE `serde_json` deserialization, because
-/// `serde_json` silently deduplicates (last-key-wins). Without this pre-scan,
+/// This must run on the raw bytes BEFORE JSON deserialization, because
+/// JSON parsers silently deduplicates (last-key-wins). Without this pre-scan,
 /// a payload with `{"verify_keys": {"ed25519:foo": ..., "ed25519:foo": ...}}`
 /// would be silently accepted with the second value winning.
 pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {

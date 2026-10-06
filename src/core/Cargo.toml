@@ -98,7 +98,6 @@ rezzy.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
 sanitize-filename.workspace = true
-serde_json.workspace = true
 serde_regex.workspace = true
 serde-saphyr.workspace = true
 serde.workspace = true
@@ -134,6 +133,7 @@ hardened_malloc-rs.workspace = true
 hardened_malloc-rs.optional = true
 
 [dev-dependencies]
+serde_json.workspace = true
 blake3 = "1"
 maplit.workspace = true
 

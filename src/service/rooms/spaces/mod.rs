@@ -29,8 +29,8 @@ use slipstream::{
 		StateEventType,
 		space::child::{HierarchySpaceChildEvent, SpaceChildEventContent},
 	},
-	sswire::Raw,
 	space::SpaceRoomJoinRule,
+	sswire::Raw,
 };
 use tokio::sync::{Mutex, MutexGuard};
 

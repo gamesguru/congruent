@@ -3,7 +3,7 @@ use std::sync::Arc;
 use conduwuit::{Result, debug, debug_info, err, error, utils, utils::string_from_bytes};
 use database::Database;
 use slipstream::{
-	api::federation::discovery::VerifyKey, sswire::Base64, signatures::Ed25519KeyPair,
+	api::federation::discovery::VerifyKey, signatures::Ed25519KeyPair, sswire::Base64,
 };
 
 use super::VerifyKeys;

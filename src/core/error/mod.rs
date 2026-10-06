@@ -55,8 +55,6 @@ pub enum Error {
 	#[error("Join error: {0}")]
 	JoinError(#[from] tokio::task::JoinError),
 	#[error(transparent)]
-	Json(#[from] serde_json::Error),
-	#[error(transparent)]
 	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]
 	JsTryFromInt(#[from] slipstream::JsTryFromIntError), // js_int re-export

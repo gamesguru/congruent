@@ -42,11 +42,7 @@ pub(super) async fn get_room_dag(
 			.filter_map(|res: Result<(_, PduEvent)>| {
 				futures::future::ready(match res {
 					| Ok((_, pdu)) => Some(Ok(pdu.event_id().to_owned())),
-					| Err(
-						conduwuit::Error::SerdeDe(_)
-						| conduwuit::Error::Json(_)
-						| conduwuit::Error::CanonicalJson(_),
-					) => {
+					| Err(conduwuit::Error::SerdeDe(_) | conduwuit::Error::CanonicalJson(_)) => {
 						warn!("get_room_dag --topo: skipping undecodable topo row");
 						None
 					},

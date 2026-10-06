@@ -128,7 +128,7 @@ pub async fn server_request(&self, target: &ServerName) -> Result<Raw<ServerSign
 		.send_federation_request(target, Request)
 		.await?;
 
-	// MSC4499: Check raw JSON for duplicate keys before serde_json dedup
+	// MSC4499: Check raw JSON for duplicate keys before the parser dedups
 	check_no_duplicate_json_keys(
 		response.server_key.get(),
 		self.services.server.config.msc4499_strict_caching,

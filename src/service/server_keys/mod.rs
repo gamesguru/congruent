@@ -18,8 +18,8 @@ use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
-	sswire::Raw,
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
+	sswire::Raw,
 };
 use tokio::sync::RwLock;
 
