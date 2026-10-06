@@ -58,9 +58,7 @@ pub(super) fn check_no_duplicate_json_keys(raw: &str, strict: bool) -> Result {
 	// MSC4499: a repeated key is malformed at any depth, not only directly in
 	// the verify_keys maps. The pre-scan above covers those; this catches the
 	// rest (e.g. two `key` members inside one key object).
-	if slipstream::json::Value::parse_strict(raw)
-		== Err(slipstream::json::Error::DuplicateKey)
-	{
+	if slipstream::json::Value::parse_strict(raw) == Err(slipstream::json::Error::DuplicateKey) {
 		let msg = "Duplicate JSON key in key response";
 		if strict {
 			return Err!(BadServerResponse("{msg}"));
