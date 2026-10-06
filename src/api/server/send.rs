@@ -439,9 +439,12 @@ async fn inject_state_hash_mismatches(
 			continue;
 		};
 
-		// Absent and `null` both mean the sender made no input assertion.
+		// Absent and `null` both mean the sender made no input assertion. Compute
+		// the local value anyway so mismatch diagnostics retain the expected
+		// digest; the comparison below only treats two present values as a
+		// mismatch.
 		let received_inputs = entry.resolution_inputs();
-		let local_inputs = if check_inputs && received_inputs.is_some() {
+		let local_inputs = if check_inputs {
 			match services.rooms.timeline.get_pdu(event_id).await {
 				| Ok(pdu) =>
 					services
