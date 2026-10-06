@@ -7,6 +7,11 @@ pub mod codec {
 	pub use mtx_slipstream::codec::*;
 }
 
+/// Slipstream's wire-format types and serde bridge.
+pub mod sswire {
+	pub use mtx_slipstream::sswire::*;
+}
+
 /// Small, macro-free builder for JSON objects backed by Slipstream's codec.
 pub struct ObjectBuilder {
 	object: json::Object,

@@ -1,6 +1,6 @@
 use slipstream::{
 	events::{AnyStateEventContent, room::member::RoomMemberEventContent},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::*;

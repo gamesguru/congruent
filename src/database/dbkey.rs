@@ -344,7 +344,7 @@ impl<'a, T: codec::Deserialize> DbDe<'a> for Json<T> {
 }
 
 /// Raw Slipstream JSON values are stored directly as their UTF-8 JSON bytes.
-impl<T> DbKey for slipstream::serde::Raw<T> {
+impl<T> DbKey for slipstream::sswire::Raw<T> {
 	type Ser<'a>
 		= RawBytes
 	where
@@ -353,7 +353,7 @@ impl<T> DbKey for slipstream::serde::Raw<T> {
 	fn db_ser(&self) -> Self::Ser<'_> { RawBytes(self.0.as_bytes().to_vec()) }
 }
 
-impl<'a, T> DbDe<'a> for slipstream::serde::Raw<T> {
+impl<'a, T> DbDe<'a> for slipstream::sswire::Raw<T> {
 	type De = RawBytesDe<'a>;
 
 	fn from_de(de: Self::De) -> Result<Self> {

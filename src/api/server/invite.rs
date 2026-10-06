@@ -15,7 +15,7 @@ use slipstream::{
 		invite_permission_config::FilterLevel,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
-	serde::JsonObject,
+	sswire::JsonObject,
 };
 
 use crate::Ruma;

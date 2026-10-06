@@ -8,7 +8,7 @@ use slipstream::{
 		get_remote_server_keys_batch::{self, v2::QueryCriteria},
 		get_server_keys,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::validate::check_no_duplicate_json_keys;

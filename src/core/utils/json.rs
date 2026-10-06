@@ -19,8 +19,8 @@ impl OwnedEventType for slipstream::events::TimelineEventType {
 
 /// Clone a Slipstream raw JSON value without requiring `Raw<T>: Clone`.
 #[must_use]
-pub fn clone_raw<T>(raw: &slipstream::serde::Raw<T>) -> slipstream::serde::Raw<T> {
-	slipstream::serde::Raw(raw.0.clone(), PhantomData)
+pub fn clone_raw<T>(raw: &slipstream::sswire::Raw<T>) -> slipstream::sswire::Raw<T> {
+	slipstream::sswire::Raw(raw.0.clone(), PhantomData)
 }
 
 /// Fallible conversion from any value that implements Slipstream's `Serialize` to a

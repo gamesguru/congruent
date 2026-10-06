@@ -143,7 +143,7 @@ pub(super) async fn verify_send_membership(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &slipstream::serde::Raw<slipstream::json::Value>,
+	pdu: &slipstream::sswire::Raw<slipstream::json::Value>,
 	expected_membership: slipstream::events::room::member::MembershipState,
 ) -> Result<(
 	slipstream::OwnedEventId,
@@ -288,7 +288,7 @@ pub(super) async fn build_membership_template_pdu(
 	room_id: &RoomId,
 	user_id: &slipstream::UserId,
 	content: slipstream::events::room::member::RoomMemberEventContent,
-) -> Result<slipstream::serde::RawJsonValue> {
+) -> Result<slipstream::sswire::RawJsonValue> {
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
 
 	let (_, mut pdu_json) = services
@@ -307,7 +307,7 @@ pub(super) async fn build_membership_template_pdu(
 	pdu_json.remove("hashes");
 	pdu_json.remove("signatures");
 
-	Ok(slipstream::serde::RawJsonValue::new(&slipstream::json::Value::Object(pdu_json))
+	Ok(slipstream::sswire::RawJsonValue::new(&slipstream::json::Value::Object(pdu_json))
 		.expect("CanonicalJson can be serialized to JSON"))
 }
 

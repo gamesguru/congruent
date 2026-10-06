@@ -50,7 +50,7 @@ use slipstream::{
 	events::receipt::{ReceiptEvent, ReceiptEventContent, ReceiptType},
 	int,
 	json::Value,
-	serde::{JsonObject, Raw},
+	sswire::{JsonObject, Raw},
 	to_device::DeviceIdOrAllDevices,
 };
 use tokio::sync::watch::{Receiver, Sender};

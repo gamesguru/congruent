@@ -41,7 +41,7 @@ use slipstream::{
 		receipt::ReceiptType,
 	},
 	push,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -1477,7 +1477,7 @@ impl Service {
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
 		// serde_json::from_str::<Raw<_>>(
-		//     slipstream::serde::to_canonical_json_string(pdu_json).expect("CanonicalJson is
+		//     slipstream::sswire::to_canonical_json_string(pdu_json).expect("CanonicalJson is
 		// valid slipstream::json::Value"), )
 		// .expect("Raw::from_value always works")
 

@@ -42,7 +42,7 @@ use slipstream::{
 		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyStrippedStateEvent,
 		presence::{PresenceEvent, PresenceEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::load_timeline;

@@ -17,7 +17,7 @@ use slipstream::{
 		AnySyncEphemeralRoomEvent,
 		receipt::{Receipt, ReceiptEvent, ReceiptThread, ReceiptType},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, globals};

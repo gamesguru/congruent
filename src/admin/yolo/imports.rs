@@ -209,7 +209,7 @@ pub(super) async fn import_pdus(
 						{
 							raw_val.remove("event_id");
 						}
-						let raw = match slipstream::serde::RawJsonValue::from_json_string(
+						let raw = match slipstream::sswire::RawJsonValue::from_json_string(
 							slipstream::codec::to_string(&slipstream::json::Value::Object(
 								raw_val.clone(),
 							)),

@@ -14,7 +14,7 @@ use slipstream::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
 		client::error::Error as RumaError,
 	},
-	serde::Base64,
+	sswire::Base64,
 };
 
 use crate::resolver::actual::ActualDest;

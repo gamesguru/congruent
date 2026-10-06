@@ -15,7 +15,7 @@ use moka::sync::Cache;
 use slipstream::{
 	OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, ServerName, UserId,
 	events::{AnyStrippedStateEvent, room::member::MembershipState},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Dep, account_data, appservice::RegistrationInfo, config, globals, rooms, users};

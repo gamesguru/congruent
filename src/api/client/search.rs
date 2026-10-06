@@ -17,7 +17,7 @@ use slipstream::{
 		v3::{Criteria, EventContextResult, ResultCategories, ResultRoomEvents, SearchResult},
 	},
 	events::AnyStateEvent,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::message::visibility_filter;

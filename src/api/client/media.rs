@@ -301,7 +301,7 @@ pub(crate) async fn get_media_preview_route(
 		})?;
 
 	Ok(get_media_preview::v1::Response {
-		data: slipstream::serde::Raw::from_value(&preview),
+		data: slipstream::sswire::Raw::from_value(&preview),
 	})
 }
 

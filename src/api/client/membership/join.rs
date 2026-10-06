@@ -37,7 +37,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 use tokio::join;
 

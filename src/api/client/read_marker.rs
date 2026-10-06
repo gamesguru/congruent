@@ -13,7 +13,7 @@ use slipstream::{
 		receipt::{ReceiptThread, ReceiptType},
 		relation::RelationType,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::Ruma;

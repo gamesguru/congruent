@@ -24,7 +24,7 @@ use slipstream::{
 	api::client::error::{ErrorKind, StandardErrorBody},
 	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	events::TimelineEventType,
-	serde::Raw,
+	sswire::Raw,
 };
 
 #[derive(Clone, Copy, Debug)]

@@ -16,7 +16,7 @@ use slipstream::{
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 /// Update current membership data.

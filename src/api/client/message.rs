@@ -33,7 +33,7 @@ use slipstream::{
 		TimelineEventType::{self, *},
 		invite_permission_config::FilterLevel,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 use tracing::warn;
 

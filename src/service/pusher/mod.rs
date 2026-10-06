@@ -27,7 +27,7 @@ use slipstream::{
 	push::{
 		Action, PushConditionPowerLevelsCtx, PushConditionRoomCtx, PushFormat, Ruleset, Tweak,
 	},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 

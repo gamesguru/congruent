@@ -47,7 +47,7 @@ use slipstream::{
 	},
 	json::{Object, Value},
 	presence::PresenceState,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 

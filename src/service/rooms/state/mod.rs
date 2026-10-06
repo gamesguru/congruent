@@ -99,7 +99,7 @@ use slipstream::{
 		AnyStrippedStateEvent, StateEventType, TimelineEventType,
 		room::create::RoomCreateEventContent,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{

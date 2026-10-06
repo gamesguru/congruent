@@ -1030,8 +1030,8 @@ async fn fetch_and_load_state(
 	input: Option<&String>,
 	output: Option<&String>,
 ) -> Result<(
-	Vec<slipstream::serde::Raw<slipstream::json::Value>>,
-	Vec<slipstream::serde::Raw<slipstream::json::Value>>,
+	Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
+	Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
 	HashMap<u64, OwnedEventId>,
 )> {
 	let mut state: HashMap<u64, OwnedEventId> = HashMap::new();
@@ -1039,8 +1039,8 @@ async fn fetch_and_load_state(
 
 	// Load state from file, federation, or local database
 	let (pdus, auth_chain): (
-		Vec<slipstream::serde::Raw<slipstream::json::Value>>,
-		Vec<slipstream::serde::Raw<slipstream::json::Value>>,
+		Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
+		Vec<slipstream::sswire::Raw<slipstream::json::Value>>,
 	) = if let Some(path) = input {
 		info!("Loading state from file: {path}");
 		let data = std::fs::read_to_string(path)
@@ -1053,10 +1053,10 @@ async fn fetch_and_load_state(
 		let auth_val = parsed
 			.get("auth_chain")
 			.ok_or(err!(Database("Missing 'auth_chain' key in input file")))?;
-		let pdus: Vec<slipstream::serde::Raw<slipstream::json::Value>> =
+		let pdus: Vec<slipstream::sswire::Raw<slipstream::json::Value>> =
 			slipstream::codec::from_value(pdus_val)
 				.map_err(|e| err!(Database("Failed to parse PDUs: {e:?}")))?;
-		let auth_chain: Vec<slipstream::serde::Raw<slipstream::json::Value>> =
+		let auth_chain: Vec<slipstream::sswire::Raw<slipstream::json::Value>> =
 			slipstream::codec::from_value(auth_val)
 				.map_err(|e| err!(Database("Failed to parse auth chain: {e:?}")))?;
 		info!(
@@ -1066,8 +1066,8 @@ async fn fetch_and_load_state(
 		);
 		(pdus, auth_chain)
 	} else if !server_names.is_empty() {
-		let mut all_pdus: Vec<slipstream::serde::Raw<slipstream::json::Value>> = Vec::new();
-		let mut all_auth: Vec<slipstream::serde::Raw<slipstream::json::Value>> = Vec::new();
+		let mut all_pdus: Vec<slipstream::sswire::Raw<slipstream::json::Value>> = Vec::new();
+		let mut all_auth: Vec<slipstream::sswire::Raw<slipstream::json::Value>> = Vec::new();
 
 		for server_name in server_names {
 			info!("Fetching room state from {server_name} at event {at_event_id_str}...");
@@ -1170,7 +1170,7 @@ async fn validate_and_extract_state(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	pdus: &[slipstream::serde::Raw<slipstream::json::Value>],
+	pdus: &[slipstream::sswire::Raw<slipstream::json::Value>],
 	skip_sig_verify: bool,
 	state: &mut HashMap<u64, OwnedEventId>,
 ) -> Result<(usize, usize)> {
@@ -1308,7 +1308,7 @@ async fn validate_and_add_auth_chain(
 	&self,
 	room_id: &slipstream::RoomId,
 	room_version: &RoomVersionId,
-	auth_chain: &[slipstream::serde::Raw<slipstream::json::Value>],
+	auth_chain: &[slipstream::sswire::Raw<slipstream::json::Value>],
 	skip_sig_verify: bool,
 ) -> Result<(usize, usize, usize)> {
 	info!("Going through auth_chain response");

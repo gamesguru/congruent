@@ -22,7 +22,7 @@ use slipstream::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 	push::Ruleset,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{

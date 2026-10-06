@@ -15,7 +15,7 @@ use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 

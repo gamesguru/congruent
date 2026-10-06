@@ -19,7 +19,7 @@ use slipstream::{
 };
 
 /// Opaque JSON document kept as text; parse with `.json()` when needed.
-pub type RawJson = slipstream::serde::Raw<JsonValue>;
+pub type RawJson = slipstream::sswire::Raw<JsonValue>;
 
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,

@@ -32,7 +32,7 @@ use slipstream::{
 		TimelineEventType::*,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 

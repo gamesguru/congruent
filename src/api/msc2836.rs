@@ -14,7 +14,7 @@ use conduwuit_service::{Services, rooms::event_handler::AuthRecoveryStage};
 use futures::StreamExt;
 use slipstream::{
 	OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
-	api::federation::event::event_relationships as federation_event_relationships, serde::Raw,
+	api::federation::event::event_relationships as federation_event_relationships, sswire::Raw,
 };
 
 pub(crate) enum Requester<'a> {

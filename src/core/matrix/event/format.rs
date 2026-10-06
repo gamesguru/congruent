@@ -6,7 +6,7 @@ use slipstream::{
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
 		space::child::HierarchySpaceChildEvent,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use super::{Event, redact};

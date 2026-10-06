@@ -2,7 +2,7 @@ use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
 use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, codec,
-	events::room::member::MembershipState, serde::JsonObject,
+	events::room::member::MembershipState, sswire::JsonObject,
 };
 
 use crate::Ruma;

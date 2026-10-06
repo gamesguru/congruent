@@ -5,7 +5,7 @@ use std::fmt::Debug;
 use conduwuit::{
 	arrayvec::ArrayVec,
 	slipstream::{
-		OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, UserId, serde::Raw,
+		OwnedEventId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, UserId, sswire::Raw,
 	},
 };
 use serde::Serialize;

@@ -220,7 +220,7 @@ pub(crate) async fn upgrade_room_route(
 
 	// Validate creation event content
 	if slipstream::codec::from_str::<CanonicalJsonObject>(
-		slipstream::serde::RawJsonValue::from_value(&create_event_content).get(),
+		slipstream::sswire::RawJsonValue::from_value(&create_event_content).get(),
 	)
 	.is_err()
 	{
@@ -233,7 +233,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomCreate,
-				content: slipstream::serde::RawJsonValue::from_value(&create_event_content),
+				content: slipstream::sswire::RawJsonValue::from_value(&create_event_content),
 				unsigned: None,
 				state_key: Some(StateKey::new()),
 				redacts: None,
@@ -261,7 +261,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomMember,
-				content: slipstream::serde::RawJsonValue::from_value(&RoomMemberEventContent {
+				content: slipstream::sswire::RawJsonValue::from_value(&RoomMemberEventContent {
 					membership: MembershipState::Join,
 					displayname: services.users.displayname(sender_user).await.ok(),
 					avatar_url: services.users.avatar_url(sender_user).await.ok(),
@@ -321,7 +321,7 @@ pub(crate) async fn upgrade_room_route(
 				}
 
 				event_content =
-					slipstream::serde::RawJsonValue::from_value(&power_levels_event_content);
+					slipstream::sswire::RawJsonValue::from_value(&power_levels_event_content);
 			}
 
 			services
@@ -461,7 +461,7 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: slipstream::serde::RawJsonValue::from_value(
+					content: slipstream::sswire::RawJsonValue::from_value(
 						&RedactedSpaceChildEventContent {},
 					),
 					state_key: Some(body.room_id.clone().as_str().into()),
@@ -485,7 +485,7 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: slipstream::serde::RawJsonValue::from_value(
+					content: slipstream::sswire::RawJsonValue::from_value(
 						&SpaceChildEventContent {
 							via: vec![sender_user.server_name().clone()],
 							order: child.order,

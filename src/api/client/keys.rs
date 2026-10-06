@@ -28,7 +28,7 @@ use slipstream::{
 	},
 	codec,
 	encryption::CrossSigningKey,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Ruma, json_util::single_field};

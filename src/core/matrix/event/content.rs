@@ -16,7 +16,7 @@ where
 	T: slipstream::codec::Deserialize,
 	E: Event,
 {
-	slipstream::serde::Raw::<()>::from_json_text(event.content().get())
+	slipstream::sswire::Raw::<()>::from_json_text(event.content().get())
 		.and_then(|raw| raw.deserialize_as::<T>())
 		.map_err(|e| err!(Request(BadJson("Failed to deserialize content into type: {e}"))))
 }

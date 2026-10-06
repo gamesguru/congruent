@@ -16,7 +16,7 @@ use slipstream::{
 	},
 	int,
 	json::Value,
-	serde::Base64,
+	sswire::Base64,
 };
 
 use super::{

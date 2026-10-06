@@ -14,7 +14,7 @@ use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::Ruma;

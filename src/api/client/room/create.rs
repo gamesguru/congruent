@@ -27,7 +27,7 @@ use slipstream::{
 		},
 	},
 	int, json,
-	serde::{JsonObject, Raw},
+	sswire::{JsonObject, Raw},
 };
 
 use crate::{Ruma, client::invite_helper};
@@ -185,7 +185,7 @@ pub(crate) async fn create_room_route(
 				RoomCreateEventContent::new_v12()
 			};
 			let mut content = slipstream::codec::from_str::<CanonicalJsonObject>(
-				slipstream::serde::RawJsonValue::from_value(&content).get(),
+				slipstream::sswire::RawJsonValue::from_value(&content).get(),
 			)?;
 			content.insert("room_version".into(), json::Value::from(room_version.as_str()));
 			content
@@ -278,7 +278,7 @@ pub(crate) async fn create_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomCreate,
-				content: slipstream::serde::RawJsonValue::from_value(&create_content),
+				content: slipstream::sswire::RawJsonValue::from_value(&create_content),
 				state_key: Some(StateKey::new()),
 				timestamp: body.origin_server_ts,
 				..Default::default()
@@ -360,7 +360,7 @@ pub(crate) async fn create_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomPowerLevels,
-				content: slipstream::serde::RawJsonValue::from_value(&power_levels_content),
+				content: slipstream::sswire::RawJsonValue::from_value(&power_levels_content),
 				state_key: Some(StateKey::new()),
 				..Default::default()
 			},

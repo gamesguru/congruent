@@ -15,7 +15,7 @@ use slipstream::{
 	},
 	events::RoomAccountDataEventType,
 	json::Value as JsonValue,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::{Ruma, router::authenticate_user};

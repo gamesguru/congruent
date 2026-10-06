@@ -15,7 +15,7 @@ use slipstream::{
 		},
 	},
 	codec,
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::Ruma;
@@ -272,7 +272,7 @@ mod tests {
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		json::Value,
-		serde::{Base64, Raw},
+		sswire::{Base64, Raw},
 	};
 	use tower::ServiceExt;
 

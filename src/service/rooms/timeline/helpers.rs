@@ -15,7 +15,7 @@ use slipstream::{
 			server_acl::RoomServerAclEventContent,
 		},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use crate::rooms::state::RoomMutexGuard;

@@ -31,7 +31,7 @@ use slipstream::{
 	},
 	json,
 	json::Value,
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 

@@ -11,7 +11,7 @@ use slipstream::{
 		AnySyncEphemeralRoomEvent, SyncEphemeralRoomEvent,
 		receipt::{ReceiptEvent, ReceiptEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 
 use self::data::{Data, ReceiptItem};
