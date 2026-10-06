@@ -170,11 +170,6 @@ version = "1.0.140"
 default-features = false
 features = ["raw_value"]
 
-[workspace.dependencies.simd-json]
-version = "0.18"
-default-features = false
-features = ["serde_impl"]
-
 # Used for appservice registration files
 [workspace.dependencies.serde-saphyr]
 version = "0.0.24"
@@ -364,58 +359,6 @@ version = "6.1.0"
 
 [workspace.dependencies.typed-arena]
 version = "2.0.2"
-
-# Used for matrix spec type definitions and helpers (legacy=libsodium compat)
-[workspace.dependencies.ed25519-dalek]
-version = "2.2.0"
-features = ["legacy_compatibility"]
-
-[workspace.dependencies.ruma]
-git = "https://forgejo.ellis.link/continuwuation/ruwuma"
-#
-rev = "d00b51a8669b21689c4eb47fb81f3a8b27c3e371"
-features = [
-    "compat",
-    "compat-arbitrary-length-ids",
-    "rand",
-    "appservice-api-c",
-    "client-api",
-    "federation-api",
-    "markdown",
-    "push-gateway-api-c",
-    "unstable-exhaustive-types",
-    "ring-compat",
-    "compat-upload-signatures",
-    "identifiers-validation",
-    "unstable-unspecified",
-    "unstable-msc2448",
-    "unstable-msc2666",
-    "unstable-msc2867",
-    "unstable-msc2870",
-    "unstable-msc3026",
-    "unstable-msc3061",
-    "unstable-msc3814",
-    "unstable-msc3245",
-    "unstable-msc3266",
-    "unstable-msc3381", # polls
-    "unstable-msc3489", # beacon / live location
-    "unstable-msc3575",
-    "unstable-msc3930", # polls push rules
-    "unstable-msc4075",
-    "unstable-msc4095",
-    "unstable-msc4121",
-    "unstable-msc4125",
-    "unstable-msc4155",
-    "unstable-msc4186",
-    "unstable-msc4203", # sending to-device events to appservices
-    "unstable-msc4210", # remove legacy mentions
-    "unstable-msc4140", # delayed events MSC4140
-    "unstable-extensible-events",
-    "unstable-pdu",
-    "unstable-msc4143", # livekit well_known response
-    "unstable-msc4284",
-    "unstable-msc4439", # pgp_key in .well_known/matrix/support
-]
 
 [workspace.dependencies.mtxdb]
 git = "https://gitlab.com/Wombat-Foundation/mtxdb.git"
@@ -618,9 +561,6 @@ version = "0.3.0"
 [workspace.dependencies.roaring]
 version = "0.10" # compatible with Synapse's rustc 1.87.0
 
-[workspace.dependencies.criterion]
-version = "0.5"
-
 
 #
 # Patches
@@ -661,10 +601,6 @@ rev = "09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
 [workspace.dependencies.slipstream]
 package = "conduwuit_slipstream"
 path = "src/slipstream"
-
-[workspace.dependencies.conduwuit-mtxdb]
-package = "conduwuit_mtxdb"
-path = "src/mtxdb"
 
 [workspace.dependencies.conduwuit-router]
 package = "conduwuit_router"
@@ -717,10 +653,6 @@ package = "conduwuit_build_metadata"
 path = "src/build_metadata"
 default-features = false
 
-
-[workspace.dependencies.conduwuit]
-package = "conduwuit"
-path = "src/main"
 
 ###############################################################################
 #
