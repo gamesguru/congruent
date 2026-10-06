@@ -75,12 +75,6 @@ struct CompatRequiredState {
 	exclude: Option<Vec<(StateEventType, String)>>,
 }
 
-impl CompatRequiredState {
-	fn is_empty(&self) -> bool {
-		self.include.is_empty() && self.exclude.as_ref().is_none_or(Vec::is_empty)
-	}
-}
-
 /// One list's or room subscription's required_state request for a room.
 /// Kept separate per selector (rather than merged into one include/exclude
 /// pair) so an exclude from one list/subscription can't suppress state that

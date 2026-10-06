@@ -17,10 +17,7 @@ use service::Services;
 use slipstream::{
 	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
 	api::client::membership::joined_rooms,
-	events::{
-		StaticEventContent,
-		room::member::{MembershipState, RoomMemberEventContent},
-	},
+	events::room::member::{MembershipState, RoomMemberEventContent},
 };
 
 pub(crate) use self::{

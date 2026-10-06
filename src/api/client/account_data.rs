@@ -13,8 +13,6 @@ use slipstream::{
 			set_room_account_data,
 		},
 	},
-	codec::{DeError, Deserialize as CodecDeserialize},
-	endpoint::body_field,
 	events::RoomAccountDataEventType,
 	json::Value as JsonValue,
 	serde::Raw,
@@ -216,23 +214,4 @@ async fn delete_account_data(
 		.account_data
 		.delete(room_id, sender_user, event_type_s)
 		.await
-}
-
-/// Wraps stored account data so the inner content can be handed back to the
-/// API response untouched.
-///
-/// `Raw<T>` re-serializes as the raw text it was decoded from, so `content`
-/// passes through byte-for-byte rather than being rebuilt from the typed event.
-/// Decoded through the codec (not serde), because
-/// [`conduwuit_service::account_data`] takes `T: codec::Deserialize`.
-struct Extract<T> {
-	content: Raw<T>,
-}
-
-impl<T: CodecDeserialize> CodecDeserialize for Extract<T> {
-	fn from_json(value: &JsonValue) -> Result<Self, DeError> {
-		Ok(Self {
-			content: body_field(Some(value), "content")?,
-		})
-	}
 }
