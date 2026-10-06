@@ -121,10 +121,8 @@ mod tests {
 
 	#[test]
 	fn missing_prev_events_filters_known_locally() {
-		let known = slipstream::OwnedEventId::from("$known:example.org")
-			.expect("valid Matrix identifier");
-		let missing = slipstream::OwnedEventId::from("$missing:example.org")
-			.expect("valid Matrix identifier");
+		let known = slipstream::OwnedEventId::from("$known:example.org");
+		let missing = slipstream::OwnedEventId::from("$missing:example.org");
 		let prev_events = vec![known.clone(), missing.clone()];
 
 		let result = missing_prev_events(&prev_events, |id| id == eid(&known));

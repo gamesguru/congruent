@@ -84,8 +84,7 @@ mod tests {
 	#[test]
 	fn promotion_claims_are_exclusive() {
 		let claims = Arc::new(PromotionClaims::new());
-		let event_id = slipstream::OwnedEventId::from("$test_event:example.org")
-			.expect("valid Matrix identifier");
+		let event_id = slipstream::OwnedEventId::from("$test_event:example.org");
 
 		assert!(claims.try_claim_promotion(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));

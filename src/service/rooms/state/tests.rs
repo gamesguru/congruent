@@ -118,10 +118,8 @@ async fn persist_dummy_pdu(services: &Services, room_id: &RoomId, pdu: &PduEvent
 async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
-	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local")
-		.expect("valid Matrix identifier");
-	let event_id = slipstream::OwnedEventId::from("$event1:test.conduwuit.local")
-		.expect("valid Matrix identifier");
+	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local");
+	let event_id = slipstream::OwnedEventId::from("$event1:test.conduwuit.local");
 	let pdu = create_dummy_pdu(&room_id, &event_id, "m.room.create", "");
 
 	// Acquire a state lock
@@ -215,12 +213,10 @@ fn test_root_handle_rejects_truncated_value() {
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
-	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local")
-		.expect("valid Matrix identifier");
+	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local");
 	let event = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::from("$force-state:test.conduwuit.local")
-			.expect("valid Matrix identifier"),
+		&slipstream::OwnedEventId::from("$force-state:test.conduwuit.local"),
 		"m.room.create",
 		"",
 	);
@@ -252,14 +248,12 @@ async fn test_force_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_state_equivalence() {
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local")
-		.expect("valid Matrix identifier");
+	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local");
 
 	// Create multiple events to build the state
 	let event1 = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::from("$event1:test.conduwuit.local")
-			.expect("valid Matrix identifier"),
+		&slipstream::OwnedEventId::from("$event1:test.conduwuit.local"),
 		"m.room.create",
 		"",
 	);
@@ -267,8 +261,7 @@ async fn test_state_equivalence() {
 	// must be treated as "leave" rather than failing to deserialize.
 	let event2 = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::from("$event2:test.conduwuit.local")
-			.expect("valid Matrix identifier"),
+		&slipstream::OwnedEventId::from("$event2:test.conduwuit.local"),
 		"m.room.member",
 		"@alice:test.conduwuit.local",
 	);
@@ -361,8 +354,7 @@ async fn seed_membership_state(
 ) -> rezzy::hamt::RootHandle {
 	let create = create_dummy_pdu(
 		room_id,
-		&slipstream::OwnedEventId::from("$seed-create:test.conduwuit.local")
-			.expect("valid Matrix identifier"),
+		&slipstream::OwnedEventId::from("$seed-create:test.conduwuit.local"),
 		"m.room.create",
 		"",
 	);
@@ -406,8 +398,7 @@ async fn seed_membership_state(
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bulk_state_update_writes_only_changed_spines() {
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local")
-		.expect("valid Matrix identifier");
+	let room_id = slipstream::OwnedRoomId::from("!test:test.conduwuit.local");
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 
 	let root = seed_membership_state(&services, &room_id, &mutex, 200).await;
@@ -415,8 +406,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	// Replace one membership entry: one changed leaf, so one changed spine.
 	let updated = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::from("$update-7:test.conduwuit.local")
-			.expect("valid Matrix identifier"),
+		&slipstream::OwnedEventId::from("$update-7:test.conduwuit.local"),
 		"m.room.member",
 		"@user7:test.conduwuit.local",
 	);
@@ -543,8 +533,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 	use std::time::Duration;
 
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::from("!sweep:test.conduwuit.local")
-		.expect("valid Matrix identifier");
+	let room_id = slipstream::OwnedRoomId::from("!sweep:test.conduwuit.local");
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 	let root = seed_membership_state(&services, &room_id, &mutex, 50).await;
 

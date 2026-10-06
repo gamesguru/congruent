@@ -278,14 +278,9 @@ mod tests {
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {
-			event_id: slipstream::OwnedEventId::from("$test:example.com")
-				.expect("valid Matrix identifier"),
-			room_id: Some(
-				slipstream::OwnedRoomId::from("!test:example.com")
-					.expect("valid Matrix identifier"),
-			),
-			sender: slipstream::OwnedUserId::from("@test:example.com")
-				.expect("valid Matrix identifier"),
+			event_id: slipstream::OwnedEventId::from("$test:example.com"),
+			room_id: Some(slipstream::OwnedRoomId::from("!test:example.com")),
+			sender: slipstream::OwnedUserId::from("@test:example.com"),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: TimelineEventType::RoomMessage,
 			content: to_raw_value(&json!({"msgtype": "m.text", "body": "test"})).unwrap(),
