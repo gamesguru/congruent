@@ -510,7 +510,7 @@ e2ee args=".*":
     case "$CRYPTO_MATRIX" in
         *[rR]*)
             RPC_BIN="$COMPLEMENT_SRC/rpc"
-            if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
+            if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" "$COMPLEMENT_SRC/internal/api" "$COMPLEMENT_SRC/go.mod" "$COMPLEMENT_SRC/go.sum" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
                 echo "Building complement-crypto's cmd/rpc binary (multiprocess tests)..."
                 (cd "$COMPLEMENT_SRC" && go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
             fi
@@ -559,16 +559,7 @@ e2ee args=".*":
     fi
     num_shards=${#SHARD_PATTERNS[@]}
 
-    # Correctness waits get headroom proportional to the shard count: N concurrent
-    # shards contend for the machine, so a budget that fits a serial run flakes
-    # here. This is the single knob for the whole suite (see api.ScaleTimeout in
-    # complement-crypto); override with COMPLEMENT_CRYPTO_TEST_TIMEOUT_SCALE.
-    TIMEOUT_SCALE="${COMPLEMENT_CRYPTO_TEST_TIMEOUT_SCALE:-}"
-    if [ -z "$TIMEOUT_SCALE" ]; then
-        if [ "$num_shards" -gt 1 ]; then TIMEOUT_SCALE="$num_shards"; else TIMEOUT_SCALE=1; fi
-    fi
-
-    echo "Sharding into $num_shards concurrent go test process(es) (timeout scale ${TIMEOUT_SCALE}x):"
+    echo "Sharding into $num_shards concurrent go test process(es):"
     for ((i = 0; i < num_shards; i++)); do
         echo "  shard $((i + 1))/$num_shards: $COMPLEMENT_SRC/tests -run '${SHARD_PATTERNS[$i]}'"
     done
@@ -596,7 +587,6 @@ e2ee args=".*":
                 COMPLEMENT_HOST_MOUNTS="$MOUNTS" \
                 COMPLEMENT_ENABLE_DIRTY_RUNS="$COMPLEMENT_ENABLE_DIRTY_RUNS" \
                 COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX="$CRYPTO_MATRIX" \
-                COMPLEMENT_CRYPTO_TEST_TIMEOUT_SCALE="$TIMEOUT_SCALE" \
                 COMPLEMENT_CRYPTO_NAMESPACE="crypto$((s + 1))" \
                 ${COMPLEMENT_CRYPTO_MITMDUMP:+COMPLEMENT_CRYPTO_MITMDUMP="$COMPLEMENT_CRYPTO_MITMDUMP"} \
                 go test -tags "$CRYPTO_TAGS" -json \
