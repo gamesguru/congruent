@@ -194,12 +194,17 @@ where
 		match (auth_check, incoming_pdu.redacts_id(&room_version_id)) {
 			| (false, _) => true,
 			| (true, None) => false,
-			| (true, Some(redact_id)) =>
-				!self
-					.services
-					.state_accessor
-					.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
-					.await?,
+			| (true, Some(redact_id)) => {
+				// A redaction of an event we don't have yet is accepted: whether the
+				// sender may redact it can only be judged once the target arrives, so
+				// soft-failing it here would drop a valid redaction.
+				self.services.timeline.get_pdu(&redact_id).await.is_ok()
+					&& !self
+						.services
+						.state_accessor
+						.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
+						.await?
+			},
 		}
 	} else {
 		false
