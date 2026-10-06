@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{extract::State, response::IntoResponse};
 use conduwuit::Result;
 use futures::StreamExt;
 use slipstream::api::client::discovery::get_supported_versions;

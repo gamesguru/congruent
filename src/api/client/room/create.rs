@@ -521,7 +521,7 @@ pub(crate) async fn create_room_route(
 						let mut topic_object = slipstream::ObjectBuilder::new();
 						topic_object.field("m.text", &vec![text.finish()]);
 						object.field("m.topic", &topic_object.finish());
-						slipstream::serde::Raw::from_value(&object.finish())
+						Raw::from_value(&object.finish())
 					},
 					state_key: Some(StateKey::new()),
 					..Default::default()

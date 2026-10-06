@@ -1636,7 +1636,7 @@ async fn collect_thread_subscriptions_extension(
 		.collect::<Object>();
 
 	if subscribed.is_empty() {
-		return Ok(Some(slipstream::json::Value::Object(slipstream::json::Object::new())));
+		return Ok(Some(Value::Object(Object::new())));
 	}
 
 	let mut object = slipstream::ObjectBuilder::new();

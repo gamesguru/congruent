@@ -1077,13 +1077,10 @@ async fn fetch_and_load_state(
 			match self
 				.services
 				.sending
-				.send_federation_request(
-					server_name,
-					get_room_state::v1::Request {
-						room_id: room_id.to_owned(),
-						event_id: at_event_id.to_owned(),
-					},
-				)
+				.send_federation_request(server_name, get_room_state::v1::Request {
+					room_id: room_id.to_owned(),
+					event_id: at_event_id.to_owned(),
+				})
 				.await
 			{
 				| Ok(resp) => {

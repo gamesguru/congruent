@@ -75,7 +75,7 @@ where
 }
 
 /// Splits an `mxc://server/media_id` URI into owned parts.
-pub(crate) fn split_mxc(uri: &str) -> conduwuit::Result<(slipstream::OwnedServerName, String)> {
+pub(crate) fn split_mxc(uri: &str) -> Result<(slipstream::OwnedServerName, String)> {
 	let parts = uri
 		.strip_prefix("mxc://")
 		.and_then(|rest| rest.split_once('/'))

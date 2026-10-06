@@ -18,10 +18,9 @@ use service::{
 	server_keys::{PubKeyMap, PubKeys},
 };
 use slipstream::{
-	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
-	OwnedUserId, UserId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedDeviceId, OwnedServerName, OwnedUserId, UserId,
 	api::{
-		AuthScheme, IncomingRequest, Metadata,
+		AuthScheme, Metadata,
 		client::{
 			directory::get_public_rooms,
 			error::ErrorKind,

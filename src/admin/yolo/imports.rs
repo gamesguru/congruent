@@ -55,8 +55,7 @@ pub(super) async fn import_pdus(
 			})
 			.ok_or_else(|| {
 				err!(Request(InvalidParam(
-					"Could not infer room_id from first PDU. Please specify --room-id \
-						 manually."
+					"Could not infer room_id from first PDU. Please specify --room-id manually."
 				)))
 			})?
 		},

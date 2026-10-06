@@ -16,7 +16,7 @@ use conduwuit::{
 use futures::{FutureExt, StreamExt};
 use lettre::Address;
 use slipstream::{
-	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, UserId,
+	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId,
 	events::{
 		RoomAccountDataEventType, StateEventType,
 		room::{
@@ -781,13 +781,14 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		}) || self
-		.services
-		.rooms
-		.state_accessor
-		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-		.await
-		.is_ok_and(|event| *event.sender() == user_id);
+		})
+		|| self
+			.services
+			.rooms
+			.state_accessor
+			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+			.await
+			.is_ok_and(|event| *event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
@@ -1154,14 +1155,12 @@ pub(super) async fn get_email(&self, user_id: String) -> Result {
 		.get_email_for_localpart(user_id.localpart())
 		.await
 	{
-		| Some(email) => {
+		| Some(email) =>
 			self.write_str(&format!("{user_id} has the associated email address {email}."))
-				.await
-		},
-		| None => {
+				.await,
+		| None =>
 			self.write_str(&format!("{user_id} has no associated email address."))
-				.await
-		},
+				.await,
 	}
 }
 
@@ -1184,10 +1183,9 @@ pub(super) async fn get_user_by_email(&self, email: String) -> Result {
 			self.write_str(&format!("{email} belongs to {user_id}."))
 				.await
 		},
-		| None => {
+		| None =>
 			self.write_str(&format!("No user has {email} as their email address."))
-				.await
-		},
+				.await,
 	}
 }
 
@@ -1211,12 +1209,11 @@ pub(super) async fn change_email(&self, user_id: String, email: Option<String>) 
 		.await;
 
 	match (current_email, new_email) {
-		| (None, None) => {
+		| (None, None) =>
 			self.write_str(&format!(
 				"{user_id} already had no associated email. No changes have been made."
 			))
-			.await
-		},
+			.await,
 		| (current_email, Some(new_email)) => {
 			self.services
 				.threepid

@@ -45,13 +45,10 @@ pub(super) async fn federation_request(
 		let response = self
 			.services
 			.sending
-			.send_federation_request(
-				&server_name,
-				get_room_state::v1::Request {
-					room_id: room_id.clone(),
-					event_id: event_id.clone(),
-				},
-			)
+			.send_federation_request(&server_name, get_room_state::v1::Request {
+				room_id: room_id.clone(),
+				event_id: event_id.clone(),
+			})
 			.await?;
 
 		let dump = {
@@ -101,13 +98,10 @@ pub(super) async fn federation_request(
 		let response = self
 			.services
 			.sending
-			.send_federation_request(
-				&server_name,
-				get_event::v1::Request {
-					event_id: event_id.clone(),
-					include_unredacted_content: None,
-				},
-			)
+			.send_federation_request(&server_name, get_event::v1::Request {
+				event_id: event_id.clone(),
+				include_unredacted_content: None,
+			})
 			.await?;
 
 		let dump = {
@@ -364,13 +358,10 @@ pub(super) async fn resend_receipts(
 	// Build the receipt EDU
 	let mut read = BTreeMap::new();
 	for (user_id, (event_id, receipt)) in &latest_receipts {
-		read.insert(
-			user_id.clone(),
-			ReceiptData {
-				data: receipt.clone(),
-				event_ids: vec![event_id.clone()],
-			},
-		);
+		read.insert(user_id.clone(), ReceiptData {
+			data: receipt.clone(),
+			event_ids: vec![event_id.clone()],
+		});
 	}
 
 	let receipt_map = ReceiptMap { read };
@@ -427,13 +418,10 @@ pub(super) async fn fetch_state_ids(
 	let response = self
 		.services
 		.sending
-		.send_federation_request(
-			&server,
-			get_room_state_ids::v1::Request {
-				room_id: room_id.clone(),
-				event_id: event_id.clone(),
-			},
-		)
+		.send_federation_request(&server, get_room_state_ids::v1::Request {
+			room_id: room_id.clone(),
+			event_id: event_id.clone(),
+		})
 		.await?;
 
 	let mut missing_events = Vec::new();

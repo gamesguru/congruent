@@ -90,15 +90,14 @@ pub(super) async fn list_outliers(
 		let action = super::outlier_utils::classify_outlier(&status, rejected, clear);
 		match action {
 			| super::outlier_utils::OutlierAction::Skip => continue,
-			| super::outlier_utils::OutlierAction::Show { should_clear } => {
+			| super::outlier_utils::OutlierAction::Show { should_clear } =>
 				if should_clear {
 					self.services
 						.rooms
 						.pdu_metadata
 						.clear_pdu_markers(&event_id);
 					cleared = cleared.saturating_add(1);
-				}
-			},
+				},
 		}
 
 		let room_id_str = pdu.room_id().map_or_else(

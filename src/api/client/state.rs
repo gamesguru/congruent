@@ -3,7 +3,7 @@ mod tests;
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, RoomVersion, err, info,
+	Err, Result, RoomVersion, err,
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };

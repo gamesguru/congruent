@@ -8,7 +8,7 @@ use conduwuit::{
 	warn,
 };
 use slipstream::{
-	CanonicalJsonValue, OwnedUserId, UserId,
+	CanonicalJsonValue, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
 	codec,
 	events::{

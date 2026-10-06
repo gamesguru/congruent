@@ -189,10 +189,9 @@ pub(super) async fn sending_queue(
 
 	if destinations.is_empty() {
 		return match server {
-			| Some(server) => {
+			| Some(server) =>
 				self.write_str(&format!("Sending queue is empty for {server}."))
-					.await
-			},
+					.await,
 			| None => self.write_str("Sending queue is empty.").await,
 		};
 	}

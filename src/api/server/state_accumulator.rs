@@ -1,4 +1,4 @@
-use axum::{Json, extract::State};
+use axum::extract::State;
 use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;

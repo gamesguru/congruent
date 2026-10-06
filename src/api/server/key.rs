@@ -33,12 +33,12 @@ pub(crate) async fn get_server_keys_route(
 ) -> Result<impl IntoResponse> {
 	let server_key = get_our_signing_keys(&services).await;
 	let server_key = Raw::new(&server_key)?;
-	let mut response = get_server_keys::v2::Response::new(server_key)
+	let response = get_server_keys::v2::Response::new(server_key)
 		.try_into_http_response::<Vec<u8>>()
 		.map(|mut response| take(response.body_mut()))?;
 	let body = std::str::from_utf8(&response)
 		.map_err(|_| err!(Request(BadJson("Invalid UTF-8 in signing-key response."))))?;
-	let mut response = slipstream::codec::from_str(body)?;
+	let mut response = codec::from_str(body)?;
 
 	services.server_keys.sign_json(&mut response)?;
 

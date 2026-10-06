@@ -418,7 +418,7 @@ pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::
 	use axum::response::IntoResponse;
 
 	(
-		[(axum::http::header::CONTENT_TYPE, "application/json")],
+		[(http::header::CONTENT_TYPE, "application/json")],
 		slipstream::codec::to_string(value),
 	)
 		.into_response()

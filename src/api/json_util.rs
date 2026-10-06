@@ -14,8 +14,8 @@ pub(crate) fn empty_events() -> slipstream::json::Value {
 }
 
 pub(crate) fn json_response(value: slipstream::json::Value) -> axum::response::Response {
-	axum::http::Response::builder()
-		.header(axum::http::header::CONTENT_TYPE, "application/json")
+	http::Response::builder()
+		.header(http::header::CONTENT_TYPE, "application/json")
 		.body(axum::body::Body::from(slipstream::codec::to_string(&value)))
 		.expect("static JSON response builder is valid")
 }

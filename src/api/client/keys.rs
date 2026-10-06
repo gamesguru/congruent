@@ -704,7 +704,7 @@ fn add_unsigned_device_display_name(
 	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
 	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
-) -> Result<(), slipstream::codec::DeError> {
+) -> Result<(), codec::DeError> {
 	if let Some(display_name) = metadata.display_name {
 		let mut object = keys.deserialize_as::<slipstream::json::Object>()?;
 

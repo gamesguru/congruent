@@ -343,12 +343,9 @@ async fn process_inbound_transaction(
 		.map(|(e, r)| {
 			let mut obj = slipstream::json::Object::new();
 			if let Err(err) = r {
-				obj.insert(
-					"error".to_owned(),
-					slipstream::json::Value::String(error::sanitized_message(err)),
-				);
+				obj.insert("error".to_owned(), Value::String(error::sanitized_message(err)));
 			}
-			(e.to_string(), slipstream::json::Value::Object(obj))
+			(e.to_string(), Value::Object(obj))
 		})
 		.collect::<slipstream::json::Object>();
 	let mut response_builder = slipstream::ObjectBuilder::new();
@@ -365,7 +362,7 @@ async fn process_inbound_transaction(
 async fn inject_state_hash_mismatches(
 	services: &crate::State,
 	body: &Ruma<send_transaction_message::v1::Request>,
-	response_json: &mut slipstream::json::Value,
+	response_json: &mut Value,
 ) {
 	let Some(json) = &body.json_body else { return };
 	let Some(obj) = json.as_object() else { return };
@@ -476,14 +473,14 @@ async fn inject_state_hash_mismatches(
 		mismatch_builder.field("received_redactions_after", &redactions_after);
 		let mut mismatch = mismatch_builder.finish();
 		if check_inputs {
-			if let slipstream::json::Value::Object(object) = &mut mismatch {
+			if let Value::Object(object) = &mut mismatch {
 				object.insert(
 					"expected_resolution_inputs_before".to_owned(),
-					slipstream::codec::to_value(&local_inputs),
+					codec::to_value(&local_inputs),
 				);
 				object.insert(
 					"received_resolution_inputs_before".to_owned(),
-					slipstream::codec::to_value(&received_inputs),
+					codec::to_value(&received_inputs),
 				);
 			}
 		}

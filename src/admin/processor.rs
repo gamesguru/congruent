@@ -33,9 +33,7 @@ use crate::{admin, admin::AdminCommand, context::Context};
 type ParsedCommand<'a> = (AdminCommand, Vec<String>, Vec<&'a str>);
 
 #[must_use]
-pub fn complete(line: &str) -> String {
-	complete_command(AdminCommand::command(), line)
-}
+pub fn complete(line: &str) -> String { complete_command(AdminCommand::command(), line) }
 
 pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> ProcessorFuture {
 	Box::pin(async move { handle_command(services, command).await })

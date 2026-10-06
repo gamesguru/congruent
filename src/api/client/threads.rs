@@ -14,7 +14,7 @@ use futures::StreamExt;
 use http::StatusCode;
 use slipstream::{
 	OwnedEventId, OwnedRoomId,
-	api::{IncomingRequest, client::threads::get_threads},
+	api::client::threads::get_threads,
 	codec::{DeError, Deserialize as CodecDeserialize},
 	endpoint::{EndpointRequest, body_field},
 	json::Value,
@@ -181,7 +181,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.put_subscription(&sender_user, &room_id, &thread_id, automatic)
 		.await?;
 
-	Ok(json_response(slipstream::json::Value::Object(slipstream::json::Object::new())))
+	Ok(json_response(Value::Object(slipstream::json::Object::new())))
 }
 
 pub(crate) async fn get_thread_subscription_msc4306_route(
@@ -244,14 +244,14 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.threads
 		.delete_subscription(&sender_user, &room_id, &thread_id)?;
 
-	Ok(json_response(slipstream::json::Value::Object(slipstream::json::Object::new())))
+	Ok(json_response(Value::Object(slipstream::json::Object::new())))
 }
 
 fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
-	let mut response = json_response(slipstream::json::Value::Object(
+	let mut response = json_response(Value::Object(
 		[
-			("errcode".to_owned(), slipstream::json::Value::String(errcode.to_owned())),
-			("error".to_owned(), slipstream::json::Value::String(error.to_owned())),
+			("errcode".to_owned(), Value::String(errcode.to_owned())),
+			("error".to_owned(), Value::String(error.to_owned())),
 		]
 		.into_iter()
 		.collect(),

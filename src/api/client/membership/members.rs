@@ -1,6 +1,6 @@
-use axum::{extract::State, response::Json};
+use axum::extract::State;
 use conduwuit::{
-	Err, Event, Pdu, PduCount, Result, err, info,
+	Err, Event, Pdu, PduCount, Result, err,
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
 use futures::{StreamExt, TryStreamExt, future::join};
