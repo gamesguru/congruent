@@ -7,7 +7,6 @@ use futures::{
 use slipstream::{
 	Int, OwnedUserId, RoomVersionId, UserId,
 	codec::DeError,
-	json::Value,
 	events::room::{
 		create::RoomCreateEventContent,
 		join_rules::{JoinRule, RoomJoinRulesEventContent},
@@ -16,6 +15,7 @@ use slipstream::{
 		third_party_invite::RoomThirdPartyInviteEventContent,
 	},
 	int,
+	json::Value,
 	serde::Base64,
 };
 
@@ -405,7 +405,7 @@ where
 		if content
 			.membership
 			.as_ref()
-			.and_then(|m| decode::<MembershipState>(&m).ok())
+			.and_then(|m| decode::<MembershipState>(m).ok())
 			.is_none()
 		{
 			warn!("no valid membership field found for m.room.member event content");
@@ -417,7 +417,7 @@ where
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
 			.as_ref()
-			.and_then(|u| decode::<OwnedUserId>(&u).ok());
+			.and_then(|u| decode::<OwnedUserId>(u).ok());
 
 		let user_for_join_auth_event: OptionFuture<_> = user_for_join_auth
 			.as_ref()
@@ -530,10 +530,9 @@ where
 				.additional_creators
 				.as_ref()
 				.is_some_and(|creators| {
-					creators.iter().any(|c| {
-						decode::<OwnedUserId>(&c)
-							.is_ok_and(|c| c == *sender)
-					})
+					creators
+						.iter()
+						.any(|c| decode::<OwnedUserId>(c).is_ok_and(|c| c == *sender))
 				}) {
 			trace!("privileging room creator or additional creator");
 			// This user is the room creator or an additional creator, give them max power
@@ -588,7 +587,7 @@ where
 		if room_version.explicitly_privilege_room_creators {
 			creators.insert(create_event.sender().to_owned());
 			for creator in room_create_content.additional_creators.iter().flatten() {
-				creators.insert(decode(&creator)?);
+				creators.insert(decode(creator)?);
 			}
 		}
 		match check_power_levels(
@@ -665,10 +664,9 @@ where
 				return true;
 			}
 			if let Some(additional_creators) = content.additional_creators {
-				return additional_creators.iter().any(|c| {
-					decode::<OwnedUserId>(&c)
-						.is_ok_and(|c| c == *user_id)
-				});
+				return additional_creators
+					.iter()
+					.any(|c| decode::<OwnedUserId>(c).is_ok_and(|c| c == *user_id));
 			}
 		}
 		false
@@ -760,7 +758,7 @@ where
 		// Int::MAX. Same case for target.
 		if let Some(additional_creators) = &create_content.additional_creators {
 			for c in additional_creators {
-				if let Ok(c) = decode(&c) {
+				if let Ok(c) = decode(c) {
 					creators.insert(c);
 				}
 			}
@@ -1501,11 +1499,7 @@ fn check_power_levels(
 	Some(true)
 }
 
-fn get_deserialize_levels(
-	old: &Value,
-	new: &Value,
-	name: &str,
-) -> Option<(Int, Int)> {
+fn get_deserialize_levels(old: &Value, new: &Value, name: &str) -> Option<(Int, Int)> {
 	Some((decode(old.get(name)?).ok()?, decode(new.get(name)?).ok()?))
 }
 

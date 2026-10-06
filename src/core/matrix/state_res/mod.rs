@@ -1,8 +1,8 @@
 #![cfg_attr(test, allow(warnings))]
 
+mod content;
 pub(crate) mod error;
 pub mod event_auth;
-mod content;
 mod power_levels;
 mod room_version;
 
@@ -404,9 +404,7 @@ where
 		if let Some(pl_event_id) = partially_resolved_pl_state.get(&power_levels_ty_sk) {
 			debug!(%pl_event_id, "selected global PL event");
 			if let Some(pl_event) = cached_fetch(pl_event_id.clone()).await {
-				if let Ok(mut c) =
-					PowerLevelsContentFields::parse(pl_event.content().get())
-				{
+				if let Ok(mut c) = PowerLevelsContentFields::parse(pl_event.content().get()) {
 					// For v12+ rooms, creators are stripped from the PL users map
 					// but need Int::MAX during state resolution sorting. Auth events
 					// also omit the create event (MSC4291), so the only reliable
@@ -429,9 +427,7 @@ where
 			if let Some(pl_event_id) = unconflicted_pl {
 				debug!(%pl_event_id, "PL is unconflicted; using as global PL context");
 				if let Some(pl_event) = cached_fetch(pl_event_id.clone()).await {
-					if let Ok(mut c) =
-						PowerLevelsContentFields::parse(pl_event.content().get())
-					{
+					if let Ok(mut c) = PowerLevelsContentFields::parse(pl_event.content().get()) {
 						if room_version.explicitly_privilege_room_creators {
 							inject_privileged_creators(&mut c, &unconflicted, &cached_fetch)
 								.await;
@@ -1056,11 +1052,12 @@ where
 				.entry(pl_id.clone())
 				.or_insert_with(|| {
 					Arc::new(
-						PowerLevelsContentFields::parse(pl_ev.content().get())
-							.unwrap_or_else(|_| PowerLevelsContentFields {
+						PowerLevelsContentFields::parse(pl_ev.content().get()).unwrap_or_else(
+							|_| PowerLevelsContentFields {
 								users_default: int!(0),
 								users: Vec::new(),
-							}),
+							},
+						),
 					)
 				})
 				.value()

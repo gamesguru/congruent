@@ -52,9 +52,7 @@ fn users(content: &Value) -> Result<Vec<(OwnedUserId, Int)>, DeError> {
 
 	object
 		.iter()
-		.map(|(user, value)| {
-			Ok((OwnedUserId::from(user.as_str()), level(value, Mode::Legacy)?))
-		})
+		.map(|(user, value)| Ok((OwnedUserId::from(user.as_str()), level(value, Mode::Legacy)?)))
 		.collect()
 }
 
@@ -169,7 +167,11 @@ pub(crate) fn deserialize_power_levels_content_fields(
 	content: &str,
 	room_version: &RoomVersion,
 ) -> Result<PowerLevelsContentFields, DeError> {
-	let mode = if room_version.integer_power_levels { Mode::Integer } else { Mode::Legacy };
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
+	} else {
+		Mode::Legacy
+	};
 	PowerLevelsContentFields::from_content(&object(content)?, mode)
 }
 
@@ -181,7 +183,11 @@ pub(crate) fn deserialize_power_levels_content_invite(
 	content: &str,
 	room_version: &RoomVersion,
 ) -> Result<PowerLevelsContentInvite, DeError> {
-	let mode = if room_version.integer_power_levels { Mode::Integer } else { Mode::Legacy };
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
+	} else {
+		Mode::Legacy
+	};
 	Ok(PowerLevelsContentInvite {
 		invite: level_or(&object(content)?, "invite", 0, mode)?,
 	})
@@ -195,7 +201,11 @@ pub(crate) fn deserialize_power_levels_content_redact(
 	content: &str,
 	room_version: &RoomVersion,
 ) -> Result<PowerLevelsContentRedact, DeError> {
-	let mode = if room_version.integer_power_levels { Mode::Integer } else { Mode::Legacy };
+	let mode = if room_version.integer_power_levels {
+		Mode::Integer
+	} else {
+		Mode::Legacy
+	};
 	Ok(PowerLevelsContentRedact {
 		redact: level_or(&object(content)?, "redact", default_power_level(), mode)?,
 	})

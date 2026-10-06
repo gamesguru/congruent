@@ -57,6 +57,7 @@ pub mod canonical_json {
 		Value::parse(input).map_err(|error| mtx_slipstream::codec::DeError(error.to_string()))
 	}
 
+	#[must_use]
 	pub fn into_object(value: Value) -> Option<Object> {
 		match value {
 			| Value::Object(object) => Some(object),
