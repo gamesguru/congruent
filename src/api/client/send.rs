@@ -227,11 +227,7 @@ pub(crate) async fn send_message_event_route(
 		&body.event_type,
 		&body.body.body,
 		Some(&body.txn_id),
-		if appservice_info.is_some() {
-			body.timestamp
-		} else {
-			None
-		},
+		if appservice_info.is_some() { body.ts } else { None },
 		None,
 	))
 	.await?;

@@ -205,7 +205,10 @@ impl Deserialize for CompatRequest {
 			conn_id: field(object, "conn_id")?,
 			txn_id: field(object, "txn_id")?,
 			timeout: field::<Option<UInt>>(object, "timeout")?.map(Duration::from_millis),
-			set_presence: field(object, "set_presence")?,
+			set_presence: match object.get("set_presence") {
+				| Some(value) if !value.is_null() => PresenceState::from_json(value)?,
+				| _ => PresenceState::Online,
+			},
 			lists: field(object, "lists")?,
 			room_subscriptions: field(object, "room_subscriptions")?,
 			extensions: field(object, "extensions")?,

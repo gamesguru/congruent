@@ -1,7 +1,7 @@
 mod msc4500;
 pub use msc4500::{
-	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PduDigests, PointDigests,
-	StateHashEntry, StateHashes,
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PRIMARY_ALGORITHM, PduDigests,
+	PointDigests, StateHashEntry, StateHashes,
 };
 mod room_state;
 mod server_can;
