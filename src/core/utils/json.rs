@@ -5,6 +5,7 @@ use slipstream::{CanonicalJsonError, CanonicalJsonObject};
 use crate::Result;
 
 pub trait OwnedEventType: Sized {
+	#[must_use]
 	fn owned_event_type(&self) -> Self;
 }
 
