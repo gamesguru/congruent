@@ -149,7 +149,9 @@ impl Data {
 			.stream()
 			.ignore_err()
 			.ready_filter_map(|(key, user): (&str, OwnedUserId)| {
-				(user == *user_id).then(|| key.into())
+				(user == *user_id)
+					.then(|| OwnedMxcUri::parse(key).ok())
+					.flatten()
 			})
 			.collect()
 			.await

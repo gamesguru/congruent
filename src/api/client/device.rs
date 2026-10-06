@@ -89,7 +89,7 @@ pub(crate) async fn update_device_route(
 				appservice.registration.id
 			);
 
-			let device_id = OwnedDeviceId::from(utils::random_string(DEVICE_ID_LENGTH));
+			let device_id = OwnedDeviceId::parse(utils::random_string(DEVICE_ID_LENGTH))?;
 
 			services
 				.users

@@ -3221,7 +3221,7 @@ fn default_otlp_protocol() -> String { "http".to_owned() }
 fn default_tracing_flame_output_path() -> String { "./tracing.folded".to_owned() }
 
 fn default_trusted_servers() -> Vec<OwnedServerName> {
-	vec![OwnedServerName::from_trusted("matrix.org")]
+	vec![OwnedServerName::parse("matrix.org").expect("valid default server name")]
 }
 
 /// do debug logging by default for debug builds

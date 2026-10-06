@@ -2,7 +2,7 @@
 
 use conduwuit_core::{Err, Result, err};
 use service::Services;
-use slipstream::{OwnedRoomId, OwnedUserId, RoomId, UserId};
+use slipstream::{OwnedRoomId, OwnedServerName, OwnedUserId, RoomId, UserId};
 
 pub(crate) fn escape_html(s: &str) -> String {
 	s.replace('&', "&amp;")
@@ -75,13 +75,13 @@ where
 }
 
 /// Splits an `mxc://server/media_id` URI into owned parts.
-pub(crate) fn split_mxc(uri: &str) -> Result<(slipstream::OwnedServerName, String)> {
+pub(crate) fn split_mxc(uri: &str) -> Result<(OwnedServerName, String)> {
 	let parts = uri
 		.strip_prefix("mxc://")
 		.and_then(|rest| rest.split_once('/'))
 		.filter(|(server, media_id)| !server.is_empty() && !media_id.is_empty());
 	match parts {
-		| Some((server, media_id)) => Ok((server.into(), media_id.to_owned())),
+		| Some((server, media_id)) => Ok((OwnedServerName::parse(server)?, media_id.to_owned())),
 		| None => conduwuit::Err!("Invalid MXC URI {uri}."),
 	}
 }

@@ -33,7 +33,9 @@ pub(crate) async fn create_mxc_uri_route(
 
 	services.media.create_async(mxc, Some(user))?;
 
-	Ok(create_mxc_uri::v1::Response::new(mxc.to_string().into()))
+	Ok(create_mxc_uri::v1::Response::new(slipstream::OwnedMxcUri::parse(
+		mxc.to_string(),
+	)?))
 }
 
 /// # `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}`

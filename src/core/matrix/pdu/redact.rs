@@ -18,14 +18,8 @@ pub fn redact(
 	let mut content = slipstream::canonical_json::into_object(content)
 		.ok_or_else(|| err!(Request(BadJson("event content must be an object"))))?;
 
-	redact_content_in_place(&mut content, room_version_id, &self.kind).map_err(|e| {
-		Error::Redaction(
-			self.sender
-				.server_name()
-				.map_or_else(|| self.sender.to_string(), |name| name.to_string()),
-			e,
-		)
-	})?;
+	redact_content_in_place(&mut content, room_version_id, &self.kind)
+		.map_err(|e| Error::Redaction(self.sender.server_name(), e))?;
 
 	let reason = slipstream::codec::from_str::<slipstream::canonical_json::Value>(
 		&slipstream::codec::to_string(reason),

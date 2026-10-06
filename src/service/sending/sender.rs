@@ -1178,7 +1178,8 @@ impl Service {
 				appservice,
 				slipstream::api::appservice::event::push_events::v1::Request {
 					events: pdu_jsons,
-					txn_id: txn_id.into(),
+					txn_id: slipstream::OwnedTransactionId::parse(txn_id)
+						.expect("base64 transaction hash is a valid transaction ID"),
 					ephemeral: edu_jsons,
 					to_device: Vec::new(), // TODO
 				},
@@ -1391,7 +1392,8 @@ impl Service {
 		// identify a transaction).
 		let txn_id = self.next_txn_id.fetch_add(1, Ordering::Relaxed).to_string();
 		let request = send_transaction_message::v1::Request {
-			transaction_id: txn_id.clone().into(),
+			transaction_id: slipstream::OwnedTransactionId::parse(&txn_id)
+				.expect("numeric transaction counter is a valid transaction ID"),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
 			pdus: outbound_pdus,

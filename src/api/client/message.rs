@@ -264,7 +264,7 @@ pub(crate) async fn get_message_events_route(
 	let appservice_device = body
 		.appservice_info
 		.as_ref()
-		.map(|registration| OwnedDeviceId::from(registration.registration.id.clone()));
+		.and_then(|registration| OwnedDeviceId::parse(&registration.registration.id).ok());
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
 		device_id: sender_device.or(appservice_device.as_ref()).or_else(|| {

@@ -261,9 +261,10 @@ pub(crate) async fn create_invite_route(
 			if appservice.is_user_match(&recipient_user) {
 				let request = slipstream::api::appservice::event::push_events::v1::Request {
 					events: vec![pdu.to_format()],
-					txn_id: general_purpose::URL_SAFE_NO_PAD
-						.encode(sha256::hash(pdu.event_id.as_bytes()))
-						.into(),
+					txn_id: slipstream::OwnedTransactionId::parse(
+						general_purpose::URL_SAFE_NO_PAD
+							.encode(sha256::hash(pdu.event_id.as_bytes())),
+					)?,
 					ephemeral: Vec::new(),
 					to_device: Vec::new(),
 				};

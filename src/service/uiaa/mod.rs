@@ -369,13 +369,19 @@ impl Service {
 				thirdparty_id_creds: ThirdpartyIdCredentials { client_secret, sid, .. },
 				..
 			}) => {
+				let (Ok(sid), Ok(client_secret)) = (
+					slipstream::OwnedSessionId::parse(sid.as_str()),
+					slipstream::OwnedClientSecret::parse(client_secret.as_str()),
+				) else {
+					return Err(StandardErrorBody {
+						kind: ErrorKind::ThreepidAuthFailed,
+						message: "Invalid session ID or client secret".to_owned(),
+					});
+				};
 				match self
 					.services
 					.threepid
-					.consume_valid_session(
-						&slipstream::OwnedSessionId::from(sid.as_str()),
-						&slipstream::OwnedClientSecret::from(client_secret.as_str()),
-					)
+					.consume_valid_session(&sid, &client_secret)
 					.await
 				{
 					| Ok(email) => {

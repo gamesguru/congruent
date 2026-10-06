@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write};
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug_info, error, info,
+	Err, Result, debug_info, err, error, info,
 	utils::{self},
 	warn,
 };
@@ -240,8 +240,10 @@ pub(crate) async fn register_route(
 
 	let (token, device) = if !no_device {
 		// Don't create a device for inhibited logins
-		let device_id = if is_guest { None } else { body.device_id.clone() }
-			.unwrap_or_else(|| utils::random_string(DEVICE_ID_LENGTH).into());
+		let device_id = match if is_guest { None } else { body.device_id.clone() } {
+			| Some(device_id) => device_id,
+			| None => slipstream::OwnedDeviceId::parse(utils::random_string(DEVICE_ID_LENGTH))?,
+		};
 
 		// Generate new token for the device
 		let new_token = utils::random_string(TOKEN_LENGTH);
@@ -648,7 +650,8 @@ pub(crate) async fn request_registration_token_via_email_route(
 				server_name: services.config.server_name.as_ref(),
 				verification_link,
 			},
-			&slipstream::OwnedClientSecret::from(body.client_secret.clone()),
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;

@@ -230,10 +230,9 @@ where
 					warn!("legacy room ID has no server name");
 					return Ok(false);
 				};
-				let sender_server_name = sender.server_name();
-				if Some(&room_id_server_name) != sender_server_name.as_ref() {
+				if room_id_server_name != sender.server_name() {
 					warn!(
-						expected = ?sender_server_name,
+						expected = %sender.server_name(),
 						received = %room_id_server_name,
 						"server name of legacy room ID does not match server name of sender"
 					);
@@ -381,9 +380,7 @@ where
 			debug!("starting m.room.aliases check");
 
 			// If sender's domain doesn't matches state_key, reject
-			if incoming_event.state_key()
-				!= sender.server_name().as_ref().map(slipstream::OwnedServerName::as_str)
-			{
+			if incoming_event.state_key() != Some(sender.server_name().as_str()) {
 				warn!("state_key does not match sender");
 				return Ok(false);
 			}

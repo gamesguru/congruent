@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result};
+use conduwuit::{Err, Result, err};
 use futures::{FutureExt, StreamExt};
 use slipstream::{
 	OwnedRoomId,
@@ -122,7 +122,8 @@ pub(crate) async fn set_profile_key_route(
 		let Some(avatar_url) = profile_key_value.as_str() else {
 			return Err!(Request(BadJson("avatar_url must be a string")));
 		};
-		let mxc = slipstream::OwnedMxcUri::from(avatar_url);
+		let mxc = slipstream::OwnedMxcUri::parse(avatar_url)
+			.map_err(|_| err!(Request(InvalidParam("avatar_url must be a valid MXC URI"))))?;
 
 		let all_joined_rooms: Vec<OwnedRoomId> = services
 			.rooms

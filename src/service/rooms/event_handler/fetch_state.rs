@@ -89,7 +89,10 @@ where
 				.chain(state_ids_res.pdu_ids.iter());
 
 			for id in all_ids {
-				let id = OwnedEventId::from(id.as_str());
+				let Ok(id) = OwnedEventId::parse(id.as_str()) else {
+					conduwuit::debug_warn!("Skipping invalid event ID in remote state response");
+					continue;
+				};
 				if !self.services.timeline.pdu_exists(&id).await {
 					missing_ids.push(id);
 				} else {

@@ -92,7 +92,7 @@ pub fn servers_invite_via<'a>(
 				.split(|&b| b == 0xFF)
 				.next_back()
 				.and_then(|server| std::str::from_utf8(server).ok())
-				.map(OwnedServerName::from);
+				.and_then(|server| OwnedServerName::parse(server).ok());
 			future::ready(server)
 		})
 }

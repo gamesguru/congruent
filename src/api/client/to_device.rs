@@ -53,7 +53,7 @@ pub(crate) async fn send_event_to_device_route(
 					federation::transactions::edu::Edu::DirectToDevice(DirectDeviceContent {
 						sender: sender_user.to_owned(),
 						ev_type: body.event_type.clone(),
-						message_id: count.to_string().into(),
+						message_id: slipstream::OwnedTransactionId::parse(count.to_string())?,
 						messages,
 					});
 				buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());

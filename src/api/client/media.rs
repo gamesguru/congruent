@@ -81,7 +81,7 @@ pub(crate) async fn create_content_route(
 	});
 
 	Ok(create_content::v3::Response {
-		content_uri: mxc.to_string().into(),
+		content_uri: slipstream::OwnedMxcUri::parse(mxc.to_string())?,
 		blurhash: blurhash.flatten(),
 	})
 }

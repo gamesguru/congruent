@@ -427,11 +427,10 @@ impl Service {
 		bytes
 			.split(|byte| *byte == 0xFF)
 			.map(|user| {
-				std::str::from_utf8(user)
-					.map(OwnedUserId::from)
-					.map_err(|_| {
-						conduwuit::err!(Database("Invalid user ID in thread participants"))
-					})
+				let invalid =
+					|| conduwuit::err!(Database("Invalid user ID in thread participants"));
+				let user = std::str::from_utf8(user).map_err(|_| invalid())?;
+				OwnedUserId::parse(user).map_err(|_| invalid())
 			})
 			.collect()
 	}

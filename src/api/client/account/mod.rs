@@ -228,7 +228,8 @@ pub(crate) async fn request_password_change_token_via_email_route(
 				user_id: &user_id,
 				verification_link,
 			},
-			&slipstream::OwnedClientSecret::from(body.client_secret.clone()),
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;

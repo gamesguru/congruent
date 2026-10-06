@@ -396,7 +396,10 @@ impl Service {
 				.and_then(|v| v.as_array())
 				.map(|arr| {
 					arr.iter()
-						.filter_map(|v| v.as_str().map(slipstream::OwnedEventId::from))
+						.filter_map(|v| {
+							v.as_str()
+								.and_then(|id| slipstream::OwnedEventId::parse(id).ok())
+						})
 						.collect()
 				})
 				.unwrap_or_default();

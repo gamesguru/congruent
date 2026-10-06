@@ -543,7 +543,10 @@ async fn join_room_by_id_helper_remote(
 		.and_then(|v| v.as_array())
 		.map(|arr| {
 			arr.iter()
-				.filter_map(|v| v.as_str().map(<slipstream::EventId>::from))
+				.filter_map(|v| {
+					v.as_str()
+						.and_then(|id| <slipstream::EventId>::parse(id).ok())
+				})
 				.collect()
 		})
 		.unwrap_or_default();

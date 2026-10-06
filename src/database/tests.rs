@@ -236,7 +236,7 @@ fn ser_complex() {
 	}
 
 	let mxc = Mxc {
-		server_name: &OwnedServerName::from("example.com"),
+		server_name: &OwnedServerName::parse("example.com").unwrap(),
 		media_id: "AbCdEfGhIjK",
 	};
 

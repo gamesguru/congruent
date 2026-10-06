@@ -25,7 +25,7 @@ use crate::Services;
 /// Users in this room are considered admins by conduwuit, and the room can be
 /// used to issue admin commands by talking to the server user inside it.
 pub async fn create_admin_room(services: &Services) -> Result {
-	let room_id = conduwuit::utils::room_id_v11(services.globals.server_name());
+	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let room_version = &RoomVersionId::V11;
 
 	let _short_id = services

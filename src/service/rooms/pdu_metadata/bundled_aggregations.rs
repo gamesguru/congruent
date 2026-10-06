@@ -279,9 +279,9 @@ mod tests {
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {
-			event_id: slipstream::OwnedEventId::from("$test:example.com"),
-			room_id: Some(slipstream::OwnedRoomId::from("!test:example.com")),
-			sender: slipstream::OwnedUserId::from("@test:example.com"),
+			event_id: slipstream::OwnedEventId::parse("$test:example.com").unwrap(),
+			room_id: Some(slipstream::OwnedRoomId::parse("!test:example.com").unwrap()),
+			sender: slipstream::OwnedUserId::parse("@test:example.com").unwrap(),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: TimelineEventType::RoomMessage,
 			content: Raw::from_value(&json!({"msgtype": "m.text", "body": "test"})),

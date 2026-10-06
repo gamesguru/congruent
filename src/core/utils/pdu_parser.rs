@@ -51,7 +51,7 @@ mod tests {
 
 	#[test]
 	fn test_parse_and_clean_pdu() {
-		let room_id = OwnedRoomId::from("!test:example.com");
+		let room_id = OwnedRoomId::parse("!test:example.com").unwrap();
 		let version = RoomVersionId::parse("10").unwrap(); // V3+ strips room_id
 
 		let raw_json = json!({
@@ -141,7 +141,7 @@ mod tests {
 
 	#[test]
 	fn v12_non_create_event_keeps_room_id_before_hashing() {
-		let room_id = OwnedRoomId::from("!test:example.com");
+		let room_id = OwnedRoomId::parse("!test:example.com").unwrap();
 		let version = RoomVersionId::parse("12").unwrap();
 
 		let value: CanonicalJsonObject = slipstream::codec::from_str(

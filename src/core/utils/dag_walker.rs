@@ -105,7 +105,7 @@ mod tests {
 		PduEvent {
 			event_id: id.to_owned(),
 			room_id: None,
-			sender: OwnedUserId::from("@test:example.com"),
+			sender: OwnedUserId::parse("@test:example.com").unwrap(),
 			origin: None,
 			origin_server_ts: uint!(0),
 			kind: TimelineEventType::RoomMessage,

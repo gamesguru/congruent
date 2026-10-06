@@ -125,7 +125,7 @@ pub enum Error {
 	#[error(transparent)]
 	MatrixIdParse(#[from] slipstream::MatrixIdParseError),
 	#[error("from {0}: {1}")]
-	Redaction(String, slipstream::canonical_json::RedactionError),
+	Redaction(slipstream::OwnedServerName, slipstream::canonical_json::RedactionError),
 	#[error("{0}: {1}")]
 	Request(slipstream::api::client::error::ErrorKind, Cow<'static, str>, http::StatusCode),
 	#[error(transparent)]

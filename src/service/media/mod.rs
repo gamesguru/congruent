@@ -263,12 +263,10 @@ impl Service {
 			};
 
 			trace!("Parsed MXC key to URL: {mxc_s}");
-			let mxc = OwnedMxcUri::from(mxc_s);
-
-			if mxc.is_valid() {
-				mxcs.push(mxc);
-			} else {
-				debug_warn!("{mxc:?} from database was found to not be valid");
+			match OwnedMxcUri::parse(mxc_s) {
+				| Ok(mxc) if mxc.is_valid() => mxcs.push(mxc),
+				| Ok(mxc) => debug_warn!("{mxc:?} from database was found to not be valid"),
+				| Err(e) => debug_warn!("MXC from database failed to parse: {e}"),
 			}
 		}
 
@@ -309,7 +307,10 @@ impl Service {
 			};
 
 			trace!("Parsed MXC key to URL: {mxc_s}");
-			let mxc = OwnedMxcUri::from(mxc_s);
+			let Ok(mxc) = OwnedMxcUri::parse(mxc_s) else {
+				debug_warn!("Invalid MXC in database, skipping");
+				continue;
+			};
 			if (mxc
 				.server_name()
 				.is_ok_and(|server| server == self.services.globals.server_name())
@@ -369,7 +370,10 @@ impl Service {
 		let mut deletion_count: usize = 0;
 
 		for mxc_uri in remote_mxcs {
-			let mxc_uri = OwnedMxcUri::from(mxc_uri.as_str());
+			let Ok(mxc_uri) = OwnedMxcUri::parse(mxc_uri.as_str()) else {
+				debug_warn!("Invalid MXC in database, skipping");
+				continue;
+			};
 			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
 			else {
 				debug_warn!("Invalid MXC in database, skipping");

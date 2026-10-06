@@ -145,7 +145,7 @@ async fn verify_federation_request(
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
 	let keys: PubKeys = [(x_matrix.key.clone(), key.key)].into();
-	let keys: PubKeyMap = [(x_matrix.origin.as_str().into(), keys)].into();
+	let keys: PubKeyMap = [(x_matrix.origin.clone(), keys)].into();
 	slipstream::signatures::verify_json(&keys, authorization).map_err(|e| {
 		err!(Request(Forbidden(warn!(
 			"Failed to verify X-Matrix signatures from {}: {e}",

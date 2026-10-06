@@ -302,10 +302,10 @@ pub(crate) async fn login_route(
 	};
 
 	// Generate new device id if the user didn't specify one
-	let device_id = body
-		.device_id
-		.clone()
-		.unwrap_or_else(|| utils::random_string(DEVICE_ID_LENGTH).into());
+	let device_id = match body.device_id.clone() {
+		| Some(device_id) => device_id,
+		| None => slipstream::OwnedDeviceId::parse(utils::random_string(DEVICE_ID_LENGTH))?,
+	};
 
 	// Generate a new token for the device (ensuring no collisions)
 	let token = services.users.generate_unique_token().await;

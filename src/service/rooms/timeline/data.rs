@@ -2240,7 +2240,8 @@ impl Data {
 					.and_then(move |(_key, val)| async move {
 						let s = std::str::from_utf8(val)
 							.map_err(|e| err!(Database("Invalid event id utf8: {e:?}")))?;
-						let event_id = OwnedEventId::from(s);
+						let event_id = OwnedEventId::parse(s)
+							.map_err(|e| err!(Database("Invalid event id: {e}")))?;
 						let event_id = &event_id;
 						self.services
 							.short

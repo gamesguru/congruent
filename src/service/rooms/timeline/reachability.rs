@@ -153,10 +153,10 @@ mod tests {
 	use super::*;
 
 	fn reachability() -> LiveReachability {
-		let a = OwnedEventId::from("$a:example.org");
-		let b = OwnedEventId::from("$b:example.org");
-		let c = OwnedEventId::from("$c:example.org");
-		let d = OwnedEventId::from("$d:example.org");
+		let a = OwnedEventId::parse("$a:example.org").unwrap();
+		let b = OwnedEventId::parse("$b:example.org").unwrap();
+		let c = OwnedEventId::parse("$c:example.org").unwrap();
+		let d = OwnedEventId::parse("$d:example.org").unwrap();
 
 		let mut topo = HashMap::new();
 		topo.insert(a.clone(), 1);
@@ -176,10 +176,10 @@ mod tests {
 	#[test]
 	fn topo_filter_and_slow_path_agree_on_chain_edges() {
 		let reach = reachability();
-		let a = OwnedEventId::from("$a:example.org");
-		let b = OwnedEventId::from("$b:example.org");
-		let c = OwnedEventId::from("$c:example.org");
-		let d = OwnedEventId::from("$d:example.org");
+		let a = OwnedEventId::parse("$a:example.org").unwrap();
+		let b = OwnedEventId::parse("$b:example.org").unwrap();
+		let c = OwnedEventId::parse("$c:example.org").unwrap();
+		let d = OwnedEventId::parse("$d:example.org").unwrap();
 
 		assert_eq!(reach.reaches(&a, &c), rezzy::Reach::Yes);
 		assert_eq!(reach.reaches(&c, &a), rezzy::Reach::No);
@@ -191,8 +191,8 @@ mod tests {
 	#[test]
 	fn missing_labels_fall_back_to_unknown() {
 		let reach = LiveReachability::new(HashMap::new(), Arc::new(|_, _| rezzy::Reach::Unknown));
-		let a = OwnedEventId::from("$a:example.org");
-		let b = OwnedEventId::from("$b:example.org");
+		let a = OwnedEventId::parse("$a:example.org").unwrap();
+		let b = OwnedEventId::parse("$b:example.org").unwrap();
 
 		assert_eq!(reach.reaches(&a, &b), rezzy::Reach::Unknown);
 	}

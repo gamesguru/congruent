@@ -1326,7 +1326,9 @@ pub async fn promote_outliers_sorted(
 
 	let mut promoted = 0_usize;
 	for event_id_str in &sorted_ids {
-		let event_id = OwnedEventId::from(event_id_str.as_str());
+		let Ok(event_id) = OwnedEventId::parse(event_id_str.as_str()) else {
+			continue;
+		};
 		let event_id = event_id.as_ref();
 		match self.promote_outlier(room_id, event_id).await {
 			| Ok(PromoteOutlierOutcome::Queued) => {

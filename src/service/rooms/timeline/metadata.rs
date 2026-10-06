@@ -21,10 +21,9 @@ mod opt_event_id {
 	pub(super) fn deserialize<'de, D: Deserializer<'de>>(
 		deserializer: D,
 	) -> Result<Option<OwnedEventId>, D::Error> {
-		Ok(
-			Option::<String>::deserialize(deserializer)?
-				.map(|id| OwnedEventId::from(id.as_str())),
-		)
+		Option::<String>::deserialize(deserializer)?
+			.map(|id| OwnedEventId::parse(id).map_err(serde::de::Error::custom))
+			.transpose()
 	}
 }
 
