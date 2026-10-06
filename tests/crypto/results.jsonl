@@ -100,9 +100,9 @@
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_display_name_change"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycled/{rust_hs1}|{rust_hs1}/on_new_device_login"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycledOnClientRestart"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycledOnClientRestart"}
 {"Action":"pass","Test":"TestRoomKeyIsNotCycledOnClientRestart/js"}
-{"Action":"fail","Test":"TestRoomKeyIsNotCycledOnClientRestart/rust"}
+{"Action":"pass","Test":"TestRoomKeyIsNotCycledOnClientRestart/rust"}
 {"Action":"pass","Test":"TestSigkillBeforeKeysUploadResponse"}
 {"Action":"pass","Test":"TestSigkillBeforeKeysUploadResponse/js"}
 {"Action":"pass","Test":"TestSigkillBeforeKeysUploadResponse/rust"}
