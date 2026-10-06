@@ -595,7 +595,6 @@ async fn sync_events_v5_route_inner(
 	body: Ruma<CompatSyncRequest>,
 	endpoint: SyncEndpoint,
 ) -> Result<axum::response::Response> {
-	debug_assert!(DEFAULT_BUMP_TYPES.is_sorted(), "DEFAULT_BUMP_TYPES is not sorted");
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	let sender_device = body.sender_device.as_ref().expect("user is authenticated");
 
@@ -1396,7 +1395,7 @@ where
 			if fallback_timestamp.is_none_or(|time| time <= ts) {
 				fallback_timestamp = Some(ts);
 			}
-			if DEFAULT_BUMP_TYPES.binary_search(&pdu.kind).is_ok()
+			if DEFAULT_BUMP_TYPES.contains(&pdu.kind)
 				&& timestamp.is_none_or(|time| time <= ts)
 			{
 				timestamp = Some(ts);

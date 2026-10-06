@@ -74,7 +74,6 @@ pub(crate) async fn get_message_events_route(
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<get_message_events::v3::Request>,
 ) -> Result<get_message_events::v3::Response> {
-	debug_assert!(IGNORED_MESSAGE_TYPES.is_sorted(), "IGNORED_MESSAGE_TYPES is not sorted");
 	let sender_user = body.sender_user();
 	let sender_device = body.sender_device_opt();
 	let room_id = &body.room_id;
@@ -475,7 +474,7 @@ where
 	}
 
 	let sender_user = event.sender();
-	let type_ignored = IGNORED_MESSAGE_TYPES.binary_search(event.kind()).is_ok();
+	let type_ignored = IGNORED_MESSAGE_TYPES.contains(event.kind());
 	let server_ignored = services
 		.moderation
 		.is_remote_server_ignored(&sender_user.server_name());
