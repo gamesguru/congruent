@@ -28,7 +28,7 @@ use slipstream::{
 
 use crate::{
 	Ruma, RumaResponse,
-	json_util::{json_response, single_field},
+	json_util::{json_response, require_object_content, single_field},
 };
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
@@ -48,6 +48,8 @@ pub(crate) async fn send_state_event_for_key_route(
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
+
+	require_object_content(&body.body.body)?;
 
 	if let Some(delay) = body.delay {
 		if std::time::SystemTime::now().checked_add(delay).is_none() {
