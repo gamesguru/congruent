@@ -65,7 +65,7 @@ pub(crate) async fn send_event_to_device_route(
 				continue;
 			}
 
-			let event_type = &body.event_type.to_string();
+			let event_type = &body.event_type.clone();
 
 			let event = event
 				.deserialize_as()

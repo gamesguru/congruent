@@ -121,8 +121,8 @@ pub(crate) async fn get_room_digest_route(
 	while let Some(Ok((_, pdu))) = pdus.next().await {
 		event_count = event_count.saturating_add(1);
 
-		let depth: u64 = pdu.depth.into();
-		let ts: u64 = u64::from(pdu.origin_server_ts);
+		let depth: u64 = pdu.depth;
+		let ts: u64 = pdu.origin_server_ts;
 
 		if depth < min_depth {
 			min_depth = depth;

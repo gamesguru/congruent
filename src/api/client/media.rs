@@ -102,7 +102,7 @@ pub(crate) async fn get_content_thumbnail_route(
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let user = body.sender_user();
 
-	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
+	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -134,7 +134,7 @@ pub(crate) async fn get_content_thumbnail_route(
 
 	Ok(get_content_thumbnail::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,
@@ -193,7 +193,7 @@ pub(crate) async fn get_content_route(
 
 	Ok(get_content::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,
@@ -254,7 +254,7 @@ pub(crate) async fn get_content_as_filename_route(
 
 	Ok(get_content_as_filename::v1::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,

@@ -206,7 +206,7 @@ impl DagExportStats {
 					prevs.push(prev.to_owned());
 				}
 				self.all_events_prevs.insert(eid, prevs);
-				let d: u64 = pdu.depth.into();
+				let d: u64 = pdu.depth;
 				self.max_depth = self.max_depth.max(d);
 				self.min_depth = self.min_depth.min(d);
 			}

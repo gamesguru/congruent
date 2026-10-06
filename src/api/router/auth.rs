@@ -285,7 +285,7 @@ async fn auth_appservice(
 			)));
 		}
 
-		Some(device_id.to_owned())
+		Some(device_id.clone())
 	} else {
 		None
 	};
@@ -320,7 +320,7 @@ async fn auth_server(
 		.to_string();
 
 	let signature: [Member; 1] =
-		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
+		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
 
 	let signatures: [Member; 1] = [(origin.as_str().into(), Value::Object(signature.into()))];
 

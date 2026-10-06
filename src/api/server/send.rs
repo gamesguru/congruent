@@ -197,8 +197,8 @@ async fn process_inbound_transaction(
 	let edus = body
 		.edus
 		.iter()
-		.map(|edu| edu.get())
-		.map(|json_str| codec::from_str::<Edu>(json_str))
+		.map(Raw::get)
+		.map(codec::from_str::<Edu>)
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -604,7 +604,7 @@ async fn build_local_dag(
 		dag.insert(event_id.clone(), prev_events);
 		let origin_server_ts = value
 			.get("origin_server_ts")
-			.and_then(|value| value.as_i64())
+			.and_then(rezzy::JsonValue::as_i64)
 			.unwrap_or_default();
 		id_origin_ts.insert(event_id.clone(), origin_server_ts);
 	}
@@ -993,7 +993,7 @@ async fn handle_edu_device_list_update(
 
 	info!(%user_id, %origin, "Received DeviceListUpdate event");
 
-	let incoming_stream_id = u64::from(stream_id);
+	let incoming_stream_id = stream_id;
 	let last_seen_stream_id = services.users.remote_device_list_stream_id(&user_id).await;
 
 	if incoming_stream_id <= last_seen_stream_id {
@@ -1002,7 +1002,7 @@ async fn handle_edu_device_list_update(
 
 	if prev_id
 		.iter()
-		.map(|prev| u64::from(*prev))
+		.copied()
 		.any(|prev| prev > last_seen_stream_id && prev != incoming_stream_id)
 	{
 		// TODO: Synapse keeps a richer pending-update pipeline keyed by prev_id, which
@@ -1061,7 +1061,7 @@ async fn handle_edu_device_list_update(
 			return;
 		};
 
-		let fetched_stream_id = u64::from(response.stream_id);
+		let fetched_stream_id = response.stream_id;
 		if fetched_stream_id <= last_seen_stream_id {
 			return;
 		}
@@ -1217,7 +1217,7 @@ async fn handle_edu_direct_to_device(
 	}
 
 	// process messages concurrently for different users
-	let ev_type = ev_type.to_string();
+	let ev_type = ev_type.clone();
 	messages
 		.into_iter()
 		.stream()
@@ -1296,7 +1296,6 @@ async fn handle_edu_direct_to_device_event(
 				.users
 				.all_device_ids(target_user_id)
 				.for_each(|target_device_id| {
-					let target_device_id = target_device_id.clone();
 					let event = event.clone();
 					async move {
 						services

@@ -233,7 +233,7 @@ async fn unban_room(&self, room: OwnedRoomOrAliasId) -> Result {
 		debug!("Room specified is a room ID, unbanning room ID");
 		self.services.rooms.metadata.ban_room(&room_id, false);
 
-		room_id.to_owned()
+		room_id.clone()
 	} else if room.is_room_alias_id() {
 		let room_alias = match RoomAliasId::parse(&room) {
 			| Ok(room_alias) => room_alias,
@@ -315,7 +315,7 @@ async fn list_banned_rooms(&self, no_details: bool) -> Result {
 	let mut rooms = room_ids
 		.iter()
 		.stream()
-		.then(|room_id| async move { get_room_info(self.services, &room_id).await })
+		.then(|room_id| async move { get_room_info(self.services, room_id).await })
 		.collect::<Vec<_>>()
 		.await;
 
@@ -357,7 +357,7 @@ async fn resolve_room_id(
 		};
 
 		debug!("Room specified is a room ID, resolving room ID");
-		Ok(room_id.to_owned())
+		Ok(room_id)
 	} else if room.is_room_alias_id() {
 		let room_alias = match RoomAliasId::parse(room) {
 			| Ok(room_alias) => room_alias,

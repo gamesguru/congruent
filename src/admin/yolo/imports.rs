@@ -82,7 +82,7 @@ pub(super) async fn import_pdus(
 		.server_name()
 		.filter(|s| !self.services.globals.server_is_ours(s))
 		.unwrap_or_else(|| self.services.globals.server_name().clone())
-		.to_owned();
+		.clone();
 
 	let mode = match (skip_auth, skip_sig_verify) {
 		| (true, _) => "force-insert (skip-auth)",

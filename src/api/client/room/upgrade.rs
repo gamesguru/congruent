@@ -487,7 +487,7 @@ pub(crate) async fn upgrade_room_route(
 					event_type: StateEventType::SpaceChild.into(),
 					content: slipstream::serde::RawJsonValue::from_value(
 						&SpaceChildEventContent {
-							via: vec![sender_user.server_name().to_owned()],
+							via: vec![sender_user.server_name().clone()],
 							order: child.order,
 							suggested: child.suggested,
 						},

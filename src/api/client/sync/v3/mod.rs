@@ -957,7 +957,7 @@ pub(crate) async fn build_sync_events(
 		}
 
 		// inject missing ephemeral to satisfy complement
-		for (_room_id, room_val) in join.as_object_mut().unwrap() {
+		for room_val in join.as_object_mut().unwrap().values_mut() {
 			let room = room_val.as_object_mut().unwrap();
 			if !room.contains_key("ephemeral") {
 				room.insert("ephemeral".to_owned(), empty_events());
@@ -1241,7 +1241,7 @@ fn collect_timeline_join_users(
 					if content.membership == "join" {
 						if let Some(ref state_key) = helper.state_key {
 							if let Ok(user_id) = UserId::parse(state_key) {
-								users.insert(user_id.to_owned());
+								users.insert(user_id.clone());
 							}
 						}
 					}
@@ -1278,7 +1278,7 @@ async fn process_presence_updates(
 				.ok()
 				.await
 		})
-		.map(|(user_id, event)| (user_id.to_owned(), event.content))
+		.map(|(user_id, event)| (user_id, event.content))
 		.collect()
 		.await
 }

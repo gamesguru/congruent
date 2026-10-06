@@ -185,7 +185,10 @@ pub(super) async fn rescue_room(
 
 		self.write_str(&format!(
 			"\nHealing state from {:?} (force-set-state --overwrite)...",
-			heal_from.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+			heal_from
+				.iter()
+				.map(OwnedServerName::as_str)
+				.collect::<Vec<_>>()
 		))
 		.await?;
 
@@ -263,7 +266,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 	let origin = pdu
 		.origin
 		.clone()
-		.unwrap_or_else(|| pdu.sender.server_name().to_owned());
+		.unwrap_or_else(|| pdu.sender.server_name());
 
 	// Lenient path: falls back to current room state when no server can
 	// provide /state_ids for this historical event.
@@ -304,7 +307,7 @@ pub(super) async fn clean_corrupt_rooms(&self, execute: bool) -> Result {
 
 		let valid = s.starts_with('!') && s.len() <= 255 && RoomId::parse(s).is_ok();
 		if !valid && s.starts_with('!') {
-			corrupt.push(room_id.to_owned());
+			corrupt.push(room_id.clone());
 		}
 	}
 
@@ -491,7 +494,7 @@ pub(super) async fn check_rooms(&self, problems_only: bool, deep: bool, fix: boo
 			futures::pin_mut!(pdus);
 			let mut prev_ts = None;
 			while let Some((_count, pdu)) = pdus.next().await {
-				let ts: u64 = pdu.origin_server_ts().0.into();
+				let ts: u64 = pdu.origin_server_ts().0;
 				if let Some(pts) = prev_ts {
 					if ts < pts {
 						timeline_breaks = timeline_breaks.saturating_add(1);

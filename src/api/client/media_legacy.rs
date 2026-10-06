@@ -253,7 +253,7 @@ pub(crate) async fn get_content_legacy_route(
 
 	Ok(get_content::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
@@ -344,7 +344,7 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 
 	Ok(get_content_as_filename::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
@@ -392,7 +392,7 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 		media_id: &body.media_id,
 	};
 
-	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
+	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 
 	let FileMeta {
 		content,
@@ -429,7 +429,7 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 
 	Ok(get_content_thumbnail::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,

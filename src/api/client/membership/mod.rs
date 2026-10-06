@@ -274,7 +274,7 @@ pub(crate) async fn fetch_join_knock_servers(
 
 		if !from_alias {
 			if let Some(server) = room_id.server_name() {
-				addl_servers.push(server.to_owned());
+				addl_servers.push(server);
 			}
 		}
 

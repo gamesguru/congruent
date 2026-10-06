@@ -427,7 +427,7 @@ fn required_state_excludes(
 	excludes: &BTreeSet<TypeStateKey>,
 ) -> bool {
 	excludes.iter().any(|(event_type, state_key)| {
-		(event_type.to_string() == "*" || *event_type == entry.0)
+		(event_type == "*" || *event_type == entry.0)
 			&& (state_key.as_str() == "*" || state_key.as_str() == entry.1)
 	})
 }
@@ -470,7 +470,7 @@ impl EndpointRequest for CompatSyncRequest {
 		let (request, list_filters, required_state_excludes, set_presence) =
 			if let Some(body) = body {
 				let compat = CompatRequest::from_json(body)?;
-				let set_presence = compat.set_presence.clone();
+				let set_presence = compat.set_presence;
 				let list_filters = compat
 					.lists
 					.iter()
@@ -1068,7 +1068,7 @@ where
 			.stream()
 			.widen_then(10, |room_id| async move {
 				let ts = match services.rooms.timeline.latest_pdu_in_room(&room_id).await {
-					| Ok(pdu) => pdu.origin_server_ts().get().into(),
+					| Ok(pdu) => pdu.origin_server_ts().get(),
 					| Err(_) => 0_u64,
 				};
 				(room_id, ts)
@@ -1373,7 +1373,7 @@ where
 			|| room_name_requested
 			|| timeline_pdus
 				.iter()
-				.any(|(_, pdu)| pdu.event_type().to_string() == "m.room.name");
+				.any(|(_, pdu)| pdu.event_type() == "m.room.name");
 
 		let room_events: Vec<_> = timeline_pdus
 			.iter()
@@ -1723,7 +1723,7 @@ async fn collect_required_state(
 				continue;
 			}
 
-			if event_type.to_string() == "*" {
+			if event_type == "*" {
 				let state_key_filter = state_key.as_str();
 				let full_state = services
 					.rooms
@@ -2004,7 +2004,7 @@ async fn new_encrypted_room_members(
 		// already
 		.filter_map(|user_id| async move {
 			(!share_encrypted_room(services, sender_user, &user_id, Some(room_id)).await)
-				.then(|| user_id.to_owned())
+				.then(|| user_id.clone())
 		})
 		.collect::<Vec<_>>()
 		.await
@@ -2155,13 +2155,13 @@ where
 								)
 								.await
 								{
-									device_list_changes.insert(user_id.to_owned());
+									device_list_changes.insert(user_id.clone());
 								}
 							},
 							| MembershipState::Leave | MembershipState::Ban => {
 								// Write down users that have left encrypted rooms we
 								// are in
-								left_encrypted_users.insert(user_id.to_owned());
+								left_encrypted_users.insert(user_id.clone());
 							},
 							| _ => {},
 						}

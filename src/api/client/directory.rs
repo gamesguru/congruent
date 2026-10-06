@@ -287,7 +287,7 @@ pub(crate) async fn get_public_rooms_filtered_helper(
 			if !filter.room_types.is_empty()
 				&& !filter
 					.room_types
-					.contains(&RoomTypeFilter::from(chunk.room_type.clone()))
+					.contains(&RoomTypeFilter::from(chunk.room_type))
 			{
 				return None;
 			}

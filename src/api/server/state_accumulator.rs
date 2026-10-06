@@ -126,7 +126,7 @@ async fn verify_federation_request(
 	}
 
 	let signature: [Member; 1] =
-		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
+		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
 	let signatures: [Member; 1] =
 		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
 	let authorization: Object = [

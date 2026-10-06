@@ -38,10 +38,10 @@ impl TimelinePdus {
 	pub(crate) fn members(&self) -> impl Iterator<Item = OwnedUserId> + '_ {
 		self.pdus.iter().flat_map(|(_, pdu)| {
 			let mut users = vec![pdu.sender.clone()];
-			if pdu.event_type().to_string() == "m.room.member" {
+			if pdu.event_type() == "m.room.member" {
 				if let Some(state_key) = &pdu.state_key {
 					if let Ok(user_id) = UserId::parse(state_key.as_str()) {
-						users.push(user_id.to_owned());
+						users.push(user_id);
 					}
 				}
 			}

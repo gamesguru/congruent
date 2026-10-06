@@ -39,7 +39,7 @@ pub(crate) async fn get_event_by_timestamp_route(
 	let stream = services
 		.rooms
 		.timeline
-		.pdus_by_timestamp(room_id, body.ts.0.into(), body.dir);
+		.pdus_by_timestamp(room_id, body.ts.0, body.dir);
 	pin_mut!(stream);
 
 	while let Some(item) = stream.next().await {

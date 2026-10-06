@@ -92,11 +92,11 @@ pub(crate) async fn join_room_by_id_route(
 			.iter()
 			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
 			.filter_map(|sender| UserId::parse(&sender).ok())
-			.map(|user| user.server_name().to_owned()),
+			.map(|user| user.server_name()),
 	);
 
 	if let Some(server) = body.room_id.server_name() {
-		servers.push(server.into());
+		servers.push(server);
 	}
 
 	servers.sort_unstable();
@@ -400,11 +400,7 @@ async fn join_room_by_id_helper_remote(
 
 	join_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	let mut content = to_canonical_value(RoomMemberEventContent {
 		displayname: services.users.displayname(sender_user).boxed().await.ok(),
@@ -547,10 +543,7 @@ async fn join_room_by_id_helper_remote(
 		.and_then(|v| v.as_array())
 		.map(|arr| {
 			arr.iter()
-				.filter_map(|v| {
-					v.as_str()
-						.and_then(|s| <slipstream::EventId>::try_from(s).ok())
-				})
+				.filter_map(|v| v.as_str().map(<slipstream::EventId>::from))
 				.collect()
 		})
 		.unwrap_or_default();
@@ -666,7 +659,7 @@ async fn join_room_by_id_helper_remote_process(
 			.get_statekey_from_short(shortstatekey)
 			.await
 		{
-			lattice.insert(&kind.to_string(), state_key.as_str(), event_id.as_str());
+			lattice.insert(kind.as_ref(), state_key.as_str(), event_id.as_str());
 		}
 	}
 

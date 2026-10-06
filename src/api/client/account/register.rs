@@ -387,7 +387,7 @@ pub(crate) async fn register_route(
 					&user_id,
 					&room_id,
 					Some("Automatically joining this room upon registration".to_owned()),
-					&[services.globals.server_name().to_owned(), room_server_name.to_owned()],
+					&[services.globals.server_name().to_owned(), room_server_name.clone()],
 					&body.appservice_info,
 					None,
 				)
@@ -504,7 +504,7 @@ async fn create_registration_uiaa_session(
 			let mut terms = slipstream::json::Value::Object(policies);
 
 			// Insert a dummy `version` field
-			for (_, documents) in terms.as_object_mut().unwrap() {
+			for documents in terms.as_object_mut().unwrap().values_mut() {
 				let documents = documents.as_object_mut().unwrap();
 
 				documents.insert("version".to_owned(), "latest".into());

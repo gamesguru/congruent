@@ -258,7 +258,7 @@ pub async fn create_event(
 		sender: sender.to_owned(),
 		origin: None,
 		origin_server_ts: timestamp.map_or_else(
-			|| utils::millis_since_unix_epoch(),
+			utils::millis_since_unix_epoch,
 			slipstream::MilliSecondsSinceUnixEpoch::get,
 		),
 		kind: event_type,

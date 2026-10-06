@@ -33,7 +33,7 @@ pub(crate) async fn set_global_account_data_route(
 		return Err!(Request(Forbidden("You cannot set account data for other users.")));
 	}
 
-	set_account_data(&services, None, &body.user_id, &body.event_type.to_string(), &body.data)
+	set_account_data(&services, None, &body.user_id, body.event_type.as_ref(), &body.data)
 		.await?;
 
 	Ok(set_global_account_data::v3::Response {})
@@ -56,7 +56,7 @@ pub(crate) async fn set_room_account_data_route(
 		&services,
 		Some(&body.room_id),
 		&body.user_id,
-		&body.event_type.to_string(),
+		body.event_type.as_ref(),
 		&body.data,
 	)
 	.await?;
@@ -126,7 +126,7 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 		authenticate_user(request, &services, &set_global_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != &*user_id {
+	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 
@@ -153,7 +153,7 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 		authenticate_user(request, &services, &set_room_account_data::v3::Request::METADATA)
 			.await?;
 
-	if sender_user != &*user_id {
+	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
 	}
 

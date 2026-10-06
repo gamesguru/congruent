@@ -39,7 +39,7 @@ pub(super) async fn process(subcommand: PresenceCommand, context: &Context<'_>) 
 			let results: Vec<(_, _, _)> = services
 				.presence
 				.presence_since(since)
-				.map(|(user_id, count, bytes)| (user_id.to_owned(), count, bytes.to_vec()))
+				.map(|(user_id, count, bytes)| (user_id, count, bytes.to_vec()))
 				.collect()
 				.await;
 			let query_time = timer.elapsed();

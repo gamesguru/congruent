@@ -263,10 +263,7 @@ pub(super) async fn get_remote_pdu_list(&self, server: OwnedServerName, force: b
 
 	for event_id in list {
 		if force {
-			match self
-				.get_remote_pdu(event_id.to_owned(), server.clone())
-				.await
-			{
+			match self.get_remote_pdu(event_id.clone(), server.clone()).await {
 				| Err(e) => {
 					failed_count = failed_count.saturating_add(1);
 					self.services
@@ -281,7 +278,7 @@ pub(super) async fn get_remote_pdu_list(&self, server: OwnedServerName, force: b
 				},
 			}
 		} else {
-			self.get_remote_pdu(event_id.to_owned(), server.clone())
+			self.get_remote_pdu(event_id.clone(), server.clone())
 				.await?;
 			success_count = success_count.saturating_add(1);
 		}
@@ -1599,7 +1596,7 @@ async fn promote_sync_anchor(
 		.state_accessor
 		.state_full_pdus_hamt(root_handle.clone())
 		.map(|pdu| {
-			let ts: u64 = pdu.origin_server_ts().0.into();
+			let ts: u64 = pdu.origin_server_ts().0;
 			let eid = pdu.event_id().to_owned();
 			(ts, eid)
 		})

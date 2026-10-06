@@ -238,7 +238,7 @@ async fn local_room_summary_response(
 		room_version,
 		encryption,
 		membership,
-		allowed_room_ids: join_rule.allowed_rooms().map(Into::into).collect(),
+		allowed_room_ids: join_rule.allowed_rooms().collect(),
 		join_rule: join_rule.into(),
 	})
 }

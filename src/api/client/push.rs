@@ -275,7 +275,7 @@ pub(crate) async fn get_pushrule_route(
 
 	let mut global = event.content.global;
 	global = normalize_poll_push_rules(global)?;
-	let rule = global.get(body.kind.clone(), &body.rule_id).map(Into::into);
+	let rule = global.get(body.kind, &body.rule_id).map(Into::into);
 
 	if let Some(rule) = rule {
 		Ok(get_pushrule::v3::Response { rule })
@@ -373,7 +373,7 @@ pub(crate) async fn get_pushrule_actions_route(
 	let actions = event
 		.content
 		.global
-		.get(body.kind.clone(), &body.rule_id)
+		.get(body.kind, &body.rule_id)
 		.map(|rule| rule.actions().to_owned())
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
@@ -399,7 +399,7 @@ pub(crate) async fn set_pushrule_actions_route(
 	if account_data
 		.content
 		.global
-		.set_actions(body.kind.clone(), &body.rule_id, body.actions.clone())
+		.set_actions(body.kind, &body.rule_id, body.actions.clone())
 		.is_err()
 	{
 		return Err!(Request(NotFound("Push rule not found.")));
@@ -447,7 +447,7 @@ pub(crate) async fn get_pushrule_enabled_route(
 	let enabled = event
 		.content
 		.global
-		.get(body.kind.clone(), &body.rule_id)
+		.get(body.kind, &body.rule_id)
 		.map(slipstream::push::AnyPushRuleRef::enabled)
 		.ok_or_else(|| err!(Request(NotFound("Push rule not found."))))?;
 
@@ -473,7 +473,7 @@ pub(crate) async fn set_pushrule_enabled_route(
 	if account_data
 		.content
 		.global
-		.set_enabled(body.kind.clone(), &body.rule_id, body.enabled)
+		.set_enabled(body.kind, &body.rule_id, body.enabled)
 		.is_err()
 	{
 		return Err!(Request(NotFound("Push rule not found.")));
@@ -509,11 +509,7 @@ pub(crate) async fn delete_pushrule_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("PushRules event not found."))))?;
 
-	if let Err(error) = account_data
-		.content
-		.global
-		.remove(body.kind.clone(), &body.rule_id)
-	{
+	if let Err(error) = account_data.content.global.remove(body.kind, &body.rule_id) {
 		let err = match error {
 			| RemovePushRuleError::ServerDefault => Error::BadRequest(
 				ErrorKind::InvalidParam,

@@ -366,11 +366,7 @@ async fn knock_room_helper_local(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	knock_event_stub.insert(
 		"content".to_owned(),
@@ -496,11 +492,7 @@ async fn knock_room_helper_remote(
 	);
 	knock_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Number(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	knock_event_stub.insert(
 		"content".to_owned(),

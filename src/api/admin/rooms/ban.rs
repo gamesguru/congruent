@@ -94,17 +94,17 @@ pub(crate) async fn ban_room(
 					"Removed users:\n{}\n\nFailed to remove users:\n{}\n\nRemoved aliases: {}",
 					evicted
 						.iter()
-						.map(|u| u.as_str())
+						.map(slipstream::OwnedUserId::as_str)
 						.collect::<Vec<_>>()
 						.join("\n"),
 					failed_evicted
 						.iter()
-						.map(|u| u.as_str())
+						.map(slipstream::OwnedUserId::as_str)
 						.collect::<Vec<_>>()
 						.join("\n"),
 					aliases
 						.iter()
-						.map(|a| a.as_str())
+						.map(OwnedRoomAliasId::as_str)
 						.collect::<Vec<_>>()
 						.join(", "),
 				)))

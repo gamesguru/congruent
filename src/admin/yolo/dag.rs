@@ -114,8 +114,8 @@ pub(super) async fn get_room_dag(
 			if let Ok(pdu_json) = self.services.rooms.timeline.get_pdu_json(&event_id).await {
 				let pdu_result = self.services.rooms.timeline.get_pdu(&event_id).await;
 				if let Ok(ref pdu) = pdu_result {
-					let ts: u64 = pdu.origin_server_ts().0.into();
-					let depth: u64 = pdu.depth.into();
+					let ts: u64 = pdu.origin_server_ts().0;
+					let depth: u64 = pdu.depth;
 					if let Some(pts) = prev_ts {
 						if ts < pts {
 							chronological_breaks.push((i, event_id.clone(), ts, pts));
@@ -751,7 +751,7 @@ pub(super) async fn get_remote_dag(
 
 			total_prev_events = total_prev_events
 				.saturating_add(u64::try_from(pdu.prev_events().count()).unwrap_or(0));
-			let depth: u64 = pdu.depth.into();
+			let depth: u64 = pdu.depth;
 			min_depth = min_depth.min(depth);
 			max_depth = max_depth.max(depth);
 			total = total.saturating_add(1);
@@ -1024,8 +1024,7 @@ pub(super) async fn dag_merge_base(
 				.boxed()
 				.next()
 				.await
-				.ok_or_else(|| err!("No active local users in room {room_id}"))?
-				.to_owned();
+				.ok_or_else(|| err!("No active local users in room {room_id}"))?;
 
 			let make_join_request =
 				slipstream::api::federation::membership::prepare_join_event::v1::Request {
@@ -1276,8 +1275,8 @@ pub(super) async fn dag_merge_base(
 
 		let max_len = path_a.len().max(path_b.len());
 		for i in 0..max_len {
-			let left = path_a.get(i).map(|id| short(id)).unwrap_or_default();
-			let right = path_b.get(i).map(|id| short(id)).unwrap_or_default();
+			let left = path_a.get(i).map(&short).unwrap_or_default();
+			let right = path_b.get(i).map(&short).unwrap_or_default();
 
 			// Check if this is the merge base
 			let is_mb_left = path_a.get(i).is_some_and(|id| id == mb);
@@ -1448,7 +1447,6 @@ pub(super) async fn audit_auth_chain(
 		state_ids.extend(outlier_ids);
 	}
 
-	let mut state_ids = state_ids;
 	if state_ids.is_empty() {
 		if let Ok(latest) = self
 			.services

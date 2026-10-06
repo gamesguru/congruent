@@ -31,9 +31,7 @@ pub(crate) async fn well_known_client(
 			.config
 			.matrix_rtc
 			.effective_foci(&services.config.well_known.rtc_focus_server_urls)
-			.iter()
-			.cloned()
-			.collect(),
+			.to_vec(),
 	})
 }
 

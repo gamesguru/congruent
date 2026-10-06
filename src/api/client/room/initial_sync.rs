@@ -91,7 +91,7 @@ pub(crate) async fn room_initial_sync_route(
 		account_data: None,
 		state: state.into(),
 		messages: messages.chunk.is_empty().or_some(messages),
-		visibility: visibility.into(),
+		visibility,
 		membership,
 	})
 }

@@ -34,8 +34,10 @@ pub(crate) async fn get_capabilities_route(
 			.expect("server must advertise at least one room version")
 	};
 
-	let mut capabilities = Capabilities::default();
-	capabilities.room_versions = RoomVersionsCapability { available, default };
+	let mut capabilities = Capabilities {
+		room_versions: RoomVersionsCapability { available, default },
+		..Default::default()
+	};
 
 	// Only allow 3pid changes if SMTP is configured
 	capabilities.thirdparty_id_changes = ThirdPartyIdChangesCapability {

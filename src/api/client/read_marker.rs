@@ -124,7 +124,7 @@ pub(crate) async fn create_receipt_route(
 
 	// MSC3771: event_id must belong to the thread the receipt targets.
 	if let ReceiptThread::Thread(root) = &body.thread {
-		if !receipt_event_is_in_thread(&services, &body.event_id, &root).await {
+		if !receipt_event_is_in_thread(&services, &body.event_id, root).await {
 			return Err!(Request(InvalidParam("event_id is not related to the given thread_id")));
 		}
 	}

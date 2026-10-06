@@ -131,8 +131,7 @@ pub(crate) async fn get_state_events_route(
 
 	// For departed users, serve state frozen at the point they left
 	let leave_root = if !is_joined {
-		let root = leave_roothandle(&services, sender_user, room_id).await;
-		root
+		leave_roothandle(&services, sender_user, room_id).await
 	} else {
 		None
 	};

@@ -71,10 +71,7 @@ pub(crate) async fn get_presence_route(
 
 			let last_active_ago = match presence.content.currently_active {
 				| Some(true) => None,
-				| _ => presence
-					.content
-					.last_active_ago
-					.map(|millis| Duration::from_millis(millis.into())),
+				| _ => presence.content.last_active_ago.map(Duration::from_millis),
 			};
 
 			Ok(get_presence::v3::Response {

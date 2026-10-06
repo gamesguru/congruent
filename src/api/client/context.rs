@@ -91,7 +91,7 @@ pub(crate) async fn get_context_route(
 
 	let base_count = base_id.pdu_count();
 	let base_token = TopoToken {
-		depth: u64::from(base_pdu.depth()),
+		depth: base_pdu.depth(),
 		pdu_count: base_count,
 	};
 
@@ -223,8 +223,7 @@ pub(crate) async fn get_context_route(
 			if filter.lazy_load_options.is_enabled()
 				&& event_type == StateEventType::RoomMember
 				&& UserId::parse(state_key)
-					.ok()
-					.is_some_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
+					.is_ok_and(|user_id| !lazy_loading_witnessed.contains(&user_id))
 			{
 				return None;
 			}

@@ -120,7 +120,7 @@ pub(super) async fn compare_room_state(
 				.await
 			{
 				let pdu_res = slipstream::codec::from_value::<PduEvent>(
-					&slipstream::json::Value::Object(json.clone()),
+					&slipstream::json::Value::Object(json),
 				)
 				.map_err(|e| e.to_string());
 				match pdu_res {
@@ -275,7 +275,7 @@ pub(super) async fn compare_room_state(
 		}
 
 		let event_id = pdu.event_id().to_owned();
-		event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+		event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 		if let Some(state_key) = &pdu.state_key {
 			remote_state.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
 		}
@@ -332,7 +332,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts = u64::from(pdu.origin_server_ts);
+						let ts = pdu.origin_server_ts;
 						conflict_entries.push((
 							server.to_string(),
 							event_id.to_string(),
@@ -407,7 +407,7 @@ pub(super) async fn compare_room_state(
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
 			local_state_ids.insert(eid.clone());
-			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0.into());
+			event_timestamps.insert(eid.clone(), pdu.origin_server_ts().0);
 			local_state.insert((event_type.to_string(), state_key.to_string()), eid.clone());
 			// Store metadata for richer diff output
 			{
@@ -449,7 +449,7 @@ pub(super) async fn compare_room_state(
 							.and_then(|v| v.as_str())
 							.unwrap_or("(none)")
 							.to_owned();
-						let ts: u64 = pdu.origin_server_ts().0.into();
+						let ts: u64 = pdu.origin_server_ts().0;
 						conflict_entries.push((
 							"local".to_owned(),
 							eid.to_string(),
@@ -471,7 +471,7 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			missing_locally
@@ -496,7 +496,7 @@ pub(super) async fn compare_room_state(
 				tip_pdu_opt
 					.as_ref()
 					.filter(|tip| tip.event_id() == event_id)
-					.map_or(0, |tip| u64::from(tip.origin_server_ts))
+					.map_or(0, |tip| tip.origin_server_ts)
 			});
 			let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 			extra_locally
@@ -622,7 +622,7 @@ pub(super) async fn compare_room_state(
 					verify_errors = verify_errors.saturating_add(1);
 				}
 				let event_id = pdu.event_id().to_owned();
-				event_timestamps.insert(event_id.clone(), u64::from(pdu.origin_server_ts));
+				event_timestamps.insert(event_id.clone(), pdu.origin_server_ts);
 				if let Some(state_key) = &pdu.state_key {
 					server_state
 						.insert((pdu.kind.to_string(), state_key.to_string()), event_id.clone());
@@ -680,7 +680,7 @@ pub(super) async fn compare_room_state(
 									.and_then(|v| v.as_str())
 									.unwrap_or("(none)")
 									.to_owned();
-								let ts = u64::from(pdu.origin_server_ts);
+								let ts = pdu.origin_server_ts;
 								conflict_entries.push((
 									cmp_server.to_string(),
 									event_id.to_string(),
@@ -733,7 +733,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_first.push((
@@ -751,7 +751,7 @@ pub(super) async fn compare_room_state(
 						tip_pdu_opt
 							.as_ref()
 							.filter(|tip| tip.event_id() == event_id)
-							.map_or(0, |tip| u64::from(tip.origin_server_ts))
+							.map_or(0, |tip| tip.origin_server_ts)
 					});
 					let extra = fmt_event_meta(&key.0, event_id, &event_meta);
 					only_on_cmp.push((
@@ -867,10 +867,8 @@ pub(super) async fn set_state_event(
 				.get_outlier_pdu_json(&event_id)
 				.await
 				.map_err(|_| err!(Request(NotFound("Event {event_id} not found locally"))))?;
-			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(
-				json.clone(),
-			))
-			.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
+			slipstream::codec::from_value::<PduEvent>(&slipstream::json::Value::Object(json))
+				.map_err(|e| err!(Request(InvalidParam("Failed to parse outlier: {e}"))))?
 		},
 	};
 
@@ -1617,7 +1615,7 @@ pub(super) async fn audit_membership(
 						.services
 						.rooms
 						.state_cache
-						.update_membership(&room_id, &user_id, &pdu, false)
+						.update_membership(&room_id, user_id, &pdu, false)
 						.await
 						.is_ok()
 					{
@@ -1802,7 +1800,7 @@ pub(super) async fn audit_membership(
 									.await
 									.ok()
 									.map_or(u64::MAX, |p| {
-										let ms = u64::from(p.origin_server_ts);
+										let ms = p.origin_server_ts;
 										now_secs.saturating_sub(ms / 1000)
 									})
 							} else {
@@ -1846,7 +1844,7 @@ pub(super) async fn audit_membership(
 								.await
 								.ok()
 								.map_or(u64::MAX, |p| {
-									let ms = u64::from(p.origin_server_ts);
+									let ms = p.origin_server_ts;
 									now_secs.saturating_sub(ms / 1000)
 								})
 						} else {

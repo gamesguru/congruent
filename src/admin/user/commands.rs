@@ -141,10 +141,7 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 					&user_id,
 					&room_id,
 					Some("Automatically joining this room upon registration".to_owned()),
-					&[
-						self.services.globals.server_name().to_owned(),
-						room_server_name.to_owned(),
-					],
+					&[self.services.globals.server_name().to_owned(), room_server_name.clone()],
 					&None,
 					None,
 				)
@@ -297,10 +294,7 @@ pub(super) async fn reset_password(
 			.for_each(|device_id: slipstream::OwnedDeviceId| {
 				let user_id = &user_id;
 				async move {
-					self.services
-						.users
-						.remove_device(&user_id, &device_id)
-						.await;
+					self.services.users.remove_device(user_id, &device_id).await;
 				}
 			})
 			.await;
@@ -516,7 +510,7 @@ pub(super) async fn force_join_list_of_local_users(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.ready_any(|user_id| server_admins.contains(&user_id.to_owned()))
+		.ready_any(|user_id| server_admins.contains(&user_id))
 		.await
 	{
 		return Err!("There is not a single server admin in the room.",);
@@ -631,7 +625,7 @@ pub(super) async fn force_join_all_local_users(
 		.rooms
 		.state_cache
 		.room_members(&room_id)
-		.ready_any(|user_id| server_admins.contains(&user_id.to_owned()))
+		.ready_any(|user_id| server_admins.contains(&user_id))
 		.await
 	{
 		return Err!("There is not a single server admin in the room.",);

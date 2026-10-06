@@ -193,7 +193,7 @@ pub(crate) async fn create_room_route(
 	};
 
 	// Figure out preset early — needed for trusted_private_chat handling
-	let preset = body.preset.clone().unwrap_or(match &body.visibility {
+	let preset = body.preset.unwrap_or(match &body.visibility {
 		| room::Visibility::Public => RoomPreset::PublicChat,
 		| _ => RoomPreset::PrivateChat,
 	});
@@ -295,7 +295,7 @@ pub(crate) async fn create_room_route(
 		| None => {
 			let as_room_id = create_event_id.as_str().replace('$', "!");
 			trace!("Creating room with v12 room ID {as_room_id}");
-			RoomId::parse(&as_room_id)?.to_owned()
+			RoomId::parse(&as_room_id)?.clone()
 		},
 	};
 	drop(state_lock);

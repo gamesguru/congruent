@@ -131,7 +131,7 @@ pub(crate) async fn create_invite_route(
 		.and_then(|sender| UserId::parse(sender).ok())
 		.map(|sender| sender.server_name())
 		.ok_or_else(|| err!(Request(InvalidParam("Invalid sender property."))))?;
-	if &sender_server != body.origin() {
+	if sender_server != body.origin() {
 		return Err!(Request(Forbidden("Sender's server does not match the origin server.",)));
 	}
 
@@ -195,7 +195,7 @@ pub(crate) async fn create_invite_route(
 
 	if let Err(e) = services
 		.antispam
-		.user_may_invite(sender_user.to_owned(), recipient_user.clone(), body.room_id.clone())
+		.user_may_invite(sender_user.clone(), recipient_user.clone(), body.room_id.clone())
 		.await
 	{
 		warn!("Antispam rejected invite: {e:?}");

@@ -19,7 +19,7 @@ pub(super) async fn reorder_timeline(
 		let mut room_ids: Vec<OwnedRoomId> = Vec::new();
 		let mut rooms = self.services.rooms.metadata.iter_ids();
 		while let Some(room_id) = rooms.next().await {
-			room_ids.push(room_id.to_owned());
+			room_ids.push(room_id.clone());
 		}
 		drop(rooms);
 

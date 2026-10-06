@@ -1084,7 +1084,7 @@ async fn build_device_list_updates(
 			.state_cache
 			.room_members(room_id)
 			.ready_for_each(|user_id| {
-				device_list_updates.changed.insert(user_id.to_owned());
+				device_list_updates.changed.insert(user_id);
 			})
 			.await;
 	}
