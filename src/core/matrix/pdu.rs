@@ -298,7 +298,7 @@ macro_rules! impl_event_delegates {
 		}
 		if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
 			let constructed_hash = self.as_pdu().event_id.as_str().replace('$', "!");
-			return Some(OwnedRoomId::from(constructed_hash));
+			return Some(OwnedRoomId::from_trusted(constructed_hash));
 		}
 		None
 	}

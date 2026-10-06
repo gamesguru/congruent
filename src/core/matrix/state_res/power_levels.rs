@@ -52,7 +52,11 @@ fn users(content: &Value) -> Result<Vec<(OwnedUserId, Int)>, DeError> {
 
 	object
 		.iter()
-		.map(|(user, value)| Ok((OwnedUserId::from(user.as_str()), level(value, Mode::Legacy)?)))
+		.map(|(user, value)| {
+			let user = OwnedUserId::parse(user.as_str())
+				.map_err(|_| DeError::expected("user ID key"))?;
+			Ok((user, level(value, Mode::Legacy)?))
+		})
 		.collect()
 }
 

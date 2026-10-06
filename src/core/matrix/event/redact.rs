@@ -37,8 +37,12 @@ pub(super) fn copy<E: Event>(event: &E) -> (Option<OwnedEventId>, RawJson) {
 		);
 	};
 
-	if let Some(redacts) = content.get("redacts").and_then(|value| value.as_str()) {
-		return (Some(OwnedEventId::from(redacts)), crate::utils::clone_raw(event.content()));
+	if let Some(redacts) = content
+		.get("redacts")
+		.and_then(|value| value.as_str())
+		.and_then(|redacts| OwnedEventId::parse(redacts).ok())
+	{
+		return (Some(redacts), crate::utils::clone_raw(event.content()));
 	}
 
 	if let Some(redacts) = event.redacts().map(ToOwned::to_owned) {

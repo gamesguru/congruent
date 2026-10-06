@@ -252,7 +252,6 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 mod tests {
 	use std::{
 		fs,
-		path::PathBuf,
 		sync::Arc,
 		time::{SystemTime, UNIX_EPOCH},
 	};
@@ -267,7 +266,6 @@ mod tests {
 		config::Config,
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
-	use figment::providers::Format;
 	use http::{Request, StatusCode};
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
@@ -313,27 +311,6 @@ mod tests {
 			old_verify_keys,
 			signatures: Signatures::new(),
 		}
-	}
-
-	fn write_test_config(config_path: &PathBuf, db_path: &PathBuf) {
-		fs::create_dir_all(
-			config_path
-				.parent()
-				.expect("test config path should have a parent"),
-		)
-		.expect("test config dir should be creatable");
-		fs::write(
-			config_path,
-			format!(
-				r#"
-[global]
-server_name = "example.com"
-database_path = "{}"
-"#,
-				db_path.display()
-			),
-		)
-		.expect("test config should be writable");
 	}
 
 	fn test_log() -> Log {
@@ -386,11 +363,11 @@ database_path = "{}"
 				.as_nanos()
 		));
 
-		let config_path = temp_root.join("config.toml");
 		let db_path = temp_root.join("db");
-		write_test_config(&config_path, &db_path);
 
-		let figment = figment::Figment::new().merge(figment::providers::Toml::file(&config_path));
+		let figment = conduwuit_core::config::Figment::new()
+			.merge(("global.server_name", "example.com"))
+			.merge(("global.database_path", db_path.to_string_lossy().into_owned()));
 		let config = Config::new(&figment).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
 		let services = conduwuit_service::Services::build(server.clone())

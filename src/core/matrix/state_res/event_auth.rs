@@ -230,9 +230,10 @@ where
 					warn!("legacy room ID has no server name");
 					return Ok(false);
 				};
-				if room_id_server_name != sender.server_name() {
+				let sender_server_name = sender.server_name();
+				if Some(&room_id_server_name) != sender_server_name.as_ref() {
 					warn!(
-						expected = %sender.server_name(),
+						expected = ?sender_server_name,
 						received = %room_id_server_name,
 						"server name of legacy room ID does not match server name of sender"
 					);
@@ -380,7 +381,9 @@ where
 			debug!("starting m.room.aliases check");
 
 			// If sender's domain doesn't matches state_key, reject
-			if incoming_event.state_key() != Some(sender.server_name().as_str()) {
+			if incoming_event.state_key()
+				!= sender.server_name().as_ref().map(slipstream::OwnedServerName::as_str)
+			{
 				warn!("state_key does not match sender");
 				return Ok(false);
 			}
@@ -412,7 +415,10 @@ where
 			return Ok(false);
 		}
 
-		let target_user = UserId::from(state_key);
+		let Ok(target_user) = UserId::parse(state_key) else {
+			warn!("m.room.member state_key is not a valid user ID");
+			return Ok(false);
+		};
 
 		let user_for_join_auth = content
 			.join_authorised_via_users_server
