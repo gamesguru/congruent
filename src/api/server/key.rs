@@ -366,8 +366,8 @@ mod tests {
 		let db_path = temp_root.join("db");
 
 		let figment = conduwuit_core::config::Figment::new()
-			.merge(("global.server_name", "example.com"))
-			.merge(("global.database_path", db_path.to_string_lossy().into_owned()));
+			.merge(("server_name", "example.com"))
+			.merge(("database_path", db_path.to_string_lossy().into_owned()));
 		let config = Config::new(&figment).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
 		let services = conduwuit_service::Services::build(server.clone())
