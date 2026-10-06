@@ -77,31 +77,25 @@ fn create_dummy_pdu(
 	state_key: &str,
 ) -> PduEvent {
 	let mut json = CanonicalJsonObject::new();
-	json.insert(
-		"room_id".into(),
-		slipstream::CanonicalJsonValue::String(room_id.as_str().to_owned()),
-	);
+	json.insert("room_id".into(), CanonicalJsonValue::String(room_id.as_str().to_owned()));
 	json.insert(
 		"sender".into(),
-		slipstream::CanonicalJsonValue::String("@alice:test.conduwuit.local".to_owned()),
+		CanonicalJsonValue::String("@alice:test.conduwuit.local".to_owned()),
 	);
-	json.insert("type".into(), slipstream::CanonicalJsonValue::String(event_type.to_owned()));
-	json.insert("state_key".into(), slipstream::CanonicalJsonValue::String(state_key.to_owned()));
+	json.insert("type".into(), CanonicalJsonValue::String(event_type.to_owned()));
+	json.insert("state_key".into(), CanonicalJsonValue::String(state_key.to_owned()));
 	json.insert(
 		"content".into(),
-		slipstream::CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
+		CanonicalJsonValue::Object(std::collections::BTreeMap::default()),
 	);
-	json.insert(
-		"origin_server_ts".into(),
-		slipstream::CanonicalJsonValue::Number(123_456_789_u64.into()),
-	);
-	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
-	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
-	json.insert("auth_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
+	json.insert("origin_server_ts".into(), CanonicalJsonValue::Number(123_456_789_u64.into()));
+	json.insert("depth".into(), CanonicalJsonValue::Number(1_u64.into()));
+	json.insert("prev_events".into(), CanonicalJsonValue::Array(Vec::new()));
+	json.insert("auth_events".into(), CanonicalJsonValue::Array(Vec::new()));
 
 	let mut hashes = CanonicalJsonObject::new();
-	hashes.insert("sha256".into(), slipstream::CanonicalJsonValue::String("dummy".to_owned()));
-	json.insert("hashes".into(), slipstream::CanonicalJsonValue::Object(hashes));
+	hashes.insert("sha256".into(), CanonicalJsonValue::String("dummy".to_owned()));
+	json.insert("hashes".into(), CanonicalJsonValue::Object(hashes));
 
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create pdu")
 }
@@ -133,7 +127,7 @@ fn create_member_pdu(
 				.expect("Timestamp is valid js_int value"),
 		),
 	);
-	json.insert("depth".into(), CanonicalJsonValue::Number(1.into()));
+	json.insert("depth".into(), CanonicalJsonValue::Number(1_u64.into()));
 	json.insert("prev_events".into(), CanonicalJsonValue::Array(Vec::new()));
 	json.insert("auth_events".into(), CanonicalJsonValue::Array(Vec::new()));
 
@@ -161,8 +155,8 @@ async fn persist_dummy_pdu(services: &Services, room_id: &RoomId, pdu: &PduEvent
 async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
-	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
-	let event_id = slipstream::OwnedEventId::parse("$event1:test.conduwuit.local").unwrap();
+	let room_id = OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let event_id = OwnedEventId::parse("$event1:test.conduwuit.local").unwrap();
 	let pdu = create_dummy_pdu(&room_id, &event_id, "m.room.create", "");
 
 	// Acquire a state lock
@@ -256,10 +250,10 @@ fn test_root_handle_rejects_truncated_value() {
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
-	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let room_id = OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
 	let event = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::parse("$force-state:test.conduwuit.local").unwrap(),
+		&OwnedEventId::parse("$force-state:test.conduwuit.local").unwrap(),
 		"m.room.create",
 		"",
 	);
@@ -291,12 +285,12 @@ async fn test_force_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_state_equivalence() {
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let room_id = OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
 
 	// Create multiple events to build the state
 	let event1 = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::parse("$event1:test.conduwuit.local").unwrap(),
+		&OwnedEventId::parse("$event1:test.conduwuit.local").unwrap(),
 		"m.room.create",
 		"",
 	);
@@ -304,7 +298,7 @@ async fn test_state_equivalence() {
 	// must be treated as "leave" rather than failing to deserialize.
 	let event2 = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::parse("$event2:test.conduwuit.local").unwrap(),
+		&OwnedEventId::parse("$event2:test.conduwuit.local").unwrap(),
 		"m.room.member",
 		"@alice:test.conduwuit.local",
 	);
@@ -397,7 +391,7 @@ async fn seed_membership_state(
 ) -> rezzy::hamt::RootHandle {
 	let create = create_dummy_pdu(
 		room_id,
-		&slipstream::OwnedEventId::parse("$seed-create:test.conduwuit.local").unwrap(),
+		&OwnedEventId::parse("$seed-create:test.conduwuit.local").unwrap(),
 		"m.room.create",
 		"",
 	);
@@ -441,7 +435,7 @@ async fn seed_membership_state(
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bulk_state_update_writes_only_changed_spines() {
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let room_id = OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 
 	let root = seed_membership_state(&services, &room_id, &mutex, 200).await;
@@ -449,7 +443,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	// Replace one membership entry: one changed leaf, so one changed spine.
 	let updated = create_dummy_pdu(
 		&room_id,
-		&slipstream::OwnedEventId::parse("$update-7:test.conduwuit.local").unwrap(),
+		&OwnedEventId::parse("$update-7:test.conduwuit.local").unwrap(),
 		"m.room.member",
 		"@user7:test.conduwuit.local",
 	);
@@ -576,7 +570,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 	use std::time::Duration;
 
 	let (_guard, _server, services) = setup_test_services().await;
-	let room_id = slipstream::OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
+	let room_id = OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
 	let root = seed_membership_state(&services, &room_id, &mutex, 50).await;
 
