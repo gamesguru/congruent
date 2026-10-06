@@ -19,6 +19,11 @@ pub fn string(length: usize) -> String {
 		.collect()
 }
 
+pub fn room_id(server_name: &slipstream::OwnedServerName) -> slipstream::OwnedRoomId {
+	slipstream::OwnedRoomId::parse(format!("!{}:{server_name}", string(18)))
+		.expect("generated room ID must be valid")
+}
+
 #[inline]
 pub fn string_array<const LENGTH: usize>() -> ArrayString<LENGTH> {
 	let mut ret = ArrayString::<LENGTH>::new();

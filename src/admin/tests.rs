@@ -406,7 +406,7 @@ async fn test_yolo_audit_membership_drift() {
 	};
 	let (services, _guard) = setup_test_services("yolo").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -652,7 +652,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	};
 	let (services, _guard) = setup_test_services("demote_torn").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -809,7 +809,7 @@ async fn test_yolo_reorder_timeline() {
 	};
 	let (services, _guard) = setup_test_services("reorder").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short
@@ -1043,7 +1043,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 
 	let (services, _guard) = setup_test_services("dedup").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let shortroomid = services
 		.rooms
 		.short
@@ -1180,7 +1180,7 @@ async fn create_test_room_with_message(
 		},
 	};
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	services
 		.rooms
 		.short
@@ -2129,7 +2129,7 @@ async fn test_yolo_heal_receipts() {
 	};
 	let (services, _guard) = setup_test_services("heal_receipts").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let user_id = UserId::parse("@user:test.conduwuit.local").unwrap();
 
 	// 1. Manually insert duplicate receipts into the database
@@ -2214,7 +2214,7 @@ async fn test_threaded_receipts_notification_counters() {
 
 	let (services, _guard) = setup_test_services("threaded_receipts").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
 	let thread_a: OwnedEventId = "$thread-a:test.conduwuit.local".try_into().unwrap();
 	let thread_b: OwnedEventId = "$thread-b:test.conduwuit.local".try_into().unwrap();
@@ -2357,7 +2357,7 @@ async fn test_yolo_rescue_room() {
 	};
 	let (services, _guard) = setup_test_services("rescue_room").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let server_user = services.globals.server_user.as_ref();
 	services
 		.users
@@ -2505,7 +2505,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	};
 	let (services, _guard) = setup_test_services("reorder_state_res").await;
 
-	let room_id = RoomId::new(services.globals.server_name());
+	let room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 	let _short_id = services
 		.rooms
 		.short

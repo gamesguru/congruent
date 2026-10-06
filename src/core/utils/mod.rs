@@ -44,7 +44,7 @@ pub use self::{
 	math::clamp,
 	mutex_map::{Guard as MutexMapGuard, MutexMap},
 	pdu::pdu_json_canonical_strip,
-	rand::{shuffle, string as random_string},
+	rand::{room_id as random_room_id, shuffle, string as random_string},
 	stream::{IterStream, ReadyExt, Tools as StreamTools, TryReadyExt},
 	string::{str_from_bytes, string_from_bytes},
 	sys::compute::available_parallelism,

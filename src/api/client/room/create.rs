@@ -84,7 +84,7 @@ pub(crate) async fn create_room_route(
 	let room_id: Option<OwnedRoomId> = if !room_features.room_ids_as_hashes {
 		match &body.room_id {
 			| Some(custom_room_id) => Some(custom_room_id_check(&services, custom_room_id)?),
-			| None => Some(RoomId::new(services.globals.server_name())),
+			| None => Some(conduwuit::utils::random_room_id(services.globals.server_name())),
 		}
 	} else {
 		None
@@ -263,7 +263,7 @@ pub(crate) async fn create_room_route(
 			services.rooms.state.mutex.lock(&room_id).await
 		},
 		| None => {
-			let temp_room_id = RoomId::new(services.globals.server_name());
+			let temp_room_id = conduwuit::utils::random_room_id(services.globals.server_name());
 			trace!("Locking temporary room state mutex for {temp_room_id}");
 			services.rooms.state.mutex.lock(&temp_room_id).await
 		},

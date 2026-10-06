@@ -116,7 +116,7 @@ pub async fn create_event(
 		| None => {
 			trace!("No room ID, assuming room creation");
 			room_version_from_event(
-				RoomId::new(self.services.globals.server_name()),
+				conduwuit::utils::random_room_id(self.services.globals.server_name()),
 				&event_type.clone(),
 				&content.clone(),
 			)?
