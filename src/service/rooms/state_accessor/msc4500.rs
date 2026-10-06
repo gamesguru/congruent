@@ -580,13 +580,31 @@ pub struct StateHashEntry {
 impl Serialize for StateHashEntry {
 	fn to_json(&self) -> slipstream::json::Value {
 		let mut obj = slipstream::json::Object::new();
-		if let Some(ref v) = self.before {
+		if self.limited {
+			obj.insert(
+				"before".into(),
+				self.before
+					.as_ref()
+					.map_or(slipstream::json::Value::Null, |v| {
+						slipstream::json::Value::String(v.clone())
+					}),
+			);
+		} else if let Some(ref v) = self.before {
 			obj.insert("before".into(), slipstream::json::Value::String(v.clone()));
 		}
 		if let Some(ref v) = self.after {
 			obj.insert("after".into(), slipstream::json::Value::String(v.clone()));
 		}
-		if let Some(ref v) = self.redactions_before {
+		if self.limited {
+			obj.insert(
+				"redactions_before".into(),
+				self.redactions_before
+					.as_ref()
+					.map_or(slipstream::json::Value::Null, |v| {
+						slipstream::json::Value::String(v.clone())
+					}),
+			);
+		} else if let Some(ref v) = self.redactions_before {
 			obj.insert("redactions_before".into(), slipstream::json::Value::String(v.clone()));
 		}
 		if let Some(ref v) = self.redactions_after {
