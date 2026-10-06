@@ -334,7 +334,7 @@ impl Drop for TempDbGuard {
 	}
 }
 
-async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>, TempDbGuard) {
+async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<service::Services>) {
 	use figment::providers::Format;
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -391,7 +391,7 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 		_serial: serial,
 	};
 
-	(services, guard)
+	(guard, services)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -404,7 +404,7 @@ async fn test_yolo_audit_membership_drift() {
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	};
-	let (services, _guard) = setup_test_services("yolo").await;
+	let (_guard, services) = setup_test_services("yolo").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -650,7 +650,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 			member::{MembershipState, RoomMemberEventContent},
 		},
 	};
-	let (services, _guard) = setup_test_services("demote_torn").await;
+	let (_guard, services) = setup_test_services("demote_torn").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -807,7 +807,7 @@ async fn test_yolo_reorder_timeline() {
 			message::RoomMessageEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("reorder").await;
+	let (_guard, services) = setup_test_services("reorder").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -1041,7 +1041,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		topo_key
 	}
 
-	let (services, _guard) = setup_test_services("dedup").await;
+	let (_guard, services) = setup_test_services("dedup").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let shortroomid = services
@@ -1315,7 +1315,7 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	use futures::StreamExt;
 	use slipstream::OwnedEventId;
 
-	let (services, _guard) =
+	let (_guard, services) =
 		setup_test_services("set_forward_extremities_excludes_ineligible").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "eligible tip").await;
 
@@ -1366,7 +1366,7 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	use futures::StreamExt;
 	use slipstream::OwnedEventId;
 
-	let (services, _guard) =
+	let (_guard, services) =
 		setup_test_services("set_forward_extremities_all_ineligible_noop").await;
 	let (room_id, event_id) =
 		create_test_room_with_message(&services, "existing eligible tip").await;
@@ -1416,7 +1416,7 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reindex_short_removes_stale_topo_entries() {
-	let (services, _guard) = setup_test_services("reindex_short_topo").await;
+	let (_guard, services) = setup_test_services("reindex_short_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
 
 	assert_eq!(count_topo_occurrences_for_test(&services, &room_id, &event_id).await, 1);
@@ -1446,7 +1446,7 @@ async fn test_yolo_reindex_short_removes_stale_topo_entries() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
-	let (services, _guard) = setup_test_services("reorder_topo").await;
+	let (_guard, services) = setup_test_services("reorder_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
 
 	seed_stale_topo_entry_for_test(&services, &event_id).await;
@@ -1487,7 +1487,7 @@ async fn test_busted_dag_resolution() {
 		println!("Skipping test_busted_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("busted_dag").await;
+	let (_guard, services) = setup_test_services("busted_dag").await;
 
 	let room_id = RoomId::parse("!L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI").unwrap();
 
@@ -1637,7 +1637,7 @@ async fn test_unredacted_room_dag_resolution() {
 		println!("Skipping test_unredacted_room_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("unredacted_room").await;
+	let (_guard, services) = setup_test_services("unredacted_room").await;
 
 	let room_id = RoomId::parse("!BDSybzDpGyDxMHZzpN:unredacted.org").unwrap();
 
@@ -1780,7 +1780,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 		return;
 	}
 	eprintln!("[LOUNGE] setup_test_services...");
-	let (services, _guard) = setup_test_services("unredacted_lounge").await;
+	let (_guard, services) = setup_test_services("unredacted_lounge").await;
 	eprintln!("[LOUNGE] services ready");
 
 	let room_id = RoomId::parse("!sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE").unwrap();
@@ -1991,7 +1991,7 @@ async fn test_nheko_dag_resolution() {
 		println!("Skipping test_nheko_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("nheko_room").await;
+	let (_guard, services) = setup_test_services("nheko_room").await;
 
 	let room_id = RoomId::parse("!UbCmIlGTHNIgIRZcpt:nheko.im").unwrap();
 
@@ -2127,7 +2127,7 @@ async fn test_yolo_heal_receipts() {
 		UserId,
 		events::receipt::{Receipt, ReceiptEvent, ReceiptEventContent, ReceiptType},
 	};
-	let (services, _guard) = setup_test_services("heal_receipts").await;
+	let (_guard, services) = setup_test_services("heal_receipts").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let user_id = UserId::parse("@user:test.conduwuit.local").unwrap();
@@ -2212,7 +2212,7 @@ async fn test_yolo_heal_receipts() {
 async fn test_threaded_receipts_notification_counters() {
 	use slipstream::{OwnedEventId, UserId, events::receipt::ReceiptThread};
 
-	let (services, _guard) = setup_test_services("threaded_receipts").await;
+	let (_guard, services) = setup_test_services("threaded_receipts").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
@@ -2352,7 +2352,7 @@ async fn test_yolo_rescue_room() {
 		create::RoomCreateEventContent,
 		member::{MembershipState, RoomMemberEventContent},
 	};
-	let (services, _guard) = setup_test_services("rescue_room").await;
+	let (_guard, services) = setup_test_services("rescue_room").await;
 	service::admin::create_admin_room(&services).await.unwrap();
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
@@ -2429,7 +2429,7 @@ async fn test_knocking_dag_resolution() {
 		println!("Skipping test_knocking_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("knocking_dag").await;
+	let (_guard, services) = setup_test_services("knocking_dag").await;
 
 	let room_id = RoomId::parse("!ylRY10DiOcgVxCi0W8f9ztanFl5wdBxYCWQqM45n_Kk").unwrap();
 
@@ -2499,7 +2499,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 			name::RoomNameEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("reorder_state_res").await;
+	let (_guard, services) = setup_test_services("reorder_state_res").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -2725,7 +2725,7 @@ async fn test_janian_dag_reorder_with_state() {
 		println!("Skipping test_janian_dag_reorder_with_state: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("janian_dag").await;
+	let (_guard, services) = setup_test_services("janian_dag").await;
 
 	let room_id = RoomId::parse("!hdMhyaHZvjLjagsXsk:janian.de").unwrap();
 
