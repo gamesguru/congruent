@@ -408,7 +408,7 @@ default-features = false
 version = "0.1"
 
 [workspace.dependencies.syn]
-version = "2.0"
+version = "3.0"
 default-features = false
 # `parsing`/`printing`/`proc-macro`/`derive`/`clone-impls` were previously
 # enabled transitively by ruma-macros; conduwuit_macros needs them directly.
