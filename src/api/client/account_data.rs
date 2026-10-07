@@ -18,7 +18,10 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{Ruma, router::authenticate_user};
+use crate::{
+	Ruma,
+	router::{ApiError, authenticate_user},
+};
 
 /// # `PUT /_matrix/client/r0/user/{userId}/account_data/{type}`
 ///
@@ -125,7 +128,7 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, event_type)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let sender_user =
@@ -150,7 +153,7 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, room_id, event_type)): Path<(String, String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let room_id = OwnedRoomId::parse(room_id)

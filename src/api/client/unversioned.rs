@@ -5,7 +5,7 @@ use conduwuit::Result;
 use futures::StreamExt;
 use slipstream::api::client::discovery::get_supported_versions;
 
-use crate::Ruma;
+use crate::{Ruma, router::ApiError};
 
 /// # `GET /_matrix/client/versions`
 ///
@@ -88,7 +88,8 @@ pub(crate) async fn get_supported_versions_route(
 ///
 /// Conduwuit-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
-pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
+pub(crate) async fn conduwuit_server_version() -> std::result::Result<impl IntoResponse, ApiError>
+{
 	let mut object = slipstream::ObjectBuilder::new();
 	object.field("name", &conduwuit::version::name());
 	object.field("version", &conduwuit::version::version());
@@ -102,7 +103,7 @@ pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
 /// only includes active users (not deactivated, no guests, etc)
 pub(crate) async fn conduwuit_local_user_count(
 	State(services): State<crate::State>,
-) -> Result<impl IntoResponse> {
+) -> std::result::Result<impl IntoResponse, ApiError> {
 	let user_count = services.users.list_local_users().count().await;
 
 	let mut object = slipstream::ObjectBuilder::new();

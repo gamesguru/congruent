@@ -24,7 +24,7 @@ use slipstream::{
 use crate::{
 	Ruma,
 	json_util::{json_response, single_field},
-	router::authenticate_user,
+	router::{ApiError, authenticate_user},
 };
 
 struct ThreadSubscriptionBody {
@@ -107,7 +107,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Response> {
+) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)
@@ -188,7 +188,7 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Response> {
+) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)
@@ -222,7 +222,7 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
-) -> Result<Response> {
+) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)

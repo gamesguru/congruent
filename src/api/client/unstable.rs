@@ -22,6 +22,7 @@ use super::{update_avatar_url, update_displayname};
 use crate::{
 	Ruma,
 	msc2836::{self, Params, Requester},
+	router::ApiError,
 };
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
@@ -330,7 +331,7 @@ pub(crate) async fn get_room_dag_route(
 			axum_extra::headers::Authorization<axum_extra::headers::authorization::Bearer>,
 		>,
 	>,
-) -> Result<impl axum::response::IntoResponse> {
+) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
 	use conduwuit::{Err, err};
 	use futures::StreamExt;
 	use slipstream::OwnedRoomId;

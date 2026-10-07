@@ -21,7 +21,7 @@ use slipstream::{
 	space::SpaceRoomJoinRule::{self, *},
 };
 
-use crate::{Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse, router::ApiError};
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary`
 ///
@@ -36,7 +36,7 @@ pub(crate) async fn get_room_summary_legacy(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_summary::msc3266::Request>,
-) -> Result<RumaResponse<get_summary::msc3266::Response>> {
+) -> std::result::Result<RumaResponse<get_summary::msc3266::Response>, ApiError> {
 	get_room_summary(State(services), ClientIp(client), body)
 		.boxed()
 		.await

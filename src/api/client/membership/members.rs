@@ -17,7 +17,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::ApiError};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/members`
 ///
@@ -170,7 +170,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	if !services
 		.rooms
 		.state_cache

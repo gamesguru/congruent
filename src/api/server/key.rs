@@ -18,7 +18,7 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::ApiError};
 
 /// # `GET /_matrix/key/v2/server`
 ///
@@ -30,7 +30,7 @@ use crate::Ruma;
 // signature for the response
 pub(crate) async fn get_server_keys_route(
 	State(services): State<crate::State>,
-) -> Result<impl IntoResponse> {
+) -> std::result::Result<impl IntoResponse, ApiError> {
 	let server_key = get_our_signing_keys(&services).await;
 	let server_key = Raw::new(&server_key)?;
 	let response = get_server_keys::v2::Response::new(server_key)

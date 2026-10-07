@@ -11,6 +11,7 @@ use serde::Deserialize;
 use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 
 use super::AccessCheck;
+use crate::router::ApiError;
 
 #[derive(Deserialize)]
 pub(crate) struct StateAccumulatorQuery {
@@ -23,7 +24,7 @@ pub(crate) async fn get_state_accumulator_route(
 	axum::extract::Path(room_id_str): axum::extract::Path<String>,
 	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
-) -> Result<impl axum::response::IntoResponse> {
+) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)

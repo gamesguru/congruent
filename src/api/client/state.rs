@@ -29,6 +29,7 @@ use slipstream::{
 use crate::{
 	Ruma, RumaResponse,
 	json_util::{json_response, require_object_content, single_field},
+	router::ApiError,
 };
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`
@@ -38,7 +39,7 @@ pub(crate) async fn send_state_event_for_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	let sender_user = body.sender_user();
 	services
 		.users
@@ -99,7 +100,7 @@ pub(crate) async fn send_state_event_for_empty_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	send_state_event_for_key_route(State(services), ClientIp(ip), body).await
 }
 

@@ -57,6 +57,7 @@ use crate::{
 	client::{
 		DEFAULT_BUMP_TYPES, TimelinePdus, ignored_filter, is_ignored_invite, sync::load_timeline,
 	},
+	router::ApiError,
 };
 
 type SyncInfo<'a> = (&'a UserId, &'a DeviceId, u64, u64, &'a sync_events::v5::Request);
@@ -574,7 +575,7 @@ pub(crate) async fn sync_events_v5_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5)).await
 }
 
@@ -582,7 +583,7 @@ pub(crate) async fn sync_events_unstable_msc3575_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	Box::pin(sync_events_v5_route_inner(
 		services,
 		client_ip,

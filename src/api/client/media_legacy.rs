@@ -12,7 +12,7 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, RumaResponse, client::create_content_route};
+use crate::{Ruma, RumaResponse, client::create_content_route, router::ApiError};
 
 /// # `POST /_matrix/media/v1/create`
 ///
@@ -118,7 +118,7 @@ pub(crate) async fn get_media_config_legacy_route(
 pub(crate) async fn get_media_config_legacy_legacy_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_media_config::v3::Request>,
-) -> Result<RumaResponse<get_media_config::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_media_config::v3::Response>, ApiError> {
 	get_media_config_legacy_route(State(services), body)
 		.await
 		.map(RumaResponse)
@@ -170,7 +170,7 @@ pub(crate) async fn get_media_preview_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
-) -> Result<RumaResponse<get_media_preview::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_media_preview::v3::Response>, ApiError> {
 	get_media_preview_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
@@ -190,7 +190,7 @@ pub(crate) async fn create_content_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
-) -> Result<RumaResponse<create_content::v3::Response>> {
+) -> std::result::Result<RumaResponse<create_content::v3::Response>, ApiError> {
 	create_content_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
@@ -278,7 +278,7 @@ pub(crate) async fn get_content_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
-) -> Result<RumaResponse<get_content::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content::v3::Response>, ApiError> {
 	get_content_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
@@ -368,7 +368,7 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
-) -> Result<RumaResponse<get_content_as_filename::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content_as_filename::v3::Response>, ApiError> {
 	get_content_as_filename_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
@@ -453,7 +453,7 @@ pub(crate) async fn get_content_thumbnail_legacy_legacy_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
-) -> Result<RumaResponse<get_content_thumbnail::v3::Response>> {
+) -> std::result::Result<RumaResponse<get_content_thumbnail::v3::Response>, ApiError> {
 	get_content_thumbnail_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)

@@ -6,6 +6,7 @@ use slipstream::{OwnedEventId, api::client::message::send_message_event};
 use crate::{
 	Ruma, RumaResponse,
 	json_util::{json_response, require_object_content, single_field},
+	router::ApiError,
 };
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
@@ -57,7 +58,7 @@ fn parse_cached_send_txn_response(
 fn cached_send_txn_response(
 	data: &[u8],
 	legacy_is_delay_id: bool,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	match parse_cached_send_txn_response(data, legacy_is_delay_id)? {
 		| CachedSendTxnResponse::EventId(event_id) =>
 			Ok(RumaResponse(send_message_event::v3::Response { event_id }).into_response()),
@@ -82,7 +83,7 @@ pub(crate) async fn send_message_event_route(
 	State(services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<send_message_event::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	let sender_user = body.sender_user();
 	let sender_device = body.sender_device_opt();
 	let appservice_info = body.appservice_info.as_ref();
