@@ -2817,7 +2817,7 @@ const DEPRECATED_KEYS: &[&str] = &[
 
 /// Layered, untyped configuration values assembled from files, environment,
 /// and command-line overrides before deserializing into [`Config`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RawConfig {
 	inner: Value,
 }
@@ -2868,8 +2868,10 @@ impl RawConfig {
 			| Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
 			| Err(error) => return Err(error.into()),
 		};
-		let parsed = toml::from_str::<Value>(&content)
-			.map_err(|error| err!(Config("Failed to parse TOML {}: {error}", path.display())))?;
+		let parsed = toml::from_str::<Value>(&content).map_err(|error| {
+			let path = path.display().to_string();
+			err!(Config("config", "Failed to parse TOML {path}: {error}"))
+		})?;
 		Self::merge_value(&mut self.inner, parsed);
 		Ok(())
 	}
@@ -2877,7 +2879,7 @@ impl RawConfig {
 	pub fn from_toml(input: &str) -> Result<Self> {
 		let mut config = Self::new();
 		let parsed = toml::from_str::<Value>(input)
-			.map_err(|error| err!(Config("Failed to parse TOML: {error}")))?;
+			.map_err(|error| err!(Config("config", "Failed to parse TOML: {error}")))?;
 		Self::merge_value(&mut config.inner, parsed);
 		Ok(config)
 	}
@@ -2912,8 +2914,12 @@ impl RawConfig {
 		self.inner
 			.clone()
 			.try_into()
-			.map_err(|error| err!(Config("Failed to deserialize config: {error}")))
+			.map_err(|error| err!(Config("config", "Failed to deserialize config: {error}")))
 	}
+}
+
+impl Default for RawConfig {
+	fn default() -> Self { Self::new() }
 }
 
 impl Config {

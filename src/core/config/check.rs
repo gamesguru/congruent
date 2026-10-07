@@ -2,8 +2,8 @@ use std::env::consts::OS;
 
 use either::Either;
 
-use super::DEPRECATED_KEYS;
-use crate::{Config, Err, RawConfig, Result, Server, debug, debug_info, debug_warn, error, warn};
+use super::{DEPRECATED_KEYS, RawConfig};
+use crate::{Config, Err, Result, Server, debug, debug_info, debug_warn, error, warn};
 
 /// Performs check() with additional checks specific to reloading old config
 /// with new config.
