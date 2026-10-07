@@ -2,10 +2,9 @@
 
 use std::any::Any;
 
-use askama::Template;
 use axum::{
 	Router,
-	extract::rejection::{FormRejection, QueryRejection},
+	extract::rejection::QueryRejection,
 	http::{HeaderValue, StatusCode, header},
 	response::{Html, IntoResponse, Response},
 };
@@ -13,31 +12,20 @@ use conduwuit_service::state;
 use tower_http::{catch_panic::CatchPanicLayer, set_header::SetResponseHeaderLayer};
 use tower_sec_fetch::SecFetchLayer;
 
-use crate::pages::TemplateContext;
-
 mod pages;
 
 type State = state::State;
 
-const CATASTROPHIC_FAILURE: &str = "cat-astrophic failure! we couldn't even render the error template. \
-please contact the team @ https://continuwuity.org";
-
 #[derive(Debug, thiserror::Error)]
 enum WebError {
-	#[error("Failed to validate form body: {0}")]
-	ValidationError(#[from] validator::ValidationErrors),
 	#[error("{0}")]
 	QueryRejection(#[from] QueryRejection),
-	#[error("{0}")]
-	FormRejection(#[from] FormRejection),
 	#[error("{0}")]
 	BadRequest(String),
 
 	#[error("This page does not exist.")]
 	NotFound,
 
-	#[error("Failed to render template: {0}")]
-	Render(#[from] askama::Error),
 	#[error("{0}")]
 	InternalError(#[from] conduwuit_core::Error),
 	#[error("Request handler panicked! {0}")]
@@ -46,38 +34,28 @@ enum WebError {
 
 impl IntoResponse for WebError {
 	fn into_response(self) -> Response {
-		#[derive(Debug, Template)]
-		#[template(path = "error.html.j2")]
-		struct Error {
-			error: WebError,
-			status: StatusCode,
-			context: TemplateContext,
-		}
-
 		let status = match &self {
-			| Self::ValidationError(_)
-			| Self::BadRequest(_)
-			| Self::QueryRejection(_)
-			| Self::FormRejection(_) => StatusCode::BAD_REQUEST,
+			| Self::BadRequest(_) | Self::QueryRejection(_) => StatusCode::BAD_REQUEST,
 			| Self::NotFound => StatusCode::NOT_FOUND,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
-		let template = Error {
-			error: self,
-			status,
-			context: TemplateContext {
-				// Statically set false to prevent error pages from being indexed.
-				allow_indexing: false,
-			},
-		};
-
-		if let Ok(body) = template.render() {
-			(status, Html(body)).into_response()
-		} else {
-			(status, CATASTROPHIC_FAILURE).into_response()
-		}
+		let error = html_escape(&self.to_string());
+		let body = format!(
+			"<!doctype html><meta name=\"robots\" content=\"noindex\"><title>{status}</title>\
+			 <h1>{status}</h1><pre>{error}</pre>"
+		);
+		(status, Html(body)).into_response()
 	}
+}
+
+fn html_escape(input: &str) -> String {
+	input
+		.replace('&', "&amp;")
+		.replace('<', "&lt;")
+		.replace('>', "&gt;")
+		.replace('"', "&quot;")
+		.replace('\'', "&#39;")
 }
 
 pub fn build() -> Router<state::State> {
@@ -89,8 +67,6 @@ pub fn build() -> Router<state::State> {
 		.nest(
 			"/_continuwuity/",
 			Router::new()
-				.merge(resources::build())
-				.merge(password_reset::build())
 				.merge(debug::build())
 				.merge(threepid::build())
 				.fallback(async || WebError::NotFound),

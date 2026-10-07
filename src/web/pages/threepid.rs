@@ -1,17 +1,13 @@
 use axum::{
 	Router,
 	extract::{Query, State, rejection::QueryRejection},
-	response::IntoResponse,
+	response::Html,
 	routing::get,
 };
 use serde::Deserialize;
 use slipstream::OwnedSessionId;
 
-use crate::{WebError, template};
-
-template! {
-	struct ThreepidValidation use "threepid_validation.html.j2" {}
-}
+use crate::WebError;
 
 pub(crate) fn build() -> Router<crate::State> {
 	Router::new().route("/3pid/email/validate", get(threepid_validation))
@@ -27,7 +23,7 @@ struct ThreepidValidationQuery {
 async fn threepid_validation(
 	State(services): State<crate::State>,
 	query: Result<Query<ThreepidValidationQuery>, QueryRejection>,
-) -> Result<impl IntoResponse, WebError> {
+) -> Result<Html<&'static str>, WebError> {
 	let Query(query) = query?;
 
 	let session = OwnedSessionId::parse(&query.session)
@@ -39,5 +35,8 @@ async fn threepid_validation(
 		.await
 		.map_err(|message| WebError::BadRequest(message.into_owned()))?;
 
-	Ok(ThreepidValidation::new(&services))
+	Ok(Html(
+		"<!doctype html><title>Email verified</title><h1>Email verified</h1>\
+		 <p>Your email address has been verified. Return to your Matrix client.</p>",
+	))
 }
