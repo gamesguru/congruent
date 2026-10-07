@@ -1187,7 +1187,7 @@ pub(super) async fn change_email(&self, user_id: String, email: Option<String>) 
 	self.bail_restricted()?;
 
 	let user_id = parse_local_user_id(self.services, &user_id)?;
-	let new_email = email.filter(|email| email.contains('@'));
+	let new_email = email.as_ref().filter(|email| email.contains('@')).cloned();
 	if email.is_some() && new_email.is_none() {
 		return Err!("Invalid email address.");
 	}
