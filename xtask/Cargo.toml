@@ -13,7 +13,5 @@ version.workspace = true
 conduwuit-admin.workspace = true
 clap.workspace = true
 
-cargo_metadata = "0.23.1"
-
 [lints]
 workspace = true
