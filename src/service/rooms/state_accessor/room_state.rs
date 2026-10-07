@@ -141,7 +141,7 @@ pub async fn room_state_keys(
 ) -> Result<Vec<String>> {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 
-	let full_state = self.load_full_state_hamt(&root_handle).await?;
+	let full_state = self.load_full_state_hamt(&root_handle)?;
 
 	// Batch-resolve the short state keys through the caching key store rather
 	// than awaiting a database lookup for each entry serially.

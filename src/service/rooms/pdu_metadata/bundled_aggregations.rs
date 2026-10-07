@@ -138,7 +138,7 @@ impl super::Service {
 			let pdu = &relation.1;
 
 			// Validate replacement
-			if !Self::is_valid_replacement_event(original_event, pdu).await? {
+			if !Self::is_valid_replacement_event(original_event, pdu)? {
 				continue;
 			}
 
@@ -220,7 +220,7 @@ impl super::Service {
 
 	/// Validates that an event is acceptable as a replacement for another event
 	/// See C/S spec "Validity of replacement events"
-	async fn is_valid_replacement_event(
+	fn is_valid_replacement_event(
 		original_event: &PduEvent,
 		replacement_event: &PduEvent,
 	) -> Result<bool> {
@@ -502,8 +502,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(result.unwrap(), "Valid replacement event should be accepted");
 	}
@@ -536,8 +535,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different room ID should be rejected");
 	}
@@ -570,8 +568,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different sender should be rejected");
 	}
@@ -602,8 +599,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Different event type should be rejected");
 	}
@@ -634,8 +630,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Event with state key should be rejected");
 	}
@@ -675,8 +670,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Replacement of replacement should be rejected");
 	}
@@ -706,8 +700,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(!result.unwrap(), "Missing m.new_content should be rejected");
 	}
@@ -748,8 +741,7 @@ mod tests {
 			None,
 		);
 
-		let result =
-			super::super::Service::is_valid_replacement_event(&original, &replacement).await;
+		let result = super::super::Service::is_valid_replacement_event(&original, &replacement);
 		assert!(result.is_ok(), "Validation should succeed");
 		assert!(
 			result.unwrap(),

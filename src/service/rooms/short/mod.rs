@@ -717,9 +717,7 @@ mod tests {
 			capture: Arc::new(capture::State::default()),
 		}));
 
-		let db = Database::open(&server)
-			.await
-			.expect("failed to open database");
+		let db = Database::open(&server).expect("failed to open database");
 		let service_map = Arc::new(conduwuit::SyncRwLock::new(BTreeMap::new()));
 
 		let globals_service = globals::Service::build(crate::Args {

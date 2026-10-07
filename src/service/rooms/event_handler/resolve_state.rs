@@ -7,7 +7,7 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, WidebandExt},
 	warn,
 };
-use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
@@ -17,6 +17,40 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 /// like rebuild_state.
 pub(crate) type PduCache =
 	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+
+struct LocalArenaProvider<'a, F> {
+	global_cache:
+		&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+	arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
+	version: rezzy::StateResVersion,
+	fetch_pdu: F,
+}
+
+impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
+	for LocalArenaProvider<'_, F>
+where
+	F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
+{
+	fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
+		let event_id = OwnedEventId::parse(id.as_str()).ok()?;
+
+		if let Some(cached_arc) = self.global_cache.get(&event_id) {
+			let local_arc = self.arena.alloc(cached_arc);
+			return Some(&**local_arc);
+		}
+
+		let pdu = (self.fetch_pdu)(&event_id)?;
+		let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
+			(self.fetch_pdu)(auth_event_id)
+		});
+		let lean = Arc::new(pdu_to_lean(&pdu, power_level));
+
+		self.global_cache.insert(event_id, lean.clone());
+
+		let local_arc = self.arena.alloc(lean);
+		Some(&**local_arc)
+	}
+}
 
 fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
 	map.iter()
@@ -69,10 +103,8 @@ pub async fn resolve_state(
 	let forkstates = forkstates.await?;
 
 	trace!("Resolving state");
-	let state: StateMap<OwnedEventId> = self
-		.state_resolution(room_id, room_version_id, forkstates.iter(), None)
-		.boxed()
-		.await?;
+	let state: StateMap<OwnedEventId> =
+		self.state_resolution(room_id, room_version_id, forkstates.iter(), None)?;
 
 	trace!("State resolution done.");
 
@@ -134,12 +166,12 @@ pub async fn resolve_state(
 }
 
 #[implement(super::Service)]
-pub async fn state_resolution<'a, StateSets>(
+pub fn state_resolution<'a, StateSets>(
 	&'a self,
 	room_id: &RoomId,
 	room_version: &'a RoomVersionId,
 	state_sets: StateSets,
-	prefetch_cache: Option<PduCache>,
+	prefetch_cache: Option<&PduCache>,
 ) -> Result<StateMap<OwnedEventId>>
 where
 	StateSets: Iterator<Item = &'a StateMap<OwnedEventId>> + Clone + Send,
@@ -174,42 +206,8 @@ where
 		| _ => rezzy::StateResVersion::V2_1_1,
 	};
 
-	struct LocalArenaProvider<'a, F> {
-		global_cache:
-			&'a moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
-		arena: typed_arena::Arena<Arc<rezzy::LeanEvent<String, rezzy::JsonValue>>>,
-		version: rezzy::StateResVersion,
-		fetch_pdu: F,
-	}
-
-	impl<F> rezzy::basespec::rezzy_types::EventProvider<String, rezzy::JsonValue>
-		for LocalArenaProvider<'_, F>
-	where
-		F: Fn(&OwnedEventId) -> Option<conduwuit_core::PduEvent>,
-	{
-		fn get_event(&self, id: &String) -> Option<&rezzy::LeanEvent<String, rezzy::JsonValue>> {
-			let event_id = OwnedEventId::parse(id.as_str()).ok()?;
-
-			if let Some(cached_arc) = self.global_cache.get(&event_id) {
-				let local_arc = self.arena.alloc(cached_arc);
-				return Some(&**local_arc);
-			}
-
-			let pdu = (self.fetch_pdu)(&event_id)?;
-			let power_level = sender_power_level_from_auth(self.version, &pdu, |auth_event_id| {
-				(self.fetch_pdu)(auth_event_id)
-			});
-			let lean = Arc::new(pdu_to_lean(&pdu, power_level));
-
-			self.global_cache.insert(event_id, lean.clone());
-
-			let local_arc = self.arena.alloc(lean);
-			Some(&**local_arc)
-		}
-	}
-
 	let timeline = &self.services.timeline;
-	let prefetch_cache_ref = prefetch_cache.as_ref();
+	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
 	let handle = tokio::runtime::Handle::current();
 

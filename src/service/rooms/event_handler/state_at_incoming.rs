@@ -164,10 +164,7 @@ where
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};
@@ -302,10 +299,7 @@ where
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};

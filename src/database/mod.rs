@@ -56,10 +56,10 @@ pub struct Database {
 
 impl Database {
 	/// Load an existing database or create a new one.
-	pub async fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
+	pub fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
 		let ctx = Context::new(server)?;
 		let descriptors = maps::descriptors();
-		let db = Engine::open(ctx.clone(), &descriptors).await?;
+		let db = Engine::open(&ctx, &descriptors)?;
 		Ok(Arc::new(Self {
 			maps: maps::open(&db)?,
 			db: db.clone(),

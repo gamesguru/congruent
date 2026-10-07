@@ -391,7 +391,6 @@ async fn test_state_equivalence() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&final_root)
-		.await
 		.expect("failed to load HAMT state");
 	assert_eq!(actual, expected);
 }
@@ -529,7 +528,6 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&new_root)
-		.await
 		.expect("failed to load HAMT state");
 	assert_eq!(actual.len(), 201, "state size must be preserved by the update");
 	assert_eq!(actual.get(&target_key), Some(&target_value));
@@ -690,7 +688,6 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&root)
-		.await
 		.expect("live root state must survive the sweep");
 	assert_eq!(state.len(), 51, "live root state must remain readable");
 }

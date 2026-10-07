@@ -58,7 +58,7 @@ pub struct Services {
 impl Services {
 	#[allow(clippy::cognitive_complexity)]
 	pub async fn build(server: Arc<Server>) -> Result<Arc<Self>> {
-		let db = Database::open(&server).await?;
+		let db = Database::open(&server)?;
 		let service: Arc<Map> = Arc::new(SyncRwLock::new(BTreeMap::new()));
 		macro_rules! build {
 			($tyname:ty) => {{

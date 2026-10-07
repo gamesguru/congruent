@@ -242,8 +242,7 @@ pub(super) async fn build_state_incremental<'a>(
 			services
 				.rooms
 				.state_accessor
-				.state_added_hamt((last_sync_end_root_handle, timeline_end_root_handle))
-				.await?
+				.state_added_hamt((last_sync_end_root_handle, timeline_end_root_handle))?
 				.stream()
 				.ready_filter_map(|(_, shorteventid)| {
 					if state_events_in_timeline.contains(&shorteventid) {

@@ -991,11 +991,7 @@ impl super::Service {
 		for root in &extremity_roots {
 			// Abort rather than merge a partial union: dropping an extremity's
 			// state would commit incomplete room state.
-			let full_state = self
-				.services
-				.state_accessor
-				.load_full_state_hamt(root)
-				.await?;
+			let full_state = self.services.state_accessor.load_full_state_hamt(root)?;
 			for (shortstatekey, shorteventid) in full_state {
 				all_entries.insert(shortstatekey, shorteventid);
 			}

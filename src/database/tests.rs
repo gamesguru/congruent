@@ -60,9 +60,7 @@ async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate:
 		capture: std::sync::Arc::new(capture::State::default()),
 	}));
 
-	let db = crate::Database::open(&server)
-		.await
-		.expect("failed to open database");
+	let db = crate::Database::open(&server).expect("failed to open database");
 
 	(guard, db)
 }

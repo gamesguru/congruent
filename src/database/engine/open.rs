@@ -17,7 +17,7 @@ use super::{
 use crate::{Context, or_else};
 
 #[implement(Engine)]
-pub(crate) async fn open(ctx: Arc<Context>, desc: &[Descriptor]) -> Result<Arc<Self>> {
+pub(crate) fn open(ctx: &Arc<Context>, desc: &[Descriptor]) -> Result<Arc<Self>> {
 	let server = &ctx.server;
 	let config = &server.config;
 	let path = &config.database_path;
