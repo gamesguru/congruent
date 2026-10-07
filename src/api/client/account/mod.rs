@@ -90,6 +90,45 @@ pub(crate) async fn get_register_available_route(
 	Ok(get_username_availability::v3::Response { available: true })
 }
 
+/// # `POST /_matrix/client/v3/account/password/email/requestToken`
+///
+/// Requests a validation email for the purpose of resetting a user's password.
+pub(crate) async fn request_password_change_token_via_email_route(
+	State(services): State<crate::State>,
+	body: Ruma<request_password_change_token_via_email::v3::Request>,
+) -> Result<request_password_change_token_via_email::v3::Response> {
+	let Ok(email) = Address::try_from(body.email.clone()) else {
+		return Err!(Request(InvalidParam("Invalid email address.")));
+	};
+
+	let Some(localpart) = services.threepid.get_localpart_for_email(&email).await else {
+		return Err!(Request(ThreepidNotFound(
+			"No account is associated with this email address"
+		)));
+	};
+
+	let user_id =
+		OwnedUserId::parse(format!("@{localpart}:{}", services.globals.server_name())).unwrap();
+	let display_name = services.users.displayname(&user_id).await.ok();
+
+	let session = services
+		.threepid
+		.send_validation_email(
+			Mailbox::new(display_name.clone(), email),
+			|verification_link| messages::PasswordReset {
+				display_name: display_name.as_deref(),
+				user_id: &user_id,
+				verification_link,
+			},
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
+			body.send_attempt.try_into().unwrap(),
+		)
+		.await?;
+
+	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
+}
+
 /// # `POST /_matrix/client/r0/account/password`
 ///
 /// Changes the password of this account.
@@ -196,45 +235,6 @@ pub(crate) async fn change_password_route(
 	}
 
 	Ok(change_password::v3::Response {})
-}
-
-/// # `POST /_matrix/client/v3/account/password/email/requestToken`
-///
-/// Requests a validation email for the purpose of resetting a user's password.
-pub(crate) async fn request_password_change_token_via_email_route(
-	State(services): State<crate::State>,
-	body: Ruma<request_password_change_token_via_email::v3::Request>,
-) -> Result<request_password_change_token_via_email::v3::Response> {
-	let Ok(email) = Address::try_from(body.email.clone()) else {
-		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
-
-	let Some(localpart) = services.threepid.get_localpart_for_email(&email).await else {
-		return Err!(Request(ThreepidNotFound(
-			"No account is associated with this email address"
-		)));
-	};
-
-	let user_id =
-		OwnedUserId::parse(format!("@{localpart}:{}", services.globals.server_name())).unwrap();
-	let display_name = services.users.displayname(&user_id).await.ok();
-
-	let session = services
-		.threepid
-		.send_validation_email(
-			Mailbox::new(display_name.clone(), email),
-			|verification_link| messages::PasswordReset {
-				display_name: display_name.as_deref(),
-				user_id: &user_id,
-				verification_link,
-			},
-			&slipstream::OwnedClientSecret::parse(&body.client_secret)
-				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
-			body.send_attempt.try_into().unwrap(),
-		)
-		.await?;
-
-	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `GET /_matrix/client/v3/account/whoami`

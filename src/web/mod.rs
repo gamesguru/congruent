@@ -42,8 +42,8 @@ impl IntoResponse for WebError {
 
 		let error = html_escape(&self.to_string());
 		let body = format!(
-			"<!doctype html><meta name=\"robots\" content=\"noindex\"><title>{status}</title>\
-			 <h1>{status}</h1><pre>{error}</pre>"
+			"<!doctype html><meta name=\"robots\" \
+			 content=\"noindex\"><title>{status}</title><h1>{status}</h1><pre>{error}</pre>"
 		);
 		(status, Html(body)).into_response()
 	}
@@ -68,6 +68,7 @@ pub fn build() -> Router<state::State> {
 			"/_continuwuity/",
 			Router::new()
 				.merge(debug::build())
+				.merge(password_reset::build())
 				.merge(threepid::build())
 				.fallback(async || WebError::NotFound),
 		)
