@@ -36,7 +36,9 @@ impl FromStr for IpCidr {
 				if prefix > 32 {
 					return Err(err!(Config("ip_range_denylist", "IPv4 prefix must be <= 32")));
 				}
-				let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
+				let mask = u32::MAX
+					.checked_shl(32_u32.saturating_sub(prefix))
+					.unwrap_or(0);
 				Ok(Self::V4 { network: u32::from(ip) & mask, mask })
 			},
 			| IpAddr::V6(ip) => {
@@ -48,7 +50,9 @@ impl FromStr for IpCidr {
 				if prefix > 128 {
 					return Err(err!(Config("ip_range_denylist", "IPv6 prefix must be <= 128")));
 				}
-				let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+				let mask = u128::MAX
+					.checked_shl(128_u32.saturating_sub(prefix))
+					.unwrap_or(0);
 				Ok(Self::V6 { network: u128::from(ip) & mask, mask })
 			},
 		}

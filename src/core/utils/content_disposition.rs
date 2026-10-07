@@ -40,7 +40,10 @@ pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositio
 		return ContentDispositionType::Attachment;
 	};
 
-	debug_assert!(ALLOWED_INLINE_CONTENT_TYPES.is_sorted());
+	debug_assert!(
+		ALLOWED_INLINE_CONTENT_TYPES.is_sorted(),
+		"inline content types must remain sorted for binary_search"
+	);
 	let content_type: Cow<'_, str> = content_type
 		.split(';')
 		.next()
