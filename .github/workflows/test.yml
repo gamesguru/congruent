@@ -86,7 +86,7 @@ jobs:
         run: make format
 
       - name: Test
-        run: set -o pipefail; make test 2>&1 | tee test-results.txt
+        run: set -o pipefail; make -j4 test 2>&1 | tee test-results.txt
 
       - name: DNS Integration Test (Respects /etc/hosts)
         env:
@@ -143,7 +143,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Lint
-        run: make lint
+        run: make -j4 lint
 
   publish-badge:
     needs: clippy-checks
