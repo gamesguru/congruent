@@ -4,8 +4,8 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Event, Result, debug::INFO_SPAN_LEVEL, debug_error, debug_info, defer, err, implement,
-	info, trace, utils::stream::IterStream, warn,
+	Err, Event, Result, debug, debug::INFO_SPAN_LEVEL, debug_error, debug_info, defer, err,
+	implement, info, trace, utils::stream::IterStream, warn,
 };
 use futures::{
 	FutureExt, TryFutureExt, TryStreamExt,
@@ -18,7 +18,6 @@ use slipstream::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use tracing::debug;
 
 use super::handle_outlier_pdu::AuthRecoveryStage;
 use crate::rooms::timeline::{RawPduId, pdu_fits};
@@ -128,12 +127,6 @@ async fn should_rescind_invite(
 /// 14. Check if the event passes auth based on the "current state" of the room,
 ///     if not soft fail it
 #[implement(super::Service)]
-#[tracing::instrument(
-	name = "pdu",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%room_id, %event_id),
-)]
 pub async fn handle_incoming_pdu<'a>(
 	&self,
 	origin: &'a ServerName,
@@ -729,12 +722,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(
-	name = "pdu_upgrade",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%room_id, %event_id = %incoming_pdu.event_id()),
-)]
 pub async fn process_timeline_upgrade(
 	&self,
 	incoming_pdu: conduwuit::PduEvent,

@@ -13,7 +13,6 @@ use slipstream::{
 };
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self, servers))]
 pub async fn add_servers_invite_via(&self, room_id: &RoomId, servers: Vec<OwnedServerName>) {
 	let mut servers: Vec<_> = self
 		.servers_invite_via(room_id)
@@ -40,7 +39,6 @@ pub async fn add_servers_invite_via(&self, room_id: &RoomId, servers: Vec<OwnedS
 ///
 /// See <https://spec.matrix.org/latest/appendices/#routing>
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn servers_route_via(&self, room_id: &RoomId) -> Result<Vec<OwnedServerName>> {
 	let most_powerful_user_server = self
 		.services
@@ -76,7 +74,6 @@ pub async fn servers_route_via(&self, room_id: &RoomId) -> Result<Vec<OwnedServe
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn servers_invite_via<'a>(
 	&'a self,
 	room_id: &'a RoomId,

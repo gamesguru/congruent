@@ -62,8 +62,6 @@ release_max_log_level = [
 	"conduwuit-service/release_max_log_level",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
@@ -99,7 +97,6 @@ serde.workspace = true
 sha1.workspace = true
 tokio.workspace = true
 tower.workspace = true
-tracing.workspace = true
 url.workspace = true
 xxhash-rust.workspace = true
 

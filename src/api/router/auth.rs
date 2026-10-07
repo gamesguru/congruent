@@ -4,7 +4,7 @@ use axum_extra::{
 	headers::{Authorization, authorization::Bearer},
 	typed_header::TypedHeaderRejectionReason,
 };
-use conduwuit::{Err, Error, Result, debug_error, err, warn};
+use conduwuit::{Err, Error, Result, debug_error, err, info, warn};
 use futures::{
 	TryFutureExt,
 	future::{
@@ -31,7 +31,6 @@ use slipstream::{
 	},
 	endpoint::EndpointRequest,
 };
-use tracing::info;
 
 use super::request::Request;
 use crate::service::appservice::RegistrationInfo;
@@ -62,7 +61,7 @@ pub(super) async fn auth(
 
 	let stack_var = 0_u8;
 	if request.parts.uri.path().contains("/login") {
-		tracing::info!(
+		conduwuit::info!(
 			"AUTH_DEBUG: URI: {} {}, Metadata ptr: {:p}, Stack pointer: {:p}, Expected login \
 			 ptr: {:p}, Expected ping ptr: {:p}",
 			&request.parts.method,
@@ -202,7 +201,7 @@ pub(super) async fn auth(
 				"Only server signatures should be used on this endpoint.",
 			)),
 		| (AuthScheme::AppserviceToken, Token::User(_)) => {
-			tracing::error!(
+			conduwuit::error!(
 				"AUTH_CORRUPTION_DETECTED: metadata.authentication is AppserviceToken but token \
 				 is User. URI: {} {}, Metadata pointer: {:p}, Authentication scheme: {:?}",
 				&request.parts.method,

@@ -95,7 +95,6 @@ pub async fn user_can_redact(
 /// Whether a user is allowed to see an event, based on
 /// the room's history_visibility at that event's state.
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, level = "trace")]
 pub async fn user_can_see_event(
 	&self,
 	user_id: &UserId,
@@ -190,7 +189,6 @@ pub async fn user_can_see_event(
 /// see state when history_visibility is `shared` (the default) or
 /// `invited`. Currently-joined users always have access.
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, level = "trace")]
 pub async fn user_can_see_state_events(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	if self.services.state_cache.is_joined(user_id, room_id).await {
 		return true;

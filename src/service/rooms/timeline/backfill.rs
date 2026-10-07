@@ -82,7 +82,6 @@ impl RemoteHistoryBudget {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "backfill", level = "trace", skip(self))]
 pub async fn backfill_if_required(
 	&self,
 	room_id: &RoomId,
@@ -625,7 +624,6 @@ fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "get_remote_pdu", level = "debug", skip(self))]
 pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
 	let budget =
 		Arc::new(RemoteHistoryBudget::new(MAX_REMOTE_HISTORY_DEPTH, event_id.to_owned()));
@@ -810,7 +808,6 @@ async fn materialize_remote_history_limited(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, pdu), level = "debug")]
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,

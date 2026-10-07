@@ -194,7 +194,6 @@ impl Service {
 			.map(|(_, pushkey): (Ignore, &str)| pushkey)
 	}
 
-	#[tracing::instrument(skip(self, dest, request))]
 	pub async fn send_request<T>(&self, dest: &str, request: T) -> Result<T::IncomingResponse>
 	where
 		T: OutgoingRequest + Debug + Send,
@@ -287,7 +286,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(skip(self, user, unread, pusher, ruleset, event))]
 	pub async fn send_push_notice<E>(
 		&self,
 		user: &UserId,
@@ -369,7 +367,6 @@ impl Service {
 		Some(subscribed)
 	}
 
-	#[tracing::instrument(skip(self, user, ruleset, pdu), level = "debug")]
 	pub async fn get_actions<'a>(
 		&self,
 		user: &UserId,
@@ -417,7 +414,6 @@ impl Service {
 		ruleset.get_actions(pdu, &ctx)
 	}
 
-	#[tracing::instrument(skip(self, unread, pusher, tweaks, event))]
 	async fn send_notice<E>(
 		&self,
 		unread: UInt,

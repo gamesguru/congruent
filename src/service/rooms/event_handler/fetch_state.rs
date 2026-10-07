@@ -20,11 +20,6 @@ use crate::rooms::short::ShortStateKey;
 /// server's response to some extent, but we still do a lot of checks
 /// on the events.
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(%origin),
-)]
 pub(crate) async fn fetch_state<Pdu>(
 	&self,
 	origin: &ServerName,

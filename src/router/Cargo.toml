@@ -73,8 +73,6 @@ release_max_log_level = [
 	"conduwuit-api/release_max_log_level",
 	"conduwuit-core/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 systemd = [
 	"dep:sd-notify",
@@ -113,7 +111,6 @@ rustls.optional = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
-tracing.workspace = true
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true

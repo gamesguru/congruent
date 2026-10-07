@@ -41,8 +41,6 @@ release_max_log_level = [
 	"conduwuit-core/release_max_log_level",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
@@ -68,7 +66,6 @@ rust-rocksdb.workspace = true
 serde.workspace = true
 slipstream.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 figment.workspace = true

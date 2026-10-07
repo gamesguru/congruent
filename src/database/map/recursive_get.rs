@@ -41,7 +41,6 @@ pub struct RecursiveGetOutput<V, K> {
 /// Fails fast on server shutdown, key parsing failure, RocksDB I/O errors, or
 /// block corruption.
 #[implement(super::Map)]
-#[tracing::instrument(skip_all, level = "trace")]
 pub async fn recursive_multi_get<K, V, P, F, I>(
 	self: &Arc<Self>,
 	roots: I,
@@ -124,7 +123,7 @@ where
 						missing.push(key);
 					},
 					| Err(e) => {
-						tracing::error!(
+						conduwuit::error!(
 							key = ?key.as_ref(),
 							%e,
 							"RocksDB multi-get failure during recursive DAG traversal"
@@ -160,7 +159,7 @@ where
 				.or_else(|| panic.downcast_ref::<String>().cloned())
 				.unwrap_or_else(|| "non-string panic payload".to_owned());
 
-			tracing::error!(%reason, "blocking task panicked during recursive_multi_get");
+			conduwuit::error!(%reason, "blocking task panicked during recursive_multi_get");
 			std::io::Error::other(format!("recursive_multi_get task panicked: {reason}"))
 		} else {
 			std::io::Error::other("recursive_multi_get task cancelled")

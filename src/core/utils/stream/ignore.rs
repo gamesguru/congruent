@@ -18,7 +18,7 @@ where
 	fn ignore_err(self: T) -> impl Stream<Item = Item> + Send + 'a {
 		self.filter_map(|res| {
 			if let Err(ref e) = res {
-				tracing::error!("ignore_err: stream item error (debug build): {e}");
+				crate::error!("ignore_err: stream item error (debug build): {e}");
 			}
 			ready(res.ok())
 		})

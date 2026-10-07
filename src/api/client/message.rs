@@ -12,6 +12,7 @@ use conduwuit::{
 		result::LogErr,
 		stream::{BroadbandExt, TryIgnore},
 	},
+	warn,
 };
 use conduwuit_service::{
 	Services,
@@ -35,7 +36,6 @@ use slipstream::{
 	},
 	sswire::Raw,
 };
-use tracing::warn;
 
 use super::sync::add_membership_to_unsigned;
 use crate::Ruma;

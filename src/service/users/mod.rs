@@ -1061,7 +1061,7 @@ impl Service {
 				let Some(one_time_key_id) = key.rsplit(|&b| b == 0xFF).next().and_then(
 					decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>,
 				) else {
-					tracing::warn!(
+					conduwuit::warn!(
 						"count_one_time_keys: skipping unparsable key id for \
 						 {user_id}|{device_id}"
 					);
@@ -1471,7 +1471,7 @@ impl Service {
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
 		let count = self.services.globals.next_count().unwrap();
 
-		tracing::info!(%user_id, "mark_device_key_update called");
+		conduwuit::info!(%user_id, "mark_device_key_update called");
 
 		let mut joined_rooms = self
 			.services
@@ -1502,7 +1502,7 @@ impl Service {
 			}
 
 			if !joined_rooms.is_empty() {
-				tracing::warn!(
+				conduwuit::warn!(
 					%user_id,
 					rooms = joined_rooms.len(),
 					"Recovered remote device-key update rooms via server-room fallback"
@@ -1526,7 +1526,7 @@ impl Service {
 				})
 				.await;
 
-			tracing::info!(%user_id, %room_id, "Flushing room for device key update");
+			conduwuit::info!(%user_id, %room_id, "Flushing room for device key update");
 
 			let sending = self.services.sending.clone();
 			self.services.server.runtime().spawn(async move {

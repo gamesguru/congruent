@@ -172,7 +172,6 @@ pub const PDU_LIMIT: usize = 50;
 pub const EDU_LIMIT: usize = 100;
 
 impl Service {
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub(super) async fn sender(self: Arc<Self>, id: usize) -> Result {
 		// In maintenance mode (listening=false), skip all outbound federation.
 		// Queued transactions are preserved and will drain on normal boot.
@@ -197,15 +196,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(
-		name = "work",
-		level = "trace",
-		skip_all,
-		fields(
-			futures = %futures.len(),
-			statuses = %statuses.len(),
-		),
-	)]
 	async fn work_loop<'a>(
 		&'a self,
 		id: usize,
@@ -238,7 +228,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(name = "response", level = "debug", skip_all)]
 	async fn handle_response<'a>(
 		&'a self,
 		response: SendingResult,
@@ -260,9 +249,9 @@ impl Service {
 		e: &Error,
 	) {
 		if e.status_code() == http::StatusCode::TOO_MANY_REQUESTS {
-			tracing::info!(dest = ?dest, "{e:?}");
+			conduwuit::info!(dest = ?dest, "{e:?}");
 		} else {
-			tracing::info!(target: "federation_debug", dest = ?dest, "{e:?}");
+			conduwuit::info!(target: "federation_debug", dest = ?dest, "{e:?}");
 		}
 
 		let mut tries = 1_u32;
@@ -275,11 +264,11 @@ impl Service {
 				},
 				| TransactionStatus::Failed(n, _) => {
 					tries = n.saturating_add(1);
-					tracing::info!(dest = ?dest, tries = tries, "Request failed while already marked as failed");
+					conduwuit::info!(dest = ?dest, tries = tries, "Request failed while already marked as failed");
 					TransactionStatus::Failed(tries, Instant::now())
 				},
 				| TransactionStatus::Cooldown(_) => {
-					tracing::info!(dest = ?dest, "Request failed while in cooldown");
+					conduwuit::info!(dest = ?dest, "Request failed while in cooldown");
 					TransactionStatus::Failed(1, Instant::now())
 				},
 			}
@@ -422,7 +411,6 @@ impl Service {
 	}
 
 	#[allow(clippy::needless_pass_by_ref_mut)]
-	#[tracing::instrument(name = "request", level = "debug", skip_all)]
 	async fn handle_request<'a>(
 		&'a self,
 		msg: Msg,
@@ -473,12 +461,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "finish",
-		level = "info",
-		skip_all,
-		fields(futures = %futures.len()),
-	)]
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
 		use tokio::{
 			select,
@@ -502,12 +484,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "netburst",
-		level = "debug",
-		skip_all,
-		fields(futures = %futures.len()),
-	)]
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn startup_netburst<'a>(
 		&'a self,
@@ -603,15 +579,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "select",
-		level = "debug",
-		skip_all,
-		fields(
-			?dest,
-			new_events = %new_events.len(),
-		)
-	)]
 	async fn select_events(
 		&self,
 		dest: &Destination,
@@ -755,7 +722,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(name = "edus", level = "debug", skip_all)]
 	async fn select_edus(&self, server_name: &ServerName) -> Result<(EduVec, u64)> {
 		// selection window
 		let since = self.db.get_latest_educount(server_name).await;
@@ -823,7 +789,6 @@ impl Service {
 	}
 
 	/// Look for device changes
-	#[tracing::instrument(name = "device_changes", level = "trace", skip(self, server_name))]
 	async fn select_edus_device_changes(
 		&self,
 		server_name: &ServerName,
@@ -880,7 +845,7 @@ impl Service {
 			}
 		}
 
-		tracing::debug!(
+		conduwuit::debug!(
 			target: "device_list_debug",
 			changes_count = all_changes.len(),
 			devices_count = user_devices.len(),
@@ -892,7 +857,6 @@ impl Service {
 	}
 
 	/// Look for read receipts in this room
-	#[tracing::instrument(name = "receipts", level = "trace", skip(self, server_name))]
 	async fn select_edus_receipts(
 		&self,
 		server_name: &ServerName,
@@ -931,7 +895,6 @@ impl Service {
 	}
 
 	/// Look for read receipts in this room
-	#[tracing::instrument(name = "receipts", level = "trace", skip(self, since, num))]
 	async fn select_edus_receipts_room(
 		&self,
 		room_id: &RoomId,
@@ -1005,7 +968,6 @@ impl Service {
 	// TODO: presence updates are batched per server via `pending_updates`,
 	// but server_sees_user still hits the DB per user to check shared rooms.
 	// Consider caching which servers each user is visible to, to avoid these DB calls.
-	#[tracing::instrument(name = "presence", level = "trace", skip(self, server_name, since))]
 	async fn select_edus_presence(
 		&self,
 		server_name: &ServerName,
@@ -1140,14 +1102,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "appservice",
-		level = "debug",
-		skip(self, events),
-		fields(
-			events = %events.len(),
-		),
-	)]
 	async fn send_events_dest_appservice(
 		&self,
 		id: String,
@@ -1218,14 +1172,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "push",
-		level = "trace",
-		skip(self, events),
-		fields(
-			events = %events.len(),
-		),
-	)]
 	async fn send_events_dest_push(
 		&self,
 		user_id: OwnedUserId,
@@ -1352,7 +1298,7 @@ impl Service {
 			.map(|edu_buf| {
 				let res = database::from_json_slice(edu_buf);
 				if let Err(ref e) = res {
-					tracing::error!(
+					conduwuit::error!(
 						"Failed to deserialize EDU: {} - JSON: {}",
 						e,
 						String::from_utf8_lossy(edu_buf)
@@ -1427,13 +1373,13 @@ impl Service {
 			edus,
 		};
 
-		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		conduwuit::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
 		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
 
 		let result = self
 			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
-		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		conduwuit::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {

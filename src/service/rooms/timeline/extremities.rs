@@ -220,7 +220,6 @@ impl Service {
 	/// 0. Optionally overwrites the stored forward extremities if `update_db`
 	///    is true.
 	/// Returns true if the extremities were changed (or would be changed).
-	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn recalculate_extremities(
 		&self,
 		room_id: &slipstream::RoomId,

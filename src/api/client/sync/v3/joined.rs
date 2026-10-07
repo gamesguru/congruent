@@ -50,15 +50,6 @@ use crate::client::{
 };
 
 /// Generate the sync response for a room the user is joined to.
-#[tracing::instrument(
-	name = "joined",
-	level = "debug",
-	skip_all,
-	fields(
-		room_id = %room_id,
-		syncing_user = %sync_context.syncing_user,
-	),
-)]
 pub(super) async fn load_joined_room(
 	services: &Services,
 	sync_context: SyncContext<'_>,
@@ -120,7 +111,6 @@ pub(super) async fn load_joined_room(
 }
 
 /// Collect changes to the syncing user's account data events.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_account_data(
 	services: &Services,
 	SyncContext {
@@ -142,7 +132,6 @@ async fn build_account_data(
 }
 
 /// Collect new ephemeral events.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_ephemeral(
 	services: &Services,
 	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,
@@ -276,7 +265,6 @@ struct StateAndTimeline {
 }
 
 /// Compute changes to the room's state and timeline.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_state_and_timeline(
 	services: &Services,
 	sync_context: SyncContext<'_>,
@@ -447,7 +435,6 @@ struct RootHandles {
 }
 
 /// Fetch the current_root_handle and last_sync_end_root_handle.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn fetch_roothandles(
 	services: &Services,
 	SyncContext { last_sync_end_count, current_count, .. }: SyncContext<'_>,
@@ -515,7 +502,6 @@ async fn fetch_roothandles(
 }
 
 /// Fetch recent timeline events.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_timeline(
 	services: &Services,
 	sync_context: SyncContext<'_>,
@@ -687,7 +673,6 @@ async fn build_state_after(
 }
 
 /// Compute the number of unread notifications in this room.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_notification_counts(
 	services: &Services,
 	SyncContext {
@@ -822,7 +807,6 @@ async fn build_notification_counts(
 }
 
 /// Check if the syncing user joined the room since their last incremental sync.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn check_joined_since_last_sync(
 	services: &Services,
 	room_id: &RoomId,
@@ -941,7 +925,6 @@ async fn check_joined_since_last_sync(
 
 /// Build the `summary` field of the room object, which includes
 /// the number of joined and invited users and the room's heroes.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_room_summary(
 	services: &Services,
 	SyncContext { syncing_user, .. }: SyncContext<'_>,
@@ -1067,7 +1050,6 @@ async fn build_heroes(
 }
 
 /// Collect updates to users' device lists for E2EE.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn build_device_list_updates(
 	services: &Services,
 	SyncContext { syncing_user, last_sync_end_count, .. }: SyncContext<'_>,

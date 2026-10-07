@@ -299,14 +299,6 @@ type PresenceUpdates = HashMap<OwnedUserId, PresenceEventContent>;
 /// For left rooms:
 /// - If the user left after `since`: `prev_batch` token, empty state (TODO:
 ///   subset of the state at the point of the leave)
-#[tracing::instrument(
-	name = "sync",
-	level = "debug",
-	skip_all,
-	fields(
-		since = %body.body.since.as_deref().unwrap_or_default(),
-    )
-)]
 pub(crate) async fn sync_events_route(
 	State(services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
@@ -762,7 +754,7 @@ pub(crate) async fn build_sync_events(
 				},
 			};
 
-			tracing::info!(
+			conduwuit::info!(
 				target: "knock_debug",
 				"get_knock_count for room_id={} user_id={} returned {:?} last_sync_end_count={:?}",
 				room_id, syncing_user, knock_count, last_sync_end_count
@@ -1009,7 +1001,7 @@ pub(crate) async fn build_sync_events(
 	// cases. Re-inject the computed payload so /sync cannot lose a one-shot
 	// device-list update between internal assembly and the final JSON body.
 	if let Some(device_lists_json) = device_lists_json {
-		tracing::info!(
+		conduwuit::info!(
 			changed = device_lists_json
 				.get("changed")
 				.and_then(|v| v.as_array())
@@ -1121,7 +1113,6 @@ pub(crate) async fn build_sync_events(
 ///
 /// Presence is only fetched for users not already in `presence_updates` and
 /// excludes the syncing user themselves.
-#[tracing::instrument(name = "member_presence", level = "debug", skip_all)]
 async fn collect_member_presence(
 	services: &Services,
 	syncing_user: &UserId,
@@ -1256,7 +1247,6 @@ fn collect_timeline_join_users(
 	}
 }
 
-#[tracing::instrument(name = "presence", level = "debug", skip_all)]
 async fn process_presence_updates(
 	services: &Services,
 	last_sync_end_count: Option<u64>,

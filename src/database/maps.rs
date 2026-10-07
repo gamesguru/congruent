@@ -26,7 +26,6 @@ pub(super) fn descriptors() -> Vec<Descriptor> {
 	descriptors
 }
 
-#[tracing::instrument(name = "maps", level = "debug", skip_all)]
 pub(super) fn open_list(db: &Arc<Engine>, maps: &[Descriptor]) -> Result<Maps> {
 	maps.iter()
 		.map(|desc| Ok((desc.name, Map::open(db, desc.name)?)))

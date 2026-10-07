@@ -93,7 +93,6 @@ fn enable_histogram(builder: &mut Builder, args: &Args) {
 }
 
 #[cfg(all(tokio_unstable, feature = "tokio_metrics"))]
-#[tracing::instrument(name = "stop", level = "info", skip_all)]
 pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 	use conduwuit_core::event;
 	use tracing::Level;
@@ -113,7 +112,6 @@ pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 }
 
 #[cfg(not(all(tokio_unstable, feature = "tokio_metrics")))]
-#[tracing::instrument(name = "stop", level = "info", skip_all)]
 pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 	wait_shutdown(server, runtime);
 }
@@ -133,15 +131,6 @@ fn wait_shutdown(_server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 		.ok();
 }
 
-#[tracing::instrument(
-	name = "fork",
-	level = "debug",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_start() {
 	debug_assert_eq!(
 		Some(WORKER_NAME),
@@ -197,37 +186,10 @@ fn set_worker_mallctl(id: usize) {
 #[cfg(any(not(feature = "jemalloc"), target_env = "msvc"))]
 fn set_worker_mallctl(_: usize) {}
 
-#[tracing::instrument(
-	name = "join",
-	level = "debug",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_stop() {}
 
-#[tracing::instrument(
-	name = "work",
-	level = "trace",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_unpark() {}
 
-#[tracing::instrument(
-	name = "park",
-	level = "trace",
-	skip_all,
-	fields(
-		id = ?thread::current().id(),
-		name = %thread::current().name().unwrap_or("None"),
-	),
-)]
 fn thread_park() {
 	match GC_ON_PARK
 		.get()
@@ -247,45 +209,13 @@ fn gc_on_park() {
 }
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "spawn",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id(),
-	),
-)]
 fn task_spawn(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "finish",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_terminate(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "enter",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_enter(meta: &tokio::runtime::TaskMeta<'_>) {}
 
 #[cfg(tokio_unstable)]
-#[tracing::instrument(
-	name = "leave",
-	level = "trace",
-	skip_all,
-	fields(
-		id = %meta.id()
-	),
-)]
 fn task_leave(meta: &tokio::runtime::TaskMeta<'_>) {}

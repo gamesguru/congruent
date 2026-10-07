@@ -15,7 +15,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), fields(%self), level = "trace")]
 pub fn raw_keys(self: &Arc<Self>) -> impl Stream<Item = Result<Key<'_>>> + Send {
 	super::macros::stream_boilerplate!(
 		map = self,

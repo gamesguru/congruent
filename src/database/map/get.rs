@@ -13,7 +13,6 @@ use crate::{
 /// Fetch a value from the database into cache, returning a reference-handle
 /// asynchronously. The key is referenced directly to perform the query.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), fields(%self), level = "trace")]
 pub fn get<K>(
 	self: &Arc<Self>,
 	key: &K,
@@ -47,7 +46,6 @@ where
 
 /// Fetch a value from the cache without I/O.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), name = "cache", level = "trace")]
 pub(crate) fn get_cached<K>(&self, key: &K) -> Result<Option<Handle<'_>>>
 where
 	K: AsRef<[u8]> + Debug + ?Sized,
@@ -60,7 +58,6 @@ where
 /// The key is referenced directly to perform the query. This is a thread-
 /// blocking call.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), name = "blocking", level = "trace")]
 pub fn get_blocking<K>(&self, key: &K) -> Result<Handle<'_>>
 where
 	K: AsRef<[u8]> + ?Sized,
@@ -73,7 +70,6 @@ where
 /// reference-handle. The key is referenced directly to perform the query. This
 /// is a thread- blocking call.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), name = "blocking_nocache", level = "trace")]
 pub fn get_blocking_nocache<K>(&self, key: &K) -> Result<Handle<'_>>
 where
 	K: AsRef<[u8]> + ?Sized,
@@ -86,7 +82,6 @@ where
 /// reference-handle asynchronously. The key is referenced directly to perform
 /// the query.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), fields(%self), level = "trace")]
 pub fn get_nocache<K>(
 	self: &Arc<Self>,
 	key: &K,

@@ -33,7 +33,6 @@ where
 /// - Query is serialized
 /// - Result is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub fn rev_stream_from_raw<P>(
 	self: &Arc<Self>,
 	from: &P,
@@ -68,7 +67,6 @@ where
 /// - Query is raw
 /// - Result is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, from), fields(%self), level = "trace")]
 pub fn rev_raw_stream_from<P>(
 	self: &Arc<Self>,
 	from: &P,
@@ -86,12 +84,6 @@ where
 	)
 }
 
-#[tracing::instrument(
-    name = "cached",
-    level = "trace",
-    skip(map, from),
-    fields(%map),
-)]
 pub(super) fn is_cached<P>(map: &Arc<super::Map>, from: &P) -> bool
 where
 	P: AsRef<[u8]> + ?Sized,

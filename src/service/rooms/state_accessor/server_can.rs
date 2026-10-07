@@ -11,7 +11,6 @@ use slipstream::{
 /// Whether a server is allowed to see an event through federation, based on
 /// the room's history_visibility at that event's state.
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, level = "trace")]
 pub async fn server_can_see_event(
 	&self,
 	origin: OwnedServerName,

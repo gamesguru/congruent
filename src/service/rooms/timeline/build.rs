@@ -21,7 +21,6 @@ use super::{ExtractBody, RoomMutexGuard};
 /// takes a roomid_mutex_state, meaning that only this function is able to
 /// mutate the room state.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, state_lock, pdu_builder), level = "trace")]
 pub async fn build_and_append_pdu(
 	&self,
 	pdu_builder: PduBuilder,
@@ -248,7 +247,6 @@ pub async fn build_and_append_pdu(
 /// Assert invariants about the admin room, to prevent (for example) all admins
 /// from leaving or being banned from the room
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, level = "debug")]
 async fn check_pdu_for_admin_room<Pdu>(&self, pdu: &Pdu, sender: &UserId) -> Result
 where
 	Pdu: Event + Send + Sync,

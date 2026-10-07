@@ -66,7 +66,6 @@ where
 }
 
 #[implement(Service)]
-#[tracing::instrument(name = "auth_chain", level = "debug", skip_all, fields(room_id = %room_id))]
 pub async fn get_auth_chain<'a, I>(
 	&'a self,
 	room_id: &RoomId,
@@ -157,7 +156,6 @@ where
 }
 
 #[implement(Service)]
-#[tracing::instrument(name = "auth_chain_bitmap", level = "debug", skip_all, fields(room_id = %room_id))]
 pub async fn get_auth_chain_bitmap<'a, I>(
 	&'a self,
 	room_id: &RoomId,
@@ -246,7 +244,6 @@ where
 }
 
 #[implement(Service)]
-#[tracing::instrument(name = "inner", level = "trace", skip(self, room_id))]
 async fn get_auth_chain_inner(
 	&self,
 	room_id: &RoomId,
@@ -462,7 +459,6 @@ pub async fn get_cached_eventid_authchain(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip_all, level = "debug")]
 pub fn cache_auth_chain_bitmap(
 	&self,
 	shortroomid: ShortRoomId,

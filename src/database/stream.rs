@@ -57,7 +57,6 @@ impl<'a> State<'a> {
 	}
 
 	#[inline]
-	#[tracing::instrument(level = "trace", skip_all)]
 	pub(super) fn init_fwd(mut self, from: From<'_>) -> Self {
 		debug_assert!(self.init, "init must be set to make this call");
 		debug_assert!(!self.seek, "seek must not be set to make this call");
@@ -73,7 +72,6 @@ impl<'a> State<'a> {
 	}
 
 	#[inline]
-	#[tracing::instrument(level = "trace", skip_all)]
 	pub(super) fn init_rev(mut self, from: From<'_>) -> Self {
 		debug_assert!(self.init, "init must be set to make this call");
 		debug_assert!(!self.seek, "seek must not be set to make this call");
@@ -89,7 +87,6 @@ impl<'a> State<'a> {
 	}
 
 	#[inline]
-	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
 	pub(super) fn seek_fwd(&mut self) {
 		if !exchange(&mut self.init, false) {
 			self.inner.next();
@@ -99,7 +96,6 @@ impl<'a> State<'a> {
 	}
 
 	#[inline]
-	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
 	pub(super) fn seek_rev(&mut self) {
 		if !exchange(&mut self.init, false) {
 			self.inner.prev();

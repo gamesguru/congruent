@@ -251,7 +251,6 @@ where
 
 /// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 #[allow(unused_variables)]
 pub async fn room_state_get_hamt_legacy(
 	&self,
@@ -469,7 +468,6 @@ pub fn state_full_shortids_hamt(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, root_handle), level = "debug")]
 /// Tests whether a HAMT root has no entries.
 pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	let root_node = self
@@ -484,7 +482,6 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
 /// Materializes all state entries stored beneath a HAMT root.
 pub async fn load_full_state_hamt(
 	&self,

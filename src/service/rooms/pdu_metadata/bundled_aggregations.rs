@@ -15,7 +15,6 @@ impl super::Service {
 	/// - m.replace relations are bundled to include the most recent replacement
 	///   event.
 	/// - m.reference relations are bundled to include a chunk of event IDs.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_bundled_aggregations(
 		&self,
 		user_id: &UserId,
@@ -171,7 +170,6 @@ impl super::Service {
 	}
 
 	/// Adds bundled aggregations to a PDU's unsigned field
-	#[tracing::instrument(skip(self, pdu), level = "debug")]
 	pub async fn add_bundled_aggregations_to_pdu(
 		&self,
 		user_id: &UserId,
@@ -222,7 +220,6 @@ impl super::Service {
 
 	/// Validates that an event is acceptable as a replacement for another event
 	/// See C/S spec "Validity of replacement events"
-	#[tracing::instrument(level = "debug")]
 	async fn is_valid_replacement_event(
 		original_event: &PduEvent,
 		replacement_event: &PduEvent,

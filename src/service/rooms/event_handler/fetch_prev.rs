@@ -19,7 +19,6 @@ use slipstream::{
 use super::check_room_id;
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all, fields(%origin))]
 #[allow(clippy::type_complexity)]
 pub(super) async fn fetch_prev<'a, Events>(
 	&self,

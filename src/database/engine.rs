@@ -56,13 +56,6 @@ pub struct Engine {
 pub(crate) type Db = DBWithThreadMode<MultiThreaded>;
 
 impl Engine {
-	#[tracing::instrument(
-		level = "info",
-		skip_all,
-		fields(
-			sequence = ?self.current_sequence(),
-		),
-	)]
 	pub fn wait_compactions_blocking(&self) -> Result {
 		info!("Waiting for database compactions to finish... This may block for a while.");
 		let mut opts = WaitForCompactOptions::default();
@@ -73,26 +66,12 @@ impl Engine {
 		self.db.wait_for_compact(&opts).map_err(map_err)
 	}
 
-	#[tracing::instrument(
-		level = "info",
-		skip_all,
-		fields(
-			sequence = ?self.current_sequence(),
-		),
-	)]
 	pub fn sort(&self) -> Result {
 		info!("Flushing database... This may block temporarily.");
 		let flushoptions = rocksdb::FlushOptions::default();
 		result(DBCommon::flush_opt(&self.db, &flushoptions))
 	}
 
-	#[tracing::instrument(
-		level = "debug",
-		skip_all,
-		fields(
-			sequence = ?self.current_sequence(),
-		),
-	)]
 	pub fn update(&self) -> Result {
 		info!("Catching up with primary... This may block.");
 		self.db.try_catch_up_with_primary().map_err(map_err)
@@ -165,13 +144,10 @@ impl Engine {
 
 	#[inline]
 	#[must_use]
-	#[tracing::instrument(name = "sequence", level = "debug", skip_all, fields(sequence))]
 	pub fn current_sequence(&self) -> u64 {
 		let sequence = self.db.latest_sequence_number();
 
 		#[cfg(debug_assertions)]
-		tracing::Span::current().record("sequence", sequence);
-
 		sequence
 	}
 

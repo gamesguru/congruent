@@ -44,7 +44,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, keys), level = "trace")]
 pub(crate) fn qry_batch<'a, S, K>(
 	self: &'a Arc<Self>,
 	keys: S,
@@ -57,7 +56,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, keys), level = "trace")]
 pub(crate) fn qry_batch_nocache<'a, S, K>(
 	self: &'a Arc<Self>,
 	keys: S,

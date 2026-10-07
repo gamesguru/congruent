@@ -136,8 +136,6 @@ media_thumbnail = [
 # increases performance, reduces build times, and reduces binary size by not compiling or
 # genreating code for log level filters that users will generally not use (debug and trace)
 release_max_log_level = [
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
 	"conduwuit-admin/release_max_log_level",
@@ -198,8 +196,6 @@ log.workspace = true
 tokio.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
 parking_lot.workspace = true
 reqwest = { workspace = true, default-features = false }
 rustls = { workspace = true, default-features = false }

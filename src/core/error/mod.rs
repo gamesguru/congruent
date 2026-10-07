@@ -6,7 +6,7 @@ mod serde;
 
 use std::{any::Any, borrow::Cow, convert::Infallible, error::Error as _, sync::PoisonError};
 
-pub use self::{err::visit, log::*};
+pub use self::log::*;
 
 #[derive(thiserror::Error)]
 pub enum Error {
@@ -74,10 +74,6 @@ pub enum Error {
 	TomlDe(#[from] toml::de::Error),
 	#[error(transparent)]
 	TomlSer(#[from] toml::ser::Error),
-	#[error("Tracing filter error: {0}")]
-	TracingFilter(#[from] tracing_subscriber::filter::ParseError),
-	#[error("Tracing reload error: {0}")]
-	TracingReload(#[from] tracing_subscriber::reload::Error),
 	#[error(transparent)]
 	TypedHeader(#[from] axum_extra::typed_header::TypedHeaderRejection),
 	#[error(transparent)]

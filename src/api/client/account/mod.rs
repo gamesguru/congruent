@@ -45,7 +45,6 @@ pub(crate) mod threepid;
 ///
 /// Note: This will not reserve the username, so the username might become
 /// invalid when trying to register
-#[tracing::instrument(skip_all, fields(%client), name = "register_available", level = "info")]
 pub(crate) async fn get_register_available_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -107,7 +106,6 @@ pub(crate) async fn get_register_available_route(
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "change_password", level = "info")]
 pub(crate) async fn change_password_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -272,7 +270,6 @@ pub(crate) async fn whoami_route(
 /// - Forgets all to-device events
 /// - Triggers device list updates
 /// - Removes ability to log in again
-#[tracing::instrument(skip_all, fields(%client), name = "deactivate", level = "info")]
 pub(crate) async fn deactivate_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,

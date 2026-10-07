@@ -24,12 +24,6 @@ pub struct Options {
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(
-	name = "compact",
-	level = "info",
-	skip(self),
-	fields(%self),
-)]
 pub fn compact_blocking(&self, opts: Options) -> Result {
 	let mut co = CompactOptions::default();
 	co.set_exclusive_manual_compaction(opts.exclusive);

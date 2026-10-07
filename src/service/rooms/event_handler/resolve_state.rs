@@ -27,7 +27,6 @@ fn copy_state_map(map: &StateMap<OwnedEventId>) -> StateMap<OwnedEventId> {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "resolve", level = "debug", skip_all)]
 pub async fn resolve_state(
 	&self,
 	room_id: &RoomId,
@@ -135,7 +134,6 @@ pub async fn resolve_state(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "rezzy", level = "debug", skip_all, fields(%room_id))]
 pub async fn state_resolution<'a, StateSets>(
 	&'a self,
 	room_id: &RoomId,

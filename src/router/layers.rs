@@ -167,7 +167,6 @@ fn body_limit_layer(server: &Server) -> DefaultBodyLimit {
 	DefaultBodyLimit::max(server.config.max_request_size)
 }
 
-#[tracing::instrument(name = "panic", level = "error", skip_all)]
 #[allow(clippy::needless_pass_by_value)]
 fn catch_panic(
 	err: Box<dyn Any + Send + 'static>,

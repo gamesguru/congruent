@@ -47,7 +47,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, keys), level = "trace")]
 pub fn get_batch<'a, S, K>(
 	self: &'a Arc<Self>,
 	keys: S,
@@ -60,7 +59,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, keys), level = "trace")]
 pub fn get_batch_nocache<'a, S, K>(
 	self: &'a Arc<Self>,
 	keys: S,
@@ -97,7 +95,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(name = "batch_blocking", level = "trace", skip_all)]
 pub fn get_batch_blocking<'a, I, K>(
 	&self,
 	keys: I,

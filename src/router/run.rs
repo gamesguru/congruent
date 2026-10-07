@@ -19,7 +19,6 @@ use tokio::{
 use crate::serve;
 
 /// Main loop base
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 	let server = &services.server;
 	debug!("Start");
@@ -66,7 +65,6 @@ pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 }
 
 /// Async initializations
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 	debug!("Starting...");
 
@@ -83,7 +81,6 @@ pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 }
 
 /// Async destructions
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
 	debug!("Shutting down...");
 
@@ -140,7 +137,6 @@ pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
 	Ok(())
 }
 
-#[tracing::instrument(skip_all, level = "info")]
 async fn signal<A: Address>(
 	services: Arc<Services>,
 	tx: Sender<()>,

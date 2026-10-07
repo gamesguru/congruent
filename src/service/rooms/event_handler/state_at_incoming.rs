@@ -12,7 +12,6 @@ use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId};
 // TODO: if we know the prev_events of the incoming event we can avoid the
 #[implement(super::Service)]
 // request and build the state from a known point and resolve if > 1 prev_event
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_degree_one<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -79,7 +78,6 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_resolved<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -257,7 +255,6 @@ where
 /// by local event creation when the room has diverged: state must be resolved
 /// across every fork, not just the room's current-state pointer.
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn resolve_extremities<'a, I>(
 	&self,
 	prev_events: I,

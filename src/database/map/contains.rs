@@ -46,7 +46,6 @@ where
 /// - key is serialized into provided buffer
 /// - harder errors will panic
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, buf), fields(%self), level = "trace")]
 pub fn bcontains<K, B>(
 	self: &Arc<Self>,
 	key: &K,
@@ -77,7 +76,6 @@ where
 /// Returns Ok if the map contains the key; NotFound otherwise. Harder errors
 /// may not always be reported properly.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, key), fields(%self), level = "trace")]
 pub fn exists_blocking<K>(&self, key: &K) -> Result
 where
 	K: AsRef<[u8]> + ?Sized + Debug,

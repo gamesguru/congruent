@@ -178,13 +178,6 @@ pub fn auth_types_for_event(
 /// The `fetch_state` closure should gather state from a state snapshot. We need
 /// to know if the event passes auth against some state not a recursive
 /// collection of auth_events fields.
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(
-		event_id = incoming_event.event_id().as_str(),
-	)
-)]
 #[allow(clippy::suspicious_operation_groupings)]
 pub async fn auth_check<E, F, Fut>(
 	room_version: &RoomVersion,

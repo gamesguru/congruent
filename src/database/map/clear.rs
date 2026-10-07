@@ -12,7 +12,6 @@ use crate::keyval::Key;
 ///
 /// See for_clear() with additional details.
 #[implement(super::Map)]
-#[tracing::instrument(level = "trace")]
 pub async fn clear(self: &Arc<Self>) {
 	self.for_clear().ignore_err().ready_for_each(|_| ()).await;
 }
@@ -24,7 +23,6 @@ pub async fn clear(self: &Arc<Self>) {
 /// Note this operation applies to a snapshot of the data when invoked.
 /// Additional data written during or after this call may be missed.
 #[implement(super::Map)]
-#[tracing::instrument(level = "trace")]
 pub fn for_clear(self: &Arc<Self>) -> impl Stream<Item = Result<Key<'_>>> + Send {
 	self.raw_keys().inspect_ok(|key| self.remove(key))
 }

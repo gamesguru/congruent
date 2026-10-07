@@ -31,7 +31,6 @@ type MakeService = IntoMakeServiceWithConnectInfo<Router, net::SocketAddr>;
 const NULL_ADDR: net::SocketAddr = net::SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 const FINI_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
-#[tracing::instrument(skip_all, level = "debug")]
 pub(super) async fn serve(
 	server: &Arc<Server>,
 	app: Router,
@@ -59,14 +58,6 @@ pub(super) async fn serve(
 	Ok(())
 }
 
-#[tracing::instrument(
-	level = "trace",
-	skip_all,
-	fields(
-		?listener,
-		socket = ?conn.0,
-	),
-)]
 async fn accept(
 	server: &Arc<Server>,
 	listener: &UnixListener,
@@ -83,14 +74,6 @@ async fn accept(
 	while tasks.try_join_next().is_some() {}
 }
 
-#[tracing::instrument(
-	level = "trace",
-	skip_all,
-	fields(
-		fd = %socket.as_raw_fd(),
-		path = ?socket.local_addr(),
-	),
-)]
 async fn accepted(
 	server: Arc<Server>,
 	builder: server::conn::auto::Builder<TokioExecutor>,

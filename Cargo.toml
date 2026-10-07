@@ -100,13 +100,12 @@ features = [
     "matched-path",
     "query",
     "tokio",
-    "tracing",
 ]
 
 [workspace.dependencies.axum-extra]
 version = "0.12.0"
 default-features = false
-features = ["typed-header", "tracing", "cookie"]
+features = ["typed-header", "cookie"]
 
 [workspace.dependencies.axum-server]
 version = "0.8.0"
@@ -206,17 +205,6 @@ features = ["fast-linear-to-srgb"]
 # logging
 [workspace.dependencies.log]
 version = "0.4.27"
-default-features = false
-[workspace.dependencies.tracing]
-version = "0.1.41"
-default-features = false
-features = ["attributes"]
-[workspace.dependencies.tracing-subscriber]
-version = "0.3.20"
-default-features = false
-features = ["env-filter", "std", "tracing", "tracing-log", "ansi", "fmt"]
-[workspace.dependencies.tracing-core]
-version = "0.1.34"
 default-features = false
 
 # for URL previews
@@ -500,7 +488,7 @@ version = "0.15.0"
 [workspace.dependencies.lettre]
 version = "0.11.19"
 default-features = false
-features = ["smtp-transport", "pool", "hostname", "builder", "rustls", "rustls-native-certs", "tokio1", "rustls-no-provider", "tokio1-rustls", "tracing", "serde"]
+features = ["smtp-transport", "pool", "hostname", "builder", "rustls", "rustls-native-certs", "tokio1", "rustls-no-provider", "tokio1-rustls", "serde"]
 
 [workspace.dependencies.governor]
 version = "0.10.4"
@@ -518,10 +506,6 @@ version = "0.5"
 #
 # Patches
 #
-
-# backport of [https://github.com/tokio-rs/tracing/pull/2956] to the 0.1.x branch of tracing.
-# we can switch back to upstream if #2956 is merged and backported in the upstream repo.
-
 
 # adds a tab completion callback: https://forgejo.ellis.link/continuwuation/rustyline-async/src/branch/main/.patchy/0002-add-tab-completion-callback.patch
 # adds event for CTRL+\: https://forgejo.ellis.link/continuwuation/rustyline-async/src/branch/main/.patchy/0001-add-event-for-ctrl.patch

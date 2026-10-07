@@ -49,7 +49,6 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 /// - If `inhibit_login` is false: Creates a device and returns device id and
 ///   access_token
 #[allow(clippy::doc_markdown)]
-#[tracing::instrument(skip_all, fields(%client), name = "register", level = "info")]
 pub(crate) async fn register_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,

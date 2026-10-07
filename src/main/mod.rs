@@ -108,12 +108,6 @@ async fn drop_sync_tokens(db: &conduwuit_database::Database) {
 /// Operate the server normally in release-mode static builds. This will start,
 /// run and stop the server within the asynchronous runtime.
 #[cfg(any(not(conduwuit_mods), not(feature = "conduwuit_mods")))]
-#[tracing::instrument(
-	name = "main",
-	parent = None,
-	skip_all,
-	level = "info"
-)]
 async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result<(), Error> {
 	extern crate conduwuit_router as router;
 

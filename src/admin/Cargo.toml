@@ -65,8 +65,6 @@ release_max_log_level = [
 	"conduwuit-core/release_max_log_level",
 	"conduwuit-database/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
 ]
@@ -96,8 +94,6 @@ lettre.workspace = true
 log.workspace = true
 serde-saphyr.workspace = true
 tokio.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
 regex.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true

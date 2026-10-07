@@ -55,7 +55,6 @@ use crate::{
 ///   rules locally
 /// - If the server does not know about the room: asks other servers over
 ///   federation
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -126,7 +125,6 @@ pub(crate) async fn join_room_by_id_route(
 /// - If the server does not know about the room: use the server name query
 ///   param if specified. if not specified, asks other servers over federation
 ///   via room alias server name and room ID server name
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_or_alias_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -338,7 +336,6 @@ pub async fn join_room_by_id_helper(
 	Ok(join_room_by_id::v3::Response::new(room_id.to_owned()))
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote", level = "info")]
 async fn join_room_by_id_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -566,7 +563,6 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
 	services: &Services,
@@ -952,7 +948,6 @@ async fn join_room_by_id_helper_remote_process(
 	Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_local", level = "info")]
 async fn join_room_by_id_helper_local(
 	services: &Services,
 	sender_user: &UserId,

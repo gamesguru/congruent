@@ -31,7 +31,6 @@ where
 /// - Query is serialized
 /// - Result is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub fn stream_prefix_raw<P>(
 	self: &Arc<Self>,
 	prefix: &P,

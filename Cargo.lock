@@ -377,7 +377,6 @@ version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be44683b41ccb9ab2d23a5230015c9c3c55be97a25e4428366de8873103f7970"
 dependencies = [
- "axum",
  "axum-core",
  "bytes",
  "cookie",
@@ -391,7 +390,6 @@ dependencies = [
  "pin-project-lite",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -876,8 +874,6 @@ dependencies = [
  "rustls",
  "rustyline-async",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -904,8 +900,6 @@ dependencies = [
  "serde-saphyr",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -940,7 +934,6 @@ dependencies = [
  "sha1 0.11.0",
  "tokio",
  "tower",
- "tracing",
  "url",
  "xxhash-rust",
 ]
@@ -1013,9 +1006,6 @@ dependencies = [
  "tokio",
  "tokio-metrics",
  "toml 1.1.6+spec-1.1.0",
- "tracing",
- "tracing-core",
- "tracing-subscriber",
  "url",
 ]
 
@@ -1037,7 +1027,6 @@ dependencies = [
  "rust-rocksdb",
  "serde",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -1090,7 +1079,6 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
- "tracing",
 ]
 
 [[package]]
@@ -1141,7 +1129,6 @@ dependencies = [
  "sha2 0.11.0",
  "termimad",
  "tokio",
- "tracing",
  "typed-arena",
  "url",
  "webpage",
@@ -1172,7 +1159,6 @@ dependencies = [
  "thiserror",
  "tower-http",
  "tower-sec-fetch",
- "tracing",
  "validator",
 ]
 
@@ -2752,7 +2738,6 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-rustls",
- "tracing",
  "url",
 ]
 
@@ -2908,15 +2893,6 @@ dependencies = [
  "markup5ever",
  "tendril",
  "xml5ever",
-]
-
-[[package]]
-name = "matchers"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
-dependencies = [
- "regex-automata",
 ]
 
 [[package]]
@@ -3153,15 +3129,6 @@ name = "nonzero_ext"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
-
-[[package]]
-name = "nu-ansi-term"
-version = "0.50.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "num"
@@ -4344,15 +4311,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sharded-slab"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
-dependencies = [
- "lazy_static",
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4642,15 +4600,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "thread_local"
-version = "1.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -4998,35 +4947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
- "valuable",
-]
-
-[[package]]
-name = "tracing-log"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
-dependencies = [
- "log",
- "once_cell",
- "tracing-core",
-]
-
-[[package]]
-name = "tracing-subscriber"
-version = "0.3.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
-dependencies = [
- "matchers",
- "nu-ansi-term",
- "once_cell",
- "regex-automata",
- "sharded-slab",
- "thread_local",
- "tracing",
- "tracing-core",
- "tracing-log",
 ]
 
 [[package]]
@@ -5161,12 +5081,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "valuable"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"

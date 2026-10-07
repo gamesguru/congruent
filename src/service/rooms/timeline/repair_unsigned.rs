@@ -59,7 +59,6 @@ pub fn update_unsigned_prev_content(
 }
 
 #[conduwuit_macros::implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 	let pdus_stream = self
 		.pdus(room_id, std::ops::Bound::Excluded(PduCount::min()))
@@ -117,7 +116,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 
 	pin_mut!(pdus_stream);
 
-	tracing::info!("repair_unsigned: starting streaming state event repair in {room_id}");
+	conduwuit::info!("repair_unsigned: starting streaming state event repair in {room_id}");
 
 	let mut repaired = 0_usize;
 	let mut skipped = 0_usize;
@@ -136,7 +135,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 			skipped = skipped.saturating_add(1);
 			let processed = repaired.saturating_add(skipped).saturating_add(errors);
 			if processed.is_multiple_of(1000) {
-				tracing::info!(
+				conduwuit::info!(
 					"repair_unsigned: {processed} processed ({repaired} repaired, {skipped} \
 					 skipped)"
 				);
@@ -181,7 +180,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 		// Populate from the previous state event
 		if let Some(prev_state) = prev_state {
 			if let Err(e) = update_unsigned_prev_content(&mut pdu_json, &prev_state) {
-				tracing::warn!(%event_id, "repair_unsigned: failed to update unsigned: {e}");
+				conduwuit::warn!(%event_id, "repair_unsigned: failed to update unsigned: {e}");
 				errors = errors.saturating_add(1);
 				continue;
 			}
@@ -194,7 +193,7 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 		};
 
 		if let Err(e) = self.replace_pdu(&pdu_id, &pdu_json, &event_id).await {
-			tracing::warn!(%event_id, "repair_unsigned: failed to write updated json: {e}");
+			conduwuit::warn!(%event_id, "repair_unsigned: failed to write updated json: {e}");
 			errors = errors.saturating_add(1);
 		} else {
 			repaired = repaired.saturating_add(1);
@@ -202,13 +201,13 @@ pub async fn repair_room_unsigned(&self, room_id: &RoomId) -> Result<usize> {
 
 		let processed = repaired.saturating_add(skipped).saturating_add(errors);
 		if processed.is_multiple_of(1000) {
-			tracing::info!(
+			conduwuit::info!(
 				"repair_unsigned: {processed} processed ({repaired} repaired, {skipped} skipped)"
 			);
 		}
 	}
 
-	tracing::info!(
+	conduwuit::info!(
 		"repair_unsigned complete for {room_id}: {repaired} repaired, {skipped} skipped, \
 		 {errors} errors"
 	);

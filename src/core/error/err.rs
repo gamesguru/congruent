@@ -122,26 +122,7 @@ macro_rules! err {
 #[collapse_debuginfo(yes)]
 macro_rules! err_log {
 	($out:ident, $level:ident, $($fields:tt)+) => {{
-		use $crate::tracing::{
-			callsite, callsite2, metadata, valueset_all, Callsite,
-			Level,
-		};
-
-		const LEVEL: Level = $crate::err_lev!($level);
-		static __CALLSITE: callsite::DefaultCallsite = callsite2! {
-			name: std::concat! {
-				"event ",
-				std::file!(),
-				":",
-				std::line!(),
-			},
-			kind: metadata::Kind::EVENT,
-			target: std::module_path!(),
-			level: LEVEL,
-			fields: $($fields)+,
-		};
-
-		($crate::error::visit)(&mut $out, LEVEL, &__CALLSITE, &mut valueset_all!(__CALLSITE.metadata().fields(), $($fields)+));
+		($out).push_str(stringify!($($fields)+));
 		($out).into()
 	}}
 }
@@ -151,83 +132,41 @@ macro_rules! err_log {
 macro_rules! err_lev {
 	(debug_warn) => {
 		if $crate::debug::logging() {
-			$crate::tracing::Level::WARN
+			$crate::log::Level::WARN
 		} else {
-			$crate::tracing::Level::DEBUG
+			$crate::log::Level::DEBUG
 		}
 	};
 
 	(debug_error) => {
 		if $crate::debug::logging() {
-			$crate::tracing::Level::ERROR
+			$crate::log::Level::ERROR
 		} else {
-			$crate::tracing::Level::DEBUG
+			$crate::log::Level::DEBUG
 		}
 	};
 
 	(warn) => {
-		$crate::tracing::Level::WARN
+		$crate::log::Level::WARN
 	};
 
 	(info) => {
-		$crate::tracing::Level::INFO
+		$crate::log::Level::INFO
 	};
 
 	(error) => {
-		$crate::tracing::Level::ERROR
+		$crate::log::Level::ERROR
 	};
 
 	(info) => {
-		$crate::tracing::Level::INFO
+		$crate::log::Level::INFO
 	};
 
 	(debug) => {
-		$crate::tracing::Level::DEBUG
+		$crate::log::Level::DEBUG
 	};
 
 	(trace) => {
-		$crate::tracing::Level::TRACE
+		$crate::log::Level::TRACE
 	};
-}
-
-use std::{fmt, fmt::Write};
-
-use tracing::{
-	__macro_support, __tracing_log, Callsite, Event, Level,
-	callsite::DefaultCallsite,
-	field::{Field, ValueSet, Visit},
-	level_enabled,
-};
-
-struct Visitor<'a>(&'a mut String);
-
-impl Visit for Visitor<'_> {
-	#[inline]
-	fn record_debug(&mut self, field: &Field, val: &dyn fmt::Debug) {
-		if field.name() == "message" {
-			write!(self.0, "{val:?}").expect("stream error");
-		} else {
-			write!(self.0, " {}={val:?}", field.name()).expect("stream error");
-		}
-	}
-}
-
-pub fn visit(
-	out: &mut String,
-	level: Level,
-	__callsite: &'static DefaultCallsite,
-	vs: &mut ValueSet<'_>,
-) {
-	let meta = __callsite.metadata();
-	let enabled = level_enabled!(level) && {
-		let interest = __callsite.interest();
-		!interest.is_never() && __macro_support::__is_enabled(meta, interest)
-	};
-
-	if enabled {
-		Event::dispatch(meta, vs);
-	}
-
-	__tracing_log!(level, __callsite, vs);
-	vs.record(&mut Visitor(out));
 }

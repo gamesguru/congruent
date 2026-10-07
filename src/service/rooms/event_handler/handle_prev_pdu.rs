@@ -1,23 +1,16 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use conduwuit::{
-	Err, Event, PduEvent, Result, debug::INFO_SPAN_LEVEL, defer, implement,
+	Err, Event, PduEvent, Result, debug, debug::INFO_SPAN_LEVEL, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
 use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
-use tracing::debug;
 
 use crate::rooms::pdu_metadata::RejectionCode;
 
 #[implement(super::Service)]
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-	name = "prev",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%prev_id),
-)]
 pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	&self,
 	origin: &'a ServerName,

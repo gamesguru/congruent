@@ -26,7 +26,6 @@ where
 
 /// Returns the full room state.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_state_full<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -41,7 +40,6 @@ pub fn room_state_full<'a>(
 
 /// Returns the full room state pdus
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_state_full_pdus<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -72,7 +70,6 @@ pub fn room_state_full_pdus_strict<'a>(
 /// Returns a single EventId from `room_id` with key (`event_type`,
 /// `state_key`).
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn room_state_get_id<Id>(
 	&self,
 	room_id: &RoomId,
@@ -96,7 +93,6 @@ where
 /// Returns a single PDU from `room_id` with key (`event_type`,
 /// `state_key`).
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn room_state_get(
 	&self,
 	room_id: &RoomId,
@@ -111,7 +107,6 @@ pub async fn room_state_get(
 /// Returns a single PDU from `room_id` at the given HAMT root with key
 /// (`event_type`, `state_key`).
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, root_handle), level = "debug")]
 pub async fn room_state_get_hamt_at_root(
 	&self,
 	room_id: &RoomId,
@@ -126,7 +121,6 @@ pub async fn room_state_get_hamt_at_root(
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`)
 /// via the current HAMT root.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn room_state_get_hamt(
 	&self,
 	room_id: &RoomId,
@@ -140,7 +134,6 @@ pub async fn room_state_get_hamt(
 
 /// Returns all state keys for the given `room_id` and `event_type`.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn room_state_keys(
 	&self,
 	room_id: &RoomId,

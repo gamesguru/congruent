@@ -189,11 +189,6 @@ impl Resolve for Hooked {
 	}
 }
 
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(name = ?name.as_str())
-)]
 async fn hooked_resolve(
 	cache: Arc<Cache>,
 	server: Arc<Server>,

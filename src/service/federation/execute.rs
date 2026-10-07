@@ -21,7 +21,6 @@ use crate::resolver::actual::ActualDest;
 
 /// Sends a request to a federation server
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, name = "request", level = "debug")]
 pub async fn execute<T>(&self, dest: &ServerName, request: T) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Debug + Send,
@@ -32,7 +31,6 @@ where
 
 /// Like execute() but with a very large timeout
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, name = "synapse", level = "debug")]
 pub async fn execute_synapse<T>(
 	&self,
 	dest: &ServerName,
@@ -46,11 +44,6 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(
-		name = "fed",
-		level = INFO_SPAN_LEVEL,
-		skip(self, client, request),
-	)]
 pub async fn execute_on<T>(
 	&self,
 	client: &Client,
@@ -229,7 +222,7 @@ fn handle_error(
 
 	if e.is_connect() {
 		e = e.without_url();
-		tracing::info!(target: "federation_debug", %dest, %method, %url, "Federation connection failed: {e:?}");
+		conduwuit::info!(target: "federation_debug", %dest, %method, %url, "Federation connection failed: {e:?}");
 		return Err(Error::FederationConnection(dest.to_owned()));
 	}
 
@@ -237,7 +230,7 @@ fn handle_error(
 		debug_error!(
 			%method,
 			%url,
-			final_url = e.url().map(tracing::field::display),
+			final_url = e.url().map(std::string::ToString::to_string),
 			"Redirect loop {}: {}",
 			actual.host,
 			e,

@@ -26,7 +26,6 @@ impl ActualDest {
 }
 
 impl super::Service {
-	#[tracing::instrument(skip_all, level = "debug", name = "resolve")]
 	pub(crate) async fn get_actual_dest(&self, server_name: &ServerName) -> Result<ActualDest> {
 		let (CachedDest { dest, host, .. }, _cached) =
 			self.lookup_actual_dest(server_name).await?;
@@ -58,7 +57,6 @@ impl super::Service {
 	/// Implemented according to the specification at <https://matrix.org/docs/spec/server_server/r0.1.4#resolving-server-names>
 	/// Numbers in comments below refer to bullet points in linked section of
 	/// specification
-	#[tracing::instrument(name = "actual", level = "debug", skip(self, cache))]
 	pub async fn resolve_actual_dest(
 		&self,
 		dest: &ServerName,
@@ -287,7 +285,6 @@ impl super::Service {
 			.await
 	}
 
-	#[tracing::instrument(name = "ip", level = "debug", skip(self))]
 	async fn query_and_cache_override(
 		&self,
 		untername: &'_ str,
@@ -316,7 +313,6 @@ impl super::Service {
 		}
 	}
 
-	#[tracing::instrument(name = "srv", level = "debug", skip(self))]
 	async fn query_srv_record(&self, hostname: &'_ str) -> Result<Option<FedDest>> {
 		let hostnames =
 			[format!("_matrix-fed._tcp.{hostname}."), format!("_matrix._tcp.{hostname}.")];

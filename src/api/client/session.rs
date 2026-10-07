@@ -39,7 +39,6 @@ use crate::Ruma;
 ///
 /// Get the supported login types of this server. One of these should be used as
 /// the `type` field when logging in.
-#[tracing::instrument(skip_all, fields(%client), name = "login", level = "info")]
 pub(crate) async fn get_login_types_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -57,7 +56,6 @@ pub(crate) async fn get_login_types_route(
 /// Authenticates the given user by its ID and its password.
 ///
 /// Returns the user ID if successful, and an error otherwise.
-#[tracing::instrument(skip_all, fields(%user_id), name = "password", level = "debug")]
 pub(crate) async fn password_login(
 	services: &Services,
 	user_id: &UserId,
@@ -100,7 +98,6 @@ pub(crate) async fn password_login(
 ///
 /// Creates the user if the user is found in the LDAP and do not already have an
 /// account.
-#[tracing::instrument(skip_all, fields(%user_id), name = "ldap", level = "debug")]
 pub(super) async fn ldap_login(
 	services: &Services,
 	user_id: &UserId,
@@ -239,7 +236,6 @@ pub(crate) async fn handle_login(
 /// Note: You can use [`GET
 /// /_matrix/client/r0/login`](fn.get_supported_versions_route.html) to see
 /// supported login types.
-#[tracing::instrument(skip_all, fields(%client), name = "login", level = "info")]
 pub(crate) async fn login_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -368,7 +364,6 @@ pub(crate) async fn login_route(
 /// to log in with the m.login.token flow.
 ///
 /// <https://spec.matrix.org/v1.13/client-server-api/#post_matrixclientv1loginget_token>
-#[tracing::instrument(skip_all, fields(%client), name = "login_token", level = "info")]
 pub(crate) async fn login_token_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -404,7 +399,6 @@ pub(crate) async fn login_token_route(
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "logout", level = "info")]
 pub(crate) async fn logout_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -450,7 +444,6 @@ pub(crate) async fn logout_route(
 /// Note: This is equivalent to calling [`GET
 /// /_matrix/client/r0/logout`](fn.logout_route.html) from each device of this
 /// user.
-#[tracing::instrument(skip_all, fields(%client), name = "logout", level = "info")]
 pub(crate) async fn logout_all_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,

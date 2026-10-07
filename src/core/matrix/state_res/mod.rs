@@ -788,7 +788,6 @@ where
 ///
 /// The power level is negative because a higher power level is equated to an
 /// earlier (further back in time) origin server timestamp.
-#[tracing::instrument(level = "debug", skip_all)]
 async fn reverse_topological_power_sort<E, F, Fut>(
 	events_to_sort: Vec<OwnedEventId>,
 	auth_diff: &HashSet<OwnedEventId>,
@@ -923,7 +922,6 @@ where
 ///
 /// `key_fn` is used as to obtain the power level and age of an event for
 /// breaking ties (together with the event ID).
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn lexicographical_topological_sort<Id, F, Fut, Hasher, S>(
 	graph: &HashMap<Id, HashSet<Id, Hasher>, S>,
 	key_fn: &F,
@@ -1126,7 +1124,6 @@ where
 /// For each `events_to_check` event we gather the events needed to auth it from
 /// the the `fetch_event` closure and verify each event using the
 /// `event_auth::auth_check` function.
-#[tracing::instrument(level = "trace", skip_all)]
 async fn iterative_auth_check<'a, E, F, Fut, S, BatchFetch, BatchFut, IsCached>(
 	room_version: &RoomVersion,
 	events_to_check: S,

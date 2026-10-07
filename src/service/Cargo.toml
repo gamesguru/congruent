@@ -47,8 +47,6 @@ release_max_log_level = [
 	"conduwuit-database/release_max_log_level",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 # TLS crypto providers are opt-in so this library stays provider-agnostic for
 # its consumers. The `setup_test_services` tests install the selected provider
@@ -109,7 +107,6 @@ hmac.workspace = true
 termimad.optional = true
 termimad.workspace = true
 tokio.workspace = true
-tracing.workspace = true
 url.workspace = true
 webpage.optional = true
 webpage.workspace = true

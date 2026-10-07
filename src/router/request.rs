@@ -15,7 +15,6 @@ use http::{Method, StatusCode, Uri};
 use tokio::time::sleep;
 use tracing::Span;
 
-#[tracing::instrument(name = "request", level = "debug", skip_all)]
 pub(crate) async fn handle(
 	State(services): State<Arc<Services>>,
 	req: http::Request<axum::body::Body>,
@@ -84,24 +83,6 @@ pub(crate) async fn handle(
 	result
 }
 
-#[tracing::instrument(
-	name = "handle",
-	level = "debug",
-	parent = parent,
-	skip_all,
-	fields(
-		active = %services
-			.server
-			.metrics
-			.requests_handle_active
-			.fetch_add(1, Ordering::Relaxed),
-		handled = %services
-			.server
-			.metrics
-			.requests_handle_finished
-			.load(Ordering::Relaxed),
-	)
-)]
 async fn execute(
 	// we made a safety contract that Services will not go out of scope
 	// during the request; this ensures a reference is accounted for at

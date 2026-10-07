@@ -216,7 +216,6 @@ async fn get_summary_and_children_local_fallback(
 
 /// Gets the summary of a space using solely federation
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 async fn get_summary_and_children_federation(
 	&self,
 	current_room: &RoomId,

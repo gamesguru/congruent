@@ -1,9 +1,7 @@
 use std::fmt::Display;
 
-use tracing::Level;
-
 use super::Result;
-use crate::error;
+use crate::{error, log::Level};
 
 pub trait LogErr<T, E: Display> {
 	#[must_use]

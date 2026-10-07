@@ -6,7 +6,6 @@ use crate::rooms::short::ShortRoomId;
 
 /// Replace a PDU with the redacted form.
 #[implement(super::Service)]
-#[tracing::instrument(name = "redact", level = "debug", skip(self))]
 pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	&self,
 	event_id: &EventId,

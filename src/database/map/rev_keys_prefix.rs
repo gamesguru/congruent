@@ -22,7 +22,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub fn rev_keys_prefix_raw<P>(
 	self: &Arc<Self>,
 	prefix: &P,

@@ -481,7 +481,6 @@ where
 /// the caller materialize the map. Because the predecessor's root has already
 /// been persisted, this also avoids re-writing nodes on the hot path.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 async fn reusable_predecessor_root_handle(
 	&self,
 	room_id: &RoomId,
@@ -540,7 +539,6 @@ async fn reusable_predecessor_root_handle(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn state_map_to_root_handle(
 	&self,
 	room_id: &RoomId,

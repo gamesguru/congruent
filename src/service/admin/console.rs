@@ -102,7 +102,6 @@ impl Console {
 		}
 	}
 
-	#[tracing::instrument(skip_all, name = "console", level = "trace")]
 	async fn worker(self: Arc<Self>) {
 		debug!("session starting");
 
@@ -145,7 +144,6 @@ impl Console {
 		self.worker_join.lock().take();
 	}
 
-	#[tracing::instrument(skip_all, name = "console_socket", level = "trace")]
 	async fn socket_worker(self: Arc<Self>) {
 		let socket_path = self.server.config.database_path.join("console.sock");
 		_ = tokio::fs::remove_file(&socket_path).await;

@@ -86,7 +86,6 @@ impl Service {
 	/// Returns an iterator over the most recent read_receipts in a room,
 	/// optionally after the event with id `since`.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn readreceipts_since<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -99,7 +98,6 @@ impl Service {
 	/// same thread already exists at an equal or greater count. Returns
 	/// whether the marker was applied.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn private_read_set(
 		&self,
 		room_id: &RoomId,
@@ -112,7 +110,6 @@ impl Service {
 
 	/// Returns the private read marker PDU count.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn private_read_get_count(
 		&self,
 		room_id: &RoomId,

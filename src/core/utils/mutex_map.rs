@@ -36,7 +36,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub async fn lock<'a, K>(&'a self, k: &'a K) -> Guard<Key, Val>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -53,7 +52,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub fn try_lock<'a, K>(&self, k: &'a K) -> Result<Guard<Key, Val>>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -70,7 +68,6 @@ where
 		})
 	}
 
-	#[tracing::instrument(level = "trace", skip(self))]
 	pub fn try_try_lock<'a, K>(&self, k: &'a K) -> Result<Guard<Key, Val>>
 	where
 		K: Debug + Send + ?Sized + Sync,
@@ -116,7 +113,6 @@ where
 	Key: Clone + Eq + Hash + Send,
 	Val: Default + Send,
 {
-	#[tracing::instrument(name = "unlock", level = "trace", skip_all)]
 	fn drop(&mut self) {
 		if Arc::strong_count(Omg::mutex(&self.val)) <= 2 {
 			self.map.lock().remove(&self.key);

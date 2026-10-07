@@ -2446,13 +2446,13 @@ impl Data {
 						};
 
 						if k.len() != 25 {
-							tracing::warn!("Invalid timestamp index key length: {}", k.len());
+							conduwuit::warn!("Invalid timestamp index key length: {}", k.len());
 							return None;
 						}
 
 						let variant = k[16];
 						if variant != 0 && variant != 1 {
-							tracing::warn!("Invalid timestamp index variant byte: {}", variant);
+							conduwuit::warn!("Invalid timestamp index variant byte: {}", variant);
 							return None;
 						}
 

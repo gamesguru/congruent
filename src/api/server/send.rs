@@ -1054,7 +1054,7 @@ async fn handle_edu_device_list_update(
 			// If that fetch fails, defer processing instead of fabricating a
 			// local keychange. The sender will retry the EDU, and we can only
 			// safely advance the remote cursor once we have confirmed state.
-			tracing::warn!(
+			conduwuit::warn!(
 				%user_id,
 				%origin,
 				incoming_stream_id,

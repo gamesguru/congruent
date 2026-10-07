@@ -105,7 +105,6 @@ impl crate::Service for Service {
 		}))
 	}
 
-	#[tracing::instrument(skip_all, name = "announcements", level = "debug")]
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		if !self.services.globals.allow_announcements_check() {
 			debug!("Disabling announcements check");
@@ -152,7 +151,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	#[tracing::instrument(skip_all)]
 	async fn check(&self) -> Result<()> {
 		debug_assert!(self.services.server.running(), "server must not be shutting down");
 
@@ -176,7 +174,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip_all)]
 	async fn handle(&self, announcement: &CheckForAnnouncementsResponseEntry) {
 		let mut message = RoomMessageEventContent::text_markdown(format!(
 			"### New announcement{}\n\n{}",

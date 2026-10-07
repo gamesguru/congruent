@@ -83,7 +83,6 @@ impl super::Service {
 	/// DB. Memory usage is dominated by metadata vectors and state groups, NOT
 	/// by full PduEvent JSON. For a 60K-event room this uses ~50MB instead of
 	/// the previous ~4GB.
-	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn rebuild_state(&self, room_id: &RoomId) -> Result<()> {
 		// Phase 1: Stream events and extract metadata + keep state PDUs
 		eprintln!("[rebuild_state] Phase 1: streaming events...");

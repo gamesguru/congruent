@@ -14,7 +14,6 @@ use crate::Ruma;
 /// # `POST /_matrix/federation/v1/publicRooms`
 ///
 /// Lists the public rooms on this server.
-#[tracing::instrument(name = "publicrooms", level = "debug", skip_all, fields(%client))]
 pub(crate) async fn get_public_rooms_filtered_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -52,7 +51,6 @@ pub(crate) async fn get_public_rooms_filtered_route(
 /// # `GET /_matrix/federation/v1/publicRooms`
 ///
 /// Lists the public rooms on this server.
-#[tracing::instrument(name = "publicrooms", level = "debug", skip_all, fields(%client))]
 pub(crate) async fn get_public_rooms_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,

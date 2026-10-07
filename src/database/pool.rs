@@ -114,7 +114,6 @@ impl Drop for Pool {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(skip_all, level = "debug")]
 pub(crate) fn close(&self) {
 	let workers = take(&mut *self.workers.lock());
 
@@ -164,12 +163,6 @@ fn spawn_until(self: &Arc<Self>, recv: &[Receiver<Cmd>], count: usize) -> Result
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	name = "spawn",
-	level = "trace",
-	skip_all,
-	fields(id = %workers.len())
-)]
 fn spawn_one(
 	self: Arc<Self>,
 	workers: &mut Vec<JoinHandle<()>>,
@@ -193,7 +186,6 @@ fn spawn_one(
 }
 
 #[implement(Pool)]
-#[tracing::instrument(level = "trace", name = "get", skip(self, cmd))]
 pub(crate) async fn execute_get(self: &Arc<Self>, mut cmd: Get) -> Result<BatchResult<'_>> {
 	let (send, recv) = oneshot::channel();
 	_ = cmd.res.insert(send);
@@ -208,7 +200,6 @@ pub(crate) async fn execute_get(self: &Arc<Self>, mut cmd: Get) -> Result<BatchR
 }
 
 #[implement(Pool)]
-#[tracing::instrument(level = "trace", name = "iter", skip(self, cmd))]
 pub(crate) async fn execute_iter(self: &Arc<Self>, mut cmd: Seek) -> Result<stream::State<'_>> {
 	let (send, recv) = oneshot::channel();
 	_ = cmd.res.insert(send);
@@ -230,17 +221,6 @@ fn select_queue(&self) -> &Sender<Cmd> {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	level = "trace",
-	name = "execute",
-	skip(self, cmd),
-	fields(
-		task = ?tokio::task::try_id(),
-		receivers = queue.receiver_count(),
-		queued = queue.len(),
-		queued_max = self.queued_max.load(Ordering::Relaxed),
-	),
-)]
 async fn execute(&self, queue: &Sender<Cmd>, cmd: Cmd) -> Result {
 	if cfg!(debug_assertions) {
 		self.queued_max.fetch_max(queue.len(), Ordering::Relaxed);
@@ -253,14 +233,6 @@ async fn execute(&self, queue: &Sender<Cmd>, cmd: Cmd) -> Result {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	parent = None,
-	level = "debug",
-	skip(self, recv),
-	fields(
-		tid = ?thread::current().id(),
-	),
-)]
 fn worker(self: Arc<Self>, id: usize, recv: &Receiver<Cmd>) {
 	self.worker_init(id);
 	self.worker_loop(recv);
@@ -315,16 +287,6 @@ fn worker_loop(self: &Arc<Self>, recv: &Receiver<Cmd>) {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	name = "wait",
-	level = "trace",
-	skip_all,
-	fields(
-		receivers = recv.receiver_count(),
-		queued = recv.len(),
-		busy = self.busy.fetch_sub(1, Ordering::Relaxed) - 1,
-	),
-)]
 fn worker_wait(self: &Arc<Self>, recv: &Receiver<Cmd>) -> Result<Cmd, RecvError> {
 	recv.recv_blocking().debug_inspect(|_| {
 		self.busy.fetch_add(1, Ordering::Relaxed);
@@ -341,12 +303,6 @@ fn worker_handle(cmd: Cmd) {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	name = "iter",
-	level = "trace",
-	skip_all,
-	fields(%cmd.map),
-)]
 fn handle_iter(mut cmd: Seek) {
 	let chan = cmd.res.take().expect("missing result channel");
 
@@ -367,15 +323,6 @@ fn handle_iter(mut cmd: Seek) {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	name = "batch",
-	level = "trace",
-	skip_all,
-	fields(
-		%cmd.map,
-		keys = %cmd.key.len(),
-	),
-)]
 fn handle_batch(mut cmd: Get) {
 	debug_assert!(cmd.key.len() > 1, "should have more than one key");
 	debug_assert!(!cmd.key.iter().any(SmallVec::is_empty), "querying for empty key");
@@ -396,12 +343,6 @@ fn handle_batch(mut cmd: Get) {
 }
 
 #[implement(Pool)]
-#[tracing::instrument(
-	name = "get",
-	level = "trace",
-	skip_all,
-	fields(%cmd.map),
-)]
 fn handle_get(mut cmd: Get) {
 	debug_assert!(!cmd.key[0].is_empty(), "querying for empty key");
 

@@ -40,7 +40,6 @@ where
 /// Fetch a value from the database into cache, returning a reference-handle
 /// asynchronously. The key is serialized into a user-supplied Writer.
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, buf), level = "trace")]
 pub fn bqry<K, B>(
 	self: &Arc<Self>,
 	key: &K,

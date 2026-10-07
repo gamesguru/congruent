@@ -159,7 +159,6 @@ where
 /// - Key is serialized to supplied buffer
 /// - Val is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, val, buf), level = "trace")]
 pub fn bput_raw<K, V, Bk>(&self, key: K, val: V, mut buf: Bk)
 where
 	K: DbKey + Debug,
@@ -190,7 +189,6 @@ where
 /// - Key is raw
 /// - Val is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip_all, fields(%self), level = "trace")]
 pub fn insert<K, V>(&self, key: &K, val: V)
 where
 	K: AsRef<[u8]> + ?Sized,

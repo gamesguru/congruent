@@ -223,7 +223,6 @@ impl Service {
 	/// fan-out. The caller is responsible for committing the new root to the
 	/// room's current-state pointer (via `set_room_state_hamt` /
 	/// `set_event_state_with_root`).
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn update_caches_for_state_delta_between(
 		&self,
 		room_id: &RoomId,
@@ -359,7 +358,6 @@ impl Service {
 	///
 	/// Appends the incoming event to the room's current HAMT state (if it is a
 	/// state event) and returns the resulting root handle.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
 		room_id: &RoomId,
@@ -381,7 +379,6 @@ impl Service {
 		.await
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state_with_root(
 		&self,
 		room_id: &RoomId,
@@ -465,7 +462,6 @@ impl Service {
 	/// Builds a new HAMT root handle (and its root node) representing the
 	/// room's current state plus the incoming state event. Only state events
 	/// may be appended; non-state events are rejected.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn append_to_state(
 		&self,
 		new_pdu: &PduEvent,
@@ -725,7 +721,6 @@ impl Service {
 		Ok(map)
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn summary_stripped<'a, E>(
 		&self,
 		event: &'a E,
@@ -762,7 +757,6 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
@@ -777,14 +771,12 @@ impl Service {
 	}
 
 	/// Returns the room's current HAMT RootHandle.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
 		let data = self.db.roomid_roothandle.get(room_id).await?;
 		root_handle_from_bytes(&data)
 	}
 
 	/// Returns the room's version.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);
@@ -1035,7 +1027,6 @@ impl Service {
 
 	/// This fetches auth events from the current state.
 	#[allow(clippy::too_many_arguments)]
-	#[tracing::instrument(skip(self, content, room_version), level = "trace")]
 	pub async fn get_auth_events(
 		&self,
 		room_id: &RoomId,

@@ -27,12 +27,8 @@ impl<T: fmt::Debug> fmt::Debug for TruncatedSlice<'_, T> {
 /// ```
 /// use conduwuit_core::utils::debug::slice_truncated;
 ///
-/// #[tracing::instrument(fields(foos = slice_truncated(foos, 42)))]
-/// fn bar(foos: &[&str]) {};
+/// /// fn bar(foos: &[&str]) {};
 /// ```
-pub fn slice_truncated<T: fmt::Debug>(
-	slice: &[T],
-	max_len: usize,
-) -> tracing::field::DebugValue<TruncatedSlice<'_, T>> {
-	tracing::field::debug(TruncatedSlice { inner: slice, max_len })
+pub fn slice_truncated<T: fmt::Debug>(slice: &[T], max_len: usize) -> impl fmt::Debug + '_ {
+	TruncatedSlice { inner: slice, max_len }
 }

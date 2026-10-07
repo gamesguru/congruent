@@ -2,13 +2,7 @@ use std::{fmt::Write, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
 
 use clap::{CommandFactory, Parser};
 use conduwuit::{
-	Error, Result, SyncMutex, debug, error,
-	log::{
-		capture,
-		capture::Capture,
-		fmt::{markdown_table, markdown_table_head},
-	},
-	trace,
+	Error, Result, SyncMutex, debug, error, log, trace,
 	utils::string::{collect_stream, common_prefix},
 	warn,
 };
@@ -25,8 +19,6 @@ use slipstream::{
 		room::message::{Relation::Reply, RoomMessageEventContent},
 	},
 };
-use tracing::Level;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 use crate::{admin, admin::AdminCommand, context::Context};
 
@@ -39,7 +31,6 @@ pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> Proces
 	Box::pin(async move { handle_command(services, command).await })
 }
 
-#[tracing::instrument(skip_all, name = "admin", level = "info")]
 async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
 	let reply_id = command.reply_id.clone();
 	AssertUnwindSafe(Box::pin(process_command(services, command)))
@@ -120,11 +111,7 @@ async fn process(
 	command: AdminCommand,
 	args: &[String],
 ) -> (Result, String) {
-	let (capture, logs) = capture_create(context);
-
-	let capture_scope = capture.start();
 	let result = Box::pin(admin::process(command, context)).await;
-	drop(capture_scope);
 
 	debug!(
 		ok = result.is_ok(),
@@ -133,50 +120,7 @@ async fn process(
 		"command processed"
 	);
 
-	let mut output = String::new();
-
-	// Prepend the logs only if any were captured
-	let logs = logs.lock();
-	if logs.lines().count() > 2 {
-		writeln!(&mut output, "```\n{logs}\n```")
-			.expect("failed to format logs to command output");
-	}
-	drop(logs);
-
-	(result, output)
-}
-
-fn capture_create(context: &Context<'_>) -> (Arc<Capture>, Arc<SyncMutex<String>>) {
-	let env_config = &context.services.server.config.admin_log_capture;
-	let env_filter = EnvFilter::try_new(env_config).unwrap_or_else(|e| {
-		warn!("admin_log_capture filter invalid: {e:?}");
-		cfg!(debug_assertions)
-			.then_some("debug")
-			.or(Some("info"))
-			.map(Into::into)
-			.expect("default capture EnvFilter")
-	});
-
-	let log_level = env_filter
-		.max_level_hint()
-		.and_then(LevelFilter::into_level)
-		.unwrap_or(Level::DEBUG);
-
-	let filter = move |data: capture::Data<'_>| {
-		data.level() <= log_level && data.our_modules() && data.scope.contains(&"admin")
-	};
-
-	let logs = Arc::new(SyncMutex::new(
-		collect_stream(|s| markdown_table_head(s)).expect("markdown table header"),
-	));
-
-	let capture = Capture::new(
-		&context.services.server.log.capture,
-		Some(filter),
-		capture::fmt(markdown_table, logs.clone()),
-	);
-
-	(capture, logs)
+	(result, String::new())
 }
 
 /// Parse chat messages from the admin room into an AdminCommand object

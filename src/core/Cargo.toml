@@ -48,8 +48,6 @@ jemalloc_stats = [
     "tikv-jemallocator/stats",
 ]
 release_max_log_level = [
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
 ]
@@ -112,9 +110,6 @@ tokio.workspace = true
 tokio-metrics.optional = true
 tokio-metrics.workspace = true
 toml.workspace = true
-tracing-core.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
 url.workspace = true
 roaring.workspace = true
 parking_lot.workspace = true

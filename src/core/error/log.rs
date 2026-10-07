@@ -1,8 +1,7 @@
 use std::{convert::Infallible, fmt};
 
-use tracing::Level;
-
 use super::Error;
+use crate::log::Level;
 
 #[inline]
 pub fn else_log<T, E>(error: E) -> Result<T, Infallible>

@@ -24,7 +24,6 @@ where
 ///
 /// - Result is raw
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), fields(%self), level = "trace")]
 pub fn rev_raw_stream(self: &Arc<Self>) -> impl Stream<Item = Result<KeyVal<'_>>> + Send {
 	super::macros::stream_boilerplate!(
 		map = self,
@@ -36,12 +35,6 @@ pub fn rev_raw_stream(self: &Arc<Self>) -> impl Stream<Item = Result<KeyVal<'_>>
 	)
 }
 
-#[tracing::instrument(
-    name = "cached",
-    level = "trace",
-    skip_all,
-    fields(%map),
-)]
 pub(super) fn is_cached(map: &Arc<super::Map>) -> bool {
 	let opts = super::cache_iter_options_default(&map.db);
 	let state = stream::State::new(map, opts).init_rev(None);

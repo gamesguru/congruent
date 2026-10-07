@@ -23,7 +23,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub fn rev_keys_from_raw<P>(
 	self: &Arc<Self>,
 	from: &P,
@@ -49,7 +48,6 @@ where
 }
 
 #[implement(super::Map)]
-#[tracing::instrument(skip(self, from), fields(%self), level = "trace")]
 pub fn rev_raw_keys_from<P>(
 	self: &Arc<Self>,
 	from: &P,

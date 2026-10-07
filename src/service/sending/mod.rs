@@ -192,7 +192,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	#[tracing::instrument(skip(self, pdu_id, user, pushkey), level = "debug")]
 	pub fn send_pdu_push(&self, pdu_id: &RawPduId, user: &UserId, pushkey: String) -> Result {
 		let dest = Destination::Push(user.to_owned(), pushkey);
 		let event = SendingEvent::Pdu(*pdu_id);
@@ -205,7 +204,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn send_pdu_appservice(&self, appservice_id: String, pdu_id: RawPduId) -> Result {
 		let dest = Destination::Appservice(appservice_id);
 		let event = SendingEvent::Pdu(pdu_id);
@@ -218,7 +216,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, room_id, pdu_id), level = "debug")]
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
 		let servers = self
 			.services
@@ -237,7 +234,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -258,7 +254,6 @@ impl Service {
 		Ok(num_servers)
 	}
 
-	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		if self.server_is_dead(server) {
 			return Ok(());
@@ -275,7 +270,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
 		let event = SendingEvent::Edu(serialized);
@@ -288,7 +282,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, room_id, serialized), level = "debug")]
 	pub async fn send_edu_room(&self, room_id: &RoomId, serialized: EduBuf) -> Result {
 		let servers = self
 			.services
@@ -299,7 +292,6 @@ impl Service {
 		self.send_edu_servers(servers, serialized).await
 	}
 
-	#[tracing::instrument(skip(self, servers, serialized), level = "debug")]
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -327,7 +319,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self, room_id), level = "debug")]
 	pub async fn flush_room(&self, room_id: &RoomId) -> Result<()> {
 		let servers = self
 			.services
@@ -338,7 +329,6 @@ impl Service {
 		self.flush_servers(servers).await
 	}
 
-	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn wait_for_pdu_servers(
 		&self,
 		servers: Vec<OwnedServerName>,
@@ -393,7 +383,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(skip(self, servers), level = "debug")]
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -467,7 +456,6 @@ impl Service {
 	///
 	/// Used after we remove an appservice registration or a user deletes a push
 	/// key
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn cleanup_events(
 		&self,
 		appservice_id: Option<&str>,
