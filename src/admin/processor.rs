@@ -1,10 +1,7 @@
 use std::{fmt::Write, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
 
 use clap::{CommandFactory, Parser};
-use conduwuit::{
-	Error, Result, debug, error, trace,
-	utils::string::common_prefix,
-};
+use conduwuit::{Error, Result, debug, error, trace, utils::string::common_prefix};
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
 use regex::Regex;
 use service::{
