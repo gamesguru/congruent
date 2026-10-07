@@ -97,7 +97,6 @@ roaring.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true
 serde.workspace = true
-serde-saphyr.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
 hmac.workspace = true

@@ -75,7 +75,6 @@ reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
-serde-saphyr.workspace = true
 serde.workspace = true
 smallvec.workspace = true
 smallstr.workspace = true

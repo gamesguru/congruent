@@ -31,17 +31,18 @@ struct Data {
 
 type Registrations = BTreeMap<String, RegistrationInfo>;
 
-/// Parses an appservice registration from its YAML representation.
-pub fn registration_from_yaml(yaml: &str) -> Result<Registration> {
-	let value = serde_saphyr::from_str::<conduwuit::utils::SerdeValue>(yaml)?.0;
+/// Parses an appservice registration from its JSON representation.
+pub fn registration_from_json(json: &str) -> Result<Registration> {
+	let value = slipstream::canonical_json::from_json_str(json)
+		.map_err(|e| err!(Request(InvalidParam("Invalid appservice JSON: {e}"))))?;
 	slipstream::codec::from_value(&value)
 		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
 }
 
-/// Renders an appservice registration as YAML.
-pub fn registration_to_yaml(registration: &Registration) -> Result<String> {
+/// Renders an appservice registration as JSON.
+pub fn registration_to_json(registration: &Registration) -> Result<String> {
 	let value = slipstream::codec::to_value(registration);
-	Ok(serde_saphyr::to_string(&conduwuit::utils::SerdeValueRef(&value))?)
+	Ok(slipstream::codec::to_string(&value))
 }
 
 #[async_trait]
@@ -77,16 +78,23 @@ impl crate::Service for Service {
 							.extension()
 							.is_some_and(|ext| ext == "yaml" || ext == "yml")
 						{
+							conduwuit::error!(
+								"YAML appservice registration {path:?} is unsupported; convert \
+								 it to JSON"
+							);
+							continue;
+						}
+						if path.extension().is_some_and(|ext| ext == "json") {
 							match tokio::fs::read_to_string(&path).await {
 								| Err(e) => {
 									conduwuit::error!(
 										"Failed to read appservice file {path:?}: {e:?}"
 									);
 								},
-								| Ok(content) => match registration_from_yaml(&content) {
+								| Ok(content) => match registration_from_json(&content) {
 									| Err(e) => {
 										conduwuit::error!(
-											"Failed to parse appservice YAML from {path:?}: \
+											"Failed to parse appservice JSON from {path:?}: \
 											 {e:?}"
 										);
 									},
@@ -330,7 +338,7 @@ impl Service {
 			.id_appserviceregistrations
 			.get(id)
 			.await
-			.and_then(|ref bytes| registration_from_yaml(&String::from_utf8_lossy(bytes)))
+			.and_then(|ref bytes| registration_from_json(&String::from_utf8_lossy(bytes)))
 			.map_err(|e| {
 				self.db.id_appserviceregistrations.remove(id);
 				err!(Database("Invalid appservice {id:?} registration: {e:?}. Removed."))

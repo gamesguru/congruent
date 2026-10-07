@@ -68,11 +68,6 @@ pub enum Error {
 	TomlDe(#[from] toml::de::Error),
 	#[error(transparent)]
 	TomlSer(#[from] toml::ser::Error),
-	#[error(transparent)]
-	YamlDe(#[from] serde_saphyr::Error),
-	#[error(transparent)]
-	YamlSer(#[from] serde_saphyr::ser_error::Error),
-
 	// slipstream/conduwuit
 	#[error("Arithmetic operation failed: {0}")]
 	Arithmetic(Cow<'static, str>),
