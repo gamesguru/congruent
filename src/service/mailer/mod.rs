@@ -17,12 +17,23 @@ struct Webhook {
 	token: Option<String>,
 }
 
-#[derive(serde::Serialize)]
-struct WebhookMessage<'a> {
-	from: &'a str,
-	to: &'a str,
-	subject: &'a str,
-	text: &'a str,
+fn json_string(value: &str) -> String {
+	let mut escaped = String::with_capacity(value.len() + 2);
+	escaped.push('"');
+	for character in value.chars() {
+		match character {
+			| '"' => escaped.push_str("\\\""),
+			| '\\' => escaped.push_str("\\\\"),
+			| '\n' => escaped.push_str("\\n"),
+			| '\r' => escaped.push_str("\\r"),
+			| '\t' => escaped.push_str("\\t"),
+			| character if character.is_control() =>
+				escaped.push_str(&format!("\\u{:04x}", character as u32)),
+			| character => escaped.push(character),
+		}
+	}
+	escaped.push('"');
+	escaped
 }
 
 #[async_trait::async_trait]
@@ -79,13 +90,19 @@ impl Mailer<'_> {
 		let subject = message.subject();
 		let body = message.render();
 
-		let payload = WebhookMessage {
-			from: &self.webhook.sender,
-			to: &recipient,
-			subject: &subject,
-			text: &body,
-		};
-		let mut request = self.webhook.client.post(&self.webhook.url).json(&payload);
+		let payload = format!(
+			"{{\"from\":{},\"to\":{},\"subject\":{},\"text\":{}}}",
+			json_string(&self.webhook.sender),
+			json_string(&recipient),
+			json_string(&subject),
+			json_string(&body),
+		);
+		let mut request = self
+			.webhook
+			.client
+			.post(&self.webhook.url)
+			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.body(payload);
 		if let Some(token) = &self.webhook.token {
 			request = request.bearer_auth(token);
 		}
