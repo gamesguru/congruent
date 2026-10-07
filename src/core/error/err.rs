@@ -87,7 +87,7 @@ macro_rules! err {
 
 	(Config($item:literal, $($args:tt)+)) => {{
 		let mut buf = String::new();
-		$crate::error::Error::Config($item, $crate::err_log!(buf, error, config = %$item, $($args)+))
+		$crate::error::Error::Config($item, $crate::err_log!(buf, error, $($args)+))
 	}};
 
 	($variant:ident($level:ident!($($args:tt)+))) => {{
