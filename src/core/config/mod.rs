@@ -880,7 +880,7 @@ pub struct Config {
 	/// `state_hamt_node_sweep_delete` only once a dry run has shown the report
 	/// is sane.
 	///
-	/// default: 21600 (6 hours)
+	/// default: 21600
 	#[serde(default = "default_state_hamt_node_sweep_interval_secs")]
 	pub state_hamt_node_sweep_interval_secs: u64,
 
