@@ -8,7 +8,7 @@ use std::{
 	time::Duration,
 };
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 use conduwuit_core::result::LogDebugErr;
 use conduwuit_core::{
 	Result, debug, is_true,
@@ -23,7 +23,7 @@ const WORKER_MIN: usize = 2;
 const WORKER_KEEPALIVE: u64 = 36;
 const MAX_BLOCKING_THREADS: usize = 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 const DISABLE_MUZZY_THRESHOLD: usize = 4;
 
 static WORKER_AFFINITY: OnceLock<bool> = OnceLock::new();
@@ -123,9 +123,9 @@ fn wait_shutdown(_server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
 
 	runtime.shutdown_timeout(SHUTDOWN_TIMEOUT);
 
-	// Join any jemalloc threads so they don't appear in use at exit.
-	#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
-	conduwuit_core::alloc::je::background_thread_enable(false)
+	// Join any allocator threads so they don't appear in use at exit.
+	#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
+	conduwuit_core::alloc::mi::background_thread_enable(false)
 		.log_debug_err()
 		.ok();
 }
@@ -160,9 +160,9 @@ fn set_worker_affinity() {
 	set_worker_mallctl(id);
 }
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
 fn set_worker_mallctl(id: usize) {
-	use conduwuit_core::alloc::je::{
+	use conduwuit_core::alloc::mi::{
 		is_affine_arena,
 		this_thread::{set_arena, set_muzzy_decay},
 	};
@@ -182,7 +182,7 @@ fn set_worker_mallctl(id: usize) {
 	}
 }
 
-#[cfg(any(not(feature = "jemalloc"), target_env = "msvc"))]
+#[cfg(any(not(feature = "mimalloc"), target_env = "msvc"))]
 fn set_worker_mallctl(_: usize) {}
 
 fn thread_stop() {}
@@ -195,14 +195,14 @@ fn thread_park() {
 		.as_ref()
 		.expect("GC_ON_PARK initialized by runtime::new()")
 	{
-		| Some(true) | None if cfg!(feature = "jemalloc_conf") => gc_on_park(),
+		| Some(true) | None if cfg!(feature = "mimalloc_conf") => gc_on_park(),
 		| _ => (),
 	}
 }
 
 fn gc_on_park() {
-	#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
-	conduwuit_core::alloc::je::this_thread::decay()
+	#[cfg(all(not(target_env = "msvc"), feature = "mimalloc"))]
+	conduwuit_core::alloc::mi::this_thread::decay()
 		.log_debug_err()
 		.ok();
 }

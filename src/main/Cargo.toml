@@ -48,6 +48,7 @@ assets = [
 [features]
 default = [
     "release_max_log_level",
+    "mimalloc",
     "ring",
     "bindgen-runtime", # replace with bindgen-static on alpine
 ]
@@ -56,8 +57,8 @@ standard = [
     "brotli_compression",
     "gzip_compression",
     "io_uring",
-    "jemalloc",
-    "jemalloc_conf",
+    "mimalloc",
+    "mimalloc_conf",
     "media_thumbnail",
     "zstd_compression",
 ]
@@ -68,11 +69,11 @@ full = [
     "ldap",
     "systemd",
     "url_preview",
-    # "hardened_malloc", # Conflicts with jemalloc
+    # "hardened_malloc", # Conflicts with mimalloc
 ]
 
 local_profiling = [
-    "jemalloc_prof",
+    "mimalloc_prof",
     "tokio_metrics",
 ]
 
@@ -111,18 +112,18 @@ ring = [
 io_uring = [
 	"conduwuit-database/io_uring",
 ]
-jemalloc = [
-	"conduwuit-core/jemalloc",
-	"conduwuit-database/jemalloc",
+mimalloc = [
+	"conduwuit-core/mimalloc",
+	"conduwuit-database/mimalloc",
 ]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
 ]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
 ]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
 ]
 ldap = [
 	"conduwuit-api/ldap",

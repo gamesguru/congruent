@@ -351,28 +351,9 @@ default-features = false
 
 
 
-# jemalloc usage
-[workspace.dependencies.tikv-jemalloc-sys]
-git = "https://forgejo.ellis.link/continuwuation/jemallocator"
-rev = "82af58d6a13ddd5dcdc7d4e91eae3b63292995b8"
+[workspace.dependencies.mimalloc]
+version = "0.1.48"
 default-features = false
-features = [
-    "background_threads_runtime_support",
-    "unprefixed_malloc_on_supported_platforms",
-]
-[workspace.dependencies.tikv-jemallocator]
-git = "https://forgejo.ellis.link/continuwuation/jemallocator"
-rev = "82af58d6a13ddd5dcdc7d4e91eae3b63292995b8"
-default-features = false
-features = [
-    "background_threads_runtime_support",
-    "unprefixed_malloc_on_supported_platforms",
-]
-[workspace.dependencies.tikv-jemalloc-ctl]
-git = "https://forgejo.ellis.link/continuwuation/jemallocator"
-rev = "82af58d6a13ddd5dcdc7d4e91eae3b63292995b8"
-default-features = false
-features = ["use_std"]
 
 [workspace.dependencies.nix]
 version = "0.31.0"

@@ -252,21 +252,7 @@ fn worker_init(&self, id: usize) {
 	// affinity is empty (no-op) if there's only one queue
 	set_affinity(affinity.clone());
 
-	#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
-	if affinity.clone().count() == 1 && conduwuit::alloc::je::is_affine_arena() {
-		use conduwuit::{
-			alloc::je::this_thread::{arena_id, set_arena},
-			result::LogDebugErr,
-		};
-
-		let id = affinity.clone().next().expect("at least one id");
-
-		if let Ok(arena) = arena_id() {
-			if arena != id {
-				set_arena(id).log_debug_err().ok();
-			}
-		}
-	}
+	// mimalloc does not expose per-arena affinity controls.
 
 	debug!(
 		%group,

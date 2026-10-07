@@ -28,20 +28,12 @@ gzip_compression = [
 hardened_malloc = [
 	"dep:hardened_malloc-rs"
 ]
-jemalloc = [
-	"dep:tikv-jemalloc-sys",
-	"dep:tikv-jemalloc-ctl",
-	"dep:tikv-jemallocator",
+mimalloc = [
+	"dep:mimalloc",
 ]
-jemalloc_conf = []
-jemalloc_prof = [
-	"tikv-jemalloc-sys/profiling",
-]
-jemalloc_stats = [
-    "tikv-jemalloc-sys/stats",
-    "tikv-jemalloc-ctl/stats",
-    "tikv-jemallocator/stats",
-]
+mimalloc_conf = []
+mimalloc_prof = []
+mimalloc_stats = []
 release_max_log_level = [
 	"log/max_level_trace",
 	"log/release_max_level_info",
@@ -88,12 +80,8 @@ serde.workspace = true
 smallvec.workspace = true
 smallstr.workspace = true
 thiserror.workspace = true
-tikv-jemallocator.optional = true
-tikv-jemallocator.workspace = true
-tikv-jemalloc-ctl.optional = true
-tikv-jemalloc-ctl.workspace = true
-tikv-jemalloc-sys.optional = true
-tikv-jemalloc-sys.workspace = true
+mimalloc.optional = true
+mimalloc.workspace = true
 tokio.workspace = true
 tokio-metrics.optional = true
 tokio-metrics.workspace = true

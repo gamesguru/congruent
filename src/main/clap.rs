@@ -128,7 +128,7 @@ pub struct Args {
 	)]
 	pub gc_on_park: Option<bool>,
 
-	/// Toggles muzzy decay for jemalloc arenas associated with a tokio
+	/// Toggles allocator decay behavior associated with a tokio
 	/// worker (when worker-affinity is enabled). Setting to false releases
 	/// memory to the operating system using MADV_FREE without MADV_DONTNEED.
 	/// Setting to false increases performance by reducing pagefaults, but

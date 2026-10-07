@@ -44,29 +44,29 @@ io_uring = [
 	"conduwuit-api/io_uring",
 	"conduwuit-service/io_uring",
 ]
-jemalloc = [
-	"conduwuit-admin/jemalloc",
-	"conduwuit-api/jemalloc",
-	"conduwuit-core/jemalloc",
-	"conduwuit-service/jemalloc",
+mimalloc = [
+	"conduwuit-admin/mimalloc",
+	"conduwuit-api/mimalloc",
+	"conduwuit-core/mimalloc",
+	"conduwuit-service/mimalloc",
 ]
-jemalloc_conf = [
-	"conduwuit-admin/jemalloc_conf",
-	"conduwuit-api/jemalloc_conf",
-	"conduwuit-core/jemalloc_conf",
-	"conduwuit-service/jemalloc_conf",
+mimalloc_conf = [
+	"conduwuit-admin/mimalloc_conf",
+	"conduwuit-api/mimalloc_conf",
+	"conduwuit-core/mimalloc_conf",
+	"conduwuit-service/mimalloc_conf",
 ]
-jemalloc_prof = [
-	"conduwuit-admin/jemalloc_prof",
-	"conduwuit-api/jemalloc_prof",
-	"conduwuit-core/jemalloc_prof",
-	"conduwuit-service/jemalloc_prof",
+mimalloc_prof = [
+	"conduwuit-admin/mimalloc_prof",
+	"conduwuit-api/mimalloc_prof",
+	"conduwuit-core/mimalloc_prof",
+	"conduwuit-service/mimalloc_prof",
 ]
-jemalloc_stats = [
-	"conduwuit-admin/jemalloc_stats",
-	"conduwuit-api/jemalloc_stats",
-	"conduwuit-core/jemalloc_stats",
-	"conduwuit-service/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-admin/mimalloc_stats",
+	"conduwuit-api/mimalloc_stats",
+	"conduwuit-core/mimalloc_stats",
+	"conduwuit-service/mimalloc_stats",
 ]
 release_max_log_level = [
 	"conduwuit-admin/release_max_log_level",

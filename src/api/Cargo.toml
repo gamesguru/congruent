@@ -38,21 +38,21 @@ gzip_compression = [
 io_uring = [
 	"conduwuit-service/io_uring",
 ]
-jemalloc = [
-    "conduwuit-core/jemalloc",
-    "conduwuit-service/jemalloc",
+mimalloc = [
+    "conduwuit-core/mimalloc",
+    "conduwuit-service/mimalloc",
 ]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
-	"conduwuit-service/jemalloc_conf",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
+	"conduwuit-service/mimalloc_conf",
 ]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
-	"conduwuit-service/jemalloc_prof",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
+	"conduwuit-service/mimalloc_prof",
 ]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
-	"conduwuit-service/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
+	"conduwuit-service/mimalloc_stats",
 ]
 ldap = [
     "conduwuit-service/ldap"

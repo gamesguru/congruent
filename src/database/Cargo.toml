@@ -24,18 +24,17 @@ ignored = ["const-str", "ctor"]
 io_uring = [
 	"rust-rocksdb/io-uring",
 ]
-jemalloc = [
-	"conduwuit-core/jemalloc",
-	"rust-rocksdb/jemalloc",
+mimalloc = [
+	"conduwuit-core/mimalloc",
 ]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
 ]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
 ]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
 ]
 release_max_log_level = [
 	"conduwuit-core/release_max_log_level",

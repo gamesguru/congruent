@@ -34,11 +34,8 @@ pub fn check(config: &Config) -> Result {
 	warn_deprecated(config);
 	warn_unknown_key(config);
 
-	if cfg!(all(feature = "hardened_malloc", feature = "jemalloc", not(target_env = "msvc"))) {
-		debug_warn!(
-			"hardened_malloc and jemalloc compile-time features are both enabled, this causes \
-			 jemalloc to be used."
-		);
+	if cfg!(all(feature = "hardened_malloc", feature = "mimalloc", not(target_env = "msvc"))) {
+		debug_warn!("hardened_malloc and mimalloc compile-time features are both enabled.");
 	}
 
 	if cfg!(not(unix)) && config.unix_socket_path.is_some() {
