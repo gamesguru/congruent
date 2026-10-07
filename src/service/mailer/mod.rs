@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Write as _, sync::Arc};
 
 use conduwuit::{Result, err, info};
 
@@ -27,8 +27,9 @@ fn json_string(value: &str) -> String {
 			| '\n' => escaped.push_str("\\n"),
 			| '\r' => escaped.push_str("\\r"),
 			| '\t' => escaped.push_str("\\t"),
-			| character if character.is_control() =>
-				escaped.push_str(&format!("\\u{:04x}", character as u32)),
+			| character if character.is_control() => {
+				let _ = write!(escaped, "\\u{:04x}", character as u32);
+			},
 			| character => escaped.push(character),
 		}
 	}
