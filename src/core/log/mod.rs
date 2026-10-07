@@ -94,7 +94,7 @@ macro_rules! __conduwuit_log {
 		$crate::__conduwuit_log!(@emit $level, $target, prefix)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident) => {{
-		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$name);
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$name);
 		$crate::__conduwuit_log!(@emit $level, $target, prefix)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr) => {{
@@ -106,7 +106,7 @@ macro_rules! __conduwuit_log {
 		$crate::__conduwuit_log!(@emit $level, $target, prefix)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = $value:expr) => {{
-		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
 		$crate::__conduwuit_log!(@emit $level, $target, prefix)
 	}};
 
@@ -119,7 +119,7 @@ macro_rules! __conduwuit_log {
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident, $($rest:tt)+) => {{
-		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$name);
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$name);
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr, $($rest:tt)+) => {{
@@ -131,7 +131,7 @@ macro_rules! __conduwuit_log {
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = $value:expr, $($rest:tt)+) => {{
-		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
+		let prefix = format!("{}{}={:?} ", $prefix, stringify!($name), &$value);
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 
