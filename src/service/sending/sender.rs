@@ -462,6 +462,11 @@ impl Service {
 			// Flush was rejected (e.g., backoff still active). Re-schedule
 			// at the remaining backoff time to avoid hot-polling the channel.
 			let delay = self.remaining_backoff(&msg.dest, statuses);
+			debug!(
+				target: "presence_debug",
+				dest = ?msg.dest, status = ?statuses.get(&msg.dest), ?delay,
+				"flush rejected by sender status"
+			);
 			if delay > Duration::ZERO {
 				self.reschedule_flush(msg.dest, delay);
 			}
@@ -1015,6 +1020,12 @@ impl Service {
 			return (None, since.1);
 		}
 
+		debug!(
+			target: "presence_debug",
+			%server_name, users = users.len(),
+			"select_edus_presence: pending presence for server"
+		);
+
 		let mut presence_updates = Vec::with_capacity(users.len().min(SELECT_PRESENCE_LIMIT));
 		let mut attempted_users = Vec::with_capacity(SELECT_PRESENCE_LIMIT);
 		let mut loop_count = 0_usize;
@@ -1031,6 +1042,11 @@ impl Service {
 				.await
 				.log_err()
 			else {
+				info!(
+					target: "presence_debug",
+					%server_name, %user_id,
+					"select_edus_presence: skipping user, presence lookup failed"
+				);
 				attempted_users.push(user_id.clone());
 				continue;
 			};
@@ -1044,6 +1060,11 @@ impl Service {
 				.server_sees_user(server_name, &user_id)
 				.await
 			{
+				info!(
+					target: "presence_debug",
+					%server_name, %user_id,
+					"select_edus_presence: dropping user, server no longer sees them"
+				);
 				continue;
 			}
 
@@ -1076,6 +1097,12 @@ impl Service {
 				.or_default()
 				.extend(users);
 		}
+
+		debug!(
+			target: "presence_debug",
+			%server_name, updates = presence_updates.len(),
+			"select_edus_presence: built presence EDU"
+		);
 
 		if presence_updates.is_empty() {
 			return (None, since.1);
