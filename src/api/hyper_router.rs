@@ -11,12 +11,17 @@ pub(crate) struct MinimalRouter {
 	pub(crate) inner: Router<()>,
 }
 
+impl MinimalRouter {
+	pub(crate) fn new() -> Self { Self { inner: Router::new() } }
+}
+
 impl hyper::service::Service<Request<Incoming>> for MinimalRouter {
 	type Error = Infallible;
 	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 	type Response = Response<Full<Bytes>>;
 
 	fn call(&self, _request: Request<Incoming>) -> Self::Future {
+		let _ = &self.inner;
 		Box::pin(async {
 			Ok(Response::builder()
 				.status(http::StatusCode::NOT_FOUND)

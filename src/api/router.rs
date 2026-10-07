@@ -24,6 +24,7 @@ pub(super) use self::{
 use crate::{admin, client, server};
 
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
+	let _minimal_router = crate::hyper_router::MinimalRouter::new();
 	let config = &server.config;
 	let mut router = router
 		.ruma_route(&client::get_profile_key_route)
@@ -456,11 +457,11 @@ async fn redirect_legacy_preview(uri: Uri) -> impl IntoResponse {
 }
 
 async fn legacy_media_disabled() -> impl IntoResponse {
-	ApiError(err!(Request(Forbidden("Unauthenticated media is disabled."))).into())
+	ApiError(err!(Request(Forbidden("Unauthenticated media is disabled."))))
 }
 
 async fn federation_disabled() -> impl IntoResponse {
-	ApiError(err!(Request(Forbidden("Federation is disabled."))).into())
+	ApiError(err!(Request(Forbidden("Federation is disabled."))))
 }
 
 async fn inject_public_join_rule(res: axum::response::Response) -> axum::response::Response {
