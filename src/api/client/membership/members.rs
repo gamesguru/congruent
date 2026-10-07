@@ -48,8 +48,7 @@ pub(crate) async fn get_member_events_route(
 		.can_access_history(sender_user, room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("You don't have permission to view this room.")))
-			.map_err(Into::into);
+		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
 
 	if let Some(at) = body.at.as_deref() {
