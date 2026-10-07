@@ -3,12 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser};
-use conduwuit_core::{
-	Err, Result,
-	config::{Figment, FigmentValue},
-	err, toml,
-	utils::available_parallelism,
-};
+use conduwuit_core::{Err, Result, config::RawConfig, err, toml, utils::available_parallelism};
 
 /// Commandline arguments
 #[derive(Parser, Debug)]
@@ -155,7 +150,7 @@ pub struct Args {
 pub(crate) fn parse() -> Args { Args::parse() }
 
 /// Synthesize any command line options with configuration file options.
-pub(crate) fn update(mut config: Figment, args: &Args) -> Result<Figment> {
+pub(crate) fn update(mut config: RawConfig, args: &Args) -> Result<RawConfig> {
 	if args.maintenance {
 		config = config.join(("startup_netburst", false));
 		config = config.join(("listening", false));
@@ -190,13 +185,12 @@ pub(crate) fn update(mut config: Figment, args: &Args) -> Result<Figment> {
 		}
 
 		// The value has to pass for what would appear as a line in the TOML file.
-		let val = toml::from_str::<FigmentValue>(option)?;
-		let FigmentValue::Dict(_, val) = val else {
-			panic!("Unexpected Figment Value: {val:#?}");
-		};
-
-		// Figment::merge() overrides existing
-		config = config.merge((key, val[key].clone()));
+		let val = toml::from_str::<toml::Value>(&format!("value = {val}"))?;
+		let value = val
+			.get("value")
+			.cloned()
+			.expect("the synthetic TOML value must contain `value`");
+		config.set_override(key, value);
 	}
 
 	Ok(config)

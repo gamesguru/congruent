@@ -677,7 +677,6 @@ mod tests {
 		matrix::StateKey,
 	};
 	use database::Database;
-	use figment::providers::Format;
 	use futures::stream::{self, StreamExt};
 	use slipstream::{OwnedEventId, event_id, events::StateEventType};
 
@@ -702,15 +701,16 @@ mod tests {
 
 		let guard = TempDbGuard { path: db_path.clone() };
 
-		let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+		let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
 			r#"
 				server_name = "test.conduwuit.local"
 				database_path = "{}"
 				"#,
 			db_path.to_string_lossy().replace('\\', "/")
-		)));
+		))
+		.expect("failed to parse test config");
 
-		let config = Config::new(&figment).expect("failed to parse config");
+		let config = Config::new(&config_raw).expect("failed to parse config");
 		let runtime_handle = tokio::runtime::Handle::current();
 		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
 			reload: LogLevelReloadHandles::default(),

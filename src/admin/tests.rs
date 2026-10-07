@@ -335,7 +335,6 @@ impl Drop for TempDbGuard {
 }
 
 async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<service::Services>) {
-	use figment::providers::Format;
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
 	static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
@@ -350,7 +349,7 @@ async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<servi
 	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{prefix}_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
 
-	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+	let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
 		r#"
 			server_name = "test.conduwuit.local"
 			database_path = "{}"
@@ -364,9 +363,10 @@ async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<servi
 			rocksdb_wal_compression = "zstd"
 			"#,
 		db_path.to_string_lossy().replace('\\', "/")
-	)));
+	))
+	.expect("failed to parse test config");
 
-	let config = conduwuit::config::Config::new(&figment).expect("failed to parse config");
+	let config = conduwuit::config::Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = tokio::runtime::Handle::current();
 	let server = std::sync::Arc::new(conduwuit::Server::new(
 		config,

@@ -277,12 +277,6 @@ version = "1.15.0"
 default-features = false
 features = ["serde"]
 
-# Used for reading the configuration from continuwuity.toml & environment variables
-[workspace.dependencies.figment]
-version = "0.10.19"
-default-features = false
-features = ["env", "toml"]
-
 [workspace.dependencies.hickory-resolver]
 version = "0.25.2"
 default-features = false

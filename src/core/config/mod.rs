@@ -5,6 +5,7 @@ pub mod proxy;
 
 use std::{
 	collections::{BTreeMap, BTreeSet, HashMap},
+	fs,
 	net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 	path::PathBuf,
 };
@@ -14,8 +15,6 @@ use either::{
 	Either,
 	Either::{Left, Right},
 };
-use figment::providers::{Env, Format, Toml};
-pub use figment::{Figment, value::Value as FigmentValue};
 use lettre::message::Mailbox;
 use regex::RegexSet;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
@@ -23,6 +22,7 @@ use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomVersionId,
 	api::client::discovery::{discover_homeserver::RtcFocusInfo, discover_support::ContactRole},
 };
+use toml::{Table, Value};
 use url::Url;
 
 use self::proxy::ProxyConfig;
@@ -2815,14 +2815,111 @@ const DEPRECATED_KEYS: &[&str] = &[
 	"well_known.rtc_focus_server_urls",
 ];
 
+/// Layered, untyped configuration values assembled from files, environment,
+/// and command-line overrides before deserializing into [`Config`].
+#[derive(Clone, Debug, Default)]
+pub struct RawConfig {
+	inner: Value,
+}
+
+impl RawConfig {
+	#[must_use]
+	pub fn new() -> Self { Self { inner: Value::Table(Table::new()) } }
+
+	fn merge_value(a: &mut Value, b: Value) {
+		match (a, b) {
+			| (Value::Table(a), Value::Table(b)) =>
+				for (key, value) in b {
+					Self::merge_value(a.entry(key).or_insert(Value::Table(Table::new())), value);
+				},
+			| (a, b) => *a = b,
+		}
+	}
+
+	fn insert(&mut self, path: impl IntoIterator<Item = String>, value: Value) {
+		let mut path = path.into_iter().peekable();
+		let mut current = &mut self.inner;
+		while let Some(key) = path.next() {
+			if path.peek().is_none() {
+				if let Value::Table(table) = current {
+					table.insert(key, value);
+				}
+				return;
+			}
+
+			if !current.is_table() {
+				*current = Value::Table(Table::new());
+			}
+			current = current
+				.as_table_mut()
+				.expect("configuration value was made into a table")
+				.entry(key)
+				.or_insert(Value::Table(Table::new()));
+		}
+	}
+
+	fn parse_scalar(value: &str) -> Value {
+		toml::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()))
+	}
+
+	pub fn load_file(&mut self, path: &std::path::Path) -> Result<()> {
+		let content = match fs::read_to_string(path) {
+			| Ok(content) => content,
+			| Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			| Err(error) => return Err(error.into()),
+		};
+		let parsed = toml::from_str::<Value>(&content)
+			.map_err(|error| err!(Config("Failed to parse TOML {}: {error}", path.display())))?;
+		Self::merge_value(&mut self.inner, parsed);
+		Ok(())
+	}
+
+	pub fn from_toml(input: &str) -> Result<Self> {
+		let mut config = Self::new();
+		let parsed = toml::from_str::<Value>(input)
+			.map_err(|error| err!(Config("Failed to parse TOML: {error}")))?;
+		Self::merge_value(&mut config.inner, parsed);
+		Ok(config)
+	}
+
+	pub fn load_env(&mut self, prefix: &str) {
+		for (key, value) in std::env::vars() {
+			let Some(key) = key.strip_prefix(prefix) else { continue };
+			let path = key
+				.split("__")
+				.filter(|part| !part.is_empty())
+				.map(str::to_ascii_lowercase);
+			self.insert(path, Self::parse_scalar(&value));
+		}
+	}
+
+	pub fn set_override(&mut self, key: &str, value: Value) {
+		self.insert(key.split('.').map(str::to_owned), value);
+	}
+
+	#[must_use]
+	pub fn contains(&self, key: &str) -> bool {
+		let mut current = &self.inner;
+		for part in key.split('.') {
+			let Some(table) = current.as_table() else { return false };
+			let Some(value) = table.get(part) else { return false };
+			current = value;
+		}
+		true
+	}
+
+	pub fn extract<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
+		self.inner
+			.clone()
+			.try_into()
+			.map_err(|error| err!(Config("Failed to deserialize config: {error}")))
+	}
+}
+
 impl Config {
 	/// Pre-initialize config
-	pub fn load(paths: &[PathBuf]) -> Result<Figment> {
-		let envs = [
-			Env::var("CONDUIT_CONFIG"),
-			Env::var("CONDUWUIT_CONFIG"),
-			Env::var("CONTINUWUITY_CONFIG"),
-		];
+	pub fn load(paths: &[PathBuf]) -> Result<RawConfig> {
+		let envs = ["CONDUIT_CONFIG", "CONDUWUIT_CONFIG", "CONTINUWUITY_CONFIG"];
 		let mut runtime_paths = Vec::new();
 		for path in paths {
 			let mut p = path.clone();
@@ -2833,27 +2930,34 @@ impl Config {
 			runtime_paths.push(PathBuf::from("conduwuit-runtime.toml"));
 		}
 
-		let mut config = envs
-			.into_iter()
-			.flatten()
-			.map(Toml::file)
-			.chain(paths.iter().cloned().map(Toml::file))
-			.chain(runtime_paths.iter().cloned().map(Toml::file))
-			.fold(Figment::new(), |config, file| config.merge(file.nested()))
-			.merge(Env::prefixed("CONDUIT_").global().split("__"))
-			.merge(Env::prefixed("CONDUWUIT_").global().split("__"))
-			.merge(Env::prefixed("CONTINUWUITY_").global().split("__"));
-
-		config = config.join(("config_paths", paths));
+		let mut config = RawConfig::new();
+		for env in envs {
+			if let Ok(path) = std::env::var(env) {
+				config.load_file(std::path::Path::new(&path))?;
+			}
+		}
+		for path in paths.iter().chain(runtime_paths.iter()) {
+			config.load_file(path)?;
+		}
+		config.load_env("CONDUIT_");
+		config.load_env("CONDUWUIT_");
+		config.load_env("CONTINUWUITY_");
+		config.set_override(
+			"config_paths",
+			Value::Array(
+				paths
+					.iter()
+					.map(|path| Value::String(path.to_string_lossy().into_owned()))
+					.collect(),
+			),
+		);
 
 		Ok(config)
 	}
 
 	/// Finalize config
-	pub fn new(raw_config: &Figment) -> Result<Self> {
-		let mut config = raw_config
-			.extract::<Self>()
-			.map_err(|e| err!("There was a problem with your configuration file: {e}"))?;
+	pub fn new(raw_config: &RawConfig) -> Result<Self> {
+		let mut config = raw_config.extract::<Self>()?;
 
 		// Evaluate user-agent templates
 		let replace_template = |s: &str| {

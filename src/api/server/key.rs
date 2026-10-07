@@ -266,7 +266,7 @@ mod tests {
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
 	use conduwuit_core::{
 		Server,
-		config::Config,
+		config::{Config, RawConfig},
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
 	use http::{Request, StatusCode};
@@ -368,10 +368,12 @@ mod tests {
 
 		let db_path = temp_root.join("db");
 
-		let figment = conduwuit_core::config::Figment::new()
-			.merge(("server_name", "example.com"))
-			.merge(("database_path", db_path.to_string_lossy().into_owned()));
-		let config = Config::new(&figment).expect("test config should be valid");
+		let config_raw = RawConfig::from_toml(&format!(
+			"server_name = \"example.com\"\ndatabase_path = \"{}\"",
+			db_path.to_string_lossy().replace('\\', "/")
+		))
+		.expect("test config should be valid");
+		let config = Config::new(&config_raw).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
 		let services =
 			conduwuit_service::Services::build(server.clone()).expect("services should build");

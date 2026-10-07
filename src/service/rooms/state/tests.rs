@@ -8,7 +8,6 @@ use conduwuit_core::{
 	log::{Log, LogLevelReloadHandles, capture},
 	matrix::{Event, PduEvent},
 };
-use figment::providers::Format;
 use slipstream::{
 	CanonicalJsonObject, EventId, RoomId, event_id,
 	events::{AnyStrippedStateEvent, StateEventType},
@@ -50,15 +49,16 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 
 	let guard = TempDbGuard { path: db_path.clone(), _lock: lock };
 
-	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+	let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
 		r#"
         server_name = "test.conduwuit.local"
         database_path = "{}"
         "#,
 		db_path.to_string_lossy().replace('\\', "/")
-	)));
+	))
+	.expect("failed to parse test config");
 
-	let config = Config::new(&figment).expect("failed to parse config");
+	let config = Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = tokio::runtime::Handle::current();
 	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
 		reload: LogLevelReloadHandles::default(),

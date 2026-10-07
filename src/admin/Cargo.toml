@@ -99,7 +99,6 @@ rezzy.workspace = true
 slipstream.workspace = true
 
 [dev-dependencies]
-figment.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 
 [lints]

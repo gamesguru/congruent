@@ -68,7 +68,6 @@ slipstream.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-figment.workspace = true
 
 [lints]
 workspace = true

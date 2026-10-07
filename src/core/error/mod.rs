@@ -45,8 +45,6 @@ pub enum Error {
 	#[error(transparent)]
 	Clap(#[from] clap::error::Error),
 	#[error(transparent)]
-	Figment(#[from] figment::error::Error),
-	#[error(transparent)]
 	Http(#[from] http::Error),
 	#[error(transparent)]
 	HttpHeader(#[from] http::header::InvalidHeaderValue),

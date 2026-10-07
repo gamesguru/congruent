@@ -1,10 +1,9 @@
 use std::env::consts::OS;
 
 use either::Either;
-use figment::Figment;
 
 use super::DEPRECATED_KEYS;
-use crate::{Config, Err, Result, Server, debug, debug_info, debug_warn, error, warn};
+use crate::{Config, Err, RawConfig, Result, Server, debug, debug_info, debug_warn, error, warn};
 
 /// Performs check() with additional checks specific to reloading old config
 /// with new config.
@@ -287,7 +286,7 @@ fn warn_unknown_key(config: &Config) {
 
 /// Checks the presence of the `address` and `unix_socket_path` keys in the
 /// raw_config, exiting the process if both keys were detected.
-pub(super) fn is_dual_listening(raw_config: &Figment) -> Result<()> {
+pub(super) fn is_dual_listening(raw_config: &RawConfig) -> Result<()> {
 	let contains_address = raw_config.contains("address");
 	let contains_unix_socket = raw_config.contains("unix_socket_path");
 	if contains_address && contains_unix_socket {
