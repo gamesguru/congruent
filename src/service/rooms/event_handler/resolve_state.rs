@@ -134,6 +134,7 @@ pub async fn resolve_state(
 }
 
 #[implement(super::Service)]
+#[allow(clippy::unused_async_trait_impl, clippy::items_after_statements)]
 pub async fn state_resolution<'a, StateSets>(
 	&'a self,
 	room_id: &RoomId,

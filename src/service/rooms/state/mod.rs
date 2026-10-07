@@ -569,10 +569,8 @@ impl Service {
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(short_state_keys.len());
 
-		for ((ssk, event_id), key_result) in short_state_keys
-			.into_iter()
-			.zip(event_ids.into_iter())
-			.zip(string_keys.into_iter())
+		for ((ssk, event_id), key_result) in
+			short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 		{
 			let shorteventid = self
 				.services

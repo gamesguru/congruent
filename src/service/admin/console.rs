@@ -1,6 +1,6 @@
 #![cfg(feature = "console")]
 
-use std::sync::Arc;
+use std::{os::unix::fs::PermissionsExt, sync::Arc};
 
 use conduwuit::{
 	Server, SyncMutex, console_history::ConsoleHistory, debug, defer, error, log,
@@ -156,7 +156,6 @@ impl Console {
 			},
 		};
 
-		use std::os::unix::fs::PermissionsExt;
 		if let Ok(meta) = tokio::fs::metadata(&socket_path).await {
 			let mut perms = meta.permissions();
 			// e.g. self.server.config.unix_socket_perms

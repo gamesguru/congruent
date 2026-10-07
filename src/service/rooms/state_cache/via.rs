@@ -15,7 +15,7 @@ use slipstream::{
 pub async fn add_servers_invite_via(&self, room_id: &RoomId, servers: Vec<OwnedServerName>) {
 	let mut servers: Vec<_> = self
 		.servers_invite_via(room_id)
-		.chain(iter(servers.into_iter()))
+		.chain(iter(servers))
 		.collect()
 		.await;
 

@@ -561,10 +561,8 @@ pub async fn state_map_to_root_handle(
 		.collect()
 		.await;
 
-	for ((shortstatekey, event_id), key_result) in short_state_keys
-		.into_iter()
-		.zip(event_ids.into_iter())
-		.zip(string_keys.into_iter())
+	for ((shortstatekey, event_id), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 	{
 		let event_id = event_id.as_ref();
 		let shorteventid = self

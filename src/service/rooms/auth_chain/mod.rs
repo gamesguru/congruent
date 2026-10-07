@@ -276,11 +276,7 @@ async fn get_auth_chain_inner(
 			.collect()
 			.await;
 
-		for (idx, (res, _short_id)) in batch_results
-			.into_iter()
-			.zip(short_ids.into_iter())
-			.enumerate()
-		{
+		for (idx, (res, _short_id)) in batch_results.into_iter().zip(short_ids).enumerate() {
 			match res {
 				| Ok(auth_shorts) =>
 					for auth_short in auth_shorts {

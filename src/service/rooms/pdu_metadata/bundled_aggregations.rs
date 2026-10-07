@@ -220,6 +220,7 @@ impl super::Service {
 
 	/// Validates that an event is acceptable as a replacement for another event
 	/// See C/S spec "Validity of replacement events"
+	#[allow(clippy::unused_async_trait_impl)]
 	async fn is_valid_replacement_event(
 		original_event: &PduEvent,
 		replacement_event: &PduEvent,
