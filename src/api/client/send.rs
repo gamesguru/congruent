@@ -91,7 +91,7 @@ pub(crate) async fn send_message_event_route(
 	let appservice_info = body.appservice_info.as_ref();
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")))
-			.into();
+			.map_err(Into::into);
 	}
 
 	require_object_content(&body.body.body)?;
@@ -112,7 +112,7 @@ pub(crate) async fn send_message_event_route(
 				return Err!(Request(InvalidParam(
 					"Tried to use txn id already used for an incompatible endpoint."
 				)))
-				.into();
+				.map_err(Into::into);
 			}
 			return cached_send_txn_response(&response, true);
 		}
@@ -133,7 +133,7 @@ pub(crate) async fn send_message_event_route(
 				return Err!(Request(InvalidParam(
 					"Tried to use txn id already used for an incompatible endpoint."
 				)))
-				.into();
+				.map_err(Into::into);
 			}
 			return cached_send_txn_response(&response, true);
 		}
@@ -178,7 +178,7 @@ pub(crate) async fn send_message_event_route(
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
 			)))
-			.into();
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);
@@ -202,7 +202,7 @@ pub(crate) async fn send_message_event_route(
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
 			)))
-			.into();
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);
@@ -223,7 +223,7 @@ pub(crate) async fn send_message_event_route(
 			return Err!(Request(InvalidParam(
 				"Tried to use txn id already used for an incompatible endpoint."
 			)))
-			.into();
+			.map_err(Into::into);
 		}
 
 		return cached_send_txn_response(&response, false);

@@ -50,7 +50,7 @@ pub(crate) async fn send_state_event_for_key_route(
 
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")))
-			.into();
+			.map_err(Into::into);
 	}
 
 	require_object_content(&body.body.body)?;
@@ -275,10 +275,7 @@ pub(crate) async fn get_state_events_for_key_route(
 pub(crate) async fn get_state_events_for_empty_key_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_state_events_for_key::v3::Request>,
-) -> std::result::Result<
-	RumaResponse<get_state_events_for_key::v3::Response>,
-	crate::router::ApiError,
-> {
+) -> std::result::Result<RumaResponse<get_state_events_for_key::v3::Response>, ApiError> {
 	get_state_events_for_key_route(State(services), body)
 		.await
 		.map(RumaResponse)

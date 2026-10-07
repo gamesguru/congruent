@@ -1,5 +1,5 @@
 use axum::{body::Body, extract::FromRequest};
-use conduwuit::Err;
+use conduwuit::{Err, Result};
 use slipstream::api::Metadata;
 
 use crate::{
@@ -34,7 +34,7 @@ impl FromRequest<crate::State, Body> for DelayedEventUser {
 	async fn from_request(
 		request: hyper::Request<Body>,
 		services: &crate::State,
-	) -> std::result::Result<Self, ApiError> {
+	) -> Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetDelayedEventRequest::METADATA)
 				.await
@@ -53,7 +53,7 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 	async fn from_request(
 		request: hyper::Request<Body>,
 		services: &crate::State,
-	) -> std::result::Result<Self, ApiError> {
+	) -> Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetAllDelayedEventsRequest::METADATA)
 				.await
@@ -68,7 +68,7 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 pub(crate) async fn update_delayed_event_route(
 	State(services): State<crate::State>,
 	Path((delay_id, action)): Path<(String, String)>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
 	let action = match action.as_str() {
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
 		| "send" => service::rooms::delayed_events::UpdateAction::Send,
@@ -89,7 +89,7 @@ pub(crate) async fn update_delayed_event_route(
 
 pub(crate) async fn update_delayed_event_without_action_route(
 	Path(_delay_id): Path<String>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
 	Err!(Request(NotFound("Invalid action."))).map_err(Into::into)
 }
 
@@ -97,7 +97,7 @@ pub(crate) async fn get_delayed_event_route(
 	State(services): State<crate::State>,
 	Path(delay_id): Path<String>,
 	user: DelayedEventUser,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
 	let data = services
 		.rooms
 		.delayed_events
@@ -110,7 +110,7 @@ pub(crate) async fn get_delayed_event_route(
 pub(crate) async fn get_all_delayed_events_route(
 	State(services): State<crate::State>,
 	user: AllDelayedEventsUser,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
 	let mut data = services
 		.rooms
 		.delayed_events

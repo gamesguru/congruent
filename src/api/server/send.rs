@@ -106,7 +106,7 @@ pub(crate) async fn send_transaction_message_route(
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
-			wait_for_result(receiver).await
+			wait_for_result(receiver).await.map_err(Into::into)
 		},
 		| Ok(FederationTxnState::Started { receiver, sender }) => {
 			// We're the first, spawn the processing task
@@ -115,7 +115,7 @@ pub(crate) async fn send_transaction_message_route(
 				.runtime()
 				.spawn(process_inbound_transaction(services, body, client, txn_key, sender));
 			// and wait for it
-			wait_for_result(receiver).await
+			wait_for_result(receiver).await.map_err(Into::into)
 		},
 		| Err(e) => {
 			if matches!(e, Error::BadRequest(LimitExceeded { .. }, _)) {
@@ -141,7 +141,7 @@ pub(crate) async fn send_transaction_message_route(
 				});
 			}
 
-			Err(e)
+			Err(ApiError(e))
 		},
 	}
 }

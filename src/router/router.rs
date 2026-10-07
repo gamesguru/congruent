@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use axum::{Router, response::IntoResponse};
-use conduwuit::Error;
+use axum::{Router, body::Body, response::IntoResponse};
 use conduwuit_service::{Services, state, state::Guard};
 use http::{StatusCode, Uri};
-use slipstream::api::client::error::ErrorKind;
 
 pub(crate) fn build(services: &Arc<Services>) -> (Router, Guard) {
 	let router = Router::<state::State>::new();
@@ -18,5 +16,8 @@ pub(crate) fn build(services: &Arc<Services>) -> (Router, Guard) {
 }
 
 async fn not_found(_uri: Uri) -> impl IntoResponse {
-	Error::Request(ErrorKind::Unrecognized, "not found :(".into(), StatusCode::NOT_FOUND)
+	axum::response::Response::builder()
+		.status(StatusCode::NOT_FOUND)
+		.body(Body::from("not found :("))
+		.expect("static 404 response is valid")
 }
