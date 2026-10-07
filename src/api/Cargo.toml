@@ -70,9 +70,6 @@ zstd_compression = [
 ]
 
 [dependencies]
-axum-client-ip.workspace = true
-axum-extra.workspace = true
-axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 conduwuit-core.workspace = true
