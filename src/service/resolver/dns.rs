@@ -220,12 +220,7 @@ async fn hooked_resolve(
 }
 
 fn is_valid_ip(ip: &std::net::IpAddr, client: &client::Service) -> bool {
-	use ipaddress::IPAddress;
-	if let Ok(parsed_ip) = IPAddress::parse(ip.to_string()) {
-		client.valid_cidr_range(&parsed_ip)
-	} else {
-		false
-	}
+	client.valid_cidr_range(ip)
 }
 
 async fn resolve_to_reqwest(

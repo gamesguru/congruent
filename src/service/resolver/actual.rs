@@ -6,7 +6,6 @@ use std::{
 use conduwuit::{Err, Result, debug, debug_info, err, error, trace};
 use futures::{FutureExt, TryFutureExt};
 use hickory_resolver::ResolveError;
-use ipaddress::IPAddress;
 use slipstream::ServerName;
 
 use super::{
@@ -377,7 +376,7 @@ impl super::Service {
 			return Err!("Won't send federation request to ourselves");
 		}
 
-		if dest.is_ip_literal() || IPAddress::is_valid(dest.host()) {
+		if dest.is_ip_literal() || dest.host().parse::<IpAddr>().is_ok() {
 			self.validate_dest_ip_literal(dest)?;
 		}
 
@@ -387,10 +386,10 @@ impl super::Service {
 	fn validate_dest_ip_literal(&self, dest: &ServerName) -> Result<()> {
 		trace!("Destination is an IP literal, checking against IP range denylist.",);
 		debug_assert!(
-			dest.is_ip_literal() || !IPAddress::is_valid(dest.host()),
+			dest.is_ip_literal() || dest.host().parse::<IpAddr>().is_err(),
 			"Destination is not an IP literal."
 		);
-		let ip = IPAddress::parse(dest.host()).map_err(|e| {
+		let ip = dest.host().parse::<IpAddr>().map_err(|e| {
 			err!(BadServerResponse(debug_error!("Failed to parse IP literal from string: {e}")))
 		})?;
 
@@ -399,7 +398,7 @@ impl super::Service {
 		Ok(())
 	}
 
-	pub(crate) fn validate_ip(&self, ip: &IPAddress) -> Result<()> {
+	pub(crate) fn validate_ip(&self, ip: &IpAddr) -> Result<()> {
 		if !self.services.client.valid_cidr_range(ip) {
 			return Err!(BadServerResponse("Not allowed to send requests to this IP"));
 		}

@@ -146,16 +146,6 @@ pub fn check(config: &Config) -> Result {
 		));
 	}
 
-	// check if user specified valid IP CIDR ranges on startup
-	for cidr in &config.ip_range_denylist {
-		if let Err(e) = ipaddress::IPAddress::parse(cidr) {
-			return Err!(Config(
-				"ip_range_denylist",
-				"Parsing specified IP CIDR range from string failed: {e}."
-			));
-		}
-	}
-
 	if config.recaptcha_site_key.is_some() && config.recaptcha_private_site_key.is_none() {
 		return Err!(Config(
 			"recaptcha_private_site_key",

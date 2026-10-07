@@ -1,11 +1,10 @@
-use std::{fmt::Debug, mem};
+use std::{fmt::Debug, mem, net::IpAddr};
 
 use bytes::Bytes;
 use conduwuit::{
 	Err, Error, Result, debug, debug_error, err, implement, trace, utils::response::LimitReadExt,
 };
 use http::{HeaderValue, header::AUTHORIZATION};
-use ipaddress::IPAddress;
 use reqwest::{Client, Method, Request, Response, Url};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
@@ -106,7 +105,7 @@ fn prepare(&self, dest: &ServerName, mut request: http::Request<Vec<u8>>) -> Res
 #[implement(super::Service)]
 fn validate_url(&self, url: &Url) -> Result<()> {
 	if let Some(url_host) = url.host_str() {
-		if let Ok(ip) = IPAddress::parse(url_host) {
+		if let Ok(ip) = url_host.parse::<IpAddr>() {
 			trace!("Checking request URL IP {ip:?}");
 			self.services.resolver.validate_ip(&ip)?;
 		}

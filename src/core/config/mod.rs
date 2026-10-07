@@ -1884,7 +1884,7 @@ pub struct Config {
 	/// "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
 	/// "2001:db8::/32", "ff00::/8", "fec0::/10"]
 	#[serde(default = "default_ip_range_denylist")]
-	pub ip_range_denylist: Vec<String>,
+	pub ip_range_denylist: Vec<crate::utils::IpCidr>,
 
 	/// Optional IP address or network interface-name to bind as the source of
 	/// URL preview requests. If not set, it will not bind to a specific
@@ -3313,7 +3313,7 @@ fn default_rocksdb_stats_level() -> u8 { 1 }
 #[inline]
 pub fn default_default_room_version() -> RoomVersionId { RoomVersionId::V12 }
 
-fn default_ip_range_denylist() -> Vec<String> {
+fn default_ip_range_denylist() -> Vec<crate::utils::IpCidr> {
 	vec![
 		"127.0.0.0/8".to_owned(),
 		"10.0.0.0/8".to_owned(),
@@ -3335,6 +3335,9 @@ fn default_ip_range_denylist() -> Vec<String> {
 		"ff00::/8".to_owned(),
 		"fec0::/10".to_owned(),
 	]
+	.into_iter()
+	.map(|cidr| cidr.parse().expect("default CIDR must be valid"))
+	.collect()
 }
 
 fn default_url_preview_max_spider_size() -> usize {

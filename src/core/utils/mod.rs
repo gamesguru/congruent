@@ -8,6 +8,7 @@ pub mod defer;
 pub mod future;
 pub mod hash;
 pub mod html;
+pub mod ip_cidr;
 pub mod json;
 pub mod kahns_sort;
 pub mod math;
@@ -37,6 +38,7 @@ pub use self::{
 	future::{BoolExt as FutureBoolExt, OptionStream, TryExtExt as TryFutureExtExt},
 	hash::sha256::delimited as calculate_hash,
 	html::Escape as HtmlEscape,
+	ip_cidr::IpCidr,
 	json::{
 		OwnedEventType, SerdeValue, SerdeValueRef, clone_raw, deserialize_from_str,
 		to_canonical_object,

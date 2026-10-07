@@ -75,7 +75,6 @@ either.workspace = true
 futures.workspace = true
 http-body-util.workspace = true
 http.workspace = true
-ipaddress.workspace = true
 libc.workspace = true
 libloading.workspace = true
 libloading.optional = true

@@ -9,7 +9,6 @@ use conduwuit_core::{
 };
 use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
-use ipaddress::IPAddress;
 use slipstream::{
 	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
@@ -122,8 +121,10 @@ impl Service {
 						)));
 					}
 
-					if let Ok(ip) =
-						IPAddress::parse(url.host_str().expect("URL previously validated"))
+					if let Ok(ip) = url
+						.host_str()
+						.expect("URL previously validated")
+						.parse::<std::net::IpAddr>()
 					{
 						if !self.services.client.valid_cidr_range(&ip) {
 							return Err!(Request(InvalidParam(
@@ -216,7 +217,7 @@ impl Service {
 
 		if let Some(url_host) = reqwest_request.url().host_str() {
 			trace!("Checking request URL for IP");
-			if let Ok(ip) = IPAddress::parse(url_host) {
+			if let Ok(ip) = url_host.parse::<std::net::IpAddr>() {
 				if !self.services.client.valid_cidr_range(&ip) {
 					return Err!(BadServerResponse("Not allowed to send requests to this IP"));
 				}
@@ -231,7 +232,7 @@ impl Service {
 
 				trace!("Checking response destination's IP");
 				if let Some(remote_addr) = response.remote_addr() {
-					if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string()) {
+					if let Ok(ip) = remote_addr.ip().to_string().parse::<std::net::IpAddr>() {
 						if !self.services.client.valid_cidr_range(&ip) {
 							return Err!(BadServerResponse(
 								"Not allowed to send requests to this IP"
@@ -443,8 +444,10 @@ impl Service {
 					)));
 				}
 
-				if let Ok(ip) =
-					IPAddress::parse(url.host_str().expect("URL previously validated"))
+				if let Ok(ip) = url
+					.host_str()
+					.expect("URL previously validated")
+					.parse::<std::net::IpAddr>()
 				{
 					if !self.services.client.valid_cidr_range(&ip) {
 						return Err!(Request(InvalidParam(

@@ -1,8 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
-use conduwuit::{Config, Result, err, implement, trace};
+use conduwuit::{Config, Result, err, implement, utils::IpCidr};
 use either::Either;
-use ipaddress::IPAddress;
 use reqwest::redirect;
 
 use crate::{resolver, service};
@@ -18,7 +17,7 @@ pub struct Service {
 	pub appservice: reqwest::Client,
 	pub pusher: reqwest::Client,
 
-	pub cidr_range_denylist: Vec<IPAddress>,
+	pub cidr_range_denylist: Vec<IpCidr>,
 }
 
 impl crate::Service for Service {
@@ -144,13 +143,7 @@ impl crate::Service for Service {
 				.redirect(redirect::Policy::limited(2))
 				.build()?,
 
-			cidr_range_denylist: config
-				.ip_range_denylist
-				.iter()
-				.map(IPAddress::parse)
-				.inspect(|cidr| trace!("Denied CIDR range: {cidr:?}"))
-				.collect::<Result<_, String>>()
-				.map_err(|e| err!(Config("ip_range_denylist", e)))?,
+			cidr_range_denylist: config.ip_range_denylist.clone(),
 		}))
 	}
 
@@ -246,8 +239,8 @@ fn builder_interface(
 #[inline]
 #[must_use]
 #[implement(Service)]
-pub fn valid_cidr_range(&self, ip: &IPAddress) -> bool {
+pub fn valid_cidr_range(&self, ip: &std::net::IpAddr) -> bool {
 	self.cidr_range_denylist
 		.iter()
-		.all(|cidr| !cidr.includes(ip))
+		.all(|cidr| !cidr.contains(ip))
 }

@@ -69,10 +69,6 @@ features = ["xxh3"]
 version = "0.13.0"
 default-features = false
 
-# used for checking if an IP is in specific subnets / CIDR ranges easier
-[workspace.dependencies.ipaddress]
-version = "0.1.3"
-
 [workspace.dependencies.rand]
 version = "0.10.0"
 
