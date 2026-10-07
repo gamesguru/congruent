@@ -1,8 +1,9 @@
 use axum::extract::State;
 use conduwuit::{
-	Err, Event, Pdu, PduCount, Result, err,
+	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
+use conduwuit_service::rooms::state::root_handle_fingerprint;
 use futures::{StreamExt, TryStreamExt, future::join};
 use slipstream::{
 	OwnedEventId, OwnedUserId,
@@ -105,6 +106,11 @@ pub(crate) async fn get_member_events_route(
 				.pdu_roothandle_before_event(leave_pdu.event_id())
 				.await
 				.ok();
+			info!(
+				target: "membership_debug",
+				"/members: departed user {sender_user} in {room_id}, leave_root={:?}",
+				root.as_ref().map(root_handle_fingerprint)
+			);
 			(root, Some(leave_pdu))
 		} else {
 			(None, None)

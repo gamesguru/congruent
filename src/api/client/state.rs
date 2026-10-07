@@ -3,11 +3,11 @@ mod tests;
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, RoomVersion, err,
+	Err, Result, RoomVersion, err, info,
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
-use conduwuit_service::Services;
+use conduwuit_service::{Services, rooms::state::root_handle_fingerprint};
 use futures::{FutureExt, TryStreamExt};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
@@ -133,7 +133,13 @@ pub(crate) async fn get_state_events_route(
 
 	// For departed users, serve state frozen at the point they left
 	let leave_root = if !is_joined {
-		leave_roothandle(&services, sender_user, room_id).await
+		let root = leave_roothandle(&services, sender_user, room_id).await;
+		info!(
+			target: "membership_debug",
+			"/state: departed user {sender_user} in {room_id}, leave_root={:?}",
+			root.as_ref().map(root_handle_fingerprint)
+		);
+		root
 	} else {
 		None
 	};
@@ -194,6 +200,12 @@ pub(crate) async fn get_state_events_for_key_route(
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
 		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
+			info!(
+				target: "membership_debug",
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={:?}",
+				body.event_type,
+				Some(root_handle_fingerprint(&root))
+			);
 			services
 				.rooms
 				.state_accessor

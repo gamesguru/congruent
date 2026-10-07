@@ -678,7 +678,7 @@
 # `state_hamt_node_sweep_delete` only once a dry run has shown the report
 # is sane.
 #
-#state_hamt_node_sweep_interval_secs = 21600 (6 hours)
+#state_hamt_node_sweep_interval_secs = 21600 # (6 hours)
 
 # Whether the periodic HAMT node sweep actually deletes unreachable nodes.
 #

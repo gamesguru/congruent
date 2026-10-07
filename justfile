@@ -336,11 +336,13 @@ e2ee args=".*":
     # complement-crypto-src submodule. Results/logs are written as the invoking
     # user (shane) straight into tests/crypto.
     #
-    # Prerequisite: the JS-SDK bundle must be built once into
-    #   complement-crypto-src/internal/api/js/chrome/dist
-    # (`go:embed dist` fails the compile without it). Build it with:
-    #   (cd complement-crypto-src && ./rebuild_js_sdk.sh matrix-js-sdk@{{ MATRIX_JS_SDK_SOURCE }})
-    # or copy it out of an existing tester image:
+    # Prerequisite: the generated artifacts must be built once (the JS-SDK bundle
+    # into complement-crypto-src/internal/api/js/chrome/dist, and, for rust
+    # matrices, the matrix_sdk_ffi Go bindings). Build both with:
+    #   just bootstrap-crypto
+    # Sources are configurable via LOCAL_JS_SDK / MATRIX_JS_SDK_SOURCE and
+    # COMPLEMENT_CRYPTO_RUST_SDK_DIR; see the complement-crypto FAQ. To instead
+    # copy the JS bundle out of an existing tester image:
     #   c=$(docker create continuwuity:complement-crypto-...); docker cp $c:/usr/src/complement-crypto/internal/api/js/chrome/dist complement-crypto-src/internal/api/js/chrome/dist; docker rm $c
     COMPLEMENT_SRC="${COMPLEMENT_CRYPTO_SRC:-$(pwd)/complement-crypto-src}"
     COMPLEMENT_BASE_IMAGE="${COMPLEMENT_IMAGE:-continuwuity:complement-$( (git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo detached) | tr '[:upper:]/:@ ' '[:lower:]----' | tr -cs 'a-z0-9_.-' '-' | sed 's/^-//;s/-$//' | cut -c1-96 )}"
@@ -425,7 +427,7 @@ e2ee args=".*":
         *[jJ]*)
             if [ ! -f "$COMPLEMENT_SRC/internal/api/js/chrome/dist/index.html" ]; then
                 echo "ERROR: JS SDK bundle missing in $COMPLEMENT_SRC/internal/api/js/chrome/dist."
-                echo "Build it first: (cd $COMPLEMENT_SRC && ./rebuild_js_sdk.sh matrix-js-sdk@{{ MATRIX_JS_SDK_SOURCE }})"
+                echo "Build it first: just bootstrap-crypto"
                 exit 1
             fi
             ;;
@@ -434,7 +436,7 @@ e2ee args=".*":
         *[rR]*)
             if [ ! -f "$COMPLEMENT_SRC/internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go" ]; then
                 echo "ERROR: matrix-sdk-ffi Go bindings missing in $COMPLEMENT_SRC/internal/api/rust."
-                echo "Generate them with: (cd $COMPLEMENT_SRC && just rebuild-rust-sdk \$COMPLEMENT_CRYPTO_RUST_SDK_DIR)"
+                echo "Generate them with: COMPLEMENT_CRYPTO_RUST_SDK_DIR=<matrix-rust-sdk> just bootstrap-crypto"
                 exit 1
             fi
             if [ -z "${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}" ]; then
@@ -470,7 +472,7 @@ e2ee args=".*":
     case "$CRYPTO_MATRIX" in
         *[rR]*)
             RPC_BIN="$COMPLEMENT_SRC/rpc"
-            if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
+            if [ ! -x "$RPC_BIN" ] || [ -n "$(find "$COMPLEMENT_SRC/cmd/rpc" "$COMPLEMENT_SRC/internal/deploy/rpc" "$COMPLEMENT_SRC/internal/api" "$COMPLEMENT_SRC/go.mod" "$COMPLEMENT_SRC/go.sum" -newer "$RPC_BIN" -print -quit 2>/dev/null)" ]; then
                 echo "Building complement-crypto's cmd/rpc binary (multiprocess tests)..."
                 (cd "$COMPLEMENT_SRC" && go build -tags="$CRYPTO_TAGS" -o rpc ./cmd/rpc)
             fi
@@ -493,7 +495,11 @@ e2ee args=".*":
 
     # Build the per-shard anchored `-run` regexes. Top-level tests only, anchored
     # with ^...$ so `TestRoomKeyIsCycledAfterEnoughMessages` doesn't sweep up its
-    # later-in-alpha sibling. Targeted runs (args != `.*`) run as a single shard.
+    # later-in-alpha sibling. Targeted runs (args != `.*`) run as a single shard,
+    # and `args` is a regex (the default is `.*`), so pass it through unchanged --
+    # don't rewrite its metacharacters. The targeted pattern is only start-anchored
+    # so a plain prefix (e.g. `TestRoomKeyIsCycledAfterEnough`) matches every test
+    # beginning with it.
     SHARD_PATTERNS=()
     if [ "$run_suffix" = "all" ]; then
         total=${#ALL_TESTS[@]}
@@ -511,7 +517,7 @@ e2ee args=".*":
             SHARD_PATTERNS+=("^(${joined})$")
         done
     else
-        SHARD_PATTERNS+=("^($(printf '%s' "{{ args }}" | sed 's/[^a-zA-Z0-9_]/|/g'))$")
+        SHARD_PATTERNS+=("^({{ args }})")
     fi
     num_shards=${#SHARD_PATTERNS[@]}
 
@@ -577,6 +583,29 @@ e2ee args=".*":
         [ -f "$shard_log" ] && cat "$shard_log" >>"$LOG_FILE"
     done
 
+    # A compile/setup failure produces no pass/fail rows, so without this the
+    # run just reports "0 pass / 0 fail" and hides the real error (for example
+    # generated bindings that do not compile). go test -json emits
+    # `build-output` lines plus a `fail` action carrying `FailedBuild`; surface
+    # both so the cause is the first thing printed.
+    if [ "$go_test_exit" -ne 0 ]; then
+        # A failed build sets `FailedBuild`; `build-output` alone can be benign
+        # linker noise (e.g. DT_TEXTREL warnings from the cgo/PIE link), so only
+        # treat it as a build failure when a package actually failed to build.
+        failed_build="$(jq -r 'select(.FailedBuild) | .FailedBuild' "$LOG_FILE" 2>/dev/null | sort -u || true)"
+        if [ -n "$failed_build" ]; then
+            build_err="$(jq -r 'select(.Action == "build-output") | .Output' "$LOG_FILE" 2>/dev/null || true)"
+            echo ""
+            echo "==================== BUILD FAILURE ===================="
+            echo "failed package(s): $(printf '%s ' $failed_build)"
+            if [ -n "$build_err" ]; then
+                printf '%s' "$build_err"
+            fi
+            echo "======================================================"
+            echo ""
+        fi
+    fi
+
     toplevel="$(git rev-parse --show-toplevel)"
     if [ -s "$RESULTS_FILE" ]; then
         # Dedupe/sort the staged rows, then merge them into the persistent
@@ -636,26 +665,29 @@ e2ee args=".*":
 # targets still need COMPLEMENT_CRYPTO_RUST_SDK_DIR pointing at a
 # matrix-rust-sdk checkout (see the e2ee prerequisite errors).
 # Usage: just crypto-rs TestNameRegex   (also: crypto-js, crypto-jsrs)
-# The bundle is not rebuilt by the test recipes, so a stale one silently tests an
-# old SDK. Override the source with MATRIX_JS_SDK_SOURCE=<git url>#<sha>.
-# Rebuild the JS-SDK bundle complement-crypto embeds; run after changing the pin
+#
+# The test recipes do not rebuild the generated artifacts (the JS bundle and
+# the Rust Go bindings), so a stale or missing one silently tests an old SDK
+# or fails the prerequisite checks. `bootstrap-crypto` builds both from
+# configurable sources and is idempotent.
+bootstrap-crypto:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Delegate to the authoritative recipes in complement-crypto-src, which own
+    # the build logic and configuration (LOCAL_JS_SDK,
+    # COMPLEMENT_CRYPTO_RUST_SDK_DIR). LOCAL_JS_SDK precedence:
+    #   1. LOCAL_JS_SDK env/.env entry (a full matrix-js-sdk spec)
+    #   2. MATRIX_JS_SDK_SOURCE env/.env entry (url#sha, kept for compatibility)
+    #   3. the pinned GitLab fork commit
+    sdk="{{ LOCAL_JS_SDK }}"
+    (cd complement-crypto-src && LOCAL_JS_SDK="$sdk" just bootstrap)
+
+# Rebuild just the JS-SDK bundle complement-crypto embeds (a subset of
+# bootstrap-crypto); run it after changing the SDK pin.
 crypto-js-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Build the pinned SDK with its own pnpm lockfile, then install that build.
-    # `yarn add <git url>` builds it without the lockfile, which resolves newer
-    # vite/matrix-widget-api types and fails `tsc`.
-    source="{{ MATRIX_JS_SDK_SOURCE }}"
-    url="${source%%#*}"
-    sha="${source##*#}"
-    work="$(mktemp -d)"
-    trap 'rm -rf "$work"' EXIT
-    git init -q "$work/sdk"
-    git -C "$work/sdk" fetch -q --depth 1 "$url" "$sha"
-    git -C "$work/sdk" checkout -q FETCH_HEAD
-    corepack enable
-    (cd "$work/sdk" && pnpm install --frozen-lockfile && pnpm build)
-    (cd complement-crypto-src && ./rebuild_js_sdk.sh "matrix-js-sdk@file:$work/sdk")
+    (cd complement-crypto-src && LOCAL_JS_SDK="{{ LOCAL_JS_SDK }}" just rebuild-js-sdk)
 
 crypto-js pattern=".*":
     # matrix-js-sdk#4291: JS does not update its crypto membership from a
@@ -677,7 +709,13 @@ PROFILE := env_var_or_default("PROFILE", "release")
 
 # matrix-js-sdk source that the Complement-Crypto tester image embeds. Keep the
 # default pinned for reproducible local bundles; override it when needed.
-MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#db6030ac2a615573cb6bafd0234d629827866fb7")
+MATRIX_JS_SDK_SOURCE := env_var_or_default("MATRIX_JS_SDK_SOURCE", "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea")
+
+# Full matrix-js-sdk spec consumed by complement-crypto's build recipes: a
+# `matrix-js-sdk@<url>#<sha>` or `matrix-js-sdk@file:/abs/path`. Defaults to
+# MATRIX_JS_SDK_SOURCE (which carries no package prefix) and is overridden
+# directly by the LOCAL_JS_SDK environment variable / .env entry.
+LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@" + MATRIX_JS_SDK_SOURCE)
 
 # Aggregates test results generated by complement
 ci-complement-stats:
