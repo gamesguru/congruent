@@ -92,8 +92,6 @@ const STATE_RES_MAX_CONFLICTED: usize = 200_000;
 /// The caller of `resolve` must ensure that all the events are from the same
 /// room. Although this function takes a `RoomId` it does not check that each
 /// event is part of the same room.
-//#[tracing::instrument(level = "debug", skip(state_sets, auth_chain_sets,
-//#[tracing::instrument(level event_fetch))]
 #[allow(clippy::cognitive_complexity)]
 pub async fn resolve<
 	'a,
@@ -1797,10 +1795,6 @@ mod tests {
 
 	async fn test_event_sort() {
 		use futures::future::ready;
-
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let event_map = events
@@ -1885,10 +1879,6 @@ mod tests {
 	// NOTE(2025-09-17): Disabled due to unknown "create event must exist" bug
 	//#[tokio::test]
 	async fn ban_vs_power_level() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"PA",
@@ -1935,10 +1925,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn topic_basic() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2000,10 +1986,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn topic_reset() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2050,10 +2032,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn join_rule_evasion() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"JR",
@@ -2083,10 +2061,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn offtopic_power_level() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"PA",
@@ -2123,10 +2097,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn topic_setting() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let events = &[
 			to_init_pdu_event(
 				"T1",
@@ -2205,10 +2175,6 @@ mod tests {
 	async fn test_event_map_none() {
 		use futures::future::ready;
 
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let mut store = TestStore::<PduEvent>(hashmap! {});
 
 		// build up the DAG
@@ -2242,10 +2208,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_lexicographical_sort() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
-
 		let graph = hashmap! {
 			event_id("l") => hashset![event_id("o")],
 			event_id("m") => hashset![event_id("n"), event_id("o")],
@@ -2271,9 +2233,6 @@ mod tests {
 
 	#[tokio::test]
 	async fn ban_with_auth_chains() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let ban = BAN_STATE_SET();
 
 		let edges = vec![vec!["END", "MB", "PA", "START"], vec!["END", "IME", "MB"]]
@@ -2292,10 +2251,6 @@ mod tests {
 	#[tokio::test]
 	async fn ban_with_auth_chains2() {
 		use futures::future::ready;
-
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let init = INITIAL_EVENTS();
 		let ban = BAN_STATE_SET();
 

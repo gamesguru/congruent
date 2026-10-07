@@ -1115,10 +1115,10 @@ pub struct Config {
 	/// log = "info,federation=debug"
 	///
 	/// See also:
-	/// https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+	/// Log filter directives use the configured log syntax.
 	///
 	/// **Caveat**:
-	/// For release builds, the tracing crate is configured at compile-time to
+	/// For release builds, logging is configured at compile-time to
 	/// automatically strip out `debug` and `trace` macros (compiling only
 	/// `info` and above) to avoid unnecessary overhead in the binary
 	/// execution. For debug builds, this restriction is not applied.
@@ -1138,14 +1138,14 @@ pub struct Config {
 	pub log_span_events: String,
 
 	/// Configures whether CONTINUWUITY_LOG EnvFilter matches values using
-	/// regular expressions. See the tracing_subscriber documentation on
+	/// regular expressions.
 	/// Directives.
 	///
 	/// default: true
 	#[serde(default = "true_fn")]
 	pub log_filter_regex: bool,
 
-	/// Toggles the display of ThreadId in tracing log output.
+	/// Toggles the display of ThreadId in log output.
 	///
 	/// default: false
 	#[serde(default)]
@@ -1264,7 +1264,7 @@ pub struct Config {
 	/// RocksDB log level. This is not the same as continuwuity's log level.
 	/// This is the log level for the RocksDB engine/library which show up in
 	/// your database folder/path as `LOG` files. continuwuity will log RocksDB
-	/// errors as normal through tracing or panics if severe for safety.
+	/// errors as normal through logging or panics if severe for safety.
 	///
 	/// default: "error"
 	#[serde(default = "default_rocksdb_log_level")]

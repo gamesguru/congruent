@@ -7,6 +7,7 @@ use std::{
 
 use conduwuit::{
 	Err, Result, err, info,
+	log::EnvFilter,
 	matrix::{
 		Event,
 		pdu::{PduEvent, PduId, RawPduId},
@@ -26,7 +27,6 @@ use slipstream::{
 	RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 };
-use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
 
@@ -466,7 +466,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 			.reload(&old_filter_layer, Some(handles))
 		{
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 			| Ok(()) => {
 				let value = &self.services.server.config.log;
@@ -493,7 +493,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 				return self.write_str("Successfully changed log level").await;
 			},
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 		}
 	}

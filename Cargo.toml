@@ -136,7 +136,6 @@ features = [
     "sensitive-headers",
     "set-header",
     "timeout",
-    "trace",
     "util",
 ]
 

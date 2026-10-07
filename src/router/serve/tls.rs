@@ -6,9 +6,8 @@ use axum_server_dual_protocol::{
 	ServerExt,
 	axum_server::{bind_rustls, tls_rustls::RustlsConfig},
 };
-use conduwuit::{Result, Server, err};
+use conduwuit::{Result, Server, debug, err, info, warn};
 use tokio::task::JoinSet;
-use tracing::{debug, info, warn};
 
 pub(super) async fn serve(
 	server: &Arc<Server>,

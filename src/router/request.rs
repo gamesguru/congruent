@@ -13,7 +13,6 @@ use conduwuit_service::Services;
 use futures::FutureExt;
 use http::{Method, StatusCode, Uri};
 use tokio::time::sleep;
-use tracing::Span;
 
 pub(crate) async fn handle(
 	State(services): State<Arc<Services>>,
@@ -33,11 +32,10 @@ pub(crate) async fn handle(
 	let uri = req.uri().clone();
 	let method = req.method().clone();
 	let services_ = services.clone();
-	let parent = Span::current();
 	let start = tokio::time::Instant::now();
 	let task = services.server.runtime().spawn(async move {
 		tokio::select! {
-			response = execute(&services_, req, next, &parent) => response,
+			response = execute(&services_, req, next) => response,
 			response = services_.server.until_shutdown()
 				.then(|()| {
 					let timeout = services_.server.config.client_shutdown_timeout;
@@ -90,7 +88,6 @@ async fn execute(
 	services: &Arc<Services>,
 	req: http::Request<axum::body::Body>,
 	next: axum::middleware::Next,
-	parent: &Span,
 ) -> Response {
 	#[cfg(debug_assertions)]
 	conduwuit::defer! {{

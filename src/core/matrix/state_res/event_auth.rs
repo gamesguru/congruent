@@ -1636,9 +1636,6 @@ mod tests {
 
 	#[test]
 	fn test_ban_pass() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let auth_events = events
@@ -1681,9 +1678,6 @@ mod tests {
 
 	#[test]
 	fn test_join_non_creator() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS_CREATE_ROOM();
 
 		let auth_events = events
@@ -1726,9 +1720,6 @@ mod tests {
 
 	#[test]
 	fn test_join_creator() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS_CREATE_ROOM();
 
 		let auth_events = events
@@ -1771,9 +1762,6 @@ mod tests {
 
 	#[test]
 	fn test_ban_fail() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let auth_events = events
@@ -1816,9 +1804,6 @@ mod tests {
 
 	#[test]
 	fn test_restricted_join_rule() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let mut events = INITIAL_EVENTS();
 		*events.get_mut(&event_id("IJR")).unwrap() = to_pdu_event(
 			"IJR",
@@ -1895,9 +1880,6 @@ mod tests {
 
 	#[test]
 	fn test_knock() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let mut events = INITIAL_EVENTS();
 		*events.get_mut(&event_id("IJR")).unwrap() = to_pdu_event(
 			"IJR",

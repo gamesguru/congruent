@@ -178,7 +178,7 @@ pub async fn build_and_append_pdu(
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
 	//
-	// This block's tracing is `debug!`, not `info!`: it runs unconditionally on
+	// This block's logging is `debug!`, not `info!`: it runs unconditionally on
 	// every locally-created PDU (not just RoomMember ones), and `?servers`
 	// formats the whole destination set. At `info!` it would run at full cost
 	// on every send in the default log config (`info,memory_serve=warn` in
@@ -230,13 +230,6 @@ pub async fn build_and_append_pdu(
 		.await?;
 
 	if num_sent > 0 {
-		let _span = tracing::info_span!(
-			"broadcast",
-			event_id = %pdu.event_id(),
-			%room_id,
-			servers = num_sent,
-		)
-		.entered();
 		info!("Sending to federation");
 	}
 

@@ -113,11 +113,11 @@ macro_rules! err {
 	};
 }
 
-/// A trinity of integration between tracing, logging, and Error. This is a
-/// customization of tracing::event! with the primary purpose of sharing the
+/// A trinity of integration between logging and Error. This is a
+/// customization of the logging event macro with the primary purpose of sharing the
 /// error string, fieldset parsing and formatting. An added benefit is that we
 /// can share the same callsite metadata for the source of our Error and the
-/// associated logging and tracing event dispatches.
+/// associated logging event dispatches.
 #[macro_export]
 #[collapse_debuginfo(yes)]
 macro_rules! err_log {

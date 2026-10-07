@@ -94,8 +94,7 @@ fn enable_histogram(builder: &mut Builder, args: &Args) {
 
 #[cfg(all(tokio_unstable, feature = "tokio_metrics"))]
 pub(super) fn shutdown(server: &Arc<Server>, runtime: tokio::runtime::Runtime) {
-	use conduwuit_core::event;
-	use tracing::Level;
+	use conduwuit_core::{event, log::Level};
 
 	// The final metrics output is promoted to INFO when tokio_unstable is active in
 	// a release/bench mode and DEBUG is likely optimized out

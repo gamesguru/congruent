@@ -28,7 +28,7 @@ impl Server {
 	) -> Result<Arc<Self>, Error> {
 		let _runtime_guard = runtime.map(runtime::Handle::enter);
 
-		let (tracing_reload_handle, capture) = crate::logging::init(&config)?;
+		let (reload_handle, capture) = crate::logging::init(&config)?;
 
 		config.check()?;
 
@@ -49,7 +49,7 @@ impl Server {
 
 		Ok(Arc::new(Self {
 			server: Arc::new(conduwuit_core::Server::new(config, runtime, Log {
-				reload: tracing_reload_handle,
+				reload: reload_handle,
 				capture,
 			})),
 

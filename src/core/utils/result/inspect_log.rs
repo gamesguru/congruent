@@ -1,6 +1,6 @@
 use std::fmt;
 
-use tracing::Level;
+use crate::log::Level;
 
 use super::Result;
 use crate::error;

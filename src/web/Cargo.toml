@@ -32,7 +32,7 @@ serde.workspace = true
 slipstream.workspace = true
 memory-serve = "2.1.0"
 validator = { version = "0.21.0", features = ["derive"] }
-tower-sec-fetch = { version = "0.1.2", features = ["tracing"] }
+tower-sec-fetch = "0.1.2"
 
 [build-dependencies]
 memory-serve = "2.1.0"

@@ -1,9 +1,6 @@
 use std::{any::Any, sync::Arc, time::Duration};
 
-use axum::{
-	Router,
-	extract::{DefaultBodyLimit, MatchedPath},
-};
+use axum::{Router, extract::DefaultBodyLimit};
 use axum_client_ip::ClientIpSource;
 use conduwuit::{Result, Server, debug, error};
 use conduwuit_service::{Services, state::Guard};
@@ -18,9 +15,7 @@ use tower_http::{
 	sensitive_headers::SetSensitiveHeadersLayer,
 	set_header::SetResponseHeaderLayer,
 	timeout::{RequestBodyTimeoutLayer, ResponseBodyTimeoutLayer, TimeoutLayer},
-	trace::{DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
-use tracing::Level;
 
 use crate::{request, router};
 
@@ -48,13 +43,6 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 	let services_ = services.clone();
 	let layers = layers
 		.layer(SetSensitiveHeadersLayer::new([header::AUTHORIZATION]))
-		.layer(
-			TraceLayer::new_for_http()
-				.make_span_with(tracing_span::<_>)
-				.on_failure(DefaultOnFailure::new().level(Level::ERROR))
-				.on_request(DefaultOnRequest::new().level(Level::DEBUG))
-				.on_response(DefaultOnResponse::new().level(Level::DEBUG)),
-		)
 		.layer(axum::middleware::from_fn_with_state(Arc::clone(services), request::handle))
 		.layer(ClientIpSource::ConnectInfo.into_extension())
 		.layer(ResponseBodyTimeoutLayer::new(Duration::from_secs(
@@ -198,33 +186,4 @@ fn catch_panic(
 		.header(header::CONTENT_TYPE, "application/json")
 		.body(http_body_util::Full::from(body.to_string()))
 		.expect("Failed to create response for our panic catcher?")
-}
-
-fn tracing_span<T>(request: &http::Request<T>) -> tracing::Span {
-	let path = request
-		.extensions()
-		.get::<MatchedPath>()
-		.map_or_else(|| request_path_str(request), truncated_matched_path);
-
-	tracing::span! {
-		parent: None,
-		debug::INFO_SPAN_LEVEL,
-		"router",
-		method = %request.method(),
-		%path,
-	}
-}
-
-fn request_path_str<T>(request: &http::Request<T>) -> &str {
-	request
-		.uri()
-		.path_and_query()
-		.expect("all requests have a path")
-		.as_str()
-}
-
-fn truncated_matched_path(path: &MatchedPath) -> &str {
-	path.as_str()
-		.rsplit_once(':')
-		.map_or(path.as_str(), |path| path.0.strip_suffix('/').unwrap_or(path.0))
 }

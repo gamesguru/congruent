@@ -54,7 +54,6 @@ use slipstream::{
 	to_device::DeviceIdOrAllDevices,
 };
 use tokio::sync::watch::{Receiver, Sender};
-use tracing::Instrument;
 
 use crate::Ruma;
 
@@ -104,23 +103,10 @@ pub(crate) async fn send_transaction_message_route(
 		},
 		| Ok(FederationTxnState::Started { receiver, sender }) => {
 			// We're the first, spawn the processing task
-			let span = if body.pdus.is_empty() {
-				tracing::info_span!(
-					"edu",
-					id = ?body.transaction_id.as_str(),
-					origin = ?body.origin(),
-				)
-			} else {
-				tracing::info_span!(
-					"federation",
-					id = ?body.transaction_id.as_str(),
-					origin = ?body.origin(),
-				)
-			};
-			services.server.runtime().spawn(
-				process_inbound_transaction(services, body, client, txn_key, sender)
-					.instrument(span),
-			);
+			services
+				.server
+				.runtime()
+				.spawn(process_inbound_transaction(services, body, client, txn_key, sender));
 			// and wait for it
 			wait_for_result(receiver).await
 		},

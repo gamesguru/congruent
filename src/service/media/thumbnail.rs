@@ -60,7 +60,6 @@ impl super::Service {
 	///
 	/// For width,height <= 96 the server uses another thumbnailing algorithm
 	/// which crops the image afterwards.
-	#[tracing::instrument(skip(self), name = "thumbnail", level = "debug")]
 	pub async fn get_thumbnail(&self, mxc: &Mxc<'_>, dim: &Dim) -> Result<Option<FileMeta>> {
 		// 0, 0 because that's the original file
 		let dim = dim.normalized();
@@ -77,7 +76,6 @@ impl super::Service {
 
 /// Using saved thumbnail
 #[implement(super::Service)]
-#[tracing::instrument(name = "saved", level = "debug", skip(self, data))]
 async fn get_thumbnail_saved(&self, data: Metadata) -> Result<Option<FileMeta>> {
 	let mut content = Vec::new();
 	let path = self.get_media_file(&data.key);
@@ -92,7 +90,6 @@ async fn get_thumbnail_saved(&self, data: Metadata) -> Result<Option<FileMeta>> 
 /// Generate a thumbnail
 #[cfg(feature = "media_thumbnail")]
 #[implement(super::Service)]
-#[tracing::instrument(name = "generate", level = "debug", skip(self, data))]
 async fn get_thumbnail_generate(
 	&self,
 	mxc: &Mxc<'_>,
@@ -139,7 +136,6 @@ async fn get_thumbnail_generate(
 
 #[cfg(not(feature = "media_thumbnail"))]
 #[implement(super::Service)]
-#[tracing::instrument(name = "fallback", level = "debug", skip_all)]
 async fn get_thumbnail_generate(
 	&self,
 	_mxc: &Mxc<'_>,
