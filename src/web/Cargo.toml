@@ -19,6 +19,7 @@ crate-type = [
 
 
 [dependencies]
+axum.workspace = true
 conduwuit-service.workspace = true
 conduwuit-core.workspace = true
 http.workspace = true
