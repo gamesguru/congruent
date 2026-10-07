@@ -1,5 +1,6 @@
 #![type_length_limit = "8192"]
 #![allow(refining_impl_trait)]
+#![allow(clippy::disallowed_macros)]
 #![recursion_limit = "256"]
 
 extern crate conduwuit_core as conduwuit;

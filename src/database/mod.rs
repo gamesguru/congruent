@@ -1,4 +1,5 @@
 #![type_length_limit = "3072"]
+#![allow(clippy::disallowed_macros)]
 
 extern crate conduwuit_core as conduwuit;
 pub extern crate rust_rocksdb as rocksdb;

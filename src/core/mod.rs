@@ -1,4 +1,5 @@
 #![type_length_limit = "12288"]
+#![allow(clippy::disallowed_macros)]
 
 pub mod alloc;
 pub mod config;

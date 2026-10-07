@@ -121,6 +121,11 @@ macro_rules! err {
 #[macro_export]
 #[collapse_debuginfo(yes)]
 macro_rules! err_log {
+	($out:ident, $level:ident, $fmt:literal $(, $args:expr)* $(,)?) => {{
+		($out).push_str(&format!($fmt $(, $args)*));
+		($out).into()
+	}};
+
 	($out:ident, $level:ident, $($fields:tt)+) => {{
 		($out).push_str(stringify!($($fields)+));
 		($out).into()

@@ -1,5 +1,3 @@
-#![allow(clippy::disallowed_macros)]
-
 use std::sync::Arc;
 
 pub mod capture;
@@ -51,22 +49,27 @@ pub struct Log {
 
 #[macro_export]
 macro_rules! error {
+	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::error!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::error!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! warn {
+	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::warn!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::warn!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! info {
+	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::info!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::info!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! debug {
+	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::debug!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::debug!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! trace {
+	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::trace!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::trace!("{}", stringify!($($x)+)) };
 }
 
