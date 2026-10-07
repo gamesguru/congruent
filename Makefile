@@ -165,7 +165,7 @@ check:   ##H Run cargo check
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
+		cargo check --all-targets --all-features
 
 .PHONY: macro
 macro: ##H See macro expansion costs
