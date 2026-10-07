@@ -349,7 +349,7 @@ pub(crate) async fn get_room_dag_route(
 				bearer.token().to_owned(),
 			| None => {
 				return Err!(Request(MissingToken("Missing access token for private room.")))
-					.into();
+					.map_err(Into::into);
 			},
 		};
 
@@ -367,7 +367,7 @@ pub(crate) async fn get_room_dag_route(
 			return Err!(Request(Forbidden(
 				"You must be a server admin to view this private room's DAG."
 			)))
-			.into();
+			.map_err(Into::into);
 		}
 	}
 

@@ -55,7 +55,8 @@ pub(crate) async fn send_state_event_for_key_route(
 
 	if let Some(delay) = body.delay {
 		if std::time::SystemTime::now().checked_add(delay).is_none() {
-			return Err!(Request(InvalidParam("org.matrix.msc4140.delay is too large."))).into();
+			return Err!(Request(InvalidParam("org.matrix.msc4140.delay is too large.")))
+				.map_err(Into::into);
 		}
 		let event = conduwuit_service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),

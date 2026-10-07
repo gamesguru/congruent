@@ -130,7 +130,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.thread_root_exists(&room_id, &thread_id)
 		.await
 	{
-		return Err!(Request(NotFound("Thread not found."))).into();
+		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}
 
 	let automatic = if let Some(cause_event_id) = body.automatic.as_ref() {
@@ -202,7 +202,7 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		.thread_root_exists(&room_id, &thread_id)
 		.await
 	{
-		return Err!(Request(NotFound("Thread not found."))).into();
+		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}
 
 	let Some(subscription) = services
@@ -212,7 +212,7 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		.await
 		.filter(|subscription| subscription.subscribed)
 	else {
-		return Err!(Request(NotFound("Thread subscription not found."))).into();
+		return Err!(Request(NotFound("Thread subscription not found."))).map_err(Into::into);
 	};
 
 	Ok(json_response(single_field("automatic", &subscription.automatic)))
@@ -236,7 +236,7 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.thread_root_exists(&room_id, &thread_id)
 		.await
 	{
-		return Err!(Request(NotFound("Thread not found."))).into();
+		return Err!(Request(NotFound("Thread not found."))).map_err(Into::into);
 	}
 
 	services

@@ -796,6 +796,7 @@ dependencies = [
  "itertools 0.14.0",
  "lettre",
  "log",
+ "matchit",
  "rand 0.10.3",
  "reqwest",
  "rezzy",

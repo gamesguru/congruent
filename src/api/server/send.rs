@@ -72,21 +72,21 @@ pub(crate) async fn send_transaction_message_route(
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
 		)))
-		.into();
+		.map_err(Into::into);
 	}
 
 	if body.pdus.len() > PDU_LIMIT {
 		return Err!(Request(Forbidden(
 			"Not allowed to send more than {PDU_LIMIT} PDUs in one transaction"
 		)))
-		.into();
+		.map_err(Into::into);
 	}
 
 	if body.edus.len() > EDU_LIMIT {
 		return Err!(Request(Forbidden(
 			"Not allowed to send more than {EDU_LIMIT} EDUs in one transaction"
 		)))
-		.into();
+		.map_err(Into::into);
 	}
 
 	let txn_key = (body.origin().to_owned(), body.transaction_id.clone());

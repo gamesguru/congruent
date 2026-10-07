@@ -73,7 +73,7 @@ pub(crate) async fn update_delayed_event_route(
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
 		| "send" => service::rooms::delayed_events::UpdateAction::Send,
 		| "cancel" => service::rooms::delayed_events::UpdateAction::Cancel,
-		| _ => return Err!(Request(NotFound("Invalid action."))).into(),
+		| _ => return Err!(Request(NotFound("Invalid action."))).map_err(Into::into),
 	};
 
 	services
@@ -90,7 +90,7 @@ pub(crate) async fn update_delayed_event_route(
 pub(crate) async fn update_delayed_event_without_action_route(
 	axum::extract::Path(_delay_id): axum::extract::Path<String>,
 ) -> std::result::Result<axum::response::Response, ApiError> {
-	Err!(Request(NotFound("Invalid action."))).into()
+	Err!(Request(NotFound("Invalid action."))).map_err(Into::into)
 }
 
 pub(crate) async fn get_delayed_event_route(

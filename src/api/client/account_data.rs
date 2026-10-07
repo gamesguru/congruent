@@ -137,7 +137,7 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 
 	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")))
-			.into();
+			.map_err(Into::into);
 	}
 
 	delete_account_data(&services, None, &user_id, &event_type).await?;
@@ -165,7 +165,7 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 
 	if sender_user != *user_id {
 		return Err!(Request(Forbidden("You cannot delete account data for other users.")))
-			.into();
+			.map_err(Into::into);
 	}
 
 	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;

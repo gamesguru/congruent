@@ -1,5 +1,6 @@
 mod args;
 mod auth;
+pub(crate) mod extract;
 mod handler;
 mod request;
 mod response;

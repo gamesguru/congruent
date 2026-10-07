@@ -88,6 +88,7 @@ hyper.workspace = true
 itertools.workspace = true
 lettre.workspace = true
 log.workspace = true
+matchit.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rezzy.workspace = true
