@@ -19,3 +19,15 @@ inherits      = "dev"
 lto           = "off"
 opt-level     = 0
 strip         = "symbols"
+
+# Dependencies dominate rebuild time. Keep them cheap to compile; the
+# workspace crates above still retain line-table debug information.
+[profile.dev-quick.package.'*']
+codegen-units = 256
+debug         = 0
+opt-level     = 0
+
+[profile.dev-quick.build-override]
+codegen-units = 16
+debug         = 0
+opt-level     = 0
