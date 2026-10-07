@@ -2,7 +2,6 @@
 
 use std::{
 	net::{self, IpAddr, Ipv4Addr},
-	os::fd::AsRawFd,
 	path::Path,
 	sync::{Arc, atomic::Ordering},
 };
@@ -60,7 +59,7 @@ pub(super) async fn serve(
 
 async fn accept(
 	server: &Arc<Server>,
-	listener: &UnixListener,
+	_listener: &UnixListener,
 	tasks: &mut JoinSet<()>,
 	app: MakeService,
 	builder: server::conn::auto::Builder<TokioExecutor>,

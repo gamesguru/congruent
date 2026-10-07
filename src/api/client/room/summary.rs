@@ -134,7 +134,7 @@ async fn local_room_summary_response(
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
 	trace!(
-		sender_user = sender_user.map(std::string::ToString::to_string),
+		sender_user = sender_user.map(ToString::to_string),
 		"Sending local room summary response for {room_id:?}"
 	);
 	let (join_rule, world_readable, guest_can_join) = join3(
@@ -255,7 +255,7 @@ async fn remote_room_summary_hierarchy_response(
 	const MAX_SERVERS_TO_TRY: usize = 5;
 	const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-	trace!(sender_user = ?sender_user.map(std::string::ToString::to_string), ?servers, "Sending remote room summary response for {room_id:?}");
+	trace!(sender_user = ?sender_user.map(ToString::to_string), ?servers, "Sending remote room summary response for {room_id:?}");
 	if !services.config.allow_federation {
 		return Err!(Request(Forbidden("Federation is disabled.")));
 	}

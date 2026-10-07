@@ -2,7 +2,7 @@ use std::{any::Any, sync::Arc, time::Duration};
 
 use axum::{Router, extract::DefaultBodyLimit};
 use axum_client_ip::ClientIpSource;
-use conduwuit::{Result, Server, debug, error};
+use conduwuit::{Result, Server, error};
 use conduwuit_service::{Services, state::Guard};
 use http::{
 	HeaderValue, Method, StatusCode,
