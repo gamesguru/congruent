@@ -2899,6 +2899,46 @@ impl RawConfig {
 		self.insert(key.split('.').map(str::to_owned), value);
 	}
 
+	pub fn append_strings(&mut self, key: &str, values: &[String]) {
+		if values.is_empty() {
+			return;
+		}
+
+		let mut parts = key.split('.').peekable();
+		let mut current = &mut self.inner;
+		while let Some(part) = parts.next() {
+			if parts.peek().is_none() {
+				let Value::Table(table) = current else { return };
+				let appended = values.iter().cloned().map(Value::String);
+				match table.entry(part.to_owned()) {
+					| toml::map::Entry::Vacant(entry) => {
+						entry.insert(Value::Array(appended.collect()));
+					},
+					| toml::map::Entry::Occupied(mut entry) =>
+						if let Value::Array(existing) = entry.get_mut() {
+							existing.extend(appended);
+						} else {
+							let previous =
+								std::mem::replace(entry.get_mut(), Value::Array(Vec::new()));
+							let Value::Array(existing) = entry.get_mut() else { unreachable!() };
+							existing.push(previous);
+							existing.extend(appended);
+						},
+				}
+				return;
+			}
+
+			if !current.is_table() {
+				*current = Value::Table(Table::new());
+			}
+			current = current
+				.as_table_mut()
+				.expect("configuration value was made into a table")
+				.entry(part.to_owned())
+				.or_insert(Value::Table(Table::new()));
+		}
+	}
+
 	#[must_use]
 	pub fn contains(&self, key: &str) -> bool {
 		let mut current = &self.inner;

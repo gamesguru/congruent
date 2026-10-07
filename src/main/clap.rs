@@ -152,22 +152,22 @@ pub(crate) fn parse() -> Args { Args::parse() }
 /// Synthesize any command line options with configuration file options.
 pub(crate) fn update(mut config: RawConfig, args: &Args) -> Result<RawConfig> {
 	if args.maintenance {
-		config = config.join(("startup_netburst", false));
-		config = config.join(("listening", false));
+		config.set_override("startup_netburst", toml::Value::Boolean(false));
+		config.set_override("listening", toml::Value::Boolean(false));
 	}
 
 	#[cfg(feature = "console")]
 	// Indicate the admin console should be spawned automatically if the
 	// configuration file hasn't already.
 	if args.console {
-		config = config.join(("admin_console_automatic", true));
+		config.set_override("admin_console_automatic", toml::Value::Boolean(true));
 	}
 
 	// Execute commands after any commands listed in configuration file
-	config = config.adjoin(("admin_execute", &args.execute));
+	config.append_strings("admin_execute", &args.execute);
 
 	// Update config with names of any functional-tests
-	config = config.adjoin(("test", &args.test));
+	config.append_strings("test", &args.test);
 
 	// All other individual overrides can go last in case we have options which
 	// set multiple conf items at once and the user still needs granular overrides.
