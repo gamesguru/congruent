@@ -831,6 +831,7 @@ dependencies = [
  "log",
  "minicbor",
  "minicbor-serde",
+ "redb",
  "rust-rocksdb",
  "serde",
  "tokio",
@@ -2758,6 +2759,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
 dependencies = [
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "redb"
+version = "4.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
