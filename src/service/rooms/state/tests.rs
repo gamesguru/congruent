@@ -9,7 +9,13 @@ use conduwuit_core::{
 	matrix::{Event, PduEvent},
 };
 use figment::providers::Format;
-use slipstream::{CanonicalJsonObject, EventId, RoomId, events::StateEventType};
+use slipstream::{
+	CanonicalJsonObject, EventId, RoomId, event_id,
+	events::{AnyStrippedStateEvent, StateEventType},
+	room_id,
+	sswire::Raw,
+	user_id,
+};
 
 use crate::Services;
 
@@ -99,6 +105,51 @@ fn create_dummy_pdu(
 	json.insert("hashes".into(), slipstream::CanonicalJsonValue::Object(hashes));
 
 	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create pdu")
+}
+
+/// Build a synthetic `m.room.member` PDU with an explicit membership and
+/// timestamp, for exercising membership-cache transitions directly.
+fn create_member_pdu(
+	room_id: &RoomId,
+	event_id: &EventId,
+	sender: &str,
+	state_key: &str,
+	membership: &str,
+	origin_server_ts: u64,
+) -> PduEvent {
+	let mut content = CanonicalJsonObject::new();
+	content.insert(
+		"membership".into(),
+		slipstream::CanonicalJsonValue::String(membership.to_owned()),
+	);
+
+	let mut json = CanonicalJsonObject::new();
+	json.insert(
+		"room_id".into(),
+		slipstream::CanonicalJsonValue::String(room_id.as_str().to_owned()),
+	);
+	json.insert("sender".into(), slipstream::CanonicalJsonValue::String(sender.to_owned()));
+	json.insert(
+		"type".into(),
+		slipstream::CanonicalJsonValue::String("m.room.member".to_owned()),
+	);
+	json.insert("state_key".into(), slipstream::CanonicalJsonValue::String(state_key.to_owned()));
+	json.insert("content".into(), slipstream::CanonicalJsonValue::Object(content));
+	json.insert(
+		"origin_server_ts".into(),
+		slipstream::CanonicalJsonValue::Number(
+			origin_server_ts.try_into().expect("valid timestamp"),
+		),
+	);
+	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
+	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
+	json.insert("auth_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
+
+	let mut hashes = CanonicalJsonObject::new();
+	hashes.insert("sha256".into(), slipstream::CanonicalJsonValue::String("dummy".to_owned()));
+	json.insert("hashes".into(), slipstream::CanonicalJsonValue::Object(hashes));
+
+	PduEvent::from_id_val(event_id, json, Some(room_id)).expect("failed to create member pdu")
 }
 
 /// Persist a synthetic PDU into the PDU/timeline store so that the
@@ -632,10 +683,90 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		.await
 		.expect("second sweep");
 	assert_eq!(root.structural_hash, live[0].structural_hash);
-	let node = services
+	let state = services
 		.rooms
-		.state_hamt
-		.store
-		.get_node(&root.structural_hash);
-	assert!(node.is_ok(), "live root node must survive the sweep");
+		.state_accessor
+		.load_full_state_hamt(&root)
+		.await
+		.expect("live root state must survive the sweep");
+	assert_eq!(state.len(), 51, "live root state must remain readable");
+}
+
+/// A leave re-applied after a newer invite must not delete that invite.
+///
+/// This is the cache-level regression for `TestUnbanViaInvite`: an unban
+/// `m.room.member`(leave) is applied during an outlier upgrade and then appended
+/// again, while an invite for the same user arrives in between. By the time the
+/// second leave application runs, `mark_as_invited` has already cleared the
+/// `leftstate` marker, so preservation cannot use the `existing_leave ==
+/// leave_pdu` shortcut and must fall back to the invite state's
+/// `origin_server_ts`. The stripped invite event must carry that timestamp, or
+/// the invite is silently deleted; `mark_as_left`/`mark_as_invited` also share
+/// `membership_mutex` so a stale leave decision cannot land its batch after the
+/// invite.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_stale_leave_does_not_delete_newer_invite() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = room_id!("!invite-race:test.conduwuit.local").to_owned();
+	let alice = user_id!("@alice:test.conduwuit.local").to_owned();
+	let inviter = user_id!("@bob:test.conduwuit.local").to_owned();
+
+	let leave = create_member_pdu(
+		&room_id,
+		&event_id!("$leave:test.conduwuit.local").to_owned(),
+		inviter.as_str(),
+		alice.as_str(),
+		"leave",
+		1_000,
+	);
+	let invite = create_member_pdu(
+		&room_id,
+		&event_id!("$invite:test.conduwuit.local").to_owned(),
+		inviter.as_str(),
+		alice.as_str(),
+		"invite",
+		2_000,
+	);
+	let invite_state = vec![invite.to_format::<Raw<AnyStrippedStateEvent>>()];
+
+	// A leave marks alice as left.
+	services
+		.rooms
+		.state_cache
+		.mark_as_left(&alice, &room_id, Some(leave.clone()))
+		.await;
+
+	// The causally newer invite lands. `mark_as_invited` clears the left marker.
+	services
+		.rooms
+		.state_cache
+		.mark_as_invited(&alice, &room_id, &inviter, Some(invite_state), None)
+		.await
+		.expect("mark_as_invited should succeed");
+
+	// The same, causally older leave is re-applied, as the timeline append path
+	// does after the outlier-upgrade path already applied it. It must observe the
+	// newer invite and keep it.
+	services
+		.rooms
+		.state_cache
+		.mark_as_left(&alice, &room_id, Some(leave))
+		.await;
+
+	let pending = services
+		.rooms
+		.state_cache
+		.invite_state(&alice, &room_id)
+		.await
+		.expect("invite state should survive a stale re-applied leave");
+	assert!(!pending.is_empty(), "the newer invite must not be deleted by a stale leave");
+	assert!(
+		services
+			.rooms
+			.state_cache
+			.get_invite_count(&room_id, &alice)
+			.await
+			.is_ok(),
+		"the invite count must survive alongside the invite"
+	);
 }

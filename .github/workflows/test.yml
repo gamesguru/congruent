@@ -105,7 +105,7 @@ jobs:
         run: |
           cargo +nightly llvm-cov --lib --all-features \
             --codecov --output-path coverage.json
-          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
+          cargo +nightly llvm-cov --lib --all-features \
             --html --output-dir .coverage
 
       - name: Upload Test Results
@@ -207,7 +207,11 @@ jobs:
             exit 0
           fi
           if [ -n "$PARENT" ]; then
-            COMMIT=$(git commit-tree "$TREE" -p "$PARENT" -m "Update unit test badge for ${BRANCH} [skip ci]")
+            if [ "$(git rev-parse "$PARENT:${BADGE_FILE}" 2>/dev/null)" = "$BLOB" ]; then
+              COMMIT="$PARENT"
+            else
+              COMMIT=$(git commit-tree "$TREE" -p "$PARENT" -m "Update unit test badge for ${BRANCH} [skip ci]")
+            fi
           else
             COMMIT=$(git commit-tree "$TREE" -m "Update unit test badge for ${BRANCH} [skip ci]")
           fi

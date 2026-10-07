@@ -6,7 +6,7 @@ use std::{collections::HashMap, sync::Arc};
 use conduwuit::{
 	Pdu, Result, SyncRwLock, implement,
 	result::LogErr,
-	utils::{ReadyExt, stream::TryIgnore},
+	utils::{MutexMap, ReadyExt, stream::TryIgnore},
 	warn,
 };
 use database::{Deserialized, Ignore, Interfix, Map};
@@ -27,6 +27,11 @@ pub struct Service {
 	services: Services,
 	db: Data,
 	pub rooms_joining: SyncRwLock<std::collections::HashSet<OwnedRoomId>>,
+	/// Serializes the read-decide-write sections of `mark_as_left` and
+	/// `mark_as_invited`. `mark_as_left` reads the pending invite to decide
+	/// whether to preserve it and then applies a batch; an invite landing
+	/// between that read and the write was deleted by the stale decision.
+	membership_mutex: MutexMap<OwnedRoomId, ()>,
 }
 
 struct Services {
@@ -67,6 +72,7 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			appservice_in_room_cache: SyncRwLock::new(HashMap::new()),
 			rooms_joining: SyncRwLock::new(std::collections::HashSet::new()),
+			membership_mutex: MutexMap::new(),
 			// Ugly way to build the cache with a dynamic capacity
 			server_visibility_cache: Cache::builder()
 				.max_capacity(

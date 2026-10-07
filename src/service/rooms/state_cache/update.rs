@@ -608,6 +608,11 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 	let left_count = self.services.globals.next_count().unwrap();
 	let mut batch = Batch::new();
 
+	// Hold the room's membership lock from the pending-invite read to the batch
+	// write, so a concurrent `mark_as_invited` cannot land in between and then
+	// be deleted by a decision made before it existed.
+	let membership_guard = self.membership_mutex.lock(room_id).await;
+
 	let leave_origin_server_ts = leave_pdu
 		.as_ref()
 		.map(|leave_pdu| leave_pdu.origin_server_ts().0);
@@ -665,6 +670,7 @@ pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: 
 		preserve_newer_invite,
 	);
 	self.db.userroomid_joined.apply_batch(batch);
+	drop(membership_guard);
 
 	self.invalidate_user_visibility(user_id, room_id).await;
 	self.invalidate_server_visibility(user_id, room_id).await;
@@ -872,6 +878,7 @@ pub async fn mark_as_invited(
 
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+	let membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db.userroomid_invitestate.batch_raw_put(
@@ -904,6 +911,7 @@ pub async fn mark_as_invited(
 		.roomuserid_forgotten
 		.batch_delete(&mut batch, &roomuser_id);
 	self.db.userroomid_joined.apply_batch(batch);
+	drop(membership_guard);
 	self.unforget(room_id, user_id);
 
 	if let Some(servers) = invite_via.filter(is_not_empty!()) {

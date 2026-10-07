@@ -87,25 +87,81 @@ jobs:
     outputs:
       include: ${{ steps.matrix.outputs.include }}
     steps:
-      - id: matrix
-        env:
-          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: false
+
+      - name: Init required submodule
+        run: git submodule update --init complement-crypto-src
+
+      - name: Install system dependencies
         run: |
-          if [ -n "$RUST_SDK_URL" ]; then
-            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"},{"name":"rs","badge":"rs","client_matrix":"rr"},{"name":"js+rs","badge":"jsrs","client_matrix":"jr,rj"}]' >> "$GITHUB_OUTPUT"
-          else
-            echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"}]' >> "$GITHUB_OUTPUT"
-          fi
+          sudo apt-get update || true
+          sudo apt-get install -y build-essential pkg-config liburing-dev libbz2-dev clang libclang-dev llvm-dev mold
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: complement-crypto-src/go.sum
+
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Build JS SDK bundle
+        run: just crypto-js-bundle
+
+      - name: Build matrix-rust-sdk FFI
+        env:
+          # Wombat-Foundation/matrix-rust-sdk (guru/fix/time-invite-mem-races)
+          RUST_SDK_REF: 6c35f386b5b944989cf88b821e72cb21f682893e
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          mkdir -p matrix-rust-sdk
+          curl -fsSL "https://gitlab.com/Wombat-Foundation/matrix-rust-sdk/-/archive/$RUST_SDK_REF/matrix-rust-sdk-$RUST_SDK_REF.tar.gz" \
+            | tar -xz --strip-components=1 -C matrix-rust-sdk
+          cd complement-crypto-src
+          just install-uniffi-bindgen
+          just rebuild-rust-sdk "$GITHUB_WORKSPACE/matrix-rust-sdk"
+
+      - name: Upload JS SDK bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: crypto-js-sdk
+          path: complement-crypto-src/internal/api/js/chrome/dist
+          retention-days: 1
+
+      - name: Upload Rust SDK artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: crypto-rust-sdk
+          path: |
+            complement-crypto-src/internal/api/rust
+            matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.a
+          retention-days: 1
+
+      - id: matrix
+        run: |
+          echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"},{"name":"rs","badge":"rs","client_matrix":"rr"},{"name":"js+rs","badge":"jsrs","client_matrix":"jr,rj"}]' >> "$GITHUB_OUTPUT"
 
   # -----------------------------------------------------------------------------
   # Complement-Crypto (E2EE). Shares the conduwuit binary built by `setup`. Runs
   # as three parallel client-matrix variants so js, rs, and js+rs results are
   # attributed separately (mirroring the official complement-crypto repo, which
   # runs JS-only, Rust-only and mixed jobs). The rs/js+rs variants consume a
-  # PREBUILT matrix-rust-sdk FFI (shared library + generated Go bindings) from a
-  # URL configured via the C10Y_CRYPTO_RUST_SDK_URL repository variable, rather
-  # than compiling matrix-rust-sdk (an ~8.5GB source build that would blow the
-  # repo's shared 10GB cache budget and only makes sense for the SDK repo itself).
+  # matrix-rust-sdk FFI built from a commit pinned in this file (no cache, to keep
+  # within the repo's shared 10GB cache budget).
   # -----------------------------------------------------------------------------
   complement-crypto-tests:
     needs: [setup, crypto-matrix]
@@ -118,7 +174,8 @@ jobs:
       pull-requests: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
+      matrix:
+        include: ${{ fromJSON(needs.crypto-matrix.outputs.include) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -190,50 +247,21 @@ jobs:
           go-version: "1.25.x"
           cache-dependency-path: complement-crypto-src/go.sum
 
-      - name: Build JS SDK bundle (for //go:embed dist)
-        if: contains(matrix.client_matrix, 'j')
-        run: |
-          cd complement-crypto-src
-          corepack enable
-          # `matrix-js-sdk@develop` is not a published npm version; the script
-          # feeds its arg straight into `yarn add`, so install the develop
-          # BRANCH via the GitHub URL form (see rebuild_js_sdk.sh --help).
-          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
+      - name: Download JS SDK bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: crypto-js-sdk
+          path: complement-crypto-src/internal/api/js/chrome/dist
 
-      # rs / js+rs variants consume a PREBUILT matrix-rust-sdk FFI (libmatrix_sdk_ffi.so
-      # plus the generated Go bindings) from C10Y_CRYPTO_RUST_SDK_URL instead of
-      # compiling it. The tarball must contain libmatrix_sdk_ffi.so and a copy of the
-      # complement-crypto internal/api/rust/ bindings (incl. matrix_sdk_ffi/matrix_sdk_ffi.go).
-      - name: Download prebuilt matrix-rust-sdk FFI
-        if: contains(matrix.client_matrix, 'r') && vars.C10Y_CRYPTO_RUST_SDK_URL != ''
-        env:
-          RUST_SDK_URL: ${{ vars.C10Y_CRYPTO_RUST_SDK_URL }}
-        run: |
-          if [ -z "$RUST_SDK_URL" ]; then
-            echo "::error::Repository variable C10Y_CRYPTO_RUST_SDK_URL is not set. Point it at a tarball containing libmatrix_sdk_ffi.so + the Go bindings (see .github/workflows/complement.yml)."
-            exit 1
-          fi
-          mkdir -p /tmp/mrsdk
-          curl -fsSL "$RUST_SDK_URL" -o /tmp/mrsdk.tar.gz
-          tar -xzf /tmp/mrsdk.tar.gz -C /tmp/mrsdk
-          SO=$(find /tmp/mrsdk -name libmatrix_sdk_ffi.so | head -n 1)
-          if [ -z "$SO" ]; then
-            echo "::error::libmatrix_sdk_ffi.so not found in $RUST_SDK_URL"
-            exit 1
-          fi
-          mkdir -p matrix-rust-sdk/target/debug
-          install -m 0755 "$SO" matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.so
-          BINDINGS_DIR=$(dirname "$(find /tmp/mrsdk -name rust.go | head -n 1)")
-          if [ -z "$BINDINGS_DIR" ] || [ ! -d "$BINDINGS_DIR" ]; then
-            echo "::error::Go bindings (rust.go) not found in $RUST_SDK_URL"
-            exit 1
-          fi
-          cp -r "$BINDINGS_DIR"/. complement-crypto-src/internal/api/rust/
-          echo "Installed prebuilt matrix-rust-sdk FFI from $RUST_SDK_URL"
+      - name: Download Rust SDK artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: crypto-rust-sdk
+          path: .
 
       - name: Run Complement-Crypto tests (${{ matrix.name }})
         id: complement-crypto
-        if: matrix.client_matrix == 'jj' || vars.C10Y_CRYPTO_RUST_SDK_URL != ''
+
         env:
           COMPLEMENT_CRYPTO_PARALLEL: "3"
           COMPLEMENT_CRYPTO_TIMEOUT: "45m"
