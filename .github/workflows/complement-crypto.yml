@@ -30,7 +30,7 @@ jobs:
           submodules: false
 
       - name: Init required submodules
-        run: git submodule update --init complement-crypto-src ruwuma ruma-upstream
+        run: git submodule update --init complement-crypto-src ruma-upstream
 
       - name: Install system dependencies
         run: |
