@@ -49,9 +49,10 @@ use crate::Ruma;
 /// - Rooms are ordered by the number of joined members
 pub(crate) async fn get_public_rooms_filtered_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms_filtered::v3::Request>,
 ) -> Result<get_public_rooms_filtered::v3::Response> {
+	info!(%client, "filtered public rooms request");
 	if let Some(server) = &body.server {
 		if services
 			.moderation
@@ -84,9 +85,10 @@ pub(crate) async fn get_public_rooms_filtered_route(
 /// - Rooms are ordered by the number of joined members
 pub(crate) async fn get_public_rooms_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms::v3::Request>,
 ) -> Result<get_public_rooms::v3::Response> {
+	info!(%client, "public rooms request");
 	if let Some(server) = &body.server {
 		if services.moderation.is_remote_server_forbidden(server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
@@ -119,9 +121,10 @@ pub(crate) async fn get_public_rooms_route(
 /// Sets the visibility of a given room in the room directory.
 pub(crate) async fn set_room_visibility_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<set_room_visibility::v3::Request>,
 ) -> Result<set_room_visibility::v3::Response> {
+	info!(%client, "set room visibility request");
 	let sender_user = body.sender_user();
 
 	if !services.rooms.metadata.exists(&body.room_id).await {

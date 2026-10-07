@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Error, Result};
+use conduwuit::{Error, Result, debug};
 use slipstream::{
 	api::{
 		client::error::ErrorKind,
@@ -16,9 +16,10 @@ use crate::Ruma;
 /// Lists the public rooms on this server.
 pub(crate) async fn get_public_rooms_filtered_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms_filtered::v1::Request>,
 ) -> Result<get_public_rooms_filtered::v1::Response> {
+	debug!(%client, "federation filtered public rooms request");
 	if !services
 		.server
 		.config
@@ -53,9 +54,10 @@ pub(crate) async fn get_public_rooms_filtered_route(
 /// Lists the public rooms on this server.
 pub(crate) async fn get_public_rooms_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_public_rooms::v1::Request>,
 ) -> Result<get_public_rooms::v1::Response> {
+	debug!(%client, "federation public rooms request");
 	if !services
 		.globals
 		.allow_public_room_directory_over_federation()

@@ -122,12 +122,16 @@ macro_rules! err {
 #[collapse_debuginfo(yes)]
 macro_rules! err_log {
 	($out:ident, $level:ident, $fmt:literal $(, $args:expr)* $(,)?) => {{
-		($out).push_str(&format!($fmt $(, $args)*));
+		let message = format!($fmt $(, $args)*);
+		$crate::$level!("{}", message);
+		($out).push_str(&message);
 		($out).into()
 	}};
 
 	($out:ident, $level:ident, $($fields:tt)+) => {{
-		($out).push_str(&$crate::__conduwuit_format!($($fields)+));
+		let message = $crate::__conduwuit_format!($($fields)+);
+		$crate::$level!("{}", message);
+		($out).push_str(&message);
 		($out).into()
 	}}
 }

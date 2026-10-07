@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, err};
+use conduwuit::{Err, Result, debug, err};
 use futures::{FutureExt, StreamExt};
 use slipstream::{
 	OwnedRoomId,
@@ -33,9 +33,10 @@ use crate::{
 /// An implementation of [MSC2666](https://github.com/matrix-org/matrix-spec-proposals/pull/2666)
 pub(crate) async fn get_mutual_rooms_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<mutual_rooms::unstable::Request>,
 ) -> Result<mutual_rooms::unstable::Response> {
+	debug!(%client, "mutual rooms request");
 	let sender_user = body.sender_user();
 
 	if sender_user == &*body.user_id {

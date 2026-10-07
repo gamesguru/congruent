@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{
-	Err, Error, PduEvent, Result, err, error,
+	Err, Error, PduEvent, Result, debug, err, error,
 	matrix::{Event, event::gen_event_id},
 	utils::{self, hash::sha256},
 	warn,
@@ -57,9 +57,10 @@ fn validate_msc4311_stripped_state(
 /// Invites a remote user to a room.
 pub(crate) async fn create_invite_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<create_invite::v2::Request>,
 ) -> Result<create_invite::v2::Response> {
+	debug!(%client, "federation invite request");
 	// ACL check origin
 	services
 		.rooms

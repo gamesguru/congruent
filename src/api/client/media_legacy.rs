@@ -2,7 +2,7 @@
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, err, utils::math::ruma_from_usize};
+use conduwuit::{Err, Result, debug, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
 use slipstream::{
 	Mxc,
@@ -129,9 +129,10 @@ pub(crate) async fn get_media_config_legacy_legacy_route(
 /// Returns URL preview.
 pub(crate) async fn get_media_preview_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
 ) -> Result<get_media_preview::v3::Response> {
+	debug!(%client, "legacy media preview request");
 	let sender_user = body.sender_user();
 
 	let url = &body.url;
@@ -205,9 +206,10 @@ pub(crate) async fn create_content_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
 ) -> Result<get_content::v3::Response> {
+	debug!(%client, "legacy media download request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -292,9 +294,10 @@ pub(crate) async fn get_content_legacy_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_as_filename_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
 ) -> Result<get_content_as_filename::v3::Response> {
+	debug!(%client, "legacy media filename request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,
@@ -381,9 +384,10 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_thumbnail_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
 ) -> Result<get_content_thumbnail::v3::Response> {
+	debug!(%client, "legacy media thumbnail request");
 	let mxc = Mxc {
 		server_name: &body.server_name,
 		media_id: &body.media_id,

@@ -41,9 +41,10 @@ use crate::Ruma;
 /// the `type` field when logging in.
 pub(crate) async fn get_login_types_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	_body: Ruma<get_login_types::v3::Request>,
 ) -> Result<get_login_types::v3::Response> {
+	info!(%client, "login types request");
 	Ok(get_login_types::v3::Response::new(vec![
 		get_login_types::v3::LoginType::Password(PasswordLoginType::default()),
 		get_login_types::v3::LoginType::ApplicationService(ApplicationServiceLoginType::default()),
@@ -366,9 +367,10 @@ pub(crate) async fn login_route(
 /// <https://spec.matrix.org/v1.13/client-server-api/#post_matrixclientv1loginget_token>
 pub(crate) async fn login_token_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
+	info!(%client, "login token request");
 	if !services.server.config.login_via_existing_session {
 		return Err!(Request(Forbidden("Login via an existing session is not enabled")));
 	}
@@ -401,9 +403,10 @@ pub(crate) async fn login_token_route(
 /// - Triggers device list updates
 pub(crate) async fn logout_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<logout::v3::Request>,
 ) -> Result<logout::v3::Response> {
+	info!(%client, "logout request");
 	let (sender_user, sender_device) = body.sender();
 	services
 		.users
@@ -446,9 +449,10 @@ pub(crate) async fn logout_route(
 /// user.
 pub(crate) async fn logout_all_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<logout_all::v3::Request>,
 ) -> Result<logout_all::v3::Response> {
+	info!(%client, "logout all request");
 	let sender_user = body.sender_user();
 	services
 		.users

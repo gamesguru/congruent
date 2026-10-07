@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug_warn, err, error,
+	Err, Result, debug, debug_warn, err, error,
 	utils::{self, content_disposition::make_content_disposition, math::ruma_from_usize},
 };
 use conduwuit_service::{
@@ -41,9 +41,10 @@ pub(crate) async fn get_media_config_route(
 /// - Media will be saved in the media/ directory
 pub(crate) async fn create_content_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
 ) -> Result<create_content::v3::Response> {
+	debug!(%client, "upload media request");
 	let user = body.sender_user();
 	if services.users.is_suspended(user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
@@ -85,9 +86,10 @@ pub(crate) async fn create_content_route(
 /// Load media thumbnail from our server or over federation.
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
+	debug!(%client, "media thumbnail request");
 	let user = body.sender_user();
 
 	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
@@ -134,9 +136,10 @@ pub(crate) async fn get_content_thumbnail_route(
 /// Load media from our server or over federation.
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
+	debug!(%client, "media download request");
 	let user = body.sender_user();
 
 	let mxc = Mxc {
@@ -187,9 +190,10 @@ pub(crate) async fn get_content_route(
 /// Load media from our server or over federation as fileName.
 pub(crate) async fn get_content_as_filename_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v1::Request>,
 ) -> Result<get_content_as_filename::v1::Response> {
+	debug!(%client, "media download filename request");
 	let user = body.sender_user();
 
 	let mxc = Mxc {
@@ -242,9 +246,10 @@ pub(crate) async fn get_content_as_filename_route(
 /// Returns URL preview.
 pub(crate) async fn get_media_preview_route(
 	State(services): State<crate::State>,
-	ClientIp(_client): ClientIp,
+	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v1::Request>,
 ) -> Result<get_media_preview::v1::Response> {
+	debug!(%client, "media preview request");
 	let sender_user = body.sender_user();
 
 	let url = &body.url;
