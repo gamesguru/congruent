@@ -5,13 +5,12 @@
 //! of dependencies and nulls out results through the existing interface when
 //! not featured.
 
-use std::time::SystemTime;
+use std::{net::IpAddr, time::SystemTime};
 
 use conduwuit::{Err, Result, debug, err, info};
 use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
-use ipaddress::IPAddress;
 use serde::Serialize;
 #[cfg(feature = "url_preview")]
 use slipstream::OwnedMxcUri;
@@ -141,7 +140,7 @@ pub async fn get_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 
 #[implement(Service)]
 async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
-	if let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated")) {
+	if let Ok(ip) = url.host_str().expect("URL previously validated").parse::<IpAddr>() {
 		if !self.services.client.valid_cidr_range(&ip) {
 			return Err!(Request(Forbidden("Requesting from this address is forbidden")));
 		}
@@ -185,7 +184,7 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 	if let Some(remote_addr) = response.remote_addr() {
 		debug!(%url, "URL preview response remote address: {:?}", remote_addr);
 
-		if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string()) {
+		if let Ok(ip) = remote_addr.ip().to_string().parse::<IpAddr>() {
 			if !self.services.client.valid_cidr_range(&ip) {
 				return Err!(Request(Forbidden("Requesting from this address is forbidden")));
 			}

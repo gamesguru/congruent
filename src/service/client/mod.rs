@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use conduwuit::{Config, Result, err, implement, utils::IpCidr};
+use conduwuit::{Config, Result, implement, utils::IpCidr};
 use either::Either;
 use reqwest::redirect;
 
