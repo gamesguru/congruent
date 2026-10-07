@@ -9,7 +9,7 @@ extern crate conduwuit_service as service;
 conduwuit_macros::introspect_crate! {}
 
 pub mod client;
-pub(crate) mod hyper_router;
+pub mod hyper_router;
 pub(crate) mod json_util;
 pub(crate) mod msc2836;
 pub mod router;
