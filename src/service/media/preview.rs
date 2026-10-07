@@ -672,24 +672,24 @@ pub fn parse_preview_url(url_str: &str) -> std::result::Result<Url, url::ParseEr
 }
 #[cfg(feature = "url_preview")]
 #[derive(Default)]
-struct HtmlMetadata {
-	title: Option<String>,
-	description: Option<String>,
-	og_title: Option<String>,
-	og_description: Option<String>,
-	og_type: Option<String>,
-	og_url: Option<String>,
-	image: Option<String>,
-	image_width: Option<u32>,
-	image_height: Option<u32>,
-	video: Option<String>,
-	video_width: Option<u32>,
-	video_height: Option<u32>,
-	audio: Option<String>,
+pub(crate) struct HtmlMetadata {
+	pub(crate) title: Option<String>,
+	pub(crate) description: Option<String>,
+	pub(crate) og_title: Option<String>,
+	pub(crate) og_description: Option<String>,
+	pub(crate) og_type: Option<String>,
+	pub(crate) og_url: Option<String>,
+	pub(crate) image: Option<String>,
+	pub(crate) image_width: Option<u32>,
+	pub(crate) image_height: Option<u32>,
+	pub(crate) video: Option<String>,
+	pub(crate) video_width: Option<u32>,
+	pub(crate) video_height: Option<u32>,
+	pub(crate) audio: Option<String>,
 }
 
 #[cfg(feature = "url_preview")]
-fn parse_html_metadata(body: &str) -> HtmlMetadata {
+pub(crate) fn parse_html_metadata(body: &str) -> HtmlMetadata {
 	let body = body.as_bytes();
 	let lower: Vec<_> = body.iter().map(u8::to_ascii_lowercase).collect();
 	let mut metadata = HtmlMetadata::default();
@@ -800,20 +800,14 @@ fn html_attribute(tag: &[u8], wanted: &str) -> Option<String> {
 		}
 
 		let name = tag.get(name_start..offset).unwrap_or_default();
-		while tag
-			.get(offset)
-			.is_some_and(|byte| byte.is_ascii_whitespace())
-		{
+		while tag.get(offset).is_some_and(u8::is_ascii_whitespace) {
 			offset = offset.saturating_add(1);
 		}
 		if tag.get(offset) != Some(&b'=') {
 			continue;
 		}
 		offset = offset.saturating_add(1);
-		while tag
-			.get(offset)
-			.is_some_and(|byte| byte.is_ascii_whitespace())
-		{
+		while tag.get(offset).is_some_and(u8::is_ascii_whitespace) {
 			offset = offset.saturating_add(1);
 		}
 
