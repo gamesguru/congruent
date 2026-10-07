@@ -1,5 +1,16 @@
 
 ###############################
+Wed 2026/10/07
+###############################
+
+## CLI dependency cleanup
+
+- Replace `clap_derive` usage with Clap's builder API (`Command`, `Arg`, and
+  `ArgMatches`), following the approach used by `../rezzy` and `../mtxdb`.
+- Start with `xtask` and the top-level server arguments, then migrate the admin
+  command tree. Remove Clap's `derive` feature once all derives are gone.
+
+###############################
 Mon 2026/10/05
 ###############################
 

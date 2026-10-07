@@ -1019,6 +1019,7 @@ dependencies = [
  "conduwuit_core",
  "conduwuit_service",
  "conduwuit_slipstream",
+ "http",
  "thiserror",
  "tower-http",
  "tower-sec-fetch",
