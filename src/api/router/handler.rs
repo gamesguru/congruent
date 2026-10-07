@@ -65,7 +65,7 @@ macro_rules! ruma_handler {
 					.method
 					.parse()
 					.expect("endpoint metadata contains a valid HTTP method");
-				crate::hyper_router::record_route(metadata_method, path, type_name::<Fun>());
+				crate::hyper_router::record_route(metadata_method.clone(), path, type_name::<Fun>());
 
 				let action = |$($tx,)* req| {
 					self($($tx,)* req)
