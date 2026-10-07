@@ -1,52 +1,10 @@
-use bytes::BytesMut;
 use http::StatusCode;
-use http_body_util::Full;
 use slipstream::api::client::{
 	error::{ErrorBody, ErrorKind},
 	uiaa::UiaaResponse,
 };
 
 use super::Error;
-use crate::error;
-
-impl axum::response::IntoResponse for Error {
-	fn into_response(self) -> axum::response::Response {
-		let status = self.status_code();
-		if status == StatusCode::INTERNAL_SERVER_ERROR {
-			crate::warn!(
-				error = %self,
-				error_debug = ?self,
-				kind = ?self.kind(),
-				status = %status,
-				"Server error"
-			);
-		} else if status.is_server_error() {
-			crate::warn!(
-				error = %self,
-				kind = ?self.kind(),
-				status = %status,
-				"Server error"
-			);
-		} else if status.is_client_error() {
-			crate::debug_error!(
-				error = %self,
-				kind = ?self.kind(),
-				status = %status,
-				"Client error"
-			);
-		}
-
-		let response: UiaaResponse = self.into();
-		response
-			.try_into_http_response::<BytesMut>()
-			.inspect_err(|e| error!("error response error: {e}"))
-			.map_or_else(
-				|_| StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-				|r| r.map(BytesMut::freeze).map(Full::new).into_response(),
-			)
-	}
-}
-
 impl From<Error> for UiaaResponse {
 	#[inline]
 	fn from(error: Error) -> Self {

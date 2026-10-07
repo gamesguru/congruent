@@ -5,7 +5,10 @@ use axum::{
 use conduwuit::{Err, Result};
 use slipstream::api::Metadata;
 
-use crate::{json_util::single_field, router::authenticate_user};
+use crate::{
+	json_util::single_field,
+	router::{ApiError, authenticate_user},
+};
 
 pub(crate) struct GetDelayedEventRequest;
 
@@ -26,15 +29,16 @@ pub(crate) struct DelayedEventUser {
 }
 
 impl FromRequest<crate::State, Body> for DelayedEventUser {
-	type Rejection = conduwuit::Error;
+	type Rejection = ApiError;
 
 	async fn from_request(
 		request: hyper::Request<Body>,
 		services: &crate::State,
-	) -> Result<Self> {
+	) -> std::result::Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetDelayedEventRequest::METADATA)
-				.await?,
+				.await
+				.map_err(ApiError)?,
 		})
 	}
 }
@@ -44,15 +48,16 @@ pub(crate) struct AllDelayedEventsUser {
 }
 
 impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
-	type Rejection = conduwuit::Error;
+	type Rejection = ApiError;
 
 	async fn from_request(
 		request: hyper::Request<Body>,
 		services: &crate::State,
-	) -> Result<Self> {
+	) -> std::result::Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetAllDelayedEventsRequest::METADATA)
-				.await?,
+				.await
+				.map_err(ApiError)?,
 		})
 	}
 }

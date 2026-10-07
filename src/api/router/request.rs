@@ -33,7 +33,10 @@ pub(super) async fn from(
 	let limited = request.with_limited_body();
 	let (mut parts, body) = limited.into_parts();
 
-	let path: Path<Vec<String>> = parts.extract().await?;
+	let path: Path<Vec<String>> = parts
+		.extract()
+		.await
+		.map_err(|_| err!(Request(Unknown("Failed to parse request path"))))?;
 	let query = parts.uri.query().unwrap_or_default();
 	let query = serde_html_form::from_str(query)
 		.map_err(|e| err!(Request(Unknown("Failed to read query parameters: {e}"))))?;

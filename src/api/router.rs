@@ -18,7 +18,7 @@ use http::{Uri, uri};
 use self::handler::RouterExt;
 pub(super) use self::{
 	args::{Args as Ruma, authenticate_user},
-	response::RumaResponse,
+	response::{ApiError, RumaResponse},
 };
 use crate::{admin, client, server};
 
@@ -455,11 +455,11 @@ async fn redirect_legacy_preview(uri: Uri) -> impl IntoResponse {
 }
 
 async fn legacy_media_disabled() -> impl IntoResponse {
-	err!(Request(Forbidden("Unauthenticated media is disabled.")))
+	ApiError(err!(Request(Forbidden("Unauthenticated media is disabled."))).into())
 }
 
 async fn federation_disabled() -> impl IntoResponse {
-	err!(Request(Forbidden("Federation is disabled.")))
+	ApiError(err!(Request(Forbidden("Federation is disabled."))).into())
 }
 
 async fn inject_public_join_rule(res: axum::response::Response) -> axum::response::Response {

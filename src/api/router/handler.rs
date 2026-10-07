@@ -1,7 +1,6 @@
 use axum::{
 	Router,
 	extract::FromRequestParts,
-	response::IntoResponse,
 	routing::{MethodFilter, on},
 };
 use conduwuit::Result;
@@ -9,7 +8,7 @@ use futures::{Future, TryFutureExt};
 use http::Method;
 use slipstream::api::{EndpointRequest, IncomingRequest};
 
-use super::{Ruma, RumaResponse, State};
+use super::{Ruma, RumaResponse, State, response::ApiError};
 
 pub(in super::super) trait RumaHandler<T> {
 	fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State>;
@@ -39,7 +38,7 @@ macro_rules! ruma_handler {
 			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Send + Sync + 'static,
 			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send,
 			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
-			Err: IntoResponse + Send,
+			Err: Into<ApiError> + Send,
 			<Req as IncomingRequest>::OutgoingResponse: Send,
 			$( $tx: FromRequestParts<State> + Send + Sync + 'static, )*
 		{
@@ -60,7 +59,11 @@ macro_rules! ruma_handler {
 			}
 
 			fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State> {
-				let action = |$($tx,)* req| self($($tx,)* req).map_ok(RumaResponse);
+				let action = |$($tx,)* req| {
+					self($($tx,)* req)
+						.map_ok(RumaResponse)
+						.map_err(Into::into)
+				};
 				let method = method_to_filter(
 					&Req::METADATA
 						.method

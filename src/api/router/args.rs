@@ -2,7 +2,7 @@ use std::{mem, ops::Deref};
 
 use axum::{body::Body, extract::FromRequest};
 use bytes::Bytes;
-use conduwuit::{Error, Result, debug, debug_warn, err, trace};
+use conduwuit::{Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
@@ -11,7 +11,7 @@ use slipstream::{
 };
 
 use super::{auth, request, request::Request};
-use crate::{State, service::appservice::RegistrationInfo};
+use crate::{State, router::ApiError, service::appservice::RegistrationInfo};
 
 /// Extractor for Ruma request structs
 pub(crate) struct Args<T> {
@@ -111,7 +111,7 @@ impl<T> FromRequest<State, Body> for Args<T>
 where
 	T: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 {
-	type Rejection = Error;
+	type Rejection = ApiError;
 
 	async fn from_request(
 		request: hyper::Request<Body>,
@@ -132,9 +132,9 @@ where
 			&& !request.parts.uri.path().contains("/media/")
 		{
 			if std::str::from_utf8(&request.body).is_err() {
-				return Err(err!(Request(NotJson("Request body is not valid UTF-8"))));
+				return Err(err!(Request(NotJson("Request body is not valid UTF-8"))).into());
 			}
-			return Err(err!(Request(BadJson("Invalid JSON body"))));
+			return Err(err!(Request(BadJson("Invalid JSON body"))).into());
 		}
 
 		// while very unusual and really shouldn't be recommended, Synapse accepts POST
@@ -167,7 +167,8 @@ where
 			if millis > 3_153_600_000_000 {
 				return Err(err!(Request(InvalidParam(
 					"org.matrix.msc4140.delay value exceeds acceptable bounds"
-				))));
+				)))
+				.into());
 			}
 
 			Some(std::time::Duration::from_millis(millis))
