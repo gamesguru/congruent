@@ -92,7 +92,8 @@ pub(super) async fn create_user(&self, username: String, password: Option<String
 
 	self.services
 		.users
-		.set_displayname(&user_id, Some(displayname));
+		.set_displayname(&user_id, Some(displayname))
+		.await;
 
 	// Initial account data
 	self.services
@@ -773,13 +774,14 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 		.is_some_and(|power_levels_content| {
 			RoomPowerLevels::from(power_levels_content.clone())
 				.user_can_change_user_power_level(&user_id, &user_id)
-		}) || self
-		.services
-		.rooms
-		.state_accessor
-		.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-		.await
-		.is_ok_and(|event| event.sender() == user_id);
+		})
+		|| self
+			.services
+			.rooms
+			.state_accessor
+			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
+			.await
+			.is_ok_and(|event| event.sender() == user_id);
 
 	if !user_can_demote_self {
 		return Err!("User is not allowed to modify their own power levels in the room.",);
@@ -788,17 +790,13 @@ pub(super) async fn force_demote(&self, user_id: String, room_id: OwnedRoomOrAli
 	let mut power_levels_content = room_power_levels.unwrap_or_default();
 	power_levels_content.users.remove(&user_id);
 
-	let event_id = self
-		.services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &power_levels_content),
-			&user_id,
-			Some(&room_id),
-			&state_lock,
-		)
-		.await?;
+	let event_id = Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(String::new(), &power_levels_content),
+		&user_id,
+		Some(&room_id),
+		&state_lock,
+	))
+	.await?;
 
 	self.write_str(&format!(
 		"User {user_id} demoted themselves to the room default power level in {room_id} - \
@@ -950,22 +948,19 @@ pub(super) async fn redact_event(&self, event_id: OwnedEventId) -> Result {
 	let redaction_event_id = {
 		let state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 
-		self.services
-			.rooms
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder {
+		Box::pin(self.services.rooms.timeline.build_and_append_pdu(
+			PduBuilder {
+				redacts: Some(event.event_id().to_owned()),
+				..PduBuilder::timeline(&RoomRedactionEventContent {
 					redacts: Some(event.event_id().to_owned()),
-					..PduBuilder::timeline(&RoomRedactionEventContent {
-						redacts: Some(event.event_id().to_owned()),
-						reason: Some(reason),
-					})
-				},
-				event.sender(),
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?
+					reason: Some(reason),
+				})
+			},
+			event.sender(),
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?
 	};
 
 	self.write_str(&format!(

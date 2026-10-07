@@ -4,7 +4,10 @@ use std::{
 	sync::Arc,
 };
 
-use conduwuit::{Err, Error, Result, error, utils, utils::hash};
+use conduwuit::{
+	Err, Error, Result, err, error, utils,
+	utils::{hash, response::LimitReadExt},
+};
 use lettre::Address;
 use ruma::{
 	UserId,
@@ -19,7 +22,7 @@ use ruma::{
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
-use crate::{Dep, config, globals, registration_tokens, threepid, users};
+use crate::{Dep, client, config, globals, registration_tokens, threepid, users};
 
 pub struct Service {
 	services: Services,
@@ -30,6 +33,7 @@ struct Services {
 	globals: Dep<globals::Service>,
 	users: Dep<users::Service>,
 	config: Dep<config::Service>,
+	client: Dep<client::Service>,
 	registration_tokens: Dep<registration_tokens::Service>,
 	threepid: Dep<threepid::Service>,
 }
@@ -44,12 +48,58 @@ impl crate::Service for Service {
 				registration_tokens: args
 					.depend::<registration_tokens::Service>("registration_tokens"),
 				threepid: args.depend::<threepid::Service>("threepid"),
+				client: args.depend::<client::Service>("client"),
 			},
 			uiaa_sessions: Mutex::new(HashMap::new()),
 		}))
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+impl Service {
+	/// Verify a reCAPTCHA v3 response token against Google's `siteverify` endpoint.
+	async fn verify_recaptcha(&self, private_site_key: &str, response: &str) -> Result<()> {
+		let response = self
+			.services
+			.client
+			.default
+			.post(RECAPTCHA_SITEVERIFY_URL)
+			.form(&[("secret", private_site_key), ("response", response)])
+			.send()
+			.await?;
+
+		let status = response.status();
+		let body = response
+			.limit_read_text(RECAPTCHA_MAX_RESPONSE_SIZE)
+			.await?;
+
+		// Error responses may still carry a JSON body, so only trust the
+		// `success` flag when the HTTP status is also successful.
+		if !status.is_success() {
+			return Err(err!(BadServerResponse(
+				"ReCaptcha verification failed with status {status}"
+			)));
+		}
+
+		let response = serde_json::from_str::<RecaptchaVerifyResponse>(&body)?;
+
+		if response.success {
+			Ok(())
+		} else {
+			Err(err!(BadServerResponse("ReCaptcha response was rejected")))
+		}
+	}
+}
+
+const RECAPTCHA_SITEVERIFY_URL: &str = "https://www.google.com/recaptcha/api/siteverify";
+
+/// Generous bound on the siteverify reply, which is a small JSON object.
+const RECAPTCHA_MAX_RESPONSE_SIZE: u64 = 4096;
+
+#[derive(serde::Deserialize)]
+struct RecaptchaVerifyResponse {
+	success: bool,
 }
 
 struct UiaaSession {
@@ -435,7 +485,7 @@ impl Service {
 					});
 				};
 
-				match recaptcha_verify::verify_v3(private_site_key, response, None).await {
+				match self.verify_recaptcha(private_site_key, response).await {
 					| Ok(()) => Ok(AuthType::ReCaptcha),
 					| Err(e) => {
 						error!("ReCaptcha verification failed: {e:?}");

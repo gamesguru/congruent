@@ -843,6 +843,36 @@ pub async fn verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
 	keys
 }
 
+/// Returns only the active (non-retired) verify keys for the given origin.
+/// Retired keys in `old_verify_keys` are excluded.
+#[implement(Service)]
+pub async fn active_verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
+	let mut keys = BTreeMap::new();
+
+	if let Ok(origin_keys) = self.signing_keys_for(origin).await {
+		keys.extend(origin_keys.verify_keys);
+	}
+
+	// The cumulative accepted record is authoritative: it reflects retirements
+	// that the raw origin payload may not (e.g. malformed retired-key metadata).
+	if let Ok(historical) = self
+		.db
+		.server_signingkeys
+		.get(&historical_db_key(origin))
+		.await
+		.deserialized::<ServerSigningKeys>()
+	{
+		keys = historical.verify_keys;
+		keys.retain(|key_id, _| !historical.old_verify_keys.contains_key(key_id));
+	}
+
+	if self.services.globals.server_is_ours(origin) {
+		keys.extend(self.verify_keys.clone());
+	}
+
+	keys
+}
+
 #[implement(Service)]
 pub async fn signing_keys_for(&self, origin: &ServerName) -> Result<ServerSigningKeys> {
 	self.raw_signing_keys_for(origin)

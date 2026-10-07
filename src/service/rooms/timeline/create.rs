@@ -170,19 +170,18 @@ pub async fn create_event(
 				"DAG fork detected ({} extremities). Resolving state for new local event.",
 				prev_events.len()
 			);
-			if let Ok(Some(compressed_state)) = self
+			if let Ok(Some(root_handle)) = self
 				.services
 				.event_handler
 				.resolve_extremities(
 					prev_events.iter().map(AsRef::as_ref),
 					room_id,
 					&room_version_id,
-					None,
 				)
 				.await
 			{
-				let content_val: serde_json::Value =
-					serde_json::from_str(content.get()).unwrap_or_default();
+				let content_val = rezzy::JsonValue::parse(content.get())
+					.expect("PDU content must be valid JSON");
 				let auth_types = rezzy::auth::auth_types_for_event(
 					&event_type.to_string(),
 					sender.as_str(),
@@ -198,10 +197,15 @@ pub async fn create_event(
 				for (ty, sk) in &auth_types {
 					let state_ty: StateEventType = ty.as_str().into();
 					let state_key = conduwuit_core::matrix::StateKey::from(sk.as_str());
-					if let Some(pdu) = self
+					if let Ok(pdu) = self
 						.services
-						.event_handler
-						.find_pdu_in_compressed_state(&state_ty, &state_key, &compressed_state)
+						.state_accessor
+						.state_get_in_room_hamt(
+							room_id,
+							&root_handle,
+							&state_ty,
+							state_key.as_str(),
+						)
 						.await
 					{
 						new_auth_events.insert((state_ty, state_key), pdu);

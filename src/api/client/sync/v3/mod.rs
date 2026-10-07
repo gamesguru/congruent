@@ -40,7 +40,7 @@ use ruma::{
 		},
 	},
 	events::{
-		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent,
+		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent, AnyStrippedStateEvent,
 		presence::{PresenceEvent, PresenceEventContent},
 	},
 	serde::Raw,
@@ -60,6 +60,131 @@ use crate::{
 /// joined and left rooms. If the number of events sent since the last sync
 /// exceeds this number, the `timeline` will be `limited`.
 const DEFAULT_TIMELINE_LIMIT: usize = 10;
+
+fn client_stripped_state(
+	events: Vec<Raw<AnyStrippedStateEvent>>,
+) -> Vec<Raw<AnyStrippedStateEvent>> {
+	events
+		.into_iter()
+		.map(|event| {
+			let mut object: serde_json::Map<String, serde_json::Value> =
+				serde_json::from_str(event.json().get())
+					.expect("stored stripped state is valid JSON");
+			object.remove("origin_server_ts");
+			Raw::from_json_string(
+				serde_json::to_string(&object).expect("stripped state is serializable"),
+			)
+			.expect("stripped state is valid JSON")
+		})
+		.collect()
+}
+
+async fn msc4429_profile_updates(
+	services: &Services,
+	user_id: &UserId,
+	filter: &FilterDefinition,
+	since: Option<u64>,
+	current_count: u64,
+) -> serde_json::Value {
+	let filter = serde_json::to_value(filter).unwrap_or_default();
+	let ids = ["profile_fields", "org.matrix.msc4429.profile_fields"]
+		.into_iter()
+		.find_map(|key| {
+			let value = filter.get(key)?;
+			value.get("ids").or_else(|| value.as_array().map(|_| value))
+		})
+		.and_then(serde_json::Value::as_array)
+		.map(|ids| {
+			ids.iter()
+				.filter_map(|id| id.as_str())
+				.collect::<HashSet<_>>()
+		});
+	let Some(ids) = ids else { return serde_json::Value::Null };
+	if ids.is_empty() {
+		return serde_json::Value::Null;
+	}
+
+	let mut users = serde_json::Map::new();
+	if since.is_none() {
+		let mut latest = HashMap::new();
+		services
+			.users
+			.profile_updates(None, current_count)
+			.for_each(|(_, update)| {
+				if ids.contains(update.field.as_str()) && update.user_id != user_id {
+					latest.insert((update.user_id.clone(), update.field.clone()), update.value);
+				}
+				std::future::ready(())
+			})
+			.await;
+		let targets = latest
+			.keys()
+			.map(|(target, _)| target)
+			.filter(|target| *target != user_id)
+			.collect::<HashSet<_>>();
+		for target in targets {
+			if !services
+				.rooms
+				.state_cache
+				.user_sees_user(user_id, target)
+				.await
+			{
+				continue;
+			}
+			let mut fields = services
+				.users
+				.all_profile_keys(target)
+				.filter(|(field, _)| std::future::ready(ids.contains(field.as_str())))
+				.collect::<HashMap<_, _>>()
+				.await
+				.into_iter()
+				.collect::<serde_json::Map<_, _>>();
+			for ((update_user, field), value) in &latest {
+				if *update_user == *target {
+					if let Some(value) = value.clone() {
+						fields.insert(field.clone(), value);
+					} else {
+						fields.remove(field);
+					}
+				}
+			}
+			if !fields.is_empty() {
+				users.insert(target.to_string(), serde_json::json!({"profile_updates": fields}));
+			}
+		}
+	} else {
+		let mut latest = HashMap::new();
+		services
+			.users
+			.profile_updates(since, current_count)
+			.for_each(|(_, update)| {
+				if ids.contains(update.field.as_str()) && update.user_id != user_id {
+					latest.insert((update.user_id.clone(), update.field.clone()), update.value);
+				}
+				std::future::ready(())
+			})
+			.await;
+		for ((target, field), value) in latest {
+			if !services
+				.rooms
+				.state_cache
+				.user_sees_user(user_id, &target)
+				.await
+			{
+				continue;
+			}
+			if let Some(fields) = users
+				.entry(target.to_string())
+				.or_insert_with(|| serde_json::json!({"profile_updates": {}}))
+				.get_mut("profile_updates")
+				.and_then(serde_json::Value::as_object_mut)
+			{
+				fields.insert(field, value.unwrap_or(serde_json::Value::Null));
+			}
+		}
+	}
+	serde_json::Value::Object(users)
+}
 
 /// A collection of updates to users' device lists, used for E2EE.
 #[derive(Clone)]
@@ -287,6 +412,7 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
 	if obj.contains_key("presence")
 		|| obj.contains_key("account_data")
 		|| obj.contains_key("to_device")
+		|| obj.contains_key("org.matrix.msc4429.users")
 	{
 		return false;
 	}
@@ -596,7 +722,9 @@ pub(crate) async fn build_sync_events(
 					"including room in invite section"
 				);
 				let invited_room = InvitedRoom {
-					invite_state: InviteState { events: invite_state },
+					invite_state: InviteState {
+						events: client_stripped_state(invite_state),
+					},
 				};
 
 				invited_rooms.insert(room_id, invited_room);
@@ -653,7 +781,9 @@ pub(crate) async fn build_sync_events(
 
 			if include_knock {
 				let knocked_room = KnockedRoom {
-					knock_state: KnockState { events: knock_state },
+					knock_state: KnockState {
+						events: client_stripped_state(knock_state),
+					},
 				};
 
 				knocked_rooms.insert(room_id, knocked_room);
@@ -790,8 +920,8 @@ pub(crate) async fn build_sync_events(
 	let ruma_response = sync_events::v3::Response {
 		next_batch: current_count.to_string(),
 		rooms: Rooms {
-			leave: left_rooms,
-			join: joined_rooms,
+			leave: left_rooms.clone(),
+			join: joined_rooms.clone(),
 			invite: invited_rooms,
 			knock: knocked_rooms.clone(),
 		},
@@ -898,6 +1028,83 @@ pub(crate) async fn build_sync_events(
 		}
 	}
 
+	let profile_updates = msc4429_profile_updates(
+		services,
+		syncing_user,
+		&filter,
+		last_sync_end_count,
+		current_count,
+	)
+	.await;
+	let mut profile_updates = profile_updates;
+	if let Some(users) = profile_updates.as_object_mut() {
+		for left_room in left_rooms.values() {
+			for event in &left_room.timeline.events {
+				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get())
+				else {
+					continue;
+				};
+				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str)
+				else {
+					continue;
+				};
+				if event.get("type").and_then(serde_json::Value::as_str) == Some("m.room.member")
+					&& event
+						.get("content")
+						.and_then(|content| content.get("membership"))
+						.and_then(serde_json::Value::as_str)
+						.is_some_and(|membership| matches!(membership, "leave" | "ban"))
+				{
+					users.insert(
+						state_key.to_owned(),
+						serde_json::json!({"profile_updates": null}),
+					);
+				}
+			}
+		}
+		for joined_room in joined_rooms.values() {
+			for event in &joined_room.timeline.events {
+				let Ok(event) = serde_json::from_str::<serde_json::Value>(event.json().get())
+				else {
+					continue;
+				};
+				let Some(state_key) = event.get("state_key").and_then(serde_json::Value::as_str)
+				else {
+					continue;
+				};
+				let is_leave = event.get("type").and_then(serde_json::Value::as_str)
+					== Some("m.room.member")
+					&& event
+						.get("content")
+						.and_then(|content| content.get("membership"))
+						.and_then(serde_json::Value::as_str)
+						.is_some_and(|membership| matches!(membership, "leave" | "ban"));
+				if is_leave {
+					let Ok(target) = UserId::parse(state_key) else { continue };
+					if !services
+						.rooms
+						.state_cache
+						.user_sees_user(syncing_user, target)
+						.await
+					{
+						users.insert(
+							state_key.to_owned(),
+							serde_json::json!({"profile_updates": null}),
+						);
+					}
+				}
+			}
+		}
+	}
+	if profile_updates
+		.as_object()
+		.is_some_and(|users| !users.is_empty())
+	{
+		val.as_object_mut()
+			.unwrap()
+			.insert("org.matrix.msc4429.users".to_owned(), profile_updates);
+	}
+
 	Ok(val)
 }
 
@@ -927,19 +1134,23 @@ async fn collect_member_presence(
 	// Phase 1: Collect users from rooms the syncing user newly joined
 	if let Some(last_sync_end_count) = last_sync_end_count {
 		for room_id in joined_rooms.keys() {
-			let shortstatehash = services
+			let last_sync_end_root_handle = services
 				.rooms
 				.timeline
-				.next_shortstatehash(room_id, PduCount::Normal(last_sync_end_count))
+				.prev_root_handle(
+					room_id,
+					PduCount::Normal(last_sync_end_count.saturating_add(1)),
+				)
 				.await
 				.ok();
 
-			let was_joined = match shortstatehash {
-				| Some(ssh) => services
+			let was_joined = match last_sync_end_root_handle {
+				| Some(root_handle) => services
 					.rooms
 					.state_accessor
-					.state_get_content::<RoomMemberEventContent>(
-						ssh,
+					.state_get_content_hamt::<RoomMemberEventContent>(
+						room_id,
+						&root_handle,
 						&StateEventType::RoomMember,
 						syncing_user.as_str(),
 					)

@@ -237,3 +237,127 @@ async fn get_verify_key_from_origin(
 
 	Err!(Request(NotFound("Failed to fetch signing-key from origin")))
 }
+
+/// Retrieves currently active (non-retired) verify keys for request authentication.
+/// Per MSC4499 / Matrix federation specification, requests must only be authenticated
+/// with active keys in `verify_keys`, not retired keys in `old_verify_keys`.
+#[implement(super::Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+pub async fn get_active_verify_key(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+) -> Result<VerifyKey> {
+	let notary_first = self.services.server.config.query_trusted_key_servers_first;
+	let notary_only = self.services.server.config.only_query_trusted_key_servers;
+
+	if let Ok(cached) = self.merged_signing_keys_for(origin).await {
+		// Only trust the cache while the response is still valid; otherwise
+		// re-query so a key the origin has since retired is not accepted.
+		if cached.valid_until_ts >= self.minimum_valid_ts() {
+			if let Some(result) = self.active_verify_keys_for(origin).await.remove(key_id) {
+				trace!("Found active key in cache");
+				return Ok(result);
+			}
+		}
+
+		// A cached binding says this key is retired: fail fast rather than
+		// triggering outbound fetches for every request signed with it.
+		if cached.old_verify_keys.contains_key(key_id)
+			&& !self
+				.active_verify_keys_for(origin)
+				.await
+				.contains_key(key_id)
+		{
+			return Err!(Request(Forbidden("Signing key {key_id} of {origin} is retired")));
+		}
+	} else if let Some(result) = self.active_verify_keys_for(origin).await.remove(key_id) {
+		return Ok(result);
+	}
+
+	if notary_first {
+		if let Ok(result) = self
+			.get_active_verify_key_from_notaries(origin, key_id)
+			.await
+		{
+			return Ok(result);
+		}
+	}
+
+	if !notary_only {
+		if let Ok(result) = self.get_active_verify_key_from_origin(origin, key_id).await {
+			return Ok(result);
+		}
+	}
+
+	if !notary_first {
+		if let Ok(result) = self
+			.get_active_verify_key_from_notaries(origin, key_id)
+			.await
+		{
+			return Ok(result);
+		}
+	}
+
+	Err!(BadServerResponse(debug_error!(
+		%key_id,
+		%origin,
+		"Failed to fetch active federation signing-key"
+	)))
+}
+
+#[implement(super::Service)]
+async fn get_active_verify_key_from_notaries(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+) -> Result<VerifyKey> {
+	for notary in self.services.globals.trusted_servers() {
+		if let Ok(server_keys) = self.notary_request(notary, origin).await {
+			for server_key in server_keys {
+				let mut server_key = match self
+					.add_signing_keys(&server_key, super::FetchSource::Notary)
+					.await
+				{
+					| Ok(patched) => patched,
+					| Err(e) => {
+						debug_error!("Failed to add signing keys: {e}");
+						continue;
+					},
+				};
+
+				if let Some(result) = server_key.verify_keys.remove(key_id) {
+					return Ok(result);
+				}
+			}
+		}
+	}
+
+	Err!(Request(NotFound("Failed to fetch active signing-key from notaries")))
+}
+
+#[implement(super::Service)]
+async fn get_active_verify_key_from_origin(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+) -> Result<VerifyKey> {
+	if let Ok(server_key) = self.server_request(origin).await {
+		let mut server_key = match self
+			.add_signing_keys(&server_key, super::FetchSource::Direct)
+			.await
+		{
+			| Ok(patched) => patched,
+			| Err(e) => {
+				debug_error!("Failed to add signing keys: {e}");
+				return Err!(BadServerResponse("Failed to add signing keys: {e}"));
+			},
+		};
+
+		if let Some(result) = server_key.verify_keys.remove(key_id) {
+			return Ok(result);
+		}
+	}
+
+	Err!(Request(NotFound("Failed to fetch active signing-key from origin")))
+}

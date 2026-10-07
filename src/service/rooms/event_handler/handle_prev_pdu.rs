@@ -27,7 +27,7 @@ pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	create_event: &'a Pdu,
 	first_ts_in_room: MilliSecondsSinceUnixEpoch,
 	prev_id: &'a EventId,
-) -> Result
+) -> Result<bool>
 where
 	Pdu: Event + Send + Sync,
 {
@@ -55,7 +55,7 @@ where
 			duration = ?time.elapsed(),
 			"Backing off from prev_event"
 			);
-			return Ok(());
+			return Ok(false);
 		}
 	}
 
@@ -74,7 +74,7 @@ where
 			// promote it ourselves; `upgrade_outlier_to_timeline_pdu` already
 			// no-ops if it turns out to be a timeline event after all.
 			if self.services.timeline.non_outlier_pdu_exists(prev_id).await {
-				return Ok(());
+				return Ok(false);
 			}
 			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
 				// Read-only check here: whether we go on to actually retry is
@@ -95,15 +95,15 @@ where
 						crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 					});
 				if !retry_worthy {
-					return Ok(());
+					return Ok(false);
 				}
 			}
 			let Ok(json) = self.services.timeline.get_outlier_pdu_json(prev_id).await else {
-				return Ok(());
+				return Ok(false);
 			};
 			let Ok(pdu) = PduEvent::from_id_val(prev_id, json.clone(), Some(room_id)) else {
 				warn!("Stored outlier {prev_id} failed to parse back into a PduEvent");
-				return Ok(());
+				return Ok(false);
 			};
 			(pdu, json)
 		},
@@ -111,7 +111,7 @@ where
 
 	// Skip old events
 	if pdu.origin_server_ts() < first_ts_in_room {
-		return Ok(());
+		return Ok(false);
 	}
 
 	// If this prev_event already failed state resolution with all of its
@@ -130,7 +130,7 @@ where
 		.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent)
 	{
 		debug!(?prev_id, "Skipping immediate prev-event retry after state-resolution failure");
-		return Ok(());
+		return Ok(false);
 	}
 
 	let start_time = Instant::now();
@@ -149,7 +149,7 @@ where
 	// Keep the large upgrade future out of handle_prev_pdu's own future.
 	// Called from within handle_incoming_pdu's `with_cork_and_flush`, so the
 	// timeline insert below must not flush on its own.
-	Box::pin(self.upgrade_outlier_to_timeline_pdu(
+	let (_, recovered) = Box::pin(self.upgrade_outlier_to_timeline_pdu(
 		pdu,
 		json,
 		create_event,
@@ -157,9 +157,6 @@ where
 		room_id,
 		false,
 		false,
-		false,
-		None,
-		true,
 	))
 	.await?;
 
@@ -168,5 +165,5 @@ where
 		"Handled prev_event",
 	);
 
-	Ok(())
+	Ok(recovered)
 }

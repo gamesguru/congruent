@@ -522,7 +522,9 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// predecessor repair on the failure path. Leaving it uncached lets
 					// that retry happen: a harmless no-op for the already-satisfied
 					// case, and a genuine second attempt for the failed one.
-					| Ok((sorted, fetched, deeper_anchor, invalid)) if !sorted.is_empty() => {
+					| Ok((sorted, fetched, deeper_anchor, invalid))
+						if !sorted.is_empty() || invalid =>
+					{
 						if let Some(anchor) = &deeper_anchor {
 							state_ids_anchor = anchor.clone();
 						}
@@ -760,7 +762,7 @@ pub async fn process_timeline_upgrade(
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
-		prev_fetch_deeper_anchor,
+		_prev_fetch_deeper_anchor,
 		prev_fetch_had_invalid_data,
 	) = if let Some(prefetched) = prefetched_prev {
 		prefetched
@@ -774,6 +776,40 @@ pub async fn process_timeline_upgrade(
 		))
 		.await?
 	};
+
+	// A malformed item in the response only matters when it left us without any
+	// usable predecessor; otherwise it may be unrelated to this event.
+	let fetched_prev_ids = &fetched_prev_events;
+	let all_prevs_unknown = futures::StreamExt::all(
+		futures::stream::iter(incoming_pdu.prev_events()),
+		|prev_id| async move {
+			!fetched_prev_ids.contains_key(prev_id)
+				&& !self.services.timeline.pdu_exists(prev_id).await
+		},
+	)
+	.await;
+
+	if prev_fetch_had_invalid_data && all_prevs_unknown {
+		warn!(
+			%event_id,
+			"prev_events fetch contained structurally invalid data; storing as outlier and rejecting"
+		);
+		self.services
+			.outlier
+			.add_pdu_outlier(&event_id, &val, Some(room_id))
+			.await;
+		self.services
+			.pdu_metadata
+			.mark_event_rejected(
+				&event_id,
+				&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
+					.with_detail("prev_event contained structurally invalid data"),
+			)
+			.await;
+		return Err(err!(Request(InvalidParam(
+			"prev_event contained structurally invalid data"
+		))));
+	}
 
 	debug!(events = ?sorted_prev_events, "Handling previous events");
 
@@ -823,41 +859,50 @@ pub async fn process_timeline_upgrade(
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
-			sorted_prev_events
+			let predecessors_were_recovered = sorted_prev_events
 				.iter()
 				.try_stream()
 				.map_ok(AsRef::as_ref)
-				.try_for_each(|prev_id| {
-					self.handle_prev_pdu(
-						origin,
-						event_id.as_ref(),
-						room_id,
-						eventid_info.remove(prev_id),
-						create_event,
-						first_ts_in_room,
-						prev_id,
-					)
-					.inspect_err(move |e| {
-						warn!("Prev {prev_id} failed: {e}");
-						match self
-							.services
-							.globals
-							.bad_event_ratelimiter
-							.write()
-							.entry(prev_id.into())
-						{
-							| hash_map::Entry::Vacant(e) => {
-								e.insert((Instant::now(), 1));
-							},
-							| hash_map::Entry::Occupied(mut e) => {
-								let tries = e.get().1.saturating_add(1);
-								*e.get_mut() = (Instant::now(), tries);
-							},
-						}
-					})
-					.map(|_| self.services.server.check_running())
+				.try_fold(false, |recovered_any, prev_id| {
+					let event_id = event_id.clone();
+					let event_info = eventid_info.remove(prev_id);
+					async move {
+						let recovered = self
+							.handle_prev_pdu(
+								origin,
+								event_id.as_ref(),
+								room_id,
+								event_info,
+								create_event,
+								first_ts_in_room,
+								prev_id,
+							)
+							.inspect_err(move |e| {
+								warn!("Prev {prev_id} failed: {e}");
+								match self
+									.services
+									.globals
+									.bad_event_ratelimiter
+									.write()
+									.entry(prev_id.into())
+								{
+									| hash_map::Entry::Vacant(e) => {
+										e.insert((Instant::now(), 1));
+									},
+									| hash_map::Entry::Occupied(mut e) => {
+										let tries = e.get().1.saturating_add(1);
+										*e.get_mut() = (Instant::now(), tries);
+									},
+								}
+							})
+							.await
+							// A failed predecessor is logged and rate-limited above; it must
+							// not prevent the incoming event from being handled.
+							.unwrap_or(false);
+						self.services.server.check_running()?;
+						Ok::<bool, conduwuit::Error>(recovered_any || recovered)
+					}
 				})
-				.boxed()
 				.await?;
 
 			// Done with prev events, now handling the incoming event
@@ -880,13 +925,11 @@ pub async fn process_timeline_upgrade(
 				create_event,
 				origin,
 				room_id,
-				false,
 				true,
-				prev_fetch_had_invalid_data,
-				prev_fetch_deeper_anchor,
-				true,
+				predecessors_were_recovered,
 			))
 			.await
+			.map(|(pdu_id, _)| pdu_id)
 		})
 		.await
 }

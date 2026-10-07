@@ -6,7 +6,6 @@ use std::{
 	sync::{Arc, OnceLock},
 };
 
-use conduwuit_build_metadata as build;
 use conduwuit_core::{config::Config, debug, trace};
 use sentry::{
 	Breadcrumb, ClientOptions, Level,
@@ -102,7 +101,7 @@ fn release_name() -> Option<Cow<'static, str>> {
 			let pkg_name = env!("CARGO_PKG_NAME");
 			let pkg_version = env!("CARGO_PKG_VERSION");
 
-			if let Some(commit_short) = build::GIT_COMMIT_HASH_SHORT {
+			if let Some(commit_short) = conduwuit_core::info::git::get().commit_hash_short {
 				Some(format!("{pkg_name}@{pkg_version}+{commit_short}"))
 			} else {
 				Some(format!("{pkg_name}@{pkg_version}"))

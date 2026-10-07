@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc, time::Duration};
+use std::{borrow::Borrow, collections::HashMap, iter::once, time::Duration};
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
@@ -35,11 +35,7 @@ use ruma::{
 use service::{
 	Services,
 	appservice::RegistrationInfo,
-	rooms::{
-		state::RoomMutexGuard,
-		state_compressor::{CompressedState, HashSetCompressStateEvent},
-		timeline::{AppendOptions, pdu_fits},
-	},
+	rooms::{state::RoomMutexGuard, timeline::pdu_fits},
 };
 use tokio::join;
 
@@ -263,7 +259,7 @@ pub async fn join_room_by_id_helper(
 		&& services
 			.rooms
 			.state
-			.get_room_shortstatehash(room_id)
+			.get_room_state_hamt(room_id)
 			.await
 			.is_err()
 	{
@@ -657,6 +653,19 @@ async fn join_room_by_id_helper_remote_process(
 
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
+
+	let mut lattice = rezzy::state::LtHash::default();
+	for (&shortstatekey, event_id) in &state {
+		if let Ok((kind, state_key)) = services
+			.rooms
+			.short
+			.get_statekey_from_short(shortstatekey)
+			.await
+		{
+			lattice.insert(&kind.to_string(), state_key.as_str(), event_id.as_str());
+		}
+	}
+
 	// Capture this before promoting send_join state/auth outliers. Promotion makes
 	// a fresh room look non-empty and otherwise misclassifies first joins as
 	// rejoins.
@@ -754,37 +763,59 @@ async fn join_room_by_id_helper_remote_process(
 		return Err!(Request(Forbidden("Auth check failed")));
 	}
 
-	info!("Compressing state from send_join ({} state events)", state.len());
-	let compressed: CompressedState = services
-		.rooms
-		.state_compressor
-		.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, eid.borrow())))
-		.collect()
-		.boxed()
-		.await;
+	let mut entries = Vec::with_capacity(state.len());
+	for (&shortstatekey, event_id) in &state {
+		let shorteventid = services
+			.rooms
+			.short
+			.get_or_create_shorteventid(event_id)
+			.await;
+		entries.push((shortstatekey, shorteventid));
+	}
 	drop(state);
 
-	info!("Saving compressed state ({} compressed events)", compressed.len());
-	let HashSetCompressStateEvent {
-		shortstatehash: statehash_before_join,
-		added,
-		removed,
-	} = services
-		.rooms
-		.state_compressor
-		.save_state_as_root(room_id, Arc::new(compressed))
-		.boxed()
-		.await?;
+	let structural_key =
+		service::rooms::state_hamt::room_structural_key(&services.globals.server_secret, room_id);
+	let (root_handle, root_node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
+			.map_err(|e| err!(error!("Failed to build HAMT root for join: {e:?}")))?;
 
-	info!("Forcing state for new room (shortstatehash={statehash_before_join})");
-	Box::pin(services.rooms.state.force_state(
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(root_node);
+
+	// Sample the joining user's membership *before* the `/send_join` state root is
+	// installed. That state includes the joiner's own membership, so reading the
+	// cache after installation always reports them as already joined, which would
+	// suppress the device-list notification for a genuine first join.
+	let was_joined_before_state_install = services
+		.rooms
+		.state_cache
+		.is_joined(sender_user, room_id)
+		.await;
+
+	debug!("Registering joined members for new room");
+	// Register the room's joined members/servers (including remote users such as
+	// the room creator) in the participation cache. The legacy `force_state`
+	// path did this from the `added`/`removed` state delta; `set_room_state_hamt`
+	// only advances the HAMT root without touching derived caches, so without
+	// this the remote server would never appear in `roomserverids` and outbound
+	// events would not be fanned out to it.
+	Box::pin(services.rooms.state.update_caches_for_state_delta_between(
 		room_id,
-		statehash_before_join,
-		added,
-		removed,
-		&state_lock,
+		None,
+		&root_handle,
 	))
 	.await?;
+
+	// Install the root only after the derived caches were updated successfully,
+	// so a cache failure never exposes new state with stale caches.
+	services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power
@@ -798,7 +829,7 @@ async fn join_room_by_id_helper_remote_process(
 		match services
 			.rooms
 			.timeline
-			.promote_outliers_sorted(room_id, &outlier_event_ids, &room_version_id)
+			.promote_outliers_sorted(room_id, &outlier_event_ids)
 			.await
 		{
 			| Ok(count) => info!("Promoted {count} outliers to timeline in {room_id}"),
@@ -856,53 +887,40 @@ async fn join_room_by_id_helper_remote_process(
 	// First joins do not eagerly fetch missing extremities here. The client-driven
 	// relationship/backfill request must remain the source of that history; eager
 	// federation requests race the expected request sequence and duplicate work.
+	let previous_root_handle = services.rooms.state.get_room_state_hamt(room_id).await.ok();
 
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without its state. Both append_to_state and append_pdu
 	// can indeed fail, in which case the local membership cache may be left in an
 	// inconsistent state (where the user appears joined in the cache but the join
 	// PDU is not persisted).
-	// TODO: unify the state write, timeline write, and membership-cache update
-	// behind a single durable operation so partial failure cannot strand cache
-	// state ahead of the persisted join event.
-	let statehash_after_join = services
+	let (state_root_handle, state_node) = services
 		.rooms
 		.state
-		.append_to_state(&parsed_join_pdu, room_id)
-		.boxed()
+		.append_to_state(&parsed_join_pdu, room_id, &state_lock, None)
 		.await?;
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(state_node);
 
 	info!("Appending new room join event");
-	services
-		.rooms
-		.timeline
-		.append_pdu(
-			&parsed_join_pdu,
-			join_event,
-			once(parsed_join_pdu.event_id.clone()),
-			AppendOptions { resolved_state: None, soft_fail: false },
-			false,
-			&state_lock,
+	Box::pin(services.rooms.timeline.append_pdu(
+		&parsed_join_pdu,
+		join_event,
+		once(parsed_join_pdu.event_id.borrow()),
+		false,
+		service::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
 			room_id,
-		)
-		.boxed()
-		.await?;
-
-	let post_append_count = services
-		.rooms
-		.state_cache
-		.room_joined_count(room_id)
-		.await
-		.unwrap_or(0);
-	info!("join: after append_pdu for {room_id}: joined_count={post_append_count}");
-
-	info!("Setting final room state for new room");
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	services
-		.rooms
-		.state
-		.set_room_state(room_id, statehash_after_join, &state_lock);
+			state_root_handle: Some(state_root_handle),
+			prev_state_root_handle: previous_root_handle,
+			advance_current_state: false,
+			was_joined_before_state_install: Some((sender_user, was_joined_before_state_install)),
+		},
+	))
+	.await?;
 
 	// Phase 2: For RE-JOINS only, forward-fill extremities AFTER the join event
 	// is committed to the timeline and room state is set. This ensures that

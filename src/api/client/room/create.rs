@@ -163,8 +163,6 @@ pub(crate) async fn create_room_route(
 
 	let mut create_content = match &body.creation_content {
 		| Some(content) => {
-			use RoomVersionId::*;
-
 			let mut content = content
 				.deserialize_as::<CanonicalJsonObject>()
 				.map_err(|e| {
@@ -173,19 +171,13 @@ pub(crate) async fn create_room_route(
 					))))
 				})?;
 
-			match room_version {
-				| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 => {
-					content.insert(
-						"creator".into(),
-						json!(&sender_user).try_into().map_err(|e| {
-							err!(Request(BadJson(debug_error!("Invalid creation content: {e}"))))
-						})?,
-					);
-				},
-				| V11 | V12 => {
-					// V11+ removed the "creator" key
-				},
-				| _ => (),
+			if !room_features.use_room_create_sender {
+				content.insert(
+					"creator".into(),
+					json!(&sender_user).try_into().map_err(|e| {
+						err!(Request(BadJson(debug_error!("Invalid creation content: {e}"))))
+					})?,
+				);
 			}
 			content.insert(
 				"room_version".into(),
@@ -196,13 +188,12 @@ pub(crate) async fn create_room_route(
 			content
 		},
 		| None => {
-			use RoomVersionId::*;
-
-			let content = match room_version {
-				| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 =>
-					RoomCreateEventContent::new_v1(sender_user.to_owned()),
-				| V11 => RoomCreateEventContent::new_v11(),
-				| _ => RoomCreateEventContent::new_v12(),
+			let content = if !room_features.use_room_create_sender {
+				RoomCreateEventContent::new_v1(sender_user.to_owned())
+			} else if room_version == RoomVersionId::V11 {
+				RoomCreateEventContent::new_v11()
+			} else {
+				RoomCreateEventContent::new_v12()
 			};
 			let mut content =
 				serde_json::from_str::<CanonicalJsonObject>(to_raw_value(&content)?.get())?;
@@ -642,6 +633,12 @@ fn default_power_levels_content(
 			serde_json::to_value(50).expect("50 is valid Value");
 	}
 
+	if !creators.is_empty() {
+		// MSC4289 requires privileged-creator rooms to default tombstones to PL150
+		power_levels_content["events"]["m.room.tombstone"] =
+			serde_json::to_value(150).expect("150 is valid Value");
+	}
+
 	if let Some(power_level_content_override) = power_level_content_override {
 		let json: JsonObject = serde_json::from_str(power_level_content_override.json().get())
 			.map_err(|e| err!(Request(BadJson("Invalid power_level_content_override: {e:?}"))))?;
@@ -666,10 +663,6 @@ fn default_power_levels_content(
 	}
 
 	if !creators.is_empty() {
-		// Raise the default power level of tombstone to 150
-		power_levels_content["events"]["m.room.tombstone"] =
-			serde_json::to_value(150).expect("150 is valid Value");
-
 		for creator in creators {
 			// Omit creators from the power level list altogether
 			power_levels_content["users"]

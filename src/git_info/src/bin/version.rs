@@ -1,4 +1,4 @@
-use conduwuit_build_metadata as metadata;
+use conduwuit_git_info as metadata;
 
 fn main() {
 	let semver = env!("CARGO_PKG_VERSION");

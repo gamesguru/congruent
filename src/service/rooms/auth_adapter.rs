@@ -41,12 +41,14 @@ pub fn to_state_res_version(room_version_id: &RoomVersionId) -> StateResVersion 
 /// auth checking and state resolution APIs.
 #[must_use]
 pub fn pdu_to_lean<E: Event>(pdu: &E) -> LeanEvent<String> {
+	let content =
+		rezzy::JsonValue::parse(pdu.content().get()).expect("PDU content must be valid JSON");
 	LeanEvent {
 		event_id: pdu.event_id().to_string(),
 		event_type: pdu.kind().to_string(),
 		sender: pdu.sender().to_string(),
 		state_key: pdu.state_key().map(str::to_owned),
-		content: pdu.get_content_as_value(),
+		content,
 		prev_events: pdu.prev_events().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events().map(|id| format!("{id}")).collect(),
 		origin_server_ts: pdu.origin_server_ts().get().into(),
@@ -232,7 +234,7 @@ mod tests {
 			event_type: event_type.to_owned(),
 			sender: sender.to_owned(),
 			state_key: state_key.map(str::to_owned),
-			content: serde_json::json!({}),
+			content: rezzy::JsonValue::Object(Default::default()),
 			prev_events: vec![],
 			auth_events: vec![],
 			origin_server_ts: 1_000_000,
@@ -282,20 +284,6 @@ mod tests {
 
 		// A non-create event with no auth state should fail auth, not panic
 		let lean = make_lean("m.room.message", None, "@alice:example.org");
-		let _pdu_json = serde_json::to_string(&serde_json::json!({
-			"event_id": lean.event_id,
-			"type": lean.event_type,
-			"sender": lean.sender,
-			"room_id": "!test:example.org",
-			"origin_server_ts": lean.origin_server_ts,
-			"depth": lean.depth,
-			"prev_events": lean.prev_events,
-			"auth_events": lean.auth_events,
-			"content": lean.content,
-			"hashes": {"sha256": "test"},
-			"signatures": {},
-		}))
-		.unwrap();
 
 		// We can't easily construct a PduEvent here without the full
 		// deserialization pipeline, but we CAN verify the StateProvider +

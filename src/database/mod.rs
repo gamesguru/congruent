@@ -89,3 +89,4 @@ impl Index<&str> for Database {
 			.expect("column in database does not exist")
 	}
 }
+pub mod batch;

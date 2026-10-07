@@ -2,7 +2,7 @@ use std::{borrow::Borrow, iter::once};
 
 use axum::extract::State;
 use conduwuit::{Result, at, err, info};
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use ruma::{OwnedEventId, api::federation::event::get_room_state_ids};
 
 use super::AccessCheck;
@@ -32,20 +32,22 @@ pub(crate) async fn get_room_state_ids_route(
 		"Serving state_ids request"
 	);
 
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(&body.event_id)
+		.pdu_roothandle_before_event(&body.event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Pdu state not found."))))?;
 
 	let pdu_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
+		.state_full_ids_hamt(&root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
 		.map(at!(1))
-		.collect()
-		.await;
+		.collect();
 
 	let auth_chain_ids = services
 		.rooms

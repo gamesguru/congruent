@@ -25,10 +25,7 @@ use ruma::{
 	RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 };
-use service::rooms::{
-	short::{ShortEventId, ShortRoomId},
-	state_compressor::HashSetCompressStateEvent,
-};
+use service::rooms::short::{ShortEventId, ShortRoomId};
 use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
@@ -913,36 +910,30 @@ pub(crate) async fn force_set_state(
 
 	let new_room_state = if absolute {
 		info!("Resolving new room state (ABSOLUTE OVERRIDE)");
-		let compressed: conduwuit_service::rooms::state_compressor::CompressedState = self
-			.services
+		self.services
 			.rooms
-			.state_compressor
-			.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, (*eid).as_ref())))
-			.collect()
-			.await;
-		std::sync::Arc::new(compressed)
+			.event_handler
+			.state_map_to_root_handle(&room_id, &state)
+			.await?
 	} else {
-		// Only attempt state resolution if the room has prior state.
-		// If there's no shortstatehash, this is a genuine cold bootstrap —
-		// use remote state directly. Real resolve_state errors (auth chain
+		// Only attempt state resolution if the room has prior state. If there
+		// is no current HAMT root, this is a genuine cold bootstrap — use the
+		// remote state directly. Real resolve_state errors (auth chain
 		// failures, resolution bugs) must NOT silently fall through here.
 		if self
 			.services
 			.rooms
 			.state
-			.get_room_shortstatehash(&room_id)
+			.get_room_state_hamt(&room_id)
 			.await
 			.is_err()
 		{
 			info!("No prior state for room — using remote state directly (cold bootstrap)");
-			let compressed: conduwuit_service::rooms::state_compressor::CompressedState = self
-				.services
+			self.services
 				.rooms
-				.state_compressor
-				.compress_state_events(state.iter().map(|(ssk, eid)| (ssk, (*eid).as_ref())))
-				.collect()
-				.await;
-			std::sync::Arc::new(compressed)
+				.event_handler
+				.state_map_to_root_handle(&room_id, &state)
+				.await?
 		} else {
 			info!("Resolving new room state (state-res)");
 			Box::pin(self.services.rooms.event_handler.resolve_state(
@@ -954,59 +945,33 @@ pub(crate) async fn force_set_state(
 		}
 	};
 
-	info!("Compressing new room state");
-	let HashSetCompressStateEvent {
-		shortstatehash: short_state_hash,
-		added,
-		removed,
-	} = self
-		.services
-		.rooms
-		.state_compressor
-		// Use save_state_as_root instead of save_state: the normal save_state
-		// must traverse the entire O(depth) ancestor diff chain via
-		// load_shortstatehash_info, which hangs on rooms with deep history.
-		// save_state_as_root checks the stateinfo_cache (O(1)) and falls back to
-		// writing the full state as a fresh root, completing in O(state_size).
-		.save_state_as_root(room_id.clone().as_ref(), new_room_state)
-		.await?;
-
 	let state_lock = self.services.rooms.state.mutex.lock(&*room_id).await;
 
 	if skip_membership_rebuild {
-		// Fast path: just set the state hash directly, skip per-member iteration
+		// Fast path: skip per-member iteration when rebuilding membership
 		info!("Fast-setting room state (skipping membership rebuild)");
-		self.services
-			.rooms
-			.state
-			.set_room_state(room_id.as_ref(), short_state_hash, &state_lock);
-
-		// Update joined count from state snapshot
-		self.services
-			.rooms
-			.state_cache
-			.update_joined_count(room_id.as_ref())
-			.await;
 	} else {
-		info!(
-			"Forcing new room state (quiet mode): {} added, {} removed",
-			added.len(),
-			removed.len()
-		);
-		Box::pin(self.services.rooms.state.force_state_quiet(
-			room_id.clone().as_ref(),
-			short_state_hash,
-			added,
-			removed,
-			&state_lock,
-		))
-		.await?;
+		// Quiet path: rebuild the membership cache below without any per-member
+		// cache churn here.
+		info!("Forcing new room state (quiet mode)");
 	}
+
+	self.services
+		.rooms
+		.state
+		.set_room_state_hamt(room_id.as_ref(), &new_room_state, &state_lock);
+
+	// Update joined count from state snapshot
+	self.services
+		.rooms
+		.state_cache
+		.update_joined_count(room_id.as_ref())
+		.await;
 
 	// Set the tip event as the sole forward extremity. Previous behavior
 	// scattered extremities across all state events, fracturing the DAG.
-	// The state is already corrected by force_state above; extremities
-	// should just point at the timeline tip.
+	// The state is already corrected above; extremities should just point at
+	// the timeline tip.
 	let tip_event_id = self
 		.services
 		.rooms
@@ -1025,31 +990,27 @@ pub(crate) async fn force_set_state(
 			)
 			.await;
 
-		// Update the tip event's shortstatehash so that state_at_incoming
-		// inherits the forced state when the next event arrives. Without this,
-		// the forced state is ephemeral — the first incoming event re-resolves
-		// from the tip's old shortstatehash and undoes the force.
-		let tip_shorteventid = self
-			.services
-			.rooms
-			.short
-			.get_or_create_shorteventid(tip_pdu.event_id())
-			.await;
+		// Associate the tip event with the forced state root so that
+		// state_at_incoming inherits the forced state when the next event
+		// arrives. Without this, the forced state is ephemeral — the first
+		// incoming event re-resolves from the tip's old state and undoes the
+		// force.
 		self.services
 			.rooms
 			.state
-			.set_pdu_shortstatehash(tip_shorteventid, short_state_hash);
-		info!("Set tip {} as sole extremity (room SSH {short_state_hash})", tip_pdu.event_id());
+			.set_event_roothandle(tip_pdu.event_id(), &new_room_state)
+			.await?;
+		info!("Set tip {} as sole extremity", tip_pdu.event_id());
 	} else {
 		// No timeline events — /sync won't deliver this room.
 		// Promote the most recent state event as a timeline anchor.
-		Box::pin(self.promote_sync_anchor(&room_id, short_state_hash, &state_lock)).await;
+		Box::pin(self.promote_sync_anchor(&room_id, &new_room_state, &state_lock)).await;
 	}
 
 	drop(state_lock);
 	if !skip_membership_rebuild {
 		info!("Rebuilding membership cache");
-		Box::pin(self.rebuild_membership_cache_inner(room_id.clone(), short_state_hash)).await;
+		Box::pin(self.rebuild_membership_cache_inner(room_id.clone())).await;
 	}
 
 	self.write_str("Successfully forced the room state from the requested remote server.")
@@ -1171,11 +1132,11 @@ async fn fetch_and_load_state(
 	} else {
 		// Local-only: rebuild state from existing database without federation
 		info!("Rebuilding room state from local DAG (no federation)...");
-		let ssh = self
+		let root_handle = self
 			.services
 			.rooms
 			.state
-			.get_room_shortstatehash(room_id)
+			.get_room_state_hamt(room_id)
 			.await
 			.map_err(|_| {
 				err!("No existing state for room — provide a server to bootstrap from")
@@ -1185,9 +1146,9 @@ async fn fetch_and_load_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full_ids(ssh)
-			.collect()
-			.await;
+			.state_full_ids_hamt(&root_handle)
+			.try_collect()
+			.await?;
 
 		info!("Local state has {} entries, re-resolving...", local_state.len());
 		state = local_state;
@@ -1456,22 +1417,17 @@ async fn dry_run_comparison(
 	auth_dropped: usize,
 ) -> Result {
 	// Compare remote state against local state without modifying anything
-	let local_state: HashMap<u64, OwnedEventId> = if let Ok(ssh) = self
-		.services
-		.rooms
-		.state
-		.get_room_shortstatehash(room_id)
-		.await
-	{
-		self.services
-			.rooms
-			.state_accessor
-			.state_full_ids(ssh)
-			.collect()
-			.await
-	} else {
-		HashMap::new()
-	};
+	let local_state: HashMap<u64, OwnedEventId> =
+		if let Ok(root_handle) = self.services.rooms.state.get_room_state_hamt(room_id).await {
+			self.services
+				.rooms
+				.state_accessor
+				.state_full_ids_hamt(&root_handle)
+				.try_collect()
+				.await?
+		} else {
+			HashMap::new()
+		};
 
 	let mut would_add = Vec::new();
 	let mut would_remove = Vec::new();
@@ -1545,23 +1501,18 @@ async fn reject_conflicting_state(
 	at_event_id: &EventId,
 	remote_eids: &HashSet<OwnedEventId>,
 ) {
-	let local_ssh: Result<u64> = match self
+	let local_root: Result<rezzy::hamt::RootHandle> = match self
 		.services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(at_event_id)
+		.pdu_roothandle_before_event(at_event_id)
 		.await
 	{
-		| Ok(ssh) => Ok(ssh),
-		| Err(_) =>
-			self.services
-				.rooms
-				.state
-				.get_room_shortstatehash(room_id)
-				.await,
+		| Ok(root_handle) => Ok(root_handle),
+		| Err(_) => self.services.rooms.state.get_room_state_hamt(room_id).await,
 	};
 
-	let Ok(local_ssh) = local_ssh else {
+	let Ok(local_root) = local_root else {
 		return;
 	};
 
@@ -1572,7 +1523,7 @@ async fn reject_conflicting_state(
 		.services
 		.rooms
 		.state_accessor
-		.state_full(local_ssh)
+		.state_full_hamt(local_root)
 		.map(|(_, pdu)| pdu.event_id().to_owned())
 		.collect()
 		.await;
@@ -1606,7 +1557,7 @@ async fn reject_conflicting_state(
 /// Rebuild membership cache from a state snapshot. Extracted to keep
 /// `force_set_room_state_from_server` below the stack-frame limit.
 #[admin_command]
-async fn rebuild_membership_cache_inner(&self, room_id: OwnedRoomId, _short_state_hash: u64) {
+async fn rebuild_membership_cache_inner(&self, room_id: OwnedRoomId) {
 	let _state_lock = self.services.rooms.state.mutex.lock(&room_id).await;
 	self.services
 		.rooms
@@ -1621,7 +1572,7 @@ async fn rebuild_membership_cache_inner(&self, room_id: OwnedRoomId, _short_stat
 async fn promote_sync_anchor(
 	&self,
 	room_id: &ruma::RoomId,
-	short_state_hash: u64,
+	root_handle: &rezzy::hamt::RootHandle,
 	state_lock: &conduwuit_service::rooms::state::RoomMutexGuard,
 ) {
 	use conduwuit::matrix::Event;
@@ -1637,7 +1588,7 @@ async fn promote_sync_anchor(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_pdus(short_state_hash)
+		.state_full_pdus_hamt(root_handle.clone())
 		.map(|pdu| {
 			let ts: u64 = pdu.origin_server_ts().0.into();
 			let eid = pdu.event_id().to_owned();

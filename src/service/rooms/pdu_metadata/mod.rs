@@ -636,14 +636,16 @@ impl Service {
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
 	pub async fn finish_promotion(&self, event_id: &EventId) -> bool {
-		// A read error means the rejection state is *unknown*, not "not
-		// rejected". Clearing the markers (or reporting success) on a failed
-		// read would erase/wrongly-accept a rejection whose state we never
-		// actually observed. Preserve the uncertain state: report failure and
-		// leave every marker in place so the event is not force-promoted
-		// before its true verdict is known.
+		// A read error other than NotFound means the rejection state is
+		// unknown, not "not rejected". Clearing the markers (or reporting
+		// success) on such a failed read would erase or wrongly accept a
+		// rejection whose state we never actually observed.
 		let code = match self.db.get_rejection_code(event_id).await {
 			| Ok(code) => code,
+			| Err(e) if e.is_not_found() => {
+				debug!(%event_id, "No rejection marker found after promotion; treating event as accepted");
+				None
+			},
 			| Err(e) => {
 				warn!(
 					%event_id,
@@ -652,15 +654,18 @@ impl Service {
 				return false;
 			},
 		};
+		// Only the rejection marker is cleared on acceptance: soft-fail markers
+		// are intentional verdicts that must persist (promotion refuses
+		// soft-failed events up front, see `promote_outlier`).
 		let Some(code) = code else {
-			// No rejection verdict -- clear any stale markers and accept.
-			self.clear_pdu_markers(event_id);
+			// No rejection verdict -- clear any stale rejection and accept.
+			self.unmark_event_rejected(event_id);
 			return true;
 		};
 		match code {
 			| RejectionCode::MissingAuthEvent => false,
 			| code if code.is_retryable() => {
-				self.clear_pdu_markers(event_id);
+				self.unmark_event_rejected(event_id);
 				true
 			},
 			| _ => false,

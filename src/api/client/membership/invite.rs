@@ -162,7 +162,6 @@ pub(crate) async fn invite_helper(
 
 			(pdu, pdu_json, invite_room_state)
 		};
-
 		let room_version_id = services.rooms.state.get_room_version(room_id).await?;
 
 		let response = services
@@ -231,16 +230,13 @@ pub(crate) async fn invite_helper(
 		..RoomMemberEventContent::new(MembershipState::Invite)
 	};
 
-	services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(recipient_user.to_string(), &content),
-			sender_user,
-			Some(room_id),
-			&state_lock,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(recipient_user.to_string(), &content),
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await?;
 
 	drop(state_lock);
 

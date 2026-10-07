@@ -6,16 +6,13 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bytes::BufMut;
 use conduwuit::{debug, info};
 use conduwuit_core::{
 	Error, Event, Result, debug_info, err,
 	result::LogErr,
 	trace,
-	utils::{
-		ReadyExt, calculate_hash, continue_exponential_backoff_secs,
-		future::TryExtExt,
-		stream::{BroadbandExt, IterStream, WidebandExt},
-	},
+	utils::{ReadyExt, calculate_hash, continue_exponential_backoff_secs, stream::BroadbandExt},
 	warn,
 };
 use futures::{
@@ -25,8 +22,8 @@ use futures::{
 	stream::FuturesUnordered,
 };
 use ruma::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedEventId, OwnedRoomId,
+	OwnedServerName, OwnedUserId, RoomId, RoomVersionId, ServerName, UInt,
 	api::{
 		appservice::event::push_events::v1::EphemeralData,
 		federation::transactions::{
@@ -49,6 +46,9 @@ use ruma::{
 use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use super::{Destination, EduBuf, EduVec, Msg, SendingEvent, Service, data::QueueItem};
+use crate::rooms::state_accessor::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, StateHashEntry, StateHashes,
+};
 
 #[derive(Debug)]
 enum TransactionStatus {
@@ -56,6 +56,103 @@ enum TransactionStatus {
 	Failed(u32, Instant), // number of times failed, time of last failure
 	Retrying(u32),        // number of times failed
 	Cooldown(Instant),
+}
+
+#[derive(Clone, Debug)]
+struct Msc4500SendTransactionRequest {
+	inner: send_transaction_message::v1::Request,
+	state_hashes: Option<StateHashes>,
+}
+
+impl ruma::api::OutgoingRequest for Msc4500SendTransactionRequest {
+	type EndpointError =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::EndpointError;
+	type IncomingResponse =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::IncomingResponse;
+
+	const METADATA: ruma::api::Metadata =
+		<send_transaction_message::v1::Request as ruma::api::OutgoingRequest>::METADATA;
+
+	fn try_into_http_request<T: Default + BufMut>(
+		self,
+		base_url: &str,
+		access_token: ruma::api::SendAccessToken<'_>,
+		considering_versions: &'_ [ruma::api::MatrixVersion],
+	) -> core::result::Result<http::Request<T>, ruma::api::error::IntoHttpError> {
+		let req = self.inner.try_into_http_request::<Vec<u8>>(
+			base_url,
+			access_token,
+			considering_versions,
+		)?;
+		let (mut parts, body) = req.into_parts();
+
+		let mut json: serde_json::Value =
+			serde_json::from_slice(&body).map_err(ruma::api::error::IntoHttpError::from)?;
+
+		if let Some(obj) = json.as_object_mut() {
+			if let Some(state_hashes) = self.state_hashes {
+				let state_hashes_val = serde_json::to_value(state_hashes)
+					.map_err(ruma::api::error::IntoHttpError::from)?;
+				obj.insert("tk.nutra.msc4500.state_hashes".to_owned(), state_hashes_val);
+			}
+		}
+
+		let new_body_bytes =
+			serde_json::to_vec(&json).map_err(ruma::api::error::IntoHttpError::from)?;
+
+		if let Some(cl) = parts.headers.get_mut(http::header::CONTENT_LENGTH) {
+			*cl = http::HeaderValue::from(new_body_bytes.len());
+		}
+
+		let mut new_body_t = T::default();
+		new_body_t.put_slice(&new_body_bytes);
+
+		Ok(http::Request::from_parts(parts, new_body_t))
+	}
+}
+
+async fn compute_outbound_state_hashes(
+	services: &super::Services,
+	experimental: &conduwuit::config::ExperimentalConfig,
+	pdus: &[(OwnedEventId, CanonicalJsonObject)],
+) -> Option<StateHashes> {
+	if pdus.is_empty() || !experimental.msc4500_enabled {
+		return None;
+	}
+
+	let with_inputs = experimental.msc4500_resolution_inputs;
+	let algorithm = if with_inputs { ALGORITHM_WITH_INPUTS } else { ALGORITHM };
+
+	// Transactions always carry an entry for every PDU; a PDU whose DAG point
+	// cannot be resolved exactly is an explicit `limited` deferral, never a
+	// guessed digest.
+	let mut inputs_cache = InputCache::new();
+	let mut entries = BTreeMap::new();
+	for (event_id, _) in pdus {
+		let entry = match services.state_accessor.msc4500_pdu_digests(event_id).await {
+			| None => StateHashEntry::limited(with_inputs),
+			| Some(digests) => {
+				let inputs = if with_inputs {
+					let pdu = services.timeline.get_pdu(event_id).await.ok();
+					let digest = match pdu {
+						| Some(pdu) =>
+							services
+								.state_accessor
+								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+								.await,
+						| None => None,
+					};
+					Some(digest)
+				} else {
+					None
+				};
+				StateHashEntry::asserting(digests, inputs)
+			},
+		};
+		entries.insert(event_id.clone(), entry);
+	}
+
+	Some(StateHashes { algorithm: algorithm.to_owned(), entries })
 }
 
 type SendingError = Box<(Destination, Error)>;
@@ -579,17 +676,24 @@ impl Service {
 		statuses
 			.entry(dest.clone()) // TODO: can we avoid cloning?
 			.and_modify(|e| match e {
-				TransactionStatus::Failed(tries, time) => {
+				| TransactionStatus::Failed(tries, time) => {
 					// Fail if a request has failed recently (exponential backoff)
 					let min = self.server.config.sender_retry_backoff_base;
 					let max = self.server.config.sender_retry_backoff_limit;
-					if continue_exponential_backoff_secs(min, max, time.elapsed(), tries.saturating_sub(1))
-						&& !matches!(dest, Destination::Appservice(_))
+					if continue_exponential_backoff_secs(
+						min,
+						max,
+						time.elapsed(),
+						tries.saturating_sub(1),
+					) && !matches!(dest, Destination::Appservice(_))
 					{
 						allow = false;
 
-						let min_dur = Duration::from_secs(min)
-							.saturating_mul(1_u32.checked_shl(tries.saturating_sub(1)).unwrap_or(u32::MAX));
+						let min_dur = Duration::from_secs(min).saturating_mul(
+							1_u32
+								.checked_shl(tries.saturating_sub(1))
+								.unwrap_or(u32::MAX),
+						);
 						let min_dur = std::cmp::min(min_dur, Duration::from_secs(max));
 						let remaining = min_dur.saturating_sub(time.elapsed());
 						self.reschedule_flush(dest.clone(), remaining);
@@ -598,10 +702,10 @@ impl Service {
 						*e = TransactionStatus::Retrying(*tries);
 					}
 				},
-				TransactionStatus::Running | TransactionStatus::Retrying(_) => {
+				| TransactionStatus::Running | TransactionStatus::Retrying(_) => {
 					allow = false; // already running
 				},
-				TransactionStatus::Cooldown(time) => {
+				| TransactionStatus::Cooldown(time) => {
 					if !has_pdu && time.elapsed() < Duration::from_millis(300) {
 						allow = false;
 					} else {
@@ -1195,17 +1299,37 @@ impl Service {
 		events: Vec<SendingEvent>,
 		edu_count: Option<u64>,
 	) -> SendingResult {
-		let pdus: Vec<_> = events
-			.iter()
-			.filter_map(|pdu| match pdu {
-				| SendingEvent::Pdu(pdu) => Some(pdu),
-				| _ => None,
-			})
-			.stream()
-			.wide_filter_map(|pdu_id| self.services.timeline.get_pdu_json_from_id(pdu_id).ok())
-			.wide_then(|pdu| self.convert_to_outgoing_federation_event(pdu))
-			.collect()
-			.await;
+		let mut source_pdus: Vec<(OwnedEventId, CanonicalJsonObject)> = Vec::new();
+		for event in &events {
+			let SendingEvent::Pdu(pdu_id) = event else {
+				continue;
+			};
+
+			let Ok(pdu) = self.services.timeline.get_pdu_json_from_id(pdu_id).await else {
+				continue;
+			};
+			let Some(event_id) = pdu
+				.get("event_id")
+				.and_then(|id| id.as_str())
+				.and_then(|id| OwnedEventId::try_from(id).ok())
+			else {
+				continue;
+			};
+
+			source_pdus.push((event_id, pdu));
+		}
+
+		let state_hashes = compute_outbound_state_hashes(
+			&self.services,
+			&self.server.config.experimental_features,
+			&source_pdus,
+		)
+		.await;
+
+		let mut outbound_pdus: Vec<Box<RawJsonValue>> = Vec::with_capacity(source_pdus.len());
+		for (_, pdu) in source_pdus {
+			outbound_pdus.push(self.convert_to_outgoing_federation_event(pdu).await);
+		}
 
 		let edus: Vec<Raw<Edu>> = events
 			.iter()
@@ -1227,7 +1351,7 @@ impl Service {
 			.filter_map(Result::ok)
 			.collect();
 
-		if pdus.is_empty() && edus.is_empty() {
+		if outbound_pdus.is_empty() && edus.is_empty() {
 			if let Some(count) = edu_count {
 				info!(
 					target: "receipt_debug",
@@ -1271,7 +1395,7 @@ impl Service {
 		// Track federation stats
 		self.stats
 			.outgoing_pdus
-			.fetch_add(pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
+			.fetch_add(outbound_pdus.len().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 		self.stats.outgoing_txns.fetch_add(1, Ordering::Relaxed);
 
 		let now = MilliSecondsSinceUnixEpoch::now();
@@ -1286,13 +1410,15 @@ impl Service {
 			transaction_id: txn_id.clone().into(),
 			origin: self.server.name.clone(),
 			origin_server_ts: now,
-			pdus,
+			pdus: outbound_pdus,
 			edus,
 		};
 
 		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
+
 		let result = self
-			.send_federation_request_on(&self.services.client.sender, &server, request)
+			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
 		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 

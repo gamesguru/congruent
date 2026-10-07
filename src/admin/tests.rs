@@ -1557,17 +1557,17 @@ async fn test_busted_dag_resolution() {
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
-	let ssh = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state(room_id, ssh, &state_lock);
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1708,17 +1708,17 @@ async fn test_unredacted_room_dag_resolution() {
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
-	let ssh = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state(room_id, ssh, &state_lock);
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1845,21 +1845,21 @@ async fn test_unredacted_lounge_dag_resolution() {
 	assert!(res.is_ok(), "rebuild-state failed: {res:?}");
 	eprintln!("[LOUNGE] <<< rebuild-state took {:?}", start_rebuild.elapsed());
 
-	// rebuild-state Phase 5+6 already merged extremities and set the room SSH.
+	// rebuild-state Phase 5+6 already merged extremities and set the room root.
 	// Just read it back.
-	let ssh = services
+	let root_handle = services
 		.rooms
 		.state
-		.get_room_shortstatehash(room_id)
+		.get_room_state_hamt(room_id)
 		.await
-		.expect("rebuild-state should have set room SSH");
+		.expect("rebuild-state should have set room state root");
 	let best_entries = services
 		.rooms
 		.state_accessor
-		.state_full_pdus(ssh)
+		.state_full_pdus_hamt(root_handle.clone())
 		.count()
 		.await;
-	eprintln!("[LOUNGE] Room SSH={ssh}, state entries={best_entries}");
+	eprintln!("[LOUNGE] Room state root set, state entries={best_entries}");
 
 	// Skip force-set-state — it reads room SSH which is stale for merged DAGs
 	// with orphan extremities. Just validate rebuild-state's output directly.
@@ -1928,7 +1928,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let resolved_state_pdus: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_pdus(ssh)
+		.state_full_pdus_hamt(root_handle)
 		.collect()
 		.await;
 
@@ -2061,17 +2061,17 @@ async fn test_nheko_dag_resolution() {
 		.await
 		.unwrap();
 	let latest_event_id = latest_pdu.event_id();
-	let ssh = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(latest_event_id)
+		.pdu_roothandle_after_event(latest_event_id)
 		.await
 		.unwrap();
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
 	services
 		.rooms
 		.state
-		.set_room_state(room_id, ssh, &state_lock);
+		.set_room_state_hamt(room_id, &root_handle, &state_lock);
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -2392,7 +2392,7 @@ async fn test_yolo_rescue_room() {
 		.unwrap();
 	drop(state_lock);
 
-	services.db["roomid_shortstatehash"].remove(&room_id);
+	services.db["roomid_roothandle"].remove(&room_id);
 
 	let res = services
 		.admin
@@ -2576,17 +2576,20 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		)
 		.await;
 
-	// Ensure Name B gets a strictly later origin_server_ts than Name A.
-	// Under parallel test load, both events can land in the same millisecond,
-	// making the V2 mainline sort tiebreaker depend on event_id hash ordering.
-	tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-
 	// 4. Branch 1: Set Room Name to "Name B" (state event)
 	let name_b_event = services
 		.rooms
 		.timeline
 		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &RoomNameEventContent::new("Name B".to_owned())),
+			PduBuilder {
+				timestamp: Some(ruma::MilliSecondsSinceUnixEpoch(
+					ruma::MilliSecondsSinceUnixEpoch::now().0 + ruma::UInt::from(1_000_u32),
+				)),
+				..PduBuilder::state(
+					String::new(),
+					&RoomNameEventContent::new("Name B".to_owned()),
+				)
+			},
 			server_user,
 			Some(&room_id),
 			&state_lock,
@@ -2659,16 +2662,16 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 
 	// Verify that state snapshot for message_c_event (Branch 2) does NOT leak
 	// Branch 1 ("Name B") name change. Its state name must be "Name A".
-	let ssh_c = services
+	let root_c = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(&message_c_event)
+		.pdu_roothandle_before_event(&message_c_event)
 		.await
 		.unwrap();
 	let name_c: Option<RoomNameEventContent> = services
 		.rooms
 		.state_accessor
-		.state_get_content(ssh_c, &ruma::events::StateEventType::RoomName, "")
+		.state_get_content_hamt(&room_id, &root_c, &ruma::events::StateEventType::RoomName, "")
 		.await
 		.ok();
 	assert_eq!(
@@ -2679,16 +2682,16 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 
 	// Verify that state snapshot for merge_event (M) correctly resolves conflict to
 	// "Name B"
-	let ssh_m = services
+	let root_m = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(&merge_event)
+		.pdu_roothandle_before_event(&merge_event)
 		.await
 		.unwrap();
 	let name_m: Option<RoomNameEventContent> = services
 		.rooms
 		.state_accessor
-		.state_get_content(ssh_m, &ruma::events::StateEventType::RoomName, "")
+		.state_get_content_hamt(&room_id, &root_m, &ruma::events::StateEventType::RoomName, "")
 		.await
 		.ok();
 	assert_eq!(

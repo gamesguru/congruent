@@ -19,6 +19,7 @@ use conduwuit::{
 };
 use conduwuit_service::{
 	Services,
+	rooms::state_accessor::{InputCache, StateHashes},
 	sending::{EDU_LIMIT, PDU_LIMIT},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -65,7 +66,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<send_transaction_message::v1::Response> {
+) -> Result<axum::Json<serde_json::Value>> {
 	if body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -93,7 +94,7 @@ pub(crate) async fn send_transaction_message_route(
 	{
 		| Ok(FederationTxnState::Cached(response)) => {
 			// Already responded
-			Ok(response)
+			Ok(axum::Json(response))
 		},
 		| Ok(FederationTxnState::Active(receiver)) => {
 			// Another thread is processing
@@ -152,7 +153,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<send_transaction_message::v1::Response> {
+) -> Result<axum::Json<serde_json::Value>> {
 	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
@@ -165,7 +166,7 @@ async fn wait_for_result(
 	}
 	let value = recv.borrow_and_update();
 	match value.clone() {
-		| Some(Ok(response)) => Ok(response),
+		| Some(Ok(response)) => Ok(axum::Json(response)),
 		| Some(Err(err)) => Err(transaction_error_to_response(&err)),
 		| None => Err(Error::Request(
 			ErrorKind::Unknown,
@@ -335,16 +336,151 @@ async fn process_inbound_transaction(
 	}
 
 	// Bundle response
-	let response = send_transaction_message::v1::Response {
-		pdus: results
+	let mut response_json = serde_json::json!({
+		"pdus": results
 			.into_iter()
-			.map(|(e, r)| (e, r.map_err(error::sanitized_message)))
-			.collect(),
-	};
+			.map(|(e, r)| {
+				let mut obj = serde_json::Map::new();
+				if let Err(err) = r {
+					obj.insert(
+						"error".to_owned(),
+						serde_json::Value::String(error::sanitized_message(err)),
+					);
+				}
+				(e.to_string(), serde_json::Value::Object(obj))
+			})
+			.collect::<serde_json::Map<_, _>>(),
+	});
+
+	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
 
 	services
 		.transactions
-		.finish_federation_txn(txn_key, sender, response);
+		.finish_federation_txn(txn_key, sender, response_json);
+}
+
+async fn inject_state_hash_mismatches(
+	services: &crate::State,
+	body: &Ruma<send_transaction_message::v1::Request>,
+	response_json: &mut serde_json::Value,
+) {
+	let Some(json) = &body.json_body else { return };
+	let Some(obj) = json.as_object() else { return };
+	let Some(hashes) = obj
+		.get("state_hashes")
+		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
+	else {
+		return;
+	};
+
+	let Ok(state_hashes) = serde_json::from_value::<StateHashes>(hashes.clone().into()) else {
+		return;
+	};
+
+	// One algorithm governs the whole transaction. An unrecognized one defers
+	// validation of every entry rather than skipping them one at a time.
+	if !state_hashes.is_known_algorithm() {
+		info!(
+			target: "state_hashes",
+			algorithm = %state_hashes.algorithm,
+			"skipping state hash validation for unrecognized algorithm"
+		);
+		return;
+	}
+
+	let Some(pdus_obj) = response_json
+		.get_mut("pdus")
+		.and_then(|p| p.as_object_mut())
+	else {
+		return;
+	};
+
+	// Only compute the (costly) input closure when this server also opted in.
+	let check_inputs = state_hashes.has_resolution_inputs()
+		&& services
+			.server
+			.config
+			.experimental_features
+			.msc4500_resolution_inputs;
+	let mut inputs_cache = InputCache::new();
+
+	for (event_id, entry) in &state_hashes.entries {
+		let Some(pdu_res) = pdus_obj
+			.get_mut(event_id.as_str())
+			.and_then(|p| p.as_object_mut())
+		else {
+			continue;
+		};
+		if pdu_res.contains_key("error") {
+			continue;
+		}
+
+		// `limited` is an explicit deferral. An entry missing a required digest is
+		// malformed: it is not an assertion that the overlay is empty, and it is
+		// not a mismatch either.
+		let Some((_, after, _, redactions_after)) = entry.required_digests() else {
+			if !entry.limited {
+				warn!(
+					target: "state_hashes",
+					%event_id,
+					"state_hashes entry is missing a required digest; deferring"
+				);
+			}
+			continue;
+		};
+
+		// An unresolved DAG point is deferred rather than reported as a mismatch.
+		let Some(local) = services
+			.rooms
+			.state_accessor
+			.msc4500_pdu_digests(event_id)
+			.await
+		else {
+			continue;
+		};
+
+		// Absent and `null` both mean the sender made no input assertion. Compute
+		// the local value anyway so mismatch diagnostics retain the expected
+		// digest; the comparison below only treats two present values as a
+		// mismatch.
+		let received_inputs = entry.resolution_inputs();
+		let local_inputs = if check_inputs {
+			match services.rooms.timeline.get_pdu(event_id).await {
+				| Ok(pdu) =>
+					services
+						.rooms
+						.state_accessor
+						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+						.await,
+				| Err(_) => None,
+			}
+		} else {
+			None
+		};
+		let inputs_differ = matches!(
+			(received_inputs, local_inputs.as_deref()),
+			(Some(received), Some(local)) if received != local
+		);
+
+		let after_differs = local.after.primary != after;
+		let redactions_differ = local.after.redactions != redactions_after;
+		if !after_differs && !redactions_differ && !inputs_differ {
+			continue;
+		}
+
+		let mut mismatch = serde_json::json!({
+			"algorithm": state_hashes.algorithm,
+			"expected_after": local.after.primary,
+			"received_after": after,
+			"expected_redactions_after": local.after.redactions,
+			"received_redactions_after": redactions_after,
+		});
+		if check_inputs {
+			mismatch["expected_resolution_inputs_before"] = serde_json::json!(local_inputs);
+			mismatch["received_resolution_inputs_before"] = serde_json::json!(received_inputs);
+		}
+		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
+	}
 }
 
 /// Handles a failed federation transaction by sending the error through

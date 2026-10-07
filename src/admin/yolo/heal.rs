@@ -118,12 +118,12 @@ pub(super) async fn rescue_room(
 		event_ids.len()
 	))
 	.await?;
-	let room_version = self.services.rooms.state.get_room_version(&room_id).await?;
-	let promoted = Box::pin(self.services.rooms.timeline.promote_outliers_sorted(
-		&room_id,
-		&event_ids,
-		&room_version,
-	))
+	let promoted = Box::pin(
+		self.services
+			.rooms
+			.timeline
+			.promote_outliers_sorted(&room_id, &event_ids),
+	)
 	.await?;
 
 	self.write_str(&format!("Promoted {promoted} events in room {room_id}."))
@@ -276,12 +276,8 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 				&create_event,
 				&origin,
 				&room_id,
-				true,  // skip_soft_fail: always lenient for admin rescue
-				false, // is_forward_extremity: historical/admin rescue, not a live tip
-				false, // prev_fetch_had_invalid_data: no fresh fetch_prev here
-				None,
-				// No outer `with_cork_and_flush` on this admin path -- the
-				// timeline insert must flush itself.
+				// historical/admin rescue; not a live timeline tip
+				false,
 				false,
 			),
 	)

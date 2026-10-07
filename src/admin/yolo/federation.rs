@@ -254,23 +254,19 @@ pub(super) async fn fetch_pdu(
 				&create_event,
 				&server,
 				&room_id,
+				// historical/admin rescue; not a live timeline tip
 				false,
-				false, // historical/admin rescue; do not merge today's forward extremities
-				false,
-				None,
-				// No outer `with_cork_and_flush` on this admin path -- the
-				// timeline insert must flush itself.
 				false,
 			),
 	)
 	.await?;
 
-	match result {
+	match result.0 {
 		| Some(ref id) => info!("fetch_pdu: success — promoted to timeline: {id:?}"),
 		| None => info!("fetch_pdu: PDU was already present or promoted (no-op)"),
 	}
 
-	match result {
+	match result.0 {
 		| Some(id) => write!(self, "Successfully fetched and rescued PDU: {id:?}"),
 		| None => write!(self, "PDU was already present or promoted successfully."),
 	}

@@ -92,13 +92,20 @@ pub(super) async fn decorate_pdu_for_export(
 		}
 
 		if !is_separated {
-			if let Ok(ssh) = ctx
+			if let Ok(root_handle) = ctx
 				.services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(pdu.event_id())
+				.pdu_roothandle_after_event(pdu.event_id())
 				.await
 			{
+				// Diagnostic-only: a stable 64-bit fingerprint of the event's
+				// HAMT root, used to group exported events by state.
+				let ssh = u64::from_be_bytes(
+					root_handle.structural_hash[..8]
+						.try_into()
+						.expect("structural hash is at least 8 bytes"),
+				);
 				obj.insert("__shortstatehash".to_owned(), JsonValue::from(ssh));
 				shortstatehash = Some(ssh);
 			}

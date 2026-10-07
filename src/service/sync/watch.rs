@@ -115,6 +115,11 @@ pub async fn setup_watch<'a>(
 	futures.push(self.db.keychangeid_userid.watch_prefix(&userid_prefix));
 	futures.push(self.db.deviceleftid_userid.watch_prefix(&userid_prefix));
 
+	// MSC4429 profile updates are keyed by global stream position, so they
+	// cannot be watched with the syncing user's key prefix. A global watcher is
+	// required to wake profile-filtered /sync requests promptly.
+	futures.push(self.db.userprofileupdate_value.watch_prefix(&[]));
+
 	// One time keys
 	futures.push(
 		self.db

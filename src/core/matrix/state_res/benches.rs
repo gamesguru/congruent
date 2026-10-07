@@ -62,22 +62,16 @@ fn resolution_shallow_auth_chain(c: &mut test::Bencher) {
 		let ev_map = store.0.clone();
 		let state_sets = [&state_at_bob, &state_at_charlie];
 		let fetch = |id: OwnedEventId| ready(ev_map.get(&id).map(ToOwned::to_owned));
-		let auth_chain_sets: Vec<HashSet<_>> = state_sets
-			.iter()
-			.map(|map| {
-				store
-					.auth_event_ids(room_id(), map.values().cloned().collect())
-					.unwrap()
-			})
-			.collect();
-
-		let rejected = |_: OwnedEventId| ready(false);
+		let auth_chain_fetch = |ids: Vec<OwnedEventId>| {
+			ready(store.auth_event_ids(room_id(), ids).unwrap_or_default())
+		};
 		let _ = match state_res::resolve(
 			&RoomVersionId::V6,
 			state_sets.into_iter(),
-			&auth_chain_sets,
 			&fetch,
-			&rejected,
+			None::<&fn(Vec<OwnedEventId>) -> std::future::Ready<Vec<Pdu>>>,
+			&auth_chain_fetch,
+			None::<&fn(Vec<OwnedEventId>)>,
 		)
 		.await
 		{
@@ -144,13 +138,16 @@ fn resolve_deeper_event_set(c: &mut test::Bencher) {
 			.collect();
 
 		let fetch = |id: OwnedEventId| ready(inner.get(&id).map(ToOwned::to_owned));
-		let rejected = |_: OwnedEventId| ready(false);
+		let auth_chain_fetch = |ids: Vec<OwnedEventId>| {
+			ready(store.auth_event_ids(room_id(), ids).unwrap_or_default())
+		};
 		let _ = match state_res::resolve(
 			&RoomVersionId::V6,
 			state_sets.into_iter(),
-			&auth_chain_sets,
 			&fetch,
-			&rejected,
+			None::<&fn(Vec<OwnedEventId>) -> std::future::Ready<Vec<Pdu>>>,
+			&auth_chain_fetch,
+			None::<&fn(Vec<OwnedEventId>)>,
 		)
 		.await
 		{

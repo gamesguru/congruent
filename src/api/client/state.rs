@@ -7,8 +7,8 @@ use conduwuit::{
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
-use conduwuit_service::Services;
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use conduwuit_service::{Services, rooms::state::root_handle_fingerprint};
+use futures::{FutureExt, TryStreamExt};
 use ruma::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
 	api::client::state::{get_state_events, get_state_events_for_key, send_state_event},
@@ -131,25 +131,26 @@ pub(crate) async fn get_state_events_route(
 	}
 
 	// For departed users, serve state frozen at the point they left
-	let shortstatehash = if !is_joined {
-		let ssh = leave_shortstatehash(&services, sender_user, room_id).await;
+	let leave_root = if !is_joined {
+		let root = leave_roothandle(&services, sender_user, room_id).await;
 		info!(
 			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_ssh={ssh:?}"
+			"/state: departed user {sender_user} in {room_id}, leave_root={:?}",
+			root.as_ref().map(root_handle_fingerprint)
 		);
-		ssh
+		root
 	} else {
 		None
 	};
 
-	let room_state: Vec<_> = if let Some(ssh) = shortstatehash {
+	let room_state: Vec<_> = if let Some(root) = leave_root {
 		services
 			.rooms
 			.state_accessor
-			.state_full_pdus(ssh)
-			.map(Event::into_format)
-			.collect()
-			.await
+			.state_full_pdus_hamt_strict(root)
+			.map_ok(Event::into_format)
+			.try_collect()
+			.await?
 	} else {
 		services
 			.rooms
@@ -197,16 +198,17 @@ pub(crate) async fn get_state_events_for_key_route(
 
 	// For departed users, look up state from the snapshot at departure
 	let event = if !is_joined {
-		if let Some(ssh) = leave_shortstatehash(&services, sender_user, room_id).await {
+		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
 			info!(
 				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_ssh={ssh}",
-				body.event_type
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={:?}",
+				body.event_type,
+				Some(root_handle_fingerprint(&root))
 			);
 			services
 				.rooms
 				.state_accessor
-				.state_get(ssh, &body.event_type, &body.state_key)
+				.state_get_in_room_hamt(room_id, &root, &body.event_type, &body.state_key)
 				.await
 		} else {
 			services
@@ -272,11 +274,11 @@ pub(crate) async fn get_state_events_for_empty_key_route(
 /// Get the shortstatehash for the state snapshot at the point when a user
 /// departed (left/banned) from a room. Returns None if the leave event
 /// can't be found or has no associated state snapshot.
-async fn leave_shortstatehash(
+async fn leave_roothandle(
 	services: &Services,
 	user_id: &UserId,
 	room_id: &RoomId,
-) -> Option<u64> {
+) -> Option<rezzy::hamt::RootHandle> {
 	let leave_pdu = services
 		.rooms
 		.state_cache
@@ -288,7 +290,7 @@ async fn leave_shortstatehash(
 	services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(leave_pdu.event_id())
+		.pdu_roothandle_before_event(leave_pdu.event_id())
 		.await
 		.ok()
 }

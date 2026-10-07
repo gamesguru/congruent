@@ -72,6 +72,8 @@ pub(super) fn redacts_id<E: Event>(
 	match *room_version {
 		| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 =>
 			event.redacts().map(ToOwned::to_owned),
+		| _ if crate::info::room_version::is_msc3389(room_version) =>
+			event.redacts().map(ToOwned::to_owned),
 		| _ =>
 			event
 				.get_content::<RoomRedactionEventContent>()

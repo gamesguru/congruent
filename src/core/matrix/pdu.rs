@@ -182,9 +182,13 @@ impl rezzy::RawEvent for Pdu {
 	#[inline]
 	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts.into() }
 
+	/// `Pdu::rejected` is populated from metadata at fetch time.
 	#[inline]
 	fn raw_rejected(&self) -> bool { self.rejected }
 
+	/// TODO: Revisit whether rezzy should require host-provided soft-fail state
+	/// at all, or compute it internally. Until that is resolved, `Pdu` does not
+	/// carry a soft-fail flag and this adapter conservatively reports `false`.
 	#[inline]
 	fn raw_soft_fail(&self) -> bool { false }
 }
