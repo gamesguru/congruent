@@ -315,19 +315,6 @@ package = "mtx-slipstream"
 git = "https://gitlab.com/Wombat-Foundation/mtx-slipstream.git"
 branch = "dev"
 
-[workspace.dependencies.rust-rocksdb]
-git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1"
-rev = "61d9d23872197e9ace4a477f2617d5c9f50ecb23"
-default-features = false
-# Only zstd is compiled in: the other codecs (lz4, bzip2, zlib) each pull a
-# separate C build for a marginal win, and RocksDB records the codec per data
-# block, so an existing database is only readable with the codec it was written
-# with. See `rocksdb_compression_algo`.
-features = [
-    "multi-threaded-cf",
-    "zstd",
-]
-
 [workspace.dependencies.sha2]
 version = "0.11.0"
 default-features = false

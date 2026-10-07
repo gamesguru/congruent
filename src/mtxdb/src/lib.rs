@@ -10,6 +10,9 @@ use std::{
 	sync::Arc,
 };
 
+pub mod keys;
+pub mod store;
+
 /// Errors returned while opening or operating the mtxdb database.
 pub use mtxdb::storage::StorageError;
 
@@ -27,9 +30,13 @@ impl Database {
 
 	/// Access the underlying shared database for adapter implementation code.
 	#[must_use]
-	pub fn shared(&self) -> &Arc<mtxdb::Database> { &self.inner }
+	pub fn shared(&self) -> &Arc<mtxdb::Database> {
+		&self.inner
+	}
 }
 
 impl Clone for Database {
-	fn clone(&self) -> Self { Self { inner: Arc::clone(&self.inner) } }
+	fn clone(&self) -> Self {
+		Self { inner: Arc::clone(&self.inner) }
+	}
 }
