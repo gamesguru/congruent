@@ -45,6 +45,8 @@ pub enum Error {
 	#[error(transparent)]
 	Clap(#[from] clap::error::Error),
 	#[error(transparent)]
+	Extension(#[from] axum::extract::rejection::ExtensionRejection),
+	#[error(transparent)]
 	Figment(#[from] figment::error::Error),
 	#[error(transparent)]
 	Http(#[from] http::Error),
@@ -56,6 +58,8 @@ pub enum Error {
 	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]
 	JsTryFromInt(#[from] slipstream::JsTryFromIntError), // js_int re-export
+	#[error(transparent)]
+	Path(#[from] axum::extract::rejection::PathRejection),
 	#[error("Mutex poisoned: {0}")]
 	Poison(Cow<'static, str>),
 	#[error("Regex error: {0}")]
@@ -70,6 +74,8 @@ pub enum Error {
 	TomlDe(#[from] toml::de::Error),
 	#[error(transparent)]
 	TomlSer(#[from] toml::ser::Error),
+	#[error(transparent)]
+	TypedHeader(#[from] axum_extra::typed_header::TypedHeaderRejection),
 	#[error(transparent)]
 	YamlDe(#[from] serde_saphyr::Error),
 	#[error(transparent)]

@@ -109,9 +109,11 @@ features = ["typed-header", "cookie"]
 version = "0.8.0"
 default-features = false
 
+# to listen on both HTTP and HTTPS if listening on TLS dierctly from conduwuit for complement or sytest
 [workspace.dependencies.axum-server-dual-protocol]
+# version = "0.7"
 git = "https://github.com/vinchona/axum-server-dual-protocol.git"
-rev = "ca6db055254255b74238673ce4135698e347d71c"
+rev = "ca6db055254255b74238673ce4135698e347d71c" # feat!: bump axum_server to 0.8.0
 default-features = false
 
 [workspace.dependencies.axum-client-ip]
