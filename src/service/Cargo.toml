@@ -54,7 +54,7 @@ release_max_log_level = [
 # enabled, mirroring how the `conduwuit` binary selects one (src/main).
 ring = ["rustls/ring"]
 systemd = ["dep:sd-notify"]
-url_preview = ["dep:image", "dep:webpage"]
+url_preview = ["dep:image"]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
 	"conduwuit-database/zstd_compression",
@@ -107,8 +107,6 @@ termimad.optional = true
 termimad.workspace = true
 tokio.workspace = true
 url.workspace = true
-webpage.optional = true
-webpage.workspace = true
 yansi.workspace = true
 dashmap.workspace = true
 bincode = "1.3.3"

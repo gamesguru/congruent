@@ -448,8 +448,6 @@ pub async fn download_media(&self, _url: &str) -> Result<UrlPreviewData> {
 #[cfg(feature = "url_preview")]
 #[implement(Service)]
 async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
-	use webpage::HTML;
-
 	let client = &self.services.client.url_preview;
 	let mut response = client.get(url).send().await?;
 
@@ -483,9 +481,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 				.expect("u64 should fit in usize"),
 		)
 		.await?;
-	let Ok(html) = HTML::from_string(body.clone(), Some(url.to_owned())) else {
-		return Err!(Request(Unknown("Failed to parse HTML")));
-	};
+	let html = parse_html_metadata(&body);
 
 	let mut preview_data = UrlPreviewData::default();
 
@@ -497,36 +493,35 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 			.map_or_else(|| raw.to_owned(), |joined| joined.to_string())
 	};
 
-	if let Some(obj) = html.opengraph.images.first() {
-		let image_url = resolve(&obj.url);
+	if let Some(image) = html.image.as_ref() {
+		let image_url = resolve(image);
 		if let Ok(data_with_img) = self
 			.download_image(&image_url, Some(preview_data.clone()))
 			.await
 		{
 			preview_data = data_with_img;
-			preview_data = apply_opengraph_dimensions(preview_data, obj);
+			preview_data.image_width = preview_data.image_width.or(html.image_width);
+			preview_data.image_height = preview_data.image_height.or(html.image_height);
 		}
 	}
 
-	if let Some(obj) = html.opengraph.videos.first() {
-		let video_url = resolve(&obj.url);
+	if let Some(video) = html.video.as_ref() {
+		let video_url = resolve(video);
 		preview_data = self.download_video(&video_url, Some(preview_data)).await?;
-		preview_data.video_width = obj.properties.get("width").and_then(|v| v.parse().ok());
-		preview_data.video_height = obj.properties.get("height").and_then(|v| v.parse().ok());
+		preview_data.video_width = html.video_width;
+		preview_data.video_height = html.video_height;
 	}
 
-	if let Some(obj) = html.opengraph.audios.first() {
-		let audio_url = resolve(&obj.url);
+	if let Some(audio) = html.audio.as_ref() {
+		let audio_url = resolve(audio);
 		preview_data = self.download_audio(&audio_url, Some(preview_data)).await?;
 	}
 
-	let props = html.opengraph.properties;
-
 	/* use OpenGraph title/description, but fall back to HTML if not available */
-	preview_data.title = props.get("title").cloned().or(html.title);
-	preview_data.description = props.get("description").cloned().or(html.description);
-	preview_data.og_type = Some(html.opengraph.og_type);
-	preview_data.og_url = props.get("url").cloned();
+	preview_data.title = html.og_title.or(html.title);
+	preview_data.description = html.og_description.or(html.description);
+	preview_data.og_type = html.og_type;
+	preview_data.og_url = html.og_url;
 
 	Ok(preview_data)
 }
@@ -676,17 +671,163 @@ pub fn parse_preview_url(url_str: &str) -> std::result::Result<Url, url::ParseEr
 	}
 }
 #[cfg(feature = "url_preview")]
-pub(super) fn apply_opengraph_dimensions(
-	mut preview_data: UrlPreviewData,
-	obj: &webpage::OpengraphObject,
-) -> UrlPreviewData {
-	preview_data.image_width = preview_data
-		.image_width
-		.or_else(|| obj.properties.get("width").and_then(|v| v.parse().ok()));
-	preview_data.image_height = preview_data
-		.image_height
-		.or_else(|| obj.properties.get("height").and_then(|v| v.parse().ok()));
-	preview_data
+#[derive(Default)]
+struct HtmlMetadata {
+	title: Option<String>,
+	description: Option<String>,
+	og_title: Option<String>,
+	og_description: Option<String>,
+	og_type: Option<String>,
+	og_url: Option<String>,
+	image: Option<String>,
+	image_width: Option<u32>,
+	image_height: Option<u32>,
+	video: Option<String>,
+	video_width: Option<u32>,
+	video_height: Option<u32>,
+	audio: Option<String>,
+}
+
+#[cfg(feature = "url_preview")]
+fn parse_html_metadata(body: &str) -> HtmlMetadata {
+	let lower = body.to_ascii_lowercase();
+	let mut metadata = HtmlMetadata::default();
+	let mut offset = 0;
+
+	while let Some(start) = lower[offset..].find('<').map(|index| index + offset) {
+		let Some(end) = lower[start..].find('>').map(|index| index + start) else {
+			break;
+		};
+
+		let tag = &body[start + 1..end];
+		let tag_lower = &lower[start + 1..end];
+		let tag_name = tag_lower
+			.trim_start_matches(|character: char| {
+				character.is_ascii_whitespace() || character == '/'
+			})
+			.split(|character: char| character.is_ascii_whitespace() || character == '/')
+			.next()
+			.unwrap_or_default();
+
+		if tag_name == "meta" {
+			let key = html_attribute(tag, "property")
+				.or_else(|| html_attribute(tag, "name"))
+				.map(|value| value.to_ascii_lowercase());
+			let value = html_attribute(tag, "content").map(|value| decode_html_entities(&value));
+
+			if let (Some(key), Some(value)) = (key, value) {
+				match key.as_str() {
+					| "og:title" => set_once(&mut metadata.og_title, value),
+					| "og:description" => set_once(&mut metadata.og_description, value),
+					| "og:type" => set_once(&mut metadata.og_type, value),
+					| "og:url" => set_once(&mut metadata.og_url, value),
+					| "og:image" => set_once(&mut metadata.image, value),
+					| "og:image:width" => metadata.image_width = value.parse().ok(),
+					| "og:image:height" => metadata.image_height = value.parse().ok(),
+					| "og:video" => set_once(&mut metadata.video, value),
+					| "og:video:width" => metadata.video_width = value.parse().ok(),
+					| "og:video:height" => metadata.video_height = value.parse().ok(),
+					| "og:audio" => set_once(&mut metadata.audio, value),
+					| "description" => set_once(&mut metadata.description, value),
+					| _ => {},
+				}
+			}
+		} else if tag_name == "title" {
+			let content_start = end + 1;
+			if let Some(close) = lower[content_start..].find("</title>") {
+				set_once(
+					&mut metadata.title,
+					decode_html_entities(body[content_start..content_start + close].trim()),
+				);
+			}
+		}
+
+		offset = end + 1;
+	}
+
+	metadata
+}
+
+#[cfg(feature = "url_preview")]
+fn html_attribute(tag: &str, wanted: &str) -> Option<String> {
+	let bytes = tag.as_bytes();
+	let mut offset = 0;
+
+	while offset < bytes.len() {
+		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace)
+			|| bytes.get(offset) == Some(&b'/')
+		{
+			offset += 1;
+		}
+
+		let name_start = offset;
+		while offset < bytes.len()
+			&& !bytes[offset].is_ascii_whitespace()
+			&& bytes[offset] != b'='
+			&& bytes[offset] != b'/'
+		{
+			offset += 1;
+		}
+		if name_start == offset {
+			break;
+		}
+
+		let name = &tag[name_start..offset];
+		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
+			offset += 1;
+		}
+		if bytes.get(offset) != Some(&b'=') {
+			continue;
+		}
+		offset += 1;
+		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
+			offset += 1;
+		}
+
+		let value = if matches!(bytes.get(offset), Some(b'\'' | b'"')) {
+			let quote = bytes[offset];
+			offset += 1;
+			let value_start = offset;
+			while offset < bytes.len() && bytes[offset] != quote {
+				offset += 1;
+			}
+			let value = tag[value_start..offset].to_owned();
+			offset += usize::from(offset < bytes.len());
+			value
+		} else {
+			let value_start = offset;
+			while offset < bytes.len()
+				&& !bytes[offset].is_ascii_whitespace()
+				&& bytes[offset] != b'/'
+			{
+				offset += 1;
+			}
+			tag[value_start..offset].to_owned()
+		};
+
+		if name.eq_ignore_ascii_case(wanted) {
+			return Some(value);
+		}
+	}
+
+	None
+}
+
+#[cfg(feature = "url_preview")]
+fn decode_html_entities(value: &str) -> String {
+	value
+		.replace("&amp;", "&")
+		.replace("&quot;", "\"")
+		.replace("&#39;", "'")
+		.replace("&lt;", "<")
+		.replace("&gt;", ">")
+}
+
+#[cfg(feature = "url_preview")]
+fn set_once<T>(slot: &mut Option<T>, value: T) {
+	if slot.is_none() {
+		*slot = Some(value);
+	}
 }
 
 #[derive(Debug, PartialEq, Eq)]

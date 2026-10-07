@@ -201,11 +201,6 @@ features = ["fast-linear-to-srgb"]
 version = "0.4.27"
 default-features = false
 
-# for URL previews
-[workspace.dependencies.webpage]
-version = "2.0.1"
-default-features = false
-
 # used for conduwuit's CLI and admin room command parsing
 [workspace.dependencies.clap]
 version = "4.5.35"

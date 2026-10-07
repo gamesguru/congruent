@@ -106,8 +106,6 @@ async fn long_file_names_works() {
 
 #[cfg(all(test, feature = "url_preview"))]
 mod url_and_opengraph_parsing_tests {
-	use webpage::HTML;
-
 	#[test]
 	fn test_valid_urls_parse_correctly() {
 		use super::super::preview::parse_preview_url;
@@ -181,15 +179,18 @@ mod url_and_opengraph_parsing_tests {
             <meta property="og:title" content="Bertrand Russell - Wikipedia">
             <meta property="og:type" content="website">
         "#;
-		let html = HTML::from_string(wikipedia.to_owned(), None).expect("failed to parse HTML");
+		let html = super::super::preview::parse_html_metadata(wikipedia);
 
-		let img = html.opengraph.images.first().expect("no og:image found");
 		assert_eq!(
-			img.url,
+			html.image.as_deref(),
+			Some(
 			"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
+			)
 		);
-		assert_eq!(img.properties.get("width").map(String::as_str), Some("955"));
-		assert_eq!(img.properties.get("height").map(String::as_str), Some("1200"));
+		assert_eq!(html.image_width, Some(955));
+		assert_eq!(html.image_height, Some(1200));
+		assert_eq!(html.og_title.as_deref(), Some("Bertrand Russell - Wikipedia"));
+		assert_eq!(html.og_type.as_deref(), Some("website"));
 	}
 
 	#[test]
@@ -204,36 +205,37 @@ mod url_and_opengraph_parsing_tests {
             <meta property="og:type" content="video.other">
             <meta property="og:video:tag" content="Nicone">
         "#;
-		let html = HTML::from_string(youtube.to_owned(), None).expect("failed to parse HTML");
+		let html = super::super::preview::parse_html_metadata(youtube);
 
-		let img = html.opengraph.images.first().expect("no og:image found");
 		assert_eq!(
-			img.url,
+			html.image.as_deref(),
+			Some(
 			"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
+			)
 		);
-		assert_eq!(img.properties.get("width").map(String::as_str), Some("1000"));
-		assert_eq!(img.properties.get("height").map(String::as_str), Some("1000"));
+		assert_eq!(html.image_width, Some(1000));
+		assert_eq!(html.image_height, Some(1000));
+		assert_eq!(
+			html.og_url.as_deref(),
+			Some("https://music.youtube.com/watch?v=Sg8sw-OvcGk&list=RDAMVMoZ_wMBHxYac&index=0")
+		);
+		assert_eq!(html.og_title.as_deref(), Some("Hands On Transparent"));
+		assert_eq!(html.og_description.as_deref(), Some("Nicone"));
+		assert_eq!(html.og_type.as_deref(), Some("video.other"));
 
-		// Assert no og:video element since it wasn't defined
-		assert!(html.opengraph.videos.is_empty());
+		// Assert no og:video element since it wasn't defined.
+		assert!(html.video.is_none());
 	}
 
 	#[test]
-	fn test_apply_opengraph_dimensions_propagation() {
-		use super::super::preview::{UrlPreviewData, apply_opengraph_dimensions};
-
+	fn test_html_metadata_dimensions_propagation() {
 		let html_snippet = r#"<meta property="og:image" content="https://example.com/image.jpg">
             <meta property="og:image:width" content="1920">
             <meta property="og:image:height" content="1080">
         "#;
-		let html =
-			HTML::from_string(html_snippet.to_owned(), None).expect("failed to parse HTML");
-		let obj = html.opengraph.images.first().expect("no og:image found");
+		let html = super::super::preview::parse_html_metadata(html_snippet);
 
-		let preview_data = UrlPreviewData::default();
-		let result = apply_opengraph_dimensions(preview_data, obj);
-
-		assert_eq!(result.image_width, Some(1920));
-		assert_eq!(result.image_height, Some(1080));
+		assert_eq!(html.image_width, Some(1920));
+		assert_eq!(html.image_height, Some(1080));
 	}
 }
