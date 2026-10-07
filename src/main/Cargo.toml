@@ -88,7 +88,6 @@ brotli_compression = [
 ]
 console = [
 	"conduwuit-service/console",
-	"dep:rustyline-async",
 ]
 element_hacks = [
 	"conduwuit-api/element_hacks",
@@ -192,8 +191,6 @@ const-str.workspace = true
 ctor.workspace = true
 log.workspace = true
 tokio.workspace = true
-rustyline-async.optional = true
-rustyline-async.workspace = true
 parking_lot.workspace = true
 reqwest = { workspace = true, default-features = false }
 rustls = { workspace = true, default-features = false }
