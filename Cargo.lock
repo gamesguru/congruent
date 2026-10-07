@@ -276,6 +276,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "either",
+ "fs-err",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-server-dual-protocol"
+version = "0.8.0"
+source = "git+https://github.com/vinchona/axum-server-dual-protocol.git?rev=ca6db055254255b74238673ce4135698e347d71c#ca6db055254255b74238673ce4135698e347d71c"
+dependencies = [
+ "axum-server",
+ "bytes",
+ "http",
+ "http-body-util",
+ "pin-project",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -774,7 +814,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rezzy",
- "roaring 0.10.12",
+ "roaring",
  "rustc-hash",
  "serde",
  "sha2 0.11.0",
@@ -803,6 +843,19 @@ dependencies = [
  "minicbor-serde",
  "rust-rocksdb",
  "serde",
+ "tokio",
+]
+
+[[package]]
+name = "conduwuit_direct_tls"
+version = "0.5.10"
+dependencies = [
+ "axum",
+ "axum-server",
+ "axum-server-dual-protocol",
+ "conduwuit_core",
+ "hyper",
+ "log",
  "tokio",
 ]
 
@@ -837,6 +890,7 @@ dependencies = [
  "conduwuit_admin",
  "conduwuit_api",
  "conduwuit_core",
+ "conduwuit_direct_tls",
  "conduwuit_macros",
  "conduwuit_service",
  "conduwuit_slipstream",
@@ -890,7 +944,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rezzy",
- "roaring 0.10.12",
+ "roaring",
  "rustls",
  "rustyline-async",
  "sd-notify",
@@ -1451,6 +1505,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5c95b673b8f6f7235229ae11c5642d81b04c2e64c1e2fb417bc0cf73ca45f29"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -2982,7 +3046,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "imbl",
  "rezzy-json",
- "roaring 0.11.5",
+ "roaring",
  "sha2 0.11.0",
  "sha3",
 ]
@@ -3020,19 +3084,13 @@ dependencies = [
 
 [[package]]
 name = "roaring"
-version = "0.10.12"
+version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e8d2cfa184d94d0726d650a9f4a1be7f9b76ac9fdb954219878dc00c1c1e7b"
+checksum = "18bd8a37d17a58532776dcdf6041ce64929adca78e8489d5cacbafe99229d3e1"
 dependencies = [
  "bytemuck",
  "byteorder",
 ]
-
-[[package]]
-name = "roaring"
-version = "0.11.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18bd8a37d17a58532776dcdf6041ce64929adca78e8489d5cacbafe99229d3e1"
 
 [[package]]
 name = "rust-librocksdb-sys"
@@ -3488,9 +3546,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 dependencies = [
  "serde",
 ]
@@ -3652,22 +3710,22 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.18"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.18"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]

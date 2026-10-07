@@ -1,0 +1,18 @@
+[package]
+name = "conduwuit_direct_tls"
+description = "Optional direct TLS listener for integration tests"
+edition = "2024"
+license = "Apache-2.0"
+version = "0.5.10"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+axum = { version = "0.8.8", default-features = false, features = ["form", "http1", "http2", "query", "tokio"] }
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server-dual-protocol = { git = "https://github.com/vinchona/axum-server-dual-protocol.git", rev = "ca6db055254255b74238673ce4135698e347d71c", default-features = false }
+conduwuit_core = { path = "../core", version = "0.5.10" }
+hyper = { version = "1.6.0", default-features = false, features = ["server", "http1", "http2"] }
+log = { version = "0.4.27", default-features = false }
+tokio = { version = "1.44.2", default-features = false, features = ["fs", "net", "macros", "sync", "signal", "time", "rt-multi-thread", "io-util"] }

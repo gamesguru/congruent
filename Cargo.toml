@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["src/*", "xtask/"]
 default-members = ["src/*"]
-exclude = ["ruwuma", "ruma-upstream"]
+exclude = ["ruwuma", "ruma-upstream", "src/direct_tls"]
 
 [workspace.package]
 authors = ["Continuwuity Team and contributors <team@continuwuity.org>"]
@@ -100,6 +100,16 @@ features = [
 version = "0.12.0"
 default-features = false
 features = ["typed-header", "cookie"]
+
+[workspace.dependencies.axum-server]
+version = "0.8.0"
+default-features = false
+
+# Optional TLS listener used by Complement and other integration tests.
+[workspace.dependencies.axum-server-dual-protocol]
+git = "https://github.com/vinchona/axum-server-dual-protocol.git"
+rev = "ca6db055254255b74238673ce4135698e347d71c"
+default-features = false
 
 [workspace.dependencies.axum-client-ip]
 version = "1.3"
@@ -430,7 +440,7 @@ features = ["std"]
 version = "0.3.0"
 
 [workspace.dependencies.roaring]
-version = "0.10" # compatible with Synapse's rustc 1.87.0
+version = "0.11"
 
 #
 # Patches

@@ -3,7 +3,7 @@ mod unix;
 
 use std::sync::Arc;
 
-use conduwuit::{Result, err, warn};
+use conduwuit::{Result, err};
 use conduwuit_service::Services;
 use tokio::sync::broadcast;
 
@@ -27,10 +27,16 @@ pub(super) async fn serve(
 	let (app, _guard) = layers::build(&services)?;
 	if cfg!(unix) && config.unix_socket_path.is_some() {
 		unix::serve(server, app, shutdown).await
+	} else if config.tls.certs.is_some() {
+		#[cfg(feature = "direct_tls")]
+		return conduwuit_direct_tls::serve(server, app, addrs, shutdown).await;
+
+		#[cfg(not(feature = "direct_tls"))]
+		Err(err!(Config(
+			"tls",
+			"conduwuit was not built with direct TLS support (\"direct_tls\")",
+		)))
 	} else {
-		if config.tls.certs.is_some() {
-			warn!("Direct TLS is no longer supported; configure a reverse proxy instead.");
-		}
 		plain::serve(server, app, addrs, shutdown).await
 	}
 }

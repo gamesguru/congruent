@@ -94,6 +94,9 @@ element_hacks = [
 	"conduwuit-api/element_hacks",
 	"conduwuit-service/element_hacks",
 ]
+direct_tls = [
+	"conduwuit-router/direct_tls",
+]
 gzip_compression = [
 	"conduwuit-api/gzip_compression",
 	"conduwuit-core/gzip_compression",

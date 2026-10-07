@@ -21,6 +21,9 @@ crate-type = [
 ignored = ["const-str", "ctor"]
 
 [features]
+direct_tls = [
+	"dep:conduwuit_direct_tls",
+]
 brotli_compression = [
 	"conduwuit-admin/brotli_compression",
 	"conduwuit-api/brotli_compression",
@@ -87,6 +90,7 @@ bytes.workspace = true
 conduwuit-admin.workspace = true
 conduwuit-api.workspace = true
 conduwuit-core.workspace = true
+conduwuit_direct_tls = { path = "../direct_tls", optional = true }
 conduwuit-macros.workspace = true
 conduwuit-service.workspace = true
 conduwuit-web.workspace = true
