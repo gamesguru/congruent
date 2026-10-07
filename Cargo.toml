@@ -96,7 +96,6 @@ features = [
     "form",
     "http1",
     "http2",
-    "json",
     "matched-path",
     "query",
     "tokio",
