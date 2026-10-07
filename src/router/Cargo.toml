@@ -28,10 +28,6 @@ brotli_compression = [
 	"conduwuit-service/brotli_compression",
 	"tower-http/compression-br",
 ]
-direct_tls = [
-	"axum-server/tls-rustls-no-provider",
-	"dep:axum-server-dual-protocol",
-]
 gzip_compression = [
 	"conduwuit-admin/gzip_compression",
 	"conduwuit-api/gzip_compression",
@@ -86,9 +82,6 @@ zstd_compression = [
 
 [dependencies]
 axum-client-ip.workspace = true
-axum-server-dual-protocol.workspace = true
-axum-server-dual-protocol.optional = true
-axum-server.workspace = true
 axum.workspace = true
 bytes.workspace = true
 conduwuit-admin.workspace = true
@@ -106,8 +99,6 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 log.workspace = true
-rustls.workspace = true
-rustls.optional = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true

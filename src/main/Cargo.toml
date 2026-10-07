@@ -90,9 +90,6 @@ console = [
 	"conduwuit-service/console",
 	"dep:rustyline-async",
 ]
-direct_tls = [
-    "conduwuit-router/direct_tls"
-]
 element_hacks = [
 	"conduwuit-api/element_hacks",
 	"conduwuit-service/element_hacks",

@@ -7,9 +7,7 @@ use std::{
 	time::Duration,
 };
 
-use axum_server::{Address, Handle as ServerHandle};
 use conduwuit::{Error, Result, Server, debug, debug_error, debug_info, error, info, warn};
-use futures::FutureExt;
 use service::Services;
 use tokio::{
 	sync::broadcast::{self, Sender},
@@ -27,16 +25,12 @@ pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 	admin::init(&services.admin).await;
 
 	// Setup shutdown/signal handling
-	let handle = ServerHandle::new();
 	let (tx, _) = broadcast::channel::<()>(1);
-	let sigs = server
-		.runtime()
-		.spawn(signal(services.clone(), tx.clone(), handle.clone()));
+	let sigs = server.runtime().spawn(signal(services.clone(), tx.clone()));
 
-	let mut listener =
-		server
-			.runtime()
-			.spawn(serve::serve(services.clone(), handle.clone(), tx.subscribe()));
+	let mut listener = server
+		.runtime()
+		.spawn(serve::serve(services.clone(), tx.subscribe()));
 
 	// Run startup admin commands.
 	// This has to be done after the admin service is initialized otherwise it
@@ -137,24 +131,12 @@ pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
 	Ok(())
 }
 
-async fn signal<A: Address>(
-	services: Arc<Services>,
-	tx: Sender<()>,
-	handle: axum_server::Handle<A>,
-) {
-	services
-		.server
-		.clone()
-		.until_shutdown()
-		.then(move |()| handle_shutdown(services, tx, handle))
-		.await;
+async fn signal(services: Arc<Services>, tx: Sender<()>) {
+	services.server.clone().until_shutdown().await;
+	handle_shutdown(services, tx).await;
 }
 
-async fn handle_shutdown<A: Address>(
-	services: Arc<Services>,
-	tx: Sender<()>,
-	handle: axum_server::Handle<A>,
-) {
+async fn handle_shutdown(services: Arc<Services>, tx: Sender<()>) {
 	let server = &services.server;
 	if let Err(e) = tx.send(()) {
 		error!("failed sending shutdown transaction to channel: {e}");
@@ -169,8 +151,6 @@ async fn handle_shutdown<A: Address>(
 		handle_active = %server.metrics.requests_handle_active.load(Ordering::Relaxed),
 		"Notifying for graceful shutdown"
 	);
-
-	handle.graceful_shutdown(Some(timeout));
 }
 
 async fn handle_services_poll(

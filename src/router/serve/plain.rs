@@ -4,21 +4,31 @@ use std::{
 };
 
 use axum::Router;
-use axum_server::{Handle as ServerHandle, bind};
 use conduwuit::{Result, Server, debug_info, info};
-use tokio::task::JoinSet;
+use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
 
 pub(super) async fn serve(
 	server: &Arc<Server>,
 	app: Router,
-	handle: ServerHandle<SocketAddr>,
 	addrs: Vec<SocketAddr>,
+	shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
 	let app = app.into_make_service_with_connect_info::<SocketAddr>();
 	let mut join_set = JoinSet::new();
 	for addr in &addrs {
-		join_set
-			.spawn_on(bind(*addr).handle(handle.clone()).serve(app.clone()), server.runtime());
+		let listener = TcpListener::bind(addr).await?;
+		let app = app.clone();
+		let mut shutdown = shutdown.resubscribe();
+		join_set.spawn_on(
+			async move {
+				axum::serve(listener, app)
+					.with_graceful_shutdown(async move {
+						let _ = shutdown.recv().await;
+					})
+					.await
+			},
+			server.runtime(),
+		);
 	}
 
 	info!("Listening on {addrs:?}");

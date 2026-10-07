@@ -2206,17 +2206,22 @@
 
 #[global.email]
 
-# HTTP endpoint which accepts the email webhook payload as JSON.
+# HTTP endpoint which accepts the email webhook payload.
 # Uncommenting the [global.email] group and setting this option enables
 # features which depend on the ability to send email,
 # such as self-service password resets.
+#
+# The endpoint receives `{from, to, subject, text}` as JSON.
+#
 #webhook_url =
 
 # The outgoing address which will be used for sending emails.
+#
 #sender =
 
 # Optional bearer token sent to the webhook provider.
-#webhook_token =
+#
+#webhook_token = false
 
 # Whether to require that users provide an email address when they
 # register.

@@ -1,12 +1,9 @@
 mod plain;
-#[cfg(feature = "direct_tls")]
-mod tls;
 mod unix;
 
 use std::sync::Arc;
 
-use axum_server::Handle as ServerHandle;
-use conduwuit::{Result, err};
+use conduwuit::{Result, err, warn};
 use conduwuit_service::Services;
 use tokio::sync::broadcast;
 
@@ -15,7 +12,6 @@ use super::layers;
 /// Serve clients
 pub(super) async fn serve(
 	services: Arc<Services>,
-	handle: ServerHandle<std::net::SocketAddr>,
 	mut shutdown: broadcast::Receiver<()>,
 ) -> Result {
 	let server = &services.server;
@@ -31,16 +27,10 @@ pub(super) async fn serve(
 	let (app, _guard) = layers::build(&services)?;
 	if cfg!(unix) && config.unix_socket_path.is_some() {
 		unix::serve(server, app, shutdown).await
-	} else if config.tls.certs.is_some() {
-		#[cfg(feature = "direct_tls")]
-		return tls::serve(server, app, handle, addrs).await;
-
-		#[cfg(not(feature = "direct_tls"))]
-		return conduwuit::Err!(Config(
-			"tls",
-			"conduwuit was not built with direct TLS support (\"direct_tls\")"
-		));
 	} else {
-		plain::serve(server, app, handle, addrs).await
+		if config.tls.certs.is_some() {
+			warn!("Direct TLS is no longer supported; configure a reverse proxy instead.");
+		}
+		plain::serve(server, app, addrs, shutdown).await
 	}
 }
