@@ -146,8 +146,9 @@ default-features = false
 features = ["rc"]
 
 # Used for ruma wrapper
-[workspace.dependencies.serde_html_form]
-version = "0.4.0"
+[workspace.dependencies.serde_urlencoded]
+version = "0.7.1"
+default-features = false
 
 # Used for password hashing
 [workspace.dependencies.argon2]

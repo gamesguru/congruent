@@ -2862,9 +2862,7 @@ impl RawConfig {
 
 	fn config_profile(value: Value) -> Value {
 		let Value::Table(mut table) = value else { return value };
-		table
-			.remove("global")
-			.unwrap_or(Value::Table(table))
+		table.remove("global").unwrap_or(Value::Table(table))
 	}
 
 	pub fn load_file(&mut self, path: &std::path::Path) -> Result<()> {

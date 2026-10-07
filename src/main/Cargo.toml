@@ -66,7 +66,6 @@ full = [
     "standard",
     "console",
     "element_hacks",
-    "ldap",
     "systemd",
     "url_preview",
     # "hardened_malloc", # Conflicts with mimalloc

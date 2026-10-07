@@ -38,7 +38,7 @@ pub(super) async fn from(
 		.await
 		.map_err(|_| err!(Request(Unknown("Failed to parse request path"))))?;
 	let query = parts.uri.query().unwrap_or_default();
-	let query = serde_html_form::from_str(query)
+	let query = serde_urlencoded::from_str(query)
 		.map_err(|e| err!(Request(Unknown("Failed to read query parameters: {e}"))))?;
 
 	let max_body_size = services.server.config.max_request_size;
