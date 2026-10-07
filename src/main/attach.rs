@@ -122,7 +122,6 @@ async fn run_interactive_mode(mut stream: UnixStream) -> Result<()> {
 	let mut response_buf = Vec::new();
 	loop {
 		print!("uwu> ");
-		use tokio::io::AsyncBufReadExt;
 		let mut input = String::new();
 		if input_reader.read_line(&mut input).await? == 0 {
 			break;

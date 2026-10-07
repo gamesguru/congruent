@@ -1,12 +1,11 @@
 #![cfg(feature = "console")]
 
-use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use std::{io::BufRead, os::unix::fs::PermissionsExt, sync::Arc, thread::JoinHandle};
 
 use conduwuit::{Server, SyncMutex, debug, error};
 use tokio::{
 	io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
 	net::{UnixListener, UnixStream},
-	task::JoinHandle,
 };
 
 use crate::{
@@ -39,7 +38,8 @@ impl Console {
 		let mut worker_join = self.worker_join.lock();
 		if worker_join.is_none() {
 			let self_ = Arc::clone(self);
-			_ = worker_join.insert(self.server.runtime().spawn(self_.worker()));
+			let runtime = self.server.runtime().clone();
+			_ = worker_join.insert(std::thread::spawn(move || self_.worker(&runtime)));
 		}
 	}
 
@@ -50,25 +50,23 @@ impl Console {
 
 	pub async fn close(self: &Arc<Self>) {
 		self.interrupt();
-		let worker_join = self.worker_join.lock().take();
-		if let Some(worker_join) = worker_join {
-			_ = worker_join.await;
-		}
+		// A blocking stdin read cannot be interrupted portably. Dropping the
+		// handle detaches the thread; it exits when stdin reaches EOF.
+		self.worker_join.lock().take();
 	}
 
-	pub fn interrupt(self: &Arc<Self>) {
-		self.worker_join.lock().as_ref().map(JoinHandle::abort);
-	}
+	pub fn interrupt(self: &Arc<Self>) { self.worker_join.lock().take(); }
 
-	async fn worker(self: Arc<Self>) {
+	fn worker(self: Arc<Self>, runtime: &tokio::runtime::Handle) {
 		debug!("admin console session starting");
 		println!("conduwuit admin console; type commands and press Enter");
 
-		let mut lines = BufReader::new(tokio::io::stdin()).lines();
-		while self.server.running() {
-			match lines.next_line().await {
-				| Ok(Some(line)) => self.handle(line).await,
-				| Ok(None) => break,
+		for line in std::io::stdin().lock().lines() {
+			if !self.server.running() {
+				break;
+			}
+			match line {
+				| Ok(line) => runtime.block_on(self.handle(line)),
 				| Err(e) => {
 					error!("console I/O: {e}");
 					break;
