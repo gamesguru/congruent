@@ -78,7 +78,7 @@ pub(crate) async fn get_supported_versions_route(
 			"v1.13".to_owned(),
 			"v1.14".to_owned(),
 		],
-		unstable_features,
+		unstable_features: Some(unstable_features),
 	};
 
 	Ok(resp)
