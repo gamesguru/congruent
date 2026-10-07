@@ -62,7 +62,7 @@ pub(crate) async fn get_state_accumulator_route(
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
 	if pdu.room_id_or_hash().as_ref() != Some(&room_id) {
-		return Err!(Request(NotFound("Event does not belong to the requested room.")));
+		return Err!(Request(NotFound("Event does not belong to the requested room."))).into();
 	}
 
 	let shorteventid = services

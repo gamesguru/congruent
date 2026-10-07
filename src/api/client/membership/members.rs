@@ -46,7 +46,7 @@ pub(crate) async fn get_member_events_route(
 		.can_access_history(sender_user, room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("You don't have permission to view this room.")));
+		return Err!(Request(Forbidden("You don't have permission to view this room."))).into();
 	}
 
 	if let Some(at) = body.at.as_deref() {
@@ -177,7 +177,7 @@ pub(crate) async fn joined_members_route(
 		.is_joined(body.sender_user(), &body.room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("You don't have permission to view this room.")));
+		return Err!(Request(Forbidden("You don't have permission to view this room."))).into();
 	}
 
 	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services

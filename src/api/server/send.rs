@@ -55,7 +55,7 @@ use slipstream::{
 };
 use tokio::sync::watch::{Receiver, Sender};
 
-use crate::Ruma;
+use crate::{Ruma, router::ApiError};
 
 type ResolvedMap = BTreeMap<OwnedEventId, Result>;
 type Pdu = (OwnedRoomId, OwnedEventId, CanonicalJsonObject);
@@ -67,23 +67,26 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<axum::response::Response, ApiError> {
 	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
-		)));
+		)))
+		.into();
 	}
 
 	if body.pdus.len() > PDU_LIMIT {
 		return Err!(Request(Forbidden(
 			"Not allowed to send more than {PDU_LIMIT} PDUs in one transaction"
-		)));
+		)))
+		.into();
 	}
 
 	if body.edus.len() > EDU_LIMIT {
 		return Err!(Request(Forbidden(
 			"Not allowed to send more than {EDU_LIMIT} EDUs in one transaction"
-		)));
+		)))
+		.into();
 	}
 
 	let txn_key = (body.origin().to_owned(), body.transaction_id.clone());

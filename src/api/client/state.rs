@@ -47,14 +47,15 @@ pub(crate) async fn send_state_event_for_key_route(
 		.await;
 
 	if services.users.is_suspended(sender_user).await? {
-		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
+		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")))
+			.into();
 	}
 
 	require_object_content(&body.body.body)?;
 
 	if let Some(delay) = body.delay {
 		if std::time::SystemTime::now().checked_add(delay).is_none() {
-			return Err!(Request(InvalidParam("org.matrix.msc4140.delay is too large.")));
+			return Err!(Request(InvalidParam("org.matrix.msc4140.delay is too large."))).into();
 		}
 		let event = conduwuit_service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),
@@ -271,10 +272,14 @@ pub(crate) async fn get_state_events_for_key_route(
 pub(crate) async fn get_state_events_for_empty_key_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_state_events_for_key::v3::Request>,
-) -> Result<RumaResponse<get_state_events_for_key::v3::Response>> {
+) -> std::result::Result<
+	RumaResponse<get_state_events_for_key::v3::Response>,
+	crate::router::ApiError,
+> {
 	get_state_events_for_key_route(State(services), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// Get the shortstatehash for the state snapshot at the point when a user

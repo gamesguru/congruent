@@ -95,7 +95,7 @@ pub(crate) async fn get_room_digest_route(
 		.server_is_participant(services.globals.server_name(), &room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("This server is not participating in that room.")));
+		return Err!(Request(Forbidden("This server is not participating in that room."))).into();
 	}
 
 	// Collect forward extremities

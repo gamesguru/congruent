@@ -132,7 +132,7 @@ pub(crate) async fn syncv3_client_server_json(
 		| Some(url) => url.to_string(),
 		| None => match services.config.well_known.server.as_ref() {
 			| Some(url) => url.to_string(),
-			| None => return Err(Error::BadRequest(ErrorKind::NotFound, "Not found.")),
+			| None => return Err(Error::BadRequest(ErrorKind::NotFound, "Not found.").into()),
 		},
 	};
 

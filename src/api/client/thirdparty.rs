@@ -22,5 +22,8 @@ pub(crate) async fn get_protocols_route(
 pub(crate) async fn get_protocols_route_unstable(
 	body: Ruma<get_protocols::v3::Request>,
 ) -> std::result::Result<RumaResponse<get_protocols::v3::Response>, ApiError> {
-	get_protocols_route(body).await.map(RumaResponse)
+	get_protocols_route(body)
+		.await
+		.map(RumaResponse)
+		.map_err(Into::into)
 }

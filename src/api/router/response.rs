@@ -11,6 +11,14 @@ impl From<Error> for ApiError {
 	fn from(error: Error) -> Self { Self(error) }
 }
 
+impl From<slipstream::codec::DeError> for ApiError {
+	fn from(error: slipstream::codec::DeError) -> Self { Self(error.into()) }
+}
+
+impl From<slipstream::api::error::IntoHttpError> for ApiError {
+	fn from(error: slipstream::api::error::IntoHttpError) -> Self { Self(error.into()) }
+}
+
 impl IntoResponse for ApiError {
 	fn into_response(self) -> Response {
 		let status = self.0.status_code();

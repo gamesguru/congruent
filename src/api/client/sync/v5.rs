@@ -576,7 +576,9 @@ pub(crate) async fn sync_events_v5_route(
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
 ) -> std::result::Result<axum::response::Response, ApiError> {
-	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5)).await
+	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5))
+		.await
+		.map_err(Into::into)
 }
 
 pub(crate) async fn sync_events_unstable_msc3575_route(
@@ -591,6 +593,7 @@ pub(crate) async fn sync_events_unstable_msc3575_route(
 		SyncEndpoint::UnstableMsc3575,
 	))
 	.await
+	.map_err(Into::into)
 }
 
 async fn sync_events_v5_route_inner(

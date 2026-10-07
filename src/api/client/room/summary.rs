@@ -41,6 +41,7 @@ pub(crate) async fn get_room_summary_legacy(
 		.boxed()
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/summary/{roomIdOrAlias}`

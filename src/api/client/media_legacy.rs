@@ -122,6 +122,7 @@ pub(crate) async fn get_media_config_legacy_legacy_route(
 	get_media_config_legacy_route(State(services), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/preview_url`
@@ -174,6 +175,7 @@ pub(crate) async fn get_media_preview_legacy_legacy_route(
 	get_media_preview_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `POST /_matrix/media/v1/upload`
@@ -194,6 +196,7 @@ pub(crate) async fn create_content_legacy_route(
 	create_content_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/download/{serverName}/{mediaId}`
@@ -282,6 +285,7 @@ pub(crate) async fn get_content_legacy_legacy_route(
 	get_content_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}`
@@ -372,6 +376,7 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 	get_content_as_filename_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }
 
 /// # `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
@@ -457,4 +462,5 @@ pub(crate) async fn get_content_thumbnail_legacy_legacy_route(
 	get_content_thumbnail_legacy_route(State(services), ClientIp(client), body)
 		.await
 		.map(RumaResponse)
+		.map_err(Into::into)
 }

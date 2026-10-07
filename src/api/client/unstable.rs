@@ -348,7 +348,8 @@ pub(crate) async fn get_room_dag_route(
 			| Some(axum_extra::TypedHeader(axum_extra::headers::Authorization(bearer))) =>
 				bearer.token().to_owned(),
 			| None => {
-				return Err!(Request(MissingToken("Missing access token for private room.")));
+				return Err!(Request(MissingToken("Missing access token for private room.")))
+					.into();
 			},
 		};
 
@@ -365,7 +366,8 @@ pub(crate) async fn get_room_dag_route(
 		if !services.users.is_admin(&user_id).await {
 			return Err!(Request(Forbidden(
 				"You must be a server admin to view this private room's DAG."
-			)));
+			)))
+			.into();
 		}
 	}
 
