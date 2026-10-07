@@ -30,7 +30,7 @@ struct Report {
 /// Reports an abusive room to homeserver admins
 pub(crate) async fn report_room_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<report_room::v3::Request>,
 ) -> Result<report_room::v3::Response> {
 	let sender_user = body.sender_user();
@@ -85,7 +85,7 @@ pub(crate) async fn report_room_route(
 /// Reports an inappropriate event to homeserver admins
 pub(crate) async fn report_event_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<report_content::v3::Request>,
 ) -> Result<report_content::v3::Response> {
 	// user authentication
@@ -132,7 +132,7 @@ pub(crate) async fn report_event_route(
 
 pub(crate) async fn report_user_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<report_user::v3::Request>,
 ) -> Result<report_user::v3::Response> {
 	// user authentication

@@ -41,7 +41,7 @@ pub(crate) async fn get_media_config_route(
 /// - Media will be saved in the media/ directory
 pub(crate) async fn create_content_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
 ) -> Result<create_content::v3::Response> {
 	let user = body.sender_user();
@@ -85,7 +85,7 @@ pub(crate) async fn create_content_route(
 /// Load media thumbnail from our server or over federation.
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let user = body.sender_user();
@@ -134,7 +134,7 @@ pub(crate) async fn get_content_thumbnail_route(
 /// Load media from our server or over federation.
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
 	let user = body.sender_user();
@@ -187,7 +187,7 @@ pub(crate) async fn get_content_route(
 /// Load media from our server or over federation as fileName.
 pub(crate) async fn get_content_as_filename_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content_as_filename::v1::Request>,
 ) -> Result<get_content_as_filename::v1::Response> {
 	let user = body.sender_user();
@@ -242,7 +242,7 @@ pub(crate) async fn get_content_as_filename_route(
 /// Returns URL preview.
 pub(crate) async fn get_media_preview_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_media_preview::v1::Request>,
 ) -> Result<get_media_preview::v1::Response> {
 	let sender_user = body.sender_user();

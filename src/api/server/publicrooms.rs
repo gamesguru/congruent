@@ -16,7 +16,7 @@ use crate::Ruma;
 /// Lists the public rooms on this server.
 pub(crate) async fn get_public_rooms_filtered_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_public_rooms_filtered::v1::Request>,
 ) -> Result<get_public_rooms_filtered::v1::Response> {
 	if !services
@@ -53,7 +53,7 @@ pub(crate) async fn get_public_rooms_filtered_route(
 /// Lists the public rooms on this server.
 pub(crate) async fn get_public_rooms_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_public_rooms::v1::Request>,
 ) -> Result<get_public_rooms::v1::Response> {
 	if !services

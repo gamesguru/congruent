@@ -41,7 +41,7 @@ use crate::Ruma;
 /// the `type` field when logging in.
 pub(crate) async fn get_login_types_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	_body: Ruma<get_login_types::v3::Request>,
 ) -> Result<get_login_types::v3::Response> {
 	Ok(get_login_types::v3::Response::new(vec![
@@ -366,7 +366,7 @@ pub(crate) async fn login_route(
 /// <https://spec.matrix.org/v1.13/client-server-api/#post_matrixclientv1loginget_token>
 pub(crate) async fn login_token_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
 	if !services.server.config.login_via_existing_session {
@@ -401,7 +401,7 @@ pub(crate) async fn login_token_route(
 /// - Triggers device list updates
 pub(crate) async fn logout_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<logout::v3::Request>,
 ) -> Result<logout::v3::Response> {
 	let (sender_user, sender_device) = body.sender();
@@ -446,7 +446,7 @@ pub(crate) async fn logout_route(
 /// user.
 pub(crate) async fn logout_all_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<logout_all::v3::Request>,
 ) -> Result<logout_all::v3::Response> {
 	let sender_user = body.sender_user();

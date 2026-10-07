@@ -47,7 +47,7 @@ pub(crate) mod threepid;
 /// invalid when trying to register
 pub(crate) async fn get_register_available_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_username_availability::v3::Request>,
 ) -> Result<get_username_availability::v3::Response> {
 	// Validate user id
@@ -108,7 +108,7 @@ pub(crate) async fn get_register_available_route(
 /// - Triggers device list updates
 pub(crate) async fn change_password_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<change_password::v3::Request>,
 ) -> Result<change_password::v3::Response> {
 	let identity = if let Some(ref user_id) = body.sender_user {
@@ -272,7 +272,7 @@ pub(crate) async fn whoami_route(
 /// - Removes ability to log in again
 pub(crate) async fn deactivate_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<deactivate::v3::Request>,
 ) -> Result<deactivate::v3::Response> {
 	// Authentication for this endpoint is technically optional,

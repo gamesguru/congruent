@@ -57,7 +57,7 @@ fn validate_msc4311_stripped_state(
 /// Invites a remote user to a room.
 pub(crate) async fn create_invite_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<create_invite::v2::Request>,
 ) -> Result<create_invite::v2::Response> {
 	// ACL check origin

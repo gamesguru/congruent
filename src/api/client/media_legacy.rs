@@ -129,7 +129,7 @@ pub(crate) async fn get_media_config_legacy_legacy_route(
 /// Returns URL preview.
 pub(crate) async fn get_media_preview_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
 ) -> Result<get_media_preview::v3::Response> {
 	let sender_user = body.sender_user();
@@ -205,7 +205,7 @@ pub(crate) async fn create_content_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
 ) -> Result<get_content::v3::Response> {
 	let mxc = Mxc {
@@ -292,7 +292,7 @@ pub(crate) async fn get_content_legacy_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_as_filename_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
 ) -> Result<get_content_as_filename::v3::Response> {
 	let mxc = Mxc {
@@ -381,7 +381,7 @@ pub(crate) async fn get_content_as_filename_legacy_legacy_route(
 ///   seconds
 pub(crate) async fn get_content_thumbnail_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
 ) -> Result<get_content_thumbnail::v3::Response> {
 	let mxc = Mxc {

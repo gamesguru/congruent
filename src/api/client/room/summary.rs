@@ -49,7 +49,7 @@ pub(crate) async fn get_room_summary_legacy(
 /// Returns a short description of the state of a room.
 pub(crate) async fn get_room_summary(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_summary::msc3266::Request>,
 ) -> Result<get_summary::msc3266::Response> {
 	let (room_id, servers) = services
