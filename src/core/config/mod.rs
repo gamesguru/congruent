@@ -15,7 +15,6 @@ use either::{
 	Either,
 	Either::{Left, Right},
 };
-use lettre::message::Mailbox;
 use regex::RegexSet;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use slipstream::{
@@ -1003,7 +1002,7 @@ pub struct Config {
 	pub well_known: WellKnownConfig,
 
 	/// display: nested
-	pub smtp: Option<SmtpConfig>,
+	pub email: Option<EmailConfig>,
 
 	#[cfg(not(doctest))]
 	/// Examples:
@@ -2749,33 +2748,24 @@ impl Default for ExperimentalConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[config_example_generator(
 	filename = "conduwuit-example.toml",
-	section = "global.smtp",
+	section = "global.email",
 	optional = "true"
 )]
-pub struct SmtpConfig {
-	/// A `smtp://`` URI which will be used to connect to a mail server.
-	/// Uncommenting the [global.smtp] group and setting this option enables
+pub struct EmailConfig {
+	/// HTTP endpoint which accepts the email webhook payload.
+	/// Uncommenting the [global.email] group and setting this option enables
 	/// features which depend on the ability to send email,
 	/// such as self-service password resets.
 	///
-	/// For most modern mail servers, format the URI like this:
-	/// 	`smtps://username:password@hostname:port`
-	/// Note that you will need to URL-encode the username and password. If your
-	/// username _is_ your email address, you will need to replace the `@` with
-	/// `%40`.
-	///
-	/// For a guide on the accepted URI syntax, consult Lettre's documentation:
-	/// https://docs.rs/lettre/latest/lettre/transport/smtp/struct.AsyncSmtpTransport.html#method.from_url
-	pub connection_uri: String,
+	/// The endpoint receives `{from, to, subject, text}` as JSON.
+	pub webhook_url: String,
 
 	/// The outgoing address which will be used for sending emails.
-	///
-	/// For a syntax guide, see https://datatracker.ietf.org/doc/html/rfc2822#section-3.4
-	///
-	/// ...or if you don't want to read the RFC, for some reason:
-	/// - `Name <address@domain.org>` to specify a sender name
-	/// - `address@domain.org` to not use a name
-	pub sender: Mailbox,
+	pub sender: String,
+
+	/// Optional bearer token sent to the webhook provider.
+	#[serde(default)]
+	pub webhook_token: Option<String>,
 
 	/// Whether to require that users provide an email address when they
 	/// register.

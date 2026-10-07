@@ -7,7 +7,6 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
-use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
 use service::mailer::messages;
 use slipstream::{
@@ -448,8 +447,8 @@ async fn create_registration_uiaa_session(
 			// Trusted registration flow with a token is available
 			let mut token_flow = AuthFlow::new(vec![AuthType::RegistrationToken]);
 
-			if let Some(smtp) = &services.config.smtp
-				&& smtp.require_email_for_token_registration
+			if let Some(email) = &services.config.email
+				&& email.require_email_for_token_registration
 			{
 				// Email is required for token registrations
 				token_flow.stages.push(AuthType::EmailIdentity);
@@ -471,8 +470,8 @@ async fn create_registration_uiaa_session(
 			}
 		}
 
-		if let Some(smtp) = &services.config.smtp
-			&& smtp.require_email_for_registration
+		if let Some(email) = &services.config.email
+			&& email.require_email_for_registration
 		{
 			// Email is required for untrusted registrations
 			untrusted_flow.stages.push(AuthType::EmailIdentity);
@@ -628,9 +627,10 @@ pub(crate) async fn request_registration_token_via_email_route(
 	State(services): State<crate::State>,
 	body: Ruma<request_registration_token_via_email::v3::Request>,
 ) -> Result<request_registration_token_via_email::v3::Response> {
-	let Ok(email) = Address::try_from(body.email.clone()) else {
+	let email = body.email.clone();
+	if !email.contains('@') {
 		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
+	}
 
 	if services
 		.threepid
@@ -644,7 +644,7 @@ pub(crate) async fn request_registration_token_via_email_route(
 	let session = services
 		.threepid
 		.send_validation_email(
-			Mailbox::new(None, email),
+			email,
 			|verification_link| messages::NewAccount {
 				server_name: services.config.server_name.as_ref(),
 				verification_link,

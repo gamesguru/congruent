@@ -4,7 +4,6 @@ use std::{
 };
 
 use conduwuit::utils;
-use lettre::Address;
 use slipstream::{ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId};
 
 #[derive(Default)]
@@ -21,7 +20,7 @@ pub(crate) struct ValidationSession {
 	/// The client's supplied client secret
 	pub client_secret: OwnedClientSecret,
 	/// The email address which is being validated
-	pub email: Address,
+	pub email: String,
 	/// The session's validation state
 	pub validation_state: ValidationState,
 }
@@ -75,7 +74,7 @@ impl ValidationSessions {
 
 	pub(super) fn create_session(
 		&mut self,
-		email: Address,
+		email: String,
 		client_secret: OwnedClientSecret,
 	) -> &mut ValidationSession {
 		let session = ValidationSession {

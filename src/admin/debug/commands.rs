@@ -20,7 +20,6 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use lettre::message::Mailbox;
 use service::rooms::short::{ShortEventId, ShortRoomId};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
@@ -1911,7 +1910,7 @@ pub(super) async fn send_test_email(&self) -> Result {
 	};
 
 	mailer
-		.send(Mailbox::new(None, email.clone()), service::mailer::messages::Test)
+		.send(email.clone(), service::mailer::messages::Test)
 		.await?;
 
 	self.write_str(&format!("Test email successfully sent to {email}"))

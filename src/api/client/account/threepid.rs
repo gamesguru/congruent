@@ -1,7 +1,6 @@
 use std::time::SystemTime;
 
 use conduwuit::{Err, Result, err};
-use lettre::{Address, message::Mailbox};
 use service::{mailer::messages, uiaa::Identity};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch,
@@ -56,9 +55,10 @@ pub(crate) async fn request_3pid_management_token_via_email_route(
 		return Err!(Request(Forbidden("You may not change your email address.")));
 	}
 
-	let Ok(email) = Address::try_from(body.email.clone()) else {
+	let email = body.email.clone();
+	if !email.contains('@') {
 		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
+	}
 
 	if services
 		.threepid
@@ -72,7 +72,7 @@ pub(crate) async fn request_3pid_management_token_via_email_route(
 	let session = services
 		.threepid
 		.send_validation_email(
-			Mailbox::new(None, email),
+			email,
 			|verification_link| messages::ChangeEmail {
 				server_name: services.config.server_name.as_str(),
 				user_id: body.sender_user_opt(),

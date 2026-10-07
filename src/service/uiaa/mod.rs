@@ -8,7 +8,6 @@ use conduwuit::{
 	Err, Error, Result, err, error, utils,
 	utils::{hash, response::LimitReadExt},
 };
-use lettre::Address;
 use slipstream::{
 	UserId,
 	api::client::{
@@ -124,7 +123,7 @@ pub struct Identity {
 	/// - The user completed a m.login.email.identity stage
 	/// - The user completed a m.login.password stage, and their user ID has an
 	///   associated email
-	pub email: Option<Address>,
+	pub email: Option<String>,
 }
 
 macro_rules! identity_update_fn {
@@ -148,7 +147,7 @@ macro_rules! identity_update_fn {
 impl Identity {
 	identity_update_fn!(fn try_set_localpart(localpart: String) else "User ID mismatch");
 
-	identity_update_fn!(fn try_set_email(email: Address) else "Email mismatch");
+	identity_update_fn!(fn try_set_email(email: String) else "Email mismatch");
 
 	/// Create an Identity with the localpart of the provided user ID
 	/// and all other fields set to None.
@@ -406,12 +405,13 @@ impl Service {
 				let user_id_or_localpart = match identifier {
 					| Some(UserIdentifier::UserIdOrLocalpart(username)) => username.to_owned(),
 					| Some(UserIdentifier::Email { address }) => {
-						let Ok(email) = Address::try_from(address.to_owned()) else {
+						let email = address.to_owned();
+						if !email.contains('@') {
 							return Err(StandardErrorBody {
 								kind: ErrorKind::InvalidParam,
 								message: "Email is malformed".to_owned(),
 							});
-						};
+						}
 
 						if let Some(localpart) =
 							self.services.threepid.get_localpart_for_email(&email).await

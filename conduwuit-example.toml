@@ -2204,33 +2204,19 @@
 #
 #msc4500_resolution_inputs = false
 
-#[global.smtp]
+#[global.email]
 
-# A `smtp://`` URI which will be used to connect to a mail server.
-# Uncommenting the [global.smtp] group and setting this option enables
+# HTTP endpoint which accepts the email webhook payload as JSON.
+# Uncommenting the [global.email] group and setting this option enables
 # features which depend on the ability to send email,
 # such as self-service password resets.
-#
-# For most modern mail servers, format the URI like this:
-# 	`smtps://username:password@hostname:port`
-# Note that you will need to URL-encode the username and password. If your
-# username _is_ your email address, you will need to replace the `@` with
-# `%40`.
-#
-# For a guide on the accepted URI syntax, consult Lettre's documentation:
-# https://docs.rs/lettre/latest/lettre/transport/smtp/struct.AsyncSmtpTransport.html#method.from_url
-#
-#connection_uri =
+#webhook_url =
 
 # The outgoing address which will be used for sending emails.
-#
-# For a syntax guide, see https://datatracker.ietf.org/doc/html/rfc2822#section-3.4
-#
-# ...or if you don't want to read the RFC, for some reason:
-# - `Name <address@domain.org>` to specify a sender name
-# - `address@domain.org` to not use a name
-#
 #sender =
+
+# Optional bearer token sent to the webhook provider.
+#webhook_token =
 
 # Whether to require that users provide an email address when they
 # register.

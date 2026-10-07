@@ -459,11 +459,6 @@ features = ["sync", "tls-rustls", "rustls-provider"]
 [workspace.dependencies.yansi]
 version = "1.0.1"
 
-[workspace.dependencies.lettre]
-version = "0.11.19"
-default-features = false
-features = ["smtp-transport", "pool", "hostname", "builder", "rustls", "rustls-native-certs", "tokio1", "rustls-no-provider", "tokio1-rustls", "serde"]
-
 [workspace.dependencies.governor]
 version = "0.10.4"
 default-features = false

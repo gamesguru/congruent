@@ -5,7 +5,6 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
-use lettre::{Address, message::Mailbox};
 use service::{mailer::messages, uiaa::Identity};
 use slipstream::{
 	OwnedRoomId, OwnedUserId, UserId,
@@ -98,9 +97,10 @@ pub(crate) async fn request_password_change_token_via_email_route(
 	State(services): State<crate::State>,
 	body: Ruma<request_password_change_token_via_email::v3::Request>,
 ) -> Result<request_password_change_token_via_email::v3::Response> {
-	let Ok(email) = Address::try_from(body.email.clone()) else {
+	let email = body.email.clone();
+	if !email.contains('@') {
 		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
+	}
 
 	let Some(localpart) = services.threepid.get_localpart_for_email(&email).await else {
 		return Err!(Request(ThreepidNotFound(
@@ -115,7 +115,7 @@ pub(crate) async fn request_password_change_token_via_email_route(
 	let session = services
 		.threepid
 		.send_validation_email(
-			Mailbox::new(display_name.clone(), email),
+			email,
 			|verification_link| messages::PasswordReset {
 				display_name: display_name.as_deref(),
 				user_id: &user_id,

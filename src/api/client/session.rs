@@ -8,7 +8,6 @@ use conduwuit::{
 use conduwuit_core::{debug_error, debug_warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
-use lettre::Address;
 use service::uiaa::Identity;
 use slipstream::{
 	OwnedUserId, UserId,
@@ -170,8 +169,10 @@ pub(crate) async fn handle_login(
 	let user_id_or_localpart = match (identifier, user) {
 		| (Some(UserIdentifier::UserIdOrLocalpart(localpart)), _) => localpart,
 		| (Some(UserIdentifier::Email { address }), _) => {
-			let email = Address::try_from(address.to_owned())
-				.map_err(|_| err!(Request(InvalidParam("Email is malformed"))))?;
+			let email = address.to_owned();
+			if !email.contains('@') {
+				return Err!(Request(InvalidParam("Email is malformed")));
+			}
 
 			&services
 				.threepid

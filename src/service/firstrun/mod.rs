@@ -273,8 +273,9 @@ impl Service {
 			);
 		}
 
-		if let Some(smtp) = &self.services.config.smtp {
-			if smtp.require_email_for_registration || smtp.require_email_for_token_registration {
+		if let Some(email) = &self.services.config.email {
+			if email.require_email_for_registration || email.require_email_for_token_registration
+			{
 				eprintln!(
 					"{} Accounts created after yours may be required to provide an email \
 					 address, as set in your configuration.",

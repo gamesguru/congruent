@@ -83,7 +83,6 @@ image.workspace = true
 itertools.workspace = true
 ldap3.optional = true
 ldap3.workspace = true
-lettre.workspace = true
 linkify = "0.10.0"
 log.workspace = true
 loole.workspace = true

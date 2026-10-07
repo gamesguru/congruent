@@ -39,7 +39,6 @@ impl Resolver {
 		let (domain, search, mut name_servers) = sys_conf.into_parts();
 
 		for ns in &mut name_servers {
-
 			if config.query_over_tcp_only {
 				ns.connections = vec![hickory_resolver::config::ConnectionConfig::tcp()];
 			}
@@ -47,11 +46,8 @@ impl Resolver {
 			ns.trust_negative_responses = !config.query_all_nameservers;
 		}
 
-		let conf = hickory_resolver::config::ResolverConfig::from_parts(
-			domain,
-			search,
-			name_servers,
-		);
+		let conf =
+			hickory_resolver::config::ResolverConfig::from_parts(domain, search, name_servers);
 
 		opts.cache_size = u64::from(config.dns_cache_entries);
 		opts.preserve_intermediates = true;

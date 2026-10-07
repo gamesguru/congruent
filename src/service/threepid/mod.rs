@@ -1,9 +1,8 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
-use conduwuit::{Err, Error, Result, result::FlatOk};
+use conduwuit::{Err, Error, Result};
 use database::{Deserialized, Map};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
-use lettre::{Address, message::Mailbox};
 use nonzero_ext::nonzero;
 use slipstream::{
 	ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId, api::client::error::ErrorKind,
@@ -21,8 +20,8 @@ pub struct Service {
 	db: Data,
 	services: Services,
 	sessions: tokio::sync::Mutex<ValidationSessions>,
-	send_attempts: std::sync::Mutex<HashMap<(OwnedClientSecret, Address), usize>>,
-	ratelimiter: DefaultKeyedRateLimiter<Address>,
+	send_attempts: std::sync::Mutex<HashMap<(OwnedClientSecret, String), usize>>,
+	ratelimiter: DefaultKeyedRateLimiter<String>,
 }
 
 pub enum EmailRequirement {
@@ -83,8 +82,9 @@ impl Service {
 
 	/// Check if users are required to have an email address.
 	pub fn email_requirement(&self) -> EmailRequirement {
-		if let Some(smtp) = &self.services.config.smtp {
-			if smtp.require_email_for_registration || smtp.require_email_for_token_registration {
+		if let Some(email) = &self.services.config.email {
+			if email.require_email_for_registration || email.require_email_for_token_registration
+			{
 				EmailRequirement::Required
 			} else {
 				EmailRequirement::Optional
@@ -100,7 +100,7 @@ impl Service {
 	#[allow(clippy::impl_trait_in_params)]
 	pub async fn send_validation_email<Template: MessageTemplate>(
 		&self,
-		recipient: Mailbox,
+		recipient: String,
 		prepare_body: impl FnOnce(String) -> Template,
 		client_secret: &ClientSecret,
 		send_attempt: usize,
@@ -119,7 +119,7 @@ impl Service {
 					},
 					| ValidationState::Pending(ref mut token) => {
 						// Check ratelimiting for the target address.
-						if self.ratelimiter.check_key(&recipient.email).is_err() {
+						if self.ratelimiter.check_key(&recipient).is_err() {
 							return Err(Error::BadRequest(
 								ErrorKind::LimitExceeded { retry_after: None },
 								"You're sending emails too fast, try again in a few minutes.",
@@ -151,7 +151,7 @@ impl Service {
 				}
 			},
 			// If no session exists, create a new one.
-			| None => sessions.create_session(recipient.email.clone(), client_secret.to_owned()),
+			| None => sessions.create_session(recipient.clone(), client_secret.to_owned()),
 		};
 
 		// Clone this so it can outlive the lock we're holding on `sessions`
@@ -224,7 +224,7 @@ impl Service {
 		&self,
 		session_id: &SessionId,
 		client_secret: &ClientSecret,
-	) -> Result<Address, Cow<'static, str>> {
+	) -> Result<String, Cow<'static, str>> {
 		let mut sessions = self.sessions.lock().await;
 
 		let Some(session) = sessions.get_session(session_id) else {
@@ -245,11 +245,7 @@ impl Service {
 	}
 
 	/// Associate a localpart with an email address.
-	pub async fn associate_localpart_email(
-		&self,
-		localpart: &str,
-		email: &Address,
-	) -> Result<()> {
+	pub async fn associate_localpart_email(&self, localpart: &str, email: &str) -> Result<()> {
 		match self.get_localpart_for_email(email).await {
 			| Some(existing_localpart) if existing_localpart != localpart => {
 				// Another account is already using the supplied email.
@@ -267,7 +263,6 @@ impl Service {
 				// Remove the user's existing email first.
 				let _ = self.disassociate_localpart_email(localpart).await;
 
-				let email: &str = email.as_ref();
 				self.db.localpart_email.insert(localpart, email);
 				self.db.email_localpart.insert(email, localpart);
 				Ok(())
@@ -279,36 +274,27 @@ impl Service {
 	///
 	/// [`Self::get_localpart_for_email`] may be used if only the email is
 	/// known.
-	pub async fn disassociate_localpart_email(&self, localpart: &str) -> Option<Address> {
+	pub async fn disassociate_localpart_email(&self, localpart: &str) -> Option<String> {
 		let email = self.get_email_for_localpart(localpart).await?;
 
 		self.db.localpart_email.remove(localpart);
-		self.db
-			.email_localpart
-			.remove(<Address as AsRef<str>>::as_ref(&email));
+		self.db.email_localpart.remove(&email);
 
 		Some(email)
 	}
 
 	/// Get the email associated with a localpart, if one exists.
-	pub async fn get_email_for_localpart(&self, localpart: &str) -> Option<Address> {
+	pub async fn get_email_for_localpart(&self, localpart: &str) -> Option<String> {
 		self.db
 			.localpart_email
 			.get(localpart)
 			.await
 			.deserialized::<String>()
 			.ok()
-			.map(TryInto::try_into)
-			.flat_ok()
 	}
 
 	/// Get the localpart associated with an email, if one exists.
-	pub async fn get_localpart_for_email(&self, email: &Address) -> Option<String> {
-		self.db
-			.email_localpart
-			.get(<Address as AsRef<str>>::as_ref(email))
-			.await
-			.deserialized()
-			.ok()
+	pub async fn get_localpart_for_email(&self, email: &str) -> Option<String> {
+		self.db.email_localpart.get(email).await.deserialized().ok()
 	}
 }

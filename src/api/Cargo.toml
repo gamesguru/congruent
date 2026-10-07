@@ -86,7 +86,6 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 itertools.workspace = true
-lettre.workspace = true
 log.workspace = true
 matchit.workspace = true
 rand.workspace = true
