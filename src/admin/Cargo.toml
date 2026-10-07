@@ -93,7 +93,6 @@ futures.workspace = true
 log.workspace = true
 serde-saphyr.workspace = true
 tokio.workspace = true
-regex.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 

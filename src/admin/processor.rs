@@ -3,7 +3,6 @@ use std::{fmt::Write, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
 use clap::{CommandFactory, Parser};
 use conduwuit::{Error, Result, debug, error, trace, utils::string::common_prefix};
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
-use regex::Regex;
 use service::{
 	Services,
 	admin::{CommandInput, CommandOutput, ProcessorFuture, ProcessorResult},
@@ -271,25 +270,63 @@ fn reply(
 /// Heuristic: output that already contains markdown formatting should not be
 /// wrapped in code blocks.
 fn looks_like_markdown(s: &str) -> bool {
-	static BOLD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-	static LINK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-
 	let trimmed = s.trim_start();
 	trimmed.starts_with('#')
 		|| trimmed.starts_with('>')
 		|| trimmed.starts_with("- ")
 		|| trimmed.starts_with("* ")
 		|| s.contains("```")
-		|| BOLD_RE
-			.get_or_init(|| {
-				Regex::new(r"(^|[^\w])\*\*[^\s][\s\S]*?[^\s]\*\*([^\w]|$)")
-					.expect("valid bold regex")
-			})
-			.is_match(s)
-		|| LINK_RE
-			.get_or_init(|| {
-				Regex::new(r"\[[^\]\n]+\]\([^()\s]+\)").expect("valid markdown link regex")
-			})
-			.is_match(s)
+		|| contains_bold(s)
+		|| contains_markdown_link(s)
 		|| s.lines().any(|line| line.trim_start().starts_with('|'))
+}
+
+fn contains_bold(s: &str) -> bool {
+	let is_word = |character: char| character.is_alphanumeric() || character == '_';
+	let mut search = 0;
+	while let Some(relative_start) = s[search..].find("**") {
+		let start = search + relative_start;
+		let content_start = start + 2;
+		let valid_before = s[..start].chars().next_back().is_none_or(|c| !is_word(c));
+		if valid_before
+			&& let Some(relative_end) = s[content_start..].find("**")
+		{
+			let end = content_start + relative_end;
+			let content = &s[content_start..end];
+			let valid_content = !content.is_empty()
+				&& !content.chars().next().is_some_and(char::is_whitespace)
+				&& !content.chars().next_back().is_some_and(char::is_whitespace);
+			let valid_after = s[end + 2..].chars().next().is_none_or(|c| !is_word(c));
+			if valid_content && valid_after {
+				return true;
+			}
+		}
+		search = content_start;
+	}
+	false
+}
+
+fn contains_markdown_link(s: &str) -> bool {
+	let mut search = 0;
+	while let Some(relative_start) = s[search..].find('[') {
+		let start = search + relative_start;
+		let Some(relative_close) = s[start + 1..].find(']') else { return false };
+		let close = start + 1 + relative_close;
+		let label = &s[start + 1..close];
+		let Some(url_start) = s[close + 1..].strip_prefix('(') else {
+			search = close + 1;
+			continue;
+		};
+		let Some(url_end) = url_start.find(')') else { return false };
+		let url = &url_start[..url_end];
+		if !label.is_empty()
+			&& !label.contains('\n')
+			&& !url.is_empty()
+			&& !url.chars().any(|c| c.is_whitespace() || matches!(c, '(' | ')'))
+		{
+			return true;
+		}
+		search = close + 1;
+	}
+	false
 }

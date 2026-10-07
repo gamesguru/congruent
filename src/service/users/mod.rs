@@ -249,21 +249,33 @@ impl Service {
 	}
 
 	fn glob_match(glob: &str, target: &str) -> bool {
-		let mut regex_str = String::with_capacity(glob.len().saturating_mul(2).saturating_add(2));
-		regex_str.push('^');
-		for c in glob.chars() {
-			match c {
-				| '*' => regex_str.push_str(".*"),
-				| '?' => regex_str.push('.'),
-				| '.' | '+' | '(' | ')' | '|' | '^' | '$' | '[' | ']' | '{' | '}' | '\\' => {
-					regex_str.push('\\');
-					regex_str.push(c);
-				},
-				| _ => regex_str.push(c),
+		let glob: Vec<char> = glob.chars().collect();
+		let target: Vec<char> = target.chars().collect();
+		let mut matched = vec![vec![false; target.len() + 1]; glob.len() + 1];
+		matched[0][0] = true;
+
+		for (glob_index, pattern) in glob.iter().enumerate() {
+			if *pattern == '*' {
+				matched[glob_index + 1][0] = matched[glob_index][0];
 			}
 		}
-		regex_str.push('$');
-		regex::Regex::new(&regex_str).is_ok_and(|re| re.is_match(target))
+
+		for glob_index in 0..glob.len() {
+			for target_index in 0..target.len() {
+				if !matched[glob_index][target_index] {
+					continue;
+				}
+
+				if glob[glob_index] == '*' {
+					matched[glob_index + 1][target_index] = true;
+					matched[glob_index][target_index + 1] = true;
+				} else if glob[glob_index] == '?' || glob[glob_index] == target[target_index] {
+					matched[glob_index + 1][target_index + 1] = true;
+				}
+			}
+		}
+
+		matched[glob.len()][target.len()]
 	}
 
 	/// Returns the recipient's filter level for an invite from the sender.

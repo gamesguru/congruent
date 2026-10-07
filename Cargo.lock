@@ -714,7 +714,6 @@ dependencies = [
  "ctor",
  "futures",
  "log",
- "regex",
  "rezzy",
  "rustls",
  "serde-saphyr",
