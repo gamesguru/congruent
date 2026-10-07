@@ -476,9 +476,6 @@ features = ["sync", "tls-rustls", "rustls-provider"]
 [workspace.dependencies.yansi]
 version = "1.0.1"
 
-[workspace.dependencies.askama]
-version = "0.15.0"
-
 [workspace.dependencies.lettre]
 version = "0.11.19"
 default-features = false
@@ -728,7 +725,7 @@ debug = 0
 
 # Proc macros and build scripts *run* during the build, and package.'*' does not
 # apply to them. Leaving them at opt-level 0 costs real time here, since this
-# workspace leans on ruma-macros/askama_derive/conduwuit_macros heavily.
+# workspace leans on ruma-macros/conduwuit_macros heavily.
 [profile.fast.build-override]
 opt-level = 1
 codegen-units = 16

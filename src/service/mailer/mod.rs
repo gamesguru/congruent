@@ -86,9 +86,7 @@ impl Mailer<'_> {
 		message: Template,
 	) -> Result<()> {
 		let subject = message.subject();
-		let body = message
-			.render()
-			.map_err(|err| err!("Failed to render message template: {err}"))?;
+		let body = message.render();
 
 		let message = MessageBuilder::new()
 			.from(self.sender.clone())
