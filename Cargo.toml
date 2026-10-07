@@ -162,11 +162,6 @@ version = "1.0.219"
 default-features = false
 features = ["rc"]
 
-[workspace.dependencies.serde_json]
-version = "1.0.140"
-default-features = false
-features = ["raw_value"]
-
 # Used for appservice registration files
 [workspace.dependencies.serde-saphyr]
 version = "0.0.24"
@@ -500,8 +495,6 @@ version = "0.3.0"
 [workspace.dependencies.roaring]
 version = "0.10" # compatible with Synapse's rustc 1.87.0
 
-[workspace.dependencies.criterion]
-version = "0.5"
 #
 # Patches
 #
