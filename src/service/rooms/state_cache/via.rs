@@ -1,7 +1,6 @@
 use conduwuit::{
 	Result, implement,
 	utils::{StreamTools, stream::TryIgnore},
-	warn,
 };
 use database::Ignore;
 use futures::{Stream, StreamExt, future, stream::iter};

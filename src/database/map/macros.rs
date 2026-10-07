@@ -28,7 +28,6 @@ macro_rules! stream_boilerplate {
 		}
 
 		let seek = Seek {
-			map: $self.clone(),
 			dir: $dir,
 			key: key_slice.map(crate::keyval::KeyBuf::from),
 			state: crate::pool::into_send_seek(state),

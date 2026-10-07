@@ -4,8 +4,8 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Event, Result, debug, debug::INFO_SPAN_LEVEL, debug_error, debug_info, defer, err,
-	implement, info, trace, utils::stream::IterStream, warn,
+	Err, Event, Result, debug, debug_error, debug_info, defer, err, implement, info, trace,
+	utils::stream::IterStream, warn,
 };
 use futures::{
 	FutureExt, TryFutureExt, TryStreamExt,

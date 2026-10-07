@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use conduwuit::{
-	Err, Event, PduEvent, Result, debug, debug::INFO_SPAN_LEVEL, defer, implement,
+	Err, Event, PduEvent, Result, debug, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
 use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};

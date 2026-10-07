@@ -127,9 +127,56 @@ macro_rules! err_log {
 	}};
 
 	($out:ident, $level:ident, $($fields:tt)+) => {{
-		($out).push_str(stringify!($($fields)+));
+		($out).push_str(&$crate::__conduwuit_format!($($fields)+));
 		($out).into()
 	}}
+}
+
+#[doc(hidden)]
+#[macro_export]
+/// Formats tracing-style fields for error values without emitting a log record.
+///
+/// This mirrors `__conduwuit_log!` so `err!(error!(...))` preserves the same
+/// field values and format-string captures as ordinary log calls.
+macro_rules! __conduwuit_format {
+	(target: $target:literal, $($rest:tt)+) => {
+		$crate::__conduwuit_format!($($rest)+)
+	};
+	($fmt:literal $(, $args:expr)* $(,)?) => {
+		format!($fmt $(, $args)*)
+	};
+
+	(%$value:expr,) => { format!("{}={} ", stringify!($value), &$value) };
+	(?$value:expr,) => { format!("{}={:?} ", stringify!($value), &$value) };
+	($name:ident,) => { format!("{}={:?} ", stringify!($name), &$name) };
+	($name:ident = %$value:expr,) => { format!("{}={} ", stringify!($name), &$value) };
+	($name:ident = ?$value:expr,) => { format!("{}={:?} ", stringify!($name), &$value) };
+	($name:ident = $value:expr,) => { format!("{}={:?} ", stringify!($name), &$value) };
+	(%$value:expr) => { format!("{}={} ", stringify!($value), &$value) };
+	(?$value:expr) => { format!("{}={:?} ", stringify!($value), &$value) };
+	($name:ident) => { format!("{}={:?} ", stringify!($name), &$name) };
+	($name:ident = %$value:expr) => { format!("{}={} ", stringify!($name), &$value) };
+	($name:ident = ?$value:expr) => { format!("{}={:?} ", stringify!($name), &$value) };
+	($name:ident = $value:expr) => { format!("{}={:?} ", stringify!($name), &$value) };
+
+	(%$value:expr, $($rest:tt)+) => {{
+		format!("{}={} {}", stringify!($value), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	(?$value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($value), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$name, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = %$value:expr, $($rest:tt)+) => {{
+		format!("{}={} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = ?$value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
+	($name:ident = $value:expr, $($rest:tt)+) => {{
+		format!("{}={:?} {}", stringify!($name), &$value, $crate::__conduwuit_format!($($rest)+))
+	}};
 }
 
 #[macro_export]

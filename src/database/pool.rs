@@ -55,7 +55,6 @@ pub(crate) struct Get {
 /// Note: only initial seek is supported at this time on the assumption rocksdb
 /// prefetching prevents mid-iteration polls from blocking on I/O.
 pub(crate) struct Seek {
-	pub(crate) map: Arc<Map>,
 	pub(crate) state: stream::State<'static>,
 	pub(crate) dir: Direction,
 	pub(crate) key: Option<KeyBuf>,

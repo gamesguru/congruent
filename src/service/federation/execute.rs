@@ -2,8 +2,7 @@ use std::{fmt::Debug, mem};
 
 use bytes::Bytes;
 use conduwuit::{
-	Err, Error, Result, debug, debug::INFO_SPAN_LEVEL, debug_error, err, implement, trace,
-	utils::response::LimitReadExt,
+	Err, Error, Result, debug, debug_error, err, implement, trace, utils::response::LimitReadExt,
 };
 use http::{HeaderValue, header::AUTHORIZATION};
 use ipaddress::IPAddress;
@@ -230,7 +229,7 @@ fn handle_error(
 		debug_error!(
 			%method,
 			%url,
-			final_url = e.url().map(std::string::ToString::to_string),
+			final_url = e.url().map(ToString::to_string),
 			"Redirect loop {}: {}",
 			actual.host,
 			e,

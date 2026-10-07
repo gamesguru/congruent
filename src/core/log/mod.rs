@@ -70,6 +70,12 @@ macro_rules! trace {
 
 #[doc(hidden)]
 #[macro_export]
+/// Compatibility implementation for the former tracing-style call syntax.
+///
+/// It preserves structured fields while dispatching through the `log` crate:
+/// `%field` uses `Display`, `?field` uses `Debug`, and unqualified fields use
+/// `Debug`, matching tracing's default field behavior. Message format strings
+/// retain Rust's implicit `{name}` captures.
 macro_rules! __conduwuit_log {
 	($level:ident, target: $target:literal, $($rest:tt)+) => {
 		$crate::__conduwuit_log!(@parse $level, ($target), String::new(), $($rest)+)

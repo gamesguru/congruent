@@ -7,7 +7,6 @@ use conduwuit::{
 	Pdu, Result, SyncRwLock, implement,
 	result::LogErr,
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
-	warn,
 };
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt, future::join5, pin_mut};

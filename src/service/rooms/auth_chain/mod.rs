@@ -8,7 +8,6 @@ use conduwuit::{
 		IterStream, MutexMap,
 		stream::{ReadyExt, TryBroadbandExt},
 	},
-	warn,
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use roaring::RoaringTreemap;

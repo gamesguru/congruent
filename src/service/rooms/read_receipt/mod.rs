@@ -2,7 +2,7 @@ mod data;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use conduwuit::{Result, debug, err, warn};
+use conduwuit::{Result, debug, err};
 use futures::Stream;
 use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,

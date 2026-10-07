@@ -292,7 +292,7 @@ async fn handle_location(
 ) -> Result<FileMeta> {
 	self.location_request(location).await.map_err(|error| {
 		err!(Request(NotFound(
-			debug_warn!(%mxc, user = user.map(tracing::field::display), ?location, ?error, "Fetching media from location failed")
+			debug_warn!(%mxc, user, ?location, ?error, "Fetching media from location failed")
 		)))
 	})
 }
