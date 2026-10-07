@@ -1,5 +1,6 @@
 #![type_length_limit = "49152"] //TODO: reduce me
 #![deny(unused_must_use)]
+#![allow(clippy::disallowed_macros)]
 
 use std::sync::{Arc, atomic::Ordering};
 

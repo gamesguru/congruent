@@ -332,9 +332,9 @@ pub async fn add_signing_keys(
 	new_keys.old_verify_keys.retain(|key_id, ok| {
 		if ok.expired_ts > now_plus_skew {
 			conduwuit::warn!(
-				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts {ts:?} is \
-				 in the future",
-				ts = ok.expired_ts
+				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts {:?} is in \
+				 the future",
+				ok.expired_ts
 			);
 			old_keys_filtered = true;
 			return false;
