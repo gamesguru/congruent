@@ -30,7 +30,7 @@ pub(crate) async fn third_party_route(
 	{
 		threepids.push(
 			ThirdPartyIdentifierInit {
-				address: email.to_string(),
+				address: email,
 				medium: Medium::Email,
 				// We don't currently track these, and they aren't used for much
 				validated_at: MilliSecondsSinceUnixEpoch::now(),

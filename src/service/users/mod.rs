@@ -251,12 +251,23 @@ impl Service {
 	fn glob_match(glob: &str, target: &str) -> bool {
 		let glob: Vec<char> = glob.chars().collect();
 		let target: Vec<char> = target.chars().collect();
-		let mut matched = vec![vec![false; target.len() + 1]; glob.len() + 1];
+		let target_width = target
+			.len()
+			.checked_add(1)
+			.expect("glob target is too large");
+		let glob_height = glob
+			.len()
+			.checked_add(1)
+			.expect("glob pattern is too large");
+		let mut matched = vec![vec![false; target_width]; glob_height];
 		matched[0][0] = true;
 
 		for (glob_index, pattern) in glob.iter().enumerate() {
 			if *pattern == '*' {
-				matched[glob_index + 1][0] = matched[glob_index][0];
+				let next_glob_index = glob_index
+					.checked_add(1)
+					.expect("glob pattern is too large");
+				matched[next_glob_index][0] = matched[glob_index][0];
 			}
 		}
 
@@ -267,10 +278,22 @@ impl Service {
 				}
 
 				if glob[glob_index] == '*' {
-					matched[glob_index + 1][target_index] = true;
-					matched[glob_index][target_index + 1] = true;
+					let next_glob_index = glob_index
+						.checked_add(1)
+						.expect("glob pattern is too large");
+					let next_target_index = target_index
+						.checked_add(1)
+						.expect("glob target is too large");
+					matched[next_glob_index][target_index] = true;
+					matched[glob_index][next_target_index] = true;
 				} else if glob[glob_index] == '?' || glob[glob_index] == target[target_index] {
-					matched[glob_index + 1][target_index + 1] = true;
+					let next_glob_index = glob_index
+						.checked_add(1)
+						.expect("glob pattern is too large");
+					let next_target_index = target_index
+						.checked_add(1)
+						.expect("glob target is too large");
+					matched[next_glob_index][next_target_index] = true;
 				}
 			}
 		}

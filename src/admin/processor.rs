@@ -284,19 +284,28 @@ fn looks_like_markdown(s: &str) -> bool {
 fn contains_bold(s: &str) -> bool {
 	let is_word = |character: char| character.is_alphanumeric() || character == '_';
 	let mut search = 0;
-	while let Some(relative_start) = s[search..].find("**") {
-		let start = search + relative_start;
-		let content_start = start + 2;
-		let valid_before = s[..start].chars().next_back().is_none_or(|c| !is_word(c));
+	while let Some(relative_start) = s.get(search..).and_then(|rest| rest.find("**")) {
+		let start = search
+			.checked_add(relative_start)
+			.expect("markdown input is too large");
+		let content_start = start.checked_add(2).expect("markdown input is too large");
+		let valid_before = s
+			.get(..start)
+			.is_none_or(|prefix| prefix.chars().next_back().is_none_or(|c| !is_word(c)));
 		if valid_before
-			&& let Some(relative_end) = s[content_start..].find("**")
+			&& let Some(relative_end) = s.get(content_start..).and_then(|rest| rest.find("**"))
 		{
-			let end = content_start + relative_end;
-			let content = &s[content_start..end];
+			let end = content_start
+				.checked_add(relative_end)
+				.expect("markdown input is too large");
+			let Some(content) = s.get(content_start..end) else { return false };
 			let valid_content = !content.is_empty()
 				&& !content.chars().next().is_some_and(char::is_whitespace)
 				&& !content.chars().next_back().is_some_and(char::is_whitespace);
-			let valid_after = s[end + 2..].chars().next().is_none_or(|c| !is_word(c));
+			let after = end.checked_add(2).expect("markdown input is too large");
+			let valid_after = s
+				.get(after..)
+				.is_none_or(|suffix| suffix.chars().next().is_none_or(|c| !is_word(c)));
 			if valid_content && valid_after {
 				return true;
 			}
@@ -308,25 +317,35 @@ fn contains_bold(s: &str) -> bool {
 
 fn contains_markdown_link(s: &str) -> bool {
 	let mut search = 0;
-	while let Some(relative_start) = s[search..].find('[') {
-		let start = search + relative_start;
-		let Some(relative_close) = s[start + 1..].find(']') else { return false };
-		let close = start + 1 + relative_close;
-		let label = &s[start + 1..close];
-		let Some(url_start) = s[close + 1..].strip_prefix('(') else {
-			search = close + 1;
+	while let Some(relative_start) = s.get(search..).and_then(|rest| rest.find('[')) {
+		let start = search
+			.checked_add(relative_start)
+			.expect("markdown input is too large");
+		let label_start = start.checked_add(1).expect("markdown input is too large");
+		let Some(relative_close) = s.get(label_start..).and_then(|rest| rest.find(']')) else {
+			return false;
+		};
+		let close = label_start
+			.checked_add(relative_close)
+			.expect("markdown input is too large");
+		let Some(label) = s.get(label_start..close) else { return false };
+		let after_close = close.checked_add(1).expect("markdown input is too large");
+		let Some(url_start) = s.get(after_close..).and_then(|rest| rest.strip_prefix('(')) else {
+			search = after_close;
 			continue;
 		};
 		let Some(url_end) = url_start.find(')') else { return false };
-		let url = &url_start[..url_end];
+		let Some(url) = url_start.get(..url_end) else { return false };
 		if !label.is_empty()
 			&& !label.contains('\n')
 			&& !url.is_empty()
-			&& !url.chars().any(|c| c.is_whitespace() || matches!(c, '(' | ')'))
+			&& !url
+				.chars()
+				.any(|c| c.is_whitespace() || matches!(c, '(' | ')'))
 		{
 			return true;
 		}
-		search = close + 1;
+		search = after_close;
 	}
 	false
 }
