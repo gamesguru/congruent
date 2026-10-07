@@ -58,10 +58,6 @@ on:
         description: "Feature: hardened_malloc"
         type: boolean
         default: false
-      feat_http3:
-        description: "Feature: http3"
-        type: boolean
-        default: false
       feat_io_uring:
         description: "Feature: io_uring"
         type: boolean
@@ -190,7 +186,6 @@ jobs:
             [ "${{ inputs.feat_element_hacks }}" == "true" ] && F+=("element_hacks")
             [ "${{ inputs.feat_full }}" == "true" ] && F+=("full")
             [ "${{ inputs.feat_hardened_malloc }}" == "true" ] && F+=("hardened_malloc")
-            [ "${{ inputs.feat_http3 }}" == "true" ] && F+=("http3")
             [ "${{ inputs.feat_io_uring }}" == "true" ] && F+=("io_uring")
             [ "${{ inputs.feat_jemalloc }}" == "true" ] && F+=("jemalloc")
             [ "${{ inputs.feat_ldap }}" == "true" ] && F+=("ldap")

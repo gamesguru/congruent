@@ -105,9 +105,6 @@ gzip_compression = [
 hardened_malloc = [
 	"conduwuit-core/hardened_malloc",
 ]
-http3 = [
-    "reqwest/http3"
-]
 ring = [
     "rustls/ring"
 ]

@@ -173,13 +173,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     set -o xtrace
     . /etc/environment
 
-    # Check if http3 feature is enabled and set appropriate RUSTFLAGS
-    if echo "${CARGO_FEATURES}" | grep -q "http3"; then
-        export RUSTFLAGS="${RUSTFLAGS} --cfg reqwest_unstable"
-    else
-        export RUSTFLAGS="${RUSTFLAGS}"
-    fi
-
     RUST_PROFILE_DIR="${RUST_PROFILE}"
     if [[ "${RUST_PROFILE}" == "dev" ]]; then
         RUST_PROFILE_DIR="debug"
