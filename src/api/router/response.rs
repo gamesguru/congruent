@@ -62,7 +62,7 @@ where
 	T: OutgoingResponse;
 
 impl From<Error> for RumaResponse<UiaaResponse> {
-	fn from(t: Error) -> Self { Self(t.into()) }
+	fn from(t: Error) -> Self { Self(t) }
 }
 
 impl<T> IntoResponse for RumaResponse<T>

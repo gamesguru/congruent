@@ -23,6 +23,7 @@ fn manifest() -> &'static std::sync::Mutex<Vec<RouteManifestEntry>> {
 	ROUTE_MANIFEST.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+#[must_use]
 pub fn matchit_path(path: &str) -> String {
 	let mut converted = String::with_capacity(path.len());
 	let mut parameter = false;
@@ -51,6 +52,7 @@ pub fn record_route(method: Method, path: &str, handler: &'static str) {
 		});
 }
 
+#[must_use]
 pub fn route_manifest() -> Vec<RouteManifestEntry> {
 	manifest()
 		.lock()
