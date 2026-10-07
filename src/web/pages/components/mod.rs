@@ -2,7 +2,7 @@ use askama::{Template, filters::HtmlSafe};
 use base64::Engine;
 use conduwuit_core::result::FlatOk;
 use conduwuit_service::Services;
-use ruma::UserId;
+use slipstream::{Mxc, UserId};
 
 pub(super) mod form;
 
@@ -36,7 +36,11 @@ impl<'a> UserCard<'a> {
 
 		let avatar_src = async {
 			let avatar_url = services.users.avatar_url(user_id).await.ok()?;
-			let avatar_mxc = avatar_url.parts().ok()?;
+			let server_name = avatar_url.server_name().ok()?;
+			let avatar_mxc = Mxc {
+				server_name: &server_name,
+				media_id: avatar_url.media_id().ok()?,
+			};
 			let file = services.media.get(&avatar_mxc).await.flat_ok()?;
 
 			Some(format!(

@@ -5,20 +5,19 @@ use conduwuit_core::{
 	Err, Error, Result, err, implement,
 	matrix::{
 		event::{Event, gen_event_id},
-		pdu::{EventHash, PduBuilder, PduEvent},
+		pdu::{EventHash, PduBuilder, PduEvent, RawJson},
 		state_res::RoomVersion,
 	},
 	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
 	warn,
 };
 use futures::{StreamExt, TryStreamExt, future};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
 	UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	uint,
 };
-use serde_json::value::{RawValue, to_raw_value};
 
 use super::RoomMutexGuard;
 
@@ -53,20 +52,17 @@ pub fn pdu_fits(owned_obj: &mut CanonicalJsonObject) -> bool {
 		}
 	}
 	// Now check the full PDU size
-	match serde_json::to_string(owned_obj) {
-		| Ok(s) => s.len() <= 65535,
-		| Err(_) => false,
-	}
+	slipstream::codec::to_string(owned_obj).len() <= 65535
 }
 
 /// Pulls the room version ID out of the given (create) event.
 fn room_version_from_event(
 	room_id: OwnedRoomId,
 	event_type: &TimelineEventType,
-	content: &RawValue,
+	content: &RawJson,
 ) -> Result<RoomVersionId> {
 	if event_type == &TimelineEventType::RoomCreate {
-		let content: RoomCreateEventContent = serde_json::from_str(content.get())?;
+		let content: RoomCreateEventContent = slipstream::codec::from_str(content.get())?;
 		Ok(content.room_version)
 	} else {
 		Err(Error::InconsistentRoomState(
@@ -120,7 +116,7 @@ pub async fn create_event(
 		| None => {
 			trace!("No room ID, assuming room creation");
 			room_version_from_event(
-				RoomId::new(self.services.globals.server_name()),
+				OwnedRoomId::new_v1(self.services.globals.server_name()),
 				&event_type.clone(),
 				&content.clone(),
 			)?
@@ -183,7 +179,7 @@ pub async fn create_event(
 				let content_val = rezzy::JsonValue::parse(content.get())
 					.expect("PDU content must be valid JSON");
 				let auth_types = rezzy::auth::auth_types_for_event(
-					&event_type.to_string(),
+					event_type.as_ref(),
 					sender.as_str(),
 					state_key.as_deref(),
 					&content_val,
@@ -240,29 +236,30 @@ pub async fn create_event(
 				.room_state_get(room_id, &event_type.clone().to_string().into(), state_key)
 				.await
 			{
-				unsigned.insert("prev_content".to_owned(), prev_pdu.get_content_as_value());
-				unsigned
-					.insert("prev_sender".to_owned(), serde_json::to_value(prev_pdu.sender())?);
+				unsigned.insert(
+					"prev_content".to_owned(),
+					slipstream::json::Value::parse(prev_pdu.content().get()).unwrap_or_default(),
+				);
+				unsigned.insert(
+					"prev_sender".to_owned(),
+					slipstream::codec::Serialize::to_json(prev_pdu.sender()),
+				);
 				unsigned.insert(
 					"replaces_state".to_owned(),
-					serde_json::to_value(prev_pdu.event_id())?,
+					slipstream::codec::Serialize::to_json(prev_pdu.event_id()),
 				);
 			}
 		}
 	}
 
 	let mut pdu = PduEvent {
-		event_id: ruma::event_id!("$thiswillbefilledinlater").into(),
+		event_id: slipstream::event_id!("$thiswillbefilledinlater"),
 		room_id: room_id.map(ToOwned::to_owned),
 		sender: sender.to_owned(),
 		origin: None,
 		origin_server_ts: timestamp.map_or_else(
-			|| {
-				utils::millis_since_unix_epoch()
-					.try_into()
-					.expect("u64 fits into UInt")
-			},
-			|ts| ts.get(),
+			utils::millis_since_unix_epoch,
+			slipstream::MilliSecondsSinceUnixEpoch::get,
 		),
 		kind: event_type,
 		content,
@@ -277,7 +274,7 @@ pub async fn create_event(
 		unsigned: if unsigned.is_empty() {
 			None
 		} else {
-			Some(to_raw_value(&unsigned)?)
+			Some(RawJson::from_value(&unsigned))
 		},
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
@@ -363,11 +360,12 @@ pub async fn create_hash_and_sign_event(
 			"Checking event in room {} with policy server",
 			pdu.room_id.as_ref().map_or("None", |id| id.as_str())
 		);
-		let policy_room_id = pdu.room_id_or_hash().expect("has room ID");
+		let policy_room_id = pdu.room_id_or_hash();
+		let policy_room_id = policy_room_id.as_ref().expect("has room ID");
 		match self
 			.services
 			.event_handler
-			.ask_policy_server(&pdu, &mut pdu_json, &policy_room_id, false)
+			.ask_policy_server(&pdu, &mut pdu_json, policy_room_id, false)
 			.await
 		{
 			| Ok(true) => {},
@@ -408,10 +406,16 @@ pub fn hash_sign_and_finalize(
 	room_version_id: &RoomVersionId,
 ) -> Result<CanonicalJsonObject> {
 	// Sort keys canonically and purge "placeholder" `event_id`
-	let mut pdu_json = utils::to_canonical_object(&*pdu).map_err(|e| {
-		err!(Request(BadJson(warn!("Failed to convert PDU to canonical JSON: {e}"))))
-	})?;
-	pdu_json.remove("event_id");
+	let mut pdu_json = pdu.to_canonical_object();
+	if conduwuit_core::matrix::event::has_opaque_event_ids(room_version_id) {
+		// Room versions 1 and 2: the event ID is assigned here, and is part of
+		// the hashed and signed event.
+		let event_id =
+			format!("${}:{}", utils::random_string(18), self.services.globals.server_name());
+		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(event_id));
+	} else {
+		pdu_json.remove("event_id");
+	}
 
 	// Sign
 	if let Err(e) = self
@@ -420,7 +424,7 @@ pub fn hash_sign_and_finalize(
 		.hash_and_sign_event(&mut pdu_json, room_version_id)
 	{
 		return match e {
-			| Error::Signatures(ruma::signatures::Error::PduSize) => {
+			| Error::Signatures(slipstream::signatures::Error::PduSize) => {
 				Err!(Request(TooLarge("Message/PDU is too long (exceeds 65535 bytes)")))
 			},
 			| _ => Err!(Request(BadJson(warn!("Signing event failed: {e}")))),
@@ -432,14 +436,14 @@ pub fn hash_sign_and_finalize(
 
 	// Rehydrate the persisted event from the finalized JSON so the stored PDU
 	// carries the same hashes/signatures as the canonical representation.
-	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_deref())?;
+	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_ref())?;
 
 	Ok(pdu_json)
 }
 
 #[cfg(test)]
 mod tests {
-	use ruma::{CanonicalJsonObject, CanonicalJsonValue};
+	use slipstream::{CanonicalJsonObject, CanonicalJsonValue};
 
 	use super::*;
 

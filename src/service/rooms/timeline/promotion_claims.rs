@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use conduwuit_core::SyncMutex;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Which disposition currently owns an event ID in [`PromotionClaims`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,14 +79,12 @@ impl Default for PromotionClaims {
 mod tests {
 	use std::sync::Arc;
 
-	use ruma::owned_event_id;
-
 	use super::*;
 
 	#[test]
 	fn promotion_claims_are_exclusive() {
 		let claims = Arc::new(PromotionClaims::new());
-		let event_id = owned_event_id!("$test_event:example.org");
+		let event_id = OwnedEventId::parse("$test_event:example.org").unwrap();
 
 		assert!(claims.try_claim_promotion(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));
@@ -98,7 +96,7 @@ mod tests {
 	#[test]
 	fn duplicate_promotion_claim_is_refused() {
 		let claims = PromotionClaims::new();
-		let event_id = owned_event_id!("$dup:example.org");
+		let event_id = OwnedEventId::parse("$dup:example.org").unwrap();
 		assert!(claims.try_claim_promotion(&event_id));
 		assert!(!claims.try_claim_promotion(&event_id));
 	}

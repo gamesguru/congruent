@@ -3,44 +3,26 @@ use axum::{
 	extract::{FromRequest, State},
 };
 use conduwuit::{Err, Result};
-use ruma::api::{AuthScheme, Metadata, VersionHistory};
+use slipstream::api::Metadata;
 
-use crate::router::authenticate_user;
+use crate::{json_util::single_field, router::authenticate_user};
 
 pub(crate) struct GetDelayedEventRequest;
 
 impl GetDelayedEventRequest {
-	const METADATA: Metadata = Metadata {
-		method: http::Method::GET,
-		rate_limited: true,
-		authentication: AuthScheme::AccessToken,
-		history: VersionHistory::new(
-			&["/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{delay_id}"],
-			&[],
-			None,
-			None,
-		),
-	};
+	const METADATA: Metadata =
+		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{}");
 }
 
 pub(crate) struct GetAllDelayedEventsRequest;
 
 impl GetAllDelayedEventsRequest {
-	const METADATA: Metadata = Metadata {
-		method: http::Method::GET,
-		rate_limited: true,
-		authentication: AuthScheme::AccessToken,
-		history: VersionHistory::new(
-			&["/_matrix/client/unstable/org.matrix.msc4140/delayed_events"],
-			&[],
-			None,
-			None,
-		),
-	};
+	const METADATA: Metadata =
+		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events");
 }
 
 pub(crate) struct DelayedEventUser {
-	pub(crate) user_id: ruma::OwnedUserId,
+	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
 impl FromRequest<crate::State, Body> for DelayedEventUser {
@@ -58,7 +40,7 @@ impl FromRequest<crate::State, Body> for DelayedEventUser {
 }
 
 pub(crate) struct AllDelayedEventsUser {
-	pub(crate) user_id: ruma::OwnedUserId,
+	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
 impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
@@ -81,7 +63,7 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 pub(crate) async fn update_delayed_event_route(
 	State(services): State<crate::State>,
 	axum::extract::Path((delay_id, action)): axum::extract::Path<(String, String)>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::response::Response> {
 	let action = match action.as_str() {
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
 		| "send" => service::rooms::delayed_events::UpdateAction::Send,
@@ -95,12 +77,14 @@ pub(crate) async fn update_delayed_event_route(
 		.update_delayed_event(delay_id, action)
 		.await?;
 
-	Ok(axum::Json(serde_json::json!({})))
+	Ok(crate::json_util::json_response(slipstream::json::Value::Object(
+		slipstream::json::Object::new(),
+	)))
 }
 
 pub(crate) async fn update_delayed_event_without_action_route(
 	axum::extract::Path(_delay_id): axum::extract::Path<String>,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::response::Response> {
 	Err!(Request(NotFound("Invalid action.")))
 }
 
@@ -108,22 +92,20 @@ pub(crate) async fn get_delayed_event_route(
 	State(services): State<crate::State>,
 	axum::extract::Path(delay_id): axum::extract::Path<String>,
 	user: DelayedEventUser,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::response::Response> {
 	let data = services
 		.rooms
 		.delayed_events
 		.get_delayed_event(&user.user_id, delay_id)
 		.await?;
 
-	Ok(axum::Json(serde_json::json!({
-		"delayed_event": data,
-	})))
+	Ok(crate::json_util::json_response(single_field("delayed_event", &data)))
 }
 
 pub(crate) async fn get_all_delayed_events_route(
 	State(services): State<crate::State>,
 	user: AllDelayedEventsUser,
-) -> Result<axum::Json<serde_json::Value>> {
+) -> Result<axum::response::Response> {
 	let mut data = services
 		.rooms
 		.delayed_events
@@ -134,10 +116,8 @@ pub(crate) async fn get_all_delayed_events_route(
 		event
 			.running_since
 			.to_system_time()
-			.and_then(|ts| ts.checked_add(event.delay))
+			.checked_add(event.delay)
 	});
 
-	Ok(axum::Json(serde_json::json!({
-		"delayed_events": data,
-	})))
+	Ok(crate::json_util::json_response(single_field("delayed_events", &data)))
 }

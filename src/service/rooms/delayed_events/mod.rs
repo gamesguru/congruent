@@ -19,24 +19,22 @@ use database::{Deserialized, Json, Map};
 use futures::{StreamExt, join};
 use http::StatusCode;
 use loole::Sender;
-use ruma::{
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::error::{ErrorKind, StandardErrorBody},
+	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
 	events::TimelineEventType,
-	serde::Raw,
+	sswire::Raw,
 };
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug)]
 pub enum UpdateAction {
 	Restart,
 	Send,
 	Cancel,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DelayedEventStatus {
 	Scheduled,
 	Send,
@@ -44,11 +42,37 @@ pub enum DelayedEventStatus {
 	Error,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AnyTimelineEventContent(pub serde_json::Value);
+impl DelayedEventStatus {
+	#[must_use]
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			| Self::Scheduled => "scheduled",
+			| Self::Send => "send",
+			| Self::Cancel => "cancel",
+			| Self::Error => "error",
+		}
+	}
+}
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+impl CodecSerialize for DelayedEventStatus {
+	fn to_json(&self) -> slipstream::json::Value { self.as_str().to_json() }
+}
+
+/// Opaque event content, stored transparently as its JSON value.
+#[derive(Clone, Debug)]
+pub struct AnyTimelineEventContent(pub slipstream::json::Value);
+
+impl CodecSerialize for AnyTimelineEventContent {
+	fn to_json(&self) -> slipstream::json::Value { self.0.clone() }
+}
+
+impl CodecDeserialize for AnyTimelineEventContent {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		Ok(Self(value.clone()))
+	}
+}
+
+#[derive(Clone, Debug)]
 pub struct DelayedEventData {
 	/// The ID of the delayed event.
 	pub delay_id: String,
@@ -57,18 +81,16 @@ pub struct DelayedEventData {
 	pub room_id: OwnedRoomId,
 
 	/// The event type of the delayed event.
-	#[serde(rename = "type")]
 	pub event_type: TimelineEventType,
 
 	/// The State Key if the event is a state event, nothing otherwise
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<String>,
 
 	/// The event content to send.
 	pub content: Raw<AnyTimelineEventContent>,
 
 	/// The duration that the server should wait before sending this event
-	#[serde(with = "ruma::serde::duration::ms")]
+	/// (encoded as milliseconds).
 	pub delay: Duration,
 
 	/// The timestamp when the delayed event was scheduled or last restarted.
@@ -76,20 +98,31 @@ pub struct DelayedEventData {
 
 	/// The error that prevented the delayed event from being sent.
 	/// Present only for finalized events that were cancelled due to an error.
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub error: Option<StandardErrorBody>,
 
 	/// The event_id this event got when it was sent.
 	/// Present only for events that were sent successfully.
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub event_id: Option<OwnedEventId>,
 
 	/// The timestamp when the event was finalized.
 	/// Present only for events that were finalized (sent, failed to send, or
 	/// cancelled).
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(rename = "finalised_ts")]
 	pub finalized_ts: Option<MilliSecondsSinceUnixEpoch>,
+}
+
+slipstream::codec_struct! {
+	DelayedEventData {
+		delay_id: String = ("delay_id"),
+		room_id: OwnedRoomId = ("room_id"),
+		event_type: TimelineEventType = ("type"),
+		state_key: Option<String> = ("state_key", omit),
+		content: Raw<AnyTimelineEventContent> = ("content"),
+		delay: Duration = ("delay", omit),
+		running_since: MilliSecondsSinceUnixEpoch = ("running_since"),
+		error: Option<StandardErrorBody> = ("error", omit),
+		event_id: Option<OwnedEventId> = ("event_id", omit),
+		finalized_ts: Option<MilliSecondsSinceUnixEpoch> = ("finalised_ts", omit),
+	}
 }
 
 impl DelayedEventData {
@@ -214,7 +247,7 @@ impl crate::Service for Service {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct ScheduledDelayedEvent {
 	pub event_type: TimelineEventType,
 	pub state_key: Option<String>,
@@ -223,6 +256,86 @@ pub struct ScheduledDelayedEvent {
 	pub room_id: OwnedRoomId,
 	pub running_since: SystemTime,
 	pub delay: Duration,
+}
+
+/// Encodes a `Duration` like serde does: `{"secs":_,"nanos":_}`.
+fn duration_to_json(value: &Duration) -> slipstream::json::Value {
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("secs", &value.as_secs());
+	object.field("nanos", &value.subsec_nanos());
+	object.finish()
+}
+
+fn duration_from_json(
+	value: &slipstream::json::Value,
+) -> Result<Duration, slipstream::codec::DeError> {
+	let secs = value
+		.get("secs")
+		.ok_or_else(|| slipstream::codec::DeError::expected("duration secs"))?;
+	let nanos = value
+		.get("nanos")
+		.ok_or_else(|| slipstream::codec::DeError::expected("duration nanos"))?;
+	Ok(Duration::new(u64::from_json(secs)?, u32::from_json(nanos)?))
+}
+
+/// Encodes a `SystemTime` like serde does:
+/// `{"secs_since_epoch":_,"nanos_since_epoch":_}`.
+fn system_time_to_json(value: &SystemTime) -> slipstream::json::Value {
+	let since = value
+		.duration_since(SystemTime::UNIX_EPOCH)
+		.unwrap_or_default();
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("secs_since_epoch", &since.as_secs());
+	object.field("nanos_since_epoch", &since.subsec_nanos());
+	object.finish()
+}
+
+fn system_time_from_json(
+	value: &slipstream::json::Value,
+) -> Result<SystemTime, slipstream::codec::DeError> {
+	let secs = value
+		.get("secs_since_epoch")
+		.ok_or_else(|| slipstream::codec::DeError::expected("secs_since_epoch"))?;
+	let nanos = value
+		.get("nanos_since_epoch")
+		.ok_or_else(|| slipstream::codec::DeError::expected("nanos_since_epoch"))?;
+	SystemTime::UNIX_EPOCH
+		.checked_add(Duration::new(u64::from_json(secs)?, u32::from_json(nanos)?))
+		.ok_or_else(|| slipstream::codec::DeError::expected("time"))
+}
+
+impl CodecSerialize for ScheduledDelayedEvent {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("event_type".into(), self.event_type.to_json());
+		obj.insert("state_key".into(), self.state_key.to_json());
+		obj.insert("content".into(), self.content.to_json());
+		obj.insert("user_id".into(), self.user_id.to_json());
+		obj.insert("room_id".into(), self.room_id.to_json());
+		obj.insert("running_since".into(), system_time_to_json(&self.running_since));
+		obj.insert("delay".into(), duration_to_json(&self.delay));
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl CodecDeserialize for ScheduledDelayedEvent {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let input = slipstream::endpoint::Input::new(&[], &[], Some(value));
+		let field = |key: &str| {
+			value
+				.get(key)
+				.ok_or_else(|| slipstream::codec::DeError::expected(key))
+		};
+		Ok(Self {
+			event_type: input.body("event_type")?,
+			state_key: input.body_or_default("state_key")?,
+			content: input.body("content")?,
+			user_id: input.body("user_id")?,
+			room_id: input.body("room_id")?,
+			running_since: system_time_from_json(field("running_since")?)?,
+			delay: duration_from_json(field("delay")?)?,
+		})
+	}
 }
 
 impl ScheduledDelayedEvent {
@@ -240,12 +353,35 @@ impl ScheduledDelayedEvent {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct FinalizedDelayedEvent {
 	pub event: ScheduledDelayedEvent,
 	pub error: Option<(StandardErrorBody, u16)>,
 	pub event_id: Option<OwnedEventId>,
 	pub finalized_ts: MilliSecondsSinceUnixEpoch,
+}
+
+impl CodecSerialize for FinalizedDelayedEvent {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("event".into(), self.event.to_json());
+		obj.insert("error".into(), self.error.to_json());
+		obj.insert("event_id".into(), self.event_id.to_json());
+		obj.insert("finalized_ts".into(), self.finalized_ts.to_json());
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl CodecDeserialize for FinalizedDelayedEvent {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let input = slipstream::endpoint::Input::new(&[], &[], Some(value));
+		Ok(Self {
+			event: input.body("event")?,
+			error: input.body_or_default("error")?,
+			event_id: input.body_or_default("event_id")?,
+			finalized_ts: input.body("finalized_ts")?,
+		})
+	}
 }
 
 impl FinalizedDelayedEvent {
@@ -349,7 +485,7 @@ impl Service {
 							&event.room_id,
 							&state_lock,
 							&event.event_type.to_string().into(),
-							event.content.cast_ref(),
+							&event.content.cast(),
 							state_key,
 							Some(timestamp),
 							Some(unsigned),
@@ -361,7 +497,7 @@ impl Service {
 							&event.room_id,
 							&state_lock,
 							&event.event_type.to_string().into(),
-							event.content.cast_ref(),
+							&event.content.cast(),
 							None,
 							Some(timestamp),
 							Some(unsigned),
@@ -602,3 +738,5 @@ impl Service {
 		}
 	}
 }
+
+database::codec_value_impls!(ScheduledDelayedEvent, FinalizedDelayedEvent);

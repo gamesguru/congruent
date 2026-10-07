@@ -8,18 +8,19 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, pin_mut};
-use ruma::{
+use service::Services;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerName, RoomId, RoomVersionId, UserId,
 	api::{
 		client::membership::leave_room,
 		federation::{self},
 	},
+	codec,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 use super::validate_remote_member_event_stub;
 use crate::Ruma;
@@ -42,11 +43,7 @@ pub(crate) async fn leave_room_route(
 // Make a user leave all their joined rooms, rescinds knocks, forgets all rooms,
 // and ignores errors
 pub async fn leave_all_rooms(services: &Services, user_id: &UserId) {
-	let rooms_joined = services
-		.rooms
-		.state_cache
-		.rooms_joined(user_id)
-		.map(ToOwned::to_owned);
+	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
 
 	let rooms_invited = services
 		.rooms
@@ -177,7 +174,6 @@ pub async fn leave_room(
 						.state_cache
 						.room_servers(room_id)
 						.ready_filter(|server| !services.globals.server_is_ours(server))
-						.map(ToOwned::to_owned)
 						.collect::<Vec<_>>()
 						.await;
 
@@ -289,7 +285,6 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 			.rooms
 			.state_cache
 			.servers_invite_via(room_id)
-			.map(ToOwned::to_owned)
 			.collect::<HashSet<OwnedServerName>>()
 			.await,
 	);
@@ -304,9 +299,9 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 			servers.extend(
 				invite_state
 					.iter()
-					.filter_map(|event| event.get_field("sender").ok().flatten())
-					.filter_map(|sender: &str| UserId::parse(sender).ok())
-					.map(|user| user.server_name().to_owned()),
+					.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+					.filter_map(|sender| UserId::parse(&sender).ok())
+					.map(|user| user.server_name()),
 			);
 		},
 		| _ => {
@@ -320,11 +315,13 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 					servers.extend(
 						knock_state
 							.iter()
-							.filter_map(|event| event.get_field("sender").ok().flatten())
-							.filter_map(|sender: &str| UserId::parse(sender).ok())
+							.filter_map(|event| {
+								event.get_field::<String>("sender").ok().flatten()
+							})
+							.filter_map(|sender| UserId::parse(&sender).ok())
 							.filter_map(|sender| {
-								if !services.globals.user_is_local(sender) {
-									Some(sender.server_name().to_owned())
+								if !services.globals.user_is_local(&sender) {
+									Some(sender.server_name())
 								} else {
 									None
 								}
@@ -337,7 +334,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	}
 
 	if let Some(room_id_server_name) = room_id.server_name() {
-		servers.insert(room_id_server_name.to_owned());
+		servers.insert(room_id_server_name);
 	}
 	if servers.is_empty() {
 		return Err!(BadServerResponse(warn!(
@@ -392,14 +389,13 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 		)));
 	}
 
-	let mut leave_event_stub = serde_json::from_str::<CanonicalJsonObject>(
-		make_leave_response.event.get(),
-	)
-	.map_err(|e| {
-		err!(BadServerResponse(warn!(
-			"Invalid make_leave event json received from {remote_server} for {room_id}: {e:?}"
-		)))
-	})?;
+	let mut leave_event_stub =
+		codec::from_str::<CanonicalJsonObject>(make_leave_response.event.get()).map_err(|e| {
+			err!(BadServerResponse(warn!(
+				"Invalid make_leave event json received from {remote_server} for {room_id}: \
+				 {e:?}"
+			)))
+		})?;
 
 	validate_remote_member_event_stub(
 		&MembershipState::Leave,
@@ -416,11 +412,7 @@ pub async fn remote_leave_room<S: ::std::hash::BuildHasher>(
 	);
 	leave_event_stub.insert(
 		"origin_server_ts".to_owned(),
-		CanonicalJsonValue::Integer(
-			utils::millis_since_unix_epoch()
-				.try_into()
-				.expect("Timestamp is valid js_int value"),
-		),
+		CanonicalJsonValue::Number(utils::millis_since_unix_epoch().into()),
 	);
 	// Inject the reason key into the event content dict if it exists
 	if let Some(reason) = reason {

@@ -10,15 +10,14 @@ use conduwuit::{
 	},
 };
 use futures::{StreamExt, future::join};
-use ruma::{
+use service::{Services, rooms::lazy_loading::MemberSet};
+use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
-use serde_json::value::RawValue;
-use service::{Services, rooms::lazy_loading::MemberSet};
 
 use crate::client::{
 	TimelinePdus, ignored_filter,
@@ -291,7 +290,7 @@ pub(super) async fn load_left_room(
 		}
 	}
 
-	let timeline_ids: std::collections::HashSet<&EventId> =
+	let timeline_ids: std::collections::HashSet<&str> =
 		raw_timeline_pdus.iter().map(|pdu| &*pdu.event_id).collect();
 
 	let raw_state_events: Vec<Raw<AnySyncStateEvent>> = state_events
@@ -373,16 +372,24 @@ async fn build_left_state_and_timeline(
 		.and_then(|limit| limit.try_into().ok())
 		.unwrap_or(DEFAULT_TIMELINE_LIMIT);
 
-	let raw_timeline = load_timeline(
-		services,
-		syncing_user,
-		room_id,
-		Some(timeline_start_count),
-		Some(timeline_end_count),
-		timeline_limit,
-		false,
-	)
-	.await?;
+	// A zero timeline limit explicitly requests no timeline events. Do not pass
+	// it through to `load_timeline`: that helper fetches one extra event to
+	// determine whether the result is limited, so a zero there would still
+	// return one event. The leave-state snapshot is built below independently.
+	let raw_timeline = if timeline_limit == 0 {
+		TimelinePdus::default()
+	} else {
+		load_timeline(
+			services,
+			syncing_user,
+			room_id,
+			Some(timeline_start_count),
+			Some(timeline_end_count),
+			timeline_limit,
+			false,
+		)
+		.await?
+	};
 
 	let mut stream = raw_timeline
 		.pdus
@@ -479,18 +486,21 @@ fn create_dummy_leave_event(
 	SyncContext { syncing_user, .. }: SyncContext<'_>,
 	room_id: &RoomId,
 ) -> PduEvent {
-	// TODO: because this event ID is random, it could cause caching issues with
-	// clients. perhaps a database table could be created to hold these dummy
-	// events, or they could be stored as outliers?
+	// Keep each synthetic event ID unique so clients do not merge dummy events
+	// from different rooms or sync responses.
 	PduEvent {
-		event_id: EventId::new(services.globals.server_name()),
+		event_id: EventId::parse(format!(
+			"${}:{}",
+			utils::random_string(18),
+			services.globals.server_name()
+		))
+		.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
-		origin_server_ts: utils::millis_since_unix_epoch()
-			.try_into()
-			.expect("Timestamp is valid js_int value"),
+		origin_server_ts: utils::millis_since_unix_epoch(),
 		kind: TimelineEventType::RoomMember,
-		content: RawValue::from_string(r#"{"membership": "leave"}"#.to_owned()).unwrap(),
+		content: Raw::from_json_text(r#"{"membership": "leave"}"#)
+			.expect("static synthetic leave content is valid JSON"),
 		state_key: Some(syncing_user.as_str().into()),
 		unsigned: None,
 		// The following keys are dropped on conversion

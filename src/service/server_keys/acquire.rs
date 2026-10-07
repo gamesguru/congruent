@@ -6,11 +6,10 @@ use std::{
 
 use conduwuit::{debug, debug_error, debug_warn, error, implement, info, trace, warn};
 use futures::{StreamExt, stream::FuturesUnordered};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
-	api::federation::discovery::ServerSigningKeys, serde::Raw,
+	api::federation::discovery::ServerSigningKeys, sswire::Raw,
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 use super::key_exists;
 
@@ -19,19 +18,21 @@ type Batch = BTreeMap<OwnedServerName, Vec<OwnedServerSigningKeyId>>;
 #[implement(super::Service)]
 pub async fn acquire_events_pubkeys<'a, I>(&self, events: I)
 where
-	I: Iterator<Item = &'a Box<RawJsonValue>> + Send,
+	I: Iterator<Item = &'a Raw<slipstream::json::Value>> + Send,
 {
 	type Batch = BTreeMap<OwnedServerName, BTreeSet<OwnedServerSigningKeyId>>;
 	type Signatures = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, String>>;
 
-	#[derive(serde::Deserialize)]
 	struct EventSignatures {
 		signatures: Option<Signatures>,
 	}
+	slipstream::codec_struct!(EventSignatures {
+		signatures: Option<Signatures> = ("signatures", omit),
+	});
 
 	let mut batch = Batch::new();
 	events
-		.filter_map(|event| serde_json::from_str::<EventSignatures>(event.get()).ok())
+		.filter_map(|event| slipstream::codec::from_str::<EventSignatures>(event.get()).ok())
 		.filter_map(|event| event.signatures)
 		.flat_map(IntoIterator::into_iter)
 		.for_each(|(server, sigs)| {
@@ -40,7 +41,7 @@ where
 
 	let batch = batch
 		.iter()
-		.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+		.map(|(server, keys)| (server, keys.iter().map(Borrow::borrow)));
 
 	self.acquire_pubkeys(batch).await;
 }
@@ -224,7 +225,7 @@ where
 		requests.push(async move {
 			let req_batch = batch
 				.iter()
-				.map(|(server, keys)| (server.borrow(), keys.iter().map(Borrow::borrow)));
+				.map(|(server, keys)| (server, keys.iter().map(Borrow::borrow)));
 
 			(notary, self.batch_notary_request(notary, req_batch).await)
 		});

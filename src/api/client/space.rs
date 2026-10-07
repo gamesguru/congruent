@@ -9,7 +9,7 @@ use conduwuit_service::rooms::spaces::{
 	PaginationToken, SummaryAccessibility, get_parent_children_via, summary_to_chunk,
 };
 use futures::{StreamExt, future::OptionFuture};
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
 };
 
@@ -77,17 +77,8 @@ where
 	type Entry = (OwnedRoomId, Via, usize, bool);
 	type Rooms = VecDeque<Entry>;
 
-	let mut queue: Rooms = [(
-		room_id.to_owned(),
-		room_id
-			.server_name()
-			.map(ToOwned::to_owned)
-			.into_iter()
-			.collect(),
-		0,
-		true,
-	)]
-	.into();
+	let mut queue: Rooms =
+		[(room_id.to_owned(), room_id.server_name().into_iter().collect(), 0, true)].into();
 
 	let mut rooms = Vec::with_capacity(limit);
 

@@ -20,18 +20,19 @@ use futures::{
 	FutureExt, StreamExt,
 	future::{join, join3, join4, try_join, try_join3},
 };
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::sync::sync_events::{
 		UnreadNotificationsCount,
 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
 	},
+	codec::Deserialize,
 	events::{
 		AnyRawAccountDataEvent, AnySyncStateEvent, StateEventType,
 		TimelineEventType::*,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -166,12 +167,11 @@ async fn build_ephemeral(
 			if is_ignored {
 				None
 			} else {
-				let mut json: serde_json::Value = serde_json::from_str(edu.json().get()).ok()?;
+				let mut json = edu.json().ok()?;
 				if let Some(obj) = json.as_object_mut() {
 					obj.remove("room_id");
 				}
-				let raw = serde_json::value::to_raw_value(&json).ok()?;
-				Some(Raw::from_json(raw))
+				Some(Raw::from_json(&json).ok()?)
 			}
 		})
 		.collect::<Vec<_>>()
@@ -379,7 +379,7 @@ async fn build_state_and_timeline(
 		.state_accessor
 		.get_room_type(room_id)
 		.await
-		.is_ok_and(|room_type| room_type == ruma::room::RoomType::Space);
+		.is_ok_and(|room_type| room_type == slipstream::room::RoomType::Space);
 
 	let limited = if pdus.is_empty() {
 		timeline_limited || ((joined_since_last_sync || user_has_join_event_in_sync) && !is_space)
@@ -409,7 +409,7 @@ async fn build_state_and_timeline(
 		.collect::<Vec<_>>()
 		.await;
 
-	let timeline_ids: HashSet<&ruma::EventId> = filtered_timeline_pdus
+	let timeline_ids: HashSet<&str> = filtered_timeline_pdus
 		.iter()
 		.map(|pdu| &*pdu.event_id)
 		.collect();
@@ -704,7 +704,7 @@ async fn build_notification_counts(
 	BTreeMap<OwnedEventId, UnreadNotificationsCount>,
 )> {
 	// Counts must be computed on every poll, not just ones where the timeline
-	// advanced: ruma's `JoinedRoom::is_empty()` treats an absent/default
+	// advanced: slipstream's `JoinedRoom::is_empty()` treats an absent/default
 	// `unread_notifications` as "no unread notifications," and the outer sync
 	// loop omits any room for which `is_empty()` is true on an incremental
 	// sync. Gating this on "did anything change this poll" made a room's
@@ -1030,18 +1030,10 @@ async fn build_heroes(
 	const MAX_HERO_COUNT: usize = 5;
 
 	// fetch joined members from the state cache first
-	let joined_members_stream = services
-		.rooms
-		.state_cache
-		.room_members(room_id)
-		.map(ToOwned::to_owned);
+	let joined_members_stream = services.rooms.state_cache.room_members(room_id);
 
 	// then fetch invited members
-	let invited_members_stream = services
-		.rooms
-		.state_cache
-		.room_members_invited(room_id)
-		.map(ToOwned::to_owned);
+	let invited_members_stream = services.rooms.state_cache.room_members_invited(room_id);
 
 	// then as a last resort fetch every membership event
 	let all_members_stream = services
@@ -1058,7 +1050,7 @@ async fn build_heroes(
 		.ignore_err()
 		.ready_filter_map(|(event_type, state_key)| {
 			if event_type == StateEventType::RoomMember {
-				state_key.to_string().try_into().ok()
+				UserId::parse(state_key).ok()
 			} else {
 				None
 			}
@@ -1098,7 +1090,7 @@ async fn build_device_list_updates(
 			.state_cache
 			.room_members(room_id)
 			.ready_for_each(|user_id| {
-				device_list_updates.changed.insert(user_id.to_owned());
+				device_list_updates.changed.insert(user_id);
 			})
 			.await;
 	}
@@ -1108,7 +1100,6 @@ async fn build_device_list_updates(
 		.users
 		.room_keys_changed(room_id, last_sync_end_count, None)
 		.map(at!(0))
-		.map(ToOwned::to_owned)
 		.collect::<Vec<_>>()
 		.await;
 

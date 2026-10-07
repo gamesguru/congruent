@@ -6,8 +6,7 @@ use conduwuit::{
 	utils::stream::ReadyExt,
 };
 use futures::{Stream, StreamExt, TryFutureExt};
-use ruma::{EventId, RoomId, events::StateEventType};
-use serde::Deserialize;
+use slipstream::{EventId, RoomId, codec::Deserialize, events::StateEventType};
 
 /// Returns a single PDU from `room_id` with key (`event_type`,`state_key`).
 #[implement(super::Service)]
@@ -18,7 +17,7 @@ pub async fn room_state_get_content<T>(
 	state_key: &str,
 ) -> Result<T>
 where
-	T: for<'de> Deserialize<'de>,
+	T: Deserialize,
 {
 	self.room_state_get(room_id, event_type, state_key)
 		.await
@@ -81,7 +80,7 @@ pub async fn room_state_get_id<Id>(
 	state_key: &str,
 ) -> Result<Id>
 where
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
+	Id: Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;

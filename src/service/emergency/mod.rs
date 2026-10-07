@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conduwuit::{Result, error, warn};
-use ruma::{
+use slipstream::{
 	events::{
 		GlobalAccountDataEvent, GlobalAccountDataEventType, push_rules::PushRulesEventContent,
 	},
@@ -62,7 +62,7 @@ impl Service {
 			.await?;
 
 		let (ruleset, pwd_set) = match self.services.config.emergency_password {
-			| Some(_) => (Ruleset::server_default(server_user), true),
+			| Some(_) => (Ruleset::server_default(server_user.as_str()), true),
 			| None => (Ruleset::new(), false),
 		};
 
@@ -72,10 +72,9 @@ impl Service {
 				None,
 				server_user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(&GlobalAccountDataEvent {
+				&slipstream::codec::to_value(&GlobalAccountDataEvent {
 					content: PushRulesEventContent { global: ruleset },
-				})
-				.expect("to json value always works"),
+				}),
 			)
 			.await?;
 

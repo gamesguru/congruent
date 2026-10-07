@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use conduwuit::{Result, matrix::Event};
 use futures::StreamExt;
-use ruma::{OwnedEventId, OwnedRoomOrAliasId};
+use slipstream::{OwnedEventId, OwnedRoomOrAliasId};
 
 use crate::admin_command;
 
@@ -15,14 +15,7 @@ pub(super) async fn view_extremities(
 ) -> Result {
 	if all || room.is_none() {
 		let mut fractured = Vec::new();
-		let rooms: Vec<_> = self
-			.services
-			.rooms
-			.metadata
-			.iter_ids()
-			.map(ToOwned::to_owned)
-			.collect()
-			.await;
+		let rooms: Vec<_> = self.services.rooms.metadata.iter_ids().collect().await;
 
 		for room_id in &rooms {
 			let count = self

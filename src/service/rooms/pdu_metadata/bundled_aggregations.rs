@@ -1,5 +1,5 @@
-use conduwuit::{Event, PduEvent, Result, err};
-use ruma::{
+use conduwuit::{Event, PduEvent, Result, err, matrix::pdu::RawJson};
+use slipstream::{
 	UserId,
 	api::Direction,
 	events::relation::{BundledMessageLikeRelations, BundledReference, ReferenceChunk},
@@ -20,7 +20,7 @@ impl super::Service {
 		&self,
 		user_id: &UserId,
 		pdu: &PduEvent,
-	) -> Result<Option<BundledMessageLikeRelations<Box<serde_json::value::RawValue>>>> {
+	) -> Result<Option<BundledMessageLikeRelations<RawJson>>> {
 		// Events that can never get bundled aggregations
 		if pdu.state_key().is_some() || Self::is_replacement_event(pdu) {
 			return Ok(None);
@@ -80,7 +80,7 @@ impl super::Service {
 			return Ok(None);
 		}
 
-		let mut bundled = BundledMessageLikeRelations::<Box<serde_json::value::RawValue>>::new();
+		let mut bundled = BundledMessageLikeRelations::<RawJson>::new();
 
 		// Handle m.replace relations - find the most recent valid one (lazy load
 		// original event)
@@ -110,15 +110,15 @@ impl super::Service {
 		Ok(Some(bundled))
 	}
 
-	/// Serialize a replacement event to the bundled format
-	fn serialize_replacement(pdu: &PduEvent) -> Result<Box<Box<serde_json::value::RawValue>>> {
-		let replacement_json = serde_json::to_string(pdu)
-			.map_err(|e| err!(Database("Failed to serialize replacement event: {e}")))?;
-
-		let raw_value = serde_json::value::RawValue::from_string(replacement_json)
-			.map_err(|e| err!(Database("Failed to create RawValue: {e}")))?;
-
-		Ok(Box::new(raw_value))
+	/// Serialize a replacement event to the bundled format.
+	///
+	/// The event is emitted through the `Pdu` codec as canonical JSON: keys
+	/// sorted, compact, nested raw fields re-serialized. The original
+	/// whitespace and key order are intentionally not preserved (the previous
+	/// serde output followed struct declaration order); clients and signature
+	/// checks only depend on the canonical form.
+	fn serialize_replacement(pdu: &PduEvent) -> Result<Box<RawJson>> {
+		Ok(Box::new(RawJson::from_value(pdu)))
 	}
 
 	/// Find the most recent valid replacement event based on origin_server_ts
@@ -184,8 +184,7 @@ impl super::Service {
 		let bundled_aggregations = self.get_bundled_aggregations(user_id, pdu).await?;
 
 		if let Some(aggregations) = bundled_aggregations {
-			let aggregations_json = serde_json::to_value(aggregations)
-				.map_err(|e| err!(Database("Failed to serialize bundled aggregations: {e}")))?;
+			let aggregations_json = slipstream::codec::to_value(&aggregations);
 
 			Self::add_bundled_aggregations_to_unsigned(pdu, aggregations_json)?;
 		}
@@ -196,22 +195,18 @@ impl super::Service {
 	/// Helper method to add bundled aggregations to a PDU's unsigned field
 	fn add_bundled_aggregations_to_unsigned(
 		pdu: &mut PduEvent,
-		aggregations_json: serde_json::Value,
+		aggregations_json: slipstream::json::Value,
 	) -> Result<()> {
-		use serde_json::{
-			Map, Value as JsonValue,
-			value::{RawValue as RawJsonValue, to_raw_value},
+		use slipstream::json::{Object as Map, Value as JsonValue};
+
+		let mut unsigned: Map = match pdu.unsigned.as_ref() {
+			| Some(unsigned) => slipstream::codec::from_str(unsigned.get())
+				.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?,
+			| None => Map::new(),
 		};
 
-		let mut unsigned: Map<String, JsonValue> = pdu
-			.unsigned
-			.as_deref()
-			.map(RawJsonValue::get)
-			.map_or_else(|| Ok(Map::new()), serde_json::from_str)
-			.map_err(|e| err!(Database("Invalid unsigned in pdu event: {e}")))?;
-
 		let relations = unsigned
-			.entry("m.relations")
+			.entry("m.relations".to_owned())
 			.or_insert_with(|| JsonValue::Object(Map::new()))
 			.as_object_mut()
 			.ok_or_else(|| err!(Database("m.relations is not an object")))?;
@@ -220,7 +215,7 @@ impl super::Service {
 			relations.extend(aggregations_map);
 		}
 
-		pdu.unsigned = Some(to_raw_value(&unsigned)?);
+		pdu.unsigned = Some(RawJson::from_value(&unsigned));
 
 		Ok(())
 	}
@@ -264,7 +259,7 @@ impl super::Service {
 	/// would be in the encrypted payload)
 	#[inline]
 	fn has_new_content_or_encrypted(event: &PduEvent) -> bool {
-		event.event_type() == &ruma::events::TimelineEventType::RoomEncrypted
+		event.event_type() == &slipstream::events::TimelineEventType::RoomEncrypted
 			|| event.get_content_as_value().get("m.new_content").is_some()
 	}
 }
@@ -278,23 +273,24 @@ enum RelationType<'a> {
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::pdu::{EventHash, PduEvent};
-	use ruma::{UInt, events::TimelineEventType, owned_event_id, owned_room_id, owned_user_id};
-	use serde_json::{Value as JsonValue, json, value::to_raw_value};
+	use slipstream::{
+		UInt, events::TimelineEventType, json, json::Value as JsonValue, sswire::Raw,
+	};
 
 	fn create_test_pdu(unsigned_content: Option<JsonValue>) -> PduEvent {
 		PduEvent {
-			event_id: owned_event_id!("$test:example.com"),
-			room_id: Some(owned_room_id!("!test:example.com")),
-			sender: owned_user_id!("@test:example.com"),
+			event_id: slipstream::OwnedEventId::parse("$test:example.com").unwrap(),
+			room_id: Some(slipstream::OwnedRoomId::parse("!test:example.com").unwrap()),
+			sender: slipstream::OwnedUserId::parse("@test:example.com").unwrap(),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: TimelineEventType::RoomMessage,
-			content: to_raw_value(&json!({"msgtype": "m.text", "body": "test"})).unwrap(),
+			content: Raw::from_value(&json!({"msgtype": "m.text", "body": "test"})),
 			state_key: None,
 			prev_events: vec![],
 			depth: UInt::from(1_u32),
 			auth_events: vec![],
 			redacts: None,
-			unsigned: unsigned_content.map(|content| to_raw_value(&content).unwrap()),
+			unsigned: unsigned_content.map(|content| Raw::from_value(&content)),
 			hashes: EventHash { sha256: "test_hash".to_owned() },
 			signatures: None,
 			origin: None,
@@ -333,11 +329,12 @@ mod tests {
 		assert!(pdu.unsigned.is_some(), "Unsigned field should be created");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
 		assert!(unsigned.get("m.relations").is_some(), "m.relations should exist");
 		assert_eq!(
-			unsigned["m.relations"], aggregations,
+			unsigned.get("m.relations").unwrap(),
+			&aggregations,
 			"Relations should match the aggregations"
 		);
 	}
@@ -364,16 +361,21 @@ mod tests {
 		assert!(result.is_ok(), "Should succeed when overwriting same relation type");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
-		let relations = &unsigned["m.relations"];
+		let relations = unsigned.get("m.relations").unwrap();
 
 		assert_eq!(
-			relations["m.replace"], new_aggregations["m.replace"],
+			relations.get("m.replace").unwrap(),
+			new_aggregations.get("m.replace").unwrap(),
 			"m.replace should be updated"
 		);
 		assert_eq!(
-			relations["m.replace"]["event_id"], "$replace:example.com",
+			relations
+				.get("m.replace")
+				.and_then(|v| v.get("event_id"))
+				.and_then(JsonValue::as_str),
+			Some("$replace:example.com"),
 			"Should have new event_id"
 		);
 
@@ -404,10 +406,14 @@ mod tests {
 		assert!(result.is_ok(), "Should succeed while preserving other fields");
 
 		let unsigned_str = pdu.unsigned.as_ref().unwrap().get();
-		let unsigned: JsonValue = serde_json::from_str(unsigned_str).unwrap();
+		let unsigned: JsonValue = slipstream::codec::from_str(unsigned_str).unwrap();
 
 		// Verify all existing fields are preserved
-		assert_eq!(unsigned["age"], 98765, "age should be preserved");
+		assert_eq!(
+			unsigned.get("age").and_then(JsonValue::as_i64),
+			Some(98765),
+			"age should be preserved"
+		);
 		assert!(unsigned.get("prev_content").is_some(), "prev_content should be preserved");
 		assert!(
 			unsigned.get("redacted_because").is_some(),
@@ -415,7 +421,7 @@ mod tests {
 		);
 
 		// Verify relations were merged correctly
-		let relations = &unsigned["m.relations"];
+		let relations = unsigned.get("m.relations").unwrap();
 		assert!(
 			relations.get("m.annotation").is_some(),
 			"Existing m.annotation should be preserved"
@@ -428,7 +434,7 @@ mod tests {
 		// Test case: Invalid JSON in existing unsigned should result in error
 		let mut pdu = create_test_pdu(None);
 		// Manually set invalid unsigned data
-		pdu.unsigned = Some(to_raw_value(&"invalid json").unwrap());
+		pdu.unsigned = Some(Raw::from_value(&"invalid json"));
 
 		let aggregations = create_bundled_aggregations();
 		let result =
@@ -453,7 +459,7 @@ mod tests {
 			sender: sender.try_into().unwrap(),
 			origin_server_ts: UInt::try_from(1_234_567_890_u64).unwrap(),
 			kind: event_type,
-			content: to_raw_value(&content).unwrap(),
+			content: Raw::from_value(&content),
 			state_key: state_key.map(Into::into),
 			prev_events: vec![],
 			depth: UInt::from(1_u32),

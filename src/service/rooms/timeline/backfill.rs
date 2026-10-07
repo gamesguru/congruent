@@ -8,7 +8,7 @@ use std::{
 	},
 };
 
-use conduwuit::{Err, Error, PduEvent, RoomVersion};
+use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
 	Result, debug, debug_warn, err, error, implement, info,
 	matrix::{
@@ -19,7 +19,7 @@ use conduwuit_core::{
 	validated, warn,
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, Int, OwnedEventId, RoomId, ServerName,
 	UInt,
 	api::federation,
@@ -28,7 +28,6 @@ use ruma::{
 		room::{create::RoomCreateEventContent, power_levels::RoomPowerLevelsEventContent},
 	},
 };
-use serde_json::value::RawValue as RawJsonValue;
 
 use super::{PromotionClaims, TopoToken};
 
@@ -101,7 +100,7 @@ pub async fn backfill_if_required(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	info!(
@@ -191,27 +190,30 @@ pub async fn backfill_if_required(
 		}
 	}
 
-	let room_mods = users.iter().filter_map(|(user_id, level)| {
-		let remote_powered =
-			level > &power_levels.users_default && !self.services.globals.user_is_local(user_id);
-		let creator = if room_version.explicitly_privilege_room_creators {
-			create_event.sender() == user_id
-				|| create_event_content
-					.additional_creators
-					.as_ref()
-					.is_some_and(|c| c.contains(user_id))
-		} else {
-			false
-		};
+	let room_mods: Vec<slipstream::OwnedServerName> = users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			let remote_powered = level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id);
+			let creator = if room_version.explicitly_privilege_room_creators {
+				create_event.sender() == user_id
+					|| create_event_content
+						.additional_creators
+						.as_ref()
+						.is_some_and(|c| c.contains(user_id))
+			} else {
+				false
+			};
 
-		if remote_powered || creator {
-			debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
-			Some(user_id.server_name())
-		} else {
-			debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
-			None
-		}
-	});
+			if remote_powered || creator {
+				debug!(%remote_powered, %creator, "User {user_id} can backfill in room {room_id}");
+				Some(user_id.server_name())
+			} else {
+				debug!(%remote_powered, %creator, "User {user_id} cannot backfill in room {room_id}");
+				None
+			}
+		})
+		.collect();
 
 	// Iterative backfill loop: after each successful /backfill response, re-scan
 	// for new backward extremities created by the newly inserted events'
@@ -375,7 +377,7 @@ pub async fn backfill_if_required(
 		);
 
 		let mut servers = self
-			.get_backfill_servers(room_id, room_mods.clone())
+			.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
 			.await
 			.boxed();
 		let mut federated_room = false;
@@ -422,7 +424,7 @@ pub async fn backfill_if_required(
 					// server's tiebreak need not match ours. Left untreated, that drift
 					// becomes a permanent wrong position for one event, which then falls
 					// outside a `/messages` page boundary and looks like a dropped event.
-					let pdus = topo_sort_backfill_batch(&pdus);
+					let pdus = topo_sort_backfill_batch(pdus);
 
 					// Handle timeline events newest-first (maintain timeline integrity)
 					for pdu in pdus {
@@ -581,8 +583,8 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 /// aborting the whole reorder -- `backfill_pdu` already tolerates and
 /// skips individual bad events without failing the batch, so this matches
 /// existing behavior.
-fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>> {
-	let mut keyed: Vec<(u64, Box<RawJsonValue>)> = Vec::with_capacity(pdus.len());
+fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
+	let mut keyed: Vec<(u64, RawJsonValue)> = Vec::with_capacity(pdus.len());
 
 	for pdu in pdus {
 		// Deliberately not `parse_incoming_pdu` here: this pass only ever reads
@@ -598,13 +600,12 @@ fn topo_sort_backfill_batch(pdus: &[Box<RawJsonValue>]) -> Vec<Box<RawJsonValue>
 		// syntactically-broken event here just can't contribute a depth, so it
 		// sorts as depth 0 and gets caught (and logged) by backfill_pdu's own
 		// parse when it's inserted.
-		let depth = serde_json::from_str::<CanonicalJsonObject>(pdu.get())
+		let depth = slipstream::codec::from_str::<CanonicalJsonObject>(pdu.get())
 			.ok()
-			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_integer))
-			.and_then(|d| u64::try_from(i64::from(d)).ok())
+			.and_then(|value| value.get("depth").and_then(CanonicalJsonValue::as_u64))
 			.unwrap_or_default();
 
-		keyed.push((depth, pdu.clone()));
+		keyed.push((depth, pdu));
 	}
 
 	// Newest-first (descending depth): `backfill_pdu` hands out
@@ -661,7 +662,7 @@ async fn get_remote_pdu_limited(
 		.services
 		.state_cache
 		.room_servers(room_id)
-		.ready_any(|server| !self.services.globals.server_is_ours(server))
+		.ready_any(|server| !self.services.globals.server_is_ours(&server))
 		.await;
 
 	if !has_remote_servers
@@ -684,15 +685,24 @@ async fn get_remote_pdu_limited(
 		.await
 		.unwrap_or_default();
 
-	let room_mods = power_levels.users.iter().filter_map(|(user_id, level)| {
-		if level > &power_levels.users_default && !self.services.globals.user_is_local(user_id) {
-			Some(user_id.server_name())
-		} else {
-			None
-		}
-	});
+	let room_mods: Vec<slipstream::OwnedServerName> = power_levels
+		.users
+		.iter()
+		.filter_map(|(user_id, level)| {
+			if level > &power_levels.users_default
+				&& !self.services.globals.user_is_local(user_id)
+			{
+				Some(user_id.server_name())
+			} else {
+				None
+			}
+		})
+		.collect();
 
-	let mut servers = self.get_backfill_servers(room_id, room_mods).await.boxed();
+	let mut servers = self
+		.get_backfill_servers(room_id, room_mods.iter().map(AsRef::as_ref))
+		.await
+		.boxed();
 
 	while let Some(ref backfill_server) = servers.next().await {
 		info!("Asking {backfill_server} for event {}", event_id);
@@ -705,7 +715,10 @@ async fn get_remote_pdu_limited(
 			})
 			.await
 			.and_then(|response| {
-				serde_json::from_str::<CanonicalJsonObject>(response.pdu.get()).map_err(|e| {
+				let raw_pdu = response.pdus.first().ok_or_else(|| {
+					err!(BadServerResponse("Empty pdus from {backfill_server}"))
+				})?;
+				slipstream::codec::from_str::<CanonicalJsonObject>(raw_pdu.get()).map_err(|e| {
 					err!(BadServerResponse(debug_warn!(
 						"Error parsing incoming event {e:?} from {backfill_server}"
 					)))
@@ -801,7 +814,7 @@ async fn materialize_remote_history_limited(
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,
-	pdu: Box<RawJsonValue>,
+	pdu: RawJsonValue,
 	count: Option<u64>,
 ) -> Result<()> {
 	let (room_id, event_id, value) = self.services.event_handler.parse_incoming_pdu(&pdu).await?;
@@ -1018,10 +1031,9 @@ pub async fn promote_outlier_batch<'a>(
 
 	let value = self.get_outlier_pdu_json(event_id).await?;
 
-	let pdu: PduEvent = serde_json::from_value(
-		serde_json::to_value(&value).map_err(|e| err!(Database("Bad outlier JSON: {e:?}")))?,
-	)
-	.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
+	let pdu: PduEvent =
+		slipstream::codec::from_value(&slipstream::json::Value::Object(value.clone()))
+			.map_err(|e| err!(Database("Bad outlier PDU: {e:?}")))?;
 
 	let shortroomid = self.services.short.get_or_create_shortroomid(room_id).await;
 
@@ -1283,11 +1295,11 @@ pub async fn promote_outliers_sorted(
 			state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 			content: rezzy::JsonValue::parse(pdu.content.get())
 				.expect("PDU content must be valid JSON"),
-			origin_server_ts: u64::from(pdu.origin_server_ts),
+			origin_server_ts: pdu.origin_server_ts,
 			auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
 			prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 			power_level: 0,
-			depth: u64::from(pdu.depth),
+			depth: pdu.depth,
 			..Default::default()
 		};
 		events_map.insert(event_id.to_string(), lean);
@@ -1315,9 +1327,10 @@ pub async fn promote_outliers_sorted(
 
 	let mut promoted = 0_usize;
 	for event_id_str in &sorted_ids {
-		let Ok(event_id) = <&EventId>::try_from(event_id_str.as_str()) else {
+		let Ok(event_id) = OwnedEventId::parse(event_id_str.as_str()) else {
 			continue;
 		};
+		let event_id = event_id.as_ref();
 		match self.promote_outlier(room_id, event_id).await {
 			| Ok(PromoteOutlierOutcome::Queued) => {
 				promoted = promoted.saturating_add(1);
@@ -1427,8 +1440,8 @@ fn topo_sort_by_prev_events(
 ) -> Vec<OwnedEventId> {
 	use std::collections::VecDeque;
 
-	let mut children: HashMap<&EventId, Vec<&EventId>> = HashMap::new();
-	let mut in_degree: HashMap<&EventId, usize> = pdus.keys().map(|id| (&**id, 0)).collect();
+	let mut children: HashMap<&OwnedEventId, Vec<&OwnedEventId>> = HashMap::new();
+	let mut in_degree: HashMap<&OwnedEventId, usize> = pdus.keys().map(|id| (id, 0)).collect();
 
 	for (event_id, (_, pdu)) in pdus {
 		for prev_id in pdu.prev_events() {
@@ -1439,13 +1452,13 @@ fn topo_sort_by_prev_events(
 		}
 	}
 
-	let mut queue: VecDeque<&EventId> = in_degree
+	let mut queue: VecDeque<&OwnedEventId> = in_degree
 		.iter()
 		.filter_map(|(id, count)| (*count == 0).then_some(*id))
 		.collect();
 
 	let mut ordered = Vec::with_capacity(pdus.len());
-	let mut visited: HashSet<&EventId> = HashSet::with_capacity(pdus.len());
+	let mut visited: HashSet<&OwnedEventId> = HashSet::with_capacity(pdus.len());
 	while let Some(event_id) = queue.pop_front() {
 		if !visited.insert(event_id) {
 			continue;
@@ -1466,7 +1479,7 @@ fn topo_sort_by_prev_events(
 		// this code exists to heal already-corrupted rooms). Append whatever
 		// is left over so nothing is silently dropped.
 		for event_id in pdus.keys() {
-			if !visited.contains(&**event_id) {
+			if !visited.contains(event_id) {
 				ordered.push(event_id.clone());
 			}
 		}
@@ -1571,7 +1584,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 	&'a self,
 	room_id: &'a RoomId,
 	room_mods: I,
-) -> impl futures::Stream<Item = ruma::OwnedServerName> + Send + 'a {
+) -> impl futures::Stream<Item = slipstream::OwnedServerName> + Send + 'a {
 	let canonical_room_alias_server = once(
 		self.services
 			.state_accessor
@@ -1579,7 +1592,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 			.await,
 	)
 	.filter_map(Result::ok)
-	.map(|alias| alias.server_name().to_owned())
+	.map(|alias| alias.server_name())
 	.stream();
 
 	room_mods
@@ -1595,12 +1608,7 @@ pub async fn get_backfill_servers<'a, I: Iterator<Item = &'a ServerName> + Send 
 				.map(ToOwned::to_owned)
 				.stream(),
 		)
-		.chain(
-			self.services
-				.state_cache
-				.room_servers(room_id)
-				.map(ToOwned::to_owned),
-		)
+		.chain(self.services.state_cache.room_servers(room_id))
 		.ready_filter(|server_name| {
 			!self.services.globals.server_is_ours(server_name)
 				&& !self

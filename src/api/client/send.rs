@@ -1,9 +1,12 @@
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
-use ruma::{OwnedEventId, api::client::message::send_message_event};
+use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
-use crate::{Ruma, RumaResponse};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, require_object_content, single_field},
+};
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
 const SEND_TXN_DELAY_ID_PREFIX: &[u8] = b"\xFFdelay_id:";
@@ -63,10 +66,7 @@ fn cached_send_txn_response(
 }
 
 fn delay_id_response(delay_id: &str) -> axum::response::Response {
-	axum::Json(serde_json::json!({
-		"delay_id": delay_id,
-	}))
-	.into_response()
+	json_response(single_field("delay_id", &delay_id))
 }
 
 /// # `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}`
@@ -84,15 +84,17 @@ pub(crate) async fn send_message_event_route(
 	body: Ruma<send_message_event::v3::Request>,
 ) -> Result<axum::response::Response> {
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 	let appservice_info = body.appservice_info.as_ref();
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
+	require_object_content(&body.body.body)?;
+
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), client_ip)
+		.update_device_last_seen(sender_user, body.sender_device_opt(), client_ip)
 		.await;
 
 	if let Some(delay) = body.delay {
@@ -133,7 +135,7 @@ pub(crate) async fn send_message_event_route(
 		let event = service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),
 			state_key: None,
-			content: body.body.body.cast_ref().clone(),
+			content: slipstream::sswire::Raw::from_json_text(body.body.body.get())?,
 			user_id: sender_user.to_owned(),
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
@@ -225,11 +227,7 @@ pub(crate) async fn send_message_event_route(
 		&body.event_type,
 		&body.body.body,
 		Some(&body.txn_id),
-		if appservice_info.is_some() {
-			body.timestamp
-		} else {
-			None
-		},
+		if appservice_info.is_some() { body.ts } else { None },
 		None,
 	))
 	.await?;

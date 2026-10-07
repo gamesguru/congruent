@@ -1,9 +1,8 @@
 use std::str::FromStr;
 
-use ruma::{
+use slipstream::{
 	UInt,
 	api::federation::space::{SpaceHierarchyParentSummary, SpaceHierarchyParentSummaryInit},
-	owned_room_id, owned_server_name,
 	space::SpaceRoomJoinRule,
 };
 
@@ -13,12 +12,12 @@ use crate::rooms::spaces::{PaginationToken, get_parent_children_via, summary_to_
 fn get_summary_children() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::parse("!root:example.org").unwrap(),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
 		children_state: vec![
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": {
                         "via": [
@@ -33,7 +32,7 @@ fn get_summary_children() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": {
                         "via": [
@@ -48,7 +47,7 @@ fn get_summary_children() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": {
                         "via": [
@@ -66,30 +65,37 @@ fn get_summary_children() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	let all = get_parent_children_via(&summary, false);
 	assert_eq!(all, vec![
-		(owned_room_id!("!foo:example.org"), vec![owned_server_name!("example.org")]),
-		(owned_room_id!("!bar:example.org"), vec![owned_server_name!("example.org")]),
-		(owned_room_id!("!baz:example.org"), vec![owned_server_name!("example.org")])
+		(slipstream::OwnedRoomId::parse("!foo:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		]),
+		(slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		]),
+		(slipstream::OwnedRoomId::parse("!baz:example.org").unwrap(), vec![
+			slipstream::OwnedServerName::parse("example.org").unwrap()
+		])
 	]);
 	let suggested = get_parent_children_via(&summary, true);
-	assert_eq!(suggested, vec![(owned_room_id!("!bar:example.org"), vec![owned_server_name!(
-		"example.org"
-	)])]);
+	assert_eq!(suggested, vec![(
+		slipstream::OwnedRoomId::parse("!bar:example.org").unwrap(),
+		vec![slipstream::OwnedServerName::parse("example.org").unwrap()]
+	)]);
 }
 
 #[test]
 fn summary_chunk_filters_children_state_for_suggested_only() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::parse("!root:example.org").unwrap(),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
 		children_state: vec![
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "suggested": true },
                       "origin_server_ts": 1,
@@ -99,7 +105,7 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"] },
                       "origin_server_ts": 2,
@@ -113,7 +119,7 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	let chunk = summary_to_chunk(summary, true);
 	let children: Vec<_> = chunk
@@ -122,20 +128,22 @@ fn summary_chunk_filters_children_state_for_suggested_only() {
 		.map(|child| child.deserialize().unwrap().state_key)
 		.collect();
 
-	assert_eq!(children, vec![owned_room_id!("!suggested:example.org")]);
+	assert_eq!(children, vec![
+		slipstream::OwnedRoomId::parse("!suggested:example.org").unwrap()
+	]);
 }
 
 #[test]
 fn get_summary_children_sorted_by_order() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::parse("!root:example.org").unwrap(),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
 		children_state: vec![
 			// No order field — should sort last using the spec tie-breakers.
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "suggested": false },
                       "origin_server_ts": 1,
@@ -146,7 +154,7 @@ fn get_summary_children_sorted_by_order() {
 			)
 			.unwrap(),
 			// order = "b"
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "order": "b", "suggested": false },
                       "origin_server_ts": 2,
@@ -157,7 +165,7 @@ fn get_summary_children_sorted_by_order() {
 			)
 			.unwrap(),
 			// order = "a"
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "order": "a", "suggested": false },
                       "origin_server_ts": 3,
@@ -168,7 +176,7 @@ fn get_summary_children_sorted_by_order() {
 			)
 			.unwrap(),
 			// No order field — should sort last using the spec tie-breakers.
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "suggested": false },
                       "origin_server_ts": 4,
@@ -182,7 +190,7 @@ fn get_summary_children_sorted_by_order() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 	assert_eq!(
 		summary
 			.room_type
@@ -207,12 +215,12 @@ fn get_summary_children_sorted_by_order() {
 fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 	let mut summary: SpaceHierarchyParentSummary = SpaceHierarchyParentSummaryInit {
 		num_joined_members: UInt::from(1_u32),
-		room_id: owned_room_id!("!root:example.org"),
+		room_id: slipstream::OwnedRoomId::parse("!root:example.org").unwrap(),
 		world_readable: true,
 		guest_can_join: true,
 		join_rule: SpaceRoomJoinRule::Public,
 		children_state: vec![
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "order": "a", "suggested": false },
                       "origin_server_ts": 20,
@@ -222,7 +230,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "order": "a", "suggested": false },
                       "origin_server_ts": 10,
@@ -232,7 +240,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "suggested": false },
                       "origin_server_ts": 30,
@@ -242,7 +250,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
                     }"#,
 			)
 			.unwrap(),
-			serde_json::from_str(
+			slipstream::codec::from_str(
 				r#"{
                       "content": { "via": ["example.org"], "suggested": false },
                       "origin_server_ts": 30,
@@ -256,7 +264,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 		allowed_room_ids: vec![],
 	}
 	.into();
-	summary.room_type = Some(ruma::room::RoomType::Space);
+	summary.room_type = Some(slipstream::room::RoomType::Space);
 
 	assert_eq!(
 		summary

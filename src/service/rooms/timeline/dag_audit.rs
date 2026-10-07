@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use conduwuit_core::Result;
 use futures::{StreamExt, stream};
-use ruma::{OwnedEventId, RoomId};
+use slipstream::{OwnedEventId, RoomId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;

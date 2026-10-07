@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use conduwuit::{Result, debug, debug_info, err, error, utils, utils::string_from_bytes};
 use database::Database;
-use ruma::{api::federation::discovery::VerifyKey, serde::Base64, signatures::Ed25519KeyPair};
+use slipstream::{
+	OwnedServerSigningKeyId, api::federation::discovery::VerifyKey, signatures::Ed25519KeyPair,
+	sswire::Base64,
+};
 
 use super::VerifyKeys;
 
@@ -17,7 +20,7 @@ pub(super) fn init(db: &Arc<Database>) -> Result<(Box<Ed25519KeyPair>, VerifyKey
 	};
 
 	let id = format!("ed25519:{}", keypair.version());
-	let verify_keys: VerifyKeys = [(id.try_into()?, verify_key)].into();
+	let verify_keys: VerifyKeys = [(OwnedServerSigningKeyId::parse(id)?, verify_key)].into();
 
 	Ok((keypair, verify_keys))
 }
@@ -52,7 +55,7 @@ fn create(db: &Arc<Database>) -> Result<(String, Vec<u8>)> {
 	let id = utils::rand::string(8);
 	debug_info!("Generated new Ed25519 keypair: {id:?}");
 
-	let value: (String, Vec<u8>) = (id, keypair.to_vec());
+	let value: (String, Vec<u8>) = (id, keypair);
 	db["global"].raw_put(b"keypair", &value);
 
 	Ok(value)

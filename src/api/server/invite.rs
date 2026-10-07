@@ -7,14 +7,15 @@ use conduwuit::{
 	utils::{self, hash::sha256},
 	warn,
 };
-use ruma::{
-	CanonicalJsonValue, OwnedUserId, UserId,
+use slipstream::{
+	CanonicalJsonValue, UserId,
 	api::{client::error::ErrorKind, federation::membership::create_invite},
+	codec,
 	events::{
 		invite_permission_config::FilterLevel,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
-	serde::JsonObject,
+	sswire::JsonObject,
 };
 
 use crate::Ruma;
@@ -75,7 +76,7 @@ pub(crate) async fn create_invite_route(
 	}
 
 	if let Some(server) = body.room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
+		if services.moderation.is_remote_server_forbidden(&server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
 		}
 	}
@@ -109,12 +110,10 @@ pub(crate) async fn create_invite_route(
 		)));
 	}
 
-	let content: RoomMemberEventContent = serde_json::from_value(
+	let content: RoomMemberEventContent = codec::from_value(
 		signed_event
 			.get("content")
-			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?
-			.clone()
-			.into(),
+			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
 
@@ -128,23 +127,24 @@ pub(crate) async fn create_invite_route(
 	// Ensure the sending user isn't a lying bozo
 	let sender_server = signed_event
 		.get("sender")
-		.try_into()
-		.map(UserId::server_name)
-		.map_err(|e| err!(Request(InvalidParam("Invalid sender property: {e}"))))?;
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|sender| UserId::parse(sender).ok())
+		.map(|sender| sender.server_name())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid sender property."))))?;
 	if sender_server != body.origin() {
 		return Err!(Request(Forbidden("Sender's server does not match the origin server.",)));
 	}
 
 	// Ensure the target user belongs to this server
-	let recipient_user: OwnedUserId = signed_event
+	let recipient_user = signed_event
 		.get("state_key")
-		.try_into()
-		.map(UserId::to_owned)
-		.map_err(|e| err!(Request(InvalidParam("Invalid state_key property: {e}"))))?;
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|state_key| UserId::parse(state_key).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid state_key property."))))?;
 
 	if !services
 		.globals
-		.server_is_ours(recipient_user.server_name())
+		.server_is_ours(&recipient_user.server_name())
 	{
 		return Err!(Request(InvalidParam("User does not belong to this homeserver.")));
 	}
@@ -153,7 +153,7 @@ pub(crate) async fn create_invite_route(
 	services
 		.rooms
 		.event_handler
-		.acl_check(recipient_user.server_name(), &body.room_id)
+		.acl_check(&recipient_user.server_name(), &body.room_id)
 		.await?;
 
 	services
@@ -167,10 +167,11 @@ pub(crate) async fn create_invite_route(
 	// Add event_id back
 	signed_event.insert("event_id".to_owned(), CanonicalJsonValue::String(event_id.to_string()));
 
-	let sender_user: &UserId = signed_event
+	let sender_user = signed_event
 		.get("sender")
-		.try_into()
-		.map_err(|e| err!(Request(InvalidParam("Invalid sender property: {e}"))))?;
+		.and_then(rezzy::JsonValue::as_str)
+		.and_then(|sender| UserId::parse(sender).ok())
+		.ok_or_else(|| err!(Request(InvalidParam("Invalid sender property."))))?;
 
 	if services.rooms.metadata.is_banned(&body.room_id).await
 		&& !services.users.is_admin(&recipient_user).await
@@ -185,7 +186,7 @@ pub(crate) async fn create_invite_route(
 
 	let recipient_filter_level = services
 		.users
-		.invite_filter_level(sender_user, &recipient_user)
+		.invite_filter_level(&sender_user, &recipient_user)
 		.await;
 
 	if matches!(recipient_filter_level, FilterLevel::Block) {
@@ -194,7 +195,7 @@ pub(crate) async fn create_invite_route(
 
 	if let Err(e) = services
 		.antispam
-		.user_may_invite(sender_user.to_owned(), recipient_user.clone(), body.room_id.clone())
+		.user_may_invite(sender_user.clone(), recipient_user.clone(), body.room_id.clone())
 		.await
 	{
 		warn!("Antispam rejected invite: {e:?}");
@@ -202,7 +203,7 @@ pub(crate) async fn create_invite_route(
 	}
 
 	let mut invite_state = body.invite_room_state.clone();
-	let mut event: JsonObject = serde_json::from_str(body.event.get())
+	let mut event: JsonObject = codec::from_str(body.event.get())
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 	let is_direct_invite = event
 		.get("content")
@@ -210,7 +211,7 @@ pub(crate) async fn create_invite_route(
 		.is_some_and(|is_direct| is_direct.as_bool() == Some(true));
 	let invite_state_values = invite_state
 		.iter()
-		.map(|event| rezzy::JsonValue::parse(event.clone().into_json().get()))
+		.map(|event| rezzy::JsonValue::parse(event.get()))
 		.collect::<std::result::Result<Vec<_>, _>>()
 		.map_err(|e| err!(Request(MissingParam("Invalid invite room state JSON: {e}"))))?;
 
@@ -223,7 +224,7 @@ pub(crate) async fn create_invite_route(
 
 	event.insert("event_id".to_owned(), "$placeholder".into());
 
-	let pdu: PduEvent = serde_json::from_value(event.into())
+	let pdu: PduEvent = codec::from_value(&rezzy::JsonValue::Object(event))
 		.map_err(|e| err!(Request(BadJson("Invalid invite event PDU: {e}"))))?;
 
 	invite_state.push(pdu.to_format());
@@ -244,7 +245,7 @@ pub(crate) async fn create_invite_route(
 			.mark_as_invited(
 				&recipient_user,
 				&body.room_id,
-				sender_user,
+				&sender_user,
 				Some(invite_state),
 				body.via.clone(),
 			)
@@ -258,11 +259,12 @@ pub(crate) async fn create_invite_route(
 
 		for appservice in services.appservice.read().await.values() {
 			if appservice.is_user_match(&recipient_user) {
-				let request = ruma::api::appservice::event::push_events::v1::Request {
+				let request = slipstream::api::appservice::event::push_events::v1::Request {
 					events: vec![pdu.to_format()],
-					txn_id: general_purpose::URL_SAFE_NO_PAD
-						.encode(sha256::hash(pdu.event_id.as_bytes()))
-						.into(),
+					txn_id: slipstream::OwnedTransactionId::parse(
+						general_purpose::URL_SAFE_NO_PAD
+							.encode(sha256::hash(pdu.event_id.as_bytes())),
+					)?,
 					ephemeral: Vec::new(),
 					to_device: Vec::new(),
 				};

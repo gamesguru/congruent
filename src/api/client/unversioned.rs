@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{extract::State, response::IntoResponse};
 use conduwuit::Result;
 use futures::StreamExt;
-use ruma::api::client::discovery::get_supported_versions;
+use slipstream::api::client::discovery::get_supported_versions;
 
 use crate::Ruma;
 
@@ -78,7 +78,7 @@ pub(crate) async fn get_supported_versions_route(
 			"v1.13".to_owned(),
 			"v1.14".to_owned(),
 		],
-		unstable_features,
+		unstable_features: Some(unstable_features),
 	};
 
 	Ok(resp)
@@ -89,10 +89,10 @@ pub(crate) async fn get_supported_versions_route(
 /// Conduwuit-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
 pub(crate) async fn conduwuit_server_version() -> Result<impl IntoResponse> {
-	Ok(Json(serde_json::json!({
-		"name": conduwuit::version::name(),
-		"version": conduwuit::version::version(),
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("name", &conduwuit::version::name());
+	object.field("version", &conduwuit::version::version());
+	Ok(crate::json_util::json_response(object.finish()))
 }
 
 /// # `GET /_conduwuit/local_user_count`
@@ -105,7 +105,7 @@ pub(crate) async fn conduwuit_local_user_count(
 ) -> Result<impl IntoResponse> {
 	let user_count = services.users.list_local_users().count().await;
 
-	Ok(Json(serde_json::json!({
-		"count": user_count
-	})))
+	let mut object = slipstream::ObjectBuilder::new();
+	object.field("count", &user_count);
+	Ok(crate::json_util::json_response(object.finish()))
 }

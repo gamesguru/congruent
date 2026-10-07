@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Event, Result};
 use futures::StreamExt;
-use ruma::{OwnedEventId, api::federation::event::event_relationships};
+use slipstream::{OwnedEventId, api::federation::event::event_relationships};
 
 use super::AccessCheck;
 use crate::{
@@ -80,7 +80,7 @@ pub(crate) async fn get_event_relationships_route(
 	Ok(event_relationships::unstable::Response {
 		events: raw_events,
 		next_batch: None,
-		limited,
+		limited: Some(limited),
 		auth_chain,
 	})
 }

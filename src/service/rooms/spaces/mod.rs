@@ -16,7 +16,7 @@ use conduwuit_core::{
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream::FuturesUnordered};
 use lru_cache::LruCache;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, RoomId, ServerName, UserId,
 	api::{
 		client::space::SpaceHierarchyRoomsChunk,
@@ -29,8 +29,8 @@ use ruma::{
 		StateEventType,
 		space::child::{HierarchySpaceChildEvent, SpaceChildEventContent},
 	},
-	serde::Raw,
 	space::SpaceRoomJoinRule,
+	sswire::Raw,
 };
 use tokio::sync::{Mutex, MutexGuard};
 
@@ -224,18 +224,17 @@ async fn get_summary_and_children_federation(
 	user_id: &UserId,
 	via: &[OwnedServerName],
 ) -> Result<Option<SummaryAccessibility>> {
-	let request = federation::space::get_hierarchy::v1::Request {
-		room_id: current_room.to_owned(),
-		suggested_only,
-	};
-
 	let mut requests: FuturesUnordered<_> = via
 		.iter()
 		.take(3)
 		.map(|server| {
+			let request = federation::space::get_hierarchy::v1::Request {
+				room_id: current_room.to_owned(),
+				suggested_only,
+			};
 			self.services
 				.sending
-				.send_federation_request(server, request.clone())
+				.send_federation_request(server, request)
 		})
 		.collect();
 
@@ -427,13 +426,14 @@ async fn get_room_summary(
 		.is_world_readable(room_id)
 		.await;
 
+	let allowed_rooms: Vec<OwnedRoomId> = join_rule.allowed_rooms().collect();
 	let is_accessible_child = self
 		.is_accessible_child(
 			room_id,
 			&join_rule.clone().into(),
 			world_readable,
 			identifier,
-			join_rule.allowed_rooms(),
+			allowed_rooms.iter(),
 		)
 		.await;
 
@@ -509,8 +509,8 @@ async fn get_room_summary(
 		encryption,
 		room_version,
 		room_id: room_id.to_owned(),
-		num_joined_members: num_joined_members.try_into().unwrap_or_default(),
-		allowed_room_ids: join_rule.allowed_rooms().map(Into::into).collect(),
+		num_joined_members,
+		allowed_room_ids: join_rule.allowed_rooms().collect(),
 		join_rule: join_rule.clone().into(),
 	};
 
@@ -707,8 +707,8 @@ async fn cache_insert(
 	cache.insert(room_id.clone(), Some(CachedSpaceHierarchySummary { summary }));
 }
 
-// Here because cannot implement `From` across ruma-federation-api and
-// ruma-client-api types
+// Here because cannot implement `From` across slipstream-federation-api and
+// slipstream-client-api types
 impl From<CachedSpaceHierarchySummary> for SpaceHierarchyRoomsChunk {
 	fn from(value: CachedSpaceHierarchySummary) -> Self {
 		let SpaceHierarchyParentSummary {
@@ -747,8 +747,8 @@ impl From<CachedSpaceHierarchySummary> for SpaceHierarchyRoomsChunk {
 	}
 }
 
-/// Here because cannot implement `From` across ruma-federation-api and
-/// ruma-client-api types
+/// Here because cannot implement `From` across slipstream-federation-api and
+/// slipstream-client-api types
 #[must_use]
 pub fn summary_to_chunk(
 	summary: SpaceHierarchyParentSummary,

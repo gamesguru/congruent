@@ -16,8 +16,8 @@ use conduwuit_core::{
 pub use create::create_admin_room;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt};
 use loole::{Receiver, Sender};
-use ruma::{
-	Mxc, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
+use slipstream::{
+	Mxc, OwnedEventId, OwnedMxcUri, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		Mentions,
 		room::{
@@ -202,7 +202,7 @@ impl Service {
 			let size_u64: u64 = message_content.body().len().try_into().unwrap_or(0);
 			let metadata = FileInfo {
 				mimetype: Some("text/markdown".to_owned()),
-				size: Some(UInt::new_saturating(size_u64)),
+				size: Some(size_u64),
 				thumbnail_info: None,
 				thumbnail_source: None,
 			};
@@ -210,8 +210,8 @@ impl Service {
 				body: "Output was too large to send as text.".to_owned(),
 				formatted: None,
 				filename: Some("output.md".to_owned()),
-				source: MediaSource::Plain(file),
-				info: Some(Box::new(metadata)),
+				source: MediaSource::Plain(file.to_string()),
+				info: Some(metadata),
 			};
 			RoomMessageEventContent::new(MessageType::File(content))
 		} else {
@@ -286,7 +286,7 @@ impl Service {
 			)
 			.await
 		{
-			| Ok(()) => Ok(mxc.to_string().into()),
+			| Ok(()) => Ok(OwnedMxcUri::parse(mxc.to_string())?),
 			| Err(e) => {
 				error!("Failed to upload text to file: {e}");
 				Err!(Request(Unknown("Failed to upload text to file")))
@@ -404,7 +404,7 @@ impl Service {
 				let mut stream = admin_users;
 
 				while let Some(user_id) = stream.next().await {
-					generated_admin_list.push(user_id.to_owned());
+					generated_admin_list.push(user_id.clone());
 				}
 			}
 		}
@@ -474,7 +474,7 @@ impl Service {
 		};
 
 		let Some(room_id) = pdu.room_id_or_hash() else {
-			return Ok(());
+			return Err!(Request(BadJson("Reply event has no room ID")));
 		};
 		let response_sender = if self.is_admin_room(&room_id).await {
 			&self.services.globals.server_user

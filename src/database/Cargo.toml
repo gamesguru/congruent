@@ -67,7 +67,7 @@ minicbor.workspace = true
 minicbor-serde.workspace = true
 rust-rocksdb.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+slipstream.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

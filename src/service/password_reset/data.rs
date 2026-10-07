@@ -5,17 +5,65 @@ use std::{
 
 use conduwuit::utils::{ReadyExt, stream::TryExpect};
 use database::{Database, Deserialized, Json, Map};
-use ruma::{OwnedUserId, UserId};
-use serde::{Deserialize, Serialize};
+use slipstream::{
+	OwnedUserId, UserId,
+	codec::{Deserialize, Serialize},
+};
 
 pub(super) struct Data {
 	passwordresettoken_info: Arc<Map>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct ResetTokenInfo {
 	pub user: OwnedUserId,
 	pub issued_at: SystemTime,
+}
+
+impl Serialize for ResetTokenInfo {
+	fn to_json(&self) -> slipstream::json::Value {
+		slipstream::json::Value::Object(
+			[
+				("user".into(), self.user.to_json()),
+				(
+					"issued_at".into(),
+					slipstream::json::Value::Number(slipstream::json::Number::from(
+						u64::try_from(
+							self.issued_at
+								.duration_since(SystemTime::UNIX_EPOCH)
+								.unwrap_or_default()
+								.as_millis(),
+						)
+						.unwrap_or(u64::MAX),
+					)),
+				),
+			]
+			.into_iter()
+			.collect(),
+		)
+	}
+}
+
+impl Deserialize for ResetTokenInfo {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let object = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError::expected("object"))?;
+		let issued_at = object
+			.get("issued_at")
+			.and_then(slipstream::json::Value::as_u64)
+			.ok_or_else(|| slipstream::codec::DeError::expected("issued_at"))?;
+		Ok(Self {
+			user: OwnedUserId::from_json(
+				object
+					.get("user")
+					.ok_or_else(|| slipstream::codec::DeError::expected("user"))?,
+			)?,
+			issued_at: SystemTime::UNIX_EPOCH
+				.checked_add(Duration::from_millis(issued_at))
+				.ok_or_else(|| slipstream::codec::DeError::expected("issued_at"))?,
+		})
+	}
 }
 
 impl ResetTokenInfo {
@@ -66,3 +114,5 @@ impl Data {
 	/// Remove a reset token.
 	pub(super) fn remove_token(&self, token: &str) { self.passwordresettoken_info.remove(token); }
 }
+
+database::codec_value_impls!(ResetTokenInfo);

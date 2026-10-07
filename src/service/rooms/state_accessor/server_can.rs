@@ -1,6 +1,6 @@
 use conduwuit::{Event, implement};
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId, OwnedServerName, UserId,
 	events::{
 		StateEventType, TimelineEventType,
@@ -18,7 +18,7 @@ pub async fn server_can_see_event(
 	room_id: OwnedRoomId,
 	event_id: OwnedEventId,
 ) -> bool {
-	if event_id.server_name() == Some(&origin) {
+	if event_id.server_name().as_ref() == Some(&origin) {
 		return true;
 	}
 
@@ -110,7 +110,7 @@ pub async fn server_can_see_event(
 
 	match history_visibility {
 		| HistoryVisibility::WorldReadable => true,
-		| HistoryVisibility::Shared => {
+		| HistoryVisibility::Shared | HistoryVisibility::Custom(_) => {
 			// Spec: servers with joined users can see all history.
 			// Invited/knocked servers do NOT qualify for shared visibility.
 			server_in_room
@@ -126,7 +126,7 @@ pub async fn server_can_see_event(
 			while let Some(member) = members.next().await {
 				if member.server_name() == origin
 					&& self
-						.user_was_invited_hamt(&room_id, &root_handle, member)
+						.user_was_invited_hamt(&room_id, &root_handle, &member)
 						.await
 				{
 					return true;
@@ -142,7 +142,7 @@ pub async fn server_can_see_event(
 			while let Some(member) = members.next().await {
 				if member.server_name() == origin
 					&& self
-						.user_was_joined_hamt(&room_id, &root_handle, member)
+						.user_was_joined_hamt(&room_id, &root_handle, &member)
 						.await
 				{
 					return true;
@@ -151,6 +151,5 @@ pub async fn server_can_see_event(
 
 			false
 		},
-		| _ => false,
 	}
 }

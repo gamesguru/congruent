@@ -4,8 +4,10 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
-use ruma::{CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType};
-use serde_json::Value as JsonValue;
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType,
+	json::Value as JsonValue,
+};
 use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {
@@ -56,9 +58,8 @@ pub(super) async fn decorate_pdu_for_export(
 	pdu_json: &CanonicalJsonObject,
 	pdu_opt: Option<&PduEvent>,
 	is_outlier: bool,
-) -> Result<(serde_json::Map<String, JsonValue>, bool, Option<u64>)> {
-	let mut obj: serde_json::Map<String, JsonValue> =
-		serde_json::from_value(serde_json::to_value(pdu_json)?)?;
+) -> Result<(slipstream::json::Object, bool, Option<u64>)> {
+	let mut obj: slipstream::json::Object = pdu_json.clone();
 
 	if is_outlier {
 		obj.insert("__outlier".to_owned(), JsonValue::Bool(true));
@@ -196,7 +197,7 @@ impl DagExportStats {
 					self.last_is_state_event = false;
 				}
 
-				self.last_event_id = Some(pdu.event_id().into());
+				self.last_event_id = Some(Box::new(pdu.event_id().to_owned()));
 				let eid = pdu.event_id().to_owned();
 				self.all_event_ids.insert(eid.clone());
 				let mut prevs = Vec::new();
@@ -205,13 +206,13 @@ impl DagExportStats {
 					prevs.push(prev.to_owned());
 				}
 				self.all_events_prevs.insert(eid, prevs);
-				let d: u64 = pdu.depth.into();
+				let d: u64 = pdu.depth;
 				self.max_depth = self.max_depth.max(d);
 				self.min_depth = self.min_depth.min(d);
 			}
 		}
 
-		let json = serde_json::to_string(&obj)?;
+		let json = slipstream::codec::to_string(&slipstream::json::Value::Object(obj.clone()));
 
 		if is_separated {
 			outliers_file.write_all(json.as_bytes()).await?;

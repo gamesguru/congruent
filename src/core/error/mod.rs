@@ -55,11 +55,9 @@ pub enum Error {
 	#[error("Join error: {0}")]
 	JoinError(#[from] tokio::task::JoinError),
 	#[error(transparent)]
-	Json(#[from] serde_json::Error),
+	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]
-	JsParseInt(#[from] ruma::JsParseIntError), // js_int re-export
-	#[error(transparent)]
-	JsTryFromInt(#[from] ruma::JsTryFromIntError), // js_int re-export
+	JsTryFromInt(#[from] slipstream::JsTryFromIntError), // js_int re-export
 	#[error(transparent)]
 	Path(#[from] axum::extract::rejection::PathRejection),
 	#[error("Mutex poisoned: {0}")]
@@ -87,59 +85,63 @@ pub enum Error {
 	#[error(transparent)]
 	YamlSer(#[from] serde_saphyr::ser_error::Error),
 
-	// ruma/conduwuit
+	// slipstream/conduwuit
 	#[error("Arithmetic operation failed: {0}")]
 	Arithmetic(Cow<'static, str>),
 	#[error("{0}: {1}")]
-	BadRequest(ruma::api::client::error::ErrorKind, &'static str), //TODO: remove
+	BadRequest(slipstream::api::client::error::ErrorKind, &'static str), //TODO: remove
 	#[error("{0}")]
 	BadServerResponse(Cow<'static, str>),
 	#[error(transparent)]
-	CanonicalJson(#[from] ruma::CanonicalJsonError),
+	CanonicalJson(#[from] slipstream::CanonicalJsonError),
+	#[error(transparent)]
+	DeserializeError(#[from] slipstream::codec::DeError),
 	#[error("There was a problem with the '{0}' directive in your configuration: {1}")]
 	Config(&'static str, Cow<'static, str>),
 	#[error("Conflict: {0}")]
 	Conflict(Cow<'static, str>), // This is only needed for when a room alias already exists
 	#[error("Missing auth events required for event validation: {0:?}")]
-	MissingAuthEvents(Vec<ruma::OwnedEventId>),
+	MissingAuthEvents(Vec<slipstream::OwnedEventId>),
 	#[error("State resolution failed but the event's prev events were all present: {0}")]
 	StateResolutionWithPrevsPresent(Cow<'static, str>),
 	#[error(transparent)]
-	ContentDisposition(#[from] ruma::http_headers::ContentDispositionParseError),
+	ContentDisposition(#[from] slipstream::http_headers::ContentDispositionParseError),
 	#[error("{0}")]
 	Database(Cow<'static, str>),
 	#[error("Feature '{0}' is not available on this server.")]
 	FeatureDisabled(Cow<'static, str>),
 	#[error("Remote server {0} responded with: {1}")]
-	Federation(ruma::OwnedServerName, ruma::api::client::error::Error),
+	Federation(slipstream::OwnedServerName, slipstream::api::client::error::Error),
 	#[error("{0} in {1}")]
-	InconsistentRoomState(&'static str, ruma::OwnedRoomId),
+	InconsistentRoomState(&'static str, slipstream::OwnedRoomId),
 	#[error(transparent)]
-	IntoHttp(#[from] ruma::api::error::IntoHttpError),
+	IntoHttp(#[from] slipstream::api::error::IntoHttpError),
 	#[error("{0}")]
 	Ldap(Cow<'static, str>),
 	#[error(transparent)]
-	Mxc(#[from] ruma::MxcUriError),
+	Mxc(#[from] slipstream::MxcUriError),
 	#[error(transparent)]
-	Mxid(#[from] ruma::IdParseError),
+	Mxid(#[from] slipstream::IdParseError),
+	#[error(transparent)]
+	MatrixIdParse(#[from] slipstream::MatrixIdParseError),
 	#[error("from {0}: {1}")]
-	Redaction(ruma::OwnedServerName, ruma::canonical_json::RedactionError),
+	Redaction(slipstream::OwnedServerName, slipstream::canonical_json::RedactionError),
 	#[error("{0}: {1}")]
-	Request(ruma::api::client::error::ErrorKind, Cow<'static, str>, http::StatusCode),
+	Request(slipstream::api::client::error::ErrorKind, Cow<'static, str>, http::StatusCode),
 	#[error(transparent)]
-	Ruma(#[from] ruma::api::client::error::Error),
+	Ruma(#[from] slipstream::api::client::error::Error),
 	#[error(transparent)]
-	Signatures(#[from] ruma::signatures::Error),
+	Signatures(#[from] slipstream::signatures::Error),
 	#[error(transparent)]
 	StateRes(#[from] crate::state_res::Error),
 	#[error("uiaa")]
-	Uiaa(ruma::api::client::uiaa::UiaaInfo),
+	Uiaa(slipstream::api::client::uiaa::UiaaInfo),
 
 	// federation / remote
 	#[error("Federation timeout: {0}")]
-	FederationTimeout(ruma::OwnedServerName),
+	FederationTimeout(slipstream::OwnedServerName),
 	#[error("Federation connection error: {0}")]
-	FederationConnection(ruma::OwnedServerName),
+	FederationConnection(slipstream::OwnedServerName),
 
 	// unique / untyped
 	#[error("{0}")]
@@ -157,6 +159,7 @@ impl Error {
 	}
 
 	/// Sanitizes public-facing errors that can leak sensitive information.
+	#[must_use]
 	pub fn sanitized_message(&self) -> String {
 		match self {
 			| Self::Database(..) => String::from("Database error occurred."),
@@ -166,6 +169,7 @@ impl Error {
 	}
 
 	/// Generate the error message string.
+	#[must_use]
 	pub fn message(&self) -> String {
 		match self {
 			| Self::Federation(origin, error) => format!("Answer from {origin}: {error}"),
@@ -180,20 +184,36 @@ impl Error {
 
 	/// Returns the Matrix error code / error kind
 	#[inline]
-	pub fn kind(&self) -> ruma::api::client::error::ErrorKind {
-		use ruma::api::client::error::ErrorKind::{FeatureDisabled, Unknown};
+	#[must_use]
+	pub fn kind(&self) -> &slipstream::api::client::error::ErrorKind {
+		use slipstream::api::client::error::ErrorKind::{FeatureDisabled, Unknown};
 
 		match self {
-			| Self::Federation(_, error) | Self::Ruma(error) =>
-				response::ruma_error_kind(error).clone(),
-			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind.clone(),
-			| Self::FeatureDisabled(..) => FeatureDisabled,
-			| _ => Unknown,
+			| Self::Federation(_, error) | Self::Ruma(error) => response::ruma_error_kind(error),
+			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind,
+			| Self::FeatureDisabled(..) => &FeatureDisabled,
+			| _ => &Unknown,
+		}
+	}
+
+	#[must_use]
+	pub fn into_kind(self) -> slipstream::api::client::error::ErrorKind {
+		use slipstream::api::client::error::{ErrorBody, ErrorKind};
+
+		match self {
+			| Self::Federation(_, error) | Self::Ruma(error) => match error.body {
+				| ErrorBody::Standard { kind, .. } => kind,
+				| ErrorBody::Other => ErrorKind::Unknown,
+			},
+			| Self::BadRequest(kind, ..) | Self::Request(kind, ..) => kind,
+			| Self::FeatureDisabled(..) => ErrorKind::FeatureDisabled,
+			| _ => ErrorKind::Unknown,
 		}
 	}
 
 	/// Returns the HTTP error code or closest approximation based on error
 	/// variant.
+	#[must_use]
 	pub fn status_code(&self) -> http::StatusCode {
 		use http::StatusCode;
 
@@ -201,7 +221,7 @@ impl Error {
 			| Self::Federation(_, error) | Self::Ruma(error) => error.status_code,
 			| Self::Request(kind, _, code) => response::status_code(kind, *code),
 			| Self::BadRequest(kind, ..) => response::bad_request_code(kind),
-			| Self::FeatureDisabled(..) => response::bad_request_code(&self.kind()),
+			| Self::FeatureDisabled(..) => response::bad_request_code(self.kind()),
 			| Self::Reqwest(error) => error.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
 			| Self::Conflict(_) => StatusCode::CONFLICT,
 			| Self::Io(error) => response::io_error_code(error.kind()),
@@ -217,6 +237,7 @@ impl Error {
 	/// often used as a special case to eliminate a contained Option with a
 	/// Result where Ok(None) is instead Err(e) if e.is_not_found().
 	#[inline]
+	#[must_use]
 	pub fn is_not_found(&self) -> bool { self.status_code() == http::StatusCode::NOT_FOUND }
 }
 

@@ -4,7 +4,7 @@ use std::{
 };
 
 use conduwuit::{Error, Result};
-use ruma::{UInt, api::client::error::ErrorKind};
+use slipstream::{UInt, api::client::error::ErrorKind};
 
 use crate::rooms::short::ShortRoomId;
 

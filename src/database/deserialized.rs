@@ -1,18 +1,19 @@
 use std::convert::identity;
 
 use conduwuit::Result;
-use serde::Deserialize;
+
+use crate::dbkey::DbDeOwned;
 
 pub trait Deserialized {
 	fn map_de<T, U, F>(self, f: F) -> Result<U>
 	where
 		F: FnOnce(T) -> U,
-		T: for<'de> Deserialize<'de>;
+		T: DbDeOwned;
 
 	#[inline]
 	fn deserialized<T>(self) -> Result<T>
 	where
-		T: for<'de> Deserialize<'de>,
+		T: DbDeOwned,
 		Self: Sized,
 	{
 		self.map_de(identity::<T>)

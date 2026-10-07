@@ -3,7 +3,8 @@ use std::time::SystemTime;
 use axum::extract::State;
 use conduwuit::{Err, Result, err};
 use lettre::{Address, message::Mailbox};
-use ruma::{
+use service::{mailer::messages, uiaa::Identity};
+use slipstream::{
 	MilliSecondsSinceUnixEpoch,
 	api::client::account::{
 		ThirdPartyIdRemovalStatus, add_3pid, delete_3pid, get_3pids,
@@ -11,7 +12,6 @@ use ruma::{
 	},
 	thirdparty::{Medium, ThirdPartyIdentifierInit},
 };
-use service::{mailer::messages, uiaa::Identity};
 
 use crate::Ruma;
 
@@ -43,7 +43,7 @@ pub(crate) async fn third_party_route(
 		);
 	}
 
-	Ok(get_3pids::v3::Response::new(threepids))
+	Ok(get_3pids::v3::Response { threepids })
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/email/requestToken`
@@ -76,15 +76,16 @@ pub(crate) async fn request_3pid_management_token_via_email_route(
 			Mailbox::new(None, email),
 			|verification_link| messages::ChangeEmail {
 				server_name: services.config.server_name.as_str(),
-				user_id: body.sender_user.as_deref(),
+				user_id: body.sender_user_opt(),
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_3pid_management_token_via_email::v3::Response::new(session))
+	Ok(request_3pid_management_token_via_email::v3::Response { sid: session.to_string() })
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/msisdn/requestToken`
@@ -119,9 +120,13 @@ pub(crate) async fn add_3pid_route(
 		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
 		.await?;
 
+	let sid = slipstream::OwnedSessionId::parse(&body.sid)
+		.map_err(|_| err!(Request(InvalidParam("Invalid sid"))))?;
+	let client_secret = slipstream::OwnedClientSecret::parse(&body.client_secret)
+		.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?;
 	let email = services
 		.threepid
-		.consume_valid_session(&body.sid, &body.client_secret)
+		.consume_valid_session(&sid, &client_secret)
 		.await
 		.map_err(|message| err!(Request(ThreepidAuthFailed("{message}"))))?;
 
@@ -130,7 +135,7 @@ pub(crate) async fn add_3pid_route(
 		.associate_localpart_email(sender_user.localpart(), &email)
 		.await?;
 
-	Ok(add_3pid::v3::Response::new())
+	Ok(add_3pid::v3::Response {})
 }
 
 /// # `POST /_matrix/client/v3/account/3pid/delete`

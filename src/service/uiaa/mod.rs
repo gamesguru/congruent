@@ -9,7 +9,7 @@ use conduwuit::{
 	utils::{hash, response::LimitReadExt},
 };
 use lettre::Address;
-use ruma::{
+use slipstream::{
 	UserId,
 	api::client::{
 		error::{ErrorKind, StandardErrorBody},
@@ -19,7 +19,6 @@ use ruma::{
 		},
 	},
 };
-use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
 use crate::{Dep, client, config, globals, registration_tokens, threepid, users};
@@ -82,9 +81,10 @@ impl Service {
 			)));
 		}
 
-		let response = serde_json::from_str::<RecaptchaVerifyResponse>(&body)?;
+		let response = slipstream::codec::from_str::<slipstream::json::Value>(&body)
+			.map_err(|e| err!(BadServerResponse("Invalid ReCaptcha response: {e}")))?;
 
-		if response.success {
+		if matches!(response.get("success"), Some(slipstream::json::Value::Bool(true))) {
 			Ok(())
 		} else {
 			Err(err!(BadServerResponse("ReCaptcha response was rejected")))
@@ -96,11 +96,6 @@ const RECAPTCHA_SITEVERIFY_URL: &str = "https://www.google.com/recaptcha/api/sit
 
 /// Generous bound on the siteverify reply, which is a small JSON object.
 const RECAPTCHA_MAX_RESPONSE_SIZE: u64 = 4096;
-
-#[derive(serde::Deserialize)]
-struct RecaptchaVerifyResponse {
-	success: bool,
-}
 
 struct UiaaSession {
 	info: UiaaInfo,
@@ -175,7 +170,7 @@ impl Service {
 		&self,
 		auth: &Option<AuthData>,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> Result<Identity> {
 		match auth.as_ref() {
@@ -218,7 +213,7 @@ impl Service {
 		self.authenticate(
 			auth,
 			vec![AuthFlow::new(vec![AuthType::Password])],
-			Box::default(),
+			slipstream::json::Value::Object(slipstream::json::Object::new()),
 			identity,
 		)
 		.await
@@ -234,7 +229,7 @@ impl Service {
 	async fn create_session(
 		&self,
 		flows: Vec<AuthFlow>,
-		params: Box<RawValue>,
+		params: slipstream::json::Value,
 		identity: Option<Identity>,
 	) -> UiaaInfo {
 		let mut uiaa_sessions = self.uiaa_sessions.lock().await;
@@ -374,10 +369,19 @@ impl Service {
 				thirdparty_id_creds: ThirdpartyIdCredentials { client_secret, sid, .. },
 				..
 			}) => {
+				let (Ok(sid), Ok(client_secret)) = (
+					slipstream::OwnedSessionId::parse(sid.as_str()),
+					slipstream::OwnedClientSecret::parse(client_secret.as_str()),
+				) else {
+					return Err(StandardErrorBody {
+						kind: ErrorKind::ThreepidAuthFailed,
+						message: "Invalid session ID or client secret".to_owned(),
+					});
+				};
 				match self
 					.services
 					.threepid
-					.consume_valid_session(sid, client_secret)
+					.consume_valid_session(&sid, &client_secret)
 					.await
 				{
 					| Ok(email) => {

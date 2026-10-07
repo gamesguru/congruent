@@ -12,7 +12,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	OwnedUserId, RoomId, UserId,
 	events::TimelineEventType::{
 		self, Beacon, CallInvite, PollStart, RoomEncrypted, RoomMessage, Sticker,
@@ -25,7 +25,7 @@ pub(crate) use self::{
 };
 
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
-	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
+	&[RoomMessage, RoomEncrypted, Beacon, CallInvite, PollStart, Sticker];
 
 #[derive(Default)]
 pub(crate) struct TimelinePdus {
@@ -38,10 +38,10 @@ impl TimelinePdus {
 	pub(crate) fn members(&self) -> impl Iterator<Item = OwnedUserId> + '_ {
 		self.pdus.iter().flat_map(|(_, pdu)| {
 			let mut users = vec![pdu.sender.clone()];
-			if pdu.event_type().to_string() == "m.room.member" {
+			if pdu.event_type() == "m.room.member" {
 				if let Some(state_key) = &pdu.state_key {
 					if let Ok(user_id) = UserId::parse(state_key.as_str()) {
-						users.push(user_id.to_owned());
+						users.push(user_id);
 					}
 				}
 			}
@@ -224,10 +224,10 @@ async fn load_timeline(
 	let mut prev_batch = if limited {
 		if pdus.len() > limit {
 			pdus.get(pdus.len().saturating_sub(limit))
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		} else {
 			pdus.front()
-				.map(|(count, _)| count.saturating_inc(ruma::api::Direction::Backward))
+				.map(|(count, _)| count.saturating_inc(slipstream::api::Direction::Backward))
 		}
 	} else {
 		ending_count
@@ -326,7 +326,7 @@ async fn load_timeline(
 	// If there are no PDUs in this room's sync range, `prev_batch` must be
 	// `None`. Even though a non-limited (empty) window has an obvious "current
 	// position" we could point `prev_batch` at, a set `prev_batch` makes
-	// ruma's `Timeline::is_empty()` return false (it treats the presence of
+	// slipstream's `Timeline::is_empty()` return false (it treats the presence of
 	// `prev_batch` as content). That in turn makes `JoinedRoom::is_empty()`
 	// false, so the incremental-sync loop in v3 always re-includes unchanged
 	// rooms like this one on every poll, violating the "unchanged room should
@@ -348,8 +348,7 @@ async fn share_encrypted_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_filter(|&room_id| Some(room_id) != ignore_room)
-		.map(ToOwned::to_owned)
+		.ready_filter(|room_id| ignore_room.is_none_or(|ignored| ignored != room_id))
 		.broad_any(|other_room_id| async move {
 			services
 				.rooms
@@ -371,7 +370,7 @@ async fn shares_a_room(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, user_id)
-		.ready_any(|room_id| Some(room_id) != ignore_room)
+		.ready_any(|room_id| ignore_room.is_none_or(|ignored| *ignored != room_id))
 		.await
 }
 
@@ -397,12 +396,12 @@ pub(crate) async fn add_membership_to_unsigned(
 		// caused by the event itself... are included."
 		// For a user's own membership event, the state after the event is just the
 		// event itself.
-		serde_json::from_str::<ruma::events::room::member::RoomMemberEventContent>(
+		slipstream::codec::from_str::<slipstream::events::room::member::RoomMemberEventContent>(
 			pdu.content.get(),
 		)
-		.map_or(ruma::events::room::member::MembershipState::Leave, |c| c.membership)
+		.map_or(slipstream::events::room::member::MembershipState::Leave, |c| c.membership)
 	} else if pdu.kind == TimelineEventType::RoomCreate {
-		ruma::events::room::member::MembershipState::Leave
+		slipstream::events::room::member::MembershipState::Leave
 	} else {
 		services
 			.rooms
@@ -412,4 +411,15 @@ pub(crate) async fn add_membership_to_unsigned(
 	};
 
 	pdu.set_membership(membership.as_str()).log_err().ok();
+}
+
+/// A `200` response whose body is the given JSON value.
+pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::Response {
+	use axum::response::IntoResponse;
+
+	(
+		[(http::header::CONTENT_TYPE, "application/json")],
+		slipstream::codec::to_string(value),
+	)
+		.into_response()
 }

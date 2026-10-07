@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::Result;
-use ruma::{
+use slipstream::{
 	api::federation::membership::prepare_leave_event,
 	events::room::member::{MembershipState, RoomMemberEventContent},
 };

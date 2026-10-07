@@ -2,7 +2,7 @@ use std::{collections::HashSet, fmt::Write};
 
 use conduwuit::{Err, Result, matrix::Event};
 use futures::StreamExt;
-use ruma::{OwnedEventId, OwnedRoomId, RoomId};
+use slipstream::{OwnedEventId, OwnedRoomId, RoomId};
 
 use crate::admin_command;
 
@@ -99,7 +99,6 @@ pub(super) async fn unreject_room(
 			.rooms
 			.metadata
 			.iter_ids()
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await
 	} else if let Some(r) = room_id {

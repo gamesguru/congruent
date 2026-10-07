@@ -4,8 +4,8 @@ use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{Err, Result, utils};
 use hmac::{Hmac, KeyInit, Mac};
-use ruma::{SecondsSinceUnixEpoch, UserId, api::client::voip::get_turn_server_info};
 use sha1::Sha1;
+use slipstream::{SecondsSinceUnixEpoch, UInt, UserId, api::client::voip::get_turn_server_info};
 
 use crate::Ruma;
 
@@ -63,6 +63,6 @@ pub(crate) async fn turn_server_route(
 		username,
 		password,
 		uris: services.globals.turn_uris().to_vec(),
-		ttl: Duration::from_secs(services.globals.turn_ttl()),
+		ttl: UInt::from(services.globals.turn_ttl()),
 	})
 }

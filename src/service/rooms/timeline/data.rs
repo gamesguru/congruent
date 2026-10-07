@@ -15,8 +15,9 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Json, KeyVal, Map, serialize_key};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, pin_mut};
-use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedUserId, RoomId, UserId, api::Direction,
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
+	api::Direction,
 };
 
 use super::{PduId, RawPduId, backward_extremities};
@@ -125,7 +126,7 @@ impl Data {
 		event_ids: &[OwnedEventId],
 	) -> Vec<Result<rooms::timeline::EventMetadata>> {
 		self.eventid_metadata
-			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.get_batch(futures::stream::iter(event_ids.iter().map(OwnedEventId::as_bytes)))
 			.map(|res| {
 				res.and_then(|handle| {
 					rooms::timeline::EventMetadata::from_bincode(&handle)
@@ -301,7 +302,7 @@ impl Data {
 				break; // crossed into normal range
 			}
 			if let Ok(s) = std::str::from_utf8(val) {
-				if let Ok(event_id) = OwnedEventId::try_from(s) {
+				if let Ok(event_id) = OwnedEventId::parse(s) {
 					all_event_ids.push((count, event_id));
 				}
 			}
@@ -317,7 +318,7 @@ impl Data {
 			let pdu_id = RawPduId::from(key);
 			let count = pdu_id.pdu_count();
 			if let Ok(s) = std::str::from_utf8(val) {
-				if let Ok(event_id) = OwnedEventId::try_from(s) {
+				if let Ok(event_id) = OwnedEventId::parse(s) {
 					all_event_ids.push((count, event_id));
 				}
 			}
@@ -337,8 +338,8 @@ impl Data {
 				None
 			};
 
-			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts.into());
-			let depth = meta_opt.as_ref().map_or(0, |m| m.depth.into());
+			let ts = meta_opt.as_ref().map_or(0, |m| m.origin_server_ts);
+			let depth = meta_opt.as_ref().map_or(0, |m| m.depth);
 
 			entries.insert(event_id.clone(), (*count, depth, ts));
 
@@ -396,7 +397,7 @@ impl Data {
 
 		while let Some((event_id_bytes, pdu_id_bytes)) = iter.try_next().await? {
 			if let Ok(event_id_str) = std::str::from_utf8(event_id_bytes) {
-				if let Ok(event_id) = OwnedEventId::try_from(event_id_str) {
+				if let Ok(event_id) = OwnedEventId::parse(event_id_str) {
 					let _pdu_id: RawPduId = pdu_id_bytes.into();
 					if let Ok(mut json) = self
 						.eventid_pdu
@@ -407,7 +408,9 @@ impl Data {
 						if !json.contains_key("event_id") {
 							json.insert(
 								"event_id".into(),
-								ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+								slipstream::CanonicalJsonValue::String(
+									event_id.as_str().to_owned(),
+								),
 							);
 							self.eventid_pdu.raw_put(event_id_bytes, Json(&json));
 							fixed = fixed.saturating_add(1);
@@ -498,14 +501,14 @@ impl Data {
 		let metadata_bytes = self.eventid_metadata.get(&event_id_bytes).await?;
 		let meta = rooms::timeline::EventMetadata::from_bincode(&metadata_bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e}")))?;
-		Ok(meta.depth.into())
+		Ok(meta.depth)
 	}
 
 	pub(super) fn remove_topo_pducount(&self, pdu_id: &RawPduId, event_id_bytes: &[u8]) {
 		if let Ok(bytes) = self.eventid_metadata.get_blocking(event_id_bytes) {
 			if let Ok(meta) = rooms::timeline::EventMetadata::from_bincode(&bytes) {
 				self.roomid_topologicalorder_pducount
-					.remove(&Self::topo_pducount_key(pdu_id, meta.depth.into()));
+					.remove(&Self::topo_pducount_key(pdu_id, meta.depth));
 			}
 		}
 	}
@@ -546,7 +549,7 @@ impl Data {
 			.get_blocking(event_id_bytes)
 			.ok()
 			.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
-			.map(|meta| meta.depth.into());
+			.map(|meta| meta.depth);
 		self.remove_stream_and_topo_pducount_from_batch(batch, pdu_id, event_id_bytes, depth);
 	}
 
@@ -717,7 +720,7 @@ impl Data {
 				.get_blocking(event_id.as_bytes())
 				.ok()
 				.and_then(|bytes| rooms::timeline::EventMetadata::from_bincode(&bytes).ok())
-				.map(|meta| meta.depth.into());
+				.map(|meta| meta.depth);
 			self.remove_stream_and_topo_pducount_from_batch(
 				batch,
 				&pduid,
@@ -965,43 +968,11 @@ impl Data {
 
 		if let Some(expected_room) = room_id {
 			let actual_room = pdu.room_id_or_hash();
-			if let Some(actual_room) = actual_room {
-				if actual_room != expected_room {
-					return Err!(Database(
-						"PDU {event_id} does belong to room {actual_room} (expected \
-						 {expected_room})"
-					));
-				}
-			} else {
-				// v12 create events do not contain room_id in the JSON.
-				// Verify room association.
-				if let Ok(expected_short) =
-					self.services.short.get_shortroomid(expected_room).await
-				{
-					if let Ok(pduid) = self.get_pdu_id(event_id).await {
-						if pduid.shortroomid() != expected_short.to_be_bytes() {
-							return Err!(Database(
-								"PDU {event_id} is not associated with room {expected_room}"
-							));
-						}
-					} else if let Ok(meta_bytes) =
-						self.eventid_metadata.get(event_id.as_bytes()).await
-					{
-						if let Ok(meta) =
-							rooms::timeline::EventMetadata::from_bincode(&meta_bytes)
-						{
-							if meta.short_room_id != expected_short {
-								return Err!(Database(
-									"PDU {event_id} is not associated with room {expected_room}"
-								));
-							}
-						} else {
-							return Err!(Database("corrupt metadata"));
-						}
-					} else {
-						return Err!(Database("PDU has no room association metadata"));
-					}
-				}
+			if actual_room.as_ref() != Some(expected_room) {
+				return Err!(Database(
+					"PDU {event_id} does belong to room {actual_room:?} (expected \
+					 {expected_room})"
+				));
 			}
 		}
 
@@ -1026,7 +997,7 @@ impl Data {
 		// Batch fetch from eventid_pduid
 		let pdu_ids: Vec<Result<database::Handle<'_>>> = self
 			.eventid_pduid
-			.get_batch(futures::stream::iter(event_ids.iter().map(|id| id.as_bytes())))
+			.get_batch(futures::stream::iter(event_ids.iter().map(OwnedEventId::as_bytes)))
 			.collect()
 			.await;
 
@@ -1246,15 +1217,17 @@ impl Data {
 		self.room_pducount_eventid
 			.batch_put(batch, pdu_id, event_id_bytes);
 
-		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
-				let ts_key =
-					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+		if let Some(ts) = json
+			.get("origin_server_ts")
+			.and_then(slipstream::json::Value::as_i64)
+		{
+			if let Ok(ts) = slipstream::UInt::try_from(ts) {
+				let ts_key = pack_timestamp_key(pdu_id.shortroomid(), ts, pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
@@ -1266,7 +1239,7 @@ impl Data {
 			depth: pdu.depth(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-			deprecated_local_topo_depth: pdu.depth().into(),
+			deprecated_local_topo_depth: pdu.depth(),
 			pdu_count: Some(count.into_unsigned()),
 		};
 		if let Ok(metadata_bytes) = bincode::serialize(&metadata) {
@@ -1343,7 +1316,7 @@ impl Data {
 			}
 		}
 
-		let depth = u64::from(pdu.depth());
+		let depth = pdu.depth();
 		for prev_id in backward_extremities::missing_prev_events(&pdu.prev_events, |id| {
 			known_locally.contains(id)
 		}) {
@@ -1412,15 +1385,17 @@ impl Data {
 		self.room_pducount_eventid
 			.batch_put(batch, pdu_id, event_id_bytes);
 
-		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+		let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 		self.roomid_topologicalorder_pducount
 			.batch_put(batch, &topo_key, event_id_bytes);
 
 		// Integrate hotfix timestamp index into WriteBatch
-		if let Some(ruma::CanonicalJsonValue::Integer(ts)) = json.get("origin_server_ts") {
-			if let Ok(ts) = ruma::UInt::try_from(i64::from(*ts)) {
-				let ts_key =
-					pack_timestamp_key(pdu_id.shortroomid(), u64::from(ts), pdu_id.pdu_count());
+		if let Some(ts) = json
+			.get("origin_server_ts")
+			.and_then(slipstream::json::Value::as_i64)
+		{
+			if let Ok(ts) = slipstream::UInt::try_from(ts) {
+				let ts_key = pack_timestamp_key(pdu_id.shortroomid(), ts, pdu_id.pdu_count());
 				self.db["roomid_timestamp_pducount"].batch_put(batch, &ts_key, []);
 			}
 		}
@@ -1432,7 +1407,7 @@ impl Data {
 			depth: pdu.depth(),
 			redacted_by: pdu.redacts().map(ToOwned::to_owned),
 			short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-			deprecated_local_topo_depth: pdu.depth().into(),
+			deprecated_local_topo_depth: pdu.depth(),
 			pdu_count: match pdu_id.pdu_count() {
 				| PduCount::Normal(x) => Some(x),
 				| PduCount::Backfilled(_) => None,
@@ -1488,9 +1463,9 @@ impl Data {
 		self.eventid_pdu
 			.batch_raw_put(&mut batch, event_id_bytes, Json(pdu_json));
 
-		if let Ok(pdu) =
-			serde_json::from_value::<PduEvent>(serde_json::to_value(pdu_json).unwrap())
-		{
+		if let Ok(pdu) = slipstream::codec::from_value::<PduEvent>(
+			&slipstream::json::Value::Object(pdu_json.clone()),
+		) {
 			let existing_metadata =
 				if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await {
 					rooms::timeline::EventMetadata::from_bincode(&bytes).ok()
@@ -1498,7 +1473,7 @@ impl Data {
 					None
 				};
 
-			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth().into());
+			let topo_key = Self::topo_pducount_key(pdu_id, pdu.depth());
 			self.roomid_topologicalorder_pducount.batch_put(
 				&mut batch,
 				&topo_key,
@@ -1512,7 +1487,7 @@ impl Data {
 				depth: pdu.depth(),
 				redacted_by: pdu.redacts().map(ToOwned::to_owned),
 				short_state_hash: existing_metadata.and_then(|m| m.short_state_hash),
-				deprecated_local_topo_depth: pdu.depth().into(),
+				deprecated_local_topo_depth: pdu.depth(),
 				pdu_count: match pdu_id.pdu_count() {
 					| PduCount::Normal(x) => Some(x),
 					| PduCount::Backfilled(_) => None,
@@ -1966,14 +1941,14 @@ impl Data {
 		(pdu_id, pdu): KeyVal<'_>,
 	) -> Result<PdusIterItem> {
 		let pdu_id: RawPduId = pdu_id.into();
-		let pdu = match serde_json::from_slice::<PduEvent>(pdu) {
+		let pdu = match database::from_json_slice::<PduEvent>(pdu) {
 			| Ok(p) => p,
 			| Err(e) => {
 				conduwuit::warn!(
 					"parse_json_slice failed: {e}. JSON: {}",
 					String::from_utf8_lossy(pdu)
 				);
-				return Err(e.into());
+				return Err(e);
 			},
 		};
 
@@ -1985,7 +1960,9 @@ impl Data {
 			{
 				return Err(conduwuit::err!(Database(
 					"PDU belongs to room {} (expected {expected_room})",
-					pdu.room_id_or_hash().expect("just checked")
+					pdu.room_id_or_hash()
+						.as_ref()
+						.map_or("none", OwnedRoomId::as_str)
 				)));
 			}
 		}
@@ -2263,8 +2240,9 @@ impl Data {
 					.and_then(move |(_key, val)| async move {
 						let s = std::str::from_utf8(val)
 							.map_err(|e| err!(Database("Invalid event id utf8: {e:?}")))?;
-						let event_id = <&EventId>::try_from(s)
-							.map_err(|e| err!(Database("Invalid event id bytes: {e:?}")))?;
+						let event_id = OwnedEventId::parse(s)
+							.map_err(|e| err!(Database("Invalid event id: {e}")))?;
+						let event_id = &event_id;
 						self.services
 							.short
 							.get_shorteventid(event_id)
@@ -2409,11 +2387,11 @@ impl Data {
 	pub(super) async fn get_origin_server_ts(
 		&self,
 		event_id: &EventId,
-	) -> Result<ruma::MilliSecondsSinceUnixEpoch> {
+	) -> Result<slipstream::MilliSecondsSinceUnixEpoch> {
 		let bytes = self.eventid_metadata.get(event_id.as_bytes()).await?;
 		let meta = rooms::timeline::EventMetadata::from_bincode(&bytes)
 			.map_err(|e| err!(Database("Failed to deserialize EventMetadata: {e:?}")))?;
-		Ok(ruma::MilliSecondsSinceUnixEpoch(meta.origin_server_ts))
+		Ok(slipstream::MilliSecondsSinceUnixEpoch(meta.origin_server_ts))
 	}
 
 	pub(super) fn pdus_by_timestamp<'a>(
@@ -2557,7 +2535,7 @@ mod tests {
 	use conduwuit::Result;
 	use conduwuit_core::matrix::pdu::{Count as PduCount, Id as PduId, RawId as RawPduId};
 	use rezzy::{HashMap, LeanEvent, verify_pagination};
-	use ruma::api::Direction;
+	use slipstream::api::Direction;
 
 	use super::Data;
 

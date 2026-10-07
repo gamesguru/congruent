@@ -6,7 +6,8 @@ use conduwuit::{
 	warn,
 };
 use futures::FutureExt;
-use ruma::{
+use service::Services;
+use slipstream::{
 	RoomId, UserId,
 	api::{client::membership::invite_user, federation::membership::create_invite},
 	events::{
@@ -14,7 +15,6 @@ use ruma::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 use super::banned_room_check;
 use crate::Ruma;
@@ -45,7 +45,7 @@ pub(crate) async fn invite_user_route(
 		&services,
 		sender_user,
 		Some(&body.room_id),
-		body.room_id.server_name(),
+		body.room_id.server_name().as_ref(),
 		client,
 	)
 	.await?;
@@ -166,9 +166,9 @@ pub(crate) async fn invite_helper(
 
 		let response = services
 			.sending
-			.send_federation_request(recipient_user.server_name(), create_invite::v2::Request {
+			.send_federation_request(&recipient_user.server_name(), create_invite::v2::Request {
 				room_id: room_id.to_owned(),
-				event_id: (*pdu.event_id).to_owned(),
+				event_id: pdu.event_id.clone(),
 				room_version: room_version_id.clone(),
 				event: services
 					.sending
@@ -203,7 +203,7 @@ pub(crate) async fn invite_helper(
 			.rooms
 			.event_handler
 			.handle_incoming_pdu(
-				recipient_user.server_name(),
+				&recipient_user.server_name(),
 				room_id,
 				&event_id,
 				value,

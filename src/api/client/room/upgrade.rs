@@ -2,11 +2,11 @@ use std::cmp::max;
 
 use axum::extract::State;
 use conduwuit::{
-	Err, Error, Event, Result, RoomVersion, debug, err, info,
+	Err, Error, Event, Result, RoomVersion, debug, err,
 	matrix::{StateKey, pdu::PduBuilder},
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedUserId, RoomId, RoomVersionId,
 	api::client::{error::ErrorKind, room::upgrade_room},
 	events::{
@@ -20,7 +20,6 @@ use ruma::{
 	},
 	int,
 };
-use serde_json::{json, value::to_raw_value};
 
 use crate::router::Ruma;
 
@@ -87,7 +86,7 @@ pub(crate) async fn upgrade_room_route(
 		.create_hash_and_sign_event(
 			PduBuilder::state(StateKey::new(), &RoomTombstoneEventContent {
 				body: "This room has been replaced".to_owned(),
-				replacement_room: RoomId::new(services.globals.server_name()),
+				replacement_room: slipstream::OwnedRoomId::new_v1(services.globals.server_name()),
 			}),
 			sender_user,
 			Some(&body.room_id),
@@ -106,14 +105,14 @@ pub(crate) async fn upgrade_room_route(
 	// Create a replacement room
 	let room_features = RoomVersion::new(&body.new_version)?;
 	let replacement_room_owned = if !room_features.room_ids_as_hashes {
-		Some(RoomId::new(services.globals.server_name()))
+		Some(slipstream::OwnedRoomId::new_v1(services.globals.server_name()))
 	} else {
 		None
 	};
 	let replacement_room: Option<&RoomId> = replacement_room_owned.as_ref().map(AsRef::as_ref);
 	let replacement_room_tmp = match replacement_room {
 		| Some(v) => v,
-		| None => &RoomId::new(services.globals.server_name()),
+		| None => &slipstream::OwnedRoomId::new_v1(services.globals.server_name()),
 	};
 
 	let _short_id = services
@@ -158,14 +157,14 @@ pub(crate) async fn upgrade_room_route(
 		.map_err(|_| err!(Database("Found room without m.room.create event.")))?;
 
 	let mut create_event_content: CanonicalJsonObject =
-		serde_json::from_str(old_create_event.content().get())
+		slipstream::codec::from_str(old_create_event.content().get())
 			.map_err(|_| err!(Database("Found room with invalid m.room.create event.")))?;
 
 	// Use the m.room.tombstone event as the predecessor
-	let predecessor = Some(ruma::events::room::create::PreviousRoom::new(
-		body.room_id.clone(),
-		tombstone_event_id,
-	));
+	let predecessor = Some(slipstream::events::room::create::PreviousRoom {
+		room_id: body.room_id.clone(),
+		event_id: tombstone_event_id,
+	});
 
 	// Extract additional_creators from the raw JSON body (not in typed Ruma
 	// Request)
@@ -174,7 +173,7 @@ pub(crate) async fn upgrade_room_route(
 			| Some(CanonicalJsonValue::Array(arr)) => arr
 				.iter()
 				.filter_map(|v| match v {
-					| CanonicalJsonValue::String(s) => OwnedUserId::try_from(s.as_str()).ok(),
+					| CanonicalJsonValue::String(s) => OwnedUserId::parse(s.as_str()).ok(),
 					| _ => None,
 				})
 				.collect(),
@@ -189,13 +188,8 @@ pub(crate) async fn upgrade_room_route(
 		use RoomVersionId::*;
 		match body.new_version {
 			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 => {
-				create_event_content.insert(
-					"creator".into(),
-					json!(&sender_user).try_into().map_err(|e| {
-						info!("Error forming creation event: {e}");
-						Error::BadRequest(ErrorKind::BadJson, "Error forming creation event")
-					})?,
-				);
+				create_event_content
+					.insert("creator".into(), slipstream::codec::to_value(&sender_user));
 			},
 			| V11 | V12 => {
 				// "creator" key no longer exists in V11+ rooms
@@ -220,24 +214,13 @@ pub(crate) async fn upgrade_room_route(
 		create_event_content.remove("additional_creators");
 	}
 
-	create_event_content.insert(
-		"room_version".into(),
-		json!(&body.new_version)
-			.try_into()
-			.map_err(|_| Error::BadRequest(ErrorKind::BadJson, "Error forming creation event"))?,
-	);
-	create_event_content.insert(
-		"predecessor".into(),
-		json!(predecessor)
-			.try_into()
-			.map_err(|_| Error::BadRequest(ErrorKind::BadJson, "Error forming creation event"))?,
-	);
+	create_event_content
+		.insert("room_version".into(), slipstream::codec::to_value(&body.new_version));
+	create_event_content.insert("predecessor".into(), slipstream::codec::to_value(&predecessor));
 
 	// Validate creation event content
-	if serde_json::from_str::<CanonicalJsonObject>(
-		to_raw_value(&create_event_content)
-			.expect("Error forming creation event")
-			.get(),
+	if slipstream::codec::from_str::<CanonicalJsonObject>(
+		slipstream::sswire::RawJsonValue::from_value(&create_event_content).get(),
 	)
 	.is_err()
 	{
@@ -250,8 +233,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomCreate,
-				content: to_raw_value(&create_event_content)
-					.expect("event is valid, we just created it"),
+				content: slipstream::sswire::RawJsonValue::from_value(&create_event_content),
 				unsigned: None,
 				state_key: Some(StateKey::new()),
 				redacts: None,
@@ -264,9 +246,10 @@ pub(crate) async fn upgrade_room_route(
 		.boxed()
 		.await?;
 	let create_id = create_event_id.as_str().replace('$', "!");
+	let parsed_room_id;
 	let (replacement_room, state_lock) = if room_features.room_ids_as_hashes {
-		let parsed_room_id = RoomId::parse(&create_id)?;
-		(Some(parsed_room_id), services.rooms.state.mutex.lock(parsed_room_id).await)
+		parsed_room_id = RoomId::parse(&create_id)?;
+		(Some(&parsed_room_id), services.rooms.state.mutex.lock(&parsed_room_id).await)
 	} else {
 		(replacement_room, state_lock)
 	};
@@ -278,7 +261,7 @@ pub(crate) async fn upgrade_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomMember,
-				content: to_raw_value(&RoomMemberEventContent {
+				content: slipstream::sswire::RawJsonValue::from_value(&RoomMemberEventContent {
 					membership: MembershipState::Join,
 					displayname: services.users.displayname(sender_user).await.ok(),
 					avatar_url: services.users.avatar_url(sender_user).await.ok(),
@@ -288,8 +271,7 @@ pub(crate) async fn upgrade_room_route(
 					reason: None,
 					join_authorized_via_users_server: None,
 					redact_events: None,
-				})
-				.expect("event is valid, we just created it"),
+				}),
 				unsigned: None,
 				state_key: Some(sender_user.as_str().into()),
 				redacts: None,
@@ -329,7 +311,7 @@ pub(crate) async fn upgrade_room_route(
 				&& room_features.explicitly_privilege_room_creators
 			{
 				let mut power_levels_event_content: RoomPowerLevelsEventContent =
-					serde_json::from_str(event_content.get()).map_err(|_| {
+					slipstream::codec::from_str(event_content.get()).map_err(|_| {
 						err!(Request(BadJson("Power levels event content is not valid")))
 					})?;
 
@@ -338,8 +320,8 @@ pub(crate) async fn upgrade_room_route(
 					power_levels_event_content.users.remove(creator);
 				}
 
-				event_content = to_raw_value(&power_levels_event_content)
-					.expect("event is valid, we just deserialized and modified it");
+				event_content =
+					slipstream::sswire::RawJsonValue::from_value(&power_levels_event_content);
 			}
 
 			services
@@ -372,13 +354,13 @@ pub(crate) async fn upgrade_room_route(
 		services
 			.rooms
 			.alias
-			.remove_alias(alias, sender_user)
+			.remove_alias(&alias, sender_user)
 			.await?;
 
 		services
 			.rooms
 			.alias
-			.set_alias(alias, replacement_room.unwrap(), sender_user)?;
+			.set_alias(&alias, replacement_room.unwrap(), sender_user)?;
 	}
 
 	// Get the old room power levels
@@ -456,7 +438,7 @@ pub(crate) async fn upgrade_room_route(
 			.rooms
 			.state_accessor
 			.room_state_get_content::<SpaceChildEventContent>(
-				space_id,
+				&space_id,
 				&StateEventType::SpaceChild,
 				body.room_id.as_str(),
 			)
@@ -471,7 +453,7 @@ pub(crate) async fn upgrade_room_route(
 			replacement_room.unwrap()
 		);
 		// First, drop the space's child event
-		let state_lock = services.rooms.state.mutex.lock(space_id).await;
+		let state_lock = services.rooms.state.mutex.lock(&space_id).await;
 		debug!("Removing space child event for room {} in space {space_id}", &body.room_id);
 		services
 			.rooms
@@ -479,13 +461,14 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: to_raw_value(&RedactedSpaceChildEventContent {})
-						.expect("event is valid, we just created it"),
+					content: slipstream::sswire::RawJsonValue::from_value(
+						&RedactedSpaceChildEventContent {},
+					),
 					state_key: Some(body.room_id.clone().as_str().into()),
 					..Default::default()
 				},
 				sender_user,
-				Some(space_id),
+				Some(&space_id),
 				&state_lock,
 			)
 			.boxed()
@@ -502,17 +485,18 @@ pub(crate) async fn upgrade_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: StateEventType::SpaceChild.into(),
-					content: to_raw_value(&SpaceChildEventContent {
-						via: vec![sender_user.server_name().to_owned()],
-						order: child.order,
-						suggested: child.suggested,
-					})
-					.expect("event is valid, we just created it"),
+					content: slipstream::sswire::RawJsonValue::from_value(
+						&SpaceChildEventContent {
+							via: vec![sender_user.server_name().clone()],
+							order: child.order,
+							suggested: child.suggested,
+						},
+					),
 					state_key: Some(replacement_room.unwrap().as_str().into()),
 					..Default::default()
 				},
 				sender_user,
-				Some(space_id),
+				Some(&space_id),
 				&state_lock,
 			)
 			.boxed()

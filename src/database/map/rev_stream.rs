@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt};
-use serde::Deserialize;
 
-use crate::{keyval, keyval::KeyVal, stream};
+use crate::{dbkey::DbDe, keyval, keyval::KeyVal, stream};
 
 /// Iterate key-value entries in the map from the end.
 ///
@@ -14,8 +13,8 @@ pub fn rev_stream<'a, K, V>(
 	self: &'a Arc<Self>,
 ) -> impl Stream<Item = Result<KeyVal<'a, K, V>>> + Send
 where
-	K: Deserialize<'a> + Send,
-	V: Deserialize<'a> + Send,
+	K: DbDe<'a> + Send,
+	V: DbDe<'a> + Send,
 {
 	self.rev_raw_stream()
 		.map(keyval::result_deserialize::<K, V>)

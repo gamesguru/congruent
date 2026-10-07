@@ -8,7 +8,7 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, appservice::RegistrationInfo};
 use futures::FutureExt;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, Int, OwnedRoomAliasId, OwnedRoomId, OwnedUserId,
 	RoomId, RoomVersionId,
 	api::client::room::{self, create_room},
@@ -26,10 +26,9 @@ use ruma::{
 			power_levels::RoomPowerLevelsEventContent,
 		},
 	},
-	int,
-	serde::{JsonObject, Raw},
+	int, json,
+	sswire::{JsonObject, Raw},
 };
-use serde_json::{json, value::to_raw_value};
 
 use crate::{Ruma, client::invite_helper};
 
@@ -85,7 +84,7 @@ pub(crate) async fn create_room_route(
 	let room_id: Option<OwnedRoomId> = if !room_features.room_ids_as_hashes {
 		match &body.room_id {
 			| Some(custom_room_id) => Some(custom_room_id_check(&services, custom_room_id)?),
-			| None => Some(RoomId::new(services.globals.server_name())),
+			| None => Some(OwnedRoomId::new_v1(services.globals.server_name())),
 		}
 	} else {
 		None
@@ -172,19 +171,9 @@ pub(crate) async fn create_room_route(
 				})?;
 
 			if !room_features.use_room_create_sender {
-				content.insert(
-					"creator".into(),
-					json!(&sender_user).try_into().map_err(|e| {
-						err!(Request(BadJson(debug_error!("Invalid creation content: {e}"))))
-					})?,
-				);
+				content.insert("creator".into(), slipstream::codec::to_value(&sender_user));
 			}
-			content.insert(
-				"room_version".into(),
-				json!(room_version.as_str())
-					.try_into()
-					.map_err(|e| err!(Request(BadJson("Invalid creation content: {e}"))))?,
-			);
+			content.insert("room_version".into(), json::Value::from(room_version.as_str()));
 			content
 		},
 		| None => {
@@ -195,15 +184,16 @@ pub(crate) async fn create_room_route(
 			} else {
 				RoomCreateEventContent::new_v12()
 			};
-			let mut content =
-				serde_json::from_str::<CanonicalJsonObject>(to_raw_value(&content)?.get())?;
-			content.insert("room_version".into(), json!(room_version.as_str()).try_into()?);
+			let mut content = slipstream::codec::from_str::<CanonicalJsonObject>(
+				slipstream::sswire::RawJsonValue::from_value(&content).get(),
+			)?;
+			content.insert("room_version".into(), json::Value::from(room_version.as_str()));
 			content
 		},
 	};
 
 	// Figure out preset early — needed for trusted_private_chat handling
-	let preset = body.preset.clone().unwrap_or(match &body.visibility {
+	let preset = body.preset.unwrap_or(match &body.visibility {
 		| room::Visibility::Public => RoomPreset::PublicChat,
 		| _ => RoomPreset::PrivateChat,
 	});
@@ -217,7 +207,7 @@ pub(crate) async fn create_room_route(
 					for item in arr {
 						match item {
 							| CanonicalJsonValue::String(s) => {
-								let user = OwnedUserId::try_from(s.as_str()).map_err(|_| {
+								let user = OwnedUserId::parse(s.as_str()).map_err(|_| {
 									err!(Request(BadJson(
 										"additional_creators contains an invalid user ID: {s}"
 									)))
@@ -273,7 +263,7 @@ pub(crate) async fn create_room_route(
 			services.rooms.state.mutex.lock(&room_id).await
 		},
 		| None => {
-			let temp_room_id = RoomId::new(services.globals.server_name());
+			let temp_room_id = OwnedRoomId::new_v1(services.globals.server_name());
 			trace!("Locking temporary room state mutex for {temp_room_id}");
 			services.rooms.state.mutex.lock(&temp_room_id).await
 		},
@@ -281,14 +271,14 @@ pub(crate) async fn create_room_route(
 
 	// 1. The room create event
 	debug!("Creating room create event for {sender_user} in room {room_id:?}");
-	let tmp_id = room_id.as_deref();
+	let tmp_id = room_id.as_ref();
 	let create_event_id = services
 		.rooms
 		.timeline
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomCreate,
-				content: to_raw_value(&create_content)?,
+				content: slipstream::sswire::RawJsonValue::from_value(&create_content),
 				state_key: Some(StateKey::new()),
 				timestamp: body.origin_server_ts,
 				..Default::default()
@@ -305,7 +295,7 @@ pub(crate) async fn create_room_route(
 		| None => {
 			let as_room_id = create_event_id.as_str().replace('$', "!");
 			trace!("Creating room with v12 room ID {as_room_id}");
-			RoomId::parse(&as_room_id)?.to_owned()
+			RoomId::parse(&as_room_id)?.clone()
 		},
 	};
 	drop(state_lock);
@@ -358,8 +348,8 @@ pub(crate) async fn create_room_route(
 
 	let power_levels_content = default_power_levels_content(
 		body.power_level_content_override.as_ref(),
-		&body.visibility,
-		&preset,
+		body.visibility,
+		preset,
 		power_levels_to_grant,
 		creators,
 	)?;
@@ -370,7 +360,7 @@ pub(crate) async fn create_room_route(
 		.build_and_append_pdu(
 			PduBuilder {
 				event_type: TimelineEventType::RoomPowerLevels,
-				content: to_raw_value(&power_levels_content)?,
+				content: slipstream::sswire::RawJsonValue::from_value(&power_levels_content),
 				state_key: Some(StateKey::new()),
 				..Default::default()
 			},
@@ -489,7 +479,10 @@ pub(crate) async fn create_room_route(
 			.await
 		{
 			| Err(e)
-				if matches!(e.kind(), ruma::api::client::error::ErrorKind::Forbidden { .. }) =>
+				if matches!(
+					e.kind(),
+					slipstream::api::client::error::ErrorKind::Forbidden { .. }
+				) =>
 			{
 				// Silently skip forbidden events
 				continue;
@@ -520,10 +513,16 @@ pub(crate) async fn create_room_route(
 			.build_and_append_pdu(
 				PduBuilder {
 					event_type: TimelineEventType::RoomTopic,
-					content: to_raw_value(&json!({
-						"topic": topic,
-						"m.topic": { "m.text": [{ "body": topic }] },
-					}))?,
+					content: {
+						let mut object = slipstream::ObjectBuilder::new();
+						object.field("topic", topic);
+						let mut text = slipstream::ObjectBuilder::new();
+						text.field("body", topic);
+						let mut topic_object = slipstream::ObjectBuilder::new();
+						topic_object.field("m.text", &vec![text.finish()]);
+						object.field("m.topic", &topic_object.finish());
+						Raw::from_value(&object.finish())
+					},
 					state_key: Some(StateKey::new()),
 					..Default::default()
 				},
@@ -575,16 +574,15 @@ pub(crate) async fn create_room_route(
 /// creates the power_levels_content for the PDU builder
 fn default_power_levels_content(
 	power_level_content_override: Option<&Raw<RoomPowerLevelsEventContent>>,
-	visibility: &room::Visibility,
-	preset: &create_room::v3::RoomPreset,
+	visibility: room::Visibility,
+	preset: create_room::v3::RoomPreset,
 	users: BTreeMap<OwnedUserId, Int>,
 	creators: Vec<OwnedUserId>,
-) -> Result<serde_json::Value> {
+) -> Result<json::Value> {
 	use create_room::v3::RoomPreset;
 
 	let mut power_levels_content =
-		serde_json::to_value(RoomPowerLevelsEventContent { users, ..Default::default() })
-			.expect("event is valid, we just created it");
+		slipstream::codec::to_value(&RoomPowerLevelsEventContent { users, ..Default::default() });
 
 	// Match Synapse's default: invite requires PL 50 (moderator) by default.
 	// For private_chat and trusted_private_chat presets, override to 0 so that
@@ -595,52 +593,38 @@ fn default_power_levels_content(
 		| RoomPreset::PrivateChat | RoomPreset::TrustedPrivateChat => 0,
 		| _ => 50,
 	};
-	power_levels_content["invite"] =
-		serde_json::to_value(invite_level).expect("invite level is valid Value");
+	power_levels_content["invite"] = json::Value::from(invite_level);
 
 	// secure proper defaults of sensitive/dangerous permissions that moderators
 	// (power level 50) should not have easy access to
-	power_levels_content["events"]["m.room.power_levels"] =
-		serde_json::to_value(100).expect("100 is valid Value");
-	power_levels_content["events"]["m.room.server_acl"] =
-		serde_json::to_value(100).expect("100 is valid Value");
-	power_levels_content["events"]["m.room.tombstone"] =
-		serde_json::to_value(100).expect("100 is valid Value");
-	power_levels_content["events"]["m.room.encryption"] =
-		serde_json::to_value(100).expect("100 is valid Value");
-	power_levels_content["events"]["m.room.history_visibility"] =
-		serde_json::to_value(100).expect("100 is valid Value");
+	power_levels_content["events"]["m.room.power_levels"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.server_acl"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.tombstone"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.encryption"] = json::Value::from(100);
+	power_levels_content["events"]["m.room.history_visibility"] = json::Value::from(100);
 
 	// always allow users to respond (not post new) to polls. this is primarily
 	// useful in read-only announcement rooms that post a public poll.
-	power_levels_content["events"]["org.matrix.msc3381.poll.response"] =
-		serde_json::to_value(0).expect("0 is valid Value");
-	power_levels_content["events"]["m.poll.response"] =
-		serde_json::to_value(0).expect("0 is valid Value");
+	power_levels_content["events"]["org.matrix.msc3381.poll.response"] = json::Value::from(0);
+	power_levels_content["events"]["m.poll.response"] = json::Value::from(0);
 
 	// synapse does this too. clients do not expose these permissions. it prevents
 	// default users from calling public rooms, for obvious reasons.
-	if *visibility == room::Visibility::Public {
-		power_levels_content["events"]["m.call.invite"] =
-			serde_json::to_value(50).expect("50 is valid Value");
-		power_levels_content["events"]["m.call"] =
-			serde_json::to_value(50).expect("50 is valid Value");
-		power_levels_content["events"]["m.call.member"] =
-			serde_json::to_value(50).expect("50 is valid Value");
-		power_levels_content["events"]["org.matrix.msc3401.call"] =
-			serde_json::to_value(50).expect("50 is valid Value");
-		power_levels_content["events"]["org.matrix.msc3401.call.member"] =
-			serde_json::to_value(50).expect("50 is valid Value");
+	if visibility == room::Visibility::Public {
+		power_levels_content["events"]["m.call.invite"] = json::Value::from(50);
+		power_levels_content["events"]["m.call"] = json::Value::from(50);
+		power_levels_content["events"]["m.call.member"] = json::Value::from(50);
+		power_levels_content["events"]["org.matrix.msc3401.call"] = json::Value::from(50);
+		power_levels_content["events"]["org.matrix.msc3401.call.member"] = json::Value::from(50);
 	}
 
 	if !creators.is_empty() {
 		// MSC4289 requires privileged-creator rooms to default tombstones to PL150
-		power_levels_content["events"]["m.room.tombstone"] =
-			serde_json::to_value(150).expect("150 is valid Value");
+		power_levels_content["events"]["m.room.tombstone"] = json::Value::from(150);
 	}
 
 	if let Some(power_level_content_override) = power_level_content_override {
-		let json: JsonObject = serde_json::from_str(power_level_content_override.json().get())
+		let json: JsonObject = slipstream::codec::from_str(power_level_content_override.get())
 			.map_err(|e| err!(Request(BadJson("Invalid power_level_content_override: {e:?}"))))?;
 
 		// Reject if the client explicitly sets a creator in the override's users map
@@ -658,7 +642,7 @@ fn default_power_levels_content(
 		}
 
 		for (key, value) in json {
-			power_levels_content[key] = value;
+			power_levels_content[key.as_str()] = value;
 		}
 	}
 

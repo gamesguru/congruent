@@ -9,16 +9,16 @@ use conduwuit::{
 };
 use conduwuit_service::{Services, rooms::search::RoomQuery};
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture};
-use ruma::{
+use search_events::v3::{Request, Response};
+use slipstream::{
 	OwnedRoomId, RoomId, UInt, UserId,
 	api::client::search::search_events::{
 		self,
 		v3::{Criteria, EventContextResult, ResultCategories, ResultRoomEvents, SearchResult},
 	},
 	events::AnyStateEvent,
-	serde::Raw,
+	sswire::Raw,
 };
-use search_events::v3::{Request, Response};
 
 use super::message::visibility_filter;
 use crate::Ruma;
@@ -85,14 +85,7 @@ async fn category_room_events(
 		.map(IntoIterator::into_iter)
 		.map(IterStream::stream)
 		.map_or_else(
-			|| {
-				services
-					.rooms
-					.state_cache
-					.rooms_joined(sender_user)
-					.map(ToOwned::to_owned)
-					.boxed()
-			},
+			|| services.rooms.state_cache.rooms_joined(sender_user).boxed(),
 			StreamExt::boxed,
 		);
 

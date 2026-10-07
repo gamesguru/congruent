@@ -1,20 +1,18 @@
 use std::io::Write;
 
-use conduwuit::{Error, Result, debug::type_name, err, result::DebugInspect, utils::exchange};
+use conduwuit::{Error, Result, err, result::DebugInspect, utils::exchange};
 use serde::{Deserialize, Serialize, ser};
 
-use crate::util::unhandled;
+use crate::{dbkey::DbKey, util::unhandled};
 
 #[inline]
-pub fn serialize_to_vec<T: Serialize>(val: T) -> Result<Vec<u8>> {
-	serialize_to::<Vec<u8>, T>(val)
-}
+pub fn serialize_to_vec<T: DbKey>(val: T) -> Result<Vec<u8>> { serialize_to::<Vec<u8>, T>(val) }
 
 #[inline]
 pub fn serialize_to<B, T>(val: T) -> Result<B>
 where
 	B: Default + Write + AsRef<[u8]>,
-	T: Serialize,
+	T: DbKey,
 {
 	let mut buf = B::default();
 	serialize(&mut buf, val)?;
@@ -28,11 +26,12 @@ where
 pub fn serialize<'a, W, T>(out: &'a mut W, val: T) -> Result<&'a [u8]>
 where
 	W: Write + AsRef<[u8]> + 'a,
-	T: Serialize,
+	T: DbKey,
 {
 	let mut serializer = Serializer { out, depth: 0, sep: false, fin: false };
 
-	val.serialize(&mut serializer)
+	val.db_ser()
+		.serialize(&mut serializer)
 		.map_err(|error| err!(SerdeSer("{error}")))
 		.debug_inspect(|()| {
 			debug_assert_eq!(
@@ -52,7 +51,7 @@ pub(crate) struct Serializer<'a, W: Write> {
 }
 
 /// Newtype for JSON serialization.
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Json<T>(pub T);
 
 /// Newtype for CBOR serialization.
@@ -159,8 +158,8 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 
 	fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
 		unhandled!(
-			"serialize Map not implemented; did you mean to use database::Json() around your \
-			 serde_json::Value?"
+			"serialize Map not implemented; did you mean to use database::Json() around a \
+			 slipstream::json::Value?"
 		)
 	}
 
@@ -186,13 +185,7 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 	where
 		T: Serialize + ?Sized,
 	{
-		debug_assert!(
-			name != "Json" || type_name::<T>() != "alloc::boxed::Box<serde_json::raw::RawValue>",
-			"serializing a Json(RawValue); you can skip serialization instead"
-		);
-
 		match name {
-			| "Json" => serde_json::to_writer(&mut *self.out, value).map_err(Into::into),
 			| "Cbor" => {
 				use minicbor::encode::write::Writer;
 				use minicbor_serde::Serializer;

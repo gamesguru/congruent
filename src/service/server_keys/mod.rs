@@ -14,14 +14,13 @@ use conduwuit::{
 };
 use database::{Deserialized, Json, Map};
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
-	serde::Raw,
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
+	sswire::Raw,
 };
-use serde_json::value::RawValue as RawJsonValue;
 use tokio::sync::RwLock;
 
 use crate::{Dep, globals, sending};
@@ -307,7 +306,6 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 	self.verify_keys
 		.iter()
 		.next()
-		.map(|(id, key)| (id.as_ref(), key))
 		.expect("missing active verify_key")
 }
 
@@ -423,7 +421,7 @@ pub async fn add_signing_keys(
 			.collect();
 
 	// Helper to compute sha256 hex string for fingerprint logging
-	let get_fingerprint = |base64_key: &ruma::serde::Base64| -> String {
+	let get_fingerprint = |base64_key: &slipstream::sswire::Base64| -> String {
 		use sha2::{Digest, Sha256};
 		let digest = Sha256::digest(base64_key.as_bytes());
 		let mut s = String::with_capacity(digest.len().saturating_mul(2));
@@ -742,7 +740,7 @@ pub async fn required_keys_exist(
 	object: &CanonicalJsonObject,
 	version: &RoomVersionId,
 ) -> bool {
-	use ruma::signatures::required_keys;
+	use slipstream::signatures::required_keys;
 
 	trace!(?object, "Checking required keys exist");
 	let Ok(required_keys) = required_keys(object, version) else {
@@ -750,9 +748,15 @@ pub async fn required_keys_exist(
 		return false;
 	};
 	trace!(?required_keys, "Required keys to verify event");
-	required_keys
+	let keys: Vec<(OwnedServerName, OwnedServerSigningKeyId)> = required_keys
 		.iter()
-		.flat_map(|(server, key_ids)| key_ids.iter().map(move |key_id| (server, key_id)))
+		.flat_map(|(server, key_ids)| {
+			key_ids
+				.iter()
+				.map(move |key_id| (server.to_owned(), key_id.to_owned()))
+		})
+		.collect();
+	keys.iter()
 		.stream()
 		.all(|(server, key_id)| self.verify_key_exists(server, key_id))
 		.await
@@ -766,7 +770,17 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		return true;
 	}
 
-	type KeysMap<'a> = BTreeMap<&'a ServerSigningKeyId, &'a RawJsonValue>;
+	// Whether `keys` lists `key_id` under `verify_keys` or `old_verify_keys`.
+	let lists_key = |keys: &Raw<ServerSigningKeys>| -> bool {
+		let Ok(keys) = slipstream::json::Value::parse(keys.get()) else {
+			return false;
+		};
+		["verify_keys", "old_verify_keys"].into_iter().any(|field| {
+			keys.get(field)
+				.and_then(|map| map.get(key_id.as_str()))
+				.is_some()
+		})
+	};
 
 	let historical_key = historical_db_key(origin);
 
@@ -777,16 +791,8 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		.await
 		.deserialized::<Raw<ServerSigningKeys>>()
 	{
-		if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys") {
-			if verify_keys.contains_key(key_id) {
-				return true;
-			}
-		}
-
-		if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys") {
-			if old_verify_keys.contains_key(key_id) {
-				return true;
-			}
+		if lists_key(&keys) {
+			return true;
 		}
 	}
 
@@ -797,16 +803,8 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 		.await
 		.deserialized::<Raw<ServerSigningKeys>>()
 	{
-		if let Ok(Some(verify_keys)) = keys.get_field::<KeysMap<'_>>("verify_keys") {
-			if verify_keys.contains_key(key_id) {
-				return true;
-			}
-		}
-
-		if let Ok(Some(old_verify_keys)) = keys.get_field::<KeysMap<'_>>("old_verify_keys") {
-			if old_verify_keys.contains_key(key_id) {
-				return true;
-			}
+		if lists_key(&keys) {
+			return true;
 		}
 	}
 
@@ -955,7 +953,7 @@ fn bounded_msc4499_backoff_secs(secs: u64) -> u64 { secs.clamp(1, 3600) }
 mod tests {
 	use std::collections::BTreeSet;
 
-	use ruma::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, serde::Base64};
+	use slipstream::{MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, sswire::Base64};
 
 	use super::{
 		BTreeMap, OldVerifyKey, bounded_msc4499_backoff_secs, select_old_verify_keys_to_evict,

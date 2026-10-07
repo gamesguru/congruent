@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, hash_map};
 use conduwuit::{
 	Err, Event, PduEvent, Result, debug, debug_info, err, implement, info, trace, warn,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName,
 	events::{StateEventType, TimelineEventType},
 };
@@ -28,7 +28,7 @@ pub async fn handle_outlier_pdu<'a, Pdu>(
 	mut value: CanonicalJsonObject,
 	_auth_events_known: bool,
 	skip_sig_verify: bool,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 	auth_recovery_stage: AuthRecoveryStage,
 ) -> Result<(PduEvent, BTreeMap<String, CanonicalJsonValue>)>
 where
@@ -177,8 +177,8 @@ where
 			.verify_event_at(&value, Some(&room_version_id), "handle_outlier_pdu::initial")
 			.await
 		{
-			| Ok(ruma::signatures::Verified::All) => value,
-			| Ok(ruma::signatures::Verified::Signatures) => {
+			| Ok(slipstream::signatures::Verified::All) => value,
+			| Ok(slipstream::signatures::Verified::Signatures) => {
 				// Content hash mismatch: content may have been tampered by a relay.
 				// If we already have this event locally, re-use our known-good content
 				// instead of redacting or re-fetching from the origin.
@@ -196,8 +196,8 @@ where
 				let sender_server = value
 					.get("sender")
 					.and_then(|v| v.as_str())
-					.and_then(|s| ruma::UserId::parse(s).ok())
-					.map(|u| u.server_name().to_owned());
+					.and_then(|s| slipstream::UserId::parse(s).ok())
+					.map(|u| u.server_name());
 
 				let mut recovered = false;
 				if let Some(ref server) = sender_server {
@@ -206,23 +206,25 @@ where
 							%event_id,
 							"Hash mismatch, fetching pristine copy from {server}"
 						);
-						if let Ok(res) = self
+						if let Some(res_pdu) = self
 							.services
 							.timeline
 							.without_cork(|| {
 								self.services.sending.send_federation_request(
 									server,
-									ruma::api::federation::event::get_event::v1::Request {
+									slipstream::api::federation::event::get_event::v1::Request {
 										event_id: event_id.to_owned(),
 										include_unredacted_content: None,
 									},
 								)
 							})
 							.await
+							.ok()
+							.and_then(|r| r.pdus.into_iter().next())
 						{
 							if let Ok((eid, clean_val)) =
 								conduwuit::matrix::event::gen_event_id_canonical_json(
-									&res.pdu,
+									&res_pdu,
 									&room_version_id,
 								) {
 								if eid == *event_id {
@@ -235,7 +237,7 @@ where
 												"handle_outlier_pdu::recovered_pristine_copy",
 											)
 											.await,
-										Ok(ruma::signatures::Verified::All)
+										Ok(slipstream::signatures::Verified::All)
 									) {
 										debug_info!(
 											%event_id,
@@ -251,29 +253,31 @@ where
 
 				if recovered {
 					// Re-fetch since we can't move clean_val out of the nested scope
-					if let Ok(res) = self
+					if let Some(res_pdu) = self
 						.services
 						.timeline
 						.without_cork(|| {
 							self.services.sending.send_federation_request(
 								sender_server.as_ref().unwrap(),
-								ruma::api::federation::event::get_event::v1::Request {
+								slipstream::api::federation::event::get_event::v1::Request {
 									event_id: event_id.to_owned(),
 									include_unredacted_content: None,
 								},
 							)
 						})
 						.await
+						.ok()
+						.and_then(|r| r.pdus.into_iter().next())
 					{
 						if let Ok((_, clean_val)) =
 							conduwuit::matrix::event::gen_event_id_canonical_json(
-								&res.pdu,
+								&res_pdu,
 								&room_version_id,
 							) {
 							clean_val
 						} else {
 							debug_info!("Calculated hash does not match (redaction): {event_id}");
-							match ruma::canonical_json::redact(
+							match slipstream::canonical_json::redact(
 								value.clone(),
 								&room_version_id,
 								None,
@@ -290,8 +294,11 @@ where
 						}
 					} else {
 						debug_info!("Calculated hash does not match (redaction): {event_id}");
-						match ruma::canonical_json::redact(value.clone(), &room_version_id, None)
-						{
+						match slipstream::canonical_json::redact(
+							value.clone(),
+							&room_version_id,
+							None,
+						) {
 							| Ok(redacted) => redacted,
 							| Err(_) => {
 								self.mark_redaction_failure_rejected(event_id, room_id, value)
@@ -302,7 +309,11 @@ where
 					}
 				} else {
 					debug_info!("Calculated hash does not match (redaction): {event_id}");
-					match ruma::canonical_json::redact(value.clone(), &room_version_id, None) {
+					match slipstream::canonical_json::redact(
+						value.clone(),
+						&room_version_id,
+						None,
+					) {
 						| Ok(redacted) => redacted,
 						| Err(_) => {
 							self.mark_redaction_failure_rejected(event_id, room_id, value)
@@ -357,16 +368,14 @@ where
 	let pdu_event = match PduEvent::from_id_val(event_id, incoming_pdu.clone(), Some(room_id)) {
 		| Ok(pdu) => pdu,
 		| Err(e) => {
-			// Persist as a rejected outlier to preserve the DAG chain.
-			// This prevents future valid events that reference this event from
-			// failing with MissingAuthEvents.
+			// Do not persist structurally invalid JSON as an outlier.  Keeping it
+			// in the outlier table makes later missing-event recovery believe the
+			// event has been fetched and suppresses a retry, even though the event
+			// can never be parsed or used.  The rejection marker is sufficient for
+			// dependent events to report the malformed predecessor.
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-				.await;
-			self.services
-				.outlier
-				.add_pdu_outlier(event_id, &incoming_pdu, Some(room_id))
 				.await;
 			return Err!(Request(BadJson(debug_warn!("Event is not a valid PDU: {e}"))));
 		},
@@ -701,8 +710,8 @@ async fn resolve_missing_outlier_auth_events<'a, Pdu>(
 	room_id: &'a RoomId,
 	pdu_event: &PduEvent,
 	incoming_pdu: &CanonicalJsonObject,
-	room_version_id: &ruma::RoomVersionId,
-	room_version_override: Option<&'a ruma::RoomVersionId>,
+	room_version_id: &slipstream::RoomVersionId,
+	room_version_override: Option<&'a slipstream::RoomVersionId>,
 	missing_auth_events: &[&EventId],
 	auth_events: &mut HashMap<OwnedEventId, PduEvent>,
 	auth_recovery_stage: AuthRecoveryStage,
@@ -806,7 +815,7 @@ where
 		.without_cork(|| {
 			self.services.sending.send_federation_request(
 				origin,
-				ruma::api::federation::authorization::get_event_authorization::v1::Request {
+				slipstream::api::federation::authorization::get_event_authorization::v1::Request {
 					room_id: room_id.to_owned(),
 					event_id: event_id.to_owned(),
 				},
@@ -871,7 +880,7 @@ where
 		while let Some(eid) = queue.pop() {
 			sorted_auth_chain.push(eid.clone());
 			for (other_eid, (_, other_pdu)) in &auth_chain_map {
-				if other_pdu.auth_events().any(|aid| aid == eid) {
+				if other_pdu.auth_events().any(|aid| aid == &eid) {
 					if let Some(deg) = in_degree.get_mut(other_eid) {
 						*deg = deg.saturating_sub(1);
 						if *deg == 0 {

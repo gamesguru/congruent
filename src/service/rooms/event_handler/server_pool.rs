@@ -31,7 +31,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 
 /// Endpoint cost constants — how expensive each federation request is for
 /// the remote server. Used as values for `add_signal(server,
@@ -215,7 +215,7 @@ impl ServerPool {
 	// ── Signal management ────────────────────────────────────────────────
 
 	/// Add a delta to a named signal for a server.
-	pub fn add_signal(&mut self, server: &ruma::ServerName, name: &str, delta: f64) {
+	pub fn add_signal(&mut self, server: &slipstream::ServerName, name: &str, delta: f64) {
 		self.signals
 			.entry(server.to_owned())
 			.or_default()
@@ -225,7 +225,7 @@ impl ServerPool {
 	}
 
 	/// Set a named signal to an absolute value for a server.
-	pub fn set_signal(&mut self, server: &ruma::ServerName, name: &str, value: f64) {
+	pub fn set_signal(&mut self, server: &slipstream::ServerName, name: &str, value: f64) {
 		self.signals
 			.entry(server.to_owned())
 			.or_default()
@@ -234,7 +234,7 @@ impl ServerPool {
 
 	/// Get the current value of a signal for a server.
 	#[must_use]
-	pub fn get_signal(&self, server: &ruma::ServerName, name: &str) -> f64 {
+	pub fn get_signal(&self, server: &slipstream::ServerName, name: &str) -> f64 {
 		self.signals
 			.get(server)
 			.and_then(|s| s.get(name))
@@ -245,7 +245,7 @@ impl ServerPool {
 	// ── Hard constraint recording ────────────────────────────────────────
 
 	/// Record a successful response. Resets backoff and cooldown.
-	pub fn record_success(&mut self, server: &ruma::ServerName) {
+	pub fn record_success(&mut self, server: &slipstream::ServerName) {
 		if let Some(state) = self.hard.get_mut(server) {
 			state.backoff_secs = 2;
 			state.cooldown_until = None;
@@ -257,7 +257,7 @@ impl ServerPool {
 	/// Record a 429 rate limit. Enters exponential backoff cooldown
 	/// (2s → 4s → 8s → 16s → 32s max). Does NOT count against error
 	/// budget.
-	pub fn record_rate_limit(&mut self, server: &ruma::ServerName) {
+	pub fn record_rate_limit(&mut self, server: &slipstream::ServerName) {
 		if let Some(state) = self.hard.get_mut(server) {
 			state.cooldown_until =
 				Instant::now().checked_add(Duration::from_secs(state.backoff_secs));
@@ -267,7 +267,7 @@ impl ServerPool {
 	}
 
 	/// Record a non-429 error. Counts against error budget (default 5).
-	pub fn record_error(&mut self, server: &ruma::ServerName) {
+	pub fn record_error(&mut self, server: &slipstream::ServerName) {
 		if let Some(state) = self.hard.get_mut(server) {
 			state.errors = state.errors.saturating_add(1);
 		}
@@ -275,7 +275,7 @@ impl ServerPool {
 	}
 
 	/// Record an empty response (dead-end). Short 10s cooldown.
-	pub fn record_dead_end(&mut self, server: &ruma::ServerName) {
+	pub fn record_dead_end(&mut self, server: &slipstream::ServerName) {
 		if let Some(state) = self.hard.get_mut(server) {
 			state.cooldown_until = Instant::now().checked_add(Duration::from_secs(10));
 		}
@@ -296,7 +296,7 @@ impl ServerPool {
 	///
 	/// Accumulates into the `"request_cost"` signal, which scoring weights
 	/// can use to avoid hammering servers with expensive endpoints.
-	pub fn record_request(&mut self, server: &ruma::ServerName, cost: f64) {
+	pub fn record_request(&mut self, server: &slipstream::ServerName, cost: f64) {
 		self.add_signal(server, "request_cost", cost);
 	}
 
@@ -349,7 +349,7 @@ impl ServerPool {
 				self.servers.len(),
 				self.servers
 					.iter()
-					.map(|s| s.as_str())
+					.map(OwnedServerName::as_str)
 					.collect::<Vec<_>>()
 					.join(", ")
 			)
@@ -359,7 +359,7 @@ impl ServerPool {
 
 #[cfg(test)]
 mod tests {
-	use ruma::OwnedServerName;
+	use slipstream::OwnedServerName;
 
 	use super::ServerPool;
 

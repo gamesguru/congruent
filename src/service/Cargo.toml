@@ -100,12 +100,11 @@ regex.workspace = true
 reqwest.workspace = true
 rezzy.workspace = true
 roaring.workspace = true
-ruma.workspace = true
 rustyline-async.optional = true
 rustyline-async.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
-serde_json.workspace = true
+slipstream.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 termimad.optional = true
@@ -131,12 +130,6 @@ figment = { workspace = true, features = ["toml"] }
 # optional `ring`/`aws_lc_rs` features select. Enabling it on the dev
 # dependency does not leak a provider onto the library's consumers.
 rustls = { workspace = true, features = ["ring"] }
-criterion.workspace = true
-
-[[bench]]
-name = "hamt"
-path = "../../benches/hamt.rs"
-harness = false
 
 [lints]
 workspace = true

@@ -1,14 +1,19 @@
-use ruma::{
+use rezzy::json;
+use slipstream::{
+	OwnedRoomId,
 	events::{
 		AnyMessageLikeEvent, AnyStateEvent, AnyStrippedStateEvent, AnySyncStateEvent,
 		AnySyncTimelineEvent, AnyTimelineEvent, StateEvent, room::member::RoomMemberEventContent,
 		space::child::HierarchySpaceChildEvent,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
-use serde_json::json;
 
 use super::{Event, redact};
+
+fn raw_json<T>(raw: &Raw<T>) -> slipstream::json::Value {
+	slipstream::codec::from_str(raw.get()).expect("event raw JSON must be valid")
+}
 
 pub struct Owned<E: Event>(pub(super) E);
 
@@ -23,25 +28,26 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncTimelineEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"sender": event.sender(),
-			"type": event.event_type(),
+			"content": raw_json(&content),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"sender": event.sender().as_str(),
+			"type": event.event_type().to_string(),
 		});
 
 		if let Some(redacts) = redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
 		}
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -54,25 +60,26 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyTimelineEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"room_id": event.room_id_or_hash(),
-			"sender": event.sender(),
-			"type": event.kind(),
+			"content": raw_json(&content),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
+			"sender": event.sender().as_str(),
+			"type": event.kind().to_string(),
 		});
 
 		if let Some(redacts) = redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
 		}
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -85,25 +92,26 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyMessageLikeEvent> {
 		let event = event.0;
 		let (redacts, content) = redact::copy(event);
 		let mut json = json!({
-			"content": content,
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"room_id": event.room_id(),
-			"sender": event.sender(),
-			"type": event.kind(),
+			"content": raw_json(&content),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"room_id": event.room_id().map(OwnedRoomId::as_str),
+			"sender": event.sender().as_str(),
+			"type": event.kind().to_string(),
 		});
 
 		if let Some(redacts) = &redacts {
-			json["redacts"] = json!(redacts);
+			json["redacts"] = json!(redacts.as_str());
 		}
 		if let Some(state_key) = event.state_key() {
 			json["state_key"] = json!(state_key);
 		}
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -115,20 +123,21 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"room_id": event.room_id_or_hash(),
-			"sender": event.sender(),
+			"content": raw_json(event.content()),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
+			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
-			"type": event.kind(),
+			"type": event.kind().to_string(),
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -140,19 +149,20 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnySyncStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"sender": event.sender(),
+			"content": raw_json(event.content()),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
-			"type": event.kind(),
+			"type": event.kind().to_string(),
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -164,15 +174,16 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<AnyStrippedStateEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let json = json!({
-			"content": event.content(),
-			"origin_server_ts": event.origin_server_ts(),
-			"room_id": event.room_id_or_hash(),
-			"sender": event.sender(),
+			"content": raw_json(event.content()),
+			"origin_server_ts": event.origin_server_ts().0,
+			"room_id": event.room_id_or_hash().as_ref().map(OwnedRoomId::as_str),
+			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
-			"type": event.kind(),
+			"type": event.kind().to_string(),
 		});
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -184,14 +195,15 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<HierarchySpaceChildEvent> {
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let json = json!({
-			"content": event.content(),
-			"origin_server_ts": event.origin_server_ts(),
-			"sender": event.sender(),
+			"content": raw_json(event.content()),
+			"origin_server_ts": event.origin_server_ts().0,
+			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
-			"type": event.kind(),
+			"type": event.kind().to_string(),
 		});
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
 }
 
@@ -203,20 +215,29 @@ impl<'a, E: Event> From<Ref<'a, E>> for Raw<StateEvent<RoomMemberEventContent>> 
 	fn from(event: Ref<'a, E>) -> Self {
 		let event = event.0;
 		let mut json = json!({
-			"content": event.content(),
-			"event_id": event.event_id(),
-			"origin_server_ts": event.origin_server_ts(),
-			"redacts": event.redacts(),
-			"room_id": event.room_id(),
-			"sender": event.sender(),
+			"content": raw_json(event.content()),
+			"event_id": event.event_id().as_str(),
+			"origin_server_ts": event.origin_server_ts().0,
+			"redacts": event.redacts().map(slipstream::OwnedEventId::as_str),
+			"room_id": event.room_id().map(OwnedRoomId::as_str),
+			"sender": event.sender().as_str(),
 			"state_key": event.state_key(),
-			"type": event.kind(),
+			"type": event.kind().to_string(),
 		});
 
 		if let Some(unsigned) = event.unsigned() {
-			json["unsigned"] = json!(unsigned);
+			json["unsigned"] = raw_json(unsigned);
 		}
 
-		serde_json::from_value(json).expect("Failed to serialize Event value")
+		Self::from_json_text(&slipstream::codec::to_string(&json))
+			.expect("Failed to serialize Event value")
 	}
+}
+
+impl<E: Event> From<Owned<E>> for Raw<json::Value> {
+	fn from(event: Owned<E>) -> Self { Ref(&event.0).into() }
+}
+
+impl<'a, E: Event> From<Ref<'a, E>> for Raw<json::Value> {
+	fn from(event: Ref<'a, E>) -> Self { Raw::<AnyTimelineEvent>::from(event).cast() }
 }

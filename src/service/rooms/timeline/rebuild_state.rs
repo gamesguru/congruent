@@ -11,7 +11,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedEventId, RoomId, RoomVersionId,
 	events::{StateEventType, TimelineEventType},
 };
@@ -68,12 +68,12 @@ fn pdu_to_lean(pdu: &conduwuit::PduEvent) -> rezzy::LeanEvent {
 		event_type: pdu.kind.to_string(),
 		state_key: pdu.state_key.as_ref().map(|k| format!("{k}")),
 		power_level,
-		origin_server_ts: pdu.origin_server_ts.into(),
+		origin_server_ts: pdu.origin_server_ts,
 		sender: pdu.sender.to_string(),
 		content: content_val,
 		prev_events: pdu.prev_events.iter().map(|id| format!("{id}")).collect(),
 		auth_events: pdu.auth_events.iter().map(|id| format!("{id}")).collect(),
-		depth: u64::from(pdu.depth),
+		depth: pdu.depth,
 		..Default::default()
 	}
 }
@@ -171,14 +171,14 @@ impl super::Service {
 			let state_key = pdu
 				.state_key()
 				.map(|sk| (pdu.kind().to_string(), sk.to_owned()));
-			let depth = u64::from(pdu.depth());
+			let depth = pdu.depth();
 
 			// Timeline events are authoritative; clear any stale rejection flags.
 			self.services.pdu_metadata.unmark_event_rejected(&eid);
 
 			if *pdu.kind() == TimelineEventType::RoomCreate {
-				if let Ok(create_content) = serde_json::from_str::<
-					ruma::events::room::create::RoomCreateEventContent,
+				if let Ok(create_content) = slipstream::codec::from_str::<
+					slipstream::events::room::create::RoomCreateEventContent,
 				>(pdu.content().get())
 				{
 					room_version = create_content.room_version;
@@ -602,10 +602,7 @@ impl super::Service {
 						n_unchanged = n_unchanged.saturating_add(1);
 						groups_deduped = groups_deduped.saturating_add(1);
 						// Look up parent's root by string key to avoid OwnedEventId parsing
-						let parent_eid: OwnedEventId = parent_event_id
-							.as_str()
-							.try_into()
-							.expect("parent_event_id from rezzy should be a valid event ID");
+						let parent_eid = OwnedEventId::parse(parent_event_id.as_str())?;
 						let result = event_root
 							.get(&parent_eid)
 							.cloned()
@@ -766,7 +763,12 @@ impl super::Service {
 		// Early exit: no conflicts means all states agree
 		if conflicted_eids.is_empty() {
 			eprintln!("[resolve_fork] 0 conflicts, early exit");
-			return fork_states[0].clone();
+			return fork_states[0]
+				.iter()
+				.map(|((ty, key), event_id)| {
+					((StateEventType::from(ty.as_str()), key.clone()), event_id.clone())
+				})
+				.collect();
 		}
 
 		eprintln!(
@@ -924,7 +926,7 @@ impl super::Service {
 		for ((ty_str, sk_str), eid_str) in resolved_lean {
 			let ty: StateEventType = ty_str.to_string().into();
 			let sk: StateKey = sk_str.into();
-			if let Ok(eid) = OwnedEventId::try_from(eid_str.as_str()) {
+			if let Ok(eid) = OwnedEventId::parse(eid_str.as_str()) {
 				resolved.insert((ty, sk), eid);
 			}
 		}

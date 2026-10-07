@@ -8,14 +8,13 @@ use conduwuit::{
 	},
 };
 use futures::{Stream, StreamExt, TryStreamExt};
-use serde::Serialize;
 
-use crate::{Handle, keyval::KeyBuf, ser};
+use crate::{Handle, dbkey::DbKey, keyval::KeyBuf, ser};
 
 pub trait Qry<'a, K, S>
 where
 	S: Stream<Item = K> + Send + 'a,
-	K: Serialize + Debug,
+	K: DbKey + Debug,
 {
 	fn qry(self, map: &'a Arc<super::Map>) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a;
 	fn qry_nocache(
@@ -28,7 +27,7 @@ impl<'a, K, S> Qry<'a, K, S> for S
 where
 	Self: 'a,
 	S: Stream<Item = K> + Send + 'a,
-	K: Serialize + Debug + 'a,
+	K: DbKey + Debug + 'a,
 {
 	#[inline]
 	fn qry(self, map: &'a Arc<super::Map>) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a {
@@ -52,7 +51,7 @@ pub(crate) fn qry_batch<'a, S, K>(
 ) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
 where
 	S: Stream<Item = K> + Send + 'a,
-	K: Serialize + Debug + 'a,
+	K: DbKey + Debug + 'a,
 {
 	qry_batch_inner(self, keys, false)
 }
@@ -65,7 +64,7 @@ pub(crate) fn qry_batch_nocache<'a, S, K>(
 ) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
 where
 	S: Stream<Item = K> + Send + 'a,
-	K: Serialize + Debug + 'a,
+	K: DbKey + Debug + 'a,
 {
 	qry_batch_inner(self, keys, true)
 }
@@ -77,7 +76,7 @@ fn qry_batch_inner<'a, S, K>(
 ) -> impl Stream<Item = Result<Handle<'a>>> + Send + 'a
 where
 	S: Stream<Item = K> + Send + 'a,
-	K: Serialize + Debug + 'a,
+	K: DbKey + Debug + 'a,
 {
 	use crate::pool::Get;
 

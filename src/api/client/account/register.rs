@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::Write};
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug_info, error, info,
+	Err, Result, debug_info, err, error, info,
 	utils::{self},
 	warn,
 };
@@ -11,7 +11,8 @@ use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
 use lettre::{Address, message::Mailbox};
 use register::RegistrationKind;
-use ruma::{
+use service::mailer::messages;
+use slipstream::{
 	OwnedUserId, UserId,
 	api::client::{
 		account::{
@@ -20,11 +21,10 @@ use ruma::{
 		},
 		uiaa::{AuthFlow, AuthType},
 	},
+	codec,
 	events::{GlobalAccountDataEventType, room::message::RoomMessageEventContent},
 	push,
 };
-use serde_json::value::RawValue;
-use service::mailer::messages;
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
 use crate::Ruma;
@@ -223,11 +223,11 @@ pub(crate) async fn register_route(
 			None,
 			&user_id,
 			GlobalAccountDataEventType::PushRules.to_string().into(),
-			&serde_json::to_value(ruma::events::push_rules::PushRulesEvent {
-				content: ruma::events::push_rules::PushRulesEventContent {
+			&codec::to_value(&slipstream::events::push_rules::PushRulesEvent {
+				content: slipstream::events::push_rules::PushRulesEventContent {
 					global: push::Ruleset::server_default(&user_id),
 				},
-			})?,
+			}),
 		)
 		.await?;
 
@@ -240,8 +240,10 @@ pub(crate) async fn register_route(
 
 	let (token, device) = if !no_device {
 		// Don't create a device for inhibited logins
-		let device_id = if is_guest { None } else { body.device_id.clone() }
-			.unwrap_or_else(|| utils::random_string(DEVICE_ID_LENGTH).into());
+		let device_id = match if is_guest { None } else { body.device_id.clone() } {
+			| Some(device_id) => device_id,
+			| None => slipstream::OwnedDeviceId::parse(utils::random_string(DEVICE_ID_LENGTH))?,
+		};
 
 		// Generate new token for the device
 		let new_token = utils::random_string(TOKEN_LENGTH);
@@ -387,7 +389,7 @@ pub(crate) async fn register_route(
 					&user_id,
 					&room_id,
 					Some("Automatically joining this room upon registration".to_owned()),
-					&[services.globals.server_name().to_owned(), room_server_name.to_owned()],
+					&[services.globals.server_name().to_owned(), room_server_name.clone()],
 					&body.appservice_info,
 					None,
 				)
@@ -421,8 +423,8 @@ pub(crate) async fn register_route(
 /// registering a new account.
 async fn create_registration_uiaa_session(
 	services: &Services,
-) -> Result<(Vec<AuthFlow>, Box<RawValue>)> {
-	let mut params = HashMap::<String, serde_json::Value>::new();
+) -> Result<(Vec<AuthFlow>, slipstream::json::Value)> {
+	let mut params = HashMap::<String, slipstream::json::Value>::new();
 
 	let open_registration = services
 		.config
@@ -464,12 +466,9 @@ async fn create_registration_uiaa_session(
 				// ReCaptcha is configured for untrusted registrations
 				untrusted_flow.stages.push(AuthType::ReCaptcha);
 
-				params.insert(
-					AuthType::ReCaptcha.as_str().to_owned(),
-					serde_json::json!({
-						"public_key": pubkey,
-					}),
-				);
+				let mut object = slipstream::ObjectBuilder::new();
+				object.field("public_key", pubkey);
+				params.insert(AuthType::ReCaptcha.as_str().to_owned(), object.finish());
 			}
 		}
 
@@ -487,22 +486,35 @@ async fn create_registration_uiaa_session(
 		// Require all users to agree to the terms and conditions, if configured
 		let terms = &services.config.registration_terms;
 		if !terms.is_empty() {
-			let mut terms =
-				serde_json::to_value(terms.clone()).expect("failed to serialize terms");
+			let mut policies = slipstream::json::Object::new();
+			for (language, documents) in terms {
+				let mut translated = slipstream::json::Object::new();
+				for (name, document) in documents {
+					let mut value = slipstream::json::Object::new();
+					value.insert(
+						"name".to_owned(),
+						slipstream::json::Value::String(document.name.clone()),
+					);
+					value.insert(
+						"url".to_owned(),
+						slipstream::json::Value::String(document.url.clone()),
+					);
+					translated.insert(name.clone(), value.into());
+				}
+				policies.insert(language.clone(), translated.into());
+			}
+			let mut terms = slipstream::json::Value::Object(policies);
 
 			// Insert a dummy `version` field
-			for (_, documents) in terms.as_object_mut().unwrap() {
+			for documents in terms.as_object_mut().unwrap().values_mut() {
 				let documents = documents.as_object_mut().unwrap();
 
 				documents.insert("version".to_owned(), "latest".into());
 			}
 
-			params.insert(
-				AuthType::Terms.as_str().to_owned(),
-				serde_json::json!({
-					"policies": terms,
-				}),
-			);
+			let mut object = slipstream::ObjectBuilder::new();
+			object.field("policies", &terms);
+			params.insert(AuthType::Terms.as_str().to_owned(), object.finish());
 
 			for flow in &mut flows {
 				flow.stages.insert(0, AuthType::Terms);
@@ -525,7 +537,7 @@ async fn create_registration_uiaa_session(
 		flows
 	};
 
-	let params = serde_json::value::to_raw_value(&params).expect("params should be valid JSON");
+	let params = slipstream::json::Value::Object(params.into_iter().collect());
 
 	Ok((flows, params))
 }
@@ -638,10 +650,11 @@ pub(crate) async fn request_registration_token_via_email_route(
 				server_name: services.config.server_name.as_ref(),
 				verification_link,
 			},
-			&body.client_secret,
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
 			body.send_attempt.try_into().unwrap(),
 		)
 		.await?;
 
-	Ok(request_registration_token_via_email::v3::Response::new(session))
+	Ok(request_registration_token_via_email::v3::Response { sid: session.to_string() })
 }

@@ -2,9 +2,11 @@ use std::{convert::AsRef, fmt::Debug, sync::Arc};
 
 use conduwuit::{Result, implement};
 use futures::{Stream, StreamExt, TryStreamExt, future};
-use serde::{Deserialize, Serialize};
 
-use crate::keyval::{Key, result_deserialize_key, serialize_key};
+use crate::{
+	dbkey::{DbDe, DbKey},
+	keyval::{Key, result_deserialize_key, serialize_key},
+};
 
 #[implement(super::Map)]
 pub fn keys_prefix<'a, K, P>(
@@ -12,8 +14,8 @@ pub fn keys_prefix<'a, K, P>(
 	prefix: &P,
 ) -> impl Stream<Item = Result<Key<'a, K>>> + Send + use<'a, K, P>
 where
-	P: Serialize + ?Sized + Debug,
-	K: Deserialize<'a> + Send,
+	P: DbKey + ?Sized + Debug,
+	K: DbDe<'a> + Send,
 {
 	self.keys_prefix_raw(prefix)
 		.map(result_deserialize_key::<K>)
@@ -26,7 +28,7 @@ pub fn keys_prefix_raw<P>(
 	prefix: &P,
 ) -> impl Stream<Item = Result<Key<'_>>> + Send + use<'_, P>
 where
-	P: Serialize + ?Sized + Debug,
+	P: DbKey + ?Sized + Debug,
 {
 	let key = serialize_key(prefix).expect("failed to serialize query key");
 	self.raw_keys_from(&key)
@@ -40,7 +42,7 @@ pub fn keys_raw_prefix<'a, K, P>(
 ) -> impl Stream<Item = Result<Key<'a, K>>> + Send + 'a
 where
 	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
-	K: Deserialize<'a> + Send + 'a,
+	K: DbDe<'a> + Send + 'a,
 {
 	self.raw_keys_prefix(prefix)
 		.map(result_deserialize_key::<K>)

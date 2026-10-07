@@ -1,26 +1,20 @@
-use axum::{Json, extract::State};
+use axum::extract::State;
 use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
-use conduwuit_service::server_keys::{PubKeyMap, PubKeys};
+use conduwuit_service::{
+	rooms::state_accessor::PRIMARY_ALGORITHM,
+	server_keys::{PubKeyMap, PubKeys},
+};
 use futures::TryStreamExt;
-use ruma::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 
 use super::AccessCheck;
 
 #[derive(Deserialize)]
 pub(crate) struct StateAccumulatorQuery {
-	pub event_id: OwnedEventId,
-}
-
-#[derive(Serialize)]
-pub(crate) struct StateAccumulatorResponse {
-	pub event_id: OwnedEventId,
-	pub algorithm: String,
-	pub lattice: String,
-	pub n_state_events: u64,
-	pub digest: String,
+	pub event_id: String,
 }
 
 pub(crate) async fn get_state_accumulator_route(
@@ -35,8 +29,10 @@ pub(crate) async fn get_state_accumulator_route(
 		.map_or("/", http::uri::PathAndQuery::as_str)
 		.to_owned();
 
-	let room_id = OwnedRoomId::try_from(room_id_str)
+	let room_id = OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let event_id = OwnedEventId::parse(query.event_id.as_str())
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 
 	verify_federation_request(&services, &x_matrix, &signature_uri).await?;
 
@@ -52,7 +48,7 @@ pub(crate) async fn get_state_accumulator_route(
 	info!(
 		origin = x_matrix.origin.as_str(),
 		room_id = %room_id,
-		event_id = %query.event_id,
+		event_id = %event_id,
 		"Serving MSC4500 state accumulator request"
 	);
 
@@ -60,7 +56,7 @@ pub(crate) async fn get_state_accumulator_route(
 	let pdu = services
 		.rooms
 		.timeline
-		.get_pdu(&query.event_id)
+		.get_pdu(&event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("Event not found."))))?;
 
@@ -71,7 +67,7 @@ pub(crate) async fn get_state_accumulator_route(
 	let shorteventid = services
 		.rooms
 		.short
-		.get_or_create_shorteventid(&query.event_id)
+		.get_or_create_shorteventid(&event_id)
 		.await;
 
 	let root_handle = services
@@ -93,15 +89,14 @@ pub(crate) async fn get_state_accumulator_route(
 	}
 	let (lattice_b64, digest) = serialize_lthash(&lattice);
 
-	let response = StateAccumulatorResponse {
-		event_id: query.event_id,
-		algorithm: "lthash16-blake3-v1".to_owned(),
-		lattice: lattice_b64,
-		n_state_events,
-		digest,
-	};
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("event_id", &event_id);
+	response.field("algorithm", &PRIMARY_ALGORITHM);
+	response.field("lattice", &lattice_b64);
+	response.field("n_state_events", &n_state_events);
+	response.field("digest", &digest);
 
-	Ok(Json(response))
+	Ok(crate::json_util::json_response(response.finish()))
 }
 
 async fn verify_federation_request(
@@ -109,9 +104,9 @@ async fn verify_federation_request(
 	x_matrix: &XMatrix,
 	signature_uri: &str,
 ) -> Result<()> {
-	type Member = (String, ruma::CanonicalJsonValue);
-	type Object = ruma::CanonicalJsonObject;
-	type Value = ruma::CanonicalJsonValue;
+	type Member = (String, slipstream::CanonicalJsonValue);
+	type Object = slipstream::CanonicalJsonObject;
+	type Value = slipstream::CanonicalJsonValue;
 
 	let destination = services.globals.server_name();
 	if let Some(dest) = x_matrix.destination.as_deref() {
@@ -134,7 +129,7 @@ async fn verify_federation_request(
 	}
 
 	let signature: [Member; 1] =
-		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.to_string()))];
+		[(x_matrix.key.as_str().into(), Value::String(x_matrix.sig.clone()))];
 	let signatures: [Member; 1] =
 		[(x_matrix.origin.as_str().into(), Value::Object(signature.into()))];
 	let authorization: Object = [
@@ -152,9 +147,9 @@ async fn verify_federation_request(
 		.await
 		.map_err(|e| err!(Request(Forbidden(warn!("Failed to fetch signing keys: {e}")))))?;
 
-	let keys: PubKeys = [(x_matrix.key.to_string(), key.key)].into();
-	let keys: PubKeyMap = [(x_matrix.origin.as_str().into(), keys)].into();
-	ruma::signatures::verify_json(&keys, authorization).map_err(|e| {
+	let keys: PubKeys = [(x_matrix.key.clone(), key.key)].into();
+	let keys: PubKeyMap = [(x_matrix.origin.clone(), keys)].into();
+	slipstream::signatures::verify_json(&keys, authorization).map_err(|e| {
 		err!(Request(Forbidden(warn!(
 			"Failed to verify X-Matrix signatures from {}: {e}",
 			x_matrix.origin
@@ -167,7 +162,7 @@ async fn verify_federation_request(
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::utils::hash::lthash::serialize_lthash;
-	use ruma::OwnedEventId;
+	use slipstream::OwnedEventId;
 
 	#[test]
 	fn test_serialize_empty_lthash() {

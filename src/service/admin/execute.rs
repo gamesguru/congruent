@@ -1,5 +1,5 @@
 use conduwuit::{Err, Result, debug, debug_info, error, implement, info};
-use ruma::events::room::message::RoomMessageEventContent;
+use slipstream::events::room::message::RoomMessageEventContent;
 use tokio::time::{Duration, sleep};
 
 use crate::admin::InvocationSource;

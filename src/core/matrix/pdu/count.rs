@@ -6,7 +6,7 @@ use std::{
 	str::FromStr,
 };
 
-use ruma::api::Direction;
+use slipstream::api::Direction;
 
 use crate::{Error, Result, err};
 

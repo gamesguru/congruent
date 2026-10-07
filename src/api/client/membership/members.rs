@@ -1,12 +1,12 @@
-use axum::{extract::State, response::Json};
+use axum::extract::State;
 use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
 use conduwuit_service::rooms::state::root_handle_fingerprint;
 use futures::{StreamExt, TryStreamExt, future::join};
-use ruma::{
-	OwnedEventId,
+use slipstream::{
+	OwnedEventId, OwnedUserId,
 	api::client::membership::{
 		get_member_events::{self, v3::MembershipEventFilter},
 		joined_members,
@@ -81,7 +81,7 @@ pub(crate) async fn get_member_events_route(
 
 		let chunk = all_pdus
 			.into_iter()
-			.filter(|pdu| *pdu.kind() == ruma::events::TimelineEventType::RoomMember)
+			.filter(|pdu| *pdu.kind() == slipstream::events::TimelineEventType::RoomMember)
 			.filter_map(|pdu| membership_filter(pdu, membership, not_membership))
 			.map(Event::into_format)
 			.collect();
@@ -170,7 +170,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<Json<Response>> {
+) -> Result<axum::response::Response> {
 	if !services
 		.rooms
 		.state_cache
@@ -180,11 +180,10 @@ pub(crate) async fn joined_members_route(
 		return Err!(Request(Forbidden("You don't have permission to view this room.")));
 	}
 
-	let room_members = services
+	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services
 		.rooms
 		.state_cache
 		.room_members(&body.room_id)
-		.map(ToOwned::to_owned)
 		.broad_then(|user_id| async move {
 			let (display_name, avatar_url) = join(
 				services.users.displayname(&user_id).ok(),
@@ -197,18 +196,21 @@ pub(crate) async fn joined_members_route(
 		.collect()
 		.await;
 
-	Ok(Json(Response { joined: room_members }))
+	let mut joined = slipstream::json::Object::new();
+	for (user_id, member) in room_members {
+		let mut value = slipstream::ObjectBuilder::new();
+		value.field("display_name", &member.display_name);
+		value.field("avatar_url", &member.avatar_url);
+		joined.insert(user_id.to_string(), value.finish());
+	}
+	let mut response = slipstream::ObjectBuilder::new();
+	response.field("joined", &joined);
+	Ok(crate::json_util::json_response(response.finish()))
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct RoomMemberResponse {
-	pub(crate) display_name: Option<String>,
-	pub(crate) avatar_url: Option<ruma::OwnedMxcUri>,
-}
-
-#[derive(serde::Serialize)]
-pub(crate) struct Response {
-	pub(crate) joined: std::collections::BTreeMap<ruma::OwnedUserId, RoomMemberResponse>,
+struct RoomMemberResponse {
+	display_name: Option<String>,
+	avatar_url: Option<slipstream::OwnedMxcUri>,
 }
 
 fn membership_filter<Pdu: Event>(

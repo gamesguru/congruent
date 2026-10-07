@@ -38,11 +38,94 @@ use conduwuit_core::{
 	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
 };
 use futures::{Future, Stream, StreamExt, TryStreamExt, pin_mut};
-use ruma::{
-	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId, UserId,
+use slipstream::{
+	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId,
+	codec::{DeError, Deserialize as CodecDeserialize, Serialize as CodecSerialize},
+	endpoint::body_field,
 	events::{GlobalAccountDataEventType, push_rules::PushRulesEvent, room::encrypted::Relation},
+	json::Value,
 };
-use serde::Deserialize;
+
+// Update Relationships
+struct ExtractRelatesTo {
+	// JSON key: `m.relates_to`
+	relates_to: Relation,
+}
+
+#[derive(Clone, Debug)]
+struct ExtractEventId {
+	event_id: OwnedEventId,
+}
+#[derive(Clone, Debug)]
+struct ExtractRelatesToEventId {
+	// JSON key: `m.relates_to`
+	relates_to: ExtractEventId,
+}
+
+struct ExtractBody {
+	body: Option<String>,
+}
+
+/// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
+/// pointing at this event's parent. Distinct from `m.relates_to` above.
+#[derive(Debug)]
+pub(crate) struct Msc2836Relationship {
+	pub(crate) rel_type: String,
+	pub(crate) event_id: OwnedEventId,
+}
+
+#[derive(Debug)]
+pub(crate) struct ExtractMsc2836Relationship {
+	// JSON key: `m.relationship`
+	relationship: Option<Msc2836Relationship>,
+}
+
+impl CodecDeserialize for ExtractRelatesTo {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractRelatesToEventId {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relates_to: body_field(Some(value), "m.relates_to")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractBody {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self { body: body_field(Some(value), "body")? })
+	}
+}
+
+impl CodecDeserialize for Msc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			rel_type: body_field(Some(value), "rel_type")?,
+			event_id: body_field(Some(value), "event_id")?,
+		})
+	}
+}
+
+impl CodecDeserialize for ExtractMsc2836Relationship {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			relationship: body_field(Some(value), "m.relationship")?,
+		})
+	}
+}
 
 use self::data::Data;
 pub use self::{
@@ -57,42 +140,6 @@ use crate::{
 	Dep, account_data, admin, appservice, globals, pusher, rooms, rooms::short::ShortEventId,
 	sending, server_keys, users,
 };
-
-// Update Relationships
-#[derive(Deserialize)]
-struct ExtractRelatesTo {
-	#[serde(rename = "m.relates_to")]
-	relates_to: Relation,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct ExtractEventId {
-	event_id: OwnedEventId,
-}
-#[derive(Clone, Debug, Deserialize)]
-struct ExtractRelatesToEventId {
-	#[serde(rename = "m.relates_to")]
-	relates_to: ExtractEventId,
-}
-
-#[derive(Deserialize)]
-struct ExtractBody {
-	body: Option<String>,
-}
-
-/// MSC2836 threading: `content.m.relationship = { rel_type, event_id }`
-/// pointing at this event's parent. Distinct from `m.relates_to` above.
-#[derive(Deserialize)]
-pub(crate) struct Msc2836Relationship {
-	pub(crate) rel_type: String,
-	pub(crate) event_id: OwnedEventId,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ExtractMsc2836Relationship {
-	#[serde(rename = "m.relationship")]
-	pub(crate) relationship: Option<Msc2836Relationship>,
-}
 
 pub struct Service {
 	services: Services,
@@ -261,7 +308,7 @@ impl Service {
 		pdu_id: &RawPduId,
 		pdu: &PduEvent,
 	) {
-		use ruma::events::TimelineEventType;
+		use slipstream::events::TimelineEventType;
 		if pdu.kind == TimelineEventType::RoomMessage {
 			if let Ok(content) = pdu.get_content::<ExtractBody>() {
 				if let Some(body) = &content.body {
@@ -449,7 +496,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 		.services
 		.users
 		.list_local_users()
-		.map(|user_id: &UserId| user_id.to_owned())
+		.map(|user_id: OwnedUserId| user_id)
 		.collect::<Vec<_>>()
 		.await;
 
@@ -489,7 +536,7 @@ pub async fn copy_room_push_rules_for_upgrade(
 				None,
 				&user_id,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(push_rules)?,
+				&push_rules.to_json(),
 			)
 			.await?;
 	}
@@ -503,7 +550,7 @@ impl Service {
 		&'a self,
 		room_id: &'a RoomId,
 		timestamp: u64,
-		dir: ruma::api::Direction,
+		dir: slipstream::api::Direction,
 	) -> impl Stream<Item = Result<PduEvent>> + Send + 'a {
 		self.db.pdus_by_timestamp(room_id, timestamp, dir)
 	}

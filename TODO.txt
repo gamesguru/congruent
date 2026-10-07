@@ -3,6 +3,53 @@
 Sat 2026/10/03
 ###############################
 
+The immediate build blocker was just the malformed `slipstream/src/lib.rs`; fixed, and `cargo check -p conduwuit_core` now passes.
+
+For the actual `ruma` replacement, `mtx-slipstream` still needs these compatibility layers:
+
+1. Matrix identifiers:
+   - `OwnedEventId`, `OwnedRoomId`, `OwnedUserId`, `OwnedServerName`
+   - borrowed ID types and parsing
+   - `Display`, `AsRef<str>`, `Serialize`, `Deserialize`, `Hash`, etc.
+2. Primitive types:
+   - `UInt`
+   - `MilliSecondsSinceUnixEpoch`
+   - `CanonicalJsonError`
+   - `IdParseError`
+   - `MxcUriError`
+3. Canonical JSON helpers:
+   - `canonical_json::redact_content_in_place`
+   - `canonical_json::try_from_json_map`
+   - `signatures::reference_hash`
+4. Room versions:
+   - `RoomVersionId`
+   - room-version feature flags and helpers
+   - event-format/state-resolution enums
+5. Matrix event types:
+   - `events::{StateEventType, TimelineEventType, RelationType}`
+   - room-create/message/power-level content structs
+   - serde-compatible event content modules
+6. Matrix API namespace:
+   - `api::client::*`
+   - `api::federation::*`
+   - `api::error::*`
+   - request/response/error types used by router, API, and service
+7. HTTP integration:
+   - `IntoHttpError`
+   - `http_headers::{ContentDisposition, ContentDispositionType}`
+
+The current aliases only cover:
+
+```
+mtx_slipstream::CanonicalJsonObject
+mtx_slipstream::CanonicalJsonValue
+mtx_slipstream::canonical_json
+```
+
+The next highest-value step is implementing Matrix identifier types and `RoomVersionId`; those are broadly used and will make the namespace migration compile much further.
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 I’ll inspect the current `rezzy-json` implementation and `.typos.toml` context, then fix the compile errors with the smallest compatible patch and run the relevant checks.
 ```
 • Ran git status --short && sed -n '1,130p' rezzy-json/src/lib.rs && sed -n '270,340p' rezzy-json/src/lib.rs…

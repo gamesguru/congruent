@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use database::Database;
 use futures::{Stream, StreamExt, TryFutureExt};
 use loole::{Receiver, Sender};
-use ruma::{
+use slipstream::{
 	OwnedServerName, OwnedUserId, UInt, UserId, events::presence::PresenceEvent,
 	presence::PresenceState,
 };
@@ -125,7 +125,7 @@ impl crate::Service for Service {
 				}
 
 				let mut room_users: std::collections::HashMap<
-					ruma::OwnedRoomId,
+					slipstream::OwnedRoomId,
 					Vec<OwnedUserId>,
 				> = std::collections::HashMap::new();
 
@@ -138,7 +138,7 @@ impl crate::Service for Service {
 							tokio::task::yield_now().await;
 						}
 						room_users
-							.entry(room_id.to_owned())
+							.entry(room_id.clone())
 							.or_default()
 							.push(user_id.clone());
 					}
@@ -151,10 +151,10 @@ impl crate::Service for Service {
 						if iterations == 0 {
 							tokio::task::yield_now().await;
 						}
-						if !self_flush.services.globals.server_is_ours(server) {
+						if !self_flush.services.globals.server_is_ours(&server) {
 							let mut entry = self_flush
 								.pending_updates
-								.entry(server.to_owned())
+								.entry(server.clone())
 								.or_default();
 
 							for user_id in &user_ids {
@@ -195,7 +195,12 @@ impl crate::Service for Service {
 				);
 
 				if !servers.is_empty() {
-					let server_refs = servers.iter().map(AsRef::as_ref);
+					debug!(
+						target: "presence_debug",
+						servers = ?servers,
+						"flush tick: flushing servers with pending presence"
+					);
+					let server_refs = servers.iter().cloned();
 					self_flush
 						.services
 						.sending
@@ -327,14 +332,14 @@ impl Service {
 			| Err(_) => None,
 		};
 
-		let last_active_ago = UInt::new(0);
+		let last_active_ago = Some(0);
 		let currently_active = *new_state == PresenceState::Online;
 		let _cork = self.services.db.cork();
 		self.db
 			.set_presence(user_id, new_state, Some(currently_active), last_active_ago, status_msg)
 			.await?;
 
-		self.schedule_timeout(user_id, new_state)?;
+		self.schedule_timeout(user_id, *new_state)?;
 		self.notify_presence_change(user_id).log_err().ok();
 
 		Ok(())
@@ -362,16 +367,16 @@ impl Service {
 			.set_presence(user_id, presence_state, currently_active, last_active_ago, status_msg)
 			.await?;
 
-		self.schedule_timeout(user_id, presence_state)?;
+		self.schedule_timeout(user_id, *presence_state)?;
 		self.notify_presence_change(user_id).log_err().ok();
 
 		Ok(())
 	}
 
 	/// Schedules a presence timeout timer for the given user if applicable.
-	fn schedule_timeout(&self, user_id: &UserId, presence_state: &PresenceState) -> Result<()> {
+	fn schedule_timeout(&self, user_id: &UserId, presence_state: PresenceState) -> Result<()> {
 		if (self.timeout_remote_users || self.services.globals.user_is_local(user_id))
-			&& user_id != self.services.globals.server_user
+			&& user_id != &self.services.globals.server_user
 		{
 			let mut timeout = match presence_state {
 				| PresenceState::Online => self.services.server.config.presence_idle_timeout_s,
@@ -421,7 +426,7 @@ impl Service {
 				break;
 			}
 
-			if !self.services.globals.user_is_local(user_id)
+			if !self.services.globals.user_is_local(&user_id)
 				|| user_id == self.services.globals.server_user
 			{
 				continue;
@@ -438,7 +443,7 @@ impl Service {
 				continue;
 			}
 
-			let user_id = user_id.to_owned();
+			let user_id = user_id.clone();
 
 			presence.state = PresenceState::Offline;
 			presence.currently_active = false;
@@ -460,7 +465,7 @@ impl Service {
 	pub fn presence_since(
 		&self,
 		since: u64,
-	) -> impl Stream<Item = (&UserId, u64, &[u8])> + Send + '_ {
+	) -> impl Stream<Item = (OwnedUserId, u64, &[u8])> + Send + '_ {
 		self.db.presence_since(since)
 	}
 
@@ -486,14 +491,13 @@ impl Service {
 		let raw = self.db.get_presence_raw(user_id).await;
 
 		if let Ok((_count, ref presence)) = raw {
-			presence_state = presence.state.clone();
+			presence_state = presence.state;
 			let now = utils::millis_since_unix_epoch();
-			last_active_ago =
-				Some(UInt::new_saturating(now.saturating_sub(presence.last_active_ts)));
+			last_active_ago = Some(now.saturating_sub(presence.last_active_ts));
 			status_msg.clone_from(&presence.status_msg);
 		}
 
-		let new_state = match (&presence_state, last_active_ago.map(u64::from)) {
+		let new_state = match (&presence_state, last_active_ago) {
 			| (PresenceState::Online, Some(ago)) if ago >= self.idle_timeout =>
 				Some(PresenceState::Unavailable),
 			| (PresenceState::Unavailable, Some(ago)) if ago >= self.offline_timeout =>
@@ -512,7 +516,7 @@ impl Service {
 				.set_presence(user_id, &new_state, Some(false), last_active_ago, status_msg)
 				.await?;
 
-			self.schedule_timeout(user_id, &new_state)?;
+			self.schedule_timeout(user_id, new_state)?;
 
 			// We notify for idle/offline transitions so remote servers eventually
 			// see the updated presence state. We have capped the outbound concurrent

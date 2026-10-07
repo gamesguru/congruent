@@ -6,7 +6,7 @@ use serde::{
 	de::{DeserializeSeed, Visitor},
 };
 
-use crate::util::unhandled;
+use crate::{dbkey::DbDe, util::unhandled};
 
 /// Deserialize into T from buffer.
 #[cfg_attr(
@@ -20,15 +20,17 @@ use crate::util::unhandled;
 )]
 pub(crate) fn from_slice<'a, T>(buf: &'a [u8]) -> Result<T>
 where
-	T: Deserialize<'a>,
+	T: DbDe<'a>,
 {
 	let mut deserializer = Deserializer { buf, pos: 0, rec: 0, seq: false };
 
-	T::deserialize(&mut deserializer).debug_inspect(|_| {
+	let de = <T::De as Deserialize<'a>>::deserialize(&mut deserializer).debug_inspect(|_| {
 		deserializer
 			.finished()
 			.expect("deserialization failed to consume trailing bytes");
-	})
+	})?;
+
+	T::from_de(de)
 }
 
 /// Deserialization state.
@@ -102,20 +104,6 @@ impl<'de> Deserializer<'de> {
 			.inspect(|record| self.inc_pos(record.len()))
 			.next()
 			.expect("remainder of buf even if SEP was not found")
-	}
-
-	/// Peek at the first byte of the current record. If all records were
-	/// consumed None is returned instead.
-	#[inline]
-	fn record_peek_byte(&self) -> Option<u8> {
-		let started = self.pos != 0 || self.rec > 0;
-		let buf = &self.buf[self.pos..];
-		debug_assert!(
-			!started || buf[0] == Self::SEP,
-			"Missing expected record separator at current position"
-		);
-
-		buf.get::<usize>(started.into()).copied()
 	}
 
 	/// Consume the record separator such that the position cleanly points to
@@ -211,9 +199,8 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 	where
 		V: Visitor<'de>,
 	{
-		let input = self.record_next();
-		let mut d = serde_json::Deserializer::from_slice(input);
-		d.deserialize_map(visitor).map_err(Into::into)
+		let _ = visitor;
+		unhandled!("deserialize Map not implemented; did you mean to use database::Json()?")
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip(self, visitor)))]
@@ -226,10 +213,11 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 	where
 		V: Visitor<'de>,
 	{
-		let input = self.record_next();
-		let mut d = serde_json::Deserializer::from_slice(input);
-		d.deserialize_struct(name, fields, visitor)
-			.map_err(Into::into)
+		let _ = visitor;
+		unhandled!(
+			"deserialize Struct {name:?} {fields:?} not implemented; did you mean to use \
+			 database::Json()?"
+		)
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip(self, visitor)))]
@@ -252,7 +240,6 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 		V: Visitor<'de>,
 	{
 		match name {
-			| "$serde_json::private::RawValue" => visitor.visit_map(self),
 			| "Cbor" => visitor
 				.visit_newtype_struct(&mut minicbor_serde::Deserializer::new(self.record_trail()))
 				.map_err(|e| Self::Error::SerdeDe(e.to_string().into())),
@@ -436,11 +423,9 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 		visitor.visit_unit()
 	}
 
-	// this only used for $serde_json::private::RawValue at this time; see MapAccess
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
-	fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-		let input = "$serde_json::private::RawValue";
-		visitor.visit_borrowed_str(input)
+	fn deserialize_identifier<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value> {
+		unhandled!("deserialize Identifier not implemented")
 	}
 
 	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip_all))]
@@ -453,14 +438,7 @@ impl<'a, 'de: 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 		tracing::instrument(level = "trace", skip_all, fields(?self.buf))
 	)]
 	fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-		match self.record_peek_byte() {
-			| Some(b'{') => self.deserialize_map(visitor),
-			| Some(b'[') => serde_json::Deserializer::from_slice(self.record_next())
-				.deserialize_seq(visitor)
-				.map_err(Into::into),
-
-			| _ => self.deserialize_str(visitor),
-		}
+		self.deserialize_str(visitor)
 	}
 }
 
@@ -478,28 +456,6 @@ impl<'a, 'de: 'a> de::SeqAccess<'de> for &'a mut Deserializer<'de> {
 
 		self.record_start();
 		seed.deserialize(&mut **self).map(Some)
-	}
-}
-
-// this only used for $serde_json::private::RawValue at this time. our db
-// schema doesn't have its own map format; we use json for that anyway
-impl<'a, 'de: 'a> de::MapAccess<'de> for &'a mut Deserializer<'de> {
-	type Error = Error;
-
-	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip(self, seed)))]
-	fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
-	where
-		K: DeserializeSeed<'de>,
-	{
-		seed.deserialize(&mut **self).map(Some)
-	}
-
-	#[cfg_attr(unabridged, tracing::instrument(level = "trace", skip(self, seed)))]
-	fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
-	where
-		V: DeserializeSeed<'de>,
-	{
-		seed.deserialize(&mut **self)
 	}
 }
 

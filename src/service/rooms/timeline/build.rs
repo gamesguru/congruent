@@ -7,7 +7,7 @@ use conduwuit_core::{
 	utils::{IterStream, ReadyExt},
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedServerName, RoomId, UserId,
 	events::{
 		TimelineEventType,
@@ -33,10 +33,10 @@ pub async fn build_and_append_pdu(
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
 
-	let room_id = room_id
-		.map(ToOwned::to_owned)
-		.or_else(|| pdu.room_id_or_hash())
-		.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+	let room_id = room_id.map_or_else(
+		|| pdu.room_id_or_hash().expect("built PDU has a room ID"),
+		ToOwned::to_owned,
+	);
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}
@@ -173,7 +173,6 @@ pub async fn build_and_append_pdu(
 		.services
 		.state_cache
 		.room_servers(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -205,7 +204,7 @@ pub async fn build_and_append_pdu(
 				event_id = %pdu.event_id(), %state_key_uid,
 				"build_and_append_pdu: inserting affected user's server as destination"
 			);
-			servers.insert(state_key_uid.server_name().to_owned());
+			servers.insert(state_key_uid.server_name());
 		} else {
 			debug!(
 				target: "membership_destination_debug",
@@ -228,7 +227,7 @@ pub async fn build_and_append_pdu(
 	let num_sent = self
 		.services
 		.sending
-		.send_pdu_servers(servers.iter().map(AsRef::as_ref).stream(), &pdu_id)
+		.send_pdu_servers(servers.iter().cloned().stream(), &pdu_id)
 		.await?;
 
 	if num_sent > 0 {

@@ -7,8 +7,8 @@ use futures::{
 	io::{AsyncWriteExt, BufWriter},
 	lock::Mutex,
 };
-use ruma::{EventId, UserId};
 use service::admin::InvocationSource;
+use slipstream::{EventId, UserId};
 
 pub(crate) struct Context<'a> {
 	pub(crate) services: &'a Services,

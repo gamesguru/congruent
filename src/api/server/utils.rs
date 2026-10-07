@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result, err, implement, info, warn};
 use conduwuit_service::Services;
-use ruma::{EventId, RoomId, ServerName};
+use slipstream::{EventId, RoomId, ServerName};
 
 pub(super) struct AccessCheck<'a> {
 	pub(super) services: &'a Services,
@@ -89,7 +89,7 @@ pub(super) async fn verify_make_membership(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	user_id: &ruma::UserId,
+	user_id: &slipstream::UserId,
 ) -> Result<()> {
 	if !services.rooms.metadata.exists(room_id).await {
 		return Err!(Request(NotFound("Room is unknown to this server.")));
@@ -131,7 +131,7 @@ pub(super) async fn verify_make_membership(
 	}
 
 	if let Some(server) = room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
+		if services.moderation.is_remote_server_forbidden(&server) {
 			return Err!(Request(Forbidden("Server is banned on this homeserver.")));
 		}
 	}
@@ -143,15 +143,15 @@ pub(super) async fn verify_send_membership(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &serde_json::value::RawValue,
-	expected_membership: ruma::events::room::member::MembershipState,
+	pdu: &slipstream::sswire::Raw<slipstream::json::Value>,
+	expected_membership: slipstream::events::room::member::MembershipState,
 ) -> Result<(
-	ruma::OwnedEventId,
-	ruma::CanonicalJsonObject,
-	ruma::events::room::member::RoomMemberEventContent,
-	ruma::RoomVersionId,
-	ruma::OwnedUserId,
-	ruma::OwnedUserId,
+	slipstream::OwnedEventId,
+	slipstream::CanonicalJsonObject,
+	slipstream::events::room::member::RoomMemberEventContent,
+	slipstream::RoomVersionId,
+	slipstream::OwnedUserId,
+	slipstream::OwnedUserId,
 )> {
 	if services.moderation.is_remote_server_forbidden(origin) {
 		warn!(
@@ -163,7 +163,7 @@ pub(super) async fn verify_send_membership(
 	}
 
 	if let Some(server) = room_id.server_name() {
-		if services.moderation.is_remote_server_forbidden(server) {
+		if services.moderation.is_remote_server_forbidden(&server) {
 			warn!(
 				%origin,
 				%room_id,
@@ -207,8 +207,8 @@ pub(super) async fn verify_send_membership(
 		return Err!(Request(BadJson("Could not convert event to canonical json.")));
 	};
 
-	let event_room_id: ruma::OwnedRoomId = if let Some(room_id_val) = value.get("room_id") {
-		serde_json::from_value(room_id_val.clone().into()).map_err(|e| {
+	let event_room_id: slipstream::OwnedRoomId = if let Some(room_id_val) = value.get("room_id") {
+		slipstream::codec::from_value(room_id_val).map_err(|e| {
 			err!(Request(BadJson(warn!("room_id field is not a valid room ID: {e}"))))
 		})?
 	} else if conduwuit::matrix::state_res::RoomVersion::new(&room_version_id)
@@ -223,29 +223,26 @@ pub(super) async fn verify_send_membership(
 		return Err!(Request(BadJson("Event room_id does not match request path room ID.")));
 	}
 
-	let event_type: ruma::events::StateEventType = serde_json::from_value(
+	let event_type: slipstream::events::StateEventType = slipstream::codec::from_value(
 		value
 			.get("type")
-			.ok_or_else(|| err!(Request(BadJson("Event missing type property."))))?
-			.clone()
-			.into(),
+			.ok_or_else(|| err!(Request(BadJson("Event missing type property."))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("Event has invalid state event type: {e}")))))?;
 
-	if event_type != ruma::events::StateEventType::RoomMember {
+	if event_type != slipstream::events::StateEventType::RoomMember {
 		return Err!(Request(BadJson(
 			"Not allowed to send non-membership state event to membership endpoint."
 		)));
 	}
 
-	let content: ruma::events::room::member::RoomMemberEventContent = serde_json::from_value(
-		value
-			.get("content")
-			.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?
-			.clone()
-			.into(),
-	)
-	.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
+	let content: slipstream::events::room::member::RoomMemberEventContent =
+		slipstream::codec::from_value(
+			value
+				.get("content")
+				.ok_or_else(|| err!(Request(BadJson("Event missing content property"))))?,
+		)
+		.map_err(|e| err!(Request(BadJson(warn!("Event content is empty or invalid: {e}")))))?;
 
 	if content.membership != expected_membership {
 		return Err!(Request(BadJson(
@@ -253,12 +250,10 @@ pub(super) async fn verify_send_membership(
 		)));
 	}
 
-	let sender: ruma::OwnedUserId = serde_json::from_value(
+	let sender: slipstream::OwnedUserId = slipstream::codec::from_value(
 		value
 			.get("sender")
-			.ok_or_else(|| err!(Request(BadJson("Event missing sender property."))))?
-			.clone()
-			.into(),
+			.ok_or_else(|| err!(Request(BadJson("Event missing sender property."))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("sender property is not a valid user ID: {e}")))))?;
 
@@ -271,15 +266,13 @@ pub(super) async fn verify_send_membership(
 	services
 		.rooms
 		.event_handler
-		.acl_check(sender.server_name(), room_id)
+		.acl_check(&sender.server_name(), room_id)
 		.await?;
 
-	let state_key: ruma::OwnedUserId = serde_json::from_value(
+	let state_key: slipstream::OwnedUserId = slipstream::codec::from_value(
 		value
 			.get("state_key")
-			.ok_or_else(|| err!(Request(BadJson("Event missing state_key property."))))?
-			.clone()
-			.into(),
+			.ok_or_else(|| err!(Request(BadJson("Event missing state_key property."))))?,
 	)
 	.map_err(|e| err!(Request(BadJson(warn!("State key is not a valid user ID: {e}")))))?;
 
@@ -293,9 +286,9 @@ pub(super) async fn verify_send_membership(
 pub(super) async fn build_membership_template_pdu(
 	services: &Services,
 	room_id: &RoomId,
-	user_id: &ruma::UserId,
-	content: ruma::events::room::member::RoomMemberEventContent,
-) -> Result<Box<serde_json::value::RawValue>> {
+	user_id: &slipstream::UserId,
+	content: slipstream::events::room::member::RoomMemberEventContent,
+) -> Result<slipstream::sswire::RawJsonValue> {
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
 
 	let (_, mut pdu_json) = services
@@ -314,8 +307,10 @@ pub(super) async fn build_membership_template_pdu(
 	pdu_json.remove("hashes");
 	pdu_json.remove("signatures");
 
-	Ok(serde_json::value::to_raw_value(&pdu_json)
-		.expect("CanonicalJson can be serialized to JSON"))
+	Ok(
+		slipstream::sswire::RawJsonValue::new(&slipstream::json::Value::Object(pdu_json))
+			.expect("CanonicalJson can be serialized to JSON"),
+	)
 }
 
 pub(super) async fn handle_and_send_incoming_pdu(
@@ -323,8 +318,8 @@ pub(super) async fn handle_and_send_incoming_pdu(
 	origin: &ServerName,
 	room_id: &RoomId,
 	event_id: &EventId,
-	value: ruma::CanonicalJsonObject,
-	room_version_id: Option<&ruma::RoomVersionId>,
+	value: slipstream::CanonicalJsonObject,
+	room_version_id: Option<&slipstream::RoomVersionId>,
 ) -> Result<conduwuit_core::pdu::RawPduId> {
 	use futures::FutureExt;
 

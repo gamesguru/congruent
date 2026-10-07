@@ -29,9 +29,6 @@ jobs:
           fetch-depth: 0
           submodules: false
 
-      - name: Init required submodules
-        run: git submodule update --init ruwuma ruma-upstream
-
       - name: Install system dependencies
         run: |
           sudo apt-get update || true

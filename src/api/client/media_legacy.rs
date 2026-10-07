@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
-use ruma::{
+use slipstream::{
 	Mxc,
 	api::client::media::{
 		create_content, create_content_async, create_mxc_uri, get_content,
@@ -33,7 +33,9 @@ pub(crate) async fn create_mxc_uri_route(
 
 	services.media.create_async(mxc, Some(user))?;
 
-	Ok(create_mxc_uri::v1::Response::new(mxc.to_string().into()))
+	Ok(create_mxc_uri::v1::Response::new(slipstream::OwnedMxcUri::parse(
+		mxc.to_string(),
+	)?))
 }
 
 /// # `PUT /_matrix/media/v3/upload/{serverName}/{mediaId}`
@@ -78,7 +80,10 @@ pub(crate) async fn create_content_async_route(
 	{
 		| Ok(()) => {},
 		| Err(e)
-			if matches!(e.kind(), ruma::api::client::error::ErrorKind::CannotOverwriteMedia) =>
+			if matches!(
+				e.kind(),
+				slipstream::api::client::error::ErrorKind::CannotOverwriteMedia
+			) =>
 		{
 			return Err(e);
 		},
@@ -149,13 +154,9 @@ pub(crate) async fn get_media_preview_legacy_route(
 		)))
 	})?;
 
-	serde_json::value::to_raw_value(&preview)
-		.map(get_media_preview::v3::Response::from_raw_value)
-		.map_err(|error| {
-			err!(Request(Unknown(
-				debug_error!(%sender_user, %url, "Failed to parse URL preview: {error}")
-			)))
-		})
+	Ok(get_media_preview::v3::Response {
+		data: slipstream::sswire::Raw::from_value(&preview),
+	})
 }
 
 /// # `GET /_matrix/media/v1/preview_url`
@@ -237,7 +238,9 @@ pub(crate) async fn get_content_legacy_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {
@@ -252,7 +255,7 @@ pub(crate) async fn get_content_legacy_route(
 
 	Ok(get_content::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
@@ -326,7 +329,9 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 			},
 			| _ => return Err!(Request(Unknown("Unknown error when fetching file."))),
 		},
-		| Err(e) if matches!(e.kind(), ruma::api::client::error::ErrorKind::NotYetUploaded) => {
+		| Err(e)
+			if matches!(e.kind(), slipstream::api::client::error::ErrorKind::NotYetUploaded) =>
+		{
 			return Err(e);
 		},
 		| Err(e) => {
@@ -341,7 +346,7 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 
 	Ok(get_content_as_filename::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
@@ -389,7 +394,7 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 		media_id: &body.media_id,
 	};
 
-	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
+	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 
 	let FileMeta {
 		content,
@@ -426,7 +431,7 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 
 	Ok(get_content_thumbnail::v3::Response {
 		file,
-		content_type: content_type.map(Into::into),
+		content_type,
 		cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
 		cache_control: Some(CACHE_CONTROL_IMMUTABLE.into()),
 		content_disposition,

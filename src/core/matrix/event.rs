@@ -9,16 +9,17 @@ mod unsigned;
 
 use std::fmt::Debug;
 
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, RoomId,
-	RoomVersionId, UserId, events::TimelineEventType,
+	RoomVersionId, UserId, events::TimelineEventType, json::Value as JsonValue,
 };
-use serde::Deserialize;
-use serde_json::{Value as JsonValue, value::RawValue as RawJsonValue};
 
 pub use self::{filter::Matches, id::*, relation::RelationTypeEqual, type_ext::TypeExt};
-use super::{pdu::Pdu, state_key::StateKey};
-use crate::{Result, utils};
+use super::{
+	pdu::{Pdu, RawJson},
+	state_key::StateKey,
+};
+use crate::Result;
 
 /// Abstraction of a PDU so users can have their own PDU types.
 pub trait Event: Clone + Debug {
@@ -43,38 +44,11 @@ pub trait Event: Clone + Debug {
 	}
 
 	#[inline]
-	fn contains_unsigned_property<T>(&self, property: &str, is_type: T) -> bool
-	where
-		T: FnOnce(&JsonValue) -> bool,
-		Self: Sized,
-	{
-		unsigned::contains_unsigned_property::<T, _>(self, property, is_type)
-	}
-
-	#[inline]
-	fn get_unsigned_property<T>(&self, property: &str) -> Result<T>
-	where
-		T: for<'de> Deserialize<'de>,
-		Self: Sized,
-	{
-		unsigned::get_unsigned_property::<T, _>(self, property)
-	}
-
-	#[inline]
 	fn get_unsigned_as_value(&self) -> JsonValue
 	where
 		Self: Sized,
 	{
 		unsigned::get_unsigned_as_value(self)
-	}
-
-	#[inline]
-	fn get_unsigned<T>(&self) -> Result<T>
-	where
-		T: for<'de> Deserialize<'de>,
-		Self: Sized,
-	{
-		unsigned::get_unsigned::<T, _>(self)
 	}
 
 	#[inline]
@@ -88,10 +62,10 @@ pub trait Event: Clone + Debug {
 	#[inline]
 	fn get_content<T>(&self) -> Result<T>
 	where
-		for<'de> T: Deserialize<'de>,
+		T: slipstream::codec::Deserialize,
 		Self: Sized,
 	{
-		content::get::<T, _>(self)
+		content::get_codec::<T, _>(self)
 	}
 
 	#[inline]
@@ -115,12 +89,14 @@ pub trait Event: Clone + Debug {
 	where
 		Self: Sized,
 	{
-		utils::to_canonical_object(self.into_pdu()).expect("failed to create Value::Object")
+		slipstream::codec::from_str(&slipstream::codec::to_string(&self.into_pdu()))
+			.expect("failed to create Value::Object")
 	}
 
 	#[inline]
 	fn to_canonical_object(&self) -> CanonicalJsonObject {
-		utils::to_canonical_object(self.as_pdu()).expect("failed to create Value::Object")
+		slipstream::codec::from_str(&slipstream::codec::to_string(self.as_pdu()))
+			.expect("failed to create Value::Object")
 	}
 
 	#[inline]
@@ -128,12 +104,14 @@ pub trait Event: Clone + Debug {
 	where
 		Self: Sized,
 	{
-		serde_json::to_value(self.into_pdu()).expect("failed to create JSON Value")
+		slipstream::codec::from_str(&slipstream::codec::to_string(&self.into_pdu()))
+			.expect("failed to create JSON Value")
 	}
 
 	#[inline]
 	fn to_value(&self) -> JsonValue {
-		serde_json::to_value(self.as_pdu()).expect("failed to create JSON Value")
+		slipstream::codec::from_str(&slipstream::codec::to_string(self.as_pdu()))
+			.expect("failed to create JSON Value")
 	}
 
 	#[inline]
@@ -158,7 +136,7 @@ pub trait Event: Clone + Debug {
 	) -> impl DoubleEndedIterator<Item = &EventId> + ExactSizeIterator + Clone + Send + Debug + '_;
 
 	/// The event's content.
-	fn content(&self) -> &RawJsonValue;
+	fn content(&self) -> &RawJson;
 
 	/// The `EventId` of this event.
 	fn event_id(&self) -> &EventId;
@@ -167,7 +145,7 @@ pub trait Event: Clone + Debug {
 	fn origin_server_ts(&self) -> MilliSecondsSinceUnixEpoch;
 
 	/// The depth of this event.
-	fn depth(&self) -> ruma::UInt;
+	fn depth(&self) -> slipstream::UInt;
 
 	/// The events before this event.
 	fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_;
@@ -193,7 +171,7 @@ pub trait Event: Clone + Debug {
 	fn kind(&self) -> &TimelineEventType;
 
 	/// Metadata container; peer-trusted only.
-	fn unsigned(&self) -> Option<&RawJsonValue>;
+	fn unsigned(&self) -> Option<&RawJson>;
 
 	/// Whether this event has been rejected (auth failure, soft-fail, or
 	/// admin rejection). Default is `false` (not rejected).

@@ -12,9 +12,9 @@ use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
-#[cfg(feature = "url_preview")]
-use ruma::OwnedMxcUri;
 use serde::Serialize;
+#[cfg(feature = "url_preview")]
+use slipstream::OwnedMxcUri;
 use url::Url;
 
 use super::Service;
@@ -49,6 +49,55 @@ pub struct UrlPreviewData {
 	pub audio: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "matrix:audio:size"))]
 	pub audio_size: Option<usize>,
+}
+
+impl slipstream::codec::Serialize for UrlPreviewData {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut object = slipstream::ObjectBuilder::new();
+		if let Some(value) = &self.title {
+			object.field("og:title", value);
+		}
+		if let Some(value) = &self.description {
+			object.field("og:description", value);
+		}
+		if let Some(value) = &self.og_type {
+			object.field("og:type", value);
+		}
+		if let Some(value) = &self.og_url {
+			object.field("og:url", value);
+		}
+		if let Some(value) = &self.image {
+			object.field("og:image", value);
+		}
+		if let Some(value) = &self.image_size {
+			object.field("matrix:image:size", value);
+		}
+		if let Some(value) = &self.image_width {
+			object.field("og:image:width", value);
+		}
+		if let Some(value) = &self.image_height {
+			object.field("og:image:height", value);
+		}
+		if let Some(value) = &self.video {
+			object.field("og:video", value);
+		}
+		if let Some(value) = &self.video_size {
+			object.field("matrix:video:size", value);
+		}
+		if let Some(value) = &self.video_width {
+			object.field("og:video:width", value);
+		}
+		if let Some(value) = &self.video_height {
+			object.field("og:video:height", value);
+		}
+		if let Some(value) = &self.audio {
+			object.field("og:audio", value);
+		}
+		if let Some(value) = &self.audio_size {
+			object.field("matrix:audio:size", value);
+		}
+		object.finish()
+	}
 }
 
 #[implement(Service)]
@@ -175,7 +224,7 @@ pub async fn download_image(
 ) -> Result<UrlPreviewData> {
 	use conduwuit::utils::random_string;
 	use image::{ImageFormat, ImageReader, imageops::FilterType};
-	use ruma::Mxc;
+	use slipstream::Mxc;
 
 	let mut preview_data = preview_data.unwrap_or_default();
 
@@ -306,7 +355,7 @@ pub async fn download_audio(
 pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	use conduwuit::utils::random_string;
 	use http::header::CONTENT_TYPE;
-	use ruma::Mxc;
+	use slipstream::Mxc;
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
@@ -353,7 +402,7 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	self.create(&mxc, None, None, content_type.as_deref(), &media)
 		.await?;
 
-	Ok((OwnedMxcUri::from(mxc.to_string()), media.len()))
+	Ok((OwnedMxcUri::parse(mxc.to_string())?, media.len()))
 }
 
 #[cfg(not(feature = "url_preview"))]

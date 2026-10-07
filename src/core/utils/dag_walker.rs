@@ -1,6 +1,6 @@
 use std::{collections::HashSet, future::Future};
 
-use ruma::OwnedEventId;
+use slipstream::OwnedEventId;
 
 use crate::PduEvent;
 
@@ -94,22 +94,22 @@ mod tests {
 		sync::{Arc, Mutex},
 	};
 
-	use ruma::{EventId, event_id};
+	use slipstream::{EventId, OwnedUserId, event_id};
 
 	use super::*;
 
 	fn mock_pdu(id: &EventId, auth_events: Vec<OwnedEventId>) -> PduEvent {
 		// Minimal PduEvent for testing auth_events traversal
-		use ruma::{events::TimelineEventType, uint, user_id};
+		use slipstream::{events::TimelineEventType, uint};
 
 		PduEvent {
 			event_id: id.to_owned(),
 			room_id: None,
-			sender: user_id!("@test:example.com").to_owned(),
+			sender: OwnedUserId::parse("@test:example.com").unwrap(),
 			origin: None,
 			origin_server_ts: uint!(0),
 			kind: TimelineEventType::RoomMessage,
-			content: serde_json::from_str("{}").unwrap(),
+			content: crate::matrix::pdu::RawJson::empty_object(),
 			state_key: None,
 			prev_events: vec![],
 			depth: uint!(0),
@@ -143,7 +143,7 @@ mod tests {
 		db.insert(
 			event_id!("$1").to_owned(),
 			FetchResult::Timeline(
-				mock_pdu(event_id!("$1"), vec![event_id!("$2").to_owned()]),
+				mock_pdu(&event_id!("$1"), vec![event_id!("$2").to_owned()]),
 				false,
 				false,
 			),
@@ -151,14 +151,14 @@ mod tests {
 		db.insert(
 			event_id!("$2").to_owned(),
 			FetchResult::Timeline(
-				mock_pdu(event_id!("$2"), vec![event_id!("$3").to_owned()]),
+				mock_pdu(&event_id!("$2"), vec![event_id!("$3").to_owned()]),
 				false,
 				false,
 			),
 		);
 		db.insert(
 			event_id!("$3").to_owned(),
-			FetchResult::Timeline(mock_pdu(event_id!("$3"), vec![]), false, false),
+			FetchResult::Timeline(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
 		let result =
@@ -176,7 +176,7 @@ mod tests {
 		db.insert(
 			event_id!("$1").to_owned(),
 			FetchResult::Timeline(
-				mock_pdu(event_id!("$1"), vec![event_id!("$2").to_owned()]),
+				mock_pdu(&event_id!("$1"), vec![event_id!("$2").to_owned()]),
 				false,
 				false,
 			),
@@ -184,14 +184,14 @@ mod tests {
 		db.insert(
 			event_id!("$2").to_owned(),
 			FetchResult::Outlier(
-				mock_pdu(event_id!("$2"), vec![event_id!("$3").to_owned()]),
+				mock_pdu(&event_id!("$2"), vec![event_id!("$3").to_owned()]),
 				false,
 				false,
 			),
 		);
 		db.insert(
 			event_id!("$3").to_owned(),
-			FetchResult::Outlier(mock_pdu(event_id!("$3"), vec![]), false, false),
+			FetchResult::Outlier(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
 		let result =
@@ -209,7 +209,7 @@ mod tests {
 		db.insert(
 			event_id!("$1").to_owned(),
 			FetchResult::Timeline(
-				mock_pdu(event_id!("$1"), vec![
+				mock_pdu(&event_id!("$1"), vec![
 					event_id!("$2").to_owned(),
 					event_id!("$3").to_owned(),
 				]),
@@ -220,7 +220,7 @@ mod tests {
 		// $2 is missing
 		db.insert(
 			event_id!("$3").to_owned(),
-			FetchResult::Timeline(mock_pdu(event_id!("$3"), vec![]), false, false),
+			FetchResult::Timeline(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
 		let result =
@@ -238,13 +238,13 @@ mod tests {
 			Box::pin(async move {
 				if id == event_id!("$A") {
 					FetchResult::Timeline(
-						mock_pdu(event_id!("$A"), vec![event_id!("$B").to_owned()]),
+						mock_pdu(&event_id!("$A"), vec![event_id!("$B").to_owned()]),
 						false,
 						false,
 					)
 				} else if id == event_id!("$B") {
 					FetchResult::Timeline(
-						mock_pdu(event_id!("$B"), vec![event_id!("$A").to_owned()]),
+						mock_pdu(&event_id!("$B"), vec![event_id!("$A").to_owned()]),
 						false,
 						false,
 					)

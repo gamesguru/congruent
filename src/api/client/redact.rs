@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
-use ruma::{
+use slipstream::{
 	api::client::redact::redact_event, events::room::redaction::RoomRedactionEventContent,
 };
 
@@ -20,7 +20,7 @@ pub(crate) async fn redact_event_route(
 	let sender_user = body.sender_user();
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), client_ip)
+		.update_device_last_seen(sender_user, body.sender_device_opt(), client_ip)
 		.await;
 	let body = &body.body;
 	if services.users.is_suspended(sender_user).await? {

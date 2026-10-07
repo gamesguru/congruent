@@ -7,10 +7,10 @@ use conduwuit_core::{
 	utils::{stream::TryIgnore, string_from_bytes},
 	warn,
 };
-use conduwuit_database::{Deserialized, Ignore, Interfix, Json, Map};
+use conduwuit_database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt};
 use ipaddress::IPAddress;
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedDeviceId, RoomId, UInt, UserId,
 	api::{
 		IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
@@ -27,7 +27,7 @@ use ruma::{
 	push::{
 		Action, PushConditionPowerLevelsCtx, PushConditionRoomCtx, PushFormat, Ruleset, Tweak,
 	},
-	serde::Raw,
+	sswire::Raw,
 	uint,
 };
 
@@ -45,6 +45,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	threads: Dep<rooms::threads::Service>,
 	users: Dep<users::Service>,
 	sending: Dep<sending::Service>,
 }
@@ -69,6 +70,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				threads: args.depend::<rooms::threads::Service>("rooms::threads"),
 				users: args.depend::<users::Service>("users"),
 				sending: args.depend::<sending::Service>("sending"),
 			},
@@ -133,7 +135,7 @@ impl Service {
 
 				let pushkey = data.pusher.ids.pushkey.as_str();
 				let key = (sender, pushkey);
-				self.db.senderkey_pusher.put(key, Json(pusher));
+				self.db.senderkey_pusher.put(key, &data.pusher);
 				self.db.pushkey_deviceid.insert(pushkey, sender_device);
 			},
 			| set_pusher::v3::PusherAction::Delete(ids) => {
@@ -301,8 +303,7 @@ impl Service {
 		let mut notify = None;
 		let mut tweaks = Vec::new();
 		let Some(room_id) = event.room_id_or_hash() else {
-			// This only affects v12+ create events
-			return Ok(());
+			return Err!(Request(InvalidParam("Event has no room ID")));
 		};
 
 		let power_levels: RoomPowerLevelsEventContent = self
@@ -344,6 +345,30 @@ impl Service {
 		Ok(())
 	}
 
+	/// MSC4306: for an event that is a reply in a thread, whether `user` is
+	/// subscribed to that thread; `None` for any other event. A thread with no
+	/// stored subscription counts as not subscribed.
+	async fn thread_subscription(
+		&self,
+		user: &UserId,
+		room_id: &RoomId,
+		pdu: &Raw<AnySyncTimelineEvent>,
+	) -> Option<bool> {
+		let event = pdu.json().ok()?;
+		let relation = event.get("content")?.get("m.relates_to")?;
+		if relation.get("rel_type")?.as_str()? != "m.thread" {
+			return None;
+		}
+		let root = slipstream::OwnedEventId::parse(relation.get("event_id")?.as_str()?).ok()?;
+		let subscribed = self
+			.services
+			.threads
+			.get_subscription(user, room_id, &root)
+			.await
+			.is_some_and(|subscription| subscription.subscribed);
+		Some(subscribed)
+	}
+
 	#[tracing::instrument(skip(self, user, ruleset, pdu), level = "debug")]
 	pub async fn get_actions<'a>(
 		&self,
@@ -364,9 +389,7 @@ impl Service {
 			.state_cache
 			.room_joined_count(room_id)
 			.await
-			.unwrap_or(1)
-			.try_into()
-			.unwrap_or_else(|_| uint!(0));
+			.unwrap_or(1);
 
 		let user_display_name = self
 			.services
@@ -375,6 +398,7 @@ impl Service {
 			.await
 			.unwrap_or_else(|_| user.localpart().to_owned());
 		let room_version = self.services.state.get_room_version(room_id).await.ok();
+		let thread_subscription = self.thread_subscription(user, room_id, pdu).await;
 
 		// Determines whether the legacy (pre-`m.mentions`) mention rules --
 		// `.m.rule.contains_user_name`, `.m.rule.contains_display_name`, and
@@ -385,6 +409,7 @@ impl Service {
 			user_display_name,
 			power_levels: Some(power_levels),
 			room_version,
+			thread_subscription,
 			#[cfg(feature = "unstable-msc3931")]
 			supported_features: Vec::new(),
 		};
@@ -447,14 +472,16 @@ impl Service {
 
 				let d = vec![device];
 				let mut notify = Notification::new(d);
+				let Some(room_id) = event.room_id_or_hash() else {
+					return Err!(Request(InvalidParam("Event has no room ID")));
+				};
 
 				notify.event_id = Some(event.event_id().to_owned());
-				notify.room_id = Some(event.room_id_or_hash().expect("has room ID"));
-				if http
+				notify.room_id = Some(room_id.clone());
+				if !http
 					.data
-					.get("org.matrix.msc4076.disable_badge_count")
-					.is_none()
-					&& http.data.get("disable_badge_count").is_none()
+					.contains_key("org.matrix.msc4076.disable_badge_count")
+					&& !http.data.contains_key("disable_badge_count")
 				{
 					notify.counts = NotificationCounts::new(unread, uint!(0));
 				} else {
@@ -475,7 +502,7 @@ impl Service {
 					}
 					notify.sender = Some(event.sender().to_owned());
 					notify.event_type = Some(event.kind().to_owned());
-					notify.content = serde_json::value::to_raw_value(event.content()).ok();
+					notify.content = Some(event.content().clone());
 
 					if *event.kind() == TimelineEventType::RoomMember {
 						notify.user_is_target =
@@ -485,18 +512,12 @@ impl Service {
 					notify.sender_display_name =
 						self.services.users.displayname(event.sender()).await.ok();
 
-					let notice_room_id = event.room_id_or_hash().expect("has room ID");
-					notify.room_name = self
-						.services
-						.state_accessor
-						.get_name(&notice_room_id)
-						.await
-						.ok();
+					notify.room_name = self.services.state_accessor.get_name(&room_id).await.ok();
 
 					notify.room_alias = self
 						.services
 						.state_accessor
-						.get_canonical_alias(&notice_room_id)
+						.get_canonical_alias(&room_id)
 						.await
 						.ok();
 				}

@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::{Err, Result, utils::ReadyExt};
 use futures::StreamExt;
-use ruma::OwnedRoomId;
+use slipstream::OwnedRoomId;
 
 use crate::{admin_command, admin_command_dispatch};
 
@@ -46,7 +46,6 @@ async fn list_joined_members(&self, room_id: OwnedRoomId, local_only: bool) -> R
 				.then(|| self.services.globals.user_is_local(user_id))
 				.unwrap_or(true)
 		})
-		.map(ToOwned::to_owned)
 		.filter_map(|user_id| async move {
 			Some((
 				self.services

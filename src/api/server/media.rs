@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, utils::content_disposition::make_content_disposition};
 use conduwuit_service::media::{Dim, FileMeta};
-use ruma::{
+use slipstream::{
 	Mxc,
 	api::federation::authenticated_media::{
 		Content, ContentMetadata, FileOrLocation, get_content, get_content_thumbnail,
@@ -43,7 +43,7 @@ pub(crate) async fn get_content_route(
 		make_content_disposition(content_disposition.as_ref(), content_type.as_deref(), None);
 	let content = Content {
 		file: content.expect("entire file contents"),
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition: Some(content_disposition),
 	};
 
@@ -67,7 +67,7 @@ pub(crate) async fn get_content_thumbnail_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
-	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
+	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 	let mxc = Mxc {
 		server_name: services.globals.server_name(),
 		media_id: &body.media_id,
@@ -86,7 +86,7 @@ pub(crate) async fn get_content_thumbnail_route(
 		make_content_disposition(content_disposition.as_ref(), content_type.as_deref(), None);
 	let content = Content {
 		file: content.expect("entire file contents"),
-		content_type: content_type.map(Into::into),
+		content_type,
 		content_disposition: Some(content_disposition),
 	};
 

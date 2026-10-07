@@ -13,17 +13,17 @@ use conduwuit::{
 use database::{Deserialized, Json};
 use futures::{FutureExt, StreamExt, TryStreamExt, pin_mut};
 use itertools::Itertools;
-use ruma::{
-	OwnedEventId, OwnedUserId, RoomId, UserId,
+use sha2::{Digest, Sha256};
+use slipstream::{
+	OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	events::{
 		AnyStrippedStateEvent, GlobalAccountDataEventType, StateEventType,
 		push_rules::PushRulesEvent,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 	push::Ruleset,
-	serde::Raw,
+	sswire::Raw,
 };
-use sha2::{Digest, Sha256};
 
 use crate::{
 	Services, media,
@@ -481,7 +481,7 @@ async fn migrate(services: &Services) -> Result<()> {
 				.alias
 				.all_local_aliases()
 				.ready_for_each(|(room_id, alias)| {
-					let matches = patterns.matches(alias);
+					let matches = patterns.matches(alias.as_str());
 					if matches.matched_any() {
 						warn!(
 							"Room with alias #{alias} ({room_id}) matches the following \
@@ -504,7 +504,7 @@ async fn migrate(services: &Services) -> Result<()> {
 
 const MIGRATE_READ_RECEIPTS_TO_SSOT_MARKER: &[u8] = b"migrate_read_receipts_to_ssot";
 async fn migrate_read_receipts(services: &Services) -> Result<()> {
-	use ruma::events::receipt::ReceiptEvent;
+	use slipstream::events::receipt::ReceiptEvent;
 
 	info!("Starting read receipt state map migration...");
 
@@ -533,7 +533,7 @@ async fn migrate_read_receipts(services: &Services) -> Result<()> {
 		let count = conduwuit::utils::u64_from_bytes(count_bytes).unwrap_or(0);
 		let user_id_bytes = &key[count_end.saturating_add(1)..];
 
-		let Ok(event) = serde_json::from_slice::<ReceiptEvent>(value) else {
+		let Ok(event) = slipstream::codec::from_slice::<ReceiptEvent>(value) else {
 			continue;
 		};
 
@@ -599,13 +599,13 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 			let room_id_bytes = &key[..sep];
 			let user_id_bytes = &key[sep.saturating_add(1)..];
 
-			let Ok(room_id) = <&RoomId>::try_from(
+			let Ok(room_id) = <RoomId>::parse(
 				conduwuit::utils::string::str_from_bytes(room_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
-			let Ok(user_id) = <&UserId>::try_from(
+			let Ok(user_id) = <UserId>::parse(
 				conduwuit::utils::string::str_from_bytes(user_id_bytes).unwrap_or_default(),
 			) else {
 				skipped = skipped.saturating_add(1);
@@ -619,34 +619,34 @@ async fn migrate_private_read_receipts(services: &Services) -> Result<()> {
 			legacy_key.push(0xFF);
 			legacy_key.extend_from_slice(user_id.as_bytes());
 
-			let event: ruma::events::receipt::ReceiptEvent =
+			let event: slipstream::events::receipt::ReceiptEvent =
 				if let Some(legacy_event_map) = &legacy_event_map {
 					if let Ok(event_bytes) = legacy_event_map.get(&legacy_key).await {
 						with_event = with_event.saturating_add(1);
-						serde_json::from_slice(&event_bytes).unwrap_or_else(|_| {
-							ruma::events::receipt::ReceiptEvent {
-								content: ruma::events::receipt::ReceiptEventContent(
+						slipstream::codec::from_slice(&event_bytes).unwrap_or_else(|_| {
+							slipstream::events::receipt::ReceiptEvent {
+								content: slipstream::events::receipt::ReceiptEventContent(
 									std::collections::BTreeMap::new(),
 								),
-								room_id: room_id.to_owned(),
+								room_id: room_id.clone(),
 							}
 						})
 					} else {
 						count_only = count_only.saturating_add(1);
-						ruma::events::receipt::ReceiptEvent {
-							content: ruma::events::receipt::ReceiptEventContent(
+						slipstream::events::receipt::ReceiptEvent {
+							content: slipstream::events::receipt::ReceiptEventContent(
 								std::collections::BTreeMap::new(),
 							),
-							room_id: room_id.to_owned(),
+							room_id: room_id.clone(),
 						}
 					}
 				} else {
 					count_only = count_only.saturating_add(1);
-					ruma::events::receipt::ReceiptEvent {
-						content: ruma::events::receipt::ReceiptEventContent(
+					slipstream::events::receipt::ReceiptEvent {
+						content: slipstream::events::receipt::ReceiptEventContent(
 							std::collections::BTreeMap::new(),
 						),
-						room_id: room_id.to_owned(),
+						room_id: room_id.clone(),
 					}
 				};
 
@@ -788,7 +788,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 		pin_mut!(stream);
 
 		while let Some(Ok((pdu_id_bytes, pdu_json_bytes))) = stream.next().await {
-			let Ok(pdu) = serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
+			let Ok(pdu) = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
@@ -870,7 +870,7 @@ async fn migrate_event_store_to_ssot(services: &Services) -> Result<()> {
 		pin_mut!(stream);
 
 		while let Some(Ok((event_id_bytes, pdu_json_bytes))) = stream.next().await {
-			let Ok(pdu) = serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
+			let Ok(pdu) = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes) else {
 				skipped = skipped.saturating_add(1);
 				continue;
 			};
@@ -981,12 +981,13 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 
 			// Do not silently skip an unreadable PDU. Leaving the marker unset makes
 			// the migration retryable after the underlying record is repaired.
-			let pdu =
-				serde_json::from_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(|e| {
+			let pdu = database::from_json_slice::<conduwuit::PduEvent>(pdu_json_bytes).map_err(
+				|e| {
 					err!(Database(
 						"Cannot decode eventid_pdu during short-prev migration: {event_id}: {e}"
 					))
-				})?;
+				},
+			)?;
 
 			// Only the DAG edges are needed below; retaining the decoded PDU would
 			// pin up to BATCH_SIZE full event bodies in memory at once.
@@ -1001,7 +1002,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 		let short_event_ids = services
 			.rooms
 			.short
-			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| &**event_id))
+			.multi_get_or_create_shorteventid(entries.iter().map(|(event_id, _)| event_id))
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1009,7 +1010,7 @@ async fn populate_shortprevevents(services: &Services) -> Result<()> {
 		let mut prev_ranges = Vec::with_capacity(entries.len());
 		for (_, prev_events) in &entries {
 			let start = prev_event_ids.len();
-			prev_event_ids.extend(prev_events.iter().map(|event_id| &**event_id));
+			prev_event_ids.extend(prev_events.iter());
 			prev_ranges.push(start..prev_event_ids.len());
 		}
 		let prev_short_ids = services
@@ -1120,7 +1121,7 @@ async fn populate_topological_index(services: &Services) -> Result<()> {
 				count_bytes.copy_from_slice(&pdu_id_bytes[8..16]);
 			}
 
-			let global_depth: u64 = meta.depth.into();
+			let global_depth: u64 = meta.depth;
 			let stream_ordering =
 				i64::from_be_bytes(conduwuit::PduCount::offset_binary_encoding(count_bytes));
 			let timeline_key = conduwuit::pdu::TimelineKey::new(global_depth, stream_ordering);
@@ -1266,7 +1267,6 @@ async fn db_lt_12(services: &Services) -> Result<()> {
 	for username in &services
 		.users
 		.list_local_users()
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedUserId>>()
 		.await
 	{
@@ -1332,7 +1332,7 @@ async fn db_lt_12(services: &Services) -> Result<()> {
 				None,
 				&user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(account_data).expect("to json value always works"),
+				&slipstream::codec::to_value(&account_data),
 			)
 			.await?;
 	}
@@ -1346,7 +1346,6 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 	for username in &services
 		.users
 		.list_local_users()
-		.map(ToOwned::to_owned)
 		.collect::<Vec<OwnedUserId>>()
 		.await
 	{
@@ -1365,7 +1364,7 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 			.await
 			.expect("Username is invalid");
 
-		let user_default_rules = Ruleset::server_default(&user);
+		let user_default_rules = Ruleset::server_default(user.as_str());
 		account_data
 			.content
 			.global
@@ -1377,7 +1376,7 @@ async fn db_lt_13(services: &Services) -> Result<()> {
 				None,
 				&user,
 				GlobalAccountDataEventType::PushRules.to_string().into(),
-				&serde_json::to_value(account_data).expect("to json value always works"),
+				&slipstream::codec::to_value(&account_data),
 			)
 			.await?;
 	}
@@ -1437,13 +1436,7 @@ async fn retroactively_fix_bad_data_from_roomuserid_joined(services: &Services) 
 	let db = &services.db;
 	let _cork = db.cork_and_sync();
 
-	let room_ids = services
-		.rooms
-		.metadata
-		.iter_ids()
-		.map(ToOwned::to_owned)
-		.collect::<Vec<_>>()
-		.await;
+	let room_ids = services.rooms.metadata.iter_ids().collect::<Vec<_>>().await;
 
 	for room_id in &room_ids {
 		debug_info!("Fixing room {room_id}");
@@ -1452,7 +1445,6 @@ async fn retroactively_fix_bad_data_from_roomuserid_joined(services: &Services) 
 			.rooms
 			.state_cache
 			.room_members(room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await;
 
@@ -1620,7 +1612,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 	// profile fields with raw strings instead of quoted JSON ones.
 	// This migration fixes that.
 
-	use serde_json::{Value, from_slice};
+	use slipstream::{codec::from_slice, json::Value};
 	type KeyVal<'a> = ((OwnedUserId, String), &'a [u8]);
 
 	info!("Fixing corrupted `us.cloke.msc4175.tz` fields...");
@@ -1676,7 +1668,7 @@ async fn fix_corrupt_msc4133_fields(services: &Services) -> Result {
 const POPULATED_USERROOMID_LEFTSTATE_TABLE_MARKER: &str = "populate_userroomid_leftstate_table";
 async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 	type KeyVal<'a> = (Key<'a>, Raw<Option<Pdu>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	type Key<'a> = (OwnedUserId, OwnedRoomId);
 
 	let db = &services.db;
 	let cork = db.cork_and_sync();
@@ -1687,7 +1679,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 		.try_fold(
 			0_usize,
 			async |mut total: usize, ((user_id, room_id), state): KeyVal<'_>| -> Result<usize> {
-				if state.deserialize().is_err() {
+				if state.deserialize_as::<Option<Pdu>>().is_err() {
 					// The cached leave event is corrupted. Try to reconstruct it from
 					// the room's current membership state when a HAMT root is already
 					// available (fresh/migrated rooms with a `roomid_roothandle`
@@ -1695,12 +1687,13 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 					// was removed by the HAMT cutover, so we drop the bad entry — the
 					// leave event remains in the timeline and is recovered at runtime
 					// once the HAMT migration has run.
-					let repaired = match services.rooms.state.get_room_state_hamt(room_id).await {
+					let repaired = match services.rooms.state.get_room_state_hamt(&room_id).await
+					{
 						| Ok(root_handle) => services
 							.rooms
 							.state_accessor
 							.state_get_in_room_hamt(
-								room_id,
+								&room_id,
 								&root_handle,
 								&StateEventType::RoomMember,
 								user_id.as_str(),
@@ -1716,7 +1709,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 								|content| content.membership == MembershipState::Leave,
 							) =>
 						{
-							userroomid_leftstate.put((user_id, room_id), Json(leave));
+							userroomid_leftstate.put((&user_id, &room_id), Json(leave));
 							warn!(
 								%room_id,
 								%user_id,
@@ -1730,7 +1723,7 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 								"room cached as left has a corrupted leave event, removing \
 								 cache entry"
 							);
-							userroomid_leftstate.del((user_id, room_id));
+							userroomid_leftstate.del((&user_id, &room_id));
 						},
 					}
 				}
@@ -1751,10 +1744,9 @@ async fn populate_userroomid_leftstate_table(services: &Services) -> Result {
 
 const FIXED_LOCAL_INVITE_STATE_MARKER: &str = "fix_local_invite_state";
 async fn fix_local_invite_state(services: &Services) -> Result {
-	// Clean up the effects of !1249 by caching stripped state for invites
+	type InviteKeyVal = ((OwnedUserId, OwnedRoomId), Raw<Vec<Raw<AnyStrippedStateEvent>>>);
 
-	type KeyVal<'a> = (Key<'a>, Raw<Vec<AnyStrippedStateEvent>>);
-	type Key<'a> = (&'a UserId, &'a RoomId);
+	// Clean up the effects of !1249 by caching stripped state for invites
 
 	let db = &services.db;
 	let cork = db.cork_and_sync();
@@ -1763,11 +1755,11 @@ async fn fix_local_invite_state(services: &Services) -> Result {
 	// for each user invited to a room
 	let fixed =  userroomid_invitestate.stream()
 		// if they're a local user on this homeserver
-		.try_filter(|((user_id, _), _): &KeyVal<'_>| ready(services.globals.user_is_local(user_id)))
-		.and_then(async |((user_id, room_id), stripped_state): KeyVal<'_>| Ok::<_,
-			conduwuit::Error>((user_id.to_owned(), room_id.to_owned(), stripped_state.deserialize
+		.try_filter(|((user_id, _), _): &InviteKeyVal| ready(services.globals.user_is_local(user_id)))
+		.and_then(async |((user_id, room_id), stripped_state): InviteKeyVal| Ok::<_,
+			conduwuit::Error>((user_id.clone(), room_id.clone(), stripped_state.deserialize_as::<Vec<Raw<AnyStrippedStateEvent>>>
 		().unwrap_or_else(|e| {
-			trace!("Failed to deserialize: {:?}", stripped_state.json());
+			trace!("Failed to deserialize: {:?}", stripped_state.get());
 			warn!(
 				%user_id,
 				%room_id,
@@ -1906,13 +1898,42 @@ async fn db_lt_19(services: &Services) -> Result<()> {
 /// `status: EventStatus` field, used only to read pre-v21 rows during
 /// `db_lt_21`. Field order replicates the exact on-disk layout of the old
 /// struct so legacy rows deserialize correctly.
+mod owned_event_id_option {
+	use serde::{Deserialize, Deserializer, Serialize, Serializer};
+	use slipstream::OwnedEventId;
+
+	#[allow(clippy::ref_option)]
+	pub(super) fn serialize<S>(
+		value: &Option<OwnedEventId>,
+		serializer: S,
+	) -> Result<S::Ok, S::Error>
+	where
+		S: Serializer,
+	{
+		value
+			.as_ref()
+			.map(ToString::to_string)
+			.serialize(serializer)
+	}
+
+	pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<OwnedEventId>, D::Error>
+	where
+		D: Deserializer<'de>,
+	{
+		Option::<String>::deserialize(deserializer)?
+			.map(|value| OwnedEventId::parse(&value).map_err(serde::de::Error::custom))
+			.transpose()
+	}
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EventMetadataV20 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	status: EventStatusV20,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
@@ -1929,10 +1950,11 @@ struct EventMetadataV20 {
 struct EventMetadataV19 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 	#[serde(default)]
@@ -1951,10 +1973,11 @@ struct EventMetadataV19 {
 struct EventMetadataV18 {
 	short_room_id: u64,
 	is_outlier: bool,
-	origin_server_ts: ruma::UInt,
-	depth: ruma::UInt,
+	origin_server_ts: slipstream::UInt,
+	depth: slipstream::UInt,
 	soft_failed: bool,
 	rejected: bool,
+	#[serde(with = "owned_event_id_option")]
 	redacted_by: Option<OwnedEventId>,
 	short_state_hash: Option<u64>,
 }
@@ -2301,6 +2324,101 @@ mod tests {
 		// We can't easily test mutation, but we verify the constant is
 		// included by confirming it matches the expected value.
 		assert_eq!(DATABASE_VERSION, 24);
+	}
+
+	#[test]
+	fn legacy_event_metadata_v20_bincode_round_trips() {
+		let original = EventMetadataV20 {
+			short_room_id: 7,
+			is_outlier: false,
+			origin_server_ts: 42,
+			depth: 11,
+			status: EventStatusV20::Pending,
+			redacted_by: Some(OwnedEventId::parse("$legacy:event").unwrap()),
+			short_state_hash: Some(9),
+			deprecated_local_topo_depth: 3,
+			pdu_count: Some(2),
+		};
+		let bytes = bincode::serialize(&original).unwrap();
+		let decoded: EventMetadataV20 = bincode::deserialize(&bytes).unwrap();
+		assert_eq!(decoded.redacted_by, original.redacted_by);
+		assert_eq!(decoded.short_room_id, original.short_room_id);
+		assert_eq!(decoded.pdu_count, original.pdu_count);
+	}
+
+	#[test]
+	fn legacy_event_metadata_v18_v19_decode_string_event_ids() {
+		#[derive(serde::Serialize)]
+		struct V18 {
+			short_room_id: u64,
+			is_outlier: bool,
+			origin_server_ts: u64,
+			depth: u64,
+			soft_failed: bool,
+			rejected: bool,
+			redacted_by: Option<String>,
+			short_state_hash: Option<u64>,
+		}
+		#[derive(serde::Serialize)]
+		struct V19 {
+			short_room_id: u64,
+			is_outlier: bool,
+			origin_server_ts: u64,
+			depth: u64,
+			soft_failed: bool,
+			rejected: bool,
+			redacted_by: Option<String>,
+			short_state_hash: Option<u64>,
+			deprecated_local_topo_depth: u64,
+			pdu_count: Option<u64>,
+			_soft_fail_reason: String,
+			_rejection_reason: String,
+		}
+
+		let id = Some("$legacy:event".to_owned());
+		let v18 = bincode::serialize(&V18 {
+			short_room_id: 1,
+			is_outlier: false,
+			origin_server_ts: 2,
+			depth: 3,
+			soft_failed: false,
+			rejected: false,
+			redacted_by: id.clone(),
+			short_state_hash: None,
+		})
+		.unwrap();
+		let v19 = bincode::serialize(&V19 {
+			short_room_id: 1,
+			is_outlier: false,
+			origin_server_ts: 2,
+			depth: 3,
+			soft_failed: false,
+			rejected: false,
+			redacted_by: id,
+			short_state_hash: None,
+			deprecated_local_topo_depth: 0,
+			pdu_count: None,
+			_soft_fail_reason: String::new(),
+			_rejection_reason: String::new(),
+		})
+		.unwrap();
+
+		assert_eq!(
+			bincode::deserialize::<EventMetadataV18>(&v18)
+				.unwrap()
+				.redacted_by
+				.unwrap()
+				.as_str(),
+			"$legacy:event"
+		);
+		assert_eq!(
+			bincode::deserialize::<EventMetadataV19>(&v19)
+				.unwrap()
+				.redacted_by
+				.unwrap()
+				.as_str(),
+			"$legacy:event"
+		);
 	}
 
 	fn diff(parent: Option<u64>, added: &[u64], removed: &[u64]) -> StateDiff {
@@ -2660,7 +2778,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	let mut room_stream = services.rooms.metadata.iter_ids();
 	while let Some(room_id) = room_stream.next().await {
 		match services.db["roomid_shortstatehash"]
-			.get(room_id)
+			.get(&room_id)
 			.await
 			.deserialized()
 		{
@@ -2702,7 +2820,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 				let structural_key = crate::rooms::state_hamt::room_structural_key(
 					&services.globals.server_secret,
-					room_id,
+					&room_id,
 				);
 
 				let (root_handle, root_node) =
@@ -2722,7 +2840,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 				services.db["state_hamt_root_lattices"]
 					.insert(&root_handle.structural_hash, lattice.to_bytes());
 				let data = crate::rooms::state::root_handle_to_bytes(&root_handle);
-				services.db["roomid_roothandle"].insert(room_id.as_bytes(), &data);
+				services.db["roomid_roothandle"].insert(room_id.as_str().as_bytes(), &data);
 			},
 		}
 	}
@@ -2801,7 +2919,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 	for room_id in room_ids {
 		let structural_key = crate::rooms::state_hamt::room_structural_key(
 			&services.globals.server_secret,
-			room_id,
+			&room_id,
 		);
 		let empty_lattice = rezzy::state::LtHash::default();
 		let (empty_root, empty_node) =
@@ -2817,7 +2935,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.
-		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(room_id));
+		let mut pdus = std::pin::pin!(services.rooms.timeline.all_pdus(&room_id));
 		let mut current_root = empty_root;
 		let mut event_batch = conduwuit_database::Batch::new();
 		let mut batched = 0_usize;

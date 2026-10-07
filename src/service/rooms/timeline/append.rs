@@ -11,7 +11,7 @@ use conduwuit_core::{
 	warn,
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, EventId, UserId,
 	events::{
 		GlobalAccountDataEventType, StateEventType, TimelineEventType,
@@ -29,7 +29,7 @@ use crate::appservice::NamespaceRegex;
 
 pub struct AppendPduContext<'a> {
 	pub state_lock: &'a RoomMutexGuard,
-	pub room_id: &'a ruma::RoomId,
+	pub room_id: &'a slipstream::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub advance_current_state: bool,
@@ -43,8 +43,8 @@ pub struct AppendPduContext<'a> {
 /// recomputation.
 pub(super) struct PduPushEval<'a> {
 	pub pdu: &'a PduEvent,
-	pub serialized: &'a ruma::serde::Raw<ruma::events::AnySyncTimelineEvent>,
-	pub room_id: &'a ruma::RoomId,
+	pub serialized: &'a slipstream::sswire::Raw<slipstream::events::AnySyncTimelineEvent>,
+	pub room_id: &'a slipstream::RoomId,
 	pub rules_for_user: &'a Ruleset,
 	pub power_levels: &'a RoomPowerLevelsEventContent,
 	pub soft_fail: bool,
@@ -215,12 +215,23 @@ where
 					unsigned.insert(
 						"prev_content".to_owned(),
 						CanonicalJsonValue::Object(
-							utils::to_canonical_object(prev_state.get_content_as_value())
+							utils::to_canonical_object(
+								slipstream::codec::from_str::<CanonicalJsonObject>(
+									&slipstream::codec::to_string(
+										&prev_state.get_content_as_value(),
+									),
+								)
 								.map_err(|e| {
 									err!(Database(error!(
-										"Failed to convert prev_state to canonical JSON: {e}",
+										"Failed to convert prev_state content: {e}"
 									)))
 								})?,
+							)
+							.map_err(|e| {
+								err!(Database(error!(
+									"Failed to convert prev_state to canonical JSON: {e}",
+								)))
+							})?,
 						),
 					);
 					unsigned.insert(
@@ -342,15 +353,18 @@ where
 	let receipt_content = BTreeMap::from_iter([(
 		pdu.event_id().to_owned(),
 		BTreeMap::from_iter([(
-			ruma::events::receipt::ReceiptType::ReadPrivate,
-			BTreeMap::from_iter([(pdu.sender().to_owned(), ruma::events::receipt::Receipt {
-				ts: Some(ruma::MilliSecondsSinceUnixEpoch::now()),
-				thread: ruma::events::receipt::ReceiptThread::Unthreaded,
-			})]),
+			slipstream::events::receipt::ReceiptType::ReadPrivate,
+			BTreeMap::from_iter([(
+				pdu.sender().to_owned(),
+				slipstream::events::receipt::Receipt {
+					ts: Some(slipstream::MilliSecondsSinceUnixEpoch::now().get()),
+					thread: slipstream::events::receipt::ReceiptThread::Unthreaded,
+				},
+			)]),
 		)]),
 	)]);
-	let receipt_event = ruma::events::receipt::ReceiptEvent {
-		content: ruma::events::receipt::ReceiptEventContent(receipt_content),
+	let receipt_event = slipstream::events::receipt::ReceiptEvent {
+		content: slipstream::events::receipt::ReceiptEventContent(receipt_content),
 		room_id: room_id.to_owned(),
 	};
 
@@ -387,9 +401,8 @@ where
 		.services
 		.state_cache
 		.active_local_users_in_room(room_id)
-		.map(ToOwned::to_owned)
 		// Don't notify the sender of their own events, and dont send from ignored users
-		.ready_filter(|user| *user != pdu.sender())
+		.ready_filter(|user| user != pdu.sender())
 		.filter_map(|recipient_user| async move {
 			(!self
 				.services
@@ -407,10 +420,11 @@ where
 
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key) = pdu.state_key() {
-			let target_user_id = UserId::parse(state_key)?;
+			let target_user_id = UserId::parse(state_key)
+				.map_err(|e| err!(Request(InvalidParam("Invalid state key: {e}"))))?;
 
-			if self.services.users.is_active_local(target_user_id).await {
-				push_target.insert(target_user_id.to_owned());
+			if self.services.users.is_active_local(&target_user_id).await {
+				push_target.insert(target_user_id.clone());
 			}
 		}
 	}
@@ -423,7 +437,7 @@ where
 			.get_global(user, GlobalAccountDataEventType::PushRules)
 			.await
 			.map_or_else(
-				|_| Ruleset::server_default(user),
+				|_| Ruleset::server_default(user.as_str()),
 				|ev: PushRulesEvent| ev.content.global,
 			);
 
@@ -465,7 +479,7 @@ where
 	}
 
 	self.db
-		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_deref());
+		.increment_notification_counts(room_id, notifies, highlights, thread_root.as_ref());
 
 	if *pdu.kind() == TimelineEventType::RoomTombstone {
 		if let Ok(tombstone) = pdu.get_content::<RoomTombstoneEventContent>() {
@@ -500,8 +514,8 @@ where
 		| TimelineEventType::RoomMember if !resolved_state_applied => {
 			if let Some(state_key) = pdu.state_key() {
 				// if the state_key fails
-				let target_user_id =
-					UserId::parse(state_key).expect("This state_key was previously validated");
+				let target_user_id = UserId::parse(state_key)
+					.map_err(|e| err!(Request(InvalidParam("Invalid state key: {e}"))))?;
 
 				// Capture whether the target was already joined *before* this event. A
 				// membership event whose membership stays `join` (e.g. a display name or
@@ -514,12 +528,12 @@ where
 				// join. Callers that installed such a state pass the pre-install sample; all
 				// others fall back to the cache.
 				let was_joined = match was_joined_before_state_install {
-					| Some((sampled_user_id, was_joined)) if sampled_user_id == target_user_id =>
+					| Some((sampled_user_id, was_joined)) if *sampled_user_id == target_user_id =>
 						was_joined,
 					| _ =>
 						self.services
 							.state_cache
-							.is_joined(target_user_id, room_id)
+							.is_joined(&target_user_id, room_id)
 							.await,
 				};
 
@@ -528,19 +542,20 @@ where
 				// knock event for auth
 				self.services
 					.state_cache
-					.update_membership(room_id, target_user_id, pdu, true)
+					.update_membership(room_id, &target_user_id, pdu, true)
 					.await?;
 
 				if let Ok(content) =
-					pdu.get_content::<ruma::events::room::member::RoomMemberEventContent>()
+					pdu.get_content::<slipstream::events::room::member::RoomMemberEventContent>()
 				{
-					if content.membership == ruma::events::room::member::MembershipState::Join
+					if content.membership
+						== slipstream::events::room::member::MembershipState::Join
 						&& !was_joined
-						&& self.services.globals.user_is_local(target_user_id)
+						&& self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users
-							.mark_device_key_update(target_user_id)
+							.mark_device_key_update(&target_user_id)
 							.await;
 					}
 				}
@@ -639,7 +654,7 @@ where
 				.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 			{
 				let appservice_uid = appservice.registration.sender_localpart.as_str();
-				if state_key_uid == &appservice_uid {
+				if state_key_uid == appservice_uid {
 					self.services
 						.sending
 						.send_pdu_appservice(appservice.registration.id.clone(), pdu_id)?;
@@ -717,7 +732,7 @@ pub(super) async fn evaluate_pdu_for_user(
 	// Skip push notifications for historical events (backfilled, rescued,
 	// or heavily delayed federation events) to avoid notification storms.
 	let now = utils::millis_since_unix_epoch();
-	let is_historical = now.saturating_sub(pdu.origin_server_ts().0.into()) > 10 * 60 * 1000;
+	let is_historical = now.saturating_sub(pdu.origin_server_ts().0) > 10 * 60 * 1000;
 	if is_historical {
 		trace!("Event {} is historical, skipping push notifications", pdu.event_id());
 		return (false, false);

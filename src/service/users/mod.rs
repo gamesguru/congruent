@@ -2,7 +2,7 @@ pub(super) mod dehydrated_device;
 
 #[cfg(feature = "ldap")]
 use std::collections::HashMap;
-use std::{collections::BTreeMap, mem, net::IpAddr, sync::Arc};
+use std::{collections::BTreeMap, net::IpAddr, sync::Arc};
 
 #[cfg(feature = "ldap")]
 use conduwuit::result::LogErr;
@@ -17,25 +17,27 @@ use database::{Deserialized, Ignore, Interfix, Json, Map};
 use futures::{Stream, StreamExt, TryFutureExt};
 #[cfg(feature = "ldap")]
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
-use ruma::{
+use slipstream::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OneTimeKeyAlgorithm, OneTimeKeyId, OneTimeKeyName,
-	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedUserId, RoomId, UInt, UserId,
+	OwnedDeviceId, OwnedKeyId, OwnedMxcUri, OwnedOneTimeKeyId, OwnedRoomId, OwnedUserId, RoomId,
+	UInt, UserId,
 	api::client::{device::Device, error::ErrorKind, filter::FilterDefinition},
+	codec::{Deserialize, Serialize},
 	encryption::{CrossSigningKey, DeviceKeys, OneTimeKey},
 	events::{
 		AnyToDeviceEvent, GlobalAccountDataEventType,
 		ignored_user_list::IgnoredUserListEvent,
 		invite_permission_config::{FilterLevel, InvitePermissionConfigEventContent},
 	},
-	serde::Raw,
+	json,
+	json::Value,
+	sswire::Raw,
 	uint,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::{Dep, account_data, admin, appservice, globals, rooms};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UserSuspension {
 	/// Whether the user is currently suspended
 	pub suspended: bool,
@@ -45,12 +47,79 @@ pub struct UserSuspension {
 	pub suspended_by: String,
 }
 
+impl Serialize for UserSuspension {
+	fn to_json(&self) -> Value {
+		let mut obj = json::Object::new();
+		obj.insert("suspended".into(), Value::Bool(self.suspended));
+		obj.insert("suspended_at".into(), Value::Number(json::Number::from(self.suspended_at)));
+		obj.insert("suspended_by".into(), Value::String(self.suspended_by.clone()));
+		Value::Object(obj)
+	}
+}
+
+impl Deserialize for UserSuspension {
+	fn from_json(value: &Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			suspended: obj
+				.get("suspended")
+				.and_then(Value::as_bool)
+				.unwrap_or(false),
+			suspended_at: obj.get("suspended_at").and_then(Value::as_u64).unwrap_or(0),
+			suspended_by: obj
+				.get("suspended_by")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.unwrap_or_default(),
+		})
+	}
+}
+
+/// Decode a codec-encoded JSON value stored as raw bytes.
+fn decode_json_slice<T: Deserialize>(bytes: &[u8]) -> Option<T> {
+	slipstream::codec::from_str(std::str::from_utf8(bytes).ok()?).ok()
+}
+
 /// A profile change retained for MSC4429 incremental sync.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProfileUpdate {
 	pub user_id: OwnedUserId,
 	pub field: String,
-	pub value: Option<serde_json::Value>,
+	pub value: Option<Value>,
+}
+
+impl Serialize for ProfileUpdate {
+	fn to_json(&self) -> Value {
+		let mut obj = json::Object::new();
+		obj.insert("user_id".into(), self.user_id.to_json());
+		obj.insert("field".into(), Value::String(self.field.clone()));
+		if let Some(ref v) = self.value {
+			obj.insert("value".into(), v.clone());
+		}
+		Value::Object(obj)
+	}
+}
+
+impl Deserialize for ProfileUpdate {
+	fn from_json(value: &Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			user_id: OwnedUserId::from_json(
+				obj.get("user_id")
+					.ok_or_else(|| slipstream::codec::DeError("missing user_id".into()))?,
+			)?,
+			field: obj
+				.get("field")
+				.and_then(|v| v.as_str())
+				.map(String::from)
+				.ok_or_else(|| slipstream::codec::DeError("missing field".into()))?,
+			value: obj.get("value").cloned(),
+		})
+	}
 }
 
 pub struct Service {
@@ -216,16 +285,16 @@ impl Service {
 					.get_raw(None, recipient_user, kind)
 					.await
 				{
-					if let Ok(mut json) = raw.deserialized::<serde_json::Value>() {
+					if let Ok(mut json) = raw.deserialized::<Value>() {
 						if let Some(content_val) = json.get_mut("content") {
 							// MSC4155: Will ignore null fields
 							if let Some(obj) = content_val.as_object_mut() {
 								obj.retain(|_, v| !v.is_null());
 							}
 
-							if let Ok(parsed) = serde_json::from_value::<
+							if let Ok(parsed) = slipstream::codec::from_value::<
 								InvitePermissionConfigEventContent,
-							>(content_val.clone())
+							>(content_val)
 							{
 								config_content = Some(parsed);
 								break;
@@ -314,7 +383,7 @@ impl Service {
 	pub async fn deactivate_account(&self, user_id: &UserId) -> Result<()> {
 		// Remove all associated devices
 		self.all_device_ids(user_id)
-			.for_each(|device_id| self.remove_device(user_id, device_id))
+			.for_each(|device_id| async move { self.remove_device(user_id, &device_id).await })
 			.await;
 
 		// Set the password to "" to indicate a deactivated account. Hashes will never
@@ -333,7 +402,7 @@ impl Service {
 			user_id,
 			Json(UserSuspension {
 				suspended: true,
-				suspended_at: MilliSecondsSinceUnixEpoch::now().get().into(),
+				suspended_at: MilliSecondsSinceUnixEpoch::now().get(),
 				suspended_by: suspending_user.to_string(),
 			}),
 		);
@@ -355,7 +424,7 @@ impl Service {
 			.deserialized::<UserSuspension>()
 			.unwrap_or_else(|_| UserSuspension {
 				suspended: true,
-				suspended_at: MilliSecondsSinceUnixEpoch::now().get().into(),
+				suspended_at: MilliSecondsSinceUnixEpoch::now().get(),
 				suspended_by: locking_user.to_string(),
 			});
 
@@ -454,12 +523,10 @@ impl Service {
 	/// Returns an iterator over all users on this homeserver (offered for
 	/// compatibility)
 	#[allow(clippy::iter_without_into_iter, clippy::iter_not_returning_iterator)]
-	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ {
-		self.stream().map(ToOwned::to_owned)
-	}
+	pub fn iter(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ { self.stream() }
 
 	/// Returns an iterator over all users on this homeserver.
-	pub fn stream(&self) -> impl Stream<Item = &UserId> + Send {
+	pub fn stream(&self) -> impl Stream<Item = OwnedUserId> + Send {
 		self.db.userid_password.keys().ignore_err()
 	}
 
@@ -467,12 +534,12 @@ impl Service {
 	///
 	/// A user account is considered `local` if the length of it's password is
 	/// greater then zero.
-	pub fn list_local_users(&self) -> impl Stream<Item = &UserId> + Send + '_ {
+	pub fn list_local_users(&self) -> impl Stream<Item = OwnedUserId> + Send + '_ {
 		self.db
 			.userid_password
 			.stream()
 			.ignore_err()
-			.ready_filter_map(|(u, p): (&UserId, &[u8])| (!p.is_empty()).then_some(u))
+			.ready_filter_map(|(u, p): (OwnedUserId, &[u8])| (!p.is_empty()).then_some(u))
 	}
 
 	/// Returns the origin of the user (password/LDAP/...).
@@ -533,11 +600,7 @@ impl Service {
 			self.db
 				.userid_displayname
 				.insert(user_id, displayname.clone());
-			self.record_profile_update(
-				user_id,
-				"displayname",
-				Some(serde_json::Value::String(displayname)),
-			);
+			self.record_profile_update(user_id, "displayname", Some(Value::String(displayname)));
 		} else {
 			self.db.userid_displayname.remove(user_id);
 			self.record_profile_update(user_id, "displayname", None);
@@ -653,25 +716,25 @@ impl Service {
 	pub fn all_device_ids<'a>(
 		&'a self,
 		user_id: &'a UserId,
-	) -> impl Stream<Item = &'a DeviceId> + Send + 'a {
+	) -> impl Stream<Item = OwnedDeviceId> + Send + 'a {
 		let prefix = (user_id, Interfix);
 		self.db
 			.userdeviceid_metadata
 			.keys_prefix(&prefix)
 			.ignore_err()
-			.map(|(_, device_id): (Ignore, &DeviceId)| device_id)
+			.map(|(_, device_id): (Ignore, OwnedDeviceId)| device_id)
 	}
 
 	/// Load the set of access tokens currently active for a device. The value
 	/// is stored as a JSON array of token strings (`Json(&tokens)` in
-	/// `set_token`), so it is read back through `serde_json::Value` rather than
+	/// `set_token`), so it is read back through `Value` rather than
 	/// the native binary format, which cannot represent a variable-length
 	/// sequence of strings.
 	async fn active_tokens(&self, user_id: &UserId, device_id: &DeviceId) -> Vec<String> {
 		let key = (user_id, device_id);
 		match self.db.userdeviceid_token.qry(&key).await {
-			| Ok(handle) => match handle.deserialized::<serde_json::Value>() {
-				| Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+			| Ok(handle) => match handle.deserialized::<Json<Vec<String>>>() {
+				| Ok(Json(tokens)) => tokens,
 				| Err(_) => Vec::new(),
 			},
 			| Err(_) => Vec::new(),
@@ -774,8 +837,7 @@ impl Service {
 		// TestUploadKeyIdempotency / TestUploadKeyIdempotencyOverlap). Keys are
 		// stored as `<user>\xFF<device>\xFF<upload_count>\xFF<key_id_json>`, so we
 		// stream the user+device scope and compare the trailing key-id segment.
-		let expected_key_id =
-			serde_json::to_string(one_time_key_key).expect("DeviceKeyId always serializes");
+		let expected_key_id = slipstream::codec::to_string(one_time_key_key);
 		let mut key_prefix = user_id.as_bytes().to_vec();
 		key_prefix.push(0xFF);
 		key_prefix.extend_from_slice(device_id.as_bytes());
@@ -813,11 +875,7 @@ impl Service {
 		key.push(0xFF);
 		// TODO: Use DeviceKeyId::to_string when it's available (and update everything,
 		// because there are no wrapping quotation marks anymore)
-		key.extend_from_slice(
-			serde_json::to_string(one_time_key_key)
-				.expect("DeviceKeyId::to_string always works")
-				.as_bytes(),
-		);
+		key.extend_from_slice(slipstream::codec::to_string(one_time_key_key).as_bytes());
 
 		self.db
 			.onetimekeyid_onetimekeys
@@ -914,12 +972,12 @@ impl Service {
 				let parsed_key: Option<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>> = key
 					.rsplit(|&b| b == 0xFF)
 					.next()
-					.and_then(|key_json| serde_json::from_slice(key_json).ok());
+					.and_then(decode_json_slice);
 				let starts = parsed_key
 					.as_ref()
 					.is_some_and(|pk| pk.to_string().starts_with(&expected_algo_prefix));
 				std::future::ready(if let (Some(parsed_key), true) = (parsed_key, starts) {
-					let val = serde_json::from_slice(val).ok();
+					let val = decode_json_slice(val);
 					val.map(|val| (key.to_vec(), parsed_key, val))
 				} else {
 					None
@@ -966,11 +1024,10 @@ impl Service {
 			// in the `/keys/claim` response so clients can tell it apart from a
 			// freshly-expiring one-time key. Clients do upload the flag, but we
 			// set it explicitly here to be robust (some SDKs omit it on upload).
-			let mut claim_key = fallback_key_value
-				.deserialize_as::<serde_json::Value>()
-				.unwrap_or_else(|_| serde_json::json!({}));
-			claim_key["fallback"] = serde_json::Value::Bool(true);
-			let claim_key = Raw::from_json(serde_json::value::to_raw_value(&claim_key)?);
+			let mut claim_key = slipstream::codec::from_str::<Value>(fallback_key_value.get())
+				.unwrap_or_else(|_| Value::Object(json::Object::new()));
+			claim_key.insert("fallback".into(), Value::Bool(true));
+			let claim_key = Raw::from_value(&claim_key);
 
 			return Ok((fallback_key_id, claim_key));
 		}
@@ -1001,14 +1058,9 @@ impl Service {
 			.raw_stream_prefix(&prefix)
 			.ignore_err()
 			.ready_for_each(|(key, _): (&[u8], &[u8])| {
-				let Some(one_time_key_id) =
-					key.rsplit(|&b| b == 0xFF).next().and_then(|key_json| {
-						serde_json::from_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>(
-							key_json,
-						)
-						.ok()
-					})
-				else {
+				let Some(one_time_key_id) = key.rsplit(|&b| b == 0xFF).next().and_then(
+					decode_json_slice::<OwnedKeyId<OneTimeKeyAlgorithm, OneTimeKeyName>>,
+				) else {
 					tracing::warn!(
 						"count_one_time_keys: skipping unparsable key id for \
 						 {user_id}|{device_id}"
@@ -1113,9 +1165,8 @@ impl Service {
 
 		if let Some(master_key) = master_key {
 			let (master_key_key, _) = parse_master_key(user_id, master_key)?;
-			let mut master_key_val: serde_json::Value =
-				serde_json::from_str(master_key.json().get())
-					.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
+			let mut master_key_val: Value = slipstream::codec::from_str(master_key.get())
+				.map_err(|e| err!(Database(debug_error!("Invalid master key JSON: {e}"))))?;
 
 			info!(
 				target: "cross_signing",
@@ -1129,15 +1180,13 @@ impl Service {
 				.get(&master_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut master_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&master_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize master key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&master_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&master_key_val);
 
@@ -1159,8 +1208,8 @@ impl Service {
 
 		// Self-signing key
 		if let Some(self_signing_key) = self_signing_key {
-			let mut self_signing_key_val: serde_json::Value =
-				serde_json::from_str(self_signing_key.json().get()).map_err(|e| {
+			let mut self_signing_key_val: Value =
+				slipstream::codec::from_str(self_signing_key.get()).map_err(|e| {
 					err!(Database(debug_error!("Invalid self-signing key JSON: {e}")))
 				})?;
 
@@ -1196,15 +1245,13 @@ impl Service {
 				.get(&self_signing_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut self_signing_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&self_signing_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize self-signing key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&self_signing_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&self_signing_key_val);
 
@@ -1225,8 +1272,8 @@ impl Service {
 		}
 
 		if let Some(user_signing_key) = user_signing_key {
-			let mut user_signing_key_val: serde_json::Value =
-				serde_json::from_str(user_signing_key.json().get()).map_err(|e| {
+			let mut user_signing_key_val: Value =
+				slipstream::codec::from_str(user_signing_key.get()).map_err(|e| {
 					err!(Database(debug_error!("Invalid user-signing key JSON: {e}")))
 				})?;
 
@@ -1245,15 +1292,13 @@ impl Service {
 				.qry(&user_signing_key_key)
 				.await
 				.ok()
-				.and_then(|old| serde_json::from_slice::<serde_json::Value>(&old).ok());
+				.and_then(|old| decode_json_slice::<Value>(&old));
 
 			if let Some(ref old_key) = old_key {
 				merge_signatures(&mut user_signing_key_val, old_key);
 			}
 
-			let new_key_vec = serde_json::to_vec(&user_signing_key_val).map_err(|e| {
-				err!(Database(debug_error!("Failed to serialize user-signing key: {e}")))
-			})?;
+			let new_key_vec = slipstream::codec::to_string(&user_signing_key_val).into_bytes();
 
 			let is_changed = old_key.as_ref() != Some(&user_signing_key_val);
 
@@ -1289,7 +1334,7 @@ impl Service {
 	) -> Result {
 		let key = (target_id, key_id);
 
-		let mut cross_signing_key: serde_json::Value = self
+		let mut cross_signing_key: Value = self
 			.db
 			.keyid_key
 			.qry(&key)
@@ -1301,20 +1346,20 @@ impl Service {
 		let signatures = cross_signing_key
 			.as_object_mut()
 			.ok_or_else(|| err!(Database(info!("key in keyid_key is not an object"))))?
-			.entry("signatures")
+			.entry("signatures".to_owned())
 			.or_insert_with(|| {
 				info!(
 					target: "cross_signing",
 					"Key {key_id} of {target_id} has no signatures field, initializing empty"
 				);
-				serde_json::json!({})
+				Value::Object(json::Object::new())
 			})
 			.as_object_mut()
 			.ok_or_else(|| {
 				err!(Database(info!("key in keyid_key has invalid signatures field.")))
 			})?
 			.entry(sender_id.to_string())
-			.or_insert_with(|| serde_json::Map::new().into());
+			.or_insert_with(|| Value::Object(json::Object::new()));
 
 		let sig_map = signatures.as_object_mut().ok_or_else(|| {
 			err!(Database(info!("signatures in keyid_key for a user is invalid.")))
@@ -1346,8 +1391,8 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a UserId, u64, &'a UserId), Ignore);
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
+		type KeyVal<'a> = ((OwnedUserId, u64, OwnedUserId), Ignore);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1359,7 +1404,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, count, _), _): &KeyVal<'_>| {
-				user_id == *user_id_ && *count <= to
+				user_id == user_id_ && *count <= to
 			})
 			.map(move |((_, count, left_user), _): KeyVal<'_>| (left_user, count))
 	}
@@ -1370,7 +1415,7 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = &'a UserId> + Send + 'a {
+	) -> impl Stream<Item = OwnedUserId> + Send + 'a {
 		self.user_keys_changed(user_id, from, to)
 			.map(|(user_id, ..)| user_id)
 	}
@@ -1381,8 +1426,8 @@ impl Service {
 		user_id: &'a UserId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a UserId, u64), &'a UserId);
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
+		type KeyVal<'a> = ((OwnedUserId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1394,7 +1439,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, count), _): &KeyVal<'_>| {
-				user_id == *user_id_ && *count <= to
+				user_id == user_id_ && *count <= to
 			})
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
@@ -1405,8 +1450,8 @@ impl Service {
 		room_id: &'a RoomId,
 		from: Option<u64>,
 		to: Option<u64>,
-	) -> impl Stream<Item = (&'a UserId, u64)> + Send + 'a {
-		type KeyVal<'a> = ((&'a RoomId, u64), &'a UserId);
+	) -> impl Stream<Item = (OwnedUserId, u64)> + Send + 'a {
+		type KeyVal<'a> = ((OwnedRoomId, u64), OwnedUserId);
 
 		let from = from.map_or(0, |from| from.saturating_add(1));
 		let to = to.unwrap_or(u64::MAX);
@@ -1418,7 +1463,7 @@ impl Service {
 			.ready_take_while(Result::is_ok)
 			.ignore_err()
 			.ready_take_while(move |((room_id_, count), _): &KeyVal<'_>| {
-				room_id == *room_id_ && *count <= to
+				room_id == room_id_ && *count <= to
 			})
 			.map(move |((_, count), changed_user): KeyVal<'_>| (changed_user, count))
 	}
@@ -1432,7 +1477,6 @@ impl Service {
 			.services
 			.state_cache
 			.rooms_joined(user_id)
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await;
 
@@ -1440,8 +1484,7 @@ impl Service {
 			let mut server_rooms = self
 				.services
 				.state_cache
-				.server_rooms(user_id.server_name())
-				.map(ToOwned::to_owned)
+				.server_rooms(&user_id.server_name())
 				.collect::<Vec<_>>()
 				.await;
 
@@ -1523,11 +1566,10 @@ impl Service {
 	where
 		F: Fn(&UserId) -> bool + Send + Sync,
 	{
-		let key: serde_json::Value = self.db.keyid_key.get(key_id).await.deserialized()?;
+		let key: Value = self.db.keyid_key.get(key_id).await.deserialized()?;
 
 		let cleaned = clean_signatures(key, sender_user, user_id, allowed_signatures)?;
-		let raw_value = serde_json::value::to_raw_value(&cleaned)?;
-		Ok(Raw::from_json(raw_value))
+		Ok(Raw::from_value(&cleaned))
 	}
 
 	pub async fn get_master_key<F>(
@@ -1575,7 +1617,7 @@ impl Service {
 		target_user_id: &UserId,
 		target_device_id: &DeviceId,
 		event_type: &str,
-		content: serde_json::Value,
+		content: Value,
 	) {
 		if event_type.starts_with("m.key.verification.") {
 			let tx_id = content
@@ -1598,14 +1640,11 @@ impl Service {
 		);
 
 		let key = (target_user_id, target_device_id, count);
-		self.db.todeviceid_events.put(
-			key,
-			Json(json!({
-				"type": event_type,
-				"sender": sender,
-				"content": content,
-			})),
-		);
+		let mut event = slipstream::ObjectBuilder::new();
+		event.field("type", &event_type);
+		event.field("sender", &sender);
+		event.field("content", &content);
+		self.db.todeviceid_events.put(key, Json(event.finish()));
 	}
 
 	pub fn get_to_device_events<'a>(
@@ -1615,7 +1654,7 @@ impl Service {
 		since: Option<u64>,
 		to: Option<u64>,
 	) -> impl Stream<Item = (u64, Raw<AnyToDeviceEvent>)> + Send + 'a {
-		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
+		type Key<'a> = (OwnedUserId, OwnedDeviceId, u64);
 
 		let from = (user_id, device_id, since.map_or(0, |since| since.saturating_add(1)));
 
@@ -1624,9 +1663,7 @@ impl Service {
 			.stream_from(&from)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
-				user_id == *user_id_
-					&& device_id == *device_id_
-					&& to.is_none_or(|to| *count <= to)
+				user_id == user_id_ && device_id == device_id_ && to.is_none_or(|to| *count <= to)
 			})
 			.map(|((_, _, count), event)| (count, event))
 	}
@@ -1639,7 +1676,7 @@ impl Service {
 	) where
 		Until: Into<Option<u64>> + Send,
 	{
-		type Key<'a> = (&'a UserId, &'a DeviceId, u64);
+		type Key<'a> = (OwnedUserId, OwnedDeviceId, u64);
 
 		// `until: None` means the caller has no acknowledged position for this device
 		// (e.g. an initial /sync with no `since`) - nothing has been consumed yet, so
@@ -1657,9 +1694,9 @@ impl Service {
 			.stream_from(&from)
 			.ignore_err()
 			.ready_take_while(move |((user_id_, device_id_, count), _): &(Key<'_>, _)| {
-				user_id == *user_id_ && device_id == *device_id_ && *count <= until
+				user_id == user_id_ && device_id == device_id_ && *count <= until
 			})
-			.ready_for_each(|(key, _): (Key<'_>, serde_json::Value)| {
+			.ready_for_each(|(key, _): (Key<'_>, Value)| {
 				self.db.todeviceid_events.del(key);
 			})
 			.await;
@@ -1756,7 +1793,9 @@ impl Service {
 		let filter_id = utils::random_string(4);
 
 		let key = (user_id, &filter_id);
-		self.db.userfilterid_filter.put(key, Json(filter));
+		self.db
+			.userfilterid_filter
+			.put(key, Json(conduwuit_database::dbkey::compact_filter(filter)));
 
 		filter_id
 	}
@@ -1810,7 +1849,7 @@ impl Service {
 		let user_string = utils::string_from_bytes(user_bytes)
 			.map_err(|e| err!(Database("User ID in openid_userid is invalid unicode. {e}")))?;
 
-		OwnedUserId::try_from(user_string)
+		OwnedUserId::parse(user_string)
 			.map_err(|e| err!(Database("User ID in openid_userid is invalid. {e}")))
 	}
 
@@ -1850,24 +1889,23 @@ impl Service {
 	}
 
 	/// Gets a specific user profile key
-	pub async fn profile_key(
-		&self,
-		user_id: &UserId,
-		profile_key: &str,
-	) -> Result<serde_json::Value> {
+	pub async fn profile_key(&self, user_id: &UserId, profile_key: &str) -> Result<Value> {
 		let key = (user_id, profile_key);
 		self.db
 			.useridprofilekey_value
 			.qry(&key)
 			.await
-			.and_then(|handle| serde_json::from_slice(&handle).map_err(Into::into))
+			.and_then(|handle| {
+				Value::parse(utils::string::str_from_bytes(handle.as_ref())?)
+					.map_err(|e| err!(Database("Invalid profile key in database: {e}")))
+			})
 	}
 
 	/// Gets all the user's profile keys and values in an iterator
 	pub fn all_profile_keys<'a>(
 		&'a self,
 		user_id: &'a UserId,
-	) -> impl Stream<Item = (String, serde_json::Value)> + 'a + Send {
+	) -> impl Stream<Item = (String, Value)> + 'a + Send {
 		type KeyVal<'a> = ((Ignore, String), &'a [u8]);
 
 		let prefix = (user_id, Interfix);
@@ -1875,8 +1913,10 @@ impl Service {
 			.useridprofilekey_value
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.map(|((_, key), value): KeyVal<'_>| Ok((key, serde_json::from_slice(value)?)))
-			.ignore_err()
+			.ready_filter_map(|((_, key), value): KeyVal<'_>| {
+				let value = Value::parse(utils::string::str_from_bytes(value).ok()?).ok()?;
+				Some((key, value))
+			})
 	}
 
 	/// Sets a new profile key value, removes the key if value is None
@@ -1884,7 +1924,7 @@ impl Service {
 		&self,
 		user_id: &UserId,
 		profile_key: &str,
-		profile_key_value: Option<serde_json::Value>,
+		profile_key_value: Option<Value>,
 	) {
 		// Skip no-op writes so unchanged values don't append update records or
 		// advance the global count.
@@ -1905,12 +1945,7 @@ impl Service {
 		self.record_profile_update(user_id, profile_key, update_value);
 	}
 
-	fn record_profile_update(
-		&self,
-		user_id: &UserId,
-		profile_key: &str,
-		value: Option<serde_json::Value>,
-	) {
+	fn record_profile_update(&self, user_id: &UserId, profile_key: &str, value: Option<Value>) {
 		if let Ok(stream_id) = self.services.globals.next_count() {
 			self.db.userprofileupdate_value.put(
 				(stream_id, user_id.to_owned(), profile_key.to_owned()),
@@ -1937,10 +1972,8 @@ impl Service {
 			.stream_from(&first)
 			.ignore_err()
 			.ready_take_while(move |((stream_id, ..), _): &(Key, _)| *stream_id <= to)
-			.filter_map(|((stream_id, ..), value): (Key, serde_json::Value)| async move {
-				serde_json::from_value(value)
-					.ok()
-					.map(|update| (stream_id, update))
+			.filter_map(|((stream_id, ..), update): (Key, Json<ProfileUpdate>)| async move {
+				Some((stream_id, update.0))
 			})
 	}
 
@@ -2165,7 +2198,7 @@ pub fn parse_user_signing_key(user_signing_key: &Raw<CrossSigningKey>) -> Result
 	Ok(user_signing_key_id)
 }
 
-pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
+pub fn merge_signatures(new: &mut Value, old: &Value) {
 	// Normalize null/missing signatures in the new key to an empty object
 	// so old signatures can be merged in. Some servers (e.g. matrix.org)
 	// send signatures: `null` rather than `{}` which would cause
@@ -2173,10 +2206,10 @@ pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
 	if let Some(obj) = new.as_object_mut() {
 		match obj.get("signatures") {
 			| Some(v) if !v.is_object() => {
-				obj.insert("signatures".to_owned(), json!({}));
+				obj.insert("signatures".to_owned(), Value::Object(BTreeMap::new()));
 			},
 			| None => {
-				obj.insert("signatures".to_owned(), json!({}));
+				obj.insert("signatures".to_owned(), Value::Object(BTreeMap::new()));
 			},
 			| _ => {},
 		}
@@ -2190,7 +2223,7 @@ pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
 			if let Some(sigs) = sigs.as_object() {
 				let Some(new_user_sigs) = new_sigs
 					.entry(user.clone())
-					.or_insert_with(|| json!({}))
+					.or_insert_with(|| Value::Object(BTreeMap::new()))
 					.as_object_mut()
 				else {
 					warn!(
@@ -2218,11 +2251,11 @@ pub fn merge_signatures(new: &mut serde_json::Value, old: &serde_json::Value) {
 
 /// Ensure that a user only sees signatures from themselves and the target user
 fn clean_signatures<F>(
-	mut cross_signing_key: serde_json::Value,
+	mut cross_signing_key: Value,
 	sender_user: Option<&UserId>,
 	user_id: &UserId,
 	allowed_signatures: &F,
-) -> Result<serde_json::Value>
+) -> Result<Value>
 where
 	F: Fn(&UserId) -> bool + Send + Sync,
 {
@@ -2230,15 +2263,10 @@ where
 		.get_mut("signatures")
 		.and_then(|v| v.as_object_mut())
 	{
-		// Don't allocate for the full size of the current signatures, but require
-		// at most one resize if nothing is dropped
-		let new_capacity = signatures.len() / 2;
-		for (user, signature) in
-			mem::replace(signatures, serde_json::Map::with_capacity(new_capacity))
-		{
-			let sid = <&UserId>::try_from(user.as_str())
+		for (user, signature) in std::mem::take(signatures) {
+			let sid = <UserId>::parse(user.as_str())
 				.map_err(|_| Error::bad_database("Invalid user ID in database."))?;
-			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(sid) {
+			if sender_user == Some(user_id) || sid == user_id || allowed_signatures(&sid) {
 				signatures.insert(user, signature);
 			} else {
 				info!(
@@ -2262,7 +2290,7 @@ fn increment(db: &Arc<Map>, key: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-	use serde_json::json;
+	use slipstream::json;
 
 	use super::merge_signatures;
 
@@ -2284,9 +2312,9 @@ mod tests {
 			}
 		});
 
-		let before = serde_json::to_vec(&new).unwrap();
+		let before = slipstream::codec::to_string(&new).into_bytes();
 		merge_signatures(&mut new, &old);
-		let after = serde_json::to_vec(&new).unwrap();
+		let after = slipstream::codec::to_string(&new).into_bytes();
 
 		assert_eq!(before, after, "Merging identical signatures must be a no-op");
 	}
@@ -2316,8 +2344,8 @@ mod tests {
 		});
 
 		merge_signatures(&mut new, &old);
-		let serialized_old = serde_json::to_vec(&old).unwrap();
-		let serialized_new = serde_json::to_vec(&new).unwrap();
+		let serialized_old = slipstream::codec::to_string(&old).into_bytes();
+		let serialized_new = slipstream::codec::to_string(&new).into_bytes();
 
 		assert_eq!(
 			serialized_old, serialized_new,
@@ -2326,3 +2354,5 @@ mod tests {
 		);
 	}
 }
+
+database::codec_value_impls!(UserSuspension);

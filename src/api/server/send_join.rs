@@ -10,12 +10,12 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{
+use slipstream::{
 	CanonicalJsonValue, EventId, OwnedEventId, RoomId, ServerName, UserId,
 	api::federation::membership::create_join_event,
 	events::room::{join_rules::JoinRule, member::MembershipState},
+	sswire::Raw,
 };
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
 use crate::Ruma;
 
@@ -25,7 +25,7 @@ async fn create_join_event(
 	services: &Services,
 	origin: &ServerName,
 	room_id: &RoomId,
-	pdu: &RawJsonValue,
+	pdu: &Raw<slipstream::json::Value>,
 	omit_members: bool,
 ) -> Result<create_join_event::v2::RoomState> {
 	let (event_id, mut value, content, room_version_id, _sender, state_key) =
@@ -60,7 +60,7 @@ async fn create_join_event(
 		.await;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {
-		use ruma::RoomVersionId::*;
+		use slipstream::RoomVersionId::*;
 
 		if matches!(room_version_id, V1 | V2 | V3 | V4 | V5 | V6 | V7) {
 			return Err!(Request(InvalidParam(
@@ -154,12 +154,12 @@ async fn create_join_event(
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,
-				&ruma::events::StateEventType::RoomName,
+				&slipstream::events::StateEventType::RoomName,
 			),
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,
-				&ruma::events::StateEventType::RoomCanonicalAlias,
+				&slipstream::events::StateEventType::RoomCanonicalAlias,
 			),
 		);
 		if has_name || has_canonical_alias {
@@ -232,7 +232,7 @@ async fn create_join_event(
 			let retained_state_id_set = &retained_state_id_set;
 			async move {
 				match event_id {
-					| Ok(event_id) if retained_state_id_set.contains(&*event_id) => None,
+					| Ok(event_id) if retained_state_id_set.contains(&event_id) => None,
 					| other => Some(other),
 				}
 			}
@@ -269,7 +269,7 @@ async fn create_join_event(
 	Ok(create_join_event::v2::RoomState {
 		auth_chain,
 		state,
-		event: to_raw_value(&CanonicalJsonValue::Object(value)).ok(),
+		event: Some(Raw::from_value(&CanonicalJsonValue::Object(value))),
 		members_omitted: omit_members,
 		servers_in_room,
 	})
@@ -314,6 +314,7 @@ pub(crate) async fn create_join_event_v1_route(
 		.boxed()
 		.await?;
 	let transformed = create_join_event::v1::RoomState {
+		origin: services.globals.server_name().to_string(),
 		auth_chain: room_state.auth_chain,
 		state: room_state.state,
 		event: room_state.event,

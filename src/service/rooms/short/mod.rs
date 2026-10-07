@@ -16,8 +16,9 @@ use futures::{
 	Stream, StreamExt,
 	stream::{self},
 };
-use ruma::{EventId, OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
-use serde::Deserialize;
+use slipstream::{
+	EventId, OwnedEventId, RoomId, RoomVersionId, codec::Deserialize, events::StateEventType,
+};
 
 use crate::{Dep, globals};
 
@@ -112,7 +113,7 @@ impl crate::Service for Service {
 		}))
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
 
 #[implement(Service)]
@@ -404,27 +405,28 @@ pub async fn get_shortstatekey(
 #[implement(Service)]
 pub async fn get_eventid_from_short<Id>(&self, shorteventid: ShortEventId) -> Result<Id>
 where
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned,
+	Id: Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	const BUFSIZE: usize = size_of::<ShortEventId>();
 
 	if let Some(cached) = self.shorteventid_eventid_cache.get(&shorteventid) {
-		let s = serde_json::to_vec(&cached)
-			.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))?;
-		return serde_json::from_slice::<Id>(&s)
+		let s = slipstream::codec::to_string(&cached);
+		return slipstream::codec::from_str::<Id>(&s)
 			.map_err(|e| err!(Database("Failed to deserialize EventId from cache: {e:?}")));
 	}
 
-	let res: Id = self
+	let handle = self
 		.db
 		.shorteventid_eventid
 		.aqry::<BUFSIZE, _>(&shorteventid)
-		.await
-		.deserialized()
-		.map_err(|e| {
-			err!(Database("Failed to find EventId from short {shorteventid:?}: {e:?}"))
-		})?;
+		.await?;
+	let bytes = handle.as_ref();
+	let event_id_str = utils::string::str_from_bytes(bytes)?;
+	let value = slipstream::json::Value::String(event_id_str.to_owned());
+	let res = Id::from_json(&value).map_err(|e| {
+		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
+	})?;
 
 	let owned = res.to_owned();
 	let event_id: &EventId = owned.borrow();
@@ -443,7 +445,7 @@ pub fn multi_get_eventid_from_short<'a, Id, S>(
 ) -> impl Stream<Item = Result<Id>> + Send + 'a
 where
 	S: Stream<Item = ShortEventId> + Send + 'a,
-	Id: for<'de> Deserialize<'de> + Sized + ToOwned + Send + 'a,
+	Id: Deserialize + Sized + ToOwned + Send + 'a,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	shorteventid
@@ -455,13 +457,11 @@ where
 
 			for (i, key) in chunk.iter().copied().enumerate() {
 				if let Some(cached) = self.shorteventid_eventid_cache.get(&key) {
-					let res = serde_json::to_vec(&cached)
-						.map_err(|e| err!(Database("Failed to serialize cached EventId: {e:?}")))
-						.and_then(|s| {
-							serde_json::from_slice::<Id>(&s).map_err(|e| {
+					let res =
+						slipstream::codec::from_str::<Id>(&slipstream::codec::to_string(&cached))
+							.map_err(|e| {
 								err!(Database("Failed to deserialize EventId from cache: {e:?}"))
-							})
-						});
+							});
 					results.push(Some(res));
 				} else {
 					results.push(None);
@@ -477,7 +477,16 @@ where
 					.await;
 
 				for ((&miss_key, res), idx) in misses.iter().zip(db_results).zip(miss_indices) {
-					let val: Result<Id> = res.deserialized();
+					let val: Result<Id> = res.and_then(|handle| {
+						let text = utils::string::str_from_bytes(handle.as_ref())?;
+						Id::from_json(&slipstream::json::Value::String(text.to_owned())).map_err(
+							|e| {
+								err!(Database(
+									"Failed to parse EventId from short {miss_key:?}: {e:?}"
+								))
+							},
+						)
+					});
 
 					if let Ok(ref val) = val {
 						let owned = val.to_owned();
@@ -670,7 +679,7 @@ mod tests {
 	use database::Database;
 	use figment::providers::Format;
 	use futures::stream::{self, StreamExt};
-	use ruma::{OwnedEventId, event_id, events::StateEventType};
+	use slipstream::{OwnedEventId, event_id, events::StateEventType};
 
 	use super::*;
 	use crate::Service as _;
@@ -746,10 +755,10 @@ mod tests {
 		// Initial lookup should result in cache miss and query DB (or allocate new
 		// since not in DB) Since it doesn't exist in DB, get_shorteventid returns
 		// Err, but get_or_create resolves/creates it
-		let short_id1 = service.get_or_create_shorteventid(event_id).await;
+		let short_id1 = service.get_or_create_shorteventid(&event_id).await;
 
 		// Cache should now contain the mappings
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), Some(short_id1));
 		assert_eq!(service.shorteventid_eventid_cache.get(&short_id1), Some(event_id.to_owned()));
 
 		// Clear cache and retrieve via get_shorteventid to verify DB storage
@@ -757,17 +766,17 @@ mod tests {
 		service.shorteventid_eventid_cache.invalidate_all();
 		service.eventid_shorteventid_cache.run_pending_tasks();
 		service.shorteventid_eventid_cache.run_pending_tasks();
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), None);
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), None);
 
-		let short_id2 = service.get_shorteventid(event_id).await.unwrap();
+		let short_id2 = service.get_shorteventid(&event_id).await.unwrap();
 		assert_eq!(short_id1, short_id2);
 
 		// Cache should be repopulated after DB hit
-		assert_eq!(service.eventid_shorteventid_cache.get(&event_id.to_owned()), Some(short_id1));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), Some(short_id1));
 
 		// Test retrieve event_id from short_id
 		let retrieved: OwnedEventId = service.get_eventid_from_short(short_id1).await.unwrap();
-		assert_eq!(retrieved, event_id.to_owned());
+		assert_eq!(retrieved, event_id);
 	}
 
 	#[tokio::test]
@@ -826,7 +835,7 @@ mod tests {
 		let event2 = event_id!("$event2:test.conduwuit.local");
 
 		// Multi create/get
-		let stream = service.multi_get_or_create_shorteventid(vec![event1, event2].into_iter());
+		let stream = service.multi_get_or_create_shorteventid(vec![&event1, &event2].into_iter());
 		let mut stream = std::pin::pin!(stream);
 		let short1 = stream.next().await.unwrap();
 		let short2 = stream.next().await.unwrap();

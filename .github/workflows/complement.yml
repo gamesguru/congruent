@@ -71,7 +71,7 @@ jobs:
           submodules: false
 
       - name: Init required submodules
-        run: git submodule update --init complement-src ruwuma ruma-upstream
+        run: git submodule update --init complement-src
 
       - name: Fetch tags and origin/main for comparison
         run: git fetch --tags --force && git fetch origin HEAD && git log -1 --format="%an (%ad) %H" -- tests/complement/results.jsonl

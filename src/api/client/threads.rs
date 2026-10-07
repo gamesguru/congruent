@@ -1,11 +1,10 @@
 use axum::{
-	Json,
 	body::{Body, to_bytes},
 	extract::{Path, State},
-	response::{IntoResponse, Response},
+	response::Response,
 };
 use conduwuit::{
-	Err, Result, at, debug_warn,
+	Err, Result, at, debug_warn, err,
 	matrix::{
 		Event,
 		pdu::{PduCount, PduEvent},
@@ -13,19 +12,31 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use http::StatusCode;
-use ruma::{
+use slipstream::{
 	OwnedEventId, OwnedRoomId,
-	api::{IncomingRequest, client::threads::get_threads},
+	api::client::threads::get_threads,
+	codec::{DeError, Deserialize as CodecDeserialize},
+	endpoint::{EndpointRequest, body_field},
+	json::Value,
 	uint,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
 
-use crate::{Ruma, router::authenticate_user};
+use crate::{
+	Ruma,
+	json_util::{json_response, single_field},
+	router::authenticate_user,
+};
 
-#[derive(Deserialize)]
 struct ThreadSubscriptionBody {
 	automatic: Option<OwnedEventId>,
+}
+
+impl CodecDeserialize for ThreadSubscriptionBody {
+	fn from_json(value: &Value) -> Result<Self, DeError> {
+		Ok(Self {
+			automatic: body_field(Some(value), "automatic")?,
+		})
+	}
 }
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/threads`
@@ -36,7 +47,7 @@ pub(crate) async fn get_threads_route(
 	// Use limit or else 10, with maximum 100
 	let limit = body
 		.limit
-		.unwrap_or_else(|| uint!(10))
+		.unwrap_or(uint!(10))
 		.try_into()
 		.unwrap_or(10)
 		.min(100);
@@ -94,9 +105,13 @@ pub(crate) async fn get_threads_route(
 
 pub(crate) async fn put_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let (parts, body) = request.into_parts();
 	let body = to_bytes(body, services.server.config.max_request_size)
 		.await
@@ -104,8 +119,10 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 	let request = hyper::Request::from_parts(parts, Body::empty());
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
-	let body = serde_json::from_slice::<ThreadSubscriptionBody>(&body)
-		.unwrap_or(ThreadSubscriptionBody { automatic: None });
+	let body = slipstream::codec::from_str::<ThreadSubscriptionBody>(
+		std::str::from_utf8(&body).unwrap_or_default(),
+	)
+	.unwrap_or(ThreadSubscriptionBody { automatic: None });
 
 	if !services
 		.rooms
@@ -164,14 +181,18 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 		.put_subscription(&sender_user, &room_id, &thread_id, automatic)
 		.await?;
 
-	Ok(Json(json!({})).into_response())
+	Ok(json_response(Value::Object(slipstream::json::Object::new())))
 }
 
 pub(crate) async fn get_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
 
@@ -194,14 +215,18 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 		return Err!(Request(NotFound("Thread subscription not found.")));
 	};
 
-	Ok(Json(json!({ "automatic": subscription.automatic })).into_response())
+	Ok(json_response(single_field("automatic", &subscription.automatic)))
 }
 
 pub(crate) async fn delete_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
-	Path((room_id, thread_id)): Path<(OwnedRoomId, OwnedEventId)>,
+	Path((room_id, thread_id)): Path<(String, String)>,
 	request: hyper::Request<Body>,
 ) -> Result<Response> {
+	let room_id = OwnedRoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+	let thread_id = OwnedEventId::parse(thread_id)
+		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let sender_user =
 		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
 
@@ -219,20 +244,18 @@ pub(crate) async fn delete_thread_subscription_msc4306_route(
 		.threads
 		.delete_subscription(&sender_user, &room_id, &thread_id)?;
 
-	Ok(Json(json!({})).into_response())
+	Ok(json_response(Value::Object(slipstream::json::Object::new())))
 }
 
 fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
-	(
-		status,
-		Json(Value::Object(
-			[
-				("errcode".to_owned(), Value::String(errcode.to_owned())),
-				("error".to_owned(), Value::String(error.to_owned())),
-			]
-			.into_iter()
-			.collect(),
-		)),
-	)
-		.into_response()
+	let mut response = json_response(Value::Object(
+		[
+			("errcode".to_owned(), Value::String(errcode.to_owned())),
+			("error".to_owned(), Value::String(error.to_owned())),
+		]
+		.into_iter()
+		.collect(),
+	));
+	*response.status_mut() = status;
+	response
 }

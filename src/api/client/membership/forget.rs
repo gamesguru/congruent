@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Result, is_matching, result::NotFound, utils::FutureBoolExt};
 use futures::pin_mut;
-use ruma::{api::client::membership::forget_room, events::room::member::MembershipState};
+use slipstream::{api::client::membership::forget_room, events::room::member::MembershipState};
 
 use crate::Ruma;
 

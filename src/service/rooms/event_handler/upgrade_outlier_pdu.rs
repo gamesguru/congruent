@@ -12,7 +12,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{StreamExt, future::ready};
-use ruma::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
+use slipstream::{CanonicalJsonValue, OwnedEventId, RoomId, ServerName, events::StateEventType};
 
 use super::{get_room_version_id, to_room_version};
 use crate::rooms::timeline::RawPduId;
@@ -194,12 +194,20 @@ where
 		match (auth_check, incoming_pdu.redacts_id(&room_version_id)) {
 			| (false, _) => true,
 			| (true, None) => false,
-			| (true, Some(redact_id)) =>
-				!self
-					.services
-					.state_accessor
-					.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
-					.await?,
+			| (true, Some(redact_id)) => {
+				// A redaction of an event we don't have yet is accepted: whether the
+				// sender may redact it can only be judged once the target arrives, so
+				// soft-failing it here would drop a valid redaction.
+				// TODO: If pending-redaction tracking is added, bound its per-room
+				// entries and age. The current path stores no additional pending index;
+				// the bound is needed for the future target-to-redaction lookup.
+				self.services.timeline.get_pdu(&redact_id).await.is_ok()
+					&& !self
+						.services
+						.state_accessor
+						.user_can_redact(&redact_id, incoming_pdu.sender(), room_id, true)
+						.await?
+			},
 		}
 	} else {
 		false
@@ -360,9 +368,9 @@ where
 		.get_forward_extremities(room_id)
 		.collect()
 		.await;
-	let prev_events: Vec<&ruma::EventId> = incoming_pdu.prev_events().collect();
+	let prev_events: Vec<&slipstream::EventId> = incoming_pdu.prev_events().collect();
 	let room_id_owned = room_id.to_owned();
-	let is_referenced = |event_id: &ruma::EventId| {
+	let is_referenced = |event_id: &slipstream::EventId| {
 		let eid = event_id.to_owned();
 		let rid = room_id_owned.clone();
 		async move {

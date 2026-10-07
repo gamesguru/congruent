@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::Result;
 use futures::StreamExt;
-use ruma::{OwnedRoomAliasId, OwnedRoomId};
+use slipstream::{OwnedRoomAliasId, OwnedRoomId};
 
 use crate::Context;
 
@@ -41,7 +41,6 @@ pub(super) async fn process(subcommand: RoomAliasCommand, context: &Context<'_>)
 				.rooms
 				.alias
 				.local_aliases_for_room(&room_id)
-				.map(ToOwned::to_owned)
 				.collect()
 				.await;
 			let query_time = timer.elapsed();
@@ -54,7 +53,7 @@ pub(super) async fn process(subcommand: RoomAliasCommand, context: &Context<'_>)
 				.rooms
 				.alias
 				.all_local_aliases()
-				.map(|(room_id, alias)| (room_id.to_owned(), alias.to_owned()))
+				.map(|(room_id, alias)| (room_id, alias))
 				.collect::<Vec<_>>()
 				.await;
 			let query_time = timer.elapsed();

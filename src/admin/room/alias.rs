@@ -3,7 +3,7 @@ use std::fmt::Write;
 use clap::Subcommand;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::{OwnedRoomAliasId, OwnedRoomId};
+use slipstream::{OwnedRoomAliasId, OwnedRoomId};
 
 use crate::Context;
 
@@ -139,7 +139,7 @@ pub(super) async fn process(command: RoomAliasCommand, context: &Context<'_>) ->
 					.rooms
 					.alias
 					.all_local_aliases()
-					.map(|(room_id, localpart)| (room_id.into(), localpart.into()))
+					.map(|(room_id, localpart)| (room_id, localpart))
 					.collect::<Vec<(OwnedRoomId, String)>>()
 					.await;
 

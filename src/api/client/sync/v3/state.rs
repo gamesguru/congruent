@@ -14,8 +14,8 @@ use conduwuit::{
 use conduwuit_service::{Services, rooms::lazy_loading::MemberSet};
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use itertools::Itertools;
-use ruma::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use service::rooms::short::ShortEventId;
+use slipstream::{OwnedEventId, RoomId, UserId, events::StateEventType};
 use tracing::trace;
 
 use crate::client::TimelinePdus;
@@ -64,8 +64,8 @@ pub(super) async fn build_state_initial(
 				included in `lazily_loaded_members` or for the user requesting the sync.
 				*/
 				let event_is_redundant = event_type == StateEventType::RoomMember
-					&& state_key.as_str().try_into().is_ok_and(|user_id: &UserId| {
-						sender_user != user_id && !lazily_loaded_members.contains(user_id)
+					&& UserId::parse(state_key.as_str()).is_ok_and(|user_id| {
+						*sender_user != user_id && !lazily_loaded_members.contains(&user_id)
 					});
 
 				event_is_redundant.or_some(event_id)

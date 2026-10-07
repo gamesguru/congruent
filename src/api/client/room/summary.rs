@@ -10,7 +10,8 @@ use futures::{
 	FutureExt, StreamExt,
 	future::{OptionFuture, join3},
 };
-use ruma::{
+use service::Services;
+use slipstream::{
 	OwnedServerName, RoomId, UserId,
 	api::{
 		client::room::get_summary,
@@ -19,7 +20,6 @@ use ruma::{
 	events::room::member::MembershipState,
 	space::SpaceRoomJoinRule::{self, *},
 };
-use service::Services;
 
 use crate::{Ruma, RumaResponse};
 
@@ -64,7 +64,6 @@ pub(crate) async fn get_room_summary(
 			.rooms
 			.state_cache
 			.room_servers(&room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {
@@ -75,7 +74,7 @@ pub(crate) async fn get_room_summary(
 		return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 	}
 
-	room_summary_response(&services, &room_id, &servers, body.sender_user.as_deref())
+	room_summary_response(&services, &room_id, &servers, body.sender_user_opt())
 		.boxed()
 		.await
 }
@@ -149,13 +148,14 @@ async fn local_room_summary_response(
 	// Synapse allows server admins to bypass visibility checks.
 	// That seems neat so we'll copy that behaviour.
 	if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
+		let allowed: Vec<_> = join_rule.allowed_rooms().collect();
 		user_can_see_summary(
 			services,
 			room_id,
 			&join_rule.clone().into(),
 			guest_can_join,
 			world_readable,
-			join_rule.allowed_rooms(),
+			allowed.iter(),
 			sender_user,
 		)
 		.await?;
@@ -231,14 +231,14 @@ async fn local_room_summary_response(
 		avatar_url,
 		guest_can_join,
 		name,
-		num_joined_members: num_joined_members.try_into().unwrap_or_default(),
+		num_joined_members,
 		topic,
 		world_readable,
 		room_type,
 		room_version,
 		encryption,
 		membership,
-		allowed_room_ids: join_rule.allowed_rooms().map(Into::into).collect(),
+		allowed_room_ids: join_rule.allowed_rooms().collect(),
 		join_rule: join_rule.into(),
 	})
 }
@@ -271,7 +271,6 @@ async fn remote_room_summary_hierarchy_response(
 			.rooms
 			.state_cache
 			.room_servers(room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await
 	} else {
@@ -284,7 +283,7 @@ async fn remote_room_summary_hierarchy_response(
 		)));
 	}
 
-	let request = get_hierarchy::v1::Request::new(room_id.to_owned());
+	let request = get_hierarchy::v1::Request::new(room_id.to_owned(), false);
 
 	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
 		debug!("Fetching room summary for {room_id} from server {server}");

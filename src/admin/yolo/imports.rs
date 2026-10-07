@@ -1,6 +1,6 @@
 use conduwuit::{Err, Result, err, info, warn};
 use conduwuit_service::rooms::event_handler::AuthRecoveryStage;
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, OwnedEventId, OwnedRoomId, RoomVersionId, events::StateEventType,
 };
 
@@ -37,29 +37,27 @@ pub(super) async fn import_pdus(
 				return Err!(Request(InvalidParam("File is empty or first line is invalid")));
 			}
 
-			let first_pdu: CanonicalJsonObject = serde_json::from_str(&first_line)
+			let first_pdu: CanonicalJsonObject = slipstream::codec::from_str(&first_line)
 				.map_err(|e| err!(Request(InvalidParam("Failed to parse first PDU: {e}"))))?;
 			let r_id = first_pdu
 				.get("room_id")
 				.and_then(|v| v.as_str())
-				.and_then(|s| ruma::RoomId::parse(s).ok());
-			r_id.map(ToOwned::to_owned)
-				.or_else(|| {
-					let is_create =
-						first_pdu.get("type").and_then(|v| v.as_str()) == Some("m.room.create");
-					if is_create {
-						let eid = first_pdu.get("event_id").and_then(|v| v.as_str())?;
-						OwnedRoomId::parse(eid.replace('$', "!")).ok()
-					} else {
-						None
-					}
-				})
-				.ok_or_else(|| {
-					err!(Request(InvalidParam(
-						"Could not infer room_id from first PDU. Please specify --room-id \
-						 manually."
-					)))
-				})?
+				.and_then(|s| slipstream::RoomId::parse(s).ok());
+			r_id.or_else(|| {
+				let is_create =
+					first_pdu.get("type").and_then(|v| v.as_str()) == Some("m.room.create");
+				if is_create {
+					let eid = first_pdu.get("event_id").and_then(|v| v.as_str())?;
+					OwnedRoomId::parse(eid.replace('$', "!")).ok()
+				} else {
+					None
+				}
+			})
+			.ok_or_else(|| {
+				err!(Request(InvalidParam(
+					"Could not infer room_id from first PDU. Please specify --room-id manually."
+				)))
+			})?
 		},
 	};
 	let room_id = inferred_room_id;
@@ -83,8 +81,8 @@ pub(super) async fn import_pdus(
 	let origin = room_id
 		.server_name()
 		.filter(|s| !self.services.globals.server_is_ours(s))
-		.unwrap_or_else(|| self.services.globals.server_name())
-		.to_owned();
+		.unwrap_or_else(|| self.services.globals.server_name().clone())
+		.clone();
 
 	let mode = match (skip_auth, skip_sig_verify) {
 		| (true, _) => "force-insert (skip-auth)",
@@ -110,7 +108,7 @@ pub(super) async fn import_pdus(
 			.map_while(Result::ok)
 			.filter(|line| !line.trim().is_empty())
 			.filter_map(|line| {
-				let value: CanonicalJsonObject = match serde_json::from_str(&line) {
+				let value: CanonicalJsonObject = match slipstream::codec::from_str(&line) {
 					| Ok(v) => v,
 					| Err(e) => {
 						warn!("Failed to parse JSON: {e}");
@@ -120,15 +118,15 @@ pub(super) async fn import_pdus(
 
 				let is_outlier = value
 					.get("__outlier")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 				let is_soft_failed = value
 					.get("__soft_failed")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 				let is_rejected = value
 					.get("__rejected")
-					.and_then(ruma::CanonicalJsonValue::as_bool)
+					.and_then(slipstream::CanonicalJsonValue::as_bool)
 					.unwrap_or(false);
 
 				let (eid, value, pdu_event) =
@@ -170,7 +168,7 @@ pub(super) async fn import_pdus(
 		.map(
 			<[(
 				OwnedEventId,
-				std::collections::BTreeMap<String, ruma::CanonicalJsonValue>,
+				std::collections::BTreeMap<String, slipstream::CanonicalJsonValue>,
 				conduwuit::Pdu,
 				bool,
 				bool,
@@ -211,10 +209,10 @@ pub(super) async fn import_pdus(
 						{
 							raw_val.remove("event_id");
 						}
-						let raw = match serde_json::value::RawValue::from_string(
-							serde_json::to_string(&raw_val)
-								.map_err(|e| e.to_string())
-								.unwrap_or_default(),
+						let raw = match slipstream::sswire::RawJsonValue::from_json_string(
+							slipstream::codec::to_string(&slipstream::json::Value::Object(
+								raw_val.clone(),
+							)),
 						) {
 							| Ok(r) => r,
 							| Err(e) => {
@@ -396,7 +394,7 @@ pub(super) async fn import_outliers(&self, jsonl: String) -> Result {
 			continue;
 		}
 
-		let pdu: CanonicalJsonObject = serde_json::from_str(line).map_err(|e| {
+		let pdu: CanonicalJsonObject = slipstream::codec::from_str(line).map_err(|e| {
 			err!(
 				"Failed to parse PDU JSON: {e:?}. Make sure it's valid JSON on each line of the \
 				 code block."
@@ -405,7 +403,7 @@ pub(super) async fn import_outliers(&self, jsonl: String) -> Result {
 
 		let event_id = pdu
 			.get("event_id")
-			.and_then(ruma::CanonicalJsonValue::as_str)
+			.and_then(slipstream::CanonicalJsonValue::as_str)
 			.and_then(|id| OwnedEventId::parse(id).ok())
 			.ok_or_else(|| err!("Missing or invalid event_id in PDU JSON"))?;
 

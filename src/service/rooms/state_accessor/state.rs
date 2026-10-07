@@ -6,14 +6,13 @@ use conduwuit::{
 	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
-use ruma::{
+use slipstream::{
 	EventId, OwnedEventId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use serde::Deserialize;
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
 
@@ -103,7 +102,7 @@ pub async fn state_get_content_hamt<T>(
 	state_key: &str,
 ) -> Result<T>
 where
-	T: for<'de> Deserialize<'de>,
+	T: slipstream::codec::Deserialize,
 {
 	self.state_get_in_room_hamt(room_id, root_handle, event_type, state_key)
 		.await
@@ -237,7 +236,7 @@ pub async fn state_get_id_hamt<Id>(
 	state_key: &str,
 ) -> Result<Id>
 where
-	Id: serde::de::DeserializeOwned + Sized + ToOwned,
+	Id: slipstream::codec::Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	let shorteventid = self
@@ -371,7 +370,7 @@ pub fn state_keys_with_ids_hamt<'a, Id>(
 	event_type: &'a StateEventType,
 ) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
 where
-	Id: for<'de> Deserialize<'de> + Send + Sized + ToOwned + 'a,
+	Id: slipstream::codec::Deserialize + Send + Sized + ToOwned + 'a,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
 	// Resolve this root's short IDs, filter to the requested event_type, and

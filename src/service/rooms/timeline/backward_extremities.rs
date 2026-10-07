@@ -27,7 +27,7 @@
 //!   finally arrives, so we know which `roomid_depth_missingeventid` entry to
 //!   delete without a scan.
 
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 /// Packs the read-path key: `[shortroomid][depth][event_id]`.
 pub(super) fn pack_depth_key(shortroomid: [u8; 8], depth: u64, event_id: &EventId) -> Vec<u8> {
@@ -76,7 +76,6 @@ pub(super) fn missing_prev_events(
 
 #[cfg(test)]
 mod tests {
-	use ruma::owned_event_id;
 
 	use super::*;
 
@@ -88,7 +87,7 @@ mod tests {
 	#[test]
 	fn depth_key_sorts_by_depth_within_a_room() {
 		let room = [0_u8; 8];
-		let id = owned_event_id!("$a:example.org");
+		let id = OwnedEventId::parse("$a:example.org").unwrap();
 		let a = pack_depth_key(room, 5, eid(&id));
 		let b = pack_depth_key(room, 10, eid(&id));
 		assert!(a < b, "lower depth must sort first for the range-scan read path");
@@ -101,7 +100,7 @@ mod tests {
 		// range scan would leak across rooms.
 		let room_a = 1_u64.to_be_bytes();
 		let room_b = 2_u64.to_be_bytes();
-		let id = owned_event_id!("$a:example.org");
+		let id = OwnedEventId::parse("$a:example.org").unwrap();
 		let high_depth_room_a = pack_depth_key(room_a, u64::MAX, eid(&id));
 		let low_depth_room_b = pack_depth_key(room_b, 0, eid(&id));
 		assert!(high_depth_room_a < low_depth_room_b);
@@ -122,8 +121,8 @@ mod tests {
 
 	#[test]
 	fn missing_prev_events_filters_known_locally() {
-		let known = owned_event_id!("$known:example.org");
-		let missing = owned_event_id!("$missing:example.org");
+		let known = OwnedEventId::parse("$known:example.org").unwrap();
+		let missing = OwnedEventId::parse("$missing:example.org").unwrap();
 		let prev_events = vec![known.clone(), missing.clone()];
 
 		let result = missing_prev_events(&prev_events, |id| id == eid(&known));
@@ -133,8 +132,8 @@ mod tests {
 
 	#[test]
 	fn missing_prev_events_empty_when_all_known() {
-		let a = owned_event_id!("$a:example.org");
-		let b = owned_event_id!("$b:example.org");
+		let a = OwnedEventId::parse("$a:example.org").unwrap();
+		let b = OwnedEventId::parse("$b:example.org").unwrap();
 		let prev_events = vec![a, b];
 
 		let result = missing_prev_events(&prev_events, |_| true);
@@ -144,8 +143,8 @@ mod tests {
 
 	#[test]
 	fn missing_prev_events_all_missing_when_none_known() {
-		let a = owned_event_id!("$a:example.org");
-		let b = owned_event_id!("$b:example.org");
+		let a = OwnedEventId::parse("$a:example.org").unwrap();
+		let b = OwnedEventId::parse("$b:example.org").unwrap();
 		let prev_events = vec![a.clone(), b.clone()];
 
 		let result = missing_prev_events(&prev_events, |_| false);

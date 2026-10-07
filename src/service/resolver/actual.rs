@@ -7,7 +7,7 @@ use conduwuit::{Err, Result, debug, debug_info, err, error, trace};
 use futures::{FutureExt, TryFutureExt};
 use hickory_resolver::ResolveError;
 use ipaddress::IPAddress;
-use ruma::ServerName;
+use slipstream::ServerName;
 
 use super::{
 	cache::{CachedDest, CachedOverride, MAX_IPS},

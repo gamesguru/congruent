@@ -3,8 +3,8 @@ pub(crate) mod tester;
 
 use clap::Subcommand;
 use conduwuit::Result;
-use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName};
 use service::rooms::short::{ShortEventId, ShortRoomId};
+use slipstream::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName};
 
 use self::tester::TesterCommand;
 use crate::admin_command_dispatch;

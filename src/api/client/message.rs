@@ -22,8 +22,8 @@ use conduwuit_service::{
 	},
 };
 use futures::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future::OptionFuture, pin_mut};
-use ruma::{
-	DeviceId, RoomId, UserId,
+use slipstream::{
+	OwnedDeviceId, RoomId, UserId,
 	api::{
 		Direction,
 		client::{error::ErrorKind, filter::RoomEventFilter, message::get_message_events},
@@ -33,7 +33,7 @@ use ruma::{
 		TimelineEventType::{self, *},
 		invite_permission_config::FilterLevel,
 	},
-	serde::Raw,
+	sswire::Raw,
 };
 use tracing::warn;
 
@@ -45,7 +45,6 @@ const IGNORED_MESSAGE_TYPES: &[TimelineEventType] = &[
 	Audio,
 	CallInvite,
 	Emote,
-	File,
 	Image,
 	KeyVerificationStart,
 	Location,
@@ -75,9 +74,8 @@ pub(crate) async fn get_message_events_route(
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<get_message_events::v3::Request>,
 ) -> Result<get_message_events::v3::Response> {
-	debug_assert!(IGNORED_MESSAGE_TYPES.is_sorted(), "IGNORED_MESSAGE_TYPES is not sorted");
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 	let room_id = &body.room_id;
 	let filter = &body.filter;
 
@@ -262,18 +260,18 @@ pub(crate) async fn get_message_events_route(
 		}
 	}
 
+	let appservice_device = body
+		.appservice_info
+		.as_ref()
+		.and_then(|registration| OwnedDeviceId::parse(&registration.registration.id).ok());
 	let lazy_loading_context = lazy_loading::Context {
 		user_id: sender_user,
-		device_id: sender_device.or_else(|| {
-			if let Some(registration) = body.appservice_info.as_ref() {
-				Some(<&DeviceId>::from(registration.registration.id.as_str()))
-			} else {
-				warn!(
-					"No device_id provided and no appservice registration found, this should be \
-					 unreachable"
-				);
-				None
-			}
+		device_id: sender_device.or(appservice_device.as_ref()).or_else(|| {
+			warn!(
+				"No device_id provided and no appservice registration found, this should be \
+				 unreachable"
+			);
+			None
 		}),
 		room_id,
 		token: Some(from.pdu_count.into_unsigned()),
@@ -476,10 +474,10 @@ where
 	}
 
 	let sender_user = event.sender();
-	let type_ignored = IGNORED_MESSAGE_TYPES.binary_search(event.kind()).is_ok();
+	let type_ignored = IGNORED_MESSAGE_TYPES.contains(event.kind());
 	let server_ignored = services
 		.moderation
-		.is_remote_server_ignored(sender_user.server_name());
+		.is_remote_server_ignored(&sender_user.server_name());
 	let user_ignored = services
 		.users
 		.user_is_ignored(sender_user, recipient_user)

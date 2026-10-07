@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use conduwuit_core::{Result, info, warn};
 use futures::StreamExt;
 use roaring::RoaringBitmap;
-use ruma::{EventId, OwnedEventId};
+use slipstream::{EventId, OwnedEventId};
 
 use super::Service;
 use crate::rooms::short::ShortEventId;
@@ -197,7 +197,7 @@ impl Service {
 	/// Prune fork storms down to operationally relevant tips using tail-based
 	/// recalculation. This is a convenience wrapper around
 	/// `recalculate_extremities` with standardized logging.
-	pub async fn prune_extremities(&self, room_id: &ruma::RoomId, tail: usize) {
+	pub async fn prune_extremities(&self, room_id: &slipstream::RoomId, tail: usize) {
 		match self.recalculate_extremities(room_id, true).await {
 			| Ok((true, tips)) => info!(
 				%room_id, tail, tips,
@@ -223,7 +223,7 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn recalculate_extremities(
 		&self,
-		room_id: &ruma::RoomId,
+		room_id: &slipstream::RoomId,
 		update_db: bool,
 	) -> Result<(bool, usize)> {
 		let state_lock = self.services.state.mutex.lock(room_id).await;
@@ -413,7 +413,7 @@ impl Service {
 				.db
 				.get_origin_server_ts(eid)
 				.await
-				.unwrap_or_else(|_| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()));
+				.unwrap_or_else(|_| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()));
 			final_ts_map.insert(eid.clone(), ts);
 		}
 
@@ -421,7 +421,7 @@ impl Service {
 			final_ts_map
 				.get(eid)
 				.copied()
-				.unwrap_or_else(|| ruma::MilliSecondsSinceUnixEpoch(0_u32.into()))
+				.unwrap_or_else(|| slipstream::MilliSecondsSinceUnixEpoch(0_u32.into()))
 		});
 
 		let num_true_extremities = final_extremities.len();
@@ -487,7 +487,7 @@ impl Service {
 #[cfg(test)]
 mod tests {
 	use HashMap;
-	use ruma::{OwnedEventId, event_id};
+	use slipstream::{OwnedEventId, event_id};
 
 	use super::*;
 
@@ -534,7 +534,7 @@ mod tests {
 
 		let sorted = vec![a, b, c, d.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*d];
+		let expected: Vec<&EventId> = vec![&d];
 		assert_eq!(tips, expected);
 	}
 
@@ -553,7 +553,7 @@ mod tests {
 		let mut tips = calculate_true_extremities(&graph, &sorted);
 		tips.sort();
 
-		let mut expected: Vec<&EventId> = vec![&*b, &*y];
+		let mut expected: Vec<&EventId> = vec![&b, &y];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -569,7 +569,7 @@ mod tests {
 
 		let sorted = vec![a.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
-		let expected: Vec<&EventId> = vec![&*a];
+		let expected: Vec<&EventId> = vec![&a];
 		assert_eq!(tips, expected);
 	}
 
@@ -589,7 +589,7 @@ mod tests {
 		// Because B is in `sorted` and nothing in `graph` lists B as a parent, B must
 		// be a tip. A is also a tip because nothing lists it as a parent.
 		tips.sort();
-		let mut expected: Vec<&EventId> = vec![&*a, &*b];
+		let mut expected: Vec<&EventId> = vec![&a, &b];
 		expected.sort();
 
 		assert_eq!(tips, expected);
@@ -608,7 +608,7 @@ mod tests {
 		let tips = calculate_true_extremities(&graph, &sorted);
 
 		// Fallback returns the last element in `sorted`
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -657,7 +657,7 @@ mod tests {
 		let sorted = vec![a, b.clone()];
 		let tips = calculate_true_extremities(&graph, &sorted);
 
-		let expected: Vec<&EventId> = vec![&*b];
+		let expected: Vec<&EventId> = vec![&b];
 		assert_eq!(tips, expected);
 	}
 
@@ -679,7 +679,7 @@ mod tests {
 
 		// Even though C was first in the array, A and B are in has_children.
 		// The algorithm correctly identifies C as the sole extremity.
-		let expected: Vec<&EventId> = vec![&*c];
+		let expected: Vec<&EventId> = vec![&c];
 		assert_eq!(tips, expected);
 	}
 
@@ -778,7 +778,7 @@ mod tests {
 		let e4 = event_id!("$4").to_owned();
 
 		// newly discovered true extremity
-		let true_exts = vec![&*e1];
+		let true_exts = vec![&e1];
 
 		// current tips in DB
 		let current_set: HashSet<OwnedEventId> = vec![e2.clone(), e3.clone(), e4.clone()]

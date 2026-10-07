@@ -1,7 +1,7 @@
 mod msc4500;
 pub use msc4500::{
-	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PduDigests, PointDigests,
-	StateHashEntry, StateHashes,
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PRIMARY_ALGORITHM, PduDigests,
+	PointDigests, StateHashEntry, StateHashes,
 };
 mod room_state;
 mod server_can;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conduwuit::{Result, Server, err};
-use ruma::{
+use slipstream::{
 	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
 		StateEventType,
@@ -38,7 +38,7 @@ pub struct Service {
 	services: Services,
 	msc4500_memo: conduwuit::SyncMutex<msc4500::CausalMemo>,
 	pub encrypted_rooms_cache:
-		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
+		conduwuit::SyncRwLock<std::collections::HashSet<slipstream::OwnedRoomId>>,
 }
 
 struct Services {
@@ -90,7 +90,11 @@ impl Service {
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
-			.map(|c: RoomNameEventContent| c.name)
+			.and_then(|c: RoomNameEventContent| {
+				(!c.name.is_empty())
+					.then_some(c.name)
+					.ok_or_else(|| err!(Request(NotFound("No name found in event content"))))
+			})
 	}
 
 	/// Returns the current room avatar event content, when present.
