@@ -64,6 +64,16 @@ pub(crate) fn root_handle_to_bytes(handle: &rezzy::hamt::RootHandle) -> Vec<u8> 
 	out
 }
 
+/// Returns a compact diagnostic fingerprint for a HAMT root.
+#[must_use]
+pub fn root_handle_fingerprint(handle: &rezzy::hamt::RootHandle) -> u64 {
+	u64::from_be_bytes(
+		handle.structural_hash[..8]
+			.try_into()
+			.expect("structural hash is at least 8 bytes"),
+	)
+}
+
 /// Parses a [`rezzy::hamt::RootHandle`] written by [`root_handle_to_bytes`].
 pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHandle> {
 	if bytes.len() != ROOT_HANDLE_LEN {
@@ -756,7 +766,7 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, _mutex_lock), level = "debug")]
+	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,

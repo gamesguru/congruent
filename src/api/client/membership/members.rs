@@ -3,6 +3,7 @@ use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
 };
+use conduwuit_service::rooms::state::root_handle_fingerprint;
 use futures::{StreamExt, TryStreamExt, future::join};
 use ruma::{
 	OwnedEventId,
@@ -107,7 +108,8 @@ pub(crate) async fn get_member_events_route(
 				.ok();
 			info!(
 				target: "membership_debug",
-				"/members: departed user {sender_user} in {room_id}, leave_root={root:?}"
+				"/members: departed user {sender_user} in {room_id}, leave_root={:?}",
+				root.as_ref().map(root_handle_fingerprint)
 			);
 			(root, Some(leave_pdu))
 		} else {

@@ -87,6 +87,70 @@ jobs:
     outputs:
       include: ${{ steps.matrix.outputs.include }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-tags: true
+          fetch-depth: 0
+          submodules: false
+
+      - name: Init required submodule
+        run: git submodule update --init complement-crypto-src
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y build-essential pkg-config liburing-dev libbz2-dev clang libclang-dev llvm-dev mold
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: complement-crypto-src/go.sum
+
+      - name: Install just
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+        with:
+          tool: just
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Build JS SDK bundle
+        run: just crypto-js-bundle
+
+      - name: Build matrix-rust-sdk FFI
+        env:
+          # Wombat-Foundation/matrix-rust-sdk (guru/fix/time-invite-mem-races)
+          RUST_SDK_REF: 6c35f386b5b944989cf88b821e72cb21f682893e
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          mkdir -p matrix-rust-sdk
+          curl -fsSL "https://gitlab.com/Wombat-Foundation/matrix-rust-sdk/-/archive/$RUST_SDK_REF/matrix-rust-sdk-$RUST_SDK_REF.tar.gz" \
+            | tar -xz --strip-components=1 -C matrix-rust-sdk
+          cd complement-crypto-src
+          just install-uniffi-bindgen
+          just rebuild-rust-sdk "$GITHUB_WORKSPACE/matrix-rust-sdk"
+
+      - name: Upload JS SDK bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: crypto-js-sdk
+          path: complement-crypto-src/internal/api/js/chrome/dist
+          retention-days: 1
+
+      - name: Upload Rust SDK artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: crypto-rust-sdk
+          path: |
+            complement-crypto-src/internal/api/rust
+            matrix-rust-sdk/target/debug/libmatrix_sdk_ffi.a
+          retention-days: 1
+
       - id: matrix
         run: |
           echo 'include=[{"name":"js","badge":"js","client_matrix":"jj"},{"name":"rs","badge":"rs","client_matrix":"rr"},{"name":"js+rs","badge":"jsrs","client_matrix":"jr,rj"}]' >> "$GITHUB_OUTPUT"
@@ -183,31 +247,17 @@ jobs:
           go-version: "1.25.x"
           cache-dependency-path: complement-crypto-src/go.sum
 
-      - name: Build JS SDK bundle (for //go:embed dist)
-        if: contains(matrix.client_matrix, 'j')
-        # Pinned to a fork commit carrying the fix for matrix-js-sdk#4291 (crypto
-        # membership is refreshed after /invite instead of waiting for /sync).
-        # Built from the pnpm lockfile by the justfile recipe; the pin lives in
-        # MATRIX_JS_SDK_SOURCE there.
-        run: just crypto-js-bundle
+      - name: Download JS SDK bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: crypto-js-sdk
+          path: complement-crypto-src/internal/api/js/chrome/dist
 
-      # rs / js+rs variants build matrix-rust-sdk FFI from a pinned commit (no repo
-      # variable / prebuilt tarball to maintain). Bump RUST_SDK_REF to update.
-      - name: Build matrix-rust-sdk FFI (pinned)
-        if: contains(matrix.client_matrix, 'r')
-        env:
-          # Wombat-Foundation/matrix-rust-sdk (guru/fix/time-invite-mem-races)
-          RUST_SDK_REF: 6c35f386b5b944989cf88b821e72cb21f682893e
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          command -v just >/dev/null || cargo install just --locked
-          mkdir -p matrix-rust-sdk
-          curl -fsSL "https://gitlab.com/Wombat-Foundation/matrix-rust-sdk/-/archive/$RUST_SDK_REF/matrix-rust-sdk-$RUST_SDK_REF.tar.gz" \
-            | tar -xz --strip-components=1 -C matrix-rust-sdk
-          cd complement-crypto-src
-          just install-uniffi-bindgen
-          just rebuild-rust-sdk "$GITHUB_WORKSPACE/matrix-rust-sdk"
+      - name: Download Rust SDK artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: crypto-rust-sdk
+          path: .
 
       - name: Run Complement-Crypto tests (${{ matrix.name }})
         id: complement-crypto

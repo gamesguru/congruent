@@ -15,7 +15,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use conduwuit_service::Services;
+use conduwuit_service::{Services, rooms::state::root_handle_fingerprint};
 use futures::{
 	FutureExt, StreamExt,
 	future::{join, join3, join4, try_join, try_join3},
@@ -498,10 +498,14 @@ async fn fetch_roothandles(
 	// if the room is brand new to this sync stream, we keep it as None so
 	// that we correctly trigger an initial state sync.
 	let last_sync_end_root_handle = next_root;
+	let current_root_fingerprint = root_handle_fingerprint(&current_root_handle);
+	let last_sync_end_fingerprint = last_sync_end_root_handle
+		.as_ref()
+		.map(root_handle_fingerprint);
 
 	trace!(
 		"fetch_roothandles: room={room_id} last_count={last_sync_end_count:?} \
-		 current={current_root_handle:?} last_end={last_sync_end_root_handle:?}",
+		 current={current_root_fingerprint:?} last_end={last_sync_end_fingerprint:?}",
 	);
 
 	Ok(RootHandles {
@@ -913,10 +917,13 @@ async fn check_joined_since_last_sync(
 		);
 
 		if joined_since_last_sync && membership_during_previous_sync.is_some() {
+			let last_sync_end_fingerprint = last_sync_end_root_handle
+				.as_ref()
+				.map(root_handle_fingerprint);
 			warn!(
 				%room_id,
 				user_joined_since_last_sync = syncing_user.as_str(),
-				?last_sync_end_root_handle,
+				?last_sync_end_fingerprint,
 				last_sync_end_count,
 				current_count,
 				membership = ?membership_during_previous_sync,

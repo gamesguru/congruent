@@ -470,7 +470,7 @@ pub fn state_full_shortids_hamt(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
+#[tracing::instrument(skip(self, root_handle), level = "debug")]
 /// Tests whether a HAMT root has no entries.
 pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	let root_node = self

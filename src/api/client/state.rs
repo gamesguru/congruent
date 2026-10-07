@@ -7,7 +7,7 @@ use conduwuit::{
 	matrix::{Event, pdu::PduBuilder},
 	utils::BoolExt,
 };
-use conduwuit_service::Services;
+use conduwuit_service::{Services, rooms::state::root_handle_fingerprint};
 use futures::{FutureExt, TryStreamExt};
 use ruma::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, UserId,
@@ -135,7 +135,8 @@ pub(crate) async fn get_state_events_route(
 		let root = leave_roothandle(&services, sender_user, room_id).await;
 		info!(
 			target: "membership_debug",
-			"/state: departed user {sender_user} in {room_id}, leave_root={root:?}"
+			"/state: departed user {sender_user} in {room_id}, leave_root={:?}",
+			root.as_ref().map(root_handle_fingerprint)
 		);
 		root
 	} else {
@@ -200,8 +201,9 @@ pub(crate) async fn get_state_events_for_key_route(
 		if let Some(root) = leave_roothandle(&services, sender_user, room_id).await {
 			info!(
 				target: "membership_debug",
-				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={root:?}",
-				body.event_type
+				"/state/{}: departed user {sender_user} in {room_id}, using leave_root={:?}",
+				body.event_type,
+				Some(root_handle_fingerprint(&root))
 			);
 			services
 				.rooms
