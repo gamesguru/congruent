@@ -64,7 +64,7 @@ async fn async_run(config: &Config, execute: &[String]) -> Result<()> {
 	println!("Connected to conduwuit admin console at {}", socket_path.display());
 	println!("Type \"help\" for help, ^D or `Quit` to exit.");
 
-	run_interactive_mode(socket_path, stream).await
+	run_interactive_mode(stream).await
 }
 
 async fn run_execute_mode(mut stream: UnixStream, execute: &[String]) -> Result<()> {
@@ -116,17 +116,15 @@ async fn run_execute_mode(mut stream: UnixStream, execute: &[String]) -> Result<
 	Ok(())
 }
 
-async fn run_interactive_mode(
-	socket_path: std::path::PathBuf,
-	mut stream: UnixStream,
-) -> Result<()> {
+async fn run_interactive_mode(mut stream: UnixStream) -> Result<()> {
 	let mut stream_reader = BufReader::new(&mut stream);
+	let mut input_reader = BufReader::new(tokio::io::stdin());
 	let mut response_buf = Vec::new();
 	loop {
 		print!("uwu> ");
 		use tokio::io::AsyncBufReadExt;
 		let mut input = String::new();
-		if tokio::io::stdin().read_line(&mut input).await? == 0 {
+		if input_reader.read_line(&mut input).await? == 0 {
 			break;
 		}
 		let trimmed = input.trim();
@@ -136,12 +134,15 @@ async fn run_interactive_mode(
 		if trimmed.eq_ignore_ascii_case("quit") {
 			break;
 		}
-		stream_reader.get_mut().write_all(trimmed.as_bytes()).await?;
+		stream_reader
+			.get_mut()
+			.write_all(trimmed.as_bytes())
+			.await?;
 		stream_reader.get_mut().write_all(b"\n").await?;
 		response_buf.clear();
 		match stream_reader.read_until(b'\0', &mut response_buf).await? {
-			0 => break,
-			_ => {
+			| 0 => break,
+			| _ => {
 				if response_buf.ends_with(b"\0") {
 					response_buf.pop();
 				}

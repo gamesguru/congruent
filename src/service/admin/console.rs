@@ -9,7 +9,10 @@ use tokio::{
 	task::JoinHandle,
 };
 
-use crate::{Dep, admin::{self, InvocationSource}};
+use crate::{
+	Dep,
+	admin::{self, InvocationSource},
+};
 
 pub struct Console {
 	server: Arc<Server>,
@@ -47,7 +50,8 @@ impl Console {
 
 	pub async fn close(self: &Arc<Self>) {
 		self.interrupt();
-		if let Some(worker_join) = self.worker_join.lock().take() {
+		let worker_join = self.worker_join.lock().take();
+		if let Some(worker_join) = worker_join {
 			_ = worker_join.await;
 		}
 	}
@@ -63,9 +67,9 @@ impl Console {
 		let mut lines = BufReader::new(tokio::io::stdin()).lines();
 		while self.server.running() {
 			match lines.next_line().await {
-				Ok(Some(line)) => self.handle(line).await,
-				Ok(None) => break,
-				Err(e) => {
+				| Ok(Some(line)) => self.handle(line).await,
+				| Ok(None) => break,
+				| Err(e) => {
 					error!("console I/O: {e}");
 					break;
 				},
@@ -81,8 +85,8 @@ impl Console {
 		_ = tokio::fs::remove_file(&socket_path).await;
 
 		let listener = match UnixListener::bind(&socket_path) {
-			Ok(listener) => listener,
-			Err(e) => {
+			| Ok(listener) => listener,
+			| Err(e) => {
 				error!("Failed to bind console socket at {socket_path:?}: {e}");
 				return;
 			},
@@ -96,13 +100,13 @@ impl Console {
 
 		while self.server.running() {
 			match listener.accept().await {
-				Ok((stream, _)) => {
+				| Ok((stream, _)) => {
 					let self_ = Arc::clone(&self);
 					self.server.runtime().spawn(async move {
 						self_.handle_connection(stream).await;
 					});
 				},
-				Err(e) => {
+				| Err(e) => {
 					error!("Console socket accept error: {e}");
 					break;
 				},
@@ -118,8 +122,8 @@ impl Console {
 		while self.server.running() {
 			line.clear();
 			match reader.read_line(&mut line).await {
-				Ok(0) | Err(_) => break,
-				Ok(_) => {
+				| Ok(0) | Err(_) => break,
+				| Ok(_) => {
 					let input = line.trim();
 					if input.is_empty() {
 						continue;
@@ -130,8 +134,9 @@ impl Console {
 						.command_in_place(input.to_owned(), None, InvocationSource::Console)
 						.await;
 					let output = match result {
-						Ok(Some(content)) | Err(content) => content.body().to_owned(),
-						Ok(None) => String::new(),
+						| Ok(Some(content)) => content.body().to_owned(),
+						| Err(content) => content.body().to_owned(),
+						| Ok(None) => String::new(),
 					};
 
 					if writer.write_all(output.as_bytes()).await.is_err()
@@ -159,15 +164,20 @@ impl Console {
 			.command_in_place(input.to_owned(), None, InvocationSource::Console)
 			.await
 		{
-			Ok(Some(content)) | Err(content) => print(content.body()),
-			Ok(None) => {}
+			| Ok(Some(content)) => print(content.body()),
+			| Err(content) => print(content.body()),
+			| Ok(None) => {},
 		}
 	}
 }
 
-pub fn print_err(markdown: &str) { println!("{markdown}"); }
+pub fn print_err(markdown: &str) {
+	println!("{markdown}");
+}
 
-pub fn print(markdown: &str) { println!("{markdown}"); }
+pub fn print(markdown: &str) {
+	println!("{markdown}");
+}
 
 #[must_use]
 pub fn format(markdown: &str) -> String {

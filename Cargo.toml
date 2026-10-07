@@ -206,6 +206,7 @@ features = [
     "signal",
     "time",
     "rt-multi-thread",
+    "io-std",
     "io-util",
 ]
 
