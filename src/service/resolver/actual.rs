@@ -5,7 +5,7 @@ use std::{
 
 use conduwuit::{Err, Result, debug, debug_info, err, error, trace};
 use futures::{FutureExt, TryFutureExt};
-use hickory_resolver::ResolveError;
+use hickory_resolver::net::NetError;
 use slipstream::ServerName;
 
 use super::{
@@ -324,14 +324,18 @@ impl super::Service {
 			match self.resolver.srv_lookup(hostname).await {
 				| Err(e) => Self::handle_resolve_error(&e, hostname, "SRV")?,
 				| Ok(result) => {
-					return Ok(result.iter().next().map(|result| {
-						FedDest::Named(
-							result.target().to_string().trim_end_matches('.').to_owned(),
-							format!(":{}", result.port())
+					return Ok(result.answers().iter().find_map(|record| {
+						let hickory_resolver::proto::rr::RData::SRV(result) = &record.data else {
+							return None;
+						};
+
+						Some(FedDest::Named(
+							result.target.to_string().trim_end_matches('.').to_owned(),
+							format!(":{}", result.port)
 								.as_str()
 								.try_into()
 								.unwrap_or_else(|_| FedDest::default_port()),
-						)
+						))
 					}));
 				},
 			}
@@ -340,30 +344,27 @@ impl super::Service {
 		Ok(None)
 	}
 
-	fn handle_resolve_error(e: &ResolveError, host: &'_ str, qtype: &'_ str) -> Result<()> {
-		use hickory_resolver::{ResolveErrorKind::Proto, proto::ProtoErrorKind};
+	fn handle_resolve_error(e: &NetError, host: &'_ str, qtype: &'_ str) -> Result<()> {
+		use hickory_resolver::net::{DnsError, NetError};
 
-		match e.kind() {
-			| Proto(e) => match e.kind() {
-				| ProtoErrorKind::NoRecordsFound { .. } => {
-					// Raise to debug_warn if we can find out the result wasn't from cache
-					debug!(%host, %qtype, "No DNS records found: {e}");
-					Ok(())
-				},
-				| ProtoErrorKind::Timeout => {
-					Err!(debug!(%host, %qtype, "DNS {e}"))
-				},
-				| ProtoErrorKind::NoConnections => {
-					error!(
-						%qtype,
-						"Your DNS server is overloaded and has ran out of connections. It is \
-						 strongly recommended you remediate this issue to ensure proper \
-						 federation connectivity."
-					);
+		match e {
+			| NetError::Dns(DnsError::NoRecordsFound(_)) => {
+				// Raise to debug_warn if we can find out the result wasn't from cache
+				debug!(%host, %qtype, "No DNS records found: {e}");
+				Ok(())
+			},
+			| NetError::Timeout => {
+				Err!(debug!(%host, %qtype, "DNS {e}"))
+			},
+			| NetError::NoConnections => {
+				error!(
+					%qtype,
+					"Your DNS server is overloaded and has ran out of connections. It is \
+					 strongly recommended you remediate this issue to ensure proper \
+					 federation connectivity."
+				);
 
-					Err!(debug!(%host, %qtype, "DNS error: {e}"))
-				},
-				| _ => Err!(debug!(%host, %qtype, "DNS error: {e}")),
+				Err!(debug!(%host, %qtype, "DNS error: {e}"))
 			},
 			| _ => Err!(warn!(%host, %qtype, "DNS error: {e}")),
 		}

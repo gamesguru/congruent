@@ -36,29 +36,24 @@ impl Resolver {
 		let (sys_conf, mut opts) = hickory_resolver::system_conf::read_system_conf()
 			.map_err(|e| err!(error!("Failed to configure DNS resolver from system: {e}")))?;
 
-		let mut conf = hickory_resolver::config::ResolverConfig::new();
+		let (domain, search, mut name_servers) = sys_conf.into_parts();
 
-		if let Some(domain) = sys_conf.domain() {
-			conf.set_domain(domain.clone());
-		}
-
-		for sys_conf in sys_conf.search() {
-			conf.add_search(sys_conf.clone());
-		}
-
-		for sys_conf in sys_conf.name_servers() {
-			let mut ns = sys_conf.clone();
+		for ns in &mut name_servers {
 
 			if config.query_over_tcp_only {
-				ns.protocol = hickory_resolver::proto::xfer::Protocol::Tcp;
+				ns.connections = vec![hickory_resolver::config::ConnectionConfig::tcp()];
 			}
 
 			ns.trust_negative_responses = !config.query_all_nameservers;
-
-			conf.add_name_server(ns);
 		}
 
-		opts.cache_size = config.dns_cache_entries as usize;
+		let conf = hickory_resolver::config::ResolverConfig::from_parts(
+			domain,
+			search,
+			name_servers,
+		);
+
+		opts.cache_size = u64::from(config.dns_cache_entries);
 		opts.preserve_intermediates = true;
 		opts.negative_min_ttl = Some(Duration::from_secs(config.dns_min_ttl_nxdomain));
 		opts.negative_max_ttl = opts.negative_min_ttl;
@@ -78,11 +73,14 @@ impl Resolver {
 			| _ => hickory_resolver::config::LookupIpStrategy::Ipv4thenIpv6,
 		};
 
-		let rt_prov = hickory_resolver::proto::runtime::TokioRuntimeProvider::new();
-		let conn_prov = hickory_resolver::name_server::TokioConnectionProvider::new(rt_prov);
-		let mut builder = TokioResolver::builder_with_config(conf, conn_prov);
+		let rt_prov = hickory_resolver::net::runtime::TokioRuntimeProvider::default();
+		let mut builder = TokioResolver::builder_with_config(conf, rt_prov);
 		*builder.options_mut() = opts;
-		let resolver = Arc::new(builder.build());
+		let resolver = Arc::new(
+			builder
+				.build()
+				.map_err(|e| err!(error!("Failed to build DNS resolver: {e}")))?,
+		);
 
 		Ok(Arc::new(Self {
 			resolver: resolver.clone(),
@@ -100,10 +98,10 @@ impl Resolver {
 	#[inline]
 	pub fn clear_cache(&self) { self.resolver.clear_cache(); }
 
-	pub async fn lookup_ip<N: hickory_resolver::IntoName>(
+	pub async fn lookup_ip<N: hickory_resolver::proto::rr::IntoName>(
 		&self,
 		name: N,
-	) -> core::result::Result<LookupIp, hickory_resolver::ResolveError> {
+	) -> core::result::Result<LookupIp, hickory_resolver::net::NetError> {
 		let start = tokio::time::Instant::now();
 		let result = self.resolver.lookup_ip(name).await;
 		let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -131,10 +129,10 @@ impl Resolver {
 		result
 	}
 
-	pub async fn srv_lookup<N: hickory_resolver::IntoName>(
+	pub async fn srv_lookup<N: hickory_resolver::proto::rr::IntoName>(
 		&self,
 		name: N,
-	) -> core::result::Result<hickory_resolver::lookup::SrvLookup, hickory_resolver::ResolveError>
+	) -> core::result::Result<hickory_resolver::lookup::Lookup, hickory_resolver::net::NetError>
 	{
 		let start = tokio::time::Instant::now();
 		let result = self.resolver.srv_lookup(name).await;
@@ -285,7 +283,7 @@ async fn resolve_to_reqwest(
 		// Don't count NoRecordsFound as a failure — it's a valid negative response
 		if let Err(ref boxed_err) = result {
 			if !boxed_err
-				.downcast_ref::<hickory_resolver::ResolveError>()
+				.downcast_ref::<hickory_resolver::net::NetError>()
 				.is_some_and(is_no_records_found)
 			{
 				server
@@ -302,21 +300,16 @@ async fn resolve_to_reqwest(
 /// Check if a DNS resolve error is a NoRecordsFound (NXDOMAIN/NoError)
 /// response. These are valid negative responses, not actual failures.
 /// ServFail is explicitly excluded as it indicates a transient server error.
-fn is_no_records_found(e: &hickory_resolver::ResolveError) -> bool {
+fn is_no_records_found(e: &hickory_resolver::net::NetError) -> bool {
 	use hickory_resolver::{
-		ResolveErrorKind::Proto,
-		proto::{ProtoErrorKind, op::ResponseCode},
+		net::{DnsError, NetError},
+		proto::op::ResponseCode,
 	};
 
 	matches!(
-		e.kind(),
-		Proto(e) if matches!(
-			e.kind(),
-			ProtoErrorKind::NoRecordsFound {
-				response_code: ResponseCode::NXDomain | ResponseCode::NoError,
-				..
-			}
-		)
+		e,
+		NetError::Dns(DnsError::NoRecordsFound(records))
+			if matches!(records.response_code, ResponseCode::NXDomain | ResponseCode::NoError)
 	)
 }
 
