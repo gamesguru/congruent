@@ -583,10 +583,13 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					else {
 						continue;
 					};
+					let Some(raw_pdu) = response.pdus.first() else {
+						continue;
+					};
 
 					let Ok((parsed_id, value)) =
 						conduwuit::matrix::event::gen_event_id_canonical_json(
-							&response.pdu,
+							raw_pdu,
 							&room_version_id,
 						)
 					else {

@@ -21,11 +21,30 @@ pub fn gen_event_id_canonical_json(
 	Ok((event_id, value))
 }
 
+/// Whether event IDs in this room version are server-assigned strings carried
+/// in the event's own `event_id` field, rather than derived from a reference
+/// hash (room versions 1 and 2).
+#[must_use]
+pub fn has_opaque_event_ids(room_version_id: &RoomVersionId) -> bool {
+	matches!(room_version_id, RoomVersionId::V1 | RoomVersionId::V2)
+}
+
 /// Generates a correct eventId for the incoming pdu.
 pub fn gen_event_id(
 	value: &CanonicalJsonObject,
 	room_version_id: &RoomVersionId,
 ) -> Result<OwnedEventId> {
+	if has_opaque_event_ids(room_version_id) {
+		// Room versions 1 and 2: the ID is a distinct field of the event.
+		let event_id = value
+			.get("event_id")
+			.and_then(slipstream::json::Value::as_str)
+			.ok_or_else(|| {
+				err!(Request(BadJson("Event has no event_id, which room versions 1 and 2 need")))
+			})?;
+		return Ok(OwnedEventId::parse(event_id)?);
+	}
+
 	let reference_hash = slipstream::signatures::reference_hash(value, room_version_id)?;
 	let event_id = OwnedEventId::parse(format!("${reference_hash}"))?;
 
@@ -45,7 +64,14 @@ pub fn gen_event_id_from_bytes(
 		.map_err(|e| err!(Database("stored PDU is not valid JSON: {e}")))?;
 	let mut value = slipstream::canonical_json::into_object(value)
 		.ok_or_else(|| err!(Database("stored PDU is not an object")))?;
+	// Room versions 1 and 2 keep their own `event_id`, which the strip removes.
+	let own_event_id = value.get("event_id").cloned();
 	pdu_json_canonical_strip(&mut value);
+	if has_opaque_event_ids(room_version_id) {
+		if let Some(event_id) = own_event_id {
+			value.insert("event_id".to_owned(), event_id);
+		}
+	}
 
 	gen_event_id(&value, room_version_id)
 }
@@ -53,6 +79,22 @@ pub fn gen_event_id_from_bytes(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn room_versions_one_and_two_use_the_events_own_event_id() {
+		let mut event = CanonicalJsonObject::new();
+		assert!(gen_event_id(&event, &RoomVersionId::V1).is_err(), "no event_id field");
+
+		event.insert(
+			"event_id".to_owned(),
+			slipstream::CanonicalJsonValue::String("$abc:example.org".to_owned()),
+		);
+		for version in [RoomVersionId::V1, RoomVersionId::V2] {
+			assert_eq!(gen_event_id(&event, &version).unwrap().as_str(), "$abc:example.org");
+		}
+		assert!(has_opaque_event_ids(&RoomVersionId::V2));
+		assert!(!has_opaque_event_ids(&RoomVersionId::V3));
+	}
 
 	#[test]
 	fn gen_event_id_from_bytes_ignores_internal_fields() {

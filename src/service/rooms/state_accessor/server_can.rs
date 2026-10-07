@@ -110,7 +110,7 @@ pub async fn server_can_see_event(
 
 	match history_visibility {
 		| HistoryVisibility::WorldReadable => true,
-		| HistoryVisibility::Shared => {
+		| HistoryVisibility::Shared | HistoryVisibility::Custom(_) => {
 			// Spec: servers with joined users can see all history.
 			// Invited/knocked servers do NOT qualify for shared visibility.
 			server_in_room

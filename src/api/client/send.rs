@@ -5,7 +5,7 @@ use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
 use crate::{
 	Ruma, RumaResponse,
-	json_util::{json_response, single_field},
+	json_util::{json_response, require_object_content, single_field},
 };
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
@@ -89,6 +89,8 @@ pub(crate) async fn send_message_event_route(
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
+
+	require_object_content(&body.body.body)?;
 
 	services
 		.users
@@ -225,11 +227,7 @@ pub(crate) async fn send_message_event_route(
 		&body.event_type,
 		&body.body.body,
 		Some(&body.txn_id),
-		if appservice_info.is_some() {
-			body.timestamp
-		} else {
-			None
-		},
+		if appservice_info.is_some() { body.ts } else { None },
 		None,
 	))
 	.await?;

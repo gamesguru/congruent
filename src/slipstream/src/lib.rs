@@ -88,8 +88,37 @@ mod tests {
 pub mod canonical_json {
 	pub use mtx_slipstream::canonical_json::*;
 
+	/// The largest integer Matrix canonical JSON allows: 2^53 - 1.
+	const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+	/// Parses JSON, then enforces the Matrix canonical JSON restrictions that a
+	/// plain JSON parser does not: no floats, and integers only within
+	/// +/-(2^53 - 1). Non-finite literals (`NaN`, `Infinity`) are not integers
+	/// either, so they are rejected here too.
+	///
+	/// # Errors
+	///
+	/// Returns an error if the input is not valid canonical JSON.
 	pub fn from_json_str(input: &str) -> Result<Value, mtx_slipstream::codec::DeError> {
-		Value::parse(input).map_err(|error| mtx_slipstream::codec::DeError(error.to_string()))
+		let value = Value::parse(input)
+			.map_err(|error| mtx_slipstream::codec::DeError(error.to_string()))?;
+		validate_canonical(&value)?;
+		Ok(value)
+	}
+
+	fn validate_canonical(value: &Value) -> Result<(), mtx_slipstream::codec::DeError> {
+		match value {
+			| Value::Number(number) => match number.as_i64() {
+				| Some(integer) if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&integer) =>
+					Ok(()),
+				| _ => Err(mtx_slipstream::codec::DeError(
+					"number is not a canonical JSON integer within +/-(2^53 - 1)".to_owned(),
+				)),
+			},
+			| Value::Array(items) => items.iter().try_for_each(validate_canonical),
+			| Value::Object(object) => object.values().try_for_each(validate_canonical),
+			| _ => Ok(()),
+		}
 	}
 
 	#[must_use]
@@ -97,6 +126,36 @@ pub mod canonical_json {
 		match value {
 			| Value::Object(object) => Some(object),
 			| _ => None,
+		}
+	}
+}
+
+#[cfg(test)]
+mod canonical_json_tests {
+	use super::canonical_json::from_json_str;
+
+	#[test]
+	fn rejects_what_matrix_canonical_json_forbids() {
+		for bad in [
+			r#"{"body": 9007199254740992}"#,
+			r#"{"body": -9007199254740992}"#,
+			r#"{"body": 1.1}"#,
+			r#"{"body": 1e3}"#,
+			r#"{"nested": [{"deep": 18446744073709551615}]}"#,
+			r#"{"body": Infinity}"#,
+			r#"{"body": NaN}"#,
+		] {
+			assert!(from_json_str(bad).is_err(), "{bad} must be rejected");
+		}
+	}
+
+	#[test]
+	fn accepts_integers_up_to_two_to_the_53_minus_one() {
+		for good in [
+			r#"{"a": 9007199254740991, "b": -9007199254740991, "c": 0, "d": [1, 2]}"#,
+			r#"{"s": "1.1", "t": true, "n": null}"#,
+		] {
+			assert!(from_json_str(good).is_ok(), "{good} must parse");
 		}
 	}
 }

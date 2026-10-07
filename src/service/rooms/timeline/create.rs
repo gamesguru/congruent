@@ -407,7 +407,15 @@ pub fn hash_sign_and_finalize(
 ) -> Result<CanonicalJsonObject> {
 	// Sort keys canonically and purge "placeholder" `event_id`
 	let mut pdu_json = pdu.to_canonical_object();
-	pdu_json.remove("event_id");
+	if conduwuit_core::matrix::event::has_opaque_event_ids(room_version_id) {
+		// Room versions 1 and 2: the event ID is assigned here, and is part of
+		// the hashed and signed event.
+		let event_id =
+			format!("${}:{}", utils::random_string(18), self.services.globals.server_name());
+		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(event_id));
+	} else {
+		pdu_json.remove("event_id");
+	}
 
 	// Sign
 	if let Err(e) = self

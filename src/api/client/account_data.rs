@@ -83,9 +83,12 @@ pub(crate) async fn get_global_account_data_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_global_account_data::v3::Response {
-		account_data: Raw::from_value(&account_data),
-	})
+	// The stored value is the whole event; the endpoint returns only its content.
+	let content = account_data
+		.get("content")
+		.ok_or_else(|| err!(Request(NotFound("Data not found."))))?;
+
+	Ok(get_global_account_data::v3::Response { account_data: Raw::from_value(content) })
 }
 
 /// # `GET /_matrix/client/r0/user/{userId}/rooms/{roomId}/account_data/{type}`
@@ -107,9 +110,12 @@ pub(crate) async fn get_room_account_data_route(
 		.await
 		.map_err(|_| err!(Request(NotFound("Data not found."))))?;
 
-	Ok(get_room_account_data::v3::Response {
-		account_data: Raw::from_value(&account_data),
-	})
+	// The stored value is the whole event; the endpoint returns only its content.
+	let content = account_data
+		.get("content")
+		.ok_or_else(|| err!(Request(NotFound("Data not found."))))?;
+
+	Ok(get_room_account_data::v3::Response { account_data: Raw::from_value(content) })
 }
 
 /// # `DELETE /_matrix/client/unstable/org.matrix.msc3391/user/{userId}/account_data/{type}`

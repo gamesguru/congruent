@@ -667,8 +667,10 @@ pub(super) async fn get_remote_dag(
 								 primary server didn't have"
 							);
 						}
-						fallback_pdus.push(res.pdu);
-						break;
+						if let Some(pdu) = res.pdus.into_iter().next() {
+							fallback_pdus.push(pdu);
+							break;
+						}
 					}
 				}
 			}
@@ -966,10 +968,11 @@ pub(super) async fn dag_merge_base(
 					)
 					.await
 					.ok()?;
+				let raw_pdu = response.pdus.first()?;
 				let (validated_id, value) = self
 					.services
 					.server_keys
-					.validate_and_add_event_id(&response.pdu, &room_version)
+					.validate_and_add_event_id(raw_pdu, &room_version)
 					.await
 					.ok()?;
 				let pdu =

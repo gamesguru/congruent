@@ -111,7 +111,7 @@ pub(super) async fn federation_request(
 
 			object.field("event_id", &event_id.to_string());
 
-			object.field("pdu", &response.pdu);
+			object.field("pdu", &response.pdus.first());
 
 			object.finish()
 		};
@@ -173,11 +173,14 @@ pub(super) async fn fetch_pdu(
 		.await?;
 
 	info!("fetch_pdu: received response from {server}, parsing PDU...");
+	let Some(raw_pdu) = response.pdus.first() else {
+		return Err!("Remote server returned an empty pdus list");
+	};
 
 	// If the room's state is completely missing and we happen
 	// to be fetching the `m.room.create` event to rescue it, we MUST extract the
 	// real version from the PDU itself. Otherwise, canonicalization fails.
-	if let Ok(val) = slipstream::codec::from_str::<slipstream::json::Value>(response.pdu.get()) {
+	if let Ok(val) = slipstream::codec::from_str::<slipstream::json::Value>(raw_pdu.get()) {
 		if val.get("type").and_then(|t| t.as_str()) == Some("m.room.create") {
 			if let Some(v_str) = val
 				.get("content")
@@ -205,7 +208,7 @@ pub(super) async fn fetch_pdu(
 
 	let (event_id, value) = if skip_auth {
 		let (eid, mut val) =
-			conduwuit::matrix::event::gen_event_id_canonical_json(&response.pdu, &room_version)?;
+			conduwuit::matrix::event::gen_event_id_canonical_json(raw_pdu, &room_version)?;
 		val.insert(
 			"event_id".into(),
 			slipstream::CanonicalJsonValue::String(eid.as_str().into()),
@@ -216,7 +219,7 @@ pub(super) async fn fetch_pdu(
 		let result = self
 			.services
 			.server_keys
-			.validate_and_add_event_id(&response.pdu, &room_version)
+			.validate_and_add_event_id(raw_pdu, &room_version)
 			.await?;
 		info!("fetch_pdu: validated event_id={}", result.0);
 		result
@@ -469,10 +472,9 @@ pub(super) async fn fetch_state_ids(
 			.await
 		{
 			| Ok(ev_resp) => {
-				if let Ok((eid, mut val)) = conduwuit::matrix::event::gen_event_id_canonical_json(
-					&ev_resp.pdu,
-					&room_version,
-				) {
+				if let Some((eid, mut val)) = ev_resp.pdus.first().and_then(|p| {
+					conduwuit::matrix::event::gen_event_id_canonical_json(p, &room_version).ok()
+				}) {
 					val.insert(
 						"event_id".into(),
 						slipstream::CanonicalJsonValue::String(eid.as_str().into()),

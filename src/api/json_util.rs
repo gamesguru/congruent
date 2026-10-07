@@ -9,6 +9,23 @@ pub(crate) fn single_field<T: Serialize + ?Sized>(
 	object.finish()
 }
 
+/// Event content must be a JSON object. A request body that is any other JSON
+/// value (a string, number, array, ...) is rejected with `M_BAD_JSON`.
+pub(crate) fn require_object_content<T>(
+	content: &slipstream::sswire::Raw<T>,
+) -> conduwuit::Result<()> {
+	// Raw event endpoints otherwise bypass the canonical-JSON parser used by
+	// normal event decoding. Validate here so NaN/Infinity, fractional numbers,
+	// and integers outside Matrix's exactly-representable range are rejected
+	// consistently with federation and state-event handling.
+	let value = slipstream::canonical_json::from_json_str(content.get())
+		.map_err(|e| conduwuit::err!(Request(BadJson("Invalid event content: {e}"))))?;
+	if value.as_object().is_none() {
+		return conduwuit::Err!(Request(BadJson("Event content must be a JSON object")));
+	}
+	Ok(())
+}
+
 pub(crate) fn empty_events() -> slipstream::json::Value {
 	single_field("events", &Vec::<slipstream::json::Value>::new())
 }

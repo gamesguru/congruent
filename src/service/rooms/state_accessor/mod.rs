@@ -1,7 +1,7 @@
 mod msc4500;
 pub use msc4500::{
-	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PduDigests, PointDigests,
-	StateHashEntry, StateHashes,
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PRIMARY_ALGORITHM, PduDigests,
+	PointDigests, StateHashEntry, StateHashes,
 };
 mod room_state;
 mod server_can;
@@ -91,7 +91,8 @@ impl Service {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
 			.and_then(|c: RoomNameEventContent| {
-				c.name
+				(!c.name.is_empty())
+					.then_some(c.name)
 					.ok_or_else(|| err!(Request(NotFound("No name found in event content"))))
 			})
 	}

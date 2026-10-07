@@ -278,6 +278,14 @@ where
 					match fetch_res {
 						| Ok((res, successful_server)) => {
 							debug!("Got {next_id} over federation from {successful_server}");
+							let Some(raw_pdu) = res.pdus.first() else {
+								info!(
+									"Empty pdus in response from {successful_server} for event \
+									 {next_id}"
+								);
+								back_off(next_id);
+								continue;
+							};
 
 							let room_version_id = match create_event {
 								| Some(ce) =>
@@ -296,7 +304,7 @@ where
 									let mut version = None;
 									if let Ok(json) =
 										slipstream::codec::from_str::<slipstream::json::Value>(
-											res.pdu.get(),
+											raw_pdu.get(),
 										) {
 										if json.get("type").and_then(|t| t.as_str())
 											== Some("m.room.create")
@@ -338,14 +346,14 @@ where
 								},
 							};
 							let (calculated_event_id, value) =
-								match gen_event_id_canonical_json(&res.pdu, &room_version_id) {
+								match gen_event_id_canonical_json(raw_pdu, &room_version_id) {
 									| Ok(res) => res,
 									| Err(e) => {
 										info!(
 											"Failed to parse PDU JSON over federation from \
 											 {successful_server} for event {next_id}: {e}. Raw \
 											 JSON: {}",
-											res.pdu.get()
+											raw_pdu.get()
 										);
 										back_off(next_id);
 										continue;
@@ -356,7 +364,7 @@ where
 								warn!(
 									"Server didn't return event id we requested: requested: \
 									 {next_id}, we got {calculated_event_id}. Event: {:?}",
-									&res.pdu
+									raw_pdu
 								);
 							}
 

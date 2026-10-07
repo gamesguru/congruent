@@ -1469,10 +1469,13 @@ async fn fetch_missing_extremity(
 			return Err(e);
 		},
 	};
+	let Some(raw_pdu) = response.pdus.first() else {
+		return Err!(Request(NotFound("Remote server returned no PDU for extremity")));
+	};
 	let (parsed_room_id, parsed_event_id, value) = services
 		.rooms
 		.event_handler
-		.parse_incoming_pdu(&response.pdu)
+		.parse_incoming_pdu(raw_pdu)
 		.await
 		.map_err(|e| err!("Failed to parse extremity {event_id}: {e}"))?;
 	if parsed_room_id != room_id {

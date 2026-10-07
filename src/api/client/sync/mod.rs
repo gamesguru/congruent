@@ -25,7 +25,7 @@ pub(crate) use self::{
 };
 
 pub(crate) const DEFAULT_BUMP_TYPES: &[TimelineEventType; 6] =
-	&[CallInvite, PollStart, Beacon, RoomEncrypted, RoomMessage, Sticker];
+	&[RoomMessage, RoomEncrypted, Beacon, CallInvite, PollStart, Sticker];
 
 #[derive(Default)]
 pub(crate) struct TimelinePdus {

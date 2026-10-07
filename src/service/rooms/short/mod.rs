@@ -423,9 +423,7 @@ where
 		.await?;
 	let bytes = handle.as_ref();
 	let event_id_str = utils::string::str_from_bytes(bytes)?;
-	let value = slipstream::json::Value::parse(event_id_str).map_err(|e| {
-		err!(Database("Failed to parse EventId JSON from short {shorteventid:?}: {e:?}"))
-	})?;
+	let value = slipstream::json::Value::String(event_id_str.to_owned());
 	let res = Id::from_json(&value).map_err(|e| {
 		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
 	})?;
@@ -479,8 +477,16 @@ where
 					.await;
 
 				for ((&miss_key, res), idx) in misses.iter().zip(db_results).zip(miss_indices) {
-					let val: Result<Id> =
-						res.and_then(|handle| database::from_json_slice(handle.as_ref()));
+					let val: Result<Id> = res.and_then(|handle| {
+						let text = utils::string::str_from_bytes(handle.as_ref())?;
+						Id::from_json(&slipstream::json::Value::String(text.to_owned())).map_err(
+							|e| {
+								err!(Database(
+									"Failed to parse EventId from short {miss_key:?}: {e:?}"
+								))
+							},
+						)
+					});
 
 					if let Ok(ref val) = val {
 						let owned = val.to_owned();

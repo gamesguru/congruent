@@ -195,6 +195,11 @@ impl crate::Service for Service {
 				);
 
 				if !servers.is_empty() {
+					debug!(
+						target: "presence_debug",
+						servers = ?servers,
+						"flush tick: flushing servers with pending presence"
+					);
 					let server_refs = servers.iter().cloned();
 					self_flush
 						.services

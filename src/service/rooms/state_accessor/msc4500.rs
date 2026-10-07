@@ -489,12 +489,12 @@ pub async fn msc4500_resolution_inputs_digest(
 	Some(encode_digest(inputs.digest()))
 }
 
-/// Algorithm identifier for the primary and redaction digests.
-pub const ALGORITHM: &str = "lthash16-blake3-v1+redactions-blake3-v1";
+pub use slipstream::state_hashes::{ALGORITHM, ALGORITHM_WITH_INPUTS};
 
-/// Algorithm identifier that additionally commits the resolution-input set.
-pub const ALGORITHM_WITH_INPUTS: &str =
-	"lthash16-blake3-v1+redactions-blake3-v1+resolution-inputs-blake3-v1";
+/// Algorithm identifier for the primary BLAKE3 LtHash16 accumulator alone, as
+/// served by the federation state-accumulator endpoint. The transaction
+/// algorithms in [`slipstream::state_hashes`] build on this base profile.
+pub const PRIMARY_ALGORITHM: &str = "lthash16-blake3-v1";
 
 /// The `state_hashes` object of a `/send` transaction.
 ///

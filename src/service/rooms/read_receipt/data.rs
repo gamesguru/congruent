@@ -401,6 +401,10 @@ impl Data {
 
 				let mut json: CanonicalJsonObject = database::from_json_slice(value)?;
 				json.remove("room_id");
+				json.insert(
+					"type".into(),
+					slipstream::CanonicalJsonValue::String("m.receipt".to_owned()),
+				);
 				let event = slipstream::codec::to_string(&json);
 
 				conduwuit::trace!(

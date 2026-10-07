@@ -205,7 +205,10 @@ impl Deserialize for CompatRequest {
 			conn_id: field(object, "conn_id")?,
 			txn_id: field(object, "txn_id")?,
 			timeout: field::<Option<UInt>>(object, "timeout")?.map(Duration::from_millis),
-			set_presence: field(object, "set_presence")?,
+			set_presence: match object.get("set_presence") {
+				| Some(value) if !value.is_null() => PresenceState::from_json(value)?,
+				| _ => PresenceState::Online,
+			},
 			lists: field(object, "lists")?,
 			room_subscriptions: field(object, "room_subscriptions")?,
 			extensions: field(object, "extensions")?,
@@ -595,7 +598,6 @@ async fn sync_events_v5_route_inner(
 	body: Ruma<CompatSyncRequest>,
 	endpoint: SyncEndpoint,
 ) -> Result<axum::response::Response> {
-	debug_assert!(DEFAULT_BUMP_TYPES.is_sorted(), "DEFAULT_BUMP_TYPES is not sorted");
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	let sender_device = body.sender_device.as_ref().expect("user is authenticated");
 
@@ -1396,9 +1398,7 @@ where
 			if fallback_timestamp.is_none_or(|time| time <= ts) {
 				fallback_timestamp = Some(ts);
 			}
-			if DEFAULT_BUMP_TYPES.binary_search(&pdu.kind).is_ok()
-				&& timestamp.is_none_or(|time| time <= ts)
-			{
+			if DEFAULT_BUMP_TYPES.contains(&pdu.kind) && timestamp.is_none_or(|time| time <= ts) {
 				timestamp = Some(ts);
 			}
 		}

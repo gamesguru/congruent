@@ -45,6 +45,12 @@ macro_rules! ruma_handler {
 		{
 			fn add_routes(&'static self, router: Router<State>) -> Router<State> {
 				let router = self.add_route(router, Req::METADATA.path);
+				// Alias paths declared by the endpoint (for example a stable path for an
+				// endpoint whose canonical path is still the unstable one).
+				let router = Req::METADATA
+					.aliases
+					.iter()
+					.fold(router, |router, alias| self.add_route(router, alias));
 				if let Some((prefix, suffix)) = Req::METADATA.path.split_once("/_matrix/client/v3/") {
 					let legacy = format!("{prefix}/_matrix/client/r0/{suffix}");
 					self.add_route(router, &legacy)

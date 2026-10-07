@@ -45,6 +45,7 @@ struct Services {
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
+	threads: Dep<rooms::threads::Service>,
 	users: Dep<users::Service>,
 	sending: Dep<sending::Service>,
 }
@@ -69,6 +70,7 @@ impl crate::Service for Service {
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
+				threads: args.depend::<rooms::threads::Service>("rooms::threads"),
 				users: args.depend::<users::Service>("users"),
 				sending: args.depend::<sending::Service>("sending"),
 			},
@@ -343,6 +345,30 @@ impl Service {
 		Ok(())
 	}
 
+	/// MSC4306: for an event that is a reply in a thread, whether `user` is
+	/// subscribed to that thread; `None` for any other event. A thread with no
+	/// stored subscription counts as not subscribed.
+	async fn thread_subscription(
+		&self,
+		user: &UserId,
+		room_id: &RoomId,
+		pdu: &Raw<AnySyncTimelineEvent>,
+	) -> Option<bool> {
+		let event = pdu.json().ok()?;
+		let relation = event.get("content")?.get("m.relates_to")?;
+		if relation.get("rel_type")?.as_str()? != "m.thread" {
+			return None;
+		}
+		let root = slipstream::OwnedEventId::parse(relation.get("event_id")?.as_str()?).ok()?;
+		let subscribed = self
+			.services
+			.threads
+			.get_subscription(user, room_id, &root)
+			.await
+			.is_some_and(|subscription| subscription.subscribed);
+		Some(subscribed)
+	}
+
 	#[tracing::instrument(skip(self, user, ruleset, pdu), level = "debug")]
 	pub async fn get_actions<'a>(
 		&self,
@@ -372,6 +398,7 @@ impl Service {
 			.await
 			.unwrap_or_else(|_| user.localpart().to_owned());
 		let room_version = self.services.state.get_room_version(room_id).await.ok();
+		let thread_subscription = self.thread_subscription(user, room_id, pdu).await;
 
 		// Determines whether the legacy (pre-`m.mentions`) mention rules --
 		// `.m.rule.contains_user_name`, `.m.rule.contains_display_name`, and
@@ -382,6 +409,7 @@ impl Service {
 			user_display_name,
 			power_levels: Some(power_levels),
 			room_version,
+			thread_subscription,
 			#[cfg(feature = "unstable-msc3931")]
 			supported_features: Vec::new(),
 		};

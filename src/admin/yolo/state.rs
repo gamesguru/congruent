@@ -153,9 +153,13 @@ pub(super) async fn compare_room_state(
 					return Ok(None);
 				},
 			};
+			let Some(raw_pdu) = response.pdus.first() else {
+				warn!("compare_room_state: empty pdus for {event_id} from {server}");
+				return Ok(None);
+			};
 			let legacy_state_event_id =
 				if matches!(room_version, RoomVersionId::V1 | RoomVersionId::V2) {
-					slipstream::codec::from_str::<JsonValue>(response.pdu.get())
+					slipstream::codec::from_str::<JsonValue>(raw_pdu.get())
 						.ok()
 						.and_then(|json| {
 							json.get("event_id")
@@ -168,7 +172,7 @@ pub(super) async fn compare_room_state(
 
 			let (fetched_event_id, value, sig_failed) = if skip_sig_verify {
 				match conduwuit::matrix::event::gen_event_id_canonical_json(
-					&response.pdu,
+					raw_pdu,
 					&room_version,
 				) {
 					| Ok((eid, val)) => (
@@ -188,7 +192,7 @@ pub(super) async fn compare_room_state(
 				match self
 					.services
 					.server_keys
-					.validate_and_add_event_id(&response.pdu, &room_version)
+					.validate_and_add_event_id(raw_pdu, &room_version)
 					.await
 				{
 					| Ok((eid, val)) => (
@@ -200,7 +204,7 @@ pub(super) async fn compare_room_state(
 						false,
 					),
 					| Err(e) => match conduwuit::matrix::event::gen_event_id_canonical_json(
-						&response.pdu,
+						raw_pdu,
 						&room_version,
 					) {
 						| Ok((eid, val)) => {

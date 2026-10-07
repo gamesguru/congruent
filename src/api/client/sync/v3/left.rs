@@ -372,16 +372,24 @@ async fn build_left_state_and_timeline(
 		.and_then(|limit| limit.try_into().ok())
 		.unwrap_or(DEFAULT_TIMELINE_LIMIT);
 
-	let raw_timeline = load_timeline(
-		services,
-		syncing_user,
-		room_id,
-		Some(timeline_start_count),
-		Some(timeline_end_count),
-		timeline_limit,
-		false,
-	)
-	.await?;
+	// A zero timeline limit explicitly requests no timeline events. Do not pass
+	// it through to `load_timeline`: that helper fetches one extra event to
+	// determine whether the result is limited, so a zero there would still
+	// return one event. The leave-state snapshot is built below independently.
+	let raw_timeline = if timeline_limit == 0 {
+		TimelinePdus::default()
+	} else {
+		load_timeline(
+			services,
+			syncing_user,
+			room_id,
+			Some(timeline_start_count),
+			Some(timeline_end_count),
+			timeline_limit,
+			false,
+		)
+		.await?
+	};
 
 	let mut stream = raw_timeline
 		.pdus
