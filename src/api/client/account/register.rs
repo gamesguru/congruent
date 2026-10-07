@@ -155,13 +155,10 @@ pub(crate) async fn register_route(
 	// the email's user as their initial localpart to avoid falling back to
 	// a randomly generated localpart
 	let supplied_username = body.username.clone().or_else(|| {
-		if let Some(identity) = &identity
-			&& let Some(email) = &identity.email
-		{
-			Some(email.user().to_owned())
-		} else {
-			None
-		}
+		identity
+			.as_ref()
+			.and_then(|identity| identity.email.as_deref())
+			.and_then(|email| email.split_once('@').map(|(user, _)| user.to_owned()))
 	});
 
 	let user_id = determine_registration_user_id(

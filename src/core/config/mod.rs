@@ -37,6 +37,14 @@ where
 	slipstream::codec::from_value(&value).map_err(serde::de::Error::custom)
 }
 
+fn deserialize_regex_set<'de, D>(deserializer: D) -> Result<RegexSet, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	let patterns = Vec::<String>::deserialize(deserializer)?;
+	RegexSet::new(patterns).map_err(serde::de::Error::custom)
+}
+
 fn deserialize_slipstream_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
 	D: serde::Deserializer<'de>,
@@ -1788,7 +1796,7 @@ pub struct Config {
 	/// example: ["badserver\\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_remote_server_names: RegexSet,
 
 	/// List of allowed server names via regex patterns that we will allow,
@@ -1799,7 +1807,7 @@ pub struct Config {
 	/// example: ["goodserver\\.tld$", "goodphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub allowed_remote_server_names: RegexSet,
 
 	/// Vector list of regex patterns of server names that continuwuity will
@@ -1808,7 +1816,7 @@ pub struct Config {
 	/// example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub prevent_media_downloads_from: RegexSet,
 
 	/// List of forbidden server names via regex patterns that we will block all
@@ -1818,7 +1826,7 @@ pub struct Config {
 	/// example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_remote_room_directory_server_names: RegexSet,
 
 	/// Vector list of regex patterns of server names that continuwuity will not
@@ -1833,7 +1841,7 @@ pub struct Config {
 	/// "69dollarfortnitecards"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub ignore_messages_from_server_names: RegexSet,
 
 	/// List of server names that continuwuity will deprioritize (try last) when
@@ -2023,7 +2031,7 @@ pub struct Config {
 	/// example: ["19dollarfortnitecards", "b[4a]droom", "badphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_alias_names: RegexSet,
 
 	/// List of forbidden username patterns/strings.
@@ -2038,7 +2046,7 @@ pub struct Config {
 	/// example: ["administrator", "b[a4]dusernam[3e]", "badphrase"]
 	///
 	/// default: []
-	#[serde(default, with = "serde_regex")]
+	#[serde(default, deserialize_with = "deserialize_regex_set")]
 	pub forbidden_usernames: RegexSet,
 
 	/// Retry failed and incomplete messages to remote servers immediately upon

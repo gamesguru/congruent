@@ -160,10 +160,6 @@ features = ["rc"]
 [workspace.dependencies.serde-saphyr]
 version = "0.0.24"
 
-# Used to load forbidden room/user regex from config
-[workspace.dependencies.serde_regex]
-version = "1.1.0"
-
 # Used for ruma wrapper
 [workspace.dependencies.serde_html_form]
 version = "0.4.0"

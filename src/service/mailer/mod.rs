@@ -18,7 +18,7 @@ struct Webhook {
 }
 
 fn json_string(value: &str) -> String {
-	let mut escaped = String::with_capacity(value.len() + 2);
+	let mut escaped = String::with_capacity(value.len().saturating_add(2));
 	escaped.push('"');
 	for character in value.chars() {
 		match character {
@@ -28,7 +28,7 @@ fn json_string(value: &str) -> String {
 			| '\r' => escaped.push_str("\\r"),
 			| '\t' => escaped.push_str("\\t"),
 			| character if character.is_control() => {
-				let _ = write!(escaped, "\\u{:04x}", character as u32);
+				let _ = write!(escaped, "\\u{:04x}", u32::from(character));
 			},
 			| character => escaped.push(character),
 		}
@@ -55,11 +55,10 @@ impl crate::Service for Service {
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		if self.webhook.is_some() {
 			info!("Email webhook is configured");
-			Ok(())
 		} else {
 			info!("Email webhook is not configured, email functionality will be unavailable");
-			Ok(())
 		}
+		Ok(())
 	}
 }
 

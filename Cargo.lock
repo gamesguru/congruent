@@ -849,7 +849,6 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde-saphyr",
- "serde_regex",
  "sha2 0.11.0",
  "smallstr",
  "smallvec",
@@ -3495,16 +3494,6 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "serde_regex"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bafc8d0c5330cecff10f16b459b479fd9acaa5b4acd7167301414e21b0057012"
-dependencies = [
- "regex",
- "serde",
 ]
 
 [[package]]
