@@ -150,6 +150,7 @@ impl Error {
 	pub fn from_errno() -> Self { Self::Io(std::io::Error::last_os_error()) }
 
 	//#[deprecated]
+	#[must_use]
 	pub fn bad_database(message: &'static str) -> Self {
 		crate::err!(Database(error!("{message}")))
 	}

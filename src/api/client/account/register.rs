@@ -35,9 +35,8 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 ///
 /// Register an account on this homeserver.
 ///
-/// You can use [`GET
-/// /_matrix/client/v3/register/available`](fn.get_register_available_route.
-/// html) to check if the user id is valid and available.
+/// You can use [`GET /_matrix/client/v3/register/available`](fn.get_register_available_route.html)
+/// to check if the user id is valid and available.
 ///
 /// - Only works if registration is enabled
 /// - If type is guest: ignores all parameters except

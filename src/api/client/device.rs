@@ -101,7 +101,7 @@ pub(crate) async fn update_device_route(
 				)
 				.await?;
 
-			return Ok(update_device::v3::Response {});
+			Ok(update_device::v3::Response {})
 		},
 	}
 }

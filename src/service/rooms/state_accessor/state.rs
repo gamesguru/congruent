@@ -469,7 +469,6 @@ pub fn state_full_shortids_hamt(
 
 #[implement(super::Service)]
 /// Tests whether a HAMT root has no entries.
-#[allow(clippy::unused_async_trait_impl)]
 pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	let root_node = self
 		.services
@@ -484,7 +483,6 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 
 #[implement(super::Service)]
 /// Materializes all state entries stored beneath a HAMT root.
-#[allow(clippy::unused_async_trait_impl)]
 pub async fn load_full_state_hamt(
 	&self,
 	root_handle: &rezzy::hamt::RootHandle,

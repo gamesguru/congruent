@@ -104,7 +104,7 @@ fn configure_cfds(
 		.map(|desc| desc.name)
 		.map(ToOwned::to_owned)
 		.chain(missing.cloned())
-		.zip(cfopts.into_iter())
+		.zip(cfopts)
 		.map(|(name, opts)| ColumnFamilyDescriptor::new(name, opts))
 		.collect();
 

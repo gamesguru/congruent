@@ -69,6 +69,7 @@ pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositio
 
 /// sanitises the file name for the Content-Disposition using
 /// `sanitize_filename` crate
+#[must_use]
 pub fn sanitise_filename(filename: &str) -> String {
 	sanitize_filename::sanitize_with_options(filename, sanitize_filename::Options {
 		truncate: false,

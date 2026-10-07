@@ -23,7 +23,7 @@ pub enum Level {
 pub struct EnvFilter;
 
 impl EnvFilter {
-	pub fn try_new(value: impl AsRef<str>) -> Result<Self, String> {
+	pub fn try_new<T: AsRef<str>>(value: T) -> Result<Self, String> {
 		let _ = value;
 		Ok(Self)
 	}
@@ -39,6 +39,7 @@ impl LogLevelReloadHandles {
 		Ok(())
 	}
 
+	#[must_use]
 	pub fn current(&self, _name: &str) -> Option<EnvFilter> { None }
 }
 

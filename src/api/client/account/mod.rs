@@ -98,7 +98,7 @@ pub(crate) async fn get_register_available_route(
 /// - Changes the password of the sender user
 /// - The password hash is calculated using argon2 with 32 character salt, the
 ///   plain password is
-/// not saved
+///   not saved
 ///
 /// If logout_devices is true it does the following for each device except the
 /// sender device:

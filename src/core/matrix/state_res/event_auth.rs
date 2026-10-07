@@ -926,7 +926,7 @@ where
 						);
 						false
 					},
-					| JoinRule::KnockRestricted(_) => {
+					| JoinRule::Restricted(_) | JoinRule::KnockRestricted(_) =>
 						if membership_allows_join || user_for_join_auth_is_valid {
 							trace!(
 								%sender,
@@ -946,30 +946,7 @@ where
 								 valid authorising user given to permit the join"
 							);
 							false
-						}
-					},
-					| JoinRule::Restricted(_) => {
-						if membership_allows_join || user_for_join_auth_is_valid {
-							trace!(
-								%sender,
-								%membership_allows_join,
-								%user_for_join_auth_is_valid,
-								"sender is invited, already joined to, or authorised to join the room, allowing join"
-							);
-							true
-						} else {
-							warn!(
-								%sender,
-								membership_event_id = ?target_user_membership_event_id,
-								membership=?target_user_current_membership,
-								%user_for_join_auth_is_valid,
-								?user_for_join_auth,
-								"sender cannot join as they are not invited nor already joined to the room, nor was a \
-								 valid authorising user given to permit the join"
-							);
-							false
-						}
-					},
+						},
 					| JoinRule::Public => {
 						trace!(%sender, "join rule is public, allowing join");
 						true

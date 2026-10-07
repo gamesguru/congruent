@@ -8,9 +8,8 @@ pub(crate) fn handle(level: LogLevel, msg: &str) {
 	}
 
 	match level {
-		| LogLevel::Header | LogLevel::Debug => debug!("{msg}"),
+		| LogLevel::Header | LogLevel::Debug | LogLevel::Info => debug!("{msg}"),
 		| LogLevel::Error | LogLevel::Fatal => error!("{msg}"),
-		| LogLevel::Info => debug!("{msg}"),
 		| LogLevel::Warn => warn!("{msg}"),
 	}
 }
