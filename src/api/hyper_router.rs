@@ -8,6 +8,56 @@ use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
 use matchit::Router;
 
+#[derive(Clone)]
+pub struct RouteManifestEntry {
+	pub method: Method,
+	pub path: String,
+	pub matchit_path: String,
+	pub handler: &'static str,
+}
+
+static ROUTE_MANIFEST: std::sync::OnceLock<std::sync::Mutex<Vec<RouteManifestEntry>>> =
+	std::sync::OnceLock::new();
+
+fn manifest() -> &'static std::sync::Mutex<Vec<RouteManifestEntry>> {
+	ROUTE_MANIFEST.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+pub fn matchit_path(path: &str) -> String {
+	let mut converted = String::with_capacity(path.len());
+	let mut parameter = false;
+	for character in path.chars() {
+		match character {
+			| '{' => {
+				converted.push(':');
+				parameter = true;
+			},
+			| '}' if parameter => parameter = false,
+			| _ => converted.push(character),
+		}
+	}
+	converted
+}
+
+pub fn record_route(method: Method, path: &str, handler: &'static str) {
+	manifest()
+		.lock()
+		.expect("route manifest mutex poisoned")
+		.push(RouteManifestEntry {
+			method,
+			path: path.to_owned(),
+			matchit_path: matchit_path(path),
+			handler,
+		});
+}
+
+pub fn route_manifest() -> Vec<RouteManifestEntry> {
+	manifest()
+		.lock()
+		.expect("route manifest mutex poisoned")
+		.clone()
+}
+
 pub type BoxedHandler = Arc<
 	dyn Fn(
 			Request<Incoming>,
