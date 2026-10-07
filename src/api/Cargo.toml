@@ -104,7 +104,6 @@ url.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [lints]

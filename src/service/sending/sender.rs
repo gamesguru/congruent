@@ -1505,10 +1505,7 @@ impl Service {
 
 		// TODO: another option would be to convert it to a canonical string to validate
 		// size and return a Result<Raw<...>>
-		// serde_json::from_str::<Raw<_>>(
-		//     slipstream::sswire::to_canonical_json_string(pdu_json).expect("CanonicalJson is
-		// valid slipstream::json::Value"), )
-		// .expect("Raw::from_value always works")
+		// `Raw::from_value` accepts the Slipstream JSON value directly.
 
 		Raw::from_value(&pdu_json)
 	}
@@ -1815,7 +1812,7 @@ mod tests {
 		for i in 1..=5 {
 			let user_id_str = format!("@user{i}:example.com");
 			let user_id = OwnedUserId::parse(user_id_str.as_str()).unwrap();
-			let json = serde_json::json!({
+			let json = slipstream::json!({
 				"type": "m.receipt",
 				"content": {
 					"$event1": {
@@ -1827,7 +1824,11 @@ mod tests {
 					}
 				}
 			});
-			receipts.push((user_id, 10 + u64::try_from(i).unwrap(), json.to_string()));
+			receipts.push((
+				user_id,
+				10 + u64::try_from(i).unwrap(),
+				slipstream::codec::to_string(&json),
+			));
 		}
 
 		let since = (10, 20);

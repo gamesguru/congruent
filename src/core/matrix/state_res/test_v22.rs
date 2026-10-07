@@ -3,7 +3,6 @@ use slipstream::{
     events::{room::{join_rules::{JoinRule, RoomJoinRulesEventContent}, power_levels::RoomPowerLevelsEventContent}, StateEventType},
     EventId, OwnedEventId, OwnedRoomId, RoomVersionId, MilliSecondsSinceUnixEpoch
 };
-use serde_json::json;
 use futures::future::ready;
 
 use super::{test_utils::*, RoomVersion, StateMap, resolve};
@@ -14,12 +13,12 @@ async fn v22_resolves_msc4297_state_reset() {
     let create_id_str = "$V22Test12345678901234567890123456789";
     let create_id: OwnedEventId = create_id_str.try_into().unwrap();
 
-    let mut e1_create = to_pdu_event::<&str>(
+	let mut e1_create = to_pdu_event::<&str>(
         create_id_str,
         alice(),
         TimelineEventType::RoomCreate,
         Some(""),
-        to_raw_json_value(&json!({ "creator": alice(), "room_version": "12" })).unwrap(),
+		to_raw_json_value(&slipstream::json!({ "creator": alice(), "room_version": "12" })),
         &[],
         &[],
     );
@@ -40,7 +39,7 @@ async fn v22_resolves_msc4297_state_reset() {
         alice(),
         TimelineEventType::RoomPowerLevels,
         Some(""),
-        to_raw_json_value(&json!({ "users": { alice(): 100 } })).unwrap(),
+        to_raw_json_value(&slipstream::json!({ "users": { alice(): 100 } })),
         &["SR_MA", create_id_str],
         &["SR_MA"],
     );
@@ -51,7 +50,7 @@ async fn v22_resolves_msc4297_state_reset() {
         alice(),
         TimelineEventType::RoomJoinRules,
         Some(""),
-        to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)).unwrap(),
+        to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Public)),
         &["SR_MA", "SR_PL", create_id_str],
         &["SR_PL"],
     );
@@ -62,7 +61,7 @@ async fn v22_resolves_msc4297_state_reset() {
         alice(),
         TimelineEventType::RoomJoinRules,
         Some(""),
-        to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Invite)).unwrap(),
+        to_raw_json_value(&RoomJoinRulesEventContent::new(JoinRule::Invite)),
         &["SR_MA", "SR_PL", create_id_str],
         &["SR_PL"],
     );
