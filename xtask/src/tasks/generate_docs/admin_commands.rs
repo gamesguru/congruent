@@ -60,7 +60,7 @@ impl Category {
         let mut output = format!("# `!admin {}`\n\n{}\n\n", self.name, self.description);
 
         for command in &self.commands {
-            let header = "#".repeat((command.depth + 1).min(3));
+			let header = "#".repeat(command.depth.saturating_add(1).min(3));
             let _ = writeln!(
                 output,
                 "{header} `!admin {}`\n\n{}",

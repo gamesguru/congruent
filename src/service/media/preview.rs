@@ -690,26 +690,43 @@ struct HtmlMetadata {
 
 #[cfg(feature = "url_preview")]
 fn parse_html_metadata(body: &str) -> HtmlMetadata {
-	let lower = body.to_ascii_lowercase();
+	let body = body.as_bytes();
+	let lower: Vec<_> = body.iter().map(u8::to_ascii_lowercase).collect();
 	let mut metadata = HtmlMetadata::default();
 	let mut offset = 0;
 
-	while let Some(start) = lower[offset..].find('<').map(|index| index + offset) {
-		let Some(end) = lower[start..].find('>').map(|index| index + start) else {
+	while let Some(start) = lower
+		.get(offset..)
+		.and_then(|remaining| remaining.iter().position(|&byte| byte == b'<'))
+		.map(|index| offset.saturating_add(index))
+	{
+		let Some(end) = lower
+			.get(start..)
+			.and_then(|remaining| remaining.iter().position(|&byte| byte == b'>'))
+			.map(|index| start.saturating_add(index))
+		else {
 			break;
 		};
 
-		let tag = &body[start + 1..end];
-		let tag_lower = &lower[start + 1..end];
-		let tag_name = tag_lower
-			.trim_start_matches(|character: char| {
-				character.is_ascii_whitespace() || character == '/'
-			})
-			.split(|character: char| character.is_ascii_whitespace() || character == '/')
-			.next()
-			.unwrap_or_default();
+		let tag_start = start.saturating_add(1);
+		let Some(tag) = body.get(tag_start..end) else { break };
+		let mut name_start = 0;
+		while tag
+			.get(name_start)
+			.is_some_and(|&byte| byte.is_ascii_whitespace() || byte == b'/')
+		{
+			name_start = name_start.saturating_add(1);
+		}
+		let mut name_end = name_start;
+		while tag
+			.get(name_end)
+			.is_some_and(|&byte| !byte.is_ascii_whitespace() && byte != b'/' && byte != b'>')
+		{
+			name_end = name_end.saturating_add(1);
+		}
+		let tag_name = tag.get(name_start..name_end).unwrap_or_default();
 
-		if tag_name == "meta" {
+		if tag_name.eq_ignore_ascii_case(b"meta") {
 			let key = html_attribute(tag, "property")
 				.or_else(|| html_attribute(tag, "name"))
 				.map(|value| value.to_ascii_lowercase());
@@ -732,80 +749,95 @@ fn parse_html_metadata(body: &str) -> HtmlMetadata {
 					| _ => {},
 				}
 			}
-		} else if tag_name == "title" {
-			let content_start = end + 1;
-			if let Some(close) = lower[content_start..].find("</title>") {
+		} else if tag_name.eq_ignore_ascii_case(b"title") {
+			let content_start = end.saturating_add(1);
+			if let Some(close) = lower.get(content_start..).and_then(|remaining| {
+				remaining
+					.windows(8)
+					.position(|window| window == b"</title>")
+			}) {
+				let content_end = content_start.saturating_add(close);
 				set_once(
 					&mut metadata.title,
-					decode_html_entities(body[content_start..content_start + close].trim()),
+					decode_html_entities(
+						String::from_utf8_lossy(
+							body.get(content_start..content_end).unwrap_or_default(),
+						)
+						.trim(),
+					),
 				);
 			}
 		}
 
-		offset = end + 1;
+		offset = end.saturating_add(1);
 	}
 
 	metadata
 }
 
 #[cfg(feature = "url_preview")]
-fn html_attribute(tag: &str, wanted: &str) -> Option<String> {
-	let bytes = tag.as_bytes();
+fn html_attribute(tag: &[u8], wanted: &str) -> Option<String> {
 	let mut offset = 0;
 
-	while offset < bytes.len() {
-		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace)
-			|| bytes.get(offset) == Some(&b'/')
+	while offset < tag.len() {
+		while tag
+			.get(offset)
+			.is_some_and(|&byte| byte.is_ascii_whitespace() || byte == b'/')
 		{
-			offset += 1;
+			offset = offset.saturating_add(1);
 		}
 
 		let name_start = offset;
-		while offset < bytes.len()
-			&& !bytes[offset].is_ascii_whitespace()
-			&& bytes[offset] != b'='
-			&& bytes[offset] != b'/'
+		while offset < tag.len()
+			&& !tag[offset].is_ascii_whitespace()
+			&& tag[offset] != b'='
+			&& tag[offset] != b'/'
 		{
-			offset += 1;
+			offset = offset.saturating_add(1);
 		}
 		if name_start == offset {
 			break;
 		}
 
-		let name = &tag[name_start..offset];
-		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
-			offset += 1;
+		let name = tag.get(name_start..offset).unwrap_or_default();
+		while tag
+			.get(offset)
+			.is_some_and(|byte| byte.is_ascii_whitespace())
+		{
+			offset = offset.saturating_add(1);
 		}
-		if bytes.get(offset) != Some(&b'=') {
+		if tag.get(offset) != Some(&b'=') {
 			continue;
 		}
-		offset += 1;
-		while bytes.get(offset).is_some_and(u8::is_ascii_whitespace) {
-			offset += 1;
+		offset = offset.saturating_add(1);
+		while tag
+			.get(offset)
+			.is_some_and(|byte| byte.is_ascii_whitespace())
+		{
+			offset = offset.saturating_add(1);
 		}
 
-		let value = if matches!(bytes.get(offset), Some(b'\'' | b'"')) {
-			let quote = bytes[offset];
-			offset += 1;
+		let value = if matches!(tag.get(offset), Some(b'\'' | b'"')) {
+			let quote = tag[offset];
+			offset = offset.saturating_add(1);
 			let value_start = offset;
-			while offset < bytes.len() && bytes[offset] != quote {
-				offset += 1;
+			while offset < tag.len() && tag[offset] != quote {
+				offset = offset.saturating_add(1);
 			}
-			let value = tag[value_start..offset].to_owned();
-			offset += usize::from(offset < bytes.len());
+			let value = String::from_utf8_lossy(tag.get(value_start..offset).unwrap_or_default())
+				.into_owned();
+			offset = offset.saturating_add(usize::from(offset < tag.len()));
 			value
 		} else {
 			let value_start = offset;
-			while offset < bytes.len()
-				&& !bytes[offset].is_ascii_whitespace()
-				&& bytes[offset] != b'/'
+			while offset < tag.len() && !tag[offset].is_ascii_whitespace() && tag[offset] != b'/'
 			{
-				offset += 1;
+				offset = offset.saturating_add(1);
 			}
-			tag[value_start..offset].to_owned()
+			String::from_utf8_lossy(tag.get(value_start..offset).unwrap_or_default()).into_owned()
 		};
 
-		if name.eq_ignore_ascii_case(wanted) {
+		if name.eq_ignore_ascii_case(wanted.as_bytes()) {
 			return Some(value);
 		}
 	}

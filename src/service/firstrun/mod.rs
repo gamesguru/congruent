@@ -1,4 +1,5 @@
 use std::{
+	fmt::Write,
 	io::IsTerminal,
 	sync::{Arc, OnceLock},
 };
@@ -139,13 +140,14 @@ impl Service {
 		// Send the welcome message
 		let config = &self.services.config;
 		let domain = self.services.globals.server_name();
-		let mut welcome_message = format!(
-			"## Thank you for trying out Continuwuity!\n\nYour new homeserver is ready to use!"
-		);
+		let mut welcome_message = "## Thank you for trying out Continuwuity!\n\nYour new \
+		                           homeserver is ready to use!"
+			.to_owned();
 		if config.allow_federation {
-			welcome_message.push_str(&format!(
+			let _ = write!(
+				welcome_message,
 				" To make sure you can federate with the rest of the Matrix network, consider checking your domain (`{domain}`) with a federation tester like [this one](https://connectivity-tester.mtrnord.blog/)."
-			));
+			);
 		}
 		welcome_message.push_str("\n\n");
 		if config.get_config_file_token().is_some() {

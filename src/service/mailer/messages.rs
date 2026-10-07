@@ -5,7 +5,7 @@ pub trait MessageTemplate {
 	fn render(&self) -> String;
 }
 
-fn footer(body: String) -> String {
+fn footer(body: &str) -> String {
 	format!("{body}\n\nMessage sent by Continuwuity {}. 🐈", env!("CARGO_PKG_VERSION"))
 }
 
@@ -23,7 +23,7 @@ impl MessageTemplate for ChangeEmail<'_> {
 			|| format!("a Matrix account on {}", self.server_name),
 			|user_id| format!("the Matrix account {user_id}"),
 		);
-		footer(format!(
+		footer(&format!(
 			"Hello!\n\nSomebody, probably you, tried to associate this email address with \
 			 {account}.\nIf that was you, and this is your email address, click this link to \
 			 proceed:\n    {}\nOtherwise, you can ignore this email. The above link will expire \
@@ -42,7 +42,7 @@ impl MessageTemplate for NewAccount<'_> {
 	fn subject(&self) -> String { "Create your new Matrix account".to_owned() }
 
 	fn render(&self) -> String {
-		footer(format!(
+		footer(&format!(
 			"Hello!\n\nSomebody, probably you, tried to create a Matrix account on {} using \
 			 this email address.\nUse the link below to proceed with creating your account:\n    \
 			 {}\nIf you are not trying to create an account, you can ignore this email. The \
@@ -66,7 +66,7 @@ impl MessageTemplate for PasswordReset<'_> {
 			|| format!("Hello {},", self.user_id),
 			|display_name| format!("Hello {display_name} ({}),", self.user_id),
 		);
-		footer(format!(
+		footer(&format!(
 			"{greeting}\n\nSomebody, probably you, tried to reset your Matrix account's \
 			 password.\nIf you requested for your password to be reset, click this link to \
 			 proceed:\n    {}\nOtherwise, you can ignore this email. The above link will expire \
@@ -82,6 +82,6 @@ impl MessageTemplate for Test {
 	fn subject(&self) -> String { "Test message".to_owned() }
 
 	fn render(&self) -> String {
-		footer("If you're seeing this, SMTP is configured correctly. :3".to_owned())
+		footer("If you're seeing this, SMTP is configured correctly. :3")
 	}
 }
