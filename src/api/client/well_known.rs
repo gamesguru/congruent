@@ -1,4 +1,4 @@
-use axum::{extract::State, response::IntoResponse};
+use axum::response::IntoResponse;
 use conduwuit::{Error, Result};
 use slipstream::api::client::{
 	discovery::{
@@ -8,7 +8,10 @@ use slipstream::api::client::{
 	error::ErrorKind,
 };
 
-use crate::{Ruma, router::ApiError};
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State},
+};
 
 /// # `GET /.well-known/matrix/client`
 ///

@@ -1,7 +1,4 @@
-use axum::{
-	body::Body,
-	extract::{Path, State},
-};
+use axum::body::Body;
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
 use slipstream::{
@@ -20,7 +17,10 @@ use slipstream::{
 
 use crate::{
 	Ruma,
-	router::{ApiError, authenticate_user},
+	router::{
+		ApiError, authenticate_user,
+		extract::{Path, State},
+	},
 };
 
 /// # `PUT /_matrix/client/r0/user/{userId}/account_data/{type}`

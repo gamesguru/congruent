@@ -1,6 +1,5 @@
 use std::{collections::HashSet, time::Duration};
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Pdu, Result, debug_info, debug_warn, err,
 	matrix::{event::gen_event_id, pdu::PduBuilder},
@@ -23,7 +22,7 @@ use slipstream::{
 };
 
 use super::validate_remote_member_event_stub;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `POST /_matrix/client/v3/rooms/{roomId}/leave`
 ///

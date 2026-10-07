@@ -1,6 +1,5 @@
 use std::borrow::ToOwned;
 
-use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug, debug_info, info, warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
@@ -16,7 +15,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/make_join/{roomId}/{userId}`
 ///

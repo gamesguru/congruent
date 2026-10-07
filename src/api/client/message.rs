@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, PduEvent, Result, at, debug_warn, info,
 	matrix::{
@@ -38,7 +36,10 @@ use slipstream::{
 };
 
 use super::sync::add_membership_to_unsigned;
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// list of safe and common non-state events to ignore if the user is ignored
 const IGNORED_MESSAGE_TYPES: &[TimelineEventType] = &[

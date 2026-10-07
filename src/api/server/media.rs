@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, utils::content_disposition::make_content_disposition};
 use conduwuit_service::media::{Dim, FileMeta};
 use slipstream::{
@@ -9,7 +7,10 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/federation/v1/media/download/{mediaId}`
 ///

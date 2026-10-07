@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{Err, Error, Result, err};
 use conduwuit_service::Services;
 use slipstream::{
@@ -21,7 +20,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 fn array_mut(value: &mut slipstream::json::Value) -> Option<&mut Vec<slipstream::json::Value>> {
 	match value {

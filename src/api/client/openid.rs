@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use axum::extract::State;
 use conduwuit::{Err, Result, utils};
 use slipstream::api::client::{account, authentication::TokenType};
 
 use super::TOKEN_LENGTH;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `POST /_matrix/client/v3/user/{userId}/openid/request_token`
 ///

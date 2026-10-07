@@ -1,12 +1,14 @@
-use axum::{extract::State, response::IntoResponse};
-use axum_client_ip::ClientIp;
+use axum::response::IntoResponse;
 use conduwuit::{Err, Result, err, utils};
 use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
 use crate::{
 	Ruma, RumaResponse,
 	json_util::{json_response, require_object_content, single_field},
-	router::ApiError,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
 };
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";

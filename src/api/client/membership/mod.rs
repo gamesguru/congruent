@@ -10,7 +10,6 @@ mod unban;
 
 use std::net::IpAddr;
 
-use axum::extract::State;
 use conduwuit::{Err, Result, info, utils::stream::IterStream, warn};
 use futures::{FutureExt, StreamExt};
 use service::Services;
@@ -35,7 +34,7 @@ pub use self::{
 	join::join_room_by_id_helper,
 	leave::{leave_all_rooms, leave_room, remote_leave_room},
 };
-use crate::{Ruma, client::full_user_deactivate};
+use crate::{Ruma, client::full_user_deactivate, router::extract::State};
 
 /// # `POST /_matrix/client/r0/joined_rooms`
 ///

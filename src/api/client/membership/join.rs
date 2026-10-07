@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once, time::Duration};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
@@ -44,6 +42,7 @@ use tokio::join;
 use super::{banned_room_check, validate_remote_member_event_stub};
 use crate::{
 	Ruma,
+	router::extract::{ClientIp, State},
 	server::{select_authorising_user, user_can_perform_restricted_join},
 };
 

@@ -1,8 +1,7 @@
-use axum::extract::State;
 use conduwuit::{Result, err};
 use slipstream::api::client::filter::{create_filter, get_filter};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/client/r0/user/{userId}/filter/{filterId}`
 ///

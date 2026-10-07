@@ -1,6 +1,5 @@
 use std::time::SystemTime;
 
-use axum::extract::State;
 use conduwuit::{Err, Result, err};
 use lettre::{Address, message::Mailbox};
 use service::{mailer::messages, uiaa::Identity};
@@ -13,7 +12,7 @@ use slipstream::{
 	thirdparty::{Medium, ThirdPartyIdentifierInit},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET _matrix/client/v3/account/3pid`
 ///

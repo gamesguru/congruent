@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests;
-use axum::{extract::State, response::IntoResponse};
-use axum_client_ip::ClientIp;
+use axum::response::IntoResponse;
 use conduwuit::{
 	Err, Result, RoomVersion, err, info,
 	matrix::{Event, pdu::PduBuilder},
@@ -29,7 +28,10 @@ use slipstream::{
 use crate::{
 	Ruma, RumaResponse,
 	json_util::{json_response, require_object_content, single_field},
-	router::ApiError,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
 };
 
 /// # `PUT /_matrix/client/*/rooms/{roomId}/state/{eventType}/{stateKey}`

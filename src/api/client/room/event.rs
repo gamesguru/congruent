@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{Err, Event, Result, debug_warn, err};
 use futures::{FutureExt, TryFutureExt, future::try_join};
 use slipstream::api::client::room::get_room_event;
@@ -6,6 +5,7 @@ use slipstream::api::client::room::get_room_event;
 use crate::{
 	Ruma,
 	client::{is_ignored_pdu, sync::add_membership_to_unsigned},
+	router::extract::State,
 };
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/event/{eventId}`

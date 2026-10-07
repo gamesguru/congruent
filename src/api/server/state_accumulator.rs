@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_extra::{TypedHeader, headers::Authorization};
 use conduwuit::{Err, Event, Result, err, info};
 use conduwuit_core::utils::hash::lthash::serialize_lthash;
 use conduwuit_service::{
@@ -11,7 +9,10 @@ use serde::Deserialize;
 use slipstream::{OwnedEventId, OwnedRoomId, api::federation::authentication::XMatrix};
 
 use super::AccessCheck;
-use crate::router::ApiError;
+use crate::router::{
+	ApiError,
+	extract::{State, TypedHeader, headers::Authorization},
+};
 
 #[derive(Deserialize)]
 pub(crate) struct StateAccumulatorQuery {
@@ -21,8 +22,8 @@ pub(crate) struct StateAccumulatorQuery {
 pub(crate) async fn get_state_accumulator_route(
 	State(services): State<crate::State>,
 	TypedHeader(Authorization(x_matrix)): TypedHeader<Authorization<XMatrix>>,
-	axum::extract::Path(room_id_str): axum::extract::Path<String>,
-	axum::extract::Query(query): axum::extract::Query<StateAccumulatorQuery>,
+	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
+	crate::router::extract::Query(query): crate::router::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
 ) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
 	let signature_uri = uri

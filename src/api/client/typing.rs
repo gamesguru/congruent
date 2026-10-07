@@ -1,9 +1,10 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, utils, utils::math::Tried};
 use slipstream::api::client::typing::create_typing_event;
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `PUT /_matrix/client/r0/rooms/{roomId}/typing/{userId}`
 ///

@@ -1,11 +1,10 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, err, matrix::pdu::PduEvent};
 use slipstream::{
 	RoomVersionId::*, api::federation::knock::send_knock, codec,
 	events::room::member::MembershipState, sswire::JsonObject,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/federation/v1/send_knock/{roomId}/{eventId}`
 ///

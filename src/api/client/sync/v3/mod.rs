@@ -7,8 +7,6 @@ use std::{
 	time::Duration,
 };
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Result, at, extract_variant,
 	matrix::pdu::PduCount,
@@ -53,6 +51,7 @@ use crate::{
 		sync::v3::{joined::load_joined_room, left::load_left_room},
 	},
 	json_util::{empty_events, single_field},
+	router::extract::{ClientIp, State},
 };
 
 /// The default maximum number of events to return in the `timeline` key of
@@ -302,7 +301,7 @@ type PresenceUpdates = HashMap<OwnedUserId, PresenceEventContent>;
 pub(crate) async fn sync_events_route(
 	State(services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
-	axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
+	crate::router::extract::RawQuery(raw_query): crate::router::extract::RawQuery,
 	body: Ruma<sync_events::v3::Request>,
 ) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
 	let timer = std::time::Instant::now();

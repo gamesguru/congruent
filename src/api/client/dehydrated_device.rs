@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, at, debug};
 use futures::StreamExt;
 use slipstream::api::client::dehydrated_device::{
@@ -8,7 +6,10 @@ use slipstream::api::client::dehydrated_device::{
 	put_dehydrated_device::unstable as put_dehydrated_device,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 const MAX_BATCH_EVENTS: usize = 50;
 

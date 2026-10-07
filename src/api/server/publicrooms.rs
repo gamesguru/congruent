@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Error, Result, debug};
 use slipstream::{
 	api::{
@@ -9,7 +7,10 @@ use slipstream::{
 	directory::Filter,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/federation/v1/publicRooms`
 ///

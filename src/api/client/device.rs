@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, err, utils};
 use futures::StreamExt;
 use service::uiaa::Identity;
@@ -10,7 +8,11 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, client::DEVICE_ID_LENGTH};
+use crate::{
+	Ruma,
+	client::DEVICE_ID_LENGTH,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/client/r0/devices`
 ///

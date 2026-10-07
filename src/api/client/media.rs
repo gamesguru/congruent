@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug, debug_warn, err, error,
 	utils::{self, content_disposition::make_content_disposition, math::ruma_from_usize},
@@ -21,7 +19,10 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/client/v1/media/config`
 pub(crate) async fn get_media_config_route(

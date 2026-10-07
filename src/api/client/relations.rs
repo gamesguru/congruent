@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Result, at, debug_warn, err,
 	matrix::{Event, event::RelationTypeEqual, pdu::PduCount},
@@ -18,7 +17,7 @@ use slipstream::{
 	events::{TimelineEventType, relation::RelationType},
 };
 
-use crate::{Ruma, client::is_ignored_pdu};
+use crate::{Ruma, client::is_ignored_pdu, router::extract::State};
 
 /// # `GET /_matrix/client/r0/rooms/{roomId}/relations/{eventId}/{relType}/{eventType}`
 pub(crate) async fn get_relating_events_with_rel_type_and_event_type_route(

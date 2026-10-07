@@ -1,7 +1,5 @@
 use std::{fmt::Write as _, time::Duration};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, debug, debug_info, info, matrix::pdu::PduEvent, utils::ReadyExt,
 };
@@ -16,7 +14,10 @@ use slipstream::{
 };
 use tokio::time::sleep;
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 struct Report {
 	sender: OwnedUserId,

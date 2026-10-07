@@ -1,7 +1,5 @@
 use std::{collections::HashMap, fmt::Write};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_info, err, error, info,
 	utils::{self},
@@ -27,7 +25,10 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
 

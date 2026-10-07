@@ -1,13 +1,13 @@
-use axum::{
-	body::Body,
-	extract::{FromRequest, State},
-};
+use axum::{body::Body, extract::FromRequest};
 use conduwuit::Err;
 use slipstream::api::Metadata;
 
 use crate::{
 	json_util::single_field,
-	router::{ApiError, authenticate_user},
+	router::{
+		ApiError, authenticate_user,
+		extract::{Path, State},
+	},
 };
 
 pub(crate) struct GetDelayedEventRequest;
@@ -67,7 +67,7 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 // without a user access token, so this route is intentionally unauthenticated.
 pub(crate) async fn update_delayed_event_route(
 	State(services): State<crate::State>,
-	axum::extract::Path((delay_id, action)): axum::extract::Path<(String, String)>,
+	Path((delay_id, action)): Path<(String, String)>,
 ) -> std::result::Result<axum::response::Response, ApiError> {
 	let action = match action.as_str() {
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
@@ -88,14 +88,14 @@ pub(crate) async fn update_delayed_event_route(
 }
 
 pub(crate) async fn update_delayed_event_without_action_route(
-	axum::extract::Path(_delay_id): axum::extract::Path<String>,
+	Path(_delay_id): Path<String>,
 ) -> std::result::Result<axum::response::Response, ApiError> {
 	Err!(Request(NotFound("Invalid action."))).map_err(Into::into)
 }
 
 pub(crate) async fn get_delayed_event_route(
 	State(services): State<crate::State>,
-	axum::extract::Path(delay_id): axum::extract::Path<String>,
+	Path(delay_id): Path<String>,
 	user: DelayedEventUser,
 ) -> std::result::Result<axum::response::Response, ApiError> {
 	let data = services

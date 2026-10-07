@@ -1,11 +1,10 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
 use slipstream::{
 	api::client::membership::kick_user,
 	events::room::member::{MembershipState, RoomMemberEventContent},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/kick`
 ///

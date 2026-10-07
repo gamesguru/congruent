@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug, debug_warn, trace,
 	utils::{IterStream, future::TryExtExt},
@@ -21,7 +19,13 @@ use slipstream::{
 	space::SpaceRoomJoinRule::{self, *},
 };
 
-use crate::{Ruma, RumaResponse, router::ApiError};
+use crate::{
+	Ruma, RumaResponse,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
+};
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary`
 ///

@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{
 	Err, Error, PduEvent, Result, debug, err, error,
@@ -18,7 +16,10 @@ use slipstream::{
 	sswire::JsonObject,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 fn validate_msc4311_stripped_state(
 	room_id: &str,

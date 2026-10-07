@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_error, err, info,
 	matrix::{event::gen_event_id_canonical_json, pdu::PduBuilder},
@@ -17,7 +15,10 @@ use slipstream::{
 };
 
 use super::banned_room_check;
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/invite`
 ///

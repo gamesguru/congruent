@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug, info, warn};
 use futures::{StreamExt, pin_mut};
 use slipstream::{
@@ -9,7 +8,7 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/client/unstable/org.matrix.msc3030/rooms/{roomId}/timestamp_to_event`
 ///

@@ -2,7 +2,6 @@
 
 use std::{borrow::Borrow, time::Instant, vec};
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, Result, at, debug, err, info, trace,
 	utils::stream::{BroadbandExt, IterStream, TryBroadbandExt},
@@ -17,7 +16,7 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// helper method for /send_join v1 and v2
 async fn create_join_event(

@@ -3,7 +3,6 @@ use std::{
 	time::Duration,
 };
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Error, Result, debug, debug_warn, err, info,
 	result::NotFound,
@@ -31,7 +30,7 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{Ruma, json_util::single_field};
+use crate::{Ruma, json_util::single_field, router::extract::State};
 
 /// # `POST /_matrix/client/r0/keys/upload`
 ///

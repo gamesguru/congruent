@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, Result, debug, err, info,
 	utils::{self, ReadyExt, hash, stream::BroadbandExt},
@@ -33,7 +31,10 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/client/v3/login`
 ///

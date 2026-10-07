@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, err, info,
 	pdu::PduBuilder,
@@ -29,7 +27,10 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 pub(crate) mod register;
 pub(crate) mod threepid;

@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
@@ -17,7 +16,10 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, router::ApiError};
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State},
+};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/members`
 ///

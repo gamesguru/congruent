@@ -1,11 +1,12 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, matrix::pdu::PduBuilder};
 use slipstream::{
 	api::client::redact::redact_event, events::room::redaction::RoomRedactionEventContent,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `PUT /_matrix/client/r0/rooms/{roomId}/redact/{eventId}/{txnId}`
 ///

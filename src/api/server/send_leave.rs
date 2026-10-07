@@ -1,6 +1,5 @@
 #![allow(deprecated)]
 
-use axum::extract::State;
 use conduwuit::Result;
 use conduwuit_service::Services;
 use slipstream::{
@@ -8,7 +7,7 @@ use slipstream::{
 	events::room::member::MembershipState, sswire::RawJsonValue,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/federation/v1/send_leave/{roomId}/{eventId}`
 ///

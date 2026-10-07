@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
-use axum::{extract::State, response::IntoResponse};
+use axum::response::IntoResponse;
 use conduwuit::Result;
 use futures::StreamExt;
 use slipstream::api::client::discovery::get_supported_versions;
 
-use crate::{Ruma, router::ApiError};
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State},
+};
 
 /// # `GET /_matrix/client/versions`
 ///

@@ -1,7 +1,5 @@
 #![allow(deprecated)]
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, err, utils::math::ruma_from_usize};
 use conduwuit_service::media::{CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, FileMeta};
 use slipstream::{
@@ -12,7 +10,14 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, RumaResponse, client::create_content_route, router::ApiError};
+use crate::{
+	Ruma, RumaResponse,
+	client::create_content_route,
+	router::{
+		ApiError,
+		extract::{ClientIp, State},
+	},
+};
 
 /// # `POST /_matrix/media/v1/create`
 ///

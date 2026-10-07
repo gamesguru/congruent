@@ -1,7 +1,5 @@
 use std::iter::once;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, RoomVersion, err, info,
 	utils::{
@@ -40,7 +38,10 @@ use slipstream::{
 };
 use tokio::join;
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/v3/publicRooms`
 ///

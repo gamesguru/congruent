@@ -3,7 +3,7 @@ use std::{
 	time::{Duration, SystemTime},
 };
 
-use axum::{extract::State, response::IntoResponse};
+use axum::response::IntoResponse;
 use conduwuit::{Result, err, utils::timepoint_from_now};
 use slipstream::{
 	MilliSecondsSinceUnixEpoch, Signatures,
@@ -18,7 +18,10 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{Ruma, router::ApiError};
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State},
+};
 
 /// # `GET /_matrix/key/v2/server`
 ///

@@ -1,6 +1,5 @@
 use axum::{
 	body::{Body, to_bytes},
-	extract::{Path, State},
 	response::Response,
 };
 use conduwuit::{
@@ -24,7 +23,10 @@ use slipstream::{
 use crate::{
 	Ruma,
 	json_util::{json_response, single_field},
-	router::{ApiError, authenticate_user},
+	router::{
+		ApiError, authenticate_user,
+		extract::{Path, State},
+	},
 };
 
 struct ThreadSubscriptionBody {

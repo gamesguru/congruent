@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_info, debug_warn, err, info,
 	matrix::{
@@ -34,7 +32,10 @@ use slipstream::{
 };
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/*/knock/{roomIdOrAlias}`
 ///

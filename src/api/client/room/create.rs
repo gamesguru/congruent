@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Result, RoomVersion, debug, debug_info, err, info,
 	matrix::{StateKey, pdu::PduBuilder},
@@ -30,7 +29,7 @@ use slipstream::{
 	sswire::{JsonObject, Raw},
 };
 
-use crate::{Ruma, client::invite_helper};
+use crate::{Ruma, client::invite_helper, router::extract::State};
 
 /// # `POST /_matrix/client/v3/createRoom`
 ///
