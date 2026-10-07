@@ -377,9 +377,7 @@ async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<servi
 		},
 	));
 
-	let services = service::Services::build(server)
-		.await
-		.expect("failed to build services");
+	let services = service::Services::build(server).expect("failed to build services");
 	let services = services.start().await.expect("failed to start services");
 
 	// Boot admin module context references

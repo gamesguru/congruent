@@ -370,9 +370,8 @@ mod tests {
 			.merge(("database_path", db_path.to_string_lossy().into_owned()));
 		let config = Config::new(&figment).expect("test config should be valid");
 		let server = Arc::new(Server::new(config, None, test_log()));
-		let services = conduwuit_service::Services::build(server.clone())
-			.await
-			.expect("services should build");
+		let services =
+			conduwuit_service::Services::build(server.clone()).expect("services should build");
 
 		let origin = services.globals.server_name().to_owned();
 		let raw = key_payload("ed25519:active", "AAA", None, None);

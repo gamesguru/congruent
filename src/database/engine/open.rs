@@ -24,7 +24,7 @@ pub(crate) fn open(ctx: &Arc<Context>, desc: &[Descriptor]) -> Result<Arc<Self>>
 
 	let db_opts = db_options(config, &ctx.env.lock(), &ctx.row_cache.lock())?;
 
-	let cfds = Self::configure_cfds(&ctx, &db_opts, desc)?;
+	let cfds = Self::configure_cfds(ctx, &db_opts, desc)?;
 	let num_cfds = cfds.len();
 	debug!("Configured {num_cfds} column descriptors...");
 

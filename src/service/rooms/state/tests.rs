@@ -65,9 +65,7 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 		capture: Arc::new(capture::State::default()),
 	}));
 
-	let services = Services::build(server.clone())
-		.await
-		.expect("failed to build services");
+	let services = Services::build(server.clone()).expect("failed to build services");
 	(guard, server, services)
 }
 
