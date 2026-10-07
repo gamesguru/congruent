@@ -61,7 +61,7 @@ macro_rules! ruma_handler {
 			}
 
 			fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State> {
-				let metadata_method = Req::METADATA
+				let metadata_method: Method = Req::METADATA
 					.method
 					.parse()
 					.expect("endpoint metadata contains a valid HTTP method");
