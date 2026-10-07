@@ -52,9 +52,6 @@ version = "1.1.2"
 default-features = false
 features = ["parse", "serde"]
 
-[workspace.dependencies.sanitize-filename]
-version = "0.6.0"
-
 [workspace.dependencies.base64]
 version = "0.22.1"
 default-features = false

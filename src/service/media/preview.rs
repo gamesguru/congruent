@@ -140,7 +140,11 @@ pub async fn get_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 
 #[implement(Service)]
 async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
-	if let Ok(ip) = url.host_str().expect("URL previously validated").parse::<IpAddr>() {
+	if let Ok(ip) = url
+		.host_str()
+		.expect("URL previously validated")
+		.parse::<IpAddr>()
+	{
 		if !self.services.client.valid_cidr_range(&ip) {
 			return Err!(Request(Forbidden("Requesting from this address is forbidden")));
 		}

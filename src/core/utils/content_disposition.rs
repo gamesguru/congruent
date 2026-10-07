@@ -4,9 +4,7 @@ use slipstream::http_headers::{ContentDisposition, ContentDispositionType};
 
 use crate::debug_info;
 
-/// as defined by MSC2702
 const ALLOWED_INLINE_CONTENT_TYPES: [&str; 26] = [
-	// keep sorted
 	"application/json",
 	"application/ld+json",
 	"audio/aac",
@@ -35,9 +33,6 @@ const ALLOWED_INLINE_CONTENT_TYPES: [&str; 26] = [
 	"video/webm",
 ];
 
-/// Returns a Content-Disposition of `attachment` or `inline`, depending on the
-/// Content-Type against MSC2702 list of safe inline Content-Types
-/// (`ALLOWED_INLINE_CONTENT_TYPES`)
 #[must_use]
 pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositionType {
 	let Some(content_type) = content_type else {
@@ -45,11 +40,7 @@ pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositio
 		return ContentDispositionType::Attachment;
 	};
 
-	debug_assert!(
-		ALLOWED_INLINE_CONTENT_TYPES.is_sorted(),
-		"ALLOWED_INLINE_CONTENT_TYPES is not sorted"
-	);
-
+	debug_assert!(ALLOWED_INLINE_CONTENT_TYPES.is_sorted());
 	let content_type: Cow<'_, str> = content_type
 		.split(';')
 		.next()
@@ -67,24 +58,21 @@ pub fn content_disposition_type(content_type: Option<&str>) -> ContentDispositio
 	}
 }
 
-/// sanitises the file name for the Content-Disposition using
-/// `sanitize_filename` crate
+/// Sanitises a file name for use in Content-Disposition.
 #[must_use]
 pub fn sanitise_filename(filename: &str) -> String {
-	sanitize_filename::sanitize_with_options(filename, sanitize_filename::Options {
-		truncate: false,
-		..Default::default()
-	})
+	filename
+		.chars()
+		.map(|character| {
+			if character.is_control() || r#"/\?%*:|"$<>"#.contains(character) {
+				'_'
+			} else {
+				character
+			}
+		})
+		.collect()
 }
 
-/// creates the final Content-Disposition based on whether the filename exists
-/// or not, or if a requested filename was specified (media download with
-/// filename)
-///
-/// if filename exists:
-/// `Content-Disposition: attachment/inline; filename=filename.ext`
-///
-/// else: `Content-Disposition: attachment/inline`
 pub fn make_content_disposition(
 	content_disposition: Option<&ContentDisposition>,
 	content_type: Option<&str>,
@@ -92,10 +80,7 @@ pub fn make_content_disposition(
 ) -> ContentDisposition {
 	ContentDisposition::new(content_disposition_type(content_type)).with_filename(
 		filename
-			.or_else(|| {
-				content_disposition
-					.and_then(|content_disposition| content_disposition.filename.as_deref())
-			})
+			.or_else(|| content_disposition.and_then(|value| value.filename.as_deref()))
 			.map(sanitise_filename),
 	)
 }
@@ -103,37 +88,13 @@ pub fn make_content_disposition(
 #[cfg(test)]
 mod tests {
 	#[test]
-	fn string_sanitisation() {
-		const SAMPLE: &str = "🏳️‍⚧️this\\r\\n įs \r\\n ä \\r\nstrïng 🥴that\n\r \
-		                      ../../../../../../../may be\r\n malicious🏳️‍⚧️";
-		const SANITISED: &str = "🏳️‍⚧️thisrn įs n ä rstrïng 🥴that ..............may be malicious🏳️‍⚧️";
-
-		let options = sanitize_filename::Options {
-			windows: true,
-			truncate: true,
-			replacement: "",
-		};
-
-		// cargo test -- --nocapture
-		println!("{SAMPLE}");
-		println!("{}", sanitize_filename::sanitize_with_options(SAMPLE, options.clone()));
-		println!("{SAMPLE:?}");
-		println!("{:?}", sanitize_filename::sanitize_with_options(SAMPLE, options.clone()));
-
-		assert_eq!(SANITISED, sanitize_filename::sanitize_with_options(SAMPLE, options.clone()));
+	fn replaces_unsafe_characters() {
+		assert_eq!("a_b_c_d_e_f_g", super::sanitise_filename("a/b\\c?d:e*f|g"));
+		assert_eq!("line_one", super::sanitise_filename("line\none"));
 	}
 
 	#[test]
-	fn empty_sanitisation() {
-		use crate::utils::string::EMPTY;
-
-		let result =
-			sanitize_filename::sanitize_with_options(EMPTY, sanitize_filename::Options {
-				windows: true,
-				truncate: true,
-				replacement: "",
-			});
-
-		assert_eq!(EMPTY, result);
+	fn preserves_empty_names() {
+		assert_eq!("", super::sanitise_filename(""));
 	}
 }

@@ -89,7 +89,6 @@ reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 sha2.workspace = true
-sanitize-filename.workspace = true
 serde_regex.workspace = true
 serde-saphyr.workspace = true
 serde.workspace = true
