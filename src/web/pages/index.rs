@@ -1,6 +1,4 @@
-use axum::{Router, extract::State, response::IntoResponse, routing::get};
-
-use crate::{WebError, template};
+use axum::{Router, response::Html, routing::get};
 
 pub(crate) fn build() -> Router<crate::State> {
 	Router::new()
@@ -8,18 +6,10 @@ pub(crate) fn build() -> Router<crate::State> {
 		.route("/_continuwuity/", get(index))
 }
 
-async fn index(State(services): State<crate::State>) -> Result<impl IntoResponse, WebError> {
-	template! {
-		struct Index<'a> use "index.html.j2" {
-			server_name: &'a str,
-			first_run: bool
-		}
-	}
-
-	Ok(Index::new(
-		&services,
-		services.globals.server_name().as_str(),
-		services.firstrun.is_first_run(),
+async fn index() -> Html<&'static str> {
+	Html(
+		"<!doctype html><html><head><meta \
+		 charset=\"utf-8\"><title>Continuwuity</title></head><body><h1>Continuwuity</\
+		 h1><p>Matrix homeserver running.</p></body></html>",
 	)
-	.into_response())
 }
