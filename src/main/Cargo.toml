@@ -50,13 +50,11 @@ default = [
     "release_max_log_level",
     "mimalloc",
     "ring",
-    "bindgen-runtime", # replace with bindgen-static on alpine
 ]
 standard = [
     "blurhashing",
     "brotli_compression",
     "gzip_compression",
-    "io_uring",
     "mimalloc",
     "mimalloc_conf",
     "media_thumbnail",
@@ -106,9 +104,6 @@ hardened_malloc = [
 ]
 ring = [
     "rustls/ring"
-]
-io_uring = [
-	"conduwuit-database/io_uring",
 ]
 mimalloc = [
 	"conduwuit-core/mimalloc",
@@ -163,12 +158,6 @@ zstd_compression = [
 ]
 conduwuit_mods = [
     "conduwuit-core/conduwuit_mods",
-]
-bindgen-static = [
-    "conduwuit-database/bindgen-static"
-]
-bindgen-runtime = [
-    "conduwuit-database/bindgen-runtime"
 ]
 
 [build-dependencies]

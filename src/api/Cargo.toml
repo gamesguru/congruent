@@ -35,9 +35,6 @@ gzip_compression = [
 	"conduwuit-service/gzip_compression",
 	"reqwest/gzip",
 ]
-io_uring = [
-	"conduwuit-service/io_uring",
-]
 mimalloc = [
     "conduwuit-core/mimalloc",
     "conduwuit-service/mimalloc",

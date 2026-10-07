@@ -26,7 +26,6 @@ brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]
 console = []
 element_hacks = []
 gzip_compression = ["conduwuit-core/gzip_compression", "reqwest/gzip"]
-io_uring = ["conduwuit-database/io_uring"]
 mimalloc = ["conduwuit-core/mimalloc", "conduwuit-database/mimalloc"]
 mimalloc_conf = [
 	"conduwuit-core/mimalloc_conf",

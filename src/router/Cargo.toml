@@ -38,11 +38,6 @@ gzip_compression = [
 	"conduwuit-service/gzip_compression",
 	"tower-http/compression-gzip",
 ]
-io_uring = [
-	"conduwuit-admin/io_uring",
-	"conduwuit-api/io_uring",
-	"conduwuit-service/io_uring",
-]
 mimalloc = [
 	"conduwuit-admin/mimalloc",
 	"conduwuit-api/mimalloc",

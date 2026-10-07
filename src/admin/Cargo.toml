@@ -31,11 +31,6 @@ gzip_compression = [
 	"conduwuit-core/gzip_compression",
 	"conduwuit-service/gzip_compression",
 ]
-io_uring = [
-	"conduwuit-api/io_uring",
-	"conduwuit-database/io_uring",
-	"conduwuit-service/io_uring",
-]
 mimalloc = [
 	"conduwuit-api/mimalloc",
 	"conduwuit-core/mimalloc",
