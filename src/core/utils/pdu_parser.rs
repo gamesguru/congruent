@@ -43,8 +43,7 @@ pub fn parse_and_clean_pdu(
 
 #[cfg(test)]
 mod tests {
-	use serde_json::json;
-	use slipstream::{OwnedRoomId, RoomVersionId, events::TimelineEventType};
+	use slipstream::{OwnedRoomId, RoomVersionId, events::TimelineEventType, json};
 
 	use super::*;
 	use crate::matrix::event::gen_event_id;

@@ -108,7 +108,6 @@ xxhash-rust.workspace = true
 # installed. `ring` is enabled here (test-only) so they have a deterministic
 # provider regardless of which providers the library's consumers select.
 rustls = { workspace = true, features = ["ring"] }
-serde_json.workspace = true
 
 [lints]
 workspace = true
