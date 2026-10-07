@@ -2860,6 +2860,13 @@ impl RawConfig {
 		toml::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()))
 	}
 
+	fn config_profile(value: Value) -> Value {
+		let Value::Table(mut table) = value else { return value };
+		table
+			.remove("global")
+			.unwrap_or(Value::Table(table))
+	}
+
 	pub fn load_file(&mut self, path: &std::path::Path) -> Result<()> {
 		let content = match fs::read_to_string(path) {
 			| Ok(content) => content,
@@ -2870,7 +2877,7 @@ impl RawConfig {
 			let path = path.display().to_string();
 			err!(Config("config", "Failed to parse TOML {path}: {error}"))
 		})?;
-		Self::merge_value(&mut self.inner, parsed);
+		Self::merge_value(&mut self.inner, Self::config_profile(parsed));
 		Ok(())
 	}
 
@@ -2878,7 +2885,7 @@ impl RawConfig {
 		let mut config = Self::new();
 		let parsed = toml::from_str::<Value>(input)
 			.map_err(|error| err!(Config("config", "Failed to parse TOML: {error}")))?;
-		Self::merge_value(&mut config.inner, parsed);
+		Self::merge_value(&mut config.inner, Self::config_profile(parsed));
 		Ok(config)
 	}
 
