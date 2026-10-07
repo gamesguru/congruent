@@ -94,9 +94,6 @@ All forked dependencies are maintained under the
 - [rust-rocksdb][continuwuation-rust-rocksdb] - Fork of
   [rust-rocksdb/rust-rocksdb][rust-rocksdb] fixing musl build issues, removing
   unnecessary `gtest` include, and using our RocksDB and jemallocator forks
-- [tracing][continuwuation-tracing] - Fork of [tokio-rs/tracing][tracing]
-  implementing `Clone` for `EnvFilter` to support dynamically changing tracing
-  environments
 
 ## Building Docker Images
 
@@ -165,13 +162,11 @@ Refer to the Docker Buildx documentation for more advanced build options.
     https://forgejo.ellis.link/continuwuation/rustyline-async
 [continuwuation-rust-rocksdb]:
     https://forgejo.ellis.link/continuwuation/rust-rocksdb
-[continuwuation-tracing]: https://forgejo.ellis.link/continuwuation/tracing
 [ruma]: https://github.com/ruma/ruma/
 [rocksdb]: https://github.com/facebook/rocksdb/
 [jemallocator]: https://github.com/tikv/jemallocator/
 [rustyline-async]: https://github.com/zyansheep/rustyline-async/
 [rust-rocksdb]: https://github.com/rust-rocksdb/rust-rocksdb/
-[tracing]: https://github.com/tokio-rs/tracing/
 [8]: https://github.com/zaidoon1/
 [9]: https://github.com/rust-lang/cargo/issues/12162
 [workspaces]: https://doc.rust-lang.org/cargo/reference/workspaces.html

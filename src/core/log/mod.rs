@@ -21,12 +21,13 @@ pub enum Level {
 	TRACE,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct EnvFilter(String);
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvFilter;
 
 impl EnvFilter {
 	pub fn try_new(value: impl AsRef<str>) -> Result<Self, String> {
-		Ok(Self(value.as_ref().to_owned()))
+		let _ = value;
+		Ok(Self)
 	}
 }
 
@@ -50,27 +51,22 @@ pub struct Log {
 
 #[macro_export]
 macro_rules! error {
-	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::error!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::error!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! warn {
-	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::warn!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::warn!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! info {
-	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::info!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::info!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! debug {
-	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::debug!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::debug!("{}", stringify!($($x)+)) };
 }
 #[macro_export]
 macro_rules! trace {
-	($fmt:literal $(, $args:expr)* $(,)?) => { ::log::trace!($fmt $(, $args)*) };
 	($($x:tt)+) => { ::log::trace!("{}", stringify!($($x)+)) };
 }
 
