@@ -518,33 +518,29 @@ impl Map {
 	pub fn stream_prefix<'a, K, V, P>(
 		&'a self,
 		prefix: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V, P>
 	where
 		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		Box::pin(
-			self.raw_stream_prefix_owned(prefix)
-				.map(keyval::result_deserialize::<K, V>),
-		)
+		self.raw_stream_prefix_owned(prefix)
+			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn stream_from<'a, K, V, P>(
 		&'a self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V, P>
 	where
 		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		Box::pin(
-			materialized(self.raw_items_from(from, crate::util::Direction::Forward))
-				.map(keyval::result_deserialize::<K, V>),
-		)
+		materialized(self.raw_items_from(from, crate::util::Direction::Forward))
+			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn rev_stream<'a, K, V>(
@@ -561,17 +557,15 @@ impl Map {
 	pub fn rev_stream_from<'a, K, V, P>(
 		&'a self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V, P>
 	where
 		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		Box::pin(
-			materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
-				.map(keyval::result_deserialize::<K, V>),
-		)
+		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
+			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn raw_stream_raw_prefix<P>(
@@ -663,16 +657,14 @@ impl Map {
 	pub fn stream_raw_from<'a, K, V, P>(
 		&'a self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V, P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
-		Box::pin(
-			self.raw_stream_from(from)
-				.map(keyval::result_deserialize::<K, V>),
-		)
+		self.raw_stream_from(from)
+			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn aqry<const MAX: usize, K>(
