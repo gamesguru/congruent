@@ -1923,7 +1923,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_basic() {
 		let events = &[
 			to_init_pdu_event(
@@ -1984,7 +1984,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_reset() {
 		let events = &[
 			to_init_pdu_event(
@@ -2030,7 +2030,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn join_rule_evasion() {
 		let events = &[
 			to_init_pdu_event(
@@ -2059,7 +2059,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn offtopic_power_level() {
 		let events = &[
 			to_init_pdu_event(
@@ -2095,7 +2095,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn topic_setting() {
 		let events = &[
 			to_init_pdu_event(
@@ -2171,7 +2171,7 @@ mod tests {
 		do_check(events, edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_event_map_none() {
 		use futures::future::ready;
 
@@ -2206,7 +2206,7 @@ mod tests {
 		assert_eq!(expected, resolved);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_lexicographical_sort() {
 		let graph = hashmap! {
 			event_id("l") => hashset![event_id("o")],
@@ -2231,7 +2231,7 @@ mod tests {
 		);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn ban_with_auth_chains() {
 		let ban = BAN_STATE_SET();
 
@@ -2248,7 +2248,7 @@ mod tests {
 		do_check(&ban.values().cloned().collect::<Vec<_>>(), edges, expected_state_ids).await;
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn ban_with_auth_chains2() {
 		use futures::future::ready;
 		let init = INITIAL_EVENTS();
@@ -2330,7 +2330,7 @@ mod tests {
 		assert_eq!(expected.len(), resolved.len());
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn join_rule_with_auth_chain() {
 		let join_rule = JOIN_RULE();
 
@@ -2512,7 +2512,7 @@ mod tests {
 		],);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn v2_1_conflicted_subgraph_uses_auth_chains() {
 		use futures::future::ready;
 
@@ -2549,7 +2549,7 @@ mod tests {
 		);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn synapse_v21_conflicted_subgraph_preserves_power_levels() {
 		use futures::future::ready;
 		use slipstream::{OwnedEventId, OwnedRoomId, json};

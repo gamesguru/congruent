@@ -137,7 +137,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_clean_dag() {
 		let mut db = HashMap::new();
 		db.insert(
@@ -170,7 +170,7 @@ mod tests {
 		assert!(result.missing.is_empty());
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_dag_with_outliers() {
 		let mut db = HashMap::new();
 		db.insert(
@@ -199,7 +199,7 @@ mod tests {
 		assert!(result.missing.is_empty());
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_dag_with_holes() {
 		let mut db = HashMap::new();
 		db.insert(
@@ -224,7 +224,7 @@ mod tests {
 		assert_eq!(result.missing, vec![event_id!("$2")]);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_cyclic_dag() {
 		// A -> B -> A
 		let fetcher = |id: OwnedEventId| {

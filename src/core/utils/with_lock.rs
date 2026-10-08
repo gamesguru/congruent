@@ -156,7 +156,7 @@ mod tests {
 		assert_eq!(*mutex.lock().unwrap(), 10);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_with_lock_async_return_value() {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(7);
@@ -171,7 +171,7 @@ mod tests {
 		assert_eq!(*value, 10);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_with_lock_async_unit_return() {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(100);
@@ -184,7 +184,7 @@ mod tests {
 		assert_eq!(*value, 50);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_with_lock_async_closure() {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(1);
@@ -197,7 +197,7 @@ mod tests {
 		assert_eq!(*value, 10);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_with_lock_async_arc_mutex() {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = Arc::new(AsyncMutex::new(2));

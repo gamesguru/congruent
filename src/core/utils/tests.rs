@@ -55,7 +55,7 @@ fn checked_add_overflow() {
 	assert_eq!(res, 0);
 }
 
-#[tokio::test]
+#[conduwuit_macros::async_test]
 async fn mutex_map_cleanup() {
 	use crate::utils::MutexMap;
 
@@ -68,11 +68,11 @@ async fn mutex_map_cleanup() {
 	assert!(map.is_empty(), "map must be empty");
 }
 
-#[tokio::test]
+#[conduwuit_macros::async_test]
 async fn mutex_map_contend() {
 	use std::sync::Arc;
 
-	use tokio::sync::Barrier;
+	use async_lock::Barrier;
 
 	use crate::utils::MutexMap;
 
@@ -83,7 +83,7 @@ async fn mutex_map_contend() {
 	let seq_ = seq.clone();
 	let map_ = map.clone();
 	let str_ = str.clone();
-	let join_a = tokio::spawn(async move {
+	let join_a = smol::spawn(async move {
 		let _lock = map_.lock(&str_).await;
 		assert!(!map_.is_empty(), "A0 must not be empty");
 		seq_[0].wait().await;
@@ -93,7 +93,7 @@ async fn mutex_map_contend() {
 	let seq_ = seq.clone();
 	let map_ = map.clone();
 	let str_ = str.clone();
-	let join_b = tokio::spawn(async move {
+	let join_b = smol::spawn(async move {
 		let _lock = map_.lock(&str_).await;
 		assert!(!map_.is_empty(), "B0 must not be empty");
 		seq_[1].wait().await;
@@ -104,7 +104,8 @@ async fn mutex_map_contend() {
 	assert!(map.contains(&str), "Must contain key");
 	seq[1].wait().await;
 
-	tokio::try_join!(join_b, join_a).expect("joined");
+	join_b.await;
+	join_a.await;
 	assert!(map.is_empty(), "Must be empty");
 }
 
@@ -238,7 +239,7 @@ fn set_intersection_sorted_all() {
 	assert!(r.eq(["bar", "baz", "foo"].iter()));
 }
 
-#[tokio::test]
+#[conduwuit_macros::async_test]
 async fn set_intersection_sorted_stream2() {
 	use futures::StreamExt;
 	use utils::{IterStream, set::intersection_sorted_stream2};
