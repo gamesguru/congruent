@@ -44,7 +44,7 @@ zstd_compression = [
 
 [dependencies]
 async-channel.workspace = true
-async-lock.workspace = true
+event-listener.workspace = true
 conduwuit-core.workspace = true
 conduwuit-macros.workspace = true
 const-str.workspace = true
@@ -55,6 +55,7 @@ redb = "4.3.0"
 serde.workspace = true
 slipstream.workspace = true
 smol.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 

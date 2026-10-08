@@ -20,7 +20,6 @@ use std::{
 	sync::Arc,
 };
 
-use async_lock::OnceCell;
 use dashmap::DashMap;
 use futures::{
 	Future, FutureExt, Stream, StreamExt, TryStreamExt, future, stream::FuturesUnordered,
@@ -34,6 +33,7 @@ use slipstream::{
 	int,
 };
 use smallvec::SmallVec;
+use tokio::sync::OnceCell;
 
 use self::power_levels::PowerLevelsContentFields;
 pub use self::{

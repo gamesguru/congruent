@@ -20,6 +20,7 @@ pub struct HttpClient {
 	default_headers: HeaderMap,
 	user_agent: Option<String>,
 	tls: Arc<ClientConfig>,
+	max_size: usize,
 }
 
 impl HttpClient {
@@ -83,10 +84,14 @@ impl HttpClient {
 			.await
 			.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
 		let (parts, body) = response.into_parts();
-		let body = body
+		let body = http_body_util::Limited::new(body, self.max_size)
 			.collect()
 			.await
-			.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?
+			.map_err(|error| {
+				conduwuit::Error::HttpClient(
+					format!("response body exceeds limit: {error}").into(),
+				)
+			})?
 			.to_bytes();
 		Ok(Response::from_parts(parts, body))
 	}
@@ -186,6 +191,7 @@ fn base(config: &Config) -> Result<HttpClient> {
 		default_headers: HeaderMap::new(),
 		user_agent: Some(config.user_agent.clone()),
 		tls: Arc::new(tls),
+		max_size: config.max_request_size.saturating_mul(10),
 	})
 }
 

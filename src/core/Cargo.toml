@@ -38,8 +38,6 @@ zstd_compression = [
 
 [dependencies]
 argon2.workspace = true
-async-broadcast.workspace = true
-async-lock.workspace = true
 arrayvec.workspace = true
 blocking.workspace = true
 base64.workspace = true
@@ -75,6 +73,7 @@ thiserror.workspace = true
 mimalloc.optional = true
 mimalloc.workspace = true
 smol.workspace = true
+tokio.workspace = true
 toml.workspace = true
 url.workspace = true
 roaring.workspace = true

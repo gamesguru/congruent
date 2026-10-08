@@ -2,12 +2,13 @@ use std::{
 	collections::{HashMap, hash_map},
 	future::Future,
 	pin::Pin,
+	sync::Arc,
 };
 
-use async_channel::{Receiver, Sender, unbounded};
 use conduwuit::SyncRwLock;
+use event_listener::Event;
 
-type Watcher = SyncRwLock<HashMap<Vec<u8>, (Sender<()>, Receiver<()>)>>;
+type Watcher = SyncRwLock<HashMap<Vec<u8>, Arc<Event>>>;
 
 #[derive(Default)]
 pub(crate) struct Watchers {
@@ -19,19 +20,16 @@ impl Watchers {
 		&'a self,
 		prefix: &[u8],
 	) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-		let rx = match self.watchers.write().entry(prefix.to_vec()) {
-			| hash_map::Entry::Occupied(o) => o.get().1.clone(),
+		let listener = match self.watchers.write().entry(prefix.to_vec()) {
+			| hash_map::Entry::Occupied(o) => Arc::clone(o.get()),
 			| hash_map::Entry::Vacant(v) => {
-				let (tx, rx) = unbounded();
-				v.insert((tx, rx.clone()));
-				rx
+				let event = Arc::new(Event::new());
+				v.insert(Arc::clone(&event));
+				event
 			},
 		};
 
-		Box::pin(async move {
-			// Tx is never destroyed
-			rx.recv().await.expect("channel should still be open");
-		})
+		Box::pin(listener.listen())
 	}
 
 	pub(crate) fn wake(&self, key: &[u8]) {
@@ -46,10 +44,10 @@ impl Watchers {
 		drop(watchers);
 
 		if !triggered.is_empty() {
-			let mut watchers = self.watchers.write();
+			let watchers = self.watchers.write();
 			for prefix in triggered {
-				if let Some(tx) = watchers.remove(prefix) {
-					tx.0.try_send(()).expect("channel should still be open");
+				if let Some(event) = watchers.get(prefix) {
+					event.notify(usize::MAX);
 				}
 			}
 		}

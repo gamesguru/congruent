@@ -7,8 +7,8 @@ use std::{
 	time::SystemTime,
 };
 
-use async_broadcast::{Sender, broadcast};
 use slipstream::OwnedServerName;
+use tokio::sync::broadcast::{self, Sender};
 
 use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};
 
@@ -64,8 +64,7 @@ pub struct Server {
 impl Server {
 	#[must_use]
 	pub fn new<T>(config: Config, runtime: Option<&T>, log: Log) -> Self {
-		let (mut signal, _) = broadcast(16);
-		signal.set_overflow(true);
+		let (signal, _) = broadcast::channel(16);
 		Self {
 			name: config.server_name.clone(),
 			config: config::Manager::new(config),
@@ -120,7 +119,7 @@ impl Server {
 	}
 
 	pub fn signal(&self, sig: &'static str) -> Result<()> {
-		if let Err(error) = self.signal.try_broadcast(sig) {
+		if let Err(error) = self.signal.send(sig) {
 			return Err!("Failed to send signal: {error}");
 		}
 
@@ -129,7 +128,7 @@ impl Server {
 
 	#[inline]
 	pub async fn until_shutdown(self: &Arc<Self>) {
-		let mut signal = self.signal.new_receiver();
+		let mut signal = self.signal.subscribe();
 		while self.running() {
 			signal.recv().await.ok();
 		}

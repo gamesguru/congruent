@@ -19,8 +19,8 @@ use crate::{
 // env.join_all_threads() which kills background threads shared by ALL
 // databases in the process, so these tests must run serially to prevent one
 // test's teardown from deadlocking the others.
-static DB_TEST_MUTEX: std::sync::LazyLock<async_lock::Mutex<()>> =
-	std::sync::LazyLock::new(|| async_lock::Mutex::new(()));
+static DB_TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+	std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 struct TempDbGuard {
 	path: std::path::PathBuf,

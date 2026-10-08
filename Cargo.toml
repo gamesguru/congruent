@@ -207,6 +207,9 @@ version = "3.4.2"
 [workspace.dependencies.async-broadcast]
 version = "0.7.2"
 
+[workspace.dependencies.event-listener]
+version = "5.4.1"
+
 [workspace.dependencies.async-fs]
 version = "2.2.0"
 

@@ -1,6 +1,6 @@
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 
-use async_lock::{Mutex, MutexGuardArc};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{Result, SyncMutex, err};
 
@@ -22,7 +22,7 @@ where
 type Map<Key, Val> = Arc<MapMutex<Key, Val>>;
 type MapMutex<Key, Val> = SyncMutex<HashMap<Key, Val>>;
 type HashMap<Key, Val> = std::collections::HashMap<Key, Value<Val>>;
-type Omg<Val> = MutexGuardArc<Val>;
+type Omg<Val> = OwnedMutexGuard<Val>;
 type Value<Val> = Arc<Mutex<Val>>;
 
 impl<Key, Val> MutexMap<Key, Val>
@@ -49,7 +49,7 @@ where
 		Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val.lock_arc().await,
+			val: val.clone().lock_owned().await,
 		}
 	}
 
@@ -65,7 +65,10 @@ where
 		Ok(Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val.try_lock_arc().ok_or_else(|| err!("would yield"))?,
+			val: val
+				.clone()
+				.try_lock_owned()
+				.map_err(|_| err!("would yield"))?,
 		})
 	}
 
@@ -87,7 +90,10 @@ where
 		Ok(Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val.try_lock_arc().ok_or_else(|| err!("would yield"))?,
+			val: val
+				.clone()
+				.try_lock_owned()
+				.map_err(|_| err!("would yield"))?,
 		})
 	}
 
@@ -115,7 +121,7 @@ where
 	Val: Default + Send,
 {
 	fn drop(&mut self) {
-		if Arc::strong_count(MutexGuardArc::source(&self.val)) <= 2 {
+		if Arc::strong_count(OwnedMutexGuard::mutex(&self.val)) <= 2 {
 			self.map.lock().remove(&self.key);
 		}
 	}

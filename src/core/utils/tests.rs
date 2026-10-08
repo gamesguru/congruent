@@ -72,7 +72,7 @@ async fn mutex_map_cleanup() {
 async fn mutex_map_contend() {
 	use std::sync::Arc;
 
-	use async_lock::Barrier;
+	use tokio::sync::Barrier;
 
 	use crate::utils::MutexMap;
 
