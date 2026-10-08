@@ -13,6 +13,7 @@ use std::{
 	time::Duration,
 };
 
+use async_lock::Semaphore;
 use async_trait::async_trait;
 use conduwuit::{
 	Result, Server, debug, debug_warn, err, error, info,
@@ -20,9 +21,8 @@ use conduwuit::{
 	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
 	warn,
 };
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream::FuturesUnordered};
 use slipstream::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
-use tokio::{task, task::JoinSet};
 
 use self::data::Data;
 pub use self::{
@@ -40,7 +40,7 @@ pub struct Service {
 	server: Arc<Server>,
 	services: Services,
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
-	pub(super) semaphore: Arc<tokio::sync::Semaphore>,
+	pub(super) semaphore: Arc<Semaphore>,
 	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
@@ -118,36 +118,24 @@ impl crate::Service for Service {
 				federation: args.depend::<federation::Service>("federation"),
 			},
 			channels: (0..num_senders).map(|_| loole::unbounded()).collect(),
-			semaphore: Arc::new(tokio::sync::Semaphore::new(
+			semaphore: Arc::new(Semaphore::new(
 				args.server.config.max_concurrent_outbound_requests,
 			)),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
-		let mut senders =
-			self.channels
-				.iter()
-				.enumerate()
-				.fold(JoinSet::new(), |mut joinset, (id, _)| {
-					let self_ = self.clone();
-					let worker = self_.sender(id);
-					let worker = if self.unconstrained() {
-						task::unconstrained(worker).boxed()
-					} else {
-						worker.boxed()
-					};
-
-					let runtime = self.server.runtime();
-					let _abort = joinset.spawn_on(worker, runtime);
-					joinset
-				});
+		let mut senders = FuturesUnordered::new();
+		for (id, _) in self.channels.iter().enumerate() {
+			let self_ = self.clone();
+			senders.push(async move { (id, self_.sender(id).await) });
+		}
 
 		// Periodic federation stats reporter
 		let stats_self = self.clone();
 		let stats_task = self.server.runtime().spawn(async move {
 			loop {
-				tokio::time::sleep(Duration::from_mins(5)).await;
+				smol::Timer::after(Duration::from_mins(5)).await;
 				if stats_self.server.is_maintenance() {
 					continue;
 				}
@@ -163,18 +151,18 @@ impl crate::Service for Service {
 			}
 		});
 
-		while let Some(ret) = senders.join_next_with_id().await {
+		while let Some((id, ret)) = senders.next().await {
 			match ret {
-				| Ok((id, _)) => {
+				| Ok(()) => {
 					debug!(?id, "sender worker finished");
 				},
 				| Err(error) => {
-					error!(id = ?error.id(), ?error, "sender worker finished");
+					error!(?id, ?error, "sender worker finished");
 				},
 			}
 		}
 
-		stats_task.abort();
+		drop(stats_task);
 		Ok(())
 	}
 
@@ -187,8 +175,6 @@ impl crate::Service for Service {
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
-
-	fn unconstrained(&self) -> bool { true }
 }
 
 impl Service {
@@ -349,7 +335,7 @@ impl Service {
 			})
 			.collect();
 
-		let started_at = tokio::time::Instant::now();
+		let started_at = std::time::Instant::now();
 		let mut keys = keys;
 		loop {
 			let mut pending = Vec::new();
@@ -379,7 +365,11 @@ impl Service {
 			}
 
 			let wait = remaining.min(Duration::from_secs(1));
-			let _ = tokio::time::timeout(wait, watchers.next()).await;
+			let _ = futures::future::select(
+				Box::pin(watchers.next()),
+				Box::pin(smol::Timer::after(wait)),
+			)
+			.await;
 		}
 	}
 
@@ -439,12 +429,7 @@ impl Service {
 	where
 		T: OutgoingRequest + Debug + Send,
 	{
-		let _permit = self
-			.semaphore
-			.clone()
-			.acquire_owned()
-			.await
-			.expect("Semaphore should not be closed");
+		let _permit = self.semaphore.acquire_arc().await;
 
 		self.services
 			.federation
