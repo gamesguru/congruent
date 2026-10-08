@@ -181,7 +181,7 @@ lint:   ##H Lint code
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		CC=gcc \
 		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
-		cargo clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
+		cargo clippy $(CARGO_SCOPE) --all-targets --all-features --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
 
 .PHONY: test
 test:   ##H Run tests
