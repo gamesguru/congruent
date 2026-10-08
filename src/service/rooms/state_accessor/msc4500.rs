@@ -403,9 +403,9 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 ///
 /// `None` means the sender cannot assert this PDU and must mark it `limited`.
 #[implement(super::Service)]
-pub async fn msc4500_pdu_digests(&self, event_id: &EventId) -> Option<PduDigests> {
-	let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
-	let after_root = self.pdu_roothandle_after_event(event_id).await.ok()?;
+pub async fn msc4500_pdu_digests(&self, event_id: OwnedEventId) -> Option<PduDigests> {
+	let pdu = self.services.timeline.get_pdu(&event_id).await.ok()?;
+	let after_root = self.pdu_roothandle_after_event(&event_id).await.ok()?;
 	let before_root = self.msc4500_before_root(&pdu).await?;
 
 	let before = self

@@ -259,29 +259,72 @@ pub(crate) async fn get_remote_server_keys_batch_route(
 
 #[cfg(test)]
 mod tests {
-	use std::{
-		fs,
-		sync::Arc,
-		time::{SystemTime, UNIX_EPOCH},
-	};
+	use std::{sync::Arc, time::SystemTime};
 
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
-	use conduwuit_core::{
-		Server,
-		config::{Config, RawConfig},
-		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
-	};
-	use http::{Request, StatusCode};
-	use http_body_util::BodyExt;
+	use bytes::Bytes;
+	use conduwuit_core::{RuntimeHandle, SmolIo, config::{Config, RawConfig}, log::{Log, LogLevelReloadHandles, capture::State as CaptureState}, Server};
+	use http::StatusCode;
+	use http_body_util::{BodyExt, Full};
+	use hyper::{Request, body::Incoming, client::conn::http1, service::service_fn};
+	use tower::Service;
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		json::Value,
 		sswire::{Base64, Raw},
 	};
-	use tower::ServiceExt;
 
 	use super::select_server_key_response;
+
+	struct TestServer {
+		addr: std::net::SocketAddr,
+		task: conduwuit_core::JoinHandle<()>,
+	}
+
+	impl TestServer {
+		async fn spawn(router: crate::hyper_router::MinimalRouter, state: crate::State) -> Self {
+			let listener = async_net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let addr = listener.local_addr().unwrap();
+			let task = RuntimeHandle::new().spawn(async move {
+				let router = Arc::new(std::sync::Mutex::new(router));
+				while let Ok((stream, _)) = listener.accept().await {
+					let router = Arc::clone(&router);
+					drop(RuntimeHandle::new().spawn(async move {
+						let service = service_fn(move |mut request: Request<Incoming>| {
+							request.extensions_mut().insert(state);
+							let response = router.lock().unwrap().call(request);
+							async move { response.await }
+						});
+						let _ = hyper::server::conn::http1::Builder::new()
+							.serve_connection(SmolIo(stream), service)
+							.await;
+					}));
+				}
+			});
+			Self { addr, task }
+		}
+
+		async fn send(&self, request: Request<Bytes>) -> conduwuit::Result<http::Response<Bytes>> {
+			let stream = async_net::TcpStream::connect(self.addr).await?;
+			let (mut sender, connection) = http1::handshake(SmolIo(stream))
+				.await
+				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP handshake failed: {error}"))))?;
+			drop(RuntimeHandle::new().spawn(async move { let _ = connection.await; }));
+			let (parts, body) = request.into_parts();
+			let response = sender
+				.send_request(Request::from_parts(parts, Full::new(body)))
+				.await
+				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP request failed: {error}"))))?;
+			let (parts, body) = response.into_parts();
+			let body = body
+				.collect()
+				.await
+				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP response failed: {error}"))))?
+				.to_bytes();
+			Ok(http::Response::from_parts(parts, body))
+		}
+	}
 
 	fn key_payload(
 		verify_key_id: &str,
@@ -357,68 +400,27 @@ mod tests {
 
 	#[conduwuit_macros::async_test]
 	async fn route_includes_historical_keys_in_json_response() {
-		let _ = rustls::crypto::ring::default_provider().install_default();
-
-		let mut temp_root = std::env::temp_dir();
-		temp_root.push(format!(
-			"continuwuity-server-keys-route-{}-{}",
-			std::process::id(),
-			SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("clock should be monotonic for test")
-				.as_nanos()
-		));
-
-		let db_path = temp_root.join("db");
-
-		let config_raw = RawConfig::from_toml(&format!(
-			"server_name = \"example.com\"\ndatabase_path = \"{}\"",
-			db_path.to_string_lossy().replace('\\', "/")
-		))
-		.expect("test config should be valid");
-		let config = Config::new(&config_raw).expect("test config should be valid");
-		let server = Arc::new(Server::new(config, None, test_log()));
-		let services =
-			conduwuit_service::Services::build(server.clone()).expect("services should build");
-
+		let temp_root = std::env::temp_dir().join(format!("conduwuit-key-test-{}", std::process::id()));
+		let raw_config = RawConfig::from_toml(&format!(
+			"server_name = \"example.com\"\nallow_federation = true\ndatabase_path = \"{}\"",
+			temp_root.to_string_lossy().replace('\\', "/")
+		)).unwrap();
+		let config = Config::new(&raw_config).unwrap();
+		let server = Arc::new(Server::new(config, None::<&()>, test_log()));
+		let services = conduwuit_service::Services::build(server.clone()).unwrap();
 		let origin = services.globals.server_name().to_owned();
 		let raw = key_payload("ed25519:active", "AAA", None, None);
-		let merged =
-			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
-
-		services.db["server_signingkeys"]
-			.raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
-		let historical_key = {
-			let mut key = origin.as_bytes().to_vec();
-			key.extend_from_slice(b"\0historical");
-			key
-		};
-		services.db["server_signingkeys"]
-			.raw_put(&historical_key, slipstream::codec::to_string(&merged).into_bytes());
-
-		let (_state, _guard) = conduwuit_service::state::create(services.clone());
-		let router =
-			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
-		let request = Request::builder()
-			.method("GET")
-			.uri(format!(
-				"/_matrix/key/v2/query/{}?minimum_valid_until_ts={}",
-				origin,
-				MilliSecondsSinceUnixEpoch::now().get()
-			))
-			.body(Body::empty())
-			.expect("request should build");
-
-		let response = router.oneshot(request).await.expect("route should respond");
+		let merged = key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
+		services.db["server_signingkeys"].raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
+		let mut key = origin.as_bytes().to_vec();
+		key.extend_from_slice(b"\0historical");
+		services.db["server_signingkeys"].raw_put(&key, slipstream::codec::to_string(&merged).into_bytes());
+		let (state, guard) = conduwuit_service::state::create(services.clone());
+		let router = crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
+		let test_server = TestServer::spawn(router, state).await;
+		let response = test_server.send(Request::get(format!("/_matrix/key/v2/query/{origin}?minimum_valid_until_ts={}", MilliSecondsSinceUnixEpoch::now().get())).body(Bytes::new()).unwrap()).await.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
-
-		let body = to_bytes(response.into_body(), usize::MAX)
-			.await
-			.expect("response body should read");
-		let json: Value = slipstream::codec::from_str(
-			std::str::from_utf8(&body).expect("response should be UTF-8"),
-		)
-		.expect("response should be valid JSON");
+		let json: Value = slipstream::codec::from_slice(response.body()).unwrap();
 		let old_key = json
 			.get("server_keys")
 			.and_then(|keys| keys.as_array())
@@ -426,12 +428,8 @@ mod tests {
 			.and_then(|key| key.get("old_verify_keys"))
 			.and_then(|keys| keys.get("ed25519:historical"))
 			.expect("historical key should be present");
-		assert_eq!(
-			old_key.get("key").and_then(|key| key.as_str()),
-			Some(STANDARD.encode(b"BBB").as_str())
-		);
-
+		assert_eq!(old_key.get("key").and_then(|key| key.as_str()), Some(STANDARD.encode(b"BBB").as_str()));
+		drop(test_server.task);
 		drop(guard);
-		_ = fs::remove_dir_all(&temp_root);
 	}
 }

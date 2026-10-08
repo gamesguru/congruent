@@ -131,12 +131,13 @@ where
 		context: &'a mut Context,
 		state: &'a State,
 	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		let state = *state;
 		Box::pin(async move {
 			let request = context
 				.request
 				.take()
 				.expect("Ruma body extractor is unique");
-			<Self as extract::FromRequest<State, Incoming>>::from_request(request, state).await
+			<Self as extract::FromRequest<State, Incoming>>::from_request(request, &state).await
 		})
 	}
 }
@@ -416,9 +417,10 @@ macro_rules! ruma_handler {
 		impl<Err, Req, Fut, Fun, $($tx,)*> RumaHandler<($($tx,)* Ruma<Req>,)> for Fun
 		where
 			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Send + Sync + 'static,
-			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send + 'static,
+			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + 'static,
 			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
-			Err: Into<ApiError> + Send,
+			Req::OutgoingResponse: Send + 'static,
+			Err: Into<ApiError> + Send + 'static,
 			$( $tx: ExtractArg + Send + 'static, )*
 		{
 			fn add_routes(&'static self, router: &mut MinimalRouter) {
@@ -444,9 +446,22 @@ macro_rules! ruma_handler {
 								Ok(value) => value,
 								Err(error) => return HandlerResult::into_response(error),
 							};
-							match self($($tx,)* body).await {
-							Ok(response) => IntoResponse::into_response(RumaResponse(response)),
-								Err(error) => HandlerResult::into_response(error.into()),
+							let task = conduwuit::RuntimeHandle::new().spawn_blocking(move || {
+								smol::block_on(async move {
+									match self($($tx,)* body).await {
+										Ok(response) => IntoResponse::into_response(RumaResponse(response)),
+										Err(error) => HandlerResult::into_response(error.into()),
+									}
+								})
+							});
+							match task.await {
+								Ok(response) => response,
+								Err(error) => http::Response::builder()
+									.status(http::StatusCode::INTERNAL_SERVER_ERROR)
+									.body(http_body_util::Full::from(bytes::Bytes::from(
+										format!("handler task failed: {error}"),
+									)))
+									.expect("handler error response is valid"),
 							}
 						})
 					});

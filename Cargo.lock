@@ -642,6 +642,7 @@ name = "conduwuit_api"
 version = "0.5.10"
 dependencies = [
  "async-lock",
+ "async-net",
  "base64 0.22.1",
  "bytes",
  "conduwuit_core",

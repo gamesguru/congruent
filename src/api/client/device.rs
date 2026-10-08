@@ -54,12 +54,12 @@ pub(crate) async fn update_device_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<update_device::v3::Request>,
 ) -> Result<update_device::v3::Response> {
-	let sender_user = body.sender_user();
+	let sender_user = body.sender_user().to_owned();
 	let appservice = body.appservice_info.as_ref();
 
 	match services
 		.users
-		.get_device_metadata(sender_user, &body.device_id)
+		.get_device_metadata(&sender_user, &body.device_id)
 		.await
 	{
 		| Ok(mut device) => {
@@ -71,7 +71,7 @@ pub(crate) async fn update_device_route(
 
 			services
 				.users
-				.update_device_metadata(sender_user, &body.device_id, &device)
+				.update_device_metadata(&sender_user, &body.device_id, &device)
 				.await?;
 
 			Ok(update_device::v3::Response {})
@@ -95,7 +95,7 @@ pub(crate) async fn update_device_route(
 			services
 				.users
 				.create_device(
-					sender_user,
+					&sender_user,
 					&device_id,
 					&appservice.registration.as_token,
 					None,
@@ -132,7 +132,7 @@ pub(crate) async fn delete_device_route(
 		);
 		services
 			.users
-			.remove_device(sender_user, &body.device_id)
+			.remove_device(&sender_user, &body.device_id)
 			.await;
 
 		return Ok(delete_device::v3::Response {});
@@ -145,12 +145,12 @@ pub(crate) async fn delete_device_route(
 	// Prompt the user to confirm with their password using UIAA
 	let _ = services
 		.uiaa
-		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
+		.authenticate_password(&body.auth, Some(Identity::from_user_id(&sender_user)))
 		.await?;
 
 	services
 		.users
-		.remove_device(sender_user, &body.device_id)
+		.remove_device(&sender_user, &body.device_id)
 		.await;
 
 	Ok(delete_device::v3::Response {})
@@ -173,7 +173,7 @@ pub(crate) async fn delete_devices_route(
 	State(services): State<crate::State>,
 	body: Ruma<delete_devices::v3::Request>,
 ) -> Result<delete_devices::v3::Response> {
-	let sender_user = body.sender_user();
+	let sender_user = body.sender_user().to_owned();
 	let appservice = body.appservice_info.as_ref();
 
 	if appservice.is_some_and(|appservice| appservice.registration.device_management) {
@@ -182,7 +182,7 @@ pub(crate) async fn delete_devices_route(
 			 enabled"
 		);
 		for device_id in &body.devices {
-			services.users.remove_device(sender_user, device_id).await;
+			services.users.remove_device(&sender_user, device_id).await;
 		}
 
 		return Ok(delete_devices::v3::Response {});
@@ -195,11 +195,11 @@ pub(crate) async fn delete_devices_route(
 	// Prompt the user to confirm with their password using UIAA
 	let _ = services
 		.uiaa
-		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
+		.authenticate_password(&body.auth, Some(Identity::from_user_id(&sender_user)))
 		.await?;
 
 	for device_id in &body.devices {
-		services.users.remove_device(sender_user, device_id).await;
+		services.users.remove_device(&sender_user, device_id).await;
 	}
 
 	Ok(delete_devices::v3::Response {})

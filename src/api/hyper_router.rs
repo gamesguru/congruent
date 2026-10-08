@@ -42,19 +42,7 @@ fn manifest() -> &'static std::sync::Mutex<Vec<RouteManifestEntry>> {
 
 #[must_use]
 pub fn matchit_path(path: &str) -> String {
-	let mut converted = String::with_capacity(path.len());
-	let mut parameter = false;
-	for character in path.chars() {
-		match character {
-			| '{' => {
-				converted.push(':');
-				parameter = true;
-			},
-			| '}' if parameter => parameter = false,
-			| _ => converted.push(character),
-		}
-	}
-	converted
+	path.to_owned()
 }
 
 pub fn record_route(method: Method, path: &str, handler: &'static str) {

@@ -84,6 +84,7 @@ url.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+async-net.workspace = true
 # The route tests make reqwest-driven calls, which need a TLS crypto provider
 # installed. `ring` is enabled here (test-only) so they have a deterministic
 # provider regardless of which providers the library's consumers select.

@@ -110,10 +110,10 @@ pub(crate) async fn send_transaction_message_route(
 		},
 		| Ok(FederationTxnState::Started { receiver, sender }) => {
 			// We're the first, spawn the processing task
-			services
-				.server
-				.runtime()
-				.spawn(process_inbound_transaction(services, body, client, txn_key, sender));
+			let runtime = services.server.runtime();
+			drop(runtime.spawn_blocking(move || {
+				smol::block_on(process_inbound_transaction(services, body, client, txn_key, sender));
+			}));
 			// and wait for it
 			wait_for_result(receiver).await.map_err(Into::into)
 		},
@@ -125,7 +125,9 @@ pub(crate) async fn send_transaction_message_route(
 				let edus: Vec<_> = body.body.edus.clone();
 				let origin = body.origin().to_owned();
 
-				services.server.runtime().spawn(async move {
+				let runtime = services.server.runtime();
+				drop(runtime.spawn_blocking(move || {
+					smol::block_on(async move {
 					let edus_stream = edus
 						.into_iter()
 						.map(|edu| edu.get().to_owned())
@@ -139,7 +141,8 @@ pub(crate) async fn send_transaction_message_route(
 							async move { handle_edu(&services, &client, &origin, edu).await }
 						})
 						.await;
-				});
+					});
+				}));
 			}
 
 			Err(ApiError(e))
@@ -234,15 +237,20 @@ async fn process_inbound_transaction(
 	// have applied the write or an ACL gate for that same transaction.
 	let origin = body.origin().to_owned();
 	let edu_origin = origin.clone();
+	let edu_state = state;
+	let edu_client = client;
 	let edu_processing = async {
 		edus.for_each_concurrent(automatic_width(), |edu| {
 			let origin = edu_origin.clone();
-			async move { handle_edu(&services, &client, &origin, edu).await }
+			async move { handle_edu(&edu_state, &edu_client, &origin, edu).await }
 		})
 		.await;
 	};
 
-	let ((), results) = futures::join!(edu_processing, handle(services, &client, &origin, pdus));
+	let ((), results) = futures::join!(
+		edu_processing,
+		handle(&state, &client, &origin, pdus)
+	);
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
@@ -429,7 +437,7 @@ async fn inject_state_hash_mismatches(
 		let Some(local) = services
 			.rooms
 			.state_accessor
-			.msc4500_pdu_digests(&event_id)
+			.msc4500_pdu_digests(event_id.clone())
 			.await
 		else {
 			continue;
