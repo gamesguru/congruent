@@ -7,7 +7,7 @@ use async_lock::{RwLock, RwLockReadGuard};
 use async_trait::async_trait;
 use conduwuit::{Err, Result, err, utils::stream::IterStream};
 use database::Map;
-use futures::{Future, FutureExt, Stream, TryStreamExt};
+use futures::{Future, FutureExt, Stream, StreamExt, TryStreamExt};
 use slipstream::{RoomAliasId, RoomId, UserId, api::appservice::Registration};
 
 pub use self::{namespace_regex::NamespaceRegex, registration_info::RegistrationInfo};
@@ -89,7 +89,7 @@ impl crate::Service for Service {
 					);
 				},
 				| Ok(mut entries) =>
-					while let Ok(Some(entry)) = entries.next_entry().await {
+					while let Some(Ok(entry)) = entries.next().await {
 						let path = entry.path();
 						let is_yaml = path
 							.extension()

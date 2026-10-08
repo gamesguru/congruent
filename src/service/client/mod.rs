@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use async_rustls::{
-	TlsConnector,
-	rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName},
-};
 use bytes::Bytes;
 use conduwuit::{Config, Result, implement, utils::IpCidr};
+use futures_rustls::{
+	TlsConnector,
+	rustls::{ClientConfig, RootCertStore, pki_types::ServerName},
+};
 use http::{HeaderMap, Request, Response, header::HOST};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
@@ -96,18 +96,32 @@ impl HttpClient {
 		Ok(Response::from_parts(parts, body))
 	}
 
-	pub fn post(&self, url: &str) -> RequestBuilder<'_> {
+	pub fn request(&self, method: http::Method, url: impl AsRef<str>) -> RequestBuilder<'_> {
 		RequestBuilder {
 			client: self,
-			url: url.to_owned(),
+			method,
+			url: url.as_ref().to_owned(),
 			headers: HeaderMap::new(),
 			body: Bytes::new(),
 		}
+	}
+
+	pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+		self.request(http::Method::GET, url)
+	}
+
+	pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+		self.request(http::Method::HEAD, url)
+	}
+
+	pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+		self.request(http::Method::POST, url)
 	}
 }
 
 pub struct RequestBuilder<'a> {
 	client: &'a HttpClient,
+	method: http::Method,
 	url: String,
 	headers: HeaderMap,
 	body: Bytes,
@@ -130,8 +144,22 @@ impl RequestBuilder<'_> {
 		self
 	}
 
+	pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
+		if let Ok(body) = serde_urlencoded::to_string(form) {
+			self.headers.insert(
+				http::header::CONTENT_TYPE,
+				http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+			);
+			self.body = Bytes::from(body);
+		}
+		self
+	}
+
 	pub async fn send(self) -> Result<Response<Bytes>> {
-		let mut request = Request::post(self.url).body(self.body)?;
+		let mut request = Request::builder()
+			.method(self.method)
+			.uri(self.url)
+			.body(self.body)?;
 		*request.headers_mut() = self.headers;
 		self.client.execute(request).await
 	}
@@ -176,15 +204,8 @@ impl crate::Service for Service {
 
 fn base(config: &Config) -> Result<HttpClient> {
 	let mut roots = RootCertStore::empty();
-	for root in webpki_roots::TLS_SERVER_ROOTS.iter() {
-		roots.add_server_trust_anchors([OwnedTrustAnchor::from_subject_spki_name_constraints(
-			root.subject,
-			root.spki,
-			root.name_constraints,
-		)]);
-	}
+	roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 	let tls = ClientConfig::builder()
-		.with_safe_defaults()
 		.with_root_certificates(roots)
 		.with_no_client_auth();
 	Ok(HttpClient {

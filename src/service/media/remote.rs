@@ -105,7 +105,7 @@ fn should_fallback_to_unauthenticated(
 				)
 				|| matches!(
 					error,
-					Error::Reqwest(_)
+					Error::HttpClient(_)
 						| Error::Federation(_, _)
 						| Error::FederationTimeout(_)
 						| Error::FederationConnection(_)

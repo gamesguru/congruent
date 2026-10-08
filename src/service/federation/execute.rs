@@ -77,7 +77,7 @@ async fn perform<T>(
 where
 	T: OutgoingRequest + Send,
 {
-	let url = request.url().clone();
+	let url = request.uri().clone();
 	let method = request.method().clone();
 
 	debug!(%method, %url, "Sending request");

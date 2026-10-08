@@ -38,11 +38,23 @@ pub async fn limit_read_text(
 
 #[allow(async_fn_in_trait)]
 pub trait LimitReadExt {
+	fn error_for_status(self) -> crate::Result<Self>
+	where
+		Self: Sized;
 	async fn limit_read(self, max_size: u64) -> crate::Result<Vec<u8>>;
 	async fn limit_read_text(self, max_size: u64) -> crate::Result<String>;
 }
 
 impl LimitReadExt for http::Response<Bytes> {
+	fn error_for_status(self) -> crate::Result<Self> {
+		if self.status().is_client_error() || self.status().is_server_error() {
+			return Err(crate::Error::HttpClient(
+				format!("HTTP status {}", self.status()).into(),
+			));
+		}
+		Ok(self)
+	}
+
 	async fn limit_read(self, max_size: u64) -> crate::Result<Vec<u8>> {
 		limit_read(self, max_size).await
 	}

@@ -224,6 +224,11 @@ version = "0.4.2"
 default-features = false
 features = ["tls12"]
 
+[workspace.dependencies.futures-rustls]
+version = "0.26.0"
+default-features = false
+features = ["logging", "ring", "tls12"]
+
 [workspace.dependencies.webpki-roots]
 version = "0.25.4"
 

@@ -1,6 +1,6 @@
 use std::{fmt::Write as _, sync::Arc};
 
-use conduwuit::{Result, err, info};
+use conduwuit::{Result, err, info, utils::response::LimitReadExt};
 
 use crate::{Args, client, mailer::messages::MessageTemplate};
 
@@ -11,7 +11,7 @@ pub struct Service {
 }
 
 struct Webhook {
-	client: client::HttpClient,
+	client: Arc<client::HttpClient>,
 	url: String,
 	sender: String,
 	token: Option<String>,

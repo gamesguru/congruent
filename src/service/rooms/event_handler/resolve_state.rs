@@ -1,6 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
 
-use async_lock::RwLock;
 use conduwuit::{
 	Error, Result, err, implement,
 	state_res::StateMap,
@@ -9,6 +8,7 @@ use conduwuit::{
 	warn,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use parking_lot::RwLock;
 use slipstream::{OwnedEventId, RoomId, RoomVersionId, events::StateEventType};
 
 use crate::rooms::short::{ShortEventId, ShortStateKey};
@@ -210,10 +210,13 @@ where
 	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
 	let fetch_pdu = move |eid: &OwnedEventId| -> Option<conduwuit_core::PduEvent> {
+		// This synchronous provider may block only on database-pool I/O. The
+		// prefetch cache uses a synchronous lock so cache hits never depend on
+		// another executor task making progress.
 		let do_fetch = |eid: &OwnedEventId| {
 			smol::block_on(async {
 				if let Some(cache) = prefetch_cache_ref {
-					if let Some(pdu) = cache.read().await.get(eid) {
+					if let Some(pdu) = cache.read().get(eid) {
 						return Some((**pdu).clone());
 					}
 				}

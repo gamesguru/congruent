@@ -255,16 +255,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-rustls"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecfa55659849ace733f86ccd219da40abd8bc14124e40b312433e85a5a266e77"
-dependencies = [
- "futures-io",
- "rustls 0.21.12",
-]
-
-[[package]]
 name = "async-signal"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -621,7 +611,7 @@ dependencies = [
  "ctor",
  "hardened_malloc-rs",
  "log",
- "rustls 0.23.45",
+ "rustls",
  "smol",
 ]
 
@@ -642,7 +632,7 @@ dependencies = [
  "futures",
  "log",
  "rezzy",
- "rustls 0.23.45",
+ "rustls",
  "smol",
  "toml",
 ]
@@ -669,7 +659,7 @@ dependencies = [
  "matchit",
  "rand",
  "rezzy",
- "rustls 0.23.45",
+ "rustls",
  "serde",
  "serde_urlencoded",
  "sha1 0.11.0",
@@ -836,7 +826,6 @@ dependencies = [
  "async-io",
  "async-lock",
  "async-net",
- "async-rustls",
  "async-trait",
  "base64 0.22.1",
  "bincode",
@@ -853,6 +842,7 @@ dependencies = [
  "either",
  "futures",
  "futures-io",
+ "futures-rustls",
  "governor",
  "hickory-resolver",
  "hmac",
@@ -872,9 +862,10 @@ dependencies = [
  "regex",
  "rezzy",
  "roaring",
- "rustls 0.23.45",
+ "rustls",
  "sd-notify",
  "serde",
+ "serde_urlencoded",
  "sha2 0.11.0",
  "smol",
  "tokio",
@@ -1376,7 +1367,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f2f12607f92c69b12ed746fabf9ca4f5c482cba46679c1a75b874ed7c26adb"
 dependencies = [
  "futures-io",
- "rustls 0.23.45",
+ "rustls",
  "rustls-pki-types",
 ]
 
@@ -2053,7 +2044,7 @@ dependencies = [
  "log",
  "nom",
  "percent-encoding",
- "rustls 0.23.45",
+ "rustls",
  "rustls-native-certs",
  "thiserror",
  "tokio",
@@ -2766,17 +2757,6 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.21.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f56a14d1f48b391359b22f731fd4bd7e43c97f3c50eee276f3aa09c94784d3e"
-dependencies = [
- "ring",
- "rustls-webpki 0.101.7",
- "sct",
-]
-
-[[package]]
-name = "rustls"
 version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
@@ -2785,7 +2765,7 @@ dependencies = [
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.15",
+ "rustls-webpki",
  "subtle",
  "zeroize",
 ]
@@ -2818,16 +2798,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "zeroize",
-]
-
-[[package]]
-name = "rustls-webpki"
-version = "0.101.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
-dependencies = [
- "ring",
- "untrusted",
 ]
 
 [[package]]
@@ -2885,16 +2855,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "sct"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
-dependencies = [
- "ring",
- "untrusted",
-]
 
 [[package]]
 name = "sd-notify"
@@ -3340,7 +3300,7 @@ version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
- "rustls 0.23.45",
+ "rustls",
  "tokio",
 ]
 
