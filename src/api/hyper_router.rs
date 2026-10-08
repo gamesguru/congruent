@@ -14,6 +14,14 @@ use http::Method;
 use hyper::{Request, Response};
 use matchit::Router;
 
+fn unrecognized_response(status: http::StatusCode) -> Response<Body> {
+	Response::builder()
+		.status(status)
+		.header(http::header::CONTENT_TYPE, "application/json")
+		.body(Body::from(r#"{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}"#))
+		.expect("static unrecognized response is valid")
+}
+
 #[derive(Clone)]
 pub struct RouteManifestEntry {
 	pub method: Method,
@@ -135,10 +143,7 @@ impl tower::Service<Request<Body>> for MinimalRouter {
 			| Method::DELETE => &self.delete,
 			| _ => {
 				return Box::pin(async {
-					Ok(Response::builder()
-						.status(http::StatusCode::METHOD_NOT_ALLOWED)
-						.body(Body::empty())
-						.expect("static 405 response is valid"))
+					Ok(unrecognized_response(http::StatusCode::METHOD_NOT_ALLOWED))
 				});
 			},
 		};
@@ -153,12 +158,8 @@ impl tower::Service<Request<Body>> for MinimalRouter {
 					.collect();
 				Box::pin(async move { Ok(handler(request, params).await) })
 			},
-			| Err(_) => Box::pin(async {
-				Ok(Response::builder()
-					.status(http::StatusCode::NOT_FOUND)
-					.body(Body::empty())
-					.expect("static 404 response is valid"))
-			}),
+			| Err(_) =>
+				Box::pin(async { Ok(unrecognized_response(http::StatusCode::NOT_FOUND)) }),
 		}
 	}
 }
