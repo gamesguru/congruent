@@ -51,11 +51,9 @@ impl RedbEngine {
 		let transaction = db
 			.begin_write()
 			.map_err(|error| err!(Database("failed to initialize redb metadata: {error}")))?;
-		{
-			transaction.open_table(TABLE).map_err(|error| {
-				err!(Database("failed to create redb metadata table: {error}"))
-			})?;
-		}
+		transaction
+			.open_table(TABLE)
+			.map_err(|error| err!(Database("failed to create redb metadata table: {error}")))?;
 		transaction.commit().map_err(|error| {
 			err!(Database("failed to commit redb metadata initialization: {error}"))
 		})?;
