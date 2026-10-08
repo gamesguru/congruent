@@ -2857,7 +2857,13 @@ impl RawConfig {
 	}
 
 	fn parse_scalar(value: &str) -> Value {
-		toml::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()))
+		let document = format!("value = {value}");
+		match toml::from_str::<Value>(&document) {
+			| Ok(Value::Table(mut table)) => table
+				.remove("value")
+				.unwrap_or_else(|| Value::String(value.to_owned())),
+			| _ => Value::String(value.to_owned()),
+		}
 	}
 
 	fn config_profile(value: Value) -> Value {
