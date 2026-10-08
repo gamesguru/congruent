@@ -13,16 +13,13 @@ mod benches;
 mod cork;
 pub mod dbkey;
 mod de;
-mod deprecated_maps;
 mod deserialized;
 mod engine;
 mod handle;
 pub mod keyval;
 mod map;
 pub mod maps;
-mod pool;
 mod ser;
-mod stream;
 #[cfg(test)]
 mod tests;
 pub(crate) mod util;
@@ -32,6 +29,7 @@ use std::{ops::Index, sync::Arc};
 
 use conduwuit::{Result, Server, err};
 
+pub(crate) use self::engine::Engine;
 pub use self::{
 	dbkey::from_json_slice,
 	de::{Ignore, IgnoreAll},
@@ -41,29 +39,18 @@ pub use self::{
 	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
 	ser::{Cbor, Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
 };
-pub(crate) use self::{
-	engine::{Engine, context::Context},
-	util::or_else,
-};
 use crate::maps::{Maps, MapsKey, MapsVal};
 
 pub struct Database {
 	maps: Maps,
 	pub db: Arc<Engine>,
-	pub(crate) _ctx: Arc<Context>,
 }
 
 impl Database {
 	/// Load an existing database or create a new one.
 	pub fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
-		let ctx = Context::new(server)?;
-		let descriptors = maps::descriptors();
-		let db = Engine::open(&ctx, &descriptors)?;
-		Ok(Arc::new(Self {
-			maps: maps::open(&db)?,
-			db: db.clone(),
-			_ctx: ctx,
-		}))
+		let db = Arc::new(Engine::open(&server.config.database_path)?);
+		Ok(Arc::new(Self { maps: maps::open(&db), db }))
 	}
 
 	#[inline]

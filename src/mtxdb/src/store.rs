@@ -19,7 +19,7 @@ impl MtxdbStore {
 	#[must_use]
 	pub fn new(db: Arc<Database>) -> Self { Self { db } }
 
-	pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self, StorageError> {
+	pub fn open<P: Into<std::path::PathBuf>>(path: P) -> Result<Self, StorageError> {
 		Ok(Self::new(Arc::new(Database::open(path.into())?)))
 	}
 

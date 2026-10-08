@@ -12,7 +12,7 @@ pub fn derive_id(domain: &[u8], identifier: &[u8]) -> [u8; 16] {
 
 	let mut hasher = Sha256::new();
 	hasher.update(domain);
-	hasher.update(&[0]);
+	hasher.update([0]);
 	hasher.update(identifier);
 
 	let mut id = [0; 16];
@@ -25,7 +25,7 @@ pub fn encode_state_key_v1(event_type: &str, state_key: &str) -> Result<Vec<u8>,
 	let event_type_len = u32::try_from(event_type.len()).map_err(|_| "event type is too long")?;
 	let state_key_len = u32::try_from(state_key.len()).map_err(|_| "state key is too long")?;
 
-	let capacity = 1usize
+	let capacity = 1_usize
 		.checked_add(4)
 		.and_then(|size| size.checked_add(event_type.len()))
 		.and_then(|size| size.checked_add(4))

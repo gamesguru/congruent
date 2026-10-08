@@ -78,13 +78,14 @@ impl EventAdapter {
 	}
 
 	fn serialize_edges(edges: &[&[u8]]) -> Result<Vec<u8>, StorageError> {
-		let mut total = 0usize;
+		let mut total = 0_usize;
 		for edge in edges {
 			let length = u32::try_from(edge.len())
 				.map_err(|_| StorageError::Corrupt("event edge is too large".to_owned()))?;
+			let length = usize::try_from(length).expect("u32 fits usize on supported targets");
 			total = total
 				.checked_add(4)
-				.and_then(|size| size.checked_add(length as usize))
+				.and_then(|size| size.checked_add(length))
 				.ok_or_else(|| {
 					StorageError::Corrupt("event edge list is too large".to_owned())
 				})?;
@@ -104,12 +105,17 @@ impl EventAdapter {
 		let mut edges = Vec::new();
 		let mut offset = 0;
 		while offset < bytes.len() {
-			let length_bytes = bytes
-				.get(offset..offset + 4)
+			let header_end = offset
+				.checked_add(4)
 				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
-			let length =
-				u32::from_le_bytes(length_bytes.try_into().expect("four-byte slice")) as usize;
-			offset += 4;
+			let length_bytes = bytes
+				.get(offset..header_end)
+				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
+			let length = usize::try_from(u32::from_le_bytes(
+				length_bytes.try_into().expect("four-byte slice"),
+			))
+			.expect("u32 fits usize on supported targets");
+			offset = header_end;
 			let end = offset
 				.checked_add(length)
 				.ok_or_else(|| StorageError::Corrupt("malformed event edge record".to_owned()))?;
