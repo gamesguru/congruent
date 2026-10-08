@@ -12,7 +12,6 @@ use slipstream::{
 	},
 	events::{Mentions, room::message::RoomMessageEventContent},
 };
-use tokio::time::sleep;
 
 use crate::{
 	Ruma,
@@ -252,5 +251,5 @@ async fn delay_response() {
 		 successful response."
 	);
 
-	sleep(Duration::from_secs(time_to_wait)).await;
+	smol::Timer::after(Duration::from_secs(time_to_wait)).await;
 }

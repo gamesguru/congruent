@@ -352,7 +352,7 @@ mod tests {
 		assert!(selected.old_verify_keys.contains_key(&historical_key_id));
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn route_includes_historical_keys_in_json_response() {
 		let _ = rustls::crypto::ring::default_provider().install_default();
 

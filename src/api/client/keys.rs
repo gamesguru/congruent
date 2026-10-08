@@ -583,7 +583,7 @@ where
 			// which cascades into client-side send timeouts. The caller is told
 			// about the missing server via `failures` and can retry.
 			let fed_timeout = timeout.min(Duration::from_secs(3));
-			let response = tokio::time::timeout(
+			let response = conduwuit::timeout(
 				fed_timeout,
 				services.sending.send_federation_request(&server, request),
 			)
@@ -769,7 +769,7 @@ pub(crate) async fn claim_keys_helper(
 			for (user_id, keys) in vec {
 				one_time_keys_input_fed.insert(user_id.clone(), keys.clone());
 			}
-			let response = tokio::time::timeout(
+			let response = conduwuit::timeout(
 				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
 					&server,

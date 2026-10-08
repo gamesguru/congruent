@@ -36,7 +36,6 @@ use slipstream::{
 	},
 	uint,
 };
-use tokio::join;
 
 use crate::{
 	Ruma,

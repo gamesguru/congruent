@@ -33,7 +33,7 @@ pub(crate) async fn appservice_ping(
 		)));
 	}
 
-	let timer = tokio::time::Instant::now();
+	let timer = std::time::Instant::now();
 
 	let _response = services
 		.sending

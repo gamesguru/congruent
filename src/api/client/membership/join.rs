@@ -37,7 +37,6 @@ use slipstream::{
 	},
 	sswire::Raw,
 };
-use tokio::join;
 
 use super::{banned_room_check, validate_remote_member_event_stub};
 use crate::{
@@ -994,7 +993,7 @@ async fn join_room_by_id_helper_local(
 					if auth_user.is_none() {
 						drop(state_lock);
 						for _ in 0..5 {
-							tokio::time::sleep(Duration::from_millis(150)).await;
+							smol::Timer::after(Duration::from_millis(150)).await;
 							auth_user = select_authorising_user(
 								services,
 								room_id,
@@ -1249,7 +1248,7 @@ async fn make_join_request(
 
 		let mut forbidden_retried = false;
 		loop {
-			let make_join_response = tokio::time::timeout(
+			let make_join_response = conduwuit::timeout(
 				REQUEST_TIMEOUT,
 				services.sending.send_federation_request(
 					remote_server,
@@ -1309,7 +1308,7 @@ async fn make_join_request(
 									 {RESTRICTED_RETRY_DELAY:?} to allow federation to propagate"
 								);
 								forbidden_retried = true;
-								tokio::time::sleep(RESTRICTED_RETRY_DELAY).await;
+								smol::Timer::after(RESTRICTED_RETRY_DELAY).await;
 								continue;
 							}
 							warn!("{remote_server} refuses to let us join: {e}.");

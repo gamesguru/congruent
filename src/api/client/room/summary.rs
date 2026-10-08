@@ -292,7 +292,7 @@ async fn remote_room_summary_hierarchy_response(
 
 	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
 		debug!("Fetching room summary for {room_id} from server {server}");
-		let result = tokio::time::timeout(
+		let result = conduwuit::timeout(
 			REQUEST_TIMEOUT,
 			services
 				.sending

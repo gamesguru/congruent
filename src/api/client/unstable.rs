@@ -312,7 +312,7 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use tokio::sync::RwLock;
+use async_lock::RwLock;
 
 type DagCacheMap =
 	std::collections::HashMap<OwnedRoomId, (Instant, Vec<slipstream::json::Value>)>;

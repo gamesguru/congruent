@@ -53,7 +53,7 @@ pub(crate) async fn create_join_event_template_route(
 	// federation catch up.
 	if is_joined {
 		for _ in 0..5 {
-			tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+			smol::Timer::after(std::time::Duration::from_millis(150)).await;
 			is_joined = services
 				.rooms
 				.state_cache
@@ -90,7 +90,7 @@ pub(crate) async fn create_join_event_template_route(
 
 			if auth_result.is_err() {
 				for _ in 0..5 {
-					tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+					smol::Timer::after(std::time::Duration::from_millis(150)).await;
 					auth_result = select_authorising_user(
 						&services,
 						&body.room_id,

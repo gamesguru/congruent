@@ -721,7 +721,7 @@ async fn sync_events_v5_route_inner(
 					while let Some(remaining) =
 						deadline.checked_duration_since(std::time::Instant::now())
 					{
-						if tokio::time::timeout(remaining, watcher).await.is_err() {
+						if conduwuit::timeout(remaining, watcher).await.is_err() {
 							break;
 						}
 
@@ -838,7 +838,7 @@ async fn build_sync_events_v5(
 		.map(at!(0))
 		.collect::<Vec<OwnedRoomId>>();
 
-	let ((all_joined_rooms, all_invited_rooms, all_knocked_rooms), all_left_rooms) = tokio::join!(
+	let ((all_joined_rooms, all_invited_rooms, all_knocked_rooms), all_left_rooms) = futures::join!(
 		join3(all_joined_rooms, all_invited_rooms, all_knocked_rooms),
 		all_left_rooms
 	);

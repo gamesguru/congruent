@@ -148,7 +148,7 @@ async fn create_join_event(
 	// `m.room.name` nor `m.room.canonical_alias` — otherwise the client uses
 	// those instead and doesn't need heroes at all.
 	let heroes = if omit_members {
-		let (has_name, has_canonical_alias) = tokio::join!(
+		let (has_name, has_canonical_alias) = futures::join!(
 			services.rooms.state_accessor.state_contains_type_hamt(
 				room_id,
 				&root_handle,

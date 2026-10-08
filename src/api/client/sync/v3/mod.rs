@@ -369,7 +369,7 @@ pub(crate) async fn sync_events_route(
 			let mut watcher = watcher;
 			while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
 			{
-				if tokio::time::timeout(remaining, watcher).await.is_err() {
+				if conduwuit::timeout(remaining, watcher).await.is_err() {
 					break;
 				}
 

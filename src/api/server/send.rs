@@ -149,7 +149,7 @@ pub(crate) async fn send_transaction_message_route(
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
 ) -> Result<axum::response::Response> {
-	if tokio::time::timeout(Duration::from_secs(50), recv.changed())
+	if conduwuit::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()
 	{
@@ -234,7 +234,7 @@ async fn process_inbound_transaction(
 	};
 
 	let ((), results) =
-		tokio::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
+		futures::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
@@ -678,7 +678,7 @@ async fn handle_room(
 	};
 	let mut results = Vec::with_capacity(sorted_event_ids.len());
 	for event_id in sorted_event_ids {
-		tokio::task::yield_now().await;
+		smol::future::yield_now().await;
 		let value = pdu_map
 			.get(&event_id)
 			.expect("sorted event IDs must be from the original map")
@@ -763,7 +763,7 @@ async fn handle_edu_presence(
 		});
 
 	let timeout = services.server.config.federation_presence_interval_s;
-	if tokio::time::timeout(Duration::from_secs(timeout), fut)
+	if conduwuit::timeout(Duration::from_secs(timeout), fut)
 		.await
 		.is_err()
 	{
@@ -780,7 +780,7 @@ async fn handle_edu_presence_update(
 	origin: &ServerName,
 	update: PresenceUpdate,
 ) {
-	tokio::task::yield_now().await;
+	smol::future::yield_now().await;
 
 	if update.user_id.server_name() != origin {
 		debug_warn!(

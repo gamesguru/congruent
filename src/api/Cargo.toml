@@ -55,6 +55,7 @@ zstd_compression = [
 ]
 
 [dependencies]
+async-lock.workspace = true
 base64.workspace = true
 bytes.workspace = true
 conduwuit-core.workspace = true
@@ -77,6 +78,7 @@ serde_urlencoded.workspace = true
 serde.workspace = true
 sha1.workspace = true
 smol.workspace = true
+tokio.workspace = true
 tower.workspace = true
 url.workspace = true
 xxhash-rust.workspace = true
