@@ -438,46 +438,6 @@ impl Service {
 	}
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn backfill_gap_cache_requires_matching_state_hash() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 500));
-
-		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
-	}
-
-	#[test]
-	fn backfill_gap_cache_rejects_zero_state_hash() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 500));
-
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
-	}
-
-	#[test]
-	fn backfill_gap_cache_requires_sufficient_limit() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 100));
-
-		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
-	}
-}
-
 /// Copy room push rules from an upgraded room to its replacement.
 ///
 /// This is used both for local room upgrades and for tombstones received
@@ -928,5 +888,45 @@ impl Service {
 		I: Stream<Item = ShortEventId> + Send + 'a,
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn backfill_gap_cache_requires_matching_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_rejects_zero_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_requires_sufficient_limit() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 100));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
 	}
 }

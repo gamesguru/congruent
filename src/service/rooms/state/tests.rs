@@ -61,8 +61,8 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	let config = Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = tokio::runtime::Handle::current();
 	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
-		reload: LogLevelReloadHandles::default(),
-		capture: Arc::new(capture::State::default()),
+		reload: LogLevelReloadHandles,
+		capture: Arc::new(capture::State),
 	}));
 
 	let services = Services::build(server.clone()).expect("failed to build services");
@@ -135,9 +135,7 @@ fn create_member_pdu(
 	json.insert("content".into(), slipstream::CanonicalJsonValue::Object(content));
 	json.insert(
 		"origin_server_ts".into(),
-		slipstream::CanonicalJsonValue::Number(
-			origin_server_ts.try_into().expect("valid timestamp"),
-		),
+		slipstream::CanonicalJsonValue::Number(origin_server_ts.into()),
 	);
 	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
 	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
@@ -482,7 +480,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.await
 		.expect("seeded root must have a retained lattice");
 	lattice.replace(
-		&StateEventType::RoomMember.to_string(),
+		StateEventType::RoomMember.as_ref(),
 		"@user7:test.conduwuit.local",
 		"$seed-member-7:test.conduwuit.local",
 		updated.event_id.as_str(),
@@ -711,7 +709,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 
 	let leave = create_member_pdu(
 		&room_id,
-		&event_id!("$leave:test.conduwuit.local").to_owned(),
+		&event_id!("$leave:test.conduwuit.local"),
 		inviter.as_str(),
 		alice.as_str(),
 		"leave",
@@ -719,7 +717,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 	);
 	let invite = create_member_pdu(
 		&room_id,
-		&event_id!("$invite:test.conduwuit.local").to_owned(),
+		&event_id!("$invite:test.conduwuit.local"),
 		inviter.as_str(),
 		alice.as_str(),
 		"invite",

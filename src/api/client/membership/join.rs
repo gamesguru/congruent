@@ -1359,45 +1359,6 @@ fn deprioritize(
 	servers
 }
 
-#[cfg(test)]
-mod tests {
-	use slipstream::OwnedServerName;
-
-	use super::*;
-
-	#[test]
-	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-		let depr = vec!["slow.invalid".try_into()?];
-		let expected: Vec<OwnedServerName> = vec![
-			"example.com".try_into()?,
-			"example.org".try_into()?,
-			"slow.invalid".try_into()?,
-		];
-
-		let servers = deprioritize(servers, &depr);
-		assert_eq!(servers, expected);
-		Ok(())
-	}
-
-	#[test]
-	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-
-		let depr_servers = deprioritize(servers.clone(), &[]);
-		assert_eq!(depr_servers, servers);
-		Ok(())
-	}
-}
-
 async fn fetch_missing_extremity(
 	services: &Services,
 	remote_server: &OwnedServerName,
@@ -1486,4 +1447,43 @@ async fn fetch_missing_extremity(
 		.await?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::OwnedServerName;
+
+	use super::*;
+
+	#[test]
+	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+		let depr = vec!["slow.invalid".try_into()?];
+		let expected: Vec<OwnedServerName> = vec![
+			"example.com".try_into()?,
+			"example.org".try_into()?,
+			"slow.invalid".try_into()?,
+		];
+
+		let servers = deprioritize(servers, &depr);
+		assert_eq!(servers, expected);
+		Ok(())
+	}
+
+	#[test]
+	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+
+		let depr_servers = deprioritize(servers.clone(), &[]);
+		assert_eq!(depr_servers, servers);
+		Ok(())
+	}
 }

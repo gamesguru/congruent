@@ -713,8 +713,8 @@ mod tests {
 		let config = Config::new(&config_raw).expect("failed to parse config");
 		let runtime_handle = tokio::runtime::Handle::current();
 		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
-			reload: LogLevelReloadHandles::default(),
-			capture: Arc::new(capture::State::default()),
+			reload: LogLevelReloadHandles,
+			capture: Arc::new(capture::State),
 		}));
 
 		let db = Database::open(&server).expect("failed to open database");
@@ -757,7 +757,7 @@ mod tests {
 
 		// Cache should now contain the mappings
 		assert_eq!(service.eventid_shorteventid_cache.get(&event_id), Some(short_id1));
-		assert_eq!(service.shorteventid_eventid_cache.get(&short_id1), Some(event_id.to_owned()));
+		assert_eq!(service.shorteventid_eventid_cache.get(&short_id1), Some(event_id.clone()));
 
 		// Clear cache and retrieve via get_shorteventid to verify DB storage
 		service.eventid_shorteventid_cache.invalidate_all();
@@ -840,15 +840,15 @@ mod tests {
 		assert!(stream.next().await.is_none());
 
 		// Check caches
-		assert_eq!(service.eventid_shorteventid_cache.get(&event1.to_owned()), Some(short1));
-		assert_eq!(service.eventid_shorteventid_cache.get(&event2.to_owned()), Some(short2));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event1.clone()), Some(short1));
+		assert_eq!(service.eventid_shorteventid_cache.get(&event2.clone()), Some(short2));
 
 		// Retrieve batch from short ids
 		let short_stream = stream::iter(vec![short1, short2]);
 		let event_stream = service.multi_get_eventid_from_short::<OwnedEventId, _>(short_stream);
 		let mut event_stream = std::pin::pin!(event_stream);
-		assert_eq!(event_stream.next().await.unwrap().unwrap(), event1.to_owned());
-		assert_eq!(event_stream.next().await.unwrap().unwrap(), event2.to_owned());
+		assert_eq!(event_stream.next().await.unwrap().unwrap(), event1.clone());
+		assert_eq!(event_stream.next().await.unwrap().unwrap(), event2.clone());
 		assert!(event_stream.next().await.is_none());
 
 		// Test state keys batch lookup

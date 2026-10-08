@@ -372,8 +372,8 @@ async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<servi
 		config,
 		Some(&runtime_handle),
 		conduwuit::log::Log {
-			reload: conduwuit::log::LogLevelReloadHandles::default(),
-			capture: std::sync::Arc::new(conduwuit::log::capture::State::default()),
+			reload: conduwuit::log::LogLevelReloadHandles,
+			capture: std::sync::Arc::new(conduwuit::log::capture::State),
 		},
 	));
 
@@ -1002,7 +1002,7 @@ async fn test_yolo_reorder_timeline() {
 		.iter()
 		.position(|id| id == &event_b)
 		.expect("Event B not found");
-	println!("Event A topological index: {}, Event B topological index: {}", index_a, index_b);
+	println!("Event A topological index: {index_a}, Event B topological index: {index_b}");
 	assert!(
 		index_b < index_a,
 		"Event B (ts=1000) should be before Event A (ts=2000) after reordering because the \
@@ -1113,7 +1113,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		.get_event_metadata(&duplicated_event)
 		.await
 		.unwrap();
-	let duplicate_topo_key = topo_pducount_key(&duplicate_pdu_id, metadata.depth.into());
+	let duplicate_topo_key = topo_pducount_key(&duplicate_pdu_id, metadata.depth);
 
 	// Seed the exact corruption that dedup-room repairs: a second timeline
 	// index entry for the same event ID, without changing the canonical
@@ -1938,7 +1938,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 			.map(|pdu| pdu.event_id().to_owned())
 			.collect();
 
-	let mut mismatches = 0u32;
+	let mut mismatches = 0_u32;
 	for id in &expected_present {
 		let eid = <slipstream::EventId>::try_from(*id).unwrap();
 		if !resolved_state_ids.contains(&eid) {
@@ -1955,7 +1955,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 							"  actual winner: {} (sender={}, ts={})",
 							state_pdu.event_id(),
 							state_pdu.sender(),
-							u64::from(state_pdu.origin_server_ts().0),
+							state_pdu.origin_server_ts().0,
 						);
 					}
 				}
@@ -2139,9 +2139,7 @@ async fn test_yolo_heal_receipts() {
 	});
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
-	content1
-		.0
-		.insert(slipstream::event_id!("$event1").to_owned(), types1);
+	content1.0.insert(slipstream::event_id!("$event1"), types1);
 
 	let event1 = ReceiptEvent {
 		content: content1,
@@ -2156,9 +2154,7 @@ async fn test_yolo_heal_receipts() {
 	});
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
-	content2
-		.0
-		.insert(slipstream::event_id!("$event2").to_owned(), types2);
+	content2.0.insert(slipstream::event_id!("$event2"), types2);
 
 	let event2 = ReceiptEvent {
 		content: content2,

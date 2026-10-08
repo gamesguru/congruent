@@ -95,7 +95,7 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![b_id.to_owned()]);
+		assert_eq!(result, vec![b_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -117,7 +117,7 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(after_b, vec![b_id.to_owned()]);
+		assert_eq!(after_b, vec![b_id.clone()]);
 
 		// Server 2 sends C also referencing A
 		// But A is already referenced (marked by B), so we simulate that
@@ -125,7 +125,7 @@ mod tests {
 		let is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 
 		let after_c = calculate_forward_extremities(
-			vec![b_id.to_owned()],
+			vec![b_id.clone()],
 			&c_id,
 			&[a.as_ref()],
 			false,
@@ -136,7 +136,7 @@ mod tests {
 
 		// B is not referenced by C's prev_events, and not referenced in DB
 		// C is added as new tip
-		assert_eq!(after_c, vec![b_id.to_owned(), c_id.to_owned()]);
+		assert_eq!(after_c, vec![b_id.clone(), c_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -158,7 +158,7 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![d_id.to_owned()]);
+		assert_eq!(result, vec![d_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -204,12 +204,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j1, vec![j1_id.to_owned()]);
+		assert_eq!(after_j1, vec![j1_id.clone()]);
 
 		// J2 also references A (which is now marked as referenced in DB)
 		let a_is_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_j2 = calculate_forward_extremities(
-			vec![j1_id.to_owned()],
+			vec![j1_id.clone()],
 			&j2_id,
 			&[a.as_ref()],
 			false,
@@ -217,11 +217,11 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j2, vec![j1_id.to_owned(), j2_id.to_owned()]);
+		assert_eq!(after_j2, vec![j1_id.clone(), j2_id.clone()]);
 
 		// J3 also references A
 		let after_j3 = calculate_forward_extremities(
-			vec![j1_id.to_owned(), j2_id.to_owned()],
+			vec![j1_id.clone(), j2_id.clone()],
 			&j3_id,
 			&[a.as_ref()],
 			false,
@@ -229,12 +229,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_j3, vec![j1_id.to_owned(), j2_id.to_owned(), j3_id.to_owned()]);
+		assert_eq!(after_j3, vec![j1_id.clone(), j2_id.clone(), j3_id.clone()]);
 
 		// Merge event references all three
 		let m_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
-			vec![j1_id.to_owned(), j2_id.to_owned(), j3_id.to_owned()],
+			vec![j1_id.clone(), j2_id.clone(), j3_id.clone()],
 			&m_id,
 			&[&j1_id, &j2_id, &j3_id],
 			false,
@@ -242,7 +242,7 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(result, vec![m_id.to_owned()]);
+		assert_eq!(result, vec![m_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -265,12 +265,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_rename, vec![rename_id.to_owned()]);
+		assert_eq!(after_rename, vec![rename_id.clone()]);
 
 		// Avatar change also references A (now referenced in DB)
 		let a_referenced = |eid: &EventId| ready(*eid == event_id!("$aaa:example.org"));
 		let after_avatar = calculate_forward_extremities(
-			vec![rename_id.to_owned()],
+			vec![rename_id.clone()],
 			&avatar_id,
 			&[a.as_ref()],
 			false,
@@ -278,11 +278,11 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_avatar, vec![rename_id.to_owned(), avatar_id.to_owned()]);
+		assert_eq!(after_avatar, vec![rename_id.clone(), avatar_id.clone()]);
 
 		// Message also references A
 		let after_msg = calculate_forward_extremities(
-			vec![rename_id.to_owned(), avatar_id.to_owned()],
+			vec![rename_id.clone(), avatar_id.clone()],
 			&msg_id,
 			&[a.as_ref()],
 			false,
@@ -290,16 +290,12 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(after_msg, vec![
-			rename_id.to_owned(),
-			avatar_id.to_owned(),
-			msg_id.to_owned()
-		]);
+		assert_eq!(after_msg, vec![rename_id.clone(), avatar_id.clone(), msg_id.clone()]);
 
 		// Merge collapses all three
 		let merge_id = event_id!("$merge:example.org");
 		let result = calculate_forward_extremities(
-			vec![rename_id.to_owned(), avatar_id.to_owned(), msg_id.to_owned()],
+			vec![rename_id.clone(), avatar_id.clone(), msg_id.clone()],
 			&merge_id,
 			&[&rename_id, &avatar_id, &msg_id],
 			false,
@@ -307,7 +303,7 @@ mod tests {
 			true,
 		)
 		.await;
-		assert_eq!(result, vec![merge_id.to_owned()]);
+		assert_eq!(result, vec![merge_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -331,7 +327,7 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![d, e_id.to_owned()]);
+		assert_eq!(result, vec![d, e_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -358,7 +354,7 @@ mod tests {
 		.await;
 
 		// A collapsed via prev_events, B collapsed via is_referenced, only C remains
-		assert_eq!(result, vec![c_id.to_owned()]);
+		assert_eq!(result, vec![c_id.clone()]);
 	}
 
 	// ---------------------------------------------------------------
@@ -391,10 +387,10 @@ mod tests {
 		.await;
 
 		// B should appear exactly once, A is not in the set anymore
-		assert_eq!(first, vec![b_id.to_owned()]);
+		assert_eq!(first, vec![b_id.clone()]);
 		assert_eq!(
 			second,
-			vec![b_id.to_owned(), b_id.to_owned()],
+			vec![b_id.clone(), b_id.clone()],
 			"re-processing adds the event again since it's not in prev_events"
 		);
 		// NOTE: In practice, the caller (upgrade_outlier_pdu) short-circuits
@@ -431,6 +427,6 @@ mod tests {
 		)
 		.await;
 
-		assert_eq!(result, vec![merge_id.to_owned()]);
+		assert_eq!(result, vec![merge_id.clone()]);
 	}
 }

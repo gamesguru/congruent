@@ -352,18 +352,18 @@ mod tests {
 
 	#[test]
 	fn deep_anchor_uses_last_candidates_single_prev() {
-		let gme = event_id!("$gme:test").to_owned();
-		let state_ids = event_id!("$state_ids:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let state_ids = event_id!("$state_ids:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
-		graph.insert(gme, [state_ids.clone()].into_iter().collect());
+		graph.insert(gme, std::iter::once(state_ids.clone()).collect());
 
 		assert_eq!(deep_state_ids_anchor(&sorted, &graph), Some(state_ids));
 	}
 
 	#[test]
 	fn deep_anchor_none_when_last_candidate_has_no_prevs() {
-		let gme = event_id!("$gme:test").to_owned();
+		let gme = event_id!("$gme:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
 		graph.insert(gme, HashSet::new());
@@ -373,9 +373,9 @@ mod tests {
 
 	#[test]
 	fn deep_anchor_none_when_last_candidate_has_multiple_prevs() {
-		let gme = event_id!("$gme:test").to_owned();
-		let a = event_id!("$a:test").to_owned();
-		let b = event_id!("$b:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let a = event_id!("$a:test");
+		let b = event_id!("$b:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
 		graph.insert(gme, [a, b].into_iter().collect());
@@ -387,13 +387,13 @@ mod tests {
 	fn deep_anchor_none_when_single_prev_is_itself_a_candidate() {
 		// A multi-hop /get_missing_events response: both `gme` and its own
 		// single prev `state_ids` were fetched together in this batch.
-		let gme = event_id!("$gme:test").to_owned();
-		let state_ids = event_id!("$state_ids:test").to_owned();
-		let external = event_id!("$external:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let state_ids = event_id!("$state_ids:test");
+		let external = event_id!("$external:test");
 		let sorted = vec![state_ids.clone(), gme.clone()];
 		let mut graph = HashMap::new();
-		graph.insert(gme, [state_ids.clone()].into_iter().collect());
-		graph.insert(state_ids, [external].into_iter().collect());
+		graph.insert(gme, std::iter::once(state_ids.clone()).collect());
+		graph.insert(state_ids, std::iter::once(external).collect());
 
 		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
 	}

@@ -1653,11 +1653,11 @@ mod tests {
 	fn test_build_device_list_edus_under_limit() {
 		let mut all_changes = BTreeMap::new();
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
-		users_18.insert(user_id!("@bob:example.com").to_owned());
+		users_18.insert(user_id!("@bob:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1672,12 +1672,12 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
-		users_15.insert(user_id!("@bob:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
+		users_15.insert(user_id!("@bob:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
-		users_18.insert(user_id!("@charlie:example.com").to_owned());
+		users_18.insert(user_id!("@charlie:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1692,9 +1692,9 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
-		users_15.insert(user_id!("@bob:example.com").to_owned());
-		users_15.insert(user_id!("@charlie:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
+		users_15.insert(user_id!("@bob:example.com"));
+		users_15.insert(user_id!("@charlie:example.com"));
 		all_changes.insert(15, users_15);
 
 		let since = (10, 20);
@@ -1709,13 +1709,13 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
 		// Same user!
-		users_18.insert(user_id!("@alice:example.com").to_owned());
-		users_18.insert(user_id!("@bob:example.com").to_owned());
+		users_18.insert(user_id!("@alice:example.com"));
+		users_18.insert(user_id!("@bob:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1729,7 +1729,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_under_limit() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 		let json = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
@@ -1789,7 +1789,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_unthreaded_precedence() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// 1. Threaded receipt
 		let json_threaded = slipstream::json!({
@@ -1840,7 +1840,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_threaded_does_not_overwrite() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// 1. Unthreaded receipt
 		let json_unthreaded = slipstream::json!({
@@ -1891,7 +1891,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_out_of_order_count_does_not_skip_in_range_receipt() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// An out-of-order receipt with a higher stream count comes first.
 		let json_late = slipstream::json!({

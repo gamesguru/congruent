@@ -56,8 +56,8 @@ async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate:
 	let config = Config::new(&config_raw).expect("failed to parse config");
 	let runtime_handle = tokio::runtime::Handle::current();
 	let server = std::sync::Arc::new(Server::new(config, Some(&runtime_handle), Log {
-		reload: LogLevelReloadHandles::default(),
-		capture: std::sync::Arc::new(capture::State::default()),
+		reload: LogLevelReloadHandles,
+		capture: std::sync::Arc::new(capture::State),
 	}));
 
 	let db = crate::Database::open(&server).expect("failed to open database");
@@ -349,15 +349,15 @@ fn json_filter_legacy_row_decodes() {
 	assert_eq!(filter.0.event_fields, Some(vec!["content.body".to_owned()]));
 
 	let again = serialize_to_vec(Json(compact_filter(&filter.0))).expect("failed to serialize");
-	assert_eq!(&again[..], &stored[..], "legacy row did not re-encode byte-identically");
+	assert_eq!(&*again, &stored[..], "legacy row did not re-encode byte-identically");
 }
 
 #[test]
 fn json_malformed_is_error() {
 	use conduwuit::slipstream::json::Value;
 
-	assert!(de::from_slice::<Json<Value>>(b"{not json").is_err());
-	assert!(de::from_slice::<Json<Value>>(&[0xFF, 0xFE]).is_err());
+	de::from_slice::<Json<Value>>(b"{not json").unwrap_err();
+	de::from_slice::<Json<Value>>(&[0xFF, 0xFE]).unwrap_err();
 }
 
 #[test]
@@ -652,7 +652,7 @@ fn serde_tuple_option_some_none_some() {
 	aa.extend_from_slice(user_id.as_bytes());
 
 	let bb: (Option<OwnedRoomId>, Option<OwnedEventId>, Option<OwnedUserId>) =
-		(Some(room_id.into()), None, Some(user_id.into()));
+		(Some(room_id), None, Some(user_id));
 
 	let bbs = serialize_to_vec(&bb).expect("failed to serialize tuple");
 	assert_eq!(aa, bbs);

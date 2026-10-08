@@ -691,7 +691,7 @@ mod serde_test3 {
 		let s = r#"{"displayname":"user-2 🏳️‍⚧️","membership":"join"}"#;
 		match slipstream::codec::from_str::<RoomMemberEventContent>(s) {
 			| Ok(c) => println!("Success: {:?}", c.membership),
-			| Err(e) => panic!("Error: {}", e),
+			| Err(e) => panic!("Error: {e}"),
 		}
 	}
 }

@@ -141,23 +141,23 @@ mod tests {
 	async fn test_clean_dag() {
 		let mut db = HashMap::new();
 		db.insert(
-			event_id!("$1").to_owned(),
+			event_id!("$1"),
 			FetchResult::Timeline(
-				mock_pdu(&event_id!("$1"), vec![event_id!("$2").to_owned()]),
+				mock_pdu(&event_id!("$1"), vec![event_id!("$2")]),
 				false,
 				false,
 			),
 		);
 		db.insert(
-			event_id!("$2").to_owned(),
+			event_id!("$2"),
 			FetchResult::Timeline(
-				mock_pdu(&event_id!("$2"), vec![event_id!("$3").to_owned()]),
+				mock_pdu(&event_id!("$2"), vec![event_id!("$3")]),
 				false,
 				false,
 			),
 		);
 		db.insert(
-			event_id!("$3").to_owned(),
+			event_id!("$3"),
 			FetchResult::Timeline(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
@@ -174,23 +174,19 @@ mod tests {
 	async fn test_dag_with_outliers() {
 		let mut db = HashMap::new();
 		db.insert(
-			event_id!("$1").to_owned(),
+			event_id!("$1"),
 			FetchResult::Timeline(
-				mock_pdu(&event_id!("$1"), vec![event_id!("$2").to_owned()]),
+				mock_pdu(&event_id!("$1"), vec![event_id!("$2")]),
 				false,
 				false,
 			),
 		);
 		db.insert(
-			event_id!("$2").to_owned(),
-			FetchResult::Outlier(
-				mock_pdu(&event_id!("$2"), vec![event_id!("$3").to_owned()]),
-				false,
-				false,
-			),
+			event_id!("$2"),
+			FetchResult::Outlier(mock_pdu(&event_id!("$2"), vec![event_id!("$3")]), false, false),
 		);
 		db.insert(
-			event_id!("$3").to_owned(),
+			event_id!("$3"),
 			FetchResult::Outlier(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
@@ -207,19 +203,16 @@ mod tests {
 	async fn test_dag_with_holes() {
 		let mut db = HashMap::new();
 		db.insert(
-			event_id!("$1").to_owned(),
+			event_id!("$1"),
 			FetchResult::Timeline(
-				mock_pdu(&event_id!("$1"), vec![
-					event_id!("$2").to_owned(),
-					event_id!("$3").to_owned(),
-				]),
+				mock_pdu(&event_id!("$1"), vec![event_id!("$2"), event_id!("$3")]),
 				false,
 				false,
 			),
 		);
 		// $2 is missing
 		db.insert(
-			event_id!("$3").to_owned(),
+			event_id!("$3"),
 			FetchResult::Timeline(mock_pdu(&event_id!("$3"), vec![]), false, false),
 		);
 
@@ -228,7 +221,7 @@ mod tests {
 				.await;
 
 		assert_eq!(result.in_timeline, 2);
-		assert_eq!(result.missing, vec![event_id!("$2").to_owned()]);
+		assert_eq!(result.missing, vec![event_id!("$2")]);
 	}
 
 	#[tokio::test]
@@ -238,13 +231,13 @@ mod tests {
 			Box::pin(async move {
 				if id == event_id!("$A") {
 					FetchResult::Timeline(
-						mock_pdu(&event_id!("$A"), vec![event_id!("$B").to_owned()]),
+						mock_pdu(&event_id!("$A"), vec![event_id!("$B")]),
 						false,
 						false,
 					)
 				} else if id == event_id!("$B") {
 					FetchResult::Timeline(
-						mock_pdu(&event_id!("$B"), vec![event_id!("$A").to_owned()]),
+						mock_pdu(&event_id!("$B"), vec![event_id!("$A")]),
 						false,
 						false,
 					)

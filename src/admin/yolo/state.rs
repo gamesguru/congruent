@@ -1938,14 +1938,14 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_empty() {
 		let meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), "");
 	}
 
 	#[test]
 	fn test_fmt_event_meta_member() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), ("join".to_owned(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), " [join]");
 	}
@@ -1953,7 +1953,7 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_power_levels() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), (String::new(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.power_levels", &eid, &meta), " [by @user:test.org]");
 	}

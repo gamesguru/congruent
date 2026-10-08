@@ -162,6 +162,47 @@ async fn verify_federation_request(
 	Ok(())
 }
 
+/// Resolves every `(type, state_key, event_id)` tuple beneath a HAMT root
+/// directly from the HAMT and short-ID mappings, without loading PDUs.
+///
+/// Fails closed: a traversal error or an unresolvable short ID aborts rather
+/// than returning an incomplete state, so callers never digest partial state.
+pub(super) async fn state_tuples(
+	services: &crate::State,
+	root_handle: &rezzy::hamt::RootHandle,
+) -> Result<Vec<(String, String, OwnedEventId)>> {
+	use conduwuit::utils::stream::IterStream;
+
+	let shorts: Vec<_> = services
+		.rooms
+		.state_accessor
+		.state_full_shortids_hamt(root_handle.clone())
+		.try_collect()
+		.await?;
+
+	let state_keys: Vec<_> = services
+		.rooms
+		.short
+		.multi_get_statekey_from_short(shorts.iter().map(|(ssk, _)| *ssk).stream())
+		.try_collect()
+		.await?;
+
+	let event_ids: Vec<OwnedEventId> = services
+		.rooms
+		.short
+		.multi_get_eventid_from_short::<OwnedEventId, _>(
+			shorts.iter().map(|(_, seid)| *seid).stream(),
+		)
+		.try_collect()
+		.await?;
+
+	Ok(state_keys
+		.into_iter()
+		.zip(event_ids)
+		.map(|((ty, sk), id)| (ty.to_string(), sk.to_string(), id))
+		.collect())
+}
+
 #[cfg(test)]
 mod tests {
 	use conduwuit_core::utils::hash::lthash::serialize_lthash;
@@ -218,45 +259,4 @@ mod tests {
 		assert_ne!(lattice, empty_lattice);
 		assert_ne!(digest, empty_digest);
 	}
-}
-
-/// Resolves every `(type, state_key, event_id)` tuple beneath a HAMT root
-/// directly from the HAMT and short-ID mappings, without loading PDUs.
-///
-/// Fails closed: a traversal error or an unresolvable short ID aborts rather
-/// than returning an incomplete state, so callers never digest partial state.
-pub(super) async fn state_tuples(
-	services: &crate::State,
-	root_handle: &rezzy::hamt::RootHandle,
-) -> Result<Vec<(String, String, OwnedEventId)>> {
-	use conduwuit::utils::stream::IterStream;
-
-	let shorts: Vec<_> = services
-		.rooms
-		.state_accessor
-		.state_full_shortids_hamt(root_handle.clone())
-		.try_collect()
-		.await?;
-
-	let state_keys: Vec<_> = services
-		.rooms
-		.short
-		.multi_get_statekey_from_short(shorts.iter().map(|(ssk, _)| *ssk).stream())
-		.try_collect()
-		.await?;
-
-	let event_ids: Vec<OwnedEventId> = services
-		.rooms
-		.short
-		.multi_get_eventid_from_short::<OwnedEventId, _>(
-			shorts.iter().map(|(_, seid)| *seid).stream(),
-		)
-		.try_collect()
-		.await?;
-
-	Ok(state_keys
-		.into_iter()
-		.zip(event_ids)
-		.map(|((ty, sk), id)| (ty.to_string(), sk.to_string(), id))
-		.collect())
 }

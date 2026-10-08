@@ -2542,7 +2542,7 @@ mod tests {
 	/// Helper: build a RawPduId from (room, count).
 	fn make_pdu_id(room: u64, count: i64) -> RawPduId {
 		let shorteventid = if count >= 0 {
-			PduCount::Normal(count as u64)
+			PduCount::Normal(count.cast_unsigned())
 		} else {
 			PduCount::Backfilled(count)
 		};
@@ -2564,7 +2564,9 @@ mod tests {
 	/// The fork at C (depth=5) is the scenario that triggers max() inflation:
 	/// when paginating backward from E and hitting C's depth, the old code
 	/// would inflate the seek position.
-	fn build_forked_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+		type DagFixture = (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>);
+
+		fn build_forked_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -2815,7 +2817,7 @@ mod tests {
 
 			let seek_key = seek_from.map(|(token_depth, token_count)| {
 				let adjacent_depth = depth_by_count
-					.get(&(token_count - 1))
+					.get(&(token_count.checked_sub(1).expect("token count must be non-zero")))
 					.copied()
 					.unwrap_or(token_depth);
 
@@ -2943,7 +2945,7 @@ mod tests {
 	/// No events are missed because G has the highest depth.
 	///
 	/// But what if the remote branch has HIGHER depth than local?
-	fn build_partition_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+		fn build_partition_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -3114,9 +3116,9 @@ mod tests {
 
 		// Must not contain any post-sync events
 		assert!(
-			!all_events.contains(&"E".to_string())
-				&& !all_events.contains(&"F".to_string())
-				&& !all_events.contains(&"G".to_string()),
+			!all_events.contains(&"E".to_owned())
+				&& !all_events.contains(&"F".to_owned())
+				&& !all_events.contains(&"G".to_owned()),
 			"backward pagination must NOT return events after sync position (got {all_events:?})"
 		);
 

@@ -318,7 +318,7 @@ mod tests {
 
 	fn test_log() -> Log {
 		Log {
-			reload: LogLevelReloadHandles::default(),
+			reload: LogLevelReloadHandles,
 			capture: Arc::new(CaptureState::new()),
 		}
 	}

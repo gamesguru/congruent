@@ -354,7 +354,7 @@ mod tests {
 	fn no_duplicates() {
 		let json =
 			r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}, "ed25519:b": {"key": "BBB"}}}"#;
-		assert!(check_no_duplicate_json_keys(json, true).is_ok());
+		check_no_duplicate_json_keys(json, true).unwrap();
 	}
 
 	#[test]
@@ -369,7 +369,7 @@ mod tests {
 		let json = r#"{"verify_keys": {"ed25519:a": {"key": "AAA", "key": "AAA"}}}"#;
 		assert!(check_no_duplicate_json_keys(json, true).is_err());
 		// Observation mode only warns.
-		assert!(check_no_duplicate_json_keys(json, false).is_ok());
+		check_no_duplicate_json_keys(json, false).unwrap();
 
 		let old = r#"{"old_verify_keys": {"ed25519:a": {"key": "AAA", "key": "AAA", "expired_ts": 1}}}"#;
 		assert!(check_no_duplicate_json_keys(old, true).is_err());
@@ -402,7 +402,7 @@ mod tests {
 	#[test]
 	fn cross_map_same_body_is_legal() {
 		let json = r#"{"verify_keys": {"ed25519:a": {"key": "AAA"}}, "old_verify_keys": {"ed25519:a": {"key": "AAA", "expired_ts": 1}}}"#;
-		assert!(check_no_duplicate_json_keys(json, true).is_ok());
+		check_no_duplicate_json_keys(json, true).unwrap();
 	}
 
 	#[test]
@@ -428,7 +428,7 @@ mod tests {
 			nested.push(']');
 		}
 
-		let json = format!(r#"{{"unsigned":{},"verify_keys":{{}}}}"#, nested);
+		let json = format!(r#"{{"unsigned":{nested},"verify_keys":{{}}}}"#);
 		assert!(check_no_duplicate_json_keys(&json, true).is_err());
 	}
 }

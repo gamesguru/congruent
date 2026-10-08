@@ -166,9 +166,9 @@ mod tests {
 
 		let mut parents = HashMap::new();
 		parents.insert(a.clone(), Vec::new());
-		parents.insert(b.clone(), vec![a.clone()]);
-		parents.insert(c.clone(), vec![b.clone()]);
-		parents.insert(d.clone(), vec![b.clone()]);
+		parents.insert(b.clone(), vec![a]);
+		parents.insert(c, vec![b.clone()]);
+		parents.insert(d, vec![b]);
 
 		LiveReachability::from_snapshot(topo, parents)
 	}

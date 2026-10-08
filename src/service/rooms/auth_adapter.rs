@@ -234,7 +234,7 @@ mod tests {
 			event_type: event_type.to_owned(),
 			sender: sender.to_owned(),
 			state_key: state_key.map(str::to_owned),
-			content: rezzy::JsonValue::Object(Default::default()),
+			content: rezzy::JsonValue::Object(std::collections::BTreeMap::default()),
 			prev_events: vec![],
 			auth_events: vec![],
 			origin_server_ts: 1_000_000,
