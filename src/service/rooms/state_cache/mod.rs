@@ -241,10 +241,10 @@ pub fn server_rooms<'a>(
 
 /// Expose raw keys for the clean_corrupt_rooms command
 #[implement(Service)]
-pub fn server_rooms_raw_keys_prefix<'a>(
-	&'a self,
-	prefix: &'a (&'a ServerName, Interfix),
-) -> impl Stream<Item = Result<database::keyval::Key<'a>>> + Send + 'a {
+pub fn server_rooms_raw_keys_prefix(
+	&self,
+	prefix: &(&ServerName, Interfix),
+) -> impl Stream<Item = Result<database::keyval::Key<'static>>> + Send {
 	self.db.serverroomids.keys_prefix_raw(prefix)
 }
 

@@ -2112,7 +2112,7 @@ impl Data {
 
 	fn parse_topo_stream<'a>(
 		&'a self,
-		stream: impl Stream<Item = Result<KeyVal<'a>>> + Send + 'a,
+		stream: impl Stream<Item = Result<KeyVal<'static>>> + Send + 'a,
 		prefix: Vec<u8>,
 	) -> impl Stream<Item = Result<TopoIterItem>> + Send + 'a {
 		stream

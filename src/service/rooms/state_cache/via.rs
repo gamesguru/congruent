@@ -2,7 +2,6 @@ use conduwuit::{
 	Result, implement,
 	utils::{StreamTools, stream::TryIgnore},
 };
-use database::Ignore;
 use futures::{Stream, StreamExt, future, stream::iter};
 use itertools::Itertools;
 use slipstream::{
@@ -83,7 +82,7 @@ pub fn servers_invite_via<'a>(
 		.roomid_inviteviaservers
 		.stream_raw_prefix(room_id)
 		.ignore_err()
-		.filter_map(|(_, servers): (Ignore, &[u8])| {
+		.filter_map(|(_, servers): (&[u8], &[u8])| {
 			let server = servers
 				.split(|&b| b == 0xFF)
 				.next_back()

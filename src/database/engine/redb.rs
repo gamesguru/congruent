@@ -28,6 +28,16 @@ pub struct RedbEngine {
 	lifts: AtomicU32,
 }
 
+#[derive(Clone, Debug)]
+pub struct FileInfo {
+	pub name: String,
+	pub level: i32,
+	pub num_entries: u64,
+	pub num_deletions: u64,
+	pub size: u64,
+	pub column_family_name: String,
+}
+
 impl RedbEngine {
 	pub(crate) fn open(path: &Path) -> Result<Self> {
 		let path = metadata_path(path);
@@ -76,6 +86,22 @@ impl RedbEngine {
 	pub fn cf_exists(&self, _name: &str) -> bool { true }
 
 	pub fn drop_cf(&self, _name: &str) -> Result<()> { Ok(()) }
+
+	pub fn file_list(&self) -> impl Iterator<Item = Result<FileInfo>> {
+		Vec::<Result<FileInfo>>::new().into_iter()
+	}
+
+	pub fn memory_usage(&self) -> Result<String> {
+		Ok(String::from("redb metadata backend; allocator statistics unavailable"))
+	}
+
+	pub fn backup_list(&self) -> Result<std::vec::IntoIter<String>> { Ok(Vec::new().into_iter()) }
+
+	pub fn backup(&self) -> Result<()> {
+		Err(err!(Database("online backups are not supported by the redb backend")))
+	}
+
+	pub fn backup_count(&self) -> Result<usize> { Ok(0) }
 
 	pub(crate) fn commit(&self, operations: Vec<DbOp>) -> Result<()> {
 		let transaction = self
