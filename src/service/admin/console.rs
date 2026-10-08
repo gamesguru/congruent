@@ -2,7 +2,10 @@
 
 use std::{
 	io::BufRead,
-	os::unix::{fs::PermissionsExt, net::{UnixListener, UnixStream}},
+	os::unix::{
+		fs::PermissionsExt,
+		net::{UnixListener, UnixStream},
+	},
 	sync::Arc,
 	thread::JoinHandle,
 };
@@ -86,12 +89,10 @@ impl Console {
 		let socket_path = self.server.config.database_path.join("console.sock");
 		_ = fs::remove_file(&socket_path).await;
 
-		let listener = match UnixListener::bind(&socket_path)
-			.and_then(|listener| {
-				listener.set_nonblocking(true)?;
-				Async::new(listener)
-			})
-		{
+		let listener = match UnixListener::bind(&socket_path).and_then(|listener| {
+			listener.set_nonblocking(true)?;
+			Async::new(listener)
+		}) {
 			| Ok(listener) => listener,
 			| Err(e) => {
 				error!("Failed to bind console socket at {socket_path:?}: {e}");

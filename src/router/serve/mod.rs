@@ -43,7 +43,10 @@ pub(super) async fn serve(services: Arc<Services>) -> Result {
 		#[cfg(not(feature = "direct_tls"))]
 		{
 			let _ = (app, state, addrs);
-			Err(err!(Config("tls", "conduwuit was not built with direct TLS support (\"direct_tls\")")))
+			Err(err!(Config(
+				"tls",
+				"conduwuit was not built with direct TLS support (\"direct_tls\")"
+			)))
 		}
 	} else {
 		plain::serve(server, &services, app, state, addrs).await
