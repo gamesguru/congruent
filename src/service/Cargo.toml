@@ -102,6 +102,7 @@ slipstream.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 smol.workspace = true
+tokio.workspace = true
 url.workspace = true
 webpki-roots.workspace = true
 yansi.workspace = true

@@ -221,6 +221,11 @@ version = "0.25.4"
 [workspace.dependencies.blocking]
 version = "1.7.0"
 
+[workspace.dependencies.tokio]
+version = "1.53.2"
+default-features = false
+features = ["sync"]
+
 [workspace.dependencies.futures-io]
 version = "0.3.34"
 

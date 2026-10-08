@@ -13,7 +13,6 @@ use std::{
 	time::Duration,
 };
 
-use async_lock::Semaphore;
 use async_trait::async_trait;
 use conduwuit::{
 	Result, Server, debug, debug_warn, err, error, info,
@@ -23,6 +22,7 @@ use conduwuit::{
 };
 use futures::{Stream, StreamExt, stream::FuturesUnordered};
 use slipstream::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
+use tokio::sync::Semaphore;
 
 use self::data::Data;
 pub use self::{
@@ -429,7 +429,12 @@ impl Service {
 	where
 		T: OutgoingRequest + Debug + Send,
 	{
-		let _permit = self.semaphore.acquire_arc().await;
+		let _permit = self
+			.semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.expect("Semaphore should not be closed");
 
 		self.services
 			.federation
