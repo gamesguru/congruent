@@ -398,7 +398,7 @@ route_handler!(T1, T2, T3, T4);
 route_handler!(T1, T2, T3, T4, T5);
 
 pub(in super::super) trait RumaHandler<T> {
-	fn add_routes(&'static self, router: &mut MinimalRouter);
+	fn add_routes(&self, router: &mut MinimalRouter);
 }
 
 pub(in super::super) trait RouterExt {
@@ -422,14 +422,15 @@ macro_rules! ruma_handler {
 		#[allow(non_snake_case)]
 		impl<Err, Req, Fut, Fun, $($tx,)*> RumaHandler<($($tx,)* Ruma<Req>,)> for Fun
 		where
-			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Send + Sync + 'static,
+			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Copy + Send + Sync + 'static,
 			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send + 'static,
 			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 			Req::OutgoingResponse: Send + 'static,
 			Err: Into<ApiError> + Send,
 			$( $tx: ExtractArg + Send + 'static, )*
 		{
-			fn add_routes(&'static self, router: &mut MinimalRouter) {
+			fn add_routes(&self, router: &mut MinimalRouter) {
+				let handler = *self;
 				let metadata = &Req::METADATA;
 				let method: Method = metadata.method.parse().expect("valid endpoint method");
 				let paths = std::iter::once(metadata.path)
@@ -455,7 +456,7 @@ macro_rules! ruma_handler {
 								Ok(value) => value,
 								Err(error) => return HandlerResult::into_response(error),
 							};
-							match self($($tx,)* body).await {
+							match handler($($tx,)* body).await {
 								Ok(response) => IntoResponse::into_response(RumaResponse(response)),
 								Err(error) => HandlerResult::into_response(error.into()),
 							}
