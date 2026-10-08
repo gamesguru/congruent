@@ -203,7 +203,6 @@ pub(crate) async fn change_password_route(
 			.ready_filter(|id| *id != body.sender_device())
 			.for_each(|id| {
 				let sender_user = sender_user.clone();
-				let services = services;
 				async move { services.users.remove_device(&sender_user, &id).await }
 			})
 			.await;

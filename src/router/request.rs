@@ -59,8 +59,8 @@ pub(crate) async fn handle(
 			.server
 			.metrics
 			.requests_handle_active
-			.fetch_sub(1, Ordering::Relaxed);
-	}
+			.fetch_sub(1, Ordering::Relaxed)
+	};
 	if response.status() == StatusCode::METHOD_NOT_ALLOWED {
 		response = error_response(
 			StatusCode::METHOD_NOT_ALLOWED,

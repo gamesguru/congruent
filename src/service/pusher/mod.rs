@@ -244,7 +244,7 @@ impl Service {
 			},
 			| Err(e) => {
 				warn!("Could not send request to pusher {dest}: {e}");
-				Err(e.into())
+				Err(e)
 			},
 		}
 	}

@@ -49,7 +49,7 @@ where
 		Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val.clone().lock_owned().await,
+			val: val.lock_owned().await,
 		}
 	}
 
@@ -65,10 +65,7 @@ where
 		Ok(Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val
-				.clone()
-				.try_lock_owned()
-				.map_err(|_| err!("would yield"))?,
+			val: val.try_lock_owned().map_err(|_| err!("would yield"))?,
 		})
 	}
 
@@ -90,10 +87,7 @@ where
 		Ok(Guard::<Key, Val> {
 			key,
 			map: Arc::clone(&self.map),
-			val: val
-				.clone()
-				.try_lock_owned()
-				.map_err(|_| err!("would yield"))?,
+			val: val.try_lock_owned().map_err(|_| err!("would yield"))?,
 		})
 	}
 

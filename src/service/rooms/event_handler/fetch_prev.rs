@@ -135,12 +135,12 @@ where
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
 					};
-					let res = conduwuit::timeout_at(
+					let res = Box::pin(conduwuit::timeout_at(
 						deadline,
 						self.services
 							.sending
 							.send_federation_request(&server, request),
-					)
+					))
 					.await;
 
 					match &res {

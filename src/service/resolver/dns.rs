@@ -228,10 +228,7 @@ impl Resolver {
 				.map_err(|e| err!(error!("Failed to build DNS resolver: {e}")))?,
 		);
 
-		Ok(Arc::new(Self {
-			resolver: resolver.clone(),
-			server: server.clone(),
-		}))
+		Ok(Arc::new(Self { resolver, server: server.clone() }))
 	}
 
 	#[inline]

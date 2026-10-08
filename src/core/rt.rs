@@ -76,7 +76,6 @@ impl RuntimeHandle {
 	#[must_use]
 	pub fn new() -> Self { Self { executor: executor() } }
 
-	#[must_use]
 	pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
 	where
 		F: Future + Send + 'static,
@@ -95,7 +94,6 @@ impl RuntimeHandle {
 		JoinHandle { task: Some(self.executor.spawn(future)) }
 	}
 
-	#[must_use]
 	pub fn spawn_blocking<F, T>(&self, function: F) -> JoinHandle<T>
 	where
 		F: FnOnce() -> T + Send + 'static,
@@ -136,6 +134,9 @@ impl<T> JoinSet<T> {
 
 	#[must_use]
 	pub fn len(&self) -> usize { self.set.len() }
+
+	#[must_use]
+	pub fn is_empty(&self) -> bool { self.set.is_empty() }
 }
 
 #[derive(Debug)]

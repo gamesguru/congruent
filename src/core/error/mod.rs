@@ -204,11 +204,10 @@ impl Error {
 			| Self::Request(kind, _, code) => response::status_code(kind, *code),
 			| Self::BadRequest(kind, ..) => response::bad_request_code(kind),
 			| Self::FeatureDisabled(..) => response::bad_request_code(self.kind()),
-			| Self::HttpClient(..) => StatusCode::BAD_GATEWAY,
+			| Self::HttpClient(..) | Self::FederationConnection(_) => StatusCode::BAD_GATEWAY,
 			| Self::Conflict(_) => StatusCode::CONFLICT,
 			| Self::Io(error) => response::io_error_code(error.kind()),
 			| Self::FederationTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
-			| Self::FederationConnection(_) => StatusCode::BAD_GATEWAY,
 			| Self::Uiaa(_) => StatusCode::UNAUTHORIZED,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		}

@@ -96,7 +96,7 @@ impl HttpClient {
 		Ok(Response::from_parts(parts, body))
 	}
 
-	pub fn request(&self, method: http::Method, url: impl AsRef<str>) -> RequestBuilder<'_> {
+	pub fn request<U: AsRef<str>>(&self, method: http::Method, url: U) -> RequestBuilder<'_> {
 		RequestBuilder {
 			client: self,
 			method,
@@ -106,15 +106,15 @@ impl HttpClient {
 		}
 	}
 
-	pub fn get(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+	pub fn get<U: AsRef<str>>(&self, url: U) -> RequestBuilder<'_> {
 		self.request(http::Method::GET, url)
 	}
 
-	pub fn head(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+	pub fn head<U: AsRef<str>>(&self, url: U) -> RequestBuilder<'_> {
 		self.request(http::Method::HEAD, url)
 	}
 
-	pub fn post(&self, url: impl AsRef<str>) -> RequestBuilder<'_> {
+	pub fn post<U: AsRef<str>>(&self, url: U) -> RequestBuilder<'_> {
 		self.request(http::Method::POST, url)
 	}
 }
@@ -128,18 +128,21 @@ pub struct RequestBuilder<'a> {
 }
 
 impl RequestBuilder<'_> {
-	pub fn header(mut self, name: http::header::HeaderName, value: impl AsRef<str>) -> Self {
+	#[must_use]
+	pub fn header<V: AsRef<str>>(mut self, name: http::header::HeaderName, value: V) -> Self {
 		if let Ok(value) = http::HeaderValue::try_from(value.as_ref()) {
 			self.headers.insert(name, value);
 		}
 		self
 	}
 
+	#[must_use]
 	pub fn bearer_auth(self, token: &str) -> Self {
-		self.header(http::header::AUTHORIZATION, &format!("Bearer {token}"))
+		self.header(http::header::AUTHORIZATION, format!("Bearer {token}"))
 	}
 
-	pub fn body(mut self, body: impl Into<Bytes>) -> Self {
+	#[must_use]
+	pub fn body<B: Into<Bytes>>(mut self, body: B) -> Self {
 		self.body = body.into();
 		self
 	}

@@ -559,7 +559,7 @@ async fn handle(
 		.into_iter()
 		.try_stream()
 		.broad_and_then(|(room_id, pdus): (_, Vec<_>)| {
-			handle_room(services, &client, origin, room_id, pdus.into_iter())
+			handle_room(services, client, origin, room_id, pdus.into_iter())
 				.map_ok(Vec::into_iter)
 				.map_ok(IterStream::try_stream)
 		})
@@ -709,7 +709,7 @@ async fn handle_room(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(&origin, room_id, &event_id, value, true, None),
+				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
 		)
 		.await
 		.map(|_| ());

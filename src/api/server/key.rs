@@ -297,8 +297,7 @@ mod tests {
 					drop(RuntimeHandle::new().spawn(async move {
 						let service = service_fn(move |mut request: Request<Incoming>| {
 							request.extensions_mut().insert(state);
-							let response = router.lock().unwrap().call(request);
-							async move { response.await }
+							router.lock().unwrap().call(request)
 						});
 						let _ = hyper::server::conn::http1::Builder::new()
 							.serve_connection(SmolIo(stream), service)

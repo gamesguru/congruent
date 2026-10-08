@@ -48,11 +48,11 @@ pub(crate) fn authenticate_user<'a>(
 	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
 	Box::pin(async move {
-		let mut request = request::from(services, request).await?;
+		let request = request::from(services, request).await?;
 		let json_body = std::str::from_utf8(&request.body)
 			.ok()
 			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
-		let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
+		let auth = auth::auth(services, &request, json_body.as_ref(), metadata).await?;
 		auth.sender_user
 			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
 	})
@@ -176,7 +176,7 @@ where
 			None
 		};
 
-		let auth = auth::auth(services, &mut request, json_body.as_ref(), &T::METADATA).await?;
+		let auth = auth::auth(services, &request, json_body.as_ref(), &T::METADATA).await?;
 		let body = make_body::<T>(&mut request, json_body.as_mut())?;
 		Ok(Self {
 			body,

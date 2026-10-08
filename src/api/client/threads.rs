@@ -117,7 +117,7 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 	let body = Limited::new(body, services.server.config.max_request_size)
 		.collect()
 		.await
-		.map(|body| body.to_bytes())
+		.map(http_body_util::Collected::to_bytes)
 		.unwrap_or_default();
 	let sender_user = authenticate_thread_user(&parts, &services).await?;
 	let body = slipstream::codec::from_str::<ThreadSubscriptionBody>(

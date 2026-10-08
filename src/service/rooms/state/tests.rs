@@ -503,7 +503,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.expect("bulk mutation failed");
 	let (written_after, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
 
-	let written = written_after - written_before;
+	let written = written_after
+		.checked_sub(written_before)
+		.expect("write counter moved backwards");
 	assert_ne!(
 		new_root.structural_hash, root.structural_hash,
 		"changing a leaf must change the root"
@@ -548,7 +550,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		"re-applying the same mutation must be idempotent"
 	);
 	assert_eq!(
-		rewritten_after - rewritten_before,
+		rewritten_after
+			.checked_sub(rewritten_before)
+			.expect("rewrite counter moved backwards"),
 		0,
 		"idempotent re-application must not write nodes"
 	);
@@ -564,7 +568,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	// bounded node cache retains the hash. A room large enough to evict its own
 	// unchanged subtrees would fall back to writing every one of them.
 	assert_eq!(
-		elided_after - elided_before,
+		elided_after
+			.checked_sub(elided_before)
+			.expect("elision counter moved backwards"),
 		0,
 		"path-copy update must not re-emit unchanged nodes"
 	);

@@ -3275,7 +3275,17 @@ mod tests {
 		// Create 1000 events where the time generally goes up but sometimes jumps back
 		let timeline = (0..1000_u64).map(|i| {
 			let i_signed = i64::try_from(i).expect("test index fits in i64");
-			let ts = i_signed * 10 + (i_signed % 11) * 5 - (i_signed % 13) * 7;
+			let ts = i_signed
+				.checked_mul(10)
+				.and_then(|value| {
+					let jitter = (i_signed % 11).checked_mul(5)?;
+					value.checked_add(jitter)
+				})
+				.and_then(|value| {
+					let jitter = (i_signed % 13).checked_mul(7)?;
+					value.checked_sub(jitter)
+				})
+				.expect("test timestamp arithmetic overflow");
 			(u64::try_from(ts.max(0)).expect("test timestamp is non-negative"), i)
 		});
 

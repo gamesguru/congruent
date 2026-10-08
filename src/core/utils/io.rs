@@ -16,7 +16,7 @@ impl<T: AsyncRead + Unpin> Read for SmolIo<T> {
 		cx: &mut Context<'_>,
 		mut buf: ReadBufCursor<'_>,
 	) -> Poll<io::Result<()>> {
-		let mut scratch = [0_u8; 8192];
+		let mut scratch = vec![0_u8; 8192].into_boxed_slice();
 		let capacity = buf.remaining().min(scratch.len());
 		if capacity == 0 {
 			return Poll::Ready(Ok(()));

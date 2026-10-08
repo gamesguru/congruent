@@ -87,10 +87,11 @@ where
 		_state: &'a State,
 	) -> BoxFuture<'a, Result<Self, ApiError>> {
 		Box::pin(async move {
-			let values = context.params.values().cloned().collect::<Vec<_>>();
 			let value = slipstream::json::Value::Array(
-				values
-					.into_iter()
+				context
+					.params
+					.values()
+					.cloned()
 					.map(slipstream::json::Value::String)
 					.collect(),
 			);
@@ -274,7 +275,7 @@ impl ExtractArg
 				.ok_or_else(|| {
 					conduwuit::err!(Request(Forbidden("Invalid X-Matrix authorization")))
 				})?;
-			Ok(extract::TypedHeader(extract::headers::Authorization(value)))
+			Ok(Self(extract::headers::Authorization(value)))
 		})
 	}
 }
@@ -287,9 +288,11 @@ pub(crate) trait RouteHandler<T> {
 	) -> (Method, &'static str, BoxedHandler);
 }
 
+type RouteBuilder =
+	Arc<dyn Fn(&'static str) -> (Method, &'static str, BoxedHandler) + Send + Sync>;
+
 pub(crate) struct RouteSpec {
-	pub(crate) builders:
-		Vec<Arc<dyn Fn(&'static str) -> (Method, &'static str, BoxedHandler) + Send + Sync>>,
+	pub(crate) builders: Vec<RouteBuilder>,
 }
 
 impl RouteSpec {

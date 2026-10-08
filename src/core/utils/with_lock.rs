@@ -161,9 +161,9 @@ mod tests {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(7);
 		let result = mutex
-			.with_lock(|v| {
-				*v += 3;
-				*v * 2
+			.with_lock(|v: &mut i32| {
+				*v = (*v).checked_add(3).expect("test value overflow");
+				(*v).checked_mul(2).expect("test value overflow")
 			})
 			.await;
 		assert_eq!(result, 20);
@@ -176,8 +176,8 @@ mod tests {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(100);
 		mutex
-			.with_lock(|v| {
-				*v -= 50;
+			.with_lock(|v: &mut i32| {
+				*v = (*v).checked_sub(50).expect("test value underflow");
 			})
 			.await;
 		let value = mutex.lock().await;
@@ -189,8 +189,8 @@ mod tests {
 		use futures::lock::Mutex as AsyncMutex;
 		let mutex = AsyncMutex::new(1);
 		mutex
-			.with_lock_async(async |v| {
-				*v += 9;
+			.with_lock_async(async |v: &mut i32| {
+				*v = (*v).checked_add(9).expect("test value overflow");
 			})
 			.await;
 		let value = mutex.lock().await;
@@ -203,7 +203,7 @@ mod tests {
 		let mutex = Arc::new(AsyncMutex::new(2));
 		mutex
 			.with_lock_async(async |v: &mut i32| {
-				*v *= 5;
+				*v = (*v).checked_mul(5).expect("test value overflow");
 			})
 			.await;
 		let value = mutex.lock().await;

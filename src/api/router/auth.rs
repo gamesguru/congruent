@@ -45,7 +45,7 @@ pub(super) struct Auth {
 
 pub(super) async fn auth(
 	services: &Services,
-	request: &mut Request,
+	request: &Request,
 	json_body: Option<&CanonicalJsonValue>,
 	metadata: &Metadata,
 ) -> Result<Auth> {
@@ -295,7 +295,7 @@ async fn auth_appservice(
 
 async fn auth_server(
 	services: &Services,
-	request: &mut Request,
+	request: &Request,
 	body: Option<&CanonicalJsonValue>,
 ) -> Result<Auth> {
 	type Member = (String, CanonicalJsonValue);
@@ -420,7 +420,7 @@ fn auth_server_checks_impl(
 	Ok(())
 }
 
-async fn parse_x_matrix(request: &mut Request) -> Result<XMatrix> {
+async fn parse_x_matrix(request: &Request) -> Result<XMatrix> {
 	let value = request
 		.parts
 		.headers

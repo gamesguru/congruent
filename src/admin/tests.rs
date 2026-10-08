@@ -1950,7 +1950,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 					}
 				}
 			}
-			mismatches += 1;
+			mismatches = mismatches.checked_add(1).expect("mismatch count overflow");
 		}
 	}
 
@@ -1958,7 +1958,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 		let eid = <slipstream::EventId>::try_from(*id).unwrap();
 		if resolved_state_ids.contains(&eid) {
 			println!("MISMATCH: expected ABSENT but PRESENT: {id}");
-			mismatches += 1;
+			mismatches = mismatches.checked_add(1).expect("mismatch count overflow");
 		}
 	}
 
@@ -2568,8 +2568,10 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.build_and_append_pdu(
 			PduBuilder {
 				timestamp: Some(slipstream::MilliSecondsSinceUnixEpoch(
-					slipstream::MilliSecondsSinceUnixEpoch::now().0
-						+ slipstream::UInt::from(1_000_u32),
+					slipstream::MilliSecondsSinceUnixEpoch::now()
+						.0
+						.checked_add(slipstream::UInt::from(1_000_u32))
+						.expect("timestamp overflow"),
 				)),
 				..PduBuilder::state(
 					String::new(),
