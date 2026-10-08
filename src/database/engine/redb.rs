@@ -213,8 +213,14 @@ fn metadata_path(path: &Path) -> PathBuf {
 
 fn composite_key(map_name: &str, key: &[u8]) -> Vec<u8> {
 	let map = map_name.as_bytes();
-	let mut composite = Vec::with_capacity(4 + map.len() + key.len());
-	composite.extend_from_slice(&(map.len() as u32).to_be_bytes());
+	let map_len = u32::try_from(map.len()).expect("metadata map name exceeds u32 length");
+	let capacity = map
+		.len()
+		.checked_add(key.len())
+		.and_then(|length| length.checked_add(4))
+		.expect("metadata composite key length overflow");
+	let mut composite = Vec::with_capacity(capacity);
+	composite.extend_from_slice(&map_len.to_be_bytes());
 	composite.extend_from_slice(map);
 	composite.extend_from_slice(key);
 	composite

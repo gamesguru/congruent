@@ -19,7 +19,7 @@ use crate::{
 	watchers::Watchers,
 };
 
-pub mod batch {
+pub(crate) mod batch {
 	use super::Map;
 
 	pub(crate) enum DbOp {
@@ -108,12 +108,14 @@ pub mod compact {
 	}
 }
 
+#[allow(dead_code)]
 pub struct Map {
 	pub(crate) name: &'static str,
 	pub(crate) db: Arc<Engine>,
 	pub(crate) watchers: Watchers,
 }
 
+#[allow(dead_code)]
 impl Map {
 	pub fn open(db: &Arc<Engine>, name: &'static str) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
@@ -240,7 +242,7 @@ impl Map {
 		K: AsRef<[u8]> + ?Sized,
 		V: AsRef<[u8]>,
 	{
-		self.write_bytes(key.as_ref().to_vec(), value.as_ref().to_vec());
+		self.write_bytes(key.as_ref(), value.as_ref().to_vec());
 	}
 
 	pub fn put_raw<K, V>(&self, key: K, value: V)
@@ -252,7 +254,7 @@ impl Map {
 		let key = ser::serialize(&mut kb, key)
 			.expect("failed to serialize key")
 			.to_vec();
-		self.write_bytes(key, value.as_ref().to_vec());
+		self.write_bytes(&key, value.as_ref().to_vec());
 	}
 
 	pub fn raw_put<K, V>(&self, key: K, value: V)
@@ -264,7 +266,7 @@ impl Map {
 		let value = ser::serialize(&mut vb, value)
 			.expect("failed to serialize value")
 			.to_vec();
-		self.write_bytes(key.as_ref().to_vec(), value);
+		self.write_bytes(key.as_ref(), value);
 	}
 
 	fn write<K, V>(&self, key: K, value: V)
@@ -280,7 +282,7 @@ impl Map {
 		let value = ser::serialize(&mut vb, value)
 			.expect("failed to serialize value")
 			.to_vec();
-		self.write_bytes(key, value);
+		self.write_bytes(&key, value);
 	}
 
 	fn write_raw<K, V>(&self, key: K, value: V, raw_key: bool)
@@ -296,18 +298,18 @@ impl Map {
 				.expect("failed to serialize key")
 				.to_vec()
 		};
-		self.write_bytes(key, value.as_ref().to_vec());
+		self.write_bytes(&key, value.as_ref().to_vec());
 	}
 
-	fn write_bytes(&self, key: Vec<u8>, value: Vec<u8>) {
+	fn write_bytes(&self, key: &[u8], value: Vec<u8>) {
 		self.db
 			.commit_batch(vec![batch::DbOp::Insert {
 				map_name: self.name,
-				key: key.clone(),
+				key: key.to_owned(),
 				value,
 			}])
 			.expect("database insert error");
-		self.watchers.wake(&key);
+		self.watchers.wake(key);
 	}
 
 	pub fn del<K>(&self, key: K)
@@ -781,7 +783,7 @@ impl Map {
 					break;
 				}
 				let mut next = Vec::new();
-				for key in current.drain(..) {
+				for key in current {
 					match map.db.get(map.name, key.as_ref())? {
 						| Some(bytes) if max_nodes.is_none_or(|limit| values.len() < limit) => {
 							let value = parse_value(&bytes)?;
@@ -884,11 +886,9 @@ impl Map {
 		self.rev_raw_stream().map(|item| item.map(|(key, _)| key))
 	}
 
-	pub fn count(self: &Arc<Self>) -> impl Future<Output = usize> + Send {
-		async move {
-			self.raw_items(crate::util::IteratorMode::Start)
-				.map_or(0, |items| items.len())
-		}
+	pub async fn count(self: &Arc<Self>) -> usize {
+		self.raw_items(crate::util::IteratorMode::Start)
+			.map_or(0, |items| items.len())
 	}
 
 	pub fn count_prefix<P>(&self, prefix: &P) -> impl Future<Output = usize> + Send
@@ -898,13 +898,12 @@ impl Map {
 		let prefix = prefix.as_ref().to_vec();
 		async move {
 			self.raw_items(crate::util::IteratorMode::Start)
-				.map(|items| {
+				.map_or(0, |items| {
 					items
 						.into_iter()
 						.filter(|(key, _)| key.starts_with(&prefix))
 						.count()
 				})
-				.unwrap_or(0)
 		}
 	}
 
@@ -913,7 +912,9 @@ impl Map {
 
 impl Debug for Map {
 	fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-		out.debug_struct("Map").field("name", &self.name).finish()
+		out.debug_struct("Map")
+			.field("name", &self.name)
+			.finish_non_exhaustive()
 	}
 }
 impl Display for Map {

@@ -149,6 +149,5 @@ pub(super) fn open(db: &Arc<Engine>) -> Maps {
 		.collect()
 }
 
-pub(super) fn descriptors() -> &'static [&'static str] { MAP_NAMES }
-
+#[must_use]
 pub fn column_family_names() -> &'static [&'static str] { MAP_NAMES }
