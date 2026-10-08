@@ -1,13 +1,16 @@
 #![cfg(feature = "console")]
 
-use std::{io::BufRead, os::unix::fs::PermissionsExt, sync::Arc, thread::JoinHandle};
+use std::{
+	io::BufRead,
+	os::unix::{fs::PermissionsExt, net::{UnixListener, UnixStream}},
+	sync::Arc,
+	thread::JoinHandle,
+};
 
 use async_fs as fs;
+use async_io::Async;
 use conduwuit::{RuntimeHandle, Server, SyncMutex, debug, error};
-use tokio::{
-	io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-	net::{UnixListener, UnixStream},
-};
+use futures::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::{
 	Dep,
@@ -83,7 +86,12 @@ impl Console {
 		let socket_path = self.server.config.database_path.join("console.sock");
 		_ = fs::remove_file(&socket_path).await;
 
-		let listener = match UnixListener::bind(&socket_path) {
+		let listener = match UnixListener::bind(&socket_path)
+			.and_then(|listener| {
+				listener.set_nonblocking(true)?;
+				Async::new(listener)
+			})
+		{
 			| Ok(listener) => listener,
 			| Err(e) => {
 				error!("Failed to bind console socket at {socket_path:?}: {e}");
@@ -113,7 +121,7 @@ impl Console {
 		}
 	}
 
-	async fn handle_connection(self: Arc<Self>, mut stream: UnixStream) {
+	async fn handle_connection(self: Arc<Self>, stream: Async<UnixStream>) {
 		let (reader, mut writer) = stream.split();
 		let mut reader = BufReader::new(reader);
 		let mut line = String::new();

@@ -1,14 +1,13 @@
 use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use conduwuit_core::{JoinHandle, Result, Server, SmolIo, debug, err, info, warn};
-use futures::{FutureExt, future::Either};
+use conduwuit_core::{Result, Server, SmolIo, debug, err, info, warn};
+use futures::future::Either;
 use futures_rustls::{TlsAcceptor, rustls::ServerConfig};
 use http::{Request, Response};
 use http_body::Body;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use rustls_pemfile::{certs, private_key};
-use tokio::sync::broadcast;
 use tower::{Service, ServiceExt};
 
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -59,14 +58,14 @@ async fn accept_tls(
 	}
 }
 
-async fn listener<S, B>(
+async fn listener<S, B, F>(
 	server: Arc<Server>,
-	app: S,
+	service_factory: F,
 	addr: SocketAddr,
 	config: Arc<ServerConfig>,
-	mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()>
 where
+	F: Fn(SocketAddr) -> S + Clone + Send + Sync + 'static,
 	S: Service<Request<Incoming>, Response = Response<B>> + Clone + Send + 'static,
 	S::Future: Send + 'static,
 	S::Error: Error + Send + Sync + 'static,
@@ -78,50 +77,39 @@ where
 		.map_err(|e| err!(error!("Failed to bind direct TLS listener on {addr}: {e}")))?;
 	let acceptor = TlsAcceptor::from(config);
 	let runtime = server.runtime().clone();
-	let mut connections: Vec<JoinHandle<()>> = Vec::new();
 
 	loop {
-		futures::select! {
-			_ = shutdown.recv().fuse() => break,
-			connection = listener.accept().fuse() => {
-				let (stream, peer) = match connection {
-					Ok(connection) => connection,
-					Err(error) => {
-						warn!(%error, %addr, "Direct TLS accept failed; retrying");
-						smol::Timer::after(ACCEPT_RETRY_DELAY).await;
-						continue;
-					},
-				};
+		let (stream, peer) = match listener.accept().await {
+			| Ok(connection) => connection,
+			| Err(error) => {
+				warn!(%error, %addr, "Direct TLS accept failed; retrying");
+				smol::Timer::after(ACCEPT_RETRY_DELAY).await;
+				continue;
+			},
+		};
 
-				let acceptor = acceptor.clone();
-				let app = app.clone();
-				connections.push(runtime.spawn(async move {
-					let Some(stream) = accept_tls(acceptor, stream).await else { return };
-					let service = service_fn(move |request| app.clone().oneshot(request));
-					if let Err(error) = http1::Builder::new()
-						.serve_connection(SmolIo(stream), service)
-						.await
-					{
-						debug!(%error, %peer, "Direct TLS connection closed with error");
-					}
-				}));
+		let acceptor = acceptor.clone();
+		let app = service_factory(peer);
+		drop(runtime.spawn(async move {
+			let Some(stream) = accept_tls(acceptor, stream).await else { return };
+			let service = service_fn(move |request| app.clone().oneshot(request));
+			if let Err(error) = http1::Builder::new()
+				.serve_connection(SmolIo(stream), service)
+				.await
+			{
+				debug!(%error, %peer, "Direct TLS connection closed with error");
 			}
-		}
+		}));
 	}
-
-	for mut connection in connections {
-		connection.abort();
-	}
-	Ok(())
 }
 
-pub async fn serve<S, B>(
+pub async fn serve<S, B, F>(
 	server: &Arc<Server>,
-	app: S,
 	addrs: Vec<SocketAddr>,
-	mut shutdown: broadcast::Receiver<()>,
+	service_factory: F,
 ) -> Result<()>
 where
+	F: Fn(SocketAddr) -> S + Clone + Send + Sync + 'static,
 	S: Service<Request<Incoming>, Response = Response<B>> + Clone + Send + 'static,
 	S::Future: Send + 'static,
 	S::Error: Error + Send + Sync + 'static,
@@ -152,14 +140,13 @@ where
 	for addr in addrs {
 		listeners.push(server.runtime().spawn(listener(
 			Arc::clone(server),
-			app.clone(),
+			service_factory.clone(),
 			addr,
 			Arc::clone(&config),
-			shutdown.resubscribe(),
 		)));
 	}
 
-	let _ = shutdown.recv().await;
+	server.until_shutdown().await;
 	for mut listener in listeners {
 		listener.abort();
 	}

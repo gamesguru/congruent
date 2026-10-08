@@ -21,8 +21,30 @@ pub(super) async fn serve(services: Arc<Services>) -> Result {
 			"Unix socket serving is not yet available in the smol listener"
 		)))
 	} else if server.config.tls.certs.is_some() {
-		let _ = (app, state, addrs);
-		Err(err!(Config("tls", "direct TLS listener migration is not yet available")))
+		#[cfg(feature = "direct_tls")]
+		{
+			let services = Arc::clone(&services);
+			let router = app.clone();
+			let service_factory = move |peer| {
+				let router = router.clone();
+				let services = Arc::clone(&services);
+				tower::service_fn(move |request| {
+					let router = router.clone();
+					let services = Arc::clone(&services);
+					async move {
+						Ok::<_, std::convert::Infallible>(
+							crate::request::handle(router, services, state, peer, request).await,
+						)
+					}
+				})
+			};
+			conduwuit_direct_tls::serve(server, addrs, service_factory).await
+		}
+		#[cfg(not(feature = "direct_tls"))]
+		{
+			let _ = (app, state, addrs);
+			Err(err!(Config("tls", "conduwuit was not built with direct TLS support (\"direct_tls\")")))
+		}
 	} else {
 		plain::serve(server, &services, app, state, addrs).await
 	};
