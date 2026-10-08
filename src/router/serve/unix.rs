@@ -13,6 +13,7 @@ use conduwuit::{Result, Server, debug, info, warn};
 use conduwuit_api::hyper_router::MinimalRouter;
 use conduwuit_core::SmolIo;
 use conduwuit_service::{Services, state::State};
+use futures::FutureExt;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 
 use crate::request;
@@ -35,14 +36,17 @@ pub(super) async fn serve(
 	let listener = Async::<UnixListener>::bind(path)?;
 	std::fs::set_permissions(path, Permissions::from_mode(server.config.unix_socket_perms))?;
 	info!(?path, "Listening");
-	while server.running() {
-		let (stream, _) = match listener.accept().await {
-			| Ok(connection) => connection,
-			| Err(error) => {
-				warn!(%error, ?path, "accept failed; retrying");
-				smol::Timer::after(std::time::Duration::from_millis(50)).await;
-				continue;
+	loop {
+		let (stream, _) = futures::select! {
+			connection = listener.accept().fuse() => match connection {
+				| Ok(connection) => connection,
+				| Err(error) => {
+					warn!(%error, ?path, "accept failed; retrying");
+					smol::Timer::after(std::time::Duration::from_millis(50)).await;
+					continue;
+				},
 			},
+			_ = server.until_shutdown().fuse() => break,
 		};
 
 		let services = Arc::clone(services);

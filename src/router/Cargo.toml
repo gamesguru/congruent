@@ -67,6 +67,7 @@ zstd_compression = [
 [dependencies]
 bytes.workspace = true
 async-net.workspace = true
+async-io.workspace = true
 conduwuit-admin.workspace = true
 conduwuit-api.workspace = true
 conduwuit-core.workspace = true

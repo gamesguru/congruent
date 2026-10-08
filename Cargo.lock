@@ -802,6 +802,7 @@ dependencies = [
 name = "conduwuit_router"
 version = "0.5.10"
 dependencies = [
+ "async-io",
  "async-net",
  "bytes",
  "conduwuit_admin",

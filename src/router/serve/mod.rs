@@ -4,7 +4,7 @@ mod unix;
 
 use std::sync::Arc;
 
-use conduwuit::{Result, err};
+use conduwuit::Result;
 use conduwuit_service::{Services, state::State};
 
 use super::layers;
@@ -25,7 +25,7 @@ pub(super) async fn serve(services: Arc<Services>) -> Result {
 		#[cfg(not(unix))]
 		{
 			let _ = (app, state, addrs);
-			Err(err!(Config(
+			Err(conduwuit::err!(Config(
 				"unix_socket_path",
 				"Unix socket serving is only available on Unix"
 			)))
@@ -53,7 +53,7 @@ pub(super) async fn serve(services: Arc<Services>) -> Result {
 		#[cfg(not(feature = "direct_tls"))]
 		{
 			let _ = (app, state, addrs);
-			Err(err!(Config(
+			Err(conduwuit::err!(Config(
 				"tls",
 				"conduwuit was not built with direct TLS support (\"direct_tls\")"
 			)))
