@@ -55,10 +55,41 @@ pub mod batch {
 
 pub use batch::Batch;
 
-#[derive(Debug)]
-pub struct Get;
-#[derive(Debug)]
-pub struct Qry;
+pub trait Get<'a, K>: Stream<Item = K> + Sized + Send + 'a
+where
+	K: AsRef<[u8]> + Send + 'a,
+{
+	fn get(self, map: &'a Arc<Map>) -> impl Stream<Item = Result<Handle<'static>>> + Send + 'a {
+		map.get_batch(self)
+	}
+}
+impl<'a, S, K> Get<'a, K> for S
+where
+	S: Stream<Item = K> + Sized + Send + 'a,
+	K: AsRef<[u8]> + Send + 'a,
+{
+}
+
+pub trait Qry<'a, K>: Stream<Item = K> + Sized + Send + 'a
+where
+	K: DbKey + Debug + Send + 'a,
+{
+	fn qry(self, map: &'a Arc<Map>) -> impl Stream<Item = Result<Handle<'static>>> + Send + 'a {
+		self.then(move |key| {
+			let mut buffer = KeyBuf::new();
+			let encoded = ser::serialize(&mut buffer, key)
+				.expect("failed to serialize query key")
+				.to_vec();
+			future::ready(map.get_blocking(&encoded))
+		})
+	}
+}
+impl<'a, S, K> Qry<'a, K> for S
+where
+	S: Stream<Item = K> + Sized + Send + 'a,
+	K: DbKey + Debug + Send + 'a,
+{
+}
 #[derive(Debug)]
 pub struct RecursiveGetOutput<V, K> {
 	pub values: Vec<V>,
@@ -83,12 +114,12 @@ pub struct Map {
 }
 
 impl Map {
-	pub(crate) fn open(db: &Arc<Engine>, name: &'static str) -> Arc<Self> {
-		Arc::new(Self {
+	pub fn open(db: &Arc<Engine>, name: &'static str) -> Result<Arc<Self>> {
+		Ok(Arc::new(Self {
 			name,
 			db: db.clone(),
 			watchers: Watchers::default(),
-		})
+		}))
 	}
 
 	pub fn name(&self) -> &str { self.name }
@@ -108,7 +139,7 @@ impl Map {
 	pub fn get<K>(
 		self: &Arc<Self>,
 		key: &K,
-	) -> impl Future<Output = Result<Handle<'static>>> + Send
+	) -> impl Future<Output = Result<Handle<'static>>> + Send + use<K>
 	where
 		K: AsRef<[u8]> + Debug + ?Sized,
 	{
@@ -131,7 +162,7 @@ impl Map {
 		let key = ser::serialize(&mut buffer, key)
 			.expect("failed to serialize query key")
 			.to_vec();
-		self.get(Box::leak(key.into_boxed_slice()))
+		future::ready(self.get_blocking(&key))
 	}
 
 	pub fn get_blocking<K>(&self, key: &K) -> Result<Handle<'static>>
@@ -198,12 +229,12 @@ impl Map {
 		self.write(key, value);
 	}
 
-	pub fn insert<K, V>(&self, key: K, value: V)
+	pub fn insert<K, V>(&self, key: &K, value: V)
 	where
-		K: DbKey + Debug,
-		V: DbKey,
+		K: AsRef<[u8]> + ?Sized,
+		V: AsRef<[u8]>,
 	{
-		self.put(key, value);
+		self.write_bytes(key.as_ref().to_vec(), value.as_ref().to_vec());
 	}
 
 	pub fn put_raw<K, V>(&self, key: K, value: V)
@@ -344,6 +375,15 @@ impl Map {
 		self.db.scan(self.name, mode)
 	}
 
+	fn raw_items_from(
+		&self,
+		from: Vec<u8>,
+		direction: crate::util::Direction,
+	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+		self.db
+			.scan(self.name, crate::util::IteratorMode::From(&from, direction))
+	}
+
 	pub fn raw_stream(&self) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
 		materialized(self.raw_items(crate::util::IteratorMode::Start))
 	}
@@ -351,14 +391,11 @@ impl Map {
 	pub fn raw_stream_from<P>(
 		&self,
 		from: &P,
-	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + use<'_>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		materialized(self.raw_items(crate::util::IteratorMode::From(
-			from.as_ref(),
-			crate::util::Direction::Forward,
-		)))
+		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Forward))
 	}
 
 	pub fn rev_raw_stream(&self) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
@@ -368,14 +405,11 @@ impl Map {
 	pub fn rev_raw_stream_from<P>(
 		&self,
 		from: &P,
-	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + use<'_>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		materialized(self.raw_items(crate::util::IteratorMode::From(
-			from.as_ref(),
-			crate::util::Direction::Reverse,
-		)))
+		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse))
 	}
 
 	pub fn raw_keys(&self) -> impl Stream<Item = Result<&'static [u8]>> + Send {
@@ -385,11 +419,17 @@ impl Map {
 	pub fn raw_keys_prefix<P>(
 		&self,
 		prefix: &P,
-	) -> impl Stream<Item = Result<&'static [u8]>> + Send
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send + use<'_>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		let prefix = prefix.as_ref().to_vec();
+		self.raw_keys_prefix_owned(prefix.as_ref().to_vec())
+	}
+
+	fn raw_keys_prefix_owned(
+		&self,
+		prefix: Vec<u8>,
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send {
 		self.raw_keys().filter(move |item| {
 			future::ready(item.as_ref().is_ok_and(|key| key.starts_with(&prefix)))
 		})
@@ -400,9 +440,23 @@ impl Map {
 		prefix: &P,
 	) -> impl Stream<Item = Result<&'static [u8]>> + Send
 	where
-		P: AsRef<[u8]> + ?Sized,
+		P: DbKey + ?Sized + Debug,
 	{
-		self.raw_keys_prefix(prefix)
+		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
+		self.raw_keys_prefix_owned(prefix)
+	}
+
+	pub fn keys_prefix<'a, K, P>(
+		&'a self,
+		prefix: &'a P,
+	) -> impl Stream<Item = Result<Key<'static, K>>> + Send + 'a
+	where
+		P: DbKey + ?Sized + Debug,
+		K: crate::dbkey::DbDe<'static> + Send + 'a,
+	{
+		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
+		self.raw_keys_prefix_owned(prefix)
+			.map(keyval::result_deserialize_key::<K>)
 	}
 
 	pub fn raw_stream_prefix<P>(
@@ -412,7 +466,13 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		let prefix = prefix.as_ref().to_vec();
+		self.raw_stream_prefix_owned(prefix.as_ref().to_vec())
+	}
+
+	fn raw_stream_prefix_owned(
+		&self,
+		prefix: Vec<u8>,
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
 		self.raw_stream().filter(move |item| {
 			future::ready(item.as_ref().is_ok_and(|(key, _)| key.starts_with(&prefix)))
 		})
@@ -420,7 +480,7 @@ impl Map {
 
 	pub fn stream<'a, K, V>(
 		&'a self,
-	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V>
 	where
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
@@ -431,32 +491,34 @@ impl Map {
 	pub fn stream_prefix<'a, K, V, P>(
 		&'a self,
 		prefix: &'a P,
-	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V>
 	where
-		P: AsRef<[u8]> + ?Sized,
+		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
-		self.raw_stream_prefix(prefix)
+		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
+		self.raw_stream_prefix_owned(prefix)
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn stream_from<'a, K, V, P>(
 		&'a self,
 		from: &'a P,
-	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V>
 	where
-		P: AsRef<[u8]> + ?Sized,
+		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
-		self.raw_stream_from(from)
+		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
+		materialized(self.raw_items_from(from, crate::util::Direction::Forward))
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
 	pub fn rev_stream<'a, K, V>(
 		&'a self,
-	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a
+	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a + use<'a, K, V>
 	where
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
@@ -470,11 +532,12 @@ impl Map {
 		from: &'a P,
 	) -> impl Stream<Item = Result<KeyVal<'static, K, V>>> + Send + 'a
 	where
-		P: AsRef<[u8]> + ?Sized,
+		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
-		self.rev_raw_stream_from(from)
+		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
+		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
@@ -486,6 +549,107 @@ impl Map {
 		P: AsRef<[u8]> + ?Sized,
 	{
 		self.raw_stream_prefix(prefix)
+	}
+
+	pub fn stream_prefix_raw<P>(
+		&self,
+		prefix: &P,
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send
+	where
+		P: DbKey + ?Sized + Debug,
+	{
+		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
+		self.raw_stream_prefix_owned(prefix)
+	}
+
+	pub fn stream_raw_prefix<P>(
+		&self,
+		prefix: &P,
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send
+	where
+		P: AsRef<[u8]> + ?Sized,
+	{
+		self.raw_stream_prefix(prefix)
+	}
+
+	pub fn get_batch_blocking<'a, I, K>(
+		&self,
+		keys: I,
+	) -> impl Iterator<Item = Result<Handle<'static>>> + Send + 'a
+	where
+		I: Iterator<Item = &'a K> + Send + 'a,
+		K: AsRef<[u8]> + ?Sized + 'a,
+	{
+		keys.map(|key| self.get_blocking(key))
+			.collect::<Vec<_>>()
+			.into_iter()
+	}
+
+	pub fn aqry<const MAX: usize, K>(
+		self: &Arc<Self>,
+		key: &K,
+	) -> impl Future<Output = Result<Handle<'static>>> + Send
+	where
+		K: DbKey + ?Sized + Debug,
+	{
+		self.qry(key)
+	}
+
+	pub fn bqry<K, B>(
+		self: &Arc<Self>,
+		key: &K,
+		buf: &mut B,
+	) -> impl Future<Output = Result<Handle<'static>>> + Send
+	where
+		K: DbKey + ?Sized + Debug,
+		B: std::io::Write + AsRef<[u8]>,
+	{
+		let encoded = ser::serialize(buf, key)
+			.expect("failed to serialize query key")
+			.to_vec();
+		future::ready(self.get_blocking(&encoded))
+	}
+
+	pub fn put_aput<const VMAX: usize, K, V>(&self, key: K, value: V)
+	where
+		K: DbKey + Debug,
+		V: DbKey,
+	{
+		self.put(key, value);
+	}
+
+	pub fn aput_put<const KMAX: usize, K, V>(&self, key: K, value: V)
+	where
+		K: DbKey + Debug,
+		V: DbKey,
+	{
+		self.put(key, value);
+	}
+
+	pub fn raw_aput<const VMAX: usize, K, V>(&self, key: K, value: V)
+	where
+		K: AsRef<[u8]>,
+		V: DbKey,
+	{
+		self.raw_put(key, value);
+	}
+
+	pub fn aput_raw<const KMAX: usize, K, V>(&self, key: K, value: V)
+	where
+		K: DbKey + Debug,
+		V: AsRef<[u8]>,
+	{
+		self.put_raw(key, value);
+	}
+
+	pub fn clear(self: &Arc<Self>) -> impl Future<Output = ()> + Send {
+		let map = self.clone();
+		async move {
+			let keys = map.raw_keys().collect::<Vec<_>>().await;
+			for key in keys.into_iter().flatten() {
+				map.remove_raw(key);
+			}
+		}
 	}
 
 	pub fn get_batch<'a, S, K>(
@@ -590,6 +754,20 @@ impl Map {
 	{
 		self.rev_raw_stream_from(from)
 			.map(|item| item.map(|(key, _)| key))
+	}
+
+	pub fn rev_keys_from<'a, K, P>(
+		&'a self,
+		from: &'a P,
+	) -> impl Stream<Item = Result<Key<'static, K>>> + Send + 'a
+	where
+		P: DbKey + ?Sized + Debug,
+		K: crate::dbkey::DbDe<'static> + Send + 'a,
+	{
+		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
+		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
+			.map(|item| item.map(|(key, _)| key))
+			.map(keyval::result_deserialize_key::<K>)
 	}
 
 	pub fn keys_raw_prefix<P>(

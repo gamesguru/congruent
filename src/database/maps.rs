@@ -145,10 +145,10 @@ pub(super) fn open(db: &Arc<Engine>) -> Maps {
 	MAP_NAMES
 		.iter()
 		.copied()
-		.map(|name| (name, Map::open(db, name)))
+		.map(|name| (name, Map::open(db, name).expect("failed to open metadata map")))
 		.collect()
 }
 
 pub(super) fn descriptors() -> &'static [&'static str] { MAP_NAMES }
 
-pub(super) fn column_family_names() -> &'static [&'static str] { MAP_NAMES }
+pub fn column_family_names() -> &'static [&'static str] { MAP_NAMES }

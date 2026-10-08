@@ -22,7 +22,7 @@ use crate::{
 
 const TABLE: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("conduwuit_metadata");
 
-pub(crate) struct RedbEngine {
+pub struct RedbEngine {
 	db: Arc<Database>,
 	corks: AtomicU32,
 	lifts: AtomicU32,
@@ -53,7 +53,7 @@ impl RedbEngine {
 
 	pub(crate) fn sync(&self) -> Result<()> { Ok(()) }
 
-	pub(crate) fn sort(&self) -> Result<()> { Ok(()) }
+	pub fn sort(&self) -> Result<()> { Ok(()) }
 
 	pub(crate) fn update(&self) -> Result<()> { Ok(()) }
 
@@ -73,9 +73,9 @@ impl RedbEngine {
 		self.corks.load(Ordering::Relaxed) > self.lifts.load(Ordering::Relaxed)
 	}
 
-	pub(crate) fn cf_exists(&self, _name: &str) -> bool { true }
+	pub fn cf_exists(&self, _name: &str) -> bool { true }
 
-	pub(crate) fn drop_cf(&self, _name: &str) -> Result<()> { Ok(()) }
+	pub fn drop_cf(&self, _name: &str) -> Result<()> { Ok(()) }
 
 	pub(crate) fn commit(&self, operations: Vec<DbOp>) -> Result<()> {
 		let transaction = self
