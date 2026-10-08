@@ -1,0 +1,13 @@
+[package]
+name = "conduwuit-db-migrate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This is deliberately its own workspace.  The production workspace must not
+# resolve or compile RocksDB, even when it is checked with --all-features.
+[workspace]
+
+[dependencies]
+redb = "4.3.0"
+rust-rocksdb = { package = "rust-rocksdb", git = "https://forgejo.ellis.link/continuwuation/rust-rocksdb-zaidoon1", rev = "61d9d23872197e9ace4a477f2617d5c9f50ecb23", default-features = false }

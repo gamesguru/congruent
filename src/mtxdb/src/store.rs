@@ -17,18 +17,14 @@ pub struct MtxdbStore {
 
 impl MtxdbStore {
 	#[must_use]
-	pub fn new(db: Arc<Database>) -> Self {
-		Self { db }
-	}
+	pub fn new(db: Arc<Database>) -> Self { Self { db } }
 
 	pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self, StorageError> {
 		Ok(Self::new(Arc::new(Database::open(path.into())?)))
 	}
 
 	#[must_use]
-	pub fn database(&self) -> &Arc<Database> {
-		&self.db
-	}
+	pub fn database(&self) -> &Arc<Database> { &self.db }
 
 	pub fn get(
 		&self,
@@ -73,9 +69,10 @@ pub struct MtxdbTransaction<'a> {
 
 #[cfg(test)]
 mod tests {
+	use std::{fs, path::PathBuf};
+
 	use super::*;
 	use crate::keys::derive_id;
-	use std::{fs, path::PathBuf};
 
 	fn test_path(name: &str) -> PathBuf {
 		std::env::temp_dir().join(format!("conduwuit-mtxdb-{name}-{}", std::process::id()))
@@ -162,7 +159,5 @@ impl MtxdbTransaction<'_> {
 		Ok(())
 	}
 
-	pub fn commit(self) -> Result<(), StorageError> {
-		self.tx.commit()
-	}
+	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
 }

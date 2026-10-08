@@ -2,7 +2,12 @@
 resolver = "2"
 members = ["src/*", "xtask/"]
 default-members = ["src/*"]
-exclude = ["ruwuma", "ruma-upstream", "src/direct_tls"]
+exclude = [
+    "ruwuma",
+    "ruma-upstream",
+    "src/direct_tls",
+    "tools/conduwuit-db-migrate",
+]
 
 [workspace.package]
 authors = ["Continuwuity Team and contributors <team@continuwuity.org>"]

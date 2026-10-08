@@ -129,8 +129,9 @@ impl EventAdapter {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
 	use std::{fs, path::PathBuf};
+
+	use super::*;
 
 	fn test_path(name: &str) -> PathBuf {
 		std::env::temp_dir().join(format!("conduwuit-mtxdb-events-{name}-{}", std::process::id()))
