@@ -9,7 +9,7 @@ use std::{
 };
 
 use conduwuit::{Result, err};
-use futures::{Stream, StreamExt, future};
+use futures::{Stream, StreamExt, future, stream};
 
 use crate::{
 	Engine, Handle,
@@ -397,13 +397,11 @@ impl Map {
 	pub fn raw_stream_from<P>(
 		&self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static>>> + Send + 'static>>
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static + use<P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		Box::pin(materialized(
-			self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Forward),
-		))
+		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Forward))
 	}
 
 	pub fn rev_raw_stream(&self) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
@@ -413,13 +411,11 @@ impl Map {
 	pub fn rev_raw_stream_from<P>(
 		&self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static>>> + Send + 'static>>
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static + use<P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		Box::pin(materialized(
-			self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse),
-		))
+		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse))
 	}
 
 	pub fn raw_keys(&self) -> impl Stream<Item = Result<&'static [u8]>> + Send {
@@ -429,7 +425,7 @@ impl Map {
 	pub fn raw_keys_prefix<P>(
 		&self,
 		prefix: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<&'static [u8]>> + Send + 'static>>
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send + 'static + use<P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
@@ -442,61 +438,71 @@ impl Map {
 					.filter(|(key, _)| key.starts_with(&prefix))
 					.collect()
 			});
-		Box::pin(materialized(items).map(|item| item.map(|(key, _)| key)))
+		materialized(items).map(|item| item.map(|(key, _)| key))
 	}
 
 	fn raw_keys_prefix_owned(
 		&self,
 		prefix: Vec<u8>,
-	) -> impl Stream<Item = Result<&'static [u8]>> + Send {
-		self.raw_keys().filter(move |item| {
-			future::ready(item.as_ref().is_ok_and(|key| key.starts_with(&prefix)))
-		})
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send + 'static {
+		let items = self
+			.raw_items(crate::util::IteratorMode::Start)
+			.map(|items| {
+				items
+					.into_iter()
+					.filter(|(key, _)| key.starts_with(&prefix))
+					.collect()
+			});
+		materialized(items).map(|item| item.map(|(key, _)| key))
 	}
 
 	pub fn keys_prefix_raw<P>(
 		&self,
 		prefix: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<&'static [u8]>> + Send + 'static>>
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send + '_
 	where
 		P: DbKey + ?Sized + Debug,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		self.raw_keys_prefix(&prefix)
+		self.raw_keys_prefix_owned(prefix)
 	}
 
 	pub fn keys_prefix<'a, K, P>(
 		&'a self,
 		prefix: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<Key<'static, K>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<Key<'static, K>>> + Send + 'a + use<'a, K, P>
 	where
 		P: DbKey + ?Sized + Debug,
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		Box::pin(
-			self.raw_keys_prefix_owned(prefix)
-				.map(keyval::result_deserialize_key::<K>),
-		)
+		self.raw_keys_prefix_owned(prefix)
+			.map(keyval::result_deserialize_key::<K>)
 	}
 
 	pub fn raw_stream_prefix<'a, P>(
 		&'a self,
 		prefix: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<KeyVal<'static>>> + Send + 'a>>
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'a
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		Box::pin(self.raw_stream_prefix_owned(prefix.as_ref().to_vec()))
+		self.raw_stream_prefix_owned(prefix.as_ref().to_vec())
 	}
 
 	fn raw_stream_prefix_owned(
 		&self,
 		prefix: Vec<u8>,
-	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
-		self.raw_stream().filter(move |item| {
-			future::ready(item.as_ref().is_ok_and(|(key, _)| key.starts_with(&prefix)))
-		})
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static {
+		let items = self
+			.raw_items(crate::util::IteratorMode::Start)
+			.map(|items| {
+				items
+					.into_iter()
+					.filter(|(key, _)| key.starts_with(&prefix))
+					.collect()
+			});
+		materialized(items)
 	}
 
 	pub fn stream<'a, K, V>(
@@ -607,7 +613,8 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		self.rev_raw_keys_from(from)
+		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse))
+			.map(|item| item.map(|(key, _)| key))
 	}
 
 	pub fn stream_raw_prefix<P>(
@@ -823,27 +830,23 @@ impl Map {
 	pub fn raw_keys_from<P>(
 		&self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<Key<'static>>> + Send + 'static>>
+	) -> impl Stream<Item = Result<Key<'static>>> + Send + 'static + use<P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		Box::pin(
-			self.raw_stream_from(from)
-				.map(|item| item.map(|(key, _)| key)),
-		)
+		self.raw_stream_from(from)
+			.map(|item| item.map(|(key, _)| key))
 	}
 
 	pub fn rev_raw_keys_from<P>(
 		&self,
 		from: &P,
-	) -> Pin<Box<dyn Stream<Item = Result<Key<'static>>> + Send + 'static>>
+	) -> impl Stream<Item = Result<Key<'static>>> + Send + 'static + use<P>
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		Box::pin(
-			self.rev_raw_stream_from(from)
-				.map(|item| item.map(|(key, _)| key)),
-		)
+		self.rev_raw_stream_from(from)
+			.map(|item| item.map(|(key, _)| key))
 	}
 
 	pub fn rev_keys_from<'a, K, P>(
@@ -928,10 +931,13 @@ impl Display for Map {
 fn materialized(
 	items: Result<Vec<(Vec<u8>, Vec<u8>)>>,
 ) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
-	let items = items
-		.unwrap_or_default()
-		.into_iter()
-		.map(|(key, value)| Ok((leak(key), leak(value))));
-	futures::stream::iter(items)
+	let items = match items {
+		| Ok(items) => items
+			.into_iter()
+			.map(|(key, value)| Ok((leak(key), leak(value))))
+			.collect(),
+		| Err(error) => vec![Err(error)],
+	};
+	stream::iter(items)
 }
 fn leak(value: Vec<u8>) -> &'static [u8] { Box::leak(value.into_boxed_slice()) }
