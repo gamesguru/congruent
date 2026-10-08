@@ -63,9 +63,6 @@ release_max_log_level = [
 	"log/max_level_trace",
 	"log/release_max_level_info",
 ]
-tokio_metrics = [
-	"conduwuit-core/tokio_metrics",
-]
 zstd_compression = [
 	"conduwuit-api/zstd_compression",
 	"conduwuit-core/zstd_compression",
@@ -86,7 +83,7 @@ const-str.workspace = true
 ctor.workspace = true
 futures.workspace = true
 log.workspace = true
-tokio.workspace = true
+smol.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 

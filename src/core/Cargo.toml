@@ -38,7 +38,6 @@ release_max_log_level = [
 	"log/max_level_trace",
 	"log/release_max_level_info",
 ]
-tokio_metrics = ["dep:tokio-metrics"]
 zstd_compression = [
     "reqwest/zstd",
 ]
@@ -80,9 +79,7 @@ smallstr.workspace = true
 thiserror.workspace = true
 mimalloc.optional = true
 mimalloc.workspace = true
-tokio.workspace = true
-tokio-metrics.optional = true
-tokio-metrics.workspace = true
+smol.workspace = true
 toml.workspace = true
 url.workspace = true
 roaring.workspace = true

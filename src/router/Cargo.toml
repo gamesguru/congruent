@@ -96,7 +96,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 log.workspace = true
-tokio.workspace = true
+smol.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 

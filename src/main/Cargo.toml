@@ -71,7 +71,6 @@ full = [
 
 local_profiling = [
     "mimalloc_prof",
-    "tokio_metrics",
 ]
 
 blurhashing = [
@@ -142,10 +141,6 @@ systemd = [
 ]
 
 
-tokio_metrics = [
-    "conduwuit-core/tokio_metrics",
-    "conduwuit-admin/tokio_metrics",
-]
 url_preview = [
 	"conduwuit-service/url_preview",
 ]
@@ -179,9 +174,9 @@ clap_complete.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 log.workspace = true
-tokio.workspace = true
 reqwest = { workspace = true, default-features = false }
 rustls = { workspace = true, default-features = false }
+smol.workspace = true
 
 
 [target.'cfg(all(not(target_env = "msvc"), target_os = "linux"))'.dependencies]

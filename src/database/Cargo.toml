@@ -53,7 +53,7 @@ log.workspace = true
 redb = "4.3.0"
 serde.workspace = true
 slipstream.workspace = true
-tokio.workspace = true
+smol.workspace = true
 
 [dev-dependencies]
 
