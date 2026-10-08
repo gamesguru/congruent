@@ -149,6 +149,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-broadcast"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "435a87a52755b8f27fcf321ac4f04b2802e337c8c4872923137471ec39c37532"
+dependencies = [
+ "event-listener",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "git+https://forgejo.ellis.link/continuwuation/async-channel?rev=e990f0006b68dc9bace7a3c95fc90b5c4e44948d#e990f0006b68dc9bace7a3c95fc90b5c4e44948d"
@@ -692,6 +704,7 @@ version = "0.5.10"
 dependencies = [
  "argon2",
  "arrayvec",
+ "async-broadcast",
  "async-lock",
  "base64 0.22.1",
  "blake3",

@@ -38,6 +38,7 @@ zstd_compression = [
 
 [dependencies]
 argon2.workspace = true
+async-broadcast.workspace = true
 async-lock.workspace = true
 arrayvec.workspace = true
 blocking.workspace = true

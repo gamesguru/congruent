@@ -1,4 +1,5 @@
 use std::{
+	future::Future,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
@@ -6,10 +7,23 @@ use std::{
 	time::SystemTime,
 };
 
+use async_broadcast::{Sender, broadcast};
 use slipstream::OwnedServerName;
-use tokio::{runtime, sync::broadcast};
 
 use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RuntimeHandle;
+
+impl RuntimeHandle {
+	pub fn spawn<F>(&self, future: F) -> smol::Task<F::Output>
+	where
+		F: Future + Send + 'static,
+		F::Output: Send + 'static,
+	{
+		smol::spawn(future)
+	}
+}
 
 /// Server runtime state; public portion
 pub struct Server {
@@ -35,10 +49,10 @@ pub struct Server {
 	pub restarting: AtomicBool,
 
 	/// Handle to the runtime
-	pub runtime: Option<runtime::Handle>,
+	pub runtime: RuntimeHandle,
 
 	/// Reload/shutdown signal
-	pub signal: broadcast::Sender<&'static str>,
+	pub signal: Sender<&'static str>,
 
 	/// Logging subsystem state
 	pub log: Log,
@@ -49,7 +63,9 @@ pub struct Server {
 
 impl Server {
 	#[must_use]
-	pub fn new(config: Config, runtime: Option<&runtime::Handle>, log: Log) -> Self {
+	pub fn new<T>(config: Config, runtime: Option<&T>, log: Log) -> Self {
+		let (mut signal, _) = broadcast(16);
+		signal.set_overflow(true);
 		Self {
 			name: config.server_name.clone(),
 			config: config::Manager::new(config),
@@ -57,8 +73,8 @@ impl Server {
 			stopping: AtomicBool::new(false),
 			reloading: AtomicBool::new(false),
 			restarting: AtomicBool::new(false),
-			runtime: runtime.cloned(),
-			signal: broadcast::channel::<&'static str>(1).0,
+			runtime: RuntimeHandle,
+			signal,
 			log,
 			metrics: Metrics::new(runtime),
 		}
@@ -104,8 +120,8 @@ impl Server {
 	}
 
 	pub fn signal(&self, sig: &'static str) -> Result<()> {
-		if let Err(e) = self.signal.send(sig) {
-			return Err!("Failed to send signal: {e}");
+		if let Err(error) = self.signal.try_broadcast(sig) {
+			return Err!("Failed to send signal: {error}");
 		}
 
 		Ok(())
@@ -113,17 +129,14 @@ impl Server {
 
 	#[inline]
 	pub async fn until_shutdown(self: &Arc<Self>) {
+		let mut signal = self.signal.new_receiver();
 		while self.running() {
-			self.signal.subscribe().recv().await.ok();
+			signal.recv().await.ok();
 		}
 	}
 
 	#[inline]
-	pub fn runtime(&self) -> &runtime::Handle {
-		self.runtime
-			.as_ref()
-			.expect("runtime handle available in Server")
-	}
+	pub fn runtime(&self) -> &RuntimeHandle { &self.runtime }
 
 	#[inline]
 	pub fn check_running(&self) -> Result {
