@@ -3,7 +3,7 @@
 use std::{io::BufRead, os::unix::fs::PermissionsExt, sync::Arc, thread::JoinHandle};
 
 use async_fs as fs;
-use conduwuit::{Server, SyncMutex, debug, error};
+use conduwuit::{RuntimeHandle, Server, SyncMutex, debug, error};
 use tokio::{
 	io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
 	net::{UnixListener, UnixStream},
@@ -58,7 +58,7 @@ impl Console {
 
 	pub fn interrupt(self: &Arc<Self>) { self.worker_join.lock().take(); }
 
-	fn worker(self: Arc<Self>, runtime: &tokio::runtime::Handle) {
+	fn worker(self: Arc<Self>, runtime: &RuntimeHandle) {
 		debug!("admin console session starting");
 		println!("conduwuit admin console; type commands and press Enter");
 
@@ -67,7 +67,7 @@ impl Console {
 				break;
 			}
 			match line {
-				| Ok(line) => runtime.block_on(self.handle(line)),
+				| Ok(line) => smol::block_on(self.handle(line)),
 				| Err(e) => {
 					error!("console I/O: {e}");
 					break;

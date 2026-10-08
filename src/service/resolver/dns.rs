@@ -31,7 +31,7 @@ impl SmolRuntimeProvider {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SmolTime;
+pub(crate) struct SmolTime;
 
 #[async_trait::async_trait]
 impl Time for SmolTime {
@@ -51,7 +51,7 @@ impl Time for SmolTime {
 
 impl Spawn for SmolRuntimeProvider {
 	fn spawn_bg(&mut self, future: impl Future<Output = ()> + Send + 'static) {
-		self.runtime.spawn(future);
+		let _ = self.runtime.spawn(future);
 	}
 }
 
@@ -97,7 +97,7 @@ impl RuntimeProvider for SmolRuntimeProvider {
 	}
 }
 
-struct SmolTcpStream(async_net::TcpStream);
+pub(crate) struct SmolTcpStream(async_net::TcpStream);
 
 impl AsyncRead for SmolTcpStream {
 	fn poll_read(
@@ -131,7 +131,7 @@ impl DnsTcpStream for SmolTcpStream {
 	type Time = SmolTime;
 }
 
-struct SmolUdpSocket(Async<std::net::UdpSocket>);
+pub(crate) struct SmolUdpSocket(Async<std::net::UdpSocket>);
 
 #[async_trait::async_trait]
 impl DnsUdpSocket for SmolUdpSocket {

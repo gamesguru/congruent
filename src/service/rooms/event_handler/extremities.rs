@@ -80,7 +80,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 1: Single linear chain — extremity collapses to 1
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn linear_chain_collapses() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -101,7 +101,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 2: Fork from 2 servers — both tips present
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn fork_creates_two_tips() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -142,7 +142,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 3: Merge event collapses fork
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn merge_collapses_fork() {
 		let b = event_id!("$bbb:example.org").to_owned();
 		let c = event_id!("$ccc:example.org").to_owned();
@@ -164,7 +164,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 4: Soft-fail does NOT create extremity
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn soft_fail_does_not_modify() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -186,7 +186,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 5: Concurrent joins from 3 servers, then merge
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn concurrent_joins_then_merge() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let j1_id = event_id!("$j1:server1.org");
@@ -248,7 +248,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 6: Concurrent membership updates (profile changes + message)
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn concurrent_membership_and_messages() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let rename_id = event_id!("$rename:server1.org");
@@ -309,7 +309,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 7: Partial merge — only some tips referenced
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn partial_merge() {
 		let b = event_id!("$bbb:example.org").to_owned();
 		let c = event_id!("$ccc:example.org").to_owned();
@@ -333,7 +333,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 8: Already-referenced extremity gets pruned
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn already_referenced_pruned() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b = event_id!("$bbb:example.org").to_owned();
@@ -360,7 +360,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 9: Idempotent re-processing
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn idempotent_processing() {
 		let a = event_id!("$aaa:example.org").to_owned();
 		let b_id = event_id!("$bbb:example.org");
@@ -402,7 +402,7 @@ mod tests {
 	// ---------------------------------------------------------------
 	// Test 10: Large fan-in — 10 concurrent senders
 	// ---------------------------------------------------------------
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn large_fan_in() {
 		// Build 10 events all referencing A
 		let event_ids: Vec<OwnedEventId> = (1..=10)

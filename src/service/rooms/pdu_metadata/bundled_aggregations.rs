@@ -471,7 +471,7 @@ mod tests {
 	}
 
 	/// Test that a valid replacement event passes validation
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_valid_replacement_event() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -508,7 +508,7 @@ mod tests {
 	}
 
 	/// Test replacement event with different room ID is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_room() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -541,7 +541,7 @@ mod tests {
 	}
 
 	/// Test replacement event with different sender is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_sender() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -574,7 +574,7 @@ mod tests {
 	}
 
 	/// Test replacement event with different type is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_different_type() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -605,7 +605,7 @@ mod tests {
 	}
 
 	/// Test replacement event with state key is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_with_state_key() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -636,7 +636,7 @@ mod tests {
 	}
 
 	/// Test replacement of an event that is already a replacement is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_original_is_replacement() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -676,7 +676,7 @@ mod tests {
 	}
 
 	/// Test replacement event missing m.new_content is rejected
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_missing_new_content() {
 		let original = create_test_event(
 			"$original:example.com",
@@ -706,7 +706,7 @@ mod tests {
 	}
 
 	/// Test encrypted replacement event without m.new_content is accepted
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_replacement_event_encrypted_missing_new_content_is_valid() {
 		let original = create_test_event(
 			"$original:example.com",

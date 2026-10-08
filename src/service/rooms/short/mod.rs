@@ -711,7 +711,7 @@ mod tests {
 		.expect("failed to parse test config");
 
 		let config = Config::new(&config_raw).expect("failed to parse config");
-		let runtime_handle = tokio::runtime::Handle::current();
+		let runtime_handle = ();
 		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
 			reload: LogLevelReloadHandles,
 			capture: Arc::new(capture::State),
@@ -744,7 +744,7 @@ mod tests {
 		(guard, globals_service, short_service, service_map)
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_shorteventid_caching() {
 		let _serial = DB_TEST_MUTEX.lock().await;
 		let (_guard, _globals, service, _map) = setup_test_service().await;
@@ -777,7 +777,7 @@ mod tests {
 		assert_eq!(retrieved, event_id);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_shortstatekey_caching() {
 		let _serial = DB_TEST_MUTEX.lock().await;
 		let (_guard, _globals, service, _map) = setup_test_service().await;
@@ -824,7 +824,7 @@ mod tests {
 		assert_eq!(ret_key.as_str(), state_key);
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_multi_lookups() {
 		let _serial = DB_TEST_MUTEX.lock().await;
 		let (_guard, _globals, service, _map) = setup_test_service().await;

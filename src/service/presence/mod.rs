@@ -96,7 +96,7 @@ impl crate::Service for Service {
 			.unwrap_or_else(Instant::now);
 
 		let self_flush = Arc::clone(&self);
-		let flush_task = self.services.server.runtime().spawn(async move {
+		let mut flush_task = self.services.server.runtime().spawn(async move {
 			let mut interval = async_io::Timer::interval(Duration::from_secs(
 				self_flush
 					.services
@@ -235,12 +235,12 @@ impl crate::Service for Service {
 						smol::future::yield_now().await;
 					});
 
-					if let Some(old_task) = presence_timers.insert(user_id, new_task) {
+					if let Some(mut old_task) = presence_timers.insert(user_id, new_task) {
 						old_task.abort();
 					}
 				},
 				| Ok((user_id, None)) =>
-					if let Some(task) = presence_timers.remove(&user_id) {
+					if let Some(mut task) = presence_timers.remove(&user_id) {
 						task.abort();
 					},
 			}
@@ -264,7 +264,7 @@ impl crate::Service for Service {
 
 		flush_task.abort();
 
-		for (_, handle) in presence_timers {
+		for (_, mut handle) in presence_timers {
 			handle.abort();
 		}
 

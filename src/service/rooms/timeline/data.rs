@@ -3205,7 +3205,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_complex_walk() -> Result<()> {
 		// Test a messy timeline where timestamps don't always go up in order.
 		//
@@ -3241,7 +3241,7 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_large_sparse_gaps() -> Result<()> {
 		// Check we jump straight to the next event, not scan huge empty gaps.
 
@@ -3268,7 +3268,7 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_wild_jitter_staircase() -> Result<()> {
 		// Create 1000 events where the time generally goes up but sometimes jumps back
 		let timeline = (0..1000_u64).map(|i| {

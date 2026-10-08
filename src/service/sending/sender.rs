@@ -216,8 +216,9 @@ impl Service {
 				let request = receiver.recv_async().fuse();
 				pin_mut!(response, request);
 				futures::select_biased! {
-					Some(response) = response => {
-						self.handle_response(response, futures, statuses).await;
+					response = response => match response {
+						Some(response) => self.handle_response(response, futures, statuses).await,
+						None => return,
 					},
 					request = request => match request {
 						Ok(request) => self.handle_request(request, futures, statuses).await,
@@ -471,11 +472,11 @@ impl Service {
 		let deadline = now.checked_add(timeout).unwrap_or(now);
 		loop {
 			trace!("Waiting for {} requests to complete...", futures.len());
-			let timer = smol::Timer::at(deadline);
+			let timer = futures::FutureExt::fuse(smol::Timer::at(deadline));
 			let response = futures.next();
 			pin_mut!(timer, response);
 			futures::select_biased! {
-				() = timer => return,
+				_ = timer => return,
 				response = response.fuse() => match response {
 					Some(Ok(dest)) => self.db.delete_all_active_requests_for(&dest).await,
 					Some(_) => continue,

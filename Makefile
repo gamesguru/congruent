@@ -169,7 +169,7 @@ check:   ##H Run cargo check
 
 .PHONY: macro
 macro: ##H See macro expansion costs
-	cargo +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+	cargo +nightly rustc -p conduwuit --bin conduwuit -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
 
 
 .PHONY: lint

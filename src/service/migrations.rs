@@ -2435,7 +2435,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_cached_full_state_matches_chain_walk() {
 		// 1 <- 2 <- 3 <- 4, with forks 5 (from 2) and 6 (from 5).
 		let diffs: HashMap<u64, StateDiff> = HashMap::from([

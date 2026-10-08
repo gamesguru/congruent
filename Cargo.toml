@@ -207,9 +207,6 @@ version = "2.6.0"
 [workspace.dependencies.async-lock]
 version = "3.4.2"
 
-[workspace.dependencies.async-broadcast]
-version = "0.7.2"
-
 [workspace.dependencies.event-listener]
 version = "5.4.1"
 
@@ -218,11 +215,6 @@ version = "2.2.0"
 
 [workspace.dependencies.async-executor]
 version = "1.14.0"
-
-[workspace.dependencies.async-rustls]
-version = "0.4.2"
-default-features = false
-features = ["tls12"]
 
 [workspace.dependencies.futures-rustls]
 version = "0.26.0"

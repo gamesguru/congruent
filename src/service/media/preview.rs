@@ -238,8 +238,11 @@ pub async fn download_image(
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching image"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching image",
+			response.status()
+		))));
 	}
 
 	let mut image = response
@@ -367,8 +370,11 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching media blob"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching media blob",
+			response.status()
+		))));
 	}
 	let content_type = response.headers().get(CONTENT_TYPE).cloned();
 	let media = response
@@ -456,8 +462,11 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching HTML text"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching HTML text",
+			response.status()
+		))));
 	}
 
 	let body = response

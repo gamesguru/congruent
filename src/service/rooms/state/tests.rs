@@ -59,7 +59,7 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 	.expect("failed to parse test config");
 
 	let config = Config::new(&config_raw).expect("failed to parse config");
-	let runtime_handle = tokio::runtime::Handle::current();
+	let runtime_handle = ();
 	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
 		reload: LogLevelReloadHandles,
 		capture: Arc::new(capture::State),
