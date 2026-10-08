@@ -376,9 +376,9 @@ mod tests {
 		let pool = pool3();
 		assert_eq!(pool.len(), 3);
 		assert!(pool.is_multi());
-		assert_eq!(pool.get_signal(&s("alpha.com"), "rank").to_bits(), 0.0_f32.to_bits());
-		assert_eq!(pool.get_signal(&s("beta.com"), "rank").to_bits(), 1.0_f32.to_bits());
-		assert_eq!(pool.get_signal(&s("gamma.com"), "rank").to_bits(), 2.0_f32.to_bits());
+		assert_eq!(pool.get_signal(&s("alpha.com"), "rank").to_bits(), 0.0_f64.to_bits());
+		assert_eq!(pool.get_signal(&s("beta.com"), "rank").to_bits(), 1.0_f64.to_bits());
+		assert_eq!(pool.get_signal(&s("gamma.com"), "rank").to_bits(), 2.0_f64.to_bits());
 	}
 
 	#[test]
@@ -535,7 +535,7 @@ mod tests {
 		assert_eq!(
 			pool.get_signal(&s("alpha.com"), "consecutive_picks")
 				.to_bits(),
-			0.0_f32.to_bits()
+			0.0_f64.to_bits()
 		);
 	}
 
@@ -546,7 +546,7 @@ mod tests {
 		let mut pool = pool3();
 		pool.add_signal(&s("alpha.com"), "knowledge", 100.0);
 		pool.add_signal(&s("alpha.com"), "knowledge", 50.0);
-		assert_eq!(pool.get_signal(&s("alpha.com"), "knowledge").to_bits(), 150.0_f32.to_bits());
+		assert_eq!(pool.get_signal(&s("alpha.com"), "knowledge").to_bits(), 150.0_f64.to_bits());
 	}
 
 	#[test]
@@ -554,13 +554,13 @@ mod tests {
 		let mut pool = pool3();
 		pool.set_signal(&s("alpha.com"), "latency", 100.0);
 		pool.set_signal(&s("alpha.com"), "latency", 42.0);
-		assert_eq!(pool.get_signal(&s("alpha.com"), "latency").to_bits(), 42.0_f32.to_bits());
+		assert_eq!(pool.get_signal(&s("alpha.com"), "latency").to_bits(), 42.0_f64.to_bits());
 	}
 
 	#[test]
 	fn get_signal_default_zero() {
 		let pool = pool3();
-		assert_eq!(pool.get_signal(&s("alpha.com"), "nonexistent").to_bits(), 0.0_f32.to_bits());
+		assert_eq!(pool.get_signal(&s("alpha.com"), "nonexistent").to_bits(), 0.0_f64.to_bits());
 	}
 
 	// ── Rate limit detection ─────────────────────────────────────────────
@@ -627,7 +627,7 @@ mod tests {
 		let mut pool = pool3();
 		pool.record_dead_end(&s("alpha.com"));
 		pool.record_dead_end(&s("alpha.com"));
-		assert_eq!(pool.get_signal(&s("alpha.com"), "dead_ends").to_bits(), 2.0_f32.to_bits());
+		assert_eq!(pool.get_signal(&s("alpha.com"), "dead_ends").to_bits(), 2.0_f64.to_bits());
 	}
 
 	// ── Summary ──────────────────────────────────────────────────────────
