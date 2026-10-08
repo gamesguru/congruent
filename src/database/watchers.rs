@@ -4,10 +4,10 @@ use std::{
 	pin::Pin,
 };
 
+use async_channel::{Receiver, Sender, unbounded};
 use conduwuit::SyncRwLock;
-use tokio::sync::watch;
 
-type Watcher = SyncRwLock<HashMap<Vec<u8>, (watch::Sender<()>, watch::Receiver<()>)>>;
+type Watcher = SyncRwLock<HashMap<Vec<u8>, (Sender<()>, Receiver<()>)>>;
 
 #[derive(Default)]
 pub(crate) struct Watchers {
@@ -19,10 +19,10 @@ impl Watchers {
 		&'a self,
 		prefix: &[u8],
 	) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-		let mut rx = match self.watchers.write().entry(prefix.to_vec()) {
+		let rx = match self.watchers.write().entry(prefix.to_vec()) {
 			| hash_map::Entry::Occupied(o) => o.get().1.clone(),
 			| hash_map::Entry::Vacant(v) => {
-				let (tx, rx) = watch::channel(());
+				let (tx, rx) = unbounded();
 				v.insert((tx, rx.clone()));
 				rx
 			},
@@ -30,7 +30,7 @@ impl Watchers {
 
 		Box::pin(async move {
 			// Tx is never destroyed
-			rx.changed().await.unwrap();
+			rx.recv().await.expect("channel should still be open");
 		})
 	}
 
@@ -49,7 +49,7 @@ impl Watchers {
 			let mut watchers = self.watchers.write();
 			for prefix in triggered {
 				if let Some(tx) = watchers.remove(prefix) {
-					tx.0.send(()).expect("channel should still be open");
+					tx.0.try_send(()).expect("channel should still be open");
 				}
 			}
 		}

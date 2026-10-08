@@ -44,6 +44,7 @@ zstd_compression = [
 
 [dependencies]
 async-channel.workspace = true
+async-lock.workspace = true
 conduwuit-core.workspace = true
 conduwuit-macros.workspace = true
 const-str.workspace = true

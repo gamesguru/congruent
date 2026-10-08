@@ -755,6 +755,7 @@ name = "conduwuit_database"
 version = "0.5.10"
 dependencies = [
  "async-channel",
+ "async-lock",
  "conduwuit_core",
  "conduwuit_macros",
  "conduwuit_slipstream",

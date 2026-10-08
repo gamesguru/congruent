@@ -19,8 +19,8 @@ use crate::{
 // env.join_all_threads() which kills background threads shared by ALL
 // databases in the process, so these tests must run serially to prevent one
 // test's teardown from deadlocking the others.
-static DB_TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-	std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+static DB_TEST_MUTEX: std::sync::LazyLock<async_lock::Mutex<()>> =
+	std::sync::LazyLock::new(|| async_lock::Mutex::new(()));
 
 struct TempDbGuard {
 	path: std::path::PathBuf,
@@ -54,7 +54,7 @@ async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate:
 	.expect("failed to parse test config");
 
 	let config = Config::new(&config_raw).expect("failed to parse config");
-	let runtime_handle = tokio::runtime::Handle::current();
+	let runtime_handle = ();
 	let server = std::sync::Arc::new(Server::new(config, Some(&runtime_handle), Log {
 		reload: LogLevelReloadHandles,
 		capture: std::sync::Arc::new(capture::State),
@@ -65,102 +65,122 @@ async fn open_test_database(prefix: &str) -> (TempDbGuard, std::sync::Arc<crate:
 	(guard, db)
 }
 
-#[tokio::test]
-async fn recursive_multi_get_traversal() {
-	let _serial = DB_TEST_MUTEX.lock().await;
-	let (_guard, db) = open_test_database("recursive_get").await;
-	let map = &db["global"];
+#[test]
+fn recursive_multi_get_traversal() {
+	smol::block_on(async {
+		let _serial = DB_TEST_MUTEX.lock().await;
+		let (_guard, db) = open_test_database("recursive_get").await;
+		let map = &db["global"];
 
-	// Insert DAG nodes:
-	// A -> B, C
-	// B -> A (cycle) & D (diamond convergence)
-	// C -> D (diamond convergence) & M (missing)
-	// D -> E
-	map.insert(b"node_A", b"node_B,node_C");
-	map.insert(b"node_B", b"node_A,node_D");
-	map.insert(b"node_C", b"node_D,node_M"); // node_M is never inserted
-	map.insert(b"node_D", b"node_E");
-	map.insert(b"node_E", b"");
+		// Insert DAG nodes:
+		// A -> B, C
+		// B -> A (cycle) & D (diamond convergence)
+		// C -> D (diamond convergence) & M (missing)
+		// D -> E
+		map.insert(b"node_A", b"node_B,node_C");
+		map.insert(b"node_B", b"node_A,node_D");
+		map.insert(b"node_C", b"node_D,node_M"); // node_M is never inserted
+		map.insert(b"node_D", b"node_E");
+		map.insert(b"node_E", b"");
 
-	let parse_val = |slice: &[u8]| -> conduwuit::Result<String> {
-		String::from_utf8(slice.to_vec()).map_err(|e| std::io::Error::other(e).into())
-	};
+		let parse_val = |slice: &[u8]| -> conduwuit::Result<String> {
+			String::from_utf8(slice.to_vec()).map_err(|e| std::io::Error::other(e).into())
+		};
 
-	let extract_children = |val: &String, sink: &mut Vec<Vec<u8>>| {
-		if !val.is_empty() {
-			for part in val.split(',') {
-				sink.push(part.as_bytes().to_vec());
+		let extract_children = |val: &String, sink: &mut Vec<Vec<u8>>| {
+			if !val.is_empty() {
+				for part in val.split(',') {
+					sink.push(part.as_bytes().to_vec());
+				}
 			}
-		}
-	};
+		};
 
-	// Test 1: full traversal with cycle, diamond, and missing key detection
-	let output = map
-		.recursive_multi_get(
-			vec![b"node_A".to_vec(), b"node_A".to_vec()],
-			None,
-			None,
-			parse_val,
-			extract_children,
-		)
-		.await
-		.expect("traversal failed");
+		// Test 1: full traversal with cycle, diamond, and missing key detection
+		let output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec(), b"node_A".to_vec()],
+				None,
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(!output.truncated);
-	assert_eq!(output.missing, vec![b"node_M".to_vec()]);
-	assert_eq!(output.values, vec![
-		"node_B,node_C".to_owned(),
-		"node_A,node_D".to_owned(),
-		"node_D,node_M".to_owned(),
-		"node_E".to_owned(),
-		String::new(),
-	]);
+		assert!(!output.truncated);
+		assert_eq!(output.missing, vec![b"node_M".to_vec()]);
+		assert_eq!(output.values, vec![
+			"node_B,node_C".to_owned(),
+			"node_A,node_D".to_owned(),
+			"node_D,node_M".to_owned(),
+			"node_E".to_owned(),
+			String::new(),
+		]);
 
-	// Test 2: truncation via max_depth
-	let depth_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], None, Some(1), parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 2: truncation via max_depth
+		let depth_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				None,
+				Some(1),
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(depth_output.truncated);
-	assert_eq!(depth_output.values, vec!["node_B,node_C".to_owned()]);
+		assert!(depth_output.truncated);
+		assert_eq!(depth_output.values, vec!["node_B,node_C".to_owned()]);
 
-	// Test 3: truncation via max_nodes
-	let node_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], Some(2), None, parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 3: truncation via max_nodes
+		let node_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				Some(2),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(node_output.truncated);
-	assert_eq!(
-		node_output.values,
-		vec!["node_B,node_C".to_owned(), "node_A,node_D".to_owned(),]
-	);
+		assert!(node_output.truncated);
+		assert_eq!(node_output.values, vec![
+			"node_B,node_C".to_owned(),
+			"node_A,node_D".to_owned(),
+		]);
 
-	// Test 4: truncation via max_nodes = Some(0)
-	let zero_node_output = map
-		.recursive_multi_get(vec![b"node_A".to_vec()], Some(0), None, parse_val, extract_children)
-		.await
-		.expect("traversal failed");
+		// Test 4: truncation via max_nodes = Some(0)
+		let zero_node_output = map
+			.recursive_multi_get(
+				vec![b"node_A".to_vec()],
+				Some(0),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(zero_node_output.truncated);
-	assert!(zero_node_output.values.is_empty());
+		assert!(zero_node_output.truncated);
+		assert!(zero_node_output.values.is_empty());
 
-	// Test 5: mid-batch truncation still records missing keys
-	let mid_batch_output = map
-		.recursive_multi_get(
-			vec![b"node_C".to_vec(), b"node_M".to_vec()],
-			Some(1),
-			None,
-			parse_val,
-			extract_children,
-		)
-		.await
-		.expect("traversal failed");
+		// Test 5: mid-batch truncation still records missing keys
+		let mid_batch_output = map
+			.recursive_multi_get(
+				vec![b"node_C".to_vec(), b"node_M".to_vec()],
+				Some(1),
+				None,
+				parse_val,
+				extract_children,
+			)
+			.await
+			.expect("traversal failed");
 
-	assert!(mid_batch_output.truncated);
-	assert_eq!(mid_batch_output.values, vec!["node_D,node_M".to_owned()]);
-	assert_eq!(mid_batch_output.missing, vec![b"node_M".to_vec()]);
+		assert!(mid_batch_output.truncated);
+		assert_eq!(mid_batch_output.values, vec!["node_D,node_M".to_owned()]);
+		assert_eq!(mid_batch_output.missing, vec![b"node_M".to_vec()]);
+	});
 }
 
 #[test]
