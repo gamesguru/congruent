@@ -19,7 +19,11 @@ use slipstream::{
 
 use crate::{
 	Ruma,
-	router::{ApiError, extract::State, response::IntoResponse},
+	router::{
+		ApiError,
+		extract::State,
+		response::{IntoResponse, Response},
+	},
 };
 
 /// # `GET /_matrix/key/v2/server`
@@ -66,8 +70,11 @@ fn expires_ts() -> MilliSecondsSinceUnixEpoch {
 ///   this will be valid forever.
 pub(crate) async fn get_server_keys_deprecated_route(
 	State(services): State<crate::State>,
-) -> impl IntoResponse {
-	get_server_keys_route(State(services)).await
+) -> Response {
+	match get_server_keys_route(State(services)).await {
+		| Ok(response) => response.into_response(),
+		| Err(error) => error.into_response(),
+	}
 }
 
 async fn get_our_signing_keys(services: &crate::State) -> ServerSigningKeys {
@@ -258,10 +265,6 @@ mod tests {
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
-	use axum::{
-		Router,
-		body::{Body, to_bytes},
-	};
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
 	use conduwuit_core::{
 		Server,
@@ -269,6 +272,7 @@ mod tests {
 		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
 	};
 	use http::{Request, StatusCode};
+	use http_body_util::BodyExt;
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
@@ -392,8 +396,9 @@ mod tests {
 		services.db["server_signingkeys"]
 			.raw_put(&historical_key, slipstream::codec::to_string(&merged).into_bytes());
 
-		let (state, guard) = conduwuit_service::state::create(services.clone());
-		let router = crate::router::build(Router::new(), &services.server).with_state(state);
+		let (_state, _guard) = conduwuit_service::state::create(services.clone());
+		let router =
+			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
 		let request = Request::builder()
 			.method("GET")
 			.uri(format!(

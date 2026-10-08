@@ -197,7 +197,7 @@ where
 	let body = take_body(request, json_body);
 	let http_request = into_http_request(request, body);
 	let path = request.parts.uri.path();
-	T::try_from_http_request(http_request, &request.path).map_err(|e| {
+	T::try_from_http_request(http_request, request.path.0.as_slice()).map_err(|e| {
 		err!(Request(BadJson(debug_warn!("Failed to deserialize request for {path}: {e}"))))
 	})
 }

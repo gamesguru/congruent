@@ -92,6 +92,7 @@ pub struct MinimalRouter {
 	pub post: Router<BoxedHandler>,
 	pub put: Router<BoxedHandler>,
 	pub delete: Router<BoxedHandler>,
+	pub routes: Vec<(Method, String, BoxedHandler)>,
 }
 
 impl Default for MinimalRouter {
@@ -106,6 +107,7 @@ impl MinimalRouter {
 			post: Router::new(),
 			put: Router::new(),
 			delete: Router::new(),
+			routes: Vec::new(),
 		}
 	}
 
@@ -124,8 +126,26 @@ impl MinimalRouter {
 		};
 
 		router
-			.insert(path, handler)
-			.map_err(|error| error.to_string())
+			.insert(&matchit_path(path), handler.clone())
+			.map_err(|error| error.to_string())?;
+		self.routes.push((method, path.to_owned(), handler));
+		Ok(())
+	}
+
+	pub fn route(mut self, path: &'static str, spec: crate::router::handler::RouteSpec) -> Self {
+		for builder in spec.builders {
+			let (method, _, handler) = builder(path);
+			self.register(method, path, handler).expect("valid route");
+		}
+		self
+	}
+
+	pub fn merge(mut self, other: Self) -> Self {
+		for (method, path, handler) in other.routes {
+			self.register(method, &path, handler)
+				.expect("valid merged route");
+		}
+		self
 	}
 }
 
@@ -154,7 +174,7 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 		match router.at(request.uri().path()) {
 			| Ok(matched) => {
 				let handler = matched.value.clone();
-				let params = matched
+				let params: std::collections::HashMap<String, String> = matched
 					.params
 					.iter()
 					.map(|(key, value)| (key.to_owned(), value.to_owned()))

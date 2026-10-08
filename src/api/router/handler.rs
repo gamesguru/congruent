@@ -27,6 +27,33 @@ trait ExtractArg: Sized {
 	) -> BoxFuture<'a, Result<Self, ApiError>>;
 }
 
+trait HandlerResult {
+	fn into_response(self) -> crate::router::response::Response;
+}
+
+impl HandlerResult for crate::router::response::Response {
+	fn into_response(self) -> crate::router::response::Response { self }
+}
+
+impl HandlerResult for ApiError {
+	fn into_response(self) -> crate::router::response::Response {
+		IntoResponse::into_response(self)
+	}
+}
+
+impl<T, E> HandlerResult for std::result::Result<T, E>
+where
+	T: IntoResponse,
+	E: IntoResponse,
+{
+	fn into_response(self) -> crate::router::response::Response {
+		match self {
+			| Ok(value) => IntoResponse::into_response(value),
+			| Err(error) => IntoResponse::into_response(error),
+		}
+	}
+}
+
 impl ExtractArg for extract::State<State> {
 	fn extract<'a>(
 		_context: &'a mut Context,
@@ -145,6 +172,224 @@ impl ExtractArg
 	}
 }
 
+impl ExtractArg for http::Uri {
+	fn extract<'a>(
+		context: &'a mut Context,
+		_state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move {
+			Ok(context
+				.request
+				.as_ref()
+				.expect("request exists while extracting")
+				.uri()
+				.clone())
+		})
+	}
+}
+
+impl ExtractArg for extract::RawQuery {
+	fn extract<'a>(
+		context: &'a mut Context,
+		_state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move {
+			Ok(Self(
+				context
+					.request
+					.as_ref()
+					.expect("request exists while extracting")
+					.uri()
+					.query()
+					.map(str::to_owned),
+			))
+		})
+	}
+}
+
+impl ExtractArg for Request<Incoming> {
+	fn extract<'a>(
+		context: &'a mut Context,
+		_state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move { Ok(context.request.take().expect("request extractor is unique")) })
+	}
+}
+
+impl ExtractArg for crate::client::delayed_events::DelayedEventUser {
+	fn extract<'a>(
+		context: &'a mut Context,
+		state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move {
+			let request = context.request.take().expect("request extractor is unique");
+			let user_id = crate::router::authenticate_user(
+				request,
+				state,
+				&crate::client::delayed_events::GetDelayedEventRequest::METADATA,
+			)
+			.await?;
+			Ok(Self { user_id })
+		})
+	}
+}
+
+impl ExtractArg for crate::client::delayed_events::AllDelayedEventsUser {
+	fn extract<'a>(
+		context: &'a mut Context,
+		state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move {
+			let request = context.request.take().expect("request extractor is unique");
+			let user_id = crate::router::authenticate_user(
+				request,
+				state,
+				&crate::client::delayed_events::GetAllDelayedEventsRequest::METADATA,
+			)
+			.await?;
+			Ok(Self { user_id })
+		})
+	}
+}
+
+impl ExtractArg
+	for extract::TypedHeader<
+		extract::headers::Authorization<slipstream::api::federation::authentication::XMatrix>,
+	>
+{
+	fn extract<'a>(
+		context: &'a mut Context,
+		_state: &'a State,
+	) -> BoxFuture<'a, Result<Self, ApiError>> {
+		Box::pin(async move {
+			let request = context
+				.request
+				.as_ref()
+				.expect("request exists while extracting");
+			let value = request
+				.headers()
+				.get(http::header::AUTHORIZATION)
+				.and_then(slipstream::api::federation::authentication::XMatrix::decode)
+				.ok_or_else(|| {
+					conduwuit::err!(Request(Forbidden("Invalid X-Matrix authorization")))
+				})?;
+			Ok(extract::TypedHeader(extract::headers::Authorization(value)))
+		})
+	}
+}
+
+pub(crate) trait RouteHandler<T> {
+	fn boxed(
+		&'static self,
+		method: Method,
+		path: &'static str,
+	) -> (Method, &'static str, BoxedHandler);
+}
+
+pub(crate) struct RouteSpec {
+	pub(crate) builders:
+		Vec<Arc<dyn Fn(&'static str) -> (Method, &'static str, BoxedHandler) + Send + Sync>>,
+}
+
+impl RouteSpec {
+	fn add<H, T>(mut self, method: Method, handler: H) -> Self
+	where
+		H: RouteHandler<T> + Copy + Sync + 'static,
+	{
+		let handler: &'static H = Box::leak(Box::new(handler));
+		self.builders
+			.push(Arc::new(move |path| handler.boxed(method.clone(), path)));
+		self
+	}
+
+	pub(crate) fn put<H, T>(self, handler: H) -> Self
+	where
+		H: RouteHandler<T> + Copy + Sync + 'static,
+	{
+		self.add(Method::PUT, handler)
+	}
+
+	pub(crate) fn delete<H, T>(self, handler: H) -> Self
+	where
+		H: RouteHandler<T> + Copy + Sync + 'static,
+	{
+		self.add(Method::DELETE, handler)
+	}
+}
+
+pub(crate) fn get<H, T>(handler: H) -> RouteSpec
+where
+	H: RouteHandler<T> + Copy + Sync + 'static,
+{
+	RouteSpec { builders: Vec::new() }.add(Method::GET, handler)
+}
+
+pub(crate) fn post<H, T>(handler: H) -> RouteSpec
+where
+	H: RouteHandler<T> + Copy + Sync + 'static,
+{
+	RouteSpec { builders: Vec::new() }.add(Method::POST, handler)
+}
+
+pub(crate) fn put<H, T>(handler: H) -> RouteSpec
+where
+	H: RouteHandler<T> + Copy + Sync + 'static,
+{
+	RouteSpec { builders: Vec::new() }.add(Method::PUT, handler)
+}
+
+pub(crate) fn delete<H, T>(handler: H) -> RouteSpec
+where
+	H: RouteHandler<T> + Copy + Sync + 'static,
+{
+	RouteSpec { builders: Vec::new() }.add(Method::DELETE, handler)
+}
+
+pub(crate) fn any<H, T>(handler: H) -> RouteSpec
+where
+	H: RouteHandler<T> + Copy + Sync + 'static,
+{
+	RouteSpec { builders: Vec::new() }
+		.add(Method::GET, handler)
+		.add(Method::POST, handler)
+		.add(Method::PUT, handler)
+		.add(Method::DELETE, handler)
+}
+
+macro_rules! route_handler {
+	( $($tx:ident),* $(,)? ) => {
+		impl<Fun, Fut, Output, $($tx,)*> RouteHandler<($($tx,)*)> for Fun
+		where
+			Fun: Fn($($tx,)*) -> Fut + Send + Sync + 'static,
+			Fut: Future<Output = Output> + Send + 'static,
+			Output: HandlerResult + Send + 'static,
+			$( $tx: ExtractArg + Send + 'static, )*
+		{
+			fn boxed(&'static self, method: Method, path: &'static str) -> (Method, &'static str, BoxedHandler) {
+				let handler: BoxedHandler = Arc::new(move |request, params| {
+					let state = request.extensions().get::<State>().copied().expect("router state extension");
+					let mut context = Context { request: Some(request), params };
+					Box::pin(async move {
+						$(let $tx = match $tx::extract(&mut context, &state).await {
+							Ok(value) => value,
+								Err(error) => return HandlerResult::into_response(error),
+						};)*
+						self($($tx,)*).await.into_response()
+					})
+				});
+				(method, path, handler)
+			}
+		}
+	}
+}
+
+route_handler!();
+route_handler!(T1);
+route_handler!(T1, T2);
+route_handler!(T1, T2, T3);
+route_handler!(T1, T2, T3, T4);
+route_handler!(T1, T2, T3, T4, T5);
+
 pub(in super::super) trait RumaHandler<T> {
 	fn add_routes(&'static self, router: &mut MinimalRouter);
 }
@@ -174,7 +419,6 @@ macro_rules! ruma_handler {
 			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send + 'static,
 			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 			Err: Into<ApiError> + Send,
-			Req::OutgoingResponse: Send,
 			$( $tx: ExtractArg + Send + 'static, )*
 		{
 			fn add_routes(&'static self, router: &mut MinimalRouter) {
@@ -183,7 +427,7 @@ macro_rules! ruma_handler {
 				let paths = std::iter::once(metadata.path)
 					.chain(metadata.aliases.iter().copied())
 					.chain(metadata.path.split_once("/_matrix/client/v3/").map(|(prefix, suffix)| {
-						Box::leak(format!("{prefix}/_matrix/client/r0/{suffix}").into_boxed_str())
+						Box::leak(format!("{prefix}/_matrix/client/r0/{suffix}").into_boxed_str()) as &'static str
 					}))
 					.collect::<Vec<_>>();
 				for path in paths {
@@ -194,15 +438,15 @@ macro_rules! ruma_handler {
 						Box::pin(async move {
 							$(let $tx = match $tx::extract(&mut context, &state).await {
 								Ok(value) => value,
-								Err(error) => return error.into().into_response(),
+								Err(error) => return HandlerResult::into_response(error),
 							};)*
 							let body = match Ruma::<Req>::extract(&mut context, &state).await {
 								Ok(value) => value,
-								Err(error) => return error.into().into_response(),
+								Err(error) => return HandlerResult::into_response(error),
 							};
 							match self($($tx,)* body).await {
-								Ok(response) => RumaResponse(response).into_response(),
-								Err(error) => error.into().into_response(),
+							Ok(response) => IntoResponse::into_response(RumaResponse(response)),
+								Err(error) => HandlerResult::into_response(error.into()),
 							}
 						})
 					});

@@ -135,7 +135,8 @@ pub(crate) async fn send_transaction_message_route(
 
 					edus_stream
 						.for_each_concurrent(automatic_width(), |edu| {
-							handle_edu(&services, &client, &origin, edu)
+							let origin = origin.clone();
+							async move { handle_edu(&services, &client, &origin, edu).await }
 						})
 						.await;
 				});
@@ -178,20 +179,26 @@ async fn process_inbound_transaction(
 	txn_key: TxnKey,
 	sender: Sender<WrappedTransactionResponse>,
 ) {
+	let state = services;
+	let services: &Services = &state;
 	let txn_start_time = Instant::now();
 	let pdus = body
 		.pdus
-		.iter()
+		.clone()
+		.into_iter()
 		.stream()
-		.broad_then(|pdu| services.rooms.event_handler.parse_incoming_pdu(pdu))
+		.broad_then(
+			|pdu| async move { services.rooms.event_handler.parse_incoming_pdu(&pdu).await },
+		)
 		.inspect_err(|e| warn!("Could not parse incoming PDU: {e}"))
 		.ready_filter_map(Result::ok);
 
 	let edus = body
 		.edus
-		.iter()
-		.map(Raw::get)
-		.map(codec::from_str::<Edu>)
+		.clone()
+		.into_iter()
+		.map(|edu| edu.get().to_owned())
+		.map(|json| codec::from_str::<Edu>(&json))
 		.filter_map(Result::ok)
 		.collect::<Vec<_>>()
 		.into_iter()
@@ -225,20 +232,21 @@ async fn process_inbound_transaction(
 	// receipt/typing/device-list EDUs land creates an ack-before-commit race:
 	// the sender advances its EDU watermark while the receiver may still not
 	// have applied the write or an ACL gate for that same transaction.
-	let edu_origin = body.origin().to_owned();
+	let origin = body.origin().to_owned();
+	let edu_origin = origin.clone();
 	let edu_processing = async {
 		edus.for_each_concurrent(automatic_width(), |edu| {
-			handle_edu(&services, &client, &edu_origin, edu)
+			let origin = edu_origin.clone();
+			async move { handle_edu(&services, &client, &origin, edu).await }
 		})
 		.await;
 	};
 
-	let ((), results) =
-		futures::join!(edu_processing, handle(&services, &client, body.origin(), pdus));
+	let ((), results) = futures::join!(edu_processing, handle(services, &client, &origin, pdus));
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
-			fail_federation_txn(services, &txn_key, &sender, err);
+			fail_federation_txn(state, &txn_key, &sender, err);
 			return;
 		},
 	};
@@ -345,7 +353,7 @@ async fn process_inbound_transaction(
 	response_builder.field("pdus", &pdus);
 	let mut response_json = response_builder.finish();
 
-	inject_state_hash_mismatches(&services, &body, &mut response_json).await;
+	inject_state_hash_mismatches(services, &body, &mut response_json).await;
 
 	services
 		.transactions
@@ -353,7 +361,7 @@ async fn process_inbound_transaction(
 }
 
 async fn inject_state_hash_mismatches(
-	services: &crate::State,
+	services: &Services,
 	body: &Ruma<send_transaction_message::v1::Request>,
 	response_json: &mut Value,
 ) {
@@ -381,13 +389,6 @@ async fn inject_state_hash_mismatches(
 		return;
 	}
 
-	let Some(pdus_obj) = response_json
-		.get_mut("pdus")
-		.and_then(|p| p.as_object_mut())
-	else {
-		return;
-	};
-
 	// Only compute the (costly) input closure when this server also opted in.
 	let check_inputs = state_hashes.has_resolution_inputs()
 		&& services
@@ -397,10 +398,12 @@ async fn inject_state_hash_mismatches(
 			.msc4500_resolution_inputs;
 	let mut inputs_cache = InputCache::new();
 
-	for (event_id, entry) in &state_hashes.entries {
-		let Some(pdu_res) = pdus_obj
-			.get_mut(event_id.as_str())
-			.and_then(|p| p.as_object_mut())
+	for (event_id, entry) in state_hashes.entries.clone() {
+		let Some(pdu_res) = response_json
+			.get("pdus")
+			.and_then(|p| p.as_object())
+			.and_then(|p| p.get(event_id.as_str()))
+			.and_then(|p| p.as_object())
 		else {
 			continue;
 		};
@@ -426,7 +429,7 @@ async fn inject_state_hash_mismatches(
 		let Some(local) = services
 			.rooms
 			.state_accessor
-			.msc4500_pdu_digests(event_id)
+			.msc4500_pdu_digests(&event_id)
 			.await
 		else {
 			continue;
@@ -438,7 +441,7 @@ async fn inject_state_hash_mismatches(
 		// mismatch.
 		let received_inputs = entry.resolution_inputs();
 		let local_inputs = if check_inputs {
-			match services.rooms.timeline.get_pdu(event_id).await {
+			match services.rooms.timeline.get_pdu(&event_id).await {
 				| Ok(pdu) =>
 					services
 						.rooms
@@ -480,7 +483,14 @@ async fn inject_state_hash_mismatches(
 				);
 			}
 		}
-		pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
+		if let Some(pdu_res) = response_json
+			.get_mut("pdus")
+			.and_then(|p| p.as_object_mut())
+			.and_then(|p| p.get_mut(event_id.as_str()))
+			.and_then(|p| p.as_object_mut())
+		{
+			pdu_res.insert("state_hash_mismatch".to_owned(), mismatch);
+		}
 	}
 }
 

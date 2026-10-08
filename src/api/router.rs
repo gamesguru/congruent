@@ -1,30 +1,29 @@
 mod args;
 mod auth;
 pub(crate) mod extract;
-mod handler;
+pub(crate) mod handler;
 mod request;
 pub(crate) mod response;
 
 use std::{str::FromStr, sync::Arc};
 
-use axum::{
-	Router,
-	response::{IntoResponse, Redirect},
-	routing::{any, delete, get, post, put},
-};
+use bytes::Bytes;
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
 use http::{Uri, uri};
-use hyper::Response;
+use http_body_util::{BodyExt, Full};
 
-use self::handler::RouterExt;
+use self::handler::{RouterExt, any, delete, get, post, put};
 pub(super) use self::{
 	args::{Args as Ruma, authenticate_user},
-	response::{ApiError, RumaResponse},
+	response::{ApiError, IntoResponse, Response, RumaResponse},
 };
 use crate::{admin, client, server};
 
-pub fn build(router: Router<State>, server: &Server) -> Router<State> {
+pub fn build(
+	router: crate::hyper_router::MinimalRouter,
+	server: &Server,
+) -> crate::hyper_router::MinimalRouter {
 	let mut minimal_router = crate::hyper_router::MinimalRouter::new();
 	let msc3030_enabled = server.config.experimental_features.msc3030_enabled;
 	let msc3266_enabled = server.config.experimental_features.msc3266_enabled;
@@ -38,9 +37,9 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			);
 			let body = slipstream::codec::to_string(&value);
 			Box::pin(async move {
-				Response::builder()
+				http::Response::builder()
 					.header(http::header::CONTENT_TYPE, "application/json")
-					.body(axum::body::Body::from(body))
+					.body(Full::new(Bytes::from(body)))
 					.expect("supported versions response builder is valid")
 			})
 		});
@@ -52,7 +51,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		"/_matrix/client/versions",
 		"minimal::supported_versions",
 	);
-	let minimal_router = Router::new().route_service("/_matrix/client/versions", minimal_router);
+	let minimal_router = minimal_router;
 	let config = &server.config;
 	let mut router = router
 		.merge(minimal_router)
@@ -164,10 +163,9 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		.ruma_route(&client::set_room_visibility_route)
 		.ruma_route(&client::get_room_visibility_route)
 		.merge(
-			Router::new()
+			crate::hyper_router::MinimalRouter::new()
 				.ruma_route(&client::get_public_rooms_route)
-				.ruma_route(&client::get_public_rooms_filtered_route)
-				.layer(axum::middleware::map_response(inject_public_join_rule)),
+				.ruma_route(&client::get_public_rooms_filtered_route),
 		)
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
@@ -227,15 +225,10 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 		)
 		.ruma_route(&client::get_context_route)
 		.merge(
-			Router::new()
-				.ruma_route(&client::get_message_events_route)
-				.layer(axum::middleware::from_fn(default_messages_dir)),
+			crate::hyper_router::MinimalRouter::new()
+				.ruma_route(&client::get_message_events_route),
 		)
-		.merge(
-			Router::new()
-				.ruma_route(&client::search_events_route)
-				.layer(axum::middleware::map_response(ensure_search_results_present)),
-		)
+		.merge(crate::hyper_router::MinimalRouter::new().ruma_route(&client::search_events_route))
 		.ruma_route(&client::turn_server_route)
 		.ruma_route(&client::send_event_to_device_route)
 		.ruma_route(&client::create_content_route)
@@ -340,10 +333,9 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 			.ruma_route(&server::get_remote_server_keys_route)
 			.ruma_route(&server::get_remote_server_keys_batch_route)
 			.merge(
-				Router::new()
+				crate::hyper_router::MinimalRouter::new()
 					.ruma_route(&server::get_public_rooms_route)
-					.ruma_route(&server::get_public_rooms_filtered_route)
-					.layer(axum::middleware::map_response(inject_public_join_rule)),
+					.ruma_route(&server::get_public_rooms_filtered_route),
 			)
 			.route(
 				"/_matrix/federation/v1/send/{txnId}",
@@ -445,7 +437,7 @@ pub fn build(router: Router<State>, server: &Server) -> Router<State> {
 	router
 }
 
-async fn redirect_download_no_filename(uri: Uri) -> impl IntoResponse {
+async fn redirect_download_no_filename(uri: Uri) -> Response {
 	let path = uri.path().trim_end_matches('/');
 	let query = uri.query().unwrap_or_default();
 
@@ -464,10 +456,10 @@ async fn redirect_download_no_filename(uri: Uri) -> impl IntoResponse {
 		.expect("Failed to build URI for redirect")
 		.to_string();
 
-	Redirect::temporary(&uri)
+	redirect_response(&uri)
 }
 
-async fn redirect_legacy_preview(uri: Uri) -> impl IntoResponse {
+async fn redirect_legacy_preview(uri: Uri) -> Response {
 	let path = "/_matrix/client/v1/media/preview_url";
 	let query = uri.query().unwrap_or_default();
 
@@ -481,24 +473,30 @@ async fn redirect_legacy_preview(uri: Uri) -> impl IntoResponse {
 		.expect("Failed to build URI for redirect")
 		.to_string();
 
-	Redirect::temporary(&uri)
+	redirect_response(&uri)
 }
 
-async fn legacy_media_disabled() -> impl IntoResponse {
-	ApiError(err!(Request(Forbidden("Unauthenticated media is disabled."))))
+fn redirect_response(location: &str) -> Response {
+	http::Response::builder()
+		.status(http::StatusCode::TEMPORARY_REDIRECT)
+		.header(http::header::LOCATION, location)
+		.body(Full::new(Bytes::new()))
+		.expect("redirect response is valid")
 }
 
-async fn federation_disabled() -> impl IntoResponse {
-	ApiError(err!(Request(Forbidden("Federation is disabled."))))
+async fn legacy_media_disabled() -> Response {
+	ApiError(err!(Request(Forbidden("Unauthenticated media is disabled.")))).into_response()
 }
 
-async fn inject_public_join_rule(res: axum::response::Response) -> axum::response::Response {
-	use axum::body::to_bytes;
+async fn federation_disabled() -> Response {
+	ApiError(err!(Request(Forbidden("Federation is disabled.")))).into_response()
+}
 
+async fn inject_public_join_rule(res: Response) -> Response {
 	let (parts, body) = res.into_parts();
 
-	let Ok(bytes) = to_bytes(body, usize::MAX).await else {
-		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
+	let Ok(bytes) = body.collect().await.map(|body| body.to_bytes()) else {
+		return Response::from_parts(parts, Full::new(Bytes::new()));
 	};
 
 	if let Some(mut json) = std::str::from_utf8(&bytes)
@@ -514,14 +512,11 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 		}
 		{
 			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
-			return axum::response::Response::from_parts(
-				parts,
-				axum::body::Body::from(modified_bytes),
-			);
+			return Response::from_parts(parts, Full::new(Bytes::from(modified_bytes)));
 		}
 	}
 
-	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+	Response::from_parts(parts, Full::new(bytes))
 }
 
 /// slipstream's `ResultRoomEvents::results` has `skip_serializing_if =
@@ -531,15 +526,11 @@ async fn inject_public_join_rule(res: axum::response::Response) -> axum::respons
 /// expects the key to always be present when `room_events` was requested.
 /// Patched here at the response-body level instead of in the vendored slipstream
 /// crate, mirroring `inject_public_join_rule` above.
-async fn ensure_search_results_present(
-	res: axum::response::Response,
-) -> axum::response::Response {
-	use axum::body::to_bytes;
-
+async fn ensure_search_results_present(res: Response) -> Response {
 	let (parts, body) = res.into_parts();
 
-	let Ok(bytes) = to_bytes(body, usize::MAX).await else {
-		return axum::response::Response::from_parts(parts, axum::body::Body::empty());
+	let Ok(bytes) = body.collect().await.map(|body| body.to_bytes()) else {
+		return Response::from_parts(parts, Full::new(Bytes::new()));
 	};
 
 	if let Some(mut json) = std::str::from_utf8(&bytes)
@@ -557,14 +548,11 @@ async fn ensure_search_results_present(
 		}
 		{
 			let modified_bytes = slipstream::codec::to_string(&json).into_bytes();
-			return axum::response::Response::from_parts(
-				parts,
-				axum::body::Body::from(modified_bytes),
-			);
+			return Response::from_parts(parts, Full::new(Bytes::from(modified_bytes)));
 		}
 	}
 
-	axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+	Response::from_parts(parts, Full::new(bytes))
 }
 
 /// slipstream's `get_message_events::v3::Request::dir` is a required `Direction`
@@ -585,29 +573,4 @@ async fn ensure_search_results_present(
 /// fact, because slipstream's deserializer rejects the request before our handler
 /// runs. Instead this injects a default `dir=f` into the query string
 /// ahead of extraction, mirroring Synapse's default.
-async fn default_messages_dir(
-	mut req: http::Request<axum::body::Body>,
-	next: axum::middleware::Next,
-) -> axum::response::Response {
-	let uri = req.uri();
-	let has_dir = uri
-		.query()
-		.is_some_and(|q| q.split('&').any(|kv| kv.split('=').next() == Some("dir")));
-
-	if !has_dir {
-		let path = uri.path();
-		let query = match uri.query() {
-			| Some(q) if !q.is_empty() => format!("{q}&dir=f"),
-			| _ => "dir=f".to_owned(),
-		};
-
-		if let Ok(new_uri) = Uri::builder()
-			.path_and_query(format!("{path}?{query}"))
-			.build()
-		{
-			*req.uri_mut() = new_uri;
-		}
-	}
-
-	next.run(req).await
-}
+const _: () = ();

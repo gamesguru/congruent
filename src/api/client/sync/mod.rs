@@ -419,9 +419,10 @@ pub(super) fn json_response(
 ) -> crate::router::response::Response {
 	use crate::router::response::IntoResponse;
 
-	(
-		[(http::header::CONTENT_TYPE, "application/json")],
-		slipstream::codec::to_string(value),
-	)
-		.into_response()
+	http::Response::builder()
+		.header(http::header::CONTENT_TYPE, "application/json")
+		.body(http_body_util::Full::new(bytes::Bytes::from(slipstream::codec::to_string(
+			value,
+		))))
+		.expect("json response is valid")
 }

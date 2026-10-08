@@ -14,14 +14,14 @@ use crate::{
 pub(crate) struct GetDelayedEventRequest;
 
 impl GetDelayedEventRequest {
-	const METADATA: Metadata =
+	pub(crate) const METADATA: Metadata =
 		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{}");
 }
 
 pub(crate) struct GetAllDelayedEventsRequest;
 
 impl GetAllDelayedEventsRequest {
-	const METADATA: Metadata =
+	pub(crate) const METADATA: Metadata =
 		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events");
 }
 

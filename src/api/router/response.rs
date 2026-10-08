@@ -75,6 +75,19 @@ impl IntoResponse for ApiError {
 	}
 }
 
+impl<T, E> IntoResponse for Result<T, E>
+where
+	T: IntoResponse,
+	E: IntoResponse,
+{
+	fn into_response(self) -> Response {
+		match self {
+			| Ok(response) => IntoResponse::into_response(response),
+			| Err(error) => IntoResponse::into_response(error),
+		}
+	}
+}
+
 pub(crate) struct RumaResponse<T>(pub(crate) T)
 where
 	T: OutgoingResponse;
