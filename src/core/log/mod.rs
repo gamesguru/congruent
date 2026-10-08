@@ -142,7 +142,7 @@ macro_rules! __conduwuit_log {
 	}};
 
 	(@parse $level:ident, $target:tt, $prefix:expr, %$value:expr, $($rest:tt)+) => {{
-		let prefix = format!("{}{}={}", $prefix, stringify!($value), &$value);
+		let prefix = format!("{}{}={} ", $prefix, stringify!($value), &$value);
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, ?$value:expr, $($rest:tt)+) => {{
@@ -154,7 +154,7 @@ macro_rules! __conduwuit_log {
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = %$value:expr, $($rest:tt)+) => {{
-		let prefix = format!("{}{}={}", $prefix, stringify!($name), &$value);
+		let prefix = format!("{}{}={} ", $prefix, stringify!($name), &$value);
 		$crate::__conduwuit_log!(@parse $level, $target, prefix, $($rest)+)
 	}};
 	(@parse $level:ident, $target:tt, $prefix:expr, $name:ident = ?$value:expr, $($rest:tt)+) => {{
