@@ -1,11 +1,14 @@
 use std::{
+	any::Any,
 	future::Future,
+	panic::AssertUnwindSafe,
 	pin::Pin,
 	sync::{Arc, OnceLock},
 	task::{Context, Poll},
 };
 
 use async_executor::Executor;
+use futures::FutureExt;
 
 static EXECUTOR: OnceLock<Arc<Executor<'static>>> = OnceLock::new();
 
@@ -43,32 +46,78 @@ impl RuntimeHandle {
 		F: Future + Send + 'static,
 		F::Output: Send + 'static,
 	{
+		let future = async move {
+			match AssertUnwindSafe(future).catch_unwind().await {
+				| Ok(value) => Ok(value),
+				| Err(panic) => {
+					log::error!("smol task panicked: {}", crate::debug::panic_str(&panic));
+					Err(JoinError::Panic(panic))
+				},
+			}
+		};
+
 		JoinHandle { task: Some(self.executor.spawn(future)) }
 	}
 }
 
-#[must_use]
-pub struct JoinHandle<T> {
-	task: Option<smol::Task<T>>,
+#[derive(Debug)]
+pub enum JoinError {
+	Cancelled,
+	Panic(Box<dyn Any + Send + 'static>),
 }
 
-impl<T: Send + 'static> JoinHandle<T> {
-	pub fn abort(&mut self) {
-		if let Some(task) = self.task.take() {
-			smol::spawn(async move {
-				let _ = task.cancel().await;
-			})
-			.detach();
+impl JoinError {
+	#[must_use]
+	pub const fn is_cancelled(&self) -> bool { matches!(self, Self::Cancelled) }
+
+	#[must_use]
+	pub const fn is_panic(&self) -> bool { matches!(self, Self::Panic(..)) }
+
+	#[must_use]
+	pub fn into_panic(self) -> Box<dyn Any + Send + 'static> {
+		match self {
+			| Self::Panic(panic) => panic,
+			| Self::Cancelled => Box::new("task was cancelled"),
 		}
 	}
 }
 
+impl std::fmt::Display for JoinError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			| Self::Cancelled => f.write_str("task was cancelled"),
+			| Self::Panic(..) => f.write_str("task panicked"),
+		}
+	}
+}
+
+impl std::error::Error for JoinError {}
+
+#[must_use]
+pub struct JoinHandle<T> {
+	task: Option<smol::Task<Result<T, JoinError>>>,
+}
+
+impl<T> JoinHandle<T> {
+	pub fn abort(&mut self) { self.task = None; }
+}
+
 impl<T> Future for JoinHandle<T> {
-	type Output = T;
+	type Output = Result<T, JoinError>;
 
 	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
 		let this = self.get_mut();
-		Pin::new(this.task.as_mut().expect("polled completed task")).poll(cx)
+		let Some(task) = this.task.as_mut() else {
+			return Poll::Ready(Err(JoinError::Cancelled));
+		};
+
+		match Pin::new(task).poll(cx) {
+			| Poll::Pending => Poll::Pending,
+			| Poll::Ready(result) => {
+				this.task = None;
+				Poll::Ready(result)
+			},
+		}
 	}
 }
 
