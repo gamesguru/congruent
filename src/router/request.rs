@@ -1,137 +1,132 @@
 use std::{
-	fmt::Debug,
+	net::SocketAddr,
 	sync::{Arc, atomic::Ordering},
-	time::Duration,
 };
 
-use axum::{
-	extract::State,
-	response::{IntoResponse, Response},
-};
-use conduwuit::{Result, debug, debug_error, debug_warn, error, trace, warn};
-use conduwuit_service::Services;
-use futures::FutureExt;
-use http::{Method, StatusCode, Uri};
-use tokio::time::sleep;
+use bytes::Bytes;
+use conduwuit::{debug_warn, trace, warn};
+use conduwuit_api::hyper_router::MinimalRouter;
+use conduwuit_service::{Services, state::State};
+use http::{Method, Request, Response, StatusCode, header};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use tower::Service;
 
 pub(crate) async fn handle(
-	State(services): State<Arc<Services>>,
-	req: http::Request<axum::body::Body>,
-	next: axum::middleware::Next,
-) -> Result<Response, StatusCode> {
+	mut router: MinimalRouter,
+	services: Arc<Services>,
+	state: State,
+	peer: SocketAddr,
+	mut request: Request<Incoming>,
+) -> Response<Full<Bytes>> {
 	if !services.server.running() {
-		debug_warn!(
-			method = %req.method(),
-			uri = %req.uri(),
-			"unavailable pending shutdown"
+		debug_warn!(method = %request.method(), uri = %request.uri(), "unavailable pending shutdown");
+		return error_response(
+			StatusCode::SERVICE_UNAVAILABLE,
+			"M_UNAVAILABLE",
+			"Server is shutting down",
 		);
-
-		return Err(StatusCode::SERVICE_UNAVAILABLE);
+	}
+	if request.method() == Method::OPTIONS {
+		return cors_response();
 	}
 
-	let uri = req.uri().clone();
-	let method = req.method().clone();
-	let services_ = services.clone();
-	let start = tokio::time::Instant::now();
-	let task = services.server.runtime().spawn(async move {
-		tokio::select! {
-			response = execute(&services_, req, next) => response,
-			response = services_.server.until_shutdown()
-				.then(|()| {
-					let timeout = services_.server.config.client_shutdown_timeout;
-					let timeout = Duration::from_secs(timeout);
-					sleep(timeout)
-				})
-				.map(|()| StatusCode::SERVICE_UNAVAILABLE)
-				.map(IntoResponse::into_response) => response,
-		}
-	});
-
-	let result = task
-		.await
-		.map_err(unhandled)
-		.and_then(move |result| handle_result(&method, &uri, result));
-
-	let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+	request.extensions_mut().insert(state);
+	request.extensions_mut().insert(peer);
+	let method = request.method().clone();
+	let uri = request.uri().clone();
+	let start = std::time::Instant::now();
+	#[cfg(debug_assertions)]
 	services
 		.server
 		.metrics
-		.requests_time
-		.fetch_add(elapsed, Ordering::Relaxed);
+		.requests_handle_active
+		.fetch_add(1, Ordering::Relaxed);
 
-	let is_error = match &result {
-		| Ok(res) => res.status().is_server_error(),
-		| Err(e) => e.is_server_error(),
+	let mut response = match router.call(request).await {
+		| Ok(response) => response,
+		| Err(error) => match error {},
 	};
 
-	if is_error {
+	#[cfg(debug_assertions)]
+	{
+		services
+			.server
+			.metrics
+			.requests_handle_finished
+			.fetch_add(1, Ordering::Relaxed);
+		services
+			.server
+			.metrics
+			.requests_handle_active
+			.fetch_sub(1, Ordering::Relaxed);
+	}
+	if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+		response = error_response(
+			StatusCode::METHOD_NOT_ALLOWED,
+			"M_UNRECOGNIZED",
+			"Method not allowed",
+		);
+	}
+	if method == Method::HEAD {
+		let (parts, _) = response.into_parts();
+		response = Response::from_parts(parts, Full::new(Bytes::new()));
+	}
+	add_headers(&mut response);
+
+	services.server.metrics.requests_time.fetch_add(
+		u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX),
+		Ordering::Relaxed,
+	);
+	if response.status().is_server_error() {
 		services
 			.server
 			.metrics
 			.requests_fail
 			.fetch_add(1, Ordering::Relaxed);
+		warn!(%method, %uri, status = %response.status(), "request failed");
 	} else {
 		services
 			.server
 			.metrics
 			.requests_success
 			.fetch_add(1, Ordering::Relaxed);
+		trace!(%method, %uri, status = %response.status(), "request complete");
 	}
-
-	result
+	response
 }
 
-async fn execute(
-	// we made a safety contract that Services will not go out of scope
-	// during the request; this ensures a reference is accounted for at
-	// the base frame of the task regardless of its detachment.
-	services: &Arc<Services>,
-	req: http::Request<axum::body::Body>,
-	next: axum::middleware::Next,
-) -> Response {
-	#[cfg(debug_assertions)]
-	conduwuit::defer! {{
-		_ = services.server
-			.metrics
-			.requests_handle_finished
-			.fetch_add(1, Ordering::Relaxed);
-		_ = services.server
-			.metrics
-			.requests_handle_active
-			.fetch_sub(1, Ordering::Relaxed);
-	}};
-
-	next.run(req).await
+fn cors_response() -> Response<Full<Bytes>> {
+	Response::builder()
+		.status(StatusCode::NO_CONTENT)
+		.header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+		.header(
+			header::ACCESS_CONTROL_ALLOW_METHODS,
+			"GET, HEAD, PATCH, POST, PUT, DELETE, OPTIONS",
+		)
+		.header(
+			header::ACCESS_CONTROL_ALLOW_HEADERS,
+			"Origin, X-Requested-With, Content-Type, Accept, Authorization",
+		)
+		.body(Full::new(Bytes::new()))
+		.expect("static CORS response is valid")
 }
 
-fn handle_result(method: &Method, uri: &Uri, result: Response) -> Result<Response, StatusCode> {
-	let status = result.status();
-	let code = status.as_u16();
-	let reason = status.canonical_reason().unwrap_or("Unknown Reason");
-
-	if status.is_server_error() {
-		warn!(%method, %uri, "{code} {reason}");
-	} else if status.is_client_error() {
-		debug_error!(%method, %uri, "{code} {reason}");
-	} else if status.is_redirection() {
-		debug!(%method, %uri, "{code} {reason}");
-	} else {
-		trace!(%method, %uri, "{code} {reason}");
-	}
-
-	if status == StatusCode::METHOD_NOT_ALLOWED {
-		return Ok(Response::builder()
-			.status(StatusCode::METHOD_NOT_ALLOWED)
-			.body(axum::body::Body::from("Method Not Allowed"))
-			.expect("static 405 response is valid"));
-	}
-
-	Ok(result)
+fn add_headers(response: &mut Response<Full<Bytes>>) {
+	let headers = response.headers_mut();
+	let _ = headers.insert("origin-agent-cluster", header::HeaderValue::from_static("?1"));
+	let _ = headers
+		.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+	let _ = headers.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+	let _ = headers
+		.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static("*"));
 }
 
-#[cold]
-fn unhandled<Error: Debug>(e: Error) -> StatusCode {
-	error!("unhandled error or panic during request: {e:?}");
-
-	StatusCode::INTERNAL_SERVER_ERROR
+fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Full<Bytes>> {
+	let body = format!(r#"{{"errcode":"{code}","error":"{message}"}}"#);
+	Response::builder()
+		.status(status)
+		.header(header::CONTENT_TYPE, "application/json")
+		.body(Full::from(body))
+		.expect("error response is valid")
 }

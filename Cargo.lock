@@ -613,6 +613,7 @@ dependencies = [
  "log",
  "rustls",
  "smol",
+ "tokio",
 ]
 
 [[package]]
@@ -800,6 +801,7 @@ dependencies = [
 name = "conduwuit_router"
 version = "0.5.10"
 dependencies = [
+ "async-net",
  "bytes",
  "conduwuit_admin",
  "conduwuit_api",
@@ -3288,6 +3290,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

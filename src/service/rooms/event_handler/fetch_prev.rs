@@ -117,7 +117,7 @@ where
 		active.push(async move {
 			let t = Instant::now();
 			let latest_events = vec![latest_event_owned];
-			let deadline = std::time::Instant::now()
+			let deadline = Instant::now()
 				.checked_add(Duration::from_secs(self.services.server.config.fetch_prev_timeout))
 				.expect("deadline should not overflow");
 			info!(

@@ -102,9 +102,7 @@ pub(crate) fn root_handle_from_bytes(bytes: &[u8]) -> Result<rezzy::hamt::RootHa
 #[must_use]
 pub(crate) fn is_state_event(pdu: &PduEvent) -> bool { pdu.state_key().is_some() }
 
-use futures::{
-	Future, FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all,
-};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join_all};
 use slipstream::{
 	EventId, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId, UserId,
 	events::{
@@ -777,53 +775,45 @@ impl Service {
 	}
 
 	/// Returns the room's version.
-	pub fn get_room_version(
-		&self,
-		room_id: &RoomId,
-	) -> impl Future<Output = Result<RoomVersionId>> + Send + 'static {
-		let short = self.services.short.clone();
-		let state_accessor = self.services.state_accessor.clone();
-		let timeline = self.services.timeline.clone();
-		let room_id = room_id.to_owned();
+	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
+		if let Ok(version) = self.services.short.get_room_version(room_id).await {
+			return Ok(version);
+		}
 
-		async move {
-			if let Ok(version) = short.get_room_version(&room_id).await {
-				return Ok(version);
-			}
+		info!(target: "rooms", "Could not get room_version by direct lookup for {}", room_id);
+		// Try the current room state snapshot first.
+		if let Ok(content) = self
+			.services
+			.state_accessor
+			.room_state_get_content::<RoomCreateEventContent>(
+				room_id,
+				&StateEventType::RoomCreate,
+				"",
+			)
+			.await
+		{
+			let version = content.room_version;
+			self.services.short.set_room_version(room_id, &version);
+			return Ok(version);
+		}
 
-			info!(target: "rooms", "Could not get room_version by direct lookup for {}", room_id);
-			// Try the current room state snapshot first.
-			if let Ok(content) = state_accessor
-				.room_state_get_content::<RoomCreateEventContent>(
-					&room_id,
-					&StateEventType::RoomCreate,
-					"",
-				)
-				.await
-			{
-				let version = content.room_version;
-				short.set_room_version(&room_id, &version);
-				return Ok(version);
-			}
-
-			warn!(target: "rooms", "Could not get room_version via state for {}", room_id);
-			// Fallback: the create event might be an outlier (not in the state
-			// snapshot). Scan outliers for this room to find it.
-			let mut outlier_stream = Box::pin(timeline.room_outlier_stream(&room_id));
-			while let Some((_eid, pdu)) = outlier_stream.next().await {
-				if pdu.kind == TimelineEventType::RoomCreate {
-					if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
-						let version = content.room_version;
-						short.set_room_version(&room_id, &version);
-						return Ok(version);
-					}
+		warn!(target: "rooms", "Could not get room_version via state for {}", room_id);
+		// Fallback: the create event might be an outlier (not in the state
+		// snapshot). Scan outliers for this room to find it.
+		let mut outlier_stream = Box::pin(self.services.timeline.room_outlier_stream(room_id));
+		while let Some((_eid, pdu)) = outlier_stream.next().await {
+			if pdu.kind == TimelineEventType::RoomCreate {
+				if let Ok(content) = pdu.get_content::<RoomCreateEventContent>() {
+					let version = content.room_version;
+					self.services.short.set_room_version(room_id, &version);
+					return Ok(version);
 				}
 			}
-
-			Err(err!(Request(NotFound(
-				"No create event found for room (checked db, state, and outliers)"
-			))))
 		}
+
+		Err(err!(Request(NotFound(
+			"No create event found for room (checked db, state, and outliers)"
+		))))
 	}
 
 	pub async fn get_roothandle(

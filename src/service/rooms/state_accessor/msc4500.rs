@@ -212,9 +212,6 @@ async fn msc4500_redaction_effective(
 	target: &Pdu,
 	room_version: &RoomVersionId,
 ) -> Option<bool> {
-	let redaction = redaction.clone();
-	let target = target.clone();
-	let room_version = room_version.clone();
 	if let Some(hit) = self.msc4500_memo.lock().effective.get(redaction.event_id()) {
 		return Some(*hit);
 	}
@@ -305,9 +302,9 @@ async fn msc4500_redact_power(
 /// returns `None` instead of a digest over partial information.
 #[implement(super::Service)]
 pub async fn msc4500_point_digests(
-	self: Arc<Self>,
+	&self,
 	root: rezzy::hamt::RootHandle,
-	pdu: Pdu,
+	pdu: &Pdu,
 	include_self: bool,
 ) -> Option<PointDigests> {
 	let room_id = pdu.room_id_or_hash()?;
@@ -349,15 +346,15 @@ pub async fn msc4500_point_digests(
 		let Some(target) = by_id.get(target_id) else {
 			continue;
 		};
-		let redaction = if redaction_id == pdu.event_id() {
-			pdu.clone()
+		let effective = if redaction_id == pdu.event_id() {
+			self.msc4500_redaction_effective(pdu, target, &room_version)
+				.await?
 		} else {
-			self.services.timeline.get_pdu(redaction_id).await.ok()?
+			let redaction = self.services.timeline.get_pdu(redaction_id).await.ok()?;
+			self.msc4500_redaction_effective(&redaction, target, &room_version)
+				.await?
 		};
-		if self
-			.msc4500_redaction_effective(&redaction, target, &room_version)
-			.await?
-		{
+		if effective {
 			redacted.insert(target.event_id());
 		}
 	}
@@ -376,7 +373,7 @@ pub async fn msc4500_point_digests(
 /// event with several `prev_events` needs a state-resolution result that is not
 /// stored per event, so it is reported as unresolvable.
 #[implement(super::Service)]
-pub async fn msc4500_before_root(self: Arc<Self>, pdu: Pdu) -> Option<rezzy::hamt::RootHandle> {
+pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHandle> {
 	// A non-state event leaves state untouched, so its stored root is the
 	// resolved state of all its parents.
 	if pdu.state_key().is_none() {
@@ -408,19 +405,13 @@ pub async fn msc4500_before_root(self: Arc<Self>, pdu: Pdu) -> Option<rezzy::ham
 ///
 /// `None` means the sender cannot assert this PDU and must mark it `limited`.
 #[implement(super::Service)]
-pub async fn msc4500_pdu_digests(self: Arc<Self>, event_id: OwnedEventId) -> Option<PduDigests> {
-	let pdu = self.services.timeline.get_pdu(&event_id).await.ok()?;
-	let after_root = self.pdu_roothandle_after_event(&event_id).await.ok()?;
-	let before_root = self.clone().msc4500_before_root(pdu.clone()).await?;
+pub async fn msc4500_pdu_digests(&self, event_id: &EventId) -> Option<PduDigests> {
+	let pdu = self.services.timeline.get_pdu(event_id).await.ok()?;
+	let after_root = self.pdu_roothandle_after_event(event_id).await.ok()?;
+	let before_root = self.msc4500_before_root(&pdu).await?;
 
-	let before = self
-		.clone()
-		.msc4500_point_digests(before_root, pdu.clone(), false)
-		.await?;
-	let after = self
-		.clone()
-		.msc4500_point_digests(after_root, pdu, true)
-		.await?;
+	let before = self.msc4500_point_digests(before_root, &pdu, false).await?;
+	let after = self.msc4500_point_digests(after_root, &pdu, true).await?;
 
 	Some(PduDigests { before, after })
 }
@@ -437,8 +428,8 @@ pub async fn msc4500_pdu_digests(self: Arc<Self>, event_id: OwnedEventId) -> Opt
 /// digests are unaffected. No placeholder is ever substituted for a gap.
 #[implement(super::Service)]
 pub async fn msc4500_resolution_inputs_digest(
-	self: Arc<Self>,
-	pdu: Pdu,
+	&self,
+	pdu: &Pdu,
 	cache: &mut InputCache,
 ) -> Option<String> {
 	let mut frontier: VecDeque<OwnedEventId> = VecDeque::new();

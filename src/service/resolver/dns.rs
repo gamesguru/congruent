@@ -178,7 +178,7 @@ impl Resolver {
 	#[allow(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 	pub(crate) fn build(
 		server: &Arc<Server>,
-		cache: Arc<Cache>,
+		_cache: Arc<Cache>,
 		_client_resolver: Dep<client::Service>,
 		_client_hooked: Dep<client::Service>,
 	) -> Result<Arc<Self>> {

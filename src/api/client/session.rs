@@ -372,7 +372,6 @@ pub(crate) async fn login_token_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
-	let services = services.services();
 	info!(%client, "login token request");
 	if !services.server.config.login_via_existing_session {
 		return Err!(Request(Forbidden("Login via an existing session is not enabled")));

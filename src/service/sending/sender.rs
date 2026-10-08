@@ -134,7 +134,7 @@ async fn compute_outbound_state_hashes(
 		let entry = match services
 			.state_accessor
 			.arc()
-			.msc4500_pdu_digests(event_id.clone())
+			.msc4500_pdu_digests(event_id)
 			.await
 		{
 			| None => StateHashEntry::limited(with_inputs),
@@ -146,7 +146,7 @@ async fn compute_outbound_state_hashes(
 							services
 								.state_accessor
 								.arc()
-								.msc4500_resolution_inputs_digest(pdu, &mut inputs_cache)
+								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
 								.await,
 						| None => None,
 					};
@@ -474,11 +474,11 @@ impl Service {
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
-		let now = std::time::Instant::now();
+		let now = Instant::now();
 		let deadline = now.checked_add(timeout).unwrap_or(now);
 		loop {
 			trace!("Waiting for {} requests to complete...", futures.len());
-			let timer = futures::FutureExt::fuse(smol::Timer::at(deadline));
+			let timer = FutureExt::fuse(smol::Timer::at(deadline));
 			let response = futures.next();
 			pin_mut!(timer, response);
 			futures::select_biased! {

@@ -53,7 +53,6 @@ pub(crate) async fn register_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<register::v3::Request>,
 ) -> Result<register::v3::Response> {
-	let services = services.services();
 	let is_guest = body.kind == RegistrationKind::Guest;
 	let emergency_mode_enabled = services.config.emergency_password.is_some();
 

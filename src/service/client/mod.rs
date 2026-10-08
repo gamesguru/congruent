@@ -194,7 +194,7 @@ impl crate::Service for Service {
 fn base(config: &Config) -> Result<HttpClient> {
 	let mut roots = RootCertStore::empty();
 	roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|root| {
-		futures_rustls::rustls::pki_types::TrustAnchor {
+		rustls::pki_types::TrustAnchor {
 			subject: root.subject.to_vec().into(),
 			subject_public_key_info: root.spki.to_vec().into(),
 			name_constraints: root

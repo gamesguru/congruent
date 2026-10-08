@@ -230,7 +230,7 @@ version = "1.7.0"
 [workspace.dependencies.tokio]
 version = "1.53.2"
 default-features = false
-features = ["sync"]
+features = ["sync", "signal", "io-std", "rt-multi-thread", "net", "time"]
 
 [workspace.dependencies.futures-io]
 version = "0.3.34"

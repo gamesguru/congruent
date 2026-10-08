@@ -176,6 +176,7 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 	fn call(&mut self, request: Request<Incoming>) -> Self::Future {
 		let router = match *request.method() {
 			| Method::GET => &self.get,
+			| Method::HEAD => &self.get,
 			| Method::POST => &self.post,
 			| Method::PUT => &self.put,
 			| Method::DELETE => &self.delete,

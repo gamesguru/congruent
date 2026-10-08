@@ -216,8 +216,9 @@ where
 		let do_fetch = |eid: &OwnedEventId| {
 			smol::block_on(async {
 				if let Some(cache) = prefetch_cache_ref {
-					if let Some(pdu) = cache.read().get(eid) {
-						return Some((**pdu).clone());
+					let cached = cache.read().get(eid).cloned();
+					if let Some(pdu) = cached {
+						return Some(pdu.as_ref().clone());
 					}
 				}
 

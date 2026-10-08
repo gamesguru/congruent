@@ -107,7 +107,6 @@ pub(crate) async fn add_3pid_route(
 	State(services): State<crate::State>,
 	body: Ruma<add_3pid::v3::Request>,
 ) -> Result<add_3pid::v3::Response> {
-	let services = services.services();
 	let sender_user = body.sender_user();
 
 	if !services.threepid.email_requirement().may_change() {

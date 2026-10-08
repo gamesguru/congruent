@@ -1,9 +1,7 @@
 use std::{fmt::Debug, net::IpAddr};
 
 use bytes::Bytes;
-use conduwuit::{
-	Err, Error, Result, debug, debug_error, err, implement, trace, utils::response::LimitReadExt,
-};
+use conduwuit::{Err, Error, Result, debug, debug_error, err, implement, trace};
 use http::{HeaderValue, Method, Request, Response, header::AUTHORIZATION};
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
@@ -93,11 +91,7 @@ where
 }
 
 #[implement(super::Service)]
-fn prepare(
-	&self,
-	dest: &ServerName,
-	mut request: http::Request<Vec<u8>>,
-) -> Result<http::Request<Vec<u8>>> {
+fn prepare(&self, dest: &ServerName, mut request: Request<Vec<u8>>) -> Result<Request<Vec<u8>>> {
 	self.sign_request(&mut request, dest);
 
 	let url = Url::parse(&request.uri().to_string())
@@ -164,7 +158,7 @@ async fn into_http_response(
 	url: &Url,
 	response: Response<Bytes>,
 	max_size: u64,
-) -> Result<http::Response<Bytes>> {
+) -> Result<Response<Bytes>> {
 	let status = response.status();
 	trace!(
 		%status, %method,
@@ -214,7 +208,7 @@ fn handle_error(
 }
 
 #[implement(super::Service)]
-fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerName) {
+fn sign_request(&self, http_request: &mut Request<Vec<u8>>, dest: &ServerName) {
 	type Member = (String, Value);
 	type Value = CanonicalJsonValue;
 	type Object = CanonicalJsonObject;
@@ -291,7 +285,7 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 	debug_assert!(authorization.is_none(), "Authorization header already present");
 }
 
-fn into_http_request<T>(actual: &ActualDest, request: T) -> Result<http::Request<Vec<u8>>>
+fn into_http_request<T>(actual: &ActualDest, request: T) -> Result<Request<Vec<u8>>>
 where
 	T: OutgoingRequest + Send,
 {

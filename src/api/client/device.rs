@@ -122,7 +122,6 @@ pub(crate) async fn delete_device_route(
 	State(services): State<crate::State>,
 	body: Ruma<delete_device::v3::Request>,
 ) -> Result<delete_device::v3::Response> {
-	let services = services.services();
 	let sender_user = body.sender_user();
 	let appservice = body.appservice_info.as_ref();
 
@@ -174,7 +173,6 @@ pub(crate) async fn delete_devices_route(
 	State(services): State<crate::State>,
 	body: Ruma<delete_devices::v3::Request>,
 ) -> Result<delete_devices::v3::Response> {
-	let services = services.services();
 	let sender_user = body.sender_user();
 	let appservice = body.appservice_info.as_ref();
 

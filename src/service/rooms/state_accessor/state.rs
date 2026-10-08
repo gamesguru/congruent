@@ -5,7 +5,7 @@ use conduwuit::{
 	matrix::{Event, StateKey},
 	utils::stream::{IterStream, ReadyExt, TryIgnore},
 };
-use futures::{Future, FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, pin_mut};
 use slipstream::{
 	EventId, OwnedEventId, RoomId, UserId,
 	events::{
@@ -501,17 +501,12 @@ pub fn load_full_state_hamt(
 /// Returns the HAMT RootHandle for the state *after* this pdu, i.e. including
 /// the pdu's own state change.
 #[implement(super::Service)]
-pub fn pdu_roothandle_after_event(
+pub async fn pdu_roothandle_after_event(
 	&self,
 	event_id: &EventId,
-) -> impl Future<Output = Result<rezzy::hamt::RootHandle>> + Send + 'static {
-	let short = self.services.short.clone();
-	let state = self.services.state.clone();
-	let event_id = event_id.to_owned();
-	async move {
-		let shorteventid = short.get_shorteventid(&event_id).await?;
-		state.get_roothandle(shorteventid).await
-	}
+) -> Result<rezzy::hamt::RootHandle> {
+	let shorteventid = self.services.short.get_shorteventid(event_id).await?;
+	self.services.state.get_roothandle(shorteventid).await
 }
 
 /// Returns the HAMT RootHandle for the state immediately *before* this pdu's

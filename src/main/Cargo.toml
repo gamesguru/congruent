@@ -163,6 +163,7 @@ log.workspace = true
 # TODO: replace reqwest with something??
 rustls = { workspace = true, default-features = false }
 smol.workspace = true
+tokio.workspace = true
 
 
 [target.'cfg(all(not(target_env = "msvc"), target_os = "linux"))'.dependencies]

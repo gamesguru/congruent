@@ -186,7 +186,8 @@ async fn process_inbound_transaction(
 	sender: Sender<WrappedTransactionResponse>,
 ) {
 	let state = services;
-	let services = state.services();
+	let services: &Services = &state;
+	let edu_services = state.services();
 	let state_hashes = body.json_body.as_ref().and_then(|json| {
 		let obj = json.as_object()?;
 		let hashes = obj
@@ -195,32 +196,9 @@ async fn process_inbound_transaction(
 		codec::from_value::<StateHashes>(hashes).ok()
 	});
 	let txn_start_time = Instant::now();
-	let pdus = body
-		.pdus
-		.clone()
-		.into_iter()
-		.stream()
-		.broad_then({
-			let services = Arc::clone(&services);
-			move |pdu| {
-				let services = Arc::clone(&services);
-				async move { services.rooms.event_handler.parse_incoming_pdu(&pdu).await }
-			}
-		})
-		.inspect_err(|e| warn!("Could not parse incoming PDU: {e}"))
-		.ready_filter_map(Result::ok);
-
-	let edus = body
-		.edus
-		.clone()
-		.into_iter()
-		.map(|edu| edu.get().to_owned())
-		.map(|json| codec::from_str::<Edu>(&json))
-		.filter_map(Result::ok)
-		.collect::<Vec<_>>()
-		.into_iter()
-		.stream();
-
+	let origin = body.origin().to_owned();
+	let pdu_count = body.pdus.len();
+	let edu_count = body.edus.len();
 	let pdu_ids: Vec<_> = body
 		.pdus
 		.iter()
@@ -231,10 +209,31 @@ async fn process_inbound_transaction(
 				.map(ToOwned::to_owned)
 		})
 		.collect();
+	let pdus = body
+		.body
+		.pdus
+		.into_iter()
+		.stream()
+		.broad_then(
+			|pdu| async move { services.rooms.event_handler.parse_incoming_pdu(&pdu).await },
+		)
+		.inspect_err(|e| warn!("Could not parse incoming PDU: {e}"))
+		.ready_filter_map(Result::ok);
+
+	let edus = body
+		.body
+		.edus
+		.into_iter()
+		.map(|edu| edu.get().to_owned())
+		.map(|json| codec::from_str::<Edu>(&json))
+		.filter_map(Result::ok)
+		.collect::<Vec<_>>()
+		.into_iter()
+		.stream();
 
 	info!(
-		pdus = body.pdus.len(),
-		edus = body.edus.len(),
+		pdus = pdu_count,
+		edus = edu_count,
 		pdu_ids = ?pdu_ids,
 		"Processing transaction"
 	);
@@ -249,20 +248,17 @@ async fn process_inbound_transaction(
 	// receipt/typing/device-list EDUs land creates an ack-before-commit race:
 	// the sender advances its EDU watermark while the receiver may still not
 	// have applied the write or an ACL gate for that same transaction.
-	let origin = body.origin().to_owned();
 	let edu_origin = origin.clone();
-	let edu_services = Arc::clone(&services);
 	let edu_processing = async move {
 		edus.for_each_concurrent(automatic_width(), move |edu| {
 			let origin = edu_origin.clone();
 			let services = Arc::clone(&edu_services);
-			async move { handle_edu(services, client, origin.clone(), edu).await }
+			async move { handle_edu(services, client, origin, edu).await }
 		})
 		.await;
 	};
 
-	let ((), results) =
-		futures::join!(edu_processing, handle(Arc::clone(&services), client, origin, pdus));
+	let ((), results) = futures::join!(edu_processing, handle(services, &client, &origin, pdus));
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
@@ -319,40 +315,40 @@ async fn process_inbound_transaction(
 	if elapsed < Duration::from_millis(50) {
 		debug!(
 			target: "federation",
-			pdus = body.pdus.len(),
-			edus = body.edus.len(),
+			pdus = pdu_count,
+			edus = edu_count,
 			?elapsed,
 			"Nominal txn"
 		);
 	} else if elapsed < Duration::from_secs(1) {
 		info!(
 			target: "federation",
-			pdus = body.pdus.len(),
-			edus = body.edus.len(),
+			pdus = pdu_count,
+			edus = edu_count,
 			?elapsed,
 			"Nominal txn"
 		);
 	} else if elapsed < Duration::from_secs(10) {
 		info!(
 			target: "federation",
-			pdus = body.pdus.len(),
-			edus = body.edus.len(),
+			pdus = pdu_count,
+			edus = edu_count,
 			?elapsed,
 			"Slow txn"
 		);
 	} else if elapsed < Duration::from_secs(100) {
 		warn!(
 			target: "federation",
-			pdus = body.pdus.len(),
-			edus = body.edus.len(),
+			pdus = pdu_count,
+			edus = edu_count,
 			?elapsed,
 			"Very slow txn"
 		);
 	} else {
 		warn!(
 			target: "federation",
-			pdus = body.pdus.len(),
-			edus = body.edus.len(),
+			pdus = pdu_count,
+			edus = edu_count,
 			?elapsed,
 			"Stalled txn"
 		);
@@ -373,7 +369,7 @@ async fn process_inbound_transaction(
 	response_builder.field("pdus", &pdus);
 	let mut response_json = response_builder.finish();
 
-	inject_state_hash_mismatches(Arc::clone(&services), state_hashes, &mut response_json).await;
+	inject_state_hash_mismatches(services, state_hashes, &mut response_json).await;
 
 	services
 		.transactions
@@ -381,7 +377,7 @@ async fn process_inbound_transaction(
 }
 
 async fn inject_state_hash_mismatches(
-	services: Arc<Services>,
+	services: &Services,
 	state_hashes: Option<StateHashes>,
 	response_json: &mut Value,
 ) {
@@ -438,8 +434,10 @@ async fn inject_state_hash_mismatches(
 		let redactions_after = redactions_after.to_owned();
 
 		// An unresolved DAG point is deferred rather than reported as a mismatch.
-		let Some(local) = Arc::clone(&services.rooms.state_accessor)
-			.msc4500_pdu_digests(event_id.clone())
+		let Some(local) = services
+			.rooms
+			.state_accessor
+			.msc4500_pdu_digests(&event_id)
 			.await
 		else {
 			continue;
@@ -453,8 +451,10 @@ async fn inject_state_hash_mismatches(
 		let local_inputs = if check_inputs {
 			match services.rooms.timeline.get_pdu(&event_id).await {
 				| Ok(pdu) =>
-					Arc::clone(&services.rooms.state_accessor)
-						.msc4500_resolution_inputs_digest(pdu, &mut inputs_cache)
+					services
+						.rooms
+						.state_accessor
+						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
 						.await,
 				| Err(_) => None,
 			}
@@ -538,9 +538,9 @@ fn transaction_error_to_response(err: &TransactionError) -> Error {
 	}
 }
 async fn handle(
-	services: Arc<Services>,
-	client: IpAddr,
-	origin: OwnedServerName,
+	services: &Services,
+	client: &IpAddr,
+	origin: &ServerName,
 	pdus: impl Stream<Item = Pdu> + Send,
 ) -> std::result::Result<ResolvedMap, TransactionError> {
 	// group pdus by room
@@ -558,8 +558,8 @@ async fn handle(
 	let results: ResolvedMap = pdus
 		.into_iter()
 		.try_stream()
-		.broad_and_then(move |(room_id, pdus): (_, Vec<_>)| {
-			handle_room(Arc::clone(&services), client, origin.clone(), room_id, pdus.into_iter())
+		.broad_and_then(|(room_id, pdus): (_, Vec<_>)| {
+			handle_room(services, &client, origin, room_id, pdus.into_iter())
 				.map_ok(Vec::into_iter)
 				.map_ok(IterStream::try_stream)
 		})
@@ -651,9 +651,9 @@ async fn build_local_dag(
 }
 
 async fn handle_room(
-	services: Arc<Services>,
-	_client: IpAddr,
-	origin: OwnedServerName,
+	services: &Services,
+	_client: &IpAddr,
+	origin: &ServerName,
 	room_id: OwnedRoomId,
 	pdus: impl Iterator<Item = Pdu> + Send,
 ) -> std::result::Result<Vec<(OwnedEventId, Result)>, TransactionError> {

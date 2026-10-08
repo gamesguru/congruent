@@ -358,7 +358,7 @@ impl Service {
 				return Err(err!(Request(Unknown("{timeout_message}"))));
 			}
 
-			let mut watchers = futures::stream::FuturesUnordered::new();
+			let mut watchers = FuturesUnordered::new();
 			for key in &pending {
 				watchers.push(self.db.servernameevent_data.watch_prefix(key));
 				watchers.push(self.db.servercurrentevent_data.watch_prefix(key));
@@ -422,7 +422,7 @@ impl Service {
 	#[inline]
 	pub async fn send_federation_request_on<T>(
 		&self,
-		client: &crate::client::HttpClient,
+		client: &client::HttpClient,
 		dest: &ServerName,
 		request: T,
 	) -> Result<T::IncomingResponse>

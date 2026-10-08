@@ -1,54 +1,75 @@
-use std::{
-	net::SocketAddr,
-	sync::{Arc, atomic::Ordering},
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use axum::Router;
-use conduwuit::{Result, Server, debug_info, info};
-use tokio::{net::TcpListener, sync::broadcast, task::JoinSet};
+use conduwuit::{Result, Server, debug, info, warn};
+use conduwuit_api::hyper_router::MinimalRouter;
+use conduwuit_core::SmolIo;
+use conduwuit_service::{Services, state::State};
+use hyper::{body::Incoming, server::conn::http1, service::service_fn};
+
+use crate::request;
 
 pub(super) async fn serve(
 	server: &Arc<Server>,
-	app: Router,
+	services: &Arc<Services>,
+	router: MinimalRouter,
+	state: State,
 	addrs: Vec<SocketAddr>,
-	shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
-	let app = app.into_make_service_with_connect_info::<SocketAddr>();
-	let mut join_set = JoinSet::new();
-	for addr in &addrs {
-		let listener = TcpListener::bind(addr).await?;
-		let app = app.clone();
-		let mut shutdown = shutdown.resubscribe();
-		join_set.spawn_on(
-			async move {
-				axum::serve(listener, app)
-					.with_graceful_shutdown(async move {
-						let _ = shutdown.recv().await;
-					})
-					.await
-			},
-			server.runtime(),
-		);
+	let mut listeners = Vec::new();
+	for addr in addrs.iter().copied() {
+		listeners.push(server.runtime().spawn(listener(
+			Arc::clone(server),
+			Arc::clone(services),
+			router.clone(),
+			state,
+			addr,
+		)));
 	}
-
-	info!("Listening on {addrs:?}");
-	while join_set.join_next().await.is_some() {}
-
-	let handle_active = server
-		.metrics
-		.requests_handle_active
-		.load(Ordering::Relaxed);
-	debug_info!(
-		handle_finished = server
-			.metrics
-			.requests_handle_finished
-			.load(Ordering::Relaxed),
-		panics = server.metrics.requests_panic.load(Ordering::Relaxed),
-		handle_active,
-		"Stopped listening on {addrs:?}",
-	);
-
-	debug_assert!(handle_active == 0, "active request handles still pending");
-
+	info!(?addrs, "Listening");
+	server.until_shutdown().await;
+	for task in &mut listeners {
+		task.abort();
+	}
 	Ok(())
+}
+
+async fn listener(
+	server: Arc<Server>,
+	services: Arc<Services>,
+	router: MinimalRouter,
+	state: State,
+	addr: SocketAddr,
+) -> Result<()> {
+	let listener = async_net::TcpListener::bind(addr).await?;
+	loop {
+		let (stream, peer) = match listener.accept().await {
+			| Ok(connection) => connection,
+			| Err(error) => {
+				warn!(%error, %addr, "accept failed; retrying");
+				smol::Timer::after(Duration::from_millis(50)).await;
+				continue;
+			},
+		};
+		let server = Arc::clone(&server);
+		let services = Arc::clone(&services);
+		let router = router.clone();
+		server.runtime().spawn(async move {
+			let service = service_fn(move |request: http::Request<Incoming>| {
+				let router = router.clone();
+				let services = services.clone();
+				async move {
+					Ok::<_, std::convert::Infallible>(
+						request::handle(router.clone(), services.clone(), state, peer, request)
+							.await,
+					)
+				}
+			});
+			if let Err(error) = http1::Builder::new()
+				.serve_connection(SmolIo(stream), service)
+				.await
+			{
+				debug!(%error, %peer, "connection closed with error");
+			}
+		});
+	}
 }

@@ -1,6 +1,6 @@
 //! Small request wrappers used by the endpoint functions.
 
-use std::{net::IpAddr, str::FromStr};
+use std::net::IpAddr;
 
 use http::Request as HttpRequest;
 use hyper::body::Incoming;
@@ -37,16 +37,9 @@ pub(crate) trait FromRequest<S, B = Incoming>: Sized {
 }
 
 pub(crate) fn client_ip<B>(request: &HttpRequest<B>) -> ClientIp {
-	let forwarded = request
-		.headers()
-		.get("x-forwarded-for")
-		.and_then(|value| value.to_str().ok())
-		.and_then(|value| value.split(',').next())
-		.and_then(|value| IpAddr::from_str(value.trim()).ok());
-	let real = request
-		.headers()
-		.get("x-real-ip")
-		.and_then(|value| value.to_str().ok())
-		.and_then(|value| IpAddr::from_str(value.trim()).ok());
-	ClientIp(forwarded.or(real).unwrap_or(IpAddr::from([127, 0, 0, 1])))
+	let peer = request
+		.extensions()
+		.get::<std::net::SocketAddr>()
+		.map(std::net::SocketAddr::ip);
+	ClientIp(peer.unwrap_or(IpAddr::from([127, 0, 0, 1])))
 }

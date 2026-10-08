@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use conduwuit::{
 	Err, Event, Result, err, info,
 	pdu::PduBuilder,
@@ -154,7 +152,6 @@ pub(crate) async fn change_password_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<change_password::v3::Request>,
 ) -> Result<change_password::v3::Response> {
-	let services = services.services();
 	info!(%client, "change password request");
 	let identity = if let Some(ref user_id) = body.sender_user {
 		// A signed-in user is trying to change their password, prompt them for their
@@ -206,7 +203,7 @@ pub(crate) async fn change_password_route(
 			.ready_filter(|id| *id != body.sender_device())
 			.for_each(|id| {
 				let sender_user = sender_user.clone();
-				let services = Arc::clone(&services);
+				let services = services;
 				async move { services.users.remove_device(&sender_user, &id).await }
 			})
 			.await;
@@ -282,7 +279,6 @@ pub(crate) async fn deactivate_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<deactivate::v3::Request>,
 ) -> Result<deactivate::v3::Response> {
-	let services = services.services();
 	info!(%client, "deactivate account request");
 	// Authentication for this endpoint is technically optional,
 	// but we require the user to be logged in

@@ -79,7 +79,7 @@ pub(crate) async fn worker(service: &Service) -> Result<()> {
 		};
 		let next_submit = next_submit.fuse();
 		let next_receive = receiver.recv_async().fuse();
-		let stop_check = futures::FutureExt::fuse(smol::Timer::after(Duration::from_secs(2)));
+		let stop_check = FutureExt::fuse(smol::Timer::after(Duration::from_secs(2)));
 		pin_mut!(next_submit, next_receive, stop_check);
 
 		// RescvFuture is cancellation-safe
