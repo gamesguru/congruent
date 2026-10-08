@@ -46,7 +46,7 @@ pub(super) async fn serve(
 					continue;
 				},
 			},
-			_ = server.until_shutdown().fuse() => break,
+			() = server.until_shutdown().fuse() => break,
 		};
 
 		let services = Arc::clone(services);
