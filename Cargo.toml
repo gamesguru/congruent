@@ -213,6 +213,9 @@ version = "5.4.1"
 [workspace.dependencies.async-fs]
 version = "2.2.0"
 
+[workspace.dependencies.async-executor]
+version = "1.14.0"
+
 [workspace.dependencies.async-rustls]
 version = "0.4.2"
 default-features = false

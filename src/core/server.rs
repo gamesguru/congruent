@@ -1,5 +1,4 @@
 use std::{
-	future::Future,
 	sync::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
@@ -10,20 +9,7 @@ use std::{
 use slipstream::OwnedServerName;
 use tokio::sync::broadcast::{self, Sender};
 
-use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RuntimeHandle;
-
-impl RuntimeHandle {
-	pub fn spawn<F>(&self, future: F) -> smol::Task<F::Output>
-	where
-		F: Future + Send + 'static,
-		F::Output: Send + 'static,
-	{
-		smol::spawn(future)
-	}
-}
+use crate::{Err, Result, config, config::Config, log::Log, metrics::Metrics, rt::RuntimeHandle};
 
 /// Server runtime state; public portion
 pub struct Server {
@@ -72,7 +58,7 @@ impl Server {
 			stopping: AtomicBool::new(false),
 			reloading: AtomicBool::new(false),
 			restarting: AtomicBool::new(false),
-			runtime: RuntimeHandle,
+			runtime: RuntimeHandle::new(),
 			signal,
 			log,
 			metrics: Metrics::new(runtime),

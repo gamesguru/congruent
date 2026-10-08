@@ -11,6 +11,7 @@ pub mod log;
 pub mod matrix;
 pub mod metrics;
 pub mod mods;
+pub mod rt;
 pub mod server;
 pub mod utils;
 
@@ -30,6 +31,7 @@ pub use matrix::{
 	Event, EventTypeExt, Pdu, PduCount, PduEvent, PduId, RoomVersion, pdu, state_res,
 };
 pub use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
+pub use rt::{JoinHandle, RuntimeHandle};
 pub use server::Server;
 pub use utils::{SmolIo, implement, result, result::Result};
 
