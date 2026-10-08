@@ -77,7 +77,7 @@ impl JoinError {
 	pub fn into_panic(self) -> Box<dyn Any + Send + 'static> {
 		match self {
 			| Self::Panic(panic) => panic,
-			| Self::Cancelled => Box::new("task was cancelled"),
+			| Self::Cancelled => panic!("attempted to extract panic from cancelled task"),
 		}
 	}
 }

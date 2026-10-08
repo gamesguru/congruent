@@ -209,11 +209,9 @@ where
 	let timeline = &self.services.timeline;
 	let prefetch_cache_ref = prefetch_cache;
 	let meta = &self.services.pdu_metadata;
-	let handle = tokio::runtime::Handle::current();
-
 	let fetch_pdu = move |eid: &OwnedEventId| -> Option<conduwuit_core::PduEvent> {
-		let do_fetch = |handle: &tokio::runtime::Handle, eid: &OwnedEventId| {
-			handle.block_on(async {
+		let do_fetch = |eid: &OwnedEventId| {
+			smol::block_on(async {
 				if let Some(cache) = prefetch_cache_ref {
 					if let Some(pdu) = cache.read().await.get(eid) {
 						return Some((**pdu).clone());
@@ -238,16 +236,7 @@ where
 			})
 		};
 
-		// block_in_place yields the current worker slot so other tasks can
-		// progress while we block.  On CurrentThread runtimes (unit tests)
-		// there is no spare worker, so we spawn a dedicated thread instead.
-		if matches!(handle.runtime_flavor(), tokio::runtime::RuntimeFlavor::MultiThread) {
-			tokio::task::block_in_place(|| do_fetch(&handle, eid))
-		} else {
-			let eid = eid.clone();
-			let handle = handle.clone();
-			std::thread::scope(|s| s.spawn(|| do_fetch(&handle, &eid)).join().unwrap())
-		}
+		do_fetch(eid)
 	};
 
 	let provider = LocalArenaProvider {

@@ -56,6 +56,8 @@ pub enum Error {
 	Regex(#[from] regex::Error),
 	#[error("HTTP client error: {0}")]
 	HttpClient(Cow<'static, str>),
+	#[error(transparent)]
+	JoinError(#[from] crate::rt::JoinError),
 	#[error("{0}")]
 	SerdeDe(Cow<'static, str>),
 	#[error("{0}")]

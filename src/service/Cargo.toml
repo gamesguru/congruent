@@ -62,6 +62,7 @@ zstd_compression = [
 typed-arena = { workspace = true }
 async-trait.workspace = true
 async-net.workspace = true
+async-io.workspace = true
 async-lock.workspace = true
 async-fs.workspace = true
 async-rustls.workspace = true

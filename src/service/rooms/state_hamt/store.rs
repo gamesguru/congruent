@@ -107,17 +107,6 @@ impl Store {
 
 	/// Resolves a node while avoiding blocking a single-threaded Tokio runtime.
 	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
-		if let Ok(handle) = tokio::runtime::Handle::try_current() {
-			if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-				return tokio::task::block_in_place(|| self.get_node_blocking(hash));
-			}
-
-			return Err(conduwuit::err!(error!(
-				"HAMT operations require a multithreaded Tokio runtime to avoid stalling the \
-				 executor."
-			)));
-		}
-
 		self.get_node_blocking(hash)
 	}
 
@@ -352,27 +341,6 @@ impl Store {
 		grace: Duration,
 		dry_run: bool,
 	) -> Result<SweepReport> {
-		if let Ok(handle) = tokio::runtime::Handle::try_current() {
-			if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-				return tokio::task::block_in_place(|| {
-					// Run the whole sweep off an executor thread: the node walk,
-					// key enumeration and deletes are all blocking RocksDB work,
-					// so holding a worker thread here would stall unrelated tasks.
-					// `sweep_blocking` does Tokio-backed I/O (thread-pool dispatch),
-					// so drive it with the current runtime's handle rather than a
-					// foreign executor; `block_in_place` keeps us on the same
-					// worker thread, so Tokio's context is still current here.
-					tokio::runtime::Handle::current()
-						.block_on(self.sweep_blocking(live_roots, grace, dry_run))
-				});
-			}
-
-			return Err(conduwuit::err!(error!(
-				"HAMT operations require a multithreaded Tokio runtime to avoid stalling the \
-				 executor."
-			)));
-		}
-
 		self.sweep_blocking(live_roots, grace, dry_run).await
 	}
 
@@ -494,20 +462,7 @@ impl Store {
 		&self,
 	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_
 	{
-		move |hash: &StructuralHash| {
-			if let Ok(handle) = tokio::runtime::Handle::try_current() {
-				if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread {
-					return tokio::task::block_in_place(|| self.get_node_blocking(hash));
-				}
-				// `block_in_place` panics on a `CurrentThread` runtime, so fall back to
-				// an explicit error to prevent stalling the only executor thread.
-				return Err(conduwuit::err!(error!(
-					"HAMT operations require a multithreaded Tokio runtime to avoid stalling \
-					 the executor."
-				)));
-			}
-			self.get_node_blocking(hash)
-		}
+		move |hash: &StructuralHash| self.get_node_blocking(hash)
 	}
 
 	/// Derives the deterministic `RootHandle` (structural hash + the

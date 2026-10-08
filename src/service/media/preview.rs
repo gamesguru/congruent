@@ -454,11 +454,11 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	let client = &self.services.client.url_preview;
 	let mut response = client.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = client
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config

@@ -833,6 +833,7 @@ name = "conduwuit_service"
 version = "0.5.10"
 dependencies = [
  "async-fs",
+ "async-io",
  "async-lock",
  "async-net",
  "async-rustls",
