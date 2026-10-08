@@ -16,24 +16,12 @@ crate-type = [
 ]
 
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
-# `conduwuit_macros::introspect_crate!`. `reqwest` is only referenced from
-# `[features]`, where it forwards compression backends to reqwest itself.
 [package.metadata.cargo-machete]
-ignored = ["const-str", "ctor", "reqwest"]
+ignored = ["const-str", "ctor"]
 
 [features]
-brotli_compression = [
-	"conduwuit-core/brotli_compression",
-	"conduwuit-service/brotli_compression",
-	"reqwest/brotli",
-]
 element_hacks = [
 	"conduwuit-service/element_hacks",
-]
-gzip_compression = [
-	"conduwuit-core/gzip_compression",
-	"conduwuit-service/gzip_compression",
-	"reqwest/gzip",
 ]
 mimalloc = [
     "conduwuit-core/mimalloc",
@@ -63,7 +51,7 @@ release_max_log_level = [
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
 	"conduwuit-service/zstd_compression",
-	"reqwest/zstd",
+	# "reqwest/zstd",
 ]
 
 [dependencies]
@@ -83,7 +71,6 @@ itertools.workspace = true
 log.workspace = true
 matchit.workspace = true
 rand.workspace = true
-reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 serde_urlencoded.workspace = true

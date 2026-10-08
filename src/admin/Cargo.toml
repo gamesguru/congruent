@@ -21,16 +21,6 @@ crate-type = [
 ignored = ["const-str", "ctor"]
 
 [features]
-brotli_compression = [
-	"conduwuit-api/brotli_compression",
-	"conduwuit-core/brotli_compression",
-	"conduwuit-service/brotli_compression",
-]
-gzip_compression = [
-	"conduwuit-api/gzip_compression",
-	"conduwuit-core/gzip_compression",
-	"conduwuit-service/gzip_compression",
-]
 mimalloc = [
 	"conduwuit-api/mimalloc",
 	"conduwuit-core/mimalloc",

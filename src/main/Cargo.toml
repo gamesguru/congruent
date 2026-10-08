@@ -19,10 +19,10 @@ crate-type = [
 ]
 
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
-# `conduwuit_macros::introspect_crate!`. `reqwest` and `conduwuit-api` are only
+# `conduwuit_macros::introspect_crate!`. `conduwuit-api` is only
 # referenced from `[features]` (feature forwarding / the dynamic mod loader).
 [package.metadata.cargo-machete]
-ignored = ["conduwuit-api", "const-str", "ctor", "reqwest"]
+ignored = ["conduwuit-api", "const-str", "ctor"]
 
 [package.metadata.deb]
 name = "continuwuity"
@@ -53,8 +53,6 @@ default = [
 ]
 standard = [
     "blurhashing",
-    "brotli_compression",
-    "gzip_compression",
     "mimalloc",
     "mimalloc_conf",
     "media_thumbnail",
@@ -76,12 +74,6 @@ local_profiling = [
 blurhashing = [
 	"conduwuit-service/blurhashing",
 ]
-brotli_compression = [
-	"conduwuit-api/brotli_compression",
-	"conduwuit-core/brotli_compression",
-	"conduwuit-router/brotli_compression",
-	"conduwuit-service/brotli_compression",
-]
 console = [
 	"conduwuit-service/console",
 ]
@@ -91,12 +83,6 @@ element_hacks = [
 ]
 direct_tls = [
 	"conduwuit-router/direct_tls",
-]
-gzip_compression = [
-	"conduwuit-api/gzip_compression",
-	"conduwuit-core/gzip_compression",
-	"conduwuit-router/gzip_compression",
-	"conduwuit-service/gzip_compression",
 ]
 hardened_malloc = [
 	"conduwuit-core/hardened_malloc",
@@ -174,7 +160,7 @@ clap_complete.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 log.workspace = true
-reqwest = { workspace = true, default-features = false }
+# TODO: replace reqwest with something??
 rustls = { workspace = true, default-features = false }
 smol.workspace = true
 

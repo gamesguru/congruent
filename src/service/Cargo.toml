@@ -22,10 +22,8 @@ ignored = ["const-str", "ctor"]
 
 [features]
 blurhashing = ["dep:blurhash", "dep:image"]
-brotli_compression = ["conduwuit-core/brotli_compression", "reqwest/brotli"]
 console = []
 element_hacks = []
-gzip_compression = ["conduwuit-core/gzip_compression", "reqwest/gzip"]
 mimalloc = ["conduwuit-core/mimalloc", "conduwuit-database/mimalloc"]
 mimalloc_conf = [
 	"conduwuit-core/mimalloc_conf",
@@ -57,7 +55,7 @@ url_preview = ["dep:image"]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
 	"conduwuit-database/zstd_compression",
-	"reqwest/zstd",
+	# "reqwest/zstd",
 ]
 
 [dependencies]
@@ -90,7 +88,6 @@ moka.workspace = true
 nonzero_ext.workspace = true
 rand.workspace = true
 regex.workspace = true
-reqwest.workspace = true
 rezzy.workspace = true
 roaring.workspace = true
 serde.workspace = true

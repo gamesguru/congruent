@@ -1682,27 +1682,6 @@ pub struct Config {
 	#[serde(default)]
 	pub zstd_compression: bool,
 
-	/// Set this to true for continuwuity to compress HTTP response bodies using
-	/// gzip. This option does nothing if continuwuity was not built with
-	/// `gzip_compression` feature. Please be aware that enabling HTTP
-	/// compression may weaken TLS. Most users should not need to enable this.
-	/// See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH before
-	/// deciding to enable this.
-	///
-	/// If you are in a large amount of rooms, you may find that enabling this
-	/// is necessary to reduce the significantly large response bodies.
-	#[serde(default)]
-	pub gzip_compression: bool,
-
-	/// Set this to true for continuwuity to compress HTTP response bodies using
-	/// brotli. This option does nothing if continuwuity was not built with
-	/// `brotli_compression` feature. Please be aware that enabling HTTP
-	/// compression may weaken TLS. Most users should not need to enable this.
-	/// See https://breachattack.com/ and https://wikipedia.org/wiki/BREACH
-	/// before deciding to enable this.
-	#[serde(default)]
-	pub brotli_compression: bool,
-
 	/// Set to true to allow user type "guest" registrations. Some clients like
 	/// Element attempt to register guest users automatically.
 	#[serde(default)]

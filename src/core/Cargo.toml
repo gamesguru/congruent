@@ -16,14 +16,8 @@ crate-type = [
 ]
 
 [features]
-brotli_compression = [
-	"reqwest/brotli",
-]
 conduwuit_mods = [
     "dep:libloading"
-]
-gzip_compression = [
-	"reqwest/gzip",
 ]
 hardened_malloc = [
 	"dep:hardened_malloc-rs"
@@ -39,7 +33,7 @@ release_max_log_level = [
 	"log/release_max_level_info",
 ]
 zstd_compression = [
-    "reqwest/zstd",
+    # "reqwest/zstd",
 ]
 
 [dependencies]
@@ -69,7 +63,6 @@ rand.workspace = true
 # tied to passwordhash 0.5.0
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 regex.workspace = true
-reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 sha2.workspace = true

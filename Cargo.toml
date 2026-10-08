@@ -69,6 +69,7 @@ default-features = false
 [workspace.dependencies.rand]
 version = "0.10.0"
 
+# TODO: remove?
 # Used for the http request / response body type for Ruma endpoints used with reqwest
 [workspace.dependencies.bytes]
 version = "1.10.1"
@@ -110,16 +111,7 @@ default-features = false
 [workspace.dependencies.rustc-hash]
 version = "2.1.2"
 
-[workspace.dependencies.reqwest]
-version = "0.13.2"
-default-features = false
-features = [
-    "rustls-no-provider",
-    "socks",
-    "http2",
-    "stream",
-    "form",
-]
+# TODO: replace with ???
 
 [workspace.dependencies.serde]
 version = "1.0.219"

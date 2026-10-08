@@ -33,11 +33,7 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 	let server = &services.server;
 	let layers = ServiceBuilder::new();
 
-	#[cfg(any(
-		feature = "zstd_compression",
-		feature = "gzip_compression",
-		feature = "brotli_compression"
-	))]
+	#[cfg(feature = "zstd_compression")]
 	let layers = layers.layer(compression_layer(server));
 
 	let services_ = services.clone();
@@ -87,11 +83,7 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 	Ok((router.layer(layers), guard))
 }
 
-#[cfg(any(
-	feature = "zstd_compression",
-	feature = "gzip_compression",
-	feature = "brotli_compression"
-))]
+#[cfg(feature = "zstd_compression")]
 fn compression_layer(server: &Server) -> tower_http::compression::CompressionLayer {
 	let mut compression_layer = tower_http::compression::CompressionLayer::new();
 
@@ -101,24 +93,6 @@ fn compression_layer(server: &Server) -> tower_http::compression::CompressionLay
 			compression_layer.zstd(true)
 		} else {
 			compression_layer.no_zstd()
-		};
-	};
-
-	#[cfg(feature = "gzip_compression")]
-	{
-		compression_layer = if server.config.gzip_compression {
-			compression_layer.gzip(true)
-		} else {
-			compression_layer.no_gzip()
-		};
-	};
-
-	#[cfg(feature = "brotli_compression")]
-	{
-		compression_layer = if server.config.brotli_compression {
-			compression_layer.br(true)
-		} else {
-			compression_layer.no_br()
 		};
 	};
 

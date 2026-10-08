@@ -162,24 +162,6 @@ fn base(config: &Config) -> Result<reqwest::ClientBuilder> {
         .danger_accept_invalid_certs(config.allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure)
 		.connection_verbose(cfg!(debug_assertions));
 
-	#[cfg(feature = "gzip_compression")]
-	{
-		builder = if config.gzip_compression {
-			builder.gzip(true)
-		} else {
-			builder.gzip(false).no_gzip()
-		};
-	};
-
-	#[cfg(feature = "brotli_compression")]
-	{
-		builder = if config.brotli_compression {
-			builder.brotli(true)
-		} else {
-			builder.brotli(false).no_brotli()
-		};
-	};
-
 	#[cfg(feature = "zstd_compression")]
 	{
 		builder = if config.zstd_compression {
@@ -187,16 +169,6 @@ fn base(config: &Config) -> Result<reqwest::ClientBuilder> {
 		} else {
 			builder.zstd(false).no_zstd()
 		};
-	};
-
-	#[cfg(not(feature = "gzip_compression"))]
-	{
-		builder = builder.no_gzip();
-	};
-
-	#[cfg(not(feature = "brotli_compression"))]
-	{
-		builder = builder.no_brotli();
 	};
 
 	#[cfg(not(feature = "zstd_compression"))]
