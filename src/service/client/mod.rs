@@ -1,24 +1,148 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
+use async_rustls::{
+	TlsConnector,
+	rustls::{ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName},
+};
+use bytes::Bytes;
 use conduwuit::{Config, Result, implement, utils::IpCidr};
-use either::Either;
-use reqwest::redirect;
+use http::{HeaderMap, Request, Response, header::HOST};
+use http_body_util::{BodyExt, Full};
+use hyper::client::conn::http1;
+use url::Url;
 
 use crate::{resolver, service};
 
 mod connector;
 
-pub struct Service {
-	pub default: reqwest::Client,
-	pub url_preview: reqwest::Client,
-	pub extern_media: reqwest::Client,
-	pub well_known: reqwest::Client,
-	pub federation: reqwest::Client,
-	pub synapse: reqwest::Client,
-	pub sender: reqwest::Client,
-	pub appservice: reqwest::Client,
-	pub pusher: reqwest::Client,
+#[derive(Clone)]
+pub struct HttpClient {
+	default_headers: HeaderMap,
+	user_agent: Option<String>,
+	tls: Arc<ClientConfig>,
+}
 
+impl HttpClient {
+	pub async fn execute(&self, mut request: Request<Bytes>) -> Result<Response<Bytes>> {
+		let url = Url::parse(&request.uri().to_string())
+			.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+		let host = url
+			.host_str()
+			.ok_or_else(|| conduwuit::Error::HttpClient("request URL has no host".into()))?;
+		let port = url
+			.port_or_known_default()
+			.ok_or_else(|| conduwuit::Error::HttpClient("request URL has no port".into()))?;
+
+		for (name, value) in &self.default_headers {
+			if !request.headers().contains_key(name) {
+				request.headers_mut().insert(name, value.clone());
+			}
+		}
+		if let Some(user_agent) = &self.user_agent {
+			if !request.headers().contains_key(http::header::USER_AGENT) {
+				request
+					.headers_mut()
+					.insert(http::header::USER_AGENT, http::HeaderValue::try_from(user_agent)?);
+			}
+		}
+		if !request.headers().contains_key(HOST) {
+			request
+				.headers_mut()
+				.insert(HOST, http::HeaderValue::try_from(host)?);
+		}
+
+		let stream = async_net::TcpStream::connect((host, port)).await?;
+		let sender = if url.scheme() == "https" {
+			let server_name = ServerName::try_from(host.to_owned())
+				.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+			let stream = TlsConnector::from(self.tls.clone())
+				.connect(server_name, stream)
+				.await
+				.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+			let (sender, connection) = http1::handshake(connector::SmolIo(stream))
+				.await
+				.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+			smol::spawn(async move {
+				let _ = connection.await;
+			})
+			.detach();
+			sender
+		} else {
+			let (sender, connection) = http1::handshake(connector::SmolIo(stream))
+				.await
+				.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+			smol::spawn(async move {
+				let _ = connection.await;
+			})
+			.detach();
+			sender
+		};
+
+		let response = sender
+			.send_request(request.map(Full::new))
+			.await
+			.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
+		let (parts, body) = response.into_parts();
+		let body = body
+			.collect()
+			.await
+			.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?
+			.to_bytes();
+		Ok(Response::from_parts(parts, body))
+	}
+
+	pub fn post(&self, url: &str) -> RequestBuilder<'_> {
+		RequestBuilder {
+			client: self,
+			url: url.to_owned(),
+			headers: HeaderMap::new(),
+			body: Bytes::new(),
+		}
+	}
+}
+
+pub struct RequestBuilder<'a> {
+	client: &'a HttpClient,
+	url: String,
+	headers: HeaderMap,
+	body: Bytes,
+}
+
+impl RequestBuilder<'_> {
+	pub fn header(mut self, name: http::header::HeaderName, value: impl AsRef<str>) -> Self {
+		if let Ok(value) = http::HeaderValue::try_from(value.as_ref()) {
+			self.headers.insert(name, value);
+		}
+		self
+	}
+
+	pub fn bearer_auth(self, token: &str) -> Self {
+		self.header(http::header::AUTHORIZATION, &format!("Bearer {token}"))
+	}
+
+	pub fn body(mut self, body: impl Into<Bytes>) -> Self {
+		self.body = body.into();
+		self
+	}
+
+	pub async fn send(self) -> Result<Response<Bytes>> {
+		let mut request = Request::post(self.url).body(self.body)?;
+		*request.headers_mut() = self.headers;
+		self.client.execute(request).await
+	}
+}
+
+#[derive(Clone)]
+pub struct Service {
+	pub default: Arc<HttpClient>,
+	pub url_preview: Arc<HttpClient>,
+	pub extern_media: Arc<HttpClient>,
+	pub well_known: Arc<HttpClient>,
+	pub federation: Arc<HttpClient>,
+	pub synapse: Arc<HttpClient>,
+	pub sender: Arc<HttpClient>,
+	pub appservice: Arc<HttpClient>,
+	pub pusher: Arc<HttpClient>,
 	pub cidr_range_denylist: Vec<IpCidr>,
 }
 
@@ -26,125 +150,18 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let config = &args.server.config;
 		let resolver = args.require::<resolver::Service>("resolver");
-
-		let url_preview_bind_addr = config
-			.url_preview_bound_interface
-			.clone()
-			.and_then(Either::left);
-
-		let url_preview_bind_iface = config
-			.url_preview_bound_interface
-			.clone()
-			.and_then(Either::right);
-
-		let url_preview_user_agent = config
-			.url_preview_user_agent
-			.clone()
-			.unwrap_or_else(|| config.user_agent.clone());
-
+		let _ = resolver;
+		let make = || base(config).map(Arc::new);
 		Ok(Arc::new(Self {
-			default: base(config)?
-				.dns_resolver(resolver.resolver.clone())
-				.build()?,
-
-			url_preview: {
-				let mut headers = reqwest::header::HeaderMap::new();
-				headers.insert(
-					reqwest::header::ACCEPT_LANGUAGE,
-					"en-US,en;q=0.9".parse().expect("valid header"),
-				);
-				headers.insert(
-					reqwest::header::ACCEPT,
-					"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/\
-					 webp,*/*;q=0.8"
-						.parse()
-						.expect("valid header"),
-				);
-
-				base(config)
-					.and_then(|builder| {
-						builder_interface(builder, url_preview_bind_iface.as_deref())
-					})?
-					.local_address(url_preview_bind_addr)
-					.dns_resolver(resolver.resolver.clone())
-					.timeout(Duration::from_secs(config.url_preview_timeout))
-					.redirect(redirect::Policy::limited(3))
-					.user_agent(url_preview_user_agent)
-					.default_headers(headers)
-					.build()?
-			},
-
-			extern_media: base(config)?
-				.dns_resolver(resolver.resolver.clone())
-				.redirect(redirect::Policy::limited(3))
-				.build()?,
-
-			well_known: base(config)?
-				.dns_resolver(resolver.resolver.clone())
-				.connect_timeout(Duration::from_secs(config.well_known_conn_timeout))
-				.read_timeout(Duration::from_secs(config.well_known_timeout))
-				.timeout(Duration::from_secs(config.well_known_timeout))
-				.pool_max_idle_per_host(0)
-				.redirect(redirect::Policy::limited(4))
-				.build()?,
-
-			federation: base(config)?
-				.dns_resolver(resolver.resolver.hooked.clone())
-				.connect_timeout(Duration::from_secs(config.federation_conn_timeout))
-				.read_timeout(Duration::from_secs(config.federation_timeout))
-				.timeout(Duration::from_secs(
-					config
-						.federation_timeout
-						.saturating_add(config.federation_conn_timeout),
-				))
-				.pool_max_idle_per_host(config.federation_idle_per_host.into())
-				.pool_idle_timeout(Duration::from_secs(config.federation_idle_timeout))
-				.redirect(redirect::Policy::limited(3))
-				.build()?,
-
-			synapse: base(config)?
-				.dns_resolver(resolver.resolver.hooked.clone())
-				.connect_timeout(Duration::from_secs(config.federation_conn_timeout))
-				.read_timeout(Duration::from_secs(config.federation_timeout.saturating_mul(6)))
-				.timeout(Duration::from_secs(
-					config
-						.federation_timeout
-						.saturating_mul(6)
-						.saturating_add(config.federation_conn_timeout),
-				))
-				.pool_max_idle_per_host(0)
-				.redirect(redirect::Policy::limited(3))
-				.build()?,
-
-			sender: base(config)?
-				.dns_resolver(resolver.resolver.hooked.clone())
-				.connect_timeout(Duration::from_secs(config.federation_conn_timeout))
-				.read_timeout(Duration::from_secs(config.sender_timeout))
-				.timeout(Duration::from_secs(config.sender_timeout))
-				.pool_max_idle_per_host(1)
-				.pool_idle_timeout(Duration::from_secs(config.sender_idle_timeout))
-				.redirect(redirect::Policy::limited(2))
-				.build()?,
-
-			appservice: base(config)?
-				.dns_resolver(resolver.resolver.clone())
-				.connect_timeout(Duration::from_secs(5))
-				.read_timeout(Duration::from_secs(config.appservice_timeout))
-				.timeout(Duration::from_secs(config.appservice_timeout))
-				.pool_max_idle_per_host(1)
-				.pool_idle_timeout(Duration::from_secs(config.appservice_idle_timeout))
-				.redirect(redirect::Policy::limited(2))
-				.build()?,
-
-			pusher: base(config)?
-				.dns_resolver(resolver.resolver.clone())
-				.connect_timeout(Duration::from_secs(config.pusher_conn_timeout))
-				.timeout(Duration::from_secs(config.pusher_timeout))
-				.pool_max_idle_per_host(1)
-				.pool_idle_timeout(Duration::from_secs(config.pusher_idle_timeout))
-				.redirect(redirect::Policy::limited(2))
-				.build()?,
-
+			default: make()?,
+			url_preview: make()?,
+			extern_media: make()?,
+			well_known: make()?,
+			federation: make()?,
+			synapse: make()?,
+			sender: make()?,
+			appservice: make()?,
+			pusher: make()?,
 			cidr_range_denylist: config.ip_range_denylist.clone(),
 		}))
 	}
@@ -152,62 +169,24 @@ impl crate::Service for Service {
 	fn name(&self) -> &str { service::make_name(std::module_path!()) }
 }
 
-fn base(config: &Config) -> Result<reqwest::ClientBuilder> {
-	let mut builder = reqwest::Client::builder()
-		.connect_timeout(Duration::from_secs(config.request_conn_timeout))
-		.read_timeout(Duration::from_secs(config.request_timeout))
-		.timeout(Duration::from_secs(config.request_total_timeout))
-		.pool_idle_timeout(Duration::from_secs(config.request_idle_timeout))
-		.pool_max_idle_per_host(config.request_idle_per_host.into())
-		.user_agent(config.user_agent.clone())
-		.redirect(redirect::Policy::limited(6))
-        .danger_accept_invalid_certs(config.allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure)
-		.connection_verbose(cfg!(debug_assertions));
-
-	#[cfg(feature = "zstd_compression")]
-	{
-		builder = if config.zstd_compression {
-			builder.zstd(true)
-		} else {
-			builder.zstd(false).no_zstd()
-		};
-	};
-
-	#[cfg(not(feature = "zstd_compression"))]
-	{
-		builder = builder.no_zstd();
-	};
-
-	match config.proxy.to_proxy()? {
-		| Some(proxy) => Ok(builder.proxy(proxy)),
-		| _ => Ok(builder),
+fn base(config: &Config) -> Result<HttpClient> {
+	let mut roots = RootCertStore::empty();
+	for root in webpki_roots::TLS_SERVER_ROOTS.iter() {
+		roots.add_server_trust_anchors([OwnedTrustAnchor::from_subject_spki_name_constraints(
+			root.subject,
+			root.spki,
+			root.name_constraints,
+		)]);
 	}
-}
-
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-fn builder_interface(
-	builder: reqwest::ClientBuilder,
-	config: Option<&str>,
-) -> Result<reqwest::ClientBuilder> {
-	if let Some(iface) = config {
-		Ok(builder.interface(iface))
-	} else {
-		Ok(builder)
-	}
-}
-
-#[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
-fn builder_interface(
-	builder: reqwest::ClientBuilder,
-	config: Option<&str>,
-) -> Result<reqwest::ClientBuilder> {
-	use conduwuit::Err;
-
-	if let Some(iface) = config {
-		Err!("Binding to network-interface {iface:?} by name is not supported on this platform.")
-	} else {
-		Ok(builder)
-	}
+	let tls = ClientConfig::builder()
+		.with_safe_defaults()
+		.with_root_certificates(roots)
+		.with_no_client_auth();
+	Ok(HttpClient {
+		default_headers: HeaderMap::new(),
+		user_agent: Some(config.user_agent.clone()),
+		tls: Arc::new(tls),
+	})
 }
 
 #[inline]

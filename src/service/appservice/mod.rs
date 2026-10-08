@@ -3,12 +3,12 @@ mod registration_info;
 
 use std::{collections::BTreeMap, iter::IntoIterator, path::Path, process::Command, sync::Arc};
 
+use async_lock::{RwLock, RwLockReadGuard};
 use async_trait::async_trait;
 use conduwuit::{Err, Result, err, utils::stream::IterStream};
 use database::Map;
 use futures::{Future, FutureExt, Stream, TryStreamExt};
 use slipstream::{RoomAliasId, RoomId, UserId, api::appservice::Registration};
-use tokio::sync::{RwLock, RwLockReadGuard};
 
 pub use self::{namespace_regex::NamespaceRegex, registration_info::RegistrationInfo};
 use crate::{Dep, globals, sending, users};

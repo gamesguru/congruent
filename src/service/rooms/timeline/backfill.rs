@@ -8,6 +8,7 @@ use std::{
 	},
 };
 
+use async_lock::Mutex;
 use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
 	Result, debug, debug_warn, err, error, implement, info,
@@ -41,7 +42,7 @@ const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
 
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
-	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
+	visited: Mutex<HashSet<OwnedEventId>>,
 }
 
 impl RemoteHistoryBudget {
@@ -51,7 +52,7 @@ impl RemoteHistoryBudget {
 
 		Self {
 			remaining: AtomicUsize::new(limit),
-			visited: tokio::sync::Mutex::new(visited),
+			visited: Mutex::new(visited),
 		}
 	}
 

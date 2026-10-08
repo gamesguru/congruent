@@ -212,6 +212,9 @@ version = "0.4.2"
 default-features = false
 features = ["tls12"]
 
+[workspace.dependencies.webpki-roots]
+version = "0.25.4"
+
 [workspace.dependencies.blocking]
 version = "1.7.0"
 

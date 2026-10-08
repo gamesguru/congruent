@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use async_lock::RwLock;
 use conduwuit::{
 	Error, Result, err, implement,
 	state_res::StateMap,
@@ -15,8 +16,7 @@ use crate::rooms::short::{ShortEventId, ShortStateKey};
 /// Pre-loaded event cache to avoid per-event RocksDB lookups during
 /// state resolution. Populated once at the start of bulk operations
 /// like rebuild_state.
-pub(crate) type PduCache =
-	Arc<tokio::sync::RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
+pub(crate) type PduCache = Arc<RwLock<HashMap<OwnedEventId, Arc<conduwuit_core::PduEvent>>>>;
 
 struct LocalArenaProvider<'a, F> {
 	global_cache:

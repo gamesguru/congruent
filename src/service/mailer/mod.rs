@@ -11,7 +11,7 @@ pub struct Service {
 }
 
 struct Webhook {
-	client: reqwest::Client,
+	client: client::HttpClient,
 	url: String,
 	sender: String,
 	token: Option<String>,
@@ -101,7 +101,7 @@ impl Mailer<'_> {
 			.webhook
 			.client
 			.post(&self.webhook.url)
-			.header(reqwest::header::CONTENT_TYPE, "application/json")
+			.header(http::header::CONTENT_TYPE, "application/json")
 			.body(payload);
 		if let Some(token) = &self.webhook.token {
 			request = request.bearer_auth(token);

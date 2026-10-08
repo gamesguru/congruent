@@ -1,5 +1,6 @@
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
+use async_lock::Mutex;
 use conduwuit::{
 	Result, Server, SyncRwLock, debug, debug_info, error, info, trace,
 	utils::stream::{IterStream, ReadyExt},
@@ -7,7 +8,6 @@ use conduwuit::{
 };
 use database::Database;
 use futures::{Stream, StreamExt, TryStreamExt};
-use tokio::sync::Mutex;
 
 use crate::{
 	account_data, admin, announcements, antispam, appservice, client, config, emergency,

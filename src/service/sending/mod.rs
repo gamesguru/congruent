@@ -432,7 +432,7 @@ impl Service {
 	#[inline]
 	pub async fn send_federation_request_on<T>(
 		&self,
-		client: &reqwest::Client,
+		client: &crate::client::HttpClient,
 		dest: &ServerName,
 		request: T,
 	) -> Result<T::IncomingResponse>

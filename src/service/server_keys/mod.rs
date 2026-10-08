@@ -8,6 +8,7 @@ mod verify;
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use async_lock::RwLock;
 use conduwuit::{
 	Result, Server, debug_error, debug_warn, err, implement, trace,
 	utils::{IterStream, MutexMap, timepoint_from_now},
@@ -21,7 +22,6 @@ use slipstream::{
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
 	sswire::Raw,
 };
-use tokio::sync::RwLock;
 
 use crate::{Dep, globals, sending};
 

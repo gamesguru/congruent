@@ -4,6 +4,7 @@ use std::{
 	sync::Arc,
 };
 
+use async_lock::Mutex;
 use conduwuit::{
 	Err, Error, Result, err, error, utils,
 	utils::{hash, response::LimitReadExt},
@@ -18,7 +19,6 @@ use slipstream::{
 		},
 	},
 };
-use tokio::sync::Mutex;
 
 use crate::{Dep, client, config, globals, registration_tokens, threepid, users};
 

@@ -4,6 +4,7 @@ mod tests;
 
 use std::{fmt::Write, sync::Arc};
 
+use async_lock::{Mutex, MutexGuard};
 use async_trait::async_trait;
 use conduwuit_core::{
 	Err, Error, Event, PduEvent, Result, debug, implement,
@@ -32,7 +33,6 @@ use slipstream::{
 	space::SpaceRoomJoinRule,
 	sswire::Raw,
 };
-use tokio::sync::{Mutex, MutexGuard};
 
 pub use self::pagination_token::PaginationToken;
 use crate::{Dep, rooms, sending};

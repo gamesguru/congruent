@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
+use async_lock::Mutex;
 use conduwuit::{Err, Error, Result};
 use database::{Deserialized, Map};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
@@ -19,7 +20,7 @@ use crate::{
 pub struct Service {
 	db: Data,
 	services: Services,
-	sessions: tokio::sync::Mutex<ValidationSessions>,
+	sessions: Mutex<ValidationSessions>,
 	send_attempts: std::sync::Mutex<HashMap<(OwnedClientSecret, String), usize>>,
 	ratelimiter: DefaultKeyedRateLimiter<String>,
 }
@@ -62,7 +63,7 @@ impl crate::Service for Service {
 				config: args.depend("config"),
 				mailer: args.depend("mailer"),
 			},
-			sessions: tokio::sync::Mutex::default(),
+			sessions: Mutex::default(),
 			send_attempts: std::sync::Mutex::default(),
 			ratelimiter: RateLimiter::keyed(Self::EMAIL_RATELIMIT),
 		}))
