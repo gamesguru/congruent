@@ -7,10 +7,21 @@
 //! notifying an in-flight `/sync` long-poll).
 
 use conduwuit::implement;
-use rocksdb::WriteBatchWithTransaction;
 
 use super::Map;
-use crate::{dbkey::DbKey, keyval::ValBuf, ser, util::or_else};
+use crate::{dbkey::DbKey, keyval::ValBuf, ser};
+
+pub(crate) enum DbOp {
+	Insert {
+		map_name: &'static str,
+		key: Vec<u8>,
+		value: Vec<u8>,
+	},
+	Remove {
+		map_name: &'static str,
+		key: Vec<u8>,
+	},
+}
 
 /// A write batch that remembers which `Map`+key pairs it touched, so the
 /// corresponding watchers get woken automatically when the batch is
@@ -18,18 +29,13 @@ use crate::{dbkey::DbKey, keyval::ValBuf, ser, util::or_else};
 /// `Map::batch_raw_put` / `Map::batch_delete`, then commit with
 /// `Map::apply_batch`.
 pub struct Batch<'a> {
-	pub(super) inner: WriteBatchWithTransaction<false>,
+	pub(super) ops: Vec<DbOp>,
 	wakes: Vec<(&'a Map, Vec<u8>)>,
 }
 
 impl Batch<'_> {
 	#[must_use]
-	pub fn new() -> Self {
-		Self {
-			inner: WriteBatchWithTransaction::default(),
-			wakes: Vec::new(),
-		}
-	}
+	pub fn new() -> Self { Self { ops: Vec::new(), wakes: Vec::new() } }
 
 	#[must_use]
 	pub fn len(&self) -> usize { self.wakes.len() }
@@ -49,7 +55,11 @@ where
 	K: AsRef<[u8]> + ?Sized,
 	V: AsRef<[u8]>,
 {
-	batch.inner.put_cf(&self.cf(), key.as_ref(), val.as_ref());
+	batch.ops.push(DbOp::Insert {
+		map_name: self.name,
+		key: key.as_ref().to_vec(),
+		value: val.as_ref().to_vec(),
+	});
 	batch.wakes.push((self, key.as_ref().to_vec()));
 }
 
@@ -71,7 +81,10 @@ pub fn batch_delete<'a, K>(&'a self, batch: &mut Batch<'a>, key: &K)
 where
 	K: AsRef<[u8]> + ?Sized,
 {
-	batch.inner.delete_cf(&self.cf(), key.as_ref());
+	batch.ops.push(DbOp::Remove {
+		map_name: self.name,
+		key: key.as_ref().to_vec(),
+	});
 	batch.wakes.push((self, key.as_ref().to_vec()));
 }
 
@@ -80,13 +93,10 @@ where
 /// the batch touched. Takes `batch` by value (not `&Batch`) and destructures
 /// it so it can't be applied twice by accident.
 pub fn apply_batch(&self, batch: Batch<'_>) {
-	let Batch { inner, wakes } = batch;
+	let Batch { ops, wakes } = batch;
 
-	let write_options = &self.write_options;
 	self.db
-		.db
-		.write_opt(&inner, write_options)
-		.or_else(or_else)
+		.commit_batch(ops)
 		.expect("database apply batch error");
 
 	if !self.db.corked() {

@@ -1,4 +1,4 @@
-mod batch;
+pub(crate) mod batch;
 mod clear;
 pub mod compact;
 mod contains;

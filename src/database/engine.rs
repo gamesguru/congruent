@@ -8,6 +8,7 @@ mod files;
 mod logger;
 mod memory_usage;
 mod open;
+pub(crate) mod redb;
 mod repair;
 
 use std::{

@@ -2,7 +2,6 @@
 #![allow(clippy::disallowed_macros)]
 
 extern crate conduwuit_core as conduwuit;
-pub extern crate rust_rocksdb as rocksdb;
 
 conduwuit_macros::introspect_crate! {}
 
