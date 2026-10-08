@@ -671,7 +671,6 @@ dependencies = [
  "ctor",
  "hardened_malloc-rs",
  "log",
- "parking_lot",
  "reqwest",
  "rustls",
  "tokio",

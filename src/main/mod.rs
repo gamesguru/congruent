@@ -9,7 +9,6 @@ use conduwuit_core::{debug_info, error};
 conduwuit_macros::introspect_crate! {}
 
 mod clap;
-mod deadlock;
 mod logging;
 mod mods;
 mod panic;
@@ -70,9 +69,6 @@ pub fn run() -> Result<()> {
 
 pub fn run_with_args(args: &Args) -> Result<()> {
 	init_git_info();
-
-	// Spawn deadlock detection thread
-	deadlock::spawn();
 
 	// Because we're not using rustls default-tls, we have to initialise a TLS
 	// provider
