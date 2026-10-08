@@ -1,4 +1,6 @@
 mod plain;
+#[cfg(unix)]
+mod unix;
 
 use std::sync::Arc;
 
@@ -16,10 +18,18 @@ pub(super) async fn serve(services: Arc<Services>) -> Result {
 	let addrs = server.config.get_bind_addrs();
 	let (app, guard, state) = layers::build(&services)?;
 	let result = if cfg!(unix) && server.config.unix_socket_path.is_some() {
-		Err(err!(Config(
-			"unix_socket_path",
-			"Unix socket serving is not yet available in the smol listener"
-		)))
+		#[cfg(unix)]
+		{
+			unix::serve(server, &services, app, state).await
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = (app, state, addrs);
+			Err(err!(Config(
+				"unix_socket_path",
+				"Unix socket serving is only available on Unix"
+			)))
+		}
 	} else if server.config.tls.certs.is_some() {
 		#[cfg(feature = "direct_tls")]
 		{
