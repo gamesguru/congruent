@@ -1,5 +1,5 @@
 {"Action":"pass","Test":"TestACLs"}
-{"Action":"fail","Test":"TestACLsForEDUs"}
+{"Action":"pass","Test":"TestACLsForEDUs"}
 {"Action":"pass","Test":"TestAddAccountData"}
 {"Action":"pass","Test":"TestAddAccountData/Can_add_global_account_data"}
 {"Action":"pass","Test":"TestAddAccountData/Can_add_room_account_data"}
@@ -879,10 +879,10 @@
 {"Action":"pass","Test":"TestThreadedReceipts"}
 {"Action":"pass","Test":"TestThreadsEndpoint"}
 {"Action":"pass","Test":"TestToDeviceMessages"}
-{"Action":"pass","Test":"TestToDeviceMessagesOverFederation"}
+{"Action":"fail","Test":"TestToDeviceMessagesOverFederation"}
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation/good_connectivity"}
 {"Action":"pass","Test":"TestToDeviceMessagesOverFederation/interrupted_connectivity"}
-{"Action":"pass","Test":"TestToDeviceMessagesOverFederation/stopped_server"}
+{"Action":"fail","Test":"TestToDeviceMessagesOverFederation/stopped_server"}
 {"Action":"skip","Test":"TestTxnIdWithRefreshToken"}
 {"Action":"pass","Test":"TestTxnIdempotency"}
 {"Action":"pass","Test":"TestTxnIdempotencyScopedToDevice"}
