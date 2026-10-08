@@ -692,6 +692,7 @@ version = "0.5.10"
 dependencies = [
  "argon2",
  "arrayvec",
+ "async-lock",
  "base64 0.22.1",
  "blake3",
  "bytes",

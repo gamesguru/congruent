@@ -4,7 +4,7 @@ mod panic;
 mod response;
 mod serde;
 
-use std::{any::Any, borrow::Cow, convert::Infallible, error::Error as _, sync::PoisonError};
+use std::{any::Any, borrow::Cow, convert::Infallible, sync::PoisonError};
 
 pub use self::log::*;
 
@@ -46,8 +46,6 @@ pub enum Error {
 	Http(#[from] http::Error),
 	#[error(transparent)]
 	HttpHeader(#[from] http::header::InvalidHeaderValue),
-	#[error("Join error: {0}")]
-	JoinError(#[from] tokio::task::JoinError),
 	#[error(transparent)]
 	JsParseInt(#[from] slipstream::JsParseIntError), // js_int re-export
 	#[error(transparent)]

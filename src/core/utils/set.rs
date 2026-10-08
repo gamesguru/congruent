@@ -62,7 +62,7 @@ where
 	S: Stream<Item = Item> + Send + Unpin,
 	Item: Eq + PartialOrd + Send + Sync,
 {
-	use tokio::sync::Mutex;
+	use async_lock::Mutex;
 
 	let b = Arc::new(Mutex::new(b.peekable()));
 	a.map(move |ai| (ai, b.clone()))

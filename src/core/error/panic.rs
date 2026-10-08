@@ -22,7 +22,6 @@ impl Error {
 	pub fn into_panic(self) -> Box<dyn Any + Send + 'static> {
 		match self {
 			| Self::Panic(_, e) | Self::PanicAny(e) => e,
-			| Self::JoinError(e) => e.into_panic(),
 			| _ => Box::new(self),
 		}
 	}
@@ -41,7 +40,6 @@ impl Error {
 	pub fn is_panic(&self) -> bool {
 		match &self {
 			| Self::Panic(..) | Self::PanicAny(..) => true,
-			| Self::JoinError(e) => e.is_panic(),
 			| _ => false,
 		}
 	}

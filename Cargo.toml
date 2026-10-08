@@ -201,6 +201,9 @@ features = [
 [workspace.dependencies.async-net]
 version = "2.0.0"
 
+[workspace.dependencies.async-lock]
+version = "3.4.2"
+
 [workspace.dependencies.async-rustls]
 version = "0.4.2"
 default-features = false
