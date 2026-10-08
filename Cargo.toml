@@ -207,6 +207,9 @@ version = "3.4.2"
 [workspace.dependencies.async-broadcast]
 version = "0.7.2"
 
+[workspace.dependencies.async-fs]
+version = "2.2.0"
+
 [workspace.dependencies.async-rustls]
 version = "0.4.2"
 default-features = false

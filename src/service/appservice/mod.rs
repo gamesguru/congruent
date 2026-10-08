@@ -82,7 +82,7 @@ impl crate::Service for Service {
 		// In Complement tests, dynamically register appservices placed in
 		// `/complement/appservice/`
 		if Path::new("/complement/appservice").is_dir() {
-			match tokio::fs::read_dir("/complement/appservice").await {
+			match async_fs::read_dir("/complement/appservice").await {
 				| Err(e) => {
 					conduwuit::error!(
 						"Failed to read appservice directory /complement/appservice: {e:?}"
@@ -98,7 +98,7 @@ impl crate::Service for Service {
 							let content = if is_yaml {
 								registration_from_yaml(&path)
 							} else {
-								tokio::fs::read_to_string(&path).await.map_err(|e| {
+								async_fs::read_to_string(&path).await.map_err(|e| {
 									err!(Database("Failed to read appservice file: {e}"))
 								})
 							};

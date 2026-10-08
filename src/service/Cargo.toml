@@ -63,6 +63,7 @@ typed-arena = { workspace = true }
 async-trait.workspace = true
 async-net.workspace = true
 async-lock.workspace = true
+async-fs.workspace = true
 async-rustls.workspace = true
 base64.workspace = true
 blurhash.optional = true
