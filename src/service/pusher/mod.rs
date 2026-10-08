@@ -1,7 +1,6 @@
-use std::{fmt::Debug, mem, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use bytes::BytesMut;
-use conduwuit::utils::response::LimitReadExt;
 use conduwuit_core::{
 	Err, Event, Result, debug_warn, err, trace,
 	utils::{stream::TryIgnore, string_from_bytes},
@@ -213,9 +212,7 @@ impl Service {
 			})?
 			.map(BytesMut::freeze);
 
-		let reqwest_request = reqwest::Request::try_from(http_request)?;
-
-		if let Some(url_host) = reqwest_request.url().host_str() {
+		if let Some(url_host) = http_request.uri().host() {
 			trace!("Checking request URL for IP");
 			if let Ok(ip) = url_host.parse::<std::net::IpAddr>() {
 				if !self.services.client.valid_cidr_range(&ip) {
@@ -224,43 +221,12 @@ impl Service {
 			}
 		}
 
-		let response = self.services.client.pusher.execute(reqwest_request).await;
+		let response = self.services.client.pusher.execute(http_request).await;
 
 		match response {
-			| Ok(mut response) => {
-				// reqwest::Response -> http::Response conversion
-
-				trace!("Checking response destination's IP");
-				if let Some(remote_addr) = response.remote_addr() {
-					if let Ok(ip) = remote_addr.ip().to_string().parse::<std::net::IpAddr>() {
-						if !self.services.client.valid_cidr_range(&ip) {
-							return Err!(BadServerResponse(
-								"Not allowed to send requests to this IP"
-							));
-						}
-					}
-				}
-
+			| Ok(response) => {
 				let status = response.status();
-				let mut http_response_builder = http::Response::builder()
-					.status(status)
-					.version(response.version());
-				mem::swap(
-					response.headers_mut(),
-					http_response_builder
-						.headers_mut()
-						.expect("http::response::Builder is usable"),
-				);
-
-				let body = response
-					.limit_read(
-						self.services
-							.config
-							.max_request_size
-							.try_into()
-							.expect("usize fits into u64"),
-					)
-					.await?;
+				let body = response.into_body();
 
 				if !status.is_success() {
 					debug_warn!("Push gateway response body: {:?}", string_from_bytes(&body));
@@ -270,9 +236,7 @@ impl Service {
 				}
 
 				let response = T::IncomingResponse::try_from_http_response(
-					http_response_builder
-						.body(body)
-						.expect("reqwest body is valid http body"),
+					http::Response::builder().status(status).body(body)?,
 				);
 				response.map_err(|e| {
 					err!(BadServerResponse(warn!(

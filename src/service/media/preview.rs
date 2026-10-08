@@ -155,15 +155,15 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 
 	if let Err(e) = response.error_for_status_ref() {
 		if let Some(status) = e.status() {
-			if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
-				|| status == reqwest::StatusCode::FORBIDDEN
-				|| status == reqwest::StatusCode::NOT_IMPLEMENTED
+			if status == http::StatusCode::METHOD_NOT_ALLOWED
+				|| status == http::StatusCode::FORBIDDEN
+				|| status == http::StatusCode::NOT_IMPLEMENTED
 			{
 				debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
 				let mut req = client.get(url.as_str());
-				if status == reqwest::StatusCode::FORBIDDEN {
+				if status == http::StatusCode::FORBIDDEN {
 					req = req.header(
-						reqwest::header::USER_AGENT,
+						http::header::USER_AGENT,
 						self.services
 							.server
 							.config
@@ -195,7 +195,7 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 		}
 	}
 
-	let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) else {
+	let Some(content_type) = response.headers().get(http::header::CONTENT_TYPE) else {
 		return Err!(Request(Unknown("Unknown or invalid Content-Type header")));
 	};
 
@@ -233,14 +233,14 @@ pub async fn download_image(
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = self
 			.services
 			.client
 			.url_preview
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config
@@ -362,14 +362,14 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = self
 			.services
 			.client
 			.url_preview
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config
