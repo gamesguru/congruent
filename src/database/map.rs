@@ -365,11 +365,11 @@ impl Map {
 
 	fn raw_items_from(
 		&self,
-		from: Vec<u8>,
+		from: &[u8],
 		direction: crate::util::Direction,
 	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
 		self.db
-			.scan(self.name, crate::util::IteratorMode::From(&from, direction))
+			.scan(self.name, crate::util::IteratorMode::From(from, direction))
 	}
 
 	pub fn raw_stream(&self) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
@@ -383,7 +383,7 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Forward))
+		materialized(self.raw_items_from(from.as_ref(), crate::util::Direction::Forward))
 	}
 
 	pub fn rev_raw_stream(&self) -> impl Stream<Item = Result<KeyVal<'static>>> + Send {
@@ -397,7 +397,7 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse))
+		materialized(self.raw_items_from(from.as_ref(), crate::util::Direction::Reverse))
 	}
 
 	pub fn raw_keys(&self) -> impl Stream<Item = Result<&'static [u8]>> + Send {
@@ -425,8 +425,9 @@ impl Map {
 
 	fn raw_keys_prefix_owned(
 		&self,
-		prefix: Vec<u8>,
-	) -> impl Stream<Item = Result<&'static [u8]>> + Send + 'static {
+		prefix: &[u8],
+	) -> impl Stream<Item = Result<&'static [u8]>> + Send + 'static + use<> {
+		let prefix = prefix.to_owned();
 		let items = self
 			.raw_items(crate::util::IteratorMode::Start)
 			.map(|items| {
@@ -446,7 +447,7 @@ impl Map {
 		P: DbKey + ?Sized + Debug,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		self.raw_keys_prefix_owned(prefix)
+		self.raw_keys_prefix_owned(&prefix)
 	}
 
 	pub fn keys_prefix<'a, K, P>(
@@ -458,7 +459,7 @@ impl Map {
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		self.raw_keys_prefix_owned(prefix)
+		self.raw_keys_prefix_owned(&prefix)
 			.map(keyval::result_deserialize_key::<K>)
 	}
 
@@ -469,13 +470,14 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		self.raw_stream_prefix_owned(prefix.as_ref().to_vec())
+		self.raw_stream_prefix_owned(prefix.as_ref())
 	}
 
 	fn raw_stream_prefix_owned(
 		&self,
-		prefix: Vec<u8>,
-	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static {
+		prefix: &[u8],
+	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static + use<> {
+		let prefix = prefix.to_owned();
 		let items = self
 			.raw_items(crate::util::IteratorMode::Start)
 			.map(|items| {
@@ -507,7 +509,7 @@ impl Map {
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		self.raw_stream_prefix_owned(prefix)
+		self.raw_stream_prefix_owned(&prefix)
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
@@ -521,7 +523,7 @@ impl Map {
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		materialized(self.raw_items_from(from, crate::util::Direction::Forward))
+		materialized(self.raw_items_from(&from, crate::util::Direction::Forward))
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
@@ -546,7 +548,7 @@ impl Map {
 		V: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
+		materialized(self.raw_items_from(&from, crate::util::Direction::Reverse))
 			.map(keyval::result_deserialize::<K, V>)
 	}
 
@@ -568,7 +570,7 @@ impl Map {
 		P: DbKey + ?Sized + Debug,
 	{
 		let prefix = ser::serialize_to_vec(prefix).expect("failed to serialize prefix");
-		self.raw_stream_prefix_owned(prefix)
+		self.raw_stream_prefix_owned(&prefix)
 	}
 
 	pub fn rev_stream_from_raw<P>(
@@ -579,7 +581,7 @@ impl Map {
 		P: DbKey + ?Sized + Debug,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
+		materialized(self.raw_items_from(&from, crate::util::Direction::Reverse))
 	}
 
 	pub fn rev_keys_raw_from<P>(
@@ -589,7 +591,7 @@ impl Map {
 	where
 		P: AsRef<[u8]> + ?Sized,
 	{
-		materialized(self.raw_items_from(from.as_ref().to_vec(), crate::util::Direction::Reverse))
+		materialized(self.raw_items_from(from.as_ref(), crate::util::Direction::Reverse))
 			.map(|item| item.map(|(key, _)| key))
 	}
 
@@ -832,7 +834,7 @@ impl Map {
 		K: crate::dbkey::DbDe<'static> + Send + 'a,
 	{
 		let from = ser::serialize_to_vec(from).expect("failed to serialize key");
-		materialized(self.raw_items_from(from, crate::util::Direction::Reverse))
+		materialized(self.raw_items_from(&from, crate::util::Direction::Reverse))
 			.map(|item| item.map(|(key, _)| key))
 			.map(keyval::result_deserialize_key::<K>)
 	}
@@ -866,9 +868,11 @@ impl Map {
 		self.rev_raw_stream().map(|item| item.map(|(key, _)| key))
 	}
 
-	pub async fn count(self: &Arc<Self>) -> usize {
-		self.raw_items(crate::util::IteratorMode::Start)
-			.map_or(0, |items| items.len())
+	pub fn count(self: &Arc<Self>) -> impl Future<Output = usize> + Send {
+		future::ready(
+			self.raw_items(crate::util::IteratorMode::Start)
+				.map_or(0, |items| items.len()),
+		)
 	}
 
 	pub fn count_prefix<P>(&self, prefix: &P) -> impl Future<Output = usize> + Send

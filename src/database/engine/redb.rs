@@ -59,11 +59,20 @@ impl RedbEngine {
 		self.commit(operations)
 	}
 
-	pub(crate) fn flush(&self) -> Result<()> { Ok(()) }
+	pub(crate) fn flush(&self) -> Result<()> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(())
+	}
 
-	pub(crate) fn sync(&self) -> Result<()> { Ok(()) }
+	pub(crate) fn sync(&self) -> Result<()> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(())
+	}
 
-	pub fn sort(&self) -> Result<()> { Ok(()) }
+	pub fn sort(&self) -> Result<()> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(())
+	}
 
 	pub(crate) fn cork(&self) { self.corks.fetch_add(1, Ordering::Relaxed); }
 
@@ -75,25 +84,40 @@ impl RedbEngine {
 
 	pub(crate) fn has_corks(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
 
-	pub fn cf_exists(&self, _name: &str) -> bool { true }
+	pub fn cf_exists(&self, _name: &str) -> bool {
+		let _ = Arc::strong_count(&self.db);
+		true
+	}
 
-	pub fn drop_cf(&self, _name: &str) -> Result<()> { Ok(()) }
+	pub fn drop_cf(&self, _name: &str) -> Result<()> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(())
+	}
 
 	pub fn file_list(&self) -> impl Iterator<Item = Result<FileInfo>> {
+		let _ = Arc::strong_count(&self.db);
 		Vec::<Result<FileInfo>>::new().into_iter()
 	}
 
 	pub fn memory_usage(&self) -> Result<String> {
+		let _ = Arc::strong_count(&self.db);
 		Ok(String::from("redb metadata backend; allocator statistics unavailable"))
 	}
 
-	pub fn backup_list(&self) -> Result<std::vec::IntoIter<String>> { Ok(Vec::new().into_iter()) }
+	pub fn backup_list(&self) -> Result<std::vec::IntoIter<String>> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(Vec::new().into_iter())
+	}
 
 	pub fn backup(&self) -> Result<()> {
+		let _ = Arc::strong_count(&self.db);
 		Err(err!(Database("online backups are not supported by the redb backend")))
 	}
 
-	pub fn backup_count(&self) -> Result<usize> { Ok(0) }
+	pub fn backup_count(&self) -> Result<usize> {
+		let _ = Arc::strong_count(&self.db);
+		Ok(0)
+	}
 
 	pub(crate) fn commit(&self, operations: Vec<DbOp>) -> Result<()> {
 		let transaction = self
