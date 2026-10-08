@@ -108,14 +108,12 @@ pub mod compact {
 	}
 }
 
-#[allow(dead_code)]
 pub struct Map {
 	pub(crate) name: &'static str,
 	pub(crate) db: Arc<Engine>,
 	pub(crate) watchers: Watchers,
 }
 
-#[allow(dead_code)]
 impl Map {
 	pub fn open(db: &Arc<Engine>, name: &'static str) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
@@ -126,8 +124,6 @@ impl Map {
 	}
 
 	pub fn name(&self) -> &str { self.name }
-
-	pub(crate) fn db(&self) -> &Arc<Engine> { &self.db }
 
 	pub fn watch_prefix<'a, K>(
 		&'a self,
@@ -283,22 +279,6 @@ impl Map {
 			.expect("failed to serialize value")
 			.to_vec();
 		self.write_bytes(&key, value);
-	}
-
-	fn write_raw<K, V>(&self, key: K, value: V, raw_key: bool)
-	where
-		K: AsRef<[u8]>,
-		V: AsRef<[u8]>,
-	{
-		let key = if raw_key {
-			key.as_ref().to_vec()
-		} else {
-			let mut kb = KeyBuf::new();
-			ser::serialize(&mut kb, key.as_ref())
-				.expect("failed to serialize key")
-				.to_vec()
-		};
-		self.write_bytes(&key, value.as_ref().to_vec());
 	}
 
 	fn write_bytes(&self, key: &[u8], value: Vec<u8>) {

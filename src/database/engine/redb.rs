@@ -65,10 +65,6 @@ impl RedbEngine {
 
 	pub fn sort(&self) -> Result<()> { Ok(()) }
 
-	pub(crate) fn update(&self) -> Result<()> { Ok(()) }
-
-	pub(crate) fn wait_compactions_blocking(&self) -> Result<()> { Ok(()) }
-
 	pub(crate) fn cork(&self) { self.corks.fetch_add(1, Ordering::Relaxed); }
 
 	pub(crate) fn uncork(&self) { self.corks.fetch_sub(1, Ordering::Relaxed); }
@@ -78,10 +74,6 @@ impl RedbEngine {
 	pub(crate) fn unlift(&self) { self.lifts.fetch_sub(1, Ordering::Relaxed); }
 
 	pub(crate) fn has_corks(&self) -> bool { self.corks.load(Ordering::Relaxed) > 0 }
-
-	pub(crate) fn corked(&self) -> bool {
-		self.corks.load(Ordering::Relaxed) > self.lifts.load(Ordering::Relaxed)
-	}
 
 	pub fn cf_exists(&self, _name: &str) -> bool { true }
 
