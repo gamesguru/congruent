@@ -402,17 +402,16 @@ pub(in super::super) trait RumaHandler<T> {
 }
 
 pub(in super::super) trait RouterExt {
-	fn ruma_route<H, T: 'static>(self, handler: &'static H) -> Self
+	fn ruma_route<H, T>(self, handler: &'static H) -> Self
 	where
 		H: RumaHandler<T>;
 }
 
 impl RouterExt for MinimalRouter {
-	fn ruma_route<H, T: 'static>(mut self, handler: &'static H) -> Self
+	fn ruma_route<H, T>(mut self, handler: &'static H) -> Self
 	where
 		H: RumaHandler<T>,
 	{
-		let handler: &dyn RumaHandler<T> = handler;
 		handler.add_routes(&mut self);
 		self
 	}
