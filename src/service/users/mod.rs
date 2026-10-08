@@ -272,8 +272,17 @@ impl Service {
 		}
 
 		for glob_index in 0..glob.len() {
-			for target_index in 0..target.len() {
+			for target_index in 0..=target.len() {
 				if !matched[glob_index][target_index] {
+					continue;
+				}
+				if target_index == target.len() {
+					if glob[glob_index] == '*' {
+						let next_glob_index = glob_index
+							.checked_add(1)
+							.expect("glob pattern is too large");
+						matched[next_glob_index][target_index] = true;
+					}
 					continue;
 				}
 
