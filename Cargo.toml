@@ -202,7 +202,6 @@ version = "=0.1.20"
 default-features = false
 features = [
     "server-auto",
-    "server-graceful",
 ]
 
 # to support multiple variations of setting a config option
