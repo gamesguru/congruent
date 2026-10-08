@@ -153,47 +153,33 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 	let client = &self.services.client.url_preview;
 	let mut response = client.head(url.as_str()).send().await?;
 
-	if let Err(e) = response.error_for_status_ref() {
-		if let Some(status) = e.status() {
-			if status == http::StatusCode::METHOD_NOT_ALLOWED
-				|| status == http::StatusCode::FORBIDDEN
-				|| status == http::StatusCode::NOT_IMPLEMENTED
-			{
-				debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
-				let mut req = client.get(url.as_str());
-				if status == http::StatusCode::FORBIDDEN {
-					req = req.header(
-						http::header::USER_AGENT,
-						self.services
-							.server
-							.config
-							.url_preview_user_agent
-							.as_deref()
-							.unwrap_or(&self.services.server.config.user_agent),
-					);
-				}
-				response = req.send().await?;
-			}
+	let mut status = response.status();
+	if status == http::StatusCode::METHOD_NOT_ALLOWED
+		|| status == http::StatusCode::FORBIDDEN
+		|| status == http::StatusCode::NOT_IMPLEMENTED
+	{
+		debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
+		let mut req = client.get(url.as_str());
+		if status == http::StatusCode::FORBIDDEN {
+			req = req.header(
+				http::header::USER_AGENT,
+				self.services
+					.server
+					.config
+					.url_preview_user_agent
+					.as_deref()
+					.unwrap_or(&self.services.server.config.user_agent),
+			);
 		}
+		response = req.send().await?;
+		status = response.status();
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(warn!("HTTP {e} fetching URL preview probe"))));
+	if !status.is_success() {
+		return Err!(Request(Unknown(warn!("HTTP {status} fetching URL preview probe"))));
 	}
 
 	debug!(%url, "URL preview response headers: {:?}", response.headers());
-
-	response.error_for_status_ref()?;
-
-	if let Some(remote_addr) = response.remote_addr() {
-		debug!(%url, "URL preview response remote address: {:?}", remote_addr);
-
-		if let Ok(ip) = remote_addr.ip().to_string().parse::<IpAddr>() {
-			if !self.services.client.valid_cidr_range(&ip) {
-				return Err!(Request(Forbidden("Requesting from this address is forbidden")));
-			}
-		}
-	}
 
 	let Some(content_type) = response.headers().get(http::header::CONTENT_TYPE) else {
 		return Err!(Request(Unknown("Unknown or invalid Content-Type header")));

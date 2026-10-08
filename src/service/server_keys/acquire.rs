@@ -176,7 +176,7 @@ async fn acquire_origin(
 
 	let timeout = Duration::from_secs(self.services.server.config.server_key_fetch_timeout);
 
-	match tokio::time::timeout(timeout, self.server_request(&origin)).await {
+	match conduwuit::timeout(timeout, self.server_request(&origin)).await {
 		| Err(e) => debug_warn!(%origin, "timed out: {e}"),
 		| Ok(Err(e)) => debug_error!(%origin, "{e}"),
 		| Ok(Ok(server_keys)) => {

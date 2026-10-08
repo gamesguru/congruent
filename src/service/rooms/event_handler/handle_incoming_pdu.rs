@@ -151,7 +151,7 @@ pub async fn handle_incoming_pdu<'a>(
 	);
 
 	let pdu_timeout = self.services.server.config.pdu_receive_timeout;
-	match Box::pin(tokio::time::timeout(std::time::Duration::from_secs(pdu_timeout), fut)).await {
+	match Box::pin(conduwuit::timeout(std::time::Duration::from_secs(pdu_timeout), fut)).await {
 		| Ok(res) => res,
 		| Err(_) => {
 			warn!(

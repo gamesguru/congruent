@@ -138,7 +138,7 @@ pub async fn ask_policy_server(
 		via = %via,
 		"Checking event for spam with policy server via legacy check"
 	);
-	let response = tokio::time::timeout(
+	let response = conduwuit::timeout(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
 		self.services
 			.sending
@@ -201,7 +201,7 @@ pub async fn fetch_policy_server_signature(
 	room_id: &RoomId,
 ) -> Result<bool> {
 	debug!("Requesting policy server signature");
-	let response = tokio::time::timeout(
+	let response = conduwuit::timeout(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
 		self.services
 			.sending

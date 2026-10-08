@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_executor::Executor;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 
 static EXECUTOR: OnceLock<Arc<Executor<'static>>> = OnceLock::new();
 
@@ -30,6 +30,42 @@ fn executor() -> Arc<Executor<'static>> {
 #[derive(Clone, Debug)]
 pub struct RuntimeHandle {
 	executor: Arc<Executor<'static>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimeoutError;
+
+impl std::fmt::Display for TimeoutError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("future timed out")
+	}
+}
+
+impl std::error::Error for TimeoutError {}
+
+pub async fn timeout<F>(
+	duration: std::time::Duration,
+	future: F,
+) -> Result<F::Output, TimeoutError>
+where
+	F: Future,
+{
+	use futures::future::{Either, select};
+
+	match select(Box::pin(future), Box::pin(smol::Timer::after(duration))).await {
+		| Either::Left((output, _)) => Ok(output),
+		| Either::Right((..)) => Err(TimeoutError),
+	}
+}
+
+pub async fn timeout_at<F>(
+	deadline: std::time::Instant,
+	future: F,
+) -> Result<F::Output, TimeoutError>
+where
+	F: Future,
+{
+	timeout(deadline.saturating_duration_since(std::time::Instant::now()), future).await
 }
 
 impl Default for RuntimeHandle {
@@ -58,6 +94,48 @@ impl RuntimeHandle {
 
 		JoinHandle { task: Some(self.executor.spawn(future)) }
 	}
+
+	#[must_use]
+	pub fn spawn_blocking<F, T>(&self, function: F) -> JoinHandle<T>
+	where
+		F: FnOnce() -> T + Send + 'static,
+		T: Send + 'static,
+	{
+		self.spawn(blocking::unblock(function))
+	}
+}
+
+/// A collection of tasks running on the conduwuit executor.
+pub struct JoinSet<T> {
+	set: FuturesUnordered<JoinHandle<T>>,
+}
+
+impl<T> Default for JoinSet<T> {
+	fn default() -> Self { Self::new() }
+}
+
+impl<T> JoinSet<T> {
+	#[must_use]
+	pub fn new() -> Self { Self { set: FuturesUnordered::new() } }
+
+	pub fn spawn_on<F>(&mut self, future: F, runtime: &RuntimeHandle)
+	where
+		F: Future<Output = T> + Send + 'static,
+		T: Send + 'static,
+	{
+		self.set.push(runtime.spawn(future));
+	}
+
+	pub async fn join_next(&mut self) -> Option<Result<T, JoinError>> { self.set.next().await }
+
+	pub fn abort_all(&mut self) {
+		for task in &mut self.set {
+			task.abort();
+		}
+	}
+
+	#[must_use]
+	pub fn len(&self) -> usize { self.set.len() }
 }
 
 #[derive(Debug)]

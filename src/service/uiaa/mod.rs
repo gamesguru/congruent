@@ -63,7 +63,13 @@ impl Service {
 			.client
 			.default
 			.post(RECAPTCHA_SITEVERIFY_URL)
-			.form(&[("secret", private_site_key), ("response", response)])
+			.header(http::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+			.body(
+				url::form_urlencoded::Serializer::new(String::new())
+					.append_pair("secret", private_site_key)
+					.append_pair("response", response)
+					.finish(),
+			)
 			.send()
 			.await?;
 

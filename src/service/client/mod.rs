@@ -53,7 +53,7 @@ impl HttpClient {
 		}
 
 		let stream = async_net::TcpStream::connect((host, port)).await?;
-		let sender = if url.scheme() == "https" {
+		let mut sender = if url.scheme() == "https" {
 			let server_name = ServerName::try_from(host.to_owned())
 				.map_err(|error| conduwuit::Error::HttpClient(error.to_string().into()))?;
 			let stream = TlsConnector::from(self.tls.clone())
@@ -144,17 +144,6 @@ impl RequestBuilder<'_> {
 		self
 	}
 
-	pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
-		if let Ok(body) = serde_urlencoded::to_string(form) {
-			self.headers.insert(
-				http::header::CONTENT_TYPE,
-				http::HeaderValue::from_static("application/x-www-form-urlencoded"),
-			);
-			self.body = Bytes::from(body);
-		}
-		self
-	}
-
 	pub async fn send(self) -> Result<Response<Bytes>> {
 		let mut request = Request::builder()
 			.method(self.method)
@@ -204,7 +193,15 @@ impl crate::Service for Service {
 
 fn base(config: &Config) -> Result<HttpClient> {
 	let mut roots = RootCertStore::empty();
-	roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+	roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|root| {
+		futures_rustls::rustls::pki_types::TrustAnchor {
+			subject: root.subject.to_vec().into(),
+			subject_public_key_info: root.spki.to_vec().into(),
+			name_constraints: root
+				.name_constraints
+				.map(|constraints| constraints.to_vec().into()),
+		}
+	}));
 	let tls = ClientConfig::builder()
 		.with_root_certificates(roots)
 		.with_no_client_auth();

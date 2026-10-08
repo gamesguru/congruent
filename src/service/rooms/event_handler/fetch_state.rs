@@ -54,7 +54,7 @@ where
 			);
 
 			let timeout = Duration::from_secs(self.services.server.config.federation_timeout);
-			let state_ids_res = match tokio::time::timeout(timeout, req).await {
+			let state_ids_res = match conduwuit::timeout(timeout, req).await {
 				| Ok(Ok(res)) => res,
 				| Ok(Err(e)) => {
 					info!(%server, "fetch_state /state_ids failed: {e}");

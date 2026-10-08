@@ -502,7 +502,7 @@ impl super::Service {
 
 		// Spawn synchronous rezzy pipeline on a blocking thread
 		let lean_events_moved = lean_events;
-		tokio::task::spawn_blocking(move || {
+		self.services.server.runtime().spawn_blocking(move || {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
 			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 			let empty_key = String::new();
@@ -672,7 +672,7 @@ impl super::Service {
 
 			if groups_compressed.is_multiple_of(100) && groups_compressed > 0 {
 				drop(cork.take());
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 				cork = Some(self.db.db.cork());
 			}
 		}

@@ -212,11 +212,14 @@ impl Service {
 			let has_space = futures.len() < 128;
 
 			if has_space {
-				tokio::select! {
-					Some(response) = futures.next() => {
+				let response = futures.next().fuse();
+				let request = receiver.recv_async().fuse();
+				pin_mut!(response, request);
+				futures::select_biased! {
+					Some(response) = response => {
 						self.handle_response(response, futures, statuses).await;
 					},
-					request = receiver.recv_async() => match request {
+					request = request => match request {
 						Ok(request) => self.handle_request(request, futures, statuses).await,
 						Err(_) => return,
 					},
@@ -224,7 +227,7 @@ impl Service {
 			} else if let Some(response) = futures.next().await {
 				self.handle_response(response, futures, statuses).await;
 			}
-			tokio::task::yield_now().await;
+			smol::future::yield_now().await;
 		}
 	}
 
@@ -322,7 +325,7 @@ impl Service {
 			.clone();
 
 		self.server.runtime().spawn(async move {
-			tokio::time::sleep(delay).await;
+			smol::Timer::after(delay).await;
 			sender
 				.send(Msg {
 					dest,
@@ -462,20 +465,18 @@ impl Service {
 	}
 
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
-		use tokio::{
-			select,
-			time::{Instant, sleep_until},
-		};
-
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
-		let now = Instant::now();
+		let now = std::time::Instant::now();
 		let deadline = now.checked_add(timeout).unwrap_or(now);
 		loop {
 			trace!("Waiting for {} requests to complete...", futures.len());
-			select! {
-				() = sleep_until(deadline) => return,
-				response = futures.next() => match response {
+			let timer = smol::Timer::at(deadline);
+			let response = futures.next();
+			pin_mut!(timer, response);
+			futures::select_biased! {
+				() = timer => return,
+				response = response.fuse() => match response {
 					Some(Ok(dest)) => self.db.delete_all_active_requests_for(&dest).await,
 					Some(_) => continue,
 					None => return,

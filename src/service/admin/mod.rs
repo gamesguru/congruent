@@ -140,12 +140,12 @@ impl crate::Service for Service {
 		self.console_auto_start().await;
 
 		loop {
-			tokio::select! {
-				command = receiver.recv_async() => match command {
+			futures::select_biased! {
+			command = receiver.recv_async().fuse() => match command {
 					Ok(command) => self.handle_command(command).await,
 					Err(_) => break,
 				},
-				sig = signals.recv() => match sig {
+			sig = signals.recv().fuse() => match sig {
 					Ok(sig) => self.handle_signal(sig).await,
 					Err(_) => continue,
 				},

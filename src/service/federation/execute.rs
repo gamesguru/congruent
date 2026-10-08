@@ -77,7 +77,8 @@ async fn perform<T>(
 where
 	T: OutgoingRequest + Send,
 {
-	let url = request.uri().clone();
+	let url = Url::parse(&request.uri().to_string())
+		.map_err(|error| Error::HttpClient(error.to_string().into()))?;
 	let method = request.method().clone();
 
 	debug!(%method, %url, "Sending request");

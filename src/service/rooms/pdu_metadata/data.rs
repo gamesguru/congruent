@@ -245,7 +245,7 @@ impl Data {
 		// `Arc<Map>`: the `'a` borrow arises and is dropped purely inside that fn,
 		// so its future has no `'a` in its signature. Two such futures overlap
 		// cleanly under `tokio::join!` while remaining `Send`.
-		let (rejected, soft_failed) = tokio::join!(
+		let (rejected, soft_failed) = futures::join!(
 			scan_verdicts(self.eventid_rejections.clone(), event_ids),
 			scan_verdicts(self.eventid_softfailed.clone(), event_ids),
 		);

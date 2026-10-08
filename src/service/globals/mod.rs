@@ -5,6 +5,7 @@ use std::{collections::HashMap, fmt::Write, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
 use data::Data;
+use futures::{FutureExt, StreamExt, pin_mut};
 use regex::RegexSet;
 use slipstream::{
 	OwnedEventId, OwnedRoomAliasId, OwnedServerName, OwnedUserId, ServerName, UserId,
@@ -97,7 +98,7 @@ impl crate::Service for Service {
 	async fn clear_cache(&self) { self.bad_event_ratelimiter.write().clear(); }
 
 	async fn worker(self: Arc<Self>) -> Result<()> {
-		let mut interval = tokio::time::interval(std::time::Duration::from_mins(1)); // 1 min
+		let mut interval = async_io::Timer::interval(std::time::Duration::from_mins(1)); // 1 min
 
 		let mut last_http_success = 0;
 		let mut last_http_fail = 0;
@@ -116,9 +117,12 @@ impl crate::Service for Service {
 		let mut shutdown = self.server.signal.subscribe();
 
 		loop {
-			tokio::select! {
-				_ = interval.tick() => {},
-				_ = shutdown.recv() => {},
+			let tick = interval.next();
+			let signal = shutdown.recv();
+			pin_mut!(tick, signal);
+			futures::select_biased! {
+				_ = tick.fuse() => {},
+				_ = signal.fuse() => {},
 			}
 			if !self.server.running() {
 				break;

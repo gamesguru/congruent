@@ -117,7 +117,7 @@ where
 		active.push(async move {
 			let t = Instant::now();
 			let latest_events = vec![latest_event_owned];
-			let deadline = tokio::time::Instant::now()
+			let deadline = std::time::Instant::now()
 				.checked_add(Duration::from_secs(self.services.server.config.fetch_prev_timeout))
 				.expect("deadline should not overflow");
 			info!(
@@ -135,7 +135,7 @@ where
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
 					};
-					let res = tokio::time::timeout_at(
+					let res = conduwuit::timeout_at(
 						deadline,
 						self.services
 							.sending
@@ -193,7 +193,7 @@ where
 						direction: Some("up".to_owned()),
 						batch: None,
 					};
-					match tokio::time::timeout(
+					match conduwuit::timeout(
 						Duration::from_secs(10),
 						self.services
 							.sending

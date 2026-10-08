@@ -323,7 +323,7 @@ impl Data {
 				}
 			}
 			if all_event_ids.len().is_multiple_of(10000) {
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 
@@ -381,7 +381,7 @@ impl Data {
 					"collect_reorder_entries: processed {} events so far...",
 					entries.len()
 				);
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 

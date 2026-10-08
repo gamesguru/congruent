@@ -1,17 +1,15 @@
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Duration};
 
-use conduwuit::{Err, Error, Result, Server, debug, error, info, trace, utils::time, warn};
-use futures::{FutureExt, TryFutureExt};
-use tokio::{
-	sync::{Mutex, MutexGuard},
-	task::{JoinHandle, JoinSet},
-	time::sleep,
+use conduwuit::{
+	Err, Error, JoinError, JoinSet, Result, Server, debug, error, info, trace, utils::time, warn,
 };
+use futures::{FutureExt, TryFutureExt};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{Services, service, service::Service};
 
 pub(crate) struct Manager {
-	manager: Mutex<Option<JoinHandle<Result<()>>>>,
+	manager: Mutex<Option<conduwuit::JoinHandle<Result<()>>>>,
 	workers: Mutex<Workers>,
 	server: Arc<Server>,
 	service: Arc<service::Map>,
@@ -75,6 +73,7 @@ impl Manager {
 
 	pub(super) async fn stop(&self) {
 		if let Some(manager) = self.manager.lock().await.take() {
+			let mut manager = manager;
 			manager.abort();
 
 			// Shutdown must not hang forever on workers that miss or ignore the
@@ -96,12 +95,10 @@ impl Manager {
 	async fn worker(&self) -> Result<()> {
 		loop {
 			let mut workers = self.workers.lock().await;
-			tokio::select! {
-				result = workers.join_next() => match result {
-					Some(Ok(result)) => self.handle_result(&mut workers, result).await?,
-					Some(Err(error)) => self.handle_abort(&mut workers, &Error::from(error))?,
-					None => break,
-				}
+			match workers.join_next().await {
+				| Some(Ok(result)) => self.handle_result(&mut workers, result).await?,
+				| Some(Err(error)) => self.handle_abort(&mut workers, &Error::from(error))?,
+				| None => break,
 			}
 		}
 
@@ -162,7 +159,7 @@ impl Manager {
 
 		let delay = Duration::from_millis(RESTART_DELAY_MS);
 		warn!("service {name:?} worker restarting after {} delay", time::pretty(delay));
-		sleep(delay).await;
+		smol::Timer::after(delay).await;
 
 		self.start_worker(workers, service)
 	}
@@ -187,7 +184,7 @@ impl Manager {
 	}
 }
 
-/// Base frame for service worker. This runs in a tokio::task. All errors and
+/// Base frame for service worker. All errors and
 /// panics from the worker are caught and returned cleanly. The JoinHandle
 /// should never error with a panic, and if so it should propagate, but it may
 /// error with an Abort which the manager should handle along with results to
@@ -198,11 +195,7 @@ async fn worker(service: Arc<dyn Service>) -> WorkerResult {
 		.catch_unwind()
 		.map_err(Error::from_panic);
 
-	let result = if service.unconstrained() {
-		tokio::task::unconstrained(result).await
-	} else {
-		result.await
-	};
+	let result = result.await;
 
 	// flattens JoinError for panic into worker's Error
 	(service, result.unwrap_or_else(Err))

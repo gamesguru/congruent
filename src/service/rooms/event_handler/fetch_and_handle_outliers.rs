@@ -130,7 +130,7 @@ where
 					let _permit = sem.acquire().await;
 					for attempt in 0..2_u8 {
 						if is_retry && attempt > 0 {
-							tokio::time::sleep(std::time::Duration::from_secs(
+							smol::Timer::after(std::time::Duration::from_secs(
 								2_u64.pow(attempt.into()),
 							))
 							.await;

@@ -284,7 +284,7 @@ where
 		})
 		.buffer_unordered(self.services.server.concurrency_scaled(200))
 		.map(
-			|res: Result<Result<(OwnedEventId, CanonicalJsonObject)>, tokio::task::JoinError>| {
+			|res: Result<Result<(OwnedEventId, CanonicalJsonObject)>, conduwuit::JoinError>| {
 				res.unwrap_or_else(|e| Err(conduwuit::err!(Database("Join task failed: {e}"))))
 			},
 		)
