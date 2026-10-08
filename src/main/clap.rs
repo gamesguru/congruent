@@ -11,7 +11,7 @@ use conduwuit_core::{Err, Result, config::RawConfig, err, toml, utils::available
 	about,
 	long_about = None,
 	name = conduwuit_core::name(),
-	version = conduwuit_core::version(),
+	version = conduwuit_git_info::display_version(),
 )]
 pub struct Args {
 	#[arg(short, long)]

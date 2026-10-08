@@ -2380,7 +2380,7 @@ pub struct WellKnownConfig {
 	/// should not be a URL.
 	///
 	/// example: "matrix.example.com:443"
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(default, deserialize_with = "deserialize_slipstream_opt")]
 	pub server: Option<OwnedServerName>,
 
 	/// URL to a support page for the server, which will be served as part of
@@ -2392,7 +2392,7 @@ pub struct WellKnownConfig {
 	/// MSC1929 server support endpoint at /.well-known/matrix/support.
 	///
 	/// default: "m.role.admin"
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(default, deserialize_with = "deserialize_slipstream_opt")]
 	pub support_role: Option<ContactRole>,
 
 	/// Email address for server support contacts, to be served as part of the
@@ -2406,7 +2406,7 @@ pub struct WellKnownConfig {
 	///
 	/// If no email or mxid is specified, all of the server's admins will be
 	/// listed.
-	#[serde(deserialize_with = "deserialize_slipstream_opt")]
+	#[serde(default, deserialize_with = "deserialize_slipstream_opt")]
 	pub support_mxid: Option<OwnedUserId>,
 
 	/// PGP key URI for server support contacts, to be served as part of the

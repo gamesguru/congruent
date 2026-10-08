@@ -28,6 +28,19 @@ pub static GIT_REMOTE_COMMIT_URL: Option<&str> = option_env!("GIT_REMOTE_COMMIT_
 pub static GIT_REMOTE_URL: Option<&str> = option_env!("GIT_REMOTE_URL");
 pub static GIT_BRANCH: Option<&str> = option_env!("GIT_BRANCH");
 
+static DISPLAY_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[must_use]
+pub fn display_version() -> &'static str {
+	DISPLAY_VERSION.get_or_init(|| {
+		let semver = env!("CARGO_PKG_VERSION");
+		VERSION_EXTRA
+			.filter(|extra| !extra.is_empty())
+			.or(GIT_COMMIT_HASH_SHORT)
+			.map_or_else(|| semver.to_owned(), |extra| format!("{semver} ({extra})"))
+	})
+}
+
 #[must_use]
 pub fn verbose_version() -> String {
 	let semver = env!("CARGO_PKG_VERSION");
