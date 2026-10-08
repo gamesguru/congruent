@@ -2564,9 +2564,9 @@ mod tests {
 	/// The fork at C (depth=5) is the scenario that triggers max() inflation:
 	/// when paginating backward from E and hitting C's depth, the old code
 	/// would inflate the seek position.
-		type DagFixture = (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>);
+	type DagFixture = (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>);
 
-		fn build_forked_dag() -> DagFixture {
+	fn build_forked_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -2817,7 +2817,11 @@ mod tests {
 
 			let seek_key = seek_from.map(|(token_depth, token_count)| {
 				let adjacent_depth = depth_by_count
-					.get(&(token_count.checked_sub(1).expect("token count must be non-zero")))
+					.get(
+						&(token_count
+							.checked_sub(1)
+							.expect("token count must be non-zero")),
+					)
 					.copied()
 					.unwrap_or(token_depth);
 
@@ -2945,7 +2949,7 @@ mod tests {
 	/// No events are missed because G has the highest depth.
 	///
 	/// But what if the remote branch has HIGHER depth than local?
-		fn build_partition_dag() -> DagFixture {
+	fn build_partition_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),

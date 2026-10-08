@@ -307,6 +307,10 @@ struct TempDbGuard {
 	_serial: tokio::sync::OwnedMutexGuard<()>,
 }
 
+static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
+	std::sync::OnceLock::new();
+static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Drop for TempDbGuard {
 	fn drop(&mut self) {
 		if let Some(services) = self.services.take() {
@@ -337,9 +341,6 @@ impl Drop for TempDbGuard {
 async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<service::Services>) {
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
-	static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
-		std::sync::OnceLock::new();
-	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let serial = TEST_SERIAL
 		.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
 		.clone()
@@ -399,7 +400,9 @@ async fn test_yolo_audit_membership_drift() {
 		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
+			join_rules::{JoinRule, RoomJoinRulesEventContent},
 			member::{MembershipState, RoomMemberEventContent},
+			power_levels::RoomPowerLevelsEventContent,
 		},
 	};
 	let (_guard, services) = setup_test_services("yolo").await;
@@ -455,7 +458,6 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Power levels event
-	use slipstream::events::room::power_levels::RoomPowerLevelsEventContent;
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
@@ -473,7 +475,6 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Join rules event
-	use slipstream::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 	services
 		.rooms
 		.timeline
@@ -645,7 +646,9 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
+			join_rules::{JoinRule, RoomJoinRulesEventContent},
 			member::{MembershipState, RoomMemberEventContent},
+			power_levels::RoomPowerLevelsEventContent,
 		},
 	};
 	let (_guard, services) = setup_test_services("demote_torn").await;
@@ -697,10 +700,6 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.await
 		.unwrap();
 
-	use slipstream::events::room::{
-		join_rules::{JoinRule, RoomJoinRulesEventContent},
-		power_levels::RoomPowerLevelsEventContent,
-	};
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
@@ -797,6 +796,7 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
+	use futures::StreamExt;
 	use slipstream::{
 		RoomVersionId,
 		events::room::{
@@ -989,7 +989,6 @@ async fn test_yolo_reorder_timeline() {
 	// the topological sort tie-breaks concurrent forks by timestamp
 	// (chronological).
 	let mut ordered_events = Vec::new();
-	use futures::StreamExt;
 	let mut stream = Box::pin(services.rooms.timeline.topo_pdus(&room_id, None));
 	while let Some(Ok((_, pdu))) = stream.next().await {
 		ordered_events.push(pdu.event_id.clone());
@@ -2135,7 +2134,7 @@ async fn test_yolo_heal_receipts() {
 	let mut users1 = std::collections::BTreeMap::new();
 	users1.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(1000_u32)),
-		thread: Default::default(),
+		thread: slipstream::events::receipt::ReceiptThread::default(),
 	});
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
@@ -2150,7 +2149,7 @@ async fn test_yolo_heal_receipts() {
 	let mut users2 = std::collections::BTreeMap::new();
 	users2.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(2000_u32)),
-		thread: Default::default(),
+		thread: slipstream::events::receipt::ReceiptThread::default(),
 	});
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);

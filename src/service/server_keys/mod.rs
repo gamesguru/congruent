@@ -969,10 +969,7 @@ mod tests {
 	}
 
 	fn old_verify_key(expired_ts_ms: u64) -> OldVerifyKey {
-		OldVerifyKey::new(
-			MilliSecondsSinceUnixEpoch(expired_ts_ms),
-			Base64::new(vec![0_u8; 32]),
-		)
+		OldVerifyKey::new(MilliSecondsSinceUnixEpoch(expired_ts_ms), Base64::new(vec![0_u8; 32]))
 	}
 
 	#[test]
