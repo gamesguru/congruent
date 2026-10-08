@@ -41,7 +41,7 @@ pub(super) async fn list_outliers(
 			}
 			i = i.saturating_add(1);
 			if i.is_multiple_of(10_000) {
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 	}

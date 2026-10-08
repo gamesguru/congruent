@@ -417,10 +417,10 @@ macro_rules! ruma_handler {
 		impl<Err, Req, Fut, Fun, $($tx,)*> RumaHandler<($($tx,)* Ruma<Req>,)> for Fun
 		where
 			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Send + Sync + 'static,
-			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + 'static,
+			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send + 'static,
 			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 			Req::OutgoingResponse: Send + 'static,
-			Err: Into<ApiError> + Send + 'static,
+			Err: Into<ApiError> + Send,
 			$( $tx: ExtractArg + Send + 'static, )*
 		{
 			fn add_routes(&'static self, router: &mut MinimalRouter) {
@@ -446,22 +446,9 @@ macro_rules! ruma_handler {
 								Ok(value) => value,
 								Err(error) => return HandlerResult::into_response(error),
 							};
-							let task = conduwuit::RuntimeHandle::new().spawn_blocking(move || {
-								smol::block_on(async move {
-									match self($($tx,)* body).await {
-										Ok(response) => IntoResponse::into_response(RumaResponse(response)),
-										Err(error) => HandlerResult::into_response(error.into()),
-									}
-								})
-							});
-							match task.await {
-								Ok(response) => response,
-								Err(error) => http::Response::builder()
-									.status(http::StatusCode::INTERNAL_SERVER_ERROR)
-									.body(http_body_util::Full::from(bytes::Bytes::from(
-										format!("handler task failed: {error}"),
-									)))
-									.expect("handler error response is valid"),
+							match self($($tx,)* body).await {
+								Ok(response) => IntoResponse::into_response(RumaResponse(response)),
+								Err(error) => HandlerResult::into_response(error.into()),
 							}
 						})
 					});

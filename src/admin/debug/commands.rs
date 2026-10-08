@@ -402,7 +402,7 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		return Err!("Not allowed to send federation requests to ourselves.");
 	}
 
-	let timer = tokio::time::Instant::now();
+	let timer = std::time::Instant::now();
 
 	match self
 		.services
@@ -532,7 +532,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	utils::pdu_json_canonical_strip(&mut event);
 
 	// Status flags
-	let (is_rejected, is_soft_failed) = tokio::join!(
+	let (is_rejected, is_soft_failed) = futures::join!(
 		self.services
 			.rooms
 			.pdu_metadata

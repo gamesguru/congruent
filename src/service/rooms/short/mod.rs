@@ -13,7 +13,7 @@ use conduwuit::{
 };
 use database::{Deserialized, Get, Map, Qry};
 use futures::{
-	Stream, StreamExt,
+	Future, Stream, StreamExt,
 	stream::{self},
 };
 use slipstream::{
@@ -325,23 +325,26 @@ fn create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
 }
 
 #[implement(Service)]
-pub async fn get_shorteventid(&self, event_id: &EventId) -> Result<ShortEventId> {
-	if let Some(short) = self.eventid_shorteventid_cache.get(&event_id.to_owned()) {
-		return Ok(short);
+pub fn get_shorteventid(
+	&self,
+	event_id: &EventId,
+) -> impl Future<Output = Result<ShortEventId>> + Send + 'static {
+	let event_id = event_id.to_owned();
+	let cache = self.eventid_shorteventid_cache.clone();
+	let reverse_cache = self.shorteventid_eventid_cache.clone();
+	let db = self.db.eventid_shorteventid.clone();
+
+	async move {
+		if let Some(short) = cache.get(&event_id) {
+			return Ok(short);
+		}
+
+		let short = db.get(&event_id).await.deserialized()?;
+
+		cache.insert(event_id.clone(), short);
+		reverse_cache.insert(short, event_id);
+		Ok(short)
 	}
-
-	let short = self
-		.db
-		.eventid_shorteventid
-		.get(event_id)
-		.await
-		.deserialized()?;
-
-	self.eventid_shorteventid_cache
-		.insert(event_id.to_owned(), short);
-	self.shorteventid_eventid_cache
-		.insert(short, event_id.to_owned());
-	Ok(short)
 }
 
 #[implement(Service)]

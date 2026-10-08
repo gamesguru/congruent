@@ -166,12 +166,14 @@ pub async fn msc4500_redactions_through(
 	event_id: &EventId,
 	room_version: &RoomVersionId,
 ) -> Option<RedactionSet> {
-	if let Some(hit) = self.msc4500_memo.lock().through.get(event_id) {
+	let event_id = event_id.to_owned();
+	let room_version = room_version.clone();
+	if let Some(hit) = self.msc4500_memo.lock().through.get(&event_id) {
 		return Some(Arc::clone(hit));
 	}
 
 	let mut nodes: HashMap<OwnedEventId, DagNode> = HashMap::new();
-	let mut frontier: Vec<OwnedEventId> = vec![event_id.to_owned()];
+	let mut frontier: Vec<OwnedEventId> = vec![event_id.clone()];
 	while let Some(id) = frontier.pop() {
 		if nodes.contains_key(&id) || self.msc4500_memo.lock().through.contains_key(&id) {
 			continue;
@@ -181,7 +183,7 @@ pub async fn msc4500_redactions_through(
 		}
 		let pdu = self.services.timeline.get_pdu(&id).await.ok()?;
 		let redaction_of = if *pdu.kind() == TimelineEventType::RoomRedaction {
-			pdu.redacts_id(room_version)
+			pdu.redacts_id(&room_version)
 		} else {
 			None
 		};
@@ -194,7 +196,7 @@ pub async fn msc4500_redactions_through(
 	if memo.through.len() > MEMO_CAPACITY {
 		memo.through.clear();
 	}
-	fold_redaction_sets(event_id, &nodes, &mut memo.through)
+	fold_redaction_sets(&event_id, &nodes, &mut memo.through)
 }
 
 /// Whether `redaction` was authorized to redact `target` at the state that
@@ -210,6 +212,9 @@ async fn msc4500_redaction_effective(
 	target: &Pdu,
 	room_version: &RoomVersionId,
 ) -> Option<bool> {
+	let redaction = redaction.clone();
+	let target = target.clone();
+	let room_version = room_version.clone();
 	if let Some(hit) = self.msc4500_memo.lock().effective.get(redaction.event_id()) {
 		return Some(*hit);
 	}
@@ -300,16 +305,16 @@ async fn msc4500_redact_power(
 /// returns `None` instead of a digest over partial information.
 #[implement(super::Service)]
 pub async fn msc4500_point_digests(
-	&self,
-	root: &rezzy::hamt::RootHandle,
-	pdu: &Pdu,
+	self: Arc<Self>,
+	root: rezzy::hamt::RootHandle,
+	pdu: Pdu,
 	include_self: bool,
 ) -> Option<PointDigests> {
 	let room_id = pdu.room_id_or_hash()?;
 	let room_version = self.services.state.get_room_version(&room_id).await.ok()?;
 
 	let state: Vec<Pdu> = self
-		.state_full_pdus_hamt_strict(root.clone())
+		.state_full_pdus_hamt_strict(root)
 		.try_collect()
 		.await
 		.ok()?;
@@ -371,7 +376,7 @@ pub async fn msc4500_point_digests(
 /// event with several `prev_events` needs a state-resolution result that is not
 /// stored per event, so it is reported as unresolvable.
 #[implement(super::Service)]
-pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHandle> {
+pub async fn msc4500_before_root(self: Arc<Self>, pdu: Pdu) -> Option<rezzy::hamt::RootHandle> {
 	// A non-state event leaves state untouched, so its stored root is the
 	// resolved state of all its parents.
 	if pdu.state_key().is_none() {
@@ -403,15 +408,19 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 ///
 /// `None` means the sender cannot assert this PDU and must mark it `limited`.
 #[implement(super::Service)]
-pub async fn msc4500_pdu_digests(&self, event_id: OwnedEventId) -> Option<PduDigests> {
+pub async fn msc4500_pdu_digests(self: Arc<Self>, event_id: OwnedEventId) -> Option<PduDigests> {
 	let pdu = self.services.timeline.get_pdu(&event_id).await.ok()?;
 	let after_root = self.pdu_roothandle_after_event(&event_id).await.ok()?;
-	let before_root = self.msc4500_before_root(&pdu).await?;
+	let before_root = self.clone().msc4500_before_root(pdu.clone()).await?;
 
 	let before = self
-		.msc4500_point_digests(&before_root, &pdu, false)
+		.clone()
+		.msc4500_point_digests(before_root, pdu.clone(), false)
 		.await?;
-	let after = self.msc4500_point_digests(&after_root, &pdu, true).await?;
+	let after = self
+		.clone()
+		.msc4500_point_digests(after_root, pdu, true)
+		.await?;
 
 	Some(PduDigests { before, after })
 }
@@ -428,8 +437,8 @@ pub async fn msc4500_pdu_digests(&self, event_id: OwnedEventId) -> Option<PduDig
 /// digests are unaffected. No placeholder is ever substituted for a gap.
 #[implement(super::Service)]
 pub async fn msc4500_resolution_inputs_digest(
-	&self,
-	pdu: &Pdu,
+	self: Arc<Self>,
+	pdu: Pdu,
 	cache: &mut InputCache,
 ) -> Option<String> {
 	let mut frontier: VecDeque<OwnedEventId> = VecDeque::new();

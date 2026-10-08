@@ -133,6 +133,7 @@ async fn compute_outbound_state_hashes(
 	for (event_id, _) in pdus {
 		let entry = match services
 			.state_accessor
+			.arc()
 			.msc4500_pdu_digests(event_id.clone())
 			.await
 		{
@@ -144,7 +145,8 @@ async fn compute_outbound_state_hashes(
 						| Some(pdu) =>
 							services
 								.state_accessor
-								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+								.arc()
+								.msc4500_resolution_inputs_digest(pdu, &mut inputs_cache)
 								.await,
 						| None => None,
 					};

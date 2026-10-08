@@ -107,7 +107,8 @@ pub(crate) async fn add_3pid_route(
 	State(services): State<crate::State>,
 	body: Ruma<add_3pid::v3::Request>,
 ) -> Result<add_3pid::v3::Response> {
-	let sender_user = body.sender_user().to_owned();
+	let services = services.services();
+	let sender_user = body.sender_user();
 
 	if !services.threepid.email_requirement().may_change() {
 		return Err!(Request(Forbidden("You may not change your email address.")));
@@ -116,7 +117,7 @@ pub(crate) async fn add_3pid_route(
 	// Require password auth to add an email
 	let _ = services
 		.uiaa
-		.authenticate_password(&body.auth, Some(Identity::from_user_id(&sender_user)))
+		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
 		.await?;
 
 	let sid = slipstream::OwnedSessionId::parse(&body.sid)

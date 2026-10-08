@@ -110,6 +110,9 @@ impl<T: Service + Send + Sync> Dep<T> {
 			|| self.init(),
 		)
 	}
+
+	#[inline]
+	pub(crate) fn arc(&self) -> Arc<T> { Arc::clone(self.get()) }
 }
 
 impl<T: Service + Send + Sync> Dep<T> {

@@ -4,11 +4,11 @@ use conduwuit::{
 	Result,
 	matrix::{Event, pdu::PduEvent},
 };
+use futures::io::AsyncWriteExt;
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, events::TimelineEventType,
 	json::Value as JsonValue,
 };
-use tokio::io::AsyncWriteExt;
 
 pub(super) struct DagExportStats {
 	pub count: u64,
@@ -166,8 +166,8 @@ impl DagExportStats {
 	pub(super) async fn process_and_write_pdu(
 		&mut self,
 		ctx: &crate::context::Context<'_>,
-		file: &mut tokio::fs::File,
-		outliers_file: &mut tokio::fs::File,
+		file: &mut async_fs::File,
+		outliers_file: &mut async_fs::File,
 		pdu_json: CanonicalJsonObject,
 		pdu_result: Result<PduEvent>,
 		is_outlier: bool,

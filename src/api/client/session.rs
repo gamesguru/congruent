@@ -372,23 +372,22 @@ pub(crate) async fn login_token_route(
 	ClientIp(client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
+	let services = services.services();
 	info!(%client, "login token request");
 	if !services.server.config.login_via_existing_session {
 		return Err!(Request(Forbidden("Login via an existing session is not enabled")));
 	}
 
-	let sender_user = body.sender_user().to_owned();
+	let sender_user = body.sender_user();
 
 	// Prompt the user to confirm with their password using UIAA
 	let _ = services
 		.uiaa
-		.authenticate_password(&body.auth, Some(Identity::from_user_id(&sender_user)))
+		.authenticate_password(&body.auth, Some(Identity::from_user_id(sender_user)))
 		.await?;
 
 	let login_token = utils::random_string(TOKEN_LENGTH);
-	let expires_in = services
-		.users
-		.create_login_token(&sender_user, &login_token);
+	let expires_in = services.users.create_login_token(sender_user, &login_token);
 
 	Ok(get_login_token::v1::Response {
 		expires_in: Duration::from_millis(expires_in),

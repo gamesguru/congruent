@@ -58,18 +58,17 @@ impl crate::Service for Service {
 impl Service {
 	/// Verify a reCAPTCHA v3 response token against Google's `siteverify` endpoint.
 	async fn verify_recaptcha(&self, private_site_key: &str, response: &str) -> Result<()> {
+		let form = url::form_urlencoded::Serializer::new(String::new())
+			.append_pair("secret", private_site_key)
+			.append_pair("response", response)
+			.finish();
 		let response = self
 			.services
 			.client
 			.default
 			.post(RECAPTCHA_SITEVERIFY_URL)
 			.header(http::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-			.body(
-				url::form_urlencoded::Serializer::new(String::new())
-					.append_pair("secret", private_site_key)
-					.append_pair("response", response)
-					.finish(),
-			)
+			.body(form)
 			.send()
 			.await?;
 

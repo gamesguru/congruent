@@ -619,6 +619,8 @@ dependencies = [
 name = "conduwuit_admin"
 version = "0.5.10"
 dependencies = [
+ "async-fs",
+ "async-lock",
  "clap",
  "conduwuit_api",
  "conduwuit_build_metadata",

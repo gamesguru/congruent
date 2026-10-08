@@ -29,14 +29,14 @@ pub(super) async fn process(subcommand: RoomAliasCommand, context: &Context<'_>)
 
 	match subcommand {
 		| RoomAliasCommand::ResolveLocalAlias { alias } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results = services.rooms.alias.resolve_local_alias(&alias).await;
 			let query_time = timer.elapsed();
 
 			write!(context, "Query completed in {query_time:?}:\n\n```rs\n{results:#?}\n```")
 		},
 		| RoomAliasCommand::LocalAliasesForRoom { room_id } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let aliases: Vec<_> = services
 				.rooms
 				.alias
@@ -48,7 +48,7 @@ pub(super) async fn process(subcommand: RoomAliasCommand, context: &Context<'_>)
 			write!(context, "Query completed in {query_time:?}:\n\n```rs\n{aliases:#?}\n```")
 		},
 		| RoomAliasCommand::AllLocalAliases => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let aliases = services
 				.rooms
 				.alias

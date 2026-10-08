@@ -1,6 +1,7 @@
 use std::{
 	collections::{BTreeMap, HashMap, HashSet},
 	net::IpAddr,
+	sync::Arc,
 	time::{Duration, Instant},
 };
 
@@ -27,8 +28,8 @@ use service::transactions::{
 	FederationTxnState, TransactionError, TxnKey, WrappedTransactionResponse,
 };
 use slipstream::{
-	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
-	RoomId, ServerName, UInt, UserId,
+	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId, ServerName, UInt, UserId,
 	api::{
 		client::error::{ErrorKind, ErrorKind::LimitExceeded},
 		federation::{
@@ -110,12 +111,12 @@ pub(crate) async fn send_transaction_message_route(
 		},
 		| Ok(FederationTxnState::Started { receiver, sender }) => {
 			// We're the first, spawn the processing task
-			let runtime = services.server.runtime();
-			drop(runtime.spawn_blocking(move || {
-				smol::block_on(process_inbound_transaction(
-					services, body, client, txn_key, sender,
-				));
-			}));
+			drop(
+				services
+					.server
+					.runtime()
+					.spawn(process_inbound_transaction(services, body, client, txn_key, sender)),
+			);
 			// and wait for it
 			wait_for_result(receiver).await.map_err(Into::into)
 		},
@@ -127,23 +128,23 @@ pub(crate) async fn send_transaction_message_route(
 				let edus: Vec<_> = body.body.edus.clone();
 				let origin = body.origin().to_owned();
 
-				let runtime = services.server.runtime();
-				drop(runtime.spawn_blocking(move || {
-					smol::block_on(async move {
-						let edus_stream = edus
-							.into_iter()
-							.map(|edu| edu.get().to_owned())
-							.map(|json_str| codec::from_str::<Edu>(&json_str))
-							.filter_map(Result::ok)
-							.stream();
+				let services = services.services();
+				let runtime = services.server.runtime().clone();
+				drop(runtime.spawn(async move {
+					let edus_stream = edus
+						.into_iter()
+						.map(|edu| edu.get().to_owned())
+						.map(|json_str| codec::from_str::<Edu>(&json_str))
+						.filter_map(Result::ok)
+						.stream();
 
-						edus_stream
-							.for_each_concurrent(automatic_width(), |edu| {
-								let origin = origin.clone();
-								async move { handle_edu(&services, &client, &origin, edu).await }
-							})
-							.await;
-					});
+					edus_stream
+						.for_each_concurrent(automatic_width(), move |edu| {
+							let origin = origin.clone();
+							let services = Arc::clone(&services);
+							async move { handle_edu(services, client, origin.clone(), edu).await }
+						})
+						.await;
 				}));
 			}
 
@@ -185,16 +186,27 @@ async fn process_inbound_transaction(
 	sender: Sender<WrappedTransactionResponse>,
 ) {
 	let state = services;
-	let services: &Services = &state;
+	let services = state.services();
+	let state_hashes = body.json_body.as_ref().and_then(|json| {
+		let obj = json.as_object()?;
+		let hashes = obj
+			.get("state_hashes")
+			.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))?;
+		codec::from_value::<StateHashes>(hashes).ok()
+	});
 	let txn_start_time = Instant::now();
 	let pdus = body
 		.pdus
 		.clone()
 		.into_iter()
 		.stream()
-		.broad_then(
-			|pdu| async move { services.rooms.event_handler.parse_incoming_pdu(&pdu).await },
-		)
+		.broad_then({
+			let services = Arc::clone(&services);
+			move |pdu| {
+				let services = Arc::clone(&services);
+				async move { services.rooms.event_handler.parse_incoming_pdu(&pdu).await }
+			}
+		})
 		.inspect_err(|e| warn!("Could not parse incoming PDU: {e}"))
 		.ready_filter_map(Result::ok);
 
@@ -239,17 +251,18 @@ async fn process_inbound_transaction(
 	// have applied the write or an ACL gate for that same transaction.
 	let origin = body.origin().to_owned();
 	let edu_origin = origin.clone();
-	let edu_state = state;
-	let edu_client = client;
-	let edu_processing = async {
-		edus.for_each_concurrent(automatic_width(), |edu| {
+	let edu_services = Arc::clone(&services);
+	let edu_processing = async move {
+		edus.for_each_concurrent(automatic_width(), move |edu| {
 			let origin = edu_origin.clone();
-			async move { handle_edu(&edu_state, &edu_client, &origin, edu).await }
+			let services = Arc::clone(&edu_services);
+			async move { handle_edu(services, client, origin.clone(), edu).await }
 		})
 		.await;
 	};
 
-	let ((), results) = futures::join!(edu_processing, handle(&state, &client, &origin, pdus));
+	let ((), results) =
+		futures::join!(edu_processing, handle(Arc::clone(&services), client, origin, pdus));
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {
@@ -360,7 +373,7 @@ async fn process_inbound_transaction(
 	response_builder.field("pdus", &pdus);
 	let mut response_json = response_builder.finish();
 
-	inject_state_hash_mismatches(services, &body, &mut response_json).await;
+	inject_state_hash_mismatches(Arc::clone(&services), state_hashes, &mut response_json).await;
 
 	services
 		.transactions
@@ -368,22 +381,11 @@ async fn process_inbound_transaction(
 }
 
 async fn inject_state_hash_mismatches(
-	services: &Services,
-	body: &Ruma<send_transaction_message::v1::Request>,
+	services: Arc<Services>,
+	state_hashes: Option<StateHashes>,
 	response_json: &mut Value,
 ) {
-	let Some(json) = &body.json_body else { return };
-	let Some(obj) = json.as_object() else { return };
-	let Some(hashes) = obj
-		.get("state_hashes")
-		.or_else(|| obj.get("tk.nutra.msc4500.state_hashes"))
-	else {
-		return;
-	};
-
-	let Ok(state_hashes) = codec::from_value::<StateHashes>(hashes) else {
-		return;
-	};
+	let Some(state_hashes) = state_hashes else { return };
 
 	// One algorithm governs the whole transaction. An unrecognized one defers
 	// validation of every entry rather than skipping them one at a time.
@@ -405,16 +407,17 @@ async fn inject_state_hash_mismatches(
 			.msc4500_resolution_inputs;
 	let mut inputs_cache = InputCache::new();
 
-	for (event_id, entry) in state_hashes.entries.clone() {
-		let Some(pdu_res) = response_json
+	for (event_id, entry) in state_hashes.entries {
+		let Some(pdu_has_error) = response_json
 			.get("pdus")
 			.and_then(|p| p.as_object())
 			.and_then(|p| p.get(event_id.as_str()))
 			.and_then(|p| p.as_object())
+			.map(|pdu| pdu.contains_key("error"))
 		else {
 			continue;
 		};
-		if pdu_res.contains_key("error") {
+		if pdu_has_error {
 			continue;
 		}
 
@@ -431,11 +434,11 @@ async fn inject_state_hash_mismatches(
 			}
 			continue;
 		};
+		let after = after.to_owned();
+		let redactions_after = redactions_after.to_owned();
 
 		// An unresolved DAG point is deferred rather than reported as a mismatch.
-		let Some(local) = services
-			.rooms
-			.state_accessor
+		let Some(local) = Arc::clone(&services.rooms.state_accessor)
 			.msc4500_pdu_digests(event_id.clone())
 			.await
 		else {
@@ -446,14 +449,12 @@ async fn inject_state_hash_mismatches(
 		// the local value anyway so mismatch diagnostics retain the expected
 		// digest; the comparison below only treats two present values as a
 		// mismatch.
-		let received_inputs = entry.resolution_inputs();
+		let received_inputs = entry.resolution_inputs().map(ToOwned::to_owned);
 		let local_inputs = if check_inputs {
 			match services.rooms.timeline.get_pdu(&event_id).await {
 				| Ok(pdu) =>
-					services
-						.rooms
-						.state_accessor
-						.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
+					Arc::clone(&services.rooms.state_accessor)
+						.msc4500_resolution_inputs_digest(pdu, &mut inputs_cache)
 						.await,
 				| Err(_) => None,
 			}
@@ -461,7 +462,7 @@ async fn inject_state_hash_mismatches(
 			None
 		};
 		let inputs_differ = matches!(
-			(received_inputs, local_inputs.as_deref()),
+			(received_inputs.as_deref(), local_inputs.as_deref()),
 			(Some(received), Some(local)) if received != local
 		);
 
@@ -537,9 +538,9 @@ fn transaction_error_to_response(err: &TransactionError) -> Error {
 	}
 }
 async fn handle(
-	services: &Services,
-	client: &IpAddr,
-	origin: &ServerName,
+	services: Arc<Services>,
+	client: IpAddr,
+	origin: OwnedServerName,
 	pdus: impl Stream<Item = Pdu> + Send,
 ) -> std::result::Result<ResolvedMap, TransactionError> {
 	// group pdus by room
@@ -557,8 +558,8 @@ async fn handle(
 	let results: ResolvedMap = pdus
 		.into_iter()
 		.try_stream()
-		.broad_and_then(|(room_id, pdus): (_, Vec<_>)| {
-			handle_room(services, client, origin, room_id, pdus.into_iter())
+		.broad_and_then(move |(room_id, pdus): (_, Vec<_>)| {
+			handle_room(Arc::clone(&services), client, origin.clone(), room_id, pdus.into_iter())
 				.map_ok(Vec::into_iter)
 				.map_ok(IterStream::try_stream)
 		})
@@ -650,9 +651,9 @@ async fn build_local_dag(
 }
 
 async fn handle_room(
-	services: &Services,
-	_client: &IpAddr,
-	origin: &ServerName,
+	services: Arc<Services>,
+	_client: IpAddr,
+	origin: OwnedServerName,
 	room_id: OwnedRoomId,
 	pdus: impl Iterator<Item = Pdu> + Send,
 ) -> std::result::Result<Vec<(OwnedEventId, Result)>, TransactionError> {
@@ -708,7 +709,7 @@ async fn handle_room(
 			services
 				.rooms
 				.event_handler
-				.handle_incoming_pdu(origin, room_id, &event_id, value, true, None),
+				.handle_incoming_pdu(&origin, room_id, &event_id, value, true, None),
 		)
 		.await
 		.map(|_| ());
@@ -733,30 +734,30 @@ async fn handle_room(
 	Ok(results)
 }
 
-async fn handle_edu(services: &Services, client: &IpAddr, origin: &ServerName, edu: Edu) {
+async fn handle_edu(services: Arc<Services>, client: IpAddr, origin: OwnedServerName, edu: Edu) {
 	match edu {
 		| Edu::Presence(presence) if services.server.config.allow_incoming_presence => {
-			handle_edu_presence(services, client, origin, presence).await;
+			handle_edu_presence(Arc::clone(&services), client, origin, presence).await;
 		},
 
 		| Edu::Receipt(receipt) if services.server.config.allow_incoming_read_receipts => {
-			handle_edu_receipt(services, client, origin, receipt).await;
+			handle_edu_receipt(Arc::clone(&services), client, origin, receipt).await;
 		},
 
 		| Edu::Typing(typing) if services.server.config.allow_incoming_typing => {
-			handle_edu_typing(services, client, origin, typing).await;
+			handle_edu_typing(&services, &client, &origin, typing).await;
 		},
 
 		| Edu::DeviceListUpdate(content) => {
-			handle_edu_device_list_update(services, client, origin, content).await;
+			handle_edu_device_list_update(&services, &client, &origin, content).await;
 		},
 
 		| Edu::DirectToDevice(content) => {
-			handle_edu_direct_to_device(services, client, origin, content).await;
+			handle_edu_direct_to_device(&services, &client, &origin, content).await;
 		},
 
 		| Edu::SigningKeyUpdate(content) => {
-			handle_edu_signing_key_update(services, client, origin, content).await;
+			handle_edu_signing_key_update(&services, &client, &origin, content).await;
 		},
 
 		| Edu::_Custom(ref _custom) => debug_warn!(?edu, "received custom/unknown EDU"),
@@ -766,9 +767,9 @@ async fn handle_edu(services: &Services, client: &IpAddr, origin: &ServerName, e
 }
 
 async fn handle_edu_presence(
-	services: &Services,
-	_client: &IpAddr,
-	origin: &ServerName,
+	services: Arc<Services>,
+	_client: IpAddr,
+	origin: OwnedServerName,
 	presence: PresenceContent,
 ) {
 	let fut = presence
@@ -776,7 +777,7 @@ async fn handle_edu_presence(
 		.into_iter()
 		.stream()
 		.for_each_concurrent(automatic_width(), |update| {
-			handle_edu_presence_update(services, origin, update)
+			handle_edu_presence_update(Arc::clone(&services), origin.clone(), update)
 		});
 
 	let timeout = services.server.config.federation_presence_interval_s;
@@ -793,8 +794,8 @@ async fn handle_edu_presence(
 }
 
 async fn handle_edu_presence_update(
-	services: &Services,
-	origin: &ServerName,
+	services: Arc<Services>,
+	origin: OwnedServerName,
 	update: PresenceUpdate,
 ) {
 	smol::future::yield_now().await;
@@ -822,9 +823,9 @@ async fn handle_edu_presence_update(
 }
 
 async fn handle_edu_receipt(
-	services: &Services,
-	_client: &IpAddr,
-	origin: &ServerName,
+	services: Arc<Services>,
+	_client: IpAddr,
+	origin: OwnedServerName,
 	receipt: ReceiptContent,
 ) {
 	receipt
@@ -832,21 +833,21 @@ async fn handle_edu_receipt(
 		.into_iter()
 		.stream()
 		.for_each_concurrent(automatic_width(), |(room_id, room_updates)| {
-			handle_edu_receipt_room(services, origin, room_id, room_updates)
+			handle_edu_receipt_room(Arc::clone(&services), origin.clone(), room_id, room_updates)
 		})
 		.await;
 }
 
 async fn handle_edu_receipt_room(
-	services: &Services,
-	origin: &ServerName,
+	services: Arc<Services>,
+	origin: OwnedServerName,
 	room_id: OwnedRoomId,
 	room_updates: ReceiptMap,
 ) {
 	if services
 		.rooms
 		.event_handler
-		.acl_check(origin, &room_id)
+		.acl_check(&origin, &room_id)
 		.await
 		.is_err()
 	{
@@ -862,17 +863,23 @@ async fn handle_edu_receipt_room(
 		.read
 		.into_iter()
 		.stream()
-		.for_each_concurrent(automatic_width(), |(user_id, user_updates)| async move {
-			handle_edu_receipt_room_user(services, origin, room_id, &user_id, user_updates).await;
+		.for_each_concurrent(automatic_width(), |(user_id, user_updates)| {
+			let services = Arc::clone(&services);
+			let origin = origin.clone();
+			let room_id = room_id.clone();
+			async move {
+				handle_edu_receipt_room_user(services, origin, room_id, user_id, user_updates)
+					.await;
+			}
 		})
 		.await;
 }
 
 async fn handle_edu_receipt_room_user(
-	services: &Services,
-	origin: &ServerName,
-	room_id: &RoomId,
-	user_id: &UserId,
+	services: Arc<Services>,
+	origin: OwnedServerName,
+	room_id: OwnedRoomId,
+	user_id: slipstream::OwnedUserId,
 	user_updates: ReceiptData,
 ) {
 	if user_id.server_name() != origin {
@@ -886,7 +893,7 @@ async fn handle_edu_receipt_room_user(
 	if !services
 		.rooms
 		.state_cache
-		.server_in_room(origin, room_id)
+		.server_in_room(&origin, &room_id)
 		.await
 	{
 		debug_warn!(
@@ -896,23 +903,29 @@ async fn handle_edu_receipt_room_user(
 		return;
 	}
 
-	let data = &user_updates.data;
+	let data = user_updates.data;
 	user_updates
 		.event_ids
 		.into_iter()
 		.stream()
-		.for_each(|event_id| async move {
-			let user_data = [(user_id.to_owned(), data.clone())];
-			let receipts = [(ReceiptType::Read, BTreeMap::from(user_data))];
-			let content = [(event_id.clone(), BTreeMap::from(receipts))];
-			services
-				.rooms
-				.read_receipt
-				.readreceipt_update(user_id, room_id, &ReceiptEvent {
-					content: ReceiptEventContent(content.into()),
-					room_id: room_id.to_owned(),
-				})
-				.await;
+		.for_each(|event_id| {
+			let services = Arc::clone(&services);
+			let user_id = user_id.clone();
+			let room_id = room_id.clone();
+			let data = data.clone();
+			async move {
+				let user_data = [(user_id.clone(), data.clone())];
+				let receipts = [(ReceiptType::Read, BTreeMap::from(user_data))];
+				let content = [(event_id.clone(), BTreeMap::from(receipts))];
+				services
+					.rooms
+					.read_receipt
+					.readreceipt_update(&user_id, &room_id, &ReceiptEvent {
+						content: ReceiptEventContent(content.into()),
+						room_id: room_id.clone(),
+					})
+					.await;
+			}
 		})
 		.await;
 }

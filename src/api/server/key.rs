@@ -414,8 +414,12 @@ mod tests {
 
 	#[conduwuit_macros::async_test]
 	async fn route_includes_historical_keys_in_json_response() {
-		let temp_root =
-			std::env::temp_dir().join(format!("conduwuit-key-test-{}", std::process::id()));
+		let suffix = SystemTime::now()
+			.duration_since(SystemTime::UNIX_EPOCH)
+			.expect("system clock is after the Unix epoch")
+			.as_nanos();
+		let temp_root = std::env::temp_dir()
+			.join(format!("conduwuit-key-test-{}-{suffix}", std::process::id()));
 		let raw_config = RawConfig::from_toml(&format!(
 			"server_name = \"example.com\"\nallow_federation = true\ndatabase_path = \"{}\"",
 			temp_root.to_string_lossy().replace('\\', "/")
@@ -437,7 +441,7 @@ mod tests {
 		let (state, guard) = conduwuit_service::state::create(services.clone());
 		let router =
 			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
-		let test_server = TestServer::spawn(router, state).await;
+		let mut test_server = TestServer::spawn(router, state).await;
 		let response = test_server
 			.send(
 				Request::get(format!(
@@ -462,7 +466,8 @@ mod tests {
 			old_key.get("key").and_then(|key| key.as_str()),
 			Some(STANDARD.encode(b"BBB").as_str())
 		);
-		drop(test_server.task);
+		test_server.task.abort();
 		drop(guard);
+		let _ = std::fs::remove_dir_all(temp_root);
 	}
 }

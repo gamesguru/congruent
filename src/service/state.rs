@@ -42,6 +42,19 @@ impl Deref for State {
 	}
 }
 
+impl State {
+	/// Obtain an owned service reference for futures that must be `'static`.
+	#[must_use]
+	pub fn services(&self) -> Arc<Services> {
+		// SAFETY: `self.services` was created with `Arc::into_raw()` and the
+		// `Guard` keeps the allocation alive for every State value.
+		unsafe {
+			Arc::increment_strong_count(self.services);
+			Arc::from_raw(self.services)
+		}
+	}
+}
+
 /// SAFETY: State is a thin wrapper containing a raw const pointer to Services
 /// in lieu of an Arc. Services is internally threadsafe. If State contains
 /// additional fields this notice should be reevaluated.

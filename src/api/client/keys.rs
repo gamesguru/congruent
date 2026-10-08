@@ -222,9 +222,10 @@ pub(crate) async fn claim_keys_route(
 ///
 /// - Requires UIAA to verify password
 pub(crate) async fn upload_signing_keys_route(
-	State(services): State<crate::State>,
+	State(state): State<crate::State>,
 	body: Ruma<upload_signing_keys::v3::Request>,
 ) -> Result<upload_signing_keys::v3::Response> {
+	let services = state.services();
 	let (sender_user, sender_device) = body.sender();
 
 	info!(
@@ -234,7 +235,7 @@ pub(crate) async fn upload_signing_keys_route(
 	);
 
 	match check_for_new_keys(
-		services,
+		state,
 		sender_user,
 		body.self_signing_key.as_ref(),
 		body.user_signing_key.as_ref(),

@@ -626,8 +626,13 @@ impl Service {
 	///
 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
 	#[inline]
-	pub async fn get_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
-		self.db.get_pdu_in_room(None, event_id).await
+	pub fn get_pdu(
+		&self,
+		event_id: &EventId,
+	) -> impl Future<Output = Result<PduEvent>> + Send + 'static {
+		let db = self.db.clone();
+		let event_id = event_id.to_owned();
+		async move { db.get_pdu_in_room(None, &event_id).await }
 	}
 
 	/// Returns the pdu, populating room_id.

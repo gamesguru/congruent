@@ -23,6 +23,7 @@ use slipstream::{
 use super::{PduId, RawPduId, backward_extremities};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
+#[derive(Clone)]
 pub(super) struct Data {
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
@@ -37,6 +38,7 @@ pub(super) struct Data {
 	services: Services,
 }
 
+#[derive(Clone)]
 struct Services {
 	short: Dep<rooms::short::Service>,
 }

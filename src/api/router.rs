@@ -165,7 +165,8 @@ pub fn build(
 		.merge(
 			crate::hyper_router::MinimalRouter::new()
 				.ruma_route(&client::get_public_rooms_route)
-				.ruma_route(&client::get_public_rooms_filtered_route),
+				.ruma_route(&client::get_public_rooms_filtered_route)
+				.map_response(inject_public_join_rule),
 		)
 		.ruma_route(&client::search_users_route)
 		.ruma_route(&client::get_member_events_route)
@@ -226,9 +227,14 @@ pub fn build(
 		.ruma_route(&client::get_context_route)
 		.merge(
 			crate::hyper_router::MinimalRouter::new()
-				.ruma_route(&client::get_message_events_route),
+				.ruma_route(&client::get_message_events_route)
+				.map_request(default_messages_dir),
 		)
-		.merge(crate::hyper_router::MinimalRouter::new().ruma_route(&client::search_events_route))
+		.merge(
+			crate::hyper_router::MinimalRouter::new()
+				.ruma_route(&client::search_events_route)
+				.map_response(ensure_search_results_present),
+		)
 		.ruma_route(&client::turn_server_route)
 		.ruma_route(&client::send_event_to_device_route)
 		.ruma_route(&client::create_content_route)
@@ -335,7 +341,8 @@ pub fn build(
 			.merge(
 				crate::hyper_router::MinimalRouter::new()
 					.ruma_route(&server::get_public_rooms_route)
-					.ruma_route(&server::get_public_rooms_filtered_route),
+					.ruma_route(&server::get_public_rooms_filtered_route)
+					.map_response(inject_public_join_rule),
 			)
 			.route(
 				"/_matrix/federation/v1/send/{txnId}",
@@ -495,9 +502,11 @@ async fn federation_disabled() -> Response {
 async fn inject_public_join_rule(res: Response) -> Response {
 	let (parts, body) = res.into_parts();
 
-	let Ok(bytes) = body.collect().await.map(|body| body.to_bytes()) else {
-		return Response::from_parts(parts, Full::new(Bytes::new()));
-	};
+	let bytes = body
+		.collect()
+		.await
+		.unwrap_or_else(|error| match error {})
+		.to_bytes();
 
 	if let Some(mut json) = std::str::from_utf8(&bytes)
 		.ok()
@@ -529,9 +538,11 @@ async fn inject_public_join_rule(res: Response) -> Response {
 async fn ensure_search_results_present(res: Response) -> Response {
 	let (parts, body) = res.into_parts();
 
-	let Ok(bytes) = body.collect().await.map(|body| body.to_bytes()) else {
-		return Response::from_parts(parts, Full::new(Bytes::new()));
-	};
+	let bytes = body
+		.collect()
+		.await
+		.unwrap_or_else(|error| match error {})
+		.to_bytes();
 
 	if let Some(mut json) = std::str::from_utf8(&bytes)
 		.ok()
@@ -573,4 +584,23 @@ async fn ensure_search_results_present(res: Response) -> Response {
 /// fact, because slipstream's deserializer rejects the request before our handler
 /// runs. Instead this injects a default `dir=f` into the query string
 /// ahead of extraction, mirroring Synapse's default.
-const _: () = ();
+fn default_messages_dir(
+	mut request: http::Request<hyper::body::Incoming>,
+) -> http::Request<hyper::body::Incoming> {
+	if request.uri().query().is_some_and(|query| {
+		query
+			.split('&')
+			.any(|pair| pair.split_once('=').is_some_and(|(key, _)| key == "dir"))
+	}) {
+		return request;
+	}
+
+	let path = match request.uri().query() {
+		| Some(query) => format!("{}?{query}&dir=f", request.uri().path()),
+		| None => format!("{}?dir=f", request.uri().path()),
+	};
+	if let Ok(uri) = path.parse() {
+		*request.uri_mut() = uri;
+	}
+	request
+}

@@ -29,7 +29,6 @@ fn unrecognized_response(status: http::StatusCode) -> Response<Full<Bytes>> {
 pub struct RouteManifestEntry {
 	pub method: Method,
 	pub path: String,
-	pub matchit_path: String,
 	pub handler: &'static str,
 }
 
@@ -40,19 +39,11 @@ fn manifest() -> &'static std::sync::Mutex<Vec<RouteManifestEntry>> {
 	ROUTE_MANIFEST.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-#[must_use]
-pub fn matchit_path(path: &str) -> String { path.to_owned() }
-
 pub fn record_route(method: Method, path: &str, handler: &'static str) {
 	manifest()
 		.lock()
 		.expect("route manifest mutex poisoned")
-		.push(RouteManifestEntry {
-			method,
-			path: path.to_owned(),
-			matchit_path: matchit_path(path),
-			handler,
-		});
+		.push(RouteManifestEntry { method, path: path.to_owned(), handler });
 }
 
 #[must_use]
@@ -112,7 +103,7 @@ impl MinimalRouter {
 		};
 
 		router
-			.insert(&matchit_path(path), handler.clone())
+			.insert(path, handler.clone())
 			.map_err(|error| error.to_string())?;
 		self.routes.push((method, path.to_owned(), handler));
 		Ok(())
@@ -132,6 +123,44 @@ impl MinimalRouter {
 				.expect("valid merged route");
 		}
 		self
+	}
+
+	pub fn map_response<F, Fut>(self, f: F) -> Self
+	where
+		F: Fn(Response<Full<Bytes>>) -> Fut + Clone + Send + Sync + 'static,
+		Fut: Future<Output = Response<Full<Bytes>>> + Send + 'static,
+	{
+		let mut mapped = Self::new();
+		for (method, path, handler) in self.routes {
+			let inner = handler.clone();
+			let f = f.clone();
+			let handler: BoxedHandler = Arc::new(move |request, params| {
+				let future = inner(request, params);
+				let f = f.clone();
+				Box::pin(async move { f(future.await).await })
+			});
+			mapped
+				.register(method, &path, handler)
+				.expect("mapped route is valid");
+		}
+		mapped
+	}
+
+	pub fn map_request<F>(self, f: F) -> Self
+	where
+		F: Fn(Request<Incoming>) -> Request<Incoming> + Clone + Send + Sync + 'static,
+	{
+		let mut mapped = Self::new();
+		for (method, path, handler) in self.routes {
+			let inner = handler.clone();
+			let f = f.clone();
+			let handler: BoxedHandler =
+				Arc::new(move |request, params| inner(f(request), params));
+			mapped
+				.register(method, &path, handler)
+				.expect("mapped route is valid");
+		}
+		mapped
 	}
 }
 
