@@ -202,6 +202,9 @@ version = "0.3.31"
 default-features = false
 features = ["std", "async-await"]
 
+[workspace.dependencies.clap_complete]
+version = "4.5.58"
+
 [workspace.dependencies.tokio]
 version = "1.44.2"
 default-features = false

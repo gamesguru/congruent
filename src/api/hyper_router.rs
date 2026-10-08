@@ -1,11 +1,17 @@
 //! Incremental replacement boundary for the Axum router.
 
-use std::{collections::HashMap, convert::Infallible, future::Future, pin::Pin, sync::Arc};
+use std::{
+	collections::HashMap,
+	convert::Infallible,
+	future::Future,
+	pin::Pin,
+	sync::Arc,
+	task::{Context, Poll},
+};
 
-use bytes::Bytes;
+use axum::body::Body;
 use http::Method;
-use http_body_util::Full;
-use hyper::{Request, Response, body::Incoming};
+use hyper::{Request, Response};
 use matchit::Router;
 
 #[derive(Clone)]
@@ -62,9 +68,9 @@ pub fn route_manifest() -> Vec<RouteManifestEntry> {
 
 pub type BoxedHandler = Arc<
 	dyn Fn(
-			Request<Incoming>,
+			Request<Body>,
 			HashMap<String, String>,
-		) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+		) -> Pin<Box<dyn Future<Output = Response<Body>> + Send>>
 		+ Send
 		+ Sync,
 >;
@@ -112,12 +118,16 @@ impl MinimalRouter {
 	}
 }
 
-impl hyper::service::Service<Request<Incoming>> for MinimalRouter {
+impl tower::Service<Request<Body>> for MinimalRouter {
 	type Error = Infallible;
 	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-	type Response = Response<Full<Bytes>>;
+	type Response = Response<Body>;
 
-	fn call(&self, request: Request<Incoming>) -> Self::Future {
+	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	fn call(&mut self, request: Request<Body>) -> Self::Future {
 		let router = match *request.method() {
 			| Method::GET => &self.get,
 			| Method::POST => &self.post,
@@ -127,7 +137,7 @@ impl hyper::service::Service<Request<Incoming>> for MinimalRouter {
 				return Box::pin(async {
 					Ok(Response::builder()
 						.status(http::StatusCode::METHOD_NOT_ALLOWED)
-						.body(Full::default())
+						.body(Body::empty())
 						.expect("static 405 response is valid"))
 				});
 			},
@@ -146,7 +156,7 @@ impl hyper::service::Service<Request<Incoming>> for MinimalRouter {
 			| Err(_) => Box::pin(async {
 				Ok(Response::builder()
 					.status(http::StatusCode::NOT_FOUND)
-					.body(Full::default())
+					.body(Body::empty())
 					.expect("static 404 response is valid"))
 			}),
 		}

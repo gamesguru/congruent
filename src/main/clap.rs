@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use conduwuit_core::{Err, Result, config::RawConfig, err, toml, utils::available_parallelism};
 
 /// Commandline arguments
@@ -14,6 +15,9 @@ use conduwuit_core::{Err, Result, config::RawConfig, err, toml, utils::available
 	version = conduwuit_git_info::display_version(),
 )]
 pub struct Args {
+	#[command(subcommand)]
+	pub command: Option<Command>,
+
 	#[arg(short, long)]
 	/// Path to the config TOML file (optional)
 	pub config: Option<Vec<PathBuf>>,
@@ -145,9 +149,30 @@ pub struct Args {
 	pub gc_muzzy: Option<bool>,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum Command {
+	/// Generate shell completion scripts.
+	Completions {
+		/// Shell to generate completions for.
+		shell: Shell,
+	},
+}
+
 /// Parse commandline arguments into structured data
 #[must_use]
 pub(crate) fn parse() -> Args { Args::parse() }
+
+pub(crate) fn generate_completions(command: &mut clap::Command, shell: Shell) {
+	clap_complete::generate(
+		shell,
+		command,
+		command.get_name().to_owned(),
+		&mut std::io::stdout(),
+	);
+}
+
+#[must_use]
+pub(crate) fn command() -> clap::Command { Args::command() }
 
 /// Synthesize any command line options with configuration file options.
 pub(crate) fn update(mut config: RawConfig, args: &Args) -> Result<RawConfig> {

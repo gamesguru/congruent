@@ -20,7 +20,7 @@ mod signal;
 
 use conduwuit_core::config::Config;
 
-use crate::clap::update;
+use crate::clap::{Command, command, generate_completions, update};
 
 #[cfg(feature = "console")]
 mod attach;
@@ -38,6 +38,12 @@ pub fn run() -> Result<()> {
 	panic::init();
 
 	let args = clap::parse();
+
+	if let Some(Command::Completions { shell }) = args.command {
+		let mut command = command();
+		generate_completions(&mut command, shell);
+		return Ok(());
+	}
 
 	if args.version_verbose {
 		let mut output = conduwuit_git_info::verbose_version();

@@ -5,7 +5,7 @@ mod handler;
 mod request;
 mod response;
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use axum::{
 	Router,
@@ -15,6 +15,7 @@ use axum::{
 use conduwuit::{Server, err};
 pub(super) use conduwuit_service::state::State;
 use http::{Uri, uri};
+use hyper::Response;
 
 use self::handler::RouterExt;
 pub(super) use self::{
@@ -24,14 +25,41 @@ pub(super) use self::{
 use crate::{admin, client, server};
 
 pub fn build(router: Router<State>, server: &Server) -> Router<State> {
-	let _minimal_router = crate::hyper_router::MinimalRouter::new();
+	let mut minimal_router = crate::hyper_router::MinimalRouter::new();
+	let msc3030_enabled = server.config.experimental_features.msc3030_enabled;
+	let msc3266_enabled = server.config.experimental_features.msc3266_enabled;
+	let msc4222_enabled = server.config.experimental_features.msc4222_enabled;
+	let versions_handler: crate::hyper_router::BoxedHandler =
+		Arc::new(move |_request, _params| {
+			let value = client::supported_versions_value(
+				msc3030_enabled,
+				msc3266_enabled,
+				msc4222_enabled,
+			);
+			let body = slipstream::codec::to_string(&value);
+			Box::pin(async move {
+				Response::builder()
+					.header(http::header::CONTENT_TYPE, "application/json")
+					.body(axum::body::Body::from(body))
+					.expect("supported versions response builder is valid")
+			})
+		});
+	minimal_router
+		.register(http::Method::GET, "/_matrix/client/versions", versions_handler)
+		.expect("supported versions route is valid");
+	crate::hyper_router::record_route(
+		http::Method::GET,
+		"/_matrix/client/versions",
+		"minimal::supported_versions",
+	);
+	let minimal_router = Router::new().route_service("/_matrix/client/versions", minimal_router);
 	let config = &server.config;
 	let mut router = router
+		.merge(minimal_router)
 		.ruma_route(&client::get_profile_key_route)
 		.ruma_route(&client::set_profile_key_route)
 		.ruma_route(&client::delete_profile_key_route)
 		.ruma_route(&client::appservice_ping)
-		.ruma_route(&client::get_supported_versions_route)
 		.ruma_route(&client::get_register_available_route)
 		.ruma_route(&client::register::register_route)
 		.ruma_route(&client::register::request_registration_token_via_email_route)
