@@ -387,14 +387,6 @@ version = "0.2"
 [workspace.dependencies.num-traits]
 version = "0.2"
 
-[workspace.dependencies.minicbor]
-version = "2.1.1"
-features = ["std"]
-
-[workspace.dependencies.minicbor-serde]
-version = "0.6.0"
-features = ["std"]
-
 [workspace.dependencies.maplit]
 version = "1.0.2"
 

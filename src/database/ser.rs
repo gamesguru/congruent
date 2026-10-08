@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use conduwuit::{Error, Result, err, result::DebugInspect, utils::exchange};
-use serde::{Deserialize, Serialize, ser};
+use serde::{Serialize, ser};
 
 use crate::{dbkey::DbKey, util::unhandled};
 
@@ -52,10 +52,6 @@ pub(crate) struct Serializer<'a, W: Write> {
 /// Newtype for JSON serialization.
 #[derive(Debug)]
 pub struct Json<T>(pub T);
-
-/// Newtype for CBOR serialization.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Cbor<T>(pub T);
 
 /// Directive to force separator serialization specifically for prefix keying
 /// use. This is a quirk of the database schema and prefix iterations.
@@ -180,21 +176,11 @@ impl<W: Write> ser::Serializer for &mut Serializer<'_, W> {
 	}
 
 	#[allow(clippy::needless_borrows_for_generic_args)] // buggy
-	fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<Self::Ok>
+	fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<Self::Ok>
 	where
 		T: Serialize + ?Sized,
 	{
-		match name {
-			| "Cbor" => {
-				use minicbor::encode::write::Writer;
-				use minicbor_serde::Serializer;
-
-				value
-					.serialize(&mut Serializer::new(&mut Writer::new(&mut *self.out)))
-					.map_err(|e| Self::Error::SerdeSer(e.to_string().into()))
-			},
-			| _ => value.serialize(self),
-		}
+		value.serialize(self)
 	}
 
 	fn serialize_newtype_variant<T: Serialize + ?Sized>(

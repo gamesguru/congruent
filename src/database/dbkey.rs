@@ -14,7 +14,7 @@ use conduwuit::{Error, Result, matrix::StateKey};
 use serde::{Deserialize, Serialize, Serializer};
 use slipstream::codec;
 
-use crate::{Cbor, Ignore, IgnoreAll, Interfix, Json, Separator};
+use crate::{Ignore, IgnoreAll, Interfix, Json, Separator};
 
 /// A value that can be written as (part of) a database key or value.
 pub trait DbKey {
@@ -137,21 +137,6 @@ impl<'a> DbDe<'a> for &'a [u8] {
 }
 
 impl<'a> DbDe<'a> for std::borrow::Cow<'a, str> {
-	type De = Self;
-
-	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }
-}
-
-impl<T: Serialize> DbKey for Cbor<T> {
-	type Ser<'a>
-		= &'a Self
-	where
-		Self: 'a;
-
-	fn db_ser(&self) -> Self::Ser<'_> { self }
-}
-
-impl<'a, T: Deserialize<'a>> DbDe<'a> for Cbor<T> {
 	type De = Self;
 
 	fn from_de(de: Self::De) -> Result<Self> { Ok(de) }

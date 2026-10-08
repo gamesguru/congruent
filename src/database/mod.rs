@@ -37,7 +37,7 @@ pub use self::{
 	handle::Handle,
 	keyval::{KeyVal, Slice, serialize_key, serialize_val},
 	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
-	ser::{Cbor, Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
+	ser::{Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
 };
 use crate::maps::{Maps, MapsKey, MapsVal};
 
