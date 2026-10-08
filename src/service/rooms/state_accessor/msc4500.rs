@@ -784,7 +784,7 @@ mod wire_tests {
 	fn only_known_algorithms_are_validated() {
 		let with = |a: &str| StateHashes {
 			algorithm: a.into(),
-			entries: Default::default(),
+			entries: BTreeMap::default(),
 		};
 		assert!(with(ALGORITHM).is_known_algorithm());
 		assert!(with(ALGORITHM_WITH_INPUTS).is_known_algorithm());
