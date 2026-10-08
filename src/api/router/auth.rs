@@ -1,9 +1,3 @@
-use axum::RequestPartsExt;
-use axum_extra::{
-	TypedHeader,
-	headers::{Authorization, authorization::Bearer},
-	typed_header::TypedHeaderRejectionReason,
-};
 use conduwuit::{Err, Error, Result, debug_error, err, info, warn};
 use futures::{
 	TryFutureExt,
@@ -73,12 +67,13 @@ pub(super) async fn auth(
 		);
 	}
 
-	let bearer: Option<TypedHeader<Authorization<Bearer>>> =
-		request.parts.extract().await.unwrap_or(None);
-	let token = match &bearer {
-		| Some(TypedHeader(Authorization(bearer))) => Some(bearer.token()),
-		| None => request.query.access_token.as_deref(),
-	};
+	let token = request
+		.parts
+		.headers
+		.get(http::header::AUTHORIZATION)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.strip_prefix("Bearer "))
+		.or(request.query.access_token.as_deref());
 
 	let token = find_token(services, token).await?;
 
@@ -426,24 +421,13 @@ fn auth_server_checks_impl(
 }
 
 async fn parse_x_matrix(request: &mut Request) -> Result<XMatrix> {
-	let TypedHeader(Authorization(x_matrix)) = request
+	let value = request
 		.parts
-		.extract::<TypedHeader<Authorization<XMatrix>>>()
-		.await
-		.map_err(|e| {
-			let msg = match e.reason() {
-				| TypedHeaderRejectionReason::Missing => "Missing Authorization header",
-				| TypedHeaderRejectionReason::Error(_) => "Invalid X-Matrix signatures",
-				| _ => "Unknown header-related error",
-			};
-
-			err!(Request(Forbidden(warn!(
-				"{msg}: {e} for {} {}",
-				&request.parts.method, &request.parts.uri
-			))))
-		})?;
-
-	Ok(x_matrix)
+		.headers
+		.get(http::header::AUTHORIZATION)
+		.ok_or_else(|| err!(Request(Forbidden("Missing Authorization header"))))?;
+	slipstream::api::federation::authentication::XMatrix::decode(value)
+		.ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
 }
 
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {

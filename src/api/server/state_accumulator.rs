@@ -25,7 +25,7 @@ pub(crate) async fn get_state_accumulator_route(
 	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
 	crate::router::extract::Query(query): crate::router::extract::Query<StateAccumulatorQuery>,
 	uri: http::Uri,
-) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
+) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
 	let signature_uri = uri
 		.path_and_query()
 		.map_or("/", http::uri::PathAndQuery::as_str)

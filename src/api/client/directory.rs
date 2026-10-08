@@ -359,7 +359,7 @@ async fn user_can_publish_room(
 		// Server admins can always publish to their own room directory.
 		return Ok(true);
 	}
-	let (create_event, room_version, power_levels_content) = join!(
+	let (create_event, room_version, power_levels_content) = futures::join!(
 		services
 			.rooms
 			.state_accessor

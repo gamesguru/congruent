@@ -957,7 +957,7 @@ async fn join_room_by_id_helper_local(
 ) -> Result {
 	info!("Joining room locally");
 
-	let (room_version, join_rules, is_invited) = join!(
+	let (room_version, join_rules, is_invited) = futures::join!(
 		services.rooms.state.get_room_version(room_id),
 		services.rooms.state_accessor.get_join_rules(room_id),
 		services.rooms.state_cache.is_invited(sender_user, room_id)

@@ -414,8 +414,10 @@ pub(crate) async fn add_membership_to_unsigned(
 }
 
 /// A `200` response whose body is the given JSON value.
-pub(super) fn json_response(value: &slipstream::json::Value) -> axum::response::Response {
-	use axum::response::IntoResponse;
+pub(super) fn json_response(
+	value: &slipstream::json::Value,
+) -> crate::router::response::Response {
+	use crate::router::response::IntoResponse;
 
 	(
 		[(http::header::CONTENT_TYPE, "application/json")],

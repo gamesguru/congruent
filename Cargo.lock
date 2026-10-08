@@ -888,10 +888,15 @@ dependencies = [
 name = "conduwuit_web"
 version = "0.5.10"
 dependencies = [
+ "bytes",
+ "conduwuit_api",
  "conduwuit_core",
  "conduwuit_service",
  "conduwuit_slipstream",
  "http",
+ "http-body-util",
+ "hyper",
+ "matchit",
  "thiserror",
  "tower-http",
  "tower-sec-fetch",

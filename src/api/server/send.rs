@@ -71,7 +71,7 @@ pub(crate) async fn send_transaction_message_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<send_transaction_message::v1::Request>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	if *body.origin() != body.body.origin {
 		return Err!(Request(Forbidden(
 			"Not allowed to send transactions on behalf of other servers"
@@ -148,7 +148,7 @@ pub(crate) async fn send_transaction_message_route(
 
 async fn wait_for_result(
 	mut recv: Receiver<WrappedTransactionResponse>,
-) -> Result<axum::response::Response> {
+) -> Result<crate::router::response::Response> {
 	if conduwuit::timeout(Duration::from_secs(50), recv.changed())
 		.await
 		.is_err()

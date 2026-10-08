@@ -1,18 +1,12 @@
-use axum::{Router, routing::get};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new()
-		.route("/", get(index))
-		.route("/_continuwuity/", get(index))
-}
-
-async fn index() -> http::Response<axum::body::Body> {
+pub(crate) async fn index(_request: Request<Incoming>) -> Response<Full<Bytes>> {
 	http::Response::builder()
 		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
-		.body(axum::body::Body::from(
-			"<!doctype html><html><head><meta \
-			 charset=\"utf-8\"><title>Continuwuity</title></head><body><h1>Continuwuity</\
-			 h1><p>Matrix homeserver running.</p></body></html>",
-		))
+		.body(Full::from(Bytes::from_static(
+			b"<!doctype html><html><head><meta charset=\"utf-8\"><title>Continuwuity</title></head><body><h1>Continuwuity</h1><p>Matrix homeserver running.</p></body></html>",
+		)))
 		.expect("static response headers are valid")
 }

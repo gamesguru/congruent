@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests;
-use axum::response::IntoResponse;
 use conduwuit::{
 	Err, Result, RoomVersion, err, info,
 	matrix::{Event, pdu::PduBuilder},
@@ -31,6 +30,7 @@ use crate::{
 	router::{
 		ApiError,
 		extract::{ClientIp, State},
+		response::IntoResponse,
 	},
 };
 
@@ -41,7 +41,7 @@ pub(crate) async fn send_state_event_for_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	let sender_user = body.sender_user();
 	services
 		.users
@@ -104,7 +104,7 @@ pub(crate) async fn send_state_event_for_empty_key_route(
 	State(services): State<crate::State>,
 	ClientIp(ip): ClientIp,
 	body: Ruma<send_state_event::v3::Request>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	send_state_event_for_key_route(State(services), ClientIp(ip), body).await
 }
 

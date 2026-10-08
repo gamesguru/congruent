@@ -1,16 +1,16 @@
 use std::{mem, ops::Deref};
 
-use axum::{body::Body, extract::FromRequest};
 use bytes::Bytes;
 use conduwuit::{Result, debug, debug_warn, err, trace};
 use futures::future::BoxFuture;
+use hyper::body::Incoming;
 use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
 	OwnedUserId, ServerName, UserId,
 	api::{EndpointRequest, IncomingRequest},
 };
 
-use super::{auth, request, request::Request};
+use super::{auth, extract::FromRequest, request, request::Request};
 use crate::{State, router::ApiError, service::appservice::RegistrationInfo};
 
 /// Extractor for Ruma request structs
@@ -43,7 +43,7 @@ pub(crate) struct Args<T> {
 }
 
 pub(crate) fn authenticate_user<'a>(
-	request: hyper::Request<Body>,
+	request: hyper::Request<Incoming>,
 	services: &'a State,
 	metadata: &'a slipstream::api::Metadata,
 ) -> BoxFuture<'a, Result<OwnedUserId>> {
@@ -107,14 +107,14 @@ where
 	fn deref(&self) -> &Self::Target { &self.body }
 }
 
-impl<T> FromRequest<State, Body> for Args<T>
+impl<T> FromRequest<State, Incoming> for Args<T>
 where
 	T: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 {
 	type Rejection = ApiError;
 
 	async fn from_request(
-		request: hyper::Request<Body>,
+		request: hyper::Request<Incoming>,
 		services: &State,
 	) -> Result<Self, Self::Rejection> {
 		let mut request = request::from(services, request).await?;

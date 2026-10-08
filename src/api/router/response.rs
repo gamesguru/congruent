@@ -1,9 +1,27 @@
-use axum::response::{IntoResponse, Response};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use conduwuit::{Error, error};
 use http::StatusCode;
 use http_body_util::Full;
 use slipstream::api::{OutgoingResponse, client::uiaa::UiaaResponse};
+
+pub(crate) type Response = http::Response<Full<Bytes>>;
+
+pub(crate) trait IntoResponse {
+	fn into_response(self) -> Response;
+}
+
+impl IntoResponse for Response {
+	fn into_response(self) -> Response { self }
+}
+
+impl IntoResponse for StatusCode {
+	fn into_response(self) -> Response {
+		http::Response::builder()
+			.status(self)
+			.body(Full::new(Bytes::new()))
+			.expect("status-only response is valid")
+	}
+}
 
 pub(crate) struct ApiError(pub(crate) Error);
 

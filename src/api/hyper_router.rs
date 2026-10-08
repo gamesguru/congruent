@@ -9,16 +9,19 @@ use std::{
 	task::{Context, Poll},
 };
 
-use axum::body::Body;
+use bytes::Bytes;
 use http::Method;
-use hyper::{Request, Response};
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 use matchit::Router;
 
-fn unrecognized_response(status: http::StatusCode) -> Response<Body> {
+fn unrecognized_response(status: http::StatusCode) -> Response<Full<Bytes>> {
 	Response::builder()
 		.status(status)
 		.header(http::header::CONTENT_TYPE, "application/json")
-		.body(Body::from(r#"{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}"#))
+		.body(Full::from(Bytes::from_static(
+			br#"{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}"#,
+		)))
 		.expect("static unrecognized response is valid")
 }
 
@@ -76,9 +79,9 @@ pub fn route_manifest() -> Vec<RouteManifestEntry> {
 
 pub type BoxedHandler = Arc<
 	dyn Fn(
-			Request<Body>,
+			Request<Incoming>,
 			HashMap<String, String>,
-		) -> Pin<Box<dyn Future<Output = Response<Body>> + Send>>
+		) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
 		+ Send
 		+ Sync,
 >;
@@ -126,16 +129,16 @@ impl MinimalRouter {
 	}
 }
 
-impl tower::Service<Request<Body>> for MinimalRouter {
+impl tower::Service<Request<Incoming>> for MinimalRouter {
 	type Error = Infallible;
 	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-	type Response = Response<Body>;
+	type Response = Response<Full<Bytes>>;
 
 	fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
 		Poll::Ready(Ok(()))
 	}
 
-	fn call(&mut self, request: Request<Body>) -> Self::Future {
+	fn call(&mut self, request: Request<Incoming>) -> Self::Future {
 		let router = match *request.method() {
 			| Method::GET => &self.get,
 			| Method::POST => &self.post,
@@ -156,6 +159,9 @@ impl tower::Service<Request<Body>> for MinimalRouter {
 					.iter()
 					.map(|(key, value)| (key.to_owned(), value.to_owned()))
 					.collect();
+				let path = params.values().cloned().collect::<Vec<_>>();
+				let mut request = request;
+				request.extensions_mut().insert(path);
 				Box::pin(async move { Ok(handler(request, params).await) })
 			},
 			| Err(_) =>

@@ -1,7 +1,3 @@
-use axum::{
-	body::{Body, to_bytes},
-	response::Response,
-};
 use conduwuit::{
 	Err, Result, at, debug_warn, err,
 	matrix::{
@@ -11,6 +7,8 @@ use conduwuit::{
 };
 use futures::StreamExt;
 use http::StatusCode;
+use http_body_util::{BodyExt, Limited};
+use hyper::body::Incoming;
 use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::client::threads::get_threads,
@@ -26,6 +24,7 @@ use crate::{
 	router::{
 		ApiError, authenticate_user,
 		extract::{Path, State},
+		response::Response,
 	},
 };
 
@@ -108,19 +107,19 @@ pub(crate) async fn get_threads_route(
 pub(crate) async fn put_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
-	request: hyper::Request<Body>,
+	request: hyper::Request<Incoming>,
 ) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
 	let (parts, body) = request.into_parts();
-	let body = to_bytes(body, services.server.config.max_request_size)
+	let body = Limited::new(body, services.server.config.max_request_size)
+		.collect()
 		.await
+		.map(|body| body.to_bytes())
 		.unwrap_or_default();
-	let request = hyper::Request::from_parts(parts, Body::empty());
-	let sender_user =
-		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+	let sender_user = authenticate_thread_user(&parts, &services).await?;
 	let body = slipstream::codec::from_str::<ThreadSubscriptionBody>(
 		std::str::from_utf8(&body).unwrap_or_default(),
 	)
@@ -189,14 +188,13 @@ pub(crate) async fn put_thread_subscription_msc4306_route(
 pub(crate) async fn get_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
-	request: hyper::Request<Body>,
+	request: hyper::Request<Incoming>,
 ) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
-	let sender_user =
-		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+	let sender_user = authenticate_thread_user(&request.into_parts().0, &services).await?;
 
 	if !services
 		.rooms
@@ -223,14 +221,13 @@ pub(crate) async fn get_thread_subscription_msc4306_route(
 pub(crate) async fn delete_thread_subscription_msc4306_route(
 	State(services): State<crate::State>,
 	Path((room_id, thread_id)): Path<(String, String)>,
-	request: hyper::Request<Body>,
+	request: hyper::Request<Incoming>,
 ) -> std::result::Result<Response, ApiError> {
 	let room_id = OwnedRoomId::parse(room_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 	let thread_id = OwnedEventId::parse(thread_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid event ID."))))?;
-	let sender_user =
-		authenticate_user(request, &services, &get_threads::v1::Request::METADATA).await?;
+	let sender_user = authenticate_thread_user(&request.into_parts().0, &services).await?;
 
 	if !services
 		.rooms
@@ -260,4 +257,31 @@ fn msc4306_error(status: StatusCode, errcode: &str, error: &str) -> Response {
 	));
 	*response.status_mut() = status;
 	response
+}
+
+async fn authenticate_thread_user(
+	parts: &http::request::Parts,
+	services: &crate::State,
+) -> Result<slipstream::OwnedUserId, ApiError> {
+	let token = parts
+		.headers
+		.get(http::header::AUTHORIZATION)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.strip_prefix("Bearer "))
+		.map(str::to_owned)
+		.or_else(|| {
+			parts.uri.query().and_then(|query| {
+				serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(query)
+					.ok()
+					.and_then(|params| params.get("access_token").cloned())
+			})
+		});
+	let token =
+		token.ok_or_else(|| conduwuit::err!(Request(MissingToken("Missing access token."))))?;
+	services
+		.users
+		.find_from_token(&token)
+		.await
+		.map(|(user, _)| user)
+		.map_err(Into::into)
 }

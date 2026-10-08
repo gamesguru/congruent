@@ -83,7 +83,7 @@ fn compute_etag(extremities: &mut [OwnedEventId], event_count: u64) -> String {
 pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
 	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
-) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
+) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
 	let room_id = slipstream::OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 

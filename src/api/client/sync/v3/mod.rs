@@ -303,7 +303,7 @@ pub(crate) async fn sync_events_route(
 	ClientIp(client_ip): ClientIp,
 	crate::router::extract::RawQuery(raw_query): crate::router::extract::RawQuery,
 	body: Ruma<sync_events::v3::Request>,
-) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
+) -> Result<crate::router::response::Response, RumaResponse<UiaaResponse>> {
 	let timer = std::time::Instant::now();
 	let (sender_user, sender_device) = body.sender();
 

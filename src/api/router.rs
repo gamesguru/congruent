@@ -3,7 +3,7 @@ mod auth;
 pub(crate) mod extract;
 mod handler;
 mod request;
-mod response;
+pub(crate) mod response;
 
 use std::{str::FromStr, sync::Arc};
 

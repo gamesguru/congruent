@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use axum::response::IntoResponse;
 use conduwuit::Result;
 use futures::StreamExt;
 
-use crate::router::{ApiError, extract::State};
+use crate::router::{ApiError, extract::State, response::IntoResponse};
 
 pub(crate) fn supported_versions_value(
 	msc3030_enabled: bool,

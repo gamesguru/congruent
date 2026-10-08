@@ -172,7 +172,7 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	if !services
 		.rooms
 		.state_cache

@@ -334,7 +334,7 @@ pub(crate) async fn get_room_dag_route(
 			>,
 		>,
 	>,
-) -> std::result::Result<impl axum::response::IntoResponse, ApiError> {
+) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
 	use conduwuit::{Err, err};
 	use futures::StreamExt;
 	use slipstream::OwnedRoomId;

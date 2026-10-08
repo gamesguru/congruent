@@ -1,24 +1,22 @@
-use axum::{
-	Router,
-	body::Bytes,
-	extract::{RawQuery, State},
-	response::Html,
-	routing::get,
-};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Request, Response, body::Incoming};
 
 use crate::WebError;
 
 const INVALID_TOKEN_ERROR: &str = "Invalid reset token. Your reset link may have expired.";
 
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new()
-		.route("/account/reset_password", get(get_password_reset).post(post_password_reset))
+fn response(body: String) -> Response<Full<Bytes>> {
+	Response::builder()
+		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+		.body(Full::from(Bytes::from(body)))
+		.expect("static response headers are valid")
 }
 
-fn form_page(message: Option<&str>) -> Html<String> {
+fn form_page(message: Option<&str>) -> Response<Full<Bytes>> {
 	let message =
 		message.map_or(String::new(), |message| format!("<p><strong>{message}</strong></p>"));
-	Html(format!(
+	response(format!(
 		"<!doctype html><title>Reset password</title><h1>Reset password</h1>{message}<form \
 		 method=\"post\"><label>New password <input type=\"password\" name=\"new_password\" \
 		 required></label><label>Confirm password <input type=\"password\" \
@@ -63,18 +61,18 @@ fn field(body: &[u8], wanted: &str) -> Option<String> {
 	})
 }
 
-fn token(raw_query: Option<String>) -> Result<String, WebError> {
+fn token(raw_query: Option<&str>) -> Result<String, WebError> {
 	raw_query
 		.and_then(|query| field(query.as_bytes(), "token"))
 		.filter(|token| !token.is_empty())
 		.ok_or_else(|| WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()))
 }
 
-async fn get_password_reset(
-	State(services): State<crate::State>,
-	RawQuery(query): RawQuery,
-) -> Result<Html<String>, WebError> {
-	let token = token(query)?;
+pub(crate) async fn get_password_reset(
+	request: Request<Incoming>,
+	services: crate::State,
+) -> Result<Response<Full<Bytes>>, WebError> {
+	let token = token(request.uri().query())?;
 	if services.password_reset.check_token(&token).await.is_none() {
 		return Err(WebError::BadRequest(INVALID_TOKEN_ERROR.to_owned()));
 	}
@@ -82,12 +80,17 @@ async fn get_password_reset(
 	Ok(form_page(None))
 }
 
-async fn post_password_reset(
-	State(services): State<crate::State>,
-	RawQuery(query): RawQuery,
-	body: Bytes,
-) -> Result<Html<String>, WebError> {
-	let token = token(query)?;
+pub(crate) async fn post_password_reset(
+	request: Request<Incoming>,
+	services: crate::State,
+) -> Result<Response<Full<Bytes>>, WebError> {
+	let token = token(request.uri().query())?;
+	let body = request
+		.into_body()
+		.collect()
+		.await
+		.map_err(|e| WebError::BadRequest(e.to_string()))?
+		.to_bytes();
 	let Some(new_password) = field(&body, "new_password") else {
 		return Ok(form_page(Some("Password cannot be empty.")));
 	};
@@ -110,7 +113,7 @@ async fn post_password_reset(
 		.consume_token(token, &new_password)
 		.await?;
 
-	Ok(Html(
+	Ok(response(
 		"<!doctype html><title>Password reset</title><h1>Password reset</h1><p>Your password \
 		 has been reset successfully.</p>"
 			.to_owned(),

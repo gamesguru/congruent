@@ -1,16 +1,11 @@
-#![allow(clippy::disallowed_macros)]
+use std::{future::Future, sync::Arc};
 
-use std::any::Any;
-
-use axum::{
-	Router,
-	extract::rejection::QueryRejection,
-	http::{HeaderValue, StatusCode, header},
-	response::{Html, IntoResponse, Response},
-};
+use bytes::Bytes;
+use conduwuit_api::hyper_router::{BoxedHandler, MinimalRouter};
 use conduwuit_service::state;
-use tower_http::{catch_panic::CatchPanicLayer, set_header::SetResponseHeaderLayer};
-use tower_sec_fetch::SecFetchLayer;
+use http::{StatusCode, header::CONTENT_TYPE};
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 
 mod pages;
 
@@ -18,8 +13,6 @@ type State = state::State;
 
 #[derive(Debug, thiserror::Error)]
 enum WebError {
-	#[error("{0}")]
-	QueryRejection(#[from] QueryRejection),
 	#[error("{0}")]
 	BadRequest(String),
 
@@ -32,8 +25,8 @@ enum WebError {
 	Panic(String),
 }
 
-impl IntoResponse for WebError {
-	fn into_response(self) -> Response {
+impl WebError {
+	fn into_response(self) -> Response<Full<Bytes>> {
 		let status = match &self {
 			| Self::BadRequest(_) | Self::QueryRejection(_) => StatusCode::BAD_REQUEST,
 			| Self::NotFound => StatusCode::NOT_FOUND,
@@ -41,11 +34,15 @@ impl IntoResponse for WebError {
 		};
 
 		let error = html_escape(&self.to_string());
-		let body = format!(
+		let body = Full::from(Bytes::from(format!(
 			"<!doctype html><meta name=\"robots\" \
 			 content=\"noindex\"><title>{status}</title><h1>{status}</h1><pre>{error}</pre>"
-		);
-		(status, Html(body)).into_response()
+		)));
+		Response::builder()
+			.status(status)
+			.header(CONTENT_TYPE, "text/html; charset=utf-8")
+			.body(body)
+			.expect("web error response is valid")
 	}
 }
 
@@ -58,36 +55,71 @@ fn html_escape(input: &str) -> String {
 		.replace('\'', "&#39;")
 }
 
-pub fn build() -> Router<state::State> {
-	#[allow(clippy::wildcard_imports)]
-	use pages::*;
+fn handler<F, Fut>(state: State, function: F) -> BoxedHandler
+where
+	F: Fn(Request<Incoming>, State) -> Fut + Send + Sync + 'static,
+	Fut: Future<Output = Result<Response<Full<Bytes>>, WebError>> + Send + 'static,
+{
+	let function = Arc::new(function);
+	Arc::new(move |request, _params| {
+		let function = Arc::clone(&function);
+		Box::pin(async move {
+			match function(request, state).await {
+				| Ok(response) => response,
+				| Err(error) => error.into_response(),
+			}
+		})
+	})
+}
 
-	Router::new()
-		.merge(index::build())
-		.nest(
-			"/_continuwuity/",
-			Router::new()
-				.merge(debug::build())
-				.merge(password_reset::build())
-				.merge(threepid::build())
-				.fallback(async || WebError::NotFound),
-		)
-		.layer(CatchPanicLayer::custom(|panic: Box<dyn Any + Send + 'static>| {
-			let details = if let Some(s) = panic.downcast_ref::<String>() {
-				s.clone()
-			} else if let Some(s) = panic.downcast_ref::<&str>() {
-				(*s).to_owned()
-			} else {
-				"(opaque panic payload)".to_owned()
-			};
-
-			WebError::Panic(details).into_response()
-		}))
-		.layer(SetResponseHeaderLayer::if_not_present(
-			header::CONTENT_SECURITY_POLICY,
-			HeaderValue::from_static("default-src 'self'; img-src 'self' data:;"),
-		))
-		.layer(SecFetchLayer::new(|policy| {
-			policy.allow_safe_methods().reject_missing_metadata();
-		}))
+pub fn build(state: State) -> MinimalRouter {
+	let mut router = MinimalRouter::new();
+	let register = |router: &mut MinimalRouter, method, path, handler| {
+		router
+			.register(method, path, handler)
+			.expect("web route is valid");
+	};
+	register(
+		&mut router,
+		http::Method::GET,
+		"/",
+		Arc::new(|request, _| Box::pin(pages::index::index(request))),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/",
+		Arc::new(|request, _| Box::pin(pages::index::index(request))),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/_debug/panic",
+		handler(state, pages::debug::panic),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/_debug/error",
+		handler(state, pages::debug::error),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/account/reset_password",
+		handler(state, pages::password_reset::get_password_reset),
+	);
+	register(
+		&mut router,
+		http::Method::POST,
+		"/_continuwuity/account/reset_password",
+		handler(state, pages::password_reset::post_password_reset),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/3pid/email/validate",
+		handler(state, pages::threepid::threepid_validation),
+	);
+	router
 }

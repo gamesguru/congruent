@@ -19,9 +19,14 @@ crate-type = [
 
 
 [dependencies]
+bytes.workspace = true
+conduwuit-api.workspace = true
 conduwuit-service.workspace = true
 conduwuit-core.workspace = true
+http-body-util.workspace = true
 http.workspace = true
+hyper.workspace = true
+matchit.workspace = true
 thiserror.workspace = true
 tower-http.workspace = true
 slipstream.workspace = true

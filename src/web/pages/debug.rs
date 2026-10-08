@@ -1,17 +1,15 @@
-use std::convert::Infallible;
-
-use axum::{Router, routing::get};
+use bytes::Bytes;
 use conduwuit_core::Error;
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 
 use crate::WebError;
 
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new()
-		.route("/_debug/panic", get(async || -> Infallible { panic!("Guru meditation error") }))
-		.route(
-			"/_debug/error",
-			get(async || -> WebError {
-				Error::Err(std::borrow::Cow::Borrowed("Guru meditation error")).into()
-			}),
-		)
+pub(crate) async fn panic(_request: Request<Incoming>) -> Response<Full<Bytes>> {
+	panic!("Guru meditation error")
+}
+
+pub(crate) async fn error(_request: Request<Incoming>) -> Response<Full<Bytes>> {
+	WebError::from(Error::Err(std::borrow::Cow::Borrowed("Guru meditation error")))
+		.into_response()
 }

@@ -576,7 +576,7 @@ pub(crate) async fn sync_events_v5_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	Box::pin(sync_events_v5_route_inner(services, client_ip, body, SyncEndpoint::StableV5))
 		.await
 		.map_err(Into::into)
@@ -586,7 +586,7 @@ pub(crate) async fn sync_events_unstable_msc3575_route(
 	State(ref services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
 	body: Ruma<CompatSyncRequest>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	Box::pin(sync_events_v5_route_inner(
 		services,
 		client_ip,
@@ -602,7 +602,7 @@ async fn sync_events_v5_route_inner(
 	client_ip: std::net::IpAddr,
 	body: Ruma<CompatSyncRequest>,
 	endpoint: SyncEndpoint,
-) -> Result<axum::response::Response> {
+) -> Result<crate::router::response::Response> {
 	let sender_user = body.sender_user.as_ref().expect("user is authenticated");
 	let sender_device = body.sender_device.as_ref().expect("user is authenticated");
 
@@ -1537,7 +1537,7 @@ fn sync_events_v5_json_response(
 	response: &sync_events::v5::Response,
 	room_extras: RoomExtras,
 	thread_subscriptions_extension: Option<Value>,
-) -> Result<axum::response::Response> {
+) -> Result<crate::router::response::Response> {
 	let mut value = response.to_body();
 	if let Some(thread_subscriptions) = thread_subscriptions_extension {
 		value

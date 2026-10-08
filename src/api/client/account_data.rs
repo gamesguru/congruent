@@ -1,6 +1,6 @@
-use axum::body::Body;
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
+use hyper::body::Incoming;
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
@@ -127,8 +127,8 @@ pub(crate) async fn get_room_account_data_route(
 pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, event_type)): Path<(String, String)>,
-	request: hyper::Request<Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+	request: hyper::Request<Incoming>,
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let sender_user =
@@ -153,8 +153,8 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, room_id, event_type)): Path<(String, String, String)>,
-	request: hyper::Request<Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
+	request: hyper::Request<Incoming>,
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let room_id = OwnedRoomId::parse(room_id)
