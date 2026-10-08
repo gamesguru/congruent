@@ -52,7 +52,6 @@ ctor.workspace = true
 cyborgtime.workspace = true
 either.workspace = true
 futures.workspace = true
-http-body-util.workspace = true
 http.workspace = true
 libc.workspace = true
 libloading.workspace = true
@@ -78,7 +77,6 @@ url.workspace = true
 roaring.workspace = true
 parking_lot.workspace = true
 lock_api.workspace = true
-hyper-util.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
 

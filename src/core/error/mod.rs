@@ -56,8 +56,8 @@ pub enum Error {
 	Poison(Cow<'static, str>),
 	#[error("Regex error: {0}")]
 	Regex(#[from] regex::Error),
-	#[error("{0}")]
-	Reqwest(#[source] FormattedReqwestError),
+	#[error("HTTP client error: {0}")]
+	HttpClient(Cow<'static, str>),
 	#[error("{0}")]
 	SerdeDe(Cow<'static, str>),
 	#[error("{0}")]
@@ -204,7 +204,7 @@ impl Error {
 			| Self::Request(kind, _, code) => response::status_code(kind, *code),
 			| Self::BadRequest(kind, ..) => response::bad_request_code(kind),
 			| Self::FeatureDisabled(..) => response::bad_request_code(self.kind()),
-			| Self::Reqwest(error) => error.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+			| Self::HttpClient(..) => StatusCode::BAD_GATEWAY,
 			| Self::Conflict(_) => StatusCode::CONFLICT,
 			| Self::Io(error) => response::io_error_code(error.kind()),
 			| Self::FederationTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
@@ -255,41 +255,3 @@ pub fn infallible(_e: &Infallible) {
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
 pub fn sanitized_message(e: Error) -> String { e.sanitized_message() }
-
-#[derive(Debug)]
-pub struct FormattedReqwestError(reqwest::Error);
-
-impl std::ops::Deref for FormattedReqwestError {
-	type Target = reqwest::Error;
-
-	fn deref(&self) -> &Self::Target { &self.0 }
-}
-
-impl std::error::Error for FormattedReqwestError {
-	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { self.0.source() }
-}
-
-impl std::fmt::Display for FormattedReqwestError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		if let Some(hyper_error) = self.0.source()
-			&& hyper_error.is::<hyper_util::client::legacy::Error>()
-			&& let Some(real_error) = hyper_error.source()
-		{
-			if let Some(real_reason) = real_error.source() {
-				write!(f, "{real_error}: {real_reason}")
-			} else {
-				write!(f, "{real_error}")
-			}
-		} else {
-			write!(f, "Request error: {}", self.0)
-		}
-	}
-}
-
-impl From<reqwest::Error> for FormattedReqwestError {
-	fn from(err: reqwest::Error) -> Self { Self(err) }
-}
-
-impl From<reqwest::Error> for Error {
-	fn from(err: reqwest::Error) -> Self { Self::Reqwest(err.into()) }
-}

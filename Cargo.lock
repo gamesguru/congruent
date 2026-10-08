@@ -700,8 +700,6 @@ dependencies = [
  "futures",
  "hardened_malloc-rs",
  "http",
- "http-body-util",
- "hyper-util",
  "libc",
  "libloading",
  "lock_api",
