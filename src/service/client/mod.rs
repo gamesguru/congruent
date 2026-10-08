@@ -6,6 +6,8 @@ use reqwest::redirect;
 
 use crate::{resolver, service};
 
+mod connector;
+
 pub struct Service {
 	pub default: reqwest::Client,
 	pub url_preview: reqwest::Client,

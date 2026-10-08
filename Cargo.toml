@@ -192,10 +192,22 @@ default-features = false
 version = "1.6.0"
 default-features = false
 features = [
-    "server",
-    "http1",
-    "http2",
+	"client",
+	"server",
+	"http1",
+	"http2",
 ]
+
+[workspace.dependencies.async-net]
+version = "2.0.0"
+
+[workspace.dependencies.async-rustls]
+version = "0.4.2"
+default-features = false
+features = ["tls12"]
+
+[workspace.dependencies.futures-io]
+version = "0.3.34"
 
 [workspace.dependencies.hyper-util]
 version = "=0.1.20"

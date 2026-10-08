@@ -255,6 +255,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-rustls"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecfa55659849ace733f86ccd219da40abd8bc14124e40b312433e85a5a266e77"
+dependencies = [
+ "futures-io",
+ "rustls 0.21.12",
+]
+
+[[package]]
 name = "async-signal"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -611,7 +621,7 @@ dependencies = [
  "ctor",
  "hardened_malloc-rs",
  "log",
- "rustls",
+ "rustls 0.23.45",
  "smol",
 ]
 
@@ -632,7 +642,7 @@ dependencies = [
  "futures",
  "log",
  "rezzy",
- "rustls",
+ "rustls 0.23.45",
  "smol",
  "toml",
 ]
@@ -659,7 +669,7 @@ dependencies = [
  "matchit",
  "rand",
  "rezzy",
- "rustls",
+ "rustls 0.23.45",
  "serde",
  "serde_urlencoded",
  "sha1 0.11.0",
@@ -805,6 +815,8 @@ dependencies = [
 name = "conduwuit_service"
 version = "0.5.10"
 dependencies = [
+ "async-net",
+ "async-rustls",
  "async-trait",
  "base64 0.22.1",
  "bincode",
@@ -819,10 +831,13 @@ dependencies = [
  "dashmap",
  "either",
  "futures",
+ "futures-io",
  "governor",
  "hickory-resolver",
  "hmac",
  "http",
+ "http-body-util",
+ "hyper",
  "image",
  "itertools",
  "ldap3",
@@ -836,7 +851,7 @@ dependencies = [
  "regex",
  "rezzy",
  "roaring",
- "rustls",
+ "rustls 0.23.45",
  "sd-notify",
  "serde",
  "sha2 0.11.0",
@@ -1673,6 +1688,7 @@ dependencies = [
  "pin-project-lite",
  "smallvec",
  "tokio",
+ "want",
 ]
 
 [[package]]
@@ -2003,7 +2019,7 @@ dependencies = [
  "log",
  "nom",
  "percent-encoding",
- "rustls",
+ "rustls 0.23.45",
  "rustls-native-certs",
  "thiserror",
  "tokio",
@@ -2716,6 +2732,17 @@ dependencies = [
 
 [[package]]
 name = "rustls"
+version = "0.21.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f56a14d1f48b391359b22f731fd4bd7e43c97f3c50eee276f3aa09c94784d3e"
+dependencies = [
+ "ring",
+ "rustls-webpki 0.101.7",
+ "sct",
+]
+
+[[package]]
+name = "rustls"
 version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
@@ -2724,7 +2751,7 @@ dependencies = [
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki",
+ "rustls-webpki 0.103.15",
  "subtle",
  "zeroize",
 ]
@@ -2748,6 +2775,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
  "zeroize",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.101.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
+dependencies = [
+ "ring",
+ "untrusted",
 ]
 
 [[package]]
@@ -2805,6 +2842,16 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sct"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
+dependencies = [
+ "ring",
+ "untrusted",
+]
 
 [[package]]
 name = "sd-notify"
@@ -3250,7 +3297,7 @@ version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
- "rustls",
+ "rustls 0.23.45",
  "tokio",
 ]
 
@@ -3397,6 +3444,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "try-lock"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
 name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3470,6 +3523,15 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
+]
+
+[[package]]
+name = "want"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b"
+dependencies = [
+ "try-lock",
 ]
 
 [[package]]

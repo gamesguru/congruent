@@ -288,7 +288,7 @@ where
 	}
 
 	let conflicted_set_start = std::time::Instant::now();
-	let all_conflicted: HashSet<_> = all_conflicted_ids
+	let all_conflicted: HashSet<OwnedEventId> = all_conflicted_ids
 		.into_iter()
 		.stream()
 		// Filter out non-existent events and non-state events in a single fetch.
@@ -349,7 +349,7 @@ where
 	//    Running this for V2 was a regression that tripled auth-check work.
 	let mut global_pl_context = None;
 	if stateres_version == StateResolutionVersion::V2_1 {
-		let conflicted_pl_events: Vec<_> = all_conflicted
+		let conflicted_pl_events: Vec<OwnedEventId> = all_conflicted
 			.iter()
 			.stream()
 			.wide_filter_map(async |id| {
@@ -444,7 +444,7 @@ where
 
 	// Get only the control events with a state_key: "" or ban/kick event (sender !=
 	// state_key)
-	let mut control_events: Vec<_> = all_conflicted
+	let mut control_events: Vec<OwnedEventId> = all_conflicted
 		.iter()
 		.stream()
 		.wide_filter_map(async |id| {
@@ -510,14 +510,14 @@ where
 
 	// At this point the control_events have been resolved we now have to
 	// sort the remaining events using the mainline of the resolved power level.
-	let deduped_power_ev: HashSet<_> = sorted_control_levels.into_iter().collect();
+	let deduped_power_ev: HashSet<OwnedEventId> = sorted_control_levels.into_iter().collect();
 
 	debug!(count = deduped_power_ev.len(), "deduped power events");
 	trace!(set = ?deduped_power_ev, "deduped power events");
 
 	// This removes the control events that passed auth and more importantly those
 	// that failed auth
-	let mut events_to_resolve: Vec<_> = all_conflicted
+	let mut events_to_resolve: Vec<OwnedEventId> = all_conflicted
 		.iter()
 		.filter(|&id| !deduped_power_ev.contains(id))
 		.cloned()
