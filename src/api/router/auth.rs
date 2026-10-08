@@ -426,8 +426,7 @@ async fn parse_x_matrix(request: &mut Request) -> Result<XMatrix> {
 		.headers
 		.get(http::header::AUTHORIZATION)
 		.ok_or_else(|| err!(Request(Forbidden("Missing Authorization header"))))?;
-	slipstream::api::federation::authentication::XMatrix::decode(value)
-		.ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
+	XMatrix::decode(value).ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
 }
 
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {

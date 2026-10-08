@@ -53,7 +53,7 @@ async fn listener(
 		let server = Arc::clone(&server);
 		let services = Arc::clone(&services);
 		let router = router.clone();
-		server.runtime().spawn(async move {
+		drop(server.runtime().spawn(async move {
 			let service = service_fn(move |request: http::Request<Incoming>| {
 				let router = router.clone();
 				let services = services.clone();
@@ -70,6 +70,6 @@ async fn listener(
 			{
 				debug!(%error, %peer, "connection closed with error");
 			}
-		});
+		}));
 	}
 }

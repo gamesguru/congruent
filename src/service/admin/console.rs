@@ -46,7 +46,7 @@ impl Console {
 
 	pub async fn start_listener(self: &Arc<Self>) {
 		let self_ = Arc::clone(self);
-		self.server.runtime().spawn(self_.socket_worker());
+		drop(self.server.runtime().spawn(self_.socket_worker()));
 	}
 
 	pub async fn close(self: &Arc<Self>) {
@@ -58,7 +58,7 @@ impl Console {
 
 	pub fn interrupt(self: &Arc<Self>) { self.worker_join.lock().take(); }
 
-	fn worker(self: Arc<Self>, runtime: &RuntimeHandle) {
+	fn worker(self: Arc<Self>, _runtime: &RuntimeHandle) {
 		debug!("admin console session starting");
 		println!("conduwuit admin console; type commands and press Enter");
 
@@ -101,9 +101,9 @@ impl Console {
 			match listener.accept().await {
 				| Ok((stream, _)) => {
 					let self_ = Arc::clone(&self);
-					self.server.runtime().spawn(async move {
+					drop(self.server.runtime().spawn(async move {
 						self_.handle_connection(stream).await;
-					});
+					}));
 				},
 				| Err(e) => {
 					error!("Console socket accept error: {e}");

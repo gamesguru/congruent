@@ -366,10 +366,13 @@ macro_rules! route_handler {
 			Output: HandlerResult + Send + 'static,
 			$( $tx: ExtractArg + Send + 'static, )*
 		{
+			#[allow(non_snake_case)]
 			fn boxed(&'static self, method: Method, path: &'static str) -> (Method, &'static str, BoxedHandler) {
 				let handler: BoxedHandler = Arc::new(move |request, params| {
 					let state = request.extensions().get::<State>().copied().expect("router state extension");
+					#[allow(unused_mut)]
 					let mut context = Context { request: Some(request), params };
+					let _ = (&state, &context);
 					Box::pin(async move {
 						$(let $tx = match $tx::extract(&mut context, &state).await {
 							Ok(value) => value,
@@ -429,7 +432,10 @@ macro_rules! ruma_handler {
 				let paths = std::iter::once(metadata.path)
 					.chain(metadata.aliases.iter().copied())
 					.chain(metadata.path.split_once("/_matrix/client/v3/").map(|(prefix, suffix)| {
-						Box::leak(format!("{prefix}/_matrix/client/r0/{suffix}").into_boxed_str()) as &'static str
+						let path: &'static str = Box::leak(
+							format!("{prefix}/_matrix/client/r0/{suffix}").into_boxed_str(),
+						);
+						path
 					}))
 					.collect::<Vec<_>>();
 				for path in paths {

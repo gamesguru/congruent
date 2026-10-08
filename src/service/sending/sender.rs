@@ -297,9 +297,9 @@ impl Service {
 			}
 			let dest_clone = dest.clone();
 			let db = self.db.clone();
-			self.server.runtime().spawn(async move {
+			drop(self.server.runtime().spawn(async move {
 				db.delete_all_requests_for(&dest_clone).await;
-			});
+			}));
 			statuses.remove(&dest);
 			return;
 		}
@@ -331,7 +331,7 @@ impl Service {
 			.0
 			.clone();
 
-		self.server.runtime().spawn(async move {
+		drop(self.server.runtime().spawn(async move {
 			smol::Timer::after(delay).await;
 			sender
 				.send(Msg {
@@ -340,7 +340,7 @@ impl Service {
 					queue_id: Vec::new(),
 				})
 				.ok();
-		});
+		}));
 	}
 
 	#[allow(clippy::needless_pass_by_ref_mut)]

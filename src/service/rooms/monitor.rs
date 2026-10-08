@@ -94,7 +94,7 @@ impl Service {
 			// Clone the handle so it does not keep `server` borrowed while the
 			// task below moves it.
 			let runtime = server.runtime().clone();
-			runtime.spawn(async move {
+			drop(runtime.spawn(async move {
 				let mut interval =
 					async_io::Timer::interval(Duration::from_secs(node_sweep_interval));
 				// consume the immediate first tick so we don't sweep on startup
@@ -115,7 +115,7 @@ impl Service {
 
 					Self::sweep_state_hamt_nodes(&state, delete).await;
 				}
-			});
+			}));
 		}
 
 		loop {

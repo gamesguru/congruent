@@ -159,6 +159,7 @@ clap.workspace = true
 clap_complete.workspace = true
 const-str.workspace = true
 ctor.workspace = true
+futures.workspace = true
 log.workspace = true
 # TODO: replace reqwest with something??
 rustls = { workspace = true, default-features = false }

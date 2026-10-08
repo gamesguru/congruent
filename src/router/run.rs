@@ -3,7 +3,7 @@ extern crate conduwuit_core as conduwuit;
 extern crate conduwuit_service as service;
 
 use std::{
-	sync::{Arc, Weak, atomic::Ordering},
+	sync::{Arc, Weak},
 	time::Duration,
 };
 

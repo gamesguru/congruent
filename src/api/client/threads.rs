@@ -13,7 +13,7 @@ use slipstream::{
 	OwnedEventId, OwnedRoomId,
 	api::client::threads::get_threads,
 	codec::{DeError, Deserialize as CodecDeserialize},
-	endpoint::{EndpointRequest, body_field},
+	endpoint::body_field,
 	json::Value,
 	uint,
 };
@@ -22,7 +22,7 @@ use crate::{
 	Ruma,
 	json_util::{json_response, single_field},
 	router::{
-		ApiError, authenticate_user,
+		ApiError,
 		extract::{Path, State},
 		response::Response,
 	},

@@ -16,20 +16,14 @@ enum WebError {
 	#[error("{0}")]
 	BadRequest(String),
 
-	#[error("This page does not exist.")]
-	NotFound,
-
 	#[error("{0}")]
 	InternalError(#[from] conduwuit_core::Error),
-	#[error("Request handler panicked! {0}")]
-	Panic(String),
 }
 
 impl WebError {
 	fn into_response(self) -> Response<Full<Bytes>> {
 		let status = match &self {
 			| Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-			| Self::NotFound => StatusCode::NOT_FOUND,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 

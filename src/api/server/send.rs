@@ -29,7 +29,7 @@ use service::transactions::{
 };
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId, ServerName, UInt, UserId,
+	OwnedUserId, ServerName, UInt, UserId,
 	api::{
 		client::error::{ErrorKind, ErrorKind::LimitExceeded},
 		federation::{
@@ -879,7 +879,7 @@ async fn handle_edu_receipt_room_user(
 	services: Arc<Services>,
 	origin: OwnedServerName,
 	room_id: OwnedRoomId,
-	user_id: slipstream::OwnedUserId,
+	user_id: OwnedUserId,
 	user_updates: ReceiptData,
 ) {
 	if user_id.server_name() != origin {

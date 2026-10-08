@@ -402,7 +402,7 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		return Err!("Not allowed to send federation requests to ourselves.");
 	}
 
-	let timer = std::time::Instant::now();
+	let timer = Instant::now();
 
 	match self
 		.services

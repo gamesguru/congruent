@@ -417,8 +417,6 @@ pub(crate) async fn add_membership_to_unsigned(
 pub(super) fn json_response(
 	value: &slipstream::json::Value,
 ) -> crate::router::response::Response {
-	use crate::router::response::IntoResponse;
-
 	http::Response::builder()
 		.header(http::header::CONTENT_TYPE, "application/json")
 		.body(http_body_util::Full::new(bytes::Bytes::from(slipstream::codec::to_string(

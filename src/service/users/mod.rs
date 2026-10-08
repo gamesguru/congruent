@@ -1573,9 +1573,9 @@ impl Service {
 			conduwuit::info!(%user_id, %room_id, "Flushing room for device key update");
 
 			let sending = self.services.sending.clone();
-			self.services.server.runtime().spawn(async move {
+			drop(self.services.server.runtime().spawn(async move {
 				let _ = sending.flush_room(&room_id).await;
-			});
+			}));
 		}
 
 		let key = (user_id, count);

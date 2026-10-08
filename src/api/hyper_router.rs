@@ -109,7 +109,12 @@ impl MinimalRouter {
 		Ok(())
 	}
 
-	pub fn route(mut self, path: &'static str, spec: crate::router::handler::RouteSpec) -> Self {
+	#[must_use]
+	pub(crate) fn route(
+		mut self,
+		path: &'static str,
+		spec: crate::router::handler::RouteSpec,
+	) -> Self {
 		for builder in spec.builders {
 			let (method, _, handler) = builder(path);
 			self.register(method, path, handler).expect("valid route");
@@ -117,6 +122,7 @@ impl MinimalRouter {
 		self
 	}
 
+	#[must_use]
 	pub fn merge(mut self, other: Self) -> Self {
 		for (method, path, handler) in other.routes {
 			self.register(method, &path, handler)
@@ -125,6 +131,7 @@ impl MinimalRouter {
 		self
 	}
 
+	#[must_use]
 	pub fn map_response<F, Fut>(self, f: F) -> Self
 	where
 		F: Fn(Response<Full<Bytes>>) -> Fut + Clone + Send + Sync + 'static,
@@ -146,6 +153,7 @@ impl MinimalRouter {
 		mapped
 	}
 
+	#[must_use]
 	pub fn map_request<F>(self, f: F) -> Self
 	where
 		F: Fn(Request<Incoming>) -> Request<Incoming> + Clone + Send + Sync + 'static,
@@ -175,8 +183,7 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 
 	fn call(&mut self, request: Request<Incoming>) -> Self::Future {
 		let router = match *request.method() {
-			| Method::GET => &self.get,
-			| Method::HEAD => &self.get,
+			| Method::GET | Method::HEAD => &self.get,
 			| Method::POST => &self.post,
 			| Method::PUT => &self.put,
 			| Method::DELETE => &self.delete,
@@ -190,7 +197,7 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 		match router.at(request.uri().path()) {
 			| Ok(matched) => {
 				let handler = matched.value.clone();
-				let params: std::collections::HashMap<String, String> = matched
+				let params: HashMap<String, String> = matched
 					.params
 					.iter()
 					.map(|(key, value)| (key.to_owned(), value.to_owned()))

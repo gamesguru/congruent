@@ -29,7 +29,7 @@ use slipstream::{
 	uint,
 };
 
-use crate::{Dep, client, config, globals, rooms, sending, users};
+use crate::{Dep, client, globals, rooms, sending, users};
 
 pub struct Service {
 	db: Data,
@@ -38,7 +38,6 @@ pub struct Service {
 
 struct Services {
 	globals: Dep<globals::Service>,
-	config: Dep<config::Service>,
 	client: Dep<client::Service>,
 	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
@@ -63,7 +62,6 @@ impl crate::Service for Service {
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
 				client: args.depend::<client::Service>("client"),
-				config: args.depend::<config::Service>("config"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),

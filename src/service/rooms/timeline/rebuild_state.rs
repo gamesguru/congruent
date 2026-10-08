@@ -502,7 +502,7 @@ impl super::Service {
 
 		// Spawn synchronous rezzy pipeline on a blocking thread
 		let lean_events_moved = lean_events;
-		self.services.server.runtime().spawn_blocking(move || {
+		drop(self.services.server.runtime().spawn_blocking(move || {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
 			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 			let empty_key = String::new();
@@ -525,7 +525,7 @@ impl super::Service {
 			if result == Err(rezzy::StateComputationError::CycleDetected) {
 				warn!("streaming state computation detected cycle; results incomplete");
 			}
-		});
+		}));
 
 		// ── Consume stream and write a HAMT root for each event ──
 		// Root handle for the empty state; events whose parent has no computed

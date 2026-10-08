@@ -609,6 +609,7 @@ dependencies = [
  "conduwuit_service",
  "const-str",
  "ctor",
+ "futures",
  "hardened_malloc-rs",
  "log",
  "rustls",

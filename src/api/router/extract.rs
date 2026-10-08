@@ -41,5 +41,5 @@ pub(crate) fn client_ip<B>(request: &HttpRequest<B>) -> ClientIp {
 		.extensions()
 		.get::<std::net::SocketAddr>()
 		.map(std::net::SocketAddr::ip);
-	ClientIp(peer.unwrap_or(IpAddr::from([127, 0, 0, 1])))
+	ClientIp(peer.unwrap_or_else(|| IpAddr::from([127, 0, 0, 1])))
 }
