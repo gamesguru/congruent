@@ -187,7 +187,8 @@ default-features = false
 version = "4.5.35"
 default-features = false
 features = [
-    "derive",
+	"color",
+	"derive",
     "env",
     "error-context",
     "help",

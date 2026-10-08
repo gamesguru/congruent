@@ -2917,7 +2917,7 @@ impl RawConfig {
 					| toml::map::Entry::Vacant(entry) => {
 						entry.insert(Value::Array(appended.collect()));
 					},
-					| toml::map::Entry::Occupied(mut entry) =>
+					| toml::map::Entry::Occupied(mut entry) => {
 						if let Value::Array(existing) = entry.get_mut() {
 							existing.extend(appended);
 						} else {
@@ -2926,7 +2926,8 @@ impl RawConfig {
 							let Value::Array(existing) = entry.get_mut() else { unreachable!() };
 							existing.push(previous);
 							existing.extend(appended);
-						},
+						}
+					},
 				}
 				return;
 			}

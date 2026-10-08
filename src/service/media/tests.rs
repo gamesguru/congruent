@@ -184,7 +184,7 @@ mod url_and_opengraph_parsing_tests {
 		assert_eq!(
 			html.image.as_deref(),
 			Some(
-			"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
+				"https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Bertrand_Russell_smoking_in_1936.jpg/960px-Bertrand_Russell_smoking_in_1936.jpg"
 			)
 		);
 		assert_eq!(html.image_width, Some(955));
@@ -210,7 +210,7 @@ mod url_and_opengraph_parsing_tests {
 		assert_eq!(
 			html.image.as_deref(),
 			Some(
-			"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
+				"https://lh3.googleusercontent.com/B260PhEADGfdW2KWv9fSOSEyQ2AXPMOwaZcNOYN4wDOiVC6fHSr-Un9SonuWQyuFoQip64Gnyuuwggo"
 			)
 		);
 		assert_eq!(html.image_width, Some(1000));
