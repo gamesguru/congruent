@@ -8,8 +8,8 @@ use crate::{Error, Result, utils::sys::available_parallelism};
 /// Parallelism extensions to augment futures::StreamExt. These combinators are
 /// for computation-oriented workloads, unlike -band combinators for I/O
 /// workloads; these default to the available compute parallelism for the
-/// system. Threads are currently drawn from the tokio-spawn pool. Results are
-/// unordered.
+/// system. Synchronous work is dispatched to the blocking thread pool. Results
+/// are unordered.
 pub trait TryParallelExt<T, E>
 where
 	Self: TryStream<Ok = T, Error = E, Item = Result<T, E>> + Send + Sized,
@@ -64,7 +64,7 @@ where
 		let _ = h;
 		self.broadn_and_then(n, move |val| {
 			let f = f.clone();
-			async move { smol::spawn(async move { f(val) }).await }
+			async move { blocking::unblock(move || f(val)).await }
 		})
 	}
 }

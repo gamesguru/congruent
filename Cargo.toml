@@ -209,6 +209,9 @@ version = "0.4.2"
 default-features = false
 features = ["tls12"]
 
+[workspace.dependencies.blocking]
+version = "1.7.0"
+
 [workspace.dependencies.futures-io]
 version = "0.3.34"
 

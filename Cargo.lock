@@ -695,6 +695,7 @@ dependencies = [
  "async-lock",
  "base64 0.22.1",
  "blake3",
+ "blocking",
  "bytes",
  "bytesize",
  "checked_ops",
