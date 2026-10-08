@@ -41,8 +41,6 @@ pub enum Error {
 	#[error(transparent)]
 	CapacityError(#[from] arrayvec::CapacityError),
 	#[error(transparent)]
-	CargoToml(#[from] cargo_toml::Error),
-	#[error(transparent)]
 	Clap(#[from] clap::error::Error),
 	#[error(transparent)]
 	Http(#[from] http::Error),
