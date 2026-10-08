@@ -1,7 +1,7 @@
 mod namespace_regex;
 mod registration_info;
 
-use std::{collections::BTreeMap, iter::IntoIterator, sync::Arc};
+use std::{collections::BTreeMap, iter::IntoIterator, path::Path, process::Command, sync::Arc};
 
 use async_trait::async_trait;
 use conduwuit::{Err, Result, err, utils::stream::IterStream};
@@ -39,6 +39,23 @@ pub fn registration_from_json(json: &str) -> Result<Registration> {
 		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
 }
 
+/// Converts an appservice YAML registration through the `yq` executable.
+fn registration_from_yaml(path: &Path) -> Result<String> {
+	let output = Command::new("yq")
+		.args(["-o=json", "."])
+		.arg(path)
+		.output()
+		.map_err(|e| err!(Request(InvalidParam("Failed to execute yq: {e}"))))?;
+
+	if !output.status.success() {
+		let error = String::from_utf8_lossy(&output.stderr);
+		return Err(err!(Request(InvalidParam("yq failed: {error}"))));
+	}
+
+	String::from_utf8(output.stdout)
+		.map_err(|e| err!(Request(InvalidParam("yq returned invalid UTF-8: {e}"))))
+}
+
 /// Renders an appservice registration as JSON.
 pub fn registration_to_json(registration: &Registration) -> Result<String> {
 	let value = slipstream::codec::to_value(registration);
@@ -64,7 +81,7 @@ impl crate::Service for Service {
 	async fn worker(self: Arc<Self>) -> Result {
 		// In Complement tests, dynamically register appservices placed in
 		// `/complement/appservice/`
-		if std::path::Path::new("/complement/appservice").is_dir() {
+		if Path::new("/complement/appservice").is_dir() {
 			match tokio::fs::read_dir("/complement/appservice").await {
 				| Err(e) => {
 					conduwuit::error!(
@@ -74,28 +91,28 @@ impl crate::Service for Service {
 				| Ok(mut entries) =>
 					while let Ok(Some(entry)) = entries.next_entry().await {
 						let path = entry.path();
-						if path
+						let is_yaml = path
 							.extension()
-							.is_some_and(|ext| ext == "yaml" || ext == "yml")
-						{
-							conduwuit::error!(
-								"YAML appservice registration {path:?} is unsupported; convert \
-								 it to JSON"
-							);
-							continue;
-						}
-						if path.extension().is_some_and(|ext| ext == "json") {
-							match tokio::fs::read_to_string(&path).await {
+							.is_some_and(|ext| ext == "yaml" || ext == "yml");
+						if is_yaml || path.extension().is_some_and(|ext| ext == "json") {
+							let content = if is_yaml {
+								registration_from_yaml(&path)
+							} else {
+								tokio::fs::read_to_string(&path).await.map_err(|e| {
+									err!(Database("Failed to read appservice file: {e}"))
+								})
+							};
+							match content {
 								| Err(e) => {
 									conduwuit::error!(
-										"Failed to read appservice file {path:?}: {e:?}"
+										"Failed to load appservice file {path:?}: {e:?}"
 									);
 								},
 								| Ok(content) => match registration_from_json(&content) {
 									| Err(e) => {
 										conduwuit::error!(
-											"Failed to parse appservice JSON from {path:?}: \
-											 {e:?}"
+											"Failed to parse appservice registration from \
+											 {path:?}: {e:?}"
 										);
 									},
 									| Ok(registration) => {
