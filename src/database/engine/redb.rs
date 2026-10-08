@@ -48,6 +48,17 @@ impl RedbEngine {
 		}
 		let db = Database::create(path)
 			.map_err(|error| err!(Database("failed to open redb metadata store: {error}")))?;
+		let transaction = db
+			.begin_write()
+			.map_err(|error| err!(Database("failed to initialize redb metadata: {error}")))?;
+		{
+			transaction.open_table(TABLE).map_err(|error| {
+				err!(Database("failed to create redb metadata table: {error}"))
+			})?;
+		}
+		transaction.commit().map_err(|error| {
+			err!(Database("failed to commit redb metadata initialization: {error}"))
+		})?;
 		Ok(Self {
 			db: Arc::new(db),
 			corks: AtomicU32::new(0),
