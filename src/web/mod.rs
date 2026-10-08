@@ -28,7 +28,7 @@ enum WebError {
 impl WebError {
 	fn into_response(self) -> Response<Full<Bytes>> {
 		let status = match &self {
-			| Self::BadRequest(_) | Self::QueryRejection(_) => StatusCode::BAD_REQUEST,
+			| Self::BadRequest(_) => StatusCode::BAD_REQUEST,
 			| Self::NotFound => StatusCode::NOT_FOUND,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
@@ -95,13 +95,13 @@ pub fn build(state: State) -> MinimalRouter {
 		&mut router,
 		http::Method::GET,
 		"/_continuwuity/_debug/panic",
-		handler(state, pages::debug::panic),
+		handler(state, |request, _state| async move { Ok(pages::debug::panic(request).await) }),
 	);
 	register(
 		&mut router,
 		http::Method::GET,
 		"/_continuwuity/_debug/error",
-		handler(state, pages::debug::error),
+		handler(state, |request, _state| async move { Ok(pages::debug::error(request).await) }),
 	);
 	register(
 		&mut router,

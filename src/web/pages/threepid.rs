@@ -33,7 +33,7 @@ pub(crate) async fn threepid_validation(
 	Ok(Response::builder()
 		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
 		.body(Full::from(Bytes::from_static(
-			"<!doctype html><title>Email verified</title><h1>Email verified</h1><p>Your email \
+			b"<!doctype html><title>Email verified</title><h1>Email verified</h1><p>Your email \
 			 address has been verified. Return to your Matrix client.</p>",
 		)))
 		.expect("static response headers are valid"))
