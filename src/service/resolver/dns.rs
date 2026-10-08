@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+	net::SocketAddr,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 
 use conduwuit::{Result, Server, err};
 use futures::FutureExt;
@@ -98,7 +102,7 @@ impl Resolver {
 		&self,
 		name: N,
 	) -> core::result::Result<LookupIp, hickory_resolver::net::NetError> {
-		let start = tokio::time::Instant::now();
+		let start = Instant::now();
 		let result = self.resolver.lookup_ip(name).await;
 		let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
 		self.server
@@ -130,7 +134,7 @@ impl Resolver {
 		name: N,
 	) -> core::result::Result<hickory_resolver::lookup::Lookup, hickory_resolver::net::NetError>
 	{
-		let start = tokio::time::Instant::now();
+		let start = Instant::now();
 		let result = self.resolver.srv_lookup(name).await;
 		let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
 		self.server
@@ -241,7 +245,7 @@ async fn resolve_to_reqwest(
 		addrs
 	};
 
-	let start = tokio::time::Instant::now();
+	let start = Instant::now();
 	let result = tokio::select! {
 		results = resolver.lookup_ip(name.as_str()) => {
 			match results {
