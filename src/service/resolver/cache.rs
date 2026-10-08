@@ -273,5 +273,7 @@ fn expiry_to_json(expire: SystemTime) -> Value {
 }
 
 fn expiry_from_json(value: &Value) -> Result<SystemTime, DeError> {
-	Ok(UNIX_EPOCH + Duration::from_millis(u64::from_json(value)?))
+	UNIX_EPOCH
+		.checked_add(Duration::from_millis(u64::from_json(value)?))
+		.ok_or_else(|| DeError::expected("valid expiry timestamp"))
 }
