@@ -67,6 +67,22 @@ pub struct MtxdbTransaction<'a> {
 	tx: DatabaseTransaction<'a>,
 }
 
+impl MtxdbTransaction<'_> {
+	pub fn put(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		node: NodeId,
+		data: &[u8],
+	) -> Result<(), StorageError> {
+		self.tx
+			.put(shard, collection, node, &mtxdb::storage::NodeData::from_slice(data))?;
+		Ok(())
+	}
+
+	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
+}
+
 #[cfg(test)]
 mod tests {
 	use std::{fs, path::PathBuf};
@@ -86,7 +102,7 @@ mod tests {
 		let event_node = derive_id(b"event", b"$event:example.com");
 		let state_node = derive_id(b"state", b"root");
 
-		{
+		let () = {
 			let store = MtxdbStore::open(&directory).expect("open mtxdb");
 			let tx = store.begin_transaction();
 			tx.put(ShardType::EventDag, collection, event_node, b"event")
@@ -125,7 +141,7 @@ mod tests {
 
 			store.sync(ShardType::EventDag).expect("sync event pool");
 			store.sync(ShardType::State).expect("sync state pool");
-		}
+		};
 
 		let reopened = MtxdbStore::open(&directory).expect("reopen mtxdb");
 		assert_eq!(
@@ -144,20 +160,4 @@ mod tests {
 		);
 		let _ = fs::remove_dir_all(directory);
 	}
-}
-
-impl MtxdbTransaction<'_> {
-	pub fn put(
-		&self,
-		shard: ShardType,
-		collection: CollectionId,
-		node: NodeId,
-		data: &[u8],
-	) -> Result<(), StorageError> {
-		self.tx
-			.put(shard, collection, node, &mtxdb::storage::NodeData::from_slice(data))?;
-		Ok(())
-	}
-
-	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
 }

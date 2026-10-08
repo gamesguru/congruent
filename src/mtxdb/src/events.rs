@@ -151,7 +151,7 @@ mod tests {
 		let prev = b"$prev:example.com";
 		let auth = b"$auth:example.com";
 
-		{
+		let () = {
 			let store = Arc::new(MtxdbStore::open(&path).unwrap());
 			let adapter = EventAdapter::new(store.clone());
 			let tx = store.begin_transaction();
@@ -164,9 +164,9 @@ mod tests {
 			assert_eq!(adapter.get_prev_events(event_id).unwrap(), vec![prev.to_vec()]);
 			assert_eq!(adapter.get_auth_chain(event_id).unwrap(), vec![auth.to_vec()]);
 			store.sync(ShardType::EventDag).unwrap();
-		}
+		};
 
-		{
+		let () = {
 			let store = Arc::new(MtxdbStore::open(&path).unwrap());
 			let adapter = EventAdapter::new(store.clone());
 			assert_eq!(adapter.get_event(event_id).unwrap().as_deref(), Some(&b"body"[..]));
@@ -179,7 +179,7 @@ mod tests {
 			assert_eq!(adapter.get_event(event_id).unwrap().as_deref(), Some(&b"updated"[..]));
 			assert!(adapter.get_prev_events(event_id).unwrap().is_empty());
 			assert!(adapter.get_auth_chain(event_id).unwrap().is_empty());
-		}
+		};
 
 		let _ = fs::remove_dir_all(path);
 	}
