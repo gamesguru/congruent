@@ -2,6 +2,7 @@
 
 use std::{io::BufRead, os::unix::fs::PermissionsExt, sync::Arc, thread::JoinHandle};
 
+use async_fs as fs;
 use conduwuit::{Server, SyncMutex, debug, error};
 use tokio::{
 	io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -80,7 +81,7 @@ impl Console {
 
 	async fn socket_worker(self: Arc<Self>) {
 		let socket_path = self.server.config.database_path.join("console.sock");
-		_ = tokio::fs::remove_file(&socket_path).await;
+		_ = fs::remove_file(&socket_path).await;
 
 		let listener = match UnixListener::bind(&socket_path) {
 			| Ok(listener) => listener,
@@ -90,10 +91,10 @@ impl Console {
 			},
 		};
 
-		if let Ok(meta) = tokio::fs::metadata(&socket_path).await {
+		if let Ok(meta) = fs::metadata(&socket_path).await {
 			let mut perms = meta.permissions();
 			perms.set_mode(self.server.config.unix_socket_perms);
-			_ = tokio::fs::set_permissions(&socket_path, perms).await;
+			_ = fs::set_permissions(&socket_path, perms).await;
 		}
 
 		while self.server.running() {

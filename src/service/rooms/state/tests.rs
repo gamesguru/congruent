@@ -161,7 +161,7 @@ async fn persist_dummy_pdu(services: &Services, room_id: &RoomId, pdu: &PduEvent
 		.expect("failed to persist dummy pdu");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -259,7 +259,7 @@ fn test_root_handle_rejects_truncated_value() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -295,7 +295,7 @@ async fn test_force_state() {
 	assert_eq!(retrieved_root.state_group_id, expected_root.state_group_id);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_state_equivalence() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
@@ -444,7 +444,7 @@ async fn seed_membership_state(
 /// This pins the write volume so that regression cannot come back silently: for
 /// a 200-entry room the tree is ~33 nodes, so a full re-materialization is an
 /// order of magnitude above the bound asserted here.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_bulk_state_update_writes_only_changed_spines() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
@@ -576,7 +576,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 /// only exercised the store's own bookkeeping would not catch a regression in
 /// `live_root_handles` — which is where a partial root set would silently turn
 /// into live-state deletion.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_sweep_reclaims_only_unreachable_nodes() {
 	use std::time::Duration;
 
@@ -700,7 +700,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 /// the invite is silently deleted; `mark_as_left`/`mark_as_invited` also share
 /// `membership_mutex` so a stale leave decision cannot land its batch after the
 /// invite.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_stale_leave_does_not_delete_newer_invite() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = room_id!("!invite-race:test.conduwuit.local").to_owned();

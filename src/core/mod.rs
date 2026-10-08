@@ -31,7 +31,7 @@ pub use matrix::{
 };
 pub use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
 pub use server::Server;
-pub use utils::{implement, result, result::Result};
+pub use utils::{SmolIo, implement, result, result::Result};
 
 pub use crate as conduwuit_core;
 

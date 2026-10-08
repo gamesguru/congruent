@@ -7,12 +7,10 @@
 
 use std::{cmp, num::Saturating as Sat};
 
+use async_fs as fs;
 use conduwuit::{Result, checked, err, implement};
 use slipstream::{Mxc, UInt, UserId, http_headers::ContentDisposition, media::Method};
-use tokio::{
-	fs,
-	io::{AsyncReadExt, AsyncWriteExt},
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{FileMeta, data::Metadata};
 

@@ -7,6 +7,7 @@ mod tests;
 mod thumbnail;
 use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
+use async_fs as fs;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use conduwuit::{
@@ -17,11 +18,8 @@ use conduwuit::{
 	},
 	warn,
 };
+use futures::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use slipstream::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
-use tokio::{
-	fs,
-	io::{AsyncReadExt, AsyncWriteExt, BufReader},
-};
 
 use self::data::{Data, Metadata};
 pub use self::{preview::parse_preview_url, thumbnail::Dim};
@@ -409,7 +407,7 @@ impl Service {
 
 		let file_rm = fs::remove_file(&path);
 		let legacy_rm = fs::remove_file(&legacy);
-		let (file_rm, legacy_rm) = tokio::join!(file_rm, legacy_rm);
+		let (file_rm, legacy_rm) = futures::join!(file_rm, legacy_rm);
 		if let Err(e) = legacy_rm {
 			if self.services.server.config.media_compat_file_link {
 				debug_error!(?key, ?legacy, "Failed to remove legacy media symlink: {e}");
@@ -426,7 +424,11 @@ impl Service {
 		let file = fs::File::create(&path).await?;
 		if self.services.server.config.media_compat_file_link {
 			let legacy = self.get_media_file_b64(key);
-			if let Err(e) = fs::symlink(&path, &legacy).await {
+			let path_ = path.clone();
+			let legacy_ = legacy.clone();
+			if let Err(e) =
+				blocking::unblock(move || std::os::unix::fs::symlink(path_, legacy_)).await
+			{
 				debug_error!(
 					key = ?encode_key(key), ?path, ?legacy,
 					"Failed to create legacy media symlink: {e}"
