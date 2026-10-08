@@ -41,9 +41,7 @@ fn manifest() -> &'static std::sync::Mutex<Vec<RouteManifestEntry>> {
 }
 
 #[must_use]
-pub fn matchit_path(path: &str) -> String {
-	path.to_owned()
-}
+pub fn matchit_path(path: &str) -> String { path.to_owned() }
 
 pub fn record_route(method: Method, path: &str, handler: &'static str) {
 	manifest()

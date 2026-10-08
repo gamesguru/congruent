@@ -131,7 +131,11 @@ async fn compute_outbound_state_hashes(
 	let mut inputs_cache = InputCache::new();
 	let mut entries = BTreeMap::new();
 	for (event_id, _) in pdus {
-		let entry = match services.state_accessor.msc4500_pdu_digests(event_id.clone()).await {
+		let entry = match services
+			.state_accessor
+			.msc4500_pdu_digests(event_id.clone())
+			.await
+		{
 			| None => StateHashEntry::limited(with_inputs),
 			| Some(digests) => {
 				let inputs = if with_inputs {

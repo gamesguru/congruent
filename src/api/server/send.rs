@@ -112,7 +112,9 @@ pub(crate) async fn send_transaction_message_route(
 			// We're the first, spawn the processing task
 			let runtime = services.server.runtime();
 			drop(runtime.spawn_blocking(move || {
-				smol::block_on(process_inbound_transaction(services, body, client, txn_key, sender));
+				smol::block_on(process_inbound_transaction(
+					services, body, client, txn_key, sender,
+				));
 			}));
 			// and wait for it
 			wait_for_result(receiver).await.map_err(Into::into)
@@ -128,19 +130,19 @@ pub(crate) async fn send_transaction_message_route(
 				let runtime = services.server.runtime();
 				drop(runtime.spawn_blocking(move || {
 					smol::block_on(async move {
-					let edus_stream = edus
-						.into_iter()
-						.map(|edu| edu.get().to_owned())
-						.map(|json_str| codec::from_str::<Edu>(&json_str))
-						.filter_map(Result::ok)
-						.stream();
+						let edus_stream = edus
+							.into_iter()
+							.map(|edu| edu.get().to_owned())
+							.map(|json_str| codec::from_str::<Edu>(&json_str))
+							.filter_map(Result::ok)
+							.stream();
 
-					edus_stream
-						.for_each_concurrent(automatic_width(), |edu| {
-							let origin = origin.clone();
-							async move { handle_edu(&services, &client, &origin, edu).await }
-						})
-						.await;
+						edus_stream
+							.for_each_concurrent(automatic_width(), |edu| {
+								let origin = origin.clone();
+								async move { handle_edu(&services, &client, &origin, edu).await }
+							})
+							.await;
 					});
 				}));
 			}
@@ -247,10 +249,7 @@ async fn process_inbound_transaction(
 		.await;
 	};
 
-	let ((), results) = futures::join!(
-		edu_processing,
-		handle(&state, &client, &origin, pdus)
-	);
+	let ((), results) = futures::join!(edu_processing, handle(&state, &client, &origin, pdus));
 	let results = match results {
 		| Ok(results) => results,
 		| Err(err) => {

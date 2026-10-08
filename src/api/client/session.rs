@@ -386,7 +386,9 @@ pub(crate) async fn login_token_route(
 		.await?;
 
 	let login_token = utils::random_string(TOKEN_LENGTH);
-	let expires_in = services.users.create_login_token(&sender_user, &login_token);
+	let expires_in = services
+		.users
+		.create_login_token(&sender_user, &login_token);
 
 	Ok(get_login_token::v1::Response {
 		expires_in: Duration::from_millis(expires_in),

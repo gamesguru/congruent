@@ -263,17 +263,21 @@ mod tests {
 
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
 	use bytes::Bytes;
-	use conduwuit_core::{RuntimeHandle, SmolIo, config::{Config, RawConfig}, log::{Log, LogLevelReloadHandles, capture::State as CaptureState}, Server};
+	use conduwuit_core::{
+		RuntimeHandle, Server, SmolIo,
+		config::{Config, RawConfig},
+		log::{Log, LogLevelReloadHandles, capture::State as CaptureState},
+	};
 	use http::StatusCode;
 	use http_body_util::{BodyExt, Full};
 	use hyper::{Request, body::Incoming, client::conn::http1, service::service_fn};
-	use tower::Service;
 	use slipstream::{
 		MilliSecondsSinceUnixEpoch, OwnedServerSigningKeyId, Signatures,
 		api::federation::discovery::{OldVerifyKey, ServerSigningKeys, VerifyKey},
 		json::Value,
 		sswire::{Base64, Raw},
 	};
+	use tower::Service;
 
 	use super::select_server_key_response;
 
@@ -305,22 +309,32 @@ mod tests {
 			Self { addr, task }
 		}
 
-		async fn send(&self, request: Request<Bytes>) -> conduwuit::Result<http::Response<Bytes>> {
+		async fn send(
+			&self,
+			request: Request<Bytes>,
+		) -> conduwuit::Result<http::Response<Bytes>> {
 			let stream = async_net::TcpStream::connect(self.addr).await?;
-			let (mut sender, connection) = http1::handshake(SmolIo(stream))
-				.await
-				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP handshake failed: {error}"))))?;
-			drop(RuntimeHandle::new().spawn(async move { let _ = connection.await; }));
+			let (mut sender, connection) =
+				http1::handshake(SmolIo(stream)).await.map_err(|error| {
+					conduwuit::err!(Request(Unknown("test HTTP handshake failed: {error}")))
+				})?;
+			drop(RuntimeHandle::new().spawn(async move {
+				let _ = connection.await;
+			}));
 			let (parts, body) = request.into_parts();
 			let response = sender
 				.send_request(Request::from_parts(parts, Full::new(body)))
 				.await
-				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP request failed: {error}"))))?;
+				.map_err(|error| {
+					conduwuit::err!(Request(Unknown("test HTTP request failed: {error}")))
+				})?;
 			let (parts, body) = response.into_parts();
 			let body = body
 				.collect()
 				.await
-				.map_err(|error| conduwuit::err!(Request(Unknown("test HTTP response failed: {error}"))))?
+				.map_err(|error| {
+					conduwuit::err!(Request(Unknown("test HTTP response failed: {error}")))
+				})?
 				.to_bytes();
 			Ok(http::Response::from_parts(parts, body))
 		}
@@ -400,25 +414,41 @@ mod tests {
 
 	#[conduwuit_macros::async_test]
 	async fn route_includes_historical_keys_in_json_response() {
-		let temp_root = std::env::temp_dir().join(format!("conduwuit-key-test-{}", std::process::id()));
+		let temp_root =
+			std::env::temp_dir().join(format!("conduwuit-key-test-{}", std::process::id()));
 		let raw_config = RawConfig::from_toml(&format!(
 			"server_name = \"example.com\"\nallow_federation = true\ndatabase_path = \"{}\"",
 			temp_root.to_string_lossy().replace('\\', "/")
-		)).unwrap();
+		))
+		.unwrap();
 		let config = Config::new(&raw_config).unwrap();
 		let server = Arc::new(Server::new(config, None::<&()>, test_log()));
 		let services = conduwuit_service::Services::build(server.clone()).unwrap();
 		let origin = services.globals.server_name().to_owned();
 		let raw = key_payload("ed25519:active", "AAA", None, None);
-		let merged = key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
-		services.db["server_signingkeys"].raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
+		let merged =
+			key_payload("ed25519:active", "AAA", Some("ed25519:historical"), Some("BBB"));
+		services.db["server_signingkeys"]
+			.raw_put(origin.as_bytes(), slipstream::codec::to_string(&raw).into_bytes());
 		let mut key = origin.as_bytes().to_vec();
 		key.extend_from_slice(b"\0historical");
-		services.db["server_signingkeys"].raw_put(&key, slipstream::codec::to_string(&merged).into_bytes());
+		services.db["server_signingkeys"]
+			.raw_put(&key, slipstream::codec::to_string(&merged).into_bytes());
 		let (state, guard) = conduwuit_service::state::create(services.clone());
-		let router = crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
+		let router =
+			crate::router::build(crate::hyper_router::MinimalRouter::new(), &services.server);
 		let test_server = TestServer::spawn(router, state).await;
-		let response = test_server.send(Request::get(format!("/_matrix/key/v2/query/{origin}?minimum_valid_until_ts={}", MilliSecondsSinceUnixEpoch::now().get())).body(Bytes::new()).unwrap()).await.unwrap();
+		let response = test_server
+			.send(
+				Request::get(format!(
+					"/_matrix/key/v2/query/{origin}?minimum_valid_until_ts={}",
+					MilliSecondsSinceUnixEpoch::now().get()
+				))
+				.body(Bytes::new())
+				.unwrap(),
+			)
+			.await
+			.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
 		let json: Value = slipstream::codec::from_slice(response.body()).unwrap();
 		let old_key = json
@@ -428,7 +458,10 @@ mod tests {
 			.and_then(|key| key.get("old_verify_keys"))
 			.and_then(|keys| keys.get("ed25519:historical"))
 			.expect("historical key should be present");
-		assert_eq!(old_key.get("key").and_then(|key| key.as_str()), Some(STANDARD.encode(b"BBB").as_str()));
+		assert_eq!(
+			old_key.get("key").and_then(|key| key.as_str()),
+			Some(STANDARD.encode(b"BBB").as_str())
+		);
 		drop(test_server.task);
 		drop(guard);
 	}
