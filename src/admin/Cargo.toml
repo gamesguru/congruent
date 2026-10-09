@@ -63,7 +63,7 @@ zstd_compression = [
 [dependencies]
 async-fs.workspace = true
 async-lock.workspace = true
-toml = { workspace = true, features = ["display"] }
+toml.workspace = true
 clap.workspace = true
 conduwuit-api.workspace = true
 conduwuit-build-metadata.workspace = true
