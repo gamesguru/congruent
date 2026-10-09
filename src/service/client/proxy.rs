@@ -105,7 +105,7 @@ where
 		methods.push(0x02);
 	}
 
-	let mut greeting = Vec::with_capacity(2usize.saturating_add(methods.len()));
+	let mut greeting = Vec::with_capacity(2_usize.saturating_add(methods.len()));
 	greeting.push(0x05);
 	greeting.push(u8::try_from(methods.len()).expect("at most two methods"));
 	greeting.extend_from_slice(&methods);

@@ -14,8 +14,8 @@ use futures_io::{AsyncRead, AsyncWrite};
 use futures_rustls::{
 	TlsConnector,
 	rustls::{
-		ClientConfig, CryptoProvider, DigitallySignedStruct, Error as TlsError, RootCertStore,
-		SignatureScheme,
+		ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+		crypto::CryptoProvider,
 		client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
 		pki_types::{CertificateDer, ServerName, UnixTime},
 	},
@@ -574,14 +574,16 @@ fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> 
 				.map(|constraints| constraints.to_vec().into()),
 		}
 	}));
-	let provider = CryptoProvider::get_default()
-		.cloned()
-		.ok_or_else(|| Error::HttpClient("no rustls crypto provider is configured".into()))?;
-	let mut tls = ClientConfig::builder_with_provider(Arc::clone(&provider))
+	let mut tls = ClientConfig::builder()
 		.with_root_certificates(roots)
 		.with_no_client_auth();
 	if config.allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure
 	{
+		// Only the opt-in verifier needs the provider's signature schemes; fall back to
+		// ring when no process default was installed so normal builds never depend on it.
+		let provider = CryptoProvider::get_default()
+			.cloned()
+			.unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
 		tls.dangerous()
 			.set_certificate_verifier(Arc::new(AcceptAnyCertificate { provider }));
 	}
