@@ -148,6 +148,10 @@ fn catch_panic(
 	};
 
 	error!("{details:#}");
+	panic_response()
+}
+
+fn panic_response() -> Response<Full<Bytes>> {
 	let mut body = slipstream::ObjectBuilder::new();
 	body.field("errcode", "M_UNKNOWN");
 	body.field("error", "M_UNKNOWN: Internal server error occurred");
@@ -200,4 +204,19 @@ fn error_response(status: StatusCode, code: &str, message: &str) -> Response<Ful
 		.header(header::CONTENT_TYPE, "application/json")
 		.body(Full::from(body))
 		.expect("error response is valid")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn panic_response_does_not_expose_payload() {
+		let response = panic_response();
+		let body = response.into_body().into_inner().expect("response body");
+		let body = String::from_utf8_lossy(&body);
+
+		assert!(!body.contains("secret-token-123"));
+		assert!(body.contains("Internal server error occurred"));
+	}
 }

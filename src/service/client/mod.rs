@@ -22,6 +22,16 @@ use futures_rustls::{
 };
 
 const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_hours(8760);
+
+fn request_deadline(total_timeout: Duration) -> Instant {
+	Instant::now()
+		.checked_add(total_timeout)
+		.unwrap_or_else(|| {
+			Instant::now()
+				.checked_add(OVERFLOW_DEADLINE_GRACE)
+				.expect("one-year deadline must fit in Instant")
+		})
+}
 use http::{
 	HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 	header::{AUTHORIZATION, COOKIE, HOST, PROXY_AUTHORIZATION, WWW_AUTHENTICATE},
@@ -69,13 +79,7 @@ impl HttpClient {
 		let url = parse_url(request.uri())?;
 		// The total deadline is shared by every redirect hop, matching the
 		// pre-migration reqwest clients.
-		let deadline = Instant::now()
-			.checked_add(self.total_timeout)
-			.unwrap_or_else(|| {
-				Instant::now()
-					.checked_add(OVERFLOW_DEADLINE_GRACE)
-					.expect("one-year deadline must fit in Instant")
-			});
+		let deadline = request_deadline(self.total_timeout);
 		match timeout_at(deadline, self.execute_hops(request, url, max_size)).await {
 			| Ok(result) => result,
 			| Err(TimeoutError) => Err(Error::HttpClientTimeout(
@@ -826,6 +830,55 @@ fn same_origin(previous: &Url, next: &Url) -> bool {
 	previous.scheme() == next.scheme()
 		&& previous.host_str() == next.host_str()
 		&& previous.port_or_known_default() == next.port_or_known_default()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn overflowing_timeout_gets_far_future_deadline() {
+		let now = Instant::now();
+		let deadline = request_deadline(Duration::MAX);
+
+		assert!(deadline > now);
+		assert!(deadline.duration_since(now) > Duration::from_secs(86_400));
+	}
+
+	#[test]
+	fn redirect_location_accepts_supported_redirects() {
+		for status in [
+			StatusCode::MOVED_PERMANENTLY,
+			StatusCode::FOUND,
+			StatusCode::SEE_OTHER,
+			StatusCode::TEMPORARY_REDIRECT,
+			StatusCode::PERMANENT_REDIRECT,
+		] {
+			let response = Response::builder()
+				.status(status)
+				.header(http::header::LOCATION, "/next")
+				.body(Bytes::new())
+				.expect("valid redirect response");
+
+			assert_eq!(redirect_location(&response), Some("/next"));
+		}
+	}
+
+	#[test]
+	fn post_redirect_drops_body_for_303() {
+		let mut request = Request::builder()
+			.method(Method::POST)
+			.uri("https://example.org/start")
+			.body(Bytes::from_static(b"body"))
+			.expect("valid request");
+		let mut previous = Url::parse("https://example.org/start").expect("valid URL");
+		let next = Url::parse("https://example.org/next").expect("valid URL");
+
+		follow_redirect(&mut request, &mut previous, next, StatusCode::SEE_OTHER)
+			.expect("valid redirect");
+		assert_eq!(request.method(), Method::GET);
+		assert!(request.body().is_empty());
+	}
 }
 
 #[inline]
