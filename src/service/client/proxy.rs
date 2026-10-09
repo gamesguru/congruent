@@ -105,14 +105,20 @@ where
 		methods.push(0x02);
 	}
 
-	let mut greeting = Vec::with_capacity(2 + methods.len());
+	let mut greeting = Vec::with_capacity(2usize.saturating_add(methods.len()));
 	greeting.push(0x05);
 	greeting.push(u8::try_from(methods.len()).expect("at most two methods"));
 	greeting.extend_from_slice(&methods);
-	stream.write_all(&greeting).await.map_err(socks_error)?;
+	stream
+		.write_all(&greeting)
+		.await
+		.map_err(|error| socks_error(&error))?;
 
 	let mut choice = [0_u8; 2];
-	stream.read_exact(&mut choice).await.map_err(socks_error)?;
+	stream
+		.read_exact(&mut choice)
+		.await
+		.map_err(|error| socks_error(&error))?;
 	if choice[0] != 0x05 {
 		return Err(err!(HttpClient(
 			"proxy returned SOCKS version {:#04x}, expected 0x05",
@@ -136,17 +142,23 @@ where
 	let address = if scheme.resolves_target() {
 		Address::Domain(target.host.clone())
 	} else {
-		Address::parse(resolve(target.host.clone()).await?)?
+		Address::parse(resolve(target.host.clone()).await?)
 	};
 
 	let mut request = vec![0x05, 0x01, 0x00];
 	address.encode(&mut request);
 	request.extend_from_slice(&target.port.to_be_bytes());
-	stream.write_all(&request).await.map_err(socks_error)?;
-	stream.flush().await.map_err(socks_error)?;
+	stream
+		.write_all(&request)
+		.await
+		.map_err(|error| socks_error(&error))?;
+	stream.flush().await.map_err(|error| socks_error(&error))?;
 
 	let mut header = [0_u8; 4];
-	stream.read_exact(&mut header).await.map_err(socks_error)?;
+	stream
+		.read_exact(&mut header)
+		.await
+		.map_err(|error| socks_error(&error))?;
 	if header[0] != 0x05 {
 		return Err(err!(HttpClient(
 			"proxy returned SOCKS version {:#04x} during CONNECT, expected 0x05",
@@ -163,22 +175,31 @@ where
 		| 0x01 => stream
 			.read_exact(&mut [0_u8; 4])
 			.await
-			.map_err(socks_error)?,
+			.map_err(|error| socks_error(&error))?,
 		| 0x04 => stream
 			.read_exact(&mut [0_u8; 16])
 			.await
-			.map_err(socks_error)?,
+			.map_err(|error| socks_error(&error))?,
 		| 0x03 => {
-			stream.read_exact(&mut bound).await.map_err(socks_error)?;
+			stream
+				.read_exact(&mut bound)
+				.await
+				.map_err(|error| socks_error(&error))?;
 			let mut host = vec![0_u8; usize::from(bound[1])];
-			stream.read_exact(&mut host).await.map_err(socks_error)?;
+			stream
+				.read_exact(&mut host)
+				.await
+				.map_err(|error| socks_error(&error))?;
 		},
 		| address_type =>
 			return Err(err!(HttpClient(
 				"proxy returned unknown SOCKS5 address type {address_type:#04x}"
 			))),
 	}
-	stream.read_exact(&mut bound).await.map_err(socks_error)?;
+	stream
+		.read_exact(&mut bound)
+		.await
+		.map_err(|error| socks_error(&error))?;
 
 	Ok(stream)
 }
@@ -198,14 +219,17 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
 	let mut request = vec![0x01];
 	push_len_prefixed(&mut request, username.as_bytes())?;
 	push_len_prefixed(&mut request, password.as_bytes())?;
-	stream.write_all(&request).await.map_err(socks_error)?;
-	stream.flush().await.map_err(socks_error)?;
+	stream
+		.write_all(&request)
+		.await
+		.map_err(|error| socks_error(&error))?;
+	stream.flush().await.map_err(|error| socks_error(&error))?;
 
 	let mut response = [0_u8; 2];
 	stream
 		.read_exact(&mut response)
 		.await
-		.map_err(socks_error)?;
+		.map_err(|error| socks_error(&error))?;
 	if response[1] != 0x00 {
 		return Err(err!(HttpClient("proxy username/password authentication failed")));
 	}
@@ -229,11 +253,11 @@ enum Address {
 }
 
 impl Address {
-	fn parse(host: std::net::IpAddr) -> Result<Self> {
-		Ok(match host {
+	fn parse(host: std::net::IpAddr) -> Self {
+		match host {
 			| std::net::IpAddr::V4(ip) => Self::Ipv4(ip.octets()),
 			| std::net::IpAddr::V6(ip) => Self::Ipv6(ip.octets()),
-		})
+		}
 	}
 
 	fn encode(&self, buffer: &mut Vec<u8>) {
@@ -271,7 +295,7 @@ fn reply_message(reply: u8) -> &'static str {
 	}
 }
 
-fn socks_error(error: std::io::Error) -> Error {
+fn socks_error(error: &std::io::Error) -> Error {
 	Error::HttpClient(format!("SOCKS5 proxy I/O error: {error}").into())
 }
 

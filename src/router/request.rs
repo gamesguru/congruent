@@ -21,7 +21,6 @@ const CONDUWUIT_CSP: &str =
 const CONDUWUIT_PERMISSIONS_POLICY: &str = "interest-cohort=(),browsing-topics=()";
 
 type CallResult = Result<Response<Full<Bytes>>, std::convert::Infallible>;
-type TaskResult = Result<CallResult, Box<dyn Any + Send + 'static>>;
 
 pub(crate) async fn handle(
 	mut router: MinimalRouter,
@@ -152,7 +151,6 @@ fn catch_panic(
 	let mut body = slipstream::ObjectBuilder::new();
 	body.field("errcode", "M_UNKNOWN");
 	body.field("error", "M_UNKNOWN: Internal server error occurred");
-	body.field("details", &details);
 	let body = body.finish();
 
 	Response::builder()

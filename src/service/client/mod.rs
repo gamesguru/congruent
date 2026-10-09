@@ -14,7 +14,8 @@ use futures_io::{AsyncRead, AsyncWrite};
 use futures_rustls::{
 	TlsConnector,
 	rustls::{
-		ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+		ClientConfig, CryptoProvider, DigitallySignedStruct, Error as TlsError, RootCertStore,
+		SignatureScheme,
 		client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
 		pki_types::{CertificateDer, ServerName, UnixTime},
 	},
@@ -54,7 +55,7 @@ pub struct HttpClient {
 impl HttpClient {
 	/// Execute using the client's own default response-body limit.
 	pub async fn execute(&self, request: Request<Bytes>) -> Result<Response<Bytes>> {
-		self.execute_with_limit(request, self.max_size).await
+		Box::pin(self.execute_with_limit(request, self.max_size)).await
 	}
 
 	/// Execute with an explicit response-body byte limit for this call.
@@ -139,7 +140,7 @@ impl HttpClient {
 		mut url: Url,
 		max_size: usize,
 	) -> Result<Response<Bytes>> {
-		apply_headers(&mut request, &self.default_headers, &self.user_agent)?;
+		apply_headers(&mut request, &self.default_headers, self.user_agent.as_deref())?;
 
 		let mut redirects = 0;
 		loop {
@@ -160,7 +161,7 @@ impl HttpClient {
 			}
 
 			follow_redirect(&mut request, &mut url, next, response.status())?;
-			redirects += 1;
+			redirects = redirects.saturating_add(1);
 		}
 	}
 
@@ -172,7 +173,7 @@ impl HttpClient {
 		request: &Request<Bytes>,
 		max_size: usize,
 	) -> Result<Response<Bytes>> {
-		let target = self.target(url)?;
+		let target = Self::target(url)?;
 		let tls = url.scheme() == "https";
 		let authority = target.authority();
 
@@ -286,7 +287,7 @@ impl HttpClient {
 					format!("TLS handshake with {} failed: {error}", target.host).into(),
 				)
 			})?;
-		Ok(Stream::Tls(stream))
+		Ok(Stream::Tls(Box::new(stream)))
 	}
 
 	/// Resolve the (possibly proxied) host through the configured resolver and
@@ -304,7 +305,7 @@ impl HttpClient {
 			})
 	}
 
-	fn target(&self, url: &Url) -> Result<proxy::Target> {
+	fn target(url: &Url) -> Result<proxy::Target> {
 		let host = url
 			.host_str()
 			.ok_or_else(|| Error::HttpClient("request URL has no host".into()))?;
@@ -390,7 +391,7 @@ impl HttpClient {
 /// A connected stream, already wrapped in TLS where the scheme requires it.
 enum Stream {
 	Plain(async_net::TcpStream),
-	Tls(futures_rustls::client::TlsStream<async_net::TcpStream>),
+	Tls(Box<futures_rustls::client::TlsStream<async_net::TcpStream>>),
 }
 
 impl AsyncRead for Stream {
@@ -467,7 +468,7 @@ impl RequestBuilder<'_> {
 			.uri(self.url)
 			.body(self.body)?;
 		*request.headers_mut() = self.headers;
-		self.client.execute(request).await
+		Box::pin(self.client.execute(request)).await
 	}
 }
 
@@ -573,12 +574,16 @@ fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> 
 				.map(|constraints| constraints.to_vec().into()),
 		}
 	}));
-	let mut tls = ClientConfig::builder()
+	let provider = CryptoProvider::get_default()
+		.cloned()
+		.ok_or_else(|| Error::HttpClient("no rustls crypto provider is configured".into()))?;
+	let mut tls = ClientConfig::builder_with_provider(Arc::clone(&provider))
 		.with_root_certificates(roots)
 		.with_no_client_auth();
 	if config.allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure
 	{
-		tls.dangerous().set_certificate_verifier(Arc::new(AcceptAnyCertificate));
+		tls.dangerous()
+			.set_certificate_verifier(Arc::new(AcceptAnyCertificate { provider }));
 	}
 
 	Ok(HttpClient {
@@ -600,7 +605,9 @@ fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> 
 /// Accepts any server certificate. Installed only when the operator opts in via
 /// the invalid-certificate configuration flag.
 #[derive(Debug)]
-struct AcceptAnyCertificate;
+struct AcceptAnyCertificate {
+	provider: Arc<CryptoProvider>,
+}
 
 impl ServerCertVerifier for AcceptAnyCertificate {
 	fn verify_server_cert(
@@ -633,7 +640,7 @@ impl ServerCertVerifier for AcceptAnyCertificate {
 	}
 
 	fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-		rustls::crypto::ring::default_provider()
+		self.provider
 			.signature_verification_algorithms
 			.supported_schemes()
 	}
@@ -641,12 +648,10 @@ impl ServerCertVerifier for AcceptAnyCertificate {
 
 /// Strip the brackets an IPv6 literal carries in a URL host or authority.
 fn unbracket(host: &str) -> String {
-	if let Some(stripped) = host.strip_prefix('[') {
-		if let Some(end) = stripped.rfind(']') {
-			return stripped[..end].to_owned();
-		}
-	}
-	host.to_owned()
+	host.strip_prefix('[')
+		.and_then(|host| host.strip_suffix(']'))
+		.unwrap_or(host)
+		.to_owned()
 }
 
 /// The value for a synthesized `Host` header: the URL host (already bracketed
@@ -696,7 +701,7 @@ fn is_http_scheme(scheme: &str) -> bool { matches!(scheme, "http" | "https") }
 fn apply_headers(
 	request: &mut Request<Bytes>,
 	default_headers: &HeaderMap,
-	user_agent: &Option<String>,
+	user_agent: Option<&str>,
 ) -> Result<()> {
 	for (name, value) in default_headers {
 		if !request.headers().contains_key(name) {
