@@ -842,7 +842,7 @@ mod tests {
 		let deadline = request_deadline(Duration::MAX);
 
 		assert!(deadline > now);
-		assert!(deadline.duration_since(now) > Duration::from_secs(86_400));
+		assert!(deadline.duration_since(now) > Duration::from_hours(24));
 	}
 
 	#[test]
