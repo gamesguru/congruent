@@ -92,19 +92,6 @@ version = "0.5.2"
 default-features = false
 features = ["util"]
 
-[workspace.dependencies.tower-http]
-version = "0.6.8"
-default-features = false
-features = [
-    "add-extension",
-    "catch-panic",
-    "cors",
-    "sensitive-headers",
-    "set-header",
-    "timeout",
-    "util",
-]
-
 [workspace.dependencies.rustls]
 version = "0.23.25"
 default-features = false

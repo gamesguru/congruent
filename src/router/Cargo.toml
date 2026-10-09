@@ -61,7 +61,6 @@ zstd_compression = [
 	"conduwuit-api/zstd_compression",
 	"conduwuit-core/zstd_compression",
 	"conduwuit-service/zstd_compression",
-	"tower-http/compression-zstd",
 ]
 
 [dependencies]
@@ -86,7 +85,6 @@ hyper-util.workspace = true
 log.workspace = true
 smol.workspace = true
 tower.workspace = true
-tower-http.workspace = true
 
 [target.'cfg(all(unix, target_os = "linux"))'.dependencies]
 sd-notify.workspace = true
