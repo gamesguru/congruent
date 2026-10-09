@@ -21,7 +21,7 @@ use futures_rustls::{
 	},
 };
 
-const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_secs(31_536_000);
+const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_hours(8760);
 use http::{
 	HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 	header::{AUTHORIZATION, COOKIE, HOST, PROXY_AUTHORIZATION, WWW_AUTHENTICATE},
