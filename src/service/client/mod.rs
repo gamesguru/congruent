@@ -15,8 +15,8 @@ use futures_rustls::{
 	TlsConnector,
 	rustls::{
 		ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
-		crypto::CryptoProvider,
 		client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+		crypto::CryptoProvider,
 		pki_types::{CertificateDer, ServerName, UnixTime},
 	},
 };
@@ -67,7 +67,9 @@ impl HttpClient {
 		let url = parse_url(request.uri())?;
 		// The total deadline is shared by every redirect hop, matching the
 		// pre-migration reqwest clients.
-		let deadline = Instant::now() + self.total_timeout;
+		let deadline = Instant::now()
+			.checked_add(self.total_timeout)
+			.unwrap_or_else(Instant::now);
 		match timeout_at(deadline, self.execute_hops(request, url, max_size)).await {
 			| Ok(result) => result,
 			| Err(TimeoutError) => Err(Error::HttpClientTimeout(

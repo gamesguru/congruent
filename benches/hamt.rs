@@ -17,7 +17,10 @@ fn collect_nodes(node: &Arc<Node>, map: &mut NodeMap) {
 /// Iterations for a case over `elements` inputs, scaled from a fixed work
 /// budget so a full sweep stays in the low seconds at every size.
 fn iterations(work_budget: u64, elements: u64) -> u64 {
-	(work_budget / elements.max(1)).clamp(3, 2_000)
+	work_budget
+		.checked_div(elements.max(1))
+		.unwrap_or(0)
+		.clamp(3, 2_000)
 }
 
 fn measure(group: &str, case: &str, elements: u64, iters: u64, mut f: impl FnMut()) {
@@ -30,10 +33,13 @@ fn measure(group: &str, case: &str, elements: u64, iters: u64, mut f: impl FnMut
 	}
 
 	let elapsed = start.elapsed();
-	let per_op = u128::from(elapsed.as_nanos()) / u128::from(iters);
-	let per_element = per_op / u128::from(elements.max(1));
+	let per_op = elapsed
+		.as_nanos()
+		.checked_div(u128::from(iters))
+		.unwrap_or(0);
+	let per_element = per_op.checked_div(u128::from(elements.max(1))).unwrap_or(0);
 
-	println!("{group:<22} {case:<22} {elements:>9} {iters:>7} {per_op:>14} {per_element:>16}",);
+	println!("{group:<22} {case:<22} {elements:>9} {iters:>7} {per_op:>14} {per_element:>16}");
 }
 
 fn bench_hamt_construction(measure_iters: bool) {

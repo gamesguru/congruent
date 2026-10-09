@@ -233,10 +233,8 @@ impl Service {
 				// `tokio::select!`, so neither completed responses nor queued
 				// messages can starve the other.
 				futures::select! {
-					response = response => match response {
-						Some(response) => self.handle_response(response, futures, statuses).await,
-						// Unreachable: the set was non-empty when polled.
-						None => {},
+					response = response => if let Some(response) = response {
+						self.handle_response(response, futures, statuses).await;
 					},
 					request = request => match request {
 						Ok(request) => self.handle_request(request, futures, statuses).await,
