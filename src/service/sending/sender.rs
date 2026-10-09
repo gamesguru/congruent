@@ -217,14 +217,26 @@ impl Service {
 		while !receiver.is_closed() {
 			let has_space = futures.len() < 128;
 
-			if has_space {
+			if futures.is_empty() {
+				// `FuturesUnordered::next()` resolves immediately with `None`
+				// while the in-flight set is empty; that must not terminate the
+				// sender. Wait for the next queued message instead.
+				match receiver.recv_async().await {
+					| Ok(request) => self.handle_request(request, futures, statuses).await,
+					| Err(_) => return,
+				}
+			} else if has_space {
 				let response = futures.next().fuse();
 				let request = receiver.recv_async().fuse();
 				pin_mut!(response, request);
-				futures::select_biased! {
+				// Unbiased (per-poll shuffled) selection, matching the previous
+				// `tokio::select!`, so neither completed responses nor queued
+				// messages can starve the other.
+				futures::select! {
 					response = response => match response {
 						Some(response) => self.handle_response(response, futures, statuses).await,
-						None => return,
+						// Unreachable: the set was non-empty when polled.
+						None => {},
 					},
 					request = request => match request {
 						Ok(request) => self.handle_request(request, futures, statuses).await,

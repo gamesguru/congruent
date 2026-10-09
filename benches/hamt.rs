@@ -33,16 +33,14 @@ fn measure(group: &str, case: &str, elements: u64, iters: u64, mut f: impl FnMut
 	let per_op = u128::from(elapsed.as_nanos()) / u128::from(iters);
 	let per_element = per_op / u128::from(elements.max(1));
 
-	println!(
-		"{group:<22} {case:<22} {elements:>9} {iters:>7} {per_op:>14} {per_element:>16}",
-		"group", "case", "elements", "iters", "ns/op", "ns/element",
-	);
+	println!("{group:<22} {case:<22} {elements:>9} {iters:>7} {per_op:>14} {per_element:>16}",);
 }
 
 fn bench_hamt_construction(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 	let lattice = rezzy::state::LtHash::default();
 
@@ -66,7 +64,8 @@ fn bench_hamt_construction(measure_iters: bool) {
 fn bench_hamt_point_lookups(measure_iters: bool) {
 	let sizes: [u64; 5] = [10, 100, 1_000, 10_000, 50_000];
 	let server_secret = [7_u8; 32];
-	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	for &size in &sizes {
@@ -108,7 +107,8 @@ fn bench_hamt_delta_isolation(measure_iters: bool) {
 	let base_size: u64 = 50_000;
 	let delta_sizes: [u64; 4] = [1, 10, 100, 1_000];
 	let server_secret = [7_u8; 32];
-	let room_id = slipstream::OwnedRoomId::from("!bench_room:test.local");
+	let room_id =
+		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
 	let structural_key = room_structural_key(&server_secret, &room_id);
 
 	let base_entries: Vec<(u64, u64)> = (0..base_size)
@@ -175,7 +175,7 @@ fn bench_lthash(measure_iters: bool) {
 		let iters = if measure_iters { iterations(100_000, count) } else { 1 };
 
 		measure("lthash_state_hashing", "lthash_checksum", count, iters, || {
-			let event_id = ruma::owned_event_id!("$bench_event:test.local");
+			let event_id = "$bench_event:test.local";
 			let mut hash = rezzy::LtHash::ZERO;
 			for i in 0..count {
 				let key_str = i.to_string();

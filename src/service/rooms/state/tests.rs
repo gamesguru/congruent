@@ -694,7 +694,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 	assert_eq!(state.len(), 51, "live root state must remain readable");
 }
 
-/// A leave re-applied after a newer invite must not delete that invite.
+/// A leave racing with a newer invite must not delete that invite.
 ///
 /// This is the cache-level regression for `TestUnbanViaInvite`: an unban
 /// `m.room.member`(leave) is applied during an outlier upgrade and then appended
@@ -705,7 +705,9 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 /// `origin_server_ts`. The stripped invite event must carry that timestamp, or
 /// the invite is silently deleted; `mark_as_left`/`mark_as_invited` also share
 /// `membership_mutex` so a stale leave decision cannot land its batch after the
-/// invite.
+/// invite. The operations below are started together to exercise the actual
+/// concurrent read/decide/write path rather than merely testing serialized
+/// calls.
 #[conduwuit_macros::async_test]
 async fn test_stale_leave_does_not_delete_newer_invite() {
 	let (_guard, _server, services) = setup_test_services().await;
@@ -738,22 +740,24 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 		.mark_as_left(&alice, &room_id, Some(leave.clone()))
 		.await;
 
-	// The causally newer invite lands. `mark_as_invited` clears the left marker.
-	services
-		.rooms
-		.state_cache
-		.mark_as_invited(&alice, &room_id, &inviter, Some(invite_state), None)
-		.await
-		.expect("mark_as_invited should succeed");
-
-	// The same, causally older leave is re-applied, as the timeline append path
-	// does after the outlier-upgrade path already applied it. It must observe the
-	// newer invite and keep it.
-	services
-		.rooms
-		.state_cache
-		.mark_as_left(&alice, &room_id, Some(leave))
-		.await;
+	// Race the causally newer invite against the same, causally older leave as
+	// the timeline append path can after an outlier upgrade. The invite clears
+	// the left marker, while the stale leave must preserve the invite whether it
+	// acquires the room lock before or after the invite.
+	let (invite_result, ()) = tokio::join!(
+		services.rooms.state_cache.mark_as_invited(
+			&alice,
+			&room_id,
+			&inviter,
+			Some(invite_state),
+			None,
+		),
+		services
+			.rooms
+			.state_cache
+			.mark_as_left(&alice, &room_id, Some(leave)),
+	);
+	invite_result.expect("mark_as_invited should succeed");
 
 	let pending = services
 		.rooms

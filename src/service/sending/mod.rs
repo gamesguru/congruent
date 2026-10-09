@@ -15,7 +15,7 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Result, Server, debug, debug_warn, err, error, info,
+	JoinError, Result, Server, debug, debug_warn, err, error, info,
 	smallvec::SmallVec,
 	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
 	warn,
@@ -128,12 +128,19 @@ impl crate::Service for Service {
 		let mut senders = FuturesUnordered::new();
 		for (id, _) in self.channels.iter().enumerate() {
 			let self_ = self.clone();
-			senders.push(async move { (id, self_.sender(id).await) });
+			// Each sender runs in its own runtime task so a panic in one
+			// sender resolves to a `JoinError` for that sender only instead of
+			// aborting every sender and restarting the whole service.
+			let handle = self
+				.server
+				.runtime()
+				.spawn(async move { self_.sender(id).await });
+			senders.push(async move { (id, handle.await) });
 		}
 
 		// Periodic federation stats reporter
 		let stats_self = self.clone();
-		let stats_task = self.server.runtime().spawn(async move {
+		let mut stats_task = self.server.runtime().spawn(async move {
 			loop {
 				smol::Timer::after(Duration::from_mins(5)).await;
 				if stats_self.server.is_maintenance() {
@@ -153,16 +160,28 @@ impl crate::Service for Service {
 
 		while let Some((id, ret)) = senders.next().await {
 			match ret {
-				| Ok(()) => {
+				| Ok(Ok(())) => {
 					debug!(?id, "sender worker finished");
 				},
-				| Err(error) => {
+				| Ok(Err(error)) => {
 					error!(?id, ?error, "sender worker finished");
+				},
+				| Err(JoinError::Panic(panic)) => {
+					error!(
+						?id,
+						panic = %debug::panic_str(&panic),
+						"sender worker panicked"
+					);
+				},
+				| Err(error) => {
+					error!(?id, ?error, "sender worker cancelled");
 				},
 			}
 		}
 
-		drop(stats_task);
+		// Abort (cancel) the stats reporter so it does not outlive this
+		// service worker; dropping the handle would only detach it.
+		stats_task.abort();
 		Ok(())
 	}
 

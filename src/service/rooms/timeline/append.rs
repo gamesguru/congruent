@@ -548,8 +548,7 @@ where
 				{
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
-						&& !was_joined
-						&& self.services.globals.user_is_local(&target_user_id)
+						&& !was_joined && self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users

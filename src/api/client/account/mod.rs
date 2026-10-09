@@ -253,8 +253,7 @@ pub(crate) async fn whoami_route(
 		.await
 		.map_err(|_| {
 			err!(Request(Forbidden("Application service has not registered this user.")))
-		})?
-		&& body.appservice_info.is_none();
+		})? && body.appservice_info.is_none();
 	Ok(whoami::v3::Response {
 		user_id: body.sender_user().to_owned(),
 		device_id: body.sender_device_opt().cloned(),
@@ -399,13 +398,12 @@ pub async fn full_user_deactivate(
 				.is_some_and(|power_levels_content| {
 					RoomPowerLevels::from(power_levels_content.clone())
 						.user_can_change_user_power_level(user_id, user_id)
-				})
-				|| services
-					.rooms
-					.state_accessor
-					.room_state_get(room_id, &StateEventType::RoomCreate, "")
-					.await
-					.is_ok_and(|event| event.sender() == user_id);
+				}) || services
+				.rooms
+				.state_accessor
+				.room_state_get(room_id, &StateEventType::RoomCreate, "")
+				.await
+				.is_ok_and(|event| event.sender() == user_id);
 
 		if user_can_demote_self {
 			let mut power_levels_content = room_power_levels.unwrap_or_default();

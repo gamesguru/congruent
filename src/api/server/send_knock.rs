@@ -55,11 +55,11 @@ pub(crate) async fn create_knock_event_v1_route(
 	// /send_knock. Invite handling performs this state-cache update explicitly;
 	// relying only on append_pdu's membership side effect leaves a timing window
 	// where the federation request has completed but rooms.knock is absent.
-	services.rooms.state_cache.mark_as_knocked(
-		&sender,
-		&body.room_id,
-		Some(knock_room_state.clone()),
-	);
+	services
+		.rooms
+		.state_cache
+		.mark_as_knocked(&sender, &body.room_id, Some(knock_room_state.clone()))
+		.await;
 
 	Ok(send_knock::v1::Response {
 		knock_room_state: knock_room_state.into_iter().map(|raw| raw.cast()).collect(),

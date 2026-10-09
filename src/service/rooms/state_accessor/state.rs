@@ -26,8 +26,7 @@ pub async fn user_was_joined_hamt(
 	user_id: &UserId,
 ) -> bool {
 	self.user_membership_hamt(room_id, root_handle, user_id)
-		.await
-		== MembershipState::Join
+		.await == MembershipState::Join
 }
 
 /// The user was an invited or joined room member at this state (potentially

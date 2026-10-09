@@ -138,8 +138,7 @@ pub async fn update_membership(
 							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
-					.as_deref()
-					== Some("m.room.create")
+					.as_deref() == Some("m.room.create")
 			});
 			if !has_create {
 				if let Ok(previous) = self.knock_state(user_id, room_id).await {
@@ -153,8 +152,7 @@ pub async fn update_membership(
 									.and_then(|value| value.as_str())
 									.map(str::to_owned)
 							})
-							.as_deref()
-							== Some("m.room.create")
+							.as_deref() == Some("m.room.create")
 					}) {
 						knock_state = previous;
 					}
@@ -170,11 +168,11 @@ pub async fn update_membership(
 							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
-					.as_deref()
-					== Some("m.room.create")
+					.as_deref() == Some("m.room.create")
 			});
 			if has_create {
-				self.mark_as_knocked(user_id, room_id, Some(knock_state));
+				self.mark_as_knocked(user_id, room_id, Some(knock_state))
+					.await;
 			}
 		},
 	}
@@ -351,6 +349,7 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db
@@ -388,6 +387,7 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db
@@ -432,6 +432,7 @@ pub async fn mark_as_invited_silent(
 
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db.userroomid_invitestate.batch_raw_put(
@@ -495,6 +496,7 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	// Write left state with no PDU (admin operation, no actual leave event)
@@ -542,6 +544,7 @@ pub async fn mark_as_left_reconciled(&self, user_id: &UserId, room_id: &RoomId) 
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let left_count = self.services.globals.next_count().unwrap();
 	let mut batch = Batch::new();
 
@@ -754,7 +757,7 @@ pub async fn mark_device_list_lefts_batch(
 /// recommended to use this directly. You most likely should use
 /// `update_membership` instead
 #[implement(super::Service)]
-pub fn mark_as_knocked(
+pub async fn mark_as_knocked(
 	&self,
 	user_id: &UserId,
 	room_id: &RoomId,
@@ -765,6 +768,7 @@ pub fn mark_as_knocked(
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 
 	let new_count = self
 		.services
@@ -890,12 +894,12 @@ pub async fn mark_as_invited(
 		.roomuserid_forgotten
 		.batch_delete(&mut batch, &roomuser_id);
 	self.db.userroomid_joined.apply_batch(batch);
-	drop(membership_guard);
 	self.unforget(room_id, user_id);
 
 	if let Some(servers) = invite_via.filter(is_not_empty!()) {
 		self.add_servers_invite_via(room_id, servers).await;
 	}
+	drop(membership_guard);
 
 	Ok(())
 }

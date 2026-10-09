@@ -1711,8 +1711,12 @@ pub(super) async fn fetch_missing_events(
 								.outlier
 								.get_pdu_outlier(&event_id)
 								.await
-								.is_err()
-								&& !self.services.rooms.timeline.pdu_exists(&event_id).await
+								.is_err() && !self
+								.services
+								.rooms
+								.timeline
+								.pdu_exists(&event_id)
+								.await
 							{
 								self.services
 									.rooms
@@ -1735,13 +1739,12 @@ pub(super) async fn fetch_missing_events(
 											.outlier
 											.get_pdu_outlier(prev)
 											.await
-											.is_err()
-											&& !self
-												.services
-												.rooms
-												.timeline
-												.pdu_exists(prev)
-												.await
+											.is_err() && !self
+											.services
+											.rooms
+											.timeline
+											.pdu_exists(prev)
+											.await
 										{
 											next_targets.insert(prev.to_owned());
 										}

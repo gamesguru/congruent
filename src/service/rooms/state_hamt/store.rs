@@ -460,8 +460,7 @@ impl Store {
 	/// tests or synchronous spawns).
 	pub fn get_blocking_resolver(
 		&self,
-	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_
-	{
+	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_ {
 		move |hash: &StructuralHash| self.get_node_blocking(hash)
 	}
 

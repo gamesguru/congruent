@@ -15,6 +15,11 @@ crate-type = [
 ]
 path = "mod.rs"
 
+[[bench]]
+name = "hamt"
+path = "../../benches/hamt.rs"
+harness = false
+
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
 # `conduwuit_macros::introspect_crate!`, which cargo-machete cannot see.
 [package.metadata.cargo-machete]

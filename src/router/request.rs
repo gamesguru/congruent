@@ -1,16 +1,27 @@
 use std::{
+	any::Any,
 	net::SocketAddr,
+	panic::AssertUnwindSafe,
 	sync::{Arc, atomic::Ordering},
+	time::Duration,
 };
 
 use bytes::Bytes;
-use conduwuit::{debug_warn, trace, warn};
+use conduwuit::{debug_warn, error, trace, warn};
 use conduwuit_api::hyper_router::MinimalRouter;
 use conduwuit_service::{Services, state::State};
+use futures::FutureExt;
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use tower::Service;
+
+const CONDUWUIT_CSP: &str =
+	"default-src 'none';frame-ancestors 'none';form-action 'none';base-uri 'none';sandbox";
+const CONDUWUIT_PERMISSIONS_POLICY: &str = "interest-cohort=(),browsing-topics=()";
+
+type CallResult = Result<Response<Full<Bytes>>, std::convert::Infallible>;
+type TaskResult = Result<CallResult, Box<dyn Any + Send + 'static>>;
 
 pub(crate) async fn handle(
 	mut router: MinimalRouter,
@@ -43,9 +54,31 @@ pub(crate) async fn handle(
 		.requests_handle_active
 		.fetch_add(1, Ordering::Relaxed);
 
-	let mut response = match router.call(request).await {
-		| Ok(response) => response,
-		| Err(error) => match error {},
+	let call = AssertUnwindSafe(router.call(request)).catch_unwind();
+	let shutdown = async {
+		services.server.until_shutdown().await;
+		smol::Timer::after(Duration::from_secs(services.server.config.client_shutdown_timeout))
+			.await;
+		Ok::<CallResult, Box<dyn Any + Send + 'static>>(Ok(error_response(
+			StatusCode::SERVICE_UNAVAILABLE,
+			"M_UNAVAILABLE",
+			"Server is shutting down",
+		)))
+	};
+	let combined = async {
+		futures::select! {
+			result = call.fuse() => result,
+			result = shutdown.fuse() => result,
+		}
+	};
+	let request_timeout = Duration::from_secs(services.server.config.client_request_timeout);
+	let mut response = match conduwuit::timeout(request_timeout, combined).await {
+		| Ok(result) => match result {
+			| Ok(Ok(response)) => response,
+			| Ok(Err(error)) => match error {},
+			| Err(panic) => catch_panic(panic, services.as_ref()),
+		},
+		| Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, "M_UNKNOWN", "Request timed out"),
 	};
 
 	#[cfg(debug_assertions)]
@@ -96,6 +129,39 @@ pub(crate) async fn handle(
 	response
 }
 
+#[allow(clippy::needless_pass_by_value)]
+fn catch_panic(
+	panic: Box<dyn Any + Send + 'static>,
+	services: &Services,
+) -> Response<Full<Bytes>> {
+	services
+		.server
+		.metrics
+		.requests_panic
+		.fetch_add(1, Ordering::Release);
+
+	let details = match panic.downcast_ref::<String>() {
+		| Some(details) => details.clone(),
+		| None => match panic.downcast_ref::<&str>() {
+			| Some(details) => (*details).to_owned(),
+			| None => "Unknown internal server error occurred.".to_owned(),
+		},
+	};
+
+	error!("{details:#}");
+	let mut body = slipstream::ObjectBuilder::new();
+	body.field("errcode", "M_UNKNOWN");
+	body.field("error", "M_UNKNOWN: Internal server error occurred");
+	body.field("details", &details);
+	let body = body.finish();
+
+	Response::builder()
+		.status(StatusCode::INTERNAL_SERVER_ERROR)
+		.header(header::CONTENT_TYPE, "application/json")
+		.body(Full::from(body.to_string()))
+		.expect("Failed to create response for our panic catcher?")
+}
+
 fn cors_response() -> Response<Full<Bytes>> {
 	Response::builder()
 		.status(StatusCode::NO_CONTENT)
@@ -117,7 +183,14 @@ fn add_headers(response: &mut Response<Full<Bytes>>) {
 	let _ = headers.insert("origin-agent-cluster", header::HeaderValue::from_static("?1"));
 	let _ = headers
 		.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+	let _ = headers.insert(header::X_XSS_PROTECTION, header::HeaderValue::from_static("0"));
 	let _ = headers.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+	let _ = headers.insert(
+		"permissions-policy",
+		header::HeaderValue::from_static(CONDUWUIT_PERMISSIONS_POLICY),
+	);
+	let _ = headers
+		.insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static(CONDUWUIT_CSP));
 	let _ = headers
 		.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, header::HeaderValue::from_static("*"));
 }

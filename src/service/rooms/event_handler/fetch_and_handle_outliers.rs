@@ -302,10 +302,10 @@ where
 									},
 								| None => {
 									let mut version = None;
-									if let Ok(json) =
-										slipstream::codec::from_str::<slipstream::json::Value>(
-											raw_pdu.get(),
-										) {
+									if let Ok(json) = slipstream::codec::from_str::<
+										slipstream::json::Value,
+									>(raw_pdu.get())
+									{
 										if json.get("type").and_then(|t| t.as_str())
 											== Some("m.room.create")
 										{
@@ -495,10 +495,10 @@ where
 											.and_then(CanonicalJsonValue::as_array)
 										{
 											for auth_event in auth_events {
-												if let Ok(aeid) =
-													slipstream::codec::from_value::<OwnedEventId>(
-														auth_event,
-													) {
+												if let Ok(aeid) = slipstream::codec::from_value::<
+													OwnedEventId,
+												>(auth_event)
+												{
 													next_auth_events.insert(aeid);
 												}
 											}

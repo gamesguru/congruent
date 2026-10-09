@@ -2296,8 +2296,7 @@ async fn filter_active_rooms<'a>(
 					.rooms
 					.state_accessor
 					.is_encrypted_room(room_id)
-					.await
-					== is_encrypted)
+					.await == is_encrypted)
 					.then_some(room_id)
 			})
 			.collect()
