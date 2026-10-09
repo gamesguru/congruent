@@ -109,16 +109,10 @@ where
 	greeting.push(0x05);
 	greeting.push(u8::try_from(methods.len()).expect("at most two methods"));
 	greeting.extend_from_slice(&methods);
-	stream
-		.write_all(&greeting)
-		.await
-		.map_err(|error| socks_error(&error))?;
+	io(stream.write_all(&greeting).await)?;
 
 	let mut choice = [0_u8; 2];
-	stream
-		.read_exact(&mut choice)
-		.await
-		.map_err(|error| socks_error(&error))?;
+	io(stream.read_exact(&mut choice).await)?;
 	if choice[0] != 0x05 {
 		return Err(err!(HttpClient(
 			"proxy returned SOCKS version {:#04x}, expected 0x05",
@@ -148,17 +142,11 @@ where
 	let mut request = vec![0x05, 0x01, 0x00];
 	address.encode(&mut request);
 	request.extend_from_slice(&target.port.to_be_bytes());
-	stream
-		.write_all(&request)
-		.await
-		.map_err(|error| socks_error(&error))?;
-	stream.flush().await.map_err(|error| socks_error(&error))?;
+	io(stream.write_all(&request).await)?;
+	io(stream.flush().await)?;
 
 	let mut header = [0_u8; 4];
-	stream
-		.read_exact(&mut header)
-		.await
-		.map_err(|error| socks_error(&error))?;
+	io(stream.read_exact(&mut header).await)?;
 	if header[0] != 0x05 {
 		return Err(err!(HttpClient(
 			"proxy returned SOCKS version {:#04x} during CONNECT, expected 0x05",
@@ -172,34 +160,19 @@ where
 	// Consume the bound address so the stream is left at the tunneled bytes.
 	let mut bound = [0_u8; 2];
 	match header[3] {
-		| 0x01 => stream
-			.read_exact(&mut [0_u8; 4])
-			.await
-			.map_err(|error| socks_error(&error))?,
-		| 0x04 => stream
-			.read_exact(&mut [0_u8; 16])
-			.await
-			.map_err(|error| socks_error(&error))?,
+		| 0x01 => io(stream.read_exact(&mut [0_u8; 4]).await)?,
+		| 0x04 => io(stream.read_exact(&mut [0_u8; 16]).await)?,
 		| 0x03 => {
-			stream
-				.read_exact(&mut bound)
-				.await
-				.map_err(|error| socks_error(&error))?;
+			io(stream.read_exact(&mut bound).await)?;
 			let mut host = vec![0_u8; usize::from(bound[1])];
-			stream
-				.read_exact(&mut host)
-				.await
-				.map_err(|error| socks_error(&error))?;
+			io(stream.read_exact(&mut host).await)?;
 		},
 		| address_type =>
 			return Err(err!(HttpClient(
 				"proxy returned unknown SOCKS5 address type {address_type:#04x}"
 			))),
 	}
-	stream
-		.read_exact(&mut bound)
-		.await
-		.map_err(|error| socks_error(&error))?;
+	io(stream.read_exact(&mut bound).await)?;
 
 	Ok(stream)
 }
@@ -219,17 +192,11 @@ async fn authenticate<S: AsyncRead + AsyncWrite + Unpin>(
 	let mut request = vec![0x01];
 	push_len_prefixed(&mut request, username.as_bytes())?;
 	push_len_prefixed(&mut request, password.as_bytes())?;
-	stream
-		.write_all(&request)
-		.await
-		.map_err(|error| socks_error(&error))?;
-	stream.flush().await.map_err(|error| socks_error(&error))?;
+	io(stream.write_all(&request).await)?;
+	io(stream.flush().await)?;
 
 	let mut response = [0_u8; 2];
-	stream
-		.read_exact(&mut response)
-		.await
-		.map_err(|error| socks_error(&error))?;
+	io(stream.read_exact(&mut response).await)?;
 	if response[1] != 0x00 {
 		return Err(err!(HttpClient("proxy username/password authentication failed")));
 	}
@@ -298,6 +265,8 @@ fn reply_message(reply: u8) -> &'static str {
 fn socks_error(error: &std::io::Error) -> Error {
 	Error::HttpClient(format!("SOCKS5 proxy I/O error: {error}").into())
 }
+
+fn io<T>(result: std::io::Result<T>) -> Result<T> { result.map_err(|error| socks_error(&error)) }
 
 /// Read from `stream` until a blank line, returning the status line and headers
 /// as lossy UTF-8. Used for HTTP proxy responses.

@@ -20,6 +20,8 @@ use futures_rustls::{
 		pki_types::{CertificateDer, ServerName, UnixTime},
 	},
 };
+
+const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_secs(31_536_000);
 use http::{
 	HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 	header::{AUTHORIZATION, COOKIE, HOST, PROXY_AUTHORIZATION, WWW_AUTHENTICATE},
@@ -69,7 +71,11 @@ impl HttpClient {
 		// pre-migration reqwest clients.
 		let deadline = Instant::now()
 			.checked_add(self.total_timeout)
-			.unwrap_or_else(Instant::now);
+			.unwrap_or_else(|| {
+				Instant::now()
+					.checked_add(OVERFLOW_DEADLINE_GRACE)
+					.expect("one-year deadline must fit in Instant")
+			});
 		match timeout_at(deadline, self.execute_hops(request, url, max_size)).await {
 			| Ok(result) => result,
 			| Err(TimeoutError) => Err(Error::HttpClientTimeout(
