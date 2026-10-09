@@ -906,7 +906,10 @@ impl super::Service {
 		let mut pl_cache = HashMap::new();
 		// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 		let empty_key = String::new();
-		let unconflicted_state: rezzy::state::at::SharedState = (&unconflicted).into();
+		let unconflicted_state: rezzy::state::at::SharedState = unconflicted
+			.iter()
+			.map(|(key, value)| (key.clone(), value.clone()))
+			.collect();
 		let resolved_lean = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
 			&unconflicted_state,
 			&conflicted_events,

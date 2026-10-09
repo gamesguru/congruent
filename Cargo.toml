@@ -55,6 +55,7 @@ features = ["parse", "serde"]
 [workspace.dependencies.base64]
 version = "0.22.1"
 default-features = false
+features = ["alloc"]
 
 # Used for MSC0F01 gossip reconciliation Bloom filter (XXH3 double-hashing)
 [workspace.dependencies.xxhash-rust]
