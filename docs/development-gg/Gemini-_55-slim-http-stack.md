@@ -145,3 +145,25 @@ function) map. Construct your HTTP response headers statically. Submit the
 response back to the client using `IORING_OP_SEND_ZC` (zero-copy send) or a
 standard vectored write. Once the send completes, recycle the buffer back into
 the provided buffer ring.
+
+---
+
+# repo notes (continuwuity)
+
+The conclusion above does not transfer directly to this repository:
+
+- axum and reqwest are already gone. Outbound federation uses the hyper-util
+  legacy client with futures-rustls (ring); inbound uses hyper +
+  `MinimalRouter`.
+- Duplicate dependencies are minimal (mostly feature-unification double builds
+  such as `serde_core`, `libc`, `either`, `toml`).
+- Build time is dominated by existing project dependencies (ring/mimalloc C
+  builds, hickory, redb, rocksdb, ruma, serde), not hyper/tokio.
+- The httparse + io_uring design is a separate experimental server (keep-alive,
+  chunking, partial reads, TLS, h2, Unix sockets, timeouts would all be
+  re-implemented). It is not a practical replacement for the production HTTP
+  stack.
+
+Immediate work is dependency-feature cleanup (e.g. unused `tower-http` features)
+driven by `cargo build --timings` and `cargo bloat` measurements, not adopting
+the rewrite.
