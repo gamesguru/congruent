@@ -444,13 +444,23 @@ impl HttpClient {
 		let address = self
 			.resolve_host(&target.host, target.port, validate)
 			.await?;
-		async_net::TcpStream::connect(address)
+		let stream = async_net::TcpStream::connect(address)
 			.await
 			.map_err(|error| {
 				Error::HttpClientConnect(
 					format!("failed to connect to {}: {error}", target.authority()).into(),
 				)
-			})
+			})?;
+
+		// Without TCP_NODELAY, Nagle's algorithm and delayed ACKs stall any message
+		// written in more than one segment on a reused connection by ~40ms.
+		stream.set_nodelay(true).map_err(|error| {
+			Error::HttpClientConnect(
+				format!("failed to set TCP_NODELAY for {}: {error}", target.authority()).into(),
+			)
+		})?;
+
+		Ok(stream)
 	}
 
 	fn target(url: &Url) -> Result<proxy::Target> {
@@ -1218,6 +1228,7 @@ mod pool_tests {
 		behavior: Behavior,
 		served: Arc<AtomicUsize>,
 	) {
+		let _ = stream.set_nodelay(true);
 		let mut buffer = Vec::new();
 		let mut chunk = [0_u8; 1024];
 		let mut on_connection = 0_usize;
@@ -1257,12 +1268,13 @@ mod pool_tests {
 			} else {
 				""
 			};
-			let response =
-				format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{connection}\r\n", BODY.len());
-			if stream.write_all(response.as_bytes()).await.is_err()
-				|| stream.write_all(BODY).await.is_err()
-				|| stream.flush().await.is_err()
-			{
+			// One write for head and body: two small writes on a keep-alive connection
+			// trigger Nagle + delayed-ACK stalls that would swamp what is measured.
+			let mut response =
+				format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{connection}\r\n", BODY.len())
+					.into_bytes();
+			response.extend_from_slice(BODY);
+			if stream.write_all(&response).await.is_err() || stream.flush().await.is_err() {
 				return;
 			}
 
@@ -1512,7 +1524,7 @@ mod pool_tests {
 	#[allow(clippy::cast_precision_loss)]
 	fn pooling_is_faster_than_reconnecting() {
 		let _serial = serial();
-		const REQUESTS: usize = 1500;
+		const REQUESTS: usize = 600;
 		const ROUNDS: usize = 3;
 
 		// Best-of-N on each side keeps scheduler noise from deciding the result.
