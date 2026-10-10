@@ -15,7 +15,7 @@ use slipstream::{
 };
 
 use self::data::{Data, ReceiptItem};
-use crate::{Dep, sending};
+use crate::{Dep, globals, sending};
 
 pub struct Service {
 	services: Services,
@@ -23,6 +23,7 @@ pub struct Service {
 }
 
 struct Services {
+	globals: Dep<globals::Service>,
 	sending: Dep<sending::Service>,
 }
 
@@ -30,6 +31,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: Services {
+				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<sending::Service>("sending"),
 			},
 			db: Data::new(&args),
@@ -60,7 +62,11 @@ impl Service {
 		room_id: &RoomId,
 		event: &ReceiptEvent,
 	) {
+		// Hold the barrier across count allocation and the write so the sender
+		// never sees the count without the row.
+		let barrier = self.services.globals.edu_barrier.read().await;
 		self.db.readreceipt_update(user_id, room_id, event).await;
+		drop(barrier);
 		self.services
 			.sending
 			.flush_room(room_id)

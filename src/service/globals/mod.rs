@@ -22,6 +22,17 @@ pub struct Service {
 	pub admin_alias: OwnedRoomAliasId,
 	pub turn_secret: String,
 	pub server_secret: [u8; 32],
+
+	/// Orders count allocation + write against EDU window selection.
+	///
+	/// A writer allocates a stream count (`next_count`) and only afterwards
+	/// makes the row visible. The sender picks `current_count()` as the upper
+	/// bound of its EDU window and then advances its cursor to it; a row whose
+	/// count was allocated but not yet written would be skipped forever.
+	/// Writers hold this for reading across allocate-and-write; the sender
+	/// takes it for writing just long enough to read the bound, which waits
+	/// out every in-flight writer.
+	pub edu_barrier: async_lock::RwLock<()>,
 }
 
 type RateLimitState = (Instant, u32); // Time if last failed try, number of failed tries
@@ -76,6 +87,7 @@ impl crate::Service for Service {
 			.expect("@conduit:server_name is valid"),
 			turn_secret,
 			server_secret,
+			edu_barrier: async_lock::RwLock::new(()),
 		}))
 	}
 

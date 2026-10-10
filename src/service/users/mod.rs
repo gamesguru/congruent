@@ -1513,6 +1513,9 @@ impl Service {
 	}
 
 	pub async fn mark_device_key_update(&self, user_id: &UserId) {
+		// Keep the sender from reading its EDU window bound between allocating the
+		// count and writing the rows below (see `globals::Service::edu_barrier`).
+		let _barrier = self.services.globals.edu_barrier.read().await;
 		let count = self.services.globals.next_count().unwrap();
 
 		conduwuit::info!(%user_id, "mark_device_key_update called");
