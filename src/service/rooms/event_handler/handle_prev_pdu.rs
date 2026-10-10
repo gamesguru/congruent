@@ -4,7 +4,9 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, debug, defer, implement,
 	utils::continue_exponential_backoff_secs, warn,
 };
-use slipstream::{CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, RoomId, ServerName};
+use slipstream::{
+	CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, ServerName,
+};
 
 use crate::rooms::pdu_metadata::RejectionCode;
 
@@ -20,6 +22,7 @@ pub(super) async fn handle_prev_pdu<'a, Pdu>(
 	create_event: &'a Pdu,
 	first_ts_in_room: MilliSecondsSinceUnixEpoch,
 	prev_id: &'a EventId,
+	state_ids_anchor: Option<OwnedEventId>,
 ) -> Result<bool>
 where
 	Pdu: Event + Send + Sync,
@@ -150,6 +153,7 @@ where
 		room_id,
 		false,
 		false,
+		state_ids_anchor,
 	))
 	.await?;
 

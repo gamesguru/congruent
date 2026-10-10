@@ -753,7 +753,7 @@ pub async fn process_timeline_upgrade(
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
-		_prev_fetch_deeper_anchor,
+		prev_fetch_deeper_anchor,
 		prev_fetch_had_invalid_data,
 	) = if let Some(prefetched) = prefetched_prev {
 		prefetched
@@ -847,16 +847,28 @@ pub async fn process_timeline_upgrade(
 
 	// Keep the actual write phase inside one flush boundary so prev-event
 	// repairs and the incoming event become visible together.
+	let final_prev_id = sorted_prev_events.last().cloned();
+	let final_prev_anchor = prev_fetch_deeper_anchor.clone();
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
+			// Typed parameter so `prev_id` below is inferred as `&EventId`.
+			let is_final_prev = |id: &EventId| {
+				final_prev_id
+					.as_ref()
+					.is_some_and(|last| last.as_str() == id.as_str())
+			};
 			let predecessors_were_recovered = sorted_prev_events
 				.iter()
 				.try_stream()
 				.map_ok(AsRef::as_ref)
-				.try_fold(false, |recovered_any, prev_id| {
+				.try_fold(false, |recovered_any, prev_id: &EventId| {
 					let event_id = event_id.clone();
 					let event_info = eventid_info.remove(prev_id);
+					let state_ids_anchor = final_prev_anchor
+						.as_ref()
+						.filter(|_| is_final_prev(prev_id))
+						.cloned();
 					async move {
 						let recovered = self
 							.handle_prev_pdu(
@@ -867,6 +879,7 @@ pub async fn process_timeline_upgrade(
 								create_event,
 								first_ts_in_room,
 								prev_id,
+								state_ids_anchor,
 							)
 							.inspect_err(move |e| {
 								warn!("Prev {prev_id} failed: {e}");
@@ -918,6 +931,7 @@ pub async fn process_timeline_upgrade(
 				room_id,
 				true,
 				predecessors_were_recovered,
+				prev_fetch_deeper_anchor,
 			))
 			.await
 			.map(|(pdu_id, _)| pdu_id)
