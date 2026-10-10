@@ -14,6 +14,7 @@ use http::Method;
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming};
 use matchit::Router;
+use percent_encoding::percent_decode_str;
 
 fn unrecognized_response(status: http::StatusCode) -> Response<Full<Bytes>> {
 	Response::builder()
@@ -23,6 +24,16 @@ fn unrecognized_response(status: http::StatusCode) -> Response<Full<Bytes>> {
 			br#"{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}"#,
 		)))
 		.expect("static unrecognized response is valid")
+}
+
+fn bad_request_response() -> Response<Full<Bytes>> {
+	Response::builder()
+		.status(http::StatusCode::BAD_REQUEST)
+		.header(http::header::CONTENT_TYPE, "application/json")
+		.body(Full::from(Bytes::from_static(
+			br#"{"errcode":"M_BAD_JSON","error":"Invalid percent-encoded path parameter"}"#,
+		)))
+		.expect("static bad request response is valid")
 }
 
 #[derive(Clone)]
@@ -197,12 +208,31 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 		match router.at(request.uri().path()) {
 			| Ok(matched) => {
 				let handler = matched.value.clone();
-				let params: HashMap<String, String> = matched
+				let params: HashMap<String, String> = match matched
 					.params
 					.iter()
-					.map(|(key, value)| (key.to_owned(), value.to_owned()))
-					.collect();
-				let path = params.values().cloned().collect::<Vec<_>>();
+					.map(|(key, value)| {
+						percent_decode_str(value)
+							.decode_utf8()
+							.map(|value| (key.to_owned(), value.into_owned()))
+					})
+					.collect()
+				{
+					| Ok(params) => params,
+					| Err(_) => return Box::pin(async { Ok(bad_request_response()) }),
+				};
+				// Positional args must follow the order of the path template, which a
+				// HashMap does not preserve; matchit yields them in path order.
+				let path = matched
+					.params
+					.iter()
+					.filter_map(|(_, value)| {
+						percent_decode_str(value)
+							.decode_utf8()
+							.ok()
+							.map(std::borrow::Cow::into_owned)
+					})
+					.collect::<Vec<_>>();
 				let mut request = request;
 				request.extensions_mut().insert(path);
 				Box::pin(async move { Ok(handler(request, params).await) })

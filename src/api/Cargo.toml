@@ -71,6 +71,7 @@ hyper.workspace = true
 itertools.workspace = true
 log.workspace = true
 matchit.workspace = true
+percent-encoding.workspace = true
 rand.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true

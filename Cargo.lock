@@ -620,6 +620,7 @@ dependencies = [
  "itertools",
  "log",
  "matchit",
+ "percent-encoding",
  "rand",
  "rezzy",
  "rustls",

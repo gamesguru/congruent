@@ -87,11 +87,15 @@ where
 		_state: &'a State,
 	) -> BoxFuture<'a, Result<Self, ApiError>> {
 		Box::pin(async move {
+			// Ordered, decoded positional args inserted by the router.
+			let ordered = context
+				.request
+				.as_ref()
+				.and_then(|request| request.extensions().get::<Vec<String>>().cloned())
+				.unwrap_or_default();
 			let value = slipstream::json::Value::Array(
-				context
-					.params
-					.values()
-					.cloned()
+				ordered
+					.into_iter()
 					.map(slipstream::json::Value::String)
 					.collect(),
 			);
