@@ -56,12 +56,14 @@ pub(super) fn port(url: &Url, scheme: Scheme) -> Result<u16> {
 
 /// Send an HTTP `CONNECT` request and wait for a `2xx` response, leaving the
 /// stream positioned at the start of the tunneled byte stream.
-pub(super) async fn http_connect<S>(mut stream: S, target: &Target) -> Result<S>
+pub(super) async fn http_connect<S>(mut stream: S, target: &Target, proxy: &Url) -> Result<S>
 where
 	S: AsyncRead + AsyncWrite + Unpin,
 {
 	let authority = target.authority();
-	let request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
+	let credentials = proxy_authorization(proxy);
+	let request =
+		format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n{credentials}\r\n");
 	stream
 		.write_all(request.as_bytes())
 		.await
@@ -84,6 +86,19 @@ where
 	}
 
 	Ok(stream)
+}
+
+/// `Proxy-Authorization: Basic` header line (with trailing CRLF) built from the
+/// proxy URL's userinfo, or an empty string when it has none.
+fn proxy_authorization(proxy: &Url) -> String {
+	use base64::{Engine, engine::general_purpose::STANDARD};
+
+	if proxy.username().is_empty() && proxy.password().is_none() {
+		return String::new();
+	}
+
+	let userinfo = format!("{}:{}", proxy.username(), proxy.password().unwrap_or_default());
+	format!("Proxy-Authorization: Basic {}\r\n", STANDARD.encode(userinfo))
 }
 
 /// Perform a SOCKS5 (RFC 1928) CONNECT through `stream`. `resolve` is used only
@@ -293,4 +308,218 @@ async fn read_header<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> Resul
 		.position(|window| window == b"\r\n")
 		.unwrap_or(buffer.len());
 	Ok(String::from_utf8_lossy(&buffer[..end]).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		pin::Pin,
+		task::{Context, Poll},
+	};
+
+	use super::*;
+
+	/// An in-memory `AsyncRead + AsyncWrite` that replays a scripted response
+	/// and records everything written, for exercising the proxy handshakes.
+	struct Scripted {
+		incoming: std::collections::VecDeque<u8>,
+		written: Vec<u8>,
+	}
+
+	impl Scripted {
+		fn new(script: &[u8]) -> Self {
+			Self {
+				incoming: script.iter().copied().collect(),
+				written: Vec::new(),
+			}
+		}
+
+		fn written(&self) -> &[u8] { &self.written }
+	}
+
+	impl AsyncRead for Scripted {
+		fn poll_read(
+			mut self: Pin<&mut Self>,
+			_cx: &mut Context<'_>,
+			buffer: &mut [u8],
+		) -> Poll<std::io::Result<usize>> {
+			let count = self.incoming.len().min(buffer.len());
+			for slot in &mut buffer[..count] {
+				*slot = self.incoming.pop_front().expect("count <= incoming length");
+			}
+			Poll::Ready(Ok(count))
+		}
+	}
+
+	impl AsyncWrite for Scripted {
+		fn poll_write(
+			mut self: Pin<&mut Self>,
+			_cx: &mut Context<'_>,
+			buffer: &[u8],
+		) -> Poll<std::io::Result<usize>> {
+			self.written.extend_from_slice(buffer);
+			Poll::Ready(Ok(buffer.len()))
+		}
+
+		fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+			Poll::Ready(Ok(()))
+		}
+
+		fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+			Poll::Ready(Ok(()))
+		}
+	}
+
+	const CONNECT_OK_IPV4_BOUND: [u8; 10] = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+
+	#[test]
+	fn proxy_authorization_from_userinfo() {
+		let url = Url::parse("http://user:pass@proxy.example:3128").expect("valid URL");
+		assert_eq!(proxy_authorization(&url), "Proxy-Authorization: Basic dXNlcjpwYXNz\r\n");
+
+		let url = Url::parse("http://proxy.example:3128").expect("valid URL");
+		assert!(proxy_authorization(&url).is_empty());
+	}
+
+	#[test]
+	fn http_connect_succeeds_and_sends_authority() {
+		let stream = Scripted::new(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+		let proxy = Url::parse("http://proxy.example:3128").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let stream =
+			smol::block_on(http_connect(stream, &target, &proxy)).expect("CONNECT succeeds");
+		let request = std::str::from_utf8(stream.written()).expect("ASCII request");
+		assert!(request.starts_with("CONNECT matrix.example:8448 HTTP/1.1\r\n"), "{request}");
+		assert!(request.contains("Host: matrix.example:8448\r\n"), "{request}");
+		assert!(!request.contains("Proxy-Authorization"), "no userinfo configured");
+	}
+
+	#[test]
+	fn http_connect_includes_proxy_authorization_from_userinfo() {
+		let stream = Scripted::new(b"HTTP/1.1 200 Connection Established\r\n\r\n");
+		let proxy = Url::parse("http://user:pass@proxy.example:3128").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let stream =
+			smol::block_on(http_connect(stream, &target, &proxy)).expect("CONNECT succeeds");
+		let request = std::str::from_utf8(stream.written()).expect("ASCII request");
+		assert!(request.contains("Proxy-Authorization: Basic dXNlcjpwYXNz\r\n"), "{request}");
+	}
+
+	#[test]
+	fn http_connect_rejects_non_2xx_response() {
+		let stream = Scripted::new(b"HTTP/1.1 403 Forbidden\r\n\r\n");
+		let proxy = Url::parse("http://proxy.example:3128").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let result = smol::block_on(http_connect(stream, &target, &proxy));
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn socks5h_sends_domain_and_skips_local_resolution() {
+		let mut script = vec![0x05, 0x00];
+		script.extend_from_slice(&CONNECT_OK_IPV4_BOUND);
+		let stream = Scripted::new(&script);
+		let proxy = Url::parse("socks5h://proxy.example:1080").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let stream = smol::block_on(socks5_connect(
+			stream,
+			&proxy,
+			Scheme::Socks5h,
+			&target,
+			|host| async move { panic!("socks5h must not resolve locally, got {host:?}") },
+		))
+		.expect("CONNECT succeeds");
+
+		let written = stream.written();
+		// Greeting: version, one method offered (no auth).
+		assert_eq!(&written[0..3], &[0x05, 0x01, 0x00]);
+		// CONNECT: version, connect command, reserved, domain address type.
+		let request = &written[3..];
+		assert_eq!(&request[0..4], &[0x05, 0x01, 0x00, 0x03]);
+		assert_eq!(request[4], 14, "length of matrix.example");
+		assert_eq!(&request[5..19], b"matrix.example");
+		assert_eq!(&request[19..21], &8448_u16.to_be_bytes());
+	}
+
+	#[test]
+	fn socks5_local_resolve_uses_resolver_and_sends_ip() {
+		let mut script = vec![0x05, 0x00];
+		script.extend_from_slice(&CONNECT_OK_IPV4_BOUND);
+		let stream = Scripted::new(&script);
+		let proxy = Url::parse("socks5://proxy.example:1080").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let stream = smol::block_on(socks5_connect(
+			stream,
+			&proxy,
+			Scheme::Socks5,
+			&target,
+			|host| async move {
+				assert_eq!(host, "matrix.example");
+				Ok("203.0.113.9".parse().expect("valid IP"))
+			},
+		))
+		.expect("CONNECT succeeds");
+
+		let written = stream.written();
+		assert_eq!(&written[0..3], &[0x05, 0x01, 0x00]);
+		let request = &written[3..];
+		assert_eq!(&request[0..4], &[0x05, 0x01, 0x00, 0x01]);
+		assert_eq!(&request[4..8], &[203, 0, 113, 9]);
+		assert_eq!(&request[8..10], &8448_u16.to_be_bytes());
+	}
+
+	#[test]
+	fn socks5_offers_and_performs_username_password_authentication() {
+		let mut script = vec![
+			0x05, 0x02, // method choice: username/password
+			0x01, 0x00, // authentication succeeded
+		];
+		script.extend_from_slice(&CONNECT_OK_IPV4_BOUND);
+		let stream = Scripted::new(&script);
+		let proxy = Url::parse("socks5://user:pass@proxy.example:1080").expect("valid URL");
+		let target = Target {
+			host: "matrix.example".into(),
+			port: 8448,
+		};
+
+		let stream = smol::block_on(socks5_connect(
+			stream,
+			&proxy,
+			Scheme::Socks5,
+			&target,
+			|_| async move { Ok("203.0.113.9".parse().expect("valid IP")) },
+		))
+		.expect("CONNECT succeeds");
+
+		let written = stream.written();
+		// Greeting offers no-auth and username/password.
+		assert_eq!(&written[0..4], &[0x05, 0x02, 0x00, 0x02]);
+		// Authentication request: version, length-prefixed user and password.
+		assert_eq!(&written[4..6], &[0x01, 0x04]);
+		assert_eq!(&written[6..10], b"user");
+		assert_eq!(written[10], 0x04);
+		assert_eq!(&written[11..15], b"pass");
+		// The CONNECT request follows.
+		assert_eq!(written[15], 0x05);
+	}
 }

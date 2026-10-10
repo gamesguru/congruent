@@ -161,14 +161,10 @@ impl HttpClient {
 				return Ok(response);
 			};
 
-			if redirects >= self.redirect_limit || !is_http_scheme(url.scheme()) {
-				return Ok(response);
-			}
-
 			let next = url.join(location).map_err(|error| {
 				Error::HttpClient(format!("invalid redirect target: {error}").into())
 			})?;
-			if !is_http_scheme(next.scheme()) {
+			if !can_follow_redirect(redirects, self.redirect_limit, &url, &next) {
 				return Ok(response);
 			}
 
@@ -250,7 +246,7 @@ impl HttpClient {
 	async fn open_stream(&self, url: &Url, target: &proxy::Target, tls: bool) -> Result<Stream> {
 		let Some(proxy_url) = self.proxy.proxy_url(url).cloned() else {
 			return self
-				.wrap_tls(self.open_tcp(target).await?, target, tls)
+				.wrap_tls(self.open_tcp(target, self.denylist_validation).await?, target, tls)
 				.await;
 		};
 
@@ -261,12 +257,19 @@ impl HttpClient {
 				.host_str()
 				.ok_or_else(|| Error::HttpClient("proxy URL has no host".into()))?,
 		);
-		let stream = self.open_tcp(&proxy::Target { host, port }).await?;
+		// The proxy address itself is admin-configured and trusted, so it is
+		// never denylist-checked; the denylist applies to the request target.
+		let stream = self.open_tcp(&proxy::Target { host, port }, false).await?;
 
 		let stream = match scheme {
 			| proxy::Scheme::Http if !tls => stream,
-			| proxy::Scheme::Http => proxy::http_connect(stream, target).await?,
+			// CONNECT hands target resolution to the proxy, so the IP range
+			// denylist cannot be enforced on this path.
+			| proxy::Scheme::Http => proxy::http_connect(stream, target, &proxy_url).await?,
 			| proxy::Scheme::Socks5 | proxy::Scheme::Socks5h => {
+				// Local-resolve (`socks5`) validates the target through the
+				// denylist below; remote-resolve (`socks5h`) cannot, for the
+				// same reason as CONNECT.
 				let port = target.port;
 				let validate = self.denylist_validation;
 				proxy::socks5_connect(stream, &proxy_url, scheme, target, |host| async move {
@@ -304,9 +307,13 @@ impl HttpClient {
 
 	/// Resolve the (possibly proxied) host through the configured resolver and
 	/// open a TCP connection to the first allowed address.
-	async fn open_tcp(&self, target: &proxy::Target) -> Result<async_net::TcpStream> {
+	async fn open_tcp(
+		&self,
+		target: &proxy::Target,
+		validate: bool,
+	) -> Result<async_net::TcpStream> {
 		let address = self
-			.resolve_host(&target.host, target.port, self.denylist_validation)
+			.resolve_host(&target.host, target.port, validate)
 			.await?;
 		async_net::TcpStream::connect(address)
 			.await
@@ -787,6 +794,15 @@ fn redirect_location(response: &Response<Bytes>) -> Option<&str> {
 		.and_then(|value| value.to_str().ok())
 }
 
+/// Whether the redirect from `previous` to `next` should be followed: within
+/// the hop limit, both endpoints http(s), and never downgrading TLS.
+fn can_follow_redirect(redirects: usize, limit: usize, previous: &Url, next: &Url) -> bool {
+	redirects < limit
+		&& is_http_scheme(previous.scheme())
+		&& is_http_scheme(next.scheme())
+		&& !(previous.scheme() == "https" && next.scheme() == "http")
+}
+
 /// Advance `request` to the redirect target: rewrite the method and drop the
 /// body for the statuses that require it, strip credentials on a cross-origin
 /// hop, and re-synthesize `Host` for the next hop.
@@ -874,18 +890,110 @@ mod tests {
 	}
 
 	#[test]
-	fn post_redirect_drops_body_for_303() {
+	fn post_redirect_drops_body_for_301_302_303() {
+		for status in [StatusCode::MOVED_PERMANENTLY, StatusCode::FOUND, StatusCode::SEE_OTHER] {
+			let mut request = Request::builder()
+				.method(Method::POST)
+				.uri("https://example.org/start")
+				.header(http::header::CONTENT_TYPE, "application/json")
+				.header(http::header::CONTENT_LENGTH, "4")
+				.body(Bytes::from_static(b"body"))
+				.expect("valid request");
+			let mut previous = Url::parse("https://example.org/start").expect("valid URL");
+			let next = Url::parse("https://example.org/next").expect("valid URL");
+
+			follow_redirect(&mut request, &mut previous, next, status).expect("valid redirect");
+			assert_eq!(request.method(), Method::GET, "{status}");
+			assert!(request.body().is_empty(), "{status}");
+			assert!(!request.headers().contains_key(http::header::CONTENT_TYPE), "{status}");
+			assert!(!request.headers().contains_key(http::header::CONTENT_LENGTH), "{status}");
+		}
+	}
+
+	#[test]
+	fn post_redirect_keeps_method_and_body_for_307_308() {
+		for status in [StatusCode::TEMPORARY_REDIRECT, StatusCode::PERMANENT_REDIRECT] {
+			let mut request = Request::builder()
+				.method(Method::POST)
+				.uri("https://example.org/start")
+				.body(Bytes::from_static(b"body"))
+				.expect("valid request");
+			let mut previous = Url::parse("https://example.org/start").expect("valid URL");
+			let next = Url::parse("https://example.org/next").expect("valid URL");
+
+			follow_redirect(&mut request, &mut previous, next, status).expect("valid redirect");
+			assert_eq!(request.method(), Method::POST, "{status}");
+			assert_eq!(request.body(), &Bytes::from_static(b"body"), "{status}");
+		}
+	}
+
+	#[test]
+	fn head_redirect_stays_head_for_303() {
 		let mut request = Request::builder()
-			.method(Method::POST)
+			.method(Method::HEAD)
 			.uri("https://example.org/start")
-			.body(Bytes::from_static(b"body"))
+			.body(Bytes::new())
 			.expect("valid request");
 		let mut previous = Url::parse("https://example.org/start").expect("valid URL");
 		let next = Url::parse("https://example.org/next").expect("valid URL");
 
 		follow_redirect(&mut request, &mut previous, next, StatusCode::SEE_OTHER)
 			.expect("valid redirect");
-		assert_eq!(request.method(), Method::GET);
+		assert_eq!(request.method(), Method::HEAD);
 		assert!(request.body().is_empty());
+	}
+
+	#[test]
+	fn cross_origin_redirect_strips_credentials() {
+		let mut request = Request::builder()
+			.method(Method::GET)
+			.uri("https://example.org/start")
+			.header(AUTHORIZATION, "Bearer secret")
+			.header(COOKIE, "session=1")
+			.header(HOST, "example.org")
+			.body(Bytes::new())
+			.expect("valid request");
+		let mut previous = Url::parse("https://example.org/start").expect("valid URL");
+		let next = Url::parse("https://other.example/next").expect("valid URL");
+
+		follow_redirect(&mut request, &mut previous, next, StatusCode::FOUND)
+			.expect("valid redirect");
+		assert!(!request.headers().contains_key(AUTHORIZATION));
+		assert!(!request.headers().contains_key(COOKIE));
+		assert!(!request.headers().contains_key(HOST), "Host is re-synthesized per hop");
+		assert_eq!(previous.host_str(), Some("other.example"));
+	}
+
+	#[test]
+	fn same_origin_redirect_keeps_credentials() {
+		let mut request = Request::builder()
+			.method(Method::GET)
+			.uri("https://example.org/start")
+			.header(AUTHORIZATION, "Bearer secret")
+			.header(COOKIE, "session=1")
+			.body(Bytes::new())
+			.expect("valid request");
+		let mut previous = Url::parse("https://example.org/start").expect("valid URL");
+		let next = Url::parse("https://example.org/next").expect("valid URL");
+
+		follow_redirect(&mut request, &mut previous, next, StatusCode::FOUND)
+			.expect("valid redirect");
+		assert!(request.headers().contains_key(AUTHORIZATION));
+		assert!(request.headers().contains_key(COOKIE));
+	}
+
+	#[test]
+	fn redirect_hop_limit_and_downgrade_are_enforced() {
+		let https = Url::parse("https://example.org/a").expect("valid URL");
+		let http = Url::parse("http://example.org/a").expect("valid URL");
+		let peer = Url::parse("https://peer.example/b").expect("valid URL");
+		let ftp = Url::parse("ftp://example.org/f").expect("valid URL");
+
+		assert!(can_follow_redirect(0, 6, &https, &peer));
+		assert!(can_follow_redirect(5, 6, &https, &peer));
+		assert!(!can_follow_redirect(6, 6, &https, &peer), "hop limit exhausted");
+		assert!(!can_follow_redirect(0, 6, &https, &http), "https downgraded to http");
+		assert!(can_follow_redirect(0, 6, &http, &https), "http upgraded to https");
+		assert!(!can_follow_redirect(0, 6, &https, &ftp), "non-http scheme");
 	}
 }

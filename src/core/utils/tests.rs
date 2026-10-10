@@ -88,6 +88,7 @@ async fn mutex_map_contend() {
 		assert!(!map_.is_empty(), "A0 must not be empty");
 		seq_[0].wait().await;
 		assert!(map_.contains(&str_), "A1 must contain key");
+		seq_[0].wait().await;
 	});
 
 	let seq_ = seq.clone();
@@ -102,6 +103,7 @@ async fn mutex_map_contend() {
 
 	seq[0].wait().await;
 	assert!(map.contains(&str), "Must contain key");
+	seq[0].wait().await;
 	seq[1].wait().await;
 
 	join_b.await;
