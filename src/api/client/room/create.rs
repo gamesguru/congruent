@@ -212,7 +212,6 @@ pub(crate) async fn create_room_route(
 									)))
 								})?;
 								creators.push(user.clone());
-								invitees.insert(user);
 							},
 							| _ => {
 								return Err!(Request(BadJson(
