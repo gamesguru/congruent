@@ -150,6 +150,9 @@ impl Services {
 		// registration and banner checks cannot race the firstrun worker.
 		self.firstrun.initialize_first_run_marker().await?;
 
+		// Appservice tokens must resolve before the first request is served.
+		self.appservice.initialize().await?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;

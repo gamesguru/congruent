@@ -98,16 +98,22 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn worker(self: Arc<Self>) -> Result {
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+impl Service {
+	/// Loads registrations and starts appservices. Awaited by
+	/// `Services::start` before listeners accept requests, so appservice
+	/// tokens are known from the first request.
+	pub async fn initialize(&self) -> Result {
 		// In Complement tests, dynamically register appservices placed in
 		// `/complement/appservice/`
 		if Path::new("/complement/appservice").is_dir() {
 			match async_fs::read_dir("/complement/appservice").await {
-				| Err(e) => {
-					conduwuit::error!(
+				| Err(e) =>
+					return Err!(Database(
 						"Failed to read appservice directory /complement/appservice: {e:?}"
-					);
-				},
+					)),
 				| Ok(mut entries) =>
 					while let Some(Ok(entry)) = entries.next().await {
 						let path = entry.path();
@@ -123,18 +129,16 @@ impl crate::Service for Service {
 								})
 							};
 							match content {
-								| Err(e) => {
-									conduwuit::error!(
+								| Err(e) =>
+									return Err!(Database(
 										"Failed to load appservice file {path:?}: {e:?}"
-									);
-								},
+									)),
 								| Ok(content) => match registration_from_json(&content) {
-									| Err(e) => {
-										conduwuit::error!(
+									| Err(e) =>
+										return Err!(Database(
 											"Failed to parse appservice registration from \
 											 {path:?}: {e:?}"
-										);
-									},
+										)),
 									| Ok(registration) => {
 										self.db
 											.id_appserviceregistrations
@@ -166,6 +170,7 @@ impl crate::Service for Service {
 			}
 		}
 
+		let count = appservices.len();
 		// Process each appservice
 		for (id, registration) in appservices {
 			// During startup, resolve any token collisions in favour of appservices
@@ -194,13 +199,11 @@ impl crate::Service for Service {
 			self.start_appservice(id, registration).await?;
 		}
 
+		conduwuit::info!("Initialized {count} appservices");
+
 		Ok(())
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
-}
-
-impl Service {
 	/// Starts an appservice, ensuring its sender_localpart user exists and is
 	/// active. Creates the user if it doesn't exist, or reactivates it if it
 	/// was deactivated. Then registers the appservice in memory for request
