@@ -21,6 +21,9 @@ use crate::{
 	util::{Direction, IteratorMode},
 };
 
+/// Log cumulative write stats every this many commits.
+const STATS_INTERVAL: u64 = 250;
+
 const TABLE: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("conduwuit_metadata");
 
 pub struct RedbEngine {
@@ -149,12 +152,21 @@ impl RedbEngine {
 		let result = self.commit_inner(operations);
 		let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
 		let stats = &self.stats;
-		stats.commits.fetch_add(1, Ordering::Relaxed);
+		let commits = stats
+			.commits
+			.fetch_add(1, Ordering::Relaxed)
+			.saturating_add(1);
 		stats.operations.fetch_add(count, Ordering::Relaxed);
 		stats.commit_nanos.fetch_add(nanos, Ordering::Relaxed);
 		stats.max_commit_nanos.fetch_max(nanos, Ordering::Relaxed);
 		if corked {
 			stats.corked_commits.fetch_add(1, Ordering::Relaxed);
+		}
+
+		// Periodic report so short-lived processes (killed mid-shutdown) still
+		// leave measurements behind.
+		if commits.is_multiple_of(STATS_INTERVAL) {
+			self.log_stats();
 		}
 
 		result
@@ -286,8 +298,10 @@ fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 	None
 }
 
-impl Drop for RedbEngine {
-	fn drop(&mut self) {
+impl RedbEngine {
+	/// Logs the write-path totals accumulated since the engine opened. Safe to
+	/// call repeatedly; counters are cumulative and never reset.
+	pub(crate) fn log_stats(&self) {
 		let stats = &self.stats;
 		let commits = stats.commits.load(Ordering::Relaxed);
 		let operations = stats.operations.load(Ordering::Relaxed);
@@ -299,6 +313,10 @@ impl Drop for RedbEngine {
 			 corked_commits={corked} commit_ms_total={total_ms} commit_ms_max={max_ms}"
 		);
 	}
+}
+
+impl Drop for RedbEngine {
+	fn drop(&mut self) { self.log_stats(); }
 }
 
 fn metadata_path(path: &Path) -> PathBuf {

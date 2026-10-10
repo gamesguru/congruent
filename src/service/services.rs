@@ -174,6 +174,9 @@ impl Services {
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
 
+		// Report before anything can stall: the container may be killed mid-stop.
+		self.db.log_write_stats();
+
 		// Some service workers exit only after the server enters stopping state
 		// and receives a shutdown signal. Interrupting alone is insufficient.
 		if self.server.running() {

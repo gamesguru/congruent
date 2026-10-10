@@ -53,6 +53,9 @@ impl Database {
 		Ok(Arc::new(Self { maps: maps::open(&db), db }))
 	}
 
+	/// Logs cumulative write-path counters (commits, operations, commit time).
+	pub fn log_write_stats(&self) { self.db.log_stats(); }
+
 	#[inline]
 	pub fn get(&self, name: &str) -> Result<&Arc<Map>> {
 		self.maps
