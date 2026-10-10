@@ -502,10 +502,10 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// upcoming /state_ids retry there instead, since that's the
 					// point the sending server can actually provide a snapshot
 					// for.
-					// Only cache when `fetch_prev` actually produced candidates. Its
-					// `Some(deeper_anchor)` case implies candidates were fetched (a
-					// deeper anchor is only derived once a candidate exists), so
-					// `!sorted.is_empty()` is the right gate for both.
+					// Cache a deeper anchor even when the response event became known
+					// concurrently. `fetch_prev` deliberately does not return known
+					// events for reprocessing, but their topology is still needed to
+					// select the correct /state_ids anchor.
 					//
 					// An *empty* `Ok` here is ambiguous: `fetch_prev` returns
 					// `Ok((Vec::new(), HashMap::new(), None, false))` both when every
@@ -517,7 +517,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// that retry happen: a harmless no-op for the already-satisfied
 					// case, and a genuine second attempt for the failed one.
 					| Ok((sorted, fetched, deeper_anchor, invalid))
-						if !sorted.is_empty() || invalid =>
+						if !sorted.is_empty() || deeper_anchor.is_some() || invalid =>
 					{
 						if let Some(anchor) = &deeper_anchor {
 							state_ids_anchor = anchor.clone();

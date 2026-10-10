@@ -242,14 +242,30 @@ where
 	let mut had_invalid_response = false;
 	let response_count = missing_events.len();
 	let mut known_count = 0_usize;
+	let mut response_graph = HashMap::new();
+	let mut response_entries = HashMap::new();
 	for raw_json in missing_events {
 		match conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id) {
-			| Ok((eid, val)) =>
+			| Ok((eid, val)) => {
+				// Keep the response topology even when another task persisted this
+				// event while the response was in flight. We must not reprocess a
+				// known event, but its prev_event is still the correct /state_ids
+				// anchor for the incoming event.
+				if let Ok(pdu) = PduEvent::from_id_val(&eid, val.clone(), Some(room_id))
+					&& check_room_id(room_id, &pdu).is_ok()
+				{
+					response_graph
+						.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
+					response_entries
+						.insert(eid.clone(), (0_u64.into(), pdu.depth(), pdu.origin_server_ts));
+				}
+
 				if self.services.timeline.pdu_exists(&eid).await {
 					known_count = known_count.saturating_add(1);
 				} else {
 					unknown_events.push((eid, val));
-				},
+				}
+			},
 			| Err(_) => {
 				// The remote server actually answered, but the returned event is
 				// structurally invalid (e.g. contains a float, per the Matrix
@@ -324,7 +340,11 @@ where
 		candidate_events.insert(eid, val);
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
-	let deep_anchor = deep_state_ids_anchor(&sorted_eids, &graph);
+	let response_sorted = conduwuit::utils::timeline_sorter::sort_timeline_events(
+		&response_entries,
+		&response_graph,
+	);
+	let deep_anchor = deep_state_ids_anchor(&response_sorted, &response_graph);
 	info!(
 		"fetch_prev {room_id}: response_events={response_count} already_known={known_count} \
 		 unparseable={unparsable} candidates={} deep_anchor={deep_anchor:?}",
