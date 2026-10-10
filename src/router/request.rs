@@ -139,16 +139,19 @@ fn catch_panic(
 		.requests_panic
 		.fetch_add(1, Ordering::Release);
 
-	let details = match panic.downcast_ref::<String>() {
+	let details = panic_details(&panic);
+	error!("{details:#}");
+	panic_response()
+}
+
+fn panic_details(panic: &(dyn Any + Send)) -> String {
+	match panic.downcast_ref::<String>() {
 		| Some(details) => details.clone(),
 		| None => match panic.downcast_ref::<&str>() {
 			| Some(details) => (*details).to_owned(),
 			| None => "Unknown internal server error occurred.".to_owned(),
 		},
-	};
-
-	error!("{details:#}");
-	panic_response()
+	}
 }
 
 fn panic_response() -> Response<Full<Bytes>> {
@@ -212,6 +215,9 @@ mod tests {
 
 	#[test]
 	fn panic_response_does_not_expose_payload() {
+		let payload: Box<dyn Any + Send> = Box::new("secret-token-123");
+		assert!(panic_details(&*payload).contains("secret-token-123"));
+
 		let response = panic_response();
 		let body = response.into_body().into_inner().expect("response body");
 		let body = String::from_utf8_lossy(&body);

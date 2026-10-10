@@ -20,18 +20,6 @@ use futures_rustls::{
 		pki_types::{CertificateDer, ServerName, UnixTime},
 	},
 };
-
-const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_hours(8760);
-
-fn request_deadline(total_timeout: Duration) -> Instant {
-	Instant::now()
-		.checked_add(total_timeout)
-		.unwrap_or_else(|| {
-			Instant::now()
-				.checked_add(OVERFLOW_DEADLINE_GRACE)
-				.expect("one-year deadline must fit in Instant")
-		})
-}
 use http::{
 	HeaderMap, HeaderValue, Method, Request, Response, StatusCode,
 	header::{AUTHORIZATION, COOKIE, HOST, PROXY_AUTHORIZATION, WWW_AUTHENTICATE},
@@ -44,6 +32,18 @@ use crate::{
 	resolver::{self, Service as ResolverService, cache::CachedOverride},
 	service,
 };
+
+const OVERFLOW_DEADLINE_GRACE: Duration = Duration::from_hours(8760);
+
+fn request_deadline(total_timeout: Duration) -> Instant {
+	Instant::now()
+		.checked_add(total_timeout)
+		.unwrap_or_else(|| {
+			Instant::now()
+				.checked_add(OVERFLOW_DEADLINE_GRACE)
+				.expect("one-year deadline must fit in Instant")
+		})
+}
 
 mod connector;
 mod proxy;
@@ -832,6 +832,15 @@ fn same_origin(previous: &Url, next: &Url) -> bool {
 		&& previous.port_or_known_default() == next.port_or_known_default()
 }
 
+#[inline]
+#[must_use]
+#[implement(Service)]
+pub fn valid_cidr_range(&self, ip: &std::net::IpAddr) -> bool {
+	self.cidr_range_denylist
+		.iter()
+		.all(|cidr| !cidr.contains(ip))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -879,13 +888,4 @@ mod tests {
 		assert_eq!(request.method(), Method::GET);
 		assert!(request.body().is_empty());
 	}
-}
-
-#[inline]
-#[must_use]
-#[implement(Service)]
-pub fn valid_cidr_range(&self, ip: &std::net::IpAddr) -> bool {
-	self.cidr_range_denylist
-		.iter()
-		.all(|cidr| !cidr.contains(ip))
 }
