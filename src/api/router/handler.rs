@@ -92,6 +92,16 @@ where
 				.as_ref()
 				.and_then(|request| request.extensions().get::<Vec<String>>().cloned())
 				.unwrap_or_default();
+
+			// A lone parameter deserializes as a scalar (`Path<String>`), like axum's
+			// extractor; everything else (tuples, sequences) takes the positional array.
+			if let [only] = ordered.as_slice() {
+				let scalar = slipstream::json::Value::String(only.clone());
+				if let Ok(value) = slipstream::codec::from_value(&scalar) {
+					return Ok(Self(value));
+				}
+			}
+
 			let value = slipstream::json::Value::Array(
 				ordered
 					.into_iter()
