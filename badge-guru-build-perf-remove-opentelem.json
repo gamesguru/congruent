@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
   "label": "Complement Tests (GitHub)",
-  "message": "20 pass, 144 skip, 0 fail",
-  "color": "yellow"
+  "message": "906 pass, 12 skip, 8 fail",
+  "color": "red"
 }
