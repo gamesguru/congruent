@@ -27,6 +27,22 @@ codegen-units = 256
 debug         = 0
 opt-level     = 0
 
+# Hot crypto/hash dependencies stay optimized even in the quick profile. The
+# pure-Rust ed25519 stack is ~100x slower unoptimized, which is enough to push
+# state-resolution tests (hundreds of signature checks per transaction) past
+# their deadlines in debug builds. Release profiles are unaffected.
+[profile.dev-quick.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev-quick.package.ed25519-zebra]
+opt-level = 3
+
+[profile.dev-quick.package.sha2]
+opt-level = 3
+
+[profile.dev-quick.package.blake3]
+opt-level = 3
+
 [profile.dev-quick.build-override]
 codegen-units = 16
 debug         = 0

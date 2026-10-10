@@ -797,7 +797,11 @@ async fn build_sync_events_v5(
 		endpoint,
 		persist_cache,
 	} = *context;
-	let next_batch = services.globals.current_count()?;
+	// See `globals::Service::edu_barrier`.
+	let next_batch = {
+		let _barrier = services.globals.edu_barrier.write().await;
+		services.globals.current_count()?
+	};
 
 	let all_joined_rooms = services
 		.rooms

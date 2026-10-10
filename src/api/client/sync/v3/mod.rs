@@ -543,7 +543,12 @@ pub(crate) async fn build_sync_events(
 ) -> Result<slipstream::json::Value, RumaResponse<UiaaResponse>> {
 	let (syncing_user, syncing_device) = body.sender();
 
-	let current_count = services.globals.current_count()?;
+	// Wait out in-flight receipt/device-key writers so every count <= the batch
+	// token is visible to the scans below (see `globals::Service::edu_barrier`).
+	let current_count = {
+		let _barrier = services.globals.edu_barrier.write().await;
+		services.globals.current_count()?
+	};
 
 	// the `since` token is the last sync end count stringified
 	let last_sync_end_count = body
