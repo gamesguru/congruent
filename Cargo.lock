@@ -2503,7 +2503,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 [[package]]
 name = "rezzy"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#72b59188baac2be6d04b15194ae5e225195c4746"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#94dc0562dcdb127d87d3775a703cd4bb081078b4"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -2517,7 +2517,7 @@ dependencies = [
 [[package]]
 name = "rezzy-json"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#72b59188baac2be6d04b15194ae5e225195c4746"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#94dc0562dcdb127d87d3775a703cd4bb081078b4"
 dependencies = [
  "ryu",
 ]
@@ -2525,7 +2525,7 @@ dependencies = [
 [[package]]
 name = "rezzy-recon"
 version = "0.6.0-rc.1"
-source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#72b59188baac2be6d04b15194ae5e225195c4746"
+source = "git+https://gitlab.com/gamesguru/rezzy.git?branch=alpha#94dc0562dcdb127d87d3775a703cd4bb081078b4"
 dependencies = [
  "base64 0.23.1",
  "sha2",
@@ -3672,9 +3672,9 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zstd"
-version = "0.14.1"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a9ecd0608fac4196ed58e1f337e9a72680fcc9ee449b8bcde6acea680b46f0"
+checksum = "057cfd910cfac363a0ada849592624b4c9ff2e10bef504c3433810d78ed96f93"
 dependencies = [
  "zstd-safe",
 ]
