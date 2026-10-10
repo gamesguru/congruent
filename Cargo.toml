@@ -186,7 +186,6 @@ features = [
 	"client",
 	"server",
 	"http1",
-	"http2",
 ]
 
 [workspace.dependencies.async-net]
@@ -225,13 +224,6 @@ features = ["sync", "signal", "io-std", "rt-multi-thread", "net", "time"]
 
 [workspace.dependencies.futures-io]
 version = "0.3.34"
-
-[workspace.dependencies.hyper-util]
-version = "=0.1.20"
-default-features = false
-features = [
-    "server-auto",
-]
 
 # to support multiple variations of setting a config option
 [workspace.dependencies.either]

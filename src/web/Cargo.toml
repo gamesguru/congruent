@@ -26,10 +26,8 @@ conduwuit-core.workspace = true
 http-body-util.workspace = true
 http.workspace = true
 hyper.workspace = true
-matchit.workspace = true
 thiserror.workspace = true
 slipstream.workspace = true
-tower-sec-fetch = "0.1.2"
 
 [lints]
 workspace = true

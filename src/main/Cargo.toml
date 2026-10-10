@@ -163,7 +163,6 @@ futures.workspace = true
 log.workspace = true
 # TODO: replace reqwest with something??
 rustls = { workspace = true, default-features = false }
-smol.workspace = true
 tokio.workspace = true
 
 
