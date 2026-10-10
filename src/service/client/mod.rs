@@ -71,6 +71,9 @@ type Sender = http1::SendRequest<Full<Bytes>>;
 /// How long an idle keep-alive connection may be reused.
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Longest to wait for a finished connection to become ready for reuse.
+const POOL_READY_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Idle connections kept per origin. Sized above the federation fetch
 /// concurrency (`concurrency_scaled(2)`, 20 on a typical host), so a burst of
 /// parallel fetches to one server reuses connections instead of dropping the
@@ -324,8 +327,14 @@ impl HttpClient {
 
 			match read {
 				| Ok(Ok(response)) => {
+					// The response is complete, but hyper's connection task must still run
+					// to become ready for the next request. Pooling it before then makes
+					// the next `try_send_request` fail as unsent and forces a reconnect, so
+					// wait for readiness, bounded so a wedged connection can never stall.
 					let reusable = !request_closes && connection_reusable(&response);
-					if reusable && !sender.is_closed() {
+					if reusable
+						&& matches!(timeout(POOL_READY_TIMEOUT, sender.ready()).await, Ok(Ok(())))
+					{
 						self.pool.put(key, sender);
 					}
 
@@ -1452,9 +1461,9 @@ mod pool_tests {
 
 	#[test]
 	fn concurrent_workers_reuse_idle_connections() {
-		let _serial = serial();
 		const WORKERS: usize = 8;
 		const PER_WORKER: usize = 250;
+		let _serial = serial();
 
 		let server = start_server(Behavior::KeepAlive);
 		let client = test_client(Pool::default());
@@ -1482,9 +1491,9 @@ mod pool_tests {
 
 	#[test]
 	fn heavy_concurrency_stays_correct() {
-		let _serial = serial();
 		const WORKERS: usize = 64;
 		const PER_WORKER: usize = 40;
+		let _serial = serial();
 
 		let server = start_server(Behavior::KeepAlive);
 		let client = test_client(Pool::default());
@@ -1523,9 +1532,9 @@ mod pool_tests {
 	#[test]
 	#[allow(clippy::cast_precision_loss)]
 	fn pooling_is_faster_than_reconnecting() {
-		let _serial = serial();
 		const REQUESTS: usize = 600;
 		const ROUNDS: usize = 3;
+		let _serial = serial();
 
 		// Best-of-N on each side keeps scheduler noise from deciding the result.
 		let mut pooled = Duration::MAX;
