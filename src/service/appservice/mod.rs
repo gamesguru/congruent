@@ -39,21 +39,31 @@ pub fn registration_from_json(json: &str) -> Result<Registration> {
 		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
 }
 
-/// Converts an appservice YAML registration through the `yq` executable.
+/// Converts an appservice YAML registration to JSON through the `yq`
+/// executable. Two incompatible `yq` programs exist: the Go one
+/// (`yq -o=json .`) and the Python jq wrapper shipped by Debian/Ubuntu (`yq .`,
+/// which already prints JSON). Try the former, then fall back to the latter.
 fn registration_from_yaml(path: &Path) -> Result<String> {
-	let output = Command::new("yq")
-		.args(["-o=json", "."])
-		.arg(path)
-		.output()
-		.map_err(|e| err!(Request(InvalidParam("Failed to execute yq: {e}"))))?;
+	let attempts: [&[&str]; 2] = [&["-o=json", "."], &["."]];
 
-	if !output.status.success() {
-		let error = String::from_utf8_lossy(&output.stderr);
-		return Err(err!(Request(InvalidParam("yq failed: {error}"))));
+	let mut last_error = String::new();
+	for args in attempts {
+		let output = match Command::new("yq").args(args).arg(path).output() {
+			| Ok(output) => output,
+			| Err(e) => return Err(err!(Request(InvalidParam("Failed to execute yq: {e}")))),
+		};
+
+		if output.status.success() {
+			return String::from_utf8(output.stdout)
+				.map_err(|e| err!(Request(InvalidParam("yq returned invalid UTF-8: {e}"))));
+		}
+
+		String::from_utf8_lossy(&output.stderr)
+			.trim()
+			.clone_into(&mut last_error);
 	}
 
-	String::from_utf8(output.stdout)
-		.map_err(|e| err!(Request(InvalidParam("yq returned invalid UTF-8: {e}"))))
+	Err(err!(Request(InvalidParam("yq failed: {last_error}"))))
 }
 
 /// Renders an appservice registration as JSON.

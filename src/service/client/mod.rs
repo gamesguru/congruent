@@ -1508,7 +1508,10 @@ mod pool_tests {
 			unpooled = unpooled.min(elapsed);
 		}
 
-		let rate = |elapsed: Duration| REQUESTS as f64 / elapsed.as_secs_f64();
+		let rate = |elapsed: Duration| {
+			f64::from(u32::try_from(REQUESTS).expect("request count fits in u32"))
+				/ elapsed.as_secs_f64()
+		};
 		eprintln!(
 			"pooled:   {pooled:?} ({:.0} req/s, 1 connection)
 unpooled: {unpooled:?} ({:.0} req/s, {REQUESTS} connections)
