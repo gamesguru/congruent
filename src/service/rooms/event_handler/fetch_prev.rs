@@ -240,10 +240,14 @@ where
 
 	let mut unknown_events = Vec::new();
 	let mut had_invalid_response = false;
+	let response_count = missing_events.len();
+	let mut known_count = 0_usize;
 	for raw_json in missing_events {
 		match conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id) {
 			| Ok((eid, val)) =>
-				if !self.services.timeline.pdu_exists(&eid).await {
+				if self.services.timeline.pdu_exists(&eid).await {
+					known_count = known_count.saturating_add(1);
+				} else {
 					unknown_events.push((eid, val));
 				},
 			| Err(_) => {
@@ -262,6 +266,7 @@ where
 	// the full `PduEvent` (which owns its own copy of the event content,
 	// separate from `val`) is dropped here rather than being kept alive in
 	// an extra map until the end of the function.
+	let unknown_len = unknown_events.len();
 	let candidate_entries: Vec<(
 		OwnedEventId,
 		slipstream::CanonicalJsonObject,
@@ -309,6 +314,7 @@ where
 		.collect()
 		.await;
 
+	let unparsable = unknown_len.saturating_sub(candidate_entries.len());
 	let mut candidate_events = HashMap::with_capacity(candidate_entries.len());
 	let mut graph = HashMap::with_capacity(candidate_entries.len());
 	let mut entries = HashMap::with_capacity(candidate_entries.len());
@@ -319,6 +325,11 @@ where
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
 	let deep_anchor = deep_state_ids_anchor(&sorted_eids, &graph);
+	info!(
+		"fetch_prev {room_id}: response_events={response_count} already_known={known_count} \
+		 unparseable={unparsable} candidates={} deep_anchor={deep_anchor:?}",
+		candidate_events.len()
+	);
 
 	Ok((sorted_eids, candidate_events, deep_anchor, had_invalid_response))
 }

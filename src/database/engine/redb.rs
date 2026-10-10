@@ -8,12 +8,13 @@ use std::{
 	path::{Path, PathBuf},
 	sync::{
 		Arc,
-		atomic::{AtomicU32, Ordering},
+		atomic::{AtomicU32, AtomicU64, Ordering},
 	},
+	time::Instant,
 };
 
 use conduwuit::{Result, err};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 
 use crate::{
 	map::batch::DbOp,
@@ -26,6 +27,18 @@ pub struct RedbEngine {
 	db: Arc<Database>,
 	corks: AtomicU32,
 	lifts: AtomicU32,
+	stats: CommitStats,
+}
+
+/// Write-path counters, logged when the engine is dropped. Totals over the
+/// engine's lifetime; commit time is summed across threads, not wall-clock.
+#[derive(Default)]
+struct CommitStats {
+	commits: AtomicU64,
+	operations: AtomicU64,
+	corked_commits: AtomicU64,
+	commit_nanos: AtomicU64,
+	max_commit_nanos: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +74,7 @@ impl RedbEngine {
 			db: Arc::new(db),
 			corks: AtomicU32::new(0),
 			lifts: AtomicU32::new(0),
+			stats: CommitStats::default(),
 		})
 	}
 
@@ -129,6 +143,24 @@ impl RedbEngine {
 	}
 
 	pub(crate) fn commit(&self, operations: Vec<DbOp>) -> Result<()> {
+		let started = Instant::now();
+		let count = u64::try_from(operations.len()).unwrap_or(u64::MAX);
+		let corked = self.has_corks();
+		let result = self.commit_inner(operations);
+		let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+		let stats = &self.stats;
+		stats.commits.fetch_add(1, Ordering::Relaxed);
+		stats.operations.fetch_add(count, Ordering::Relaxed);
+		stats.commit_nanos.fetch_add(nanos, Ordering::Relaxed);
+		stats.max_commit_nanos.fetch_max(nanos, Ordering::Relaxed);
+		if corked {
+			stats.corked_commits.fetch_add(1, Ordering::Relaxed);
+		}
+
+		result
+	}
+
+	fn commit_inner(&self, operations: Vec<DbOp>) -> Result<()> {
 		let transaction = self
 			.db
 			.begin_write()
@@ -180,7 +212,15 @@ impl RedbEngine {
 		Ok(self.get(map_name, key)?.is_some())
 	}
 
-	pub(crate) fn entries(&self, map_name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+	/// Collects `[lower, upper)` (unbounded above when `upper` is `None`) in key
+	/// order, stripping `strip` leading bytes (the map prefix) from each key.
+	/// Seeks by range instead of walking the shared table.
+	fn range(
+		&self,
+		lower: &[u8],
+		upper: Option<&[u8]>,
+		strip: usize,
+	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
 		let transaction = self
 			.db
 			.begin_read()
@@ -188,19 +228,17 @@ impl RedbEngine {
 		let table = transaction
 			.open_table(TABLE)
 			.map_err(|error| err!(Database("failed to open redb metadata table: {error}")))?;
-		let prefix = composite_key(map_name, &[]);
+		let iter = match upper {
+			| Some(upper) => table.range::<&[u8]>(lower..upper),
+			| None => table.range::<&[u8]>(lower..),
+		}
+		.map_err(|error| err!(Database("failed to iterate redb metadata: {error}")))?;
+
 		let mut entries = Vec::new();
-		for item in table
-			.iter()
-			.map_err(|error| err!(Database("failed to iterate redb metadata: {error}")))?
-		{
+		for item in iter {
 			let (key, value) =
 				item.map_err(|error| err!(Database("failed to read redb metadata: {error}")))?;
-			let key = key.value();
-			if !key.starts_with(&prefix) {
-				continue;
-			}
-			entries.push((key[prefix.len()..].to_vec(), value.value().to_vec()));
+			entries.push((key.value()[strip..].to_vec(), value.value().to_vec()));
 		}
 		Ok(entries)
 	}
@@ -210,21 +248,56 @@ impl RedbEngine {
 		map_name: &str,
 		mode: IteratorMode<'_>,
 	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-		let mut entries = self.entries(map_name)?;
+		let prefix = composite_key(map_name, &[]);
+		let end = prefix_end(&prefix);
 		match mode {
-			| IteratorMode::Start => {},
-			| IteratorMode::End => entries.reverse(),
-			| IteratorMode::From(key, direction) => {
-				entries.retain(|(candidate, _)| match direction {
-					| Direction::Forward => candidate.as_slice() >= key,
-					| Direction::Reverse => candidate.as_slice() <= key,
-				});
-				if matches!(direction, Direction::Reverse) {
-					entries.reverse();
-				}
+			| IteratorMode::Start => self.range(&prefix, end.as_deref(), prefix.len()),
+			| IteratorMode::End => {
+				let mut entries = self.range(&prefix, end.as_deref(), prefix.len())?;
+				entries.reverse();
+				Ok(entries)
+			},
+			| IteratorMode::From(key, Direction::Forward) => {
+				let lower = composite_key(map_name, key);
+				self.range(&lower, end.as_deref(), prefix.len())
+			},
+			| IteratorMode::From(key, Direction::Reverse) => {
+				// Keys <= `key`: the smallest key above it is `key` + 0x00.
+				let mut upper = composite_key(map_name, key);
+				upper.push(0);
+				let mut entries = self.range(&prefix, Some(&upper), prefix.len())?;
+				entries.reverse();
+				Ok(entries)
 			},
 		}
-		Ok(entries)
+	}
+}
+
+/// Smallest byte string greater than every string starting with `prefix`.
+fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
+	let mut end = prefix.to_vec();
+	while let Some(last) = end.pop() {
+		if let Some(next) = last.checked_add(1) {
+			end.push(next);
+			return Some(end);
+		}
+	}
+
+	None
+}
+
+impl Drop for RedbEngine {
+	fn drop(&mut self) {
+		let stats = &self.stats;
+		let commits = stats.commits.load(Ordering::Relaxed);
+		let operations = stats.operations.load(Ordering::Relaxed);
+		let corked = stats.corked_commits.load(Ordering::Relaxed);
+		let total_ms = stats.commit_nanos.load(Ordering::Relaxed) / 1_000_000;
+		let max_ms = stats.max_commit_nanos.load(Ordering::Relaxed) / 1_000_000;
+		conduwuit::info!(
+			"redb write stats (lifetime totals): commits={commits} operations={operations} \
+			 corked_commits={corked} commit_ms_total={total_ms} commit_ms_max={max_ms}"
+		);
 	}
 }
 
@@ -249,4 +322,56 @@ fn composite_key(map_name: &str, key: &[u8]) -> Vec<u8> {
 	composite.extend_from_slice(map);
 	composite.extend_from_slice(key);
 	composite
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn prefix_end_increments_with_carry() {
+		assert_eq!(prefix_end(&[1, 2, 3]), Some(vec![1, 2, 4]));
+		assert_eq!(prefix_end(&[1, 255]), Some(vec![2]));
+		assert_eq!(prefix_end(&[255, 255]), None);
+	}
+
+	#[test]
+	fn scan_is_scoped_to_one_map_and_seeks() {
+		let dir = std::env::temp_dir().join(format!("redb-scan-{}", std::process::id()));
+		let engine = RedbEngine::open(&dir).expect("open");
+		let put = |map: &'static str, key: &[u8]| DbOp::Insert {
+			map_name: map,
+			key: key.to_vec(),
+			value: key.to_vec(),
+		};
+		engine
+			.commit_batch(vec![put("a", b"1"), put("a", b"2"), put("a", b"3"), put("b", b"2")])
+			.expect("commit");
+
+		let keys = |entries: Vec<(Vec<u8>, Vec<u8>)>| {
+			entries
+				.into_iter()
+				.map(|(k, _)| String::from_utf8(k).expect("utf8"))
+				.collect::<Vec<_>>()
+		};
+		assert_eq!(keys(engine.scan("a", IteratorMode::Start).unwrap()), ["1", "2", "3"]);
+		assert_eq!(keys(engine.scan("a", IteratorMode::End).unwrap()), ["3", "2", "1"]);
+		assert_eq!(
+			keys(
+				engine
+					.scan("a", IteratorMode::From(b"2", Direction::Forward))
+					.unwrap()
+			),
+			["2", "3"]
+		);
+		assert_eq!(
+			keys(
+				engine
+					.scan("a", IteratorMode::From(b"2", Direction::Reverse))
+					.unwrap()
+			),
+			["2", "1"]
+		);
+		let _ = std::fs::remove_dir_all(dir);
+	}
 }

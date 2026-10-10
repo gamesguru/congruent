@@ -404,8 +404,8 @@
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_CannotSendCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent"}
 {"Action":"pass","Test":"TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
-{"Action":"fail","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_includes_conflicted_subgraph"}
+{"Action":"pass","Test":"TestMSC4297StateResolutionV2_1_starts_from_empty_set"}
 {"Action":"pass","Test":"TestMSC4308ThreadSubscriptionsSlidingSync"}
 {"Action":"pass","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_incremental_sliding_sync"}
 {"Action":"pass","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_initial_sliding_sync"}
@@ -840,7 +840,7 @@
 {"Action":"pass","Test":"TestServerCapabilities"}
 {"Action":"skip","Test":"TestServerNotices"}
 {"Action":"pass","Test":"TestStateIdsFallbackFetchesFullAuthChain"}
-{"Action":"fail","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
+{"Action":"pass","Test":"TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse"}
 {"Action":"pass","Test":"TestSync"}
 {"Action":"pass","Test":"TestSync/parallel"}
 {"Action":"pass","Test":"TestSync/parallel/Can_sync_a_joined_room"}

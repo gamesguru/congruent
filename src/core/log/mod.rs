@@ -72,11 +72,21 @@ macro_rules! trace {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __conduwuit_level {
-	(error) => { ::log::Level::Error };
-	(warn) => { ::log::Level::Warn };
-	(info) => { ::log::Level::Info };
-	(debug) => { ::log::Level::Debug };
-	(trace) => { ::log::Level::Trace };
+	(error) => {
+		::log::Level::Error
+	};
+	(warn) => {
+		::log::Level::Warn
+	};
+	(info) => {
+		::log::Level::Info
+	};
+	(debug) => {
+		::log::Level::Debug
+	};
+	(trace) => {
+		::log::Level::Trace
+	};
 }
 
 #[doc(hidden)]

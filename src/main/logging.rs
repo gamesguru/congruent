@@ -32,11 +32,10 @@ impl Filter {
 						directives.push((target.trim().to_owned(), level));
 					}
 				},
-				| None => {
+				| None =>
 					if let Ok(level) = LevelFilter::from_str(part) {
 						default = level;
-					}
-				},
+					},
 			}
 		}
 
