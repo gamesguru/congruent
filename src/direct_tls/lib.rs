@@ -64,15 +64,16 @@ const TLS_HANDSHAKE_RECORD: u8 = 0x16;
 
 async fn looks_like_tls(stream: &async_net::TcpStream) -> bool {
 	let mut first = [0_u8; 1];
-	match futures::future::select(
-		Box::pin(stream.peek(&mut first)),
-		Box::pin(smol::Timer::after(TLS_HANDSHAKE_TIMEOUT)),
-	)
-	.await
-	{
-		| Either::Left((Ok(1), _)) => first[0] == TLS_HANDSHAKE_RECORD,
-		| _ => false,
-	}
+	let peeked = matches!(
+		futures::future::select(
+			Box::pin(stream.peek(&mut first)),
+			Box::pin(smol::Timer::after(TLS_HANDSHAKE_TIMEOUT)),
+		)
+		.await,
+		Either::Left((Ok(1), _))
+	);
+
+	peeked && first[0] == TLS_HANDSHAKE_RECORD
 }
 
 async fn listener<S, B, F>(
