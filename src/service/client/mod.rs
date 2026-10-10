@@ -1,6 +1,7 @@
 use std::{
+	collections::HashMap,
 	pin::Pin,
-	sync::Arc,
+	sync::{Arc, Mutex, PoisonError},
 	task::{Context, Poll},
 	time::{Duration, Instant},
 };
@@ -60,8 +61,72 @@ pub struct HttpClient {
 	redirect_limit: usize,
 	denylist_validation: bool,
 	cidr_range_denylist: Vec<IpCidr>,
-	resolver: Arc<ResolverService>,
+	resolver: Option<Arc<ResolverService>>,
 	proxy: ProxyConfig,
+	pool: Arc<Pool>,
+}
+
+type Sender = http1::SendRequest<Full<Bytes>>;
+
+/// How long an idle keep-alive connection may be reused.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle connections kept per origin.
+const POOL_MAX_IDLE_PER_HOST: usize = 8;
+
+/// Connections are only interchangeable when everything that influenced how
+/// they were established matches.
+// Deliberately not `Debug`: `proxy` may embed credentials.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct PoolKey {
+	tls: bool,
+	authority: String,
+	validate: bool,
+	/// The full proxy URL (including any credentials) the connection was routed
+	/// through, if any, so differently-authenticated proxies never share one.
+	proxy: Option<String>,
+}
+
+struct Idle {
+	sender: Sender,
+	since: Instant,
+}
+
+/// Idle HTTP/1.1 keep-alive connections, shared by all clones of a client.
+struct Pool {
+	idle: Mutex<HashMap<PoolKey, Vec<Idle>>>,
+	max_idle: usize,
+}
+
+impl Default for Pool {
+	fn default() -> Self { Self::new(POOL_MAX_IDLE_PER_HOST) }
+}
+
+impl Pool {
+	fn new(max_idle: usize) -> Self { Self { idle: Mutex::default(), max_idle } }
+
+	fn take(&self, key: &PoolKey) -> Option<Sender> {
+		let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
+		let list = idle.get_mut(key)?;
+		while let Some(entry) = list.pop() {
+			if entry.since.elapsed() < POOL_IDLE_TIMEOUT && !entry.sender.is_closed() {
+				return Some(entry.sender);
+			}
+		}
+
+		None
+	}
+
+	fn put(&self, key: PoolKey, sender: Sender) {
+		let mut idle = self.idle.lock().unwrap_or_else(PoisonError::into_inner);
+		let list = idle.entry(key).or_default();
+		list.retain(|entry| {
+			entry.since.elapsed() < POOL_IDLE_TIMEOUT && !entry.sender.is_closed()
+		});
+		if list.len() < self.max_idle {
+			list.push(Idle { sender, since: Instant::now() });
+		}
+	}
 }
 
 impl HttpClient {
@@ -184,40 +249,101 @@ impl HttpClient {
 		let target = Self::target(url)?;
 		let tls = url.scheme() == "https";
 		let authority = target.authority();
-
-		let connected = timeout(self.connect_timeout, self.connect(url, &target, tls)).await;
-		let mut sender = match connected {
-			| Ok(result) => result?,
-			| Err(TimeoutError) =>
-				return Err(Error::HttpClientConnect(
-					format!(
-						"connection to {authority} timed out after {:?}",
-						self.connect_timeout
-					)
-					.into(),
-				)),
+		let key = PoolKey {
+			tls,
+			authority: authority.clone(),
+			validate: self.denylist_validation,
+			proxy: self
+				.proxy
+				.proxy_url(url)
+				.map(|proxy| proxy.as_str().to_owned()),
 		};
 
-		let request = prepare_request(request, url, self.needs_absolute_form(url))?;
-		let read = timeout(self.read_timeout, async {
-			let response = sender.send_request(request).await.map_err(|error| {
-				Error::HttpClient(
-					format!("failed to send request to {authority}: {error}").into(),
-				)
-			})?;
-			collect_body(response, max_size).await
-		})
-		.await;
+		let mut reusable = self.pool.take(&key);
+		loop {
+			let reused = reusable.is_some();
+			let mut sender = match reusable.take() {
+				| Some(sender) => sender,
+				| None => {
+					let connected =
+						timeout(self.connect_timeout, self.connect(url, &target, tls)).await;
+					match connected {
+						| Ok(result) => result?,
+						| Err(TimeoutError) =>
+							return Err(Error::HttpClientConnect(
+								format!(
+									"connection to {authority} timed out after {:?}",
+									self.connect_timeout
+								)
+								.into(),
+							)),
+					}
+				},
+			};
 
-		match read {
-			| Ok(result) => result,
-			| Err(TimeoutError) => Err(Error::HttpClientTimeout(
-				format!(
-					"response from {authority} exceeded read timeout of {:?}",
-					self.read_timeout
-				)
-				.into(),
-			)),
+			let prepared = prepare_request(request, url, self.needs_absolute_form(url))?;
+			// Methods that are safe to replay if the connection fails after the request
+			// may have reached the peer. Anything else is only retried when hyper
+			// reports the request was never written.
+			let replay_safe = matches!(
+				*request.method(),
+				Method::GET
+					| Method::HEAD | Method::PUT
+					| Method::DELETE
+					| Method::OPTIONS
+					| Method::TRACE
+			);
+			let request_closes = wants_close(request.headers());
+			let read = timeout(self.read_timeout, async {
+				let response = match sender.try_send_request(prepared).await {
+					| Ok(response) => response,
+					| Err(failure) => {
+						// A pooled connection may have been closed by the peer while idle.
+						let unsent = failure.message().is_some();
+						let error = failure.into_error();
+						let stale = unsent
+							|| (replay_safe
+								&& (error.is_canceled()
+									|| error.is_closed() || error.is_incomplete_message()));
+						return Err((
+							stale,
+							Error::HttpClient(
+								format!("failed to send request to {authority}: {error}").into(),
+							),
+						));
+					},
+				};
+				collect_body(response, max_size)
+					.await
+					.map_err(|(transient, error)| (transient && replay_safe && reused, error))
+			})
+			.await;
+
+			match read {
+				| Ok(Ok(response)) => {
+					let reusable = !request_closes && connection_reusable(&response);
+					if reusable && sender.ready().await.is_ok() {
+						self.pool.put(key, sender);
+					}
+
+					return Ok(response);
+				},
+				| Ok(Err((stale, error))) =>
+					if reused && stale {
+						// Retry once on a fresh connection.
+						continue;
+					} else {
+						return Err(error);
+					},
+				| Err(TimeoutError) =>
+					return Err(Error::HttpClientTimeout(
+						format!(
+							"response from {authority} exceeded read timeout of {:?}",
+							self.read_timeout
+						)
+						.into(),
+					)),
+			}
 		}
 	}
 
@@ -349,7 +475,8 @@ impl HttpClient {
 		}
 
 		let mut candidates = Vec::new();
-		match self.resolver.cache.get_override(host).await {
+		let resolver = self.resolver()?;
+		match resolver.cache.get_override(host).await {
 			| Ok(over) if over.valid() => candidates.extend(over.ips.iter().copied()),
 			| Ok(CachedOverride { overriding: Some(overriding), .. }) =>
 				self.lookup(&overriding, &mut candidates).await?,
@@ -373,7 +500,7 @@ impl HttpClient {
 
 	async fn lookup(&self, host: &str, candidates: &mut Vec<std::net::IpAddr>) -> Result<()> {
 		let lookup = self
-			.resolver
+			.resolver()?
 			.resolver
 			.lookup_ip(host.to_owned())
 			.await
@@ -382,6 +509,12 @@ impl HttpClient {
 			})?;
 		candidates.extend(lookup);
 		Ok(())
+	}
+
+	fn resolver(&self) -> Result<&Arc<ResolverService>> {
+		self.resolver
+			.as_ref()
+			.ok_or_else(|| Error::HttpClient("no DNS resolver configured for this client".into()))
 	}
 
 	fn check_denied(&self, ip: &std::net::IpAddr, validate: bool, host: &str) -> Result<()> {
@@ -617,9 +750,10 @@ fn base(config: &Config, resolver: &Arc<ResolverService>) -> Result<HttpClient> 
 		total_timeout: Duration::from_secs(config.request_total_timeout),
 		redirect_limit: 6,
 		denylist_validation: false,
-		resolver: Arc::clone(resolver),
+		resolver: Some(Arc::clone(resolver)),
 		cidr_range_denylist: config.ip_range_denylist.clone(),
 		proxy: config.proxy.clone(),
+		pool: Arc::default(),
 	})
 }
 
@@ -765,13 +899,40 @@ fn prepare_request(
 	Ok(request)
 }
 
-async fn collect_body(response: Response<Incoming>, max_size: usize) -> Result<Response<Bytes>> {
+/// Whether `headers` carry a `Connection: close` token.
+fn wants_close(headers: &HeaderMap) -> bool {
+	headers
+		.get_all(http::header::CONNECTION)
+		.iter()
+		.filter_map(|value| value.to_str().ok())
+		.any(|value| {
+			value
+				.split(',')
+				.any(|token| token.trim().eq_ignore_ascii_case("close"))
+		})
+}
+
+/// Whether the connection that produced `response` may serve another request.
+fn connection_reusable(response: &Response<Bytes>) -> bool {
+	response.version() == http::Version::HTTP_11 && !wants_close(response.headers())
+}
+
+/// Collect the response body. On failure the flag says whether the cause was
+/// the connection failing (retryable) rather than the body exceeding `max_size`.
+async fn collect_body(
+	response: Response<Incoming>,
+	max_size: usize,
+) -> std::result::Result<Response<Bytes>, (bool, Error)> {
 	let (parts, body) = response.into_parts();
 	let body = http_body_util::Limited::new(body, max_size)
 		.collect()
 		.await
 		.map_err(|error| {
-			Error::HttpClient(format!("response body exceeds limit: {error}").into())
+			let too_large = error.is::<http_body_util::LengthLimitError>();
+			(
+				!too_large,
+				Error::HttpClient(format!("failed to read response body: {error}").into()),
+			)
 		})?
 		.to_bytes();
 	Ok(Response::from_parts(parts, body))
@@ -995,5 +1156,368 @@ mod tests {
 		assert!(!can_follow_redirect(0, 6, &https, &http), "https downgraded to http");
 		assert!(can_follow_redirect(0, 6, &http, &https), "http upgraded to https");
 		assert!(!can_follow_redirect(0, 6, &https, &ftp), "non-http scheme");
+	}
+}
+
+#[cfg(test)]
+mod pool_tests {
+	use std::{
+		net::SocketAddr,
+		sync::atomic::{AtomicUsize, Ordering},
+	};
+
+	use futures::{
+		future::join_all,
+		io::{AsyncReadExt, AsyncWriteExt},
+	};
+
+	use super::*;
+
+	#[derive(Clone, Copy)]
+	enum Behavior {
+		/// Answer every request and keep the connection open.
+		KeepAlive,
+		/// Answer with `Connection: close` and hang up.
+		Close,
+		/// Advertise keep-alive, answer, then hang up anyway (stale when idle).
+		HangUpAfterResponse,
+		/// On a reused connection, hang up without answering every 7th request.
+		DropReusedEverySeventh,
+		/// Answer the first request on a connection, then hang up on the second
+		/// without answering it.
+		DropSecondOnConnection,
+	}
+
+	struct TestServer {
+		addr: SocketAddr,
+		accepted: Arc<AtomicUsize>,
+		served: Arc<AtomicUsize>,
+	}
+
+	const BODY: &[u8] = b"pong";
+
+	fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+		haystack
+			.windows(needle.len())
+			.position(|window| window == needle)
+	}
+
+	async fn serve(
+		mut stream: async_net::TcpStream,
+		behavior: Behavior,
+		served: Arc<AtomicUsize>,
+	) {
+		let mut buffer = Vec::new();
+		let mut chunk = [0_u8; 1024];
+		let mut on_connection = 0_usize;
+		loop {
+			let end = loop {
+				if let Some(position) = find(&buffer, b"\r\n\r\n") {
+					break position.checked_add(4).expect("request header offset fits");
+				}
+
+				match stream.read(&mut chunk).await {
+					| Ok(0) | Err(_) => return,
+					| Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+				}
+			};
+			buffer.drain(..end);
+
+			let total = served
+				.fetch_add(1, Ordering::SeqCst)
+				.checked_add(1)
+				.expect("served request count fits");
+			if matches!(behavior, Behavior::DropReusedEverySeventh)
+				&& on_connection > 0
+				&& total.is_multiple_of(7)
+			{
+				return;
+			}
+
+			if matches!(behavior, Behavior::DropSecondOnConnection) && on_connection > 0 {
+				return;
+			}
+
+			on_connection = on_connection
+				.checked_add(1)
+				.expect("connection request count fits");
+			let connection = if matches!(behavior, Behavior::Close) {
+				"Connection: close\r\n"
+			} else {
+				""
+			};
+			let response =
+				format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{connection}\r\n", BODY.len());
+			if stream.write_all(response.as_bytes()).await.is_err()
+				|| stream.write_all(BODY).await.is_err()
+				|| stream.flush().await.is_err()
+			{
+				return;
+			}
+
+			if matches!(behavior, Behavior::Close | Behavior::HangUpAfterResponse) {
+				return;
+			}
+		}
+	}
+
+	fn start_server(behavior: Behavior) -> TestServer {
+		let listener = smol::block_on(async_net::TcpListener::bind("127.0.0.1:0"))
+			.expect("bind test server");
+		let addr = listener.local_addr().expect("local addr");
+		let accepted = Arc::new(AtomicUsize::new(0));
+		let served = Arc::new(AtomicUsize::new(0));
+
+		let (accepted_count, served_count) = (Arc::clone(&accepted), Arc::clone(&served));
+		smol::spawn(async move {
+			while let Ok((stream, _)) = listener.accept().await {
+				accepted_count.fetch_add(1, Ordering::SeqCst);
+				smol::spawn(serve(stream, behavior, Arc::clone(&served_count))).detach();
+			}
+		})
+		.detach();
+
+		TestServer { addr, accepted, served }
+	}
+
+	fn test_client(pool: Pool) -> HttpClient {
+		let tls = ClientConfig::builder()
+			.with_root_certificates(RootCertStore::empty())
+			.with_no_client_auth();
+
+		HttpClient {
+			default_headers: HeaderMap::new(),
+			user_agent: None,
+			tls: Arc::new(tls),
+			max_size: 1 << 20,
+			connect_timeout: Duration::from_secs(5),
+			read_timeout: Duration::from_secs(5),
+			total_timeout: Duration::from_secs(60),
+			redirect_limit: 6,
+			denylist_validation: false,
+			cidr_range_denylist: Vec::new(),
+			resolver: None,
+			proxy: ProxyConfig::None,
+			pool: Arc::new(pool),
+		}
+	}
+
+	async fn ping(client: &HttpClient, addr: SocketAddr) -> Result<()> {
+		let response = client.get(format!("http://{addr}/ping")).send().await?;
+		assert_eq!(response.status(), StatusCode::OK);
+		assert_eq!(response.body().as_ref(), BODY);
+		Ok(())
+	}
+
+	#[test]
+	fn sequential_requests_share_one_connection() {
+		let server = start_server(Behavior::KeepAlive);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			for _ in 0..100 {
+				ping(&client, server.addr).await.expect("request succeeds");
+			}
+		});
+
+		assert_eq!(server.served.load(Ordering::SeqCst), 100);
+		assert_eq!(server.accepted.load(Ordering::SeqCst), 1, "connection was reused");
+	}
+
+	#[test]
+	fn connection_close_is_never_reused() {
+		let server = start_server(Behavior::Close);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			for _ in 0..5 {
+				ping(&client, server.addr).await.expect("request succeeds");
+			}
+		});
+
+		assert_eq!(server.accepted.load(Ordering::SeqCst), 5);
+	}
+
+	#[test]
+	fn stale_pooled_connections_are_retried() {
+		let server = start_server(Behavior::HangUpAfterResponse);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			for _ in 0..25 {
+				ping(&client, server.addr)
+					.await
+					.expect("stale connection is skipped or retried");
+			}
+		});
+
+		assert_eq!(server.served.load(Ordering::SeqCst), 25);
+	}
+
+	#[test]
+	fn survives_server_dropping_reused_connections_under_load() {
+		let server = start_server(Behavior::DropReusedEverySeventh);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			for _ in 0..700 {
+				ping(&client, server.addr)
+					.await
+					.expect("dropped reused connection is retried on a fresh one");
+			}
+		});
+
+		assert!(server.accepted.load(Ordering::SeqCst) > 1, "drops forced reconnects");
+	}
+
+	#[test]
+	fn non_replayable_requests_are_not_retried_after_connection_loss() {
+		let server = start_server(Behavior::DropSecondOnConnection);
+		let client = test_client(Pool::default());
+		let url = format!("http://{}/ping", server.addr);
+
+		smol::block_on(async {
+			let first = client.request(Method::POST, &url).send().await;
+			assert!(first.is_ok(), "first request opens the connection");
+
+			// The pooled connection is dropped by the server mid-request. A POST may
+			// already have been processed, so it must surface the error, not replay.
+			let second = client.request(Method::POST, &url).send().await;
+			assert!(second.is_err(), "POST must not be silently replayed");
+		});
+
+		assert_eq!(server.served.load(Ordering::SeqCst), 2, "no replay reached the server");
+
+		// A GET in the same situation is replayed on a fresh connection.
+		let server = start_server(Behavior::DropSecondOnConnection);
+		let url = format!("http://{}/ping", server.addr);
+		smol::block_on(async {
+			client.get(&url).send().await.expect("first GET");
+			client
+				.get(&url)
+				.send()
+				.await
+				.expect("GET is retried on a fresh connection");
+		});
+	}
+
+	#[test]
+	fn request_connection_close_is_not_pooled() {
+		let server = start_server(Behavior::KeepAlive);
+		let client = test_client(Pool::default());
+		let url = format!("http://{}/ping", server.addr);
+
+		smol::block_on(async {
+			for _ in 0..3 {
+				client
+					.get(&url)
+					.header(http::header::CONNECTION, "close")
+					.send()
+					.await
+					.expect("request succeeds");
+			}
+		});
+
+		assert_eq!(server.accepted.load(Ordering::SeqCst), 3);
+	}
+
+	#[test]
+	fn concurrent_workers_reuse_idle_connections() {
+		const WORKERS: usize = 8;
+		const PER_WORKER: usize = 250;
+
+		let server = start_server(Behavior::KeepAlive);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			let tasks = (0..WORKERS).map(|_| {
+				let client = client.clone();
+				let addr = server.addr;
+				smol::spawn(async move {
+					for _ in 0..PER_WORKER {
+						ping(&client, addr).await.expect("request succeeds");
+					}
+				})
+			});
+			join_all(tasks).await;
+		});
+
+		assert_eq!(server.served.load(Ordering::SeqCst), WORKERS * PER_WORKER);
+		assert!(
+			server.accepted.load(Ordering::SeqCst) <= WORKERS,
+			"each worker settles on one pooled connection (the cap bounds idle, not active, \
+			 connections)"
+		);
+	}
+
+	#[test]
+	fn heavy_concurrency_stays_correct() {
+		const WORKERS: usize = 64;
+		const PER_WORKER: usize = 40;
+
+		let server = start_server(Behavior::KeepAlive);
+		let client = test_client(Pool::default());
+
+		smol::block_on(async {
+			let tasks = (0..WORKERS).map(|_| {
+				let client = client.clone();
+				let addr = server.addr;
+				smol::spawn(async move {
+					for _ in 0..PER_WORKER {
+						ping(&client, addr).await.expect("request succeeds");
+					}
+				})
+			});
+			join_all(tasks).await;
+		});
+
+		assert_eq!(server.served.load(Ordering::SeqCst), WORKERS * PER_WORKER);
+	}
+
+	/// Run `REQUESTS` sequential requests and return the elapsed time and the
+	/// number of connections the server accepted.
+	fn timed_run(max_idle: usize, requests: usize) -> (Duration, usize) {
+		let server = start_server(Behavior::KeepAlive);
+		let client = test_client(Pool::new(max_idle));
+		let started = Instant::now();
+		smol::block_on(async {
+			for _ in 0..requests {
+				ping(&client, server.addr).await.expect("request succeeds");
+			}
+		});
+
+		(started.elapsed(), server.accepted.load(Ordering::SeqCst))
+	}
+
+	#[test]
+	#[allow(clippy::cast_precision_loss)]
+	fn pooling_is_faster_than_reconnecting() {
+		const REQUESTS: usize = 1500;
+		const ROUNDS: usize = 3;
+
+		// Best-of-N on each side keeps scheduler noise from deciding the result.
+		let mut pooled = Duration::MAX;
+		let mut unpooled = Duration::MAX;
+		for _ in 0..ROUNDS {
+			let (elapsed, connections) = timed_run(POOL_MAX_IDLE_PER_HOST, REQUESTS);
+			assert_eq!(connections, 1, "pooled run reuses a single connection");
+			pooled = pooled.min(elapsed);
+
+			let (elapsed, connections) = timed_run(0, REQUESTS);
+			assert_eq!(connections, REQUESTS, "unpooled run reconnects every time");
+			unpooled = unpooled.min(elapsed);
+		}
+
+		let rate = |elapsed: Duration| REQUESTS as f64 / elapsed.as_secs_f64();
+		eprintln!(
+			"pooled:   {pooled:?} ({:.0} req/s, 1 connection)
+unpooled: {unpooled:?} ({:.0} req/s, {REQUESTS} connections)
+speedup:  {:.2}x",
+			rate(pooled),
+			rate(unpooled),
+			unpooled.as_secs_f64() / pooled.as_secs_f64(),
+		);
+
+		assert!(pooled < unpooled, "reusing connections must beat reconnecting");
 	}
 }
