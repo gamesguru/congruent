@@ -1,4 +1,4 @@
-use std::{any::type_name, collections::HashMap, future::Future, sync::Arc};
+use std::{any::type_name, future::Future, sync::Arc};
 
 use conduwuit::Result;
 use futures::future::BoxFuture;
@@ -17,7 +17,6 @@ use crate::hyper_router::{BoxedHandler, MinimalRouter};
 
 struct Context {
 	request: Option<Request<Incoming>>,
-	params: HashMap<String, String>,
 }
 
 trait ExtractArg: Sized {
@@ -375,10 +374,10 @@ macro_rules! route_handler {
 		{
 			#[allow(non_snake_case)]
 			fn boxed(&'static self, method: Method, path: &'static str) -> (Method, &'static str, BoxedHandler) {
-				let handler: BoxedHandler = Arc::new(move |request, params| {
+				let handler: BoxedHandler = Arc::new(move |request, _params| {
 					let state = request.extensions().get::<State>().copied().expect("router state extension");
 					#[allow(unused_mut)]
-					let mut context = Context { request: Some(request), params };
+					let mut context = Context { request: Some(request) };
 					let _ = (&state, &context);
 					Box::pin(async move {
 						$(let $tx = match $tx::extract(&mut context, &state).await {
@@ -448,9 +447,9 @@ macro_rules! ruma_handler {
 					.collect::<Vec<_>>();
 				for path in paths {
 					crate::hyper_router::record_route(method.clone(), path, type_name::<Fun>());
-					let handler: BoxedHandler = Arc::new(move |request, params| {
+					let handler: BoxedHandler = Arc::new(move |request, _params| {
 						let state = request.extensions().get::<State>().copied().expect("router state extension");
-						let mut context = Context { request: Some(request), params };
+						let mut context = Context { request: Some(request) };
 						Box::pin(async move {
 							$(let $tx = match $tx::extract(&mut context, &state).await {
 								Ok(value) => value,
