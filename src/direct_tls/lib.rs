@@ -58,11 +58,29 @@ async fn accept_tls(
 	}
 }
 
+/// TLS records start with the handshake content type; anything else on a
+/// `dual_protocol` listener is treated as plain HTTP.
+const TLS_HANDSHAKE_RECORD: u8 = 0x16;
+
+async fn looks_like_tls(stream: &async_net::TcpStream) -> bool {
+	let mut first = [0_u8; 1];
+	match futures::future::select(
+		Box::pin(stream.peek(&mut first)),
+		Box::pin(smol::Timer::after(TLS_HANDSHAKE_TIMEOUT)),
+	)
+	.await
+	{
+		| Either::Left((Ok(1), _)) => first[0] == TLS_HANDSHAKE_RECORD,
+		| _ => false,
+	}
+}
+
 async fn listener<S, B, F>(
 	server: Arc<Server>,
 	service_factory: F,
 	addr: SocketAddr,
 	config: Arc<ServerConfig>,
+	dual_protocol: bool,
 ) -> Result<()>
 where
 	F: Fn(SocketAddr) -> S + Clone + Send + Sync + 'static,
@@ -91,12 +109,18 @@ where
 		let acceptor = acceptor.clone();
 		let app = service_factory(peer);
 		drop(runtime.spawn(async move {
-			let Some(stream) = accept_tls(acceptor, stream).await else { return };
 			let service = service_fn(move |request| app.clone().oneshot(request));
-			if let Err(error) = http1::Builder::new()
-				.serve_connection(SmolIo(stream), service)
-				.await
-			{
+			let result = if dual_protocol && !looks_like_tls(&stream).await {
+				http1::Builder::new()
+					.serve_connection(SmolIo(stream), service)
+					.await
+			} else {
+				let Some(stream) = accept_tls(acceptor, stream).await else { return };
+				http1::Builder::new()
+					.serve_connection(SmolIo(stream), service)
+					.await
+			};
+			if let Err(error) = result {
 				debug!(%error, %peer, "Direct TLS connection closed with error");
 			}
 		}));
@@ -133,7 +157,7 @@ where
 	let config = load_tls_config(certs_path, key_path).await?;
 
 	if tls.dual_protocol {
-		warn!("dual_protocol is not supported by the smol direct TLS listener; serving TLS only");
+		warn!("dual_protocol is enabled; plain HTTP is also accepted on the TLS ports (insecure)");
 	}
 
 	let mut listeners = Vec::with_capacity(addrs.len());
@@ -143,6 +167,7 @@ where
 			service_factory.clone(),
 			addr,
 			Arc::clone(&config),
+			tls.dual_protocol,
 		)));
 	}
 
