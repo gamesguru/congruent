@@ -71,8 +71,11 @@ type Sender = http1::SendRequest<Full<Bytes>>;
 /// How long an idle keep-alive connection may be reused.
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Idle connections kept per origin.
-const POOL_MAX_IDLE_PER_HOST: usize = 8;
+/// Idle connections kept per origin. Sized above the federation fetch
+/// concurrency (`concurrency_scaled(2)`, 20 on a typical host), so a burst of
+/// parallel fetches to one server reuses connections instead of dropping the
+/// surplus and re-handshaking.
+const POOL_MAX_IDLE_PER_HOST: usize = 64;
 
 /// Connections are only interchangeable when everything that influenced how
 /// they were established matches.
@@ -322,7 +325,7 @@ impl HttpClient {
 			match read {
 				| Ok(Ok(response)) => {
 					let reusable = !request_closes && connection_reusable(&response);
-					if reusable && sender.ready().await.is_ok() {
+					if reusable && !sender.is_closed() {
 						self.pool.put(key, sender);
 					}
 
@@ -1196,6 +1199,14 @@ mod pool_tests {
 
 	const BODY: &[u8] = b"pong";
 
+	/// The tests share smol's global executor, so running them in parallel makes
+	/// them starve each other (and wrecks the benchmark). Serialize them.
+	static SERIAL: Mutex<()> = Mutex::new(());
+
+	fn serial() -> std::sync::MutexGuard<'static, ()> {
+		SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
 	fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 		haystack
 			.windows(needle.len())
@@ -1311,6 +1322,7 @@ mod pool_tests {
 
 	#[test]
 	fn sequential_requests_share_one_connection() {
+		let _serial = serial();
 		let server = start_server(Behavior::KeepAlive);
 		let client = test_client(Pool::default());
 
@@ -1326,6 +1338,7 @@ mod pool_tests {
 
 	#[test]
 	fn connection_close_is_never_reused() {
+		let _serial = serial();
 		let server = start_server(Behavior::Close);
 		let client = test_client(Pool::default());
 
@@ -1340,6 +1353,7 @@ mod pool_tests {
 
 	#[test]
 	fn stale_pooled_connections_are_retried() {
+		let _serial = serial();
 		let server = start_server(Behavior::HangUpAfterResponse);
 		let client = test_client(Pool::default());
 
@@ -1356,6 +1370,7 @@ mod pool_tests {
 
 	#[test]
 	fn survives_server_dropping_reused_connections_under_load() {
+		let _serial = serial();
 		let server = start_server(Behavior::DropReusedEverySeventh);
 		let client = test_client(Pool::default());
 
@@ -1372,6 +1387,7 @@ mod pool_tests {
 
 	#[test]
 	fn non_replayable_requests_are_not_retried_after_connection_loss() {
+		let _serial = serial();
 		let server = start_server(Behavior::DropSecondOnConnection);
 		let client = test_client(Pool::default());
 		let url = format!("http://{}/ping", server.addr);
@@ -1403,6 +1419,7 @@ mod pool_tests {
 
 	#[test]
 	fn request_connection_close_is_not_pooled() {
+		let _serial = serial();
 		let server = start_server(Behavior::KeepAlive);
 		let client = test_client(Pool::default());
 		let url = format!("http://{}/ping", server.addr);
@@ -1423,6 +1440,7 @@ mod pool_tests {
 
 	#[test]
 	fn concurrent_workers_reuse_idle_connections() {
+		let _serial = serial();
 		const WORKERS: usize = 8;
 		const PER_WORKER: usize = 250;
 
@@ -1452,6 +1470,7 @@ mod pool_tests {
 
 	#[test]
 	fn heavy_concurrency_stays_correct() {
+		let _serial = serial();
 		const WORKERS: usize = 64;
 		const PER_WORKER: usize = 40;
 
@@ -1492,6 +1511,7 @@ mod pool_tests {
 	#[test]
 	#[allow(clippy::cast_precision_loss)]
 	fn pooling_is_faster_than_reconnecting() {
+		let _serial = serial();
 		const REQUESTS: usize = 1500;
 		const ROUNDS: usize = 3;
 
