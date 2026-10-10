@@ -71,6 +71,16 @@ macro_rules! trace {
 
 #[doc(hidden)]
 #[macro_export]
+macro_rules! __conduwuit_level {
+	(error) => { ::log::Level::Error };
+	(warn) => { ::log::Level::Warn };
+	(info) => { ::log::Level::Info };
+	(debug) => { ::log::Level::Debug };
+	(trace) => { ::log::Level::Trace };
+}
+
+#[doc(hidden)]
+#[macro_export]
 /// Compatibility implementation for the former tracing-style call syntax.
 ///
 /// It preserves structured fields while dispatching through the `log` crate:
@@ -78,12 +88,18 @@ macro_rules! trace {
 /// `Debug`, matching tracing's default field behavior. Message format strings
 /// retain Rust's implicit `{name}` captures.
 macro_rules! __conduwuit_log {
-	($level:ident, target: $target:literal, $($rest:tt)+) => {
-		$crate::__conduwuit_log!(@parse $level, ($target), String::new(), $($rest)+)
-	};
-	($level:ident, $($rest:tt)+) => {
-		$crate::__conduwuit_log!(@parse $level, default, String::new(), $($rest)+)
-	};
+	// The field prefix is formatted eagerly by the `@parse` arms, so check the
+	// level first: disabled events must not pay for `Debug`-formatting fields.
+	($level:ident, target: $target:literal, $($rest:tt)+) => {{
+		if ::log::log_enabled!(target: $target, $crate::__conduwuit_level!($level)) {
+			$crate::__conduwuit_log!(@parse $level, ($target), String::new(), $($rest)+)
+		}
+	}};
+	($level:ident, $($rest:tt)+) => {{
+		if ::log::log_enabled!($crate::__conduwuit_level!($level)) {
+			$crate::__conduwuit_log!(@parse $level, default, String::new(), $($rest)+)
+		}
+	}};
 
 	(@emit $level:ident, default, $prefix:expr) => {
 		::log::$level!("{}", $prefix)
