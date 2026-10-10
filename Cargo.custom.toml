@@ -22,10 +22,16 @@ strip         = "symbols"
 
 # Dependencies dominate rebuild time. Keep them cheap to compile; the
 # workspace crates above still retain line-table debug information.
+#
+# opt-level must NOT be 0 here: before f7dc4b6a6 dev-quick inherited
+# `profile.dev.package.'*'` (opt-level 'z'), and Complement latencies were
+# 20-60x lower than with every dependency at 0 (register 52ms vs 437ms,
+# createRoom 17ms vs 1000ms, send 8ms vs 178ms), which pushes the 250-event
+# MSC4297 state-resolution tests past their 10s deadline.
 [profile.dev-quick.package.'*']
 codegen-units = 256
 debug         = 0
-opt-level     = 0
+opt-level     = 1
 
 # Hot crypto/hash dependencies stay optimized even in the quick profile. The
 # pure-Rust ed25519 stack is ~100x slower unoptimized, which is enough to push
