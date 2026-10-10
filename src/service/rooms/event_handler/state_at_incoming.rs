@@ -233,7 +233,7 @@ async fn get_extremity_lthash<Pdu>(
 	&self,
 	_root_handle: &rezzy::hamt::RootHandle,
 	_prev_event: &Pdu,
-) -> Result<rezzy::LtHash>
+) -> Result<rezzy::incremental::LtHash>
 where
 	Pdu: Event + Send + Sync,
 {
@@ -305,7 +305,7 @@ where
 	};
 
 	// Build a HAMT root handle from the resolved state.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	for ((ty, sk), id) in &new_state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());

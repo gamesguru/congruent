@@ -10,8 +10,8 @@ use conduwuit::{Result, err};
 use database::{Batch, Map};
 use futures::TryStreamExt;
 use rezzy::{
-	LtHash,
 	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
+	incremental::LtHash,
 };
 
 /// Report produced by [`Store::sweep`], in either dry-run or live mode.

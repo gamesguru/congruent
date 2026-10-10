@@ -648,7 +648,7 @@ async fn join_room_by_id_helper_remote_process(
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	for (&shortstatekey, event_id) in &state {
 		if let Ok((kind, state_key)) = services
 			.rooms

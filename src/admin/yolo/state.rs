@@ -935,7 +935,7 @@ pub(super) async fn set_state_event(
 
 	// Build the HAMT root for the new state, resolving short IDs so the
 	// lattice can be reconstructed from the entries.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	let mut short_state_keys = Vec::with_capacity(new_state.len());
 	let mut event_ids = Vec::with_capacity(new_state.len());

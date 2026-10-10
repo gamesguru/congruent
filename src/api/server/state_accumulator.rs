@@ -85,7 +85,7 @@ pub(crate) async fn get_state_accumulator_route(
 	// digest over partial state.
 	let entries = state_tuples(&services, &root_handle).await?;
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
 	for (ty, sk, id) in &entries {
 		lattice.insert(ty, sk, id.as_str());
@@ -210,7 +210,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_empty_lthash() {
-		let empty_lthash = rezzy::LtHash::ZERO;
+		let empty_lthash = rezzy::incremental::LtHash::ZERO;
 		let (lattice, digest): (String, String) = serialize_lthash(&empty_lthash);
 
 		// The lattice for an empty LtHash is 2048 null bytes.
@@ -232,7 +232,7 @@ mod tests {
 
 	#[test]
 	fn test_serialize_populated_lthash() {
-		let mut lthash = rezzy::LtHash::ZERO;
+		let mut lthash = rezzy::incremental::LtHash::ZERO;
 		// Add some dummy data to manipulate the lthash state
 		let event_id1: OwnedEventId = "$abc:example.com".try_into().unwrap();
 		let event_id2: OwnedEventId = "$def:example.com".try_into().unwrap();
@@ -254,7 +254,7 @@ mod tests {
 		);
 
 		// The digest and lattice should no longer be the empty one
-		let empty_lthash = rezzy::LtHash::ZERO;
+		let empty_lthash = rezzy::incremental::LtHash::ZERO;
 		let (empty_lattice, empty_digest): (String, String) = serialize_lthash(&empty_lthash);
 		assert_ne!(lattice, empty_lattice);
 		assert_ne!(digest, empty_digest);

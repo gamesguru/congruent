@@ -15,7 +15,10 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Pdu, RoomVersion, implement, matrix::Event};
 use futures::TryStreamExt;
-use rezzy::state::{LtHash, RedactionOverlay, ResolutionInputRecord, ResolutionInputs};
+use rezzy::{
+	incremental::LtHash,
+	state::{RedactionOverlay, ResolutionInputRecord, ResolutionInputs},
+};
 use slipstream::{
 	EventId, OwnedEventId, RoomVersionId,
 	codec::{Deserialize, Serialize},

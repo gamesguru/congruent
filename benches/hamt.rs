@@ -48,7 +48,7 @@ fn bench_hamt_construction(measure_iters: bool) {
 	let room_id =
 		slipstream::OwnedRoomId::parse("!bench_room:test.local").expect("valid room ID");
 	let structural_key = room_structural_key(&server_secret, &room_id);
-	let lattice = rezzy::state::LtHash::default();
+	let lattice = rezzy::incremental::LtHash::default();
 
 	for &size in &sizes {
 		let iters = if measure_iters { iterations(200_000, size) } else { 1 };
@@ -78,7 +78,7 @@ fn bench_hamt_point_lookups(measure_iters: bool) {
 		let entries: Vec<(u64, u64)> = (0..size)
 			.map(|i| (i, i.saturating_mul(1_000).saturating_add(7)))
 			.collect();
-		let lattice = rezzy::state::LtHash::default();
+		let lattice = rezzy::incremental::LtHash::default();
 
 		let (_root_handle, root_node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
@@ -120,7 +120,7 @@ fn bench_hamt_delta_isolation(measure_iters: bool) {
 	let base_entries: Vec<(u64, u64)> = (0..base_size)
 		.map(|i| (i, i.saturating_mul(1_000).saturating_add(7)))
 		.collect();
-	let base_lattice = rezzy::state::LtHash::default();
+	let base_lattice = rezzy::incremental::LtHash::default();
 
 	let (_base_root_handle, base_root_node) =
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &base_lattice, base_entries.clone())
@@ -161,7 +161,7 @@ fn bench_hamt_delta_isolation(measure_iters: bool) {
 					.expect("node must exist in combined map"))
 			};
 
-			let lattice = rezzy::state::LtHash::default();
+			let lattice = rezzy::incremental::LtHash::default();
 			let res = rezzy::hamt::delta::isolate_delta::<u64, u64, _, std::convert::Infallible>(
 				&base_root_node,
 				&lattice,
@@ -182,7 +182,7 @@ fn bench_lthash(measure_iters: bool) {
 
 		measure("lthash_state_hashing", "lthash_checksum", count, iters, || {
 			let event_id = "$bench_event:test.local";
-			let mut hash = rezzy::LtHash::ZERO;
+			let mut hash = rezzy::incremental::LtHash::ZERO;
 			for i in 0..count {
 				let key_str = i.to_string();
 				hash.insert("m.room.member", &key_str, &event_id);

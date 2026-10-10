@@ -113,7 +113,7 @@ pub async fn resolve_state(
 	// for deciding which leaves actually changed.
 	let previous_statemap = &forkstates[0];
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	// Only the changed leaves become mutations, so this stays proportional to
 	// the state delta rather than the state size.
 	let mut mutations: Vec<(ShortStateKey, Option<ShortEventId>)> = Vec::new();

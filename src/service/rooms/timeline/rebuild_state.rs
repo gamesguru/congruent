@@ -305,7 +305,7 @@ impl super::Service {
 		&self,
 		room_id: &RoomId,
 		entries: Vec<(ShortStateKey, ShortEventId)>,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
 		let structural_key =
 			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
@@ -330,8 +330,8 @@ impl super::Service {
 	async fn lattice_for_short_entries(
 		&self,
 		entries: &[(ShortStateKey, ShortEventId)],
-	) -> Result<rezzy::state::LtHash> {
-		let mut lattice = rezzy::state::LtHash::default();
+	) -> Result<rezzy::incremental::LtHash> {
+		let mut lattice = rezzy::incremental::LtHash::default();
 
 		let shortstatekeys: Vec<ShortStateKey> = entries
 			.iter()
@@ -382,7 +382,7 @@ enum StateUpdateOwned {
 		state: rezzy::SharedState<String>,
 		/// Incrementally maintained LtHash from rezzy, used as dedup key to
 		/// skip O(N) compression loop if the same state has already been seen.
-		hash: Box<rezzy::LtHash>,
+		hash: Box<rezzy::incremental::LtHash>,
 	},
 	Unchanged {
 		parent_event_id: String,
@@ -531,10 +531,11 @@ impl super::Service {
 		// Root handle for the empty state; events whose parent has no computed
 		// root (e.g. the first event in the room) inherit it.
 		let empty_root =
-			self.store_hamt_root(room_id, Vec::new(), &rezzy::state::LtHash::default())?;
+			self.store_hamt_root(room_id, Vec::new(), &rezzy::incremental::LtHash::default())?;
 
 		let mut event_root: HashMap<OwnedEventId, rezzy::hamt::RootHandle> = HashMap::new();
-		let mut lthash_to_root: HashMap<rezzy::LtHash, rezzy::hamt::RootHandle> = HashMap::new();
+		let mut lthash_to_root: HashMap<rezzy::incremental::LtHash, rezzy::hamt::RootHandle> =
+			HashMap::new();
 		let mut current_root = empty_root.clone();
 		let mut groups_compressed = 0_usize;
 		let mut groups_deduped = 0_usize;
@@ -1083,7 +1084,7 @@ impl super::Service {
 			resolved_map.len()
 		);
 
-		let mut lattice = rezzy::state::LtHash::default();
+		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(resolved_map.len());
 		for ((ty, sk), id) in &resolved_map {

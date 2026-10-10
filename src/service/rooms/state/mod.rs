@@ -261,7 +261,7 @@ impl Service {
 		};
 
 		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		let lattice = rezzy::state::LtHash::default();
+		let lattice = rezzy::incremental::LtHash::default();
 		let (added, removed): HamtDelta =
 			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
 				&old_node,
@@ -563,7 +563,7 @@ impl Service {
 			.collect()
 			.await;
 
-		let mut lattice = rezzy::state::LtHash::default();
+		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(short_state_keys.len());
 
@@ -607,7 +607,7 @@ impl Service {
 		structural_key: &[u8],
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
 		let old = self
 			.services
@@ -644,7 +644,7 @@ impl Service {
 	pub fn persist_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) {
 		let encoded = lattice.to_bytes();
 		self.db
@@ -660,9 +660,9 @@ impl Service {
 	pub async fn get_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-	) -> Option<rezzy::state::LtHash> {
+	) -> Option<rezzy::incremental::LtHash> {
 		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
-			return rezzy::state::LtHash::from_bytes(&raw);
+			return rezzy::incremental::LtHash::from_bytes(&raw);
 		}
 
 		let raw = self
@@ -675,7 +675,7 @@ impl Service {
 			return None;
 		}
 
-		let lattice = rezzy::state::LtHash::from_bytes(&raw)?;
+		let lattice = rezzy::incremental::LtHash::from_bytes(&raw)?;
 		self.db
 			.lattice_cache
 			.insert(root_handle.structural_hash, Arc::from(&*raw));

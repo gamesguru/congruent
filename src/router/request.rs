@@ -139,7 +139,7 @@ fn catch_panic(
 		.requests_panic
 		.fetch_add(1, Ordering::Release);
 
-	let details = panic_details(&panic);
+	let details = panic_details(&*panic);
 	error!("{details:#}");
 	panic_response()
 }

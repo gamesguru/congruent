@@ -603,7 +603,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 
 	// An orphan: a real, fully-built tree that no recorded root handle points
 	// at, as if its only root had been deleted.
-	let mut orphan_lattice = rezzy::state::LtHash::default();
+	let mut orphan_lattice = rezzy::incremental::LtHash::default();
 	for index in 0..8_u64 {
 		orphan_lattice.insert(
 			"m.room.member",
@@ -744,7 +744,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 	// the timeline append path can after an outlier upgrade. The invite clears
 	// the left marker, while the stale leave must preserve the invite whether it
 	// acquires the room lock before or after the invite.
-	let (invite_result, ()) = tokio::join!(
+	let (invite_result, ()) = futures::join!(
 		services.rooms.state_cache.mark_as_invited(
 			&alice,
 			&room_id,

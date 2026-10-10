@@ -544,7 +544,7 @@ pub async fn state_map_to_root_handle(
 	room_id: &RoomId,
 	short_state: &HashMap<u64, OwnedEventId>,
 ) -> Result<rezzy::hamt::RootHandle> {
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(short_state.len());
 	let mut short_state_keys = Vec::with_capacity(short_state.len());
 	let mut event_ids = Vec::with_capacity(short_state.len());

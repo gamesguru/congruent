@@ -546,7 +546,7 @@ pub async fn pdu_roothandle_before_event(
 			);
 			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
 				&structural_key,
-				&rezzy::state::LtHash::default(),
+				&rezzy::incremental::LtHash::default(),
 				Vec::new(),
 			)
 			.map_err(|e| err!(error!("Failed to build empty HAMT root: {e:?}")))?;
