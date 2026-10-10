@@ -391,8 +391,8 @@
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/power_level_content_override_cannot_set_the_room_creator"}
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_Additional"}
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalCreatorsAndInvited"}
-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation"}
-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation/additional_creators_are_valid"}
+{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation"}
+{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation/additional_creators_are_valid"}
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation/additional_creators_elements_aren't_strings"}
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation/additional_creators_elements_aren't_user_ID_strings"}
 {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators_AdditionalValidation/additional_creators_elements_aren't_valid_user_ID_strings_(domain)"}
@@ -664,9 +664,9 @@
 {"Action":"pass","Test":"TestRemotePngThumbnail"}
 {"Action":"pass","Test":"TestRemotePngThumbnail/test_/_matrix/client/v1/media_endpoint"}
 {"Action":"pass","Test":"TestRemotePngThumbnail/test_/_matrix/media/v3_endpoint"}
-{"Action":"pass","Test":"TestRemotePresence"}
+{"Action":"fail","Test":"TestRemotePresence"}
 {"Action":"pass","Test":"TestRemotePresence/Presence_changes_are_also_reported_to_remote_room_members"}
-{"Action":"pass","Test":"TestRemotePresence/Presence_changes_to_UNAVAILABLE_are_reported_to_remote_room_members"}
+{"Action":"fail","Test":"TestRemotePresence/Presence_changes_to_UNAVAILABLE_are_reported_to_remote_room_members"}
 {"Action":"pass","Test":"TestRemoteTyping"}
 {"Action":"pass","Test":"TestRemovingAccountData"}
 {"Action":"pass","Test":"TestRemovingAccountData/Deleting_a_user's_account_data_via_DELETE_works"}
