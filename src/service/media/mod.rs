@@ -117,6 +117,11 @@ impl Service {
 		f.write_all(file).await.map_err(|e| {
 			err!(Database(error!("Failed to write media file for MXC {mxc} at key {key:?}: {e}")))
 		})?;
+		// async-fs buffers writes on a blocking pool; without an explicit flush the
+		// data may be lost when the handle drops, leaving an empty file on disk.
+		f.flush().await.map_err(|e| {
+			err!(Database(error!("Failed to flush media file for MXC {mxc} at key {key:?}: {e}")))
+		})?;
 
 		Ok(())
 	}

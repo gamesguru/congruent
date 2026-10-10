@@ -41,6 +41,7 @@ impl super::Service {
 		//TODO: Dangling metadata in database if creation fails
 		let mut f = self.create_media_file(&key).await?;
 		f.write_all(file).await?;
+		f.flush().await?;
 
 		Ok(())
 	}
@@ -128,6 +129,7 @@ async fn get_thumbnail_generate(
 
 	let mut f = self.create_media_file(&thumbnail_key).await?;
 	f.write_all(&thumbnail_bytes).await?;
+	f.flush().await?;
 
 	Ok(Some(into_filemeta(data, thumbnail_bytes)))
 }

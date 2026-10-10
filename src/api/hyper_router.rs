@@ -237,8 +237,19 @@ impl tower::Service<Request<Incoming>> for MinimalRouter {
 				request.extensions_mut().insert(path);
 				Box::pin(async move { Ok(handler(request, params).await) })
 			},
-			| Err(_) =>
-				Box::pin(async { Ok(unrecognized_response(http::StatusCode::NOT_FOUND)) }),
+			| Err(_) => {
+				// A known path under a different method is a 405, not a 404.
+				let path = request.uri().path();
+				let known = [&self.get, &self.post, &self.put, &self.delete]
+					.into_iter()
+					.any(|router| router.at(path).is_ok());
+				let status = if known {
+					http::StatusCode::METHOD_NOT_ALLOWED
+				} else {
+					http::StatusCode::NOT_FOUND
+				};
+				Box::pin(async move { Ok(unrecognized_response(status)) })
+			},
 		}
 	}
 }

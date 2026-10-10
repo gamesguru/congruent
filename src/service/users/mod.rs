@@ -1554,6 +1554,7 @@ impl Service {
 			}
 		}
 
+		let mut flush_rooms = Vec::with_capacity(joined_rooms.len());
 		for room_id in joined_rooms {
 			// TODO: replace these ad hoc fanout writes with a single typed
 			// "device-key change projection" helper shared by the write path and the
@@ -1570,6 +1571,20 @@ impl Service {
 				})
 				.await;
 
+			flush_rooms.push(room_id);
+		}
+
+		let key = (user_id, count);
+		self.db.keychangeid_userid.put_raw(key, user_id);
+
+		// Keep the published watermark monotonic across concurrent calls. This must
+		// be published before any flush is scheduled: the sender gates device-list
+		// EDU selection on this watermark and then advances its cursor past `count`,
+		// so a flush that wins the race would skip this change permanently.
+		self.last_device_key_update_count
+			.fetch_max(count, std::sync::atomic::Ordering::AcqRel);
+
+		for room_id in flush_rooms {
 			conduwuit::info!(%user_id, %room_id, "Flushing room for device key update");
 
 			let sending = self.services.sending.clone();
@@ -1577,13 +1592,6 @@ impl Service {
 				let _ = sending.flush_room(&room_id).await;
 			}));
 		}
-
-		let key = (user_id, count);
-		self.db.keychangeid_userid.put_raw(key, user_id);
-
-		// Keep the published watermark monotonic across concurrent calls.
-		self.last_device_key_update_count
-			.fetch_max(count, std::sync::atomic::Ordering::AcqRel);
 	}
 
 	pub fn mark_device_list_left(&self, user_id: &UserId, left_user: &UserId, count: u64) {
