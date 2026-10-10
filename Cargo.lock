@@ -145,7 +145,8 @@ dependencies = [
 [[package]]
 name = "async-channel"
 version = "2.5.0"
-source = "git+https://forgejo.ellis.link/continuwuation/async-channel?rev=e990f0006b68dc9bace7a3c95fc90b5c4e44948d#e990f0006b68dc9bace7a3c95fc90b5c4e44948d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924ed96dd52d1b75e9c1a3e6275715fd320f5f9439fb5a4a11fa51f4221158d2"
 dependencies = [
  "concurrent-queue",
  "event-listener-strategy",
@@ -697,7 +698,6 @@ dependencies = [
 name = "conduwuit_database"
 version = "0.5.10"
 dependencies = [
- "async-channel",
  "conduwuit_core",
  "conduwuit_macros",
  "conduwuit_slipstream",
@@ -1191,8 +1191,9 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
-source = "git+https://forgejo.ellis.link/continuwuation/event-listener?rev=b2c19bcaf5a0a69c38c034e417bda04a9b991529#b2c19bcaf5a0a69c38c034e417bda04a9b991529"
+version = "5.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
  "parking",
  "pin-project-lite",
@@ -1675,7 +1676,8 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.20"
-source = "git+https://forgejo.ellis.link/continuwuation/hyper-util?rev=09fcd3bf4656c81a8ad573bee410ab2b57f60b86#09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
  "bytes",
  "http",

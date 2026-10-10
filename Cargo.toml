@@ -262,10 +262,6 @@ version = "2.1.1"
 [workspace.dependencies.loole]
 version = "0.4.0"
 
-# used for MPMC channels
-[workspace.dependencies.async-channel]
-version = "2.5.0"
-
 [workspace.dependencies.smol]
 version = "2.0.2"
 
@@ -394,23 +390,10 @@ version = "0.11"
 # Patches
 #
 
-# adds LIFO queue scheduling; this should be updated with PR progress.
-[patch.crates-io.event-listener]
-git = "https://forgejo.ellis.link/continuwuation/event-listener"
-rev = "b2c19bcaf5a0a69c38c034e417bda04a9b991529"
-[patch.crates-io.async-channel]
-git = "https://forgejo.ellis.link/continuwuation/async-channel"
-rev = "e990f0006b68dc9bace7a3c95fc90b5c4e44948d"
-
 # adds affinity masks for selecting more than one core at a time
 [patch.crates-io.core_affinity]
 git = "https://forgejo.ellis.link/continuwuation/core_affinity_rs"
 rev = "7c7a9dea35382743a63837cdd1d977efdb8f1b8a"
-
-# reverts hyperium#148 conflicting with our delicate federation resolver hooks
-[patch.crates-io.hyper-util]
-git = "https://forgejo.ellis.link/continuwuation/hyper-util"
-rev = "09fcd3bf4656c81a8ad573bee410ab2b57f60b86"
 
 #
 # Our crates

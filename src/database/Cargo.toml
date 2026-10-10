@@ -43,7 +43,6 @@ zstd_compression = [
 ]
 
 [dependencies]
-async-channel.workspace = true
 event-listener.workspace = true
 conduwuit-core.workspace = true
 conduwuit-macros.workspace = true
