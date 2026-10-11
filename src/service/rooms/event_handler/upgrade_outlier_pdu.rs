@@ -133,7 +133,7 @@ where
 			?sender_ssk,
 			sender_member_present = sender_member_present,
 			"upgrade_outlier: state at event"
-		)
+		);
 	};
 
 	let room_version = to_room_version(&room_version_id);
