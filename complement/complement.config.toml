@@ -15,6 +15,9 @@ allow_inbound_profile_lookup_federation_requests = true
 allow_incoming_presence = true
 allow_outgoing_presence = true
 allow_local_presence = true
+# Default 5s equals TestRemotePresence's 5s MustSyncUntil window, so delivery
+# was a coin flip on flush-timer phase.
+federation_presence_interval_s = 1
 allow_registration = true
 database_path = "/var/lib/continuwuity"
 # By default we use info/warn, only for failures/debugging verbose
