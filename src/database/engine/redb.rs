@@ -255,6 +255,19 @@ impl RedbEngine {
 		Ok(entries)
 	}
 
+	/// Entries of `map_name` whose key starts with `prefix`, in key order,
+	/// seeking directly to the prefix range instead of reading the whole map.
+	pub(crate) fn scan_prefix(
+		&self,
+		map_name: &str,
+		prefix: &[u8],
+	) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+		let lower = composite_key(map_name, prefix);
+		let map_prefix_len = composite_key(map_name, &[]).len();
+		let upper = prefix_end(&lower);
+		self.range(&lower, upper.as_deref(), map_prefix_len)
+	}
+
 	pub(crate) fn scan(
 		&self,
 		map_name: &str,
@@ -390,6 +403,9 @@ mod tests {
 			),
 			["2", "1"]
 		);
+		assert_eq!(keys(engine.scan_prefix("a", b"2").unwrap()), ["2"]);
+		assert_eq!(keys(engine.scan_prefix("a", b"").unwrap()), ["1", "2", "3"]);
+		assert!(engine.scan_prefix("a", b"9").unwrap().is_empty());
 		let _ = std::fs::remove_dir_all(dir);
 	}
 }

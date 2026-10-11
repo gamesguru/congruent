@@ -13,7 +13,7 @@ use conduwuit::{
 };
 use database::{Deserialized, Get, Map, Qry};
 use futures::{
-	Stream, StreamExt,
+	FutureExt, Stream, StreamExt,
 	stream::{self},
 };
 use slipstream::{
@@ -33,6 +33,7 @@ pub struct Service {
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
 	shorteventid_create_mutex: SyncMutex<()>,
+	shortstatekey_create_mutex: SyncMutex<()>,
 }
 
 struct Data {
@@ -110,6 +111,7 @@ impl crate::Service for Service {
 				.max_capacity(args.server.config.leanevent_cache_capacity.into())
 				.build(),
 			shorteventid_create_mutex: SyncMutex::new(()),
+			shortstatekey_create_mutex: SyncMutex::new(()),
 		}))
 	}
 
@@ -356,7 +358,24 @@ pub async fn get_or_create_shortstatekey(
 		return shortstatekey;
 	}
 
+	// Creation must be atomic per (type, state_key): two concurrent callers that
+	// both miss would otherwise allocate different short keys, and the forward
+	// map would keep only one of them. A state root built with the other key
+	// would then hold the entry where `get_shortstatekey` never looks.
+	let _guard = self.shortstatekey_create_mutex.lock();
+
 	let key = (event_type, state_key);
+	if let Some(Ok(handle)) = self.db.statekey_shortstatekey.qry(&key).now_or_never() {
+		if let Ok(existing) = handle.deserialized::<ShortStateKey>() {
+			let cached_key = (event_type.clone(), StateKey::from(state_key));
+			self.statekey_shortstatekey_cache
+				.insert(cached_key.clone(), existing);
+			self.shortstatekey_statekey_cache
+				.insert(existing, cached_key);
+			return existing;
+		}
+	}
+
 	let shortstatekey = self.services.globals.next_count().unwrap();
 	debug_assert!(size_of_val(&shortstatekey) == BUFSIZE, "buffer requirement changed");
 

@@ -110,6 +110,32 @@ where
 	let state_at_incoming_event =
 		state_at_incoming_event.expect("we always set this to some above");
 
+	// Diagnostic: record which state the auth check below will see. The sender's
+	// membership is looked up by its canonical short key; a state map that holds
+	// the sender under some other short key reports `sender_member_present=false`.
+	{
+		let sender_ssk = self
+			.services
+			.short
+			.get_shortstatekey(&StateEventType::RoomMember, incoming_pdu.sender().as_str())
+			.await
+			.ok();
+		let sender_member_present = sender_ssk
+			.as_ref()
+			.is_some_and(|ssk| state_at_incoming_event.contains_key(ssk));
+		info!(
+			target: "state_at_event_debug",
+			event_id = %incoming_pdu.event_id,
+			%room_id,
+			prev_events = incoming_pdu.prev_events().count(),
+			was_recovered = was_recovered,
+			state_size = state_at_incoming_event.len(),
+			?sender_ssk,
+			sender_member_present = sender_member_present,
+			"upgrade_outlier: state at event"
+		)
+	};
+
 	let room_version = to_room_version(&room_version_id);
 	debug!(
 		event_id = %incoming_pdu.event_id,

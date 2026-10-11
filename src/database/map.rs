@@ -427,16 +427,10 @@ impl Map {
 		&self,
 		prefix: &[u8],
 	) -> impl Stream<Item = Result<&'static [u8]>> + Send + 'static + use<> {
-		let prefix = prefix.to_owned();
-		let items = self
-			.raw_items(crate::util::IteratorMode::Start)
-			.map(|items| {
-				items
-					.into_iter()
-					.filter(|(key, _)| key.starts_with(&prefix))
-					.collect()
-			});
-		materialized(items).map(|item| item.map(|(key, _)| key))
+		// Seek to the prefix range; reading and leaking the whole map for every
+		// prefix query is both slow and a permanent memory cost (see
+		// `materialized`).
+		materialized(self.db.scan_prefix(self.name, prefix)).map(|item| item.map(|(key, _)| key))
 	}
 
 	pub fn keys_prefix_raw<P>(
@@ -477,16 +471,9 @@ impl Map {
 		&self,
 		prefix: &[u8],
 	) -> impl Stream<Item = Result<KeyVal<'static>>> + Send + 'static + use<> {
-		let prefix = prefix.to_owned();
-		let items = self
-			.raw_items(crate::util::IteratorMode::Start)
-			.map(|items| {
-				items
-					.into_iter()
-					.filter(|(key, _)| key.starts_with(&prefix))
-					.collect()
-			});
-		materialized(items)
+		// Seek to the prefix range; reading the whole map for every prefix query
+		// is slow, and `materialized` leaks everything it returns.
+		materialized(self.db.scan_prefix(self.name, prefix))
 	}
 
 	pub fn stream<'a, K, V>(
