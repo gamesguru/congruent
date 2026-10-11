@@ -71,7 +71,7 @@ jobs:
           rustup default nightly
           rustup component add rustfmt --toolchain nightly
           # .pre-commit-config.yaml's cargo-fmt hook pins this exact dated toolchain.
-          rustup toolchain install nightly-2026-08-20 --profile minimal --component rustfmt
+          rustup toolchain install nightly-2026-08-20 --profile minimal --component rustfmt --component llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -98,12 +98,13 @@ jobs:
           cargo test --quiet --package conduwuit_service --lib resolver::tests::test_dns_resolution_integration
 
       - name: Code Coverage
-        continue-on-error: true
         run: |
-          cargo +nightly llvm-cov --lib --all-features \
+          set -eo pipefail
+          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
             --codecov --output-path coverage.json
-          cargo +nightly llvm-cov --lib --all-features \
+          cargo +nightly-2026-08-20 llvm-cov --lib --all-features \
             --html --output-dir .coverage
+          test -s coverage.json
 
       - name: Upload Test Results
         if: always()
@@ -121,6 +122,7 @@ jobs:
           path: |
             coverage.json
             .coverage/
+          if-no-files-found: error
           retention-days: 30
 
       - name: Test Summary
