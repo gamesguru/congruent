@@ -680,7 +680,13 @@ bootstrap-crypto:
     #   2. MATRIX_JS_SDK_SOURCE env/.env entry (url#sha, kept for compatibility)
     #   3. the pinned GitLab fork commit
     sdk="{{ LOCAL_JS_SDK }}"
-    (cd complement-crypto-src && LOCAL_JS_SDK="$sdk" just bootstrap)
+    rust_sdk_dir="${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}"
+    if [ -n "$rust_sdk_dir" ]; then
+        # Resolve relative to the caller's repository root before changing into
+        # the complement-crypto submodule, which has a different working dir.
+        rust_sdk_dir="$(realpath "$rust_sdk_dir")"
+    fi
+    (cd complement-crypto-src && LOCAL_JS_SDK="$sdk" COMPLEMENT_CRYPTO_RUST_SDK_DIR="$rust_sdk_dir" just bootstrap)
 
 # Rebuild just the JS-SDK bundle complement-crypto embeds (a subset of
 # bootstrap-crypto); run it after changing the SDK pin.
