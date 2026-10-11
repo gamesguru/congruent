@@ -1,9 +1,6 @@
-use axum::{
-	body::Body,
-	extract::{Path, State},
-};
 use conduwuit::{Err, Result, err};
 use conduwuit_service::Services;
+use hyper::body::Incoming;
 use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::{
@@ -18,7 +15,13 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::{Ruma, router::authenticate_user};
+use crate::{
+	Ruma,
+	router::{
+		ApiError, authenticate_user,
+		extract::{Path, State},
+	},
+};
 
 /// # `PUT /_matrix/client/r0/user/{userId}/account_data/{type}`
 ///
@@ -124,8 +127,8 @@ pub(crate) async fn get_room_account_data_route(
 pub(crate) async fn delete_global_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, event_type)): Path<(String, String)>,
-	request: hyper::Request<Body>,
-) -> Result<axum::response::Response> {
+	request: hyper::Request<Incoming>,
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let sender_user =
@@ -133,7 +136,8 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 			.await?;
 
 	if sender_user != *user_id {
-		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
+		return Err!(Request(Forbidden("You cannot delete account data for other users.")))
+			.map_err(Into::into);
 	}
 
 	delete_account_data(&services, None, &user_id, &event_type).await?;
@@ -149,8 +153,8 @@ pub(crate) async fn delete_global_account_data_msc3391_route(
 pub(crate) async fn delete_room_account_data_msc3391_route(
 	State(services): State<crate::State>,
 	Path((user_id, room_id, event_type)): Path<(String, String, String)>,
-	request: hyper::Request<Body>,
-) -> Result<axum::response::Response> {
+	request: hyper::Request<Incoming>,
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	let user_id = OwnedUserId::parse(user_id)
 		.map_err(|_| err!(Request(InvalidParam("Invalid user ID."))))?;
 	let room_id = OwnedRoomId::parse(room_id)
@@ -160,7 +164,8 @@ pub(crate) async fn delete_room_account_data_msc3391_route(
 			.await?;
 
 	if sender_user != *user_id {
-		return Err!(Request(Forbidden("You cannot delete account data for other users.")));
+		return Err!(Request(Forbidden("You cannot delete account data for other users.")))
+			.map_err(Into::into);
 	}
 
 	delete_account_data(&services, Some(&room_id), &user_id, &event_type).await?;

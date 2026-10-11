@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, PduCount, Result, matrix::Event};
 use slipstream::{
 	EventId, MilliSecondsSinceUnixEpoch, OwnedEventId,
@@ -16,7 +14,10 @@ use slipstream::{
 	sswire::Raw,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/read_markers`
 ///

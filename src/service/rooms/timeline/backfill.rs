@@ -8,6 +8,7 @@ use std::{
 	},
 };
 
+use async_lock::Mutex;
 use conduwuit::{Err, Error, PduEvent, RoomVersion, matrix::pdu::RawJson as RawJsonValue};
 use conduwuit_core::{
 	Result, debug, debug_warn, err, error, implement, info,
@@ -41,7 +42,7 @@ const MAX_REMOTE_HISTORY_DEPTH: usize = 64;
 
 struct RemoteHistoryBudget {
 	remaining: AtomicUsize,
-	visited: tokio::sync::Mutex<HashSet<OwnedEventId>>,
+	visited: Mutex<HashSet<OwnedEventId>>,
 }
 
 impl RemoteHistoryBudget {
@@ -51,7 +52,7 @@ impl RemoteHistoryBudget {
 
 		Self {
 			remaining: AtomicUsize::new(limit),
-			visited: tokio::sync::Mutex::new(visited),
+			visited: Mutex::new(visited),
 		}
 	}
 
@@ -82,7 +83,6 @@ impl RemoteHistoryBudget {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "backfill", level = "trace", skip(self))]
 pub async fn backfill_if_required(
 	&self,
 	room_id: &RoomId,
@@ -625,7 +625,6 @@ fn topo_sort_backfill_batch(pdus: Vec<RawJsonValue>) -> Vec<RawJsonValue> {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "get_remote_pdu", level = "debug", skip(self))]
 pub async fn get_remote_pdu(&self, room_id: &RoomId, event_id: &EventId) -> Result<PduEvent> {
 	let budget =
 		Arc::new(RemoteHistoryBudget::new(MAX_REMOTE_HISTORY_DEPTH, event_id.to_owned()));
@@ -810,7 +809,6 @@ async fn materialize_remote_history_limited(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, pdu), level = "debug")]
 pub async fn backfill_pdu(
 	&self,
 	origin: &ServerName,

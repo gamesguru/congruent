@@ -59,7 +59,6 @@ impl Deref for Manager {
 
 /// Update the active configuration, returning prior configuration.
 #[implement(Manager)]
-#[tracing::instrument(skip_all, level = "info")]
 pub fn update(&self, config: Config) -> Result<Arc<Config>> {
 	let config = Arc::new(config);
 	let new = Arc::into_raw(config);
@@ -101,12 +100,6 @@ fn load(&self, handle: &mut [Option<Arc<Config>>]) -> &'static Arc<Config> {
 	unsafe { std::mem::transmute(config) }
 }
 
-#[tracing::instrument(
-	name = "miss",
-	level = "trace",
-	skip_all,
-	fields(%index, ?config)
-)]
 #[allow(clippy::transmute_ptr_to_ptr)]
 fn load_miss(
 	handle: &mut [Option<Arc<Config>>],

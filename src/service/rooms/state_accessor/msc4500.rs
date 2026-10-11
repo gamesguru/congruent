@@ -15,7 +15,10 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Pdu, RoomVersion, implement, matrix::Event};
 use futures::TryStreamExt;
-use rezzy::state::{LtHash, RedactionOverlay, ResolutionInputRecord, ResolutionInputs};
+use rezzy::{
+	incremental::LtHash,
+	state::{RedactionOverlay, ResolutionInputRecord, ResolutionInputs},
+};
 use slipstream::{
 	EventId, OwnedEventId, RoomVersionId,
 	codec::{Deserialize, Serialize},
@@ -166,12 +169,14 @@ pub async fn msc4500_redactions_through(
 	event_id: &EventId,
 	room_version: &RoomVersionId,
 ) -> Option<RedactionSet> {
-	if let Some(hit) = self.msc4500_memo.lock().through.get(event_id) {
+	let event_id = event_id.to_owned();
+	let room_version = room_version.clone();
+	if let Some(hit) = self.msc4500_memo.lock().through.get(&event_id) {
 		return Some(Arc::clone(hit));
 	}
 
 	let mut nodes: HashMap<OwnedEventId, DagNode> = HashMap::new();
-	let mut frontier: Vec<OwnedEventId> = vec![event_id.to_owned()];
+	let mut frontier: Vec<OwnedEventId> = vec![event_id.clone()];
 	while let Some(id) = frontier.pop() {
 		if nodes.contains_key(&id) || self.msc4500_memo.lock().through.contains_key(&id) {
 			continue;
@@ -181,7 +186,7 @@ pub async fn msc4500_redactions_through(
 		}
 		let pdu = self.services.timeline.get_pdu(&id).await.ok()?;
 		let redaction_of = if *pdu.kind() == TimelineEventType::RoomRedaction {
-			pdu.redacts_id(room_version)
+			pdu.redacts_id(&room_version)
 		} else {
 			None
 		};
@@ -194,7 +199,7 @@ pub async fn msc4500_redactions_through(
 	if memo.through.len() > MEMO_CAPACITY {
 		memo.through.clear();
 	}
-	fold_redaction_sets(event_id, &nodes, &mut memo.through)
+	fold_redaction_sets(&event_id, &nodes, &mut memo.through)
 }
 
 /// Whether `redaction` was authorized to redact `target` at the state that
@@ -301,7 +306,7 @@ async fn msc4500_redact_power(
 #[implement(super::Service)]
 pub async fn msc4500_point_digests(
 	&self,
-	root: &rezzy::hamt::RootHandle,
+	root: rezzy::hamt::RootHandle,
 	pdu: &Pdu,
 	include_self: bool,
 ) -> Option<PointDigests> {
@@ -309,7 +314,7 @@ pub async fn msc4500_point_digests(
 	let room_version = self.services.state.get_room_version(&room_id).await.ok()?;
 
 	let state: Vec<Pdu> = self
-		.state_full_pdus_hamt_strict(root.clone())
+		.state_full_pdus_hamt_strict(root)
 		.try_collect()
 		.await
 		.ok()?;
@@ -344,15 +349,15 @@ pub async fn msc4500_point_digests(
 		let Some(target) = by_id.get(target_id) else {
 			continue;
 		};
-		let redaction = if redaction_id == pdu.event_id() {
-			pdu.clone()
+		let effective = if redaction_id == pdu.event_id() {
+			self.msc4500_redaction_effective(pdu, target, &room_version)
+				.await?
 		} else {
-			self.services.timeline.get_pdu(redaction_id).await.ok()?
+			let redaction = self.services.timeline.get_pdu(redaction_id).await.ok()?;
+			self.msc4500_redaction_effective(&redaction, target, &room_version)
+				.await?
 		};
-		if self
-			.msc4500_redaction_effective(&redaction, target, &room_version)
-			.await?
-		{
+		if effective {
 			redacted.insert(target.event_id());
 		}
 	}
@@ -408,10 +413,8 @@ pub async fn msc4500_pdu_digests(&self, event_id: &EventId) -> Option<PduDigests
 	let after_root = self.pdu_roothandle_after_event(event_id).await.ok()?;
 	let before_root = self.msc4500_before_root(&pdu).await?;
 
-	let before = self
-		.msc4500_point_digests(&before_root, &pdu, false)
-		.await?;
-	let after = self.msc4500_point_digests(&after_root, &pdu, true).await?;
+	let before = self.msc4500_point_digests(before_root, &pdu, false).await?;
+	let after = self.msc4500_point_digests(after_root, &pdu, true).await?;
 
 	Some(PduDigests { before, after })
 }
@@ -784,7 +787,7 @@ mod wire_tests {
 	fn only_known_algorithms_are_validated() {
 		let with = |a: &str| StateHashes {
 			algorithm: a.into(),
-			entries: Default::default(),
+			entries: BTreeMap::default(),
 		};
 		assert!(with(ALGORITHM).is_known_algorithm());
 		assert!(with(ALGORITHM_WITH_INPUTS).is_known_algorithm());

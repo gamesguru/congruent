@@ -1,4 +1,3 @@
-use axum::{extract::State, response::IntoResponse};
 use conduwuit::{Error, Result};
 use slipstream::api::client::{
 	discovery::{
@@ -8,7 +7,10 @@ use slipstream::api::client::{
 	error::ErrorKind,
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State, response::IntoResponse},
+};
 
 /// # `GET /.well-known/matrix/client`
 ///
@@ -127,12 +129,12 @@ pub(crate) async fn well_known_support(
 /// Web as a non-standard health check.
 pub(crate) async fn syncv3_client_server_json(
 	State(services): State<crate::State>,
-) -> Result<impl IntoResponse> {
+) -> std::result::Result<impl IntoResponse, ApiError> {
 	let server_url = match services.config.well_known.client.as_ref() {
 		| Some(url) => url.to_string(),
 		| None => match services.config.well_known.server.as_ref() {
 			| Some(url) => url.to_string(),
-			| None => return Err(Error::BadRequest(ErrorKind::NotFound, "Not found.")),
+			| None => return Err(Error::BadRequest(ErrorKind::NotFound, "Not found.").into()),
 		},
 	};
 

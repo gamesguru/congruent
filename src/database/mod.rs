@@ -1,7 +1,7 @@
 #![type_length_limit = "3072"]
+#![allow(clippy::disallowed_macros)]
 
 extern crate conduwuit_core as conduwuit;
-pub extern crate rust_rocksdb as rocksdb;
 
 conduwuit_macros::introspect_crate! {}
 
@@ -13,16 +13,13 @@ mod benches;
 mod cork;
 pub mod dbkey;
 mod de;
-mod deprecated_maps;
 mod deserialized;
 mod engine;
 mod handle;
 pub mod keyval;
 mod map;
 pub mod maps;
-mod pool;
 mod ser;
-mod stream;
 #[cfg(test)]
 mod tests;
 pub(crate) mod util;
@@ -32,6 +29,7 @@ use std::{ops::Index, sync::Arc};
 
 use conduwuit::{Result, Server, err};
 
+pub(crate) use self::engine::Engine;
 pub use self::{
 	dbkey::from_json_slice,
 	de::{Ignore, IgnoreAll},
@@ -39,32 +37,24 @@ pub use self::{
 	handle::Handle,
 	keyval::{KeyVal, Slice, serialize_key, serialize_val},
 	map::{Batch, Get, Map, Qry, RecursiveGetOutput, compact},
-	ser::{Cbor, Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
-};
-pub(crate) use self::{
-	engine::{Engine, context::Context},
-	util::or_else,
+	ser::{Interfix, Json, SEP, Separator, serialize, serialize_to, serialize_to_vec},
 };
 use crate::maps::{Maps, MapsKey, MapsVal};
 
 pub struct Database {
 	maps: Maps,
 	pub db: Arc<Engine>,
-	pub(crate) _ctx: Arc<Context>,
 }
 
 impl Database {
 	/// Load an existing database or create a new one.
-	pub async fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
-		let ctx = Context::new(server)?;
-		let descriptors = maps::descriptors();
-		let db = Engine::open(ctx.clone(), &descriptors).await?;
-		Ok(Arc::new(Self {
-			maps: maps::open(&db)?,
-			db: db.clone(),
-			_ctx: ctx,
-		}))
+	pub fn open(server: &Arc<Server>) -> Result<Arc<Self>> {
+		let db = Arc::new(Engine::open(&server.config.database_path)?);
+		Ok(Arc::new(Self { maps: maps::open(&db), db }))
 	}
+
+	/// Logs cumulative write-path counters (commits, operations, commit time).
+	pub fn log_write_stats(&self) { self.db.log_stats(); }
 
 	#[inline]
 	pub fn get(&self, name: &str) -> Result<&Arc<Map>> {

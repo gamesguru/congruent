@@ -23,6 +23,7 @@ use slipstream::{
 use super::{PduId, RawPduId, backward_extremities};
 use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
+#[derive(Clone)]
 pub(super) struct Data {
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
@@ -37,6 +38,7 @@ pub(super) struct Data {
 	services: Services,
 }
 
+#[derive(Clone)]
 struct Services {
 	short: Dep<rooms::short::Service>,
 }
@@ -323,7 +325,7 @@ impl Data {
 				}
 			}
 			if all_event_ids.len().is_multiple_of(10000) {
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 
@@ -381,7 +383,7 @@ impl Data {
 					"collect_reorder_entries: processed {} events so far...",
 					entries.len()
 				);
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 			}
 		}
 
@@ -2112,7 +2114,7 @@ impl Data {
 
 	fn parse_topo_stream<'a>(
 		&'a self,
-		stream: impl Stream<Item = Result<KeyVal<'a>>> + Send + 'a,
+		stream: impl Stream<Item = Result<KeyVal<'static>>> + Send + 'a,
 		prefix: Vec<u8>,
 	) -> impl Stream<Item = Result<TopoIterItem>> + Send + 'a {
 		stream
@@ -2446,13 +2448,13 @@ impl Data {
 						};
 
 						if k.len() != 25 {
-							tracing::warn!("Invalid timestamp index key length: {}", k.len());
+							conduwuit::warn!("Invalid timestamp index key length: {}", k.len());
 							return None;
 						}
 
 						let variant = k[16];
 						if variant != 0 && variant != 1 {
-							tracing::warn!("Invalid timestamp index variant byte: {}", variant);
+							conduwuit::warn!("Invalid timestamp index variant byte: {}", variant);
 							return None;
 						}
 
@@ -2542,7 +2544,7 @@ mod tests {
 	/// Helper: build a RawPduId from (room, count).
 	fn make_pdu_id(room: u64, count: i64) -> RawPduId {
 		let shorteventid = if count >= 0 {
-			PduCount::Normal(count as u64)
+			PduCount::Normal(count.cast_unsigned())
 		} else {
 			PduCount::Backfilled(count)
 		};
@@ -2564,7 +2566,9 @@ mod tests {
 	/// The fork at C (depth=5) is the scenario that triggers max() inflation:
 	/// when paginating backward from E and hitting C's depth, the old code
 	/// would inflate the seek position.
-	fn build_forked_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+	type DagFixture = (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>);
+
+	fn build_forked_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -2815,7 +2819,11 @@ mod tests {
 
 			let seek_key = seek_from.map(|(token_depth, token_count)| {
 				let adjacent_depth = depth_by_count
-					.get(&(token_count - 1))
+					.get(
+						&(token_count
+							.checked_sub(1)
+							.expect("token count must be non-zero")),
+					)
 					.copied()
 					.unwrap_or(token_depth);
 
@@ -2943,7 +2951,7 @@ mod tests {
 	/// No events are missed because G has the highest depth.
 	///
 	/// But what if the remote branch has HIGHER depth than local?
-	fn build_partition_dag() -> (HashMap<String, LeanEvent>, Vec<(String, u64, i64)>) {
+	fn build_partition_dag() -> DagFixture {
 		let events: Vec<LeanEvent<String>> = vec![
 			LeanEvent {
 				event_id: "A".into(),
@@ -3114,9 +3122,9 @@ mod tests {
 
 		// Must not contain any post-sync events
 		assert!(
-			!all_events.contains(&"E".to_string())
-				&& !all_events.contains(&"F".to_string())
-				&& !all_events.contains(&"G".to_string()),
+			!all_events.contains(&"E".to_owned())
+				&& !all_events.contains(&"F".to_owned())
+				&& !all_events.contains(&"G".to_owned()),
 			"backward pagination must NOT return events after sync position (got {all_events:?})"
 		);
 
@@ -3199,7 +3207,7 @@ mod tests {
 		}
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_complex_walk() -> Result<()> {
 		// Test a messy timeline where timestamps don't always go up in order.
 		//
@@ -3235,7 +3243,7 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_large_sparse_gaps() -> Result<()> {
 		// Check we jump straight to the next event, not scan huge empty gaps.
 
@@ -3262,12 +3270,22 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
+	#[conduwuit_macros::async_test]
 	async fn test_pdus_by_timestamp_wild_jitter_staircase() -> Result<()> {
 		// Create 1000 events where the time generally goes up but sometimes jumps back
 		let timeline = (0..1000_u64).map(|i| {
 			let i_signed = i64::try_from(i).expect("test index fits in i64");
-			let ts = i_signed * 10 + (i_signed % 11) * 5 - (i_signed % 13) * 7;
+			let ts = i_signed
+				.checked_mul(10)
+				.and_then(|value| {
+					let jitter = (i_signed % 11).checked_mul(5)?;
+					value.checked_add(jitter)
+				})
+				.and_then(|value| {
+					let jitter = (i_signed % 13).checked_mul(7)?;
+					value.checked_sub(jitter)
+				})
+				.expect("test timestamp arithmetic overflow");
 			(u64::try_from(ts.max(0)).expect("test timestamp is non-negative"), i)
 		});
 

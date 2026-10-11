@@ -1,11 +1,10 @@
 use std::collections::{HashSet, VecDeque};
 
-use axum::extract::State;
 use conduwuit::{Err, Event, Result, debug, info, trace, utils::to_canonical_object, warn};
 use slipstream::{OwnedEventId, api::federation::event::get_missing_events, sswire::Raw};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// arbitrary number but synapse's is 20 and we can handle lots of these anyways
 const LIMIT_MAX: usize = 50;

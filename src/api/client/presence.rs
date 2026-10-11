@@ -1,10 +1,9 @@
 use std::time::Duration;
 
-use axum::extract::State;
 use conduwuit::{Err, Result};
 use slipstream::api::client::presence::{get_presence, set_presence};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `PUT /_matrix/client/r0/presence/{userId}/status`
 ///

@@ -1,14 +1,14 @@
 mod namespace_regex;
 mod registration_info;
 
-use std::{collections::BTreeMap, iter::IntoIterator, sync::Arc};
+use std::{collections::BTreeMap, iter::IntoIterator, path::Path, process::Command, sync::Arc};
 
+use async_lock::{RwLock, RwLockReadGuard};
 use async_trait::async_trait;
 use conduwuit::{Err, Result, err, utils::stream::IterStream};
 use database::Map;
-use futures::{Future, FutureExt, Stream, TryStreamExt};
+use futures::{Future, FutureExt, Stream, StreamExt, TryStreamExt};
 use slipstream::{RoomAliasId, RoomId, UserId, api::appservice::Registration};
-use tokio::sync::{RwLock, RwLockReadGuard};
 
 pub use self::{namespace_regex::NamespaceRegex, registration_info::RegistrationInfo};
 use crate::{Dep, globals, sending, users};
@@ -31,17 +31,55 @@ struct Data {
 
 type Registrations = BTreeMap<String, RegistrationInfo>;
 
-/// Parses an appservice registration from its YAML representation.
-pub fn registration_from_yaml(yaml: &str) -> Result<Registration> {
-	let value = serde_saphyr::from_str::<conduwuit::utils::SerdeValue>(yaml)?.0;
+/// Parses an appservice registration from its JSON representation.
+pub fn registration_from_json(json: &str) -> Result<Registration> {
+	let value = slipstream::canonical_json::from_json_str(json)
+		.map_err(|e| err!(Request(InvalidParam("Invalid appservice JSON: {e}"))))?;
 	slipstream::codec::from_value(&value)
 		.map_err(|e| err!(Request(InvalidParam("Invalid appservice registration: {e}"))))
 }
 
-/// Renders an appservice registration as YAML.
-pub fn registration_to_yaml(registration: &Registration) -> Result<String> {
+/// Arguments that make `yq` print its input as JSON.
+///
+/// Two incompatible `yq` programs exist. The Go one (mikefarah) needs
+/// `-o=json .`; the Python jq wrapper shipped by Debian/Ubuntu already prints
+/// JSON for `.` and rejects `-o`. They are told apart by `yq --version`.
+fn yq_json_args() -> Result<&'static [&'static str]> {
+	let version = Command::new("yq")
+		.arg("--version")
+		.output()
+		.map_err(|e| err!(Request(InvalidParam("Failed to execute yq: {e}"))))?;
+
+	let banner = String::from_utf8_lossy(&version.stdout);
+	Ok(if banner.contains("mikefarah") {
+		&["-o=json", "."]
+	} else {
+		&["."]
+	})
+}
+
+/// Converts an appservice YAML registration to JSON through the `yq`
+/// executable.
+fn registration_from_yaml(path: &Path) -> Result<String> {
+	let output = Command::new("yq")
+		.args(yq_json_args()?)
+		.arg(path)
+		.output()
+		.map_err(|e| err!(Request(InvalidParam("Failed to execute yq: {e}"))))?;
+
+	if !output.status.success() {
+		let error = String::from_utf8_lossy(&output.stderr);
+		return Err(err!(Request(InvalidParam("yq failed: {error}"))));
+	}
+
+	String::from_utf8(output.stdout)
+		.map_err(|e| err!(Request(InvalidParam("yq returned invalid UTF-8: {e}"))))
+}
+
+/// Renders an appservice registration as JSON.
+pub fn registration_to_json(registration: &Registration) -> Result<String> {
 	let value = slipstream::codec::to_value(registration);
-	Ok(serde_saphyr::to_string(&conduwuit::utils::SerdeValueRef(&value))?)
+	Ok(slipstream::codec::to_string(&value))
 }
 
 #[async_trait]
@@ -60,36 +98,47 @@ impl crate::Service for Service {
 		}))
 	}
 
-	async fn worker(self: Arc<Self>) -> Result {
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+impl Service {
+	/// Loads registrations and starts appservices. Awaited by
+	/// `Services::start` before listeners accept requests, so appservice
+	/// tokens are known from the first request.
+	pub async fn initialize(&self) -> Result {
 		// In Complement tests, dynamically register appservices placed in
 		// `/complement/appservice/`
-		if std::path::Path::new("/complement/appservice").is_dir() {
-			match tokio::fs::read_dir("/complement/appservice").await {
-				| Err(e) => {
-					conduwuit::error!(
+		if Path::new("/complement/appservice").is_dir() {
+			match async_fs::read_dir("/complement/appservice").await {
+				| Err(e) =>
+					return Err!(Database(
 						"Failed to read appservice directory /complement/appservice: {e:?}"
-					);
-				},
+					)),
 				| Ok(mut entries) =>
-					while let Ok(Some(entry)) = entries.next_entry().await {
+					while let Some(Ok(entry)) = entries.next().await {
 						let path = entry.path();
-						if path
+						let is_yaml = path
 							.extension()
-							.is_some_and(|ext| ext == "yaml" || ext == "yml")
-						{
-							match tokio::fs::read_to_string(&path).await {
-								| Err(e) => {
-									conduwuit::error!(
-										"Failed to read appservice file {path:?}: {e:?}"
-									);
-								},
-								| Ok(content) => match registration_from_yaml(&content) {
-									| Err(e) => {
-										conduwuit::error!(
-											"Failed to parse appservice YAML from {path:?}: \
-											 {e:?}"
-										);
-									},
+							.is_some_and(|ext| ext == "yaml" || ext == "yml");
+						if is_yaml || path.extension().is_some_and(|ext| ext == "json") {
+							let content = if is_yaml {
+								registration_from_yaml(&path)
+							} else {
+								async_fs::read_to_string(&path).await.map_err(|e| {
+									err!(Database("Failed to read appservice file: {e}"))
+								})
+							};
+							match content {
+								| Err(e) =>
+									return Err!(Database(
+										"Failed to load appservice file {path:?}: {e:?}"
+									)),
+								| Ok(content) => match registration_from_json(&content) {
+									| Err(e) =>
+										return Err!(Database(
+											"Failed to parse appservice registration from \
+											 {path:?}: {e:?}"
+										)),
 									| Ok(registration) => {
 										self.db
 											.id_appserviceregistrations
@@ -121,6 +170,7 @@ impl crate::Service for Service {
 			}
 		}
 
+		let count = appservices.len();
 		// Process each appservice
 		for (id, registration) in appservices {
 			// During startup, resolve any token collisions in favour of appservices
@@ -149,13 +199,11 @@ impl crate::Service for Service {
 			self.start_appservice(id, registration).await?;
 		}
 
+		conduwuit::info!("Initialized {count} appservices");
+
 		Ok(())
 	}
 
-	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
-}
-
-impl Service {
 	/// Starts an appservice, ensuring its sender_localpart user exists and is
 	/// active. Creates the user if it doesn't exist, or reactivates it if it
 	/// was deactivated. Then registers the appservice in memory for request
@@ -330,7 +378,7 @@ impl Service {
 			.id_appserviceregistrations
 			.get(id)
 			.await
-			.and_then(|ref bytes| registration_from_yaml(&String::from_utf8_lossy(bytes)))
+			.and_then(|ref bytes| registration_from_json(&String::from_utf8_lossy(bytes)))
 			.map_err(|e| {
 				self.db.id_appserviceregistrations.remove(id);
 				err!(Database("Invalid appservice {id:?} registration: {e:?}. Removed."))

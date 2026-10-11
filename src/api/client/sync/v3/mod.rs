@@ -7,8 +7,6 @@ use std::{
 	time::Duration,
 };
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Result, at, extract_variant,
 	matrix::pdu::PduCount,
@@ -53,6 +51,7 @@ use crate::{
 		sync::v3::{joined::load_joined_room, left::load_left_room},
 	},
 	json_util::{empty_events, single_field},
+	router::extract::{ClientIp, State},
 };
 
 /// The default maximum number of events to return in the `timeline` key of
@@ -299,20 +298,12 @@ type PresenceUpdates = HashMap<OwnedUserId, PresenceEventContent>;
 /// For left rooms:
 /// - If the user left after `since`: `prev_batch` token, empty state (TODO:
 ///   subset of the state at the point of the leave)
-#[tracing::instrument(
-	name = "sync",
-	level = "debug",
-	skip_all,
-	fields(
-		since = %body.body.since.as_deref().unwrap_or_default(),
-    )
-)]
 pub(crate) async fn sync_events_route(
 	State(services): State<crate::State>,
 	ClientIp(client_ip): ClientIp,
-	axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
+	crate::router::extract::RawQuery(raw_query): crate::router::extract::RawQuery,
 	body: Ruma<sync_events::v3::Request>,
-) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
+) -> Result<crate::router::response::Response, RumaResponse<UiaaResponse>> {
 	let timer = std::time::Instant::now();
 	let (sender_user, sender_device) = body.sender();
 
@@ -378,7 +369,7 @@ pub(crate) async fn sync_events_route(
 			let mut watcher = watcher;
 			while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
 			{
-				if tokio::time::timeout(remaining, watcher).await.is_err() {
+				if conduwuit::timeout(remaining, watcher).await.is_err() {
 					break;
 				}
 
@@ -552,7 +543,12 @@ pub(crate) async fn build_sync_events(
 ) -> Result<slipstream::json::Value, RumaResponse<UiaaResponse>> {
 	let (syncing_user, syncing_device) = body.sender();
 
-	let current_count = services.globals.current_count()?;
+	// Wait out in-flight receipt/device-key writers so every count <= the batch
+	// token is visible to the scans below (see `globals::Service::edu_barrier`).
+	let current_count = {
+		let _barrier = services.globals.edu_barrier.write().await;
+		services.globals.current_count()?
+	};
 
 	// the `since` token is the last sync end count stringified
 	let last_sync_end_count = body
@@ -762,7 +758,7 @@ pub(crate) async fn build_sync_events(
 				},
 			};
 
-			tracing::info!(
+			conduwuit::info!(
 				target: "knock_debug",
 				"get_knock_count for room_id={} user_id={} returned {:?} last_sync_end_count={:?}",
 				room_id, syncing_user, knock_count, last_sync_end_count
@@ -1009,7 +1005,7 @@ pub(crate) async fn build_sync_events(
 	// cases. Re-inject the computed payload so /sync cannot lose a one-shot
 	// device-list update between internal assembly and the final JSON body.
 	if let Some(device_lists_json) = device_lists_json {
-		tracing::info!(
+		conduwuit::info!(
 			changed = device_lists_json
 				.get("changed")
 				.and_then(|v| v.as_array())
@@ -1121,7 +1117,6 @@ pub(crate) async fn build_sync_events(
 ///
 /// Presence is only fetched for users not already in `presence_updates` and
 /// excludes the syncing user themselves.
-#[tracing::instrument(name = "member_presence", level = "debug", skip_all)]
 async fn collect_member_presence(
 	services: &Services,
 	syncing_user: &UserId,
@@ -1256,7 +1251,6 @@ fn collect_timeline_join_users(
 	}
 }
 
-#[tracing::instrument(name = "presence", level = "debug", skip_all)]
 async fn process_presence_updates(
 	services: &Services,
 	last_sync_end_count: Option<u64>,

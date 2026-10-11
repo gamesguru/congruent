@@ -4,11 +4,11 @@ use std::{
 	sync::Arc,
 };
 
+use async_lock::Mutex;
 use conduwuit::{
 	Err, Error, Result, err, error, utils,
 	utils::{hash, response::LimitReadExt},
 };
-use lettre::Address;
 use slipstream::{
 	UserId,
 	api::client::{
@@ -19,7 +19,6 @@ use slipstream::{
 		},
 	},
 };
-use tokio::sync::Mutex;
 
 use crate::{Dep, client, config, globals, registration_tokens, threepid, users};
 
@@ -59,12 +58,17 @@ impl crate::Service for Service {
 impl Service {
 	/// Verify a reCAPTCHA v3 response token against Google's `siteverify` endpoint.
 	async fn verify_recaptcha(&self, private_site_key: &str, response: &str) -> Result<()> {
+		let form = url::form_urlencoded::Serializer::new(String::new())
+			.append_pair("secret", private_site_key)
+			.append_pair("response", response)
+			.finish();
 		let response = self
 			.services
 			.client
 			.default
 			.post(RECAPTCHA_SITEVERIFY_URL)
-			.form(&[("secret", private_site_key), ("response", response)])
+			.header(http::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+			.body(form)
 			.send()
 			.await?;
 
@@ -124,7 +128,7 @@ pub struct Identity {
 	/// - The user completed a m.login.email.identity stage
 	/// - The user completed a m.login.password stage, and their user ID has an
 	///   associated email
-	pub email: Option<Address>,
+	pub email: Option<String>,
 }
 
 macro_rules! identity_update_fn {
@@ -148,7 +152,7 @@ macro_rules! identity_update_fn {
 impl Identity {
 	identity_update_fn!(fn try_set_localpart(localpart: String) else "User ID mismatch");
 
-	identity_update_fn!(fn try_set_email(email: Address) else "Email mismatch");
+	identity_update_fn!(fn try_set_email(email: String) else "Email mismatch");
 
 	/// Create an Identity with the localpart of the provided user ID
 	/// and all other fields set to None.
@@ -406,12 +410,13 @@ impl Service {
 				let user_id_or_localpart = match identifier {
 					| Some(UserIdentifier::UserIdOrLocalpart(username)) => username.to_owned(),
 					| Some(UserIdentifier::Email { address }) => {
-						let Ok(email) = Address::try_from(address.to_owned()) else {
+						let email = address.to_owned();
+						if !email.contains('@') {
 							return Err(StandardErrorBody {
 								kind: ErrorKind::InvalidParam,
 								message: "Email is malformed".to_owned(),
 							});
-						};
+						}
 
 						if let Some(localpart) =
 							self.services.threepid.get_localpart_for_email(&email).await

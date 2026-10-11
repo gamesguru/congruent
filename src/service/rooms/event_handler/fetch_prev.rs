@@ -19,7 +19,6 @@ use slipstream::{
 use super::check_room_id;
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all, fields(%origin))]
 #[allow(clippy::type_complexity)]
 pub(super) async fn fetch_prev<'a, Events>(
 	&self,
@@ -118,7 +117,7 @@ where
 		active.push(async move {
 			let t = Instant::now();
 			let latest_events = vec![latest_event_owned];
-			let deadline = tokio::time::Instant::now()
+			let deadline = Instant::now()
 				.checked_add(Duration::from_secs(self.services.server.config.fetch_prev_timeout))
 				.expect("deadline should not overflow");
 			info!(
@@ -136,12 +135,12 @@ where
 						limit: 50_u32.into(),
 						min_depth: 0_u32.into(),
 					};
-					let res = tokio::time::timeout_at(
+					let res = Box::pin(conduwuit::timeout_at(
 						deadline,
 						self.services
 							.sending
 							.send_federation_request(&server, request),
-					)
+					))
 					.await;
 
 					match &res {
@@ -194,7 +193,7 @@ where
 						direction: Some("up".to_owned()),
 						batch: None,
 					};
-					match tokio::time::timeout(
+					match conduwuit::timeout(
 						Duration::from_secs(10),
 						self.services
 							.sending
@@ -241,12 +240,32 @@ where
 
 	let mut unknown_events = Vec::new();
 	let mut had_invalid_response = false;
+	let response_count = missing_events.len();
+	let mut known_count = 0_usize;
+	let mut response_graph = HashMap::new();
+	let mut response_entries = HashMap::new();
 	for raw_json in missing_events {
 		match conduwuit::matrix::event::gen_event_id_canonical_json(&raw_json, &room_version_id) {
-			| Ok((eid, val)) =>
-				if !self.services.timeline.pdu_exists(&eid).await {
+			| Ok((eid, val)) => {
+				// Keep the response topology even when another task persisted this
+				// event while the response was in flight. We must not reprocess a
+				// known event, but its prev_event is still the correct /state_ids
+				// anchor for the incoming event.
+				if let Ok(pdu) = PduEvent::from_id_val(&eid, val.clone(), Some(room_id))
+					&& check_room_id(room_id, &pdu).is_ok()
+				{
+					response_graph
+						.insert(eid.clone(), pdu.prev_events().map(ToOwned::to_owned).collect());
+					response_entries
+						.insert(eid.clone(), (0_u64.into(), pdu.depth(), pdu.origin_server_ts));
+				}
+
+				if self.services.timeline.pdu_exists(&eid).await {
+					known_count = known_count.saturating_add(1);
+				} else {
 					unknown_events.push((eid, val));
-				},
+				}
+			},
 			| Err(_) => {
 				// The remote server actually answered, but the returned event is
 				// structurally invalid (e.g. contains a float, per the Matrix
@@ -263,6 +282,7 @@ where
 	// the full `PduEvent` (which owns its own copy of the event content,
 	// separate from `val`) is dropped here rather than being kept alive in
 	// an extra map until the end of the function.
+	let unknown_len = unknown_events.len();
 	let candidate_entries: Vec<(
 		OwnedEventId,
 		slipstream::CanonicalJsonObject,
@@ -310,6 +330,7 @@ where
 		.collect()
 		.await;
 
+	let unparsable = unknown_len.saturating_sub(candidate_entries.len());
 	let mut candidate_events = HashMap::with_capacity(candidate_entries.len());
 	let mut graph = HashMap::with_capacity(candidate_entries.len());
 	let mut entries = HashMap::with_capacity(candidate_entries.len());
@@ -319,7 +340,16 @@ where
 		candidate_events.insert(eid, val);
 	}
 	let sorted_eids = conduwuit::utils::timeline_sorter::sort_timeline_events(&entries, &graph);
-	let deep_anchor = deep_state_ids_anchor(&sorted_eids, &graph);
+	let response_sorted = conduwuit::utils::timeline_sorter::sort_timeline_events(
+		&response_entries,
+		&response_graph,
+	);
+	let deep_anchor = deep_state_ids_anchor(&response_sorted, &response_graph);
+	info!(
+		"fetch_prev {room_id}: response_events={response_count} already_known={known_count} \
+		 unparseable={unparsable} candidates={} deep_anchor={deep_anchor:?}",
+		candidate_events.len()
+	);
 
 	Ok((sorted_eids, candidate_events, deep_anchor, had_invalid_response))
 }
@@ -353,18 +383,18 @@ mod tests {
 
 	#[test]
 	fn deep_anchor_uses_last_candidates_single_prev() {
-		let gme = event_id!("$gme:test").to_owned();
-		let state_ids = event_id!("$state_ids:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let state_ids = event_id!("$state_ids:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
-		graph.insert(gme, [state_ids.clone()].into_iter().collect());
+		graph.insert(gme, std::iter::once(state_ids.clone()).collect());
 
 		assert_eq!(deep_state_ids_anchor(&sorted, &graph), Some(state_ids));
 	}
 
 	#[test]
 	fn deep_anchor_none_when_last_candidate_has_no_prevs() {
-		let gme = event_id!("$gme:test").to_owned();
+		let gme = event_id!("$gme:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
 		graph.insert(gme, HashSet::new());
@@ -374,9 +404,9 @@ mod tests {
 
 	#[test]
 	fn deep_anchor_none_when_last_candidate_has_multiple_prevs() {
-		let gme = event_id!("$gme:test").to_owned();
-		let a = event_id!("$a:test").to_owned();
-		let b = event_id!("$b:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let a = event_id!("$a:test");
+		let b = event_id!("$b:test");
 		let sorted = vec![gme.clone()];
 		let mut graph = HashMap::new();
 		graph.insert(gme, [a, b].into_iter().collect());
@@ -388,13 +418,13 @@ mod tests {
 	fn deep_anchor_none_when_single_prev_is_itself_a_candidate() {
 		// A multi-hop /get_missing_events response: both `gme` and its own
 		// single prev `state_ids` were fetched together in this batch.
-		let gme = event_id!("$gme:test").to_owned();
-		let state_ids = event_id!("$state_ids:test").to_owned();
-		let external = event_id!("$external:test").to_owned();
+		let gme = event_id!("$gme:test");
+		let state_ids = event_id!("$state_ids:test");
+		let external = event_id!("$external:test");
 		let sorted = vec![state_ids.clone(), gme.clone()];
 		let mut graph = HashMap::new();
-		graph.insert(gme, [state_ids.clone()].into_iter().collect());
-		graph.insert(state_ids, [external].into_iter().collect());
+		graph.insert(gme, std::iter::once(state_ids.clone()).collect());
+		graph.insert(state_ids, std::iter::once(external).collect());
 
 		assert_eq!(deep_state_ids_anchor(&sorted, &graph), None);
 	}

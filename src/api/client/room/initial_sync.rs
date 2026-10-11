@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, Result, at, debug_warn,
 	utils::{BoolExt, stream::TryTools},
@@ -6,7 +5,7 @@ use conduwuit::{
 use futures::{FutureExt, TryStreamExt, future::try_join4};
 use slipstream::api::client::room::initial_sync::v3::{PaginationChunk, Request, Response};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 const LIMIT_MAX: usize = 100;
 

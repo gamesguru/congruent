@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use conduwuit::{Event, Result, debug, info, utils::ReadyExt, warn};
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, pin_mut};
 use slipstream::OwnedServerName;
 
 use crate::service::Dep;
@@ -72,11 +72,10 @@ impl Service {
 			return Ok(());
 		}
 
-		let mut interval = tokio::time::interval(Duration::from_secs(sweep_interval));
-		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		let mut interval = async_io::Timer::interval(Duration::from_secs(sweep_interval));
 		let mut shutdown = self.services.server.signal.subscribe();
 		// consume the immediate first tick so we don't double-scan on startup
-		interval.tick().await;
+		interval.next().await;
 
 		// --- Periodic HAMT node reclamation ---
 		// A dedicated task rather than another arm on the forward-fill tick, so
@@ -95,17 +94,19 @@ impl Service {
 			// Clone the handle so it does not keep `server` borrowed while the
 			// task below moves it.
 			let runtime = server.runtime().clone();
-			runtime.spawn(async move {
+			drop(runtime.spawn(async move {
 				let mut interval =
-					tokio::time::interval(Duration::from_secs(node_sweep_interval));
-				interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+					async_io::Timer::interval(Duration::from_secs(node_sweep_interval));
 				// consume the immediate first tick so we don't sweep on startup
-				interval.tick().await;
+				interval.next().await;
 
 				loop {
-					tokio::select! {
-						_ = interval.tick() => {},
-						_ = shutdown.recv() => {},
+					let tick = interval.next();
+					let signal = shutdown.recv();
+					pin_mut!(tick, signal);
+					futures::select_biased! {
+						_ = tick.fuse() => {},
+						_ = signal.fuse() => {},
 					}
 
 					if !server.running() {
@@ -114,13 +115,16 @@ impl Service {
 
 					Self::sweep_state_hamt_nodes(&state, delete).await;
 				}
-			});
+			}));
 		}
 
 		loop {
-			tokio::select! {
-				_ = interval.tick() => {},
-				_ = shutdown.recv() => {},
+			let tick = interval.next();
+			let signal = shutdown.recv();
+			pin_mut!(tick, signal);
+			futures::select_biased! {
+				_ = tick.fuse() => {},
+				_ = signal.fuse() => {},
 			}
 
 			if !self.services.server.running() {
@@ -214,8 +218,8 @@ impl Service {
 
 				// Yield to the executor between rooms to prevent starving
 				// client requests on low-memory boxes.
-				tokio::task::yield_now().await;
-				tokio::time::sleep(Duration::from_millis(50)).await;
+				smol::future::yield_now().await;
+				smol::Timer::after(Duration::from_millis(50)).await;
 			})
 			.await;
 	}

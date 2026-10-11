@@ -1,6 +1,7 @@
+use std::time::Duration;
+
 use conduwuit::{Err, Result, debug, debug_info, error, implement, info};
 use slipstream::events::room::message::RoomMessageEventContent;
-use tokio::time::{Duration, sleep};
 
 use crate::admin::InvocationSource;
 
@@ -14,7 +15,7 @@ pub(super) async fn console_auto_start(&self) {
 		self.console.start_listener().await;
 		if self.services.server.config.admin_console_automatic {
 			// Allow more of the startup sequence to execute before spawning
-			tokio::task::yield_now().await;
+			smol::Timer::after(Duration::ZERO).await;
 			self.console.start();
 		}
 	}
@@ -40,7 +41,7 @@ pub async fn startup_execute(&self) -> Result {
 	let errors = !smoketest && self.services.server.config.admin_execute_errors_ignore;
 
 	//TODO: remove this after run-states are broadcast
-	sleep(Duration::from_millis(500)).await;
+	smol::Timer::after(Duration::from_millis(500)).await;
 
 	for (i, command) in commands.iter().enumerate() {
 		if let Err(e) = self.execute_command(i, command.clone()).await {
@@ -49,7 +50,7 @@ pub async fn startup_execute(&self) -> Result {
 			}
 		}
 
-		tokio::task::yield_now().await;
+		smol::Timer::after(Duration::ZERO).await;
 	}
 
 	if !smoketest
@@ -95,7 +96,7 @@ pub(super) async fn signal_execute(&self) -> Result {
 			}
 		}
 
-		tokio::task::yield_now().await;
+		smol::Timer::after(Duration::ZERO).await;
 	}
 
 	Ok(())

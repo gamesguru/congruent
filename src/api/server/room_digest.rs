@@ -1,9 +1,10 @@
-use axum::extract::State;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use conduwuit::{Err, Result, err, info, utils::math::usize_from_f64};
 use futures::StreamExt;
 use slipstream::OwnedEventId;
 use xxhash_rust::xxh3;
+
+use crate::router::{ApiError, extract::State};
 
 /// Default active window: the W most recent events by topological depth.
 const DEFAULT_WINDOW: usize = 5000;
@@ -81,8 +82,8 @@ fn compute_etag(extremities: &mut [OwnedEventId], event_count: u64) -> String {
 /// Part of MSC0F01: Gossip-Based Federation Room Reconciliation.
 pub(crate) async fn get_room_digest_route(
 	State(services): State<crate::State>,
-	axum::extract::Path(room_id_str): axum::extract::Path<String>,
-) -> Result<impl axum::response::IntoResponse> {
+	crate::router::extract::Path(room_id_str): crate::router::extract::Path<String>,
+) -> std::result::Result<impl crate::router::response::IntoResponse, ApiError> {
 	let room_id = slipstream::OwnedRoomId::parse(room_id_str)
 		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
 
@@ -93,7 +94,8 @@ pub(crate) async fn get_room_digest_route(
 		.server_is_participant(services.globals.server_name(), &room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("This server is not participating in that room.")));
+		return Err!(Request(Forbidden("This server is not participating in that room.")))
+			.map_err(Into::into);
 	}
 
 	// Collect forward extremities

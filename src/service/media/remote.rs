@@ -102,14 +102,13 @@ fn should_fallback_to_unauthenticated(
 				|| matches!(
 					error.status_code(),
 					StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT
-				)
-				|| matches!(
-					error,
-					Error::Reqwest(_)
-						| Error::Federation(_, _)
-						| Error::FederationTimeout(_)
-						| Error::FederationConnection(_)
-				),
+				) || matches!(
+				error,
+				Error::HttpClient(_)
+					| Error::Federation(_, _)
+					| Error::FederationTimeout(_)
+					| Error::FederationConnection(_)
+			),
 		| _ => false,
 	}
 }
@@ -292,7 +291,7 @@ async fn handle_location(
 ) -> Result<FileMeta> {
 	self.location_request(location).await.map_err(|error| {
 		err!(Request(NotFound(
-			debug_warn!(%mxc, user = user.map(tracing::field::display), ?location, ?error, "Fetching media from location failed")
+			debug_warn!(%mxc, user, ?location, ?error, "Fetching media from location failed")
 		)))
 	})
 }

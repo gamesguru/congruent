@@ -220,7 +220,6 @@ impl Service {
 	/// 0. Optionally overwrites the stored forward extremities if `update_db`
 	///    is true.
 	/// Returns true if the extremities were changed (or would be changed).
-	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn recalculate_extremities(
 		&self,
 		room_id: &slipstream::RoomId,
@@ -493,8 +492,8 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_00_single_tip() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
 
@@ -506,9 +505,9 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_01_fork() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -522,10 +521,10 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_02_diamond() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
-		let d = event_id!("$d").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
+		let d = event_id!("$d");
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -540,10 +539,10 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_03_islands() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let x = event_id!("$x").to_owned();
-		let y = event_id!("$y").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let x = event_id!("$x");
+		let y = event_id!("$y");
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -561,8 +560,8 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_04_missing_parents() {
-		let a = event_id!("$a").to_owned();
-		let z = event_id!("$z").to_owned(); // not in sorted, but referenced
+		let a = event_id!("$a");
+		let z = event_id!("$z"); // not in sorted, but referenced
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		graph.insert(a.clone(), vec![z].into_iter().collect());
@@ -575,8 +574,8 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_05_missing_from_graph() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		// Graph only knows about A's parents (none). B is omitted from the map
@@ -597,8 +596,8 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_06_cycle_fallback() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -616,7 +615,7 @@ mod tests {
 	fn test_calculate_true_extremities_07_no_cap() {
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		let mut sorted = Vec::new();
-		let root = event_id!("$root").to_owned();
+		let root = event_id!("$root");
 		sorted.push(root.clone());
 
 		for i in 0..25 {
@@ -643,10 +642,10 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_09_extraneous_graph_data() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let old = event_id!("$old").to_owned();
-		let older = event_id!("$older").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let old = event_id!("$old");
+		let older = event_id!("$older");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
@@ -663,9 +662,9 @@ mod tests {
 
 	#[test]
 	fn test_calculate_true_extremities_10_out_of_order() {
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
@@ -688,9 +687,9 @@ mod tests {
 	#[test]
 	fn test_phantom_11_no_drift_linear() {
 		// Linear chain A -> B -> C, stored extremity is C (correct)
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a].into_iter().collect());
@@ -704,9 +703,9 @@ mod tests {
 	#[test]
 	fn test_phantom_12_real_drift() {
 		// Linear chain A -> B -> C, but stored extremity is A (has children)
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -720,9 +719,9 @@ mod tests {
 	#[test]
 	fn test_phantom_13_out_of_window_tolerated() {
 		// Window only has B -> C, but stored extremity includes $old (outside window)
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
-		let old = event_id!("$old").to_owned();
+		let b = event_id!("$b");
+		let c = event_id!("$c");
+		let old = event_id!("$old");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(c.clone(), vec![b].into_iter().collect());
@@ -736,7 +735,7 @@ mod tests {
 	#[test]
 	fn test_phantom_14_capped_subset_ok() {
 		// 25 fork tips from a root, but stored set is capped to 10
-		let root = event_id!("$root").to_owned();
+		let root = event_id!("$root");
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 
 		let mut all_tips = Vec::new();
@@ -755,9 +754,9 @@ mod tests {
 	#[test]
 	fn test_phantom_15_mixed_valid_and_phantom() {
 		// A -> B -> C, stored = {A, C}. A is phantom (has child B), C is valid.
-		let a = event_id!("$a").to_owned();
-		let b = event_id!("$b").to_owned();
-		let c = event_id!("$c").to_owned();
+		let a = event_id!("$a");
+		let b = event_id!("$b");
+		let c = event_id!("$c");
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
 		graph.insert(b.clone(), vec![a.clone()].into_iter().collect());
@@ -772,10 +771,10 @@ mod tests {
 
 	#[test]
 	fn test_merge_true_extremities() {
-		let e1 = event_id!("$1").to_owned();
-		let e2 = event_id!("$2").to_owned();
-		let e3 = event_id!("$3").to_owned();
-		let e4 = event_id!("$4").to_owned();
+		let e1 = event_id!("$1");
+		let e2 = event_id!("$2");
+		let e3 = event_id!("$3");
+		let e4 = event_id!("$4");
 
 		// newly discovered true extremity
 		let true_exts = vec![&e1];
@@ -801,9 +800,9 @@ mod tests {
 
 	#[test]
 	fn test_merge_recalculated_extremities_drops_accepted_graph_stale_leaf() {
-		let stale_leaf = event_id!("$stale").to_owned();
-		let child_tip = event_id!("$child").to_owned();
-		let out_of_graph = event_id!("$outlier").to_owned();
+		let stale_leaf = event_id!("$stale");
+		let child_tip = event_id!("$child");
+		let out_of_graph = event_id!("$outlier");
 
 		let true_extremities: HashSet<OwnedEventId> =
 			vec![child_tip.clone()].into_iter().collect();
@@ -855,26 +854,18 @@ mod tests {
 			.map(|(event, parents)| (event, parents.into_iter().collect()))
 			.collect();
 
-		assert_eq!(parents_by_event.get(&root).unwrap().len(), 0);
+		assert_eq!(parents_by_event[&root].len(), 0);
 		assert!(
-			parents_by_event.get(&accepted_tip).unwrap().contains(&root),
+			parents_by_event[&accepted_tip].contains(&root),
 			"accepted child beyond rejected/soft-failed events should retire the older root"
 		);
-		assert!(
-			parents_by_event
-				.get(&accepted_sibling)
-				.unwrap()
-				.contains(&root)
-		);
+		assert!(parents_by_event[&accepted_sibling].contains(&root));
 		assert!(
 			!parents_by_event.contains_key(&rejected),
 			"rejected/soft-failed events must not become recalculated tips"
 		);
 		assert!(
-			!parents_by_event
-				.get(&accepted_after_outlier)
-				.unwrap()
-				.contains(&root),
+			!parents_by_event[&accepted_after_outlier].contains(&root),
 			"outliers must not bridge an accepted event back to an older root"
 		);
 	}
@@ -924,7 +915,7 @@ mod tests {
 			HashSet::from([rejected_a, soft_failed_a, rejected_only_child]);
 
 		let graph = accepted_extremity_graph(&raw_edges, &accepted_events, &bridge_events);
-		let tips = rezzy::state::at::find_forward_extremities_roaring(graph.clone());
+		let tips = rezzy::state::at::find_forward_extremities_roaring(graph);
 		let tips: HashSet<ShortEventId> = tips.into_iter().collect();
 
 		assert!(tips.contains(&merge_tip));
@@ -949,23 +940,23 @@ mod tests {
 		);
 
 		let current_event_ids = HashSet::from([
-			event_id!("$fork_a").to_owned(),
-			event_id!("$fork_b").to_owned(),
-			event_id!("$merge_tip").to_owned(),
-			event_id!("$accepted_after_outlier").to_owned(),
-			event_id!("$external_tip").to_owned(),
+			event_id!("$fork_a"),
+			event_id!("$fork_b"),
+			event_id!("$merge_tip"),
+			event_id!("$accepted_after_outlier"),
+			event_id!("$external_tip"),
 		]);
 		let true_extremities = HashSet::from([
-			event_id!("$merge_tip").to_owned(),
-			event_id!("$accepted_after_outlier").to_owned(),
-			event_id!("$accepted_after_rejected_only_child").to_owned(),
+			event_id!("$merge_tip"),
+			event_id!("$accepted_after_outlier"),
+			event_id!("$accepted_after_rejected_only_child"),
 		]);
 		let current_extremities = vec![
-			(event_id!("$fork_a").to_owned(), Some(fork_a)),
-			(event_id!("$fork_b").to_owned(), Some(fork_b)),
-			(event_id!("$merge_tip").to_owned(), Some(merge_tip)),
-			(event_id!("$accepted_after_outlier").to_owned(), Some(accepted_after_outlier)),
-			(event_id!("$external_tip").to_owned(), None),
+			(event_id!("$fork_a"), Some(fork_a)),
+			(event_id!("$fork_b"), Some(fork_b)),
+			(event_id!("$merge_tip"), Some(merge_tip)),
+			(event_id!("$accepted_after_outlier"), Some(accepted_after_outlier)),
+			(event_id!("$external_tip"), None),
 		];
 
 		let merged = merge_recalculated_extremities(
@@ -974,13 +965,13 @@ mod tests {
 			current_extremities,
 		);
 
-		assert!(!merged.contains(&event_id!("$fork_a").to_owned()));
-		assert!(!merged.contains(&event_id!("$fork_b").to_owned()));
-		assert!(merged.contains(&event_id!("$merge_tip").to_owned()));
-		assert!(merged.contains(&event_id!("$accepted_after_outlier").to_owned()));
-		assert!(merged.contains(&event_id!("$accepted_after_rejected_only_child").to_owned()));
+		assert!(!merged.contains(&event_id!("$fork_a")));
+		assert!(!merged.contains(&event_id!("$fork_b")));
+		assert!(merged.contains(&event_id!("$merge_tip")));
+		assert!(merged.contains(&event_id!("$accepted_after_outlier")));
+		assert!(merged.contains(&event_id!("$accepted_after_rejected_only_child")));
 		assert!(
-			merged.contains(&event_id!("$external_tip").to_owned()),
+			merged.contains(&event_id!("$external_tip")),
 			"current tips outside the accepted graph remain unverifiable and should be preserved"
 		);
 		assert_ne!(merged, current_event_ids);

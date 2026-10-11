@@ -195,7 +195,7 @@ fn get_summary_children_sorted_by_order() {
 		summary
 			.room_type
 			.as_ref()
-			.map(|room_type| room_type.as_str()),
+			.map(slipstream::room::RoomType::as_str),
 		Some("m.space")
 	);
 
@@ -270,7 +270,7 @@ fn get_summary_children_tie_breaks_by_timestamp_then_room_id() {
 		summary
 			.room_type
 			.as_ref()
-			.map(|room_type| room_type.as_str()),
+			.map(slipstream::room::RoomType::as_str),
 		Some("m.space")
 	);
 	assert!(

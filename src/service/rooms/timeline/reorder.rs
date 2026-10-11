@@ -327,9 +327,9 @@ mod tests {
 
 	#[test]
 	fn test_position_depths_linear_chain() {
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
 
 		let mut entries = HashMap::new();
 		entries.insert(a.clone(), (PduCount::from(0_u64), 1, 10));
@@ -353,10 +353,10 @@ mod tests {
 	fn test_position_depths_disconnected_segments() {
 		// Two disconnected chains: A→B (ts 10,20) and X→Y (ts 15,25).
 		// Position-based depths should interleave them chronologically.
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let x = event_id!("$X").to_owned();
-		let y = event_id!("$Y").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let x = event_id!("$X");
+		let y = event_id!("$Y");
 
 		let mut entries = HashMap::new();
 		entries.insert(a.clone(), (PduCount::from(0_u64), 1, 10));
@@ -373,7 +373,7 @@ mod tests {
 
 		// All 4 events get unique, monotonically increasing depths 1..4
 		let mut all_depths: Vec<u64> = depths.values().copied().collect();
-		all_depths.sort();
+		all_depths.sort_unstable();
 		assert_eq!(all_depths, vec![1, 2, 3, 4]);
 
 		// Parent always has lower depth than child
@@ -384,10 +384,10 @@ mod tests {
 	#[test]
 	fn test_position_depths_diamond() {
 		// A → B, A → C, B+C → D
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
-		let d = event_id!("$D").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
+		let d = event_id!("$D");
 
 		let mut entries = HashMap::new();
 		entries.insert(a.clone(), (PduCount::from(0_u64), 1, 10));
@@ -413,7 +413,7 @@ mod tests {
 
 	#[test]
 	fn test_position_depths_single_event() {
-		let a = event_id!("$A").to_owned();
+		let a = event_id!("$A");
 		let entries: HashMap<OwnedEventId, (PduCount, u64, u64)> =
 			[(a.clone(), (PduCount::from(0_u64), 1, 10))].into();
 		let graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
@@ -427,9 +427,9 @@ mod tests {
 	#[test]
 	fn test_position_depths_all_roots_sorted_by_ts() {
 		// 5 unconnected events — should be sorted by timestamp
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
+		let a = event_id!("$A");
+		let b = event_id!("$B");
+		let c = event_id!("$C");
 
 		let mut entries = HashMap::new();
 		entries.insert(a.clone(), (PduCount::from(0_u64), 0, 30));
@@ -452,41 +452,41 @@ mod tests {
 		// A -> B -> C -> F
 		//   -> D -> E -/
 		// (A forks to B and D. B->C, D->E. C and E join at F)
-		let a = event_id!("$A").to_owned();
-		let b = event_id!("$B").to_owned();
-		let c = event_id!("$C").to_owned();
-		let d = event_id!("$D").to_owned();
-		let e = event_id!("$E").to_owned();
-		let f = event_id!("$F").to_owned();
+		let event_a = event_id!("$A");
+		let event_b = event_id!("$B");
+		let event_c = event_id!("$C");
+		let event_d = event_id!("$D");
+		let event_e = event_id!("$E");
+		let event_f = event_id!("$F");
 
 		let mut entries = HashMap::new();
-		entries.insert(a.clone(), (PduCount::from(0_u64), 1, 10));
-		entries.insert(b.clone(), (PduCount::from(0_u64), 2, 20));
-		entries.insert(c.clone(), (PduCount::from(0_u64), 3, 30));
-		entries.insert(d.clone(), (PduCount::from(0_u64), 2, 25));
-		entries.insert(e.clone(), (PduCount::from(0_u64), 3, 35));
-		entries.insert(f.clone(), (PduCount::from(0_u64), 4, 40));
+		entries.insert(event_a.clone(), (PduCount::from(0_u64), 1, 10));
+		entries.insert(event_b.clone(), (PduCount::from(0_u64), 2, 20));
+		entries.insert(event_c.clone(), (PduCount::from(0_u64), 3, 30));
+		entries.insert(event_d.clone(), (PduCount::from(0_u64), 2, 25));
+		entries.insert(event_e.clone(), (PduCount::from(0_u64), 3, 35));
+		entries.insert(event_f.clone(), (PduCount::from(0_u64), 4, 40));
 
 		let mut graph: HashMap<OwnedEventId, HashSet<OwnedEventId>> = HashMap::new();
-		graph.insert(b.clone(), [a.clone()].into());
-		graph.insert(c.clone(), [b.clone()].into());
-		graph.insert(d.clone(), [a.clone()].into());
-		graph.insert(e.clone(), [d.clone()].into());
-		graph.insert(f.clone(), [c.clone(), e.clone()].into());
+		graph.insert(event_b.clone(), [event_a.clone()].into());
+		graph.insert(event_c.clone(), [event_b.clone()].into());
+		graph.insert(event_d.clone(), [event_a.clone()].into());
+		graph.insert(event_e.clone(), [event_d.clone()].into());
+		graph.insert(event_f.clone(), [event_c.clone(), event_e.clone()].into());
 
 		let sorted = sort_timeline_events(&entries, &graph);
 		let depths = position_depths(&sorted);
 
 		// A is the root, F is the tip
-		assert_eq!(depths[&a], 1);
-		assert_eq!(depths[&f], 6);
+		assert_eq!(depths[&event_a], 1);
+		assert_eq!(depths[&event_f], 6);
 
 		// Parents must strictly be lower depth than children
-		assert!(depths[&a] < depths[&b]);
-		assert!(depths[&a] < depths[&d]);
-		assert!(depths[&b] < depths[&c]);
-		assert!(depths[&d] < depths[&e]);
-		assert!(depths[&c] < depths[&f]);
-		assert!(depths[&e] < depths[&f]);
+		assert!(depths[&event_a] < depths[&event_b]);
+		assert!(depths[&event_a] < depths[&event_d]);
+		assert!(depths[&event_b] < depths[&event_c]);
+		assert!(depths[&event_d] < depths[&event_e]);
+		assert!(depths[&event_c] < depths[&event_f]);
+		assert!(depths[&event_e] < depths[&event_f]);
 	}
 }

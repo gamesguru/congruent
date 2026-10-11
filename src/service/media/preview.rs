@@ -5,13 +5,12 @@
 //! of dependencies and nulls out results through the existing interface when
 //! not featured.
 
-use std::time::SystemTime;
+use std::{net::IpAddr, time::SystemTime};
 
 use conduwuit::{Err, Result, debug, err, info};
 use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
-use ipaddress::IPAddress;
 use serde::Serialize;
 #[cfg(feature = "url_preview")]
 use slipstream::OwnedMxcUri;
@@ -141,7 +140,11 @@ pub async fn get_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 
 #[implement(Service)]
 async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
-	if let Ok(ip) = IPAddress::parse(url.host_str().expect("URL previously validated")) {
+	if let Ok(ip) = url
+		.host_str()
+		.expect("URL previously validated")
+		.parse::<IpAddr>()
+	{
 		if !self.services.client.valid_cidr_range(&ip) {
 			return Err!(Request(Forbidden("Requesting from this address is forbidden")));
 		}
@@ -150,49 +153,35 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 	let client = &self.services.client.url_preview;
 	let mut response = client.head(url.as_str()).send().await?;
 
-	if let Err(e) = response.error_for_status_ref() {
-		if let Some(status) = e.status() {
-			if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
-				|| status == reqwest::StatusCode::FORBIDDEN
-				|| status == reqwest::StatusCode::NOT_IMPLEMENTED
-			{
-				debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
-				let mut req = client.get(url.as_str());
-				if status == reqwest::StatusCode::FORBIDDEN {
-					req = req.header(
-						reqwest::header::USER_AGENT,
-						self.services
-							.server
-							.config
-							.url_preview_user_agent
-							.as_deref()
-							.unwrap_or(&self.services.server.config.user_agent),
-					);
-				}
-				response = req.send().await?;
-			}
+	let mut status = response.status();
+	if status == http::StatusCode::METHOD_NOT_ALLOWED
+		|| status == http::StatusCode::FORBIDDEN
+		|| status == http::StatusCode::NOT_IMPLEMENTED
+	{
+		debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
+		let mut req = client.get(url.as_str());
+		if status == http::StatusCode::FORBIDDEN {
+			req = req.header(
+				http::header::USER_AGENT,
+				self.services
+					.server
+					.config
+					.url_preview_user_agent
+					.as_deref()
+					.unwrap_or(&self.services.server.config.user_agent),
+			);
 		}
+		response = req.send().await?;
+		status = response.status();
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(warn!("HTTP {e} fetching URL preview probe"))));
+	if !status.is_success() {
+		return Err!(Request(Unknown(warn!("HTTP {status} fetching URL preview probe"))));
 	}
 
 	debug!(%url, "URL preview response headers: {:?}", response.headers());
 
-	response.error_for_status_ref()?;
-
-	if let Some(remote_addr) = response.remote_addr() {
-		debug!(%url, "URL preview response remote address: {:?}", remote_addr);
-
-		if let Ok(ip) = IPAddress::parse(remote_addr.ip().to_string()) {
-			if !self.services.client.valid_cidr_range(&ip) {
-				return Err!(Request(Forbidden("Requesting from this address is forbidden")));
-			}
-		}
-	}
-
-	let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) else {
+	let Some(content_type) = response.headers().get(http::header::CONTENT_TYPE) else {
 		return Err!(Request(Unknown("Unknown or invalid Content-Type header")));
 	};
 
@@ -230,14 +219,14 @@ pub async fn download_image(
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = self
 			.services
 			.client
 			.url_preview
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config
@@ -249,8 +238,11 @@ pub async fn download_image(
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching image"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching image",
+			response.status()
+		))));
 	}
 
 	let mut image = response
@@ -359,14 +351,14 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = self
 			.services
 			.client
 			.url_preview
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config
@@ -378,8 +370,11 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching media blob"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching media blob",
+			response.status()
+		))));
 	}
 	let content_type = response.headers().get(CONTENT_TYPE).cloned();
 	let media = response
@@ -448,16 +443,14 @@ pub async fn download_media(&self, _url: &str) -> Result<UrlPreviewData> {
 #[cfg(feature = "url_preview")]
 #[implement(Service)]
 async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
-	use webpage::HTML;
-
 	let client = &self.services.client.url_preview;
 	let mut response = client.get(url).send().await?;
 
-	if response.status() == reqwest::StatusCode::FORBIDDEN {
+	if response.status() == http::StatusCode::FORBIDDEN {
 		response = client
 			.get(url)
 			.header(
-				reqwest::header::USER_AGENT,
+				http::header::USER_AGENT,
 				self.services
 					.server
 					.config
@@ -469,8 +462,11 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 			.await?;
 	}
 
-	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching HTML text"))));
+	if !response.status().is_success() {
+		return Err!(Request(Unknown(error!(
+			"HTTP status {} fetching HTML text",
+			response.status()
+		))));
 	}
 
 	let body = response
@@ -483,9 +479,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 				.expect("u64 should fit in usize"),
 		)
 		.await?;
-	let Ok(html) = HTML::from_string(body.clone(), Some(url.to_owned())) else {
-		return Err!(Request(Unknown("Failed to parse HTML")));
-	};
+	let html = parse_html_metadata(&body);
 
 	let mut preview_data = UrlPreviewData::default();
 
@@ -497,36 +491,35 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 			.map_or_else(|| raw.to_owned(), |joined| joined.to_string())
 	};
 
-	if let Some(obj) = html.opengraph.images.first() {
-		let image_url = resolve(&obj.url);
+	if let Some(image) = html.image.as_ref() {
+		let image_url = resolve(image);
 		if let Ok(data_with_img) = self
 			.download_image(&image_url, Some(preview_data.clone()))
 			.await
 		{
 			preview_data = data_with_img;
-			preview_data = apply_opengraph_dimensions(preview_data, obj);
+			preview_data.image_width = preview_data.image_width.or(html.image_width);
+			preview_data.image_height = preview_data.image_height.or(html.image_height);
 		}
 	}
 
-	if let Some(obj) = html.opengraph.videos.first() {
-		let video_url = resolve(&obj.url);
+	if let Some(video) = html.video.as_ref() {
+		let video_url = resolve(video);
 		preview_data = self.download_video(&video_url, Some(preview_data)).await?;
-		preview_data.video_width = obj.properties.get("width").and_then(|v| v.parse().ok());
-		preview_data.video_height = obj.properties.get("height").and_then(|v| v.parse().ok());
+		preview_data.video_width = html.video_width;
+		preview_data.video_height = html.video_height;
 	}
 
-	if let Some(obj) = html.opengraph.audios.first() {
-		let audio_url = resolve(&obj.url);
+	if let Some(audio) = html.audio.as_ref() {
+		let audio_url = resolve(audio);
 		preview_data = self.download_audio(&audio_url, Some(preview_data)).await?;
 	}
 
-	let props = html.opengraph.properties;
-
 	/* use OpenGraph title/description, but fall back to HTML if not available */
-	preview_data.title = props.get("title").cloned().or(html.title);
-	preview_data.description = props.get("description").cloned().or(html.description);
-	preview_data.og_type = Some(html.opengraph.og_type);
-	preview_data.og_url = props.get("url").cloned();
+	preview_data.title = html.og_title.or(html.title);
+	preview_data.description = html.og_description.or(html.description);
+	preview_data.og_type = html.og_type;
+	preview_data.og_url = html.og_url;
 
 	Ok(preview_data)
 }
@@ -676,17 +669,189 @@ pub fn parse_preview_url(url_str: &str) -> std::result::Result<Url, url::ParseEr
 	}
 }
 #[cfg(feature = "url_preview")]
-pub(super) fn apply_opengraph_dimensions(
-	mut preview_data: UrlPreviewData,
-	obj: &webpage::OpengraphObject,
-) -> UrlPreviewData {
-	preview_data.image_width = preview_data
-		.image_width
-		.or_else(|| obj.properties.get("width").and_then(|v| v.parse().ok()));
-	preview_data.image_height = preview_data
-		.image_height
-		.or_else(|| obj.properties.get("height").and_then(|v| v.parse().ok()));
-	preview_data
+#[derive(Default)]
+pub(crate) struct HtmlMetadata {
+	pub(crate) title: Option<String>,
+	pub(crate) description: Option<String>,
+	pub(crate) og_title: Option<String>,
+	pub(crate) og_description: Option<String>,
+	pub(crate) og_type: Option<String>,
+	pub(crate) og_url: Option<String>,
+	pub(crate) image: Option<String>,
+	pub(crate) image_width: Option<u32>,
+	pub(crate) image_height: Option<u32>,
+	pub(crate) video: Option<String>,
+	pub(crate) video_width: Option<u32>,
+	pub(crate) video_height: Option<u32>,
+	pub(crate) audio: Option<String>,
+}
+
+#[cfg(feature = "url_preview")]
+pub(crate) fn parse_html_metadata(body: &str) -> HtmlMetadata {
+	let body = body.as_bytes();
+	let lower: Vec<_> = body.iter().map(u8::to_ascii_lowercase).collect();
+	let mut metadata = HtmlMetadata::default();
+	let mut offset = 0;
+
+	while let Some(start) = lower
+		.get(offset..)
+		.and_then(|remaining| remaining.iter().position(|&byte| byte == b'<'))
+		.map(|index| offset.saturating_add(index))
+	{
+		let Some(end) = lower
+			.get(start..)
+			.and_then(|remaining| remaining.iter().position(|&byte| byte == b'>'))
+			.map(|index| start.saturating_add(index))
+		else {
+			break;
+		};
+
+		let tag_start = start.saturating_add(1);
+		let Some(tag) = body.get(tag_start..end) else { break };
+		let mut name_start = 0;
+		while tag
+			.get(name_start)
+			.is_some_and(|&byte| byte.is_ascii_whitespace() || byte == b'/')
+		{
+			name_start = name_start.saturating_add(1);
+		}
+		let mut name_end = name_start;
+		while tag
+			.get(name_end)
+			.is_some_and(|&byte| !byte.is_ascii_whitespace() && byte != b'/' && byte != b'>')
+		{
+			name_end = name_end.saturating_add(1);
+		}
+		let tag_name = tag.get(name_start..name_end).unwrap_or_default();
+
+		if tag_name.eq_ignore_ascii_case(b"meta") {
+			let key = html_attribute(tag, "property")
+				.or_else(|| html_attribute(tag, "name"))
+				.map(|value| value.to_ascii_lowercase());
+			let value = html_attribute(tag, "content").map(|value| decode_html_entities(&value));
+
+			if let (Some(key), Some(value)) = (key, value) {
+				match key.as_str() {
+					| "og:title" => set_once(&mut metadata.og_title, value),
+					| "og:description" => set_once(&mut metadata.og_description, value),
+					| "og:type" => set_once(&mut metadata.og_type, value),
+					| "og:url" => set_once(&mut metadata.og_url, value),
+					| "og:image" => set_once(&mut metadata.image, value),
+					| "og:image:width" => metadata.image_width = value.parse().ok(),
+					| "og:image:height" => metadata.image_height = value.parse().ok(),
+					| "og:video" => set_once(&mut metadata.video, value),
+					| "og:video:width" => metadata.video_width = value.parse().ok(),
+					| "og:video:height" => metadata.video_height = value.parse().ok(),
+					| "og:audio" => set_once(&mut metadata.audio, value),
+					| "description" => set_once(&mut metadata.description, value),
+					| _ => {},
+				}
+			}
+		} else if tag_name.eq_ignore_ascii_case(b"title") {
+			let content_start = end.saturating_add(1);
+			if let Some(close) = lower.get(content_start..).and_then(|remaining| {
+				remaining
+					.windows(8)
+					.position(|window| window == b"</title>")
+			}) {
+				let content_end = content_start.saturating_add(close);
+				set_once(
+					&mut metadata.title,
+					decode_html_entities(
+						String::from_utf8_lossy(
+							body.get(content_start..content_end).unwrap_or_default(),
+						)
+						.trim(),
+					),
+				);
+			}
+		}
+
+		offset = end.saturating_add(1);
+	}
+
+	metadata
+}
+
+#[cfg(feature = "url_preview")]
+fn html_attribute(tag: &[u8], wanted: &str) -> Option<String> {
+	let mut offset = 0;
+
+	while offset < tag.len() {
+		while tag
+			.get(offset)
+			.is_some_and(|&byte| byte.is_ascii_whitespace() || byte == b'/')
+		{
+			offset = offset.saturating_add(1);
+		}
+
+		let name_start = offset;
+		while offset < tag.len()
+			&& !tag[offset].is_ascii_whitespace()
+			&& tag[offset] != b'='
+			&& tag[offset] != b'/'
+		{
+			offset = offset.saturating_add(1);
+		}
+		if name_start == offset {
+			break;
+		}
+
+		let name = tag.get(name_start..offset).unwrap_or_default();
+		while tag.get(offset).is_some_and(u8::is_ascii_whitespace) {
+			offset = offset.saturating_add(1);
+		}
+		if tag.get(offset) != Some(&b'=') {
+			continue;
+		}
+		offset = offset.saturating_add(1);
+		while tag.get(offset).is_some_and(u8::is_ascii_whitespace) {
+			offset = offset.saturating_add(1);
+		}
+
+		let value = if matches!(tag.get(offset), Some(b'\'' | b'"')) {
+			let quote = tag[offset];
+			offset = offset.saturating_add(1);
+			let value_start = offset;
+			while offset < tag.len() && tag[offset] != quote {
+				offset = offset.saturating_add(1);
+			}
+			let value = String::from_utf8_lossy(tag.get(value_start..offset).unwrap_or_default())
+				.into_owned();
+			offset = offset.saturating_add(usize::from(offset < tag.len()));
+			value
+		} else {
+			let value_start = offset;
+			while offset < tag.len() && !tag[offset].is_ascii_whitespace() && tag[offset] != b'/'
+			{
+				offset = offset.saturating_add(1);
+			}
+			String::from_utf8_lossy(tag.get(value_start..offset).unwrap_or_default()).into_owned()
+		};
+
+		if name.eq_ignore_ascii_case(wanted.as_bytes()) {
+			return Some(value);
+		}
+	}
+
+	None
+}
+
+#[cfg(feature = "url_preview")]
+fn decode_html_entities(value: &str) -> String {
+	value
+		.replace("&amp;", "&")
+		.replace("&quot;", "\"")
+		.replace("&#39;", "'")
+		.replace("&lt;", "<")
+		.replace("&gt;", ">")
+}
+
+#[cfg(feature = "url_preview")]
+fn set_once<T>(slot: &mut Option<T>, value: T) {
+	if slot.is_none() {
+		*slot = Some(value);
+	}
 }
 
 #[derive(Debug, PartialEq, Eq)]

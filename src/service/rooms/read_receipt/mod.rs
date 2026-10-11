@@ -2,7 +2,7 @@ mod data;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use conduwuit::{Result, debug, err, warn};
+use conduwuit::{Result, debug, err};
 use futures::Stream;
 use slipstream::{
 	OwnedEventId, OwnedUserId, RoomId, UserId,
@@ -15,7 +15,7 @@ use slipstream::{
 };
 
 use self::data::{Data, ReceiptItem};
-use crate::{Dep, sending};
+use crate::{Dep, globals, sending};
 
 pub struct Service {
 	services: Services,
@@ -23,6 +23,7 @@ pub struct Service {
 }
 
 struct Services {
+	globals: Dep<globals::Service>,
 	sending: Dep<sending::Service>,
 }
 
@@ -30,6 +31,7 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: Services {
+				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<sending::Service>("sending"),
 			},
 			db: Data::new(&args),
@@ -60,7 +62,11 @@ impl Service {
 		room_id: &RoomId,
 		event: &ReceiptEvent,
 	) {
+		// Hold the barrier across count allocation and the write so the sender
+		// never sees the count without the row.
+		let barrier = self.services.globals.edu_barrier.read().await;
 		self.db.readreceipt_update(user_id, room_id, event).await;
+		drop(barrier);
 		self.services
 			.sending
 			.flush_room(room_id)
@@ -86,7 +92,6 @@ impl Service {
 	/// Returns an iterator over the most recent read_receipts in a room,
 	/// optionally after the event with id `since`.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn readreceipts_since<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -99,7 +104,6 @@ impl Service {
 	/// same thread already exists at an equal or greater count. Returns
 	/// whether the marker was applied.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn private_read_set(
 		&self,
 		room_id: &RoomId,
@@ -112,7 +116,6 @@ impl Service {
 
 	/// Returns the private read marker PDU count.
 	#[inline]
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn private_read_get_count(
 		&self,
 		room_id: &RoomId,

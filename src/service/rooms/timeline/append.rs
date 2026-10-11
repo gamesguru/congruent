@@ -53,7 +53,6 @@ pub(super) struct PduPushEval<'a> {
 /// Append the incoming event setting the state snapshot to the state from
 /// the server that sent the event.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 #[allow(clippy::too_many_arguments)]
 pub async fn append_incoming_pdu<'a, Leaves>(
 	&'a self,
@@ -162,7 +161,6 @@ where
 /// Returns pdu id
 #[implement(super::Service)]
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn append_pdu<'a, Leaves>(
 	&'a self,
 	pdu: &'a PduEvent,
@@ -550,8 +548,7 @@ where
 				{
 					if content.membership
 						== slipstream::events::room::member::MembershipState::Join
-						&& !was_joined
-						&& self.services.globals.user_is_local(&target_user_id)
+						&& !was_joined && self.services.globals.user_is_local(&target_user_id)
 					{
 						self.services
 							.users

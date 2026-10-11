@@ -20,11 +20,9 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use conduwuit::{Result, Server, debug, err, error, utils::response::LimitReadExt, warn};
 use database::{Deserialized, Map};
+use futures::{FutureExt, StreamExt, pin_mut};
 use slipstream::events::{Mentions, room::message::RoomMessageEventContent};
-use tokio::{
-	sync::Notify,
-	time::{MissedTickBehavior, interval},
-};
+use tokio::sync::Notify;
 
 use crate::{Dep, admin, client, globals};
 
@@ -105,7 +103,6 @@ impl crate::Service for Service {
 		}))
 	}
 
-	#[tracing::instrument(skip_all, name = "announcements", level = "debug")]
 	async fn worker(self: Arc<Self>) -> Result<()> {
 		if !self.services.globals.allow_announcements_check() {
 			debug!("Disabling announcements check");
@@ -129,13 +126,15 @@ impl crate::Service for Service {
 			self.interval.mul_f64(1.0 + jitter_percent / 100.0)
 		};
 
-		let mut i = interval(self.interval);
-		i.set_missed_tick_behavior(MissedTickBehavior::Delay);
-		i.reset_after(first_check_jitter);
+		smol::Timer::after(first_check_jitter).await;
+		let mut i = async_io::Timer::interval(self.interval);
 		loop {
-			tokio::select! {
-				() = self.interrupt.notified() => break,
-				_ = i.tick() => (),
+			let interrupt = self.interrupt.notified();
+			let tick = i.next();
+			pin_mut!(interrupt, tick);
+			futures::select_biased! {
+				() = interrupt.fuse() => break,
+				_ = tick.fuse() => (),
 			}
 
 			if let Err(e) = self.check().await {
@@ -152,7 +151,6 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	#[tracing::instrument(skip_all)]
 	async fn check(&self) -> Result<()> {
 		debug_assert!(self.services.server.running(), "server must not be shutting down");
 
@@ -176,7 +174,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip_all)]
 	async fn handle(&self, announcement: &CheckForAnnouncementsResponseEntry) {
 		let mut message = RoomMessageEventContent::text_markdown(format!(
 			"### New announcement{}\n\n{}",

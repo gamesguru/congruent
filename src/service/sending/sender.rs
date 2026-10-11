@@ -131,7 +131,12 @@ async fn compute_outbound_state_hashes(
 	let mut inputs_cache = InputCache::new();
 	let mut entries = BTreeMap::new();
 	for (event_id, _) in pdus {
-		let entry = match services.state_accessor.msc4500_pdu_digests(event_id).await {
+		let entry = match services
+			.state_accessor
+			.arc()
+			.msc4500_pdu_digests(event_id)
+			.await
+		{
 			| None => StateHashEntry::limited(with_inputs),
 			| Some(digests) => {
 				let inputs = if with_inputs {
@@ -140,6 +145,7 @@ async fn compute_outbound_state_hashes(
 						| Some(pdu) =>
 							services
 								.state_accessor
+								.arc()
 								.msc4500_resolution_inputs_digest(&pdu, &mut inputs_cache)
 								.await,
 						| None => None,
@@ -172,7 +178,6 @@ pub const PDU_LIMIT: usize = 50;
 pub const EDU_LIMIT: usize = 100;
 
 impl Service {
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub(super) async fn sender(self: Arc<Self>, id: usize) -> Result {
 		// In maintenance mode (listening=false), skip all outbound federation.
 		// Queued transactions are preserved and will drain on normal boot.
@@ -197,15 +202,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(
-		name = "work",
-		level = "trace",
-		skip_all,
-		fields(
-			futures = %futures.len(),
-			statuses = %statuses.len(),
-		),
-	)]
 	async fn work_loop<'a>(
 		&'a self,
 		id: usize,
@@ -221,12 +217,26 @@ impl Service {
 		while !receiver.is_closed() {
 			let has_space = futures.len() < 128;
 
-			if has_space {
-				tokio::select! {
-					Some(response) = futures.next() => {
+			if futures.is_empty() {
+				// `FuturesUnordered::next()` resolves immediately with `None`
+				// while the in-flight set is empty; that must not terminate the
+				// sender. Wait for the next queued message instead.
+				match receiver.recv_async().await {
+					| Ok(request) => self.handle_request(request, futures, statuses).await,
+					| Err(_) => return,
+				}
+			} else if has_space {
+				let response = futures.next().fuse();
+				let request = receiver.recv_async().fuse();
+				pin_mut!(response, request);
+				// Unbiased (per-poll shuffled) selection, matching the previous
+				// `tokio::select!`, so neither completed responses nor queued
+				// messages can starve the other.
+				futures::select! {
+					response = response => if let Some(response) = response {
 						self.handle_response(response, futures, statuses).await;
 					},
-					request = receiver.recv_async() => match request {
+					request = request => match request {
 						Ok(request) => self.handle_request(request, futures, statuses).await,
 						Err(_) => return,
 					},
@@ -234,11 +244,10 @@ impl Service {
 			} else if let Some(response) = futures.next().await {
 				self.handle_response(response, futures, statuses).await;
 			}
-			tokio::task::yield_now().await;
+			smol::future::yield_now().await;
 		}
 	}
 
-	#[tracing::instrument(name = "response", level = "debug", skip_all)]
 	async fn handle_response<'a>(
 		&'a self,
 		response: SendingResult,
@@ -260,9 +269,9 @@ impl Service {
 		e: &Error,
 	) {
 		if e.status_code() == http::StatusCode::TOO_MANY_REQUESTS {
-			tracing::info!(dest = ?dest, "{e:?}");
+			conduwuit::info!(dest = ?dest, "{e:?}");
 		} else {
-			tracing::info!(target: "federation_debug", dest = ?dest, "{e:?}");
+			conduwuit::info!(target: "federation_debug", dest = ?dest, "{e:?}");
 		}
 
 		let mut tries = 1_u32;
@@ -275,11 +284,11 @@ impl Service {
 				},
 				| TransactionStatus::Failed(n, _) => {
 					tries = n.saturating_add(1);
-					tracing::info!(dest = ?dest, tries = tries, "Request failed while already marked as failed");
+					conduwuit::info!(dest = ?dest, tries = tries, "Request failed while already marked as failed");
 					TransactionStatus::Failed(tries, Instant::now())
 				},
 				| TransactionStatus::Cooldown(_) => {
-					tracing::info!(dest = ?dest, "Request failed while in cooldown");
+					conduwuit::info!(dest = ?dest, "Request failed while in cooldown");
 					TransactionStatus::Failed(1, Instant::now())
 				},
 			}
@@ -298,9 +307,9 @@ impl Service {
 			}
 			let dest_clone = dest.clone();
 			let db = self.db.clone();
-			self.server.runtime().spawn(async move {
+			drop(self.server.runtime().spawn(async move {
 				db.delete_all_requests_for(&dest_clone).await;
-			});
+			}));
 			statuses.remove(&dest);
 			return;
 		}
@@ -332,8 +341,8 @@ impl Service {
 			.0
 			.clone();
 
-		self.server.runtime().spawn(async move {
-			tokio::time::sleep(delay).await;
+		drop(self.server.runtime().spawn(async move {
+			smol::Timer::after(delay).await;
 			sender
 				.send(Msg {
 					dest,
@@ -341,7 +350,7 @@ impl Service {
 					queue_id: Vec::new(),
 				})
 				.ok();
-		});
+		}));
 	}
 
 	#[allow(clippy::needless_pass_by_ref_mut)]
@@ -422,7 +431,6 @@ impl Service {
 	}
 
 	#[allow(clippy::needless_pass_by_ref_mut)]
-	#[tracing::instrument(name = "request", level = "debug", skip_all)]
 	async fn handle_request<'a>(
 		&'a self,
 		msg: Msg,
@@ -473,27 +481,19 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "finish",
-		level = "info",
-		skip_all,
-		fields(futures = %futures.len()),
-	)]
 	async fn finish_responses<'a>(&'a self, futures: &mut SendingFutures<'a>) {
-		use tokio::{
-			select,
-			time::{Instant, sleep_until},
-		};
-
 		let timeout = self.server.config.sender_shutdown_timeout;
 		let timeout = Duration::from_secs(timeout);
 		let now = Instant::now();
 		let deadline = now.checked_add(timeout).unwrap_or(now);
 		loop {
 			trace!("Waiting for {} requests to complete...", futures.len());
-			select! {
-				() = sleep_until(deadline) => return,
-				response = futures.next() => match response {
+			let timer = FutureExt::fuse(smol::Timer::at(deadline));
+			let response = futures.next();
+			pin_mut!(timer, response);
+			futures::select_biased! {
+				_ = timer => return,
+				response = response.fuse() => match response {
 					Some(Ok(dest)) => self.db.delete_all_active_requests_for(&dest).await,
 					Some(_) => continue,
 					None => return,
@@ -502,12 +502,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "netburst",
-		level = "debug",
-		skip_all,
-		fields(futures = %futures.len()),
-	)]
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	async fn startup_netburst<'a>(
 		&'a self,
@@ -603,15 +597,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "select",
-		level = "debug",
-		skip_all,
-		fields(
-			?dest,
-			new_events = %new_events.len(),
-		)
-	)]
 	async fn select_events(
 		&self,
 		dest: &Destination,
@@ -755,11 +740,15 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(name = "edus", level = "debug", skip_all)]
 	async fn select_edus(&self, server_name: &ServerName) -> Result<(EduVec, u64)> {
 		// selection window
 		let since = self.db.get_latest_educount(server_name).await;
-		let since_upper = self.services.globals.current_count()?;
+		// Wait out in-flight writers so every count <= `since_upper` is visible to the
+		// scans below (see `Service::edu_barrier`).
+		let since_upper = {
+			let _barrier = self.services.globals.edu_barrier.write().await;
+			self.services.globals.current_count()?
+		};
 		let batch = (since, since_upper);
 		debug_assert!(batch.0 <= batch.1, "since range must not be negative");
 		debug!(
@@ -823,7 +812,6 @@ impl Service {
 	}
 
 	/// Look for device changes
-	#[tracing::instrument(name = "device_changes", level = "trace", skip(self, server_name))]
 	async fn select_edus_device_changes(
 		&self,
 		server_name: &ServerName,
@@ -880,7 +868,7 @@ impl Service {
 			}
 		}
 
-		tracing::debug!(
+		conduwuit::debug!(
 			target: "device_list_debug",
 			changes_count = all_changes.len(),
 			devices_count = user_devices.len(),
@@ -892,7 +880,6 @@ impl Service {
 	}
 
 	/// Look for read receipts in this room
-	#[tracing::instrument(name = "receipts", level = "trace", skip(self, server_name))]
 	async fn select_edus_receipts(
 		&self,
 		server_name: &ServerName,
@@ -931,7 +918,6 @@ impl Service {
 	}
 
 	/// Look for read receipts in this room
-	#[tracing::instrument(name = "receipts", level = "trace", skip(self, since, num))]
 	async fn select_edus_receipts_room(
 		&self,
 		room_id: &RoomId,
@@ -1005,7 +991,6 @@ impl Service {
 	// TODO: presence updates are batched per server via `pending_updates`,
 	// but server_sees_user still hits the DB per user to check shared rooms.
 	// Consider caching which servers each user is visible to, to avoid these DB calls.
-	#[tracing::instrument(name = "presence", level = "trace", skip(self, server_name, since))]
 	async fn select_edus_presence(
 		&self,
 		server_name: &ServerName,
@@ -1140,14 +1125,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "appservice",
-		level = "debug",
-		skip(self, events),
-		fields(
-			events = %events.len(),
-		),
-	)]
 	async fn send_events_dest_appservice(
 		&self,
 		id: String,
@@ -1218,14 +1195,6 @@ impl Service {
 		}
 	}
 
-	#[tracing::instrument(
-		name = "push",
-		level = "trace",
-		skip(self, events),
-		fields(
-			events = %events.len(),
-		),
-	)]
 	async fn send_events_dest_push(
 		&self,
 		user_id: OwnedUserId,
@@ -1352,7 +1321,7 @@ impl Service {
 			.map(|edu_buf| {
 				let res = database::from_json_slice(edu_buf);
 				if let Err(ref e) = res {
-					tracing::error!(
+					conduwuit::error!(
 						"Failed to deserialize EDU: {} - JSON: {}",
 						e,
 						String::from_utf8_lossy(edu_buf)
@@ -1427,13 +1396,13 @@ impl Service {
 			edus,
 		};
 
-		tracing::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
+		conduwuit::debug!(target: "federation_debug", dest = ?server, "Sending federation request to server!");
 		let msc4500_req = Msc4500SendTransactionRequest { inner: request, state_hashes };
 
 		let result = self
 			.send_federation_request_on(&self.services.client.sender, &server, msc4500_req)
 			.await;
-		tracing::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
+		conduwuit::debug!(target: "federation_debug", dest = ?server, "Finished sending federation request! Result: {:?}", result.is_ok());
 
 		for (event_id, result) in result.iter().flat_map(|resp| resp.pdus.iter()) {
 			if let Err(e) = result {
@@ -1707,11 +1676,11 @@ mod tests {
 	fn test_build_device_list_edus_under_limit() {
 		let mut all_changes = BTreeMap::new();
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
-		users_18.insert(user_id!("@bob:example.com").to_owned());
+		users_18.insert(user_id!("@bob:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1726,12 +1695,12 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
-		users_15.insert(user_id!("@bob:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
+		users_15.insert(user_id!("@bob:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
-		users_18.insert(user_id!("@charlie:example.com").to_owned());
+		users_18.insert(user_id!("@charlie:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1746,9 +1715,9 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
-		users_15.insert(user_id!("@bob:example.com").to_owned());
-		users_15.insert(user_id!("@charlie:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
+		users_15.insert(user_id!("@bob:example.com"));
+		users_15.insert(user_id!("@charlie:example.com"));
 		all_changes.insert(15, users_15);
 
 		let since = (10, 20);
@@ -1763,13 +1732,13 @@ mod tests {
 		let mut all_changes = BTreeMap::new();
 
 		let mut users_15 = HashSet::new();
-		users_15.insert(user_id!("@alice:example.com").to_owned());
+		users_15.insert(user_id!("@alice:example.com"));
 		all_changes.insert(15, users_15);
 
 		let mut users_18 = HashSet::new();
 		// Same user!
-		users_18.insert(user_id!("@alice:example.com").to_owned());
-		users_18.insert(user_id!("@bob:example.com").to_owned());
+		users_18.insert(user_id!("@alice:example.com"));
+		users_18.insert(user_id!("@bob:example.com"));
 		all_changes.insert(18, users_18);
 
 		let since = (10, 20);
@@ -1783,7 +1752,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_under_limit() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 		let json = slipstream::json!({
 			"type": "m.receipt",
 			"content": {
@@ -1843,7 +1812,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_unthreaded_precedence() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// 1. Threaded receipt
 		let json_threaded = slipstream::json!({
@@ -1894,7 +1863,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_threaded_does_not_overwrite() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// 1. Unthreaded receipt
 		let json_unthreaded = slipstream::json!({
@@ -1945,7 +1914,7 @@ mod tests {
 	#[test]
 	fn test_build_receipt_map_out_of_order_count_does_not_skip_in_range_receipt() {
 		let mut receipts = Vec::new();
-		let user_id = user_id!("@alice:example.com").to_owned();
+		let user_id = user_id!("@alice:example.com");
 
 		// An out-of-order receipt with a higher stream count comes first.
 		let json_late = slipstream::json!({

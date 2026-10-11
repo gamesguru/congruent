@@ -15,14 +15,14 @@ use std::{
 
 use async_trait::async_trait;
 use conduwuit::{
-	Result, Server, debug, debug_warn, err, error, info,
+	JoinError, Result, Server, debug, debug_warn, err, error, info,
 	smallvec::SmallVec,
 	utils::{ReadyExt, TryReadyExt, available_parallelism, math::usize_from_u64_truncated},
 	warn,
 };
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream::FuturesUnordered};
 use slipstream::{OwnedServerName, RoomId, ServerName, UserId, api::OutgoingRequest};
-use tokio::{task, task::JoinSet};
+use tokio::sync::Semaphore;
 
 use self::data::Data;
 pub use self::{
@@ -40,7 +40,7 @@ pub struct Service {
 	server: Arc<Server>,
 	services: Services,
 	channels: Vec<(loole::Sender<Msg>, loole::Receiver<Msg>)>,
-	pub(super) semaphore: Arc<tokio::sync::Semaphore>,
+	pub(super) semaphore: Arc<Semaphore>,
 	pub(super) dead_servers: std::sync::RwLock<std::collections::HashSet<OwnedServerName>>,
 	/// Monotonic counter for outgoing federation transaction IDs, seeded from
 	/// the current unix-ms timestamp at startup and incremented per
@@ -118,36 +118,31 @@ impl crate::Service for Service {
 				federation: args.depend::<federation::Service>("federation"),
 			},
 			channels: (0..num_senders).map(|_| loole::unbounded()).collect(),
-			semaphore: Arc::new(tokio::sync::Semaphore::new(
+			semaphore: Arc::new(Semaphore::new(
 				args.server.config.max_concurrent_outbound_requests,
 			)),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
-		let mut senders =
-			self.channels
-				.iter()
-				.enumerate()
-				.fold(JoinSet::new(), |mut joinset, (id, _)| {
-					let self_ = self.clone();
-					let worker = self_.sender(id);
-					let worker = if self.unconstrained() {
-						task::unconstrained(worker).boxed()
-					} else {
-						worker.boxed()
-					};
-
-					let runtime = self.server.runtime();
-					let _abort = joinset.spawn_on(worker, runtime);
-					joinset
-				});
+		let mut senders = FuturesUnordered::new();
+		for (id, _) in self.channels.iter().enumerate() {
+			let self_ = self.clone();
+			// Each sender runs in its own runtime task so a panic in one
+			// sender resolves to a `JoinError` for that sender only instead of
+			// aborting every sender and restarting the whole service.
+			let handle = self
+				.server
+				.runtime()
+				.spawn(async move { self_.sender(id).await });
+			senders.push(async move { (id, handle.await) });
+		}
 
 		// Periodic federation stats reporter
 		let stats_self = self.clone();
-		let stats_task = self.server.runtime().spawn(async move {
+		let mut stats_task = self.server.runtime().spawn(async move {
 			loop {
-				tokio::time::sleep(Duration::from_mins(5)).await;
+				smol::Timer::after(Duration::from_mins(5)).await;
 				if stats_self.server.is_maintenance() {
 					continue;
 				}
@@ -163,17 +158,29 @@ impl crate::Service for Service {
 			}
 		});
 
-		while let Some(ret) = senders.join_next_with_id().await {
+		while let Some((id, ret)) = senders.next().await {
 			match ret {
-				| Ok((id, _)) => {
+				| Ok(Ok(())) => {
 					debug!(?id, "sender worker finished");
 				},
+				| Ok(Err(error)) => {
+					error!(?id, ?error, "sender worker finished");
+				},
+				| Err(JoinError::Panic(panic)) => {
+					error!(
+						?id,
+						panic = %debug::panic_str(&panic),
+						"sender worker panicked"
+					);
+				},
 				| Err(error) => {
-					error!(id = ?error.id(), ?error, "sender worker finished");
+					error!(?id, ?error, "sender worker cancelled");
 				},
 			}
 		}
 
+		// Abort (cancel) the stats reporter so it does not outlive this
+		// service worker; dropping the handle would only detach it.
 		stats_task.abort();
 		Ok(())
 	}
@@ -187,12 +194,9 @@ impl crate::Service for Service {
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
-
-	fn unconstrained(&self) -> bool { true }
 }
 
 impl Service {
-	#[tracing::instrument(skip(self, pdu_id, user, pushkey), level = "debug")]
 	pub fn send_pdu_push(&self, pdu_id: &RawPduId, user: &UserId, pushkey: String) -> Result {
 		let dest = Destination::Push(user.to_owned(), pushkey);
 		let event = SendingEvent::Pdu(*pdu_id);
@@ -205,7 +209,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn send_pdu_appservice(&self, appservice_id: String, pdu_id: RawPduId) -> Result {
 		let dest = Destination::Appservice(appservice_id);
 		let event = SendingEvent::Pdu(pdu_id);
@@ -218,7 +221,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, room_id, pdu_id), level = "debug")]
 	pub async fn send_pdu_room(&self, room_id: &RoomId, pdu_id: &RawPduId) -> Result {
 		let servers = self
 			.services
@@ -237,7 +239,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn send_pdu_servers<'a, S>(&self, servers: S, pdu_id: &RawPduId) -> Result<usize>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -258,7 +259,6 @@ impl Service {
 		Ok(num_servers)
 	}
 
-	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
 	pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		if self.server_is_dead(server) {
 			return Ok(());
@@ -275,7 +275,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, server, serialized), level = "debug")]
 	pub fn send_reliable_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
 		let dest = Destination::Federation(server.to_owned());
 		let event = SendingEvent::Edu(serialized);
@@ -288,7 +287,6 @@ impl Service {
 		})
 	}
 
-	#[tracing::instrument(skip(self, room_id, serialized), level = "debug")]
 	pub async fn send_edu_room(&self, room_id: &RoomId, serialized: EduBuf) -> Result {
 		let servers = self
 			.services
@@ -299,7 +297,6 @@ impl Service {
 		self.send_edu_servers(servers, serialized).await
 	}
 
-	#[tracing::instrument(skip(self, servers, serialized), level = "debug")]
 	pub async fn send_edu_servers<'a, S>(&self, servers: S, serialized: EduBuf) -> Result
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -327,7 +324,6 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self, room_id), level = "debug")]
 	pub async fn flush_room(&self, room_id: &RoomId) -> Result<()> {
 		let servers = self
 			.services
@@ -338,7 +334,6 @@ impl Service {
 		self.flush_servers(servers).await
 	}
 
-	#[tracing::instrument(skip(self, servers, pdu_id), level = "debug")]
 	pub async fn wait_for_pdu_servers(
 		&self,
 		servers: Vec<OwnedServerName>,
@@ -359,7 +354,7 @@ impl Service {
 			})
 			.collect();
 
-		let started_at = tokio::time::Instant::now();
+		let started_at = std::time::Instant::now();
 		let mut keys = keys;
 		loop {
 			let mut pending = Vec::new();
@@ -382,18 +377,21 @@ impl Service {
 				return Err(err!(Request(Unknown("{timeout_message}"))));
 			}
 
-			let mut watchers = futures::stream::FuturesUnordered::new();
+			let mut watchers = FuturesUnordered::new();
 			for key in &pending {
 				watchers.push(self.db.servernameevent_data.watch_prefix(key));
 				watchers.push(self.db.servercurrentevent_data.watch_prefix(key));
 			}
 
 			let wait = remaining.min(Duration::from_secs(1));
-			let _ = tokio::time::timeout(wait, watchers.next()).await;
+			let _ = futures::future::select(
+				Box::pin(watchers.next()),
+				Box::pin(smol::Timer::after(wait)),
+			)
+			.await;
 		}
 	}
 
-	#[tracing::instrument(skip(self, servers), level = "debug")]
 	pub async fn flush_servers<'a, S>(&self, servers: S) -> Result<()>
 	where
 		S: Stream<Item = OwnedServerName> + Send + 'a,
@@ -443,7 +441,7 @@ impl Service {
 	#[inline]
 	pub async fn send_federation_request_on<T>(
 		&self,
-		client: &reqwest::Client,
+		client: &client::HttpClient,
 		dest: &ServerName,
 		request: T,
 	) -> Result<T::IncomingResponse>
@@ -467,7 +465,6 @@ impl Service {
 	///
 	/// Used after we remove an appservice registration or a user deletes a push
 	/// key
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn cleanup_events(
 		&self,
 		appservice_id: Option<&str>,

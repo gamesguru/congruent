@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, ops::Deref, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, ops::Deref, sync::Arc, time::Instant};
 
 use clap::Subcommand;
 use conduwuit::{
@@ -11,7 +11,6 @@ use conduwuit::{
 use conduwuit_database::Map;
 use conduwuit_service::Services;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt};
-use tokio::time::Instant;
 
 use crate::{admin_command, admin_command_dispatch};
 

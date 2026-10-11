@@ -134,7 +134,6 @@ async fn is_key_expired_for_event(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn get_verify_key(
 	&self,
 	origin: &ServerName,
@@ -234,7 +233,6 @@ async fn get_verify_key_from_origin(
 /// Per MSC4499 / Matrix federation specification, requests must only be authenticated
 /// with active keys in `verify_keys`, not retired keys in `old_verify_keys`.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn get_active_verify_key(
 	&self,
 	origin: &ServerName,

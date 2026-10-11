@@ -151,7 +151,6 @@ pub fn room_stream<'a>(
 /// timeline insert from landing between the read and the write, letting
 /// this call clobber a just-appended timeline event back into an outlier.
 #[implement(Service)]
-#[tracing::instrument(skip(self, pdu), level = "debug")]
 pub async fn add_pdu_outlier(
 	&self,
 	event_id: &EventId,
@@ -176,7 +175,6 @@ pub async fn add_pdu_outlier(
 /// the `&InsertMutexGuard` parameter is unused beyond proving at the call
 /// site that the lock is genuinely already held.
 #[implement(Service)]
-#[tracing::instrument(skip(self, pdu, _insert_lock), level = "debug")]
 pub fn add_pdu_outlier_locked(
 	&self,
 	event_id: &EventId,
@@ -224,7 +222,6 @@ fn derive_room_id(
 
 /// Append the PDU as an outlier using a Batch.
 #[implement(Service)]
-#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
 pub fn add_pdu_outlier_batch<'a>(
 	&'a self,
 	batch: &mut database::Batch<'a>,
@@ -240,7 +237,6 @@ pub fn add_pdu_outlier_batch<'a>(
 /// Bypasses the `!meta.is_outlier` guard because the event's timeline pointers
 /// are being removed in the same `Batch`.
 #[implement(Service)]
-#[tracing::instrument(skip(self, batch, pdu), level = "debug")]
 pub fn add_pdu_outlier_batch_demote<'a>(
 	&'a self,
 	batch: &mut database::Batch<'a>,
@@ -367,7 +363,6 @@ pub fn apply_outlier_batch(&self, batch: database::Batch<'_>) {
 
 /// Remove the PDU from the outlier tree.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn remove_outlier(&self, event_id: &EventId) {
 	if !self
 		.services
@@ -404,7 +399,6 @@ pub fn clear_outlier_flag(&self, event_id: &EventId) {
 pub fn fix_pdu_event_ids(&self) -> Result<usize> { Ok(0) }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "info")]
 pub async fn startup_janitor(&self) {
 	info!("Outlier janitor is disabled.");
 }

@@ -7,7 +7,6 @@ use conduwuit::{
 	Pdu, Result, SyncRwLock, implement,
 	result::LogErr,
 	utils::{MutexMap, ReadyExt, stream::TryIgnore},
-	warn,
 };
 use database::{Deserialized, Ignore, Interfix, Map};
 use futures::{Stream, StreamExt, future::join5, pin_mut};
@@ -138,7 +137,6 @@ impl crate::Service for Service {
 }
 
 #[implement(Service)]
-#[tracing::instrument(level = "trace", skip_all)]
 pub async fn appservice_in_room(&self, room_id: &RoomId, appservice: &RegistrationInfo) -> bool {
 	if let Some(cached) = self
 		.appservice_in_room_cache
@@ -182,12 +180,10 @@ pub fn get_appservice_in_room_cache_usage(&self) -> (usize, usize) {
 }
 
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub fn clear_appservice_in_room_cache(&self) { self.appservice_in_room_cache.write().clear(); }
 
 /// Returns an iterator of all servers participating in this room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_servers<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -201,7 +197,6 @@ pub fn room_servers<'a>(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn server_in_room<'a>(&'a self, server: &'a ServerName, room_id: &'a RoomId) -> bool {
 	let key = (server, room_id);
 	self.db.serverroomids.qry(&key).await.is_ok()
@@ -213,7 +208,6 @@ pub fn is_joining(&self, room_id: &RoomId) -> bool { self.rooms_joining.read().c
 /// Returns true if the server is participating in the room (joined, invited, or
 /// knocked).
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn server_is_participant<'a>(
 	&'a self,
 	server: &'a ServerName,
@@ -232,7 +226,6 @@ pub async fn server_is_participant<'a>(
 /// Returns an iterator of all rooms a server participates in (as far as we
 /// know).
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn server_rooms<'a>(
 	&'a self,
 	server: &'a ServerName,
@@ -248,10 +241,10 @@ pub fn server_rooms<'a>(
 
 /// Expose raw keys for the clean_corrupt_rooms command
 #[implement(Service)]
-pub fn server_rooms_raw_keys_prefix<'a>(
-	&'a self,
-	prefix: &'a (&'a ServerName, Interfix),
-) -> impl Stream<Item = Result<database::keyval::Key<'a>>> + Send + 'a {
+pub fn server_rooms_raw_keys_prefix(
+	&self,
+	prefix: &(&ServerName, Interfix),
+) -> impl Stream<Item = Result<database::keyval::Key<'static>>> + Send {
 	self.db.serverroomids.keys_prefix_raw(prefix)
 }
 
@@ -265,7 +258,6 @@ pub fn server_rooms_remove_raw(&self, key: &[u8]) -> Result<()> {
 /// Returns true if a server can see a user by having any active membership
 /// (joined, invited, or knocked) in at least one shared room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn server_sees_user(&self, server: &ServerName, user_id: &UserId) -> bool {
 	let key = (server.to_owned(), user_id.to_owned());
 	if let Some(sees) = self.server_visibility_cache.get(&key) {
@@ -286,7 +278,6 @@ pub async fn server_sees_user(&self, server: &ServerName, user_id: &UserId) -> b
 
 /// Returns true if user_a and user_b share at least one room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn user_sees_user(&self, user_a: &UserId, user_b: &UserId) -> bool {
 	if user_a == user_b {
 		return true;
@@ -313,7 +304,6 @@ pub async fn user_sees_user(&self, user_a: &UserId, user_b: &UserId) -> bool {
 
 /// List the rooms common between two users
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn get_shared_rooms<'a>(
 	&'a self,
 	user_a: &'a UserId,
@@ -328,7 +318,6 @@ pub fn get_shared_rooms<'a>(
 
 /// Returns an iterator of all joined members of a room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_members<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -343,7 +332,6 @@ pub fn room_members<'a>(
 
 /// Invalidate user visibility cache for all users in the room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn invalidate_user_visibility(&self, user_id: &UserId, room_id: &RoomId) {
 	self.room_members(room_id)
 		.ready_for_each(|other_user| {
@@ -359,7 +347,6 @@ pub async fn invalidate_user_visibility(&self, user_id: &UserId, room_id: &RoomI
 
 /// Invalidate server visibility cache for the user and all servers in the room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn invalidate_server_visibility(&self, user_id: &UserId, room_id: &RoomId) {
 	self.room_servers(room_id)
 		.ready_for_each(|server| {
@@ -371,13 +358,11 @@ pub async fn invalidate_server_visibility(&self, user_id: &UserId, room_id: &Roo
 
 /// Returns the number of users which are currently in a room
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn room_joined_count(&self, room_id: &RoomId) -> Result<u64> {
 	self.db.roomid_joinedcount.get(room_id).await.deserialized()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 /// Returns an iterator of all our local users in the room, even if they're
 /// deactivated/guests
 pub fn local_users_in_room<'a>(
@@ -391,7 +376,6 @@ pub fn local_users_in_room<'a>(
 /// Returns an iterator of all our local joined users in a room who are
 /// active (not deactivated, not guest)
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub fn active_local_users_in_room<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -404,7 +388,6 @@ pub fn active_local_users_in_room<'a>(
 
 /// Returns the number of users which are currently invited to a room
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn room_invited_count(&self, room_id: &RoomId) -> Result<u64> {
 	self.db
 		.roomid_invitedcount
@@ -415,7 +398,6 @@ pub async fn room_invited_count(&self, room_id: &RoomId) -> Result<u64> {
 
 /// Returns an iterator over all User IDs who ever joined a room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_useroncejoined<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -430,7 +412,6 @@ pub fn room_useroncejoined<'a>(
 
 /// Returns an iterator over all invited members of a room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_members_invited<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -445,7 +426,6 @@ pub fn room_members_invited<'a>(
 
 /// Returns an iterator over all knocked members of a room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn room_members_knocked<'a>(
 	&'a self,
 	room_id: &'a RoomId,
@@ -459,7 +439,6 @@ pub fn room_members_knocked<'a>(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn get_invite_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
 	let key = (room_id, user_id);
 	self.db
@@ -470,7 +449,6 @@ pub async fn get_invite_count(&self, room_id: &RoomId, user_id: &UserId) -> Resu
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn get_knock_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
 	let key = (room_id, user_id);
 	self.db
@@ -481,7 +459,6 @@ pub async fn get_knock_count(&self, room_id: &RoomId, user_id: &UserId) -> Resul
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn get_left_count(&self, room_id: &RoomId, user_id: &UserId) -> Result<u64> {
 	let key = (room_id, user_id);
 	self.db.roomuserid_leftcount.qry(&key).await.deserialized()
@@ -489,7 +466,6 @@ pub async fn get_left_count(&self, room_id: &RoomId, user_id: &UserId) -> Result
 
 /// Returns an iterator over all rooms this user joined.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn rooms_joined<'a>(
 	&'a self,
 	user_id: &'a UserId,
@@ -504,7 +480,6 @@ pub fn rooms_joined<'a>(
 
 /// Returns an iterator over all rooms a user was invited to.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn rooms_invited<'a>(
 	&'a self,
 	user_id: &'a UserId,
@@ -524,7 +499,6 @@ pub fn rooms_invited<'a>(
 
 /// Returns an iterator over all rooms a user is currently knocking.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn rooms_knocked<'a>(
 	&'a self,
 	user_id: &'a UserId,
@@ -549,7 +523,6 @@ pub fn rooms_knocked<'a>(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn invite_state(
 	&self,
 	user_id: &UserId,
@@ -564,7 +537,6 @@ pub async fn invite_state(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn knock_state(
 	&self,
 	user_id: &UserId,
@@ -579,7 +551,6 @@ pub async fn knock_state(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn left_state(&self, user_id: &UserId, room_id: &RoomId) -> Result<Option<Pdu>> {
 	let key = (user_id, room_id);
 	self.db
@@ -591,7 +562,6 @@ pub async fn left_state(&self, user_id: &UserId, room_id: &RoomId) -> Result<Opt
 
 /// Returns an iterator over all rooms a user left.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn rooms_left<'a>(
 	&'a self,
 	user_id: &'a UserId,
@@ -610,7 +580,6 @@ pub fn rooms_left<'a>(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn user_membership(
 	&self,
 	user_id: &UserId,
@@ -647,46 +616,39 @@ pub async fn user_membership(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn once_joined(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.roomuseroncejoinedids.qry(&key).await.is_ok()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_joined<'a>(&'a self, user_id: &'a UserId, room_id: &'a RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.userroomid_joined.qry(&key).await.is_ok()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_knocked<'a>(&'a self, user_id: &'a UserId, room_id: &'a RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.userroomid_knockedstate.qry(&key).await.is_ok()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_invited(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.userroomid_invitestate.qry(&key).await.is_ok()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_invited_or_joined(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	self.is_joined(user_id, room_id).await || self.is_invited(user_id, room_id).await
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_knocked_or_joined(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	self.is_joined(user_id, room_id).await || self.is_knocked(user_id, room_id).await
 }
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_left(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	let key = (user_id, room_id);
 	self.db.userroomid_leftstate.qry(&key).await.is_ok()
@@ -698,14 +660,12 @@ pub async fn is_left(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 /// surface the leave to other devices via `include_leave`, even after one
 /// device forgets the room.
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn is_forgotten(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	let key = (room_id, user_id);
 	self.db.roomuserid_forgotten.qry(&key).await.is_ok()
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn can_access_history(&self, user_id: &UserId, room_id: &RoomId) -> bool {
 	if self.is_joined(user_id, room_id).await {
 		return true;
@@ -715,7 +675,6 @@ pub async fn can_access_history(&self, user_id: &UserId, room_id: &RoomId) -> bo
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "trace")]
 pub async fn invite_sender(&self, user_id: &UserId, room_id: &RoomId) -> Result<OwnedUserId> {
 	let key = (user_id, room_id);
 	self.db
@@ -732,7 +691,7 @@ mod serde_test3 {
 		let s = r#"{"displayname":"user-2 🏳️‍⚧️","membership":"join"}"#;
 		match slipstream::codec::from_str::<RoomMemberEventContent>(s) {
 			| Ok(c) => println!("Success: {:?}", c.membership),
-			| Err(e) => panic!("Error: {}", e),
+			| Err(e) => panic!("Error: {e}"),
 		}
 	}
 }

@@ -1,13 +1,14 @@
-use std::{fmt::Debug, mem};
+use std::fmt::Debug;
 
 use bytes::BytesMut;
-use conduwuit::{Err, Result, debug_error, err, utils, utils::response::LimitReadExt, warn};
-use reqwest::Client;
+use conduwuit::{Err, Result, debug_error, err, utils, warn};
 use slipstream::api::{IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken};
+
+use crate::client::HttpClient;
 
 /// Sends a request to an antispam service
 pub(crate) async fn send_antispam_request<T>(
-	client: &Client,
+	client: &HttpClient,
 	base_url: &str,
 	secret: &str,
 	request: T,
@@ -19,26 +20,13 @@ where
 	let http_request = request
 		.try_into_http_request::<BytesMut>(base_url, SendAccessToken::Always(secret), &VERSIONS)?
 		.map(BytesMut::freeze);
-	let reqwest_request = reqwest::Request::try_from(http_request)?;
-
-	let mut response = client.execute(reqwest_request).await.map_err(|e| {
+	let response = client.execute(http_request).await.map_err(|e| {
 		warn!("Could not send request to antispam: {e:?}");
 		e
 	})?;
 
-	// reqwest::Response -> http::Response conversion
 	let status = response.status();
-	let mut http_response_builder = http::Response::builder()
-		.status(status)
-		.version(response.version());
-	mem::swap(
-		response.headers_mut(),
-		http_response_builder
-			.headers_mut()
-			.expect("http::response::Builder is usable"),
-	);
-
-	let body = response.limit_read(65535).await?; // TODO: handle timeout
+	let body = response.into_body();
 
 	if !status.is_success() {
 		debug_error!("Antispam response bytes: {:?}", utils::string_from_bytes(&body));
@@ -53,9 +41,7 @@ where
 	}
 
 	let response = T::IncomingResponse::try_from_http_response(
-		http_response_builder
-			.body(body)
-			.expect("reqwest body is valid http body"),
+		http::Response::builder().status(status).body(body)?,
 	);
 
 	response.map_err(|e| {

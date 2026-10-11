@@ -1,25 +1,12 @@
-use axum::{Router, extract::State, response::IntoResponse, routing::get};
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 
-use crate::{WebError, template};
-
-pub(crate) fn build() -> Router<crate::State> {
-	Router::new()
-		.route("/", get(index))
-		.route("/_continuwuity/", get(index))
-}
-
-async fn index(State(services): State<crate::State>) -> Result<impl IntoResponse, WebError> {
-	template! {
-		struct Index<'a> use "index.html.j2" {
-			server_name: &'a str,
-			first_run: bool
-		}
-	}
-
-	Ok(Index::new(
-		&services,
-		services.globals.server_name().as_str(),
-		services.firstrun.is_first_run(),
-	)
-	.into_response())
+pub(crate) async fn index(_request: Request<Incoming>) -> Response<Full<Bytes>> {
+	Response::builder()
+		.header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
+		.body(Full::from(Bytes::from_static(
+			b"<!doctype html><html><head><meta charset=\"utf-8\"><title>Continuwuity</title></head><body><h1>Continuwuity</h1><p>Matrix homeserver running.</p></body></html>",
+		)))
+		.expect("static response headers are valid")
 }

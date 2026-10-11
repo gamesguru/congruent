@@ -10,6 +10,11 @@ use std::{
 	sync::Arc,
 };
 
+pub mod events;
+pub mod keys;
+pub mod state;
+pub mod store;
+
 /// Errors returned while opening or operating the mtxdb database.
 pub use mtxdb::storage::StorageError;
 

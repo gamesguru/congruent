@@ -21,15 +21,6 @@ use slipstream::{
 
 /// Update current membership data.
 #[implement(super::Service)]
-#[tracing::instrument(
-		level = "debug",
-		skip_all,
-		fields(
-			%room_id,
-			%user_id,
-			?pdu,
-		),
-	)]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_membership(
 	&self,
@@ -147,8 +138,7 @@ pub async fn update_membership(
 							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
-					.as_deref()
-					== Some("m.room.create")
+					.as_deref() == Some("m.room.create")
 			});
 			if !has_create {
 				if let Ok(previous) = self.knock_state(user_id, room_id).await {
@@ -162,8 +152,7 @@ pub async fn update_membership(
 									.and_then(|value| value.as_str())
 									.map(str::to_owned)
 							})
-							.as_deref()
-							== Some("m.room.create")
+							.as_deref() == Some("m.room.create")
 					}) {
 						knock_state = previous;
 					}
@@ -179,11 +168,11 @@ pub async fn update_membership(
 							.and_then(|value| value.as_str())
 							.map(str::to_owned)
 					})
-					.as_deref()
-					== Some("m.room.create")
+					.as_deref() == Some("m.room.create")
 			});
 			if has_create {
-				self.mark_as_knocked(user_id, room_id, Some(knock_state));
+				self.mark_as_knocked(user_id, room_id, Some(knock_state))
+					.await;
 			}
 		},
 	}
@@ -196,7 +185,6 @@ pub async fn update_membership(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 pub async fn update_joined_count(&self, room_id: &RoomId) {
 	let mut joinedcount = 0_u64;
 	let mut invitedcount = 0_u64;
@@ -349,9 +337,8 @@ fn set_other_membership_states_into_batch<'a>(
 /// recommended to use this directly. You most likely should use
 /// `update_membership` instead
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
-	tracing::info!(
+	conduwuit::info!(
 		target: "knock_debug",
 		"mark_as_joined called for user_id={} room_id={}",
 		user_id,
@@ -362,6 +349,7 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db
@@ -393,13 +381,13 @@ pub async fn mark_as_joined(&self, user_id: &UserId, room_id: &RoomId) {
 /// `update_membership`, presence updates, or device list notifications.
 /// The caller MUST call `update_joined_count` after the batch completes.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db
@@ -431,7 +419,6 @@ pub async fn mark_as_joined_silent(&self, user_id: &UserId, room_id: &RoomId) {
 /// notifications, or sync-side side effects beyond the raw membership tables.
 /// The caller MUST call `update_joined_count` after the batch completes.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, last_state, sender_user, invite_via), level = "debug")]
 pub async fn mark_as_invited_silent(
 	&self,
 	user_id: &UserId,
@@ -445,6 +432,7 @@ pub async fn mark_as_invited_silent(
 
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	self.db.userroomid_invitestate.batch_raw_put(
@@ -502,13 +490,13 @@ pub async fn mark_as_invited_silent(
 /// clear" bug through `reconcile_membership`, which calls this whenever its
 /// room-state snapshot doesn't (yet) reflect a just-landed invite.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let mut batch = Batch::new();
 
 	// Write left state with no PDU (admin operation, no actual leave event)
@@ -550,13 +538,13 @@ pub async fn mark_as_left_silent(&self, user_id: &UserId, room_id: &RoomId) {
 /// stale for every membership removal that flows through state resolution
 /// instead of a real `/leave`.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_left_reconciled(&self, user_id: &UserId, room_id: &RoomId) -> u64 {
 	let userroom_id = (user_id, room_id);
 	let userroom_id = serialize_key(userroom_id).expect("failed to serialize userroom_id");
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 	let left_count = self.services.globals.next_count().unwrap();
 	let mut batch = Batch::new();
 
@@ -593,9 +581,8 @@ pub async fn mark_as_left_reconciled(&self, user_id: &UserId, room_id: &RoomId) 
 /// behave as if the user is no longer in the room. This may occur, for example,
 /// if the room being left has been server-banned by an administrator.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn mark_as_left(&self, user_id: &UserId, room_id: &RoomId, leave_pdu: Option<Pdu>) {
-	tracing::info!(
+	conduwuit::info!(
 		target: "knock_debug",
 		"mark_as_left called for user_id={} room_id={}", user_id, room_id
 	);
@@ -770,8 +757,7 @@ pub async fn mark_device_list_lefts_batch(
 /// recommended to use this directly. You most likely should use
 /// `update_membership` instead
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
-pub fn mark_as_knocked(
+pub async fn mark_as_knocked(
 	&self,
 	user_id: &UserId,
 	room_id: &RoomId,
@@ -782,6 +768,7 @@ pub fn mark_as_knocked(
 
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
+	let _membership_guard = self.membership_mutex.lock(room_id).await;
 
 	let new_count = self
 		.services
@@ -789,7 +776,7 @@ pub fn mark_as_knocked(
 		.next_count()
 		.unwrap()
 		.saturating_add(1);
-	tracing::info!(
+	conduwuit::info!(
 		target: "knock_debug",
 		"mark_as_knocked called for user_id={} room_id={} new_count={} knocked_state={:?}",
 		user_id, room_id, new_count, knocked_state
@@ -827,7 +814,6 @@ pub fn mark_as_knocked(
 /// need to gate access on "did this user forget this room" (e.g. /messages)
 /// should check `is_forgotten()`, not infer it from `is_left()` going false.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn forget(&self, room_id: &RoomId, user_id: &UserId) {
 	let roomuser_id = (room_id, user_id);
 
@@ -835,7 +821,6 @@ pub fn forget(&self, room_id: &RoomId, user_id: &UserId) {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub fn unforget(&self, room_id: &RoomId, user_id: &UserId) {
 	let roomuser_id = (room_id, user_id);
 	let roomuser_id = serialize_key(roomuser_id).expect("failed to serialize roomuser_id");
@@ -844,14 +829,12 @@ pub fn unforget(&self, room_id: &RoomId, user_id: &UserId) {
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 fn mark_as_once_joined(&self, user_id: &UserId, room_id: &RoomId) {
 	let key = (user_id, room_id);
 	self.db.roomuseroncejoinedids.put_raw(key, []);
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip(self, last_state, invite_via))]
 pub async fn mark_as_invited(
 	&self,
 	user_id: &UserId,
@@ -911,12 +894,12 @@ pub async fn mark_as_invited(
 		.roomuserid_forgotten
 		.batch_delete(&mut batch, &roomuser_id);
 	self.db.userroomid_joined.apply_batch(batch);
-	drop(membership_guard);
 	self.unforget(room_id, user_id);
 
 	if let Some(servers) = invite_via.filter(is_not_empty!()) {
 		self.add_servers_invite_via(room_id, servers).await;
 	}
+	drop(membership_guard);
 
 	Ok(())
 }
@@ -1039,7 +1022,6 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 /// This is used when `force_state` replaces the room state entirely. We must
 /// update the derived caches to reflect the new state.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn update_caches_for_state_delta(
 	&self,
 	room_id: &RoomId,

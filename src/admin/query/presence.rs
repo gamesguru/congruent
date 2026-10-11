@@ -28,14 +28,14 @@ pub(super) async fn process(subcommand: PresenceCommand, context: &Context<'_>) 
 
 	match subcommand {
 		| PresenceCommand::GetPresence { user_id } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results = services.presence.get_presence(&user_id).await;
 			let query_time = timer.elapsed();
 
 			write!(context, "Query completed in {query_time:?}:\n\n```rs\n{results:#?}\n```")
 		},
 		| PresenceCommand::PresenceSince { since } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results: Vec<(_, _, _)> = services
 				.presence
 				.presence_since(since)

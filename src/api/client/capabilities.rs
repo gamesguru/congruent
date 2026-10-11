@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use conduwuit::{Result, Server};
 use slipstream::{
 	RoomVersionId,
@@ -10,7 +9,7 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, json_util::single_field};
+use crate::{Ruma, json_util::single_field, router::extract::State};
 
 /// # `GET /_matrix/client/v3/capabilities`
 ///

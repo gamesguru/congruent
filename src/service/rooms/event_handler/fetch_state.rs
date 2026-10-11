@@ -20,11 +20,6 @@ use crate::rooms::short::ShortStateKey;
 /// server's response to some extent, but we still do a lot of checks
 /// on the events.
 #[implement(super::Service)]
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(%origin),
-)]
 pub(crate) async fn fetch_state<Pdu>(
 	&self,
 	origin: &ServerName,
@@ -59,7 +54,7 @@ where
 			);
 
 			let timeout = Duration::from_secs(self.services.server.config.federation_timeout);
-			let state_ids_res = match tokio::time::timeout(timeout, req).await {
+			let state_ids_res = match conduwuit::timeout(timeout, req).await {
 				| Ok(Ok(res)) => res,
 				| Ok(Err(e)) => {
 					info!(%server, "fetch_state /state_ids failed: {e}");

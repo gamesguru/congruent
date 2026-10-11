@@ -23,7 +23,7 @@ pub(super) async fn process(subcommand: AppserviceCommand, context: &Context<'_>
 
 	match subcommand {
 		| AppserviceCommand::GetRegistration { appservice_id } => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let results = services.appservice.get_registration(&appservice_id).await;
 
 			let query_time = timer.elapsed();
@@ -31,7 +31,7 @@ pub(super) async fn process(subcommand: AppserviceCommand, context: &Context<'_>
 			write!(context, "Query completed in {query_time:?}:\n\n```rs\n{results:#?}\n```")
 		},
 		| AppserviceCommand::All => {
-			let timer = tokio::time::Instant::now();
+			let timer = std::time::Instant::now();
 			let mut db_ids = Box::pin(services.appservice.iter_db_ids());
 			let mut results = Vec::new();
 			let mut count = 0_u64;
@@ -39,7 +39,7 @@ pub(super) async fn process(subcommand: AppserviceCommand, context: &Context<'_>
 				results.push(id);
 				count = count.saturating_add(1);
 				if count.is_multiple_of(1000) {
-					tokio::task::yield_now().await;
+					smol::future::yield_now().await;
 				}
 			}
 			let query_time = timer.elapsed();

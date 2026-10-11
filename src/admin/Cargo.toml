@@ -21,57 +21,37 @@ crate-type = [
 ignored = ["const-str", "ctor"]
 
 [features]
-brotli_compression = [
-	"conduwuit-api/brotli_compression",
-	"conduwuit-core/brotli_compression",
-	"conduwuit-service/brotli_compression",
+mimalloc = [
+	"conduwuit-api/mimalloc",
+	"conduwuit-core/mimalloc",
+	"conduwuit-database/mimalloc",
+	"conduwuit-service/mimalloc",
 ]
-gzip_compression = [
-	"conduwuit-api/gzip_compression",
-	"conduwuit-core/gzip_compression",
-	"conduwuit-service/gzip_compression",
+mimalloc_conf = [
+	"conduwuit-api/mimalloc_conf",
+	"conduwuit-core/mimalloc_conf",
+	"conduwuit-database/mimalloc_conf",
+	"conduwuit-service/mimalloc_conf",
 ]
-io_uring = [
-	"conduwuit-api/io_uring",
-	"conduwuit-database/io_uring",
-	"conduwuit-service/io_uring",
+mimalloc_prof = [
+	"conduwuit-api/mimalloc_prof",
+	"conduwuit-core/mimalloc_prof",
+	"conduwuit-database/mimalloc_prof",
+	"conduwuit-service/mimalloc_prof",
 ]
-jemalloc = [
-	"conduwuit-api/jemalloc",
-	"conduwuit-core/jemalloc",
-	"conduwuit-database/jemalloc",
-	"conduwuit-service/jemalloc",
-]
-jemalloc_conf = [
-	"conduwuit-api/jemalloc_conf",
-	"conduwuit-core/jemalloc_conf",
-	"conduwuit-database/jemalloc_conf",
-	"conduwuit-service/jemalloc_conf",
-]
-jemalloc_prof = [
-	"conduwuit-api/jemalloc_prof",
-	"conduwuit-core/jemalloc_prof",
-	"conduwuit-database/jemalloc_prof",
-	"conduwuit-service/jemalloc_prof",
-]
-jemalloc_stats = [
-	"conduwuit-api/jemalloc_stats",
-	"conduwuit-core/jemalloc_stats",
-	"conduwuit-database/jemalloc_stats",
-	"conduwuit-service/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-api/mimalloc_stats",
+	"conduwuit-core/mimalloc_stats",
+	"conduwuit-database/mimalloc_stats",
+	"conduwuit-service/mimalloc_stats",
 ]
 release_max_log_level = [
 	"conduwuit-api/release_max_log_level",
 	"conduwuit-core/release_max_log_level",
 	"conduwuit-database/release_max_log_level",
 	"conduwuit-service/release_max_log_level",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-]
-tokio_metrics = [
-	"conduwuit-core/tokio_metrics",
 ]
 zstd_compression = [
 	"conduwuit-api/zstd_compression",
@@ -81,7 +61,9 @@ zstd_compression = [
 ]
 
 [dependencies]
-toml = { workspace = true, features = ["display"] }
+async-fs.workspace = true
+async-lock.workspace = true
+toml.workspace = true
 clap.workspace = true
 conduwuit-api.workspace = true
 conduwuit-build-metadata.workspace = true
@@ -92,18 +74,12 @@ conduwuit-service.workspace = true
 const-str.workspace = true
 ctor.workspace = true
 futures.workspace = true
-lettre.workspace = true
 log.workspace = true
-serde-saphyr.workspace = true
-tokio.workspace = true
-tracing-subscriber.workspace = true
-tracing.workspace = true
-regex.workspace = true
+smol.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
 
 [dev-dependencies]
-figment.workspace = true
 rustls = { workspace = true, features = ["ring"] }
 
 [lints]

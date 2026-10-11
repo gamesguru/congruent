@@ -1,9 +1,9 @@
 use std::{
+	fmt::Write,
 	io::IsTerminal,
 	sync::{Arc, OnceLock},
 };
 
-use askama::Template;
 use async_trait::async_trait;
 use conduwuit::{Result, info, utils::ReadyExt};
 use futures::{FutureExt, StreamExt};
@@ -130,13 +130,6 @@ impl Service {
 	/// Returns Ok(true) if the specified user was the first user, and Ok(false)
 	/// if they were not.
 	pub async fn empower_first_user(&self, user: &UserId) -> Result<bool> {
-		#[derive(Template)]
-		#[template(path = "welcome.md")]
-		struct WelcomeMessage<'a> {
-			config: &'a Dep<config::Service>,
-			domain: &'a str,
-		}
-
 		// If first run mode isn't active, do nothing.
 		if !self.disable_first_run() {
 			return Ok(false);
@@ -145,12 +138,46 @@ impl Service {
 		self.services.admin.make_user_admin(user).boxed().await?;
 
 		// Send the welcome message
-		let welcome_message = WelcomeMessage {
-			config: &self.services.config,
-			domain: self.services.globals.server_name().as_str(),
+		let config = &self.services.config;
+		let domain = self.services.globals.server_name();
+		let mut welcome_message = "## Thank you for trying out Continuwuity!\n\nYour new \
+		                           homeserver is ready to use!"
+			.to_owned();
+		if config.allow_federation {
+			let _ = write!(
+				welcome_message,
+				" To make sure you can federate with the rest of the Matrix network, consider checking your domain (`{domain}`) with a federation tester like [this one](https://connectivity-tester.mtrnord.blog/)."
+			);
 		}
-		.render()
-		.expect("should have been able to render welcome message template");
+		welcome_message.push_str("\n\n");
+		if config.get_config_file_token().is_some() {
+			welcome_message.push_str(
+				"Users may now create accounts normally using the configured registration token.",
+			);
+		} else if config.recaptcha_site_key.is_some() {
+			welcome_message
+				.push_str("Users may now create accounts normally after solving a CAPTCHA.");
+		} else if config.yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse
+		{
+			welcome_message.push_str(
+				"**This server has open, unrestricted registration enabled!** Anyone, including \
+				 spammers, may now create an account with no further steps. If this is not \
+				 desired behavior, set \
+				 `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse` to \
+				 `false` in your configuration and restart the server.",
+			);
+		} else if config.allow_registration {
+			welcome_message.push_str(
+				"To allow more users to register, use the `!admin token` admin commands to \
+				 issue registration tokens, or set a registration token in the configuration.",
+			);
+		} else {
+			welcome_message.push_str(
+				"You've disabled registration. To create more accounts, use the `!admin users \
+				 create-user` admin command.",
+			);
+		}
+		welcome_message.push_str("\n\nThis room is your server's admin room. You can send messages starting with `!admin` in this room to perform a range of administrative actions.\nTo view a list of available commands, send the following message: `!admin --help`\n\nProject chatrooms:\n> Support chatroom: https://matrix.to/#/#continuwuity:continuwuity.org\n> Update announcements: https://matrix.to/#/#announcements:continuwuity.org\n> Other chatrooms: https://matrix.to/#/#space:continuwuity.org\n\nHelpful links:\n> Source code: https://forgejo.ellis.link/continuwuation/continuwuity\n> Documentation: https://continuwuity.org/\n> Report issues: https://forgejo.ellis.link/continuwuation/continuwuity/issues");
 
 		self.services
 			.admin
@@ -246,8 +273,9 @@ impl Service {
 			);
 		}
 
-		if let Some(smtp) = &self.services.config.smtp {
-			if smtp.require_email_for_registration || smtp.require_email_for_token_registration {
+		if let Some(email) = &self.services.config.email {
+			if email.require_email_for_registration || email.require_email_for_token_registration
+			{
 				eprintln!(
 					"{} Accounts created after yours may be required to provide an email \
 					 address, as set in your configuration.",

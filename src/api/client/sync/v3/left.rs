@@ -30,14 +30,6 @@ use crate::client::{
 	},
 };
 
-#[tracing::instrument(
-	name = "left",
-	level = "debug",
-	skip_all,
-	fields(
-		room_id = %room_id,
-	),
-)]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn load_left_room(
 	services: &Services,

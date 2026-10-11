@@ -56,7 +56,6 @@ impl crate::Service for Service {
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn reset(&self, ctx: &Context<'_>) {
 	let prefix = (ctx.user_id, ctx.device_id, ctx.room_id, Interfix);
 	self.db
@@ -70,7 +69,6 @@ pub async fn reset(&self, ctx: &Context<'_>) {
 /// Returns only the subset of `senders` which should be sent to the client
 /// according to the provided lazy loading context.
 #[implement(Service)]
-#[tracing::instrument(name = "retain", level = "debug", skip_all)]
 pub async fn retain_lazy_members(&self, senders: MemberSet, ctx: &Context<'_>) -> MemberSet {
 	debug_assert!(
 		ctx.options.is_none_or(Options::is_enabled),

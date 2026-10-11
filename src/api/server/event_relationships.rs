@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{Event, Result};
 use futures::StreamExt;
 use slipstream::{OwnedEventId, api::federation::event::event_relationships};
@@ -7,6 +6,7 @@ use super::AccessCheck;
 use crate::{
 	Ruma,
 	msc2836::{self, Params, Requester},
+	router::extract::State,
 };
 
 /// # `POST /_matrix/federation/unstable/event_relationships`

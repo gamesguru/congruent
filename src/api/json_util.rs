@@ -1,4 +1,8 @@
+use bytes::Bytes;
+use http_body_util::Full;
 use slipstream::codec::Serialize;
+
+use crate::router::response::Response;
 
 pub(crate) fn single_field<T: Serialize + ?Sized>(
 	key: &str,
@@ -30,13 +34,13 @@ pub(crate) fn empty_events() -> slipstream::json::Value {
 	single_field("events", &Vec::<slipstream::json::Value>::new())
 }
 
-pub(crate) fn json_response(value: slipstream::json::Value) -> axum::response::Response {
+pub(crate) fn json_response(value: slipstream::json::Value) -> Response {
 	let body = slipstream::codec::to_string(&value);
 	// Release the JSON tree before constructing the response body to reduce peak memory use.
 	drop(value);
 	http::Response::builder()
 		.header(http::header::CONTENT_TYPE, "application/json")
-		.body(axum::body::Body::from(body))
+		.body(Full::new(Bytes::from(body)))
 		.expect("static JSON response builder is valid")
 }
 

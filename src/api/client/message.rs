@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, PduEvent, Result, at, debug_warn, info,
 	matrix::{
@@ -12,6 +10,7 @@ use conduwuit::{
 		result::LogErr,
 		stream::{BroadbandExt, TryIgnore},
 	},
+	warn,
 };
 use conduwuit_service::{
 	Services,
@@ -35,10 +34,12 @@ use slipstream::{
 	},
 	sswire::Raw,
 };
-use tracing::warn;
 
 use super::sync::add_membership_to_unsigned;
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// list of safe and common non-state events to ignore if the user is ignored
 const IGNORED_MESSAGE_TYPES: &[TimelineEventType] = &[
@@ -555,6 +556,5 @@ pub(crate) async fn is_ignored_invite(
 	services
 		.users
 		.invite_filter_level(&sender_user, recipient_user)
-		.await
-		== FilterLevel::Ignore
+		.await == FilterLevel::Ignore
 }

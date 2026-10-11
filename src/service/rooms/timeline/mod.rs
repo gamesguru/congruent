@@ -322,12 +322,10 @@ impl Service {
 
 	pub fn db_apply_batch(&self, batch: database::Batch<'_>) { self.db.db_apply_batch(batch); }
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn first_pdu_in_room(&self, room_id: &RoomId) -> Result<impl Event> {
 		self.first_item_in_room(room_id).await.map(at!(1))
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn first_item_in_room(&self, room_id: &RoomId) -> Result<(TopoToken, impl Event)> {
 		let pdus = self.topo_pdus(room_id, None);
 
@@ -337,12 +335,10 @@ impl Service {
 			.ok_or_else(|| err!(Request(NotFound("No PDU found in room"))))
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn latest_pdu_in_room(&self, room_id: &RoomId) -> Result<impl Event> {
 		self.db.latest_pdu_in_room(room_id).await
 	}
 
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn last_timeline_count(&self, room_id: &RoomId) -> Result<PduCount> {
 		if let Some(count) = self.last_timeline_count_cache.get(&room_id.to_owned()) {
 			info!(
@@ -439,46 +435,6 @@ impl Service {
 	#[inline]
 	pub async fn reindex_timeline(&self, room_id: &RoomId) -> Result<usize> {
 		self.db.reindex_timeline(room_id).await
-	}
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn backfill_gap_cache_requires_matching_state_hash() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 500));
-
-		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
-	}
-
-	#[test]
-	fn backfill_gap_cache_rejects_zero_state_hash() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 500));
-
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
-	}
-
-	#[test]
-	fn backfill_gap_cache_requires_sufficient_limit() {
-		let from = TopoToken {
-			depth: 42,
-			pdu_count: PduCount::Normal(42),
-		};
-		let cached = Some((7, from, 100));
-
-		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
-		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
 	}
 }
 
@@ -717,7 +673,6 @@ impl Service {
 	/// or in the room.
 	///
 	/// Note: deliberately uncached for now.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn next_root_handle(
 		&self,
 		room_id: &RoomId,
@@ -745,7 +700,6 @@ impl Service {
 	/// or in the room.
 	///
 	/// Note: deliberately uncached for now.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn prev_root_handle(
 		&self,
 		room_id: &RoomId,
@@ -769,7 +723,6 @@ impl Service {
 	}
 
 	/// Returns the HAMT root handle of the room at the given event count.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_root_handle(
 		&self,
 		room_id: &RoomId,
@@ -801,7 +754,6 @@ impl Service {
 	}
 
 	/// Removes a pdu and creates a new one with the same id.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn replace_pdu(
 		&self,
 		pdu_id: &RawPduId,
@@ -829,7 +781,6 @@ impl Service {
 	/// is deliberately no `Option<PduCount>` overload: that shape is what let
 	/// two different call sites independently forget which way to adjust the
 	/// boundary (see `docs/development-gg/fable/boundary-flake-advisory.md`).
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus_rev<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -847,7 +798,6 @@ impl Service {
 			.topo_pdus_rev(room_id, until.unwrap_or_else(TopoToken::max))
 	}
 
-	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn fix_pdu_event_ids(&self) -> Result<usize> { self.db.fix_pdu_event_ids().await }
 
 	/// Forward iteration over PDUs bounded by `from`.
@@ -857,7 +807,6 @@ impl Service {
 	/// the opposite sign from `pdus_rev`'s; that asymmetry is exactly why
 	/// callers should never hand-roll it (see the doc comment on
 	/// `Data::pdus` in `data.rs`).
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -867,7 +816,6 @@ impl Service {
 	}
 
 	/// Forward iteration using topological ordering, starting after `from`.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn topo_pdus<'a>(
 		&'a self,
 		room_id: &'a RoomId,
@@ -940,5 +888,45 @@ impl Service {
 		I: Stream<Item = ShortEventId> + Send + 'a,
 	{
 		self.db.multi_get_shortauthevents(shorteventids)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn backfill_gap_cache_requires_matching_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 8, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_rejects_zero_state_hash() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 500));
+
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 0, from, 100));
+	}
+
+	#[test]
+	fn backfill_gap_cache_requires_sufficient_limit() {
+		let from = TopoToken {
+			depth: 42,
+			pdu_count: PduCount::Normal(42),
+		};
+		let cached = Some((7, from, 100));
+
+		assert!(Service::backfill_gap_free_cache_hit(cached, 7, from, 100));
+		assert!(!Service::backfill_gap_free_cache_hit(cached, 7, from, 101));
 	}
 }

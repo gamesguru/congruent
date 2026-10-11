@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, debug, err, utils};
 use futures::StreamExt;
 use service::uiaa::Identity;
@@ -10,7 +8,11 @@ use slipstream::{
 	},
 };
 
-use crate::{Ruma, client::DEVICE_ID_LENGTH};
+use crate::{
+	Ruma,
+	client::DEVICE_ID_LENGTH,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/client/r0/devices`
 ///
@@ -47,7 +49,6 @@ pub(crate) async fn get_device_route(
 /// # `PUT /_matrix/client/r0/devices/{deviceId}`
 ///
 /// Updates the metadata on a given device of the sender user.
-#[tracing::instrument(skip_all, fields(%client), name = "update_device", level = "debug")]
 pub(crate) async fn update_device_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -102,7 +103,7 @@ pub(crate) async fn update_device_route(
 				)
 				.await?;
 
-			return Ok(update_device::v3::Response {});
+			Ok(update_device::v3::Response {})
 		},
 	}
 }

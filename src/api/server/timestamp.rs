@@ -1,10 +1,9 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, info};
 use futures::{StreamExt, pin_mut};
 use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event_by_timestamp};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/timestamp_to_event/{roomId}`
 ///

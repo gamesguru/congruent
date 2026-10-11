@@ -8,7 +8,6 @@ use conduwuit_core::{
 	log::{Log, LogLevelReloadHandles, capture},
 	matrix::{Event, PduEvent},
 };
-use figment::providers::Format;
 use slipstream::{
 	CanonicalJsonObject, EventId, RoomId, event_id,
 	events::{AnyStrippedStateEvent, StateEventType},
@@ -50,24 +49,23 @@ async fn setup_test_services() -> (TempDbGuard, Arc<Server>, Arc<Services>) {
 
 	let guard = TempDbGuard { path: db_path.clone(), _lock: lock };
 
-	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+	let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
 		r#"
         server_name = "test.conduwuit.local"
         database_path = "{}"
         "#,
 		db_path.to_string_lossy().replace('\\', "/")
-	)));
+	))
+	.expect("failed to parse test config");
 
-	let config = Config::new(&figment).expect("failed to parse config");
-	let runtime_handle = tokio::runtime::Handle::current();
+	let config = Config::new(&config_raw).expect("failed to parse config");
+	let runtime_handle = ();
 	let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
-		reload: LogLevelReloadHandles::default(),
-		capture: Arc::new(capture::State::default()),
+		reload: LogLevelReloadHandles,
+		capture: Arc::new(capture::State),
 	}));
 
-	let services = Services::build(server.clone())
-		.await
-		.expect("failed to build services");
+	let services = Services::build(server.clone()).expect("failed to build services");
 	(guard, server, services)
 }
 
@@ -137,9 +135,7 @@ fn create_member_pdu(
 	json.insert("content".into(), slipstream::CanonicalJsonValue::Object(content));
 	json.insert(
 		"origin_server_ts".into(),
-		slipstream::CanonicalJsonValue::Number(
-			origin_server_ts.try_into().expect("valid timestamp"),
-		),
+		slipstream::CanonicalJsonValue::Number(origin_server_ts.into()),
 	);
 	json.insert("depth".into(), slipstream::CanonicalJsonValue::Number(1_u64.into()));
 	json.insert("prev_events".into(), slipstream::CanonicalJsonValue::Array(Vec::new()));
@@ -165,7 +161,7 @@ async fn persist_dummy_pdu(services: &Services, room_id: &RoomId, pdu: &PduEvent
 		.expect("failed to persist dummy pdu");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_state_round_trip() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -263,7 +259,7 @@ fn test_root_handle_rejects_truncated_value() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_force_state() {
 	let (_guard, _server, services) = setup_test_services().await;
 
@@ -299,7 +295,7 @@ async fn test_force_state() {
 	assert_eq!(retrieved_root.state_group_id, expected_root.state_group_id);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_state_equivalence() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
@@ -391,7 +387,6 @@ async fn test_state_equivalence() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&final_root)
-		.await
 		.expect("failed to load HAMT state");
 	assert_eq!(actual, expected);
 }
@@ -449,7 +444,7 @@ async fn seed_membership_state(
 /// This pins the write volume so that regression cannot come back silently: for
 /// a 200-entry room the tree is ~33 nodes, so a full re-materialization is an
 /// order of magnitude above the bound asserted here.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_bulk_state_update_writes_only_changed_spines() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
@@ -485,7 +480,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.await
 		.expect("seeded root must have a retained lattice");
 	lattice.replace(
-		&StateEventType::RoomMember.to_string(),
+		StateEventType::RoomMember.as_ref(),
 		"@user7:test.conduwuit.local",
 		"$seed-member-7:test.conduwuit.local",
 		updated.event_id.as_str(),
@@ -508,7 +503,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.expect("bulk mutation failed");
 	let (written_after, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
 
-	let written = written_after - written_before;
+	let written = written_after
+		.checked_sub(written_before)
+		.expect("write counter moved backwards");
 	assert_ne!(
 		new_root.structural_hash, root.structural_hash,
 		"changing a leaf must change the root"
@@ -529,7 +526,6 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&new_root)
-		.await
 		.expect("failed to load HAMT state");
 	assert_eq!(actual.len(), 201, "state size must be preserved by the update");
 	assert_eq!(actual.get(&target_key), Some(&target_value));
@@ -554,7 +550,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		"re-applying the same mutation must be idempotent"
 	);
 	assert_eq!(
-		rewritten_after - rewritten_before,
+		rewritten_after
+			.checked_sub(rewritten_before)
+			.expect("rewrite counter moved backwards"),
 		0,
 		"idempotent re-application must not write nodes"
 	);
@@ -570,7 +568,9 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	// bounded node cache retains the hash. A room large enough to evict its own
 	// unchanged subtrees would fall back to writing every one of them.
 	assert_eq!(
-		elided_after - elided_before,
+		elided_after
+			.checked_sub(elided_before)
+			.expect("elision counter moved backwards"),
 		0,
 		"path-copy update must not re-emit unchanged nodes"
 	);
@@ -582,7 +582,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 /// only exercised the store's own bookkeeping would not catch a regression in
 /// `live_root_handles` — which is where a partial root set would silently turn
 /// into live-state deletion.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_sweep_reclaims_only_unreachable_nodes() {
 	use std::time::Duration;
 
@@ -603,7 +603,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 
 	// An orphan: a real, fully-built tree that no recorded root handle points
 	// at, as if its only root had been deleted.
-	let mut orphan_lattice = rezzy::state::LtHash::default();
+	let mut orphan_lattice = rezzy::incremental::LtHash::default();
 	for index in 0..8_u64 {
 		orphan_lattice.insert(
 			"m.room.member",
@@ -690,12 +690,11 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		.rooms
 		.state_accessor
 		.load_full_state_hamt(&root)
-		.await
 		.expect("live root state must survive the sweep");
 	assert_eq!(state.len(), 51, "live root state must remain readable");
 }
 
-/// A leave re-applied after a newer invite must not delete that invite.
+/// A leave racing with a newer invite must not delete that invite.
 ///
 /// This is the cache-level regression for `TestUnbanViaInvite`: an unban
 /// `m.room.member`(leave) is applied during an outlier upgrade and then appended
@@ -706,8 +705,10 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 /// `origin_server_ts`. The stripped invite event must carry that timestamp, or
 /// the invite is silently deleted; `mark_as_left`/`mark_as_invited` also share
 /// `membership_mutex` so a stale leave decision cannot land its batch after the
-/// invite.
-#[tokio::test(flavor = "multi_thread")]
+/// invite. The operations below are started together to exercise the actual
+/// concurrent read/decide/write path rather than merely testing serialized
+/// calls.
+#[conduwuit_macros::async_test]
 async fn test_stale_leave_does_not_delete_newer_invite() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = room_id!("!invite-race:test.conduwuit.local").to_owned();
@@ -716,7 +717,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 
 	let leave = create_member_pdu(
 		&room_id,
-		&event_id!("$leave:test.conduwuit.local").to_owned(),
+		&event_id!("$leave:test.conduwuit.local"),
 		inviter.as_str(),
 		alice.as_str(),
 		"leave",
@@ -724,7 +725,7 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 	);
 	let invite = create_member_pdu(
 		&room_id,
-		&event_id!("$invite:test.conduwuit.local").to_owned(),
+		&event_id!("$invite:test.conduwuit.local"),
 		inviter.as_str(),
 		alice.as_str(),
 		"invite",
@@ -739,22 +740,24 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 		.mark_as_left(&alice, &room_id, Some(leave.clone()))
 		.await;
 
-	// The causally newer invite lands. `mark_as_invited` clears the left marker.
-	services
-		.rooms
-		.state_cache
-		.mark_as_invited(&alice, &room_id, &inviter, Some(invite_state), None)
-		.await
-		.expect("mark_as_invited should succeed");
-
-	// The same, causally older leave is re-applied, as the timeline append path
-	// does after the outlier-upgrade path already applied it. It must observe the
-	// newer invite and keep it.
-	services
-		.rooms
-		.state_cache
-		.mark_as_left(&alice, &room_id, Some(leave))
-		.await;
+	// Race the causally newer invite against the same, causally older leave as
+	// the timeline append path can after an outlier upgrade. The invite clears
+	// the left marker, while the stale leave must preserve the invite whether it
+	// acquires the room lock before or after the invite.
+	let (invite_result, ()) = futures::join!(
+		services.rooms.state_cache.mark_as_invited(
+			&alice,
+			&room_id,
+			&inviter,
+			Some(invite_state),
+			None,
+		),
+		services
+			.rooms
+			.state_cache
+			.mark_as_left(&alice, &room_id, Some(leave)),
+	);
+	invite_result.expect("mark_as_invited should succeed");
 
 	let pending = services
 		.rooms

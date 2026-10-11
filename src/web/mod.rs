@@ -1,114 +1,119 @@
-use std::any::Any;
+use std::{future::Future, sync::Arc};
 
-use askama::Template;
-use axum::{
-	Router,
-	extract::rejection::{FormRejection, QueryRejection},
-	http::{HeaderValue, StatusCode, header},
-	response::{Html, IntoResponse, Response},
-};
+use bytes::Bytes;
+use conduwuit_api::hyper_router::{BoxedHandler, MinimalRouter};
 use conduwuit_service::state;
-use tower_http::{catch_panic::CatchPanicLayer, set_header::SetResponseHeaderLayer};
-use tower_sec_fetch::SecFetchLayer;
-
-use crate::pages::TemplateContext;
+use http::{StatusCode, header::CONTENT_TYPE};
+use http_body_util::Full;
+use hyper::{Request, Response, body::Incoming};
 
 mod pages;
 
 type State = state::State;
 
-const CATASTROPHIC_FAILURE: &str = "cat-astrophic failure! we couldn't even render the error template. \
-please contact the team @ https://continuwuity.org";
-
 #[derive(Debug, thiserror::Error)]
 enum WebError {
-	#[error("Failed to validate form body: {0}")]
-	ValidationError(#[from] validator::ValidationErrors),
-	#[error("{0}")]
-	QueryRejection(#[from] QueryRejection),
-	#[error("{0}")]
-	FormRejection(#[from] FormRejection),
 	#[error("{0}")]
 	BadRequest(String),
 
-	#[error("This page does not exist.")]
-	NotFound,
-
-	#[error("Failed to render template: {0}")]
-	Render(#[from] askama::Error),
 	#[error("{0}")]
 	InternalError(#[from] conduwuit_core::Error),
-	#[error("Request handler panicked! {0}")]
-	Panic(String),
 }
 
-impl IntoResponse for WebError {
-	fn into_response(self) -> Response {
-		#[derive(Debug, Template)]
-		#[template(path = "error.html.j2")]
-		struct Error {
-			error: WebError,
-			status: StatusCode,
-			context: TemplateContext,
-		}
-
+impl WebError {
+	fn into_response(self) -> Response<Full<Bytes>> {
 		let status = match &self {
-			| Self::ValidationError(_)
-			| Self::BadRequest(_)
-			| Self::QueryRejection(_)
-			| Self::FormRejection(_) => StatusCode::BAD_REQUEST,
-			| Self::NotFound => StatusCode::NOT_FOUND,
+			| Self::BadRequest(_) => StatusCode::BAD_REQUEST,
 			| _ => StatusCode::INTERNAL_SERVER_ERROR,
 		};
 
-		let template = Error {
-			error: self,
-			status,
-			context: TemplateContext {
-				// Statically set false to prevent error pages from being indexed.
-				allow_indexing: false,
-			},
-		};
-
-		if let Ok(body) = template.render() {
-			(status, Html(body)).into_response()
-		} else {
-			(status, CATASTROPHIC_FAILURE).into_response()
-		}
+		let error = html_escape(&self.to_string());
+		let body = Full::from(Bytes::from(format!(
+			"<!doctype html><meta name=\"robots\" \
+			 content=\"noindex\"><title>{status}</title><h1>{status}</h1><pre>{error}</pre>"
+		)));
+		Response::builder()
+			.status(status)
+			.header(CONTENT_TYPE, "text/html; charset=utf-8")
+			.body(body)
+			.expect("web error response is valid")
 	}
 }
 
-pub fn build() -> Router<state::State> {
-	#[allow(clippy::wildcard_imports)]
-	use pages::*;
+fn html_escape(input: &str) -> String {
+	input
+		.replace('&', "&amp;")
+		.replace('<', "&lt;")
+		.replace('>', "&gt;")
+		.replace('"', "&quot;")
+		.replace('\'', "&#39;")
+}
 
-	Router::new()
-		.merge(index::build())
-		.nest(
-			"/_continuwuity/",
-			Router::new()
-				.merge(resources::build())
-				.merge(password_reset::build())
-				.merge(debug::build())
-				.merge(threepid::build())
-				.fallback(async || WebError::NotFound),
-		)
-		.layer(CatchPanicLayer::custom(|panic: Box<dyn Any + Send + 'static>| {
-			let details = if let Some(s) = panic.downcast_ref::<String>() {
-				s.clone()
-			} else if let Some(s) = panic.downcast_ref::<&str>() {
-				(*s).to_owned()
-			} else {
-				"(opaque panic payload)".to_owned()
-			};
+fn handler<F, Fut>(state: State, function: F) -> BoxedHandler
+where
+	F: Fn(Request<Incoming>, State) -> Fut + Send + Sync + 'static,
+	Fut: Future<Output = Result<Response<Full<Bytes>>, WebError>> + Send + 'static,
+{
+	let function = Arc::new(function);
+	Arc::new(move |request, _params| {
+		let function = Arc::clone(&function);
+		Box::pin(async move {
+			match function(request, state).await {
+				| Ok(response) => response,
+				| Err(error) => error.into_response(),
+			}
+		})
+	})
+}
 
-			WebError::Panic(details).into_response()
-		}))
-		.layer(SetResponseHeaderLayer::if_not_present(
-			header::CONTENT_SECURITY_POLICY,
-			HeaderValue::from_static("default-src 'self'; img-src 'self' data:;"),
-		))
-		.layer(SecFetchLayer::new(|policy| {
-			policy.allow_safe_methods().reject_missing_metadata();
-		}))
+pub fn build(state: State) -> MinimalRouter {
+	let mut router = MinimalRouter::new();
+	let register = |router: &mut MinimalRouter, method, path, handler| {
+		router
+			.register(method, path, handler)
+			.expect("web route is valid");
+	};
+	register(
+		&mut router,
+		http::Method::GET,
+		"/",
+		Arc::new(|request, _| Box::pin(pages::index::index(request))),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/",
+		Arc::new(|request, _| Box::pin(pages::index::index(request))),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/_debug/panic",
+		handler(state, |request, _state| async move { Ok(pages::debug::panic(request).await) }),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/_debug/error",
+		handler(state, |request, _state| async move { Ok(pages::debug::error(request).await) }),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/account/reset_password",
+		handler(state, pages::password_reset::get_password_reset),
+	);
+	register(
+		&mut router,
+		http::Method::POST,
+		"/_continuwuity/account/reset_password",
+		handler(state, pages::password_reset::post_password_reset),
+	);
+	register(
+		&mut router,
+		http::Method::GET,
+		"/_continuwuity/3pid/email/validate",
+		handler(state, pages::threepid::threepid_validation),
+	);
+	router
 }

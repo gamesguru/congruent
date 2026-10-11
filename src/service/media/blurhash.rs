@@ -38,14 +38,6 @@ pub fn create_blurhash(
 }
 
 /// Returns the blurhash or a blurhash error which implements Display.
-#[tracing::instrument(
-	name = "blurhash",
-	level = "debug",
-	skip(data),
-	fields(
-		bytes = data.len(),
-	),
-)]
 #[cfg(feature = "blurhashing")]
 fn get_blurhash_from_request(
 	data: &[u8],
@@ -109,16 +101,18 @@ fn is_image_above_size_limit<T: image::ImageDecoder>(
 }
 
 #[cfg(feature = "blurhashing")]
-#[tracing::instrument(name = "encode", level = "debug", skip_all)]
 #[inline]
 fn blurhash_an_image(
 	image: &image::DynamicImage,
 	blurhash_config: BlurhashConfig,
 ) -> Result<String, BlurhashingError> {
-	Ok(blurhash::encode_image(
+	let rgba = image.to_rgba8();
+	Ok(blurhash::encode(
 		blurhash_config.components_x,
 		blurhash_config.components_y,
-		&image.to_rgba8(),
+		rgba.width(),
+		rgba.height(),
+		rgba.as_raw(),
 	)?)
 }
 

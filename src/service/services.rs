@@ -1,5 +1,6 @@
 use std::{any::Any, collections::BTreeMap, sync::Arc};
 
+use async_lock::Mutex;
 use conduwuit::{
 	Result, Server, SyncRwLock, debug, debug_info, error, info, trace,
 	utils::stream::{IterStream, ReadyExt},
@@ -7,7 +8,6 @@ use conduwuit::{
 };
 use database::Database;
 use futures::{Stream, StreamExt, TryStreamExt};
-use tokio::sync::Mutex;
 
 use crate::{
 	account_data, admin, announcements, antispam, appservice, client, config, emergency,
@@ -57,8 +57,8 @@ pub struct Services {
 
 impl Services {
 	#[allow(clippy::cognitive_complexity)]
-	pub async fn build(server: Arc<Server>) -> Result<Arc<Self>> {
-		let db = Database::open(&server).await?;
+	pub fn build(server: Arc<Server>) -> Result<Arc<Self>> {
+		let db = Database::open(&server)?;
 		let service: Arc<Map> = Arc::new(SyncRwLock::new(BTreeMap::new()));
 		macro_rules! build {
 			($tyname:ty) => {{
@@ -150,6 +150,9 @@ impl Services {
 		// registration and banner checks cannot race the firstrun worker.
 		self.firstrun.initialize_first_run_marker().await?;
 
+		// Appservice tokens must resolve before the first request is served.
+		self.appservice.initialize().await?;
+
 		info!("Starting service manager...");
 		let manager = {
 			let mut lock = self.manager.lock().await;
@@ -173,6 +176,9 @@ impl Services {
 
 	pub async fn stop(&self) {
 		info!("Shutting down services...");
+
+		// Report before anything can stall: the container may be killed mid-stop.
+		self.db.log_write_stats();
 
 		// Some service workers exit only after the server enters stopping state
 		// and receives a shutdown signal. Interrupting alone is insufficient.

@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Result,
 	utils::{future::BoolExt, stream::BroadbandExt},
@@ -9,7 +8,7 @@ use slipstream::{
 	events::room::join_rules::JoinRule,
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 // conduwuit can handle a lot more results than synapse
 const LIMIT_MAX: usize = 500;

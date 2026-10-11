@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once, time::Duration};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, PduCount, Result, debug, debug_info, debug_warn, err, error, info,
 	matrix::{
@@ -39,11 +37,11 @@ use slipstream::{
 	},
 	sswire::Raw,
 };
-use tokio::join;
 
 use super::{banned_room_check, validate_remote_member_event_stub};
 use crate::{
 	Ruma,
+	router::extract::{ClientIp, State},
 	server::{select_authorising_user, user_can_perform_restricted_join},
 };
 
@@ -55,7 +53,6 @@ use crate::{
 ///   rules locally
 /// - If the server does not know about the room: asks other servers over
 ///   federation
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -126,7 +123,6 @@ pub(crate) async fn join_room_by_id_route(
 /// - If the server does not know about the room: use the server name query
 ///   param if specified. if not specified, asks other servers over federation
 ///   via room alias server name and room ID server name
-#[tracing::instrument(skip_all, fields(%client), name = "join", level = "info")]
 pub(crate) async fn join_room_by_id_or_alias_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -338,7 +334,6 @@ pub async fn join_room_by_id_helper(
 	Ok(join_room_by_id::v3::Response::new(room_id.to_owned()))
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote", level = "info")]
 async fn join_room_by_id_helper_remote(
 	services: &Services,
 	sender_user: &UserId,
@@ -566,7 +561,6 @@ async fn join_room_by_id_helper_remote(
 	.await
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_remote_process", level = "info")]
 #[allow(clippy::too_many_arguments)]
 async fn join_room_by_id_helper_remote_process(
 	services: &Services,
@@ -654,7 +648,7 @@ async fn join_room_by_id_helper_remote_process(
 	let (state, mut state_eids) = state;
 	outlier_event_ids.append(&mut state_eids);
 
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	for (&shortstatekey, event_id) in &state {
 		if let Ok((kind, state_key)) = services
 			.rooms
@@ -952,7 +946,6 @@ async fn join_room_by_id_helper_remote_process(
 	Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(%sender_user, %room_id), name = "join_local", level = "info")]
 async fn join_room_by_id_helper_local(
 	services: &Services,
 	sender_user: &UserId,
@@ -964,7 +957,7 @@ async fn join_room_by_id_helper_local(
 ) -> Result {
 	info!("Joining room locally");
 
-	let (room_version, join_rules, is_invited) = join!(
+	let (room_version, join_rules, is_invited) = futures::join!(
 		services.rooms.state.get_room_version(room_id),
 		services.rooms.state_accessor.get_join_rules(room_id),
 		services.rooms.state_cache.is_invited(sender_user, room_id)
@@ -1000,7 +993,7 @@ async fn join_room_by_id_helper_local(
 					if auth_user.is_none() {
 						drop(state_lock);
 						for _ in 0..5 {
-							tokio::time::sleep(Duration::from_millis(150)).await;
+							smol::Timer::after(Duration::from_millis(150)).await;
 							auth_user = select_authorising_user(
 								services,
 								room_id,
@@ -1255,7 +1248,7 @@ async fn make_join_request(
 
 		let mut forbidden_retried = false;
 		loop {
-			let make_join_response = tokio::time::timeout(
+			let make_join_response = conduwuit::timeout(
 				REQUEST_TIMEOUT,
 				services.sending.send_federation_request(
 					remote_server,
@@ -1315,7 +1308,7 @@ async fn make_join_request(
 									 {RESTRICTED_RETRY_DELAY:?} to allow federation to propagate"
 								);
 								forbidden_retried = true;
-								tokio::time::sleep(RESTRICTED_RETRY_DELAY).await;
+								smol::Timer::after(RESTRICTED_RETRY_DELAY).await;
 								continue;
 							}
 							warn!("{remote_server} refuses to let us join: {e}.");
@@ -1363,45 +1356,6 @@ fn deprioritize(
 		servers.into_iter().partition(|s| deprioritized.contains(s));
 	servers.append(&mut depr);
 	servers
-}
-
-#[cfg(test)]
-mod tests {
-	use slipstream::OwnedServerName;
-
-	use super::*;
-
-	#[test]
-	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-		let depr = vec!["slow.invalid".try_into()?];
-		let expected: Vec<OwnedServerName> = vec![
-			"example.com".try_into()?,
-			"example.org".try_into()?,
-			"slow.invalid".try_into()?,
-		];
-
-		let servers = deprioritize(servers, &depr);
-		assert_eq!(servers, expected);
-		Ok(())
-	}
-
-	#[test]
-	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
-		let servers = vec![
-			"example.com".try_into()?,
-			"slow.invalid".try_into()?,
-			"example.org".try_into()?,
-		];
-
-		let depr_servers = deprioritize(servers.clone(), &[]);
-		assert_eq!(depr_servers, servers);
-		Ok(())
-	}
 }
 
 async fn fetch_missing_extremity(
@@ -1492,4 +1446,43 @@ async fn fetch_missing_extremity(
 		.await?;
 
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::OwnedServerName;
+
+	use super::*;
+
+	#[test]
+	fn deprioritizing_servers_works() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+		let depr = vec!["slow.invalid".try_into()?];
+		let expected: Vec<OwnedServerName> = vec![
+			"example.com".try_into()?,
+			"example.org".try_into()?,
+			"slow.invalid".try_into()?,
+		];
+
+		let servers = deprioritize(servers, &depr);
+		assert_eq!(servers, expected);
+		Ok(())
+	}
+
+	#[test]
+	fn empty_deprioritized_is_noop() -> Result<(), Box<dyn std::error::Error>> {
+		let servers = vec![
+			"example.com".try_into()?,
+			"slow.invalid".try_into()?,
+			"example.org".try_into()?,
+		];
+
+		let depr_servers = deprioritize(servers.clone(), &[]);
+		assert_eq!(depr_servers, servers);
+		Ok(())
+	}
 }

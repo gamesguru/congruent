@@ -3,102 +3,54 @@ extern crate conduwuit_core as conduwuit;
 extern crate conduwuit_service as service;
 
 use std::{
-	sync::{Arc, Weak, atomic::Ordering},
+	sync::{Arc, Weak},
 	time::Duration,
 };
 
-use axum_server::{Address, Handle as ServerHandle};
-use conduwuit::{Error, Result, Server, debug, debug_error, debug_info, error, info, warn};
-use futures::FutureExt;
+use conduwuit::{Result, Server, debug, debug_error, debug_info, info, warn};
+use futures::future::{Either, select};
 use service::Services;
-use tokio::{
-	sync::broadcast::{self, Sender},
-	task::JoinHandle,
-};
 
 use crate::serve;
 
-/// Main loop base
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn run(services: Arc<Services>) -> Result<()> {
 	let server = &services.server;
 	debug!("Start");
-
-	// Install the admin room callback here for now
 	admin::init(&services.admin).await;
-
-	// Setup shutdown/signal handling
-	let handle = ServerHandle::new();
-	let (tx, _) = broadcast::channel::<()>(1);
-	let sigs = server
-		.runtime()
-		.spawn(signal(services.clone(), tx.clone(), handle.clone()));
-
-	let mut listener =
-		server
-			.runtime()
-			.spawn(serve::serve(services.clone(), handle.clone(), tx.subscribe()));
-
-	// Run startup admin commands.
-	// This has to be done after the admin service is initialized otherwise it
-	// panics.
+	let mut listener = server.runtime().spawn(serve::serve(services.clone()));
 	services.admin.startup_execute().await?;
-
-	// Print first-run banner if necessary. This needs to be done after the startup
-	// admin commands are run in case one of them created the first user.
 	services.firstrun.print_first_run_banner();
-
 	debug!("Running");
-	let res = tokio::select! {
-		res = &mut listener => res.map_err(Error::from).unwrap_or_else(Err),
-		res = services.poll() => handle_services_poll(server, res, listener).await,
+	let result = match select(Box::pin(&mut listener), Box::pin(services.poll())).await {
+		| Either::Left((result, _)) => result.map_err(conduwuit::Error::from).unwrap_or_else(Err),
+		| Either::Right((result, _)) => {
+			if server.running() {
+				let _ = server.shutdown();
+			}
+			if let Err(error) = listener.await {
+				debug_error!(%error, "listener task failed");
+			}
+			result
+		},
 	};
-
-	// Join the signal handler before we leave.
-	sigs.abort();
-	_ = sigs.await;
-
-	// Remove the admin room callback
 	admin::fini(&services.admin).await;
-
 	debug_info!("Finish");
-	res
+	result
 }
 
-/// Async initializations
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn start(server: Arc<Server>) -> Result<Arc<Services>> {
 	debug!("Starting...");
-
-	let services = Services::build(server).await?.start().await?;
-
+	let services = Services::build(server)?.start().await?;
 	services.rooms.outlier.startup_janitor().await;
-
 	#[cfg(all(feature = "systemd", target_os = "linux"))]
-	sd_notify::notify(&[sd_notify::NotifyState::Ready])
-		.expect("failed to notify systemd of ready state");
-
+	sd_notify::notify(&[sd_notify::NotifyState::Ready]).expect("failed to notify systemd");
 	debug!("Started");
 	Ok(services)
 }
 
-/// Async destructions
-#[tracing::instrument(skip_all, level = "info")]
 pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
-	debug!("Shutting down...");
-
-	#[cfg(all(feature = "systemd", target_os = "linux"))]
-	sd_notify::notify(&[sd_notify::NotifyState::Stopping])
-		.expect("failed to notify systemd of stopping state");
-
-	// Wait for all completions before dropping or we'll lose them to the module
-	// unload and explode.
+	info!("Shutting down...");
 	services.stop().await;
-
-	// Check that Services and Database will drop as expected, The complex of Arc's
-	// used for various components can easily lead to references being held
-	// somewhere improperly; this can hang shutdowns.
-	info!("Closing database...");
 	let db = Arc::downgrade(&services.db);
 	if let Err(services) = Arc::try_unwrap(services) {
 		debug_error!(
@@ -106,93 +58,19 @@ pub(crate) async fn stop(services: Arc<Services>) -> Result<()> {
 			Arc::strong_count(&services)
 		);
 	}
-
-	// Give async tasks a chance to release their references before reporting.
 	let mut remaining = Weak::strong_count(&db);
 	if remaining > 0 {
-		use tokio::time::{Duration, sleep, timeout};
-
-		info!(
-			"{} dangling references to Database, allowing them 5 seconds to close cleanly",
-			remaining
-		);
-		timeout(Duration::from_secs(5), async {
-			loop {
-				sleep(Duration::from_millis(25)).await;
-				if Weak::strong_count(&db) == 0 {
-					break;
-				}
+		let _ = conduwuit::timeout(Duration::from_secs(5), async {
+			while Weak::strong_count(&db) > 0 {
+				smol::Timer::after(Duration::from_millis(25)).await;
 			}
 		})
-		.await
-		.ok();
+		.await;
 		remaining = Weak::strong_count(&db);
 	}
-
 	if remaining > 0 {
-		warn!(
-			"{remaining} database connections are still held by running background tasks (this \
-			 is harmless, likely pending network requests). The system will now exit."
-		);
+		warn!("{remaining} database connections remain during shutdown");
 	}
-
 	warn!("Shutdown complete.");
 	Ok(())
-}
-
-#[tracing::instrument(skip_all, level = "info")]
-async fn signal<A: Address>(
-	services: Arc<Services>,
-	tx: Sender<()>,
-	handle: axum_server::Handle<A>,
-) {
-	services
-		.server
-		.clone()
-		.until_shutdown()
-		.then(move |()| handle_shutdown(services, tx, handle))
-		.await;
-}
-
-async fn handle_shutdown<A: Address>(
-	services: Arc<Services>,
-	tx: Sender<()>,
-	handle: axum_server::Handle<A>,
-) {
-	let server = &services.server;
-	if let Err(e) = tx.send(()) {
-		error!("failed sending shutdown transaction to channel: {e}");
-	}
-
-	services.interrupt();
-
-	let timeout = server.config.client_shutdown_timeout;
-	let timeout = Duration::from_secs(timeout);
-	debug!(
-		?timeout,
-		handle_active = %server.metrics.requests_handle_active.load(Ordering::Relaxed),
-		"Notifying for graceful shutdown"
-	);
-
-	handle.graceful_shutdown(Some(timeout));
-}
-
-async fn handle_services_poll(
-	server: &Arc<Server>,
-	result: Result<()>,
-	listener: JoinHandle<Result<()>>,
-) -> Result<()> {
-	debug!("Service manager finished: {result:?}");
-
-	if server.running() {
-		if let Err(e) = server.shutdown() {
-			error!("Failed to send shutdown signal: {e}");
-		}
-	}
-
-	if let Err(e) = listener.await {
-		error!("Client listener task finished with error: {e}");
-	}
-
-	result
 }

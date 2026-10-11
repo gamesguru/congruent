@@ -12,7 +12,7 @@ impl Suppress {
 	pub fn new(server: &Arc<Server>) -> Self {
 		let handle = "console";
 		let config = &server.config.log;
-		let suppress = EnvFilter::default();
+		let suppress = EnvFilter;
 		let restore = server
 			.log
 			.reload

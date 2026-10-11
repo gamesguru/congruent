@@ -7,12 +7,10 @@
 
 use std::{cmp, num::Saturating as Sat};
 
+use async_fs as fs;
 use conduwuit::{Result, checked, err, implement};
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use slipstream::{Mxc, UInt, UserId, http_headers::ContentDisposition, media::Method};
-use tokio::{
-	fs,
-	io::{AsyncReadExt, AsyncWriteExt},
-};
 
 use super::{FileMeta, data::Metadata};
 
@@ -43,6 +41,7 @@ impl super::Service {
 		//TODO: Dangling metadata in database if creation fails
 		let mut f = self.create_media_file(&key).await?;
 		f.write_all(file).await?;
+		f.flush().await?;
 
 		Ok(())
 	}
@@ -60,7 +59,6 @@ impl super::Service {
 	///
 	/// For width,height <= 96 the server uses another thumbnailing algorithm
 	/// which crops the image afterwards.
-	#[tracing::instrument(skip(self), name = "thumbnail", level = "debug")]
 	pub async fn get_thumbnail(&self, mxc: &Mxc<'_>, dim: &Dim) -> Result<Option<FileMeta>> {
 		// 0, 0 because that's the original file
 		let dim = dim.normalized();
@@ -77,7 +75,6 @@ impl super::Service {
 
 /// Using saved thumbnail
 #[implement(super::Service)]
-#[tracing::instrument(name = "saved", level = "debug", skip(self, data))]
 async fn get_thumbnail_saved(&self, data: Metadata) -> Result<Option<FileMeta>> {
 	let mut content = Vec::new();
 	let path = self.get_media_file(&data.key);
@@ -92,7 +89,6 @@ async fn get_thumbnail_saved(&self, data: Metadata) -> Result<Option<FileMeta>> 
 /// Generate a thumbnail
 #[cfg(feature = "media_thumbnail")]
 #[implement(super::Service)]
-#[tracing::instrument(name = "generate", level = "debug", skip(self, data))]
 async fn get_thumbnail_generate(
 	&self,
 	mxc: &Mxc<'_>,
@@ -133,13 +129,13 @@ async fn get_thumbnail_generate(
 
 	let mut f = self.create_media_file(&thumbnail_key).await?;
 	f.write_all(&thumbnail_bytes).await?;
+	f.flush().await?;
 
 	Ok(Some(into_filemeta(data, thumbnail_bytes)))
 }
 
 #[cfg(not(feature = "media_thumbnail"))]
 #[implement(super::Service)]
-#[tracing::instrument(name = "fallback", level = "debug", skip_all)]
 async fn get_thumbnail_generate(
 	&self,
 	_mxc: &Mxc<'_>,

@@ -277,6 +277,7 @@ pub(super) async fn fetch_pdu(
 				// historical/admin rescue; not a live timeline tip
 				false,
 				false,
+				None,
 			),
 	)
 	.await?;

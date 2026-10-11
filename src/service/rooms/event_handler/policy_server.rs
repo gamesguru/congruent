@@ -30,7 +30,6 @@ use slipstream::{
 /// contacted for whatever reason, Err(e) is returned, which generally is a
 /// fail-open operation.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, pdu, pdu_json, room_id), level = "info")]
 pub async fn ask_policy_server(
 	&self,
 	pdu: &PduEvent,
@@ -139,7 +138,7 @@ pub async fn ask_policy_server(
 		via = %via,
 		"Checking event for spam with policy server via legacy check"
 	);
-	let response = tokio::time::timeout(
+	let response = conduwuit::timeout(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
 		self.services
 			.sending
@@ -193,7 +192,6 @@ pub async fn ask_policy_server(
 /// Asks a remote policy server for a signature on this event.
 /// If the policy server signs this event, the original data is mutated.
 #[implement(super::Service)]
-#[tracing::instrument(skip_all, fields(event_id=%pdu.event_id(), via=%via), level = "info")]
 pub async fn fetch_policy_server_signature(
 	&self,
 	pdu: &PduEvent,
@@ -203,7 +201,7 @@ pub async fn fetch_policy_server_signature(
 	room_id: &RoomId,
 ) -> Result<bool> {
 	debug!("Requesting policy server signature");
-	let response = tokio::time::timeout(
+	let response = conduwuit::timeout(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
 		self.services
 			.sending

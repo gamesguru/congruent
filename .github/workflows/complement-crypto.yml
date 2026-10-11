@@ -72,7 +72,7 @@ jobs:
       - name: Build continuwuity (dev-quick, shared)
         env:
           RUSTFLAGS: -C link-arg=-fuse-ld=mold
-        run: SKIP_CONFIRM=1 make build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
+        run: SKIP_CONFIRM=1 make -j4 build PROFILE=${{ env.PROFILE }} CARGO_FLAGS="--config Cargo.custom.toml --profile ${{ env.PROFILE }} --features direct_tls,url_preview"
 
       - name: Upload shared binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -231,7 +231,7 @@ jobs:
           install -m 0755 /tmp/shared-bin/conduwuit target/latest/conduwuit
 
       - name: Build Complement Docker image
-        run: make complement/docker PROFILE=${{ env.PROFILE }}
+        run: make -j4 complement/docker PROFILE=${{ env.PROFILE }}
 
       - name: Install just
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7

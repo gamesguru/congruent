@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Event, Pdu, PduCount, Result, err, info,
 	utils::{future::TryExtExt, stream::BroadbandExt},
@@ -17,7 +16,10 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::{ApiError, extract::State},
+};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/members`
 ///
@@ -170,14 +172,15 @@ pub(crate) async fn get_member_events_route(
 pub(crate) async fn joined_members_route(
 	State(services): State<crate::State>,
 	body: Ruma<joined_members::v3::Request>,
-) -> Result<axum::response::Response> {
+) -> std::result::Result<crate::router::response::Response, ApiError> {
 	if !services
 		.rooms
 		.state_cache
 		.is_joined(body.sender_user(), &body.room_id)
 		.await
 	{
-		return Err!(Request(Forbidden("You don't have permission to view this room.")));
+		return Err!(Request(Forbidden("You don't have permission to view this room.")))
+			.map_err(Into::into);
 	}
 
 	let room_members: Vec<(OwnedUserId, RoomMemberResponse)> = services

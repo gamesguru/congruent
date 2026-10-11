@@ -1,6 +1,5 @@
 use std::borrow::ToOwned;
 
-use axum::extract::State;
 use conduwuit::{Err, Error, Result, debug, debug_info, info, warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
@@ -16,12 +15,11 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/make_join/{roomId}/{userId}`
 ///
 /// Creates a join template.
-#[tracing::instrument(skip_all, fields(room_id = %body.room_id, user_id = %body.user_id, origin = %body.origin()), level = "info")]
 pub(crate) async fn create_join_event_template_route(
 	State(services): State<crate::State>,
 	body: Ruma<prepare_join_event::v1::Request>,
@@ -55,7 +53,7 @@ pub(crate) async fn create_join_event_template_route(
 	// federation catch up.
 	if is_joined {
 		for _ in 0..5 {
-			tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+			smol::Timer::after(std::time::Duration::from_millis(150)).await;
 			is_joined = services
 				.rooms
 				.state_cache
@@ -92,7 +90,7 @@ pub(crate) async fn create_join_event_template_route(
 
 			if auth_result.is_err() {
 				for _ in 0..5 {
-					tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+					smol::Timer::after(std::time::Duration::from_millis(150)).await;
 					auth_result = select_authorising_user(
 						&services,
 						&body.room_id,

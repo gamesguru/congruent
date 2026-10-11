@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Error, Result, debug, err, info,
 	utils::{self, ReadyExt, hash, stream::BroadbandExt},
@@ -10,7 +8,6 @@ use conduwuit::{
 use conduwuit_core::{debug_error, debug_warn};
 use conduwuit_service::Services;
 use futures::StreamExt;
-use lettre::Address;
 use service::uiaa::Identity;
 use slipstream::{
 	OwnedUserId, UserId,
@@ -33,18 +30,21 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/client/v3/login`
 ///
 /// Get the supported login types of this server. One of these should be used as
 /// the `type` field when logging in.
-#[tracing::instrument(skip_all, fields(%client), name = "login", level = "info")]
 pub(crate) async fn get_login_types_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	_body: Ruma<get_login_types::v3::Request>,
 ) -> Result<get_login_types::v3::Response> {
+	info!(%client, "login types request");
 	Ok(get_login_types::v3::Response::new(vec![
 		get_login_types::v3::LoginType::Password(PasswordLoginType::default()),
 		get_login_types::v3::LoginType::ApplicationService(ApplicationServiceLoginType::default()),
@@ -57,7 +57,6 @@ pub(crate) async fn get_login_types_route(
 /// Authenticates the given user by its ID and its password.
 ///
 /// Returns the user ID if successful, and an error otherwise.
-#[tracing::instrument(skip_all, fields(%user_id), name = "password", level = "debug")]
 pub(crate) async fn password_login(
 	services: &Services,
 	user_id: &UserId,
@@ -100,7 +99,6 @@ pub(crate) async fn password_login(
 ///
 /// Creates the user if the user is found in the LDAP and do not already have an
 /// account.
-#[tracing::instrument(skip_all, fields(%user_id), name = "ldap", level = "debug")]
 pub(super) async fn ldap_login(
 	services: &Services,
 	user_id: &UserId,
@@ -171,8 +169,10 @@ pub(crate) async fn handle_login(
 	let user_id_or_localpart = match (identifier, user) {
 		| (Some(UserIdentifier::UserIdOrLocalpart(localpart)), _) => localpart,
 		| (Some(UserIdentifier::Email { address }), _) => {
-			let email = Address::try_from(address.to_owned())
-				.map_err(|_| err!(Request(InvalidParam("Email is malformed"))))?;
+			let email = address.to_owned();
+			if !email.contains('@') {
+				return Err!(Request(InvalidParam("Email is malformed")));
+			}
 
 			&services
 				.threepid
@@ -239,7 +239,6 @@ pub(crate) async fn handle_login(
 /// Note: You can use [`GET
 /// /_matrix/client/r0/login`](fn.get_supported_versions_route.html) to see
 /// supported login types.
-#[tracing::instrument(skip_all, fields(%client), name = "login", level = "info")]
 pub(crate) async fn login_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -368,12 +367,12 @@ pub(crate) async fn login_route(
 /// to log in with the m.login.token flow.
 ///
 /// <https://spec.matrix.org/v1.13/client-server-api/#post_matrixclientv1loginget_token>
-#[tracing::instrument(skip_all, fields(%client), name = "login_token", level = "info")]
 pub(crate) async fn login_token_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
+	info!(%client, "login token request");
 	if !services.server.config.login_via_existing_session {
 		return Err!(Request(Forbidden("Login via an existing session is not enabled")));
 	}
@@ -404,12 +403,12 @@ pub(crate) async fn login_token_route(
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "logout", level = "info")]
 pub(crate) async fn logout_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<logout::v3::Request>,
 ) -> Result<logout::v3::Response> {
+	info!(%client, "logout request");
 	let (sender_user, sender_device) = body.sender();
 	services
 		.users
@@ -450,12 +449,12 @@ pub(crate) async fn logout_route(
 /// Note: This is equivalent to calling [`GET
 /// /_matrix/client/r0/logout`](fn.logout_route.html) from each device of this
 /// user.
-#[tracing::instrument(skip_all, fields(%client), name = "logout", level = "info")]
 pub(crate) async fn logout_all_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<logout_all::v3::Request>,
 ) -> Result<logout_all::v3::Response> {
+	info!(%client, "logout all request");
 	let sender_user = body.sender_user();
 	services
 		.users

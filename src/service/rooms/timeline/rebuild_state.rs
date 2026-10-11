@@ -83,7 +83,6 @@ impl super::Service {
 	/// DB. Memory usage is dominated by metadata vectors and state groups, NOT
 	/// by full PduEvent JSON. For a 60K-event room this uses ~50MB instead of
 	/// the previous ~4GB.
-	#[tracing::instrument(skip(self), level = "info")]
 	pub async fn rebuild_state(&self, room_id: &RoomId) -> Result<()> {
 		// Phase 1: Stream events and extract metadata + keep state PDUs
 		eprintln!("[rebuild_state] Phase 1: streaming events...");
@@ -306,7 +305,7 @@ impl super::Service {
 		&self,
 		room_id: &RoomId,
 		entries: Vec<(ShortStateKey, ShortEventId)>,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
 		let structural_key =
 			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
@@ -331,8 +330,8 @@ impl super::Service {
 	async fn lattice_for_short_entries(
 		&self,
 		entries: &[(ShortStateKey, ShortEventId)],
-	) -> Result<rezzy::state::LtHash> {
-		let mut lattice = rezzy::state::LtHash::default();
+	) -> Result<rezzy::incremental::LtHash> {
+		let mut lattice = rezzy::incremental::LtHash::default();
 
 		let shortstatekeys: Vec<ShortStateKey> = entries
 			.iter()
@@ -383,7 +382,7 @@ enum StateUpdateOwned {
 		state: rezzy::SharedState<String>,
 		/// Incrementally maintained LtHash from rezzy, used as dedup key to
 		/// skip O(N) compression loop if the same state has already been seen.
-		hash: Box<rezzy::LtHash>,
+		hash: Box<rezzy::incremental::LtHash>,
 	},
 	Unchanged {
 		parent_event_id: String,
@@ -503,7 +502,7 @@ impl super::Service {
 
 		// Spawn synchronous rezzy pipeline on a blocking thread
 		let lean_events_moved = lean_events;
-		tokio::task::spawn_blocking(move || {
+		drop(self.services.server.runtime().spawn_blocking(move || {
 			let target_refs: Vec<&String> = target_ids_owned.iter().collect();
 			// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 			let empty_key = String::new();
@@ -526,16 +525,17 @@ impl super::Service {
 			if result == Err(rezzy::StateComputationError::CycleDetected) {
 				warn!("streaming state computation detected cycle; results incomplete");
 			}
-		});
+		}));
 
 		// ── Consume stream and write a HAMT root for each event ──
 		// Root handle for the empty state; events whose parent has no computed
 		// root (e.g. the first event in the room) inherit it.
 		let empty_root =
-			self.store_hamt_root(room_id, Vec::new(), &rezzy::state::LtHash::default())?;
+			self.store_hamt_root(room_id, Vec::new(), &rezzy::incremental::LtHash::default())?;
 
 		let mut event_root: HashMap<OwnedEventId, rezzy::hamt::RootHandle> = HashMap::new();
-		let mut lthash_to_root: HashMap<rezzy::LtHash, rezzy::hamt::RootHandle> = HashMap::new();
+		let mut lthash_to_root: HashMap<rezzy::incremental::LtHash, rezzy::hamt::RootHandle> =
+			HashMap::new();
 		let mut current_root = empty_root.clone();
 		let mut groups_compressed = 0_usize;
 		let mut groups_deduped = 0_usize;
@@ -673,7 +673,7 @@ impl super::Service {
 
 			if groups_compressed.is_multiple_of(100) && groups_compressed > 0 {
 				drop(cork.take());
-				tokio::task::yield_now().await;
+				smol::future::yield_now().await;
 				cork = Some(self.db.db.cork());
 			}
 		}
@@ -907,7 +907,10 @@ impl super::Service {
 		let mut pl_cache = HashMap::new();
 		// Empty (`""`) state-key sentinel for the `(EventType, K)` lookups
 		let empty_key = String::new();
-		let unconflicted_state: rezzy::state::at::SharedState = (&unconflicted).into();
+		let unconflicted_state: rezzy::state::at::SharedState = unconflicted
+			.iter()
+			.map(|(key, value)| (key.clone(), value.clone()))
+			.collect();
 		let resolved_lean = rezzy::resolve_iterative_sort(rezzy::IterativeInputs::new(
 			&unconflicted_state,
 			&conflicted_events,
@@ -992,11 +995,7 @@ impl super::Service {
 		for root in &extremity_roots {
 			// Abort rather than merge a partial union: dropping an extremity's
 			// state would commit incomplete room state.
-			let full_state = self
-				.services
-				.state_accessor
-				.load_full_state_hamt(root)
-				.await?;
+			let full_state = self.services.state_accessor.load_full_state_hamt(root)?;
 			for (shortstatekey, shorteventid) in full_state {
 				all_entries.insert(shortstatekey, shorteventid);
 			}
@@ -1085,7 +1084,7 @@ impl super::Service {
 			resolved_map.len()
 		);
 
-		let mut lattice = rezzy::state::LtHash::default();
+		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(resolved_map.len());
 		for ((ty, sk), id) in &resolved_map {

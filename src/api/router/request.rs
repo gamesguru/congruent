@@ -1,11 +1,14 @@
 use std::str;
 
-use axum::{RequestExt, RequestPartsExt, extract::Path};
 use bytes::Bytes;
 use conduwuit::{Result, err};
 use http::request::Parts;
+use http_body_util::{BodyExt, Limited};
+use hyper::body::Incoming;
 use serde::Deserialize;
 use service::Services;
+
+use super::extract::Path;
 
 #[derive(Deserialize)]
 pub(super) struct QueryParams {
@@ -28,14 +31,12 @@ pub(super) struct Request {
 
 pub(super) async fn from(
 	services: &Services,
-	request: hyper::Request<axum::body::Body>,
+	request: hyper::Request<Incoming>,
 ) -> Result<Request> {
-	let limited = request.with_limited_body();
-	let (mut parts, body) = limited.into_parts();
-
-	let path: Path<Vec<String>> = parts.extract().await?;
+	let (mut parts, body) = request.into_parts();
+	let path = parts.extensions.remove::<Vec<String>>().unwrap_or_default();
 	let query = parts.uri.query().unwrap_or_default();
-	let query = serde_html_form::from_str(query)
+	let query = serde_urlencoded::from_str(query)
 		.map_err(|e| err!(Request(Unknown("Failed to read query parameters: {e}"))))?;
 
 	let max_body_size = services.server.config.max_request_size;
@@ -53,9 +54,11 @@ pub(super) async fn from(
 		}
 	}
 
-	let body = axum::body::to_bytes(body, max_body_size)
+	let body = Limited::new(body, max_body_size)
+		.collect()
 		.await
-		.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?;
+		.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?
+		.to_bytes();
 
-	Ok(Request { path, query, body, parts })
+	Ok(Request { path: Path(path), query, body, parts })
 }

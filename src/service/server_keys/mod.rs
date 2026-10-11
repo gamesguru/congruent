@@ -8,6 +8,7 @@ mod verify;
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use async_lock::RwLock;
 use conduwuit::{
 	Result, Server, debug_error, debug_warn, err, implement, trace,
 	utils::{IterStream, MutexMap, timepoint_from_now},
@@ -21,7 +22,6 @@ use slipstream::{
 	signatures::{Ed25519KeyPair, PublicKeyMap, PublicKeySet},
 	sswire::Raw,
 };
-use tokio::sync::RwLock;
 
 use crate::{Dep, globals, sending};
 
@@ -332,9 +332,9 @@ pub async fn add_signing_keys(
 	new_keys.old_verify_keys.retain(|key_id, ok| {
 		if ok.expired_ts > now_plus_skew {
 			conduwuit::warn!(
-				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts {ts:?} is \
-				 in the future",
-				ts = ok.expired_ts
+				"Ignoring malformed old_verify_key {key_id} for {origin}: expired_ts {:?} is in \
+				 the future",
+				ok.expired_ts
 			);
 			old_keys_filtered = true;
 			return false;
@@ -734,7 +734,6 @@ pub async fn add_signing_keys(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self, object), level = "debug")]
 pub async fn required_keys_exist(
 	&self,
 	object: &CanonicalJsonObject,
@@ -763,7 +762,6 @@ pub async fn required_keys_exist(
 }
 
 #[implement(Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSigningKeyId) -> bool {
 	// Our own active signing key is held in memory, not necessarily in the DB
 	if self.services.globals.server_is_ours(origin) && self.verify_keys.contains_key(key_id) {
@@ -971,10 +969,7 @@ mod tests {
 	}
 
 	fn old_verify_key(expired_ts_ms: u64) -> OldVerifyKey {
-		OldVerifyKey::new(
-			MilliSecondsSinceUnixEpoch(expired_ts_ms.try_into().unwrap()),
-			Base64::new(vec![0_u8; 32]),
-		)
+		OldVerifyKey::new(MilliSecondsSinceUnixEpoch(expired_ts_ms), Base64::new(vec![0_u8; 32]))
 	}
 
 	#[test]

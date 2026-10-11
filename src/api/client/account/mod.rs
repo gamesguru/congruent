@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Event, Result, err, info,
 	pdu::PduBuilder,
@@ -7,7 +5,6 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::{FutureExt, StreamExt};
-use lettre::{Address, message::Mailbox};
 use service::{mailer::messages, uiaa::Identity};
 use slipstream::{
 	OwnedRoomId, OwnedUserId, UserId,
@@ -29,7 +26,10 @@ use slipstream::{
 };
 
 use super::{DEVICE_ID_LENGTH, TOKEN_LENGTH, join_room_by_id_helper};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 pub(crate) mod register;
 pub(crate) mod threepid;
@@ -45,12 +45,12 @@ pub(crate) mod threepid;
 ///
 /// Note: This will not reserve the username, so the username might become
 /// invalid when trying to register
-#[tracing::instrument(skip_all, fields(%client), name = "register_available", level = "info")]
 pub(crate) async fn get_register_available_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_username_availability::v3::Request>,
 ) -> Result<get_username_availability::v3::Response> {
+	info!(%client, "register availability request");
 	// Validate user id
 	let user_id =
 		match UserId::parse_with_server_name(&body.username, services.globals.server_name()) {
@@ -90,6 +90,46 @@ pub(crate) async fn get_register_available_route(
 	Ok(get_username_availability::v3::Response { available: true })
 }
 
+/// # `POST /_matrix/client/v3/account/password/email/requestToken`
+///
+/// Requests a validation email for the purpose of resetting a user's password.
+pub(crate) async fn request_password_change_token_via_email_route(
+	State(services): State<crate::State>,
+	body: Ruma<request_password_change_token_via_email::v3::Request>,
+) -> Result<request_password_change_token_via_email::v3::Response> {
+	let email = body.email.clone();
+	if !email.contains('@') {
+		return Err!(Request(InvalidParam("Invalid email address.")));
+	}
+
+	let Some(localpart) = services.threepid.get_localpart_for_email(&email).await else {
+		return Err!(Request(ThreepidNotFound(
+			"No account is associated with this email address"
+		)));
+	};
+
+	let user_id =
+		OwnedUserId::parse(format!("@{localpart}:{}", services.globals.server_name())).unwrap();
+	let display_name = services.users.displayname(&user_id).await.ok();
+
+	let session = services
+		.threepid
+		.send_validation_email(
+			email,
+			|verification_link| messages::PasswordReset {
+				display_name: display_name.as_deref(),
+				user_id: &user_id,
+				verification_link,
+			},
+			&slipstream::OwnedClientSecret::parse(&body.client_secret)
+				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
+			body.send_attempt.try_into().unwrap(),
+		)
+		.await?;
+
+	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
+}
+
 /// # `POST /_matrix/client/r0/account/password`
 ///
 /// Changes the password of this account.
@@ -98,7 +138,7 @@ pub(crate) async fn get_register_available_route(
 /// - Changes the password of the sender user
 /// - The password hash is calculated using argon2 with 32 character salt, the
 ///   plain password is
-/// not saved
+///   not saved
 ///
 /// If logout_devices is true it does the following for each device except the
 /// sender device:
@@ -107,12 +147,12 @@ pub(crate) async fn get_register_available_route(
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "change_password", level = "info")]
 pub(crate) async fn change_password_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<change_password::v3::Request>,
 ) -> Result<change_password::v3::Response> {
+	info!(%client, "change password request");
 	let identity = if let Some(ref user_id) = body.sender_user {
 		// A signed-in user is trying to change their password, prompt them for their
 		// existing one
@@ -198,45 +238,6 @@ pub(crate) async fn change_password_route(
 	Ok(change_password::v3::Response {})
 }
 
-/// # `POST /_matrix/client/v3/account/password/email/requestToken`
-///
-/// Requests a validation email for the purpose of resetting a user's password.
-pub(crate) async fn request_password_change_token_via_email_route(
-	State(services): State<crate::State>,
-	body: Ruma<request_password_change_token_via_email::v3::Request>,
-) -> Result<request_password_change_token_via_email::v3::Response> {
-	let Ok(email) = Address::try_from(body.email.clone()) else {
-		return Err!(Request(InvalidParam("Invalid email address.")));
-	};
-
-	let Some(localpart) = services.threepid.get_localpart_for_email(&email).await else {
-		return Err!(Request(ThreepidNotFound(
-			"No account is associated with this email address"
-		)));
-	};
-
-	let user_id =
-		OwnedUserId::parse(format!("@{localpart}:{}", services.globals.server_name())).unwrap();
-	let display_name = services.users.displayname(&user_id).await.ok();
-
-	let session = services
-		.threepid
-		.send_validation_email(
-			Mailbox::new(display_name.clone(), email),
-			|verification_link| messages::PasswordReset {
-				display_name: display_name.as_deref(),
-				user_id: &user_id,
-				verification_link,
-			},
-			&slipstream::OwnedClientSecret::parse(&body.client_secret)
-				.map_err(|_| err!(Request(InvalidParam("Invalid client_secret"))))?,
-			body.send_attempt.try_into().unwrap(),
-		)
-		.await?;
-
-	Ok(request_password_change_token_via_email::v3::Response { sid: session.to_string() })
-}
-
 /// # `GET /_matrix/client/v3/account/whoami`
 ///
 /// Get `user_id` of the sender user.
@@ -252,8 +253,7 @@ pub(crate) async fn whoami_route(
 		.await
 		.map_err(|_| {
 			err!(Request(Forbidden("Application service has not registered this user.")))
-		})?
-		&& body.appservice_info.is_none();
+		})? && body.appservice_info.is_none();
 	Ok(whoami::v3::Response {
 		user_id: body.sender_user().to_owned(),
 		device_id: body.sender_device_opt().cloned(),
@@ -272,12 +272,12 @@ pub(crate) async fn whoami_route(
 /// - Forgets all to-device events
 /// - Triggers device list updates
 /// - Removes ability to log in again
-#[tracing::instrument(skip_all, fields(%client), name = "deactivate", level = "info")]
 pub(crate) async fn deactivate_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<deactivate::v3::Request>,
 ) -> Result<deactivate::v3::Response> {
+	info!(%client, "deactivate account request");
 	// Authentication for this endpoint is technically optional,
 	// but we require the user to be logged in
 	let sender_user = body
@@ -398,13 +398,12 @@ pub async fn full_user_deactivate(
 				.is_some_and(|power_levels_content| {
 					RoomPowerLevels::from(power_levels_content.clone())
 						.user_can_change_user_power_level(user_id, user_id)
-				})
-				|| services
-					.rooms
-					.state_accessor
-					.room_state_get(room_id, &StateEventType::RoomCreate, "")
-					.await
-					.is_ok_and(|event| event.sender() == user_id);
+				}) || services
+				.rooms
+				.state_accessor
+				.room_state_get(room_id, &StateEventType::RoomCreate, "")
+				.await
+				.is_ok_and(|event| event.sender() == user_id);
 
 		if user_can_demote_self {
 			let mut power_levels_content = room_power_levels.unwrap_or_default();

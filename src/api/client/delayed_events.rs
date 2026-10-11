@@ -1,23 +1,27 @@
-use axum::{
-	body::Body,
-	extract::{FromRequest, State},
-};
 use conduwuit::{Err, Result};
+use hyper::body::Incoming;
 use slipstream::api::Metadata;
 
-use crate::{json_util::single_field, router::authenticate_user};
+use crate::{
+	json_util::single_field,
+	router::{
+		ApiError, authenticate_user,
+		extract::{FromRequest, Path, State},
+		response::Response,
+	},
+};
 
 pub(crate) struct GetDelayedEventRequest;
 
 impl GetDelayedEventRequest {
-	const METADATA: Metadata =
+	pub(crate) const METADATA: Metadata =
 		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events/{}");
 }
 
 pub(crate) struct GetAllDelayedEventsRequest;
 
 impl GetAllDelayedEventsRequest {
-	const METADATA: Metadata =
+	pub(crate) const METADATA: Metadata =
 		Metadata::new("GET", "/_matrix/client/unstable/org.matrix.msc4140/delayed_events");
 }
 
@@ -25,16 +29,17 @@ pub(crate) struct DelayedEventUser {
 	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
-impl FromRequest<crate::State, Body> for DelayedEventUser {
-	type Rejection = conduwuit::Error;
+impl FromRequest<crate::State, Incoming> for DelayedEventUser {
+	type Rejection = ApiError;
 
 	async fn from_request(
-		request: hyper::Request<Body>,
+		request: hyper::Request<Incoming>,
 		services: &crate::State,
-	) -> Result<Self> {
+	) -> Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetDelayedEventRequest::METADATA)
-				.await?,
+				.await
+				.map_err(ApiError)?,
 		})
 	}
 }
@@ -43,16 +48,17 @@ pub(crate) struct AllDelayedEventsUser {
 	pub(crate) user_id: slipstream::OwnedUserId,
 }
 
-impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
-	type Rejection = conduwuit::Error;
+impl FromRequest<crate::State, Incoming> for AllDelayedEventsUser {
+	type Rejection = ApiError;
 
 	async fn from_request(
-		request: hyper::Request<Body>,
+		request: hyper::Request<Incoming>,
 		services: &crate::State,
-	) -> Result<Self> {
+	) -> Result<Self, ApiError> {
 		Ok(Self {
 			user_id: authenticate_user(request, services, &GetAllDelayedEventsRequest::METADATA)
-				.await?,
+				.await
+				.map_err(ApiError)?,
 		})
 	}
 }
@@ -62,13 +68,13 @@ impl FromRequest<crate::State, Body> for AllDelayedEventsUser {
 // without a user access token, so this route is intentionally unauthenticated.
 pub(crate) async fn update_delayed_event_route(
 	State(services): State<crate::State>,
-	axum::extract::Path((delay_id, action)): axum::extract::Path<(String, String)>,
-) -> Result<axum::response::Response> {
+	Path((delay_id, action)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
 	let action = match action.as_str() {
 		| "restart" => service::rooms::delayed_events::UpdateAction::Restart,
 		| "send" => service::rooms::delayed_events::UpdateAction::Send,
 		| "cancel" => service::rooms::delayed_events::UpdateAction::Cancel,
-		| _ => return Err!(Request(NotFound("Invalid action."))),
+		| _ => return Err!(Request(NotFound("Invalid action."))).map_err(Into::into),
 	};
 
 	services
@@ -83,16 +89,16 @@ pub(crate) async fn update_delayed_event_route(
 }
 
 pub(crate) async fn update_delayed_event_without_action_route(
-	axum::extract::Path(_delay_id): axum::extract::Path<String>,
-) -> Result<axum::response::Response> {
-	Err!(Request(NotFound("Invalid action.")))
+	Path(_delay_id): Path<String>,
+) -> Result<Response, ApiError> {
+	Err!(Request(NotFound("Invalid action."))).map_err(Into::into)
 }
 
 pub(crate) async fn get_delayed_event_route(
 	State(services): State<crate::State>,
-	axum::extract::Path(delay_id): axum::extract::Path<String>,
+	Path(delay_id): Path<String>,
 	user: DelayedEventUser,
-) -> Result<axum::response::Response> {
+) -> Result<Response, ApiError> {
 	let data = services
 		.rooms
 		.delayed_events
@@ -105,7 +111,7 @@ pub(crate) async fn get_delayed_event_route(
 pub(crate) async fn get_all_delayed_events_route(
 	State(services): State<crate::State>,
 	user: AllDelayedEventsUser,
-) -> Result<axum::response::Response> {
+) -> Result<Response, ApiError> {
 	let mut data = services
 		.rooms
 		.delayed_events

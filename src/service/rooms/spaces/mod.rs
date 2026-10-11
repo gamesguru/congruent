@@ -4,6 +4,7 @@ mod tests;
 
 use std::{fmt::Write, sync::Arc};
 
+use async_lock::{Mutex, MutexGuard};
 use async_trait::async_trait;
 use conduwuit_core::{
 	Err, Error, Event, PduEvent, Result, debug, implement,
@@ -32,7 +33,6 @@ use slipstream::{
 	space::SpaceRoomJoinRule,
 	sswire::Raw,
 };
-use tokio::sync::{Mutex, MutexGuard};
 
 pub use self::pagination_token::PaginationToken;
 use crate::{Dep, rooms, sending};
@@ -216,7 +216,6 @@ async fn get_summary_and_children_local_fallback(
 
 /// Gets the summary of a space using solely federation
 #[implement(Service)]
-#[tracing::instrument(level = "debug", skip(self))]
 async fn get_summary_and_children_federation(
 	&self,
 	current_room: &RoomId,

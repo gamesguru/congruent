@@ -37,7 +37,7 @@ async fn changes_since(
 	since: u64,
 	room_id: Option<OwnedRoomId>,
 ) -> Result {
-	let timer = tokio::time::Instant::now();
+	let timer = std::time::Instant::now();
 	let results: Vec<_> = self
 		.services
 		.account_data
@@ -57,7 +57,7 @@ async fn account_data_get(
 	kind: String,
 	room_id: Option<OwnedRoomId>,
 ) -> Result {
-	let timer = tokio::time::Instant::now();
+	let timer = std::time::Instant::now();
 	let results = self
 		.services
 		.account_data

@@ -12,7 +12,6 @@ use slipstream::{EventId, OwnedEventId, RoomId, RoomVersionId};
 // TODO: if we know the prev_events of the incoming event we can avoid the
 #[implement(super::Service)]
 // request and build the state from a known point and resolve if > 1 prev_event
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_degree_one<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -79,7 +78,6 @@ where
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn state_at_incoming_resolved<Pdu>(
 	&self,
 	incoming_pdu: &Pdu,
@@ -166,10 +164,7 @@ where
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};
@@ -238,7 +233,7 @@ async fn get_extremity_lthash<Pdu>(
 	&self,
 	_root_handle: &rezzy::hamt::RootHandle,
 	_prev_event: &Pdu,
-) -> Result<rezzy::LtHash>
+) -> Result<rezzy::incremental::LtHash>
 where
 	Pdu: Event + Send + Sync,
 {
@@ -257,7 +252,6 @@ where
 /// by local event creation when the room has diverged: state must be resolved
 /// across every fork, not just the room's current-state pointer.
 #[implement(super::Service)]
-#[tracing::instrument(name = "state", level = "debug", skip_all)]
 pub(crate) async fn resolve_extremities<'a, I>(
 	&self,
 	prev_events: I,
@@ -305,16 +299,13 @@ where
 		.try_collect()
 		.await?;
 
-	let Ok(new_state) = self
-		.state_resolution(room_id, room_version_id, fork_states.iter(), None)
-		.boxed()
-		.await
+	let Ok(new_state) = self.state_resolution(room_id, room_version_id, fork_states.iter(), None)
 	else {
 		return Ok(None);
 	};
 
 	// Build a HAMT root handle from the resolved state.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	for ((ty, sk), id) in &new_state {
 		lattice.insert(ty.to_string().as_str(), sk.as_str(), id.as_str());

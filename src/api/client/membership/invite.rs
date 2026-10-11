@@ -1,5 +1,3 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_error, err, info,
 	matrix::{event::gen_event_id_canonical_json, pdu::PduBuilder},
@@ -17,12 +15,14 @@ use slipstream::{
 };
 
 use super::banned_room_check;
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/invite`
 ///
 /// Tries to send an invite event into the room.
-#[tracing::instrument(skip_all, fields(%client), name = "invite", level = "info")]
 pub(crate) async fn invite_user_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,

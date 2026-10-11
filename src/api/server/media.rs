@@ -1,6 +1,4 @@
-use axum::extract::State;
-use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result, utils::content_disposition::make_content_disposition};
+use conduwuit::{Err, Result, debug, utils::content_disposition::make_content_disposition};
 use conduwuit_service::media::{Dim, FileMeta};
 use slipstream::{
 	Mxc,
@@ -9,22 +7,20 @@ use slipstream::{
 	},
 };
 
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `GET /_matrix/federation/v1/media/download/{mediaId}`
 ///
 /// Load media from our server.
-#[tracing::instrument(
-	name = "media_get",
-	level = "debug",
-	skip_all,
-	fields(%client)
-)]
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
+	debug!(%client, "federation media download request");
 	let mxc = Mxc {
 		server_name: services.globals.server_name(),
 		media_id: &body.media_id,
@@ -56,17 +52,12 @@ pub(crate) async fn get_content_route(
 /// # `GET /_matrix/federation/v1/media/thumbnail/{mediaId}`
 ///
 /// Load media thumbnail from our server.
-#[tracing::instrument(
-	name = "media_thumbnail_get",
-	level = "debug",
-	skip_all,
-	fields(%client)
-)]
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
+	debug!(%client, "federation media thumbnail request");
 	let dim = Dim::from_ruma(body.width, body.height, body.method)?;
 	let mxc = Mxc {
 		server_name: services.globals.server_name(),

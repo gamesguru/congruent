@@ -117,7 +117,7 @@ pub enum DebugCommand {
 	///   having new keys available)
 	ForceDeviceListUpdates,
 
-	/// Change tracing log level/filter on the fly
+	/// Change log level/filter on the fly
 	///
 	/// This accepts the same format as the `log` config option.
 	ChangeLogLevel {

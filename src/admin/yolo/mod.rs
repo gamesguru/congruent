@@ -773,7 +773,7 @@ pub enum YoloCommand {
 		#[arg(long, default_value = "3")]
 		rounds: usize,
 
-		/// Override the safety limit that prevents tracing >50 roots at once.
+		/// Override the safety limit that prevents processing >50 roots at once.
 		#[arg(long = "override")]
 		override_limit: bool,
 	},

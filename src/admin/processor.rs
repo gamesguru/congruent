@@ -1,19 +1,8 @@
 use std::{fmt::Write, panic::AssertUnwindSafe, sync::Arc, time::SystemTime};
 
 use clap::{CommandFactory, Parser};
-use conduwuit::{
-	Error, Result, SyncMutex, debug, error,
-	log::{
-		capture,
-		capture::Capture,
-		fmt::{markdown_table, markdown_table_head},
-	},
-	trace,
-	utils::string::{collect_stream, common_prefix},
-	warn,
-};
+use conduwuit::{Error, Result, debug, error, trace, utils::string::common_prefix};
 use futures::{AsyncWriteExt, future::FutureExt, io::BufWriter};
-use regex::Regex;
 use service::{
 	Services,
 	admin::{CommandInput, CommandOutput, ProcessorFuture, ProcessorResult},
@@ -25,8 +14,6 @@ use slipstream::{
 		room::message::{Relation::Reply, RoomMessageEventContent},
 	},
 };
-use tracing::Level;
-use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 use crate::{admin, admin::AdminCommand, context::Context};
 
@@ -39,7 +26,6 @@ pub(super) fn dispatch(services: Arc<Services>, command: CommandInput) -> Proces
 	Box::pin(async move { handle_command(services, command).await })
 }
 
-#[tracing::instrument(skip_all, name = "admin", level = "info")]
 async fn handle_command(services: Arc<Services>, command: CommandInput) -> ProcessorResult {
 	let reply_id = command.reply_id.clone();
 	AssertUnwindSafe(Box::pin(process_command(services, command)))
@@ -120,11 +106,7 @@ async fn process(
 	command: AdminCommand,
 	args: &[String],
 ) -> (Result, String) {
-	let (capture, logs) = capture_create(context);
-
-	let capture_scope = capture.start();
 	let result = Box::pin(admin::process(command, context)).await;
-	drop(capture_scope);
 
 	debug!(
 		ok = result.is_ok(),
@@ -133,50 +115,7 @@ async fn process(
 		"command processed"
 	);
 
-	let mut output = String::new();
-
-	// Prepend the logs only if any were captured
-	let logs = logs.lock();
-	if logs.lines().count() > 2 {
-		writeln!(&mut output, "```\n{logs}\n```")
-			.expect("failed to format logs to command output");
-	}
-	drop(logs);
-
-	(result, output)
-}
-
-fn capture_create(context: &Context<'_>) -> (Arc<Capture>, Arc<SyncMutex<String>>) {
-	let env_config = &context.services.server.config.admin_log_capture;
-	let env_filter = EnvFilter::try_new(env_config).unwrap_or_else(|e| {
-		warn!("admin_log_capture filter invalid: {e:?}");
-		cfg!(debug_assertions)
-			.then_some("debug")
-			.or(Some("info"))
-			.map(Into::into)
-			.expect("default capture EnvFilter")
-	});
-
-	let log_level = env_filter
-		.max_level_hint()
-		.and_then(LevelFilter::into_level)
-		.unwrap_or(Level::DEBUG);
-
-	let filter = move |data: capture::Data<'_>| {
-		data.level() <= log_level && data.our_modules() && data.scope.contains(&"admin")
-	};
-
-	let logs = Arc::new(SyncMutex::new(
-		collect_stream(|s| markdown_table_head(s)).expect("markdown table header"),
-	));
-
-	let capture = Capture::new(
-		&context.services.server.log.capture,
-		Some(filter),
-		capture::fmt(markdown_table, logs.clone()),
-	);
-
-	(capture, logs)
+	(result, String::new())
 }
 
 /// Parse chat messages from the admin room into an AdminCommand object
@@ -331,25 +270,82 @@ fn reply(
 /// Heuristic: output that already contains markdown formatting should not be
 /// wrapped in code blocks.
 fn looks_like_markdown(s: &str) -> bool {
-	static BOLD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-	static LINK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-
 	let trimmed = s.trim_start();
 	trimmed.starts_with('#')
 		|| trimmed.starts_with('>')
 		|| trimmed.starts_with("- ")
 		|| trimmed.starts_with("* ")
 		|| s.contains("```")
-		|| BOLD_RE
-			.get_or_init(|| {
-				Regex::new(r"(^|[^\w])\*\*[^\s][\s\S]*?[^\s]\*\*([^\w]|$)")
-					.expect("valid bold regex")
-			})
-			.is_match(s)
-		|| LINK_RE
-			.get_or_init(|| {
-				Regex::new(r"\[[^\]\n]+\]\([^()\s]+\)").expect("valid markdown link regex")
-			})
-			.is_match(s)
+		|| contains_bold(s)
+		|| contains_markdown_link(s)
 		|| s.lines().any(|line| line.trim_start().starts_with('|'))
+}
+
+fn contains_bold(s: &str) -> bool {
+	let is_word = |character: char| character.is_alphanumeric() || character == '_';
+	let mut search = 0;
+	while let Some(relative_start) = s.get(search..).and_then(|rest| rest.find("**")) {
+		let start = search
+			.checked_add(relative_start)
+			.expect("markdown input is too large");
+		let content_start = start.checked_add(2).expect("markdown input is too large");
+		let valid_before = s
+			.get(..start)
+			.is_none_or(|prefix| prefix.chars().next_back().is_none_or(|c| !is_word(c)));
+		if valid_before
+			&& let Some(relative_end) = s.get(content_start..).and_then(|rest| rest.find("**"))
+		{
+			let end = content_start
+				.checked_add(relative_end)
+				.expect("markdown input is too large");
+			let Some(content) = s.get(content_start..end) else { return false };
+			let valid_content = !content.is_empty()
+				&& !content.chars().next().is_some_and(char::is_whitespace)
+				&& !content.chars().next_back().is_some_and(char::is_whitespace);
+			let after = end.checked_add(2).expect("markdown input is too large");
+			let valid_after = s
+				.get(after..)
+				.is_none_or(|suffix| suffix.chars().next().is_none_or(|c| !is_word(c)));
+			if valid_content && valid_after {
+				return true;
+			}
+		}
+		search = content_start;
+	}
+	false
+}
+
+fn contains_markdown_link(s: &str) -> bool {
+	let mut search = 0;
+	while let Some(relative_start) = s.get(search..).and_then(|rest| rest.find('[')) {
+		let start = search
+			.checked_add(relative_start)
+			.expect("markdown input is too large");
+		let label_start = start.checked_add(1).expect("markdown input is too large");
+		let Some(relative_close) = s.get(label_start..).and_then(|rest| rest.find(']')) else {
+			return false;
+		};
+		let close = label_start
+			.checked_add(relative_close)
+			.expect("markdown input is too large");
+		let Some(label) = s.get(label_start..close) else { return false };
+		let after_close = close.checked_add(1).expect("markdown input is too large");
+		let Some(url_start) = s.get(after_close..).and_then(|rest| rest.strip_prefix('(')) else {
+			search = after_close;
+			continue;
+		};
+		let Some(url_end) = url_start.find(')') else { return false };
+		let Some(url) = url_start.get(..url_end) else { return false };
+		if !label.is_empty()
+			&& !label.contains('\n')
+			&& !url.is_empty()
+			&& !url
+				.chars()
+				.any(|c| c.is_whitespace() || matches!(c, '(' | ')'))
+		{
+			return true;
+		}
+		search = after_close;
+	}
+	false
 }

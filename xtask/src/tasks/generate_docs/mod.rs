@@ -1,8 +1,6 @@
 mod admin_commands;
 
-use std::{collections::HashMap, fs::File, io::Write, path::{Path, PathBuf}};
-
-use cargo_metadata::MetadataCommand;
+use std::{collections::HashMap, env, fs::File, io::Write, path::{Path, PathBuf}};
 
 use crate::tasks::TaskResult;
 
@@ -71,12 +69,10 @@ pub(crate) struct Args {
 pub(super) fn run(common_args: crate::Args, task_args: Args) -> TaskResult<()> {
     let mut queue = FileQueue::default();
 
-    let metadata = MetadataCommand::new()
-        .no_deps()
-        .exec()
-        .expect("should have been able to run cargo");
-
-    let root = task_args.root.unwrap_or_else(|| metadata.workspace_root.join_os("docs/"));
+	let root = task_args.root.unwrap_or_else(|| {
+		PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"))
+			.join("../docs/")
+	});
 
     admin_commands::generate(&mut queue)?;
 

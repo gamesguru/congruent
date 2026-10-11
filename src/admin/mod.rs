@@ -2,6 +2,7 @@
 #![allow(clippy::wildcard_imports)]
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::disallowed_macros)]
 
 conduwuit_macros::introspect_crate! {}
 

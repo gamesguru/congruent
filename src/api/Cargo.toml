@@ -16,43 +16,28 @@ crate-type = [
 ]
 
 # `ctor` is used only via the `::ctor::ctor` paths emitted by
-# `conduwuit_macros::introspect_crate!`. `reqwest` is only referenced from
-# `[features]`, where it forwards compression backends to reqwest itself.
 [package.metadata.cargo-machete]
-ignored = ["const-str", "ctor", "reqwest"]
+ignored = ["const-str", "ctor"]
 
 [features]
-brotli_compression = [
-	"conduwuit-core/brotli_compression",
-	"conduwuit-service/brotli_compression",
-	"reqwest/brotli",
-]
 element_hacks = [
 	"conduwuit-service/element_hacks",
 ]
-gzip_compression = [
-	"conduwuit-core/gzip_compression",
-	"conduwuit-service/gzip_compression",
-	"reqwest/gzip",
+mimalloc = [
+    "conduwuit-core/mimalloc",
+    "conduwuit-service/mimalloc",
 ]
-io_uring = [
-	"conduwuit-service/io_uring",
+mimalloc_conf = [
+	"conduwuit-core/mimalloc_conf",
+	"conduwuit-service/mimalloc_conf",
 ]
-jemalloc = [
-    "conduwuit-core/jemalloc",
-    "conduwuit-service/jemalloc",
+mimalloc_prof = [
+	"conduwuit-core/mimalloc_prof",
+	"conduwuit-service/mimalloc_prof",
 ]
-jemalloc_conf = [
-	"conduwuit-core/jemalloc_conf",
-	"conduwuit-service/jemalloc_conf",
-]
-jemalloc_prof = [
-	"conduwuit-core/jemalloc_prof",
-	"conduwuit-service/jemalloc_prof",
-]
-jemalloc_stats = [
-	"conduwuit-core/jemalloc_stats",
-	"conduwuit-service/jemalloc_stats",
+mimalloc_stats = [
+	"conduwuit-core/mimalloc_stats",
+	"conduwuit-service/mimalloc_stats",
 ]
 ldap = [
     "conduwuit-service/ldap"
@@ -62,19 +47,15 @@ release_max_log_level = [
 	"conduwuit-service/release_max_log_level",
 	"log/max_level_trace",
 	"log/release_max_level_info",
-	"tracing/max_level_trace",
-	"tracing/release_max_level_info",
 ]
 zstd_compression = [
 	"conduwuit-core/zstd_compression",
 	"conduwuit-service/zstd_compression",
-	"reqwest/zstd",
+	# "reqwest/zstd",
 ]
 
 [dependencies]
-axum-client-ip.workspace = true
-axum-extra.workspace = true
-axum.workspace = true
+async-lock.workspace = true
 base64.workspace = true
 bytes.workspace = true
 conduwuit-core.workspace = true
@@ -88,23 +69,27 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 itertools.workspace = true
-lettre.workspace = true
 log.workspace = true
+matchit.workspace = true
+percent-encoding.workspace = true
 rand.workspace = true
-reqwest.workspace = true
 rezzy.workspace = true
 slipstream.workspace = true
-serde_html_form.workspace = true
+serde_urlencoded.workspace = true
 serde.workspace = true
 sha1.workspace = true
+smol.workspace = true
 tokio.workspace = true
 tower.workspace = true
-tracing.workspace = true
 url.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-rustls = { workspace = true, features = ["aws_lc_rs"] }
+async-net.workspace = true
+# The route tests make reqwest-driven calls, which need a TLS crypto provider
+# installed. `ring` is enabled here (test-only) so they have a deterministic
+# provider regardless of which providers the library's consumers select.
+rustls = { workspace = true, features = ["ring"] }
 
 [lints]
 workspace = true

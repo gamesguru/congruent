@@ -1,8 +1,7 @@
-use axum::extract::State;
 use conduwuit::Result;
 use slipstream::api::federation::openid::get_openid_userinfo;
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/openid/userinfo`
 ///

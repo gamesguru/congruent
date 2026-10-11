@@ -1,7 +1,5 @@
 use std::{borrow::Borrow, collections::HashMap, iter::once};
 
-use axum::extract::State;
-use axum_client_ip::ClientIp;
 use conduwuit::{
 	Err, Result, debug_info, debug_warn, err, info,
 	matrix::{
@@ -34,12 +32,14 @@ use slipstream::{
 };
 
 use super::{banned_room_check, join::join_room_by_id_helper, validate_remote_member_event_stub};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	router::extract::{ClientIp, State},
+};
 
 /// # `POST /_matrix/client/*/knock/{roomIdOrAlias}`
 ///
 /// Tries to knock the room to ask permission to join for the sender user.
-#[tracing::instrument(skip_all, fields(%client), name = "knock", level = "info")]
 pub(crate) async fn knock_room_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
@@ -559,7 +559,7 @@ async fn knock_room_helper_remote(
 		.filter_map(Result::ok);
 
 	let mut state_map: HashMap<u64, OwnedEventId> = HashMap::new();
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 
 	for event in state {
 		let Some(state_key) = event.get("state_key") else {
@@ -658,17 +658,21 @@ async fn knock_room_helper_remote(
 	// Installing the resolved state root makes append_pdu skip its normal
 	// membership-cache update. Persist the local knock explicitly so the
 	// knocker's next /sync includes this room in `rooms.knock`.
-	services.rooms.state_cache.mark_as_knocked(
-		sender_user,
-		room_id,
-		Some(
-			send_knock_response
-				.knock_room_state
-				.iter()
-				.map(Raw::cast)
-				.collect(),
-		),
-	);
+	services
+		.rooms
+		.state_cache
+		.mark_as_knocked(
+			sender_user,
+			room_id,
+			Some(
+				send_knock_response
+					.knock_room_state
+					.iter()
+					.map(Raw::cast)
+					.collect(),
+			),
+		)
+		.await;
 
 	info!("Successfully set final room state for new room");
 

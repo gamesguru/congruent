@@ -4,8 +4,8 @@ use std::{
 };
 
 use conduwuit::{
-	Err, Event, Result, debug::INFO_SPAN_LEVEL, debug_error, debug_info, defer, err, implement,
-	info, trace, utils::stream::IterStream, warn,
+	Err, Event, Result, debug, debug_error, debug_info, defer, err, implement, info, trace,
+	utils::stream::IterStream, warn,
 };
 use futures::{
 	FutureExt, TryFutureExt, TryStreamExt,
@@ -18,7 +18,6 @@ use slipstream::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use tracing::debug;
 
 use super::handle_outlier_pdu::AuthRecoveryStage;
 use crate::rooms::timeline::{RawPduId, pdu_fits};
@@ -128,12 +127,6 @@ async fn should_rescind_invite(
 /// 14. Check if the event passes auth based on the "current state" of the room,
 ///     if not soft fail it
 #[implement(super::Service)]
-#[tracing::instrument(
-	name = "pdu",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%room_id, %event_id),
-)]
 pub async fn handle_incoming_pdu<'a>(
 	&self,
 	origin: &'a ServerName,
@@ -158,7 +151,7 @@ pub async fn handle_incoming_pdu<'a>(
 	);
 
 	let pdu_timeout = self.services.server.config.pdu_receive_timeout;
-	match Box::pin(tokio::time::timeout(std::time::Duration::from_secs(pdu_timeout), fut)).await {
+	match Box::pin(conduwuit::timeout(std::time::Duration::from_secs(pdu_timeout), fut)).await {
 		| Ok(res) => res,
 		| Err(_) => {
 			warn!(
@@ -509,10 +502,10 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// upcoming /state_ids retry there instead, since that's the
 					// point the sending server can actually provide a snapshot
 					// for.
-					// Only cache when `fetch_prev` actually produced candidates. Its
-					// `Some(deeper_anchor)` case implies candidates were fetched (a
-					// deeper anchor is only derived once a candidate exists), so
-					// `!sorted.is_empty()` is the right gate for both.
+					// Cache a deeper anchor even when the response event became known
+					// concurrently. `fetch_prev` deliberately does not return known
+					// events for reprocessing, but their topology is still needed to
+					// select the correct /state_ids anchor.
 					//
 					// An *empty* `Ok` here is ambiguous: `fetch_prev` returns
 					// `Ok((Vec::new(), HashMap::new(), None, false))` both when every
@@ -524,7 +517,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					// that retry happen: a harmless no-op for the already-satisfied
 					// case, and a genuine second attempt for the failed one.
 					| Ok((sorted, fetched, deeper_anchor, invalid))
-						if !sorted.is_empty() || invalid =>
+						if !sorted.is_empty() || deeper_anchor.is_some() || invalid =>
 					{
 						if let Some(anchor) = &deeper_anchor {
 							state_ids_anchor = anchor.clone();
@@ -729,12 +722,6 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(
-	name = "pdu_upgrade",
-	level = INFO_SPAN_LEVEL,
-	skip_all,
-	fields(%room_id, %event_id = %incoming_pdu.event_id()),
-)]
 pub async fn process_timeline_upgrade(
 	&self,
 	incoming_pdu: conduwuit::PduEvent,
@@ -766,7 +753,7 @@ pub async fn process_timeline_upgrade(
 	let (
 		sorted_prev_events,
 		fetched_prev_events,
-		_prev_fetch_deeper_anchor,
+		prev_fetch_deeper_anchor,
 		prev_fetch_had_invalid_data,
 	) = if let Some(prefetched) = prefetched_prev {
 		prefetched
@@ -860,16 +847,28 @@ pub async fn process_timeline_upgrade(
 
 	// Keep the actual write phase inside one flush boundary so prev-event
 	// repairs and the incoming event become visible together.
+	let final_prev_id = sorted_prev_events.last().cloned();
+	let final_prev_anchor = prev_fetch_deeper_anchor.clone();
 	self.services
 		.timeline
 		.with_cork_and_flush(|| async move {
+			// Typed parameter so `prev_id` below is inferred as `&EventId`.
+			let is_final_prev = |id: &EventId| {
+				final_prev_id
+					.as_ref()
+					.is_some_and(|last| last.as_str() == id.as_str())
+			};
 			let predecessors_were_recovered = sorted_prev_events
 				.iter()
 				.try_stream()
 				.map_ok(AsRef::as_ref)
-				.try_fold(false, |recovered_any, prev_id| {
+				.try_fold(false, |recovered_any, prev_id: &EventId| {
 					let event_id = event_id.clone();
 					let event_info = eventid_info.remove(prev_id);
+					let state_ids_anchor = final_prev_anchor
+						.as_ref()
+						.filter(|_| is_final_prev(prev_id))
+						.cloned();
 					async move {
 						let recovered = self
 							.handle_prev_pdu(
@@ -880,6 +879,7 @@ pub async fn process_timeline_upgrade(
 								create_event,
 								first_ts_in_room,
 								prev_id,
+								state_ids_anchor,
 							)
 							.inspect_err(move |e| {
 								warn!("Prev {prev_id} failed: {e}");
@@ -931,6 +931,7 @@ pub async fn process_timeline_upgrade(
 				room_id,
 				true,
 				predecessors_were_recovered,
+				prev_fetch_deeper_anchor,
 			))
 			.await
 			.map(|(pdu_id, _)| pdu_id)

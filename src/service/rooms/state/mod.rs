@@ -223,7 +223,6 @@ impl Service {
 	/// fan-out. The caller is responsible for committing the new root to the
 	/// room's current-state pointer (via `set_room_state_hamt` /
 	/// `set_event_state_with_root`).
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn update_caches_for_state_delta_between(
 		&self,
 		room_id: &RoomId,
@@ -262,7 +261,7 @@ impl Service {
 		};
 
 		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
-		let lattice = rezzy::state::LtHash::default();
+		let lattice = rezzy::incremental::LtHash::default();
 		let (added, removed): HamtDelta =
 			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
 				&old_node,
@@ -285,13 +284,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -319,13 +317,12 @@ impl Service {
 				.services
 				.short
 				.get_statekey_from_short(shortstatekey)
-				.await
-				&& !matches!(
-					event_type,
-					StateEventType::RoomMember
-						| StateEventType::RoomEncryption
-						| StateEventType::SpaceChild
-				) {
+				.await && !matches!(
+				event_type,
+				StateEventType::RoomMember
+					| StateEventType::RoomEncryption
+					| StateEventType::SpaceChild
+			) {
 				continue;
 			}
 			let Ok(event_id_obj) = self
@@ -359,7 +356,6 @@ impl Service {
 	///
 	/// Appends the incoming event to the room's current HAMT state (if it is a
 	/// state event) and returns the resulting root handle.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state(
 		&self,
 		room_id: &RoomId,
@@ -381,7 +377,6 @@ impl Service {
 		.await
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn set_event_state_with_root(
 		&self,
 		room_id: &RoomId,
@@ -465,7 +460,6 @@ impl Service {
 	/// Builds a new HAMT root handle (and its root node) representing the
 	/// room's current state plus the incoming state event. Only state events
 	/// may be appended; non-state events are rejected.
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn append_to_state(
 		&self,
 		new_pdu: &PduEvent,
@@ -569,14 +563,12 @@ impl Service {
 			.collect()
 			.await;
 
-		let mut lattice = rezzy::state::LtHash::default();
+		let mut lattice = rezzy::incremental::LtHash::default();
 		let mut entries: Vec<(ShortStateKey, ShortEventId)> =
 			Vec::with_capacity(short_state_keys.len());
 
-		for ((ssk, event_id), key_result) in short_state_keys
-			.into_iter()
-			.zip(event_ids.into_iter())
-			.zip(string_keys.into_iter())
+		for ((ssk, event_id), key_result) in
+			short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 		{
 			let shorteventid = self
 				.services
@@ -615,7 +607,7 @@ impl Service {
 		structural_key: &[u8],
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
 		let old = self
 			.services
@@ -652,7 +644,7 @@ impl Service {
 	pub fn persist_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-		lattice: &rezzy::state::LtHash,
+		lattice: &rezzy::incremental::LtHash,
 	) {
 		let encoded = lattice.to_bytes();
 		self.db
@@ -668,9 +660,9 @@ impl Service {
 	pub async fn get_root_lattice(
 		&self,
 		root_handle: &rezzy::hamt::RootHandle,
-	) -> Option<rezzy::state::LtHash> {
+	) -> Option<rezzy::incremental::LtHash> {
 		if let Some(raw) = self.db.lattice_cache.get(&root_handle.structural_hash) {
-			return rezzy::state::LtHash::from_bytes(&raw);
+			return rezzy::incremental::LtHash::from_bytes(&raw);
 		}
 
 		let raw = self
@@ -683,7 +675,7 @@ impl Service {
 			return None;
 		}
 
-		let lattice = rezzy::state::LtHash::from_bytes(&raw)?;
+		let lattice = rezzy::incremental::LtHash::from_bytes(&raw)?;
 		self.db
 			.lattice_cache
 			.insert(root_handle.structural_hash, Arc::from(&*raw));
@@ -725,7 +717,6 @@ impl Service {
 		Ok(map)
 	}
 
-	#[tracing::instrument(skip_all, level = "debug")]
 	pub async fn summary_stripped<'a, E>(
 		&self,
 		event: &'a E,
@@ -762,7 +753,6 @@ impl Service {
 	}
 
 	/// Set the state HAMT RootHandle to a new version.
-	#[tracing::instrument(skip(self, root_handle, _mutex_lock), level = "debug")]
 	pub fn set_room_state_hamt(
 		&self,
 		room_id: &RoomId,
@@ -777,14 +767,12 @@ impl Service {
 	}
 
 	/// Returns the room's current HAMT RootHandle.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_state_hamt(&self, room_id: &RoomId) -> Result<rezzy::hamt::RootHandle> {
 		let data = self.db.roomid_roothandle.get(room_id).await?;
 		root_handle_from_bytes(&data)
 	}
 
 	/// Returns the room's version.
-	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn get_room_version(&self, room_id: &RoomId) -> Result<RoomVersionId> {
 		if let Ok(version) = self.services.short.get_room_version(room_id).await {
 			return Ok(version);
@@ -986,12 +974,11 @@ impl Service {
 					.services
 					.pdu_metadata
 					.is_event_rejected(&event_id)
-					.await
-				&& !self
-					.services
-					.pdu_metadata
-					.is_event_soft_failed(&event_id)
-					.await;
+					.await && !self
+				.services
+				.pdu_metadata
+				.is_event_soft_failed(&event_id)
+				.await;
 			if admitted {
 				eligible.push(event_id);
 			} else {
@@ -1035,7 +1022,6 @@ impl Service {
 
 	/// This fetches auth events from the current state.
 	#[allow(clippy::too_many_arguments)]
-	#[tracing::instrument(skip(self, content, room_version), level = "trace")]
 	pub async fn get_auth_events(
 		&self,
 		room_id: &RoomId,

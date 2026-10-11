@@ -935,7 +935,7 @@ pub(super) async fn set_state_event(
 
 	// Build the HAMT root for the new state, resolving short IDs so the
 	// lattice can be reconstructed from the entries.
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(new_state.len());
 	let mut short_state_keys = Vec::with_capacity(new_state.len());
 	let mut event_ids = Vec::with_capacity(new_state.len());
@@ -1938,14 +1938,14 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_empty() {
 		let meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), "");
 	}
 
 	#[test]
 	fn test_fmt_event_meta_member() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), ("join".to_owned(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.member", &eid, &meta), " [join]");
 	}
@@ -1953,7 +1953,7 @@ mod tests {
 	#[test]
 	fn test_fmt_event_meta_power_levels() {
 		let mut meta = HashMap::new();
-		let eid = event_id!("$abc:test.org").to_owned();
+		let eid = event_id!("$abc:test.org");
 		meta.insert(eid.clone(), (String::new(), "@user:test.org".to_owned()));
 		assert_eq!(fmt_event_meta("m.room.power_levels", &eid, &meta), " [by @user:test.org]");
 	}

@@ -2,13 +2,9 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser};
-use conduwuit_core::{
-	Err, Result,
-	config::{Figment, FigmentValue},
-	err, toml,
-	utils::available_parallelism,
-};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
+use conduwuit_core::{Err, Result, config::RawConfig, err, toml, utils::available_parallelism};
 
 /// Commandline arguments
 #[derive(Parser, Debug)]
@@ -16,9 +12,12 @@ use conduwuit_core::{
 	about,
 	long_about = None,
 	name = conduwuit_core::name(),
-	version = conduwuit_core::version(),
+	version = conduwuit_git_info::display_version(),
 )]
 pub struct Args {
+	#[command(subcommand)]
+	pub command: Option<Command>,
+
 	#[arg(short, long)]
 	/// Path to the config TOML file (optional)
 	pub config: Option<Vec<PathBuf>>,
@@ -133,7 +132,7 @@ pub struct Args {
 	)]
 	pub gc_on_park: Option<bool>,
 
-	/// Toggles muzzy decay for jemalloc arenas associated with a tokio
+	/// Toggles allocator decay behavior associated with a tokio
 	/// worker (when worker-affinity is enabled). Setting to false releases
 	/// memory to the operating system using MADV_FREE without MADV_DONTNEED.
 	/// Setting to false increases performance by reducing pagefaults, but
@@ -150,29 +149,50 @@ pub struct Args {
 	pub gc_muzzy: Option<bool>,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum Command {
+	/// Generate shell completion scripts.
+	Completions {
+		/// Shell to generate completions for.
+		shell: Shell,
+	},
+}
+
 /// Parse commandline arguments into structured data
 #[must_use]
 pub(crate) fn parse() -> Args { Args::parse() }
 
+pub(crate) fn generate_completions(command: &mut clap::Command, shell: Shell) {
+	clap_complete::generate(
+		shell,
+		command,
+		command.get_name().to_owned(),
+		&mut std::io::stdout(),
+	);
+}
+
+#[must_use]
+pub(crate) fn command() -> clap::Command { Args::command() }
+
 /// Synthesize any command line options with configuration file options.
-pub(crate) fn update(mut config: Figment, args: &Args) -> Result<Figment> {
+pub(crate) fn update(mut config: RawConfig, args: &Args) -> Result<RawConfig> {
 	if args.maintenance {
-		config = config.join(("startup_netburst", false));
-		config = config.join(("listening", false));
+		config.set_override("startup_netburst", toml::Value::Boolean(false));
+		config.set_override("listening", toml::Value::Boolean(false));
 	}
 
 	#[cfg(feature = "console")]
 	// Indicate the admin console should be spawned automatically if the
 	// configuration file hasn't already.
 	if args.console {
-		config = config.join(("admin_console_automatic", true));
+		config.set_override("admin_console_automatic", toml::Value::Boolean(true));
 	}
 
 	// Execute commands after any commands listed in configuration file
-	config = config.adjoin(("admin_execute", &args.execute));
+	config.append_strings("admin_execute", &args.execute);
 
 	// Update config with names of any functional-tests
-	config = config.adjoin(("test", &args.test));
+	config.append_strings("test", &args.test);
 
 	// All other individual overrides can go last in case we have options which
 	// set multiple conf items at once and the user still needs granular overrides.
@@ -190,13 +210,12 @@ pub(crate) fn update(mut config: Figment, args: &Args) -> Result<Figment> {
 		}
 
 		// The value has to pass for what would appear as a line in the TOML file.
-		let val = toml::from_str::<FigmentValue>(option)?;
-		let FigmentValue::Dict(_, val) = val else {
-			panic!("Unexpected Figment Value: {val:#?}");
-		};
-
-		// Figment::merge() overrides existing
-		config = config.merge((key, val[key].clone()));
+		let val = toml::from_str::<toml::Value>(&format!("value = {val}"))?;
+		let value = val
+			.get("value")
+			.cloned()
+			.expect("the synthetic TOML value must contain `value`");
+		config.set_override(key, value);
 	}
 
 	Ok(config)

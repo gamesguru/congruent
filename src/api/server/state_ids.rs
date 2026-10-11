@@ -1,12 +1,11 @@
 use std::{borrow::Borrow, iter::once};
 
-use axum::extract::State;
 use conduwuit::{Result, at, err, info};
 use futures::TryStreamExt;
 use slipstream::{OwnedEventId, api::federation::event::get_room_state_ids};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/state_ids/{roomId}`
 ///

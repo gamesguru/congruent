@@ -8,13 +8,12 @@ use conduwuit::{
 	matrix::{Event, pdu::PduEvent},
 	warn,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, io::AsyncWriteExt};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_missing_events},
 };
-use tokio::io::AsyncWriteExt;
 
 use super::export::DagExportStats;
 use crate::admin_command;
@@ -80,13 +79,13 @@ pub(super) async fn get_room_dag(
 		.map_or_else(|_| "unknown".to_owned(), |v| v.to_string());
 	let safe_room_id = room_id.to_string().replace('!', "").replace(':', "_");
 	let path = format!("/tmp/local-dag-{safe_room_id}-v{room_version_str}-{server}.jsonl");
-	let mut file = tokio::fs::File::create(&path)
+	let mut file = async_fs::File::create(&path)
 		.await
 		.map_err(|e| err!(Database("Failed to create file {path}: {e:?}")))?;
 
 	let outliers_path =
 		format!("/tmp/local-dag-{safe_room_id}-v{room_version_str}-{server}-outliers.jsonl");
-	let mut outliers_file = tokio::fs::File::create(&outliers_path)
+	let mut outliers_file = async_fs::File::create(&outliers_path)
 		.await
 		.map_err(|e| err!(Database("Failed to create outliers file {outliers_path}: {e:?}")))?;
 
@@ -306,10 +305,10 @@ pub(super) async fn get_room_dag(
 		"/tmp/local-dag-{safe_room_id}-v{room_version_str}-{server}-d{min_d}-{max_depth}.jsonl",
 		max_depth = stats.max_depth
 	);
-	if let Err(e) = tokio::fs::rename(&path, &final_path).await {
+	if let Err(e) = async_fs::rename(&path, &final_path).await {
 		warn!("Failed to rename {path} -> {final_path}: {e}");
 	}
-	let display_path = if tokio::fs::metadata(&final_path).await.is_ok() {
+	let display_path = if async_fs::metadata(&final_path).await.is_ok() {
 		&final_path
 	} else {
 		&path
@@ -494,10 +493,10 @@ pub(super) async fn get_remote_dag(
 	let safe_room_id = room_id.to_string().replace('!', "").replace(':', "_");
 	let server_str = server.as_ref().map_or("auto", |s| s);
 	let path = format!("/tmp/remote-dag-{safe_room_id}-v{room_version}-{server_str}.jsonl");
-	let file = tokio::fs::File::create(&path)
+	let file = async_fs::File::create(&path)
 		.await
 		.map_err(|e| err!(Database("Failed to create file {path}: {e:?}")))?;
-	let mut writer = tokio::io::BufWriter::new(file);
+	let mut writer = futures::io::BufWriter::new(file);
 
 	let mut seen = HashSet::<OwnedEventId>::new();
 	let mut queued = HashSet::<OwnedEventId>::new();
@@ -511,7 +510,7 @@ pub(super) async fn get_remote_dag(
 	let mut consecutive_errors = 0_usize;
 	let mut last_fetched_event: Option<OwnedEventId> = None;
 	let batch_size = 500;
-	let start_time = tokio::time::Instant::now();
+	let start_time = std::time::Instant::now();
 
 	let server_list_str = pool.display();
 
@@ -540,7 +539,7 @@ pub(super) async fn get_remote_dag(
 			for id in request_v.into_iter().rev() {
 				queue.push_front(id);
 			}
-			tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+			smol::Timer::after(std::time::Duration::from_secs(2)).await;
 			continue;
 		};
 
@@ -779,7 +778,7 @@ pub(super) async fn get_remote_dag(
 		}
 
 		// Yield to avoid blocking
-		tokio::task::yield_now().await;
+		smol::future::yield_now().await;
 	}
 
 	writer
@@ -789,9 +788,9 @@ pub(super) async fn get_remote_dag(
 
 	if !queue.is_empty() {
 		let frontier_path = format!("/tmp/remote-dag-frontier-{safe_room_id}.jsonl");
-		if let Ok(f) = tokio::fs::File::create(&frontier_path).await {
-			use tokio::io::AsyncWriteExt;
-			let mut f_writer = tokio::io::BufWriter::new(f);
+		if let Ok(f) = async_fs::File::create(&frontier_path).await {
+			use futures::io::AsyncWriteExt;
+			let mut f_writer = futures::io::BufWriter::new(f);
 			for eid in &queue {
 				let _ = f_writer.write_all(format!("{eid}\n").as_bytes()).await;
 			}
@@ -842,10 +841,10 @@ pub(super) async fn get_remote_dag(
 		"/tmp/remote-dag-{safe_room_id}-v{room_version}-{server_str}-d{min_depth}-{max_depth}.\
 		 jsonl"
 	);
-	if let Err(e) = tokio::fs::rename(&path, &final_path).await {
+	if let Err(e) = async_fs::rename(&path, &final_path).await {
 		warn!("Failed to rename {path} -> {final_path}: {e}");
 	}
-	let display_path = if tokio::fs::metadata(&final_path).await.is_ok() {
+	let display_path = if async_fs::metadata(&final_path).await.is_ok() {
 		&final_path
 	} else {
 		&path
@@ -1712,8 +1711,12 @@ pub(super) async fn fetch_missing_events(
 								.outlier
 								.get_pdu_outlier(&event_id)
 								.await
-								.is_err()
-								&& !self.services.rooms.timeline.pdu_exists(&event_id).await
+								.is_err() && !self
+								.services
+								.rooms
+								.timeline
+								.pdu_exists(&event_id)
+								.await
 							{
 								self.services
 									.rooms
@@ -1736,13 +1739,12 @@ pub(super) async fn fetch_missing_events(
 											.outlier
 											.get_pdu_outlier(prev)
 											.await
-											.is_err()
-											&& !self
-												.services
-												.rooms
-												.timeline
-												.pdu_exists(prev)
-												.await
+											.is_err() && !self
+											.services
+											.rooms
+											.timeline
+											.pdu_exists(prev)
+											.await
 										{
 											next_targets.insert(prev.to_owned());
 										}

@@ -3,7 +3,6 @@ use std::{
 	str::FromStr,
 };
 
-use axum::extract::State as AxumState;
 use conduwuit::{Err, Result, utils::stream::IterStream};
 use conduwuit_service::rooms::spaces::{
 	PaginationToken, SummaryAccessibility, get_parent_children_via, summary_to_chunk,
@@ -13,7 +12,10 @@ use slipstream::{
 	OwnedRoomId, OwnedServerName, RoomId, UInt, UserId, api::client::space::get_hierarchy,
 };
 
-use crate::{Ruma, router::State};
+use crate::{
+	Ruma,
+	router::{State, extract::State as AxumState},
+};
 
 /// # `GET /_matrix/client/v1/rooms/{room_id}/hierarchy`
 ///

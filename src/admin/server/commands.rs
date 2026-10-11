@@ -44,26 +44,26 @@ pub(super) async fn config_diff(&self) -> Result {
 
 	let cfg = &self.services.server.config;
 
-	// Re-create the Figment from the active config paths so we can inspect
+	// Re-create the raw configuration from the active config paths so we can inspect
 	// which keys the user *explicitly* set (vs. filled by serde defaults).
 	let paths = cfg.config_paths.clone().unwrap_or_default();
-	let figment = Config::load(&paths)?;
+	let raw_config = Config::load(&paths)?;
 
 	// All known config keys extracted from the embedded example TOML.
 	let known_keys = extract_known_keys_from_example();
 
 	// For each known key, check whether the user explicitly set it.
-	// figment.contains() returns true only when the key appears in one of
+	// raw_config.contains() returns true only when the key appears in one of
 	// the loaded providers (TOML files / env vars), not just from defaults.
 	let set_keys: Vec<&str> = known_keys
 		.iter()
-		.filter(|k| figment.contains(k.as_str()))
+		.filter(|k| raw_config.contains(k.as_str()))
 		.map(String::as_str)
 		.collect();
 
 	let missing_keys: Vec<&str> = known_keys
 		.iter()
-		.filter(|k| !figment.contains(k.as_str()))
+		.filter(|k| !raw_config.contains(k.as_str()))
 		.map(String::as_str)
 		.collect();
 
@@ -115,7 +115,7 @@ pub(super) async fn config_diff(&self) -> Result {
 
 /// Parses the embedded example TOML to build the canonical list of all
 /// config keys known to this binary version. Keys are represented in
-/// dot-notation mirroring how figment addresses nested fields
+/// dot-notation mirroring how the raw configuration addresses nested fields
 /// (e.g. `tls.certs`, `well_known.client`).
 fn extract_known_keys_from_example() -> BTreeSet<String> {
 	let mut keys = BTreeSet::new();

@@ -1,9 +1,8 @@
-use axum::extract::State;
 use conduwuit::{Err, Event, Result, err, info};
 use slipstream::{MilliSecondsSinceUnixEpoch, api::federation::event::get_event};
 
 use super::AccessCheck;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/event/{eventId}`
 ///

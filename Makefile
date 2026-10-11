@@ -12,7 +12,7 @@ MAKEFLAGS += --no-print-directory
 # `?=`) is required: Make auto-imports already-exported shell variables as if
 # they were `?=`-defined, so a plain `?=` would keep a bad inherited value
 # instead of replacing it. Bump this in lockstep with rust-toolchain.toml.
-RUSTUP_TOOLCHAIN ?=
+RUSTUP_TOOLCHAIN := 1.98.1
 export RUSTUP_TOOLCHAIN
 
 # [CONFIG] source .env if it exists
@@ -94,7 +94,6 @@ vars: ##H Print debug info
 		printf "$(STYLE_CYAN)%-25s$(STYLE_RESET) %s\n" "VERSION" \
 		"$$(cargo run $(CARGO_FLAGS) -p conduwuit_git_info --bin version --quiet)"
 
-
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Development commands
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -166,11 +165,11 @@ check:   ##H Run cargo check
 	ROCKSDB_INCLUDE_DIR=$(ROCKSDB_INCLUDE_DIR) \
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
-		cargo check $(CARGO_SCOPE) --locked $(CARGO_FLAGS)
+		cargo check --all-targets --all-features $(CARGO_SCOPE) $(CARGO_FLAGS)
 
 .PHONY: macro
 macro: ##H See macro expansion costs
-	cargo +nightly rustc -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
+	cargo +nightly rustc -p conduwuit --bin conduwuit -- -Zmacro-stats 2>&1 | awk -f scripts/macro_totals.awk
 
 
 .PHONY: lint
@@ -182,7 +181,7 @@ lint:   ##H Lint code
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		CC=gcc \
 		CFLAGS="$$(gcc -Wunterminated-string-initialization -x c -c /dev/null -o /dev/null 2>/dev/null && echo '-Wno-error=unterminated-string-initialization')" \
-		cargo clippy $(CARGO_SCOPE) --features full --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
+		cargo clippy $(CARGO_SCOPE) --all-targets --all-features --locked --no-deps $(CARGO_FLAGS) -- $(if $(CI),-D warnings)
 
 .PHONY: test
 test:   ##H Run tests
@@ -192,7 +191,7 @@ test:   ##H Run tests
 		ROCKSDB_LIB_DIR=$(ROCKSDB_LIB_DIR) \
 		LD_LIBRARY_PATH=$(ROCKSDB_LIB_DIR):$$LD_LIBRARY_PATH \
 		NO_SCCACHE=$(NO_SCCACHE) \
-		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--features full)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS) -- --nocapture
+		cargo test --locked --all-targets $(if $(p),,$(if $(CRATE),,--all-features)) --timings $(CARGO_SCOPE) $(CARGO_FLAGS) -- --nocapture
 
 .PHONY: cov
 cov:    ##H Run tests with llvm-cov coverage (text summary)

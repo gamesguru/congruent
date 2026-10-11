@@ -7,6 +7,7 @@ use std::{
 
 use conduwuit::{
 	Err, Result, err, info,
+	log::EnvFilter,
 	matrix::{
 		Event,
 		pdu::{PduEvent, PduId, RawPduId},
@@ -19,14 +20,12 @@ use conduwuit::{
 	warn,
 };
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use lettre::message::Mailbox;
 use service::rooms::short::{ShortEventId, ShortRoomId};
 use slipstream::{
 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName,
 	RoomVersionId,
 	api::federation::event::{get_event, get_room_state},
 };
-use tracing_subscriber::EnvFilter;
 
 use crate::admin_command;
 
@@ -403,7 +402,7 @@ pub(super) async fn ping(&self, server: OwnedServerName) -> Result {
 		return Err!("Not allowed to send federation requests to ourselves.");
 	}
 
-	let timer = tokio::time::Instant::now();
+	let timer = Instant::now();
 
 	match self
 		.services
@@ -466,7 +465,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 			.reload(&old_filter_layer, Some(handles))
 		{
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 			| Ok(()) => {
 				let value = &self.services.server.config.log;
@@ -493,7 +492,7 @@ pub(super) async fn change_log_level(&self, filter: Option<String>, reset: bool)
 				return self.write_str("Successfully changed log level").await;
 			},
 			| Err(e) => {
-				return Err!("Failed to modify and reload the global tracing log level: {e}");
+				return Err!("Failed to modify and reload the global log level: {e}");
 			},
 		}
 	}
@@ -533,7 +532,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	utils::pdu_json_canonical_strip(&mut event);
 
 	// Status flags
-	let (is_rejected, is_soft_failed) = tokio::join!(
+	let (is_rejected, is_soft_failed) = futures::join!(
 		self.services
 			.rooms
 			.pdu_metadata
@@ -681,7 +680,6 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 pub(super) async fn first_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 	self.bail_restricted()?;
 
@@ -708,7 +706,6 @@ pub(super) async fn first_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 	self.bail_restricted()?;
 
@@ -735,7 +732,6 @@ pub(super) async fn latest_pdu_in_room(&self, room_id: OwnedRoomId) -> Result {
 }
 
 #[admin_command]
-#[tracing::instrument(skip(self), level = "info")]
 #[allow(clippy::fn_params_excessive_bools)]
 pub(crate) async fn force_set_state(
 	&self,
@@ -1914,7 +1910,7 @@ pub(super) async fn send_test_email(&self) -> Result {
 	};
 
 	mailer
-		.send(Mailbox::new(None, email.clone()), service::mailer::messages::Test)
+		.send(email.clone(), service::mailer::messages::Test)
 		.await?;
 
 	self.write_str(&format!("Test email successfully sent to {email}"))

@@ -178,13 +178,6 @@ pub fn auth_types_for_event(
 /// The `fetch_state` closure should gather state from a state snapshot. We need
 /// to know if the event passes auth against some state not a recursive
 /// collection of auth_events fields.
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(
-		event_id = incoming_event.event_id().as_str(),
-	)
-)]
 #[allow(clippy::suspicious_operation_groupings)]
 pub async fn auth_check<E, F, Fut>(
 	room_version: &RoomVersion,
@@ -933,7 +926,7 @@ where
 						);
 						false
 					},
-					| JoinRule::KnockRestricted(_) => {
+					| JoinRule::Restricted(_) | JoinRule::KnockRestricted(_) =>
 						if membership_allows_join || user_for_join_auth_is_valid {
 							trace!(
 								%sender,
@@ -953,30 +946,7 @@ where
 								 valid authorising user given to permit the join"
 							);
 							false
-						}
-					},
-					| JoinRule::Restricted(_) => {
-						if membership_allows_join || user_for_join_auth_is_valid {
-							trace!(
-								%sender,
-								%membership_allows_join,
-								%user_for_join_auth_is_valid,
-								"sender is invited, already joined to, or authorised to join the room, allowing join"
-							);
-							true
-						} else {
-							warn!(
-								%sender,
-								membership_event_id = ?target_user_membership_event_id,
-								membership=?target_user_current_membership,
-								%user_for_join_auth_is_valid,
-								?user_for_join_auth,
-								"sender cannot join as they are not invited nor already joined to the room, nor was a \
-								 valid authorising user given to permit the join"
-							);
-							false
-						}
-					},
+						},
 					| JoinRule::Public => {
 						trace!(%sender, "join rule is public, allowing join");
 						true
@@ -1643,9 +1613,6 @@ mod tests {
 
 	#[test]
 	fn test_ban_pass() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let auth_events = events
@@ -1688,9 +1655,6 @@ mod tests {
 
 	#[test]
 	fn test_join_non_creator() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS_CREATE_ROOM();
 
 		let auth_events = events
@@ -1733,9 +1697,6 @@ mod tests {
 
 	#[test]
 	fn test_join_creator() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS_CREATE_ROOM();
 
 		let auth_events = events
@@ -1778,9 +1739,6 @@ mod tests {
 
 	#[test]
 	fn test_ban_fail() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let events = INITIAL_EVENTS();
 
 		let auth_events = events
@@ -1823,9 +1781,6 @@ mod tests {
 
 	#[test]
 	fn test_restricted_join_rule() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let mut events = INITIAL_EVENTS();
 		*events.get_mut(&event_id("IJR")).unwrap() = to_pdu_event(
 			"IJR",
@@ -1902,9 +1857,6 @@ mod tests {
 
 	#[test]
 	fn test_knock() {
-		let _ = tracing::subscriber::set_default(
-			tracing_subscriber::fmt().with_test_writer().finish(),
-		);
 		let mut events = INITIAL_EVENTS();
 		*events.get_mut(&event_id("IJR")).unwrap() = to_pdu_event(
 			"IJR",

@@ -5,8 +5,7 @@ use std::{
 
 use conduwuit::{Err, Result, debug, debug_info, err, error, trace};
 use futures::{FutureExt, TryFutureExt};
-use hickory_resolver::ResolveError;
-use ipaddress::IPAddress;
+use hickory_resolver::net::NetError;
 use slipstream::ServerName;
 
 use super::{
@@ -26,7 +25,6 @@ impl ActualDest {
 }
 
 impl super::Service {
-	#[tracing::instrument(skip_all, level = "debug", name = "resolve")]
 	pub(crate) async fn get_actual_dest(&self, server_name: &ServerName) -> Result<ActualDest> {
 		let (CachedDest { dest, host, .. }, _cached) =
 			self.lookup_actual_dest(server_name).await?;
@@ -58,7 +56,6 @@ impl super::Service {
 	/// Implemented according to the specification at <https://matrix.org/docs/spec/server_server/r0.1.4#resolving-server-names>
 	/// Numbers in comments below refer to bullet points in linked section of
 	/// specification
-	#[tracing::instrument(name = "actual", level = "debug", skip(self, cache))]
 	pub async fn resolve_actual_dest(
 		&self,
 		dest: &ServerName,
@@ -287,7 +284,6 @@ impl super::Service {
 			.await
 	}
 
-	#[tracing::instrument(name = "ip", level = "debug", skip(self))]
 	async fn query_and_cache_override(
 		&self,
 		untername: &'_ str,
@@ -316,7 +312,6 @@ impl super::Service {
 		}
 	}
 
-	#[tracing::instrument(name = "srv", level = "debug", skip(self))]
 	async fn query_srv_record(&self, hostname: &'_ str) -> Result<Option<FedDest>> {
 		let hostnames =
 			[format!("_matrix-fed._tcp.{hostname}."), format!("_matrix._tcp.{hostname}.")];
@@ -329,14 +324,18 @@ impl super::Service {
 			match self.resolver.srv_lookup(hostname).await {
 				| Err(e) => Self::handle_resolve_error(&e, hostname, "SRV")?,
 				| Ok(result) => {
-					return Ok(result.iter().next().map(|result| {
-						FedDest::Named(
-							result.target().to_string().trim_end_matches('.').to_owned(),
-							format!(":{}", result.port())
+					return Ok(result.answers().iter().find_map(|record| {
+						let hickory_resolver::proto::rr::RData::SRV(result) = &record.data else {
+							return None;
+						};
+
+						Some(FedDest::Named(
+							result.target.to_string().trim_end_matches('.').to_owned(),
+							format!(":{}", result.port)
 								.as_str()
 								.try_into()
 								.unwrap_or_else(|_| FedDest::default_port()),
-						)
+						))
 					}));
 				},
 			}
@@ -345,30 +344,27 @@ impl super::Service {
 		Ok(None)
 	}
 
-	fn handle_resolve_error(e: &ResolveError, host: &'_ str, qtype: &'_ str) -> Result<()> {
-		use hickory_resolver::{ResolveErrorKind::Proto, proto::ProtoErrorKind};
+	fn handle_resolve_error(e: &NetError, host: &'_ str, qtype: &'_ str) -> Result<()> {
+		use hickory_resolver::net::{DnsError, NetError};
 
-		match e.kind() {
-			| Proto(e) => match e.kind() {
-				| ProtoErrorKind::NoRecordsFound { .. } => {
-					// Raise to debug_warn if we can find out the result wasn't from cache
-					debug!(%host, %qtype, "No DNS records found: {e}");
-					Ok(())
-				},
-				| ProtoErrorKind::Timeout => {
-					Err!(debug!(%host, %qtype, "DNS {e}"))
-				},
-				| ProtoErrorKind::NoConnections => {
-					error!(
-						%qtype,
-						"Your DNS server is overloaded and has ran out of connections. It is \
-						 strongly recommended you remediate this issue to ensure proper \
-						 federation connectivity."
-					);
+		match e {
+			| NetError::Dns(DnsError::NoRecordsFound(_)) => {
+				// Raise to debug_warn if we can find out the result wasn't from cache
+				debug!(%host, %qtype, "No DNS records found: {e}");
+				Ok(())
+			},
+			| NetError::Timeout => {
+				Err!(debug!(%host, %qtype, "DNS {e}"))
+			},
+			| NetError::NoConnections => {
+				error!(
+					%qtype,
+					"Your DNS server is overloaded and has ran out of connections. It is \
+					 strongly recommended you remediate this issue to ensure proper \
+					 federation connectivity."
+				);
 
-					Err!(debug!(%host, %qtype, "DNS error: {e}"))
-				},
-				| _ => Err!(debug!(%host, %qtype, "DNS error: {e}")),
+				Err!(debug!(%host, %qtype, "DNS error: {e}"))
 			},
 			| _ => Err!(warn!(%host, %qtype, "DNS error: {e}")),
 		}
@@ -381,7 +377,7 @@ impl super::Service {
 			return Err!("Won't send federation request to ourselves");
 		}
 
-		if dest.is_ip_literal() || IPAddress::is_valid(dest.host()) {
+		if dest.is_ip_literal() || dest.host().parse::<IpAddr>().is_ok() {
 			self.validate_dest_ip_literal(dest)?;
 		}
 
@@ -391,10 +387,10 @@ impl super::Service {
 	fn validate_dest_ip_literal(&self, dest: &ServerName) -> Result<()> {
 		trace!("Destination is an IP literal, checking against IP range denylist.",);
 		debug_assert!(
-			dest.is_ip_literal() || !IPAddress::is_valid(dest.host()),
+			dest.is_ip_literal() || dest.host().parse::<IpAddr>().is_err(),
 			"Destination is not an IP literal."
 		);
-		let ip = IPAddress::parse(dest.host()).map_err(|e| {
+		let ip = dest.host().parse::<IpAddr>().map_err(|e| {
 			err!(BadServerResponse(debug_error!("Failed to parse IP literal from string: {e}")))
 		})?;
 
@@ -403,7 +399,7 @@ impl super::Service {
 		Ok(())
 	}
 
-	pub(crate) fn validate_ip(&self, ip: &IPAddress) -> Result<()> {
+	pub(crate) fn validate_ip(&self, ip: &IpAddr) -> Result<()> {
 		if !self.services.client.valid_cidr_range(ip) {
 			return Err!(BadServerResponse("Not allowed to send requests to this IP"));
 		}

@@ -30,17 +30,6 @@ thread_local! {
 
 /// Set the core affinity for this thread. The ID should be listed in
 /// CORES_AVAILABLE. Empty input is a no-op; prior affinity unchanged.
-#[tracing::instrument(
-	level = "debug",
-	skip_all,
-	fields(
-		id = ?std::thread::current().id(),
-		name = %std::thread::current().name().unwrap_or("None"),
-		set = ?ids.clone().collect::<Vec<_>>(),
-		CURRENT = %format!("[b{:b}]", CORE_AFFINITY.get()),
-		AVAILABLE = %format!("[b{:b}]", *CORES_AVAILABLE),
-	),
-)]
 pub fn set_affinity<I>(mut ids: I)
 where
 	I: Iterator<Item = Id> + Clone + Debug,

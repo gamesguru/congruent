@@ -1,4 +1,3 @@
-use axum::extract::State;
 use conduwuit::{
 	Err, Result, info,
 	utils::stream::{BroadbandExt, IterStream},
@@ -9,7 +8,7 @@ use conduwuit_service::rooms::spaces::{
 use futures::{FutureExt, StreamExt};
 use slipstream::api::federation::space::get_hierarchy;
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `GET /_matrix/federation/v1/hierarchy/{roomId}`
 ///

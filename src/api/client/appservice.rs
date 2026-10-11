@@ -1,8 +1,7 @@
-use axum::extract::State;
 use conduwuit::{Err, Result, err};
 use slipstream::api::{appservice::ping, client::appservice::request_ping};
 
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 /// # `POST /_matrix/client/v1/appservice/{appserviceId}/ping`
 ///
@@ -34,7 +33,7 @@ pub(crate) async fn appservice_ping(
 		)));
 	}
 
-	let timer = tokio::time::Instant::now();
+	let timer = std::time::Instant::now();
 
 	let _response = services
 		.sending

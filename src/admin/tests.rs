@@ -304,8 +304,12 @@ fn strip_v12_create_removes() {
 struct TempDbGuard {
 	path: std::path::PathBuf,
 	services: Option<std::sync::Arc<service::Services>>,
-	_serial: tokio::sync::OwnedMutexGuard<()>,
+	_serial: async_lock::MutexGuardArc<()>,
 }
+
+static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<async_lock::Mutex<()>>> =
+	std::sync::OnceLock::new();
+static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Drop for TempDbGuard {
 	fn drop(&mut self) {
@@ -313,15 +317,10 @@ impl Drop for TempDbGuard {
 			let _ = std::thread::Builder::new()
 				.name("admin-test-shutdown".into())
 				.spawn(move || {
-					if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-						.enable_all()
-						.build()
-					{
-						runtime.block_on(async move {
-							services.stop().await;
-							drop(services);
-						});
-					}
+					smol::block_on(async move {
+						services.stop().await;
+						drop(services);
+					});
 				})
 				.and_then(|thread| {
 					thread
@@ -334,23 +333,19 @@ impl Drop for TempDbGuard {
 	}
 }
 
-async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>, TempDbGuard) {
-	use figment::providers::Format;
+async fn setup_test_services(prefix: &str) -> (TempDbGuard, std::sync::Arc<service::Services>) {
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
-	static TEST_SERIAL: std::sync::OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> =
-		std::sync::OnceLock::new();
-	static TEST_DB_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 	let serial = TEST_SERIAL
-		.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+		.get_or_init(|| std::sync::Arc::new(async_lock::Mutex::new(())))
 		.clone()
-		.lock_owned()
+		.lock_arc()
 		.await;
 	let count = TEST_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 	let db_path = std::env::temp_dir().join(format!("conduwuit_test_db_{prefix}_{count}"));
 	let _ = std::fs::remove_dir_all(&db_path);
 
-	let figment = figment::Figment::new().merge(figment::providers::Toml::string(&format!(
+	let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
 		r#"
 			server_name = "test.conduwuit.local"
 			database_path = "{}"
@@ -364,22 +359,17 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 			rocksdb_wal_compression = "zstd"
 			"#,
 		db_path.to_string_lossy().replace('\\', "/")
-	)));
+	))
+	.expect("failed to parse test config");
 
-	let config = conduwuit::config::Config::new(&figment).expect("failed to parse config");
-	let runtime_handle = tokio::runtime::Handle::current();
-	let server = std::sync::Arc::new(conduwuit::Server::new(
-		config,
-		Some(&runtime_handle),
-		conduwuit::log::Log {
-			reload: conduwuit::log::LogLevelReloadHandles::default(),
-			capture: std::sync::Arc::new(conduwuit::log::capture::State::default()),
-		},
-	));
+	let config = conduwuit::config::Config::new(&config_raw).expect("failed to parse config");
+	let server =
+		std::sync::Arc::new(conduwuit::Server::new(config, None::<&()>, conduwuit::log::Log {
+			reload: conduwuit::log::LogLevelReloadHandles,
+			capture: std::sync::Arc::new(conduwuit::log::capture::State),
+		}));
 
-	let services = service::Services::build(server)
-		.await
-		.expect("failed to build services");
+	let services = service::Services::build(server).expect("failed to build services");
 	let services = services.start().await.expect("failed to start services");
 
 	// Boot admin module context references
@@ -391,20 +381,22 @@ async fn setup_test_services(prefix: &str) -> (std::sync::Arc<service::Services>
 		_serial: serial,
 	};
 
-	(services, guard)
+	(guard, services)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_audit_membership_drift() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
 		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
+			join_rules::{JoinRule, RoomJoinRulesEventContent},
 			member::{MembershipState, RoomMemberEventContent},
+			power_levels::RoomPowerLevelsEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("yolo").await;
+	let (_guard, services) = setup_test_services("yolo").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -457,7 +449,6 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Power levels event
-	use slipstream::events::room::power_levels::RoomPowerLevelsEventContent;
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
@@ -475,7 +466,6 @@ async fn test_yolo_audit_membership_drift() {
 		.unwrap();
 
 	// Join rules event
-	use slipstream::events::room::join_rules::{JoinRule, RoomJoinRulesEventContent};
 	services
 		.rooms
 		.timeline
@@ -640,17 +630,19 @@ async fn test_yolo_audit_membership_drift() {
 /// This exercises the two calls exactly as `yolo/state.rs`'s clean-repair
 /// path now does: the removal applied and committed *before*
 /// `add_pdu_outlier_batch` runs, so its guard sees accurate state.
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
 		RoomVersionId,
 		events::room::{
 			create::RoomCreateEventContent,
+			join_rules::{JoinRule, RoomJoinRulesEventContent},
 			member::{MembershipState, RoomMemberEventContent},
+			power_levels::RoomPowerLevelsEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("demote_torn").await;
+	let (_guard, services) = setup_test_services("demote_torn").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -699,10 +691,6 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 		.await
 		.unwrap();
 
-	use slipstream::events::room::{
-		join_rules::{JoinRule, RoomJoinRulesEventContent},
-		power_levels::RoomPowerLevelsEventContent,
-	};
 	let mut power_levels = RoomPowerLevelsEventContent::new();
 	power_levels
 		.users
@@ -796,9 +784,10 @@ async fn test_demote_timeline_to_outlier_leaves_no_torn_state() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_reorder_timeline() {
 	use conduwuit::pdu::PduBuilder;
+	use futures::StreamExt;
 	use slipstream::{
 		RoomVersionId,
 		events::room::{
@@ -807,7 +796,7 @@ async fn test_yolo_reorder_timeline() {
 			message::RoomMessageEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("reorder").await;
+	let (_guard, services) = setup_test_services("reorder").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -991,7 +980,6 @@ async fn test_yolo_reorder_timeline() {
 	// the topological sort tie-breaks concurrent forks by timestamp
 	// (chronological).
 	let mut ordered_events = Vec::new();
-	use futures::StreamExt;
 	let mut stream = Box::pin(services.rooms.timeline.topo_pdus(&room_id, None));
 	while let Some(Ok((_, pdu))) = stream.next().await {
 		ordered_events.push(pdu.event_id.clone());
@@ -1004,7 +992,7 @@ async fn test_yolo_reorder_timeline() {
 		.iter()
 		.position(|id| id == &event_b)
 		.expect("Event B not found");
-	println!("Event A topological index: {}, Event B topological index: {}", index_a, index_b);
+	println!("Event A topological index: {index_a}, Event B topological index: {index_b}");
 	assert!(
 		index_b < index_a,
 		"Event B (ts=1000) should be before Event A (ts=2000) after reordering because the \
@@ -1012,7 +1000,7 @@ async fn test_yolo_reorder_timeline() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 	use conduwuit::{
 		PduCount,
@@ -1041,7 +1029,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		topo_key
 	}
 
-	let (services, _guard) = setup_test_services("dedup").await;
+	let (_guard, services) = setup_test_services("dedup").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let shortroomid = services
@@ -1115,7 +1103,7 @@ async fn test_yolo_dedup_room_removes_duplicate_topo_entry() {
 		.get_event_metadata(&duplicated_event)
 		.await
 		.unwrap();
-	let duplicate_topo_key = topo_pducount_key(&duplicate_pdu_id, metadata.depth.into());
+	let duplicate_topo_key = topo_pducount_key(&duplicate_pdu_id, metadata.depth);
 
 	// Seed the exact corruption that dedup-room repairs: a second timeline
 	// index entry for the same event ID, without changing the canonical
@@ -1310,12 +1298,12 @@ async fn count_topo_occurrences_for_test(
 	count
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	use futures::StreamExt;
 	use slipstream::OwnedEventId;
 
-	let (services, _guard) =
+	let (_guard, services) =
 		setup_test_services("set_forward_extremities_excludes_ineligible").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "eligible tip").await;
 
@@ -1361,12 +1349,12 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	use futures::StreamExt;
 	use slipstream::OwnedEventId;
 
-	let (services, _guard) =
+	let (_guard, services) =
 		setup_test_services("set_forward_extremities_all_ineligible_noop").await;
 	let (room_id, event_id) =
 		create_test_room_with_message(&services, "existing eligible tip").await;
@@ -1414,9 +1402,9 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_reindex_short_removes_stale_topo_entries() {
-	let (services, _guard) = setup_test_services("reindex_short_topo").await;
+	let (_guard, services) = setup_test_services("reindex_short_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
 
 	assert_eq!(count_topo_occurrences_for_test(&services, &room_id, &event_id).await, 1);
@@ -1444,9 +1432,9 @@ async fn test_yolo_reindex_short_removes_stale_topo_entries() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
-	let (services, _guard) = setup_test_services("reorder_topo").await;
+	let (_guard, services) = setup_test_services("reorder_topo").await;
 	let (room_id, event_id) = create_test_room_with_message(&services, "stale topo").await;
 
 	seed_stale_topo_entry_for_test(&services, &event_id).await;
@@ -1473,7 +1461,7 @@ async fn test_yolo_reorder_timeline_removes_stale_topo_entries() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_busted_dag_resolution() {
 	use std::path::Path;
 
@@ -1487,7 +1475,7 @@ async fn test_busted_dag_resolution() {
 		println!("Skipping test_busted_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("busted_dag").await;
+	let (_guard, services) = setup_test_services("busted_dag").await;
 
 	let room_id = RoomId::parse("!L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI").unwrap();
 
@@ -1623,7 +1611,7 @@ async fn test_busted_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_unredacted_room_dag_resolution() {
 	use std::path::Path;
 
@@ -1637,7 +1625,7 @@ async fn test_unredacted_room_dag_resolution() {
 		println!("Skipping test_unredacted_room_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("unredacted_room").await;
+	let (_guard, services) = setup_test_services("unredacted_room").await;
 
 	let room_id = RoomId::parse("!BDSybzDpGyDxMHZzpN:unredacted.org").unwrap();
 
@@ -1765,7 +1753,7 @@ async fn test_unredacted_room_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_unredacted_lounge_dag_resolution() {
 	use std::path::Path;
 
@@ -1780,7 +1768,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 		return;
 	}
 	eprintln!("[LOUNGE] setup_test_services...");
-	let (services, _guard) = setup_test_services("unredacted_lounge").await;
+	let (_guard, services) = setup_test_services("unredacted_lounge").await;
 	eprintln!("[LOUNGE] services ready");
 
 	let room_id = RoomId::parse("!sM2LwqNHGQOgLf35gqxPMy9D7oYde2q9ADg8HPBM3kE").unwrap();
@@ -1940,7 +1928,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 			.map(|pdu| pdu.event_id().to_owned())
 			.collect();
 
-	let mut mismatches = 0u32;
+	let mut mismatches = 0_u32;
 	for id in &expected_present {
 		let eid = <slipstream::EventId>::try_from(*id).unwrap();
 		if !resolved_state_ids.contains(&eid) {
@@ -1957,12 +1945,12 @@ async fn test_unredacted_lounge_dag_resolution() {
 							"  actual winner: {} (sender={}, ts={})",
 							state_pdu.event_id(),
 							state_pdu.sender(),
-							u64::from(state_pdu.origin_server_ts().0),
+							state_pdu.origin_server_ts().0,
 						);
 					}
 				}
 			}
-			mismatches += 1;
+			mismatches = mismatches.checked_add(1).expect("mismatch count overflow");
 		}
 	}
 
@@ -1970,14 +1958,14 @@ async fn test_unredacted_lounge_dag_resolution() {
 		let eid = <slipstream::EventId>::try_from(*id).unwrap();
 		if resolved_state_ids.contains(&eid) {
 			println!("MISMATCH: expected ABSENT but PRESENT: {id}");
-			mismatches += 1;
+			mismatches = mismatches.checked_add(1).expect("mismatch count overflow");
 		}
 	}
 
 	assert!(mismatches == 0, "{mismatches} state resolution mismatches (see above)");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_nheko_dag_resolution() {
 	use std::path::Path;
 
@@ -1991,7 +1979,7 @@ async fn test_nheko_dag_resolution() {
 		println!("Skipping test_nheko_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("nheko_room").await;
+	let (_guard, services) = setup_test_services("nheko_room").await;
 
 	let room_id = RoomId::parse("!UbCmIlGTHNIgIRZcpt:nheko.im").unwrap();
 
@@ -2119,7 +2107,7 @@ async fn test_nheko_dag_resolution() {
 	assert!(exts_count < 10, "expected very few forward extremities, got: {exts_count}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_heal_receipts() {
 	use conduwuit_database::Json;
 	use futures::StreamExt;
@@ -2127,7 +2115,7 @@ async fn test_yolo_heal_receipts() {
 		UserId,
 		events::receipt::{Receipt, ReceiptEvent, ReceiptEventContent, ReceiptType},
 	};
-	let (services, _guard) = setup_test_services("heal_receipts").await;
+	let (_guard, services) = setup_test_services("heal_receipts").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let user_id = UserId::parse("@user:test.conduwuit.local").unwrap();
@@ -2137,13 +2125,11 @@ async fn test_yolo_heal_receipts() {
 	let mut users1 = std::collections::BTreeMap::new();
 	users1.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(1000_u32)),
-		thread: Default::default(),
+		thread: slipstream::events::receipt::ReceiptThread::default(),
 	});
 	let mut types1 = std::collections::BTreeMap::new();
 	types1.insert(ReceiptType::Read, users1);
-	content1
-		.0
-		.insert(slipstream::event_id!("$event1").to_owned(), types1);
+	content1.0.insert(slipstream::event_id!("$event1"), types1);
 
 	let event1 = ReceiptEvent {
 		content: content1,
@@ -2154,13 +2140,11 @@ async fn test_yolo_heal_receipts() {
 	let mut users2 = std::collections::BTreeMap::new();
 	users2.insert(user_id.clone(), Receipt {
 		ts: Some(slipstream::UInt::from(2000_u32)),
-		thread: Default::default(),
+		thread: slipstream::events::receipt::ReceiptThread::default(),
 	});
 	let mut types2 = std::collections::BTreeMap::new();
 	types2.insert(ReceiptType::Read, users2);
-	content2
-		.0
-		.insert(slipstream::event_id!("$event2").to_owned(), types2);
+	content2.0.insert(slipstream::event_id!("$event2"), types2);
 
 	let event2 = ReceiptEvent {
 		content: content2,
@@ -2208,11 +2192,11 @@ async fn test_yolo_heal_receipts() {
 	assert_eq!(count, 1, "Expected exactly 1 receipt remaining, got {count}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_threaded_receipts_notification_counters() {
 	use slipstream::{OwnedEventId, UserId, events::receipt::ReceiptThread};
 
-	let (services, _guard) = setup_test_services("threaded_receipts").await;
+	let (_guard, services) = setup_test_services("threaded_receipts").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let user_id = UserId::parse("@threaded:test.conduwuit.local").unwrap();
@@ -2345,14 +2329,14 @@ async fn test_threaded_receipts_notification_counters() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_rescue_room() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::events::room::{
 		create::RoomCreateEventContent,
 		member::{MembershipState, RoomMemberEventContent},
 	};
-	let (services, _guard) = setup_test_services("rescue_room").await;
+	let (_guard, services) = setup_test_services("rescue_room").await;
 	service::admin::create_admin_room(&services).await.unwrap();
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
@@ -2417,7 +2401,7 @@ async fn test_yolo_rescue_room() {
 	assert!(!output.contains('✗'), "Expected clean state after rescue");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_knocking_dag_resolution() {
 	use std::path::Path;
 
@@ -2429,7 +2413,7 @@ async fn test_knocking_dag_resolution() {
 		println!("Skipping test_knocking_dag_resolution: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("knocking_dag").await;
+	let (_guard, services) = setup_test_services("knocking_dag").await;
 
 	let room_id = RoomId::parse("!ylRY10DiOcgVxCi0W8f9ztanFl5wdBxYCWQqM45n_Kk").unwrap();
 
@@ -2487,7 +2471,7 @@ async fn test_knocking_dag_resolution() {
 	println!("DAG knocking state resolved successfully without panicking!");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_yolo_reorder_timeline_state_resolution() {
 	use conduwuit::pdu::PduBuilder;
 	use slipstream::{
@@ -2499,7 +2483,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 			name::RoomNameEventContent,
 		},
 	};
-	let (services, _guard) = setup_test_services("reorder_state_res").await;
+	let (_guard, services) = setup_test_services("reorder_state_res").await;
 
 	let room_id = slipstream::OwnedRoomId::new_v1(services.globals.server_name());
 	let _short_id = services
@@ -2584,8 +2568,10 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 		.build_and_append_pdu(
 			PduBuilder {
 				timestamp: Some(slipstream::MilliSecondsSinceUnixEpoch(
-					slipstream::MilliSecondsSinceUnixEpoch::now().0
-						+ slipstream::UInt::from(1_000_u32),
+					slipstream::MilliSecondsSinceUnixEpoch::now()
+						.0
+						.checked_add(slipstream::UInt::from(1_000_u32))
+						.expect("timestamp overflow"),
 				)),
 				..PduBuilder::state(
 					String::new(),
@@ -2713,7 +2699,7 @@ async fn test_yolo_reorder_timeline_state_resolution() {
 	);
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[conduwuit_macros::async_test]
 async fn test_janian_dag_reorder_with_state() {
 	use std::path::Path;
 
@@ -2725,7 +2711,7 @@ async fn test_janian_dag_reorder_with_state() {
 		println!("Skipping test_janian_dag_reorder_with_state: test DAG file not found");
 		return;
 	}
-	let (services, _guard) = setup_test_services("janian_dag").await;
+	let (_guard, services) = setup_test_services("janian_dag").await;
 
 	let room_id = RoomId::parse("!hdMhyaHZvjLjagsXsk:janian.de").unwrap();
 

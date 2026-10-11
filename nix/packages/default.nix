@@ -37,15 +37,9 @@
               default = pkgs.callPackage ./continuwuity.nix {
                 inherit self craneLib;
                 liburing = (if isStatic then pkgs.pkgsStatic else pkgs).liburing;
-                # extra features via `cargoExtraArgs`
-                cargoExtraArgs = "-F http3";
-                # extra RUSTFLAGS via `rustflags`
-                # the stuff below is required for http3
-                rustflags = "--cfg reqwest_unstable";
               };
 
               # users may also override this with other cargo profiles to build for other feature sets
-              # for features configuration see `default` package which enables http3 by default
 
               max-perf = default.override {
                 # compiles slower but with more thorough optimizations

@@ -1,69 +1,72 @@
-use std::sync::Arc;
+use std::{fmt::Write as _, sync::Arc};
 
-use conduwuit::{Err, Result, err, info};
-use lettre::{
-	AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
-	message::{Mailbox, MessageBuilder, header::ContentType},
-};
+use conduwuit::{Result, err, info, utils::response::LimitReadExt};
 
-use crate::{Args, mailer::messages::MessageTemplate};
+use crate::{Args, client, mailer::messages::MessageTemplate};
 
 pub mod messages;
 
-type Transport = AsyncSmtpTransport<Tokio1Executor>;
-type TransportError = lettre::transport::smtp::Error;
-
 pub struct Service {
-	transport: Option<(Mailbox, Transport)>,
+	webhook: Option<Webhook>,
+}
+
+struct Webhook {
+	client: Arc<client::HttpClient>,
+	url: String,
+	sender: String,
+	token: Option<String>,
+}
+
+fn json_string(value: &str) -> String {
+	let mut escaped = String::with_capacity(value.len().saturating_add(2));
+	escaped.push('"');
+	for character in value.chars() {
+		match character {
+			| '"' => escaped.push_str("\\\""),
+			| '\\' => escaped.push_str("\\\\"),
+			| '\n' => escaped.push_str("\\n"),
+			| '\r' => escaped.push_str("\\r"),
+			| '\t' => escaped.push_str("\\t"),
+			| character if character.is_control() => {
+				let _ = write!(escaped, "\\u{:04x}", u32::from(character));
+			},
+			| character => escaped.push(character),
+		}
+	}
+	escaped.push('"');
+	escaped
 }
 
 #[async_trait::async_trait]
 impl crate::Service for Service {
 	fn build(args: Args<'_>) -> Result<Arc<Self>> {
-		let transport = args
-			.server
-			.config
-			.smtp
-			.as_ref()
-			.map(|config| {
-				Ok((config.sender.clone(), Transport::from_url(&config.connection_uri)?.build()))
-			})
-			.transpose()
-			.map_err(|err: TransportError| err!("Failed to set up SMTP transport: {err}"))?;
+		let webhook = args.server.config.email.as_ref().map(|config| Webhook {
+			client: args.require::<client::Service>("client").default.clone(),
+			url: config.webhook_url.clone(),
+			sender: config.sender.clone(),
+			token: config.webhook_token.clone(),
+		});
 
-		Ok(Arc::new(Self { transport }))
+		Ok(Arc::new(Self { webhook }))
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 
 	async fn worker(self: Arc<Self>) -> Result<()> {
-		if let Some((_, ref transport)) = self.transport {
-			match transport.test_connection().await {
-				| Ok(true) => {
-					info!("SMTP connection test successful");
-					Ok(())
-				},
-				| Ok(false) => {
-					Err!("SMTP connection test failed")
-				},
-				| Err(err) => {
-					Err!("SMTP connection test failed: {err}")
-				},
-			}
+		if self.webhook.is_some() {
+			info!("Email webhook is configured");
 		} else {
-			info!("SMTP is not configured, email functionality will be unavailable");
-			Ok(())
+			info!("Email webhook is not configured, email functionality will be unavailable");
 		}
+		Ok(())
 	}
 }
 
 impl Service {
-	/// Returns a mailer which allows email to be sent, if SMTP is configured.
+	/// Returns a mailer which allows email to be sent, if the webhook is configured.
 	#[must_use]
 	pub fn mailer(&self) -> Option<Mailer<'_>> {
-		self.transport
-			.as_ref()
-			.map(|(sender, transport)| Mailer { sender, transport })
+		self.webhook.as_ref().map(|webhook| Mailer { webhook })
 	}
 
 	pub fn expect_mailer(&self) -> Result<Mailer<'_>> {
@@ -74,35 +77,36 @@ impl Service {
 }
 
 pub struct Mailer<'a> {
-	sender: &'a Mailbox,
-	transport: &'a Transport,
+	webhook: &'a Webhook,
 }
 
 impl Mailer<'_> {
 	/// Sends an email.
 	pub async fn send<Template: MessageTemplate>(
 		&self,
-		recipient: Mailbox,
+		recipient: String,
 		message: Template,
 	) -> Result<()> {
 		let subject = message.subject();
-		let body = message
-			.render()
-			.map_err(|err| err!("Failed to render message template: {err}"))?;
+		let body = message.render();
 
-		let message = MessageBuilder::new()
-			.from(self.sender.clone())
-			.to(recipient)
-			.subject(subject)
-			.date_now()
-			.header(ContentType::TEXT_PLAIN)
-			.body(body)
-			.expect("should have been able to construct message");
-
-		self.transport
-			.send(message)
-			.await
-			.map_err(|err: TransportError| err!("Failed to send message: {err}"))?;
+		let payload = format!(
+			"{{\"from\":{},\"to\":{},\"subject\":{},\"text\":{}}}",
+			json_string(&self.webhook.sender),
+			json_string(&recipient),
+			json_string(&subject),
+			json_string(&body),
+		);
+		let mut request = self
+			.webhook
+			.client
+			.post(&self.webhook.url)
+			.header(http::header::CONTENT_TYPE, "application/json")
+			.body(payload);
+		if let Some(token) = &self.webhook.token {
+			request = request.bearer_auth(token);
+		}
+		request.send().await?.error_for_status()?;
 
 		Ok(())
 	}

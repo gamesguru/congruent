@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use axum::extract::State;
 use conduwuit::{
 	Err, Result, at, debug_warn, is_true,
 	matrix::Event,
@@ -21,7 +20,7 @@ use slipstream::{
 };
 
 use super::message::visibility_filter;
-use crate::Ruma;
+use crate::{Ruma, router::extract::State};
 
 type RoomStates = BTreeMap<OwnedRoomId, RoomState>;
 type RoomState = Vec<Raw<AnyStateEvent>>;

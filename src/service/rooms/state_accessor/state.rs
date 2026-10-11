@@ -26,8 +26,7 @@ pub async fn user_was_joined_hamt(
 	user_id: &UserId,
 ) -> bool {
 	self.user_membership_hamt(room_id, root_handle, user_id)
-		.await
-		== MembershipState::Join
+		.await == MembershipState::Join
 }
 
 /// The user was an invited or joined room member at this state (potentially
@@ -251,7 +250,6 @@ where
 
 /// Returns a PDU from `room_id` with key `(event_type, state_key)` via HAMT.
 #[implement(super::Service)]
-#[tracing::instrument(skip(self), level = "debug")]
 #[allow(unused_variables)]
 pub async fn room_state_get_hamt_legacy(
 	&self,
@@ -418,22 +416,21 @@ where
 #[implement(super::Service)]
 #[inline]
 /// Returns entries present in the first root and absent from the second.
-pub async fn state_removed_hamt(
+pub fn state_removed_hamt(
 	&self,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
 ) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
 	self.state_added_hamt((root_handles.1, root_handles.0))
-		.await
 }
 
 #[implement(super::Service)]
 /// Returns entries present in the second root and absent from the first.
-pub async fn state_added_hamt(
+pub fn state_added_hamt(
 	&self,
 	root_handles: (&rezzy::hamt::RootHandle, &rezzy::hamt::RootHandle),
 ) -> Result<Vec<(ShortStateKey, ShortEventId)>> {
-	let full_state_a = self.load_full_state_hamt(root_handles.0).await?;
-	let full_state_b = self.load_full_state_hamt(root_handles.1).await?;
+	let full_state_a = self.load_full_state_hamt(root_handles.0)?;
+	let full_state_b = self.load_full_state_hamt(root_handles.1)?;
 
 	Ok(full_state_b
 		.into_iter()
@@ -449,8 +446,7 @@ pub fn state_full_shortids_hamt(
 ) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
 	let load = async move {
 		let mut entries: Vec<_> = self
-			.load_full_state_hamt(&root_handle)
-			.await?
+			.load_full_state_hamt(&root_handle)?
 			.into_iter()
 			.collect();
 		// The HAMT stores entries keyed by ShortStateKey, whose value is a
@@ -469,9 +465,8 @@ pub fn state_full_shortids_hamt(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(skip(self, root_handle), level = "debug")]
 /// Tests whether a HAMT root has no entries.
-pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
+pub fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -> Result<bool> {
 	let root_node = self
 		.services
 		.state_hamt
@@ -484,9 +479,8 @@ pub async fn state_is_empty_hamt(&self, root_handle: &rezzy::hamt::RootHandle) -
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(name = "load_hamt", level = "debug", skip_all)]
 /// Materializes all state entries stored beneath a HAMT root.
-pub async fn load_full_state_hamt(
+pub fn load_full_state_hamt(
 	&self,
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> Result<std::collections::HashMap<ShortStateKey, ShortEventId>> {
@@ -552,7 +546,7 @@ pub async fn pdu_roothandle_before_event(
 			);
 			let (empty_root, empty_node) = rezzy::hamt::build_hamt_root_handle(
 				&structural_key,
-				&rezzy::state::LtHash::default(),
+				&rezzy::incremental::LtHash::default(),
 				Vec::new(),
 			)
 			.map_err(|e| err!(error!("Failed to build empty HAMT root: {e:?}")))?;

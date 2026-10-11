@@ -28,6 +28,7 @@ pub async fn upgrade_outlier_to_timeline_pdu<Pdu>(
 	room_id: &RoomId,
 	is_timeline_event: bool,
 	predecessors_were_recovered: bool,
+	state_ids_anchor: Option<OwnedEventId>,
 ) -> Result<(Option<RawPduId>, bool)>
 where
 	Pdu: Event + Send + Sync,
@@ -82,6 +83,19 @@ where
 			};
 
 			if state.is_none() {
+				// The snapshot used below must be the state *at this event*, so
+				// /state_ids is always asked about the event itself. A deeper
+				// anchor (the point before the gap) is only a source of missing
+				// events and auth chain: pull it first for its side effects and
+				// ignore the returned snapshot, which predates the gap.
+				if let Some(anchor) = state_ids_anchor.as_ref() {
+					if let Err(e) = self
+						.fetch_state(origin, create_event, room_id, anchor, false)
+						.await
+					{
+						debug!(%anchor, "deeper /state_ids anchor fetch failed: {e}");
+					}
+				}
 				let state = self
 					.fetch_state(origin, create_event, room_id, incoming_pdu.event_id(), false)
 					.await?;
@@ -481,7 +495,6 @@ where
 /// the caller materialize the map. Because the predecessor's root has already
 /// been persisted, this also avoids re-writing nodes on the hot path.
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 async fn reusable_predecessor_root_handle(
 	&self,
 	room_id: &RoomId,
@@ -540,13 +553,12 @@ async fn reusable_predecessor_root_handle(
 }
 
 #[implement(super::Service)]
-#[tracing::instrument(level = "debug", skip_all)]
 pub async fn state_map_to_root_handle(
 	&self,
 	room_id: &RoomId,
 	short_state: &HashMap<u64, OwnedEventId>,
 ) -> Result<rezzy::hamt::RootHandle> {
-	let mut lattice = rezzy::state::LtHash::default();
+	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(short_state.len());
 	let mut short_state_keys = Vec::with_capacity(short_state.len());
 	let mut event_ids = Vec::with_capacity(short_state.len());
@@ -563,10 +575,8 @@ pub async fn state_map_to_root_handle(
 		.collect()
 		.await;
 
-	for ((shortstatekey, event_id), key_result) in short_state_keys
-		.into_iter()
-		.zip(event_ids.into_iter())
-		.zip(string_keys.into_iter())
+	for ((shortstatekey, event_id), key_result) in
+		short_state_keys.into_iter().zip(event_ids).zip(string_keys)
 	{
 		let event_id = event_id.as_ref();
 		let shorteventid = self
