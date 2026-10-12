@@ -453,16 +453,24 @@ pub enum YoloCommand {
 		skip_sig_verify: bool,
 	},
 
-	/// Export a room's HAMT nodes, state roots and events to a JSONL file for
-	/// the mtxdb CLI to import.
+	/// Export one room's events and metadata to a JSONL file for the mtxdb CLI.
 	///
 	/// Read-only; reads RocksDB and never touches mtxdb. The file starts with a
 	/// `header` line and ends with an `end` line carrying the counts; a file
 	/// without the `end` line is truncated.
 	ExportMtxdb {
-		/// Room ID
-		room_id: OwnedRoomId,
-		/// Output path. Defaults to `/tmp/mtxdb-export-<room>.jsonl`.
+		/// Room ID (omit when using --all).
+		room_id: Option<OwnedRoomId>,
+		/// Output file for one room, or output directory when using --all.
+		#[arg(long)]
+		path: Option<String>,
+		/// Export every room with a current-state root.
+		#[arg(long)]
+		all: bool,
+	},
+	/// Export global signing-key records to a JSONL file.
+	ExportMtxdbKeys {
+		/// Output path. Defaults to `/tmp/mtxdb-export-keys.jsonl`.
 		#[arg(long)]
 		path: Option<String>,
 	},

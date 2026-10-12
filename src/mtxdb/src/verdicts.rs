@@ -60,11 +60,10 @@ impl VerdictAdapter {
 	/// Read-modify-write the event's verdict atomically. The record is removed
 	/// when `change` leaves it empty. A concurrent writer to the same bucket
 	/// fails the commit, and the whole read-modify-write is redone.
-	pub fn update(
-		&self,
-		event_id: &[u8],
-		mut change: impl FnMut(&mut Verdict),
-	) -> Result<(), StorageError> {
+	pub fn update<F>(&self, event_id: &[u8], mut change: F) -> Result<(), StorageError>
+	where
+		F: FnMut(&mut Verdict),
+	{
 		let node = event_record_id(event_id);
 		let collection = event_verdict_collection_id(&node);
 		let mut attempts = 0_u8;

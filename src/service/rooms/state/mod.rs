@@ -985,6 +985,21 @@ impl Service {
 		Ok(handles)
 	}
 
+	/// Returns rooms with a persisted current-state root.
+	pub async fn rooms_with_roots(&self) -> Result<Vec<OwnedRoomId>> {
+		let mut rooms = Vec::new();
+		let mut stream = self.db.roomid_roothandle.raw_stream();
+		while let Some(kv) = stream.next().await {
+			let (key, _): database::KeyVal<'_> = kv?;
+			if let Ok(text) = std::str::from_utf8(key) {
+				if let Ok(room_id) = OwnedRoomId::parse(text) {
+					rooms.push(room_id);
+				}
+			}
+		}
+		Ok(rooms)
+	}
+
 	/// Reclaims HAMT nodes no recorded root can reach.
 	///
 	/// `live_roots` is gathered by [`Self::live_root_handles`] rather than taken

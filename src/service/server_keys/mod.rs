@@ -73,6 +73,14 @@ pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct KeyExportCounts {
+	pub historical: u64,
+	pub provisional: u64,
+	pub corroborated: u64,
+	pub notary: u64,
+}
+
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		let minimum_valid = Duration::from_hours(1);
@@ -789,6 +797,107 @@ fn shadow_key_records(
 	tx.commit()
 }
 
+/// What a keys export wrote.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeysExportCounts {
+	pub historical: u64,
+	pub provisional: u64,
+	pub corroborated: u64,
+	pub notary: u64,
+}
+
+/// Exports all signing key records as JSONL. Each line is a `server_keys`
+/// object with `origin` and one of the four record kinds. The importer owns
+/// the on-disk format; this export just provides the raw payloads.
+#[implement(Service)]
+pub async fn export_keys_jsonl<W: std::io::Write + Send>(
+	&self,
+	out: &mut W,
+) -> Result<KeysExportCounts> {
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use conduwuit::Err;
+	use slipstream::json::{Object, Value};
+
+	fn line(out: &mut W, record: Object) -> Result<()> {
+		let text = slipstream::codec::to_string(&Value::Object(record));
+		out.write_all(text.as_bytes())
+			.and_then(|()| out.write_all(b"\n"))
+			.map_err(|e| Err!(Database("export write failed: {e}")))
+	}
+
+	fn record(tag: &str) -> Object {
+		let mut object = Object::new();
+		object.insert("t".to_owned(), Value::String(tag.to_owned()));
+		object
+	}
+
+	let mut counts = KeysExportCounts::default();
+
+	let mut stream = self
+		.db
+		.server_signingkeys
+		.stream()
+		.map(|(key, value)| (key, value))
+		.boxed();
+
+	while let Some((key, value)) = stream.next().await {
+		let key_str = String::from_utf8_lossy(&key);
+		let parts: Vec<&str> = key_str.split('\0').collect();
+		let (origin, kind) = match parts.as_slice() {
+			[origin, "historical"] => (origin, "historical"),
+			[origin, "provisional"] => (origin, "provisional"),
+			[origin, "corroborated"] => (origin, "corroborated"),
+			[origin] if origin == parts[0] => (origin, "notary"),
+			_ => continue,
+		};
+
+		let mut obj = record("server_keys");
+		obj.insert("origin".to_owned(), Value::String(origin.to_owned()));
+		obj.insert("kind".to_owned(), Value::String(kind.to_owned()));
+
+		match kind {
+			"historical" => {
+				let keys: ServerSigningKeys = value.deserialized()?;
+				obj.insert(
+					"payload".to_owned(),
+					Value::String(STANDARD.encode(slipstream::codec::to_vec(&keys)?)),
+				);
+				counts.historical = counts.historical.saturating_add(1);
+			}
+			"provisional" => {
+				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> = value.deserialized()?;
+				obj.insert(
+					"payload".to_owned(),
+					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids)?)),
+				);
+				counts.provisional = counts.provisional.saturating_add(1);
+			}
+			"corroborated" => {
+				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> = value.deserialized()?;
+				obj.insert(
+					"payload".to_owned(),
+					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids)?)),
+				);
+				counts.corroborated = counts.corroborated.saturating_add(1);
+			}
+			"notary" => {
+				let raw: Raw<ServerSigningKeys> = value.deserialized()?;
+				obj.insert(
+					"payload".to_owned(),
+					Value::String(STANDARD.encode(raw.get().to_vec())),
+				);
+				counts.notary = counts.notary.saturating_add(1);
+			}
+			_ => unreachable!(),
+		}
+
+		line(out, obj)?;
+	}
+
+	out.flush().map_err(|e| Err!(Database("export flush failed: {e}")))?;
+	Ok(counts)
+}
+
 #[implement(Service)]
 pub async fn required_keys_exist(
 	&self,
@@ -969,6 +1078,71 @@ pub async fn merged_signing_keys_for(&self, origin: &ServerName) -> Result<Serve
 	}
 
 	Ok(keys)
+}
+
+/// Export global signing-key records as tagged JSONL.
+#[implement(Service)]
+pub async fn export_keys_jsonl<W: std::io::Write + Send>(
+	&self,
+	out: &mut W,
+) -> Result<KeyExportCounts> {
+	use slipstream::json::{Object, Value};
+
+	fn write_line<W: std::io::Write>(out: &mut W, object: Object) -> Result<()> {
+		let json = slipstream::codec::to_string(&Value::Object(object));
+		out.write_all(json.as_bytes())
+			.and_then(|()| out.write_all(b"\n"))
+			.map_err(|error| err!(Database("Failed to write signing-key export: {error}")))
+	}
+
+	let mut counts = KeyExportCounts::default();
+	let mut header = Object::new();
+	header.insert("t".to_owned(), Value::String("header".to_owned()));
+	header.insert("format".to_owned(), Value::String("mtxdb-export-keys/v1".to_owned()));
+	write_line(out, header)?;
+
+	let suffixes: [(&[u8], &str); 3] = [
+		(b"\0historical", "historical"),
+		(b"\0provisional", "provisional"),
+		(b"\0corroborated", "corroborated"),
+	];
+	let mut records = self.db.server_signingkeys.raw_stream();
+	while let Some(kv) = records.next().await {
+		let (key, bytes): database::KeyVal<'_> = kv?;
+		let (origin, kind) = suffixes
+			.iter()
+			.find_map(|(suffix, kind)| key.strip_suffix(suffix).map(|origin| (origin, *kind)))
+			.unwrap_or((key, "notary"));
+		let origin = std::str::from_utf8(origin)
+			.map_err(|error| err!(Database("Invalid server name in signing-key export: {error}")))?;
+		let payload = std::str::from_utf8(bytes)
+			.map_err(|error| err!(Database("Invalid signing-key JSON payload: {error}")))?;
+		let payload = Value::parse(payload)
+			.map_err(|error| err!(Database("Invalid signing-key JSON payload: {error}")))?;
+		let mut record = Object::new();
+		record.insert("t".to_owned(), Value::String("server_key".to_owned()));
+		record.insert("origin".to_owned(), Value::String(origin.to_owned()));
+		record.insert("kind".to_owned(), Value::String(kind.to_owned()));
+		record.insert("payload".to_owned(), payload);
+		write_line(out, record)?;
+		match kind {
+			| "historical" => counts.historical = counts.historical.saturating_add(1),
+			| "provisional" => counts.provisional = counts.provisional.saturating_add(1),
+			| "corroborated" => counts.corroborated = counts.corroborated.saturating_add(1),
+			| _ => counts.notary = counts.notary.saturating_add(1),
+		}
+	}
+
+	let mut end = Object::new();
+	end.insert("t".to_owned(), Value::String("end".to_owned()));
+	end.insert("historical".to_owned(), Value::from(counts.historical));
+	end.insert("provisional".to_owned(), Value::from(counts.provisional));
+	end.insert("corroborated".to_owned(), Value::from(counts.corroborated));
+	end.insert("notary".to_owned(), Value::from(counts.notary));
+	write_line(out, end)?;
+	out.flush()
+		.map_err(|error| err!(Database("Failed to flush signing-key export: {error}")))?;
+	Ok(counts)
 }
 
 #[implement(Service)]
