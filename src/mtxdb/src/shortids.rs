@@ -200,7 +200,12 @@ impl ShortIdAdapter {
 					StorageError::Corrupt("short id counter overflow".to_owned())
 				})?;
 				Self::put(&tx, Map::EventForward, node, &with_prefix(next, event_id))?;
-				Self::put(&tx, Map::EventReverse, reverse_node(b"short-eid-rev", next), event_id)?;
+				Self::put(
+					&tx,
+					Map::EventReverse,
+					reverse_node(b"short-eid-rev", next),
+					event_id,
+				)?;
 				allocated = true;
 				next
 			};

@@ -144,8 +144,11 @@ impl Service {
 }
 
 #[implement(Service)]
-pub async fn get_or_create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
-	self.get_or_create_shorteventid_blocking(event_id)
+pub fn get_or_create_shorteventid(
+	&self,
+	event_id: &EventId,
+) -> impl Future<Output = ShortEventId> {
+	std::future::ready(self.get_or_create_shorteventid_blocking(event_id))
 }
 
 #[implement(Service)]
@@ -226,12 +229,21 @@ where
 }
 
 #[implement(Service)]
-pub async fn get_shorteventid(&self, event_id: &EventId) -> Result<ShortEventId> {
-	self.get_shorteventid_blocking(event_id)
+pub fn get_shorteventid(&self, event_id: &EventId) -> impl Future<Output = Result<ShortEventId>> {
+	std::future::ready(self.get_shorteventid_blocking(event_id))
 }
 
 #[implement(Service)]
-pub async fn get_or_create_shortstatekey(
+pub fn get_or_create_shortstatekey(
+	&self,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> impl Future<Output = ShortStateKey> {
+	std::future::ready(self.get_or_create_shortstatekey_blocking(event_type, state_key))
+}
+
+#[implement(Service)]
+pub fn get_or_create_shortstatekey_blocking(
 	&self,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -252,7 +264,16 @@ pub async fn get_or_create_shortstatekey(
 }
 
 #[implement(Service)]
-pub async fn get_shortstatekey(
+pub fn get_shortstatekey(
+	&self,
+	event_type: &StateEventType,
+	state_key: &str,
+) -> impl Future<Output = Result<ShortStateKey>> {
+	std::future::ready(self.get_shortstatekey_blocking(event_type, state_key))
+}
+
+#[implement(Service)]
+pub fn get_shortstatekey_blocking(
 	&self,
 	event_type: &StateEventType,
 	state_key: &str,
@@ -272,7 +293,19 @@ pub async fn get_shortstatekey(
 }
 
 #[implement(Service)]
-pub async fn get_eventid_from_short<Id>(&self, shorteventid: ShortEventId) -> Result<Id>
+pub fn get_eventid_from_short<Id>(
+	&self,
+	shorteventid: ShortEventId,
+) -> impl Future<Output = Result<Id>>
+where
+	Id: Deserialize + Sized + ToOwned,
+	<Id as ToOwned>::Owned: Borrow<EventId>,
+{
+	std::future::ready(self.get_eventid_from_short_blocking(shorteventid))
+}
+
+#[implement(Service)]
+pub fn get_eventid_from_short_blocking<Id>(&self, shorteventid: ShortEventId) -> Result<Id>
 where
 	Id: Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
@@ -340,7 +373,15 @@ where
 }
 
 #[implement(Service)]
-pub async fn get_statekey_from_short(
+pub fn get_statekey_from_short(
+	&self,
+	shortstatekey: ShortStateKey,
+) -> impl Future<Output = Result<(StateEventType, StateKey)>> {
+	std::future::ready(self.get_statekey_from_short_blocking(shortstatekey))
+}
+
+#[implement(Service)]
+pub fn get_statekey_from_short_blocking(
 	&self,
 	shortstatekey: ShortStateKey,
 ) -> Result<(StateEventType, StateKey)> {
