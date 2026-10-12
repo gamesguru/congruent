@@ -80,6 +80,36 @@ impl MtxdbTransaction<'_> {
 		Ok(())
 	}
 
+	/// Stage removal of one record. Removing a key that is not live is a
+	/// no-op: it writes nothing and does not advance the collection version,
+	/// so a sweep that is retried after a crash is idempotent. The removal
+	/// commits atomically with every other mutation in this transaction, so
+	/// orphaned nodes can be removed in the same transaction that publishes
+	/// the new roots.
+	pub fn remove(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		node: NodeId,
+	) -> Result<(), StorageError> {
+		self.tx.remove(shard, collection, node)?;
+		Ok(())
+	}
+
+	/// Stage removal of many records in one collection. Prefer this to a loop
+	/// of [`Self::remove`]: the liveness read and the staged-mutation scan
+	/// happen once for the whole batch, so a sweep stays linear in the number
+	/// of orphans.
+	pub fn remove_many(
+		&self,
+		shard: ShardType,
+		collection: CollectionId,
+		nodes: &[NodeId],
+	) -> Result<(), StorageError> {
+		self.tx.remove_many(shard, collection, nodes)?;
+		Ok(())
+	}
+
 	pub fn commit(self) -> Result<(), StorageError> { self.tx.commit() }
 }
 
@@ -158,6 +188,93 @@ mod tests {
 				.as_deref(),
 			Some(&b"state"[..])
 		);
+		let _ = fs::remove_dir_all(directory);
+	}
+	#[test]
+	fn removals_commit_atomically_with_the_roots_that_replace_them() {
+		let directory = test_path("remove-atomic");
+		let _ = fs::remove_dir_all(&directory);
+		let nodes = derive_id(b"sys", b"test-remove-nodes");
+		let roots = derive_id(b"sys", b"test-remove-roots");
+		let orphan = derive_id(b"state", b"orphan");
+		let kept = derive_id(b"state", b"kept");
+		let root_key = derive_id(b"state", b"root");
+
+		let store = MtxdbStore::open(&directory).expect("open mtxdb");
+		let seed = store.begin_transaction();
+		seed.put(ShardType::State, nodes, orphan, b"old-node").unwrap();
+		seed.put(ShardType::State, nodes, kept, b"kept-node").unwrap();
+		seed.put(ShardType::EventDag, roots, root_key, b"root-1").unwrap();
+		seed.commit().unwrap();
+
+		// A sweep: publish the new root and drop the orphan in one commit.
+		let sweep = store.begin_transaction();
+		sweep.remove(ShardType::State, nodes, orphan).unwrap();
+		sweep.put(ShardType::EventDag, roots, root_key, b"root-2").unwrap();
+		assert!(
+			store.get(ShardType::State, &nodes, orphan).unwrap().is_some(),
+			"nothing is visible before commit"
+		);
+		sweep.commit().unwrap();
+
+		assert_eq!(store.get(ShardType::State, &nodes, orphan).unwrap(), None);
+		assert_eq!(
+			store.get(ShardType::State, &nodes, kept).unwrap().as_deref(),
+			Some(&b"kept-node"[..])
+		);
+		assert_eq!(
+			store
+				.get(ShardType::EventDag, &roots, root_key)
+				.unwrap()
+				.as_deref(),
+			Some(&b"root-2"[..])
+		);
+		let _ = fs::remove_dir_all(directory);
+	}
+
+	#[test]
+	fn a_repeated_sweep_is_idempotent_and_a_removed_node_can_be_re_added() {
+		let directory = test_path("remove-idempotent");
+		let _ = fs::remove_dir_all(&directory);
+		let nodes = derive_id(b"sys", b"test-remove-idempotent");
+		let ids: Vec<NodeId> = (0..8u8)
+			.map(|index| derive_id(b"state", &[index]))
+			.collect();
+
+		let store = MtxdbStore::open(&directory).expect("open mtxdb");
+		let seed = store.begin_transaction();
+		for id in &ids {
+			seed.put(ShardType::State, nodes, *id, b"node").unwrap();
+		}
+		seed.commit().unwrap();
+
+		for _ in 0..2 {
+			// The second pass finds everything already gone and must succeed.
+			let sweep = store.begin_transaction();
+			sweep.remove_many(ShardType::State, nodes, &ids[..5]).unwrap();
+			sweep.commit().unwrap();
+		}
+		for id in &ids[..5] {
+			assert_eq!(store.get(ShardType::State, &nodes, *id).unwrap(), None);
+		}
+		for id in &ids[5..] {
+			assert!(store.get(ShardType::State, &nodes, *id).unwrap().is_some());
+		}
+
+		// The HAMT re-emits an unchanged node after it was removed.
+		let readd = store.begin_transaction();
+		readd.put(ShardType::State, nodes, ids[0], b"node").unwrap();
+		readd.commit().unwrap();
+		assert_eq!(
+			store.get(ShardType::State, &nodes, ids[0]).unwrap().as_deref(),
+			Some(&b"node"[..])
+		);
+
+		store.sync(ShardType::State).unwrap();
+		drop(store);
+		let reopened = MtxdbStore::open(&directory).expect("reopen mtxdb");
+		assert_eq!(reopened.get(ShardType::State, &nodes, ids[1]).unwrap(), None);
+		assert!(reopened.get(ShardType::State, &nodes, ids[0]).unwrap().is_some());
 		let _ = fs::remove_dir_all(directory);
 	}
 }
