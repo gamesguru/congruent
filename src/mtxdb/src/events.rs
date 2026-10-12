@@ -524,10 +524,10 @@ mod room_tests {
 		assert_eq!(event, b"$e:x");
 		assert_eq!(room, b"!r:x");
 
-		assert!(EventAdapter::decode_locator(&[]).is_err());
-		assert!(EventAdapter::decode_locator(&[9, 0, 0, 0, 0]).is_err());
-		assert!(EventAdapter::decode_locator(&[LOCATOR_VERSION, 255, 0, 0, 0, 1]).is_err());
+		EventAdapter::decode_locator(&[]).unwrap_err();
+		EventAdapter::decode_locator(&[9, 0, 0, 0, 0]).unwrap_err();
+		EventAdapter::decode_locator(&[LOCATOR_VERSION, 255, 0, 0, 0, 1]).unwrap_err();
 		// Legacy unversioned value: a bare room id starting with '!'.
-		assert!(EventAdapter::decode_locator(b"!room:example.com").is_err());
+		EventAdapter::decode_locator(b"!room:example.com").unwrap_err();
 	}
 }

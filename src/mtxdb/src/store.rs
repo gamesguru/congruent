@@ -248,7 +248,7 @@ mod tests {
 		let directory = test_path("remove-idempotent");
 		let _ = fs::remove_dir_all(&directory);
 		let nodes = derive_id(b"sys", b"test-remove-idempotent");
-		let ids: Vec<NodeId> = (0..8u8)
+		let ids: Vec<NodeId> = (0..8_u8)
 			.map(|index| derive_id(b"state", &[index]))
 			.collect();
 
