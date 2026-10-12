@@ -9,12 +9,15 @@ use slipstream::{
 use super::{PubKeyMap, PubKeys, extract_key};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ValidUntilPolicy {
+/// Whether event signature verification enforces a key's `valid_until_ts`.
+pub enum ValidUntilPolicy {
+	/// Ignore `valid_until_ts`, as required by room versions 1 through 4.
 	Ignore,
+	/// Require the key's validity window to cover the event timestamp.
 	Enforce,
 }
 
-fn valid_until_policy(version: &RoomVersionId) -> ValidUntilPolicy {
+fn validity_policy_for_version(version: &RoomVersionId) -> ValidUntilPolicy {
 	if matches!(
 		version,
 		RoomVersionId::V1 | RoomVersionId::V2 | RoomVersionId::V3 | RoomVersionId::V4
@@ -25,9 +28,7 @@ fn valid_until_policy(version: &RoomVersionId) -> ValidUntilPolicy {
 	}
 }
 
-fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool {
-	error.is_not_found()
-}
+fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool { error.is_not_found() }
 
 #[implement(super::Service)]
 pub async fn get_event_keys(
@@ -59,7 +60,7 @@ pub async fn get_event_keys(
 
 	// Room versions 5 and later require the signing key's valid_until_ts to
 	// cover the event's origin_server_ts; versions 1-4 ignore valid_until_ts.
-	let valid_until_policy = valid_until_policy(version);
+	let validity_policy = validity_policy_for_version(version);
 
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
@@ -68,7 +69,7 @@ pub async fn get_event_keys(
 				server,
 				key_ids.iter().map(Borrow::borrow),
 				origin_server_ts,
-				valid_until_policy,
+				validity_policy,
 			)
 			.await;
 		keys.insert(server.to_owned(), pubkeys);
@@ -117,7 +118,7 @@ pub async fn get_pubkeys_for_event<'a, I>(
 	origin: &ServerName,
 	key_ids: I,
 	origin_server_ts: MilliSecondsSinceUnixEpoch,
-	valid_until_policy: ValidUntilPolicy,
+	validity_policy: ValidUntilPolicy,
 ) -> PubKeys
 where
 	I: Iterator<Item = &'a ServerSigningKeyId> + Send,
@@ -137,7 +138,7 @@ where
 				);
 				continue;
 			}
-			if valid_until_policy == ValidUntilPolicy::Enforce
+			if validity_policy == ValidUntilPolicy::Enforce
 				&& !self
 					.is_key_valid_for_event(origin, key_id, origin_server_ts)
 					.await
@@ -442,8 +443,9 @@ async fn get_active_verify_key_from_origin(
 
 #[cfg(test)]
 mod tests {
-	use super::{ValidUntilPolicy, missing_key_record_is_allowed, valid_until_policy};
 	use slipstream::RoomVersionId;
+
+	use super::{ValidUntilPolicy, missing_key_record_is_allowed, validity_policy_for_version};
 
 	#[test]
 	fn missing_key_record_is_allowed_but_storage_errors_are_not() {
@@ -458,8 +460,8 @@ mod tests {
 		for version in
 			[RoomVersionId::V1, RoomVersionId::V2, RoomVersionId::V3, RoomVersionId::V4]
 		{
-			assert_eq!(valid_until_policy(&version), ValidUntilPolicy::Ignore);
+			assert_eq!(validity_policy_for_version(&version), ValidUntilPolicy::Ignore);
 		}
-		assert_eq!(valid_until_policy(&RoomVersionId::V5), ValidUntilPolicy::Enforce);
+		assert_eq!(validity_policy_for_version(&RoomVersionId::V5), ValidUntilPolicy::Enforce);
 	}
 }

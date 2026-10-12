@@ -391,18 +391,18 @@ mod tests {
 
 	use super::Services;
 
+	static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 	struct TestDb(std::path::PathBuf);
 
 	impl Drop for TestDb {
-		fn drop(&mut self) {
-			let _ = fs::remove_dir_all(&self.0);
-		}
+		fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 	}
 
 	#[conduwuit_macros::async_test]
 	async fn startup_refuses_short_ids_without_import_marker() {
+		let _serial = crate::DB_TEST_MUTEX.lock().await;
 		let _ = rustls::crypto::ring::default_provider().install_default();
-		static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 		let count = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
 		let db_path = std::env::temp_dir().join(format!(
 			"conduwuit_services_marker_test_{}_{}",
@@ -422,14 +422,10 @@ mod tests {
 		.expect("failed to parse test config");
 		let config = Config::new(&config_raw).expect("failed to validate test config");
 		let runtime_handle = ();
-		let server = Arc::new(Server::new(
-			config,
-			Some(&runtime_handle),
-			Log {
-				reload: LogLevelReloadHandles,
-				capture: Arc::new(capture::State),
-			},
-		));
+		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
+			reload: LogLevelReloadHandles,
+			capture: Arc::new(capture::State),
+		}));
 		let services = Services::build(server).expect("failed to build test services");
 		conduwuit_mtxdb::shortids::ShortIdAdapter::new(services.mtxdb.clone())
 			.expect("failed to open short-id adapter")
