@@ -7,7 +7,7 @@ use axum::{
 use conduwuit::Result;
 use futures::{Future, TryFutureExt};
 use http::Method;
-use ruma::api::IncomingRequest;
+use slipstream::api::{EndpointRequest, IncomingRequest};
 
 use super::{Ruma, RumaResponse, State};
 
@@ -38,21 +38,35 @@ macro_rules! ruma_handler {
 		where
 			Fun: Fn($($tx,)* Ruma<Req>,) -> Fut + Send + Sync + 'static,
 			Fut: Future<Output = Result<Req::OutgoingResponse, Err>> + Send,
-			Req: IncomingRequest + Send + Sync + 'static,
+			Req: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 			Err: IntoResponse + Send,
 			<Req as IncomingRequest>::OutgoingResponse: Send,
 			$( $tx: FromRequestParts<State> + Send + Sync + 'static, )*
 		{
 			fn add_routes(&'static self, router: Router<State>) -> Router<State> {
-				Req::METADATA
-					.history
-					.all_paths()
-					.fold(router, |router, path| self.add_route(router, path))
+				let router = self.add_route(router, Req::METADATA.path);
+				// Alias paths declared by the endpoint (for example a stable path for an
+				// endpoint whose canonical path is still the unstable one).
+				let router = Req::METADATA
+					.aliases
+					.iter()
+					.fold(router, |router, alias| self.add_route(router, alias));
+				if let Some((prefix, suffix)) = Req::METADATA.path.split_once("/_matrix/client/v3/") {
+					let legacy = format!("{prefix}/_matrix/client/r0/{suffix}");
+					self.add_route(router, &legacy)
+				} else {
+					router
+				}
 			}
 
 			fn add_route(&'static self, router: Router<State>, path: &str) -> Router<State> {
 				let action = |$($tx,)* req| self($($tx,)* req).map_ok(RumaResponse);
-				let method = method_to_filter(&Req::METADATA.method);
+				let method = method_to_filter(
+					&Req::METADATA
+						.method
+						.parse()
+						.expect("endpoint metadata contains a valid HTTP method"),
+				);
 				router.route(path, on(method, action))
 			}
 		}

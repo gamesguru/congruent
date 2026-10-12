@@ -17,7 +17,7 @@ use conduwuit::{
 	},
 	warn,
 };
-use ruma::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
+use slipstream::{Mxc, OwnedMxcUri, UserId, http_headers::ContentDisposition};
 use tokio::{
 	fs,
 	io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -83,6 +83,16 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Reserves an MXC URI for asynchronous upload.
+	pub fn create_async(&self, mxc: &Mxc<'_>, user: Option<&UserId>) -> Result<()> {
+		self.db
+			.create_file_metadata(mxc, user, &Dim::default(), None, None)
+			.map(|_| ())
+			.map_err(|e| {
+				err!(Database(error!("Failed to reserve media metadata for MXC {mxc}: {e}")))
+			})
+	}
+
 	/// Uploads a file.
 	pub async fn create(
 		&self,
@@ -111,6 +121,36 @@ impl Service {
 		})?;
 
 		Ok(())
+	}
+
+	/// Fills a previously reserved MXC URI with content.
+	pub async fn create_async_upload(
+		&self,
+		mxc: &Mxc<'_>,
+		user: Option<&UserId>,
+		content_disposition: Option<&ContentDisposition>,
+		content_type: Option<&str>,
+		file: &[u8],
+	) -> Result<()> {
+		let existing = self
+			.db
+			.search_file_metadata(mxc, &Dim::default())
+			.await
+			.ok();
+
+		if let Some(metadata) = existing {
+			let path = self.get_media_file(&metadata.key);
+			if fs::metadata(&path).await.is_ok() {
+				return Err!(Request(CannotOverwriteMedia(
+					"Media has already been uploaded to this MXC URI."
+				)));
+			}
+
+			self.db.delete_file_metadata_key(&metadata.key);
+		}
+
+		self.create(mxc, user, content_disposition, content_type, file)
+			.await
 	}
 
 	/// Deletes a file in the database and from the media directory via an MXC
@@ -146,12 +186,13 @@ impl Service {
 		let mxcs = self.db.get_all_user_mxcs(user).await;
 		let mut deletion_count: usize = 0;
 
-		for mxc in mxcs {
-			let Ok(mxc) = mxc.as_str().try_into().inspect_err(|e| {
-				debug_error!(%mxc, "Failed to parse MXC URI from database: {e}");
-			}) else {
+		for mxc_uri in mxcs {
+			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
+			else {
+				debug_error!(%mxc_uri, "Failed to parse MXC URI from database");
 				continue;
 			};
+			let mxc = Mxc { server_name: &server_name, media_id };
 
 			debug_info!(%deletion_count, "Deleting MXC {mxc} by user {user} from database and filesystem");
 			match self.delete(&mxc).await {
@@ -173,9 +214,14 @@ impl Service {
 			| Ok(Metadata { content_disposition, content_type, key }) => {
 				let mut content = Vec::with_capacity(8192);
 				let path = self.get_media_file(&key);
-				BufReader::new(fs::File::open(path).await?)
-					.read_to_end(&mut content)
-					.await?;
+				let file = match fs::File::open(path).await {
+					| Ok(file) => file,
+					| Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+						return Err!(Request(NotYetUploaded("Media has not been uploaded yet.")));
+					},
+					| Err(e) => return Err!(Io(e)),
+				};
+				BufReader::new(file).read_to_end(&mut content).await?;
 
 				Ok(Some(FileMeta {
 					content: Some(content),
@@ -217,12 +263,10 @@ impl Service {
 			};
 
 			trace!("Parsed MXC key to URL: {mxc_s}");
-			let mxc = OwnedMxcUri::from(mxc_s);
-
-			if mxc.is_valid() {
-				mxcs.push(mxc);
-			} else {
-				debug_warn!("{mxc:?} from database was found to not be valid");
+			match OwnedMxcUri::parse(mxc_s) {
+				| Ok(mxc) if mxc.is_valid() => mxcs.push(mxc),
+				| Ok(mxc) => debug_warn!("{mxc:?} from database was found to not be valid"),
+				| Err(e) => debug_warn!("MXC from database failed to parse: {e}"),
 			}
 		}
 
@@ -263,8 +307,13 @@ impl Service {
 			};
 
 			trace!("Parsed MXC key to URL: {mxc_s}");
-			let mxc = OwnedMxcUri::from(mxc_s);
-			if (mxc.server_name() == Ok(self.services.globals.server_name())
+			let Ok(mxc) = OwnedMxcUri::parse(mxc_s) else {
+				debug_warn!("Invalid MXC in database, skipping");
+				continue;
+			};
+			if (mxc
+				.server_name()
+				.is_ok_and(|server| server == self.services.globals.server_name())
 				&& !yes_i_want_to_delete_local_media)
 				|| !mxc.is_valid()
 			{
@@ -320,11 +369,17 @@ impl Service {
 
 		let mut deletion_count: usize = 0;
 
-		for mxc in remote_mxcs {
-			let Ok(mxc) = mxc.as_str().try_into() else {
+		for mxc_uri in remote_mxcs {
+			let Ok(mxc_uri) = OwnedMxcUri::parse(mxc_uri.as_str()) else {
 				debug_warn!("Invalid MXC in database, skipping");
 				continue;
 			};
+			let (Ok(server_name), Ok(media_id)) = (mxc_uri.server_name(), mxc_uri.media_id())
+			else {
+				debug_warn!("Invalid MXC in database, skipping");
+				continue;
+			};
+			let mxc = Mxc { server_name: &server_name, media_id };
 
 			debug_info!("Deleting MXC {mxc} from database and filesystem");
 

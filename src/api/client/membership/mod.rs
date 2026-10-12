@@ -11,17 +11,14 @@ mod unban;
 use std::net::IpAddr;
 
 use axum::extract::State;
-use conduwuit::{Err, Result, warn};
+use conduwuit::{Err, Result, info, utils::stream::IterStream, warn};
 use futures::{FutureExt, StreamExt};
-use ruma::{
-	CanonicalJsonObject, OwnedRoomId, RoomId, RoomVersionId, ServerName, UserId,
-	api::client::membership::joined_rooms,
-	events::{
-		StaticEventContent,
-		room::member::{MembershipState, RoomMemberEventContent},
-	},
-};
 use service::Services;
+use slipstream::{
+	CanonicalJsonObject, OwnedRoomId, OwnedServerName, RoomId, RoomVersionId, ServerName, UserId,
+	api::client::membership::joined_rooms,
+	events::room::member::{MembershipState, RoomMemberEventContent},
+};
 
 pub(crate) use self::{
 	ban::ban_user_route,
@@ -52,7 +49,6 @@ pub(crate) async fn joined_rooms_route(
 			.rooms
 			.state_cache
 			.rooms_joined(body.sender_user())
-			.map(ToOwned::to_owned)
 			.collect()
 			.await,
 	})
@@ -78,7 +74,7 @@ pub(crate) async fn banned_room_check(
 	if let Some(room_id) = room_id {
 		let room_banned = services.rooms.metadata.is_banned(room_id).await;
 		let server_banned = room_id.server_name().is_some_and(|server_name| {
-			services.moderation.is_remote_server_forbidden(server_name)
+			services.moderation.is_remote_server_forbidden(&server_name)
 		});
 		if room_banned || server_banned {
 			warn!(
@@ -245,4 +241,53 @@ pub(crate) fn validate_remote_member_event_stub(
 	}
 
 	Ok(())
+}
+
+/// Helper function to gather servers to try when joining or knocking on a room.
+/// Abstracts the fallback logic for discovering remote servers.
+pub(crate) async fn fetch_join_knock_servers(
+	services: &Services,
+	sender_user: &UserId,
+	room_id: &RoomId,
+	mut servers: Vec<OwnedServerName>,
+	from_alias: bool,
+) -> Vec<OwnedServerName> {
+	if servers.is_empty() || from_alias {
+		let addl_via_servers = services.rooms.state_cache.servers_invite_via(room_id);
+
+		let addl_state_servers = services
+			.rooms
+			.state_cache
+			.invite_state(sender_user, room_id)
+			.await
+			.unwrap_or_default();
+
+		let mut addl_servers: Vec<_> = addl_state_servers
+			.iter()
+			.filter_map(|event| event.get_field::<String>("sender").ok().flatten())
+			.filter_map(|sender| UserId::parse(&sender).ok())
+			.map(|user| user.server_name())
+			.stream()
+			.chain(addl_via_servers)
+			.collect()
+			.await;
+
+		if !from_alias {
+			if let Some(server) = room_id.server_name() {
+				addl_servers.push(server);
+			}
+		}
+
+		addl_servers.sort_unstable();
+		addl_servers.dedup();
+		conduwuit::utils::shuffle(&mut addl_servers);
+		for server in addl_servers {
+			if !servers.contains(&server) {
+				servers.push(server);
+			}
+		}
+	}
+
+	info!("Built list of servers for join/knock: {:?}", servers);
+	servers
 }

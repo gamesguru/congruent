@@ -17,6 +17,7 @@ def sql_quote(value):
     """Escape a value for safe embedding inside a single-quoted SQL string literal."""
     return value.replace("'", "''")
 
+
 args_str = " ".join(sys.argv[1:])
 
 # Get the local machine's timezone offset (e.g. "-04:00") to send to Postgres over SSH
@@ -53,6 +54,18 @@ if baseline_match:
     baseline = baseline_match.group(1)
     args_str = args_str.replace(baseline_match.group(0), "")
 
+# Extract --super flag (superscore: best-ever per test across all branches)
+# --verbose is kept as backward-compat alias
+super_mode = (
+    "--super" in args_str
+    or "-s" in args_str.split()
+    or "--verbose" in args_str
+    or "-v" in args_str.split()
+)
+for flag in ("--super", "--verbose"):
+    args_str = args_str.replace(flag, "")
+args_str = re.sub(r"\s-[sv]\s", " ", f" {args_str} ").strip()
+
 # Extract new_passes (Must be done before order parsing to avoid greedy capture)
 new_passes = False
 new_passes_match = re.search(r"new_passes=([^\s]*)", args_str, re.IGNORECASE)
@@ -64,9 +77,6 @@ if new_passes_match:
         new_passes = False
     args_str = args_str.replace(new_passes_match.group(0), "")
 
-super_mode = bool(re.search(r"(^|\s)--super(\s|$)", args_str))
-args_str = re.sub(r"(^|\s)--super(\s|$)", " ", args_str).strip()
-
 # Extract order (it takes whatever is left if it starts with order=)
 order_match = re.search(
     r"order=(.+?)(?:$| like=| limit=| new_passes=)", args_str + " ", re.IGNORECASE
@@ -74,10 +84,14 @@ order_match = re.search(
 if order_match:
     order = order_match.group(1).strip()
 
+# Build columns_tail based on flags
+cols = ["failures_list"]
+if super_mode:
+    cols.extend(["date_last_passed", "branches_passed_on"])
 if new_passes:
-    columns_tail = "new_failures_list,\n    new_passes_list"
-else:
-    columns_tail = "new_failures_list"
+    cols.append("new_passes_list")
+
+columns_tail = ",\n    ".join(f"a.{c}" for c in cols)
 
 if super_mode:
     super_columns = "run_total,\n    detail_n_pass,\n    detail_n_fail,\n    detail_n_skip,\n    baseline_run_id,\n    baseline_n_pass,\n    baseline_n_fail,\n    baseline_n_skip,"
@@ -133,19 +147,78 @@ if not _ORDER_TOKEN_RE.match(order):
 if not re.fullmatch(r"[0-9]+", limit):
     limit = "15"
 
-sql_file_path = os.path.join(os.path.dirname(__file__), "queries.sql")
-with open(sql_file_path, "r") as f:
-    base_query_template = f.read()
-
-query = base_query_template.format(
-    baseline_run_filter=baseline_run_filter,
-    tz_sql=tz_sql,
-    columns_tail=columns_tail,
-    order=order,
-    limit=limit,
-    like_filter=like_filter,
-    super_columns=super_columns,
-)
+# Pick query template:
+#   --super:             "superscore" — global ever-passed across all branches
+#   --super baseline=X:  superscore filtered to a specific branch
+#   baseline=X:          direct diff against a specific commit/branch run
+#   (default):           auto-baseline against the most recent matching run
+script_dir = os.path.dirname(__file__)
+if super_mode and baseline:
+    # Superscore + baseline: filter to regressions that previously passed on a specific branch
+    branch_filter = f"AND ep2.branches::text LIKE '%{baseline}%'"
+    sql_file_path = os.path.join(script_dir, "queries_global.sql")
+    with open(sql_file_path, "r", encoding="utf-8") as f:
+        base_query_template = f.read()
+    query = base_query_template.format(
+        tz_sql=tz_sql,
+        columns_tail=columns_tail,
+        order=order,
+        limit=limit,
+        like_filter=like_filter,
+        branch_filter=branch_filter,
+    )
+elif super_mode:
+    # Superscore: global ever-passed across all branches ("what's the best I've ever done?")
+    sql_file_path = os.path.join(script_dir, "queries_global.sql")
+    with open(sql_file_path, "r", encoding="utf-8") as f:
+        base_query_template = f.read()
+    query = base_query_template.format(
+        tz_sql=tz_sql,
+        columns_tail=columns_tail,
+        order=order,
+        limit=limit,
+        like_filter=like_filter,
+        branch_filter="",
+    )
+elif baseline:
+    # Direct diff: compare against a specific commit/branch run
+    baseline_run_filter = (
+        f"(b.commit_hash LIKE '{baseline}%'"
+        f" OR b.version_string LIKE '%{baseline}%'"
+        f" OR b.branch LIKE '%{baseline}%'"
+        f" OR b.id::text = '{baseline}')"
+    )
+    sql_file_path = os.path.join(script_dir, "queries.sql")
+    with open(sql_file_path, "r", encoding="utf-8") as f:
+        base_query_template = f.read()
+    query = base_query_template.format(
+        baseline_run_filter=baseline_run_filter,
+        tz_sql=tz_sql,
+        columns_tail=columns_tail,
+        order=order,
+        limit=limit,
+        like_filter=like_filter,
+    )
+else:
+    # Default: auto-baseline against the most recent matching run
+    auto_baseline = like_str if like_str != "all" else "dev"
+    baseline_run_filter = (
+        f"(b.commit_hash LIKE '{auto_baseline}%'"
+        f" OR b.version_string LIKE '%{auto_baseline}%'"
+        f" OR b.branch LIKE '%{auto_baseline}%'"
+        f" OR b.id::text = '{auto_baseline}')"
+    )
+    sql_file_path = os.path.join(script_dir, "queries.sql")
+    with open(sql_file_path, "r", encoding="utf-8") as f:
+        base_query_template = f.read()
+    query = base_query_template.format(
+        baseline_run_filter=baseline_run_filter,
+        tz_sql=tz_sql,
+        columns_tail=columns_tail,
+        order=order,
+        limit=limit,
+        like_filter=like_filter,
+    )
 
 print(f"\nExecuting Query:\n{query}\n")
 
@@ -153,9 +226,9 @@ env = os.environ.copy()
 env["PAGER"] = env.get("PAGER") or "less -X -F -S"
 
 try:
-    subprocess.run(["./bin/db-shell", "-c", query], env=env)
-except KeyboardInterrupt:
-    raise SystemExit(130)
+    subprocess.run(["./bin/db-shell", "-c", query], env=env, check=False)
+except KeyboardInterrupt as exc:
+    raise SystemExit(130) from exc
 finally:
     if sys.stdin.isatty():
         os.system("stty sane 2>/dev/null")

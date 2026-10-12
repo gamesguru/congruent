@@ -3,7 +3,7 @@ use std::{fmt::Debug, mem};
 use bytes::BytesMut;
 use conduwuit::{Err, Result, debug_error, err, utils, utils::response::LimitReadExt, warn};
 use reqwest::Client;
-use ruma::api::{IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken};
+use slipstream::api::{IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken};
 
 /// Sends a request to an antispam service
 pub(crate) async fn send_antispam_request<T>(

@@ -22,7 +22,7 @@ inputs:
     description: "Path to local test_results.jsonl for direct ingest"
     default: ""
   run_metadata:
-    description: "JSON object with run metadata: {commit_hash, branch, arch, os, profile, room_version, version_string, features, pass, fail, skip}"
+    description: "JSON object with run metadata: {commit_hash, branch, arch, os, profile, room_version, version_string, features, github_run_id, pass, fail, skip}"
     default: ""
 
 runs:
@@ -50,13 +50,17 @@ runs:
       shell: bash
       env:
         SSH_TARGET: ${{ inputs.ssh_target }}
+        DATABASE_URL: ${{ inputs.database_url }}
         RESULTS_FILE: ${{ inputs.results_file }}
         RUN_META: ${{ inputs.run_metadata }}
       run: |
         "${{ github.action_path }}/sync_recent.sh" --direct "$RESULTS_FILE" "$RUN_META"
 
     - name: Bulk Sync History (backup)
-      if: always()
+      # Direct ingestion already writes this run to PostgreSQL and deliberately
+      # avoids cloning the _metadata/badges branch. Only perform the historical
+      # fallback when direct-ingest inputs were not supplied.
+      if: always() && (inputs.results_file == '' || inputs.run_metadata == '' || failure())
       continue-on-error: true
       shell: bash
       env:

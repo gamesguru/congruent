@@ -1,69 +1,68 @@
 use std::{cmp, collections::HashMap};
 
-use conduwuit::{smallstr::SmallString, trace};
+use conduwuit::{info, smallstr::SmallString, trace};
 use conduwuit_core::{
 	Err, Error, Result, err, implement,
 	matrix::{
 		event::{Event, gen_event_id},
-		pdu::{EventHash, PduBuilder, PduEvent},
-		state_res::{self, RoomVersion},
+		pdu::{EventHash, PduBuilder, PduEvent, RawJson},
+		state_res::RoomVersion,
 	},
 	utils::{self, IterStream, ReadyExt, stream::TryIgnore},
 	warn,
 };
-use futures::{StreamExt, TryStreamExt, future, future::ready};
-use ruma::{
+use futures::{StreamExt, TryStreamExt, future};
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, RoomId, RoomVersionId,
 	UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	uint,
 };
-use serde_json::value::{RawValue, to_raw_value};
 
 use super::RoomMutexGuard;
 
 pub fn pdu_fits(owned_obj: &mut CanonicalJsonObject) -> bool {
-	// room IDs, event IDs, senders, types, and state keys must all be <= 255 bytes
+	// room IDs, event IDs, senders, types, and state keys should ideally be <= 255
+	// bytes but legacy DAGs (e.g. matrix.org) contain events with much larger
+	// fields (e.g. 320+ bytes). We relax these to 1024 to prevent DAG splits,
+	// relying on the overall 64KiB limit.
 	if let Some(CanonicalJsonValue::String(room_id)) = owned_obj.get("room_id") {
-		if room_id.len() > 255 {
+		if room_id.len() > 1024 {
 			return false;
 		}
 	}
 	if let Some(CanonicalJsonValue::String(event_id)) = owned_obj.get("event_id") {
-		if event_id.len() > 255 {
+		if event_id.len() > 1024 {
 			return false;
 		}
 	}
 	if let Some(CanonicalJsonValue::String(sender)) = owned_obj.get("sender") {
-		if sender.len() > 255 {
+		if sender.len() > 1024 {
 			return false;
 		}
 	}
 	if let Some(CanonicalJsonValue::String(kind)) = owned_obj.get("type") {
-		if kind.len() > 255 {
+		if kind.len() > 1024 {
 			return false;
 		}
 	}
 	if let Some(CanonicalJsonValue::String(state_key)) = owned_obj.get("state_key") {
-		if state_key.len() > 255 {
+		if state_key.len() > 1024 {
 			return false;
 		}
 	}
 	// Now check the full PDU size
-	match serde_json::to_string(owned_obj) {
-		| Ok(s) => s.len() <= 65535,
-		| Err(_) => false,
-	}
+	slipstream::codec::to_string(owned_obj).len() <= 65535
 }
 
 /// Pulls the room version ID out of the given (create) event.
 fn room_version_from_event(
 	room_id: OwnedRoomId,
 	event_type: &TimelineEventType,
-	content: &RawValue,
+	content: &RawJson,
 ) -> Result<RoomVersionId> {
 	if event_type == &TimelineEventType::RoomCreate {
-		let content: RoomCreateEventContent = serde_json::from_str(content.get())?;
+		let content: RoomCreateEventContent = slipstream::codec::from_str(content.get())?;
 		Ok(content.room_version)
 	} else {
 		Err(Error::InconsistentRoomState(
@@ -73,7 +72,10 @@ fn room_version_from_event(
 	}
 }
 
-// Creates an event, but does not hash or sign it.
+/// Creates, hashes, signs, and auth-checks an event.
+///
+/// The returned PDU has its real event_id (computed from the content hash),
+/// not a placeholder.
 #[implement(super::Service)]
 pub async fn create_event(
 	&self,
@@ -81,7 +83,7 @@ pub async fn create_event(
 	sender: &UserId,
 	room_id: Option<&RoomId>,
 	_mutex_lock: &RoomMutexGuard,
-) -> Result<(PduEvent, RoomVersionId)> {
+) -> Result<(PduEvent, CanonicalJsonObject)> {
 	let PduBuilder {
 		event_type,
 		content,
@@ -114,7 +116,7 @@ pub async fn create_event(
 		| None => {
 			trace!("No room ID, assuming room creation");
 			room_version_from_event(
-				RoomId::new(self.services.globals.server_name()),
+				OwnedRoomId::new_v1(self.services.globals.server_name()),
 				&event_type.clone(),
 				&content.clone(),
 			)?
@@ -129,27 +131,86 @@ pub async fn create_event(
 				.state
 				.get_forward_extremities(room_id)
 				.take(20)
-				.map(Into::into)
 				.collect()
 				.await,
 		| None => Vec::new(),
 	};
 
-	let auth_events: HashMap<(StateEventType, SmallString<[u8; 48]>), PduEvent> = match room_id {
-		| Some(room_id) =>
-			self.services
-				.state
-				.get_auth_events(
+	let mut auth_events: HashMap<(StateEventType, SmallString<[u8; 48]>), PduEvent> =
+		match room_id {
+			| Some(room_id) =>
+				self.services
+					.state
+					.get_auth_events(
+						room_id,
+						&event_type,
+						sender,
+						state_key.as_deref(),
+						&content,
+						&room_version,
+						&room_version_id,
+					)
+					.await?,
+			| None => HashMap::new(),
+		};
+
+	// When a room has diverged (multiple forward extremities), we MUST resolve the
+	// state across all forks to determine the true current state for this new
+	// event. Relying solely on `roomid_shortstatehash` (which `get_auth_events`
+	// uses) is vulnerable to a TOCTOU race: if federation is concurrently
+	// processing a fork, it may have temporarily forced the room state to that
+	// fork's state, causing local users to fail auth against missing memberships.
+	if let Some(room_id) = room_id {
+		if prev_events.len() > 1 {
+			info!(
+				"DAG fork detected ({} extremities). Resolving state for new local event.",
+				prev_events.len()
+			);
+			if let Ok(Some(root_handle)) = self
+				.services
+				.event_handler
+				.resolve_extremities(
+					prev_events.iter().map(AsRef::as_ref),
 					room_id,
-					&event_type,
-					sender,
-					state_key.as_deref(),
-					&content,
-					&room_version,
+					&room_version_id,
 				)
-				.await?,
-		| None => HashMap::new(),
-	};
+				.await
+			{
+				let content_val = rezzy::JsonValue::parse(content.get())
+					.expect("PDU content must be valid JSON");
+				let auth_types = rezzy::auth::auth_types_for_event(
+					event_type.as_ref(),
+					sender.as_str(),
+					state_key.as_deref(),
+					&content_val,
+					crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+					// The actual room version string; rezzy gates the
+					// restricted-join auth rule on it being v8+.
+					room_version_id.as_str(),
+				);
+
+				let mut new_auth_events = HashMap::new();
+				for (ty, sk) in &auth_types {
+					let state_ty: StateEventType = ty.as_str().into();
+					let state_key = conduwuit_core::matrix::StateKey::from(sk.as_str());
+					if let Ok(pdu) = self
+						.services
+						.state_accessor
+						.state_get_in_room_hamt(
+							room_id,
+							&root_handle,
+							&state_ty,
+							state_key.as_str(),
+						)
+						.await
+					{
+						new_auth_events.insert((state_ty, state_key), pdu);
+					}
+				}
+				auth_events = new_auth_events;
+			}
+		}
+	}
 	// Our depth is the maximum depth of prev_events + 1
 	let depth = match room_id {
 		| Some(_) => prev_events
@@ -175,29 +236,30 @@ pub async fn create_event(
 				.room_state_get(room_id, &event_type.clone().to_string().into(), state_key)
 				.await
 			{
-				unsigned.insert("prev_content".to_owned(), prev_pdu.get_content_as_value());
-				unsigned
-					.insert("prev_sender".to_owned(), serde_json::to_value(prev_pdu.sender())?);
+				unsigned.insert(
+					"prev_content".to_owned(),
+					slipstream::json::Value::parse(prev_pdu.content().get()).unwrap_or_default(),
+				);
+				unsigned.insert(
+					"prev_sender".to_owned(),
+					slipstream::codec::Serialize::to_json(prev_pdu.sender()),
+				);
 				unsigned.insert(
 					"replaces_state".to_owned(),
-					serde_json::to_value(prev_pdu.event_id())?,
+					slipstream::codec::Serialize::to_json(prev_pdu.event_id()),
 				);
 			}
 		}
 	}
 
-	let pdu = PduEvent {
-		event_id: ruma::event_id!("$thiswillbefilledinlater").into(),
+	let mut pdu = PduEvent {
+		event_id: slipstream::event_id!("$thiswillbefilledinlater"),
 		room_id: room_id.map(ToOwned::to_owned),
 		sender: sender.to_owned(),
 		origin: None,
 		origin_server_ts: timestamp.map_or_else(
-			|| {
-				utils::millis_since_unix_epoch()
-					.try_into()
-					.expect("u64 fits into UInt")
-			},
-			|ts| ts.get(),
+			utils::millis_since_unix_epoch,
+			slipstream::MilliSecondsSinceUnixEpoch::get,
 		),
 		kind: event_type,
 		content,
@@ -212,51 +274,43 @@ pub async fn create_event(
 		unsigned: if unsigned.is_empty() {
 			None
 		} else {
-			Some(to_raw_value(&unsigned)?)
+			Some(RawJson::from_value(&unsigned))
 		},
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
+		rejected: false,
 	};
 
-	let auth_fetch = |k: &StateEventType, s: &str| {
-		let key = (k.clone(), s.into());
-		ready(auth_events.get(&key).map(ToOwned::to_owned))
+	// Hash, sign, and compute the real event_id immediately so all
+	// downstream logging and auth checks see the real ID, not the
+	// placeholder.
+	let pdu_json = self.hash_sign_and_finalize(&mut pdu, &room_version_id)?;
+
+	info!(
+		"auth_events keys for new {} at PDU {}: {:?}",
+		pdu.kind,
+		pdu.event_id,
+		auth_events.keys().collect::<Vec<_>>()
+	);
+
+	let create_event = if let Some(room_id) = room_id {
+		self.services
+			.state_accessor
+			.room_state_get(room_id, &StateEventType::RoomCreate, "")
+			.await
+			.ok()
+	} else {
+		None
 	};
 
-	let room_id_or_hash = pdu.room_id_or_hash();
-	let create_pdu = match &pdu.kind {
-		| TimelineEventType::RoomCreate => None,
-		| _ => {
-			let room_id = room_id_or_hash.ok_or_else(|| {
-				err!(Request(Forbidden(warn!("Failed to determine room ID for event"))))
-			})?;
-			Some(
-				self.services
-					.state_accessor
-					.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-					.await
-					.map_err(|e| {
-						err!(Request(Forbidden(warn!("Failed to fetch room create event: {e}"))))
-					})?,
-			)
-		},
-	};
-	let create_event = match &pdu.kind {
-		| TimelineEventType::RoomCreate => &pdu,
-		| _ => create_pdu.as_ref().unwrap().as_pdu(),
-	};
-
-	let auth_check = state_res::auth_check(
-		&room_version,
+	let state_provider =
+		crate::rooms::auth_adapter::PduStateProvider::from_smallstr_map(&auth_events)
+			.with_create_event(create_event.as_ref());
+	if !crate::rooms::auth_adapter::rezzy_auth_check(
 		&pdu,
-		None, // TODO: third_party_invite
-		auth_fetch,
-		create_event,
-	)
-	.await
-	.map_err(|e| err!(Request(Forbidden(warn!("Auth check failed: {e:?}")))))?;
-
-	if !auth_check {
+		&state_provider,
+		crate::rooms::auth_adapter::to_state_res_version(&room_version_id),
+	) {
 		return Err!(Request(Forbidden("Event is not authorized.")));
 	}
 	trace!(
@@ -264,7 +318,16 @@ pub async fn create_event(
 		pdu.event_id,
 		pdu.room_id.as_ref().map_or("None", |id| id.as_str())
 	);
-	Ok((pdu, room_version_id))
+
+	// MSC4291: ensure `room_id` in internal representation even for v12+
+	if pdu.room_id.is_none() {
+		let internal_room_id = pdu
+			.room_id_or_hash()
+			.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+		pdu.room_id = Some(internal_room_id);
+	}
+
+	Ok((pdu, pdu_json))
 }
 
 #[implement(super::Service)]
@@ -279,40 +342,9 @@ pub async fn create_hash_and_sign_event(
 	if !self.services.globals.user_is_local(sender) {
 		return Err!(Request(Forbidden("Sender must be a local user")));
 	}
-	let (mut pdu, room_version_id) = self
+	let (pdu, mut pdu_json) = self
 		.create_event(pdu_builder, sender, room_id, mutex_lock)
 		.await?;
-	// Hash and sign
-	let mut pdu_json = utils::to_canonical_object(&pdu).map_err(|e| {
-		err!(Request(BadJson(warn!("Failed to convert PDU to canonical JSON: {e}"))))
-	})?;
-	pdu_json.remove("event_id");
-
-	trace!("hashing and signing event {}", pdu.event_id);
-	if let Err(e) = self
-		.services
-		.server_keys
-		.hash_and_sign_event(&mut pdu_json, &room_version_id)
-	{
-		return match e {
-			| Error::Signatures(ruma::signatures::Error::PduSize) => {
-				Err!(Request(TooLarge("Message/PDU is too long (exceeds 65535 bytes)")))
-			},
-			| _ => Err!(Request(Unknown(warn!("Signing event failed: {e}")))),
-		};
-	}
-	// Generate event id
-	pdu.event_id = gen_event_id(&pdu_json, &room_version_id)?;
-	pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
-
-	// MSC4291: ensure room_id is in our internal representation even if it's
-	// v12+
-	if pdu.room_id.is_none() {
-		let internal_room_id = pdu
-			.room_id_or_hash()
-			.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
-		pdu.room_id = Some(internal_room_id);
-	}
 
 	// Verify that the *full* PDU isn't over 64KiB.
 	// Ruma only validates that it's under 64KiB before signing and hashing.
@@ -328,10 +360,12 @@ pub async fn create_hash_and_sign_event(
 			"Checking event in room {} with policy server",
 			pdu.room_id.as_ref().map_or("None", |id| id.as_str())
 		);
+		let policy_room_id = pdu.room_id_or_hash();
+		let policy_room_id = policy_room_id.as_ref().expect("has room ID");
 		match self
 			.services
 			.event_handler
-			.ask_policy_server(&pdu, &mut pdu_json, pdu.room_id().expect("has room ID"), false)
+			.ask_policy_server(&pdu, &mut pdu_json, policy_room_id, false)
 			.await
 		{
 			| Ok(true) => {},
@@ -361,4 +395,77 @@ pub async fn create_hash_and_sign_event(
 
 	trace!("New PDU created: {pdu:?}");
 	Ok((pdu, pdu_json))
+}
+
+/// Serialize a PDU to canonical JSON, hash and sign it, then compute and
+/// set the real `event_id`.  Returns the signed canonical JSON object.
+#[implement(super::Service)]
+pub fn hash_sign_and_finalize(
+	&self,
+	pdu: &mut PduEvent,
+	room_version_id: &RoomVersionId,
+) -> Result<CanonicalJsonObject> {
+	// Sort keys canonically and purge "placeholder" `event_id`
+	let mut pdu_json = pdu.to_canonical_object();
+	if conduwuit_core::matrix::event::has_opaque_event_ids(room_version_id) {
+		// Room versions 1 and 2: the event ID is assigned here, and is part of
+		// the hashed and signed event.
+		let event_id =
+			format!("${}:{}", utils::random_string(18), self.services.globals.server_name());
+		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(event_id));
+	} else {
+		pdu_json.remove("event_id");
+	}
+
+	// Sign
+	if let Err(e) = self
+		.services
+		.server_keys
+		.hash_and_sign_event(&mut pdu_json, room_version_id)
+	{
+		return match e {
+			| Error::Signatures(slipstream::signatures::Error::PduSize) => {
+				Err!(Request(TooLarge("Message/PDU is too long (exceeds 65535 bytes)")))
+			},
+			| _ => Err!(Request(BadJson(warn!("Signing event failed: {e}")))),
+		};
+	}
+
+	pdu.event_id = gen_event_id(&pdu_json, room_version_id)?;
+	pdu_json.insert("event_id".into(), CanonicalJsonValue::String(pdu.event_id.clone().into()));
+
+	// Rehydrate the persisted event from the finalized JSON so the stored PDU
+	// carries the same hashes/signatures as the canonical representation.
+	*pdu = PduEvent::from_id_val(&pdu.event_id, pdu_json.clone(), pdu.room_id.as_ref())?;
+
+	Ok(pdu_json)
+}
+
+#[cfg(test)]
+mod tests {
+	use slipstream::{CanonicalJsonObject, CanonicalJsonValue};
+
+	use super::*;
+
+	#[test]
+	fn test_pdu_fits() {
+		let mut obj = CanonicalJsonObject::new();
+		obj.insert("type".into(), CanonicalJsonValue::String("m.room.message".into()));
+		assert!(pdu_fits(&mut obj));
+
+		// Test exact size limit boundary (65535 bytes)
+		let large_string = "a".repeat(65400);
+		obj.insert("content".into(), CanonicalJsonValue::String(large_string));
+		assert!(pdu_fits(&mut obj));
+
+		// Test oversized PDU (>65535 bytes)
+		let huge_string = "a".repeat(66000);
+		obj.insert("content".into(), CanonicalJsonValue::String(huge_string));
+		assert!(!pdu_fits(&mut obj));
+
+		// Test oversized individual field (>1024 chars for room_id)
+		let mut obj2 = CanonicalJsonObject::new();
+		obj2.insert("room_id".into(), CanonicalJsonValue::String("a".repeat(1025)));
+		assert!(!pdu_fits(&mut obj2));
+	}
 }

@@ -1,6 +1,6 @@
 use axum::extract::State;
 use conduwuit::Result;
-use ruma::api::federation::edutypes::get_edutypes;
+use slipstream::api::federation::edutypes::get_edutypes;
 
 use crate::Ruma;
 

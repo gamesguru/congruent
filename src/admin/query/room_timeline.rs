@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use conduwuit::{PduCount, Result, utils::stream::TryTools};
 use futures::TryStreamExt;
-use ruma::OwnedRoomOrAliasId;
+use slipstream::OwnedRoomOrAliasId;
 
 use crate::{admin_command, admin_command_dispatch};
 
@@ -52,7 +52,7 @@ pub(super) async fn pdus(
 		.services
 		.rooms
 		.timeline
-		.pdus_rev(&room_id, from)
+		.pdus_rev(&room_id, from.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded))
 		.try_take(limit.unwrap_or(3))
 		.try_collect()
 		.await?;

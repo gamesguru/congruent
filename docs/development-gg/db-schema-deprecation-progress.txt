@@ -1,0 +1,67 @@
+ are u saying we can never delete column families?
+
+  can we move them to a deprecated.rs
+
+
+• Waited for background terminal · env RUSTC_WRAPPER= cargo check --quiet
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• No. We can delete column families, but only after two conditions are true:
+
+  1. Nothing at startup, in migrations, or in debug/admin code still expects the CF to be describable/openable.
+  2. The code that drops the CF does not still hold any live Map or stream handles for it.
+
+  The bug here is narrower: on a fresh DB, migrations.rs still conditionally does Map::open(..., "roomuserid_privateread") and similar for the legacy receipt CFs. If those names are removed from MAPS, DB open/setup can panic before that fallback logic
+  runs. So the descriptors need to remain for now, even if the CFs are usually absent and later dropped by migration.
+
+  Yes, moving legacy descriptors into something like deprecated.rs is reasonable. The important part is that they still get included in the descriptor list passed at DB open. That gives you cleaner organization without breaking startup. Once the last
+  migration/startup/admin path stops referencing those CF names, you can remove them entirely in one follow-up.
+
+
+› or deprecated_mapsrs
+
+
+• Yes, deprecated_maps.rs is a sensible refactor.
+
+  The requirement is not “keep legacy descriptors in maps.rs forever”; it is “keep them in the set of descriptors used when opening/configuring the DB.” So you can:
+
+  - Move legacy Descriptors into src/database/deprecated_maps.rs
+  - Export a DEPRECATED_MAPS: &[Descriptor]
+  - Make maps.rs build MAPS from active + deprecated descriptors, or have DB-open/config code consume both lists
+
+  That keeps the startup contract intact while separating live schema from legacy compatibility baggage.
+
+  What you cannot do is hide them in a file that is no longer included by DB open/config. If you want, I can make that refactor now and keep the behavior unchanged.
+
+─ Worked for 3m 39s ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› but how can i delete migration code if people skip versions? then they might miss them, it's a pain in the ass you're describing the way
+
+
+• You don’t delete it arbitrarily. You delete it when you also define an upgrade floor.
+
+  Those old CF descriptors and migrations are only needed if you support upgrades from databases old enough to still have that layout. If you want to support “skip any number of versions forever,” then yes, legacy migration code accumulates and that
+  is painful. The usual way out is:
+
+  - Keep compatibility for a bounded window.
+  - Declare a minimum supported schema/app version for direct upgrades.
+  - If someone upgrades from older than that floor, require stepping through an intermediate release or running an offline migration tool.
+
+  That is the normal tradeoff. Otherwise the codebase carries infinite historical baggage.
+
+  So the practical approach is:
+
+  - Short term: keep the legacy descriptors and migration paths, but isolate them in deprecated_maps.rs / legacy migration modules.
+  - Medium term: add a schema version policy.
+  - Later: remove migrations/CF descriptors older than the supported upgrade floor.
+
+  If you do not want an upgrade floor, then you should assume some legacy migration code stays indefinitely. In that world, the right move is organization, not deletion: quarantine old descriptors and migrations so they stop polluting the main path.
+
+  The pain I’m describing is real, but the alternatives are also real:
+
+  - Infinite backward compatibility: permanent complexity.
+  - Bounded compatibility: occasional forced step-upgrades.
+
+  Those are the two honest choices.

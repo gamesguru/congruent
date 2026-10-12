@@ -1,4 +1,5 @@
 mod argon;
+pub mod lthash;
 pub mod sha256;
 
 use crate::Result;

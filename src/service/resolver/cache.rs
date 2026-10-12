@@ -1,4 +1,4 @@
-use std::{mem::size_of_val, net::IpAddr, sync::Arc, time::SystemTime};
+use std::{net::IpAddr, sync::Arc, time::SystemTime};
 
 use conduwuit::{
 	Result,
@@ -8,8 +8,8 @@ use conduwuit::{
 };
 use database::{Cbor, Deserialized, Map};
 use futures::{Stream, StreamExt, future::join};
-use ruma::ServerName;
 use serde::{Deserialize, Serialize};
+use slipstream::{OwnedServerName, ServerName};
 
 use super::fed::FedDest;
 
@@ -107,19 +107,19 @@ pub async fn get_override(&self, name: &str) -> Result<CachedOverride> {
 }
 
 #[implement(Cache)]
-pub fn destinations(&self) -> impl Stream<Item = (&ServerName, CachedDest)> + Send + '_ {
+pub fn destinations(&self) -> impl Stream<Item = (OwnedServerName, CachedDest)> + Send + '_ {
 	self.destinations
 		.stream()
 		.ignore_err()
-		.map(|item: (&ServerName, Cbor<_>)| (item.0, item.1.0))
+		.map(|item: (OwnedServerName, Cbor<_>)| (item.0, item.1.0))
 }
 
 #[implement(Cache)]
-pub fn overrides(&self) -> impl Stream<Item = (&ServerName, CachedOverride)> + Send + '_ {
+pub fn overrides(&self) -> impl Stream<Item = (OwnedServerName, CachedOverride)> + Send + '_ {
 	self.overrides
 		.stream()
 		.ignore_err()
-		.map(|item: (&ServerName, Cbor<_>)| (item.0, item.1.0))
+		.map(|item: (OwnedServerName, Cbor<_>)| (item.0, item.1.0))
 }
 
 impl CachedDest {
@@ -129,8 +129,7 @@ impl CachedDest {
 
 	#[must_use]
 	pub(crate) fn default_expire(expire_secs: u64) -> SystemTime {
-		let start = expire_secs.clamp(1, u64::MAX / 2);
-		rand::time_from_now_secs(start..start.saturating_mul(2))
+		rand::time_from_now_secs(expire_secs..expire_secs.saturating_mul(2).max(1))
 	}
 
 	#[inline]

@@ -1,11 +1,13 @@
 use std::{mem, ops::Deref};
 
 use axum::{body::Body, extract::FromRequest};
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use conduwuit::{Error, Result, debug, debug_warn, err, trace};
-use ruma::{
+use futures::future::BoxFuture;
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, DeviceId, OwnedDeviceId, OwnedServerName,
-	OwnedUserId, ServerName, UserId, api::IncomingRequest,
+	OwnedUserId, ServerName, UserId,
+	api::{EndpointRequest, IncomingRequest},
 };
 
 use super::{auth, request, request::Request};
@@ -40,16 +42,20 @@ pub(crate) struct Args<T> {
 	pub(crate) delay: Option<std::time::Duration>,
 }
 
-pub(crate) async fn authenticate_user(
+pub(crate) fn authenticate_user<'a>(
 	request: hyper::Request<Body>,
-	services: &State,
-	metadata: &ruma::api::Metadata,
-) -> Result<OwnedUserId> {
-	let mut request = request::from(services, request).await?;
-	let json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
-	let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
-	auth.sender_user
-		.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
+	services: &'a State,
+	metadata: &'a slipstream::api::Metadata,
+) -> BoxFuture<'a, Result<OwnedUserId>> {
+	Box::pin(async move {
+		let mut request = request::from(services, request).await?;
+		let json_body = std::str::from_utf8(&request.body)
+			.ok()
+			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
+		let auth = auth::auth(services, &mut request, json_body.as_ref(), metadata).await?;
+		auth.sender_user
+			.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))
+	})
 }
 
 impl<T> Args<T>
@@ -64,23 +70,32 @@ where
 	#[inline]
 	pub(crate) fn sender_user(&self) -> &UserId {
 		self.sender_user
-			.as_deref()
+			.as_ref()
 			.expect("user must be authenticated for this handler")
 	}
 
 	#[inline]
+	pub(crate) fn sender_user_opt(&self) -> Option<&UserId> { self.sender_user.as_ref() }
+
+	#[inline]
 	pub(crate) fn sender_device(&self) -> &DeviceId {
 		self.sender_device
-			.as_deref()
+			.as_ref()
 			.expect("user must be authenticated and device identified")
 	}
 
 	#[inline]
+	pub(crate) fn sender_device_opt(&self) -> Option<&DeviceId> { self.sender_device.as_ref() }
+
+	#[inline]
 	pub(crate) fn origin(&self) -> &ServerName {
 		self.origin
-			.as_deref()
+			.as_ref()
 			.expect("server must be authenticated for this handler")
 	}
+
+	#[inline]
+	pub(crate) fn origin_opt(&self) -> Option<&ServerName> { self.origin.as_ref() }
 }
 
 impl<T> Deref for Args<T>
@@ -94,7 +109,7 @@ where
 
 impl<T> FromRequest<State, Body> for Args<T>
 where
-	T: IncomingRequest + Send + Sync + 'static,
+	T: EndpointRequest + IncomingRequest + Send + Sync + 'static,
 {
 	type Rejection = Error;
 
@@ -103,7 +118,9 @@ where
 		services: &State,
 	) -> Result<Self, Self::Rejection> {
 		let mut request = request::from(services, request).await?;
-		let mut json_body = serde_json::from_slice::<CanonicalJsonValue>(&request.body).ok();
+		let mut json_body = std::str::from_utf8(&request.body)
+			.ok()
+			.and_then(|body| slipstream::canonical_json::from_json_str(body).ok());
 
 		// if the body is not empty and not media, but json parsing failed, it is
 		// invalid JSON
@@ -159,8 +176,9 @@ where
 		};
 
 		let auth = auth::auth(services, &mut request, json_body.as_ref(), &T::METADATA).await?;
+		let body = make_body::<T>(&mut request, json_body.as_mut())?;
 		Ok(Self {
-			body: make_body::<T>(&mut request, json_body.as_mut())?,
+			body,
 			origin: auth.origin,
 			sender_user: auth.sender_user,
 			sender_device: auth.sender_device,
@@ -177,10 +195,11 @@ where
 {
 	let body = take_body(request, json_body);
 	let http_request = into_http_request(request, body);
-	T::try_from_http_request(http_request, &request.path)
-		.map_err(|e| err!(Request(BadJson(debug_warn!("{e}")))))
+	let path = request.parts.uri.path();
+	T::try_from_http_request(http_request, &request.path).map_err(|e| {
+		err!(Request(BadJson(debug_warn!("Failed to deserialize request for {path}: {e}"))))
+	})
 }
-
 fn into_http_request(request: &Request, body: Bytes) -> hyper::Request<Bytes> {
 	let mut http_request = hyper::Request::builder()
 		.uri(request.parts.uri.clone())
@@ -204,7 +223,5 @@ fn take_body(request: &mut Request, json_body: Option<&mut CanonicalJsonValue>) 
 		return mem::take(&mut request.body);
 	};
 
-	let mut buf = BytesMut::new().writer();
-	serde_json::to_writer(&mut buf, &json_body).expect("value serialization can't fail");
-	buf.into_inner().freeze()
+	Bytes::from(slipstream::codec::to_string(json_body))
 }

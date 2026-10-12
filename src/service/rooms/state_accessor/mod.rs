@@ -1,3 +1,8 @@
+mod msc4500;
+pub use msc4500::{
+	ALGORITHM, ALGORITHM_WITH_INPUTS, InputCache, InputNode, PRIMARY_ALGORITHM, PduDigests,
+	PointDigests, StateHashEntry, StateHashes,
+};
 mod room_state;
 mod server_can;
 mod state;
@@ -6,11 +11,9 @@ mod user_can;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use conduwuit::{Result, err};
-use conduwuit_core::Pdu;
-use database::Map;
-use ruma::{
-	EventEncryptionAlgorithm, JsOption, OwnedEventId, OwnedRoomAliasId, RoomId, UserId,
+use conduwuit::{Result, Server, err};
+use slipstream::{
+	EventEncryptionAlgorithm, JsOption, OwnedRoomAliasId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::{
@@ -29,25 +32,23 @@ use ruma::{
 	room::RoomType,
 };
 
-use crate::{Dep, rooms, rooms::short::ShortStateHash};
+use crate::{Dep, rooms};
 
 pub struct Service {
 	services: Services,
-	db: Data,
+	msc4500_memo: conduwuit::SyncMutex<msc4500::CausalMemo>,
 	pub encrypted_rooms_cache:
-		conduwuit::SyncRwLock<std::collections::HashSet<ruma::OwnedRoomId>>,
+		conduwuit::SyncRwLock<std::collections::HashSet<slipstream::OwnedRoomId>>,
 }
 
 struct Services {
+	globals: Dep<crate::globals::Service>,
 	short: Dep<rooms::short::Service>,
 	state: Dep<rooms::state::Service>,
-	state_compressor: Dep<rooms::state_compressor::Service>,
+	state_hamt: Dep<rooms::state_hamt::Service>, // TODO: MSC4511
 	state_cache: Dep<rooms::state_cache::Service>,
 	timeline: Dep<rooms::timeline::Service>,
-}
-
-struct Data {
-	shorteventid_shortstatehash: Arc<Map>,
+	server: Arc<Server>,
 }
 
 #[async_trait]
@@ -55,16 +56,15 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: Services {
+				globals: args.depend::<crate::globals::Service>("globals"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 				short: args.depend::<rooms::short::Service>("rooms::short"),
+				state_hamt: args.depend::<rooms::state_hamt::Service>("rooms::state_hamt"),
 				state: args.depend::<rooms::state::Service>("rooms::state"),
-				state_compressor: args
-					.depend::<rooms::state_compressor::Service>("rooms::state_compressor"),
+				server: args.server.clone(),
 			},
-			db: Data {
-				shorteventid_shortstatehash: args.db["shorteventid_shortstatehash"].clone(),
-			},
+			msc4500_memo: conduwuit::SyncMutex::default(),
 			encrypted_rooms_cache: conduwuit::SyncRwLock::new(std::collections::HashSet::new()),
 		}))
 	}
@@ -73,12 +73,31 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Returns the rezzy [`StateResVersion`] for a room, using the
+	/// cached 3-tier lookup (memory → DB → create event fallback).
+	pub async fn get_state_res_version(
+		&self,
+		room_id: &RoomId,
+	) -> Result<rezzy::StateResVersion> {
+		self.services
+			.state
+			.get_room_version(room_id)
+			.await
+			.map(|v| rooms::auth_adapter::to_state_res_version(&v))
+	}
+
+	/// Returns the current room name.
 	pub async fn get_name(&self, room_id: &RoomId) -> Result<String> {
 		self.room_state_get_content(room_id, &StateEventType::RoomName, "")
 			.await
-			.map(|c: RoomNameEventContent| c.name)
+			.and_then(|c: RoomNameEventContent| {
+				(!c.name.is_empty())
+					.then_some(c.name)
+					.ok_or_else(|| err!(Request(NotFound("No name found in event content"))))
+			})
 	}
 
+	/// Returns the current room avatar event content, when present.
 	pub async fn get_avatar(&self, room_id: &RoomId) -> JsOption<RoomAvatarEventContent> {
 		let content = self
 			.room_state_get_content(room_id, &StateEventType::RoomAvatar, "")
@@ -88,6 +107,7 @@ impl Service {
 		JsOption::from_option(content)
 	}
 
+	/// Returns the current membership state content for a user.
 	pub async fn get_member(
 		&self,
 		room_id: &RoomId,
@@ -101,18 +121,16 @@ impl Service {
 	pub async fn is_world_readable(&self, room_id: &RoomId) -> bool {
 		self.room_state_get_content(room_id, &StateEventType::RoomHistoryVisibility, "")
 			.await
-			.map(|c: RoomHistoryVisibilityEventContent| {
+			.is_ok_and(|c: RoomHistoryVisibilityEventContent| {
 				c.history_visibility == HistoryVisibility::WorldReadable
 			})
-			.unwrap_or(false)
 	}
 
 	/// Checks if guests are able to join a given room
 	pub async fn guest_can_join(&self, room_id: &RoomId) -> bool {
 		self.room_state_get_content(room_id, &StateEventType::RoomGuestAccess, "")
 			.await
-			.map(|c: RoomGuestAccessEventContent| c.guest_access == GuestAccess::CanJoin)
-			.unwrap_or(false)
+			.is_ok_and(|c: RoomGuestAccessEventContent| c.guest_access == GuestAccess::CanJoin)
 	}
 
 	/// Gets the primary alias from canonical alias event
@@ -140,6 +158,7 @@ impl Service {
 			.map_or(JoinRule::Invite, |c: RoomJoinRulesEventContent| c.join_rule)
 	}
 
+	/// Returns the room type declared by its create event.
 	pub async fn get_room_type(&self, room_id: &RoomId) -> Result<RoomType> {
 		self.room_state_get_content(room_id, &StateEventType::RoomCreate, "")
 			.await
@@ -161,6 +180,7 @@ impl Service {
 			.map(|content: RoomEncryptionEventContent| content.algorithm)
 	}
 
+	/// Tests whether the room has encryption state, caching positive results.
 	pub async fn is_encrypted_room(&self, room_id: &RoomId) -> bool {
 		if self.encrypted_rooms_cache.read().contains(room_id) {
 			return true;
@@ -178,31 +198,5 @@ impl Service {
 		}
 
 		encrypted
-	}
-
-	pub async fn state_get(
-		&self,
-		shortstatehash: ShortStateHash,
-		event_type: &StateEventType,
-		state_key: &str,
-	) -> Result<Pdu> {
-		self.state_get_in_room(None, shortstatehash, event_type, state_key)
-			.await
-	}
-
-	pub async fn state_get_in_room(
-		&self,
-		room_id: Option<&RoomId>,
-		shortstatehash: ShortStateHash,
-		event_type: &StateEventType,
-		state_key: &str,
-	) -> Result<Pdu> {
-		let event_id: OwnedEventId = self
-			.state_get_id(shortstatehash, event_type, state_key)
-			.await?;
-		self.services
-			.timeline
-			.get_pdu_in_room(room_id, &event_id)
-			.await
 	}
 }

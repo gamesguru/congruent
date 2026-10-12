@@ -1,5 +1,5 @@
 use askama::Template;
-use ruma::UserId;
+use slipstream::UserId;
 
 pub trait MessageTemplate: Template {
 	fn subject(&self) -> String;
@@ -37,7 +37,7 @@ pub struct PasswordReset<'a> {
 }
 
 impl MessageTemplate for PasswordReset<'_> {
-	fn subject(&self) -> String { format!("Password reset request for {}", &self.user_id) }
+	fn subject(&self) -> String { format!("Password reset request for {}", self.user_id) }
 }
 
 #[derive(Template)]

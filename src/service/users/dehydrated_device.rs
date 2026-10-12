@@ -1,15 +1,16 @@
-use conduwuit::{Err, Result, implement, trace};
+use conduwuit::{Err, Result, implement, info, trace};
 use conduwuit_database::{Deserialized, Json};
-use ruma::{
+use slipstream::{
 	DeviceId, OwnedDeviceId, UserId,
 	api::client::dehydrated_device::{
 		DehydratedDeviceData, put_dehydrated_device::unstable::Request,
 	},
-	serde::Raw,
+	codec::{Deserialize, Serialize},
+	encryption::DeviceKeys,
+	sswire::Raw,
 };
-use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct DehydratedDevice {
 	/// Unique ID of the device.
 	pub device_id: OwnedDeviceId,
@@ -18,7 +19,41 @@ pub struct DehydratedDevice {
 	pub device_data: Raw<DehydratedDeviceData>,
 }
 
+impl Serialize for DehydratedDevice {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		obj.insert("device_id".into(), self.device_id.to_json());
+		obj.insert("device_data".into(), self.device_data.to_json());
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for DehydratedDevice {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError("expected object".into()))?;
+		Ok(Self {
+			device_id: OwnedDeviceId::from_json(
+				obj.get("device_id")
+					.ok_or_else(|| slipstream::codec::DeError("missing device_id".into()))?,
+			)?,
+			device_data: Raw::<DehydratedDeviceData>::from_json(
+				obj.get("device_data")
+					.ok_or_else(|| slipstream::codec::DeError("missing device_data".into()))?,
+			)?,
+		})
+	}
+}
+
 /// Creates or recreates the user's dehydrated device.
+///
+/// Normalizes the uploaded `device_keys` by round-tripping through the typed
+/// [`DeviceKeys`] struct. This strips non-spec fields like `"dehydrated":true`
+/// which Element embeds but are not part of the [`DeviceKeys`] schema. Without
+/// this, other clients deserialize through the same struct, recompute canonical
+/// JSON *without* the extra field, and cross-signing signature verification
+/// fails — causing the device to appear "Not trusted".
 #[implement(super::Service)]
 #[tracing::instrument(
 	level = "info",
@@ -47,6 +82,7 @@ pub async fn set_dehydrated_device(&self, user_id: &UserId, request: Request) ->
 	}
 
 	if let Ok(existing_id) = existing_id {
+		info!("Replacing existing dehydrated device {existing_id}");
 		self.remove_device(user_id, &existing_id).await;
 	}
 
@@ -68,13 +104,28 @@ pub async fn set_dehydrated_device(&self, user_id: &UserId, request: Request) ->
 		}),
 	);
 
-	trace!(device_keys = ?request.device_keys);
-	self.add_device_keys(user_id, &request.device_id, &request.device_keys)
+	// Normalize device_keys by round-tripping through the typed DeviceKeys struct
+	// to strip non-spec fields (e.g. "dehydrated":true) that break cross-signing
+	// signature verification on other clients.
+	let device_keys = request
+		.device_keys
+		.deserialize()
+		.map(|dk: DeviceKeys| Raw::new(&dk).expect("DeviceKeys round-trip"))
+		.unwrap_or(request.device_keys);
+
+	info!(device_id = %request.device_id, "Storing dehydrated device keys");
+	self.add_device_keys(user_id, &request.device_id, &device_keys)
 		.await;
 
-	trace!(one_time_keys = ?request.one_time_keys);
+	info!(count = request.one_time_keys.len(), "Storing one-time keys");
 	for (one_time_key_key, one_time_key_value) in &request.one_time_keys {
 		self.add_one_time_key(user_id, &request.device_id, one_time_key_key, one_time_key_value)
+			.await?;
+	}
+
+	info!(count = request.fallback_keys.len(), "Storing fallback keys");
+	for (fallback_key_id, fallback_key_value) in &request.fallback_keys {
+		self.add_one_time_key(user_id, &request.device_id, fallback_key_id, fallback_key_value)
 			.await?;
 	}
 
@@ -109,7 +160,7 @@ pub(super) async fn remove_dehydrated_device(
 	};
 
 	if let Some(maybe_device_id) = maybe_device_id {
-		if maybe_device_id != device_id {
+		if device_id != maybe_device_id {
 			return Err!(Request(NotFound("Not the user's dehydrated device.")));
 		}
 	}
@@ -146,4 +197,16 @@ pub async fn get_dehydrated_device(&self, user_id: &UserId) -> Result<Dehydrated
 		.get(user_id)
 		.await
 		.deserialized()
+		.map_err(|e| {
+			if e.is_not_found() {
+				conduwuit::Error::BadRequest(
+					slipstream::api::client::error::ErrorKind::NotFound,
+					"No dehydrated device found.",
+				)
+			} else {
+				e
+			}
+		})
 }
+
+conduwuit_database::codec_value_impls!(DehydratedDevice);

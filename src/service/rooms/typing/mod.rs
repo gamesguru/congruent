@@ -5,7 +5,7 @@ use conduwuit::{
 	utils::{self, IterStream},
 };
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::federation::transactions::edu::{Edu, TypingContent},
 	events::SyncEphemeralRoomEvent,
@@ -212,9 +212,9 @@ impl Service {
 		&self,
 		room_id: &RoomId,
 		sender_user: &UserId,
-	) -> Result<SyncEphemeralRoomEvent<ruma::events::typing::TypingEventContent>> {
+	) -> Result<SyncEphemeralRoomEvent<slipstream::events::typing::TypingEventContent>> {
 		Ok(SyncEphemeralRoomEvent {
-			content: ruma::events::typing::TypingEventContent {
+			content: slipstream::events::typing::TypingEventContent {
 				user_ids: self.typing_users_for_user(room_id, sender_user).await?,
 			},
 		})
@@ -239,7 +239,7 @@ impl Service {
 		let edu = Edu::Typing(content);
 
 		let mut buf = EduBuf::new();
-		serde_json::to_writer(&mut buf, &edu).expect("Serialized Edu::Typing");
+		buf.extend_from_slice(slipstream::codec::to_string(&edu).as_bytes());
 
 		self.services.sending.send_edu_room(room_id, buf).await?;
 

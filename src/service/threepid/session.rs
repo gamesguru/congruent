@@ -5,7 +5,7 @@ use std::{
 
 use conduwuit::utils;
 use lettre::Address;
-use ruma::{ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId};
+use slipstream::{ClientSecret, OwnedClientSecret, OwnedSessionId, SessionId};
 
 #[derive(Default)]
 pub(super) struct ValidationSessions {
@@ -43,7 +43,7 @@ pub(crate) struct ValidationToken {
 
 impl ValidationToken {
 	// one hour
-	const MAX_TOKEN_AGE: Duration = Duration::from_secs(60 * 60);
+	const MAX_TOKEN_AGE: Duration = Duration::from_hours(1);
 	const RANDOM_TOKEN_LENGTH: usize = 16;
 
 	pub(super) fn new_random() -> Self {

@@ -8,7 +8,7 @@ use conduwuit::{
 };
 use database::{Database, Deserialized, Handle, Interfix, Map, Qry};
 use futures::{Stream, StreamExt, pin_mut};
-use ruma::{DeviceId, OwnedUserId, RoomId, UserId, api::client::filter::LazyLoadOptions};
+use slipstream::{DeviceId, OwnedUserId, RoomId, UserId, api::client::filter::LazyLoadOptions};
 
 pub struct Service {
 	db: Data,

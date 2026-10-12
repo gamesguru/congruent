@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use conduwuit::implement;
-use ruma::{OwnedServerName, OwnedUserId};
+use slipstream::{OwnedServerName, OwnedUserId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Destination {

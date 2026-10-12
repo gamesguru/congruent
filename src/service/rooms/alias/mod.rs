@@ -8,12 +8,16 @@ use conduwuit::{
 	utils::{ReadyExt, stream::TryIgnore},
 };
 use database::{Deserialized, Ignore, Interfix, Map};
-use futures::{Stream, StreamExt, TryFutureExt};
-use ruma::{
-	OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId, RoomOrAliasId, UserId,
+use futures::{Stream, StreamExt};
+use slipstream::{
+	OwnedRoomAliasId, OwnedRoomId, OwnedServerName, OwnedUserId, RoomAliasId, RoomId,
+	RoomOrAliasId, UserId,
 	events::{
 		StateEventType,
-		room::power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent},
+		room::{
+			create::RoomCreateEventContent,
+			power_levels::{RoomPowerLevels, RoomPowerLevelsEventContent},
+		},
 	},
 };
 
@@ -35,6 +39,7 @@ struct Services {
 	appservice: Dep<appservice::Service>,
 	globals: Dep<globals::Service>,
 	sending: Dep<sending::Service>,
+	state: Dep<rooms::state::Service>,
 	state_accessor: Dep<rooms::state_accessor::Service>,
 	state_cache: Dep<rooms::state_cache::Service>,
 }
@@ -52,6 +57,7 @@ impl crate::Service for Service {
 				appservice: args.depend::<appservice::Service>("appservice"),
 				globals: args.depend::<globals::Service>("globals"),
 				sending: args.depend::<sending::Service>("sending"),
+				state: args.depend::<rooms::state::Service>("rooms::state"),
 				state_accessor: args
 					.depend::<rooms::state_accessor::Service>("rooms::state_accessor"),
 				state_cache: args.depend::<rooms::state_cache::Service>("rooms::state_cache"),
@@ -70,8 +76,8 @@ impl Service {
 		room_id: &RoomId,
 		user_id: &UserId,
 	) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can set this alias")));
 		}
@@ -93,10 +99,18 @@ impl Service {
 		Ok(())
 	}
 
-	#[tracing::instrument(skip(self))]
-	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
-		if alias == self.services.globals.admin_alias
-			&& user_id != self.services.globals.server_user
+	/// Checks whether `user_id` is permitted to remove `alias`, without
+	/// actually removing it. Callers that need to perform other room
+	/// operations (e.g. updating canonical-alias state) alongside the
+	/// removal should call this first so a request that will ultimately be
+	/// rejected is rejected before anything is mutated.
+	pub async fn ensure_user_can_remove_alias(
+		&self,
+		alias: &RoomAliasId,
+		user_id: &UserId,
+	) -> Result<()> {
+		if alias == &self.services.globals.admin_alias
+			&& user_id != &self.services.globals.server_user
 		{
 			return Err!(Request(Forbidden("Only the server user can remove this alias")));
 		}
@@ -104,6 +118,66 @@ impl Service {
 		if !self.user_can_remove_alias(alias, user_id).await? {
 			return Err!(Request(Forbidden("User is not permitted to remove this alias.")));
 		}
+
+		Ok(())
+	}
+
+	pub async fn user_can_change_canonical_alias(
+		&self,
+		room_id: &RoomId,
+		user_id: &UserId,
+	) -> Result<bool> {
+		let room_version_id = self.services.state.get_room_version(room_id);
+		let create_event =
+			self.services
+				.state_accessor
+				.room_state_get(room_id, &StateEventType::RoomCreate, "");
+		let power_levels = self
+			.services
+			.state_accessor
+			.room_state_get_content::<RoomPowerLevelsEventContent>(
+				room_id,
+				&StateEventType::RoomPowerLevels,
+				"",
+			);
+		let (room_version_id, create_event, power_levels) =
+			futures::join!(room_version_id, create_event, power_levels);
+
+		let room_version = conduwuit::RoomVersion::new(
+			&room_version_id.map_err(|_| err!(Request(NotFound("Unknown room"))))?,
+		)
+		.expect("room version must be supported");
+		let create_event = create_event.map_err(|_| err!(Request(NotFound("Unknown room"))))?;
+
+		if room_version.explicitly_privilege_room_creators {
+			let create_content: RoomCreateEventContent =
+				slipstream::codec::from_str(create_event.content().get())
+					.map_err(|_| err!(Database("Invalid event content for m.room.create")))?;
+			let user_owned = user_id.to_owned();
+			if create_event.sender() == user_id
+				|| create_content
+					.additional_creators
+					.as_ref()
+					.is_some_and(|creators| creators.contains(&user_owned))
+			{
+				return Ok(true);
+			}
+		}
+
+		if let Ok(power_levels) = power_levels.map(RoomPowerLevels::from) {
+			return Ok(
+				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
+			);
+		}
+
+		// If there is no power levels event, only the room creator can change
+		// canonical aliases.
+		Ok(create_event.sender() == user_id)
+	}
+
+	#[tracing::instrument(skip(self))]
+	pub async fn remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<()> {
+		self.ensure_user_can_remove_alias(alias, user_id).await?;
 
 		let alias_full = alias.as_bytes().to_vec();
 		let alias = alias.alias();
@@ -144,11 +218,17 @@ impl Service {
 		servers: Option<Vec<OwnedServerName>>,
 	) -> Result<(OwnedRoomId, Vec<OwnedServerName>)> {
 		if room.is_room_id() {
-			let room_id: &RoomId = room.try_into().expect("valid RoomId");
-			Ok((room_id.to_owned(), servers.unwrap_or_default()))
+			let room_id = OwnedRoomId::parse(room.as_str()).expect("valid RoomId");
+			let mut s = servers.unwrap_or_default();
+			if let Some(server_name) = room_id.server_name() {
+				if !s.contains(&server_name) {
+					s.push(server_name);
+				}
+			}
+			Ok((room_id, s))
 		} else {
-			let alias: &RoomAliasId = room.try_into().expect("valid RoomAliasId");
-			self.resolve_alias(alias).await
+			let alias = OwnedRoomAliasId::parse(room.as_str()).expect("valid RoomAliasId");
+			self.resolve_alias(&alias).await
 		}
 	}
 
@@ -162,7 +242,7 @@ impl Service {
 		let server_is_ours = self
 			.services
 			.globals
-			.server_is_ours(room_alias.server_name());
+			.server_is_ours(&room_alias.server_name());
 
 		if !server_is_ours {
 			// TODO: The spec advises servers may cache remote room aliases temporarily.
@@ -180,7 +260,6 @@ impl Service {
 				.services
 				.state_cache
 				.room_servers(&room_id)
-				.map(ToOwned::to_owned)
 				.collect()
 				.await;
 			return Ok((room_id, servers));
@@ -191,29 +270,33 @@ impl Service {
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub async fn resolve_local_alias(&self, alias: &RoomAliasId) -> Result<OwnedRoomId> {
-		self.db.alias_roomid.get(alias.alias()).await.deserialized()
+		self.db
+			.alias_roomid
+			.get(alias.as_str())
+			.await
+			.deserialized()
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]
 	pub fn local_aliases_for_room<'a>(
 		&'a self,
 		room_id: &'a RoomId,
-	) -> impl Stream<Item = &'a RoomAliasId> + Send + 'a {
+	) -> impl Stream<Item = OwnedRoomAliasId> + Send + 'a {
 		let prefix = (room_id, Interfix);
 		self.db
 			.aliasid_alias
 			.stream_prefix(&prefix)
 			.ignore_err()
-			.map(|(_, alias): (Ignore, &RoomAliasId)| alias)
+			.map(|(_, alias): (Ignore, OwnedRoomAliasId)| alias)
 	}
 
 	#[tracing::instrument(skip(self), level = "debug")]
-	pub fn all_local_aliases(&self) -> impl Stream<Item = (&RoomId, &str)> + Send + '_ {
+	pub fn all_local_aliases(&self) -> impl Stream<Item = (OwnedRoomId, String)> + Send + '_ {
 		self.db
 			.alias_roomid
 			.stream()
 			.ignore_err()
-			.map(|(alias_localpart, room_id): (&str, &RoomId)| (room_id, alias_localpart))
+			.map(|(alias_localpart, room_id): (String, OwnedRoomId)| (room_id, alias_localpart))
 	}
 
 	async fn user_can_remove_alias(&self, alias: &RoomAliasId, user_id: &UserId) -> Result<bool> {
@@ -236,35 +319,8 @@ impl Service {
 			return Ok(true);
 		}
 
-		// Checking whether the user is able to change canonical aliases of the room
-		if let Ok(power_levels) = self
-			.services
-			.state_accessor
-			.room_state_get_content::<RoomPowerLevelsEventContent>(
-				&room_id,
-				&StateEventType::RoomPowerLevels,
-				"",
-			)
-			.map_ok(RoomPowerLevels::from)
+		self.user_can_change_canonical_alias(&room_id, user_id)
 			.await
-		{
-			return Ok(
-				power_levels.user_can_send_state(user_id, StateEventType::RoomCanonicalAlias)
-			);
-		}
-
-		// If there is no power levels event, only the room creator can change
-		// canonical aliases
-		if let Ok(event) = self
-			.services
-			.state_accessor
-			.room_state_get(&room_id, &StateEventType::RoomCreate, "")
-			.await
-		{
-			return Ok(event.sender() == user_id);
-		}
-
-		Err!(Database("Room has no m.room.create event"))
 	}
 
 	async fn who_created_alias(&self, alias: &RoomAliasId) -> Result<OwnedUserId> {
@@ -291,7 +347,7 @@ impl Service {
 		&self,
 		room_alias: &RoomAliasId,
 	) -> Result<Option<OwnedRoomId>> {
-		use ruma::api::appservice::query::query_room_alias;
+		use slipstream::api::appservice::query::query_room_alias;
 
 		for appservice in self.services.appservice.read().await.values() {
 			if appservice.aliases.is_match(room_alias.as_str())
@@ -321,11 +377,8 @@ impl Service {
 		room_alias: &RoomAliasId,
 		appservice_info: &Option<RegistrationInfo>,
 	) -> Result<()> {
-		if !self
-			.services
-			.globals
-			.server_is_ours(room_alias.server_name())
-		{
+		let server_name = room_alias.server_name();
+		if !self.services.globals.server_is_ours(&server_name) {
 			return Err!(Request(InvalidParam("Alias is from another server.")));
 		}
 

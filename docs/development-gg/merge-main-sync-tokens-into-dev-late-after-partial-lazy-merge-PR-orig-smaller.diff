@@ -1,0 +1,2686 @@
+diff --git a/.github/actions/postgres/import_history.sh b/.github/actions/postgres/import_history.sh
+index 3fbb558dd3..256f731695 100755
+--- a/.github/actions/postgres/import_history.sh
++++ b/.github/actions/postgres/import_history.sh
+@@ -74,12 +74,13 @@ echo "→ Consolidating and ingesting test details..."
+   done
+   echo "\."
+   echo "INSERT INTO run_details (run_id, test_name, status)
+-        SELECT r.id, (t.j->>'Test'), (t.j->>'Action')
++        SELECT DISTINCT ON (r.id, (t.j->>'Test')) r.id, (t.j->>'Test'), (t.j->>'Action')
+         FROM t
+         JOIN runs r ON r.commit_hash = (t.j->>'commit')
+                    AND r.arch IS NOT DISTINCT FROM (NULLIF((t.j->>'arch'),''))
+                    AND r.os IS NOT DISTINCT FROM (NULLIF((t.j->>'os'),''))
+                    AND r.profile IS NOT DISTINCT FROM (NULLIF((t.j->>'profile'),''))
++        ORDER BY r.id, (t.j->>'Test'), (t.j->>'Time') DESC
+         ON CONFLICT (run_id, test_name) DO NOTHING;"
+ ) | psql "$DB_TARGET"
+ [ -n "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"
+diff --git a/conduwuit-example.toml b/conduwuit-example.toml
+index 925708258e..ad91457c0f 100644
+--- a/conduwuit-example.toml
++++ b/conduwuit-example.toml
+@@ -194,6 +194,10 @@
+ #
+ #shortstatekey_cache_capacity = varies by system
+ 
++# This item is undocumented. Please contribute documentation for it.
++#
++#shortstatehash_cache_capacity = varies by system
++
+ # This item is undocumented. Please contribute documentation for it.
+ #
+ #statekeyshort_cache_capacity = varies by system
+diff --git a/docs/development-gg.md b/docs/development-gg.md
+new file mode 100644
+index 0000000000..352cc0215a
+--- /dev/null
++++ b/docs/development-gg.md
+@@ -0,0 +1,33 @@
++# Ginger's Kill-Sync-Tokens Work
++
++This document tracks the ongoing work by Ginger in the `kill-sync-tokens` branch and identify synergistic opportunities.
++
++## Integrated Improvements
++
++The following items from Ginger's branch have been integrated into `main`/`guru/sync-tokens-2nd-try`:
++
++1.  **Panic Fixes for Missing SSH**:
++    *   Gracefully handle cases where a Short State Hash (SSH) is missing during sync (specifically sliding sync).
++    *   Prevents server panics when encountering events with missing or reset state.
++    *   Commits: `624bd3796`, `bf4c716c7`.
++
++2.  **Improved `last_sync_end` Calculation**:
++    *   Implemented a more accurate forward-scanning approach to determine the state at the end of the last sync.
++    *   Uses the PDU immediately following the last sync point to ensure precision.
++    *   Commit: `4facaa444`.
++
++## Documentation of Future Items
++
++The following items are planned for future integration once the `kill-sync-tokens` branch is stabilized:
++
++1.  **Type-Safe MSC4222 Support**:
++    *   Integrates `use_state_after` directly into the `SyncContext` and the type system.
++    *   Eliminates the need for manual JSON patching of `state_after`.
++    *   Ensures better long-term maintainability and compatibility with Ruma.
++    *   Commit: `af8e28559`.
++
++2.  **Removing the Sync Token Table**:
++    *   The ultimate goal: entirely remove the `roomsynctoken_shortstatehash` database table.
++    *   Moves the server to a "stateless" sync token model, relying exclusively on timeline lookups.
++    *   Completely eliminates database bloat and OOM risks associated with the large sync token table.
++    *   Commit: `6a2480774`.
+diff --git a/src/admin/room/commands.rs b/src/admin/room/commands.rs
+index a7450ebb70..aa652f5f72 100644
+--- a/src/admin/room/commands.rs
++++ b/src/admin/room/commands.rs
+@@ -1,6 +1,6 @@
+ use conduwuit::{Err, Result};
+ use futures::StreamExt;
+-use ruma::OwnedRoomId;
++use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+ 
+ use crate::{PAGE_SIZE, admin_command, get_room_info};
+ 
+@@ -83,3 +83,23 @@ pub(super) async fn exists(&self, room_id: OwnedRoomId) -> Result {
+ 
+ 	self.write_str(&format!("{result}")).await
+ }
++
++#[admin_command]
++pub(super) async fn purge_sync_tokens(&self, room: OwnedRoomOrAliasId) -> Result {
++	// Resolve the room ID from the room or alias ID
++	let room_id = self.services.rooms.alias.resolve(&room).await?;
++
++	// Delete all tokens for this room using the service method
++	let deleted_count = self
++		.services
++		.rooms
++		.user
++		.delete_room_tokens(&room_id)
++		.await?;
++
++	self.write_str(&format!(
++		"Successfully deleted {deleted_count} sync tokens for room {}",
++		room_id.as_str()
++	))
++	.await
++}
+diff --git a/src/admin/room/mod.rs b/src/admin/room/mod.rs
+index baa54d4b2c..fa8d316590 100644
+--- a/src/admin/room/mod.rs
++++ b/src/admin/room/mod.rs
+@@ -6,7 +6,7 @@ mod moderation;
+ 
+ use clap::Subcommand;
+ use conduwuit::Result;
+-use ruma::OwnedRoomId;
++use ruma::{OwnedRoomId, OwnedRoomOrAliasId};
+ 
+ use self::{
+ 	alias::RoomAliasCommand, directory::RoomDirectoryCommand, info::RoomInfoCommand,
+@@ -60,4 +60,11 @@ pub enum RoomCommand {
+ 	Exists {
+ 		room_id: OwnedRoomId,
+ 	},
++
++	/// - Delete all sync tokens for a room
++	PurgeSyncTokens {
++		/// Room ID or alias to purge sync tokens for
++		#[arg(value_parser)]
++		room: OwnedRoomOrAliasId,
++	},
+ }
+diff --git a/src/api/client/sync/mod.rs b/src/api/client/sync/mod.rs
+index 218d5ae08f..c7b28d11fa 100644
+--- a/src/api/client/sync/mod.rs
++++ b/src/api/client/sync/mod.rs
+@@ -48,6 +48,13 @@ async fn load_timeline(
+ 	ending_count: Option<PduCount>,
+ 	limit: usize,
+ ) -> Result<TimelinePdus> {
++	if let (Some(starting_count), Some(ending_count)) = (starting_count, ending_count) {
++		debug_assert!(
++			starting_count <= ending_count,
++			"starting count {starting_count} > ending count {ending_count}"
++		);
++	}
++
+ 	let mut pdu_stream = match starting_count {
+ 		| Some(starting_count) => {
+ 			let last_timeline_count = services
+@@ -152,13 +159,12 @@ async fn share_encrypted_room(
+ 		.rooms
+ 		.state_cache
+ 		.get_shared_rooms(sender_user, user_id)
+-		.ready_filter(|&room_id| Some(room_id) != ignore_room)
+-		.map(ToOwned::to_owned)
++		.ready_filter(|room_id| Some(*room_id) != ignore_room)
+ 		.broad_any(|other_room_id| async move {
+ 			services
+ 				.rooms
+ 				.state_accessor
+-				.is_encrypted_room(&other_room_id)
++				.is_encrypted_room(other_room_id)
+ 				.await
+ 		})
+ 		.await
+diff --git a/src/api/client/sync/v3/joined.rs b/src/api/client/sync/v3/joined.rs
+index 8cc1bf60be..dcff9e8de1 100644
+--- a/src/api/client/sync/v3/joined.rs
++++ b/src/api/client/sync/v3/joined.rs
+@@ -17,7 +17,7 @@ use conduwuit::{
+ use conduwuit_service::Services;
+ use futures::{
+ 	FutureExt, StreamExt, TryFutureExt,
+-	future::{OptionFuture, join, join3, join4, try_join, try_join3, try_join4},
++	future::{OptionFuture, join, join3, join4, try_join, try_join3},
+ };
+ use ruma::{
+ 	OwnedRoomId, OwnedUserId, RoomId, UserId,
+@@ -25,8 +25,9 @@ use ruma::{
+ 		UnreadNotificationsCount,
+ 		v3::{Ephemeral, JoinedRoom, RoomAccountData, RoomSummary, State as RoomState, Timeline},
+ 	},
++	assign,
+ 	events::{
+-		AnyRawAccountDataEvent, AnySyncStateEvent, StateEventType,
++		AnyRawAccountDataEvent, StateEventType,
+ 		TimelineEventType::*,
+ 		room::member::{MembershipState, RoomMemberEventContent},
+ 	},
+@@ -34,6 +35,7 @@ use ruma::{
+ 	uint,
+ };
+ use service::rooms::short::ShortStateHash;
++use tokio::pin;
+ 
+ use super::{load_timeline, share_encrypted_room};
+ use crate::client::{
+@@ -58,7 +60,7 @@ pub(super) async fn load_joined_room(
+ 	services: &Services,
+ 	sync_context: SyncContext<'_>,
+ 	ref room_id: OwnedRoomId,
+-) -> Result<(JoinedRoom, Vec<Raw<AnySyncStateEvent>>, DeviceListUpdates)> {
++) -> Result<(JoinedRoom, Vec<Raw<ruma::events::AnySyncStateEvent>>, DeviceListUpdates)> {
+ 	/*
+ 	Building a sync response involves many steps which all depend on each other.
+ 	To parallelize the process as much as possible, each step is divided into its own function,
+@@ -70,7 +72,6 @@ pub(super) async fn load_joined_room(
+ 		ephemeral,
+ 		StateAndTimeline {
+ 			state_events,
+-			state_after,
+ 			timeline,
+ 			summary,
+ 			notification_counts,
+@@ -93,22 +94,24 @@ pub(super) async fn load_joined_room(
+ 		);
+ 	}
+ 
+-	let joined_room = JoinedRoom {
++	let state_events_raw: Vec<Raw<ruma::events::AnySyncStateEvent>> =
++		state_events.into_iter().map(Event::into_format).collect();
++
++	let (state_events_to_send, state_after) = if sync_context.use_state_after {
++		(Vec::new(), state_events_raw)
++	} else {
++		(state_events_raw, Vec::new())
++	};
++
++	let joined_room = assign!(JoinedRoom::new(), {
+ 		account_data,
+ 		summary: summary.unwrap_or_default(),
+ 		unread_notifications: notification_counts.unwrap_or_default(),
+ 		timeline,
+-		state: RoomState {
+-			events: state_events.into_iter().map(Event::into_format).collect(),
+-		},
++		state: assign!(RoomState::new(), { events: state_events_to_send }),
+ 		ephemeral,
+ 		unread_thread_notifications: BTreeMap::new(),
+-	};
+-
+-	let state_after = state_after
+-		.into_iter()
+-		.map(Event::into_format)
+-		.collect::<Vec<_>>();
++	});
+ 
+ 	Ok((joined_room, state_after, device_list_updates))
+ }
+@@ -132,7 +135,7 @@ async fn build_account_data(
+ 		.collect()
+ 		.await;
+ 
+-	Ok(RoomAccountData { events: account_data_changes })
++	Ok(assign!(RoomAccountData::new(), { events: account_data_changes }))
+ }
+ 
+ /// Collect new ephemeral events.
+@@ -239,14 +242,13 @@ async fn build_ephemeral(
+ 	edus.extend(typing_event);
+ 	edus.extend(private_read_event);
+ 
+-	Ok(Ephemeral { events: edus })
++	Ok(assign!(Ephemeral::new(), { events: edus }))
+ }
+ 
+ /// A struct to hold the state events, timeline, and other data which is
+ /// computed from them.
+ struct StateAndTimeline {
+ 	state_events: Vec<PduEvent>,
+-	state_after: Vec<PduEvent>,
+ 	timeline: Timeline,
+ 	summary: Option<RoomSummary>,
+ 	notification_counts: Option<UnreadNotificationsCount>,
+@@ -266,11 +268,19 @@ async fn build_state_and_timeline(
+ 	)
+ 	.await?;
+ 
+-	let (state_events, state_after, notification_counts, joined_since_last_sync) = try_join4(
+-		build_state_events(services, sync_context, room_id, shortstatehashes, &timeline),
+-		build_state_after(services, sync_context, room_id, shortstatehashes, &timeline),
++	let joined_since_last_sync =
++		check_joined_since_last_sync(services, shortstatehashes, sync_context).await?;
++
++	let (state_events, notification_counts) = try_join(
++		build_state_events(
++			services,
++			sync_context,
++			room_id,
++			shortstatehashes,
++			&timeline,
++			joined_since_last_sync,
++		),
+ 		build_notification_counts(services, sync_context, room_id, &timeline),
+-		check_joined_since_last_sync(services, shortstatehashes, sync_context),
+ 	)
+ 	.await?;
+ 
+@@ -278,7 +288,7 @@ async fn build_state_and_timeline(
+ 	// joined since the last sync, that being the syncing user's join event. if
+ 	// it's empty something is wrong.
+ 	if joined_since_last_sync && timeline.pdus.is_empty() {
+-		warn!(%room_id, "timeline for newly joined room is empty");
++		debug_warn!("timeline for newly joined room is empty");
+ 	}
+ 
+ 	let (summary, device_list_updates) = try_join(
+@@ -326,12 +336,11 @@ async fn build_state_and_timeline(
+ 
+ 	Ok(StateAndTimeline {
+ 		state_events,
+-		state_after,
+-		timeline: Timeline {
++		timeline: assign!(Timeline::new(), {
+ 			limited,
+ 			prev_batch: prev_batch.as_ref().map(ToString::to_string),
+ 			events: filtered_timeline,
+-		},
++		}),
+ 		summary,
+ 		notification_counts,
+ 		device_list_updates,
+@@ -351,7 +360,7 @@ struct ShortStateHashes {
+ #[tracing::instrument(level = "debug", skip_all)]
+ async fn fetch_shortstatehashes(
+ 	services: &Services,
+-	SyncContext { last_sync_end_count, current_count, .. }: SyncContext<'_>,
++	SyncContext { last_sync_end_count, .. }: SyncContext<'_>,
+ 	room_id: &RoomId,
+ ) -> Result<ShortStateHashes> {
+ 	// the room state currently.
+@@ -361,46 +370,45 @@ async fn fetch_shortstatehashes(
+ 		.rooms
+ 		.state
+ 		.get_room_shortstatehash(room_id)
+-		.map_err(|_| err!(Database(error!("Room {room_id} has no state"))));
++		.map_err(|_| err!(Database(error!("Room {room_id} has no state"))))
++		.await?;
+ 
+-	// the room state as of the end of the last sync.
+-	// this will be None if we are doing an initial sync or if we just joined this
+-	// room.
++	// The room state as of the end of the last sync.
++	// This will be None if we are doing an initial sync.
+ 	let last_sync_end_shortstatehash =
+-		OptionFuture::from(last_sync_end_count.map(|last_sync_end_count| {
+-			// look up the shortstatehash saved by the last sync's call to
+-			// `associate_token_shortstatehash`
+-			services
+-				.rooms
+-				.user
+-				.get_token_shortstatehash(room_id, last_sync_end_count)
+-				.inspect_err(move |_| {
+-					debug_warn!(
+-						token = last_sync_end_count,
+-						"Room has no shortstatehash for this token"
+-					);
+-				})
+-				.ok()
+-		}))
+-		.map(Option::flatten)
+-		.map(Ok);
+-
+-	let (current_shortstatehash, last_sync_end_shortstatehash) =
+-		try_join(current_shortstatehash, last_sync_end_shortstatehash).await?;
+-
+-	/*
+-	associate the `current_count` with the `current_shortstatehash`, so we can
+-	use it on the next sync as the `last_sync_end_shortstatehash`.
++		OptionFuture::from(last_sync_end_count.map(async |last_sync_end_count| {
++			pin! {
++				let pdus = services
++					.rooms
++					.timeline
++					.pdus(room_id, Some(PduCount::Normal(last_sync_end_count)))
++					.ignore_err();
++			}
+ 
+-	TODO: the table written to by this call grows extremely fast, gaining one new entry for each
+-	joined room on _every single sync request_. we need to find a better way to remember the shortstatehash
+-	between syncs.
+-	*/
+-	services
+-		.rooms
+-		.user
+-		.associate_token_shortstatehash(room_id, current_count, current_shortstatehash)
+-		.await;
++			match pdus.next().await {
++				| Some((_, pdu_after_last_sync_end)) => {
++					trace!(?pdu_after_last_sync_end.event_id, "pdu at last sync end");
++
++					Some(
++						services
++							.rooms
++							.state_accessor
++							.pdu_shortstatehash(&pdu_after_last_sync_end.event_id)
++							.await
++							.map_err(|err| {
++								err!("Last sync end PDU has no shortstatehash: {err}")
++							}),
++					)
++				},
++				| None => {
++					// No events have been sent since the last sync, or we just joined this room
++					None
++				},
++			}
++		}))
++		.await
++		.flatten()
++		.transpose()?;
+ 
+ 	Ok(ShortStateHashes {
+ 		current_shortstatehash,
+@@ -454,11 +462,13 @@ async fn build_state_events(
+ 	room_id: &RoomId,
+ 	shortstatehashes: ShortStateHashes,
+ 	timeline: &TimelinePdus,
++	joined_since_last_sync: bool,
+ ) -> Result<Vec<PduEvent>> {
+ 	let SyncContext {
+ 		syncing_user,
+ 		last_sync_end_count,
+ 		full_state,
++		use_state_after,
+ 		..
+ 	} = sync_context;
+ 
+@@ -467,50 +477,58 @@ async fn build_state_events(
+ 		last_sync_end_shortstatehash,
+ 	} = shortstatehashes;
+ 
+-	// the spec states that the `state` property only includes state events up to
+-	// the beginning of the timeline, so we determine the state of the syncing room
+-	// as of the first timeline event. NOTE: this explanation is not entirely
+-	// accurate; see the implementation of `build_state_incremental`.
+-	let timeline_start_shortstatehash = async {
+-		if let Some((_, pdu)) = timeline.pdus.front() {
+-			if let Ok(shortstatehash) = services
+-				.rooms
+-				.state_accessor
+-				.pdu_shortstatehash(&pdu.event_id)
+-				.await
+-			{
+-				return shortstatehash;
+-			}
+-		}
++	// compute the state hash at the start of the timeline if we are not using
++	// state_after
++	let state_hash = if use_state_after {
++		current_shortstatehash
++	} else if let Some((_, pdu)) = timeline.pdus.front() {
++		match services
++			.rooms
++			.state_accessor
++			.pdu_shortstatehash(&pdu.event_id)
++			.await
++		{
++			| Ok(shortstatehash) => {
++				use futures::StreamExt;
++				let mut state_stream = std::pin::pin!(
++					services
++						.rooms
++						.state_accessor
++						.state_full_ids::<ruma::OwnedEventId>(shortstatehash)
++				);
+ 
++				if state_stream.next().await.is_some() {
++					shortstatehash
++				} else {
++					current_shortstatehash
++				}
++			},
++			| Err(_) => current_shortstatehash,
++		}
++	} else {
+ 		current_shortstatehash
+ 	};
+ 
+ 	// the user IDs of members whose membership needs to be sent to the client, if
+ 	// lazy-loading is enabled.
+ 	let lazily_loaded_members =
+-		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.senders());
+-
+-	let (timeline_start_shortstatehash, lazily_loaded_members) =
+-		join(timeline_start_shortstatehash, lazily_loaded_members).await;
++		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.senders()).await;
+ 
+ 	// compute the state delta between the previous sync and this sync.
+-	match (last_sync_end_count, last_sync_end_shortstatehash) {
++	match (last_sync_end_count, last_sync_end_shortstatehash, joined_since_last_sync) {
+ 		/*
+ 		if `last_sync_end_count` is Some (meaning this is an incremental sync), and `last_sync_end_shortstatehash`
+ 		is Some (meaning the syncing user didn't just join this room for the first time ever), and `full_state` is false,
+ 		then use `build_state_incremental`.
+ 		*/
+-		| (Some(last_sync_end_count), Some(last_sync_end_shortstatehash)) if !full_state =>
++		| (Some(_), Some(last_sync_end_shortstatehash), false) if !full_state =>
+ 			build_state_incremental(
+ 				services,
+ 				syncing_user,
+-				room_id,
+-				PduCount::Normal(last_sync_end_count),
+ 				last_sync_end_shortstatehash,
+-				timeline_start_shortstatehash,
+-				current_shortstatehash,
++				state_hash,
+ 				timeline,
++				use_state_after,
+ 				lazily_loaded_members.as_ref(),
+ 			)
+ 			.boxed()
+@@ -524,7 +542,9 @@ async fn build_state_events(
+ 			build_state_initial(
+ 				services,
+ 				syncing_user,
+-				timeline_start_shortstatehash,
++				state_hash,
++				timeline,
++				use_state_after,
+ 				lazily_loaded_members.as_ref(),
+ 			)
+ 			.boxed()
+@@ -532,36 +552,6 @@ async fn build_state_events(
+ 	}
+ }
+ 
+-/// Calculate the state events after the timeline for MSC4222.
+-async fn build_state_after(
+-	services: &Services,
+-	sync_context: SyncContext<'_>,
+-	room_id: &RoomId,
+-	shortstatehashes: ShortStateHashes,
+-	timeline: &TimelinePdus,
+-) -> Result<Vec<PduEvent>> {
+-	if !services.config.experimental_features.msc4222_enabled {
+-		return Ok(Vec::new());
+-	}
+-
+-	let SyncContext { syncing_user, .. } = sync_context;
+-	let ShortStateHashes { current_shortstatehash, .. } = shortstatehashes;
+-
+-	// the user IDs of members whose membership needs to be sent to the client, if
+-	// lazy-loading is enabled.
+-	let lazily_loaded_members =
+-		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.senders()).await;
+-
+-	build_state_initial(
+-		services,
+-		syncing_user,
+-		current_shortstatehash,
+-		lazily_loaded_members.as_ref(),
+-	)
+-	.boxed()
+-	.await
+-}
+-
+ /// Compute the number of unread notifications in this room.
+ #[tracing::instrument(level = "debug", skip_all)]
+ async fn build_notification_counts(
+@@ -619,10 +609,10 @@ async fn build_notification_counts(
+ 
+ 		trace!(%notification_count, %highlight_count, "syncing new notification counts");
+ 
+-		Ok(Some(UnreadNotificationsCount {
++		Ok(Some(assign!(UnreadNotificationsCount::new(), {
+ 			notification_count: Some(notification_count),
+ 			highlight_count: Some(highlight_count),
+-		}))
++		})))
+ 	} else {
+ 		Ok(None)
+ 	}
+@@ -635,23 +625,25 @@ async fn check_joined_since_last_sync(
+ 	ShortStateHashes { last_sync_end_shortstatehash, .. }: ShortStateHashes,
+ 	SyncContext { syncing_user, .. }: SyncContext<'_>,
+ ) -> Result<bool> {
+-	// fetch the syncing user's membership event during the last sync.
+-	// this will be None if `previous_sync_end_shortstatehash` is None.
+-	let membership_during_previous_sync = match last_sync_end_shortstatehash {
+-		| Some(last_sync_end_shortstatehash) => services
+-			.rooms
+-			.state_accessor
+-			.state_get_content(
+-				last_sync_end_shortstatehash,
+-				&StateEventType::RoomMember,
+-				syncing_user.as_str(),
+-			)
+-			.await
+-			.inspect_err(|_| debug_warn!("User has no previous membership"))
+-			.ok(),
+-		| None => None,
++	let Some(last_sync_end_shortstatehash) = last_sync_end_shortstatehash else {
++		// For initial syncs always return false, since there's no "last sync" for the
++		// user to have joined since.
++		return Ok(false);
+ 	};
+ 
++	// Fetch the syncing user's membership event during the last sync.
++	let membership_during_previous_sync = services
++		.rooms
++		.state_accessor
++		.state_get_content(
++			last_sync_end_shortstatehash,
++			&StateEventType::RoomMember,
++			syncing_user.as_str(),
++		)
++		.await
++		.inspect_err(|_| debug_warn!("User has no previous membership"))
++		.ok();
++
+ 	// TODO: If the requesting user got state-reset out of the room, this
+ 	// will be `true` when it shouldn't be. this function should never be called
+ 	// in that situation, but it may be if the membership cache didn't get updated.
+@@ -737,13 +729,13 @@ async fn build_room_summary(
+ 		"syncing updated summary"
+ 	);
+ 
+-	Ok(Some(RoomSummary {
++	Ok(Some(assign!(RoomSummary::new(), {
+ 		heroes: heroes
+ 			.map(|heroes| heroes.into_iter().collect())
+ 			.unwrap_or_default(),
+ 		joined_member_count: Some(ruma_from_u64(joined_member_count)),
+ 		invited_member_count: Some(ruma_from_u64(invited_member_count)),
+-	}))
++	})))
+ }
+ 
+ /// Fetch the user IDs to include in the `m.heroes` property of the room
+@@ -783,9 +775,11 @@ async fn build_heroes(
+ 				.ready_filter_map(|(key, _)| Some(key)),
+ 		)
+ 		.ignore_err()
+-		.ready_filter_map(|(event_type, state_key)| {
++		.ready_filter_map(|(event_type, state_key)| -> Option<OwnedUserId> {
+ 			if event_type == StateEventType::RoomMember {
+-				state_key.to_string().try_into().ok()
++				UserId::parse(state_key.as_str())
++					.ok()
++					.map(ToOwned::to_owned)
+ 			} else {
+ 				None
+ 			}
+@@ -835,9 +829,8 @@ async fn build_device_list_updates(
+ 		.users
+ 		.room_keys_changed(room_id, last_sync_end_count, Some(current_count))
+ 		.map(at!(0))
+-		.map(ToOwned::to_owned)
+ 		.ready_for_each(|user_id| {
+-			device_list_updates.changed.insert(user_id);
++			device_list_updates.changed.insert(user_id.to_owned());
+ 		})
+ 		.await;
+ 
+diff --git a/src/api/client/sync/v3/left.rs b/src/api/client/sync/v3/left.rs
+index 60bfaba899..3f4aa4b7a0 100644
+--- a/src/api/client/sync/v3/left.rs
++++ b/src/api/client/sync/v3/left.rs
+@@ -1,13 +1,14 @@
+ use conduwuit::{
+-	Event, PduEvent, Result, debug_warn,
++	Event, PduEvent, Result, at, debug_warn,
+ 	pdu::EventHash,
+ 	trace,
+ 	utils::{self, IterStream, future::ReadyEqExt, stream::WidebandExt as _},
+ };
+-use futures::{StreamExt, future::join};
++use futures::StreamExt;
+ use ruma::{
+ 	EventId, OwnedRoomId, RoomId,
+ 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
++	assign,
+ 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
+ 	serde::Raw,
+ 	uint,
+@@ -89,7 +90,7 @@ pub(super) async fn load_left_room(
+ 
+ 	let does_not_exist = services.rooms.metadata.exists(room_id).eq(&false).await;
+ 
+-	let (timeline, state_events, leave_shortstatehash) = match leave_membership_event.clone() {
++	let (timeline, state_events) = match leave_membership_event {
+ 		| Some(leave_membership_event) if does_not_exist => {
+ 			/*
+ 			we have none PDUs with left beef for this room, likely because it was a rejected invite to a room
+@@ -105,7 +106,7 @@ pub(super) async fn load_left_room(
+ 			}
+ 
+ 			trace!("syncing remote-assisted leave PDU");
+-			(TimelinePdus::default(), vec![leave_membership_event], None)
++			(TimelinePdus::default(), vec![leave_membership_event])
+ 		},
+ 		| Some(leave_membership_event) => {
+ 			// we have this room in our DB, and can fetch the state and timeline from when
+@@ -137,7 +138,7 @@ pub(super) async fn load_left_room(
+ 				)
+ 				.await?;
+ 
+-			let (timeline, state_events) = build_left_state_and_timeline(
++			build_left_state_and_timeline(
+ 				services,
+ 				sync_context,
+ 				room_id,
+@@ -145,9 +146,7 @@ pub(super) async fn load_left_room(
+ 				leave_shortstatehash,
+ 				prev_membership_event,
+ 			)
+-			.await?;
+-
+-			(timeline, state_events, Some(leave_shortstatehash))
++			.await?
+ 		},
+ 		| None => {
+ 			/*
+@@ -162,79 +161,44 @@ pub(super) async fn load_left_room(
+ 			}
+ 
+ 			trace!("syncing dummy leave event");
+-			(
+-				TimelinePdus::default(),
+-				vec![create_dummy_leave_event(services, sync_context, room_id)],
+-				None,
+-			)
+-		},
+-	};
+-
+-	let state_after = if services.config.experimental_features.msc4222_enabled {
+-		if let Some(shortstatehash) = leave_shortstatehash {
+-			let lazily_loaded_members = prepare_lazily_loaded_members(
++			(TimelinePdus::default(), vec![create_dummy_leave_event(
+ 				services,
+ 				sync_context,
+ 				room_id,
+-				timeline.senders(),
+-			)
+-			.await;
+-
+-			build_state_initial(
+-				services,
+-				syncing_user,
+-				shortstatehash,
+-				lazily_loaded_members.as_ref(),
+-			)
+-			.await?
+-			.into_iter()
+-			.map(Event::into_format)
+-			.collect()
+-		} else {
+-			Vec::new()
+-		}
+-	} else {
+-		Vec::new()
++			)])
++		},
+ 	};
+ 
+-	let mut raw_timeline_pdus = Vec::with_capacity(timeline.pdus.len());
+-	let mut in_timeline = false;
+-
+-	let TimelinePdus { pdus, limited } = timeline;
+-
+-	let mut stream = pdus
++	let raw_timeline_pdus = timeline
++		.pdus
+ 		.into_iter()
+ 		.stream()
+ 		// filter out ignored events from the timeline
+-		.wide_filter_map(|item| ignored_filter(services, item, syncing_user));
++		.wide_filter_map(|item| ignored_filter(services, item, syncing_user))
++		.map(at!(1))
++		.map(Event::into_format)
++		.collect::<Vec<_>>()
++		.await;
+ 
+-	while let Some((_, pdu)) = stream.next().await {
+-		if pdu.event_type() == &TimelineEventType::RoomMember
+-			&& pdu.state_key() == Some(syncing_user.as_str())
+-		{
+-			in_timeline = true;
+-		}
+-		raw_timeline_pdus.push(pdu.into_format());
+-	}
++	let state_events_raw: Vec<Raw<AnySyncStateEvent>> =
++		state_events.into_iter().map(Event::into_format).collect();
+ 
+-	let mut state_events_raw: Vec<_> = state_events.into_iter().map(Event::into_format).collect();
+-
+-	if !in_timeline && last_sync_end_count.is_none_or(|c| c < left_count) {
+-		if let Some(leave_pdu) = leave_membership_event {
+-			state_events_raw.push(leave_pdu.into_format());
+-		}
+-	}
++	let (state_events_to_send, state_after) = if sync_context.use_state_after {
++		(Vec::new(), state_events_raw)
++	} else {
++		(state_events_raw, Vec::new())
++	};
+ 
+ 	Ok(Some((
+-		LeftRoom {
+-			account_data: RoomAccountData { events: Vec::new() },
+-			timeline: Timeline {
+-				limited,
++		assign!(LeftRoom::new(), {
++			account_data: RoomAccountData::new(),
++			timeline: assign!(Timeline::new(), {
++				limited: timeline.limited,
+ 				prev_batch: Some(current_count.to_string()),
+ 				events: raw_timeline_pdus,
+-			},
+-			state: State { events: state_events_raw },
+-		},
++			}),
++			state: assign!(State::new(), { events: state_events_to_send }),
++		}),
+ 		state_after,
+ 	)))
+ }
+@@ -280,29 +244,8 @@ async fn build_left_state_and_timeline(
+ 	)
+ 	.await?;
+ 
+-	let timeline_start_shortstatehash = async {
+-		if let Some((_, pdu)) = timeline.pdus.front() {
+-			if let Ok(shortstatehash) = services
+-				.rooms
+-				.state_accessor
+-				.pdu_shortstatehash(&pdu.event_id)
+-				.await
+-			{
+-				return shortstatehash;
+-			}
+-		}
+-
+-		// the timeline generally should not be empty (see the TODO further down),
+-		// but in case it is we use `leave_shortstatehash` as the state to
+-		// send
+-		leave_shortstatehash
+-	};
+-
+ 	let lazily_loaded_members =
+-		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.senders());
+-
+-	let (timeline_start_shortstatehash, lazily_loaded_members) =
+-		join(timeline_start_shortstatehash, lazily_loaded_members).await;
++		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.senders()).await;
+ 
+ 	// TODO: calculate incremental state for incremental syncs.
+ 	// always calculating initial state _works_ but returns more data and does
+@@ -310,7 +253,9 @@ async fn build_left_state_and_timeline(
+ 	let mut state = build_state_initial(
+ 		services,
+ 		syncing_user,
+-		timeline_start_shortstatehash,
++		leave_shortstatehash,
++		&timeline,
++		sync_context.use_state_after,
+ 		lazily_loaded_members.as_ref(),
+ 	)
+ 	.await?;
+diff --git a/src/api/client/sync/v3/mod.rs b/src/api/client/sync/v3/mod.rs
+index f1043515b6..addf471847 100644
+--- a/src/api/client/sync/v3/mod.rs
++++ b/src/api/client/sync/v3/mod.rs
+@@ -11,18 +11,14 @@ use std::{
+ use axum::{extract::State, response::IntoResponse};
+ use axum_client_ip::ClientIp;
+ use conduwuit::{
+-	Result, at, extract_variant,
++	Result, at, error, extract_variant,
+ 	utils::{
+ 		ReadyExt, TryFutureExtExt,
+ 		stream::{BroadbandExt, Tools, WidebandExt},
+ 	},
+-	warn,
+ };
+ use conduwuit_service::Services;
+-use futures::{
+-	FutureExt, StreamExt, TryFutureExt,
+-	future::{OptionFuture, join3, join4},
+-};
++use futures::{FutureExt, StreamExt, TryFutureExt, future::OptionFuture};
+ use ruma::{
+ 	DeviceId, OwnedUserId, RoomId, UserId,
+ 	api::{
+@@ -32,15 +28,16 @@ use ruma::{
+ 			sync::sync_events::{
+ 				self, DeviceLists,
+ 				v3::{
+-					Filter, GlobalAccountData, InviteState, InvitedRoom, KnockState, KnockedRoom,
+-					Presence, Rooms, ToDevice,
++					Filter, GlobalAccountData, InviteState, InvitedRoom, JoinedRoom, KnockState,
++					KnockedRoom, LeftRoom, Presence, Rooms, ToDevice,
+ 				},
+ 			},
+ 			uiaa::UiaaResponse,
+ 		},
+ 	},
++	assign,
+ 	events::{
+-		AnyGlobalAccountDataEvent, AnyRawAccountDataEvent,
++		AnyRawAccountDataEvent,
+ 		presence::{PresenceEvent, PresenceEventContent},
+ 	},
+ 	serde::Raw,
+@@ -85,10 +82,10 @@ impl DeviceListUpdates {
+ 
+ impl From<DeviceListUpdates> for DeviceLists {
+ 	fn from(val: DeviceListUpdates) -> Self {
+-		Self {
++		assign!(Self::new(), {
+ 			changed: val.changed.into_iter().collect(),
+ 			left: val.left.into_iter().collect(),
+-		}
++		})
+ 	}
+ }
+ 
+@@ -116,6 +113,9 @@ struct SyncContext<'a> {
+ 	/// The sync filter, which the client uses to specify what data should be
+ 	/// included in the sync response.
+ 	filter: &'a FilterDefinition,
++	/// Whether the state at the end of the timeline should be used when
++	/// calculating state diffs for sync.
++	use_state_after: bool,
+ }
+ 
+ impl<'a> SyncContext<'a> {
+@@ -185,6 +185,7 @@ type PresenceUpdates = HashMap<OwnedUserId, PresenceEventContent>;
+ pub(crate) async fn sync_events_route(
+ 	State(services): State<crate::State>,
+ 	ClientIp(client_ip): ClientIp,
++	axum::extract::RawQuery(query): axum::extract::RawQuery,
+ 	body: Ruma<sync_events::v3::Request>,
+ ) -> Result<axum::response::Response, RumaResponse<UiaaResponse>> {
+ 	let (sender_user, sender_device) = body.sender();
+@@ -206,7 +207,11 @@ pub(crate) async fn sync_events_route(
+ 	// Setup watchers, so if there's no response, we can wait for them
+ 	let watcher = services.sync.watch(sender_user, sender_device);
+ 
+-	let response = build_sync_events(&services, &body).await?;
++	let use_state_after = query.as_deref().is_some_and(|q| {
++		q.contains("use_state_after=true") || q.contains("org.matrix.msc4222.state_after")
++	}) && services.config.experimental_features.msc4222_enabled;
++
++	let response = build_sync_events(&services, &body, use_state_after).await?;
+ 	if body.body.since.is_none() || body.body.full_state || !is_sync_response_empty(&response) {
+ 		return Ok(axum::Json(response).into_response());
+ 	}
+@@ -218,7 +223,7 @@ pub(crate) async fn sync_events_route(
+ 	_ = tokio::time::timeout(duration, watcher).await;
+ 
+ 	// Retry returning data
+-	let response = build_sync_events(&services, &body).await?;
++	let response = build_sync_events(&services, &body, use_state_after).await?;
+ 	Ok(axum::Json(response).into_response())
+ }
+ 
+@@ -236,9 +241,14 @@ fn is_sync_response_empty(val: &serde_json::Value) -> bool {
+ 	rooms_empty && presence_empty && account_data_empty && to_device_empty && device_lists_empty
+ }
+ 
++type RoomStateMap = BTreeMap<ruma::OwnedRoomId, Vec<Raw<ruma::events::AnySyncStateEvent>>>;
++type JoinedRooms = BTreeMap<ruma::OwnedRoomId, JoinedRoom>;
++type LeftRooms = BTreeMap<ruma::OwnedRoomId, LeftRoom>;
++
+ pub(crate) async fn build_sync_events(
+ 	services: &Services,
+ 	body: &Ruma<sync_events::v3::Request>,
++	use_state_after: bool,
+ ) -> Result<serde_json::Value, RumaResponse<UiaaResponse>> {
+ 	let (syncing_user, syncing_device) = body.sender();
+ 
+@@ -274,28 +284,38 @@ pub(crate) async fn build_sync_events(
+ 		current_count,
+ 		full_state,
+ 		filter: &filter,
++		use_state_after,
+ 	};
+ 
+ 	let joined_rooms = services
+ 		.rooms
+ 		.state_cache
+ 		.rooms_joined(syncing_user)
+-		.map(ToOwned::to_owned)
+-		.broad_filter_map(|room_id| async {
+-			let joined_room = load_joined_room(services, context, room_id.clone()).await;
++		.broad_filter_map(|room_id| async move {
++			let joined_room = load_joined_room(services, context, room_id.to_owned()).await;
+ 
+ 			match joined_room {
+-				| Ok((room, state_after, updates)) => Some((room_id, room, state_after, updates)),
++				| Ok((room, state_after, updates)) =>
++					Some((room_id.to_owned(), room, state_after, updates)),
+ 				| Err(err) => {
+-					warn!(?err, %room_id, "error loading joined room");
++					error!(?err, %room_id, "error loading joined room");
+ 					None
+ 				},
+ 			}
+ 		})
+ 		.ready_fold(
+-			(BTreeMap::new(), BTreeMap::new(), DeviceListUpdates::new()),
+-			|(mut joined_rooms, mut joined_state_after, mut all_updates),
+-			 (room_id, joined_room, state_after, updates)| {
++			(JoinedRooms::new(), RoomStateMap::new(), DeviceListUpdates::new()),
++			|(mut joined_rooms, mut joined_state_after, mut all_updates): (
++				JoinedRooms,
++				RoomStateMap,
++				DeviceListUpdates,
++			),
++			 (room_id, joined_room, state_after, updates): (
++				ruma::OwnedRoomId,
++				JoinedRoom,
++				Vec<Raw<ruma::events::AnySyncStateEvent>>,
++				DeviceListUpdates,
++			)| {
+ 				all_updates.merge(updates);
+ 
+ 				if !joined_room.is_empty() || context.last_sync_end_count.is_none() {
+@@ -320,14 +340,19 @@ pub(crate) async fn build_sync_events(
+ 				| Ok(Some((room, state_after))) => Some((room_id, room, state_after)),
+ 				| Ok(None) => None,
+ 				| Err(err) => {
+-					warn!(?err, %room_id, "error loading joined room");
++					error!(?err, %room_id, "error loading joined room");
+ 					None
+ 				},
+ 			}
+ 		})
+ 		.fold(
+-			(BTreeMap::new(), BTreeMap::new()),
+-			|(mut left_rooms, mut left_state_after), (room_id, left_room, state_after)| async move {
++			(LeftRooms::new(), RoomStateMap::new()),
++			|(mut left_rooms, mut left_state_after): (LeftRooms, RoomStateMap),
++			 (room_id, left_room, state_after): (
++				ruma::OwnedRoomId,
++				LeftRoom,
++				Vec<Raw<ruma::events::AnySyncStateEvent>>,
++			)| async move {
+ 				left_rooms.insert(room_id.clone(), left_room);
+ 				if !state_after.is_empty() {
+ 					left_state_after.insert(room_id, state_after);
+@@ -357,9 +382,9 @@ pub(crate) async fn build_sync_events(
+ 
+ 			// only sync this invite if it was sent after the last /sync call
+ 			if last_sync_end_count < invite_count {
+-				let invited_room = InvitedRoom {
+-					invite_state: InviteState { events: invite_state },
+-				};
++				let invited_room = assign!(InvitedRoom::new(), {
++					invite_state: InviteState::from(invite_state),
++				});
+ 
+ 				invited_rooms.insert(room_id, invited_room);
+ 			}
+@@ -380,40 +405,26 @@ pub(crate) async fn build_sync_events(
+ 
+ 			// only sync this knock if it was sent after the last /sync call
+ 			if last_sync_end_count < knock_count {
+-				let knocked_room = KnockedRoom {
+-					knock_state: KnockState { events: knock_state },
+-				};
++				let knocked_room = assign!(KnockedRoom::new(), {
++					knock_state: assign!(KnockState::new(), { events: knock_state }),
++				});
+ 
+ 				knocked_rooms.insert(room_id, knocked_room);
+ 			}
+ 			knocked_rooms
+ 		});
+ 
+-	let (joined_rooms, left_rooms, invited_rooms, knocked_rooms) =
+-		join4(joined_rooms, left_rooms, invited_rooms, knocked_rooms).await;
+-
+-	let (joined_rooms, joined_state_after, device_list_updates) = joined_rooms;
+-	let (left_rooms, left_state_after) = left_rooms;
+-
+ 	let presence_updates: OptionFuture<_> = services
+ 		.config
+ 		.allow_local_presence
+ 		.then(|| process_presence_updates(services, last_sync_end_count, syncing_user))
+ 		.into();
+ 
+-	let account_data: Vec<Raw<AnyGlobalAccountDataEvent>> = services
++	let account_data = services
+ 		.account_data
+ 		.changes_since(None, syncing_user, last_sync_end_count, Some(current_count))
+ 		.ready_filter_map(|e| extract_variant!(e, AnyRawAccountDataEvent::Global))
+-		.collect()
+-		.await;
+-
+-	// Look for device list updates of this account
+-	let keys_changed = services
+-		.users
+-		.keys_changed(syncing_user, last_sync_end_count, Some(current_count))
+-		.map(ToOwned::to_owned)
+-		.collect::<HashSet<_>>();
++		.collect();
+ 
+ 	let to_device_events = services
+ 		.users
+@@ -426,35 +437,57 @@ pub(crate) async fn build_sync_events(
+ 		.map(at!(1))
+ 		.collect::<Vec<_>>();
+ 
++	// Look for device list updates of this account
++	let keys_changed = services
++		.users
++		.keys_changed(syncing_user, last_sync_end_count, Some(current_count))
++		.map(ToOwned::to_owned)
++		.collect::<HashSet<_>>();
++
+ 	let device_one_time_keys_count = services
+ 		.users
+ 		.count_one_time_keys(syncing_user, syncing_device);
+ 
+-	// Remove all to-device events the device received *last time*
+-	let remove_to_device_events =
+-		services
+-			.users
+-			.remove_to_device_events(syncing_user, syncing_device, last_sync_end_count);
++	let (
++		(joined_rooms, joined_state_after, mut device_list_updates),
++		(left_rooms, left_state_after),
++		invited_rooms,
++		knocked_rooms,
++		presence_updates,
++		account_data,
++		to_device_events,
++		keys_changed,
++		device_one_time_keys_count,
++	) = async {
++		futures::join!(
++			joined_rooms,
++			left_rooms,
++			invited_rooms,
++			knocked_rooms,
++			presence_updates,
++			account_data,
++			to_device_events,
++			keys_changed,
++			device_one_time_keys_count,
++		)
++	}
++	.boxed()
++	.await;
+ 
+-	let ephemeral = join3(remove_to_device_events, to_device_events, presence_updates);
+-	let top = join3(ephemeral, device_one_time_keys_count, keys_changed)
+-		.boxed()
++	// Remove all to-device events the device received *last time*
++	services
++		.users
++		.remove_to_device_events(syncing_user, syncing_device, last_sync_end_count)
+ 		.await;
+ 
+-	let (ephemeral, device_one_time_keys_count, keys_changed) = top;
+-	let ((), to_device_events, presence_updates) = ephemeral;
+-	let mut device_list_updates: DeviceLists = device_list_updates.into();
+ 	device_list_updates.changed.extend(keys_changed);
+ 
+-	let ruma_response = sync_events::v3::Response {
+-		next_batch: current_count.to_string(),
+-		rooms: Rooms {
+-			leave: left_rooms,
+-			join: joined_rooms,
+-			invite: invited_rooms,
+-			knock: knocked_rooms,
+-		},
+-		presence: Presence {
++	let ruma_response = assign!(sync_events::v3::Response::new(current_count.to_string()), {
++		account_data: assign!(GlobalAccountData::new(), { events: account_data }),
++		device_lists: device_list_updates.into(),
++		device_one_time_keys_count,
++		device_unused_fallback_key_types: None,
++		presence: assign!(Presence::new(), {
+ 			events: presence_updates
+ 				.into_iter()
+ 				.flat_map(IntoIterator::into_iter)
+@@ -462,13 +495,15 @@ pub(crate) async fn build_sync_events(
+ 				.map(|ref event| Raw::new(event))
+ 				.filter_map(Result::ok)
+ 				.collect(),
+-		},
+-		account_data: GlobalAccountData { events: account_data },
+-		to_device: ToDevice { events: to_device_events },
+-		device_lists: device_list_updates,
+-		device_one_time_keys_count,
+-		device_unused_fallback_key_types: None,
+-	};
++		}),
++		rooms: assign!(Rooms::new(), {
++			leave: left_rooms,
++			join: joined_rooms,
++			invite: invited_rooms,
++			knock: knocked_rooms,
++		}),
++		to_device: assign!(ToDevice::new(), { events: to_device_events }),
++	});
+ 
+ 	let mut val: serde_json::Value = serde_json::from_slice(
+ 		ruma_response
+diff --git a/src/api/client/sync/v3/state.rs b/src/api/client/sync/v3/state.rs
+index b22074d89d..bf433a79b3 100644
+--- a/src/api/client/sync/v3/state.rs
++++ b/src/api/client/sync/v3/state.rs
+@@ -1,11 +1,8 @@
+-use std::{collections::BTreeSet, ops::ControlFlow};
++use std::collections::HashSet;
+ 
+ use conduwuit::{
+-	Result, at, is_equal_to,
+-	matrix::{
+-		Event,
+-		pdu::{PduCount, PduEvent},
+-	},
++	Result, at,
++	matrix::{Event, pdu::PduEvent},
+ 	utils::{
+ 		BoolExt, IterStream, ReadyExt, TryFutureExtExt,
+ 		stream::{BroadbandExt, TryIgnore},
+@@ -16,9 +13,7 @@ use conduwuit_service::{
+ 	rooms::{lazy_loading::MemberSet, short::ShortStateHash},
+ };
+ use futures::{FutureExt, StreamExt};
+-use itertools::Itertools;
+-use ruma::{OwnedEventId, RoomId, UserId, events::StateEventType};
+-use service::rooms::short::ShortEventId;
++use ruma::{OwnedEventId, UserId, events::StateEventType};
+ use tracing::trace;
+ 
+ use crate::client::TimelinePdus;
+@@ -38,14 +33,22 @@ use crate::client::TimelinePdus;
+ pub(super) async fn build_state_initial(
+ 	services: &Services,
+ 	sender_user: &UserId,
+-	timeline_start_shortstatehash: ShortStateHash,
++	state_hash: ShortStateHash,
++	timeline: &TimelinePdus,
++	use_state_after: bool,
+ 	lazily_loaded_members: Option<&MemberSet>,
+ ) -> Result<Vec<PduEvent>> {
+-	// load the keys and event IDs of the state events at the start of the timeline
++	let event_ids_in_timeline: HashSet<_> =
++		timeline.pdus.iter().map(|pdu| &pdu.1.event_id).collect();
++
++	// load the keys and event IDs of the state events at the target state hash
+ 	let (shortstatekeys, event_ids): (Vec<_>, Vec<_>) = services
+ 		.rooms
+ 		.state_accessor
+-		.state_full_ids(timeline_start_shortstatehash)
++		.state_full_ids(state_hash)
++		.ready_filter(|(_, event_id)| {
++			use_state_after || !event_ids_in_timeline.contains(event_id)
++		})
+ 		.unzip()
+ 		.await;
+ 
+@@ -92,82 +95,32 @@ pub(super) async fn build_state_initial(
+ pub(super) async fn build_state_incremental<'a>(
+ 	services: &Services,
+ 	sender_user: &'a UserId,
+-	room_id: &RoomId,
+-	last_sync_end_count: PduCount,
+ 	last_sync_end_shortstatehash: ShortStateHash,
+-	timeline_start_shortstatehash: ShortStateHash,
+-	timeline_end_shortstatehash: ShortStateHash,
++	state_hash: ShortStateHash,
+ 	timeline: &TimelinePdus,
++	use_state_after: bool,
+ 	lazily_loaded_members: Option<&'a MemberSet>,
+ ) -> Result<Vec<PduEvent>> {
+-	/*
+-	NB: a limited sync is one where `timeline.limited == true`. Synapse calls this a "gappy" sync internally.
+-
+-	The algorithm implemented in this function is, currently, quite different from the algorithm vaguely described
+-	by the Matrix specification. This is because the specification's description of the `state` property does not accurately
+-	reflect how Synapse behaves, and therefore how client SDKs behave. Notable differences include:
+-	1. We do not compute the delta using the naive approach of "every state event from the end of the last sync
+-	   up to the start of this sync's timeline". see below for details.
+-	2. If lazy-loading is enabled, we include lazily-loaded membership events. The specific users to include are determined
+-	   elsewhere and supplied to this function in the `lazily_loaded_members` parameter.
+-	*/
+-
+-	/*
+-	the `state` property of an incremental sync which isn't limited are _usually_ empty.
+-	(note: the specification says that the `state` property is _always_ empty for limited syncs, which is incorrect.)
+-	however, if an event in the timeline (`timeline.pdus`) merges a split in the room's DAG (i.e. has multiple `prev_events`),
+-	the state at the _end_ of the timeline may include state events which were merged in and don't exist in the state
+-	at the _start_ of the timeline. because this is uncommon, we check here to see if any events in the timeline
+-	merged a split in the DAG.
+-
+-	see: https://github.com/element-hq/synapse/issues/16941
+-	*/
+-
+-	let timeline_is_linear = timeline.pdus.is_empty() || {
+-		let last_pdu_of_last_sync = services
++	let mut state_event_ids: HashSet<OwnedEventId> = HashSet::new();
++
++	trace!(
++		%use_state_after,
++		%last_sync_end_shortstatehash,
++		%state_hash,
++		"computing state for incremental sync"
++	);
++
++	// Fetch lazy-loaded membership events if lazy-loading is enabled
++	if let Some(lazily_loaded_members) = lazily_loaded_members
++		&& !lazily_loaded_members.is_empty()
++	{
++		trace!("including lazy membership events for members: {:?}", lazily_loaded_members);
++
++		services
+ 			.rooms
+-			.timeline
+-			.pdus_rev(room_id, Some(last_sync_end_count.saturating_add(1)))
+-			.boxed()
+-			.next()
+-			.await
+-			.transpose()
+-			.expect("last sync should have had some PDUs")
+-			.map(at!(1));
+-
+-		// make sure the prev_events of each pdu in the timeline refer only to the
+-		// previous pdu
+-		timeline
+-			.pdus
+-			.iter()
+-			.try_fold(last_pdu_of_last_sync.map(|pdu| pdu.event_id), |prev_event_id, (_, pdu)| {
+-				if let Ok(pdu_prev_event_id) = pdu.prev_events.iter().exactly_one() {
+-					if prev_event_id
+-						.as_ref()
+-						.is_none_or(is_equal_to!(pdu_prev_event_id))
+-					{
+-						return ControlFlow::Continue(Some(pdu_prev_event_id.to_owned()));
+-					}
+-				}
+-
+-				trace!(
+-					"pdu {:?} has split prev_events (expected {:?}): {:?}",
+-					pdu.event_id, prev_event_id, pdu.prev_events
+-				);
+-				ControlFlow::Break(())
+-			})
+-			.is_continue()
+-	};
+-
+-	if timeline_is_linear && !timeline.limited {
+-		// if there are no splits in the DAG and the timeline isn't limited, then
+-		// `state` will always be empty unless lazy loading is enabled.
+-
+-		if let Some(lazily_loaded_members) = lazily_loaded_members {
+-			if !timeline.pdus.is_empty() {
+-				// lazy loading is enabled, so we return the membership events which were
+-				// requested by the caller.
+-				let lazy_membership_events: Vec<_> = lazily_loaded_members
++			.short
++			.multi_get_eventid_from_short::<'_, OwnedEventId, _>(
++				lazily_loaded_members
+ 					.iter()
+ 					.stream()
+ 					.broad_filter_map(|user_id| async move {
+@@ -178,92 +131,56 @@ pub(super) async fn build_state_incremental<'a>(
+ 						services
+ 							.rooms
+ 							.state_accessor
+-							.state_get(
+-								timeline_start_shortstatehash,
++							.state_get_shortid(
++								state_hash,
+ 								&StateEventType::RoomMember,
+ 								user_id.as_str(),
+ 							)
+ 							.ok()
+ 							.await
+-					})
+-					.collect()
+-					.await;
+-
+-				if !lazy_membership_events.is_empty() {
+-					trace!(
+-						"syncing lazy membership events for members: {:?}",
+-						lazy_membership_events
+-							.iter()
+-							.map(|pdu| pdu.state_key().unwrap())
+-							.collect::<Vec<_>>()
+-					);
+-				}
+-				return Ok(lazy_membership_events);
+-			}
+-		}
+-
+-		// lazy loading is disabled, `state` is empty.
+-		return Ok(vec![]);
++					}),
++			)
++			.ignore_err()
++			.ready_for_each(|event_id| {
++				state_event_ids.insert(event_id);
++			})
++			.await;
+ 	}
+ 
+-	/*
+-	at this point, either the timeline is `limited` or the DAG has a split in it. this necessitates
+-	computing the incremental state (which may be empty).
+-
+-	NOTE: this code path does not use the `lazy_membership_events` parameter. any changes to membership will be included
+-	in the incremental state. therefore, the incremental state may include "redundant" membership events,
+-	which we do not filter out because A. the spec forbids lazy-load filtering if the timeline is `limited`,
+-	and B. DAG splits which require sending extra membership state events are (probably) uncommon enough that
+-	the performance penalty is acceptable.
+-	*/
+-
+-	trace!(%timeline_is_linear, %timeline.limited, "computing state for incremental sync");
+-
+-	// fetch the shorteventids of state events in the timeline
+-	let state_events_in_timeline: BTreeSet<ShortEventId> = services
+-		.rooms
+-		.short
+-		.multi_get_or_create_shorteventid(timeline.pdus.iter().filter_map(|(_, pdu)| {
+-			if pdu.state_key().is_some() {
+-				Some(pdu.event_id.as_ref())
+-			} else {
+-				None
+-			}
+-		}))
+-		.collect()
+-		.await;
+-
+-	trace!("{} state events in timeline", state_events_in_timeline.len());
+-
+-	/*
+-	fetch the state events which were added since the last sync.
+-
+-	specifically we fetch the difference between the state at the last sync and the state at the _end_
+-	of the timeline, and then we filter out state events in the timeline itself using the shorteventids we fetched.
+-	this is necessary to account for splits in the DAG, as explained above.
+-	*/
+-	let state_diff = services
++	// Fetch the state events added since the last sync.
++	services
+ 		.rooms
+ 		.short
+ 		.multi_get_eventid_from_short::<'_, OwnedEventId, _>(
+ 			services
+ 				.rooms
+ 				.state_accessor
+-				.state_added((last_sync_end_shortstatehash, timeline_end_shortstatehash))
++				.state_added((last_sync_end_shortstatehash, state_hash))
+ 				.await?
+ 				.stream()
+-				.ready_filter_map(|(_, shorteventid)| {
+-					if state_events_in_timeline.contains(&shorteventid) {
+-						None
+-					} else {
+-						Some(shorteventid)
+-					}
+-				}),
++				.map(at!(1)),
+ 		)
+-		.ignore_err();
++		.ignore_err()
++		.ready_for_each(|event_id| {
++			state_event_ids.insert(event_id);
++		})
++		.await;
++
++	if !use_state_after {
++		// If state_after isn't enabled, filter out state events which also exist
++		// in the timeline. If splits exist in the DAG, this may not be exactly the same
++		// thing as the state diff ending at the start of the timeline, but Synapse
++		// also does this and it's technically more useful behavior anyway.
++		// See: https://github.com/element-hq/synapse/issues/16941
++
++		for (_, pdu) in &timeline.pdus {
++			state_event_ids.remove(pdu.event_id());
++		}
++	}
+ 
+-	// finally, fetch the PDU contents and collect them into a vec
+-	let state_diff_pdus = state_diff
++	// Finally, fetch the PDU contents and collect them into a vec
++	let state_diff_pdus = state_event_ids
++		.stream()
+ 		.broad_filter_map(|event_id| async move {
+ 			services
+ 				.rooms
+diff --git a/src/api/client/sync/v5.rs b/src/api/client/sync/v5.rs
+index 183f3aaacc..3ab352d50b 100644
+--- a/src/api/client/sync/v5.rs
++++ b/src/api/client/sync/v5.rs
+@@ -856,8 +856,8 @@ where
+ 
+ 		let since_shortstatehash = services
+ 			.rooms
+-			.user
+-			.get_token_shortstatehash(room_id, globalsince)
++			.timeline
++			.next_shortstatehash(room_id, PduCount::Normal(globalsince))
+ 			.await
+ 			.ok();
+ 
+@@ -960,11 +960,11 @@ where
+ 						.room_members(room_id)
+ 						// Don't send key updates from the sender to the sender
+ 						.ready_filter(|user_id| sender_user != *user_id)
+-						// Only send keys if the sender doesn't share an encrypted room with the target
++						// only send keys if the sender doesn't share a room with the target
+ 						// already
+-						.filter_map(|user_id| {
+-							share_encrypted_room(services, sender_user, user_id, Some(room_id))
+-								.map(|res| res.or_some(user_id.to_owned()))
++						.filter_map(|user_id| async move {
++							(!share_encrypted_room(services, sender_user, user_id, Some(room_id)).await)
++								.then(|| user_id.to_owned())
+ 						})
+ 						.collect::<Vec<_>>()
+ 						.await,
+diff --git a/src/core/config/mod.rs b/src/core/config/mod.rs
+index 1cdc1936b1..3bc16d1cc4 100644
+--- a/src/core/config/mod.rs
++++ b/src/core/config/mod.rs
+@@ -259,6 +259,10 @@ pub struct Config {
+ 	#[serde(default = "default_shortstatekey_cache_capacity")]
+ 	pub shortstatekey_cache_capacity: u32,
+ 
++	/// default: varies by system
++	#[serde(default = "default_shortstatehash_cache_capacity")]
++	pub shortstatehash_cache_capacity: u32,
++
+ 	/// default: varies by system
+ 	#[serde(default = "default_statekeyshort_cache_capacity")]
+ 	pub statekeyshort_cache_capacity: u32,
+@@ -2712,6 +2716,10 @@ fn default_shortstatekey_cache_capacity() -> u32 {
+ 	parallelism_scaled_u32(10_000).saturating_add(100_000)
+ }
+ 
++fn default_shortstatehash_cache_capacity() -> u32 {
++	parallelism_scaled_u32(10_000).saturating_add(100_000)
++}
++
+ fn default_statekeyshort_cache_capacity() -> u32 {
+ 	parallelism_scaled_u32(10_000).saturating_add(100_000)
+ }
+diff --git a/src/core/matrix/pdu/raw_id.rs b/src/core/matrix/pdu/raw_id.rs
+index 318a0cd73e..4947cc15f6 100644
+--- a/src/core/matrix/pdu/raw_id.rs
++++ b/src/core/matrix/pdu/raw_id.rs
+@@ -1,3 +1,5 @@
++use std::mem::size_of;
++
+ use arrayvec::ArrayVec;
+ 
+ use super::{Count, Id, ShortEventId, ShortId, ShortRoomId};
+diff --git a/src/database/de.rs b/src/database/de.rs
+index efb117b52b..baec00d579 100644
+--- a/src/database/de.rs
++++ b/src/database/de.rs
+@@ -1,3 +1,5 @@
++use std::mem::size_of;
++
+ use conduwuit::{
+ 	Error, Result, arrayvec::ArrayVec, checked, debug::DebugInspect, err, utils::string,
+ };
+diff --git a/src/main/clap.rs b/src/main/clap.rs
+index 0c6ccb9962..fdb86a6c74 100644
+--- a/src/main/clap.rs
++++ b/src/main/clap.rs
+@@ -53,6 +53,10 @@ pub struct Args {
+ 	#[arg(long)]
+ 	pub execute: Vec<String>,
+ 
++	/// Drop all sync tokens from the database during startup (migration).
++	#[arg(long)]
++	pub drop_sync_tokens: bool,
++
+ 	/// Set functional testing modes if available. Ex '--test=smoke'
+ 	#[arg(long, hide(true))]
+ 	pub test: Vec<String>,
+diff --git a/src/main/mod.rs b/src/main/mod.rs
+index 21282b1a69..08a5950697 100644
+--- a/src/main/mod.rs
++++ b/src/main/mod.rs
+@@ -75,9 +75,10 @@ pub fn run_with_args(args: &Args) -> Result<()> {
+ 
+ 	let runtime = runtime::new(args)?;
+ 	let server = Server::new(args, Some(runtime.handle()))?;
++	let drop_sync_tokens = args.drop_sync_tokens;
+ 
+ 	runtime.spawn(signal::signal(server.clone()));
+-	runtime.block_on(async_main(&server))?;
++	runtime.block_on(async_main(&server, drop_sync_tokens))?;
+ 	runtime::shutdown(&server, runtime);
+ 
+ 	#[cfg(unix)]
+@@ -89,6 +90,12 @@ pub fn run_with_args(args: &Args) -> Result<()> {
+ 	Ok(())
+ }
+ 
++async fn drop_sync_tokens(db: &conduwuit_database::Database) {
++	conduwuit_core::info!("Dropping all sync tokens as requested by CLI flag...");
++	db["roomsynctoken_shortstatehash"].clear().await;
++	conduwuit_core::info!("Finished dropping all sync tokens.");
++}
++
+ /// Operate the server normally in release-mode static builds. This will start,
+ /// run and stop the server within the asynchronous runtime.
+ #[cfg(any(not(conduwuit_mods), not(feature = "conduwuit_mods")))]
+@@ -98,16 +105,21 @@ pub fn run_with_args(args: &Args) -> Result<()> {
+ 	skip_all,
+ 	level = "info"
+ )]
+-async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
++async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result<(), Error> {
+ 	extern crate conduwuit_router as router;
+ 
+ 	match router::start(&server.server).await {
+-		| Ok(services) => server.services.lock().await.insert(services),
++		| Ok(services) => {
++			if drop_sync_tokens_flag {
++				drop_sync_tokens(&services.db).await;
++			}
++			let _ = server.services.lock().await.insert(services);
++		},
+ 		| Err(error) => {
+ 			error!("Critical error starting server: {error}");
+ 			return Err(error);
+ 		},
+-	};
++	}
+ 
+ 	if let Err(error) = router::run(
+ 		server
+@@ -145,7 +157,7 @@ async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
+ /// and hot-reload portions of the server as-needed before returning for an
+ /// actual shutdown. This is not available in release-mode or static builds.
+ #[cfg(all(conduwuit_mods, feature = "conduwuit_mods"))]
+-async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
++async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result<(), Error> {
+ 	let mut starts = true;
+ 	let mut reloads = true;
+ 	while reloads {
+@@ -154,6 +166,10 @@ async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
+ 			return Err(error);
+ 		}
+ 
++		if starts && drop_sync_tokens_flag {
++			drop_sync_tokens(&server.server.db).await;
++		}
++
+ 		let result = mods::run(server, starts).await;
+ 		if let Ok(result) = result {
+ 			(starts, reloads) = result;
+diff --git a/src/service/globals/mod.rs b/src/service/globals/mod.rs
+index 3930042d33..1fcf8b6922 100644
+--- a/src/service/globals/mod.rs
++++ b/src/service/globals/mod.rs
+@@ -1,6 +1,6 @@
+ mod data;
+ 
+-use std::{collections::HashMap, fmt::Write, sync::Arc, time::Instant};
++use std::{collections::HashMap, fmt::Write, mem::size_of, sync::Arc, time::Instant};
+ 
+ use async_trait::async_trait;
+ use conduwuit::{Result, Server, SyncRwLock, error, utils::bytes::pretty};
+diff --git a/src/service/presence/data.rs b/src/service/presence/data.rs
+index e489243245..b0a88d83b7 100644
+--- a/src/service/presence/data.rs
++++ b/src/service/presence/data.rs
+@@ -1,4 +1,4 @@
+-use std::sync::Arc;
++use std::{mem::size_of, sync::Arc};
+ 
+ use conduwuit::{
+ 	Result, debug_warn, utils,
+diff --git a/src/service/resolver/cache.rs b/src/service/resolver/cache.rs
+index cfea71875b..a74f60e340 100644
+--- a/src/service/resolver/cache.rs
++++ b/src/service/resolver/cache.rs
+@@ -1,4 +1,4 @@
+-use std::{net::IpAddr, sync::Arc, time::SystemTime};
++use std::{mem::size_of_val, net::IpAddr, sync::Arc, time::SystemTime};
+ 
+ use conduwuit::{
+ 	Result,
+diff --git a/src/service/resolver/fed.rs b/src/service/resolver/fed.rs
+index e5bee9ac29..112f28880a 100644
+--- a/src/service/resolver/fed.rs
++++ b/src/service/resolver/fed.rs
+@@ -1,6 +1,7 @@
+ use std::{
+ 	borrow::Cow,
+ 	fmt,
++	mem::size_of_val,
+ 	net::{IpAddr, SocketAddr},
+ };
+ 
+diff --git a/src/service/rooms/read_receipt/mod.rs b/src/service/rooms/read_receipt/mod.rs
+index 09381e1582..8c30005bba 100644
+--- a/src/service/rooms/read_receipt/mod.rs
++++ b/src/service/rooms/read_receipt/mod.rs
+@@ -146,15 +146,28 @@ pub fn pack_receipts<I>(receipts: I) -> Raw<SyncEphemeralRoomEvent<ReceiptEventC
+ where
+ 	I: Iterator<Item = Raw<AnySyncEphemeralRoomEvent>>,
+ {
+-	let mut json = BTreeMap::new();
++	let mut json: BTreeMap<OwnedEventId, Receipts> = BTreeMap::new();
+ 	for value in receipts {
+ 		let receipt = serde_json::from_str::<SyncEphemeralRoomEvent<ReceiptEventContent>>(
+ 			value.json().get(),
+ 		);
+ 		match receipt {
+ 			| Ok(value) =>
+-				for (event, receipt) in value.content {
+-					json.insert(event, receipt);
++				for (event_id, new_receipts) in value.content {
++					let existing_receipts = json.entry(event_id).or_default();
++					for (receipt_type, new_users) in new_receipts {
++						let existing_users = existing_receipts.entry(receipt_type).or_default();
++						for (user_id, new_receipt) in new_users {
++							// Prefer unthreaded receipts if there's a clash
++							let is_unthreaded = matches!(
++								new_receipt.thread,
++								ruma::events::receipt::ReceiptThread::Unthreaded
++							);
++							if is_unthreaded || !existing_users.contains_key(&user_id) {
++								existing_users.insert(user_id, new_receipt);
++							}
++						}
++					}
+ 				},
+ 			| _ => {
+ 				debug!("failed to parse receipt: {:?}", receipt);
+diff --git a/src/service/rooms/search/mod.rs b/src/service/rooms/search/mod.rs
+index 241d952ff3..f3bd2e8149 100644
+--- a/src/service/rooms/search/mod.rs
++++ b/src/service/rooms/search/mod.rs
+@@ -1,4 +1,4 @@
+-use std::sync::Arc;
++use std::{mem::size_of, sync::Arc};
+ 
+ use conduwuit::{
+ 	PduCount, PduEvent, Result,
+diff --git a/src/service/rooms/short/mod.rs b/src/service/rooms/short/mod.rs
+index 7c21e826e1..e707c9d4da 100644
+--- a/src/service/rooms/short/mod.rs
++++ b/src/service/rooms/short/mod.rs
+@@ -1,4 +1,9 @@
+-use std::{borrow::Borrow, fmt::Debug, mem::size_of_val, sync::Arc};
++use std::{
++	borrow::Borrow,
++	fmt::Debug,
++	mem::{size_of, size_of_val},
++	sync::Arc,
++};
+ 
+ pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
+ use conduwuit::{
+diff --git a/src/service/rooms/state/mod.rs b/src/service/rooms/state/mod.rs
+index e2c75f3464..50fa6b412b 100644
+--- a/src/service/rooms/state/mod.rs
++++ b/src/service/rooms/state/mod.rs
+@@ -1,4 +1,4 @@
+-use std::{collections::HashMap, fmt::Write, iter::once, sync::Arc};
++use std::{collections::HashMap, fmt::Write, iter::once, mem::size_of, sync::Arc};
+ 
+ use async_trait::async_trait;
+ use conduwuit::{RoomVersion, debug};
+@@ -375,6 +375,14 @@ impl Service {
+ 			.map_err(|e| err!(Request(NotFound("No create event found: {e:?}"))))
+ 	}
+ 
++	pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<ShortStateHash> {
++		self.db
++			.shorteventid_shortstatehash
++			.qry(&shorteventid)
++			.await
++			.deserialized()
++	}
++
+ 	pub async fn get_room_shortstatehash(&self, room_id: &RoomId) -> Result<ShortStateHash> {
+ 		self.db
+ 			.roomid_shortstatehash
+diff --git a/src/service/rooms/state_accessor/state.rs b/src/service/rooms/state_accessor/state.rs
+index 7814218df1..68e9be26d9 100644
+--- a/src/service/rooms/state_accessor/state.rs
++++ b/src/service/rooms/state_accessor/state.rs
+@@ -1,4 +1,4 @@
+-use std::{borrow::Borrow, ops::Deref, sync::Arc};
++use std::{borrow::Borrow, mem::size_of, ops::Deref, sync::Arc};
+ 
+ use conduwuit::{
+ 	Result, at, err, implement,
+diff --git a/src/service/rooms/timeline/data.rs b/src/service/rooms/timeline/data.rs
+index 200efba2f2..0b73650fbb 100644
+--- a/src/service/rooms/timeline/data.rs
++++ b/src/service/rooms/timeline/data.rs
+@@ -328,6 +328,62 @@ impl Data {
+ 		}
+ 	}
+ 
++	pub(super) async fn prev_timeline_count(&self, before: &PduId) -> Result<PduCount> {
++		let before_pdu =
++			Self::pdu_count_to_id(before.shortroomid, before.shorteventid, Direction::Backward);
++
++		let prefix = before_pdu.shortroomid();
++		let pdu_ids = self
++			.pduid_pdu
++			.rev_keys_raw_from(&before_pdu)
++			.ready_try_take_while(move |pdu_bytes: &&[u8]| Ok(pdu_bytes.starts_with(&prefix)))
++			.ready_and_then(|pdu_bytes: &[u8]| {
++				let pdu_id = RawPduId::from(pdu_bytes);
++				Ok(pdu_id.pdu_count())
++			});
++
++		pin_mut!(pdu_ids);
++		pdu_ids
++			.try_next()
++			.await?
++			.ok_or_else(|| err!(Request(NotFound("No earlier PDUs found in room"))))
++	}
++
++	pub(super) async fn next_timeline_count(&self, after: &PduId) -> Result<PduCount> {
++		let after_pdu =
++			Self::pdu_count_to_id(after.shortroomid, after.shorteventid, Direction::Forward);
++
++		let prefix = after_pdu.shortroomid();
++		let pdu_ids = self
++			.pduid_pdu
++			.keys_raw_from(&after_pdu)
++			.ready_try_take_while(move |pdu_bytes: &&[u8]| Ok(pdu_bytes.starts_with(&prefix)))
++			.ready_and_then(|pdu_bytes: &[u8]| {
++				let pdu_id = RawPduId::from(pdu_bytes);
++				Ok(pdu_id.pdu_count())
++			});
++
++		pin_mut!(pdu_ids);
++		pdu_ids
++			.try_next()
++			.await?
++			.ok_or_else(|| err!(Request(NotFound("No more PDUs found in room"))))
++	}
++
++	fn pdu_count_to_id(
++		shortroomid: ShortRoomId,
++		shorteventid: PduCount,
++		dir: Direction,
++	) -> RawPduId {
++		// +1 so we don't send the base event
++		let pdu_id = PduId {
++			shortroomid,
++			shorteventid: shorteventid.saturating_inc(dir),
++		};
++
++		pdu_id.into()
++	}
++
+ 	async fn count_to_id(
+ 		&self,
+ 		room_id: &RoomId,
+@@ -341,13 +397,7 @@ impl Data {
+ 			.await
+ 			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
+ 
+-		// +1 so we don't send the base event
+-		let pdu_id = PduId {
+-			shortroomid,
+-			shorteventid: shorteventid.saturating_inc(dir),
+-		};
+-
+-		Ok(pdu_id.into())
++		Ok(Self::pdu_count_to_id(shortroomid, shorteventid, dir))
+ 	}
+ }
+ 
+diff --git a/src/service/rooms/timeline/mod.rs b/src/service/rooms/timeline/mod.rs
+index 8814c3f676..f1819c398b 100644
+--- a/src/service/rooms/timeline/mod.rs
++++ b/src/service/rooms/timeline/mod.rs
+@@ -5,20 +5,24 @@ mod create;
+ mod data;
+ mod redact;
+ 
+-use std::{fmt::Write, sync::Arc};
++use std::{fmt::Write, mem::size_of, sync::Arc};
+ 
+ use async_trait::async_trait;
+ pub use conduwuit_core::matrix::pdu::{PduId, RawPduId};
+ use conduwuit_core::{
+-	Result, Server, at, err,
++	Result, Server, SyncMutex, at, err,
+ 	matrix::{
+ 		event::Event,
+ 		pdu::{PduCount, PduEvent},
+ 	},
+-	utils::{MutexMap, MutexMapGuard, future::TryExtExt, stream::TryIgnore},
++	utils::{
++		MutexMap, MutexMapGuard, bytes, future::TryExtExt, math::usize_from_f64,
++		stream::TryIgnore,
++	},
+ 	warn,
+ };
+ use futures::{Future, Stream, TryStreamExt, pin_mut};
++use lru_cache::LruCache;
+ use ruma::{
+ 	CanonicalJsonObject, EventId, OwnedEventId, OwnedRoomId, RoomId,
+ 	events::room::encrypted::Relation,
+@@ -28,7 +32,9 @@ use serde::Deserialize;
+ use self::data::Data;
+ pub use self::{create::pdu_fits, data::PdusIterItem};
+ use crate::{
+-	Dep, account_data, admin, appservice, globals, pusher, rooms, sending, server_keys, users,
++	Dep, account_data, admin, appservice, globals, pusher, rooms,
++	rooms::short::{ShortEventId, ShortRoomId, ShortStateHash},
++	sending, server_keys, users,
+ };
+ 
+ // Update Relationships
+@@ -57,6 +63,8 @@ pub struct Service {
+ 	services: Services,
+ 	db: Data,
+ 	pub mutex_insert: RoomMutexMap,
++	pub next_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
++	pub prev_shortstatehash_cache: SyncMutex<LruCache<(ShortRoomId, PduCount), ShortStateHash>>,
+ }
+ 
+ struct Services {
+@@ -89,7 +97,14 @@ pub type RoomMutexGuard = MutexMapGuard<OwnedRoomId, ()>;
+ #[async_trait]
+ impl crate::Service for Service {
+ 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
++		let config = &args.server.config;
++		let cache_capacity =
++			f64::from(config.shortstatehash_cache_capacity) * config.cache_capacity_modifier;
++		let cache_capacity = usize_from_f64(cache_capacity)?;
++
+ 		Ok(Arc::new(Self {
++			next_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
++			prev_shortstatehash_cache: SyncMutex::new(LruCache::new(cache_capacity / 2)),
+ 			services: Services {
+ 				server: args.server.clone(),
+ 				account_data: args.depend::<account_data::Service>("account_data"),
+@@ -121,12 +136,31 @@ impl crate::Service for Service {
+ 	}
+ 
+ 	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
++		let next_cache_len = self.next_shortstatehash_cache.lock().len();
++		let next_cache_bytes = next_cache_len.saturating_mul(
++			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
++		);
++		let next_bytes = bytes::pretty(next_cache_bytes);
++		writeln!(out, "next_shortstatehash_cache: {next_cache_len} ({next_bytes})")?;
++
++		let prev_cache_len = self.prev_shortstatehash_cache.lock().len();
++		let prev_cache_bytes = prev_cache_len.saturating_mul(
++			size_of::<(ShortRoomId, PduCount)>().saturating_add(size_of::<ShortStateHash>()),
++		);
++		let prev_bytes = bytes::pretty(prev_cache_bytes);
++		writeln!(out, "prev_shortstatehash_cache: {prev_cache_len} ({prev_bytes})")?;
++
+ 		let mutex_insert = self.mutex_insert.len();
+ 		writeln!(out, "insert_mutex: {mutex_insert}")?;
+ 
+ 		Ok(())
+ 	}
+ 
++	async fn clear_cache(&self) {
++		self.next_shortstatehash_cache.lock().clear();
++		self.prev_shortstatehash_cache.lock().clear();
++	}
++
+ 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+ }
+ 
+@@ -243,6 +277,125 @@ impl Service {
+ 		self.db.get_pdu_json_from_id(pdu_id).await
+ 	}
+ 
++	/// Returns the shortstatehash of the room at the event directly preceding
++	/// the exclusive `before` param. `before` does not have to be a valid
++	/// count or in the room.
++	#[tracing::instrument(skip(self), level = "debug")]
++	pub async fn prev_shortstatehash(
++		&self,
++		room_id: &RoomId,
++		before: PduCount,
++	) -> Result<ShortStateHash> {
++		let shortroomid: ShortRoomId = self
++			.services
++			.short
++			.get_shortroomid(room_id)
++			.await
++			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
++
++		if let Some(hash) = self
++			.prev_shortstatehash_cache
++			.lock()
++			.get_mut(&(shortroomid, before))
++		{
++			return Ok(*hash);
++		}
++
++		let before_pdu = PduId { shortroomid, shorteventid: before };
++
++		let prev_count = self.db.prev_timeline_count(&before_pdu).await?;
++		let prev_pdu = PduId { shortroomid, shorteventid: prev_count };
++
++		let shorteventid = self.get_shorteventid_from_pdu_id(&prev_pdu).await?;
++
++		let result = self.services.state.get_shortstatehash(shorteventid).await;
++
++		if let Ok(hash) = result {
++			self.prev_shortstatehash_cache
++				.lock()
++				.insert((shortroomid, before), hash);
++		}
++
++		result
++	}
++
++	/// Returns the shortstatehash of the room at the event directly following
++	/// the exclusive `after` param. `after` does not have to be a valid count
++	/// or in the room.
++	#[tracing::instrument(skip(self), level = "debug")]
++	pub async fn next_shortstatehash(
++		&self,
++		room_id: &RoomId,
++		after: PduCount,
++	) -> Result<ShortStateHash> {
++		let shortroomid: ShortRoomId = self
++			.services
++			.short
++			.get_shortroomid(room_id)
++			.await
++			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
++
++		if let Some(hash) = self
++			.next_shortstatehash_cache
++			.lock()
++			.get_mut(&(shortroomid, after))
++		{
++			return Ok(*hash);
++		}
++
++		let after_pdu = PduId { shortroomid, shorteventid: after };
++
++		let next_count = self.db.next_timeline_count(&after_pdu).await?;
++		let next_pdu = PduId { shortroomid, shorteventid: next_count };
++
++		let shorteventid = self.get_shorteventid_from_pdu_id(&next_pdu).await?;
++
++		let result = self.services.state.get_shortstatehash(shorteventid).await;
++
++		if let Ok(hash) = result {
++			self.next_shortstatehash_cache
++				.lock()
++				.insert((shortroomid, after), hash);
++		}
++
++		result
++	}
++
++	/// Returns the shortstatehash of the room at the event
++	#[tracing::instrument(skip(self), level = "debug")]
++	pub async fn get_shortstatehash(
++		&self,
++		room_id: &RoomId,
++		count: PduCount,
++	) -> Result<ShortStateHash> {
++		let shortroomid: ShortRoomId = self
++			.services
++			.short
++			.get_shortroomid(room_id)
++			.await
++			.map_err(|e| err!(Request(NotFound("Room {room_id:?} not found: {e:?}"))))?;
++
++		let pdu_id = PduId { shortroomid, shorteventid: count };
++
++		let shorteventid = self.get_shorteventid_from_pdu_id(&pdu_id).await?;
++
++		self.services.state.get_shortstatehash(shorteventid).await
++	}
++
++	/// Returns the `shorteventid` from the `pdu_id`
++	pub async fn get_shorteventid_from_pdu_id(&self, pdu_id: &PduId) -> Result<ShortEventId> {
++		let event_id = self.get_event_id_from_pdu_id(pdu_id).await?;
++
++		self.services.short.get_shorteventid(&event_id).await
++	}
++
++	/// Returns the `event_id` from the `pdu_id`
++	pub async fn get_event_id_from_pdu_id(&self, pdu_id: &PduId) -> Result<OwnedEventId> {
++		let pdu_id: RawPduId = (*pdu_id).into();
++
++		self.get_pdu_from_id(&pdu_id).await.map(|pdu| pdu.event_id)
++	}
++
+ 	/// Checks if pdu exists
+ 	///
+ 	/// Checks the `eventid_outlierpdu` Tree if not found in the timeline.
+diff --git a/src/service/rooms/user/mod.rs b/src/service/rooms/user/mod.rs
+index bd76f1f4c8..6c06831dfe 100644
+--- a/src/service/rooms/user/mod.rs
++++ b/src/service/rooms/user/mod.rs
+@@ -1,10 +1,10 @@
+ use std::sync::Arc;
+ 
+-use conduwuit::{Result, implement};
+-use database::{Database, Deserialized, Map};
++use conduwuit::{Result, implement, utils::stream::TryReadyExt};
++use database::{Deserialized, Map};
+ use ruma::{RoomId, UserId};
+ 
+-use crate::{Dep, globals, rooms, rooms::short::ShortStateHash};
++use crate::{Dep, globals, rooms};
+ 
+ pub struct Service {
+ 	db: Data,
+@@ -12,7 +12,7 @@ pub struct Service {
+ }
+ 
+ struct Data {
+-	db: Arc<Database>,
++	db: Arc<database::Database>,
+ 	userroomid_notificationcount: Arc<Map>,
+ 	userroomid_highlightcount: Arc<Map>,
+ 	roomuserid_lastnotificationread: Arc<Map>,
+@@ -91,39 +91,49 @@ pub async fn last_notification_read(&self, user_id: &UserId, room_id: &RoomId) -
+ 		.unwrap_or(0)
+ }
+ 
++/// Count how many sync tokens exist for a room without deleting them
++///
++/// This is useful for dry runs to see how many tokens would be deleted
+ #[implement(Service)]
+-pub async fn associate_token_shortstatehash(
+-	&self,
+-	room_id: &RoomId,
+-	token: u64,
+-	shortstatehash: ShortStateHash,
+-) {
+-	let shortroomid = self
+-		.services
+-		.short
+-		.get_shortroomid(room_id)
+-		.await
+-		.expect("room exists");
++pub async fn count_room_tokens(&self, room_id: &RoomId) -> Result<usize> {
++	let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+ 
+-	let _cork = self.db.db.cork();
+-	let key: &[u64] = &[shortroomid, token];
+-	self.db
++	// Create a prefix to search by - all entries for this room will start with its
++	// short ID
++	let prefix = &[shortroomid];
++
++	let count = self
++		.db
+ 		.roomsynctoken_shortstatehash
+-		.put(key, shortstatehash);
++		.keys_prefix_raw(prefix)
++		.ready_try_fold(0_usize, |acc, _| Ok(acc.saturating_add(1)))
++		.await?;
++
++	Ok(count)
+ }
+ 
++/// Delete all sync tokens associated with a room
++///
++/// This helps clean up the database as these tokens are never otherwise removed
+ #[implement(Service)]
+-pub async fn get_token_shortstatehash(
+-	&self,
+-	room_id: &RoomId,
+-	token: u64,
+-) -> Result<ShortStateHash> {
++pub async fn delete_room_tokens(&self, room_id: &RoomId) -> Result<usize> {
+ 	let shortroomid = self.services.short.get_shortroomid(room_id).await?;
+ 
+-	let key: &[u64] = &[shortroomid, token];
+-	self.db
++	// Create a prefix to search by - all entries for this room will start with its
++	// short ID
++	let prefix = &[shortroomid];
++
++	let _cork = self.db.db.cork();
++
++	let count = self
++		.db
+ 		.roomsynctoken_shortstatehash
+-		.qry(key)
+-		.await
+-		.deserialized()
++		.keys_prefix_raw(prefix)
++		.ready_try_fold(0_usize, |acc, key| {
++			self.db.roomsynctoken_shortstatehash.remove(key);
++			Ok(acc.saturating_add(1))
++		})
++		.await?;
++
++	Ok(count)
+ }
+diff --git a/tests/test_results/complement/test_results.jsonl b/tests/test_results/complement/test_results.jsonl
+index c415141587..2aaacbd865 100644
+--- a/tests/test_results/complement/test_results.jsonl
++++ b/tests/test_results/complement/test_results.jsonl
+@@ -1,4 +1,4 @@
+-{"Action":"pass","Test":"TestACLs"}
++{"Action":"fail","Test":"TestACLs"}
+ {"Action":"pass","Test":"TestAddAccountData"}
+ {"Action":"pass","Test":"TestAddAccountData/Can_add_global_account_data"}
+ {"Action":"pass","Test":"TestAddAccountData/Can_add_room_account_data"}
+@@ -73,11 +73,6 @@
+ {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_a_different_access_token_are_deleted_on_password_change"}
+ {"Action":"pass","Test":"TestChangePasswordPushers/Pushers_created_with_the_same_access_token_are_not_deleted_on_password_change"}
+ {"Action":"fail","Test":"TestClientSpacesSummary"}
+-{"Action":"pass","Test":"TestClientSpacesSummary/max_depth"}
+-{"Action":"fail","Test":"TestClientSpacesSummary/pagination"}
+-{"Action":"fail","Test":"TestClientSpacesSummary/query_whole_graph"}
+-{"Action":"fail","Test":"TestClientSpacesSummary/redact_link"}
+-{"Action":"fail","Test":"TestClientSpacesSummary/suggested_only"}
+ {"Action":"fail","Test":"TestClientSpacesSummaryJoinRules"}
+ {"Action":"pass","Test":"TestComplementCanCreateValidV12Rooms"}
+ {"Action":"pass","Test":"TestContent"}
+@@ -101,14 +96,12 @@
+ {"Action":"fail","Test":"TestDelayedEvents/delayed_state_events_can_be_cancelled"}
+ {"Action":"fail","Test":"TestDelayedEvents/delayed_state_events_can_be_restarted"}
+ {"Action":"fail","Test":"TestDelayedEvents/delayed_state_events_can_be_sent_on_request"}
+-{"Action":"fail","Test":"TestDelayedEvents/delayed_state_is_cancelled_by_new_state_from_another_user"}
+-{"Action":"fail","Test":"TestDelayedEvents/delayed_state_is_not_cancelled_by_new_state_from_the_same_user"}
+ {"Action":"pass","Test":"TestDelayedEvents/parallel"}
+ {"Action":"pass","Test":"TestDelayedEvents/parallel/cannot_cancel_a_delayed_event_without_a_matching_delay_ID"}
+ {"Action":"pass","Test":"TestDelayedEvents/parallel/cannot_restart_a_delayed_event_without_a_matching_delay_ID"}
+ {"Action":"pass","Test":"TestDelayedEvents/parallel/cannot_send_a_delayed_event_without_a_matching_delay_ID"}
+-{"Action":"fail","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings"}
+-{"Action":"fail","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings/Deleting_a_user's_device_should_delete_any_local_notification_settings_entries_from_their_account_data"}
++{"Action":"pass","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings"}
++{"Action":"pass","Test":"TestDeletingDeviceRemovesDeviceLocalNotificationSettings/Deleting_a_user's_device_should_delete_any_local_notification_settings_entries_from_their_account_data"}
+ {"Action":"pass","Test":"TestDemotingUsersViaUsersDefault"}
+ {"Action":"fail","Test":"TestDeviceListUpdates"}
+ {"Action":"fail","Test":"TestDeviceListUpdates/when_joining_a_room_with_a_local_user"}
+@@ -126,8 +119,8 @@
+ {"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/interrupted_connectivity"}
+ {"Action":"fail","Test":"TestDeviceListsUpdateOverFederation/stopped_server"}
+ {"Action":"fail","Test":"TestDeviceListsUpdateOverFederationOnRoomJoin"}
+-{"Action":"fail","Test":"TestDeviceManagement"}
+-{"Action":"fail","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
++{"Action":"pass","Test":"TestDeviceManagement"}
++{"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}"}
+ {"Action":"pass","Test":"TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner"}
+ {"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}"}
+ {"Action":"pass","Test":"TestDeviceManagement/GET_/device/{deviceId}_gives_a_404_for_unknown_devices"}
+@@ -156,22 +149,22 @@
+ {"Action":"pass","Test":"TestFederationRejectInvite"}
+ {"Action":"fail","Test":"TestFederationRoomsInvite"}
+ {"Action":"fail","Test":"TestFederationRoomsInvite/Parallel"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times"}
+ {"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Invited_user_has_'is_direct'_flag_in_prev_content_after_joining"}
+ {"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room"}
+-{"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room"}
++{"Action":"fail","Test":"TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room"}
+ {"Action":"pass","Test":"TestFederationRoomsInvite/Parallel/Remote_invited_user_can_see_room_metadata"}
+ {"Action":"pass","Test":"TestFederationThumbnail"}
+ {"Action":"pass","Test":"TestFetchEvent"}
+-{"Action":"fail","Test":"TestFetchEventNonWorldReadable"}
++{"Action":"pass","Test":"TestFetchEventNonWorldReadable"}
+ {"Action":"pass","Test":"TestFetchEventWorldReadable"}
+-{"Action":"fail","Test":"TestFetchHistoricalInvitedEventFromBeforeInvite"}
++{"Action":"pass","Test":"TestFetchHistoricalInvitedEventFromBeforeInvite"}
+ {"Action":"pass","Test":"TestFetchHistoricalInvitedEventFromBetweenInvite"}
+-{"Action":"fail","Test":"TestFetchHistoricalJoinedEventDenied"}
++{"Action":"pass","Test":"TestFetchHistoricalJoinedEventDenied"}
+ {"Action":"pass","Test":"TestFetchHistoricalSharedEvent"}
+ {"Action":"pass","Test":"TestFetchMessagesFromNonExistentRoom"}
+ {"Action":"pass","Test":"TestFilter"}
+@@ -194,18 +187,18 @@
+ {"Action":"pass","Test":"TestInboundFederationProfile/Inbound_federation_can_query_profile_data"}
+ {"Action":"pass","Test":"TestInboundFederationProfile/Non-numeric_ports_in_server_names_are_rejected"}
+ {"Action":"fail","Test":"TestInboundFederationRejectsEventsWithRejectedAuthEvents"}
+-{"Action":"pass","Test":"TestInviteFiltering"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_allow_a_user_from_a_blocked_server"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_block_a_single_user"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_block_a_user_from_an_allowed_server"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_block_a_whole_server"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_glob_serveral_servers"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_glob_serveral_users"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_ignore_a_single_user"}
+-{"Action":"pass","Test":"TestInviteFiltering/Can_ignore_a_whole_server"}
++{"Action":"fail","Test":"TestInviteFiltering"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_allow_a_user_from_a_blocked_server"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_block_a_single_user"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_block_a_user_from_an_allowed_server"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_block_a_whole_server"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_glob_serveral_servers"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_glob_serveral_users"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_ignore_a_single_user"}
++{"Action":"fail","Test":"TestInviteFiltering/Can_ignore_a_whole_server"}
+ {"Action":"pass","Test":"TestInviteFiltering/Can_invite_users_normally_without_any_rules"}
+-{"Action":"pass","Test":"TestInviteFiltering/Will_allow_users_when_a_user_appears_in_multiple_fields"}
+-{"Action":"pass","Test":"TestInviteFiltering/Will_ignore_null_fields"}
++{"Action":"fail","Test":"TestInviteFiltering/Will_allow_users_when_a_user_appears_in_multiple_fields"}
++{"Action":"fail","Test":"TestInviteFiltering/Will_ignore_null_fields"}
+ {"Action":"pass","Test":"TestInviteFromIgnoredUsersDoesNotAppearInSync"}
+ {"Action":"pass","Test":"TestIsDirectFlagFederation"}
+ {"Action":"pass","Test":"TestIsDirectFlagLocal"}
+@@ -220,7 +213,7 @@
+ {"Action":"pass","Test":"TestJoinViaRoomIDAndServerName"}
+ {"Action":"fail","Test":"TestJson"}
+ {"Action":"fail","Test":"TestJson/Parallel"}
+-{"Action":"fail","Test":"TestJson/Parallel/Invalid_JSON_special_values"}
++{"Action":"pass","Test":"TestJson/Parallel/Invalid_JSON_special_values"}
+ {"Action":"fail","Test":"TestJson/Parallel/Invalid_numerical_values"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel"}
+@@ -233,16 +226,16 @@
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_find_event_before_given_timestamp"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_find_next_event_topologically_after_given_timestamp_when_all_message_timestamps_are_the_same"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_find_next_event_topologically_before_given_timestamp_when_all_message_timestamps_are_the_same"}
+-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/should_find_nothing_after_the_latest_timestamp"}
+-{"Action":"pass","Test":"TestJumpToDateEndpoint/parallel/should_find_nothing_before_the_earliest_timestamp"}
++{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_find_nothing_after_the_latest_timestamp"}
++{"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_find_nothing_before_the_earliest_timestamp"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_not_be_able_to_query_a_private_room_you_are_not_a_member_of"}
+ {"Action":"fail","Test":"TestJumpToDateEndpoint/parallel/should_not_be_able_to_query_a_public_room_you_are_not_a_member_of"}
+ {"Action":"fail","Test":"TestKeyChangesLocal"}
+ {"Action":"fail","Test":"TestKeyChangesLocal/New_login_should_create_a_device_lists.changed_entry"}
+ {"Action":"fail","Test":"TestKeyClaimOrdering"}
+ {"Action":"pass","Test":"TestKeysQueryWithDeviceIDAsObjectFails"}
+-{"Action":"pass","Test":"TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
+-{"Action":"pass","Test":"TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
++{"Action":"fail","Test":"TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
++{"Action":"fail","Test":"TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
+ {"Action":"fail","Test":"TestKnockRoomsInPublicRoomsDirectory"}
+ {"Action":"fail","Test":"TestKnockRoomsInPublicRoomsDirectoryInMSC3787Room"}
+ {"Action":"fail","Test":"TestKnocking"}
+@@ -264,12 +257,12 @@
+ {"Action":"pass","Test":"TestKnocking/Attempting_to_join_a_room_with_join_rule_'knock'_without_an_invite_should_fail"}
+ {"Action":"pass","Test":"TestKnocking/Attempting_to_join_a_room_with_join_rule_'knock'_without_an_invite_should_fail#01"}
+ {"Action":"pass","Test":"TestKnocking/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'"}
+-{"Action":"pass","Test":"TestKnocking/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'#01"}
++{"Action":"fail","Test":"TestKnocking/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'#01"}
+ {"Action":"pass","Test":"TestKnocking/Knocking_on_a_room_with_a_join_rule_other_than_'knock'_should_fail"}
+ {"Action":"pass","Test":"TestKnocking/Knocking_on_a_room_with_a_join_rule_other_than_'knock'_should_fail#01"}
+ {"Action":"fail","Test":"TestKnocking/Knocking_on_a_room_with_join_rule_'knock'_should_succeed"}
+ {"Action":"fail","Test":"TestKnocking/Knocking_on_a_room_with_join_rule_'knock'_should_succeed#01"}
+-{"Action":"fail","Test":"TestKnocking/Users_in_the_room_see_a_user's_membership_update_when_they_knock"}
++{"Action":"pass","Test":"TestKnocking/Users_in_the_room_see_a_user's_membership_update_when_they_knock"}
+ {"Action":"fail","Test":"TestKnocking/Users_in_the_room_see_a_user's_membership_update_when_they_knock#01"}
+ {"Action":"fail","Test":"TestKnockingInMSC3787Room"}
+ {"Action":"fail","Test":"TestKnockingInMSC3787Room/A_user_can_knock_on_a_room_without_a_reason"}
+@@ -290,22 +283,17 @@
+ {"Action":"pass","Test":"TestKnockingInMSC3787Room/Attempting_to_join_a_room_with_join_rule_'knock'_without_an_invite_should_fail"}
+ {"Action":"pass","Test":"TestKnockingInMSC3787Room/Attempting_to_join_a_room_with_join_rule_'knock'_without_an_invite_should_fail#01"}
+ {"Action":"pass","Test":"TestKnockingInMSC3787Room/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'"}
+-{"Action":"pass","Test":"TestKnockingInMSC3787Room/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'#01"}
++{"Action":"fail","Test":"TestKnockingInMSC3787Room/Change_the_join_rule_of_a_room_from_'invite'_to_'knock'#01"}
+ {"Action":"pass","Test":"TestKnockingInMSC3787Room/Knocking_on_a_room_with_a_join_rule_other_than_'knock'_should_fail"}
+ {"Action":"pass","Test":"TestKnockingInMSC3787Room/Knocking_on_a_room_with_a_join_rule_other_than_'knock'_should_fail#01"}
+ {"Action":"fail","Test":"TestKnockingInMSC3787Room/Knocking_on_a_room_with_join_rule_'knock'_should_succeed"}
+ {"Action":"fail","Test":"TestKnockingInMSC3787Room/Knocking_on_a_room_with_join_rule_'knock'_should_succeed#01"}
+-{"Action":"fail","Test":"TestKnockingInMSC3787Room/Users_in_the_room_see_a_user's_membership_update_when_they_knock"}
++{"Action":"pass","Test":"TestKnockingInMSC3787Room/Users_in_the_room_see_a_user's_membership_update_when_they_knock"}
+ {"Action":"fail","Test":"TestKnockingInMSC3787Room/Users_in_the_room_see_a_user's_membership_update_when_they_knock#01"}
+ {"Action":"pass","Test":"TestLeakyTyping"}
+ {"Action":"pass","Test":"TestLeaveEventInviteRejection"}
+ {"Action":"fail","Test":"TestLeaveEventVisibility"}
+ {"Action":"fail","Test":"TestLeftRoomFixture"}
+-{"Action":"fail","Test":"TestLeftRoomFixture/Can_get_'m.room.name'_state_for_a_departed_room"}
+-{"Action":"fail","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/members_for_a_departed_room"}
+-{"Action":"pass","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/messages_for_a_departed_room"}
+-{"Action":"fail","Test":"TestLeftRoomFixture/Can_get_rooms/{roomId}/state_for_a_departed_room"}
+-{"Action":"pass","Test":"TestLeftRoomFixture/Getting_messages_going_forward_is_limited_for_a_departed_room"}
+ {"Action":"pass","Test":"TestLocalPngThumbnail"}
+ {"Action":"pass","Test":"TestLocalPngThumbnail/test_/_matrix/client/v1/media_endpoint"}
+ {"Action":"pass","Test":"TestLocalPngThumbnail/test_/_matrix/media/v3_endpoint"}
+@@ -327,14 +315,14 @@
+ {"Action":"pass","Test":"TestMSC3967"}
+ {"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators"}
+ {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/PL_event_is_missing_creator_in_users_map"}
+-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/admin_with_>PL100_cannot_kick_creator"}
++{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/admin_with_>PL100_cannot_kick_creator"}
+ {"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/admin_with_>PL100_sorts_after_the_room_creator_for_state_resolution"}
+-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin"}
+-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin_above_PL100"}
+-{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin_at_JSON_max_value"}
++{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin"}
++{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin_above_PL100"}
++{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/creator_can_kick_admin_at_JSON_max_value"}
+ {"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/creator_cannot_set_self_in_PL_event"}
+ {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/m.room.tombstone_needs_PL150_in_the_PL_event"}
+-{"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/power_level_cannot_be_set_beyond_max_canonical_JSON_int"}
++{"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/power_level_cannot_be_set_beyond_max_canonical_JSON_int"}
+ {"Action":"pass","Test":"TestMSC4289PrivilegedRoomCreators/power_level_content_override_can_be_set"}
+ {"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators/power_level_content_override_cannot_set_the_room_creator"}
+ {"Action":"fail","Test":"TestMSC4289PrivilegedRoomCreators_Additional"}
+@@ -359,9 +347,9 @@
+ {"Action":"fail","Test":"TestMSC4308ThreadSubscriptionsSlidingSync/Receives_thread_subscriptions_over_initial_sliding_sync"}
+ {"Action":"fail","Test":"TestMSC4311FullCreateEventOnStrippedState"}
+ {"Action":"pass","Test":"TestMediaConfig"}
+-{"Action":"fail","Test":"TestMediaFilenames"}
+-{"Action":"fail","Test":"TestMediaFilenames/Parallel"}
+-{"Action":"fail","Test":"TestMediaFilenames/Parallel/ASCII"}
++{"Action":"pass","Test":"TestMediaFilenames"}
++{"Action":"pass","Test":"TestMediaFilenames/Parallel"}
++{"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_file_'ascii'"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_file_'ascii'_over_/_matrix/client/v1/media/download"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_file_'name;with;semicolons'"}
+@@ -369,11 +357,11 @@
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_file_'name_with_spaces'"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_file_'name_with_spaces'_over_/_matrix/client/v1/media/download"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_specifying_a_different_ASCII_file_name"}
+-{"Action":"fail","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_specifying_a_different_ASCII_file_name_over__matrix/client/v1/media/download"}
++{"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_download_specifying_a_different_ASCII_file_name_over__matrix/client/v1/media/download"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/ASCII/Can_upload_with_ASCII_file_name"}
+-{"Action":"fail","Test":"TestMediaFilenames/Parallel/Unicode"}
++{"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_specifying_a_different_Unicode_file_name"}
+-{"Action":"fail","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_specifying_a_different_Unicode_file_name_over__matrix/client/v1/media/download"}
++{"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_specifying_a_different_Unicode_file_name_over__matrix/client/v1/media/download"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_locally"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_locally_over__matrix/client/v1/media/download"}
+ {"Action":"pass","Test":"TestMediaFilenames/Parallel/Unicode/Can_download_with_Unicode_file_name_over_federation"}
+@@ -397,14 +385,14 @@
+ {"Action":"pass","Test":"TestMediaWithoutFileNameCSMediaV1/parallel/Can_upload_without_a_file_name"}
+ {"Action":"fail","Test":"TestMembersLocal"}
+ {"Action":"fail","Test":"TestMembersLocal/Parallel"}
+-{"Action":"pass","Test":"TestMembersLocal/Parallel/Existing_members_see_new_members'_join_events"}
++{"Action":"fail","Test":"TestMembersLocal/Parallel/Existing_members_see_new_members'_join_events"}
+ {"Action":"fail","Test":"TestMembersLocal/Parallel/Existing_members_see_new_members'_presence_(in_incremental_sync)"}
+-{"Action":"pass","Test":"TestMembersLocal/Parallel/Existing_members_see_new_members'_presence_(in_initial_sync)"}
+-{"Action":"pass","Test":"TestMembersLocal/Parallel/New_room_members_see_their_own_join_event"}
++{"Action":"fail","Test":"TestMembersLocal/Parallel/Existing_members_see_new_members'_presence_(in_initial_sync)"}
++{"Action":"fail","Test":"TestMembersLocal/Parallel/New_room_members_see_their_own_join_event"}
+ {"Action":"fail","Test":"TestMembershipOnEvents"}
+ {"Action":"fail","Test":"TestMessagesOverFederation"}
+-{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)"}
+-{"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_greater_than_the_number_of_messages_backfilled_(in_Synapse,_100)"}
++{"Action":"fail","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)"}
++{"Action":"fail","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_greater_than_the_number_of_messages_backfilled_(in_Synapse,_100)"}
+ {"Action":"pass","Test":"TestMessagesOverFederation/Visible_shared_history_after_joining_new_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}
+ {"Action":"fail","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)"}
+ {"Action":"fail","Test":"TestMessagesOverFederation/Visible_shared_history_after_re-joining_room_(backfill)/`messagesRequestLimit`_is_lower_than_the_number_of_messages_backfilled_(assumed)"}
+@@ -422,13 +410,13 @@
+ {"Action":"pass","Test":"TestPowerLevels/GET_/rooms/:room_id/state/m.room.power_levels_can_fetch_levels"}
+ {"Action":"pass","Test":"TestPowerLevels/PUT_/rooms/:room_id/state/m.room.power_levels_can_set_levels"}
+ {"Action":"pass","Test":"TestPowerLevels/PUT_power_levels_should_not_explode_if_the_old_power_levels_were_empty"}
+-{"Action":"fail","Test":"TestPresence"}
+-{"Action":"fail","Test":"TestPresence/GET_/presence/:user_id/status_fetches_initial_status"}
++{"Action":"pass","Test":"TestPresence"}
++{"Action":"pass","Test":"TestPresence/GET_/presence/:user_id/status_fetches_initial_status"}
+ {"Action":"pass","Test":"TestPresence/PUT_/presence/:user_id/status_updates_my_presence"}
+ {"Action":"pass","Test":"TestPresence/Presence_can_be_set_from_sync"}
+ {"Action":"pass","Test":"TestPresence/Presence_changes_are_reported_to_local_room_members"}
+ {"Action":"pass","Test":"TestPresence/Presence_changes_to_UNAVAILABLE_are_reported_to_local_room_members"}
+-{"Action":"pass","Test":"TestPresenceSyncDifferentRooms"}
++{"Action":"fail","Test":"TestPresenceSyncDifferentRooms"}
+ {"Action":"pass","Test":"TestProfileAvatarURL"}
+ {"Action":"pass","Test":"TestProfileAvatarURL/GET_/profile/:user_id/avatar_url_publicly_accessible"}
+ {"Action":"pass","Test":"TestProfileAvatarURL/PUT_/profile/:user_id/avatar_url_sets_my_avatar"}
+@@ -458,6 +446,8 @@
+ {"Action":"pass","Test":"TestPushSync/Enabling_a_push_rule_wakes_up_an_incremental_/sync"}
+ {"Action":"pass","Test":"TestPushSync/Push_rules_come_down_in_an_initial_/sync"}
+ {"Action":"pass","Test":"TestPushSync/Setting_actions_for_a_push_rule_wakes_up_an_incremental_/sync"}
++{"Action":"fail","Test":"TestRedact"}
++{"Action":"fail","Test":"TestRedact/Event_content_is_redacted"}
+ {"Action":"pass","Test":"TestRegistration"}
+ {"Action":"pass","Test":"TestRegistration/parallel"}
+ {"Action":"pass","Test":"TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name"}
+@@ -498,8 +488,8 @@
+ {"Action":"fail","Test":"TestRemovingAccountData/Deleting_a_user's_account_data_via_PUT_works"}
+ {"Action":"fail","Test":"TestRemovingAccountData/Deleting_a_user's_room_account_data_via_PUT_works"}
+ {"Action":"fail","Test":"TestRemovingAccountData/Deleting_a_user's_room_data_via_DELETE_works"}
+-{"Action":"fail","Test":"TestRequestEncodingFails"}
+-{"Action":"fail","Test":"TestRequestEncodingFails/POST_rejects_invalid_utf-8_in_JSON"}
++{"Action":"pass","Test":"TestRequestEncodingFails"}
++{"Action":"pass","Test":"TestRequestEncodingFails/POST_rejects_invalid_utf-8_in_JSON"}
+ {"Action":"fail","Test":"TestRestrictedRoomsLocalJoin"}
+ {"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_fail_initially"}
+ {"Action":"pass","Test":"TestRestrictedRoomsLocalJoin/Join_should_fail_when_left_allowed_room"}
+@@ -508,19 +498,19 @@
+ {"Action":"fail","Test":"TestRestrictedRoomsLocalJoin/Join_should_succeed_when_joined_to_allowed_room"}
+ {"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room"}
+ {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_initially"}
+-{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_when_left_allowed_room"}
+-{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_with_mangled_join_rules"}
++{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_when_left_allowed_room"}
++{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_fail_with_mangled_join_rules"}
+ {"Action":"pass","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_succeed_when_invited"}
+ {"Action":"fail","Test":"TestRestrictedRoomsLocalJoinInMSC3787Room/Join_should_succeed_when_joined_to_allowed_room"}
+-{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
+-{"Action":"pass","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
++{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11"}
++{"Action":"fail","Test":"TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12"}
+ {"Action":"fail","Test":"TestRestrictedRoomsRemoteJoin"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_initially"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_when_left_allowed_room"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_fail_with_mangled_join_rules"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoin/Join_should_succeed_when_invited"}
+ {"Action":"fail","Test":"TestRestrictedRoomsRemoteJoin/Join_should_succeed_when_joined_to_allowed_room"}
+-{"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
++{"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinFailOver"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room"}
+ {"Action":"fail","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room"}
+ {"Action":"pass","Test":"TestRestrictedRoomsRemoteJoinInMSC3787Room/Join_should_fail_initially"}
+@@ -540,20 +530,20 @@
+ {"Action":"pass","Test":"TestRoomAlias/Parallel/Room_aliases_can_contain_Unicode"}
+ {"Action":"fail","Test":"TestRoomCanonicalAlias"}
+ {"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel"}
+-{"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_accepts_present_aliases"}
+-{"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_accepts_present_alt_aliases"}
++{"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_accepts_present_aliases"}
++{"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_accepts_present_alt_aliases"}
+ {"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_alias_pointing_to_different_local_room"}
+ {"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_alt_alias_pointing_to_different_local_room"}
+ {"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_invalid_aliases"}
+ {"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_invalid_aliases#01"}
+-{"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_missing_aliases"}
+-{"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_missing_aliases#01"}
+-{"Action":"fail","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_setting_rejects_deleted_aliases"}
++{"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_missing_aliases"}
++{"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_rejects_missing_aliases#01"}
++{"Action":"pass","Test":"TestRoomCanonicalAlias/Parallel/m.room.canonical_alias_setting_rejects_deleted_aliases"}
+ {"Action":"fail","Test":"TestRoomCreate"}
+ {"Action":"fail","Test":"TestRoomCreate/Parallel"}
+-{"Action":"pass","Test":"TestRoomCreate/Parallel/Can_/sync_newly_created_room"}
++{"Action":"fail","Test":"TestRoomCreate/Parallel/Can_/sync_newly_created_room"}
+ {"Action":"fail","Test":"TestRoomCreate/Parallel/POST_/createRoom_creates_a_room_with_the_given_version"}
+-{"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_ignores_attempts_to_set_the_room_version_via_creation_content"}
++{"Action":"fail","Test":"TestRoomCreate/Parallel/POST_/createRoom_ignores_attempts_to_set_the_room_version_via_creation_content"}
+ {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room"}
+ {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_private_room_with_invites"}
+ {"Action":"pass","Test":"TestRoomCreate/Parallel/POST_/createRoom_makes_a_public_room"}
+@@ -567,39 +557,39 @@
+ {"Action":"pass","Test":"TestRoomCreate/Parallel/Rooms_can_be_created_with_an_initial_invite_list_(SYN-205)"}
+ {"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself"}
+ {"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel"}
+-{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Joining_room_twice_is_idempotent"}
++{"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel/Joining_room_twice_is_idempotent"}
+ {"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel/Room_creation_reports_m.room.create_to_myself"}
+-{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Room_creation_reports_m.room.member_to_myself"}
+-{"Action":"pass","Test":"TestRoomCreationReportsEventsToMyself/parallel/Setting_room_topic_reports_m.room.topic_to_myself"}
++{"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel/Room_creation_reports_m.room.member_to_myself"}
++{"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel/Setting_room_topic_reports_m.room.topic_to_myself"}
+ {"Action":"fail","Test":"TestRoomCreationReportsEventsToMyself/parallel/Setting_state_twice_is_idempotent"}
+-{"Action":"pass","Test":"TestRoomDeleteAlias"}
+-{"Action":"pass","Test":"TestRoomDeleteAlias/Parallel"}
++{"Action":"fail","Test":"TestRoomDeleteAlias"}
++{"Action":"fail","Test":"TestRoomDeleteAlias/Parallel"}
+ {"Action":"pass","Test":"TestRoomDeleteAlias/Parallel/Alias_creators_can_delete_alias_with_no_ops"}
+-{"Action":"pass","Test":"TestRoomDeleteAlias/Parallel/Alias_creators_can_delete_canonical_alias_with_no_ops"}
++{"Action":"fail","Test":"TestRoomDeleteAlias/Parallel/Alias_creators_can_delete_canonical_alias_with_no_ops"}
+ {"Action":"pass","Test":"TestRoomDeleteAlias/Parallel/Deleting_a_non-existent_alias_should_return_a_404"}
+-{"Action":"pass","Test":"TestRoomDeleteAlias/Parallel/Regular_users_can_add_and_delete_aliases_in_the_default_room_configuration"}
++{"Action":"fail","Test":"TestRoomDeleteAlias/Parallel/Regular_users_can_add_and_delete_aliases_in_the_default_room_configuration"}
+ {"Action":"pass","Test":"TestRoomDeleteAlias/Parallel/Users_can't_delete_other's_aliases"}
+ {"Action":"fail","Test":"TestRoomForget"}
+ {"Action":"fail","Test":"TestRoomForget/Parallel"}
+ {"Action":"pass","Test":"TestRoomForget/Parallel/Can't_forget_room_you're_still_in"}
+ {"Action":"pass","Test":"TestRoomForget/Parallel/Can_forget_room_we_weren't_an_actual_member"}
+ {"Action":"pass","Test":"TestRoomForget/Parallel/Can_forget_room_you've_been_kicked_from"}
+-{"Action":"pass","Test":"TestRoomForget/Parallel/Can_re-join_room_if_re-invited"}
+-{"Action":"pass","Test":"TestRoomForget/Parallel/Forgetting_room_does_not_show_up_in_v2_initial_/sync"}
++{"Action":"fail","Test":"TestRoomForget/Parallel/Can_re-join_room_if_re-invited"}
++{"Action":"fail","Test":"TestRoomForget/Parallel/Forgetting_room_does_not_show_up_in_v2_initial_/sync"}
+ {"Action":"fail","Test":"TestRoomForget/Parallel/Forgotten_room_messages_cannot_be_paginated"}
+ {"Action":"fail","Test":"TestRoomForget/Parallel/Leave_for_forgotten_room_shows_up_in_v2_incremental_/sync"}
+ {"Action":"pass","Test":"TestRoomImageRoundtrip"}
+ {"Action":"fail","Test":"TestRoomMembers"}
+ {"Action":"fail","Test":"TestRoomMembers/Parallel"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room"}
+ {"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/join/:room_alias_can_join_a_room_with_custom_content"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room"}
+ {"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/join/:room_id_can_join_a_room_with_custom_content"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/ban_can_ban_a_user"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/invite_can_send_an_invite"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/ban_can_ban_a_user"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/invite_can_send_an_invite"}
+ {"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/join_can_join_a_room"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/leave_can_leave_a_room"}
+-{"Action":"pass","Test":"TestRoomMembers/Parallel/Test_that_we_can_be_reinvited_to_a_room_we_created"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/POST_/rooms/:room_id/leave_can_leave_a_room"}
++{"Action":"fail","Test":"TestRoomMembers/Parallel/Test_that_we_can_be_reinvited_to_a_room_we_created"}
+ {"Action":"pass","Test":"TestRoomMessagesLazyLoading"}
+ {"Action":"pass","Test":"TestRoomMessagesLazyLoadingLocalUser"}
+ {"Action":"pass","Test":"TestRoomReadMarkers"}
+@@ -617,12 +607,11 @@
+ {"Action":"pass","Test":"TestRoomSpecificUsernameChange/Eve_can_find_Alice_by_mxid"}
+ {"Action":"pass","Test":"TestRoomSpecificUsernameChange/Eve_can_find_Alice_by_profile_display_name"}
+ {"Action":"pass","Test":"TestRoomSpecificUsernameChange/Eve_cannot_find_Alice_by_room-specific_name_that_Eve_is_not_privy_to"}
+-{"Action":"fail","Test":"TestRoomState"}
+-{"Action":"fail","Test":"TestRoomState/Parallel"}
++{"Action":"pass","Test":"TestRoomState"}
++{"Action":"pass","Test":"TestRoomState/Parallel"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/GET_/directory/room/:room_alias_yields_room_ID"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/GET_/joined_rooms_lists_newly-created_room"}
+-{"Action":"pass","Test":"TestRoomState/Parallel/GET_/publicRooms_lists_newly-created_room"}
+-{"Action":"fail","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_fetches_my_membership"}
++{"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_fetches_my_membership"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/joined_members_is_forbidden_after_leaving_room"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.member/:user_id?format=event_fetches_my_membership_event"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/GET_/rooms/:room_id/state/m.room.member/:user_id_fetches_my_membership"}
+@@ -633,40 +622,42 @@
+ {"Action":"pass","Test":"TestRoomState/Parallel/POST_/rooms/:room_id/state/m.room.name_sets_name"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/PUT_/createRoom_with_creation_content"}
+ {"Action":"pass","Test":"TestRoomState/Parallel/PUT_/rooms/:room_id/state/m.room.topic_sets_topic"}
+-{"Action":"pass","Test":"TestRoomSummary"}
+-{"Action":"pass","Test":"TestRoomsInvite"}
+-{"Action":"pass","Test":"TestRoomsInvite/Parallel"}
++{"Action":"fail","Test":"TestRoomSummary"}
++{"Action":"fail","Test":"TestRoomsInvite"}
++{"Action":"fail","Test":"TestRoomsInvite/Parallel"}
+ {"Action":"pass","Test":"TestRoomsInvite/Parallel/Can_invite_users_to_invite-only_rooms"}
+-{"Action":"pass","Test":"TestRoomsInvite/Parallel/Invited_user_can_reject_invite"}
+-{"Action":"pass","Test":"TestRoomsInvite/Parallel/Invited_user_can_reject_invite_for_empty_room"}
++{"Action":"fail","Test":"TestRoomsInvite/Parallel/Invited_user_can_reject_invite"}
++{"Action":"fail","Test":"TestRoomsInvite/Parallel/Invited_user_can_reject_invite_for_empty_room"}
+ {"Action":"pass","Test":"TestRoomsInvite/Parallel/Invited_user_can_see_room_metadata"}
+-{"Action":"pass","Test":"TestRoomsInvite/Parallel/Test_that_we_can_be_reinvited_to_a_room_we_created"}
++{"Action":"fail","Test":"TestRoomsInvite/Parallel/Test_that_we_can_be_reinvited_to_a_room_we_created"}
+ {"Action":"pass","Test":"TestRoomsInvite/Parallel/Uninvited_users_cannot_join_the_room"}
+-{"Action":"pass","Test":"TestRoomsInvite/Parallel/Users_cannot_invite_a_user_that_is_already_in_the_room"}
++{"Action":"fail","Test":"TestRoomsInvite/Parallel/Users_cannot_invite_a_user_that_is_already_in_the_room"}
+ {"Action":"pass","Test":"TestRoomsInvite/Parallel/Users_cannot_invite_themselves_to_a_room"}
+ {"Action":"fail","Test":"TestSearch"}
+ {"Action":"fail","Test":"TestSearch/parallel"}
+ {"Action":"fail","Test":"TestSearch/parallel/Can_back-paginate_search_results"}
+ {"Action":"fail","Test":"TestSearch/parallel/Can_get_context_around_search_results"}
+-{"Action":"pass","Test":"TestSearch/parallel/Can_search_for_an_event_by_body"}
+-{"Action":"pass","Test":"TestSearch/parallel/Search_results_with_rank_ordering_do_not_include_redacted_events"}
+-{"Action":"pass","Test":"TestSearch/parallel/Search_results_with_recent_ordering_do_not_include_redacted_events"}
+-{"Action":"pass","Test":"TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"}
+-{"Action":"fail","Test":"TestSendAndFetchMessage"}
++{"Action":"fail","Test":"TestSearch/parallel/Can_search_for_an_event_by_body"}
++{"Action":"fail","Test":"TestSearch/parallel/Search_results_with_rank_ordering_do_not_include_redacted_events"}
++{"Action":"fail","Test":"TestSearch/parallel/Search_results_with_recent_ordering_do_not_include_redacted_events"}
++{"Action":"fail","Test":"TestSearch/parallel/Search_works_across_an_upgraded_room_and_its_predecessor"}
++{"Action":"pass","Test":"TestSendAndFetchMessage"}
+ {"Action":"fail","Test":"TestSendJoinPartialStateResponse"}
+ {"Action":"pass","Test":"TestSendMessageWithTxn"}
+ {"Action":"pass","Test":"TestServerCapabilities"}
+ {"Action":"skip","Test":"TestServerNotices"}
+ {"Action":"fail","Test":"TestSync"}
+ {"Action":"fail","Test":"TestSync/parallel"}
+-{"Action":"pass","Test":"TestSync/parallel/Can_sync_a_joined_room"}
++{"Action":"fail","Test":"TestSync/parallel/Can_sync_a_joined_room"}
+ {"Action":"fail","Test":"TestSync/parallel/Device_list_tracking"}
+ {"Action":"fail","Test":"TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled"}
+-{"Action":"pass","Test":"TestSync/parallel/Full_state_sync_includes_joined_rooms"}
++{"Action":"fail","Test":"TestSync/parallel/Full_state_sync_includes_joined_rooms"}
+ {"Action":"fail","Test":"TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync"}
++{"Action":"fail","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline"}
++{"Action":"fail","Test":"TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline"}
+ {"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync"}
+ {"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync"}
+-{"Action":"pass","Test":"TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync"}
++{"Action":"fail","Test":"TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync"}
+ {"Action":"fail","Test":"TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event"}
+ {"Action":"pass","Test":"TestSyncFilter"}
+ {"Action":"pass","Test":"TestSyncFilter/Can_create_filter"}
+@@ -680,7 +671,7 @@
+ {"Action":"pass","Test":"TestSyncTimelineGap/full"}
+ {"Action":"pass","Test":"TestSyncTimelineGap/incremental"}
+ {"Action":"pass","Test":"TestTentativeEventualJoiningAfterRejecting"}
+-{"Action":"fail","Test":"TestThreadReceiptsInSyncMSC4102"}
++{"Action":"pass","Test":"TestThreadReceiptsInSyncMSC4102"}
+ {"Action":"fail","Test":"TestThreadSubscriptions"}
+ {"Action":"fail","Test":"TestThreadSubscriptions/Can_create_automatic_subscription_to_a_thread"}
+ {"Action":"fail","Test":"TestThreadSubscriptions/Can_subscribe_to_and_unsubscribe_from_a_thread"}

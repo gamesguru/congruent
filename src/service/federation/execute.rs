@@ -8,13 +8,13 @@ use conduwuit::{
 use http::{HeaderValue, header::AUTHORIZATION};
 use ipaddress::IPAddress;
 use reqwest::{Client, Method, Request, Response, Url};
-use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, ServerName, ServerSigningKeyId,
+use slipstream::{
+	CanonicalJsonObject, CanonicalJsonValue, OwnedServerSigningKeyId, ServerName,
 	api::{
 		EndpointError, IncomingResponse, MatrixVersion, OutgoingRequest, SendAccessToken,
-		client::error::Error as RumaError, federation::authentication::XMatrix,
+		client::error::Error as RumaError,
 	},
-	serde::Base64,
+	sswire::Base64,
 };
 
 use crate::resolver::actual::ActualDest;
@@ -59,9 +59,10 @@ pub async fn execute_on<T>(
 ) -> Result<T::IncomingResponse>
 where
 	T: OutgoingRequest + Send,
+	T::EndpointError: Debug,
 {
 	if !self.services.server.config.allow_federation {
-		return Err!(Config("allow_federation", "Federation is disabled."));
+		return Err!(debug!("Federation is disabled."));
 	}
 
 	if self.services.moderation.is_remote_server_forbidden(dest) {
@@ -134,8 +135,12 @@ async fn handle_response<T>(
 where
 	T: OutgoingRequest + Send,
 {
-	const HUGE_ENDPOINTS: [&str; 2] =
-		["/_matrix/federation/v2/send_join/", "/_matrix/federation/v2/state/"];
+	const HUGE_ENDPOINTS: [&str; 4] = [
+		"/_matrix/federation/v2/send_join/",
+		"/_matrix/federation/v2/state/",
+		"/_matrix/federation/v1/state/",
+		"/_matrix/federation/v1/state_ids/",
+	];
 	let size_limit: u64 = if HUGE_ENDPOINTS.iter().any(|e| url.path().starts_with(e)) {
 		// Some federation endpoints can return huge response bodies, so we'll bump the
 		// limit for those endpoints specifically.
@@ -176,12 +181,20 @@ async fn into_http_response(
 		.status(status)
 		.version(response.version());
 
-	mem::swap(
-		response.headers_mut(),
-		http_response_builder
-			.headers_mut()
-			.expect("http::response::Builder is usable"),
-	);
+	let headers = http_response_builder
+		.headers_mut()
+		.expect("http::response::Builder is usable");
+
+	mem::swap(response.headers_mut(), headers);
+
+	// Some servers omit Content-Type (e.g. broken media endpoints). Default to
+	// application/octet-stream so slipstream's response deserialization doesn't fail.
+	if !headers.contains_key(http::header::CONTENT_TYPE) {
+		headers.insert(
+			http::header::CONTENT_TYPE,
+			HeaderValue::from_static("application/octet-stream"),
+		);
+	}
 
 	trace!("Waiting for response body...");
 	let body_bytes = response.limit_read(max_size).await?;
@@ -216,7 +229,7 @@ fn handle_error(
 
 	if e.is_connect() {
 		e = e.without_url();
-		debug!(target: "federation", %dest, %method, %url, "Federation connection failed: {e:?}");
+		tracing::info!(target: "federation_debug", %dest, %method, %url, "Federation connection failed: {e:?}");
 		return Err(Error::FederationConnection(dest.to_owned()));
 	}
 
@@ -250,8 +263,10 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		.expect("http::Request missing path_and_query");
 
 	let mut req: Object = if !body.is_empty() {
-		let content: CanonicalJsonValue =
-			serde_json::from_slice(body).expect("failed to serialize body");
+		let content: CanonicalJsonValue = slipstream::codec::from_str(
+			std::str::from_utf8(body).expect("request body is not valid UTF-8"),
+		)
+		.expect("failed to serialize body");
 
 		let authorization: [Member; 5] = [
 			("content".into(), content),
@@ -283,12 +298,12 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		.and_then(|object| object[origin.as_str()].as_object())
 		.expect("origin signatures object");
 
-	let key: &ServerSigningKeyId = signatures
+	let key: OwnedServerSigningKeyId = signatures
 		.keys()
 		.next()
-		.map(|k| k.as_str().try_into())
-		.expect("at least one signature from this origin")
-		.expect("keyid is json string");
+		.and_then(|k| OwnedServerSigningKeyId::parse(k.as_str()).ok())
+		.expect("at least one signature from this origin");
+	let key = &key;
 
 	let sig: Base64 = signatures
 		.values()
@@ -298,8 +313,13 @@ fn sign_request(&self, http_request: &mut http::Request<Vec<u8>>, dest: &ServerN
 		.expect("signature is json string")
 		.expect("signature is valid base64");
 
-	let x_matrix = XMatrix::new(origin.into(), dest.into(), key.into(), sig);
-	let authorization = HeaderValue::from(&x_matrix);
+	let sig_encoded = sig.encode();
+	let auth_str = format!(
+		"X-Matrix origin=\"{origin}\",key=\"{key}\",sig=\"{sig_encoded}\",destination=\"{dest}\""
+	);
+	let authorization = HeaderValue::from_str(&auth_str).expect("valid header value");
+
+	debug!(?authorization, "Sending X-Matrix auth");
 	let authorization = http_request
 		.headers_mut()
 		.insert(AUTHORIZATION, authorization);

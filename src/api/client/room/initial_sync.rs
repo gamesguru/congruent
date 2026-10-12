@@ -4,7 +4,7 @@ use conduwuit::{
 	utils::{BoolExt, stream::TryTools},
 };
 use futures::{FutureExt, TryStreamExt, future::try_join4};
-use ruma::api::client::room::initial_sync::v3::{PaginationChunk, Request, Response};
+use slipstream::api::client::room::initial_sync::v3::{PaginationChunk, Request, Response};
 
 use crate::Ruma;
 
@@ -46,11 +46,11 @@ pub(crate) async fn room_initial_sync_route(
 	let events = services
 		.rooms
 		.timeline
-		.pdus_rev(room_id, None)
+		.pdus_rev(room_id, std::ops::Bound::Unbounded)
 		.try_take(limit)
 		.and_then(async |mut pdu| {
-			pdu.1.set_unsigned(body.sender_user.as_deref());
-			if let Some(sender_user) = body.sender_user.as_deref() {
+			pdu.1.set_unsigned(body.sender_user_opt());
+			if let Some(sender_user) = body.sender_user_opt() {
 				if let Err(e) = services
 					.rooms
 					.pdu_metadata
@@ -70,13 +70,13 @@ pub(crate) async fn room_initial_sync_route(
 			.await?;
 
 	let messages = PaginationChunk {
-		start: events.last().map(at!(0)).as_ref().map(ToString::to_string),
+		start: events.last().map(at!(0)).as_ref().map(|c| format!("{c}")),
 
 		end: events
 			.first()
 			.map(at!(0))
 			.as_ref()
-			.map(ToString::to_string)
+			.map(|c| format!("{c}"))
 			.unwrap_or_default(),
 
 		chunk: events
@@ -91,7 +91,7 @@ pub(crate) async fn room_initial_sync_route(
 		account_data: None,
 		state: state.into(),
 		messages: messages.chunk.is_empty().or_some(messages),
-		visibility: visibility.into(),
+		visibility,
 		membership,
 	})
 }

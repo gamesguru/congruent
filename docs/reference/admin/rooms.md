@@ -82,6 +82,10 @@ List rooms that are published
 
 Check if we know about a room
 
+## `!admin rooms bump`
+
+Forcefully trigger federation sync/catchup in a room. Useful for recovering a specific stale room immediately
+
 ## `!admin rooms purge-sync-tokens`
 
-- Delete all sync tokens for a room
+Delete all sync tokens for a room

@@ -1,0 +1,18 @@
+[package]
+name = "json-canon-bench"
+version = "0.0.0"
+edition = "2024"
+
+# Standalone: deliberately NOT a member of the root workspace, so root lints/deps do not apply.
+[workspace]
+
+[dependencies]
+mtx-slipstream = { path = "/run/media/shane/shane4tb-ent/repos/_mtx-slipstream" }
+rezzy-json = { path = "/run/media/shane/shane4tb-ent/repos/rezzy/rezzy-json" }
+simd-json = { version = "0.18", default-features = false, features = ["runtime-detection", "swar-number-parsing"] }
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

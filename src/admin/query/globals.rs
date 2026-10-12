@@ -1,6 +1,6 @@
 use clap::Subcommand;
 use conduwuit::Result;
-use ruma::OwnedServerName;
+use slipstream::OwnedServerName;
 
 use crate::Context;
 

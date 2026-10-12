@@ -3,7 +3,7 @@ use std::time::Duration;
 use axum::extract::State;
 use conduwuit::{Error, Result};
 use futures::{FutureExt, StreamExt, TryFutureExt};
-use ruma::api::{
+use slipstream::api::{
 	client::error::ErrorKind,
 	federation::{
 		device::get_devices::{self, v1::UserDevice},
@@ -37,8 +37,7 @@ pub(crate) async fn get_devices_route(
 			.users
 			.get_devicelist_version(user_id)
 			.await
-			.unwrap_or(0)
-			.try_into()?,
+			.unwrap_or(0),
 		devices: services
 			.users
 			.all_devices_metadata(user_id)
@@ -96,7 +95,7 @@ pub(crate) async fn get_keys_route(
 		&services,
 		None,
 		&body.device_keys,
-		|u| Some(u.server_name()) == body.origin.as_deref(),
+		|u| Some(u.server_name()) == body.origin_opt().cloned(),
 		services.globals.allow_device_name_federation(),
 		Duration::from_secs(0),
 	)
@@ -106,6 +105,15 @@ pub(crate) async fn get_keys_route(
 		device_keys: result.device_keys,
 		master_keys: result.master_keys,
 		self_signing_keys: result.self_signing_keys,
+		failures: result
+			.failures
+			.into_iter()
+			.filter_map(|(server, failure)| {
+				slipstream::OwnedServerName::parse(server)
+					.ok()
+					.map(|server| (server, failure))
+			})
+			.collect(),
 	})
 }
 
@@ -130,5 +138,16 @@ pub(crate) async fn claim_keys_route(
 	let result =
 		claim_keys_helper(&services, &body.one_time_keys, Duration::from_secs(0)).await?;
 
-	Ok(claim_keys::v1::Response { one_time_keys: result.one_time_keys })
+	Ok(claim_keys::v1::Response {
+		one_time_keys: result.one_time_keys,
+		failures: result
+			.failures
+			.into_iter()
+			.filter_map(|(server, failure)| {
+				slipstream::OwnedServerName::parse(server)
+					.ok()
+					.map(|server| (server, failure))
+			})
+			.collect(),
+	})
 }

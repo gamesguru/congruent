@@ -1,0 +1,529 @@
+
+###############################
+Sat 2026/10/03
+###############################
+
+The immediate build blocker was just the malformed `slipstream/src/lib.rs`; fixed, and `cargo check -p conduwuit_core` now passes.
+
+For the actual `ruma` replacement, `mtx-slipstream` still needs these compatibility layers:
+
+1. Matrix identifiers:
+   - `OwnedEventId`, `OwnedRoomId`, `OwnedUserId`, `OwnedServerName`
+   - borrowed ID types and parsing
+   - `Display`, `AsRef<str>`, `Serialize`, `Deserialize`, `Hash`, etc.
+2. Primitive types:
+   - `UInt`
+   - `MilliSecondsSinceUnixEpoch`
+   - `CanonicalJsonError`
+   - `IdParseError`
+   - `MxcUriError`
+3. Canonical JSON helpers:
+   - `canonical_json::redact_content_in_place`
+   - `canonical_json::try_from_json_map`
+   - `signatures::reference_hash`
+4. Room versions:
+   - `RoomVersionId`
+   - room-version feature flags and helpers
+   - event-format/state-resolution enums
+5. Matrix event types:
+   - `events::{StateEventType, TimelineEventType, RelationType}`
+   - room-create/message/power-level content structs
+   - serde-compatible event content modules
+6. Matrix API namespace:
+   - `api::client::*`
+   - `api::federation::*`
+   - `api::error::*`
+   - request/response/error types used by router, API, and service
+7. HTTP integration:
+   - `IntoHttpError`
+   - `http_headers::{ContentDisposition, ContentDispositionType}`
+
+The current aliases only cover:
+
+```
+mtx_slipstream::CanonicalJsonObject
+mtx_slipstream::CanonicalJsonValue
+mtx_slipstream::canonical_json
+```
+
+The next highest-value step is implementing Matrix identifier types and `RoomVersionId`; those are broadly used and will make the namespace migration compile much further.
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+I’ll inspect the current `rezzy-json` implementation and `.typos.toml` context, then fix the compile errors with the smallest compatible patch and run the relevant checks.
+```
+• Ran git status --short && sed -n '1,130p' rezzy-json/src/lib.rs && sed -n '270,340p' rezzy-json/src/lib.rs…
+  └ rezzy-json/src/lib.rs:328:            simd_json::OwnedValue::Array(values) => {
+    rezzy-json/src/lib.rs:331:            simd_json::OwnedValue::Object(values) => Self::Object(
+    Cargo.toml:44:    ".typos.toml",
+• Edited rezzy-json/src/lib.rs (+8 -6)
++        #[cfg(not(feature = "simd"))]
++        {
++        }
+• Ran cargo fmt --package rezzy-json && cargo check -p rezzy-json --features simd && cargo check -p rezzy-js…
+  └     Checking rezzy-json v0.6.0-rc.1 (/run/media/shane/shane4tb-ent/repos/rezzy/rezzy-json)
+        Finished `dev` profile [unoptimized] target(s) in 4.82s
+        Finished `dev` profile [unoptimized] target(s) in 0.04s
+• Ran git diff --stat && git diff -- rezzy-json/src/lib.rs && git status --short
+  └ M  rezzy-json/Cargo.toml
+    MM rezzy-json/src/lib.rs
+    M  src/state/lthash.rs
+```
+Fixed the `rezzy-json` compile errors in rezzy-json/src/lib.rs:
+
+- Disabled the non-SIMD fallback under `#[cfg(not(feature = "simd"))]`, removing the unreachable-code warning.
+- Replaced nonexistent `Number::new` calls with existing constructors.
+- Removed the missing `ToOwned` requirement.
+- Preserved float normalization through `Number::from_f64`.
+
+Verified both configurations:
+
+- `cargo check -p rezzy-json --features simd`
+- `cargo check -p rezzy-json`
+
+Both pass.
+```
+  Worked for 35s • 5:09 PM
+```
+Node encoding confirmed: 21 + 16L + 32C. Let me compute the actual per-event write volume properly:
+$ cat \> /tmp/opencode/hamt.py \<\<'EOF'
+BRANCH=32
+def tree(n):
+&#32;&#32;&#32;&#32;"""Returns (total\_nodes, interior\_nodes, leaf\_nodes, bytes) for a CHAMP of n leaves."""
+&#32;&#32;&#32;&#32;if n\<=0: return (1,0,1,21)
+&#32;&#32;&#32;&#32;nodes=0; inter=0; leaf=0; byts=0
+&#32;&#32;&#32;&#32;depth=0
+&#32;&#32;&#32;&#32;while True:
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;count=BRANCH\*\*depth
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# entries per node at this depth
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;per=n/count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;if per\<=BRANCH or count\>=n:
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# this is the leaf-holding level
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;leaf=count; nodes+=count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;byts+=count\*(21+16\*per)
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;break
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;\# interior level: 32 children
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;inter+=count; nodes+=count
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;byts+=count\*(21+32\*32)
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;&#32;depth+=1
+&#32;&#32;&#32;&#32;return (nodes,inter,leaf,byts)
+
+def spine\_depth(n):
+&#32;&#32;&#32;&#32;d=0
+&#32;&#32;&#32;&#32;while BRANCH\*\*d \< n: d+=1
+&#32;&#32;&#32;&#32;return d
+
+print(f"{'N':\>10} {'Tn':\>8} {'depth':\>6} {'spine':\>6} {'fulltree\_B':\>12} {'fulltree\_KB':\>12} {'spine\_B':\>8} {'ratio':\>8}")
+for n in (100,1000,10000,100000,1000000):
+&#32;&#32;&#32;&#32;tn,inter,leaf,b=tree(n)
+&#32;&#32;&#32;&#32;d=spine\_depth(n)
+&#32;&#32;&#32;&#32;spine=d+1
+&#32;&#32;&#32;&#32;\# spine bytes: mostly interior (21+1024) with one leaf
+&#32;&#32;&#32;&#32;sb=(spine-1)\*(21+32\*32)+(21+16)
+&#32;&#32;&#32;&#32;print(f"{n:\>10} {tn:\>8} {d:\>6} {spine:\>6} {b:\>12,} {b/1024:\>12,.0f} {sb:\>8} {b/sb:\>8,.0f}x")
+EOF
+python3 /tmp/opencode/hamt.py
+N       Tn  depth  spine   fulltree\_B  fulltree\_KB  spine\_B    ratio
+&#32;&#32;&#32;&#32;&#32;&#32;&#32;100       33      2      3      3,317.0            3     2127        2x
+&#32;&#32;&#32;&#32;&#32;&#32;1000       33      2      3     17,717.0           17     2127        8x
+&#32;&#32;&#32;&#32;&#32;10000     1057      3      4    215,989.0          211     3172       68x
+&#32;&#32;&#32;&#32;100000    33825      4      5  3,392,693.0        3,313     4217      805x
+&#32;&#32;&#32;1000000    33825      4      5 17,792,693.0       17,376     4217    4,219x
+
+That calculation is consistent with the confirmed node model `21 + 16L + 32C`.
+
+The key result is the write-amplification gap:
+
+- 1,000 events: \~17 KiB full tree vs \~2.1 KiB spine
+- 10,000: \~211 KiB vs \~3.1 KiB
+- 100,000: \~3.2 MiB vs \~4.1 KiB
+- 1,000,000: \~17.4 MiB vs \~4.2 KiB
+
+So for large populations, rewriting the full HAMT is catastrophically more expensive than writing the copy-on-write path. At one million events, it is roughly 4,200× more data.
+
+That strongly supports storing population updates as append-only/delta work and reserving full-tree materialization for compaction, checkpoints, or rebuilds—not per-event writes.
+```
+  Worked for 13s • 5:20 PM
+```
+Clippy is clean. Now the analysis — I verified these firsthand, since the first agent wrongly claimed build\_hamt\_root\_handle doesn't exist in rezzy (it does, src/hamt/mod.rs:813).
+Clippy fix: hoisted the base64 import into the test-module header (lthash.rs:1108) and replaced the format\_collect chain with the fold + write\! pattern the file's own hex() helper already uses (lthash.rs:1722). cargo clippy --all-targets and cargo fmt --check both clean, 35 lthash tests pass.
+How much goes to roots
+rezzy persists nothing — no SQL/DDL anywhere in src/. It returns created: Vec\<(StructuralHash, Vec\<u8\>)\> (the depth+1 path-copy spine) and lets the caller store it. One root per state group everywhere:
+&#32;&#9;records	bytes	composition
+sithnapse	4	\~4,340	2× full MTHR (\~2,127 B each) + 32 B alias + 8 B refcount
+congruent	4	\~2,240	3× 64 B RootHandle pointer + 2048 B lattice
+96% of every root record is the 2048-byte LtHash lattice. That's not incidental — state\_group\_id = BLAKE3(lattice) (hash.rs:148) and LtHash is homomorphic, so incremental updates need the retained lattice, not just the 32-byte digest. The lattice cost is inherent to the design.
+What's actually wrong
+1\. congruent rebuilds the whole tree per incoming state event. This dwarfs everything above. upgrade\_outlier\_pdu.rs:239 → resolve\_state() → build\_hamt\_root\_handle → persist\_node\_recursive (resolve\_state.rs:89-97) re-materializes the entire HAMT from a flat HashMap and writes all of it, instead of using the persist\_mutation path-copy that exists and is only reachable from locally-generated events.
+state entries	full-tree rebuild	path-copy spine	ratio
+10,000	211 KB	3.2 KB	68×
+100,000	3.3 MB	4.2 KB	805×
+1,000,000	17.4 MB	4.2 KB	4,219×
+And put\_node (store.rs:125-135) writes two records per node (value + mtime) with no existence check — so content-addressed nodes that are byte-identical to what's already on disk get rewritten anyway. Dedup is defeated on every rebuild.
+2\. sithnapse stores the same2 KB lattice twice. mtxdb\_syn.rs:565-585 writes the MTHR blob under root\_node\_id(state\_group) and state\_group\_root\_node\_id(state\_group\_id) — identical bytes, two keys (value.clone() vs value). The StateGroupId interning only pays off when state groups converge (state res, forks rejoining); in the linear case that's 100% waste and doubles root bytes.
+3\. sithnapse has no read-before-write short-circuit. It does three reads (:596, :618, :634) but uses them only for collision detection and refcount arithmetic — never to compare against value and skip. So records A and C are rewritten byte-identically on every call.
+4\. congruent writes roomid\_roothandle twice per state event. state/mod.rs:384 in the atomic batch, then append.rs:330 → set\_room\_state\_hamt → state/mod.rs:679 again, unbatched. advance\_current\_state is true exactly on the incoming-state-event hot path (upgrade\_outlier\_pdu.rs:344-348).
+5\. Neither reclaims nodes. congruent's Store::sweep mark-and-sweep (store.rs:237-350) has zero callers — no admin command, no job, no test. sithnapse explicitly retains nodes (store.py:2428-2432). Combined with \#1, congruent's node tables grow \~211 KB per event at 10k entries, permanently.
+6\. congruent violates rezzy's documented persistence contract. hash.rs:67-71 says outright: "Do not use bincode or other positional binary formats with this struct… use a versioned envelope with an explicit format tag." root\_handle\_to\_bytes is exactly a positional binary format, and it drops codec\_version/routing\_version/routing\_params. A codec bump silently misparses every stored root. Also maps.rs:284,289 still say val\_size\_hint: Some(48) — it's been 64 since StructuralHash widened from \[u8;16\].
+The one-line summary: roots are \~2 KB because of a necessary2048-byte lattice; the actual write amplification is congruent rewriting 211 KB–17 MB of nodes per event on a path that already has a 3 KB alternative.
+
+The central diagnosis is right: the dominant problem is congruent rebuilding and rewriting the full HAMT for every incoming state event. The existing path-copy spine is the obvious fix, reducing writes from hundreds of KB/MB to a few KB.
+
+Priority order:
+
+1. Change congruent’s incoming-event path to use `persist_mutation` rather than `build_hamt_root_handle` \+ recursive full persistence.
+2. Add content-existence checks or make `put_node` truly content-addressed/idempotent.
+3. Remove the duplicate congruent `roomid_roothandle` write.
+4. Fix the versioned root-handle envelope before relying on persisted roots across codec changes.
+5. Deduplicate sithnapse’s two identical 2,048-byte lattice records.
+6. Add an actual sweep/reclamation caller and coverage.
+
+One arithmetic correction: congruent’s `2,048 + 3×64 = 2,240` bytes means the lattice is about 91.4% of the root record, not 96%. The broader conclusion remains unchanged: the lattice is an inherent root cost, while the HAMT rewrite amplification is accidental and fixable.
+
+
+###############################
+Mon 2026/08/17
+###############################
+
+## What the last 50 commits actually added, and the concrete simplifications
+
+Honest framing first: a lot of the +3566 is *defensive machinery that grew to fix the TestCorruptedAuthChain/promotion saga*, and it's now overlapping. The EventStatus refactor was the one reduction; the regression I just fixed shows the cost
+of the tooling density. Here's what I'd simplify, highest leverage first:
+
+### 1. Collapse the two-read fetch_state guard to one read (the `EventStatus` win you already paid for)
+fetch_state.rs:378-383 is now doing two separate DB reads (is_event_rejected and is_event_visible_to_clients) to decide "skip this rejected outlier." But the EventStatus enum already carries both facts together — Rejected(code) is the
+outlier-not-visible state. The clean invariant is **one method that returns whether the event is rejected and not a visible timeline event**, implemented as a single get_status read. That's the "invariant at read time" you originally wanted —
+now that EventStatus makes it impossible for a timeline event to be Rejected, the double-check is redundant.
+
+### 2. Delete `mark_event_rejected_skip_visibility_check` (exactly 1 caller)
+I flagged this earlier; the EventStatus refactor makes it even more obviously redundant. The visibility check exists only because of the async-vs-sync timing in the original mark_event_rejected. With EventStatus mutual-exclusion, a Rejected
+event cannot be timeline-visible, so the "skip visibility check" bypass has the same effect as the guarded path. Unify behind one mark_event_rejected, eliminating the footgun of 44+ call sites needing to know there are two.
+
+### 3. The `pdu_metadata` method surface is now ~18 overlapping predicates
+is_event_soft_failed, is_event_rejected, is_event_accepted, is_event_visible_to_clients, is_event_permanently_rejected, is_event_pending_auth_resolution, get_soft_fail_reason, get_rejection_reason, take_retry_* ×2, finish_promotion,
+clear_pdu_markers, unmark_* ×2... The EventStatus enum means most of these collapse to a single get_status().await? + matches!. Realistically: **one status() accessor + one mark_* + one unmark (clear) covers ~15 of these**, and the distinct
+predicates (permanent-vs-retryable, pending-auth) become methods on EventStatus/RejectionCode instead of Service methods. This is the "kill the flag-madness" payoff you were aiming for.
+
+### 4. `backfill.rs` (+553) and `upgrade_outlier_pdu.rs`/`handle_outlier_pdu.rs` (+~640 combined)
+These ballooned because the promotion/rejection/recovery logic is now interleaved. The PromotionClaims module (+241) + take_retry_*_for_promotion + finish_promotion + mark_event_rejected's atomic claim form a promotion-vs-rejection arbiter
+layer that overlaps PromotionDisposition. With EventStatus making stale-rejected-on-timeline impossible, several of the "recheck under lock / claim / finish" steps become unnecessary — the enum is itself the single source of truth. This is
+the biggest code-volume reduction available, but it's a careful refactor (touches the TOCTOU fixes), so I'd do it last.
+
+### 5. Already-simplified (don't re-touch)
+- timeline/heal.rs deleted (-434) — good, that's done.
+- database/map/recursive_get.rs (+126) — it's a real utility with tests; keep.
+- state_cache/update.rs (+98) — device-list/membership reconciliation; keep unless proven redundant.
+- State Resolution Intake & Fallbacks vs Synapse documented in `docs/development-gg/federation_event_intake.md#state-resolution--intake-fallbacks--synapse-vs-continuwuity-shortstatehash-vs-hamt` (comparing shortstatehash vs HAMT/accumulator).
+
+## Recommendation
+
+Do #1 and #2 now — they're small, safe, and directly reduce the exactly-the-knob-bloat you've been complaining about, building on the EventStatus foundation you already landed. Then #3 as a focused second pass (collapsing the predicate
+surface — this is where line-count drops most). Leave #4 for a deliberate, separately-tested PR.
+
+Want me to start with #1 + #2 (the two-read guard collapse + deleting mark_event_rejected_skip_visibility_check), since they're the clearest wins with minimal blast radius?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+###############################
+8/6/2026
+###############################
+
+Left as noted-not-fixed (matches your own risk assessment):
+- Effective-retirement-timestamp divergence (stamps now at absence-detection vs. MSC's "last observation still present") — real scope creep (needs last-seen tracking per active key), didn't touch it.
+- Read-modify-write cost — noted, not urgent.
+- Item 4, strict-mode gating behind org.matrix.msc4499_strict_caching — didn't touch; that's a real feature-flag decision, not a code-review fix, and I don't want to make that call unilaterally. Want me to look at what that'd take?
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+###############################
+07/31/2026
+###############################
+
+
+• Upstream guru/dev-* did fix some of the worst mistakes on this branch, but no, it did not “optimize the shit out of it” end-to-end.
+
+  What upstream clearly does better:
+
+  - It avoids the per-sync per-room SSH write flood on this branch.
+    This branch writes associate_token_shortstatehash(...) on every sync in src/api/client/sync/v3/joined.rs:439. Upstream switched back to deriving state-at-token with next_shortstatehash(...) in src/api/client/sync/v3/
+    joined.rs:450, which is much saner.
+
+  - It keeps the joined_since_last_sync fast paths.
+    Upstream still special-cases new joins in timeline/state handling at src/api/client/sync/v3/joined.rs:537 and src/api/client/sync/v3/joined.rs:623. Your branch dropped that and regressed.
+
+  - It avoids unconditional state_after work.
+    Upstream gates MSC4222 state-after on use_state_after at src/api/client/sync/v3/joined.rs:662. Your branch always builds it when MSC4222 is on.
+
+  What is still expensive in upstream:
+
+  - Sliding sync E2EE is still not cheap.
+    Upstream still walks all joined rooms and does per-room encryption/device-list logic. It uses next_shortstatehash(...) there too, which is better, but it still does a lot of room-by-room work around src/api/client/sync/
+    v5.rs:1892 in the upstream branch.
+
+  - share_encrypted_room(...) and room_members(...) are still on hot paths.
+    Those calls are still in upstream E2EE processing and will cost real time in large encrypted graphs.
+
+  - Room ordering for lists is still brute-force-ish.
+    Upstream fetches latest_pdu_in_room() timestamps and sorts active rooms at src/api/client/sync/v5.rs:1026. That is fine functionally, but not “fully optimized” if you have a lot of rooms.
+
+  - There are still explicit TODOs in sync code.
+    Notably incomplete filters and read-receipt work in v5.rs, plus join/state edge-case TODOs in joined.rs.
+
+  So the real answer is:
+
+  - Upstream fixed several branch-specific regressions.
+  - Upstream is better engineered on sync correctness/perf tradeoffs.
+  - Upstream still leaves substantial optimization headroom, especially around:
+      - E2EE membership/device-list diffing
+      - room ordering / list prep
+      - avoiding repeated room-member scans
+      - cheap state-change fingerprints / accumulators
+
+  If you want the next practical move, I’d target upstream-style behavior first, then optimize beyond it:
+
+  1. revert this branch’s SSH association strategy
+  2. restore the use_state_after gate
+  3. restore joined_since_last_sync behavior
+  4. then attack E2EE diffing with member-only state summaries or an accumulator/fingerprint path
+
+  That is where the remaining real wins are.
+
+
+
+
+###############################
+07/31/2026
+###############################
+
+❯ do get-remote-dag, compare-room-state, or other commands actually call `/state` or rather `/state_ids` for efficiency?
+
+Good, that was transient — the loop itself is fine; I'll continue the baseline dump in a moment. First, let me check your question directly in the code.
+
+  Ran 7 shell commands
+
+Answered directly from the code:
+
+compare-room-state (src/admin/yolo/state.rs:23, compare_room_state) uses the full /state endpoint (get_room_state::v1::Request), not /state_ids. It fetches complete PDU JSON for every state event in the room from the remote — not just event IDs.
+
+get-remote-dag (src/admin/yolo/dag.rs:360) uses neither. It doesn't fetch room state snapshots at all — it crawls via /event/{eventId} (get_event::v1) and /get_missing_events, walking prev_events directly to reconstruct the DAG.
+
+Interesting side finding: there is a fetch_state_ids helper (src/admin/yolo/federation.rs:382) that correctly wraps the efficient /state_ids endpoint (get_room_state_ids::v1::Request) — but it's dead code. I grepped the whole codebase and nothing calls it; it's defined and never used.
+
+So the honest answer: compare-room-state is doing more work than it needs to for a comparison — if the command only needs to diff which state event IDs differ between local and remote (rather than needing full content immediately), it should be using /state_ids first, then only fetching full PDUs for the IDs that actually differ. Want me to check compare_room_state's body to see whether it actually needs the full PDU content up front (in which case /state is justified) or whether it's just diffing IDs (in which case switching to the existing-but-unused fetch_state_ids would be a real, low-risk efficiency win)?
+
+✻ Worked for 3m 55s
+
+※ recap: Investigating stuck federation rooms on wombatx and fixing the outlier-extremity bug (patch committed, tests passing). Now verifying the fix actually reduces extremity counts on real sick rooms in the local DB copy before moving to the next patch.
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+7/14/2026
+
+I read through the actual implementation (not just the embedded TODO.txt, which is itself a stale self-review from before this session's latest fixes) and compared it against the current spec state. The gap is bigger than that TODO.txt suggests, in a few places specifically because we moved the spec since that review was written.
+
+High-severity, high-confidence gaps:
+
+1. No corroboration tier at all. Eviction in add_signing_keys is flat oldest-expired_ts-first (ovks.sort_by(|... | ok_a.expired_ts.cmp(&ok_b.expired_ts)...)) with zero corroborated/uncorroborated distinction. This is the exact vulnerability the corroboration tier exists to close — a rogue origin can flood-evict a target's history today, with none of the anti-gaming protection we spent most of this session building. This is the single biggest gap.
+2. No provisional/permanent notary two-tier binding. add_signing_keys treats direct fetches and notary relays identically for First-Seen-Wins purposes — there's no "provisional until direct-confirmed" staging, no override rule, no freeze-on-expiry. This is the core TOFU-poisoning defense in the spec and it's structurally absent, not just incomplete.
+3. expired_ts first-assignment-wins isn't implemented — and this is new since your last review. historical_keys.old_verify_keys.extend(filtered_old_verify_keys) does last-write-wins on Rust's BTreeMap::extend. The collision check right above it only compares key bodies (existing_old_key.key != new_old_key.key), never expired_ts. So two responses with the same key body but different expired_ts sail straight through the collision check and the second one silently overwrites the first via .extend() — precisely the backdating bug we just closed in the spec text this session.
+4. Storage ceiling counts active + retired together. total_keys = verify_keys.len() + old_verify_keys.len(); if total_keys > 3000 { evict } — this is the exact "two 3,000s don't reconcile" issue we fixed in the spec a few commits ago, except baked into the implementation the other way: the spec now explicitly exempts active keys from the 3,000, and this code doesn't.
+5. Duplicate-key scan is scoped too narrowly. check_no_duplicate_json_keys only walks verify_keys and old_verify_keys as named sections. The spec requires rejecting duplicates "at any depth, anywhere in the response document" — a duplicate top-level server_name or something nested in signatures wouldn't be caught here.
+
+Worth flagging, lower confidence:
+
+6. Backoff growth is already exponential in current code: record_backoff multiplies msc4499_backoff_secs by 1x, 2x, 4x, etc. and caps at 1 hour.
+7. Possible signature-invalidation bug in the FSW patching block (if vk.key != *first_seen { vk.key = first_seen.clone(); }) — this mutates the key body after the origin's original signature was presumably already deserialized into signatures. If that field isn't cleared/re-derived, a notary serving a patched response would be bundling a key body the origin never actually signed under a signature claiming it did. I can't fully confirm this from the diff alone (don't have full visibility into sign_json/to_canonical_object semantics here) — worth a direct look if you want it chased down.
+
+Matches the current spec cleanly: active-key ceiling (50), per-response retired-key ceiling (3,000), 5-minute expired_ts future-skew check, cross-map body-collision rejection, the T < expired_ts historical-verification boundary, no purge-on-valid_until_ts-expiry, and fetch coalescing via the per-server mutex.
+
+Net: it's a serious, substantial implementation effort, but items 1–4 are the load-bearing security mechanisms this session's work centers on, and none of them are there yet. Want me to go deeper on the signature-patching concern, or is this enough to take back to that branch?
+
+
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+7/7/2026
+
+• Mostly yes, but not perfectly aligned with the current 4499 draft.
+
+  What looks implemented correctly in 75.patch:
+
+  - raw duplicate-JSON-key detection before deserialization
+  - cross-map collision rejection between verify_keys and old_verify_keys
+  - verify_keys active-key ceiling of 50
+  - First Seen Wins enforcement machinery
+  - negative caching / backoff / coalescing
+  - expired_ts future-sanity filtering with 5-minute skew
+  - historical-event validity checks against origin_server_ts
+  - quota eviction logic, eventually moved to 3,000
+  - notary returns patched/filtered keys rather than blindly forwarding garbage
+
+  What still looks off against the latest draft:
+
+  - Deterministic pruning is incomplete.
+    The patch evicts by oldest expired_ts, but I did not see the explicit tie-break by key_id. So same-input/same-output determinism is not fully nailed down.
+
+  - The 3,000 rule is partly modeled as payload validation, not just retained-cache behavior.
+    There is code rejecting old_verify_keys > 3000 on ingestion. That is stronger and slightly different from “retain at most 3,000 cached key IDs per remote server.”
+
+  - The convergence wording is not really implemented as such.
+    I do not see an explicit “re-evaluate full locally known candidate set with the same pruning rule when new history is learned” concept spelled out in the implementation. There is merge/spillover behavior, but not the clean spec shape.
+
+  - Rollout behavior is implementation-specific.
+    The patch has an enforce_fsw flag, which matches the rollout idea, but that means behavior may differ depending on config, whereas the draft now presents the strict rule as normative and the rollout as transitional guidance.
+
+  - I would want to inspect the notary-vs-direct provisional freeze path more carefully before saying it is exact.
+    The test results embedded in the patch suggest it was being driven toward parity, but patch archaeology is not the same as a clean final review of the target repo.
+
+  So the honest answer is:
+
+  - Implemented in spirit: yes, strongly.
+  - Implemented exactly as the latest draft now reads: not quite.
+
+  If you want the short verdict: 75.patch is clearly a serious MSC4499 implementation effort and covers most of the important contract, but it is probably one review pass behind the final spec wording you now have. The biggest specific gap I see is the missing explicit deterministic tie-break in pruning.
+
+
+###############################
+Mon 2026/08/17 — EventStatus enum + TestCorruptedAuthChain wrap-up
+###############################
+
+## Q: does `is_event_visible_to_clients` add a flag? (no)
+
+`is_event_visible_to_clients` is NOT a new flag — it's a pre-existing read:
+`self.services.timeline.get_pdu_id(event_id).await.is_ok()`. The guard refinement
+(`is_event_rejected && !is_event_visible_to_clients`) added ZERO new state; it
+combined two already-existing reads. It is a stopgap, not a knob.
+
+## Q: is the rejection-flag model bloated? (yes)
+
+`EventMetadata` carries 3 independent status booleans (`is_outlier`, `rejected`,
+`soft_failed`) + 2 reason strings (`rejection_reason`, `soft_fail_reason`) +
+`pdu_count` (None = outlier, i.e. already redundant with `is_outlier`) +
+`short_state_hash` (separate state-res concern).
+
+`pdu_metadata` exposes ~14 read/write/take methods over them:
+`is_event_rejected`, `is_event_soft_failed`, `is_event_accepted`,
+`is_event_visible_to_clients`, `is_event_permanently_rejected`,
+`is_event_pending_auth_resolution`, `mark_event_rejected`,
+`mark_event_rejected_skip_visibility_check`, `unmark_event_rejected`,
+`unmark_event_soft_failed`, `take_retry_if_rejection_retryable`,
+`take_retry_if_rejection_retryable_for_promotion`, `mark_as_referenced`,
+`is_event_referenced`.
+
+The last ~35 commits touching pdu_metadata/metadata.rs are ALL this class:
+promotion TOCTOU, stale-marker inference, retryable-vs-permanent, typed
+RejectionCode, batched promotion races, etc. That is the "flag madness".
+
+## Q: would EventStatus enum reduce complexity + lines + improve perf? (yes, all four)
+
+Collapse the status booleans + reasons into ONE typed field:
+
+    enum EventStatus {
+        Pending,                  // outlier, awaiting validation
+        Accepted,                 // validated (timeline or accepted outlier)
+        Rejected(RejectionCode),  // typed, permanent vs retryable in the variant
+        SoftFailed(String),
+    }
+
+- Complexity: single source of truth; "stale marker on a timeline event" becomes
+  IMPOSSIBLE because Accepted/Rejected are mutually-exclusive variants.
+- Lines: ~14 methods collapse into `matches!(status, Accepted)` + a few transition
+  fns (validate/reject/soft_fail/promote); the ~35 recent fix commits become moot.
+- Perf: today every is_* is a separate metadata read + bincode deserialize, and
+  is_event_permanently_rejected additionally STRING-parses rejection_reason into
+  RejectionCode on each read. Enum stores typed RejectionCode directly → one read,
+  no parse, fewer DB round-trips.
+- Removes redundancy: is_outlier already implied by pdu_count==None.
+
+Cost: it's a DB migration (EventMetadata is bincode in RocksDB; EventMetadataV1
+fallback already exists so the migration path is proven). Large surface. Do it as
+its own focused PR — NOT bundled with the test fix or the HAMT work.
+
+## Q: do LtHash / HAMT / state-accumulator reduce this? (mostly no — different layer)
+
+- msc4511/augmented-hamt: DELETES state_compressor (-546 lines), replaces with
+  state_hamt + lthash. Real SIMPLIFICATION of state STORAGE. Does NOT touch
+  rejection flags.
+- msc4500/state-accumulator: EXPANSION (server_pool +643, new endpoint, ~800 lines
+  admin/yolo outlier/rejected tooling). Adds layers, doesn't simplify.
+- Neither touches event VALIDATION (rejection flags / promotion / sync /send).
+  That needs the EventStatus enum (+ optionally Synapse-style staging+background).
+
+Verdict: EventStatus is the single highest-leverage simplification available; it's
+orthogonal to HAMT/LtHash (state storage). Both are worth doing, separately.
+
+## Go side (complement) status
+
+4 fixes correct + safe (commit as one):
+  1. MustSendTransaction -> tolerant SendTransaction (the one real fix)
+  2. removed orphan Timeline = append(..., eventB)
+  3. t.Fatalf -> ct.Errorf + 404 in /state_ids handler (t.Fatalf = Goexit + no
+     response = homeserver hangs until timeout)
+  4. sync barrier (sentinel + MustSyncUntil) in the positive test
+
+2 skip items are the drift (judgment call):
+  A. recovery test SkipIf(Dendrite) && SkipIf(Synapse) -> Conduwuit-only.
+  B. t.Skip("Synapse-specific final state assertion") -> skips the test's only real
+     assertion on Synapse (passes without checking anything).
+
+Lean: make both explicit Conduwuit-only (positive guard + comment), not
+double-negative skips / skip-only-the-assertion. That double-negative form is
+exactly the accommodation-hack drift that's been biting.
+
+
+###############################
+Mon 2026/08/17 — EventStatus enum: DONE
+###############################
+
+The EventStatus enum refactor is landed as 359c5d03d3 (17 files, +365/-195):
+EventStatus { Pending, Accepted, Rejected(RejectionCode), SoftFailed(SoftFailCode) }
+replaces the is_outlier/rejected/soft_failed booleans + reason strings, plus a
+typed SoftFailCode. cargo check clean; metadata unit tests 5/5.
+
+Remaining roadmap items (orthogonal to each other, both separate layers):
+1. HAMT/LtHash state-STORAGE simplification — msc4511/augmented-hamt deletes
+   state_compressor (-546 lines) for state_hamt + lthash. msc4500 is an
+   expansion, not a simplification.
+2. Synapse-style staging + background ingestion — the optional step 2 for the
+   ingestion layer (close the remaining sync-vs-async /send race class;
+   EventStatus was step 1 for the rejection-flag part of that layer).
+
+
+#################################################################################
+# Fri 2026/10/02 - some cleanups (profile, hamt, etc)
+#################################################################################
+
+Here is what each item means in practice. I'm explaining from the review comments and the agents' reports, not from fresh code reading.
+
+1. Profile watcher is still global
+- src/service/sync/watch.rs makes every /sync session watch the whole userprofileupdate_value map, using an empty prefix.
+- Any user's display name, avatar or profile-field change wakes every active sync on the server. Most of those wakeups find nothing the session is allowed to see and are thrown away.
+- On a busy server that is wasted work for every profile edit.
+- Fix: subscribe only sessions whose filter asks for profile fields. Alternatively, scope the wake-up to users who share a room with the syncing user. It's a performance issue, not a correctness one.
+
+2. Profile backfill migration
+- Custom profile fields are now announced to clients through an update-record stream. Records are written only when a field changes.
+- Fields set before this change have no record. A client doing an initial MSC4429 sync won't see them until someone edits them again.
+- Fix: a one-time, repeatable migration that writes an update record for every existing field. Or make initial sync read the current profile rows directly instead of the stream.
+- Cost: this is a correctness gap for existing users, but only for the MSC4429 initial-sync feature.
+
+3. Strict accessor callers
+- The old state accessors silently skip any state event whose PDU can't be loaded. A caller then sees a partial room state and treats it as the whole thing.
+- I added strict versions that return errors. Only theesponses and reconcile_membership were moved over.
+- About a dozen other callers still use the lossy versof them cache or serve the result, which is where apartial snapshot does harm. Callers that just display
+- Next step: audit those callers and move the risky on
+
+4. del_node race
+- del_node removes a HAMT node from the database and from an in-memory cache.
+- A reader that loaded the node just before the delete after the delete. The cache then holds a node with no
+  database row.
+- I reordered it to delete the row first and evict the window but doesn't close it.
+- Closing it needs a lock or a version counter around
+- Risk: this only matters if nodes are deleted while rderstand to be the garbage-collection sweep. It should rare and low-impact.
+
+If you want me to pick one, the strict-accessor audit se it's the only one that can serve wrong data. Theprofile backfill is next, for existing users.

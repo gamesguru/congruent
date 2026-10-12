@@ -1,0 +1,12 @@
+# Enable in each clone with:
+#   git config --local include.path ../.gitconfig
+# Remove refs already fetched with:
+#   git update-ref -d refs/remotes/origin/_metadata/badges
+#   git update-ref -d refs/remotes/origin/badges
+#   git update-ref -d refs/remotes/origin/gh-pages
+
+[remote "origin"]
+	fetch = +refs/heads/*:refs/remotes/origin/*
+	fetch = ^refs/heads/_metadata/badges
+	fetch = ^refs/heads/badges
+	fetch = ^refs/heads/gh-pages

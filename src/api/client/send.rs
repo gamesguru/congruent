@@ -1,9 +1,12 @@
 use axum::{extract::State, response::IntoResponse};
 use axum_client_ip::ClientIp;
 use conduwuit::{Err, Result, err, utils};
-use ruma::{OwnedEventId, api::client::message::send_message_event};
+use slipstream::{OwnedEventId, api::client::message::send_message_event};
 
-use crate::{Ruma, RumaResponse};
+use crate::{
+	Ruma, RumaResponse,
+	json_util::{json_response, require_object_content, single_field},
+};
 
 const SEND_TXN_EVENT_ID_PREFIX: &[u8] = b"\xFFevent_id:";
 const SEND_TXN_DELAY_ID_PREFIX: &[u8] = b"\xFFdelay_id:";
@@ -63,10 +66,7 @@ fn cached_send_txn_response(
 }
 
 fn delay_id_response(delay_id: &str) -> axum::response::Response {
-	axum::Json(serde_json::json!({
-		"delay_id": delay_id,
-	}))
-	.into_response()
+	json_response(single_field("delay_id", &delay_id))
 }
 
 /// # `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}`
@@ -84,22 +84,24 @@ pub(crate) async fn send_message_event_route(
 	body: Ruma<send_message_event::v3::Request>,
 ) -> Result<axum::response::Response> {
 	let sender_user = body.sender_user();
-	let sender_device = body.sender_device.as_deref();
+	let sender_device = body.sender_device_opt();
 	let appservice_info = body.appservice_info.as_ref();
 	if services.users.is_suspended(sender_user).await? {
 		return Err!(Request(UserSuspended("You cannot perform this action while suspended.")));
 	}
 
+	require_object_content(&body.body.body)?;
+
 	services
 		.users
-		.update_device_last_seen(sender_user, body.sender_device.as_deref(), client_ip)
+		.update_device_last_seen(sender_user, body.sender_device_opt(), client_ip)
 		.await;
 
 	if let Some(delay) = body.delay {
 		// Check if this is a new transaction id
 		if let Ok(response) = services
 			.transactions
-			.get_client_txn(sender_user, sender_device, &body.txn_id)
+			.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await
 		{
 			if response.is_empty() {
@@ -112,14 +114,14 @@ pub(crate) async fn send_message_event_route(
 
 		let txn_lock = services
 			.transactions
-			.lock_client_txn(sender_user, sender_device, &body.txn_id)
+			.lock_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await;
 
 		// Re-check after acquiring the transaction lock in case a concurrent request
 		// with the same txn id populated the cache while this request was waiting.
 		if let Ok(response) = services
 			.transactions
-			.get_client_txn(sender_user, sender_device, &body.txn_id)
+			.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 			.await
 		{
 			if response.is_empty() {
@@ -133,7 +135,7 @@ pub(crate) async fn send_message_event_route(
 		let event = service::rooms::delayed_events::ScheduledDelayedEvent {
 			event_type: body.event_type.clone().into(),
 			state_key: None,
-			content: body.body.body.cast_ref().clone(),
+			content: slipstream::sswire::Raw::from_json_text(body.body.body.get())?,
 			user_id: sender_user.to_owned(),
 			room_id: body.room_id.clone(),
 			running_since: std::time::SystemTime::now(),
@@ -145,9 +147,10 @@ pub(crate) async fn send_message_event_route(
 			.queue_delayed_event(event)
 			.await?;
 
-		services.transactions.add_client_txnid(
+		services.transactions.add_room_txnid(
 			sender_user,
 			sender_device,
+			&body.room_id,
 			&body.txn_id,
 			&encode_cached_send_txn_response(SEND_TXN_DELAY_ID_PREFIX, delay_id.as_bytes()),
 		);
@@ -160,7 +163,7 @@ pub(crate) async fn send_message_event_route(
 	// Check if this is a new transaction id
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -176,14 +179,14 @@ pub(crate) async fn send_message_event_route(
 
 	let txn_lock = services
 		.transactions
-		.lock_client_txn(sender_user, sender_device, &body.txn_id)
+		.lock_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await;
 
 	// Re-check after acquiring the transaction lock in case a concurrent request
 	// with the same txn id populated the cache while this request was waiting.
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -203,7 +206,7 @@ pub(crate) async fn send_message_event_route(
 	// same txn id populated the cache while this request was waiting.
 	if let Ok(response) = services
 		.transactions
-		.get_client_txn(sender_user, sender_device, &body.txn_id)
+		.get_room_txn(sender_user, sender_device, &body.room_id, &body.txn_id)
 		.await
 	{
 		// The client might have sent a txnid of the /sendToDevice endpoint
@@ -224,18 +227,15 @@ pub(crate) async fn send_message_event_route(
 		&body.event_type,
 		&body.body.body,
 		Some(&body.txn_id),
-		if appservice_info.is_some() {
-			body.timestamp
-		} else {
-			None
-		},
+		if appservice_info.is_some() { body.ts } else { None },
 		None,
 	))
 	.await?;
 
-	services.transactions.add_client_txnid(
+	services.transactions.add_room_txnid(
 		sender_user,
 		sender_device,
+		&body.room_id,
 		&body.txn_id,
 		&encode_cached_send_txn_response(SEND_TXN_EVENT_ID_PREFIX, event_id.as_bytes()),
 	);
@@ -257,7 +257,7 @@ mod tests {
 
 		match parse_cached_send_txn_response(&cached, true)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$event:example.com")
+				assert_eq!(parsed.as_str(), "$event:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}
@@ -286,7 +286,7 @@ mod tests {
 
 		match parse_cached_send_txn_response(b"$legacy:example.com", false)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$legacy:example.com")
+				assert_eq!(parsed.as_str(), "$legacy:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}
@@ -298,7 +298,7 @@ mod tests {
 	fn cached_send_txn_response_prefers_legacy_event_id_in_delay_branch() -> Result<()> {
 		match parse_cached_send_txn_response(b"$legacy:example.com", true)? {
 			| CachedSendTxnResponse::EventId(parsed) => {
-				assert_eq!(parsed.as_str(), "$legacy:example.com")
+				assert_eq!(parsed.as_str(), "$legacy:example.com");
 			},
 			| CachedSendTxnResponse::DelayId(_) => panic!("expected event id"),
 		}

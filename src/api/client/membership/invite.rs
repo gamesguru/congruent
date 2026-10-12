@@ -6,7 +6,8 @@ use conduwuit::{
 	warn,
 };
 use futures::FutureExt;
-use ruma::{
+use service::Services;
+use slipstream::{
 	RoomId, UserId,
 	api::{client::membership::invite_user, federation::membership::create_invite},
 	events::{
@@ -14,7 +15,6 @@ use ruma::{
 		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
-use service::Services;
 
 use super::banned_room_check;
 use crate::Ruma;
@@ -45,7 +45,7 @@ pub(crate) async fn invite_user_route(
 		&services,
 		sender_user,
 		Some(&body.room_id),
-		body.room_id.server_name(),
+		body.room_id.server_name().as_ref(),
 		client,
 	)
 	.await?;
@@ -121,12 +121,25 @@ pub(crate) async fn invite_helper(
 		return Err!(Request(Forbidden("Invite blocked by antispam service.")));
 	}
 
+	if !services
+		.rooms
+		.state_cache
+		.is_joined(sender_user, room_id)
+		.await
+	{
+		return Err!(Request(Forbidden(
+			"You must be joined in the room you are trying to invite from."
+		)));
+	}
+
 	if !services.globals.user_is_local(recipient_user) {
 		let (pdu, pdu_json, invite_room_state) = {
 			let state_lock = services.rooms.state.mutex.lock(room_id).await;
 
 			let content = RoomMemberEventContent {
+				displayname: services.users.displayname(recipient_user).await.ok(),
 				avatar_url: services.users.avatar_url(recipient_user).await.ok(),
+				blurhash: services.users.blurhash(recipient_user).await.ok(),
 				is_direct: Some(is_direct),
 				reason,
 				..RoomMemberEventContent::new(MembershipState::Invite)
@@ -149,14 +162,13 @@ pub(crate) async fn invite_helper(
 
 			(pdu, pdu_json, invite_room_state)
 		};
-
 		let room_version_id = services.rooms.state.get_room_version(room_id).await?;
 
 		let response = services
 			.sending
-			.send_federation_request(recipient_user.server_name(), create_invite::v2::Request {
+			.send_federation_request(&recipient_user.server_name(), create_invite::v2::Request {
 				room_id: room_id.to_owned(),
-				event_id: (*pdu.event_id).to_owned(),
+				event_id: pdu.event_id.clone(),
 				room_version: room_version_id.clone(),
 				event: services
 					.sending
@@ -190,7 +202,14 @@ pub(crate) async fn invite_helper(
 		let pdu_id = services
 			.rooms
 			.event_handler
-			.handle_incoming_pdu(recipient_user.server_name(), room_id, &event_id, value, true)
+			.handle_incoming_pdu(
+				&recipient_user.server_name(),
+				room_id,
+				&event_id,
+				value,
+				true,
+				None,
+			)
 			.boxed()
 			.await?
 			.ok_or_else(|| {
@@ -198,17 +217,6 @@ pub(crate) async fn invite_helper(
 			})?;
 
 		return services.sending.send_pdu_room(room_id, &pdu_id).await;
-	}
-
-	if !services
-		.rooms
-		.state_cache
-		.is_joined(sender_user, room_id)
-		.await
-	{
-		return Err!(Request(Forbidden(
-			"You must be joined in the room you are trying to invite from."
-		)));
 	}
 
 	let state_lock = services.rooms.state.mutex.lock(room_id).await;
@@ -222,16 +230,13 @@ pub(crate) async fn invite_helper(
 		..RoomMemberEventContent::new(MembershipState::Invite)
 	};
 
-	services
-		.rooms
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(recipient_user.to_string(), &content),
-			sender_user,
-			Some(room_id),
-			&state_lock,
-		)
-		.await?;
+	Box::pin(services.rooms.timeline.build_and_append_pdu(
+		PduBuilder::state(recipient_user.to_string(), &content),
+		sender_user,
+		Some(room_id),
+		&state_lock,
+	))
+	.await?;
 
 	drop(state_lock);
 

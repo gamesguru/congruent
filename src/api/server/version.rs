@@ -1,5 +1,5 @@
 use conduwuit::Result;
-use ruma::api::federation::discovery::get_server_version;
+use slipstream::api::federation::discovery::get_server_version;
 
 use crate::Ruma;
 

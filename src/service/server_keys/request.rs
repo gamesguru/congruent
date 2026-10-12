@@ -1,21 +1,35 @@
 use std::{collections::BTreeMap, fmt::Debug};
 
-use conduwuit::{Err, Result, debug, implement};
-use ruma::{
+use conduwuit::{Err, Result, debug, debug_warn, implement};
+use slipstream::{
 	OwnedServerName, OwnedServerSigningKeyId, ServerName, ServerSigningKeyId,
 	api::federation::discovery::{
 		ServerSigningKeys, get_remote_server_keys,
 		get_remote_server_keys_batch::{self, v2::QueryCriteria},
 		get_server_keys,
 	},
+	sswire::Raw,
 };
+
+use super::validate::check_no_duplicate_json_keys;
+
+/// MSC4499: Validate raw JSON before any typed deserialization.
+/// Shared by all key ingestion paths (direct fetch, notary, batch notary).
+fn validate_raw(raw: &Raw<ServerSigningKeys>, strict: bool) -> bool {
+	if let Err(e) = check_no_duplicate_json_keys(raw.get(), strict) {
+		debug_warn!("Rejecting key response with duplicate JSON keys: {e}");
+		return false;
+	}
+
+	true
+}
 
 #[implement(super::Service)]
 pub(super) async fn batch_notary_request<'a, S, K>(
 	&self,
 	notary: &ServerName,
 	batch: S,
-) -> Result<Vec<ServerSigningKeys>>
+) -> Result<Vec<Raw<ServerSigningKeys>>>
 where
 	S: Iterator<Item = (&'a ServerName, K)> + Send,
 	K: Iterator<Item = &'a ServerSigningKeyId> + Send,
@@ -23,15 +37,15 @@ where
 	use get_remote_server_keys_batch::v2::Request;
 	type RumaBatch = BTreeMap<OwnedServerName, BTreeMap<OwnedServerSigningKeyId, QueryCriteria>>;
 
-	let criteria = QueryCriteria {
-		minimum_valid_until_ts: Some(self.minimum_valid_ts()),
-	};
-
 	let mut server_keys = batch.fold(RumaBatch::new(), |mut batch, (server, key_ids)| {
 		batch
 			.entry(server.into())
 			.or_default()
-			.extend(key_ids.map(|key_id| (key_id.into(), criteria.clone())));
+			.extend(key_ids.map(|key_id| {
+				(key_id.into(), QueryCriteria {
+					minimum_valid_until_ts: Some(self.minimum_valid_ts()),
+				})
+			}));
 
 		batch
 	});
@@ -58,15 +72,17 @@ where
 			"notary request"
 		);
 
-		let response = self
+		let batch_response = self
 			.services
 			.sending
 			.send_synapse_request(notary, request)
-			.await?
+			.await?;
+
+		let response = batch_response
 			.server_keys
-			.into_iter()
-			.map(|key| key.deserialize())
-			.filter_map(Result::ok);
+			.iter()
+			.filter(|raw| validate_raw(raw, self.services.server.config.msc4499_strict_caching))
+			.cloned();
 
 		results.extend(response);
 	}
@@ -79,38 +95,49 @@ pub async fn notary_request(
 	&self,
 	notary: &ServerName,
 	target: &ServerName,
-) -> Result<impl Iterator<Item = ServerSigningKeys> + Clone + Debug + Send + use<>> {
+) -> Result<impl Iterator<Item = Raw<ServerSigningKeys>> + Clone + Debug + Send + use<>> {
 	use get_remote_server_keys::v2::Request;
 
 	let request = Request {
 		server_name: target.into(),
-		minimum_valid_until_ts: self.minimum_valid_ts(),
+		minimum_valid_until_ts: Some(self.minimum_valid_ts()),
 	};
+
+	let notary_response = self
+		.services
+		.sending
+		.send_federation_request(notary, request)
+		.await?;
+
+	Ok(notary_response
+		.server_keys
+		.iter()
+		.filter(|raw| validate_raw(raw, self.services.server.config.msc4499_strict_caching))
+		.cloned()
+		.collect::<Vec<_>>()
+		.into_iter())
+}
+
+#[implement(super::Service)]
+pub async fn server_request(&self, target: &ServerName) -> Result<Raw<ServerSigningKeys>> {
+	use get_server_keys::v2::Request;
 
 	let response = self
 		.services
 		.sending
-		.send_federation_request(notary, request)
-		.await?
-		.server_keys
-		.into_iter()
-		.map(|key| key.deserialize())
-		.filter_map(Result::ok);
+		.send_federation_request(target, Request)
+		.await?;
 
-	Ok(response)
-}
+	// MSC4499: Check raw JSON for duplicate keys before the parser dedups
+	check_no_duplicate_json_keys(
+		response.server_key.get(),
+		self.services.server.config.msc4499_strict_caching,
+	)?;
 
-#[implement(super::Service)]
-pub async fn server_request(&self, target: &ServerName) -> Result<ServerSigningKeys> {
-	use get_server_keys::v2::Request;
-
-	let server_signing_key = self
-		.services
-		.sending
-		.send_federation_request(target, Request::new())
-		.await
-		.map(|response| response.server_key)
-		.and_then(|key| key.deserialize().map_err(Into::into))?;
+	let server_signing_key: ServerSigningKeys = response
+		.server_key
+		.deserialize_as()
+		.map_err(|e| conduwuit::err!(BadServerResponse("{e}")))?;
 
 	if server_signing_key.server_name != target {
 		return Err!(BadServerResponse(debug_warn!(
@@ -120,5 +147,5 @@ pub async fn server_request(&self, target: &ServerName) -> Result<ServerSigningK
 		)));
 	}
 
-	Ok(server_signing_key)
+	Ok(response.server_key)
 }

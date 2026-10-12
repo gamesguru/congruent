@@ -18,10 +18,9 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use conduwuit::{Result, Server, debug, error, utils::response::LimitReadExt, warn};
+use conduwuit::{Result, Server, debug, err, error, utils::response::LimitReadExt, warn};
 use database::{Deserialized, Map};
-use ruma::events::{Mentions, room::message::RoomMessageEventContent};
-use serde::Deserialize;
+use slipstream::events::{Mentions, room::message::RoomMessageEventContent};
 use tokio::{
 	sync::Notify,
 	time::{MissedTickBehavior, interval},
@@ -43,18 +42,45 @@ struct Services {
 	server: Arc<Server>,
 }
 
-#[derive(Debug, Deserialize)]
-struct CheckForAnnouncementsResponse {
-	announcements: Vec<CheckForAnnouncementsResponseEntry>,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct CheckForAnnouncementsResponseEntry {
 	id: u64,
 	date: Option<String>,
 	message: String,
-	#[serde(default, skip_serializing_if = "bool::not")]
 	mention_room: bool,
+}
+
+impl CheckForAnnouncementsResponseEntry {
+	fn from_value(value: &slipstream::json::Value) -> Option<Self> {
+		Some(Self {
+			id: value.get("id")?.as_u64()?,
+			date: value
+				.get("date")
+				.and_then(|date| date.as_str())
+				.map(ToOwned::to_owned),
+			message: value.get("message")?.as_str()?.to_owned(),
+			mention_room: matches!(
+				value.get("mention_room"),
+				Some(slipstream::json::Value::Bool(true))
+			),
+		})
+	}
+}
+
+fn parse_announcements(body: &str) -> Result<Vec<CheckForAnnouncementsResponseEntry>> {
+	let value = slipstream::codec::from_str::<slipstream::json::Value>(body)
+		.map_err(|e| err!(BadServerResponse("Invalid announcements response: {e}")))?;
+	let Some(slipstream::json::Value::Array(entries)) = value.get("announcements") else {
+		return Err(err!(BadServerResponse("Announcements response is missing `announcements`")));
+	};
+
+	entries
+		.iter()
+		.map(|entry| {
+			CheckForAnnouncementsResponseEntry::from_value(entry)
+				.ok_or_else(|| err!(BadServerResponse("Invalid announcement entry")))
+		})
+		.collect()
 }
 
 const CHECK_FOR_ANNOUNCEMENTS_URL: &str =
@@ -140,8 +166,7 @@ impl Service {
 			.limit_read_text(1024 * 1024)
 			.await?;
 
-		let response = serde_json::from_str::<CheckForAnnouncementsResponse>(&response)?;
-		for announcement in &response.announcements {
+		for announcement in &parse_announcements(&response)? {
 			if announcement.id > self.last_check_for_announcements_id().await {
 				self.handle(announcement).await;
 				self.update_check_for_announcements_id(announcement.id);

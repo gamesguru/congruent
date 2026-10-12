@@ -1,21 +1,18 @@
 use std::collections::BTreeMap;
 
-use ruma::{
+use slipstream::{
 	MilliSecondsSinceUnixEpoch, OwnedEventId,
 	events::{EventContent, MessageLikeEventType, StateEventType, TimelineEventType},
 };
-use serde::Deserialize;
-use serde_json::value::{RawValue as RawJsonValue, to_raw_value};
 
-use super::StateKey;
+use super::{RawJson, StateKey};
 
 /// Build the start of a PDU in order to add it to the Database.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Builder {
-	#[serde(rename = "type")]
 	pub event_type: TimelineEventType,
 
-	pub content: Box<RawJsonValue>,
+	pub content: RawJson,
 
 	pub unsigned: Option<Unsigned>,
 
@@ -28,18 +25,17 @@ pub struct Builder {
 	pub timestamp: Option<MilliSecondsSinceUnixEpoch>,
 }
 
-type Unsigned = BTreeMap<String, serde_json::Value>;
+type Unsigned = BTreeMap<String, slipstream::json::Value>;
 
 impl Builder {
 	pub fn state<S, T>(state_key: S, content: &T) -> Self
 	where
-		T: EventContent<EventType = StateEventType>,
+		T: EventContent<EventType = StateEventType> + slipstream::codec::Serialize,
 		S: Into<StateKey>,
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: to_raw_value(content)
-				.expect("Builder failed to serialize state event content to RawValue"),
+			content: RawJson::from_value(content),
 			state_key: Some(state_key.into()),
 			..Self::default()
 		}
@@ -47,12 +43,11 @@ impl Builder {
 
 	pub fn timeline<T>(content: &T) -> Self
 	where
-		T: EventContent<EventType = MessageLikeEventType>,
+		T: EventContent<EventType = MessageLikeEventType> + slipstream::codec::Serialize,
 	{
 		Self {
 			event_type: content.event_type().into(),
-			content: to_raw_value(content)
-				.expect("Builder failed to serialize timeline event content to RawValue"),
+			content: RawJson::from_value(content),
 			..Self::default()
 		}
 	}
@@ -62,7 +57,7 @@ impl Default for Builder {
 	fn default() -> Self {
 		Self {
 			event_type: "m.room.message".into(),
-			content: Box::<RawJsonValue>::default(),
+			content: RawJson::empty_object(),
 			unsigned: None,
 			state_key: None,
 			redacts: None,

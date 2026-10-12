@@ -15,6 +15,11 @@ crate-type = [
 #	"dylib",
 ]
 
+# `serde_regex` is used only as a string path in `#[serde(with = "serde_regex")]`,
+# which cargo-machete's path-based scan cannot detect.
+[package.metadata.cargo-machete]
+ignored = ["serde_regex"]
+
 [features]
 brotli_compression = [
 	"reqwest/brotli",
@@ -59,6 +64,7 @@ zstd_compression = [
 argon2.workspace = true
 arrayvec.workspace = true
 axum.workspace = true
+base64.workspace = true
 axum-extra.workspace = true
 bytes.workspace = true
 bytesize.workspace = true
@@ -67,7 +73,6 @@ checked_ops.workspace = true
 chrono.workspace = true
 clap.workspace = true
 conduwuit-macros.workspace = true
-conduwuit-build-metadata.workspace = true
 const-str.workspace = true
 core_affinity.workspace = true
 ctor.workspace = true
@@ -78,7 +83,6 @@ futures.workspace = true
 http-body-util.workspace = true
 http.workspace = true
 ipaddress.workspace = true
-itertools.workspace = true
 libc.workspace = true
 libloading.workspace = true
 libloading.optional = true
@@ -90,10 +94,10 @@ rand.workspace = true
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 regex.workspace = true
 reqwest.workspace = true
+rezzy.workspace = true
+slipstream.workspace = true
 sha2.workspace = true
-ruma.workspace = true
 sanitize-filename.workspace = true
-serde_json.workspace = true
 serde_regex.workspace = true
 serde-saphyr.workspace = true
 serde.workspace = true
@@ -118,6 +122,7 @@ roaring.workspace = true
 parking_lot.workspace = true
 lock_api.workspace = true
 hyper-util.workspace = true
+dashmap.workspace = true
 rustc-hash.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -128,6 +133,7 @@ hardened_malloc-rs.workspace = true
 hardened_malloc-rs.optional = true
 
 [dev-dependencies]
+blake3 = "1"
 maplit.workspace = true
 
 [lints]

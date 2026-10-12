@@ -1,4 +1,5 @@
 #![type_length_limit = "49152"] //TODO: reduce me
+#![deny(unused_must_use)]
 
 use std::sync::{Arc, atomic::Ordering};
 
@@ -16,6 +17,10 @@ mod runtime;
 mod sentry;
 mod server;
 mod signal;
+
+use conduwuit_core::config::Config;
+
+use crate::clap::update;
 
 #[cfg(feature = "console")]
 mod attach;
@@ -35,7 +40,7 @@ pub fn run() -> Result<()> {
 	let args = clap::parse();
 
 	if args.version_verbose {
-		let mut output = conduwuit_build_metadata::verbose_version();
+		let mut output = conduwuit_git_info::verbose_version();
 
 		let enabled = build_features::ENABLED_FEATURES;
 		output.push_str("\nenabled_features: ");
@@ -58,6 +63,8 @@ pub fn run() -> Result<()> {
 }
 
 pub fn run_with_args(args: &Args) -> Result<()> {
+	init_git_info();
+
 	// Spawn deadlock detection thread
 	deadlock::spawn();
 
@@ -66,18 +73,23 @@ pub fn run_with_args(args: &Args) -> Result<()> {
 	#[cfg(feature = "aws_lc_rs")]
 	rustls::crypto::aws_lc_rs::default_provider()
 		.install_default()
-		.expect("failed to initialise ring rustls crypto provider");
+		.expect("failed to initialise aws_lc_rs rustls crypto provider");
 
 	#[cfg(all(feature = "ring", not(feature = "aws_lc_rs")))]
 	rustls::crypto::ring::default_provider()
 		.install_default()
 		.expect("failed to initialise ring rustls crypto provider");
 
-	let runtime = runtime::new(args)?;
-	let server = Server::new(args, Some(runtime.handle()))?;
+	let config_paths = args.config.clone().unwrap_or_default();
+	let config = Config::load(&config_paths)
+		.and_then(|raw| update(raw, args))
+		.and_then(|raw| Config::new(&raw))?;
+
+	let runtime = runtime::new(args, &config)?;
+	let server = Server::new(config, Some(runtime.handle()))?;
 
 	runtime.spawn(signal::signal(server.clone()));
-	runtime.block_on(async_main(&server))?;
+	runtime.block_on(async_main(&server, args.drop_sync_tokens))?;
 	runtime::shutdown(&server, runtime);
 
 	#[cfg(unix)]
@@ -89,6 +101,16 @@ pub fn run_with_args(args: &Args) -> Result<()> {
 	Ok(())
 }
 
+async fn drop_sync_tokens(db: &conduwuit_database::Database) {
+	conduwuit_core::info!("Dropping all sync tokens as requested by CLI flag...");
+	if let Err(e) = db.db.drop_cf("roomsynctoken_shortstatehash") {
+		conduwuit_core::warn!("Failed to drop sync tokens column family: {e}");
+	}
+	conduwuit_core::info!(
+		"Finished dropping all sync tokens (requires restart to recreate the empty table)."
+	);
+}
+
 /// Operate the server normally in release-mode static builds. This will start,
 /// run and stop the server within the asynchronous runtime.
 #[cfg(any(not(conduwuit_mods), not(feature = "conduwuit_mods")))]
@@ -98,11 +120,14 @@ pub fn run_with_args(args: &Args) -> Result<()> {
 	skip_all,
 	level = "info"
 )]
-async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
+async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result<(), Error> {
 	extern crate conduwuit_router as router;
 
 	match router::start(&server.server).await {
 		| Ok(services) => {
+			if drop_sync_tokens_flag {
+				drop_sync_tokens(&services.db).await;
+			}
 			let _ = server.services.lock().await.insert(services);
 		},
 		| Err(error) => {
@@ -147,13 +172,17 @@ async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
 /// and hot-reload portions of the server as-needed before returning for an
 /// actual shutdown. This is not available in release-mode or static builds.
 #[cfg(all(conduwuit_mods, feature = "conduwuit_mods"))]
-async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
+async fn async_main(server: &Arc<Server>, drop_sync_tokens_flag: bool) -> Result<(), Error> {
 	let mut starts = true;
 	let mut reloads = true;
 	while reloads {
 		if let Err(error) = mods::open(server).await {
 			error!("Loading router: {error}");
 			return Err(error);
+		}
+
+		if starts && drop_sync_tokens_flag {
+			drop_sync_tokens(&server.server.db).await;
 		}
 
 		let result = mods::run(server, starts).await;
@@ -175,4 +204,20 @@ async fn async_main(server: &Arc<Server>) -> Result<(), Error> {
 
 	debug_info!("Exit runtime");
 	Ok(())
+}
+
+/// Hand the compile-time git info to core so the rest of the program can read
+/// it without depending on the crate that changes on every commit.
+fn init_git_info() {
+	use conduwuit_git_info as git;
+
+	conduwuit_core::info::git::set(conduwuit_core::info::git::GitInfo {
+		commit_hash: git::GIT_COMMIT_HASH,
+		commit_hash_short: git::GIT_COMMIT_HASH_SHORT,
+		version_extra: git::VERSION_EXTRA,
+		branch: git::GIT_BRANCH,
+		remote_url: git::GIT_REMOTE_URL,
+		remote_web_url: git::GIT_REMOTE_WEB_URL,
+		remote_commit_url: git::GIT_REMOTE_COMMIT_URL,
+	});
 }

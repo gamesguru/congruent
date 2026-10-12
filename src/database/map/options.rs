@@ -28,6 +28,13 @@ pub(crate) fn cache_read_options_default(db: &Arc<Engine>) -> ReadOptions {
 }
 
 #[inline]
+pub(crate) fn nocache_read_options_default(db: &Arc<Engine>) -> ReadOptions {
+	let mut options = read_options_default(db);
+	options.fill_cache(false);
+	options
+}
+
+#[inline]
 pub(crate) fn read_options_default(db: &Arc<Engine>) -> ReadOptions {
 	let mut options = ReadOptions::default();
 	options.set_total_order_seek(true);

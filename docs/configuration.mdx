@@ -89,3 +89,5 @@ Created user with user_id: @june:girlboss.ceo and password: `<redacted>`
 Alternatively, you can configure `CONTINUWUITY_ADMIN_EXECUTE` or the config file value `admin_execute` with a list of commands.
 
 This command-line argument can be paired with the `--option` flag.
+
+If you want to run admin commands against an already-running server without opening the interactive REPL, use `--attach --execute "..."` instead. In that mode the attach client connects to `console.sock`, sends each command line directly, and exits without requiring a TTY.

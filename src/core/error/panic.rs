@@ -18,6 +18,7 @@ impl Error {
 	pub fn from_panic(e: Box<dyn Any + Send>) -> Self { Self::Panic(debug::panic_str(&e), e) }
 
 	#[inline]
+	#[must_use]
 	pub fn into_panic(self) -> Box<dyn Any + Send + 'static> {
 		match self {
 			| Self::Panic(_, e) | Self::PanicAny(e) => e,
@@ -28,6 +29,7 @@ impl Error {
 
 	/// Get the panic message string.
 	#[inline]
+	#[must_use]
 	pub fn panic_str(self) -> Option<&'static str> {
 		self.is_panic()
 			.then_some(debug::panic_str(&self.into_panic()))
@@ -35,6 +37,7 @@ impl Error {
 
 	/// Check if the Error is trafficking a panic object.
 	#[inline]
+	#[must_use]
 	pub fn is_panic(&self) -> bool {
 		match &self {
 			| Self::Panic(..) | Self::PanicAny(..) => true,

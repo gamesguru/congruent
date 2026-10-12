@@ -10,17 +10,13 @@ use conduwuit::{
 	},
 };
 use futures::{StreamExt, future::join};
-use ruma::{
+use service::{Services, rooms::lazy_loading::MemberSet};
+use slipstream::{
 	EventId, OwnedRoomId, RoomId,
 	api::client::sync::sync_events::v3::{LeftRoom, RoomAccountData, State, Timeline},
 	events::{AnySyncStateEvent, StateEventType, TimelineEventType},
-	serde::Raw,
+	sswire::Raw,
 	uint,
-};
-use serde_json::value::RawValue;
-use service::{
-	Services,
-	rooms::{lazy_loading::MemberSet, short::ShortStateHash},
 };
 
 use crate::client::{
@@ -77,14 +73,22 @@ pub(super) async fn load_left_room(
 		return Ok(None);
 	}
 
-	// return early if:
-	// - this is an initial sync and the room filter doesn't include leaves, or
-	// - this is an incremental sync, and we've already synced the leave, and the
-	//   room filter doesn't include leaves
-	if last_sync_end_count.is_none_or(|last_sync_end_count| last_sync_end_count >= left_count)
-		&& !filter.room.include_leave
-	{
-		return Ok(None);
+	let is_forgotten = services
+		.rooms
+		.state_cache
+		.is_forgotten(syncing_user, room_id)
+		.await;
+
+	match last_sync_end_count {
+		| None =>
+			if is_forgotten || !filter.room.include_leave {
+				return Ok(None);
+			},
+		| Some(last_sync_end_count) => {
+			if last_sync_end_count >= left_count && !filter.room.include_leave {
+				return Ok(None);
+			}
+		},
 	}
 
 	if let Some(ref leave_membership_event) = leave_membership_event {
@@ -95,11 +99,11 @@ pub(super) async fn load_left_room(
 		);
 	}
 
-	let last_sync_end_shortstatehash = match last_sync_end_count {
+	let last_sync_end_root_handle = match last_sync_end_count {
 		| Some(last_sync_end_count) => services
 			.rooms
 			.timeline
-			.prev_shortstatehash(room_id, PduCount::Normal(last_sync_end_count.saturating_add(1)))
+			.prev_root_handle(room_id, PduCount::Normal(last_sync_end_count.saturating_add(1)))
 			.await
 			.ok(),
 		| None => None,
@@ -107,7 +111,7 @@ pub(super) async fn load_left_room(
 
 	let does_not_exist = services.rooms.metadata.exists(room_id).eq(&false).await;
 
-	let (timeline, state_events, leave_shortstatehash) = match leave_membership_event {
+	let (timeline, state_events, leave_root_handle) = match leave_membership_event {
 		| Some(ref leave_membership_event) if does_not_exist => {
 			/*
 			we have none PDUs with left beef for this room, likely because it was a rejected invite to a room
@@ -136,31 +140,40 @@ pub(super) async fn load_left_room(
 				"leave PDU should be for the user requesting the sync"
 			);
 
-			// the shortstatehash of the state _immediately before_ the syncing user left
-			// this room. the state represented here _does not_ include
-			// `leave_membership_event`.
-			let leave_shortstatehash = services
+			// `pdu_roothandle_after_event` resolves the state *after* a PDU, so the
+			// leave event's own root includes `leave_membership_event`. For the
+			// membership immediately before the user left we walk back one
+			// event to the pre-leave root.
+			let leave_root_handle = services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(&leave_membership_event.event_id)
+				.pdu_roothandle_after_event(&leave_membership_event.event_id)
 				.await?;
+
+			let before_leave_root_handle = services
+				.rooms
+				.state_accessor
+				.pdu_roothandle_before_event(&leave_membership_event.event_id)
+				.await
+				.unwrap_or_else(|_| leave_root_handle.clone());
 
 			let prev_membership_event = services
 				.rooms
 				.state_accessor
-				.state_get(
-					leave_shortstatehash,
+				.state_get_in_room_hamt(
+					room_id,
+					&before_leave_root_handle,
 					&StateEventType::RoomMember,
 					leave_state_key.as_str(),
 				)
 				.await?;
 
-			let last_sync_end_shortstatehash = if last_sync_end_shortstatehash.is_none()
+			let last_sync_end_root_handle = if last_sync_end_root_handle.is_none()
 				&& last_sync_end_count.is_some_and(|c| c >= left_count)
 			{
-				Some(leave_shortstatehash)
+				Some(leave_root_handle.clone())
 			} else {
-				last_sync_end_shortstatehash
+				last_sync_end_root_handle
 			};
 
 			let (timeline, state_events) = build_left_state_and_timeline(
@@ -168,13 +181,13 @@ pub(super) async fn load_left_room(
 				sync_context,
 				room_id,
 				leave_membership_event,
-				leave_shortstatehash,
+				&leave_root_handle,
 				&prev_membership_event,
-				last_sync_end_shortstatehash,
+				last_sync_end_root_handle,
 			)
 			.await?;
 
-			(timeline, state_events, Some(leave_shortstatehash))
+			(timeline, state_events, Some(leave_root_handle))
 		},
 
 		| None => {
@@ -201,7 +214,7 @@ pub(super) async fn load_left_room(
 	let state_after = if services.config.experimental_features.msc4222_enabled
 		&& sync_context.use_state_after
 	{
-		if let Some(shortstatehash) = leave_shortstatehash {
+		if let Some(root_handle) = leave_root_handle {
 			let lazily_loaded_members: Option<MemberSet> = prepare_lazily_loaded_members(
 				services,
 				sync_context,
@@ -213,7 +226,7 @@ pub(super) async fn load_left_room(
 			build_state_initial(
 				services,
 				syncing_user,
-				shortstatehash,
+				&root_handle,
 				lazily_loaded_members.as_ref(),
 			)
 			.await?
@@ -277,7 +290,7 @@ pub(super) async fn load_left_room(
 		}
 	}
 
-	let timeline_ids: std::collections::HashSet<&EventId> =
+	let timeline_ids: std::collections::HashSet<&str> =
 		raw_timeline_pdus.iter().map(|pdu| &*pdu.event_id).collect();
 
 	let raw_state_events: Vec<Raw<AnySyncStateEvent>> = state_events
@@ -320,9 +333,9 @@ async fn build_left_state_and_timeline(
 	sync_context: SyncContext<'_>,
 	room_id: &RoomId,
 	leave_membership_event: &PduEvent,
-	leave_shortstatehash: ShortStateHash,
+	leave_root_handle: &rezzy::hamt::RootHandle,
 	prev_membership_event: &PduEvent,
-	last_sync_end_shortstatehash: Option<ShortStateHash>,
+	last_sync_end_root_handle: Option<rezzy::hamt::RootHandle>,
 ) -> Result<(TimelinePdus, Vec<PduEvent>)> {
 	let SyncContext {
 		syncing_user,
@@ -359,16 +372,24 @@ async fn build_left_state_and_timeline(
 		.and_then(|limit| limit.try_into().ok())
 		.unwrap_or(DEFAULT_TIMELINE_LIMIT);
 
-	let raw_timeline = load_timeline(
-		services,
-		syncing_user,
-		room_id,
-		Some(timeline_start_count),
-		Some(timeline_end_count),
-		timeline_limit,
-		false,
-	)
-	.await?;
+	// A zero timeline limit explicitly requests no timeline events. Do not pass
+	// it through to `load_timeline`: that helper fetches one extra event to
+	// determine whether the result is limited, so a zero there would still
+	// return one event. The leave-state snapshot is built below independently.
+	let raw_timeline = if timeline_limit == 0 {
+		TimelinePdus::default()
+	} else {
+		load_timeline(
+			services,
+			syncing_user,
+			room_id,
+			Some(timeline_start_count),
+			Some(timeline_end_count),
+			timeline_limit,
+			false,
+		)
+		.await?
+	};
 
 	let mut stream = raw_timeline
 		.pdus
@@ -392,36 +413,36 @@ async fn build_left_state_and_timeline(
 		limited: raw_timeline.limited,
 	};
 
-	let timeline_start_shortstatehash = async {
+	let timeline_start_root_handle = async {
 		if let Some((_, pdu)) = timeline.pdus.front() {
-			if let Ok(shortstatehash) = services
+			if let Ok(root_handle) = services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(&pdu.event_id)
+				.pdu_roothandle_before_event(&pdu.event_id)
 				.await
 			{
-				return shortstatehash;
+				return root_handle;
 			}
 		}
 
 		// the timeline generally should not be empty, but in case it is we use
-		// `leave_shortstatehash` as the state to send
-		leave_shortstatehash
+		// `leave_root_handle` as the state to send
+		leave_root_handle.clone()
 	};
 
 	let lazily_loaded_members =
 		prepare_lazily_loaded_members(services, sync_context, room_id, timeline.members());
 
-	let (timeline_start_shortstatehash, lazily_loaded_members) =
-		join(timeline_start_shortstatehash, lazily_loaded_members).await;
+	let (timeline_start_root_handle, lazily_loaded_members) =
+		join(timeline_start_root_handle, lazily_loaded_members).await;
 
 	// compute the state delta between the previous sync and this sync.
-	let state = match (last_sync_end_count, last_sync_end_shortstatehash) {
-		| (Some(last_sync_end_count), Some(last_sync_end_shortstatehash)) => {
-			let timeline_end_shortstatehash = services
+	let state = match (last_sync_end_count, last_sync_end_root_handle) {
+		| (Some(last_sync_end_count), Some(last_sync_end_root_handle)) => {
+			let timeline_end_root_handle = services
 				.rooms
 				.state_accessor
-				.pdu_shortstatehash(leave_membership_event.event_id())
+				.pdu_roothandle_after_event(leave_membership_event.event_id())
 				.await?;
 
 			build_state_incremental(
@@ -429,9 +450,9 @@ async fn build_left_state_and_timeline(
 				syncing_user,
 				room_id,
 				PduCount::Normal(last_sync_end_count),
-				last_sync_end_shortstatehash,
-				timeline_start_shortstatehash,
-				timeline_end_shortstatehash,
+				&last_sync_end_root_handle,
+				&timeline_start_root_handle,
+				&timeline_end_root_handle,
 				&timeline,
 				lazily_loaded_members.as_ref(),
 			)
@@ -441,7 +462,7 @@ async fn build_left_state_and_timeline(
 			build_state_initial(
 				services,
 				syncing_user,
-				timeline_start_shortstatehash,
+				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),
 			)
 			.await?,
@@ -465,18 +486,21 @@ fn create_dummy_leave_event(
 	SyncContext { syncing_user, .. }: SyncContext<'_>,
 	room_id: &RoomId,
 ) -> PduEvent {
-	// TODO: because this event ID is random, it could cause caching issues with
-	// clients. perhaps a database table could be created to hold these dummy
-	// events, or they could be stored as outliers?
+	// Keep each synthetic event ID unique so clients do not merge dummy events
+	// from different rooms or sync responses.
 	PduEvent {
-		event_id: EventId::new(services.globals.server_name()),
+		event_id: EventId::parse(format!(
+			"${}:{}",
+			utils::random_string(18),
+			services.globals.server_name()
+		))
+		.expect("synthetic leave event ID must be valid"),
 		sender: syncing_user.to_owned(),
 		origin: None,
-		origin_server_ts: utils::millis_since_unix_epoch()
-			.try_into()
-			.expect("Timestamp is valid js_int value"),
+		origin_server_ts: utils::millis_since_unix_epoch(),
 		kind: TimelineEventType::RoomMember,
-		content: RawValue::from_string(r#"{"membership": "leave"}"#.to_owned()).unwrap(),
+		content: Raw::from_json_text(r#"{"membership": "leave"}"#)
+			.expect("static synthetic leave content is valid JSON"),
 		state_key: Some(syncing_user.as_str().into()),
 		unsigned: None,
 		// The following keys are dropped on conversion
@@ -487,5 +511,6 @@ fn create_dummy_leave_event(
 		redacts: None,
 		hashes: EventHash { sha256: String::new() },
 		signatures: None,
+		rejected: false,
 	}
 }

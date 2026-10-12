@@ -8,7 +8,7 @@ use axum::{
 	extract::State,
 	response::{IntoResponse, Response},
 };
-use conduwuit::{Result, debug, debug_error, debug_warn, err, error, trace};
+use conduwuit::{Result, debug, debug_error, debug_warn, err, error, trace, warn};
 use conduwuit_service::Services;
 use futures::FutureExt;
 use http::{Method, StatusCode, Uri};
@@ -35,6 +35,7 @@ pub(crate) async fn handle(
 	let method = req.method().clone();
 	let services_ = services.clone();
 	let parent = Span::current();
+	let start = tokio::time::Instant::now();
 	let task = services.server.runtime().spawn(async move {
 		tokio::select! {
 			response = execute(&services_, req, next, &parent) => response,
@@ -49,9 +50,38 @@ pub(crate) async fn handle(
 		}
 	});
 
-	task.await
+	let result = task
+		.await
 		.map_err(unhandled)
-		.and_then(move |result| handle_result(&method, &uri, result))
+		.and_then(move |result| handle_result(&method, &uri, result));
+
+	let elapsed = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+	services
+		.server
+		.metrics
+		.requests_time
+		.fetch_add(elapsed, Ordering::Relaxed);
+
+	let is_error = match &result {
+		| Ok(res) => res.status().is_server_error(),
+		| Err(e) => e.is_server_error(),
+	};
+
+	if is_error {
+		services
+			.server
+			.metrics
+			.requests_fail
+			.fetch_add(1, Ordering::Relaxed);
+	} else {
+		services
+			.server
+			.metrics
+			.requests_success
+			.fetch_add(1, Ordering::Relaxed);
+	}
+
+	result
 }
 
 #[tracing::instrument(
@@ -102,7 +132,7 @@ fn handle_result(method: &Method, uri: &Uri, result: Response) -> Result<Respons
 	let reason = status.canonical_reason().unwrap_or("Unknown Reason");
 
 	if status.is_server_error() {
-		error!(%method, %uri, "{code} {reason}");
+		warn!(%method, %uri, "{code} {reason}");
 	} else if status.is_client_error() {
 		debug_error!(%method, %uri, "{code} {reason}");
 	} else if status.is_redirection() {

@@ -12,9 +12,9 @@ use conduwuit_core::implement;
 #[cfg(feature = "url_preview")]
 use conduwuit_core::utils::response::LimitReadExt;
 use ipaddress::IPAddress;
-#[cfg(feature = "url_preview")]
-use ruma::OwnedMxcUri;
 use serde::Serialize;
+#[cfg(feature = "url_preview")]
+use slipstream::OwnedMxcUri;
 use url::Url;
 
 use super::Service;
@@ -25,6 +25,10 @@ pub struct UrlPreviewData {
 	pub title: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:description"))]
 	pub description: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:type"))]
+	pub og_type: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:url"))]
+	pub og_url: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "og:image"))]
 	pub image: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none", rename(serialize = "matrix:image:size"))]
@@ -47,8 +51,57 @@ pub struct UrlPreviewData {
 	pub audio_size: Option<usize>,
 }
 
+impl slipstream::codec::Serialize for UrlPreviewData {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut object = slipstream::ObjectBuilder::new();
+		if let Some(value) = &self.title {
+			object.field("og:title", value);
+		}
+		if let Some(value) = &self.description {
+			object.field("og:description", value);
+		}
+		if let Some(value) = &self.og_type {
+			object.field("og:type", value);
+		}
+		if let Some(value) = &self.og_url {
+			object.field("og:url", value);
+		}
+		if let Some(value) = &self.image {
+			object.field("og:image", value);
+		}
+		if let Some(value) = &self.image_size {
+			object.field("matrix:image:size", value);
+		}
+		if let Some(value) = &self.image_width {
+			object.field("og:image:width", value);
+		}
+		if let Some(value) = &self.image_height {
+			object.field("og:image:height", value);
+		}
+		if let Some(value) = &self.video {
+			object.field("og:video", value);
+		}
+		if let Some(value) = &self.video_size {
+			object.field("matrix:video:size", value);
+		}
+		if let Some(value) = &self.video_width {
+			object.field("og:video:width", value);
+		}
+		if let Some(value) = &self.video_height {
+			object.field("og:video:height", value);
+		}
+		if let Some(value) = &self.audio {
+			object.field("og:audio", value);
+		}
+		if let Some(value) = &self.audio_size {
+			object.field("matrix:audio:size", value);
+		}
+		object.finish()
+	}
+}
+
 #[implement(Service)]
-pub async fn remove_url_preview(&self, url: &str) -> Result<()> {
+pub fn remove_url_preview(&self, url: &str) -> Result<()> {
 	// TODO: also remove the downloaded image
 	self.db.remove_url_preview(url)
 }
@@ -57,7 +110,7 @@ pub async fn remove_url_preview(&self, url: &str) -> Result<()> {
 pub async fn clear_url_previews(&self) { self.db.clear_url_previews().await; }
 
 #[implement(Service)]
-pub async fn set_url_preview(&self, url: &str, data: &UrlPreviewData) -> Result<()> {
+pub fn set_url_preview(&self, url: &str, data: &UrlPreviewData) -> Result<()> {
 	let now = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
 		.expect("valid system time");
@@ -106,8 +159,15 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 				debug!(%url, "URL preview HEAD probe returned {status}, falling back to GET");
 				let mut req = client.get(url.as_str());
 				if status == reqwest::StatusCode::FORBIDDEN {
-					req =
-						req.header(reqwest::header::USER_AGENT, conduwuit::version::user_agent());
+					req = req.header(
+						reqwest::header::USER_AGENT,
+						self.services
+							.server
+							.config
+							.url_preview_user_agent
+							.as_deref()
+							.unwrap_or(&self.services.server.config.user_agent),
+					);
 				}
 				response = req.send().await?;
 			}
@@ -115,10 +175,12 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 	}
 
 	if let Err(e) = response.error_for_status_ref() {
-		return Err!(Request(Unknown(error!("HTTP {e} fetching URL preview probe"))));
+		return Err!(Request(Unknown(warn!("HTTP {e} fetching URL preview probe"))));
 	}
 
 	debug!(%url, "URL preview response headers: {:?}", response.headers());
+
+	response.error_for_status_ref()?;
 
 	if let Some(remote_addr) = response.remote_addr() {
 		debug!(%url, "URL preview response remote address: {:?}", remote_addr);
@@ -148,7 +210,7 @@ async fn request_url_preview(&self, url: &Url) -> Result<UrlPreviewData> {
 		},
 	};
 
-	self.set_url_preview(url.as_str(), &data).await?;
+	self.set_url_preview(url.as_str(), &data)?;
 
 	Ok(data)
 }
@@ -161,8 +223,8 @@ pub async fn download_image(
 	preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
 	use conduwuit::utils::random_string;
-	use image::ImageReader;
-	use ruma::Mxc;
+	use image::{ImageFormat, ImageReader, imageops::FilterType};
+	use slipstream::Mxc;
 
 	let mut preview_data = preview_data.unwrap_or_default();
 
@@ -174,7 +236,15 @@ pub async fn download_image(
 			.client
 			.url_preview
 			.get(url)
-			.header(reqwest::header::USER_AGENT, conduwuit::version::user_agent())
+			.header(
+				reqwest::header::USER_AGENT,
+				self.services
+					.server
+					.config
+					.url_preview_user_agent
+					.as_deref()
+					.unwrap_or(&self.services.server.config.user_agent),
+			)
 			.send()
 			.await?;
 	}
@@ -183,7 +253,7 @@ pub async fn download_image(
 		return Err!(Request(Unknown(error!("HTTP {e} fetching image"))));
 	}
 
-	let image = response
+	let mut image = response
 		.limit_read(
 			self.services
 				.server
@@ -194,36 +264,28 @@ pub async fn download_image(
 		)
 		.await?;
 
-	let mxc = Mxc {
-		server_name: self.services.globals.server_name(),
-		media_id: &random_string(super::MXC_LENGTH),
-	};
+	let (width, height);
 
-	let mut final_image = image;
-	let mut final_width;
-	let mut final_height;
+	// Metadata (size/dimensions) reported to clients always describes the
+	// original fetched image, even though a downscaled copy may be what's
+	// actually stored below.
+	preview_data.image_size = Some(image.len());
 
-	let cursor = std::io::Cursor::new(&final_image);
+	let cursor = std::io::Cursor::new(&image);
 	if let Ok(reader) = ImageReader::new(cursor).with_guessed_format() {
 		if let Ok(dim) = reader.into_dimensions() {
-			final_width = Some(dim.0);
-			final_height = Some(dim.1);
+			width = Some(dim.0);
+			height = Some(dim.1);
 
 			// Dynamically scale down massive URL preview images to 250x250 limits
 			// to avoid gigabytes of raw 4K database hoarding.
 			if dim.0 > 250 || dim.1 > 250 {
-				if let Ok(img) = image::load_from_memory(&final_image) {
-					use image::imageops::FilterType;
+				if let Ok(img) = image::load_from_memory(&image) {
 					let resized = img.resize(250, 250, FilterType::CatmullRom);
 					let mut cursor = std::io::Cursor::new(Vec::new());
 
-					if resized
-						.write_to(&mut cursor, image::ImageFormat::Jpeg)
-						.is_ok()
-					{
-						final_image = cursor.into_inner();
-						final_width = Some(resized.width());
-						final_height = Some(resized.height());
+					if resized.write_to(&mut cursor, ImageFormat::Jpeg).is_ok() {
+						image = cursor.into_inner();
 					}
 				}
 			}
@@ -238,12 +300,16 @@ pub async fn download_image(
 		)));
 	}
 
-	preview_data.image_width = final_width.or(preview_data.image_width);
-	preview_data.image_height = final_height.or(preview_data.image_height);
+	let mxc = Mxc {
+		server_name: self.services.globals.server_name(),
+		media_id: &random_string(super::MXC_LENGTH),
+	};
 
-	self.create(&mxc, None, None, None, &final_image).await?;
+	self.create(&mxc, None, None, None, &image).await?;
 
 	preview_data.image = Some(mxc.to_string());
+	preview_data.image_width = width.or(preview_data.image_width);
+	preview_data.image_height = height.or(preview_data.image_height);
 
 	Ok(preview_data)
 }
@@ -289,7 +355,7 @@ pub async fn download_audio(
 pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	use conduwuit::utils::random_string;
 	use http::header::CONTENT_TYPE;
-	use ruma::Mxc;
+	use slipstream::Mxc;
 
 	let mut response = self.services.client.url_preview.get(url).send().await?;
 
@@ -299,7 +365,15 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 			.client
 			.url_preview
 			.get(url)
-			.header(reqwest::header::USER_AGENT, conduwuit::version::user_agent())
+			.header(
+				reqwest::header::USER_AGENT,
+				self.services
+					.server
+					.config
+					.url_preview_user_agent
+					.as_deref()
+					.unwrap_or(&self.services.server.config.user_agent),
+			)
 			.send()
 			.await?;
 	}
@@ -328,7 +402,7 @@ pub async fn download_media(&self, url: &str) -> Result<(OwnedMxcUri, usize)> {
 	self.create(&mxc, None, None, content_type.as_deref(), &media)
 		.await?;
 
-	Ok((OwnedMxcUri::from(mxc.to_string()), media.len()))
+	Ok((OwnedMxcUri::parse(mxc.to_string())?, media.len()))
 }
 
 #[cfg(not(feature = "url_preview"))]
@@ -338,6 +412,7 @@ pub async fn download_image(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -348,6 +423,7 @@ pub async fn download_video(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -358,12 +434,14 @@ pub async fn download_audio(
 	_url: &str,
 	_preview_data: Option<UrlPreviewData>,
 ) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
 #[cfg(not(feature = "url_preview"))]
 #[implement(Service)]
 pub async fn download_media(&self, _url: &str) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -378,7 +456,15 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	if response.status() == reqwest::StatusCode::FORBIDDEN {
 		response = client
 			.get(url)
-			.header(reqwest::header::USER_AGENT, conduwuit::version::user_agent())
+			.header(
+				reqwest::header::USER_AGENT,
+				self.services
+					.server
+					.config
+					.url_preview_user_agent
+					.as_deref()
+					.unwrap_or(&self.services.server.config.user_agent),
+			)
 			.send()
 			.await?;
 	}
@@ -403,9 +489,18 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 
 	let mut preview_data = UrlPreviewData::default();
 
+	let base_url = Url::parse(url).ok();
+	let resolve = |raw: &str| -> String {
+		base_url
+			.as_ref()
+			.and_then(|base| base.join(raw).ok())
+			.map_or_else(|| raw.to_owned(), |joined| joined.to_string())
+	};
+
 	if let Some(obj) = html.opengraph.images.first() {
+		let image_url = resolve(&obj.url);
 		if let Ok(data_with_img) = self
-			.download_image(&obj.url, Some(preview_data.clone()))
+			.download_image(&image_url, Some(preview_data.clone()))
 			.await
 		{
 			preview_data = data_with_img;
@@ -414,13 +509,15 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	}
 
 	if let Some(obj) = html.opengraph.videos.first() {
-		preview_data = self.download_video(&obj.url, Some(preview_data)).await?;
+		let video_url = resolve(&obj.url);
+		preview_data = self.download_video(&video_url, Some(preview_data)).await?;
 		preview_data.video_width = obj.properties.get("width").and_then(|v| v.parse().ok());
 		preview_data.video_height = obj.properties.get("height").and_then(|v| v.parse().ok());
 	}
 
 	if let Some(obj) = html.opengraph.audios.first() {
-		preview_data = self.download_audio(&obj.url, Some(preview_data)).await?;
+		let audio_url = resolve(&obj.url);
+		preview_data = self.download_audio(&audio_url, Some(preview_data)).await?;
 	}
 
 	let props = html.opengraph.properties;
@@ -428,6 +525,8 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 	/* use OpenGraph title/description, but fall back to HTML if not available */
 	preview_data.title = props.get("title").cloned().or(html.title);
 	preview_data.description = props.get("description").cloned().or(html.description);
+	preview_data.og_type = Some(html.opengraph.og_type);
+	preview_data.og_url = props.get("url").cloned();
 
 	Ok(preview_data)
 }
@@ -435,6 +534,7 @@ async fn download_html(&self, url: &str) -> Result<UrlPreviewData> {
 #[cfg(not(feature = "url_preview"))]
 #[implement(Service)]
 async fn download_html(&self, _url: &str) -> Result<UrlPreviewData> {
+	std::future::ready(()).await;
 	Err!(FeatureDisabled("url_preview"))
 }
 
@@ -519,7 +619,7 @@ pub fn url_preview_allowed(&self, url: &Url) -> bool {
 				| Some((_, root_domain)) => {
 					if denylist_domain_explicit.contains(&root_domain.to_owned()) {
 						debug!(
-							"Root domain {} is not allowed by \
+							"Root domain {} is not allowed by \n\t\t\t\t\t\t \
 							 url_preview_domain_explicit_denylist (check 1/3)",
 							&root_domain
 						);
@@ -529,7 +629,7 @@ pub fn url_preview_allowed(&self, url: &Url) -> bool {
 					if allowlist_domain_explicit.contains(&root_domain.to_owned()) {
 						debug!(
 							"Root domain {} is allowed by url_preview_domain_explicit_allowlist \
-							 (check 2/3)",
+							 \n\t\t\t\t\t (check 2/3)",
 							&root_domain
 						);
 						return true;
@@ -541,7 +641,7 @@ pub fn url_preview_allowed(&self, url: &Url) -> bool {
 					{
 						debug!(
 							"Root domain {} is allowed by url_preview_domain_contains_allowlist \
-							 (check 3/3)",
+							 \n\t\t\t\t\t (check 3/3)",
 							&root_domain
 						);
 						return true;

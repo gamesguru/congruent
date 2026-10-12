@@ -2,6 +2,7 @@ pub mod arrayvec;
 pub mod bool;
 pub mod bytes;
 pub mod content_disposition;
+pub mod dag_walker;
 pub mod debug;
 pub mod defer;
 pub mod future;
@@ -11,6 +12,8 @@ pub mod json;
 pub mod kahns_sort;
 pub mod math;
 pub mod mutex_map;
+pub mod pdu;
+pub mod pdu_parser;
 pub mod rand;
 pub mod response;
 pub mod result;
@@ -21,6 +24,7 @@ pub mod sys;
 #[cfg(test)]
 mod tests;
 pub mod time;
+pub mod timeline_sorter;
 pub mod with_lock;
 
 pub use ::conduwuit_macros::implement;
@@ -33,9 +37,13 @@ pub use self::{
 	future::{BoolExt as FutureBoolExt, OptionStream, TryExtExt as TryFutureExtExt},
 	hash::sha256::delimited as calculate_hash,
 	html::Escape as HtmlEscape,
-	json::{deserialize_from_str, to_canonical_object},
+	json::{
+		OwnedEventType, SerdeValue, SerdeValueRef, clone_raw, deserialize_from_str,
+		to_canonical_object,
+	},
 	math::clamp,
 	mutex_map::{Guard as MutexMapGuard, MutexMap},
+	pdu::pdu_json_canonical_strip,
 	rand::{shuffle, string as random_string},
 	stream::{IterStream, ReadyExt, Tools as StreamTools, TryReadyExt},
 	string::{str_from_bytes, string_from_bytes},
@@ -133,11 +141,27 @@ macro_rules! is_zero {
 #[macro_export]
 macro_rules! is_equal_to {
 	($val:ident) => {
-		|x| x == $val
+		|x| $val == x
 	};
 
 	($val:expr_2021) => {
-		|x| x == $val
+		|x| $val == x
+	};
+
+	($val:expr_2021,ref) => {
+		|x| $val == x
+	};
+
+	($val:expr_2021,deref) => {
+		|x| $val == *x
+	};
+
+	($val:expr_2021,deref_both) => {
+		|x| *$val == *x
+	};
+
+	($val:expr_2021,cow) => {
+		|x| $val.as_ref() == *x
 	};
 }
 

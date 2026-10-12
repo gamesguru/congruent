@@ -1,20 +1,17 @@
 use std::{collections::HashSet, iter::once};
 
-use conduwuit::trace;
+use conduwuit::{debug, info, trace};
 use conduwuit_core::{
 	Err, Result, err, implement,
 	matrix::{event::Event, pdu::PduBuilder},
 	utils::{IterStream, ReadyExt},
 };
 use futures::{FutureExt, StreamExt};
-use ruma::{
-	OwnedEventId, OwnedServerName, RoomId, RoomVersionId, UserId,
+use slipstream::{
+	OwnedEventId, OwnedServerName, RoomId, UserId,
 	events::{
 		TimelineEventType,
-		room::{
-			member::{MembershipState, RoomMemberEventContent},
-			redaction::RoomRedactionEventContent,
-		},
+		room::member::{MembershipState, RoomMemberEventContent},
 	},
 };
 
@@ -36,44 +33,27 @@ pub async fn build_and_append_pdu(
 		.create_hash_and_sign_event(pdu_builder, sender, room_id, state_lock)
 		.await?;
 
-	let room_id = room_id
-		.map(ToOwned::to_owned)
-		.or_else(|| pdu.room_id_or_hash())
-		.ok_or_else(|| err!(Request(Forbidden("Event has no room_id"))))?;
+	let room_id = room_id.map_or_else(
+		|| pdu.room_id_or_hash().expect("built PDU has a room ID"),
+		ToOwned::to_owned,
+	);
 	if self.services.admin.is_admin_room(&room_id).await {
 		self.check_pdu_for_admin_room(&pdu, sender).boxed().await?;
 	}
 
 	// If redaction event is not authorized, do not append it to the timeline
 	if *pdu.kind() == TimelineEventType::RoomRedaction {
-		use RoomVersionId::*;
 		trace!("Running redaction checks for room {room_id}");
-		match self.services.state.get_room_version(&room_id).await? {
-			| V1 | V2 | V3 | V4 | V5 | V6 | V7 | V8 | V9 | V10 => {
-				if let Some(redact_id) = pdu.redacts() {
-					if !self
-						.services
-						.state_accessor
-						.user_can_redact(redact_id, pdu.sender(), &room_id, false)
-						.await?
-					{
-						return Err!(Request(Forbidden("User cannot redact this event.")));
-					}
-				}
-			},
-			| _ => {
-				let content: RoomRedactionEventContent = pdu.get_content()?;
-				if let Some(redact_id) = &content.redacts {
-					if !self
-						.services
-						.state_accessor
-						.user_can_redact(redact_id, pdu.sender(), &room_id, false)
-						.await?
-					{
-						return Err!(Request(Forbidden("User cannot redact this event.")));
-					}
-				}
-			},
+		let room_version_id = self.services.state.get_room_version(&room_id).await?;
+		if let Some(redact_id) = pdu.redacts_id(&room_version_id) {
+			if !self
+				.services
+				.state_accessor
+				.user_can_redact(&redact_id, pdu.sender(), &room_id, false)
+				.await?
+			{
+				return Err!(Request(Forbidden("User cannot redact this event.")));
+			}
 		}
 	}
 
@@ -108,12 +88,34 @@ pub async fn build_and_append_pdu(
 			.await;
 	}
 
+	let previous_root_handle = self.services.state.get_room_state_hamt(&room_id).await.ok();
+
 	// We append to state before appending the pdu, so we don't have a moment in
 	// time with the pdu without it's state. This is okay because append_pdu can't
-	// fail.
-	trace!("Appending {} state for room {room_id}", pdu.event_id());
-	let statehashid = self.services.state.append_to_state(&pdu, &room_id).await?;
-	trace!("State hash ID for {room_id}: {statehashid:?}");
+	// fail. Only state events mutate the room state; a non-state event must not be
+	// routed through append_to_state, which rejects non-state PDUs.
+	let (state_root_handle, state_node) = if pdu.state_key().is_some() {
+		trace!("Appending {} state for room {room_id}", pdu.event_id());
+		self.services
+			.state
+			.append_to_state(&pdu, &room_id, state_lock, None)
+			.await
+			.map(|(handle, node)| (handle, Some(node)))?
+	} else {
+		// A non-state event does not change the room state, so reuse the current
+		// room root and do not persist any new HAMT node.
+		let root = previous_root_handle
+			.clone()
+			.ok_or_else(|| err!(Request(NotFound("Room has no state to append"))))?;
+		(root, None)
+	};
+
+	if let Some(node) = &state_node {
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(node.clone());
+	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());
 	let pdu_id = self
@@ -123,9 +125,15 @@ pub async fn build_and_append_pdu(
 			// Since this PDU references all pdu_leaves we can update the leaves
 			// of the room
 			once(pdu.event_id()),
-			None,
-			state_lock,
-			&room_id,
+			*pdu.kind() != TimelineEventType::RoomMember,
+			crate::rooms::timeline::AppendPduContext {
+				state_lock,
+				room_id: &room_id,
+				state_root_handle: Some(state_root_handle.clone()),
+				prev_state_root_handle: previous_root_handle,
+				advance_current_state: false,
+				was_joined_before_state_install: None,
+			},
 		)
 		.boxed()
 		.await?;
@@ -150,30 +158,59 @@ pub async fn build_and_append_pdu(
 		}
 	}
 
-	// We set the room state after inserting the pdu, so that we never have a moment
-	// in time where events in the current room state do not exist
-	trace!("Setting room state for room {room_id}");
-	self.services
-		.state
-		.set_room_state(&room_id, statehashid, state_lock);
+	// The room pointer is advanced inside `append_pdu`'s atomic batch for state
+	// events, together with the timeline write, so a flush can never expose the
+	// PDU without its state root. Only a non-state event still needs it set here.
+	if !crate::rooms::state::is_state_event(&pdu) {
+		self.services.globals.with_cork_and_flush(|| {
+			self.services
+				.state
+				.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
+		});
+	}
 
 	let mut servers: HashSet<OwnedServerName> = self
 		.services
 		.state_cache
 		.room_servers(&room_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
 	// In case we are kicking or banning a user, we need to inform their server of
 	// the change
+	//
+	// This block's tracing is `debug!`, not `info!`: it runs unconditionally on
+	// every locally-created PDU (not just RoomMember ones), and `?servers`
+	// formats the whole destination set. At `info!` it would run at full cost
+	// on every send in the default log config (`info,memory_serve=warn` in
+	// release builds, `debug` in dev builds) -- `debug!` keeps it opt-in via
+	// the `membership_destination_debug` target (e.g.
+	// `RUST_LOG=membership_destination_debug=debug`) without paying that cost
+	// by default.
+	debug!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), kind = ?pdu.kind(), state_key = ?pdu.state_key,
+		room_servers_count = servers.len(),
+		"build_and_append_pdu: pre-special-case servers"
+	);
 	if *pdu.kind() == TimelineEventType::RoomMember {
 		if let Some(state_key_uid) = &pdu
 			.state_key
 			.as_ref()
 			.and_then(|state_key| UserId::parse(state_key.as_str()).ok())
 		{
-			servers.insert(state_key_uid.server_name().to_owned());
+			debug!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), %state_key_uid,
+				"build_and_append_pdu: inserting affected user's server as destination"
+			);
+			servers.insert(state_key_uid.server_name());
+		} else {
+			debug!(
+				target: "membership_destination_debug",
+				event_id = %pdu.event_id(), state_key = ?pdu.state_key,
+				"build_and_append_pdu: RoomMember event but state_key didn't parse as a UserId"
+			);
 		}
 	}
 
@@ -181,11 +218,28 @@ pub async fn build_and_append_pdu(
 	// room_servers() and/or the if statement above
 	servers.remove(self.services.globals.server_name());
 
+	debug!(
+		target: "membership_destination_debug",
+		event_id = %pdu.event_id(), final_servers = ?servers,
+		"build_and_append_pdu: final destination set"
+	);
 	trace!("Sending PDU {} to {} servers", pdu.event_id(), servers.len());
-	self.services
+	let num_sent = self
+		.services
 		.sending
-		.send_pdu_servers(servers.iter().map(AsRef::as_ref).stream(), &pdu_id)
+		.send_pdu_servers(servers.iter().cloned().stream(), &pdu_id)
 		.await?;
+
+	if num_sent > 0 {
+		let _span = tracing::info_span!(
+			"broadcast",
+			event_id = %pdu.event_id(),
+			%room_id,
+			servers = num_sent,
+		)
+		.entered();
+		info!("Sending to federation");
+	}
 
 	trace!("Event {} in room {:?} has been appended", pdu.event_id(), room_id);
 	Ok(pdu.event_id().to_owned())

@@ -1,9 +1,9 @@
 use std::{borrow::Borrow, iter::once};
 
 use axum::extract::State;
-use conduwuit::{Err, Result, at, err, info, utils::IterStream};
-use futures::{FutureExt, StreamExt, TryStreamExt};
-use ruma::{OwnedEventId, api::federation::event::get_room_state};
+use conduwuit::{Result, at, err, info, utils::IterStream};
+use futures::{FutureExt, TryStreamExt};
+use slipstream::{OwnedEventId, api::federation::event::get_room_state};
 
 use super::AccessCheck;
 use crate::Ruma;
@@ -24,33 +24,29 @@ pub(crate) async fn get_room_state_route(
 	.check()
 	.await?;
 
-	if !services
-		.rooms
-		.state_cache
-		.server_in_room(services.globals.server_name(), &body.room_id)
-		.await
-	{
-		info!(
-			origin = body.origin().as_str(),
-			"Refusing to serve state for room we aren't participating in"
-		);
-		return Err!(Request(NotFound("This server is not participating in that room.")));
-	}
+	info!(
+		origin = body.origin().as_str(),
+		room_id = %body.room_id,
+		event_id = %body.event_id,
+		"Serving full room state request"
+	);
 
-	let shortstatehash = services
+	let root_handle = services
 		.rooms
 		.state_accessor
-		.pdu_shortstatehash(&body.event_id)
+		.pdu_roothandle_before_event(&body.event_id)
 		.await
 		.map_err(|_| err!(Request(NotFound("PDU state not found."))))?;
 
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids(shortstatehash)
+		.state_full_ids_hamt(&root_handle)
+		.try_collect::<Vec<_>>()
+		.await?
+		.into_iter()
 		.map(at!(1))
-		.collect()
-		.await;
+		.collect();
 
 	let pdus = state_ids
 		.iter()

@@ -1,5 +1,5 @@
 use conduwuit::Result;
-use ruma::{UserId, api::appservice::Registration};
+use slipstream::{UserId, api::appservice::Registration};
 
 use super::NamespaceRegex;
 

@@ -13,15 +13,17 @@ pub enum TesterCommand {
 
 #[rustfmt::skip]
 #[admin_command]
+#[allow(clippy::unused_async_trait_impl)]
 async fn panic(&self) -> Result {
-
+	std::future::ready(()).await;
 	panic!("panicked")
 }
 
 #[rustfmt::skip]
 #[admin_command]
+#[allow(clippy::unused_async_trait_impl)]
 async fn failure(&self) -> Result {
-
+	std::future::ready(()).await;
 	Err!("failed")
 }
 

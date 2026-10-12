@@ -5,48 +5,47 @@ mod raw_id;
 mod redact;
 #[cfg(test)]
 mod tests;
+mod topo;
 mod unsigned;
 
 use std::cmp::Ordering;
 
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId,
-	OwnedServerName, OwnedUserId, RoomId, UInt, UserId, events::TimelineEventType,
+	OwnedServerName, OwnedUserId, RoomId, UInt, UserId,
+	codec::{Deserialize as CodecDeserialize, Serialize as CodecSerialize},
+	events::TimelineEventType,
+	json::{Object as JsonObject, Value as JsonValue},
 };
-use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue as RawJsonValue;
+
+/// Opaque JSON document kept as text; parse with `.json()` when needed.
+pub type RawJson = slipstream::sswire::Raw<JsonValue>;
 
 pub use self::{
 	Count as PduCount, Id as PduId, Pdu as PduEvent, RawId as RawPduId,
 	builder::{Builder, Builder as PduBuilder},
-	count::Count,
+	count::{Count, TimelineKey},
 	id::{ShortId, *},
 	raw_id::*,
+	topo::TopoToken,
 };
 use super::{Event, StateKey};
-use crate::Result;
+use crate::{Result, utils::OwnedEventType};
 
 /// Persistent Data Unit (Event)
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Debug)]
 pub struct Pdu {
 	pub event_id: OwnedEventId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub room_id: Option<OwnedRoomId>,
-
 	pub sender: OwnedUserId,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub origin: Option<OwnedServerName>,
 
 	pub origin_server_ts: UInt,
 
-	#[serde(rename = "type")]
 	pub kind: TimelineEventType,
 
-	pub content: Box<RawJsonValue>,
+	pub content: RawJson,
 
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub state_key: Option<StateKey>,
 
 	pub prev_events: Vec<OwnedEventId>,
@@ -54,25 +53,69 @@ pub struct Pdu {
 	pub depth: UInt,
 
 	pub auth_events: Vec<OwnedEventId>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub redacts: Option<OwnedEventId>,
-
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub unsigned: Option<Box<RawJsonValue>>,
+	pub unsigned: Option<RawJson>,
 
 	pub hashes: EventHash,
 
 	// BTreeMap<Box<ServerName>, BTreeMap<ServerSigningKeyId, String>>
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub signatures: Option<Box<RawJsonValue>>,
+	pub signatures: Option<RawJson>,
+
+	/// Whether this event has been rejected (by auth check, soft-fail, or
+	/// admin action). Populated at fetch time from pdu_metadata DB;
+	/// not persisted in the event JSON itself.
+	pub rejected: bool,
+}
+
+impl Clone for Pdu {
+	fn clone(&self) -> Self {
+		Self {
+			event_id: self.event_id.clone(),
+			room_id: self.room_id.clone(),
+			sender: self.sender.clone(),
+			origin: self.origin.clone(),
+			origin_server_ts: self.origin_server_ts,
+			kind: self.kind.owned_event_type(),
+			content: crate::utils::clone_raw(&self.content),
+			state_key: self.state_key.clone(),
+			prev_events: self.prev_events.clone(),
+			depth: self.depth,
+			auth_events: self.auth_events.clone(),
+			redacts: self.redacts.clone(),
+			unsigned: self.unsigned.as_ref().map(crate::utils::clone_raw),
+			hashes: self.hashes.clone(),
+			signatures: self.signatures.as_ref().map(crate::utils::clone_raw),
+			rejected: self.rejected,
+		}
+	}
 }
 
 /// Content hashes of a PDU.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct EventHash {
 	/// The SHA-256 hash.
 	pub sha256: String,
+}
+
+impl CodecSerialize for EventHash {
+	fn to_json(&self) -> JsonValue {
+		let mut obj = JsonObject::new();
+		obj.insert("sha256".into(), JsonValue::String(self.sha256.clone()));
+		JsonValue::Object(obj)
+	}
+}
+
+impl CodecDeserialize for EventHash {
+	fn from_json(value: &JsonValue) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError::expected("EventHash object"))?;
+		let sha256 = obj
+			.get("sha256")
+			.and_then(|v| v.as_str())
+			.ok_or_else(|| slipstream::codec::DeError::expected("sha256"))?;
+		Ok(Self { sha256: sha256.to_owned() })
+	}
 }
 
 impl Pdu {
@@ -83,13 +126,43 @@ impl Pdu {
 	) -> Result<Self> {
 		json.insert(
 			"event_id".into(),
-			ruma::CanonicalJsonValue::String(event_id.as_str().to_owned()),
+			slipstream::CanonicalJsonValue::String(event_id.as_str().to_owned()),
 		);
-		let pdu: Self = serde_json::from_value(serde_json::to_value(json)?)?;
+		let mut pdu: Self = slipstream::codec::from_str(&slipstream::codec::to_string(&json))?;
+		event_id.clone_into(&mut pdu.event_id);
+
+		if pdu.kind.to_string().chars().count() > 255 {
+			return Err(crate::err!(Request(InvalidParam("Event type is too long"))));
+		}
+
+		if let Some(state_key) = &pdu.state_key {
+			if state_key.chars().count() > 255 {
+				return Err(crate::err!(Request(InvalidParam("State key is too long"))));
+			}
+		}
+
+		if pdu.room_id.is_none() {
+			if pdu.kind == TimelineEventType::RoomCreate {
+				// V12+: room_id is omitted from the signed content. Derive it
+				// deterministically from the event_id hash ($ -> !) to prevent
+				// a malicious server from spoofing creator privileges.
+				let constructed_hash = event_id.as_str().replacen('$', "!", 1);
+				let constructed_room_id = RoomId::parse(&constructed_hash).map_err(|_| {
+					crate::err!(Request(InvalidParam(
+						"Invalid event_id for room hash derivation"
+					)))
+				})?;
+				pdu.room_id = Some(constructed_room_id);
+			} else if let Some(room_id) = room_id {
+				pdu.room_id = Some(room_id.to_owned());
+			} else {
+				return Err(crate::err!(Request(InvalidParam("Event is missing room_id"))));
+			}
+		}
 
 		// Validate the PDU belongs to the expected room if one is specified
 		if let Some(expected_room) = room_id {
-			if pdu.room_id_or_hash().as_deref() != Some(expected_room) {
+			if pdu.room_id_or_hash().as_ref() != Some(expected_room) {
 				return Err(crate::err!(Request(InvalidParam(
 					"PDU {event_id} does not belong to room {expected_room}"
 				))));
@@ -100,57 +173,155 @@ impl Pdu {
 	}
 }
 
-impl Event for Pdu {
+/// Maps Pdu fields to rezzy's [`RawEvent`](rezzy::RawEvent) trait,
+/// enabling `rezzy::ParsedEvent::new(&pdu)` for zero-copy auth checks
+/// and state resolution without intermediate `LeanEvent` conversion.
+impl rezzy::RawEvent for Pdu {
+	type Id = OwnedEventId;
+
+	/// `Pdu::event_id` → `$event_id:server.name`
 	#[inline]
-	fn auth_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-		self.auth_events.iter().map(AsRef::as_ref)
+	fn raw_event_id(&self) -> &OwnedEventId { &self.event_id }
+
+	/// `Pdu::kind` (`TimelineEventType` enum) → `"m.room.member"` etc.
+	#[inline]
+	fn raw_event_type(&self) -> std::borrow::Cow<'_, str> {
+		std::borrow::Cow::Owned(self.kind.to_string())
 	}
 
+	/// `Pdu::sender` (`OwnedUserId`) → `"@user:server"`
 	#[inline]
-	fn content(&self) -> &RawJsonValue { &self.content }
+	fn raw_sender(&self) -> &str { self.sender.as_str() }
+
+	/// `Pdu::state_key` (`Option<StateKey>`) → `Option<&str>`
+	#[inline]
+	fn raw_state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+
+	/// `Pdu::content` (`RawJson`) → raw JSON string
+	#[inline]
+	fn raw_content_json(&self) -> &str { self.content.get() }
+
+	/// `Pdu::prev_events` → DAG parent references
+	#[inline]
+	fn raw_prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
+
+	/// `Pdu::auth_events` → auth chain references
+	#[inline]
+	fn raw_auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+
+	/// `Pdu::depth` (`UInt`) → `u64`
+	#[inline]
+	fn raw_depth(&self) -> u64 { self.depth }
+
+	/// `Pdu::origin_server_ts` (`UInt`) → milliseconds since epoch
+	#[inline]
+	fn raw_origin_server_ts(&self) -> u64 { self.origin_server_ts }
+
+	/// `Pdu::rejected` is populated from metadata at fetch time.
+	#[inline]
+	fn raw_rejected(&self) -> bool { self.rejected }
+
+	/// TODO: Revisit whether rezzy should require host-provided soft-fail state
+	/// at all, or compute it internally. Until that is resolved, `Pdu` does not
+	/// carry a soft-fail flag and this adapter conservatively reports `false`.
+	#[inline]
+	fn raw_soft_fail(&self) -> bool { false }
+}
+
+/// Direct [`DagNode`](rezzy::DagNode) implementation on `Pdu`, enabling
+/// rezzy's traversal and topological functions (`find_backward_extremities`,
+/// `compute_topo_positions`, `reverse_topological_order`, etc.) to operate
+/// on `HashMap<OwnedEventId, Pdu>` with zero conversion overhead.
+///
+/// For auth checking and content-aware operations, use
+/// `rezzy::ParsedEvent::new(&pdu)` which provides the full `EventLike` trait
+/// via the [`RawEvent`](rezzy::RawEvent) impl above.
+impl rezzy::DagNode for Pdu {
+	type Id = OwnedEventId;
 
 	#[inline]
-	fn event_id(&self) -> &EventId { &self.event_id }
+	fn event_id(&self) -> &OwnedEventId { &self.event_id }
 
 	#[inline]
-	fn origin_server_ts(&self) -> MilliSecondsSinceUnixEpoch {
-		MilliSecondsSinceUnixEpoch(self.origin_server_ts)
-	}
+	fn depth(&self) -> u64 { self.depth }
 
 	#[inline]
-	fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-		self.prev_events.iter().map(AsRef::as_ref)
-	}
+	fn prev_events(&self) -> &[OwnedEventId] { &self.prev_events }
 
 	#[inline]
-	fn redacts(&self) -> Option<&EventId> { self.redacts.as_deref() }
+	fn auth_events(&self) -> &[OwnedEventId] { &self.auth_events }
+}
 
-	#[inline]
-	fn room_id(&self) -> Option<&RoomId> { self.room_id.as_deref() }
+macro_rules! impl_event_delegates {
+	() => {
+		#[inline]
+		fn auth_events(
+			&self,
+		) -> impl DoubleEndedIterator<Item = &EventId>
+		+ ExactSizeIterator
+		+ Clone
+		+ Send
+		+ std::fmt::Debug
+		+ '_ {
+			self.as_pdu().auth_events.iter()
+		}
 
-	#[inline]
+		#[inline]
+		fn content(&self) -> &RawJson { &self.as_pdu().content }
+
+		#[inline]
+		fn event_id(&self) -> &EventId { &self.as_pdu().event_id }
+
+		#[inline]
+		fn origin_server_ts(&self) -> MilliSecondsSinceUnixEpoch {
+			MilliSecondsSinceUnixEpoch(self.as_pdu().origin_server_ts)
+		}
+
+		#[inline]
+		fn depth(&self) -> UInt { self.as_pdu().depth }
+
+		#[inline]
+		fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
+			self.as_pdu().prev_events.iter()
+		}
+
+		#[inline]
+		fn redacts(&self) -> Option<&EventId> { self.as_pdu().redacts.as_ref() }
+
+		#[inline]
+		fn room_id(&self) -> Option<&RoomId> { self.as_pdu().room_id.as_ref() }
+
+#[inline]
 	fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
-		if let Some(room_id) = &self.room_id {
+		if let Some(room_id) = &self.as_pdu().room_id {
 			return Some(room_id.clone());
 		}
-		if *self.event_type() == TimelineEventType::RoomCreate {
-			let constructed_hash = self.event_id.as_str().replace('$', "!");
-			return RoomId::parse(&constructed_hash).ok().map(ToOwned::to_owned);
+		if *self.as_pdu().event_type() == TimelineEventType::RoomCreate {
+			let reference_hash = self.as_pdu().event_id.as_str().strip_prefix('$')?;
+			return OwnedRoomId::new_v2(reference_hash).ok();
 		}
 		None
 	}
 
-	#[inline]
-	fn sender(&self) -> &UserId { &self.sender }
+		#[inline]
+		fn sender(&self) -> &UserId { &self.as_pdu().sender }
 
-	#[inline]
-	fn state_key(&self) -> Option<&str> { self.state_key.as_deref() }
+		#[inline]
+		fn state_key(&self) -> Option<&str> { self.as_pdu().state_key.as_deref() }
 
-	#[inline]
-	fn kind(&self) -> &TimelineEventType { &self.kind }
+		#[inline]
+		fn kind(&self) -> &TimelineEventType { &self.as_pdu().kind }
 
-	#[inline]
-	fn unsigned(&self) -> Option<&RawJsonValue> { self.unsigned.as_deref() }
+		#[inline]
+		fn unsigned(&self) -> Option<&RawJson> { self.as_pdu().unsigned.as_ref() }
+
+		#[inline]
+		fn rejected(&self) -> bool { self.as_pdu().rejected }
+	};
+}
+
+impl Event for Pdu {
+	impl_event_delegates!();
 
 	#[inline]
 	fn as_mut_pdu(&mut self) -> &mut Pdu { self }
@@ -165,63 +336,49 @@ impl Event for Pdu {
 	fn is_owned(&self) -> bool { true }
 }
 
-impl Event for &Pdu {
-	#[inline]
-	fn auth_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-		self.auth_events.iter().map(AsRef::as_ref)
-	}
+impl Event for std::sync::Arc<Pdu> {
+	impl_event_delegates!();
 
 	#[inline]
-	fn content(&self) -> &RawJsonValue { &self.content }
-
-	#[inline]
-	fn event_id(&self) -> &EventId { &self.event_id }
-
-	#[inline]
-	fn origin_server_ts(&self) -> MilliSecondsSinceUnixEpoch {
-		MilliSecondsSinceUnixEpoch(self.origin_server_ts)
-	}
-
-	#[inline]
-	fn prev_events(&self) -> impl DoubleEndedIterator<Item = &EventId> + Clone + Send + '_ {
-		self.prev_events.iter().map(AsRef::as_ref)
-	}
-
-	#[inline]
-	fn redacts(&self) -> Option<&EventId> { self.redacts.as_deref() }
-
-	#[inline]
-	fn room_id(&self) -> Option<&RoomId> { self.room_id.as_ref().map(AsRef::as_ref) }
-
-	#[inline]
-	fn room_id_or_hash(&self) -> Option<OwnedRoomId> {
-		if let Some(room_id) = &self.room_id {
-			return Some(room_id.clone());
-		}
-		if *self.event_type() == TimelineEventType::RoomCreate {
-			let constructed_hash = self.event_id.as_str().replace('$', "!");
-			return RoomId::parse(&constructed_hash).ok().map(ToOwned::to_owned);
-		}
-		None
-	}
-
-	#[inline]
-	fn sender(&self) -> &UserId { &self.sender }
-
-	#[inline]
-	fn state_key(&self) -> Option<&str> { self.state_key.as_deref() }
-
-	#[inline]
-	fn kind(&self) -> &TimelineEventType { &self.kind }
-
-	#[inline]
-	fn unsigned(&self) -> Option<&RawJsonValue> { self.unsigned.as_deref() }
+	fn as_mut_pdu(&mut self) -> &mut Pdu { Self::make_mut(self) }
 
 	#[inline]
 	fn as_pdu(&self) -> &Pdu { self }
 
 	#[inline]
-	fn into_pdu(self) -> Pdu { self.clone() }
+	fn into_pdu(self) -> Pdu { Self::try_unwrap(self).unwrap_or_else(|arc| (*arc).clone()) }
+
+	#[inline]
+	fn is_owned(&self) -> bool { true }
+}
+
+impl Event for &std::sync::Arc<Pdu> {
+	impl_event_delegates!();
+
+	#[inline]
+	fn as_mut_pdu(&mut self) -> &mut Pdu { panic!("Cannot mutate shared reference") }
+
+	#[inline]
+	fn as_pdu(&self) -> &Pdu { self }
+
+	#[inline]
+	fn into_pdu(self) -> Pdu { (**self).clone() }
+
+	#[inline]
+	fn is_owned(&self) -> bool { false }
+}
+
+impl Event for &Pdu {
+	impl_event_delegates!();
+
+	#[inline]
+	fn as_mut_pdu(&mut self) -> &mut Pdu { panic!("Cannot mutate shared reference") }
+
+	#[inline]
+	fn as_pdu(&self) -> &Pdu { self }
+
+	#[inline]
+	fn into_pdu(self) -> Pdu { (*self).clone() }
 
 	#[inline]
 	fn is_owned(&self) -> bool { false }
@@ -243,4 +400,153 @@ impl Ord for Pdu {
 /// Ordering determined by the Pdu's ID, not the memory representations.
 impl PartialOrd for Pdu {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+impl CodecSerialize for Pdu {
+	fn to_json(&self) -> JsonValue {
+		let mut obj = JsonObject::new();
+
+		obj.insert("event_id".into(), <OwnedEventId as CodecSerialize>::to_json(&self.event_id));
+		if let Some(room_id) = &self.room_id {
+			obj.insert("room_id".into(), <OwnedRoomId as CodecSerialize>::to_json(room_id));
+		}
+		obj.insert("sender".into(), <OwnedUserId as CodecSerialize>::to_json(&self.sender));
+		if let Some(origin) = &self.origin {
+			obj.insert("origin".into(), <OwnedServerName as CodecSerialize>::to_json(origin));
+		}
+		obj.insert(
+			"origin_server_ts".into(),
+			<u64 as CodecSerialize>::to_json(&self.origin_server_ts),
+		);
+		obj.insert("type".into(), <TimelineEventType as CodecSerialize>::to_json(&self.kind));
+		// content is stored as raw JSON bytes - we need to parse it
+		if let Ok(content_val) = slipstream::codec::from_str::<JsonValue>(self.content.get()) {
+			obj.insert("content".into(), content_val);
+		}
+		if let Some(state_key) = &self.state_key {
+			obj.insert("state_key".into(), JsonValue::String(state_key.as_str().to_owned()));
+		}
+		obj.insert(
+			"prev_events".into(),
+			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.prev_events),
+		);
+		obj.insert("depth".into(), <u64 as CodecSerialize>::to_json(&self.depth));
+		obj.insert(
+			"auth_events".into(),
+			<Vec<OwnedEventId> as CodecSerialize>::to_json(&self.auth_events),
+		);
+		if let Some(redacts) = &self.redacts {
+			obj.insert("redacts".into(), <OwnedEventId as CodecSerialize>::to_json(redacts));
+		}
+		if let Some(unsigned) = &self.unsigned {
+			if let Ok(unsigned_val) = slipstream::codec::from_str::<JsonValue>(unsigned.get()) {
+				obj.insert("unsigned".into(), unsigned_val);
+			}
+		}
+		obj.insert("hashes".into(), <EventHash as CodecSerialize>::to_json(&self.hashes));
+		if let Some(signatures) = &self.signatures {
+			if let Ok(sig_val) = slipstream::codec::from_str::<JsonValue>(signatures.get()) {
+				obj.insert("signatures".into(), sig_val);
+			}
+		}
+		// rejected is not serialized as it's runtime-only
+
+		JsonValue::Object(obj)
+	}
+}
+
+/// Largest value of the old serde-era `UInt` (2^53 - 1, JS-safe integer).
+const UINT_MAX: u64 = 9_007_199_254_740_991;
+
+/// Field lookup treating an explicit `null` as absent, as the previous serde
+/// derive did for `Option` fields.
+fn present<'a>(obj: &'a JsonObject, key: &str) -> Option<&'a JsonValue> {
+	obj.get(key)
+		.filter(|value| !matches!(value, JsonValue::Null))
+}
+
+/// Required `UInt` field, limited to the range the serde-era type accepted.
+fn uint(obj: &JsonObject, key: &'static str) -> Result<u64, slipstream::codec::DeError> {
+	present(obj, key)
+		.and_then(slipstream::json::Value::as_u64)
+		.filter(|value| *value <= UINT_MAX)
+		.ok_or_else(|| slipstream::codec::DeError::expected(key))
+}
+
+impl CodecDeserialize for Pdu {
+	fn from_json(value: &JsonValue) -> Result<Self, slipstream::codec::DeError> {
+		let obj = value
+			.as_object()
+			.ok_or_else(|| slipstream::codec::DeError::expected("Pdu object"))?;
+
+		let event_id = <OwnedEventId as CodecDeserialize>::from_json(
+			obj.get("event_id")
+				.ok_or_else(|| slipstream::codec::DeError::expected("event_id"))?,
+		)?;
+		let room_id = present(obj, "room_id")
+			.map(<OwnedRoomId as CodecDeserialize>::from_json)
+			.transpose()?;
+		let sender = <OwnedUserId as CodecDeserialize>::from_json(
+			obj.get("sender")
+				.ok_or_else(|| slipstream::codec::DeError::expected("sender"))?,
+		)?;
+		let origin = present(obj, "origin")
+			.map(<OwnedServerName as CodecDeserialize>::from_json)
+			.transpose()?;
+		let origin_server_ts = uint(obj, "origin_server_ts")?;
+		let kind = <TimelineEventType as CodecDeserialize>::from_json(
+			obj.get("type")
+				.ok_or_else(|| slipstream::codec::DeError::expected("type"))?,
+		)?;
+		// `content` has no default: a missing (or null) content is an error.
+		let content_val = present(obj, "content")
+			.ok_or_else(|| slipstream::codec::DeError::expected("content"))?;
+		let content = RawJson::from_value(content_val);
+		// A present `state_key` must be a string; silently dropping a malformed
+		// one would turn a state event into a timeline event.
+		let state_key = present(obj, "state_key")
+			.map(|v| {
+				v.as_str()
+					.map(StateKey::from)
+					.ok_or_else(|| slipstream::codec::DeError::expected("state_key string"))
+			})
+			.transpose()?;
+		let prev_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
+			obj.get("prev_events")
+				.ok_or_else(|| slipstream::codec::DeError::expected("prev_events"))?,
+		)?;
+		let depth = uint(obj, "depth")?;
+		let auth_events = <Vec<OwnedEventId> as CodecDeserialize>::from_json(
+			obj.get("auth_events")
+				.ok_or_else(|| slipstream::codec::DeError::expected("auth_events"))?,
+		)?;
+		let redacts = present(obj, "redacts")
+			.map(<OwnedEventId as CodecDeserialize>::from_json)
+			.transpose()?;
+		let unsigned = present(obj, "unsigned").map(RawJson::from_value);
+		let hashes = <EventHash as CodecDeserialize>::from_json(
+			obj.get("hashes")
+				.ok_or_else(|| slipstream::codec::DeError::expected("hashes"))?,
+		)?;
+		let signatures = present(obj, "signatures").map(RawJson::from_value);
+
+		Ok(Self {
+			event_id,
+			room_id,
+			sender,
+			origin,
+			origin_server_ts,
+			kind,
+			content,
+			state_key,
+			prev_events,
+			depth,
+			auth_events,
+			redacts,
+			unsigned,
+			hashes,
+			signatures,
+			rejected: false,
+		})
+	}
 }

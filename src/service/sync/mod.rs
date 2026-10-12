@@ -10,18 +10,19 @@ use std::{
 use conduwuit::{Result, Server, SyncMutex};
 use database::Map;
 use moka::sync::Cache;
-use ruma::{
+use slipstream::{
 	OwnedDeviceId, OwnedRoomId, OwnedUserId,
 	api::client::sync::sync_events::{
 		self,
 		v4::{ExtensionsConfig, SyncRequestList},
 		v5::{self, request as v5_request},
 	},
+	codec::{Deserialize, Serialize},
 	directory::RoomTypeFilter,
+	endpoint::Input,
 	events::StateEventType,
 	uint,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{Dep, rooms};
 
@@ -29,32 +30,100 @@ use crate::{Dep, rooms};
 /// sliding sync. Kept here so they can be cached alongside the rest of a
 /// snake-cased connection's sticky parameters and survive follow-up requests
 /// that omit `lists` entirely.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
 pub struct CompatListFilters {
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub is_dm: Option<bool>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
 	pub is_encrypted: Option<bool>,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(alias = "is_invited")]
 	pub is_invite: Option<bool>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub room_types: Vec<RoomTypeFilter>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub not_room_types: Vec<RoomTypeFilter>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub tags: Vec<String>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub not_tags: Vec<String>,
-
-	#[serde(default, skip_serializing_if = "<[_]>::is_empty")]
 	pub spaces: Vec<OwnedRoomId>,
+}
+
+impl Serialize for CompatListFilters {
+	fn to_json(&self) -> slipstream::json::Value {
+		let mut obj = slipstream::json::Object::new();
+		if let Some(v) = self.is_dm {
+			obj.insert("is_dm".into(), slipstream::json::Value::Bool(v));
+		}
+		if let Some(v) = self.is_encrypted {
+			obj.insert("is_encrypted".into(), slipstream::json::Value::Bool(v));
+		}
+		if let Some(v) = self.is_invite {
+			obj.insert("is_invite".into(), slipstream::json::Value::Bool(v));
+		}
+		if !self.room_types.is_empty() {
+			obj.insert(
+				"room_types".into(),
+				slipstream::json::Value::Array(
+					self.room_types.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		if !self.not_room_types.is_empty() {
+			obj.insert(
+				"not_room_types".into(),
+				slipstream::json::Value::Array(
+					self.not_room_types.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		if !self.tags.is_empty() {
+			obj.insert(
+				"tags".into(),
+				slipstream::json::Value::Array(
+					self.tags
+						.iter()
+						.map(|t| slipstream::json::Value::String(t.clone()))
+						.collect(),
+				),
+			);
+		}
+		if !self.not_tags.is_empty() {
+			obj.insert(
+				"not_tags".into(),
+				slipstream::json::Value::Array(
+					self.not_tags
+						.iter()
+						.map(|t| slipstream::json::Value::String(t.clone()))
+						.collect(),
+				),
+			);
+		}
+		if !self.spaces.is_empty() {
+			obj.insert(
+				"spaces".into(),
+				slipstream::json::Value::Array(
+					self.spaces.iter().map(Serialize::to_json).collect(),
+				),
+			);
+		}
+		slipstream::json::Value::Object(obj)
+	}
+}
+
+impl Deserialize for CompatListFilters {
+	fn from_json(value: &slipstream::json::Value) -> Result<Self, slipstream::codec::DeError> {
+		let input = Input::new(&[], &[], Some(value));
+		// Like the serde derive this replaces: wrong types are errors, and
+		// `is_invited` is accepted as a spelling of `is_invite`.
+		let is_invite = match input.body::<Option<bool>>("is_invite")? {
+			| Some(is_invite) => Some(is_invite),
+			| None => input.body::<Option<bool>>("is_invited")?,
+		};
+		Ok(Self {
+			is_dm: input.body("is_dm")?,
+			is_encrypted: input.body("is_encrypted")?,
+			is_invite,
+			room_types: input.body_or_default("room_types")?,
+			not_room_types: input.body_or_default("not_room_types")?,
+			tags: input.body_or_default("tags")?,
+			not_tags: input.body_or_default("not_tags")?,
+			spaces: input.body_or_default("spaces")?,
+		})
+	}
 }
 
 impl From<&v5_request::ListFilters> for CompatListFilters {
@@ -88,17 +157,20 @@ pub struct Service {
 }
 
 pub struct Data {
+	deviceleftid_userid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
-	userroomid_joined: Arc<Map>,
 	userroomid_invitestate: Arc<Map>,
+	userroomid_joined: Arc<Map>,
+	userroomid_knockedstate: Arc<Map>,
 	userroomid_leftstate: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
-	pduid_pdu: Arc<Map>,
+	room_pducount_eventid: Arc<Map>,
 	keychangeid_userid: Arc<Map>,
 	roomusertype_roomuserdataid: Arc<Map>,
 	readreceiptid_readreceipt: Arc<Map>,
 	userid_lastonetimekeyupdate: Arc<Map>,
+	userprofileupdate_value: Arc<Map>,
 }
 
 struct Services {
@@ -138,17 +210,20 @@ impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			db: Data {
+				deviceleftid_userid: args.db["deviceleftid_userid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
-				userroomid_joined: args.db["userroomid_joined"].clone(),
 				userroomid_invitestate: args.db["userroomid_invitestate"].clone(),
+				userroomid_joined: args.db["userroomid_joined"].clone(),
+				userroomid_knockedstate: args.db["userroomid_knockedstate"].clone(),
 				userroomid_leftstate: args.db["userroomid_leftstate"].clone(),
 				userroomid_notificationcount: args.db["userroomid_notificationcount"].clone(),
 				userroomid_highlightcount: args.db["userroomid_highlightcount"].clone(),
-				pduid_pdu: args.db["pduid_pdu"].clone(),
+				room_pducount_eventid: args.db["room_pducount_eventid"].clone(),
 				keychangeid_userid: args.db["keychangeid_userid"].clone(),
 				roomusertype_roomuserdataid: args.db["roomusertype_roomuserdataid"].clone(),
 				readreceiptid_readreceipt: args.db["readreceiptid_readreceipt"].clone(),
 				userid_lastonetimekeyupdate: args.db["userid_lastonetimekeyupdate"].clone(),
+				userprofileupdate_value: args.db["userprofileupdate_value"].clone(),
 			},
 			services: Services {
 				server: args.server.clone(),
@@ -157,10 +232,10 @@ impl crate::Service for Service {
 				typing: args.depend::<rooms::typing::Service>("rooms::typing"),
 			},
 			connections: Cache::builder()
-				.time_to_idle(Duration::from_secs(12 * 60 * 60))
+				.time_to_idle(Duration::from_hours(12))
 				.build(),
 			snake_connections: Cache::builder()
-				.time_to_idle(Duration::from_secs(12 * 60 * 60))
+				.time_to_idle(Duration::from_hours(12))
 				.build(),
 		}))
 	}

@@ -4,8 +4,8 @@ use axum::{
 	response::IntoResponse,
 	routing::get,
 };
-use ruma::OwnedSessionId;
 use serde::Deserialize;
+use slipstream::OwnedSessionId;
 
 use crate::{WebError, template};
 
@@ -19,7 +19,8 @@ pub(crate) fn build() -> Router<crate::State> {
 
 #[derive(Deserialize)]
 struct ThreepidValidationQuery {
-	session: OwnedSessionId,
+	// slipstream IDs have no serde impl, so take the raw string.
+	session: String,
 	token: String,
 }
 
@@ -29,9 +30,12 @@ async fn threepid_validation(
 ) -> Result<impl IntoResponse, WebError> {
 	let Query(query) = query?;
 
+	let session = OwnedSessionId::parse(&query.session)
+		.map_err(|_| WebError::BadRequest("invalid session".to_owned()))?;
+
 	services
 		.threepid
-		.try_validate_session(&query.session, &query.token)
+		.try_validate_session(&session, &query.token)
 		.await
 		.map_err(|message| WebError::BadRequest(message.into_owned()))?;
 

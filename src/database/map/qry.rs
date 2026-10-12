@@ -2,9 +2,8 @@ use std::{convert::AsRef, fmt::Debug, io::Write, sync::Arc};
 
 use conduwuit::{Result, arrayvec::ArrayVec, implement};
 use futures::Future;
-use serde::Serialize;
 
-use crate::{Handle, keyval::KeyBuf, ser};
+use crate::{Handle, dbkey::DbKey, keyval::KeyBuf, ser};
 
 /// Fetch a value from the database into cache, returning a reference-handle
 /// asynchronously. The key is serialized into an allocated buffer to perform
@@ -16,7 +15,7 @@ pub fn qry<K>(
 	key: &K,
 ) -> impl Future<Output = Result<Handle<'_>>> + Send + use<'_, K>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 {
 	let mut buf = KeyBuf::new();
 	self.bqry(key, &mut buf)
@@ -32,7 +31,7 @@ pub fn aqry<const MAX: usize, K>(
 	key: &K,
 ) -> impl Future<Output = Result<Handle<'_>>> + Send + use<'_, MAX, K>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 {
 	let mut buf = ArrayVec::<u8, MAX>::new();
 	self.bqry(key, &mut buf)
@@ -48,7 +47,7 @@ pub fn bqry<K, B>(
 	buf: &mut B,
 ) -> impl Future<Output = Result<Handle<'_>>> + Send + use<'_, K, B>
 where
-	K: Serialize + ?Sized + Debug,
+	K: DbKey + ?Sized + Debug,
 	B: Write + AsRef<[u8]>,
 {
 	let key = ser::serialize(buf, key).expect("failed to serialize query key");

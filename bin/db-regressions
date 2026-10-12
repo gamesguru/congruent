@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bin/db-regressions
+# Show recent CI runs with regression counts using the global "ever passed" baseline.
+# A test is a regression if it fails now but has EVER passed in any prior run.
+#
+# Usage:
+#   ./bin/db-regressions          # last 10 runs
+#   ./bin/db-regressions 25       # last 25 runs
+#   ./bin/db-regressions 1 abc123 # single commit
+
+LIMIT=${1:-10}
+COMMIT_FILTER=${2:-}
+
+if [ -n "$COMMIT_FILTER" ]; then
+	WHERE_CLAUSE="AND r.commit_hash LIKE '${COMMIT_FILTER}%'"
+else
+	WHERE_CLAUSE=""
+fi
+
+exec "$(dirname "$0")/db-shell" -c "
+SELECT
+    r.id,
+    LEFT(r.commit_hash, 10) AS commit,
+    COALESCE(LEFT(r.branch, 30), '') AS branch,
+    r.n_pass,
+    r.n_fail,
+    COUNT(*) FILTER (WHERE rd.status = 'fail' AND ep.test_name IS NOT NULL) AS regressions,
+    STRING_AGG(rd.test_name, E'\n' ORDER BY rd.test_name)
+        FILTER (WHERE rd.status = 'fail' AND ep.test_name IS NOT NULL) AS regression_list
+FROM (
+    SELECT * FROM runs
+    WHERE n_pass > 0 ${WHERE_CLAUSE}
+    ORDER BY run_date DESC
+    LIMIT ${LIMIT}
+) r
+JOIN run_details rd ON rd.run_id = r.id
+LEFT JOIN mv_ever_passed ep ON ep.test_name = rd.test_name
+    AND ep.rv IS NOT DISTINCT FROM COALESCE(r.room_version, '11')
+GROUP BY r.id, r.commit_hash, r.branch, r.n_pass, r.n_fail, r.run_date
+ORDER BY r.run_date DESC;
+"

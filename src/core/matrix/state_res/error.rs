@@ -1,13 +1,12 @@
-use serde_json::Error as JsonError;
 use thiserror::Error;
 
 /// Represents the various errors that arise when resolving state.
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-	/// A deserialization error.
+	/// A slipstream codec conversion error.
 	#[error(transparent)]
-	SerdeJson(#[from] JsonError),
+	Codec(#[from] slipstream::codec::DeError),
 
 	/// The given option or version is unsupported.
 	#[error("Unsupported room version: {0}")]

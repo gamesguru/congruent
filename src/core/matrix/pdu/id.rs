@@ -1,6 +1,4 @@
 use super::{Count, RawId};
-use crate::utils::u64_from_u8x8;
-
 pub type ShortRoomId = ShortId;
 pub type ShortEventId = ShortId;
 pub type ShortStateKey = ShortId;
@@ -15,9 +13,10 @@ pub struct Id {
 impl From<RawId> for Id {
 	#[inline]
 	fn from(raw: RawId) -> Self {
-		Self {
-			shortroomid: u64_from_u8x8(raw.shortroomid()),
-			shorteventid: Count::from_unsigned(u64_from_u8x8(raw.shorteventid())),
-		}
+		let shortroomid = u64::from_be_bytes(raw.shortroomid());
+		let count_bytes = Count::offset_binary_encoding(raw.shorteventid());
+		let shorteventid = Count::from_signed(i64::from_be_bytes(count_bytes));
+
+		Self { shortroomid, shorteventid }
 	}
 }

@@ -1,15 +1,17 @@
+use std::time::Duration;
+
 use axum::extract::State;
 use axum_client_ip::ClientIp;
 use conduwuit::{
-	Err, Result, debug, debug_warn, info, trace,
+	Err, Result, debug, debug_warn, trace,
 	utils::{IterStream, future::TryExtExt},
 };
 use futures::{
-	FutureExt, StreamExt, TryFutureExt,
+	FutureExt, StreamExt,
 	future::{OptionFuture, join3},
-	stream::FuturesUnordered,
 };
-use ruma::{
+use service::Services;
+use slipstream::{
 	OwnedServerName, RoomId, UserId,
 	api::{
 		client::room::get_summary,
@@ -18,7 +20,6 @@ use ruma::{
 	events::room::member::MembershipState,
 	space::SpaceRoomJoinRule::{self, *},
 };
-use service::Services;
 
 use crate::{Ruma, RumaResponse};
 
@@ -58,11 +59,22 @@ pub(crate) async fn get_room_summary(
 		.resolve_with_servers(&body.room_id_or_alias, Some(body.via.clone()))
 		.await?;
 
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(&room_id)
+			.collect()
+			.await
+	} else {
+		servers
+	};
+
 	if services.rooms.metadata.is_banned(&room_id).await {
 		return Err!(Request(Forbidden("This room is banned on this homeserver.")));
 	}
 
-	room_summary_response(&services, &room_id, &servers, body.sender_user.as_deref())
+	room_summary_response(&services, &room_id, &servers, body.sender_user_opt())
 		.boxed()
 		.await
 }
@@ -73,6 +85,12 @@ async fn room_summary_response(
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<get_summary::msc3266::Response> {
+	// Local state is only trustworthy while we're actually participating in
+	// the room. Once we've left (or never joined), `local_room_summary_response`
+	// still returns `Ok` -- it just reads whatever's left in local storage
+	// (e.g. a stale/zeroed `room_joined_count`) -- so without this gate it
+	// masks the remote-federation fallback below with garbage data instead of
+	// ever reaching it, for exactly the rooms that fallback exists to serve.
 	if services
 		.rooms
 		.state_cache
@@ -130,13 +148,14 @@ async fn local_room_summary_response(
 	// Synapse allows server admins to bypass visibility checks.
 	// That seems neat so we'll copy that behaviour.
 	if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
+		let allowed: Vec<_> = join_rule.allowed_rooms().collect();
 		user_can_see_summary(
 			services,
 			room_id,
 			&join_rule.clone().into(),
 			guest_can_join,
 			world_readable,
-			join_rule.allowed_rooms(),
+			allowed.iter(),
 			sender_user,
 		)
 		.await?;
@@ -212,25 +231,31 @@ async fn local_room_summary_response(
 		avatar_url,
 		guest_can_join,
 		name,
-		num_joined_members: num_joined_members.try_into().unwrap_or_default(),
+		num_joined_members,
 		topic,
 		world_readable,
 		room_type,
 		room_version,
 		encryption,
 		membership,
-		allowed_room_ids: join_rule.allowed_rooms().map(Into::into).collect(),
+		allowed_room_ids: join_rule.allowed_rooms().collect(),
 		join_rule: join_rule.into(),
 	})
 }
 
 /// used by MSC3266 to fetch a room's info if we do not know about it
+///
+/// Tries servers sequentially (up to a limit) rather than blasting all servers
+/// simultaneously, to avoid wasting federation connection budget.
 async fn remote_room_summary_hierarchy_response(
 	services: &Services,
 	room_id: &RoomId,
 	servers: &[OwnedServerName],
 	sender_user: Option<&UserId>,
 ) -> Result<SpaceHierarchyParentSummary> {
+	const MAX_SERVERS_TO_TRY: usize = 5;
+	const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
 	trace!(sender_user = ?sender_user.map(tracing::field::display), ?servers, "Sending remote room summary response for {room_id:?}");
 	if !services.config.allow_federation {
 		return Err!(Request(Forbidden("Federation is disabled.")));
@@ -241,56 +266,69 @@ async fn remote_room_summary_hierarchy_response(
 			"Federaton of room {room_id} is currently disabled on this server."
 		)));
 	}
+	let servers = if servers.is_empty() {
+		services
+			.rooms
+			.state_cache
+			.room_servers(room_id)
+			.collect()
+			.await
+	} else {
+		servers.to_vec()
+	};
+
 	if servers.is_empty() {
-		return Err!(Request(MissingParam(
-			"No servers were provided to fetch the room over federation"
+		return Err!(Request(NotFound(
+			"Room is known locally but no federation servers are available for summary lookup"
 		)));
 	}
 
-	let request = get_hierarchy::v1::Request::new(room_id.to_owned());
+	let request = get_hierarchy::v1::Request::new(room_id.to_owned(), false);
 
-	let mut requests: FuturesUnordered<_> = servers
-		.iter()
-		.map(|server| {
-			info!("Fetching room summary for {room_id} from server {server}");
+	for server in servers.iter().take(MAX_SERVERS_TO_TRY) {
+		debug!("Fetching room summary for {room_id} from server {server}");
+		let result = tokio::time::timeout(
+			REQUEST_TIMEOUT,
 			services
 				.sending
-				.send_federation_request(server, request.clone())
-				.inspect_ok(move |v| {
-					debug!("Fetched room summary for {room_id} from server {server}: {v:?}");
-				})
-				.inspect_err(move |e| {
-					info!("Failed to fetch room summary for {room_id} from server {server}: {e}");
-				})
-		})
-		.collect();
+				.send_federation_request(server, request.clone()),
+		)
+		.await;
 
-	while let Some(Ok(response)) = requests.next().await {
-		trace!("{response:?}");
-		let room = response.room.clone();
-		if room.room_id != room_id {
-			debug_warn!(
-				"Room ID {} returned does not belong to the requested room ID {}",
-				room.room_id,
-				room_id
-			);
-			continue;
-		}
+		match result {
+			| Ok(Ok(response)) => {
+				let room = response.room.clone();
+				if room.room_id != room_id {
+					debug_warn!(
+						"Room ID {} returned does not belong to the requested room ID {}",
+						room.room_id,
+						room_id
+					);
+					continue;
+				}
 
-		if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
-			return user_can_see_summary(
-				services,
-				room_id,
-				&room.join_rule,
-				room.guest_can_join,
-				room.world_readable,
-				room.allowed_room_ids.iter().map(AsRef::as_ref),
-				sender_user,
-			)
-			.await
-			.map(|()| room);
+				if sender_user.is_none() || !services.users.is_admin(sender_user.unwrap()).await {
+					return user_can_see_summary(
+						services,
+						room_id,
+						&room.join_rule,
+						room.guest_can_join,
+						room.world_readable,
+						room.allowed_room_ids.iter().map(AsRef::as_ref),
+						sender_user,
+					)
+					.await
+					.map(|()| room);
+				}
+				return Ok(room);
+			},
+			| Ok(Err(e)) => {
+				debug!("Failed to fetch room summary for {room_id} from server {server}: {e}");
+			},
+			| Err(_elapsed) => {
+				debug!("Timed out fetching room summary for {room_id} from server {server}");
+			},
 		}
-		return Ok(room);
 	}
 
 	Err!(Request(NotFound("Room not found or is not accessible")))

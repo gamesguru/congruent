@@ -2,22 +2,27 @@ use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum_client_ip::ClientIp;
-use conduwuit::{Err, Result};
+use conduwuit::{Err, Result, err};
 use futures::{FutureExt, StreamExt};
-use ruma::{
+use slipstream::{
 	OwnedRoomId,
 	api::{
 		client::{
 			membership::mutual_rooms,
 			profile::{delete_profile_key, get_profile_key, set_profile_key},
+			relations::event_relationships,
 		},
 		federation,
 	},
+	codec,
 	presence::PresenceState,
 };
 
 use super::{update_avatar_url, update_displayname};
-use crate::Ruma;
+use crate::{
+	Ruma,
+	msc2836::{self, Params, Requester},
+};
 
 /// # `GET /_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms`
 ///
@@ -34,7 +39,7 @@ pub(crate) async fn get_mutual_rooms_route(
 ) -> Result<mutual_rooms::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if sender_user == body.user_id {
+	if sender_user == &*body.user_id {
 		return Err!(Request(Unknown("You cannot request rooms in common with yourself.")));
 	}
 
@@ -46,7 +51,6 @@ pub(crate) async fn get_mutual_rooms_route(
 		.rooms
 		.state_cache
 		.get_shared_rooms(sender_user, &body.user_id)
-		.map(ToOwned::to_owned)
 		.collect()
 		.await;
 
@@ -67,7 +71,7 @@ pub(crate) async fn set_profile_key_route(
 ) -> Result<set_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -118,7 +122,8 @@ pub(crate) async fn set_profile_key_route(
 		let Some(avatar_url) = profile_key_value.as_str() else {
 			return Err!(Request(BadJson("avatar_url must be a string")));
 		};
-		let mxc = ruma::OwnedMxcUri::from(avatar_url);
+		let mxc = slipstream::OwnedMxcUri::parse(avatar_url)
+			.map_err(|_| err!(Request(InvalidParam("avatar_url must be a valid MXC URI"))))?;
 
 		let all_joined_rooms: Vec<OwnedRoomId> = services
 			.rooms
@@ -131,11 +136,10 @@ pub(crate) async fn set_profile_key_route(
 		Box::pin(update_avatar_url(&services, &body.user_id, Some(mxc), None, &all_joined_rooms))
 			.await;
 	} else {
-		services.users.set_profile_key(
-			&body.user_id,
-			&body.key_name,
-			Some(profile_key_value.clone()),
-		);
+		services
+			.users
+			.set_profile_key(&body.user_id, &body.key_name, Some(profile_key_value.clone()))
+			.await;
 	}
 
 	if services.config.allow_local_presence {
@@ -160,7 +164,7 @@ pub(crate) async fn delete_profile_key_route(
 ) -> Result<delete_profile_key::unstable::Response> {
 	let sender_user = body.sender_user();
 
-	if *sender_user != body.user_id && body.appservice_info.is_none() {
+	if sender_user != &*body.user_id && body.appservice_info.is_none() {
 		return Err!(Request(Forbidden("You cannot update the profile of another user")));
 	}
 
@@ -197,7 +201,8 @@ pub(crate) async fn delete_profile_key_route(
 	} else {
 		services
 			.users
-			.set_profile_key(&body.user_id, &body.key_name, None);
+			.set_profile_key(&body.user_id, &body.key_name, None)
+			.await;
 	}
 
 	if services.config.allow_local_presence {
@@ -221,14 +226,14 @@ pub(crate) async fn get_profile_key_route(
 	State(services): State<crate::State>,
 	body: Ruma<get_profile_key::unstable::Request>,
 ) -> Result<get_profile_key::unstable::Response> {
-	let mut profile_key_value: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+	let mut profile_key_value: BTreeMap<String, slipstream::json::Value> = BTreeMap::new();
 
 	if !services.globals.user_is_local(&body.user_id) {
 		// Create and update our local copy of the user
 		if let Ok(response) = services
 			.sending
 			.send_federation_request(
-				body.user_id.server_name(),
+				&body.user_id.server_name(),
 				federation::query::get_profile_information::v1::Request {
 					user_id: body.user_id.clone(),
 					field: None, // we want the full user's profile to update locally as well
@@ -242,7 +247,8 @@ pub(crate) async fn get_profile_key_route(
 
 			services
 				.users
-				.set_displayname(&body.user_id, response.displayname.clone());
+				.set_displayname(&body.user_id, response.displayname.clone())
+				.await;
 
 			services
 				.users
@@ -255,11 +261,10 @@ pub(crate) async fn get_profile_key_route(
 			match response.custom_profile_fields.get(&body.key_name) {
 				| Some(value) => {
 					profile_key_value.insert(body.key_name.clone(), value.clone());
-					services.users.set_profile_key(
-						&body.user_id,
-						&body.key_name,
-						Some(value.clone()),
-					);
+					services
+						.users
+						.set_profile_key(&body.user_id, &body.key_name, Some(value.clone()))
+						.await;
 				},
 				| _ => {
 					return Err!(Request(NotFound("The requested profile key does not exist.")));
@@ -298,4 +303,170 @@ pub(crate) async fn get_profile_key_route(
 	}
 
 	Ok(get_profile_key::unstable::Response { value: profile_key_value })
+}
+
+use std::{
+	sync::LazyLock,
+	time::{Duration, Instant},
+};
+
+use tokio::sync::RwLock;
+
+type DagCacheMap =
+	std::collections::HashMap<OwnedRoomId, (Instant, Vec<slipstream::json::Value>)>;
+
+static DAG_CACHE: LazyLock<RwLock<DagCacheMap>> =
+	LazyLock::new(|| RwLock::new(DagCacheMap::new()));
+
+/// # `GET /_matrix/client/unstable/org.continuwuity.dag/{roomId}`
+///
+/// Fetches the local DAG for the given room, returning raw JSON arrays.
+/// Cached for 2 seconds to support hundreds of concurrent forensic viewers.
+pub(crate) async fn get_room_dag_route(
+	State(services): State<crate::State>,
+	axum::extract::Path(room_id_str): axum::extract::Path<String>,
+	auth: Option<
+		axum_extra::TypedHeader<
+			axum_extra::headers::Authorization<axum_extra::headers::authorization::Bearer>,
+		>,
+	>,
+) -> Result<impl axum::response::IntoResponse> {
+	use conduwuit::{Err, err};
+	use futures::StreamExt;
+	use slipstream::OwnedRoomId;
+
+	let room_id = OwnedRoomId::parse(room_id_str)
+		.map_err(|_| err!(Request(InvalidParam("Invalid room ID."))))?;
+
+	let is_public = services.rooms.state_accessor.get_join_rules(&room_id).await
+		== slipstream::events::room::join_rules::JoinRule::Public;
+
+	if !is_public {
+		// Extract token for private rooms
+		let token = match auth {
+			| Some(axum_extra::TypedHeader(axum_extra::headers::Authorization(bearer))) =>
+				bearer.token().to_owned(),
+			| None => {
+				return Err!(Request(MissingToken("Missing access token for private room.")));
+			},
+		};
+
+		// Validate user
+		let (user_id, _) = services.users.find_from_token(&token).await.map_err(|_| {
+			conduwuit::Error::Request(
+				slipstream::api::client::error::ErrorKind::UnknownToken { soft_logout: false },
+				"Invalid access token.".into(),
+				http::StatusCode::UNAUTHORIZED,
+			)
+		})?;
+
+		// Require server admin
+		if !services.users.is_admin(&user_id).await {
+			return Err!(Request(Forbidden(
+				"You must be a server admin to view this private room's DAG."
+			)));
+		}
+	}
+
+	if let Some((ts, cached_events)) = DAG_CACHE.read().await.get(&room_id) {
+		if ts.elapsed() < Duration::from_secs(2) {
+			return Ok(crate::json_util::json_response(slipstream::json::Value::Array(
+				cached_events.clone(),
+			)));
+		}
+	}
+
+	let mut events = Vec::new();
+	// Use pdus_rev to fetch from latest to oldest, avoiding full timeline scan.
+	let pdus = services
+		.rooms
+		.timeline
+		.pdus_rev(&room_id, std::ops::Bound::Unbounded);
+	futures::pin_mut!(pdus);
+
+	// Limit to the latest 200 events for performance
+	let mut count: usize = 0;
+	while let Some(Ok((_, pdu))) = pdus.next().await {
+		if count >= 200 {
+			break;
+		}
+
+		let mut obj: slipstream::json::Object = codec::from_str(&codec::to_string(&pdu))?;
+
+		if let Ok(root_handle) = services
+			.rooms
+			.state_accessor
+			.pdu_roothandle_after_event(&pdu.event_id)
+			.await
+		{
+			// Diagnostic-only field (stripped before client delivery): emit a
+			// stable 64-bit fingerprint of the event's HAMT root.
+			let fingerprint = u64::from_be_bytes(
+				root_handle.structural_hash[..8]
+					.try_into()
+					.expect("structural hash is at least 8 bytes"),
+			);
+			obj.insert("__shortstatehash".to_owned(), slipstream::json::Value::from(fingerprint));
+		}
+
+		// Add event_id in case PduEvent serialization omits it (V3+ rooms)
+		obj.insert(
+			"event_id".to_owned(),
+			slipstream::json::Value::String(pdu.event_id.to_string()),
+		);
+
+		events.push(slipstream::json::Value::Object(obj));
+		count = count.saturating_add(1);
+	}
+
+	// Reverse so they are chronologically ordered (oldest to newest)
+	events.reverse();
+
+	// Update cache
+	DAG_CACHE
+		.write()
+		.await
+		.insert(room_id.clone(), (Instant::now(), events.clone()));
+
+	Ok(crate::json_util::json_response(slipstream::json::Value::Array(events)))
+}
+
+/// # `POST /_matrix/client/unstable/event_relationships`
+///
+/// Walks the `m.relationship` DAG from an anchor event, fetching missing
+/// events over federation as needed.
+///
+/// An implementation of [MSC2836](https://github.com/matrix-org/matrix-spec-proposals/pull/2836)
+pub(crate) async fn get_event_relationships_route(
+	State(services): State<crate::State>,
+	body: Ruma<event_relationships::unstable::Request>,
+) -> Result<event_relationships::unstable::Response> {
+	let sender_user = body.sender_user();
+
+	let params = Params::defaulted(msc2836::DefaultedParams {
+		event_id: body.event_id.clone(),
+		room_id: body.room_id.clone(),
+		max_depth: body.max_depth,
+		max_breadth: body.max_breadth,
+		limit: body.limit,
+		depth_first: body.depth_first,
+		recent_first: body.recent_first,
+		include_parent: body.include_parent,
+		include_children: body.include_children,
+		direction: body.direction.clone(),
+	});
+
+	let (events, limited) =
+		Box::pin(msc2836::resolve(&services, Requester::Client(sender_user), params)).await?;
+
+	let mut raw_events = Vec::with_capacity(events.len());
+	for pdu in &events {
+		raw_events.push(msc2836::to_raw_json_with_children(&services, pdu).await);
+	}
+
+	Ok(event_relationships::unstable::Response {
+		events: raw_events,
+		next_batch: None,
+		limited,
+	})
 }

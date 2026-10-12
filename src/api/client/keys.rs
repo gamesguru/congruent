@@ -8,10 +8,12 @@ use conduwuit::{
 	Err, Error, Result, debug, debug_warn, err, info,
 	result::NotFound,
 	utils::{IterStream, stream::WidebandExt},
+	warn,
 };
 use conduwuit_service::{Services, users::parse_master_key};
 use futures::{StreamExt, stream::FuturesUnordered};
-use ruma::{
+use service::uiaa::Identity;
+use slipstream::{
 	OneTimeKeyAlgorithm, OwnedDeviceId, OwnedUserId, UserId,
 	api::{
 		client::{
@@ -24,13 +26,12 @@ use ruma::{
 		},
 		federation,
 	},
+	codec,
 	encryption::CrossSigningKey,
-	serde::Raw,
+	sswire::Raw,
 };
-use serde_json::json;
-use service::uiaa::Identity;
 
-use crate::Ruma;
+use crate::{Ruma, json_util::single_field};
 
 /// # `POST /_matrix/client/r0/keys/upload`
 ///
@@ -49,8 +50,10 @@ pub(crate) async fn upload_keys_route(
 		if one_time_key
 			.deserialize()
 			.inspect_err(|e| {
-				debug_warn!(
+				warn!(
 					%key_id,
+					%sender_user,
+					%sender_device,
 					?one_time_key,
 					"Invalid one time key JSON submitted by client, skipping: {e}"
 				);
@@ -66,20 +69,56 @@ pub(crate) async fn upload_keys_route(
 			.await?;
 	}
 
+	for (key_id, fallback_key) in &body.fallback_keys {
+		if fallback_key
+			.deserialize()
+			.inspect_err(|e| {
+				debug_warn!(
+					%key_id,
+					?fallback_key,
+					"Invalid one time key JSON submitted by client, skipping: {e}"
+				);
+			})
+			.is_err()
+		{
+			continue;
+		}
+
+		services
+			.users
+			.add_fallback_key(sender_user, sender_device, key_id, fallback_key, false)
+			.await?;
+	}
+
 	if let Some(device_keys) = &body.device_keys {
 		let deser_device_keys = device_keys.deserialize().map_err(|e| {
-			err!(Request(BadJson(debug_warn!(
+			warn!(
+				%sender_user,
+				%sender_device,
 				?device_keys,
 				"Invalid device keys JSON uploaded by client: {e}"
-			))))
+			);
+			err!(Request(BadJson("Invalid device keys JSON uploaded by client")))
 		})?;
 
 		if deser_device_keys.user_id != sender_user {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_user_id = %deser_device_keys.user_id,
+				"User ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"User ID in keys uploaded does not match your own user ID"
 			)));
 		}
 		if deser_device_keys.device_id != sender_device {
+			warn!(
+				%sender_user,
+				%sender_device,
+				uploaded_device_id = %deser_device_keys.device_id,
+				"Device ID in uploaded device keys does not match sender"
+			);
 			return Err!(Request(Unknown(
 				"Device ID in keys uploaded does not match your own device ID"
 			)));
@@ -98,22 +137,35 @@ pub(crate) async fn upload_keys_route(
 					%sender_user,
 					%sender_device,
 					?device_keys,
-					"Ignoring user uploaded keys as they are an exact copy already in the \
-					 database"
+					"Merging cross-signing signatures for re-uploaded exact copy of keys"
 				);
+
+				let mut new_device_keys_json = codec::to_value(&device_keys);
+				let existing_device_keys_json = codec::to_value(&existing_keys);
+
+				conduwuit_service::users::merge_signatures(
+					&mut new_device_keys_json,
+					&existing_device_keys_json,
+				);
+
+				let merged_keys: Raw<slipstream::encryption::DeviceKeys> =
+					Raw::from_value(&new_device_keys_json);
+
+				services
+					.users
+					.add_device_keys(sender_user, sender_device, &merged_keys)
+					.await;
 			} else {
 				services
 					.users
 					.add_device_keys(sender_user, sender_device, device_keys)
 					.await;
-				flush_user_rooms(&services, sender_user).await;
 			}
 		} else {
 			services
 				.users
 				.add_device_keys(sender_user, sender_device, device_keys)
 				.await;
-			flush_user_rooms(&services, sender_user).await;
 		}
 	}
 
@@ -222,8 +274,6 @@ pub(crate) async fn upload_signing_keys_route(
 		)
 		.await?;
 
-	flush_user_rooms(&services, sender_user).await;
-
 	info!(
 		target: "cross_signing",
 		"Successfully processed /keys/device_signing/upload from {}",
@@ -316,28 +366,22 @@ pub(crate) async fn upload_signatures_route(
 ) -> Result<upload_signatures::v3::Response> {
 	if body.signed_keys.is_empty() {
 		debug!("Empty signed_keys sent in key signature upload");
-		return Ok(upload_signatures::v3::Response::new());
+		return Ok(upload_signatures::v3::Response { failures: BTreeMap::new() });
 	}
 
 	let sender_user = body.sender_user();
 
 	for (user_id, keys) in &body.signed_keys {
 		for (key_id, key) in keys {
-			let Ok(key) = serde_json::to_value(key).inspect_err(|e| {
-				info!(
-					target: "cross_signing",
-					"Invalid key in JSON from {} for {} / {}: {}",
-					sender_user, user_id, key_id, e
-				);
-			}) else {
-				continue;
-			};
+			// `codec::to_value` is infallible, so the old serialization-failure
+			// branch is unreachable.
+			let key = codec::to_value(key);
 
 			let Some(signatures) = key.get("signatures") else {
 				continue;
 			};
 
-			let Some(sender_user_val) = signatures.get(sender_user.to_string()) else {
+			let Some(sender_user_val) = signatures.get(sender_user.as_str()) else {
 				continue;
 			};
 
@@ -367,8 +411,6 @@ pub(crate) async fn upload_signatures_route(
 			}
 		}
 	}
-
-	flush_user_rooms(&services, sender_user).await;
 
 	Ok(upload_signatures::v3::Response { failures: BTreeMap::new() })
 }
@@ -401,7 +443,6 @@ pub(crate) async fn get_key_changes_route(
 		services
 			.users
 			.keys_changed(sender_user, Some(from), Some(to))
-			.map(ToOwned::to_owned)
 			.collect::<Vec<_>>()
 			.await,
 	);
@@ -412,9 +453,8 @@ pub(crate) async fn get_key_changes_route(
 		device_list_updates.extend(
 			services
 				.users
-				.room_keys_changed(room_id, Some(from), Some(to))
+				.room_keys_changed(&room_id, Some(from), Some(to))
 				.map(|(user_id, _)| user_id)
-				.map(ToOwned::to_owned)
 				.collect::<Vec<_>>()
 				.await,
 		);
@@ -455,15 +495,15 @@ where
 			continue;
 		}
 
+		let mut container = BTreeMap::new();
 		if device_ids.is_empty() {
-			let mut container = BTreeMap::new();
 			let mut devices = services.users.all_device_ids(user_id).boxed();
 
 			while let Some(device_id) = devices.next().await {
-				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
+				if let Ok(mut keys) = services.users.get_device_keys(user_id, &device_id).await {
 					let metadata = services
 						.users
-						.get_device_metadata(user_id, device_id)
+						.get_device_metadata(user_id, &device_id)
 						.await
 						.map_err(|_| {
 							err!(Database("all_device_keys contained nonexistent device."))
@@ -472,14 +512,13 @@ where
 					add_unsigned_device_display_name(&mut keys, metadata, include_display_names)
 						.map_err(|_| err!(Database("invalid device keys in database")))?;
 
-					container.insert(device_id.to_owned(), keys);
+					container.insert(device_id.clone(), keys);
 				}
 			}
 
 			device_keys.insert(user_id.to_owned(), container);
 		} else {
 			for device_id in device_ids {
-				let mut container = BTreeMap::new();
 				if let Ok(mut keys) = services.users.get_device_keys(user_id, device_id).await {
 					let metadata = services
 						.users
@@ -496,9 +535,8 @@ where
 
 					container.insert(device_id.to_owned(), keys);
 				}
-
-				device_keys.insert(user_id.to_owned(), container);
 			}
+			device_keys.insert(user_id.to_owned(), container);
 		}
 
 		if let Ok(master_key) = services
@@ -528,6 +566,10 @@ where
 		.into_iter()
 		.stream()
 		.wide_filter_map(|(server, vec)| async move {
+			let requested_users = vec
+				.iter()
+				.map(|(user_id, _)| user_id.as_str().to_owned())
+				.collect::<HashSet<_>>();
 			let mut device_keys_input_fed = BTreeMap::new();
 			for (user_id, keys) in vec {
 				device_keys_input_fed.insert(user_id.to_owned(), keys.clone());
@@ -535,24 +577,49 @@ where
 
 			let request =
 				federation::keys::get_keys::v1::Request { device_keys: device_keys_input_fed };
+			// Cap the per-server federation wait so a single unreachable (e.g.
+			// paused/offline) remote server doesn't stall the whole /keys/query
+			// response. Reachable servers answer in milliseconds; an unreachable
+			// one would otherwise block up to the connect timeout (default 10s),
+			// which cascades into client-side send timeouts. The caller is told
+			// about the missing server via `failures` and can retry.
+			let fed_timeout = timeout.min(Duration::from_secs(3));
 			let response = tokio::time::timeout(
-				timeout,
-				services.sending.send_federation_request(server, request),
+				fed_timeout,
+				services.sending.send_federation_request(&server, request),
 			)
 			.await
 			// Need to flatten the Result<Result<V, E>, E> into Result<V, E>
 			.map_err(|_| err!(Request(Unknown("Timeout when getting keys over federation."))))
 			.and_then(|res| res);
 
-			Some((server, response))
+			Some((server, requested_users, response))
 		})
 		.collect::<FuturesUnordered<_>>()
 		.await
 		.into_iter();
 
-	for (server, response) in futures {
+	for (server, requested_users, response) in futures {
 		match response {
 			| Ok(response) => {
+				let mut filtered_device_keys = BTreeMap::new();
+				for (user_id, devices) in response.device_keys {
+					if user_id.server_name().as_str() != server.as_str()
+						|| !requested_users.contains(user_id.as_str())
+					{
+						continue;
+					}
+
+					for (device_id, device_keys) in &devices {
+						services
+							.users
+							.cache_remote_device_keys(&user_id, device_id, device_keys)
+							.await;
+					}
+
+					filtered_device_keys.insert(user_id, devices);
+				}
+
 				for (user, master_key) in response.master_keys {
 					let (master_key_id, mut master_key) =
 						match parse_master_key(&user, &master_key) {
@@ -569,7 +636,11 @@ where
 
 					if let Ok(our_master_key) = services
 						.users
-						.get_key(&master_key_id, sender_user, &user, &allowed_signatures)
+						// Use |_| true here: we need ALL stored signatures (including
+						// from other local users) so they survive the merge back into
+						// the DB. The requesting user's visibility filter is applied
+						// separately to the response.
+						.get_key(&master_key_id, sender_user, &user, &|_: &UserId| true)
 						.await
 					{
 						if let Ok((_, mut our_master_key)) =
@@ -584,8 +655,9 @@ where
 							);
 						}
 					}
-					let json = serde_json::to_value(master_key).expect("to_value always works");
-					let raw = serde_json::from_value(json).expect("Raw::from_value always works");
+					// The old conversion inferred `Option<Raw<..>>` from this
+					// call site's parameter type.
+					let raw = Some(Raw::<CrossSigningKey>::from_value(&master_key));
 
 					if let Err(e) = services
 						.users
@@ -610,10 +682,10 @@ where
 				}
 
 				self_signing_keys.extend(response.self_signing_keys);
-				device_keys.extend(response.device_keys);
+				device_keys.extend(filtered_device_keys);
 			},
 			| Err(e) => {
-				failures.insert(server.to_string(), json!({ "error": e.to_string() }));
+				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}
 	}
@@ -628,26 +700,27 @@ where
 }
 
 fn add_unsigned_device_display_name(
-	keys: &mut Raw<ruma::encryption::DeviceKeys>,
-	metadata: ruma::api::client::device::Device,
+	keys: &mut Raw<slipstream::encryption::DeviceKeys>,
+	metadata: slipstream::api::client::device::Device,
 	include_display_names: bool,
-) -> serde_json::Result<()> {
+) -> Result<(), codec::DeError> {
 	if let Some(display_name) = metadata.display_name {
-		let mut object = keys.deserialize_as::<serde_json::Map<String, serde_json::Value>>()?;
+		let mut object = keys.deserialize_as::<slipstream::json::Object>()?;
 
-		let unsigned = object.entry("unsigned").or_insert_with(|| json!({}));
-		if let serde_json::Value::Object(unsigned_object) = unsigned {
-			if include_display_names {
-				unsigned_object.insert("device_display_name".to_owned(), display_name.into());
+		let unsigned = object
+			.entry("unsigned".to_owned())
+			.or_insert_with(|| slipstream::json::Value::Object(slipstream::json::Object::new()));
+		if let slipstream::json::Value::Object(unsigned_object) = unsigned {
+			let device_display_name = if include_display_names {
+				slipstream::json::Value::String(display_name)
 			} else {
-				unsigned_object.insert(
-					"device_display_name".to_owned(),
-					Some(metadata.device_id.as_str().to_owned()).into(),
-				);
-			}
+				slipstream::json::Value::String(metadata.device_id.as_str().to_owned())
+			};
+
+			unsigned_object.insert("device_display_name".to_owned(), device_display_name);
 		}
 
-		*keys = Raw::from_json(serde_json::value::to_raw_value(&object)?);
+		*keys = Raw::from_value(&object);
 	}
 
 	Ok(())
@@ -698,9 +771,9 @@ pub(crate) async fn claim_keys_helper(
 				one_time_keys_input_fed.insert(user_id.clone(), keys.clone());
 			}
 			let response = tokio::time::timeout(
-				timeout,
+				timeout.min(Duration::from_secs(3)),
 				services.sending.send_federation_request(
-					server,
+					&server,
 					federation::keys::claim_keys::v1::Request {
 						one_time_keys: one_time_keys_input_fed,
 					},
@@ -724,18 +797,10 @@ pub(crate) async fn claim_keys_helper(
 					}
 				},
 			| Err(e) => {
-				failures.insert(server.to_string(), json!({"error": e.to_string()}));
+				failures.insert(server.to_string(), single_field("error", &e.to_string()));
 			},
 		}
 	}
 
 	Ok(claim_keys::v3::Response { failures, one_time_keys })
-}
-
-async fn flush_user_rooms(services: &Services, user_id: &UserId) {
-	let rooms_joined = services.rooms.state_cache.rooms_joined(user_id);
-	tokio::pin!(rooms_joined);
-	while let Some(room_id) = rooms_joined.next().await {
-		let _ = services.sending.flush_room(room_id).await;
-	}
 }

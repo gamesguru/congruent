@@ -1,7 +1,7 @@
 use axum::extract::State;
 use conduwuit::{Err, Result};
 use futures::StreamExt;
-use ruma::api::client::room::aliases;
+use slipstream::api::client::room::aliases;
 
 use crate::Ruma;
 
@@ -31,7 +31,6 @@ pub(crate) async fn get_room_aliases_route(
 			.rooms
 			.alias
 			.local_aliases_for_room(&body.room_id)
-			.map(ToOwned::to_owned)
 			.collect()
 			.await,
 	})

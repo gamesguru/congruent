@@ -74,6 +74,7 @@ if [[ "${1:-}" == "--direct" ]]; then
 	PASS=$(jq -r '.pass // 0' <<<"$RUN_META")
 	FAIL=$(jq -r '.fail // 0' <<<"$RUN_META")
 	SKIP=$(jq -r '.skip // 0' <<<"$RUN_META")
+	GITHUB_RUN_ID=$(jq -r '.github_run_id // ""' <<<"$RUN_META")
 	RUN_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 	# pass/fail/skip must be plain integers -- reject anything else rather than splice it
@@ -81,6 +82,7 @@ if [[ "${1:-}" == "--direct" ]]; then
 	[[ "$PASS" =~ ^[0-9]+$ ]] || PASS=0
 	[[ "$FAIL" =~ ^[0-9]+$ ]] || FAIL=0
 	[[ "$SKIP" =~ ^[0-9]+$ ]] || SKIP=0
+	[[ "$GITHUB_RUN_ID" =~ ^[0-9]+$ ]] || GITHUB_RUN_ID=""
 	ROOM_VERSION=${ROOM_VERSION:-11}
 
 	if [[ -z "$COMMIT" || ! -f "$RESULTS_FILE" ]]; then
@@ -95,16 +97,18 @@ if [[ "${1:-}" == "--direct" ]]; then
 		# sql_quote() only doubles single quotes, so force standard string semantics for
 		# this transaction before interpolating any external values into string literals.
 		echo "SET LOCAL standard_conforming_strings = on;"
-		echo "INSERT INTO runs (run_date, commit_hash, branch, arch, os, profile, n_pass, n_skip, n_fail, room_version, features, version_string)
+		echo "ALTER TABLE runs ADD COLUMN IF NOT EXISTS github_run_id bigint;"
+		echo "INSERT INTO runs (run_date, commit_hash, branch, arch, os, profile, n_pass, n_skip, n_fail, room_version, features, version_string, github_run_id)
         SELECT '$(sql_quote "$RUN_DATE")'::timestamptz, '$(sql_quote "$COMMIT")', '$(sql_quote "$BRANCH")', NULLIF('$(sql_quote "$ARCH")', ''), NULLIF('$(sql_quote "$OS")', ''), NULLIF('$(sql_quote "$PROFILE")', ''), ${PASS}, ${SKIP}, ${FAIL},
           COALESCE(NULLIF('$(sql_quote "$ROOM_VERSION")', ''), '11'),
-          COALESCE(regexp_replace(btrim('$(sql_quote "$FEATURES")', ' ,'), '[,\s]+', ' ', 'g'), ''), '$(sql_quote "$VERSION")'
+          COALESCE(regexp_replace(btrim('$(sql_quote "$FEATURES")', ' ,'), '[,\s]+', ' ', 'g'), ''), '$(sql_quote "$VERSION")',
+          NULLIF('$(sql_quote "$GITHUB_RUN_ID")', '')::bigint
         ON CONFLICT (commit_hash, arch, os, profile, room_version, features) DO NOTHING;"
 		echo "COMMIT;"
 	) | psql_remote
 
-	jq -c --arg c "$COMMIT" --arg a "$ARCH" --arg o "$OS" --arg p "$PROFILE" --arg rv "$ROOM_VERSION" --arg f "$FEATURES" \
-		'. + {commit: $c, arch: $a, os: $o, profile: $p, room_version: $rv, features: ($f | gsub("[,\\s]+"; " ") | gsub("^ | $"; ""))}' "$RESULTS_FILE" |
+	jq -c --arg c "$COMMIT" --arg a "$ARCH" --arg o "$OS" --arg p "$PROFILE" --arg rv "$ROOM_VERSION" --arg f "$FEATURES" --arg grid "$GITHUB_RUN_ID" \
+		'. + {commit: $c, arch: $a, os: $o, profile: $p, room_version: $rv, features: ($f | gsub("[,\\s]+"; " ") | gsub("^ | $"; "")), github_run_id: (if $grid | test("^[0-9]+$") then ($grid | tonumber) else null end)}' "$RESULTS_FILE" |
 		ingest_details
 	echo "✓ Direct ingest complete."
 	exit 0
@@ -124,12 +128,14 @@ echo "→ Streaming last $LIMIT run summaries..."
 	printf '%s\n' "\copy b FROM STDIN csv quote e'\x01' delimiter e'\x02';"
 	git show "FETCH_HEAD:runs.jsonl" | tail -n "$LIMIT"
 	echo "\."
-	echo "INSERT INTO runs (run_date, commit_hash, upstream_commit, branch, author_name, actor, provider, arch, os, version_string, features, profile, binary_sha256, n_pass, n_skip, n_fail, room_version)
+	echo "ALTER TABLE runs ADD COLUMN IF NOT EXISTS github_run_id bigint;"
+	echo "INSERT INTO runs (run_date, commit_hash, upstream_commit, branch, author_name, actor, provider, arch, os, version_string, features, profile, binary_sha256, n_pass, n_skip, n_fail, room_version, github_run_id)
         SELECT
           (j->>'run_date')::timestamptz, (j->>'commit_hash'), (j->>'upstream_commit'), (j->>'branch'),
           (j->>'author_name'), (j->>'actor'), (j->>'provider'), NULLIF(j->>'arch', ''), NULLIF(j->>'os', ''),
           (j->>'version_string'), COALESCE(btrim(regexp_replace(j->>'features', '[,\s]+', ' ', 'g'), ' ,'), ''), NULLIF(j->>'profile', ''), (j->>'binary_sha256'),
-          (j->'passed_count')::int, (j->'skipped_count')::int, (j->'failed_count')::int, COALESCE(NULLIF(j->>'room_version', ''), '11')
+          (j->'passed_count')::int, (j->'skipped_count')::int, (j->'failed_count')::int, COALESCE(NULLIF(j->>'room_version', ''), '11'),
+          NULLIF(j->>'github_run_id', '')::bigint
         FROM b ON CONFLICT (commit_hash, arch, os, profile, room_version, features) DO NOTHING;"
 	echo "COMMIT;"
 ) | psql_remote

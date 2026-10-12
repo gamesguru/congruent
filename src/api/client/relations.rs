@@ -6,7 +6,7 @@ use conduwuit::{
 };
 use conduwuit_service::Services;
 use futures::StreamExt;
-use ruma::{
+use slipstream::{
 	EventId, RoomId, UInt, UserId,
 	api::{
 		Direction,
@@ -34,8 +34,8 @@ pub(crate) async fn get_relating_events_with_rel_type_and_event_type_route(
 		body.rel_type.clone().into(),
 		body.from.as_deref(),
 		body.to.as_deref(),
-		body.limit,
-		body.recurse,
+		Some(body.limit),
+		body.recurse.unwrap_or(false),
 		body.dir,
 	)
 	.await
@@ -61,8 +61,8 @@ pub(crate) async fn get_relating_events_with_rel_type_route(
 		body.rel_type.clone().into(),
 		body.from.as_deref(),
 		body.to.as_deref(),
-		body.limit,
-		body.recurse,
+		Some(body.limit),
+		body.recurse.unwrap_or(false),
 		body.dir,
 	)
 	.await
@@ -186,11 +186,9 @@ async fn paginate_relations_with_filter(
 	let has_more = events.len() >= limit;
 
 	let next_batch = if has_more {
-		match dir {
-			| Direction::Forward => events.last(),
-			| Direction::Backward => events.first(),
-		}
-		.map(|(count, _)| count.to_string())
+		// `from` is an exclusive boundary for both directions, so the next page
+		// must restart from the last event we actually returned on this page.
+		events.last().map(|(count, _)| count.to_string())
 	} else {
 		None
 	};

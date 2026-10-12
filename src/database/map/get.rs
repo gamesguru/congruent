@@ -34,6 +34,7 @@ where
 	let cmd = Get {
 		map: self.clone(),
 		key: [key.as_ref().into()].into(),
+		nocache: false,
 		res: None,
 	};
 
@@ -66,6 +67,47 @@ where
 {
 	let res = self.get_blocking_opts(key, &self.read_options);
 	handle_from(res)
+}
+
+/// Fetch a value from the database WITHOUT caching, returning a
+/// reference-handle. The key is referenced directly to perform the query. This
+/// is a thread- blocking call.
+#[implement(super::Map)]
+#[tracing::instrument(skip(self, key), name = "blocking_nocache", level = "trace")]
+pub fn get_blocking_nocache<K>(&self, key: &K) -> Result<Handle<'_>>
+where
+	K: AsRef<[u8]> + ?Sized,
+{
+	let res = self.get_blocking_opts(key, &self.nocache_read_options);
+	handle_from(res)
+}
+
+/// Fetch a value from the database WITHOUT caching, returning a
+/// reference-handle asynchronously. The key is referenced directly to perform
+/// the query.
+#[implement(super::Map)]
+#[tracing::instrument(skip(self, key), fields(%self), level = "trace")]
+pub fn get_nocache<K>(
+	self: &Arc<Self>,
+	key: &K,
+) -> impl Future<Output = Result<Handle<'_>>> + Send + use<'_, K>
+where
+	K: AsRef<[u8]> + Debug + ?Sized,
+{
+	use crate::pool::Get;
+
+	let cmd = Get {
+		map: self.clone(),
+		key: [key.as_ref().into()].into(),
+		nocache: true,
+		res: None,
+	};
+
+	self.db
+		.pool
+		.execute_get(cmd)
+		.and_then(|mut res| ready(res.remove(0)))
+		.boxed()
 }
 
 #[implement(super::Map)]

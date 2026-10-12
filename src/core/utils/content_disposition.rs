@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use ruma::http_headers::{ContentDisposition, ContentDispositionType};
+use slipstream::http_headers::{ContentDisposition, ContentDispositionType};
 
 use crate::debug_info;
 

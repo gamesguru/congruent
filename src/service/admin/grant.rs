@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use conduwuit::{
 	Err, Result, debug_info, debug_warn, error, implement, matrix::pdu::PduBuilder, warn,
 };
-use ruma::{
+use slipstream::{
 	RoomId, UserId,
 	events::{
 		RoomAccountDataEventType, StateEventType,
@@ -48,46 +48,40 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 	// invite the remote user.
 	if self.services.globals.user_is_local(user_id) {
 		debug_info!("Inviting local user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					String::from(user_id),
-					&RoomMemberEventContent::new(MembershipState::Invite),
-				),
-				server_user,
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?;
+		Box::pin(self.services.timeline.build_and_append_pdu(
+			PduBuilder::state(
+				user_id.to_string(),
+				&RoomMemberEventContent::new(MembershipState::Invite),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?;
 
 		debug_info!("Force joining local user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					String::from(user_id),
-					&RoomMemberEventContent::new(MembershipState::Join),
-				),
-				user_id,
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?;
+		Box::pin(self.services.timeline.build_and_append_pdu(
+			PduBuilder::state(
+				user_id.to_string(),
+				&RoomMemberEventContent::new(MembershipState::Join),
+			),
+			user_id,
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?;
 	} else {
 		debug_info!("Inviting remote user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					user_id.to_string(),
-					&RoomMemberEventContent::new(MembershipState::Invite),
-				),
-				server_user,
-				Some(&room_id),
-				&state_lock,
-			)
-			.await?;
+		Box::pin(self.services.timeline.build_and_append_pdu(
+			PduBuilder::state(
+				user_id.to_string(),
+				&RoomMemberEventContent::new(MembershipState::Invite),
+			),
+			server_user,
+			Some(&room_id),
+			&state_lock,
+		))
+		.await?;
 	}
 
 	// Set power levels
@@ -107,15 +101,13 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 		.insert(server_user.into(), 69420.into());
 	room_power_levels.users.insert(user_id.into(), 100.into());
 
-	self.services
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(String::new(), &room_power_levels),
-			server_user,
-			Some(&room_id),
-			&state_lock,
-		)
-		.await?;
+	Box::pin(self.services.timeline.build_and_append_pdu(
+		PduBuilder::state(String::new(), &room_power_levels),
+		server_user,
+		Some(&room_id),
+		&state_lock,
+	))
+	.await?;
 
 	// Set room tag
 	let room_tag = self.services.server.config.admin_room_tag.as_str();
@@ -150,7 +142,7 @@ async fn set_room_tag(&self, room_id: &RoomId, user_id: &UserId, tag: &str) -> R
 			Some(room_id),
 			user_id,
 			RoomAccountDataEventType::Tag,
-			&serde_json::to_value(event)?,
+			&slipstream::codec::to_value(&event),
 		)
 		.await
 }
@@ -203,21 +195,19 @@ pub async fn revoke_admin(&self, user_id: &UserId) -> Result {
 		},
 	};
 
-	self.services
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-				membership: Leave,
-				reason: Some("Admin Revoked".into()),
-				is_direct: None,
-				join_authorized_via_users_server: None,
-				third_party_invite: None,
-				..event
-			}),
-			self.services.globals.server_user.as_ref(),
-			Some(&room_id),
-			&state_lock,
-		)
-		.await
-		.map(|_| ())
+	Box::pin(self.services.timeline.build_and_append_pdu(
+		PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
+			membership: Leave,
+			reason: Some("Admin Revoked".into()),
+			is_direct: None,
+			join_authorized_via_users_server: None,
+			third_party_invite: None,
+			..event
+		}),
+		self.services.globals.server_user.as_ref(),
+		Some(&room_id),
+		&state_lock,
+	))
+	.await
+	.map(|_| ())
 }

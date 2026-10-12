@@ -9,7 +9,7 @@ use conduwuit::{
 	Err, Event, PduEvent, Result, debug, debug_error, debug_info, debug_warn, implement, trace,
 	warn,
 };
-use ruma::{
+use slipstream::{
 	CanonicalJsonObject, CanonicalJsonValue, KeyId, RoomId, ServerName, SigningKeyId,
 	api::federation::room::{
 		policy_check::unstable::Request as PolicyCheckRequest,
@@ -17,7 +17,6 @@ use ruma::{
 	},
 	events::{StateEventType, room::policy::RoomPolicyEventContent},
 };
-use serde_json::value::RawValue;
 
 /// Asks a remote policy server if the event is allowed.
 ///
@@ -44,7 +43,9 @@ pub async fn ask_policy_server(
 		return Ok(true); // don't ever contact policy servers
 	}
 
-	if *pdu.event_type() == StateEventType::RoomPolicy.into() {
+	if *pdu.event_type()
+		== slipstream::events::TimelineEventType::from(StateEventType::RoomPolicy)
+	{
 		debug!(
 			room_id = %room_id,
 			event_type = ?pdu.event_type(),
@@ -90,7 +91,12 @@ pub async fn ask_policy_server(
 		trace!("Policy server is empty for room {room_id}, skipping spam check");
 		return Ok(true);
 	}
-	if !self.services.state_cache.server_in_room(via, room_id).await {
+	if !self
+		.services
+		.state_cache
+		.server_in_room(&via, room_id)
+		.await
+	{
 		debug!(
 			via = %via,
 			"Policy server is not in the room, skipping spam check"
@@ -110,15 +116,14 @@ pub async fn ask_policy_server(
 				"Getting policy server signature on event"
 			);
 			return self
-				.fetch_policy_server_signature(pdu, pdu_json, via, outgoing, room_id)
+				.fetch_policy_server_signature(pdu, pdu_json, &via, outgoing, room_id)
 				.await;
 		}
 		// for incoming events, is it signed by <via> with the key
 		// "ed25519:policy_server"?
 		if let Some(CanonicalJsonValue::Object(sigs)) = pdu_json.get("signatures") {
 			if let Some(CanonicalJsonValue::Object(server_sigs)) = sigs.get(via.as_str()) {
-				let wanted_key_id: &KeyId<ruma::SigningKeyAlgorithm, ruma::Base64PublicKey> =
-					SigningKeyId::parse("ed25519:policy_server")?;
+				let wanted_key_id = SigningKeyId::parse("ed25519:policy_server")?;
 				if let Some(CanonicalJsonValue::String(_sig_value)) =
 					server_sigs.get(wanted_key_id.as_str())
 				{
@@ -138,7 +143,7 @@ pub async fn ask_policy_server(
 		Duration::from_secs(self.services.server.config.policy_server_request_timeout),
 		self.services
 			.sending
-			.send_federation_request(via, PolicyCheckRequest {
+			.send_federation_request(&via, PolicyCheckRequest {
 				event_id: pdu.event_id().to_owned(),
 				pdu: Some(outgoing),
 			}),
@@ -194,7 +199,7 @@ pub async fn fetch_policy_server_signature(
 	pdu: &PduEvent,
 	pdu_json: &mut CanonicalJsonObject,
 	via: &ServerName,
-	outgoing: Box<RawValue>,
+	outgoing: conduwuit::matrix::pdu::RawJson,
 	room_id: &RoomId,
 ) -> Result<bool> {
 	debug!("Requesting policy server signature");
@@ -237,8 +242,10 @@ pub async fn fetch_policy_server_signature(
 		debug!("Policy server refused to sign event");
 		return Ok(false);
 	}
-	let sigs: ruma::Signatures<ruma::OwnedServerName, ruma::ServerSigningKeyVersion> =
-		response.signatures.unwrap();
+	let sigs: slipstream::Signatures<
+		slipstream::OwnedServerName,
+		slipstream::ServerSigningKeyVersion,
+	> = response.signatures.unwrap();
 	if !sigs.contains_key(via) {
 		debug_warn!(
 			"Policy server returned signatures, but did not include the expected server name \
@@ -248,9 +255,9 @@ pub async fn fetch_policy_server_signature(
 		);
 		return Ok(false);
 	}
-	let keypairs = sigs.get(via).unwrap();
+	let keypairs = &sigs[via];
 	let wanted_key_id = KeyId::parse("ed25519:policy_server")?;
-	if !keypairs.contains_key(wanted_key_id) {
+	if !keypairs.contains_key(&wanted_key_id) {
 		debug_warn!(
 			"Policy server returned signature, but did not use the key ID \
 			 'ed25519:policy_server'."
@@ -262,7 +269,7 @@ pub async fn fetch_policy_server_signature(
 		.or_insert_with(|| CanonicalJsonValue::Object(BTreeMap::default()));
 
 	if let CanonicalJsonValue::Object(signatures_map) = signatures_entry {
-		let sig_value = keypairs.get(wanted_key_id).unwrap().to_owned();
+		let sig_value = keypairs.get(&wanted_key_id).unwrap().to_owned();
 
 		match signatures_map.get_mut(via.as_str()) {
 			| Some(CanonicalJsonValue::Object(inner_map)) => {
