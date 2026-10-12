@@ -156,12 +156,13 @@ pub async fn state_contains_shortstatekey_hamt(
 		room_id,
 	);
 
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node(&root_handle.structural_hash)?;
-	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let store = &self.services.state_hamt.store;
+	let root_node = store.get_node_verifying(
+		room_id.as_bytes(),
+		&structural_key,
+		&root_handle.structural_hash,
+	)?;
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	let res = root_node
 		.search(&structural_key, &shortstatekey, &mut resolver)
 		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?;
@@ -189,12 +190,13 @@ pub async fn state_get_shortid_hamt(
 		room_id,
 	);
 
-	let root_node = self
-		.services
-		.state_hamt
-		.store
-		.get_node(&root_handle.structural_hash)?;
-	let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+	let store = &self.services.state_hamt.store;
+	let root_node = store.get_node_verifying(
+		room_id.as_bytes(),
+		&structural_key,
+		&root_handle.structural_hash,
+	)?;
+	let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 	root_node
 		.search(&structural_key, &shortstatekey, &mut resolver)
 		.map_err(|e| err!(error!("HAMT lookup failed: {e:?}")))?

@@ -948,3 +948,67 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 		"the invite count must survive alongside the invite"
 	);
 }
+
+/// Reads that miss the cache are compared against their mtxdb shadow without
+/// ever being served from it: a missing shadow, a verified one, and one that
+/// fails full-hash verification are each counted, and the caller always gets
+/// the RocksDB node.
+#[conduwuit_macros::async_test]
+async fn test_verifying_reads_count_shadow_outcomes_and_serve_rocksdb() {
+	use rezzy::{hamt::PersistedInternalNode, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-verify:test.conduwuit.local").unwrap();
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let store = &services.rooms.state_hamt.store;
+	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+
+	let build = |seed: u64| {
+		let (_, node) = rezzy::hamt::build_hamt_root_handle(
+			&structural_key,
+			&LtHash::default(),
+			(0_u64..4).map(move |key| (key, key.checked_add(seed).expect("fixture fits u64"))),
+		)
+		.expect("build HAMT node");
+		let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+		(node.structural_hash, bytes)
+	};
+	// Written straight to RocksDB so the node cache never holds them.
+	let (absent, absent_bytes) = build(1000);
+	let (present, present_bytes) = build(2000);
+	let (corrupt, corrupt_bytes) = build(3000);
+	for (hash, bytes) in
+		[(absent, &absent_bytes), (present, &present_bytes), (corrupt, &corrupt_bytes)]
+	{
+		services.db["state_hamt_nodes"].insert(&hash, bytes);
+	}
+	shadow
+		.put_node(room_id.as_bytes(), &present, &present_bytes)
+		.expect("shadow-write verified node");
+	// Another node's bytes under `corrupt`'s id: right key, wrong content.
+	shadow
+		.put_node(room_id.as_bytes(), &corrupt, &present_bytes)
+		.expect("shadow-write mismatched node");
+
+	let before = store.shadow_read_stats().snapshot();
+	for hash in [absent, present, corrupt] {
+		let node = store
+			.get_node_verifying(room_id.as_bytes(), &structural_key, &hash)
+			.expect("RocksDB serves the read");
+		assert_eq!(node.structural_hash, hash, "the RocksDB node is what is returned");
+	}
+	let after = store.shadow_read_stats().snapshot();
+	let delta =
+		|after: u64, before: u64| after.checked_sub(before).expect("counter moved backwards");
+	assert_eq!(delta(after.0, before.0), 1, "one verified shadow");
+	assert_eq!(delta(after.1, before.1), 1, "one missing shadow");
+	assert_eq!(delta(after.2, before.2), 0, "content-addressed nodes cannot verify yet differ");
+	assert_eq!(delta(after.3, before.3), 1, "one shadow failing full-hash verification");
+
+	// A cached node is not re-verified.
+	store
+		.get_node_verifying(room_id.as_bytes(), &structural_key, &present)
+		.expect("cached read");
+	assert_eq!(store.shadow_read_stats().snapshot(), after, "cache hits skip verification");
+}

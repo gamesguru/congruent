@@ -233,12 +233,15 @@ impl Service {
 		from_root: Option<&rezzy::hamt::RootHandle>,
 		to_root: &rezzy::hamt::RootHandle,
 	) -> Result<()> {
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let store = &self.services.state_hamt.store;
 		let old_node = match from_root {
-			| Some(root) => self
-				.services
-				.state_hamt
-				.store
-				.get_node(&root.structural_hash)?,
+			| Some(root) => store.get_node_verifying(
+				room_id.as_bytes(),
+				&structural_key,
+				&root.structural_hash,
+			)?,
 			| None => Arc::new(rezzy::hamt::HamtNode {
 				datamap: 0,
 				nodemap: 0,
@@ -261,13 +264,14 @@ impl Service {
 				.put_node(room_id.as_bytes(), empty_node.clone());
 			empty_node
 		} else {
-			self.services
-				.state_hamt
-				.store
-				.get_node(&to_root.structural_hash)?
+			store.get_node_verifying(
+				room_id.as_bytes(),
+				&structural_key,
+				&to_root.structural_hash,
+			)?
 		};
 
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 		let lattice = rezzy::incremental::LtHash::default();
 		let (added, removed): HamtDelta =
 			rezzy::hamt::delta::isolate_delta::<u64, u64, _, conduwuit::Error>(
@@ -501,12 +505,17 @@ impl Service {
 		};
 		if let Some(base) = base {
 			if let Some(mut lattice) = self.get_root_lattice(&base).await {
-				let old = self
-					.services
-					.state_hamt
-					.store
-					.get_node(&base.structural_hash)?;
-				let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+				let structural_key = rooms::state_hamt::room_structural_key(
+					&self.services.globals.server_secret,
+					room_id,
+				);
+				let store = &self.services.state_hamt.store;
+				let old = store.get_node_verifying(
+					room_id.as_bytes(),
+					&structural_key,
+					&base.structural_hash,
+				)?;
+				let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 				let value = self
 					.services
 					.short
@@ -514,10 +523,7 @@ impl Service {
 					.await;
 				let (new_node, displaced, created) = rezzy::hamt::persist_mutation(
 					&old,
-					&rooms::state_hamt::room_structural_key(
-						&self.services.globals.server_secret,
-						room_id,
-					),
+					&structural_key,
 					new_shortstatekey,
 					Some(value),
 					&mut resolver,
@@ -628,12 +634,13 @@ impl Service {
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
 		lattice: &rezzy::incremental::LtHash,
 	) -> Result<rezzy::hamt::RootHandle> {
-		let old = self
-			.services
-			.state_hamt
-			.store
-			.get_node(&prev.structural_hash)?;
-		let mut resolver = self.services.state_hamt.store.get_blocking_resolver();
+		let store = &self.services.state_hamt.store;
+		let old = store.get_node_verifying(
+			room_id.as_bytes(),
+			structural_key,
+			&prev.structural_hash,
+		)?;
+		let mut resolver = store.get_room_resolver(room_id.as_bytes(), structural_key);
 
 		// Displaced values are unused: callers pass a lattice already computed
 		// from the resolved post-mutation state, so there is no need to replay

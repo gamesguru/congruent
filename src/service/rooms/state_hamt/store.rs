@@ -59,9 +59,40 @@ impl WriteStats {
 	pub fn shadow_writes(&self) -> u64 { self.shadow_written.load(Ordering::Relaxed) }
 }
 
+/// Outcomes of comparing nodes read from RocksDB against their mtxdb shadow.
+///
+/// Verification never changes what a reader sees: RocksDB serves every read.
+/// These counters exist so a shadow that has drifted is visible before reads
+/// are ever moved to mtxdb.
+#[derive(Debug, Default)]
+pub struct ShadowReadStats {
+	/// Shadow node present, verified against its full hash, and byte-identical.
+	pub verified: AtomicU64,
+	/// No shadow node. Expected for nodes written before shadow writes began.
+	pub missing: AtomicU64,
+	/// Shadow node verified but its content differs from RocksDB.
+	pub mismatched: AtomicU64,
+	/// Shadow node failed hash verification, or mtxdb could not be read.
+	pub errors: AtomicU64,
+}
+
+impl ShadowReadStats {
+	/// `(verified, missing, mismatched, errors)`.
+	#[must_use]
+	pub fn snapshot(&self) -> (u64, u64, u64, u64) {
+		(
+			self.verified.load(Ordering::Relaxed),
+			self.missing.load(Ordering::Relaxed),
+			self.mismatched.load(Ordering::Relaxed),
+			self.errors.load(Ordering::Relaxed),
+		)
+	}
+}
+
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 pub struct Store {
 	mtxdb: conduwuit_mtxdb::state::StateAdapter,
+	shadow_reads: ShadowReadStats,
 	/// RocksDB column family containing the densely persisted nodes.
 	db: Arc<Map>,
 
@@ -96,6 +127,7 @@ impl Store {
 
 		Self {
 			mtxdb: conduwuit_mtxdb::state::StateAdapter::new(mtxdb),
+			shadow_reads: ShadowReadStats::default(),
 			db,
 			node_mtimes,
 			node_cache,
@@ -132,8 +164,13 @@ impl Store {
 	/// Checks the memory cache first. On miss, reads from RocksDB and
 	/// parses the dense format into an in-memory `HamtNode`.
 	pub fn get_node_blocking(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
+		self.load_node(hash).map(|(node, _)| node)
+	}
+
+	/// Resolves a node, reporting whether it came from the memory cache.
+	fn load_node(&self, hash: &StructuralHash) -> Result<(Arc<HamtNode<u64, u64>>, bool)> {
 		if let Some(node) = self.node_cache.get(hash) {
-			return Ok(node);
+			return Ok((node, true));
 		}
 
 		let bytes = self.db.get_blocking(hash)?;
@@ -144,7 +181,77 @@ impl Store {
 		let node = Self::decode_node(hash, &bytes)?;
 		self.node_cache.insert(*hash, node.clone());
 
+		Ok((node, false))
+	}
+
+	/// Like [`Self::get_node_blocking`], but a node read from RocksDB (not the
+	/// cache) is also compared against its mtxdb shadow. The result is always
+	/// the RocksDB node; a disagreement is counted and logged, never served.
+	pub fn get_node_verifying(
+		&self,
+		room_id: &[u8],
+		structural_key: &[u8],
+		hash: &StructuralHash,
+	) -> Result<Arc<HamtNode<u64, u64>>> {
+		let (node, cached) = self.load_node(hash)?;
+		if !cached {
+			self.verify_shadow_node(room_id, structural_key, hash, &node);
+		}
 		Ok(node)
+	}
+
+	/// A resolver for [`rezzy::hamt`] traversals in `room_id` that verifies each
+	/// node it loads from RocksDB against mtxdb. See
+	/// [`Self::get_node_verifying`].
+	pub fn get_room_resolver<'a>(
+		&'a self,
+		room_id: &'a [u8],
+		structural_key: &'a [u8],
+	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + 'a {
+		move |hash: &StructuralHash| self.get_node_verifying(room_id, structural_key, hash)
+	}
+
+	/// Counters for [`Self::get_node_verifying`].
+	#[must_use]
+	pub fn shadow_read_stats(&self) -> &ShadowReadStats { &self.shadow_reads }
+
+	fn verify_shadow_node(
+		&self,
+		room_id: &[u8],
+		structural_key: &[u8],
+		hash: &StructuralHash,
+		durable: &Arc<HamtNode<u64, u64>>,
+	) {
+		let stats = &self.shadow_reads;
+		match self.get_shadow_node_verified(room_id, structural_key, hash) {
+			| Ok(None) => {
+				stats.missing.fetch_add(1, Ordering::Relaxed);
+			},
+			| Ok(Some(shadow)) => {
+				let encode = |node: &Arc<HamtNode<u64, u64>>| {
+					PersistedInternalNode::<u64, u64>::from(node.as_ref()).encode_v1()
+				};
+				if encode(&shadow) == encode(durable) {
+					stats.verified.fetch_add(1, Ordering::Relaxed);
+				} else {
+					stats.mismatched.fetch_add(1, Ordering::Relaxed);
+					conduwuit::warn!(
+						room = %String::from_utf8_lossy(room_id),
+						hash = ?hash,
+						"mtxdb shadow node differs from RocksDB"
+					);
+				}
+			},
+			| Err(error) => {
+				stats.errors.fetch_add(1, Ordering::Relaxed);
+				conduwuit::warn!(
+					room = %String::from_utf8_lossy(room_id),
+					hash = ?hash,
+					?error,
+					"mtxdb shadow node failed verification"
+				);
+			},
+		}
 	}
 
 	/// The durable encoded bytes of a node, exactly as stored, or `None` when no
