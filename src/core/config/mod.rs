@@ -3417,3 +3417,13 @@ fn default_ldap_uid_attribute() -> String { String::from("uid") }
 fn default_ldap_name_attribute() -> String { String::from("givenName") }
 
 fn default_presence_idle_debounce_ms() -> u64 { 60000 }
+
+#[cfg(test)]
+mod tests {
+	use super::default_access_token_ttl;
+
+	#[test]
+	fn access_tokens_default_to_five_minutes() {
+		assert_eq!(default_access_token_ttl(), 300_000);
+	}
+}

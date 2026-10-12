@@ -951,10 +951,13 @@ impl Service {
 
 		// Expiring access tokens of this device are superseded; tokens which
 		// never expire (issued to clients without refresh support) are kept.
-		for old in self.active_tokens(&user_id, &device_id).await {
-			if token_expiry::superseded_on_refresh(self.token_expires_at(&old).await) {
-				self.remove_access_token(&user_id, &device_id, &old).await;
-			}
+		let mut tokens = Vec::new();
+		for token in self.active_tokens(&user_id, &device_id).await {
+			let expires_at = self.token_expires_at(&token).await;
+			tokens.push((token, expires_at));
+		}
+		for old in token_expiry::superseded_tokens(tokens) {
+			self.remove_access_token(&user_id, &device_id, &old).await;
 		}
 
 		let access_token = self.generate_unique_token().await;
@@ -967,8 +970,8 @@ impl Service {
 	}
 
 	async fn remove_access_token(&self, user_id: &UserId, device_id: &DeviceId, token: &str) {
-		let mut tokens = self.active_tokens(user_id, device_id).await;
-		tokens.retain(|t| t != token);
+		let tokens =
+			token_expiry::without_token(self.active_tokens(user_id, device_id).await, token);
 		self.db.token_userdeviceid.remove(token);
 		self.db.token_expiresat.remove(token);
 		self.db

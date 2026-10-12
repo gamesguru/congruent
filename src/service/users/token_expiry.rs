@@ -16,9 +16,27 @@ pub(super) fn has_expired(expires_at: Option<u64>, now: u64) -> bool {
 /// non-expiring ones were issued to clients without refresh support.
 pub(super) fn superseded_on_refresh(expires_at: Option<u64>) -> bool { expires_at.is_some() }
 
+/// The tokens of a device (paired with their recorded expiry) which a refresh
+/// replaces, in their original order.
+pub(super) fn superseded_tokens(tokens: Vec<(String, Option<u64>)>) -> Vec<String> {
+	tokens
+		.into_iter()
+		.filter(|(_, expires_at)| superseded_on_refresh(*expires_at))
+		.map(|(token, _)| token)
+		.collect()
+}
+
+/// A device's token list with one token revoked.
+pub(super) fn without_token(mut tokens: Vec<String>, token: &str) -> Vec<String> {
+	tokens.retain(|t| t != token);
+	tokens
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{expires_at, has_expired, superseded_on_refresh};
+	use super::{
+		expires_at, has_expired, superseded_on_refresh, superseded_tokens, without_token,
+	};
 
 	#[test]
 	fn expiry_is_issue_time_plus_lifetime() {
@@ -47,5 +65,39 @@ mod tests {
 	fn refresh_supersedes_only_expiring_tokens() {
 		assert!(superseded_on_refresh(Some(1_000)));
 		assert!(!superseded_on_refresh(None));
+	}
+
+	fn owned(token: &str, expires_at: Option<u64>) -> (String, Option<u64>) {
+		(token.to_owned(), expires_at)
+	}
+
+	#[test]
+	fn a_refresh_replaces_expiring_tokens_and_keeps_the_rest() {
+		let tokens = vec![owned("old", Some(1)), owned("legacy", None), owned("older", Some(2))];
+		assert_eq!(superseded_tokens(tokens), ["old", "older"]);
+	}
+
+	#[test]
+	fn a_refresh_with_no_expiring_tokens_replaces_nothing() {
+		assert!(superseded_tokens(vec![owned("legacy", None)]).is_empty());
+		assert!(superseded_tokens(Vec::new()).is_empty());
+	}
+
+	#[test]
+	fn an_already_lapsed_token_is_still_replaced_on_refresh() {
+		// The refresh arrives after expiry; that is the whole point of it.
+		assert_eq!(superseded_tokens(vec![owned("lapsed", Some(0))]), ["lapsed"]);
+	}
+
+	#[test]
+	fn revoking_a_token_leaves_the_devices_others() {
+		let tokens = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+		assert_eq!(without_token(tokens, "b"), ["a", "c"]);
+	}
+
+	#[test]
+	fn revoking_an_unknown_token_changes_nothing() {
+		let tokens = vec!["a".to_owned()];
+		assert_eq!(without_token(tokens, "z"), ["a"]);
 	}
 }

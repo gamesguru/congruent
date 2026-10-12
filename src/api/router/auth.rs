@@ -238,15 +238,18 @@ pub(super) async fn auth(
 			sender_device: None,
 			appservice_info: None,
 		}),
-		| (_, Token::Expired) => Err(Error::BadRequest(
-			ErrorKind::UnknownToken { soft_logout: true },
-			"Access token has expired.",
-		)),
-		| (_, Token::Invalid) => Err(Error::BadRequest(
-			ErrorKind::UnknownToken { soft_logout: false },
-			"Unknown access token.",
-		)),
+		| (_, Token::Expired) => Err(expired_token_error()),
+		| (_, Token::Invalid) => Err(unknown_token_error()),
 	}
+}
+
+/// The client may refresh, so this is a soft logout.
+fn expired_token_error() -> Error {
+	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: true }, "Access token has expired.")
+}
+
+fn unknown_token_error() -> Error {
+	Error::BadRequest(ErrorKind::UnknownToken { soft_logout: false }, "Unknown access token.")
 }
 
 async fn auth_appservice(
@@ -498,6 +501,22 @@ mod tests {
 	fn a_lapsed_user_token_is_expired_not_invalid() {
 		// Expired maps to a soft logout; Invalid would be a hard one.
 		assert!(matches!(classify_user_token(user(), true), Token::Expired));
+	}
+
+	#[test]
+	fn an_expired_token_is_a_soft_logout() {
+		assert!(matches!(
+			expired_token_error(),
+			Error::BadRequest(ErrorKind::UnknownToken { soft_logout: true }, _)
+		));
+	}
+
+	#[test]
+	fn an_unknown_token_is_a_hard_logout() {
+		assert!(matches!(
+			unknown_token_error(),
+			Error::BadRequest(ErrorKind::UnknownToken { soft_logout: false }, _)
+		));
 	}
 
 	#[test]
