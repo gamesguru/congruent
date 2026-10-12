@@ -6,14 +6,15 @@ use std::{
 
 pub use conduwuit::matrix::pdu::{ShortEventId, ShortId, ShortRoomId, ShortStateKey};
 use conduwuit::{
-	Result, SyncMutex, err, implement,
+	Result, err, implement,
 	matrix::StateKey,
 	pair_of,
 	utils::{self, IterStream, ReadyExt},
 };
-use database::{Deserialized, Get, Map, Qry};
+use conduwuit_mtxdb::shortids::ShortIdAdapter;
+use database::{Deserialized, Map};
 use futures::{
-	FutureExt, Stream, StreamExt,
+	Stream, StreamExt,
 	stream::{self},
 };
 use slipstream::{
@@ -22,8 +23,12 @@ use slipstream::{
 
 use crate::{Dep, globals};
 
+/// Short ids for events and state keys. They are allocated and stored by
+/// mtxdb, which is also where the HAMT leaves that carry them live; the
+/// caches only sit in front of that.
 pub struct Service {
 	db: Data,
+	shortids: ShortIdAdapter,
 	services: Services,
 	pub eventid_shorteventid_cache: moka::sync::Cache<OwnedEventId, ShortEventId>,
 	pub shorteventid_eventid_cache: moka::sync::Cache<ShortEventId, OwnedEventId>,
@@ -32,15 +37,9 @@ pub struct Service {
 	pub shortstatekey_statekey_cache:
 		moka::sync::Cache<ShortStateKey, (StateEventType, StateKey)>,
 	pub leanevent_cache: moka::sync::Cache<OwnedEventId, Arc<rezzy::LeanEvent<String>>>,
-	shorteventid_create_mutex: SyncMutex<()>,
-	shortstatekey_create_mutex: SyncMutex<()>,
 }
 
 struct Data {
-	eventid_shorteventid: Arc<Map>,
-	shorteventid_eventid: Arc<Map>,
-	statekey_shortstatekey: Arc<Map>,
-	shortstatekey_statekey: Arc<Map>,
 	roomid_shortroomid: Arc<Map>,
 	roomid_roomversion: Arc<Map>,
 }
@@ -85,13 +84,11 @@ impl crate::Service for Service {
 
 		Ok(Arc::new(Self {
 			db: Data {
-				eventid_shorteventid: args.db["eventid_shorteventid"].clone(),
-				shorteventid_eventid: args.db["shorteventid_eventid"].clone(),
-				statekey_shortstatekey: args.db["statekey_shortstatekey"].clone(),
-				shortstatekey_statekey: args.db["shortstatekey_statekey"].clone(),
 				roomid_shortroomid: args.db["roomid_shortroomid"].clone(),
 				roomid_roomversion: args.db["roomid_roomversion"].clone(),
 			},
+			shortids: ShortIdAdapter::new(args.mtxdb.clone())
+				.map_err(|error| err!(Database("Failed to open mtxdb short ids: {error}")))?,
 			services: Services {
 				globals: args.depend::<globals::Service>("globals"),
 			},
@@ -110,21 +107,45 @@ impl crate::Service for Service {
 			leanevent_cache: moka::sync::Cache::builder()
 				.max_capacity(args.server.config.leanevent_cache_capacity.into())
 				.build(),
-			shorteventid_create_mutex: SyncMutex::new(()),
-			shortstatekey_create_mutex: SyncMutex::new(()),
 		}))
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(module_path!()) }
 }
+fn short_error(what: &str, error: impl std::fmt::Display) -> conduwuit::Error {
+	err!(Database("mtxdb short id {what} failed: {error}"))
+}
+
+fn not_found(what: &str) -> conduwuit::Error { err!(Request(NotFound("{what} not found"))) }
+
+impl Service {
+	fn cache_event(&self, event_id: &EventId, short: ShortEventId) {
+		self.eventid_shorteventid_cache
+			.insert(event_id.to_owned(), short);
+		self.shorteventid_eventid_cache
+			.insert(short, event_id.to_owned());
+	}
+
+	fn cache_state_key(&self, key: (StateEventType, StateKey), short: ShortStateKey) {
+		self.statekey_shortstatekey_cache.insert(key.clone(), short);
+		self.shortstatekey_statekey_cache.insert(short, key);
+	}
+
+	/// Resolve a stored event id string into the caller's id type.
+	fn parse_event_id<Id>(short: ShortEventId, bytes: &[u8]) -> Result<Id>
+	where
+		Id: Deserialize + Sized + ToOwned,
+		<Id as ToOwned>::Owned: Borrow<EventId>,
+	{
+		let text = utils::string::str_from_bytes(bytes)?;
+		Id::from_json(&slipstream::json::Value::String(text.to_owned()))
+			.map_err(|e| err!(Database("Failed to parse EventId from short {short:?}: {e:?}")))
+	}
+}
 
 #[implement(Service)]
 pub async fn get_or_create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
-	if let Ok(shorteventid) = self.get_shorteventid(event_id).await {
-		return shorteventid;
-	}
-
-	self.create_shorteventid(event_id)
+	self.get_or_create_shorteventid_blocking(event_id)
 }
 
 #[implement(Service)]
@@ -133,20 +154,12 @@ pub fn get_or_create_shorteventid_blocking(&self, event_id: &EventId) -> ShortEv
 		return short;
 	}
 
-	if let Ok(handle) = self
-		.db
-		.eventid_shorteventid
-		.get_blocking(event_id.as_bytes())
-	{
-		let short = utils::u64_from_u8(&handle);
-		self.eventid_shorteventid_cache
-			.insert(event_id.to_owned(), short);
-		self.shorteventid_eventid_cache
-			.insert(short, event_id.to_owned());
-		return short;
-	}
-
-	self.create_shorteventid(event_id)
+	let short = self
+		.shortids
+		.allocate_events(&[event_id.as_bytes()])
+		.expect("mtxdb short event id allocation")[0];
+	self.cache_event(event_id, short);
+	short
 }
 
 #[implement(Service)]
@@ -155,15 +168,12 @@ pub fn get_shorteventid_blocking(&self, event_id: &EventId) -> Result<ShortEvent
 		return Ok(short);
 	}
 
-	let handle = self
-		.db
-		.eventid_shorteventid
-		.get_blocking(event_id.as_bytes())?;
-	let short = utils::u64_from_u8(&handle);
-	self.eventid_shorteventid_cache
-		.insert(event_id.to_owned(), short);
-	self.shorteventid_eventid_cache
-		.insert(short, event_id.to_owned());
+	let short = self
+		.shortids
+		.get_event(event_id.as_bytes())
+		.map_err(|e| short_error("event lookup", e))?
+		.ok_or_else(|| not_found("short event id"))?;
+	self.cache_event(event_id, short);
 	Ok(short)
 }
 
@@ -178,108 +188,35 @@ where
 	event_ids
 		.stream()
 		.ready_chunks(256)
-		.then(move |chunk| async move {
-			let mut results = Vec::with_capacity(chunk.len());
-			let mut misses = Vec::new();
-			let mut miss_indices = Vec::new();
+		.map(move |chunk| {
+			let mut results: Vec<Option<ShortEventId>> = chunk
+				.iter()
+				.map(|&event_id| self.eventid_shorteventid_cache.get(&event_id.to_owned()))
+				.collect();
 
-			for (i, &event_id) in chunk.iter().enumerate() {
-				if let Some(short) = self.eventid_shorteventid_cache.get(&event_id.to_owned()) {
-					results.push(Some(short));
-				} else {
-					results.push(None);
-					misses.push(event_id);
-					miss_indices.push(i);
-				}
-			}
+			let misses: Vec<&EventId> = chunk
+				.iter()
+				.zip(&results)
+				.filter(|(_, hit)| hit.is_none())
+				.map(|(&event_id, _)| event_id)
+				.collect();
 
 			if !misses.is_empty() {
-				const BUFSIZE: usize = size_of::<ShortEventId>();
-				let db_results: Vec<Result<database::Handle<'_>>> = stream::iter(misses.clone())
-					.get(&self.db.eventid_shorteventid)
-					.collect()
-					.await;
+				let miss_bytes: Vec<&[u8]> = misses.iter().map(|id| id.as_bytes()).collect();
+				let allocated = self
+					.shortids
+					.allocate_events(&miss_bytes)
+					.expect("mtxdb short event id allocation");
 
-				let mut unresolved = Vec::new();
-
-				for (idx, (result, event_id)) in miss_indices
-					.into_iter()
-					.zip(db_results.into_iter().zip(misses))
+				let mut allocated = allocated.into_iter();
+				for (event_id, slot) in chunk
+					.iter()
+					.zip(results.iter_mut())
+					.filter(|(_, slot)| slot.is_none())
 				{
-					let short = match result {
-						| Ok(ref handle) => {
-							let short = utils::u64_from_u8(handle);
-							self.eventid_shorteventid_cache
-								.insert(event_id.to_owned(), short);
-							self.shorteventid_eventid_cache
-								.insert(short, event_id.to_owned());
-							short
-						},
-						| Err(_) => {
-							unresolved.push((idx, event_id));
-							continue;
-						},
-					};
-					results[idx] = Some(short);
-				}
-
-				if !unresolved.is_empty() {
-					let _guard = self.shorteventid_create_mutex.lock();
-					let mut new_event_ids = Vec::new();
-					let mut new_allocations = std::collections::HashMap::new();
-
-					for &(_, event_id) in &unresolved {
-						if new_allocations.contains_key(event_id)
-							|| new_event_ids.contains(&event_id)
-						{
-							continue;
-						}
-
-						if let Ok(handle) = self
-							.db
-							.eventid_shorteventid
-							.get_blocking(event_id.as_bytes())
-						{
-							let short = utils::u64_from_u8(&handle);
-							new_allocations.insert(event_id, short);
-							self.eventid_shorteventid_cache
-								.insert(event_id.to_owned(), short);
-							self.shorteventid_eventid_cache
-								.insert(short, event_id.to_owned());
-						} else {
-							new_event_ids.push(event_id);
-						}
-					}
-
-					if !new_event_ids.is_empty() {
-						let mut next_id = self
-							.services
-							.globals
-							.next_count_batch(u64::try_from(new_event_ids.len()).unwrap())
-							.unwrap();
-
-						for event_id in new_event_ids {
-							let short = next_id.saturating_add(1);
-							next_id = short;
-
-							self.db
-								.eventid_shorteventid
-								.raw_aput::<BUFSIZE, _, _>(event_id, short);
-							self.db
-								.shorteventid_eventid
-								.aput_raw::<BUFSIZE, _, _>(short, event_id);
-
-							new_allocations.insert(event_id, short);
-							self.eventid_shorteventid_cache
-								.insert(event_id.to_owned(), short);
-							self.shorteventid_eventid_cache
-								.insert(short, event_id.to_owned());
-						}
-					}
-
-					for (idx, event_id) in unresolved {
-						results[idx] = Some(new_allocations[event_id]);
-					}
+					let short = allocated.next().expect("one short id per miss");
+					self.cache_event(event_id, short);
+					*slot = Some(short);
 				}
 			}
 
@@ -289,61 +226,8 @@ where
 }
 
 #[implement(Service)]
-fn create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
-	const BUFSIZE: usize = size_of::<ShortEventId>();
-
-	let _guard = self.shorteventid_create_mutex.lock();
-
-	if let Ok(handle) = self
-		.db
-		.eventid_shorteventid
-		.get_blocking(event_id.as_bytes())
-	{
-		let short = utils::u64_from_u8(&handle);
-		self.eventid_shorteventid_cache
-			.insert(event_id.to_owned(), short);
-		self.shorteventid_eventid_cache
-			.insert(short, event_id.to_owned());
-		return short;
-	}
-
-	let short = self.services.globals.next_count().unwrap();
-	debug_assert!(size_of_val(&short) == BUFSIZE, "buffer requirement changed");
-
-	self.db
-		.eventid_shorteventid
-		.raw_aput::<BUFSIZE, _, _>(event_id, short);
-
-	self.db
-		.shorteventid_eventid
-		.aput_raw::<BUFSIZE, _, _>(short, event_id);
-
-	self.eventid_shorteventid_cache
-		.insert(event_id.to_owned(), short);
-	self.shorteventid_eventid_cache
-		.insert(short, event_id.to_owned());
-
-	short
-}
-
-#[implement(Service)]
 pub async fn get_shorteventid(&self, event_id: &EventId) -> Result<ShortEventId> {
-	if let Some(short) = self.eventid_shorteventid_cache.get(&event_id.to_owned()) {
-		return Ok(short);
-	}
-
-	let short = self
-		.db
-		.eventid_shorteventid
-		.get(event_id)
-		.await
-		.deserialized()?;
-
-	self.eventid_shorteventid_cache
-		.insert(event_id.to_owned(), short);
-	self.shorteventid_eventid_cache
-		.insert(short, event_id.to_owned());
-	Ok(short)
+	self.get_shorteventid_blocking(event_id)
 }
 
 #[implement(Service)]
@@ -352,48 +236,19 @@ pub async fn get_or_create_shortstatekey(
 	event_type: &StateEventType,
 	state_key: &str,
 ) -> ShortStateKey {
-	const BUFSIZE: usize = size_of::<ShortStateKey>();
-
-	if let Ok(shortstatekey) = self.get_shortstatekey(event_type, state_key).await {
-		return shortstatekey;
-	}
-
-	// Creation must be atomic per (type, state_key): two concurrent callers that
-	// both miss would otherwise allocate different short keys, and the forward
-	// map would keep only one of them. A state root built with the other key
-	// would then hold the entry where `get_shortstatekey` never looks.
-	let _guard = self.shortstatekey_create_mutex.lock();
-
-	let key = (event_type, state_key);
-	if let Some(Ok(handle)) = self.db.statekey_shortstatekey.qry(&key).now_or_never() {
-		if let Ok(existing) = handle.deserialized::<ShortStateKey>() {
-			let cached_key = (event_type.clone(), StateKey::from(state_key));
-			self.statekey_shortstatekey_cache
-				.insert(cached_key.clone(), existing);
-			self.shortstatekey_statekey_cache
-				.insert(existing, cached_key);
-			return existing;
-		}
-	}
-
-	let shortstatekey = self.services.globals.next_count().unwrap();
-	debug_assert!(size_of_val(&shortstatekey) == BUFSIZE, "buffer requirement changed");
-
-	self.db
-		.statekey_shortstatekey
-		.put_aput::<BUFSIZE, _, _>(key, shortstatekey);
-
-	self.db
-		.shortstatekey_statekey
-		.aput_put::<BUFSIZE, _, _>(shortstatekey, key);
-
 	let cached_key = (event_type.clone(), StateKey::from(state_key));
-	self.statekey_shortstatekey_cache
-		.insert(cached_key.clone(), shortstatekey);
-	self.shortstatekey_statekey_cache
-		.insert(shortstatekey, cached_key);
+	if let Some(short) = self.statekey_shortstatekey_cache.get(&cached_key) {
+		return short;
+	}
 
-	shortstatekey
+	// The adapter serializes allocation, so two concurrent callers that both
+	// miss resolve to the same short key.
+	let short = self
+		.shortids
+		.allocate_state_key(event_type.to_string().as_str(), state_key)
+		.expect("mtxdb short state key allocation");
+	self.cache_state_key(cached_key, short);
+	short
 }
 
 #[implement(Service)]
@@ -407,17 +262,12 @@ pub async fn get_shortstatekey(
 		return Ok(short);
 	}
 
-	let key = (event_type, state_key);
-	let short: ShortStateKey = self
-		.db
-		.statekey_shortstatekey
-		.qry(&key)
-		.await
-		.deserialized()?;
-
-	self.statekey_shortstatekey_cache
-		.insert(cached_key.clone(), short);
-	self.shortstatekey_statekey_cache.insert(short, cached_key);
+	let short = self
+		.shortids
+		.get_state_key(event_type.to_string().as_str(), state_key)
+		.map_err(|e| short_error("state key lookup", e))?
+		.ok_or_else(|| not_found("short state key"))?;
+	self.cache_state_key(cached_key, short);
 	Ok(short)
 }
 
@@ -427,33 +277,22 @@ where
 	Id: Deserialize + Sized + ToOwned,
 	<Id as ToOwned>::Owned: Borrow<EventId>,
 {
-	const BUFSIZE: usize = size_of::<ShortEventId>();
-
 	if let Some(cached) = self.shorteventid_eventid_cache.get(&shorteventid) {
 		let s = slipstream::codec::to_string(&cached);
 		return slipstream::codec::from_str::<Id>(&s)
 			.map_err(|e| err!(Database("Failed to deserialize EventId from cache: {e:?}")));
 	}
 
-	let handle = self
-		.db
-		.shorteventid_eventid
-		.aqry::<BUFSIZE, _>(&shorteventid)
-		.await?;
-	let bytes = handle.as_ref();
-	let event_id_str = utils::string::str_from_bytes(bytes)?;
-	let value = slipstream::json::Value::String(event_id_str.to_owned());
-	let res = Id::from_json(&value).map_err(|e| {
-		err!(Database("Failed to parse EventId from short {shorteventid:?}: {e:?}"))
-	})?;
+	let bytes = self
+		.shortids
+		.get_event_id(shorteventid)
+		.map_err(|e| short_error("event id lookup", e))?
+		.ok_or_else(|| not_found("event id for short"))?;
+	let res = Self::parse_event_id::<Id>(shorteventid, &bytes)?;
 
 	let owned = res.to_owned();
 	let event_id: &EventId = owned.borrow();
-	self.shorteventid_eventid_cache
-		.insert(shorteventid, event_id.to_owned());
-	self.eventid_shorteventid_cache
-		.insert(event_id.to_owned(), shorteventid);
-
+	self.cache_event(event_id, shorteventid);
 	Ok(res)
 }
 
@@ -469,58 +308,33 @@ where
 {
 	shorteventid
 		.ready_chunks(256)
-		.then(move |chunk| async move {
-			let mut results = Vec::with_capacity(chunk.len());
-			let mut misses = Vec::new();
-			let mut miss_indices = Vec::new();
-
-			for (i, key) in chunk.iter().copied().enumerate() {
-				if let Some(cached) = self.shorteventid_eventid_cache.get(&key) {
-					let res =
-						slipstream::codec::from_str::<Id>(&slipstream::codec::to_string(&cached))
-							.map_err(|e| {
-								err!(Database("Failed to deserialize EventId from cache: {e:?}"))
-							});
-					results.push(Some(res));
-				} else {
-					results.push(None);
-					misses.push(key);
-					miss_indices.push(i);
-				}
-			}
-
-			if !misses.is_empty() {
-				let db_results: Vec<Result<database::Handle<'_>>> = stream::iter(misses.clone())
-					.qry(&self.db.shorteventid_eventid)
-					.collect()
-					.await;
-
-				for ((&miss_key, res), idx) in misses.iter().zip(db_results).zip(miss_indices) {
-					let val: Result<Id> = res.and_then(|handle| {
-						let text = utils::string::str_from_bytes(handle.as_ref())?;
-						Id::from_json(&slipstream::json::Value::String(text.to_owned())).map_err(
-							|e| {
-								err!(Database(
-									"Failed to parse EventId from short {miss_key:?}: {e:?}"
-								))
-							},
-						)
-					});
-
-					if let Ok(ref val) = val {
-						let owned = val.to_owned();
-						let event_id: &EventId = owned.borrow();
-						self.shorteventid_eventid_cache
-							.insert(miss_key, event_id.to_owned());
-						self.eventid_shorteventid_cache
-							.insert(event_id.to_owned(), miss_key);
+		.map(move |chunk| {
+			let results: Vec<Result<Id>> = chunk
+				.into_iter()
+				.map(|short| {
+					if let Some(cached) = self.shorteventid_eventid_cache.get(&short) {
+						return slipstream::codec::from_str::<Id>(&slipstream::codec::to_string(
+							&cached,
+						))
+						.map_err(|e| {
+							err!(Database("Failed to deserialize EventId from cache: {e:?}"))
+						});
 					}
 
-					results[idx] = Some(val);
-				}
-			}
+					let bytes = self
+						.shortids
+						.get_event_id(short)
+						.map_err(|e| short_error("event id lookup", e))?
+						.ok_or_else(|| not_found("event id for short"))?;
+					let val = Self::parse_event_id::<Id>(short, &bytes)?;
+					let owned = val.to_owned();
+					let event_id: &EventId = owned.borrow();
+					self.cache_event(event_id, short);
+					Ok(val)
+				})
+				.collect();
 
-			stream::iter(results.into_iter().map(Option::unwrap))
+			stream::iter(results)
 		})
 		.flatten()
 }
@@ -530,28 +344,21 @@ pub async fn get_statekey_from_short(
 	&self,
 	shortstatekey: ShortStateKey,
 ) -> Result<(StateEventType, StateKey)> {
-	const BUFSIZE: usize = size_of::<ShortStateKey>();
-
 	if let Some(cached) = self.shortstatekey_statekey_cache.get(&shortstatekey) {
 		return Ok(cached);
 	}
 
-	let res: (StateEventType, StateKey) = self
-		.db
-		.shortstatekey_statekey
-		.aqry::<BUFSIZE, _>(&shortstatekey)
-		.await
-		.deserialized()
-		.map_err(|e| {
+	let (event_type, state_key) = self
+		.shortids
+		.get_state_key_from_short(shortstatekey)
+		.map_err(|e| short_error("state key lookup", e))?
+		.ok_or_else(|| {
 			err!(Database(
-				"Failed to find (StateEventType, state_key) from short {shortstatekey:?}: {e:?}"
+				"Failed to find (StateEventType, state_key) from short {shortstatekey:?}"
 			))
 		})?;
-
-	self.shortstatekey_statekey_cache
-		.insert(shortstatekey, res.clone());
-	self.statekey_shortstatekey_cache
-		.insert(res.clone(), shortstatekey);
+	let res = (StateEventType::from(event_type.as_str()), StateKey::from(state_key));
+	self.cache_state_key(res.clone(), shortstatekey);
 	Ok(res)
 }
 
@@ -565,41 +372,31 @@ where
 {
 	shortstatekey
 		.ready_chunks(256)
-		.then(move |chunk| async move {
-			let mut results = Vec::with_capacity(chunk.len());
-			let mut misses = Vec::new();
-			let mut miss_indices = Vec::new();
-
-			for (i, key) in chunk.iter().copied().enumerate() {
-				if let Some(cached) = self.shortstatekey_statekey_cache.get(&key) {
-					results.push(Some(Ok(cached.clone())));
-				} else {
-					results.push(None);
-					misses.push(key);
-					miss_indices.push(i);
-				}
-			}
-
-			if !misses.is_empty() {
-				let db_results: Vec<Result<(StateEventType, StateKey)>> =
-					stream::iter(misses.clone())
-						.qry(&self.db.shortstatekey_statekey)
-						.map(Deserialized::deserialized)
-						.collect()
-						.await;
-
-				for ((&miss_key, res), idx) in misses.iter().zip(db_results).zip(miss_indices) {
-					if let Ok(ref val) = res {
-						self.shortstatekey_statekey_cache
-							.insert(miss_key, val.clone());
-						self.statekey_shortstatekey_cache
-							.insert(val.clone(), miss_key);
+		.map(move |chunk| {
+			let results: Vec<Result<(StateEventType, StateKey)>> = chunk
+				.into_iter()
+				.map(|short| {
+					if let Some(cached) = self.shortstatekey_statekey_cache.get(&short) {
+						return Ok(cached);
 					}
-					results[idx] = Some(res);
-				}
-			}
 
-			stream::iter(results.into_iter().map(Option::unwrap))
+					let (event_type, state_key) = self
+						.shortids
+						.get_state_key_from_short(short)
+						.map_err(|e| short_error("state key lookup", e))?
+						.ok_or_else(|| {
+							err!(Database(
+								"Failed to find (StateEventType, state_key) from short {short:?}"
+							))
+						})?;
+					let res =
+						(StateEventType::from(event_type.as_str()), StateKey::from(state_key));
+					self.cache_state_key(res.clone(), short);
+					Ok(res)
+				})
+				.collect();
+
+			stream::iter(results)
 		})
 		.flatten()
 }

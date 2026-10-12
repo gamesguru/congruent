@@ -230,6 +230,13 @@ impl Services {
 				.map_err(|error| {
 					conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
 				})?;
+		let has_mtxdb_short_ids =
+			conduwuit_mtxdb::shortids::ShortIdAdapter::new(self.mtxdb.clone())
+				.map_err(|error| {
+					conduwuit::err!(Database(error!("Checking mtxdb short id data: {error}")))
+				})?
+				.last_allocated()
+				> 0;
 		if has_legacy_events || has_legacy_signing_keys {
 			return Err(conduwuit::err!(Database(error!(
 				"This legacy database has no mtxdb import marker and still contains event or \
@@ -239,7 +246,8 @@ impl Services {
 			))));
 		}
 
-		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys {
+		if has_mtxdb_events || has_mtxdb_verdicts || has_mtxdb_signing_keys || has_mtxdb_short_ids
+		{
 			return Err(conduwuit::err!(Database(error!(
 				"This database has mtxdb data but no valid import marker, so the offline import \
 				 is incomplete or its marker was lost. Re-run `mtxdb import` with the complete \
