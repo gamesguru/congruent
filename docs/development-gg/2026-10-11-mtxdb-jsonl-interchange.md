@@ -49,6 +49,27 @@ the PDU identity agrees with `event_id`, and that edge fields agree with the
 PDU. They persist verdict codes and redaction metadata alongside the original
 PDU, then rebuild derived state through mtxdb's native APIs.
 
+## Derived state (not exported)
+
+`mtxdb-export/v1` carries no room state: no state roots, HAMT nodes, state
+entries, short ids, locators, or auth closures. They are derived from the
+events, and the on-disk layout belongs to mtxdb, so the format does not
+serialize it.
+
+How an importer reproduces the server's state from `event` records is
+deliberately deferred. Open questions for a later revision:
+
+- Whether the importer re-runs state resolution over the imported DAG, or the
+  export gains an explicit per-room state record (type, state key, event ID
+  entries for each current-state tip) that the importer only has to load.
+- How the importer checks that its derived state agrees with the exporting
+  server's, for example by comparing a per-room digest.
+- How events whose verdicts affect resolution (`rejected`, `soft_failed`,
+  `outlier`) are treated while deriving state.
+
+Until that is specified, `v1` consumers must not assume any state is present,
+and must not infer one from the order of `event` records.
+
 ## Global signing-key export
 
 Signing keys are global, so they use a separate JSONL file produced by
