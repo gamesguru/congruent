@@ -578,6 +578,94 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	);
 }
 
+/// Shadow writes preserve the exact RocksDB encoding, and mtxdb reads reject
+/// bytes selected through a colliding 16-byte node ID when the full hash does
+/// not match.
+#[conduwuit_macros::async_test]
+async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
+	use rezzy::{hamt::PersistedInternalNode, incremental::LtHash};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-hamt:test.conduwuit.local").unwrap();
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let (_, node) = rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), [(
+		17_u64, 29_u64,
+	)])
+	.expect("build HAMT node");
+	let hash = node.structural_hash;
+	let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_node(room_id.as_bytes(), node.clone());
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_encoded_node(room_id.as_bytes(), hash, &bytes)
+		.expect("write encoded node");
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(room_id.as_bytes(), node);
+
+	let rocksdb_bytes = services.db["state_hamt_nodes"]
+		.get_blocking(&hash)
+		.expect("read RocksDB node");
+	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let mtxdb_bytes = shadow
+		.get_nodes(room_id.as_bytes(), &[hash])
+		.expect("read mtxdb node");
+	assert_eq!(mtxdb_bytes[0].as_deref(), Some(&*rocksdb_bytes));
+
+	let verified = services
+		.rooms
+		.state_hamt
+		.store
+		.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &hash)
+		.expect("verify shadow node")
+		.expect("shadow node is present");
+	assert_eq!(verified.structural_hash, hash);
+
+	let mut collision = hash;
+	collision[31] ^= 1;
+	assert_eq!(&collision[..16], &hash[..16]);
+	let collision_error = services
+		.rooms
+		.state_hamt
+		.store
+		.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &collision)
+		.expect_err("a colliding truncated node ID must fail full-hash verification");
+	assert!(collision_error.to_string().contains("structural hash"));
+
+	let (_, elided_before) = services.rooms.state_hamt.store.write_stats().snapshot();
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_node(room_id.as_bytes(), verified);
+	services.rooms.state_hamt.store.put_node(
+		room_id.as_bytes(),
+		services
+			.rooms
+			.state_hamt
+			.store
+			.get_node_blocking(&hash)
+			.expect("read durable RocksDB node"),
+	);
+	let (_, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
+	assert_eq!(
+		elided_after
+			.checked_sub(elided_before)
+			.expect("elision counter moved backwards"),
+		2
+	);
+}
+
 /// Node reclamation must remove exactly the unreachable nodes.
 ///
 /// The live-root set is derived from the recorded root handles, so a test that

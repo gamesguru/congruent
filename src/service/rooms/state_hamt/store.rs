@@ -137,6 +137,29 @@ impl Store {
 		Ok(node)
 	}
 
+	/// Read a shadow-written node from mtxdb and verify the full structural
+	/// hash before exposing it. mtxdb keys use only the first 16 hash bytes, so
+	/// the stored value must be checked against the caller's full hash.
+	pub fn get_shadow_node_verified(
+		&self,
+		room_id: &[u8],
+		structural_key: &[u8],
+		hash: &StructuralHash,
+	) -> Result<Option<Arc<HamtNode<u64, u64>>>> {
+		let nodes = self
+			.mtxdb
+			.get_nodes(room_id, &[*hash])
+			.map_err(|error| err!(Database(error!("{error}"))))?;
+		let Some(bytes) = nodes.into_iter().next().flatten() else {
+			return Ok(None);
+		};
+
+		let node =
+			PersistedInternalNode::<u64, u64>::decode_v1_verified(&bytes, structural_key, *hash)
+				.map_err(|error| err!(Database(error!("{error}"))))?;
+		Ok(Some(Arc::new(node)))
+	}
+
 	/// Validates and parses an encoded node body into an in-memory `HamtNode`
 	/// whose children are left lazy for [`Self::get_blocking_resolver`] to pull.
 	///
