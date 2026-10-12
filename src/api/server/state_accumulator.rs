@@ -83,7 +83,7 @@ pub(crate) async fn get_state_accumulator_route(
 	// Build the LtHash lattice over the event's post-event state. Any entry
 	// that cannot be resolved fails the request rather than yielding a
 	// digest over partial state.
-	let entries = state_tuples(&services, &root_handle).await?;
+	let entries = state_tuples(&services, &room_id, &root_handle).await?;
 
 	let mut lattice = rezzy::incremental::LtHash::default();
 	let n_state_events = u64::try_from(entries.len()).unwrap_or_default();
@@ -169,6 +169,7 @@ async fn verify_federation_request(
 /// than returning an incomplete state, so callers never digest partial state.
 pub(super) async fn state_tuples(
 	services: &crate::State,
+	room_id: &slipstream::RoomId,
 	root_handle: &rezzy::hamt::RootHandle,
 ) -> Result<Vec<(String, String, OwnedEventId)>> {
 	use conduwuit::utils::stream::IterStream;
@@ -176,7 +177,7 @@ pub(super) async fn state_tuples(
 	let shorts: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_shortids_hamt(root_handle.clone())
+		.state_full_shortids_hamt(room_id, root_handle.clone())
 		.try_collect()
 		.await?;
 

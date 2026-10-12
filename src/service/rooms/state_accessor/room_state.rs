@@ -33,7 +33,7 @@ pub fn room_state_full<'a>(
 	self.services
 		.state
 		.get_room_state_hamt(room_id)
-		.map_ok(|root_handle| self.state_full_hamt(root_handle).map(Ok).boxed())
+		.map_ok(|root_handle| self.state_full_hamt(room_id, root_handle).map(Ok).boxed())
 		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
 		.try_flatten_stream()
 }
@@ -47,7 +47,11 @@ pub fn room_state_full_pdus<'a>(
 	self.services
 		.state
 		.get_room_state_hamt(room_id)
-		.map_ok(|root_handle| self.state_full_pdus_hamt(root_handle).map(Ok).boxed())
+		.map_ok(|root_handle| {
+			self.state_full_pdus_hamt(room_id, root_handle)
+				.map(Ok)
+				.boxed()
+		})
 		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
 		.try_flatten_stream()
 }
@@ -63,7 +67,10 @@ pub fn room_state_full_pdus_strict<'a>(
 		.state
 		.get_room_state_hamt(room_id)
 		.map_err(move |e| err!(Database("Missing state for {room_id:?}: {e:?}")))
-		.map_ok(move |root_handle| self.state_full_pdus_hamt_strict(root_handle).boxed())
+		.map_ok(move |root_handle| {
+			self.state_full_pdus_hamt_strict(room_id, root_handle)
+				.boxed()
+		})
 		.try_flatten_stream()
 }
 
@@ -141,7 +148,7 @@ pub async fn room_state_keys(
 ) -> Result<Vec<String>> {
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 
-	let full_state = self.load_full_state_hamt(&root_handle)?;
+	let full_state = self.load_full_state_hamt(room_id, &root_handle)?;
 
 	// Batch-resolve the short state keys through the caching key store rather
 	// than awaiting a database lookup for each entry serially.

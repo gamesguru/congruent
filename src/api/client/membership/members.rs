@@ -77,7 +77,7 @@ pub(crate) async fn get_member_events_route(
 		let all_pdus: Vec<Pdu> = services
 			.rooms
 			.state_accessor
-			.state_full_pdus_hamt_strict(root_handle)
+			.state_full_pdus_hamt_strict(room_id, root_handle)
 			.try_collect()
 			.await?;
 
@@ -129,7 +129,11 @@ pub(crate) async fn get_member_events_route(
 	let mut members: Vec<Pdu> = services
 		.rooms
 		.state_accessor
-		.state_keys_with_ids_hamt::<OwnedEventId>(leave_root, &StateEventType::RoomMember)
+		.state_keys_with_ids_hamt::<OwnedEventId>(
+			room_id,
+			leave_root,
+			&StateEventType::RoomMember,
+		)
 		.broadn_filter_map(256, |(_, event_id)| async move {
 			services.rooms.timeline.get_pdu(&event_id).await.ok()
 		})

@@ -386,7 +386,7 @@ async fn test_state_equivalence() {
 	let actual = services
 		.rooms
 		.state_accessor
-		.load_full_state_hamt(&final_root)
+		.load_full_state_hamt(&room_id, &final_root)
 		.expect("failed to load HAMT state");
 	assert_eq!(actual, expected);
 }
@@ -526,7 +526,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	let actual = services
 		.rooms
 		.state_accessor
-		.load_full_state_hamt(&new_root)
+		.load_full_state_hamt(&room_id, &new_root)
 		.expect("failed to load HAMT state");
 	assert_eq!(actual.len(), 201, "state size must be preserved by the update");
 	assert_eq!(actual.get(&target_key), Some(&target_value));
@@ -578,11 +578,11 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	);
 }
 
-/// Shadow writes preserve the exact RocksDB encoding, and mtxdb reads reject
+/// Nodes are stored in mtxdb under their canonical encoding, and reads reject
 /// bytes selected through a colliding 16-byte node ID when the full hash does
 /// not match.
 #[conduwuit_macros::async_test]
-async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
+async fn test_mtxdb_node_bytes_and_full_hash_verification() {
 	use rezzy::{hamt::PersistedInternalNode, incremental::LtHash};
 
 	let (_guard, _server, services) = setup_test_services().await;
@@ -617,143 +617,85 @@ async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
 	}
 	assert!(nodes.len() > 1, "fixture must contain a multi-level HAMT");
 
-	services
-		.rooms
-		.state_hamt
-		.store
-		.put_node(room_id.as_bytes(), node.clone());
-	services
-		.rooms
-		.state_hamt
-		.store
+	let store = &services.rooms.state_hamt.store;
+	store
+		.put_node(room_id.as_bytes(), node.clone())
+		.expect("write node");
+	store
 		.put_encoded_node(room_id.as_bytes(), hash, &bytes)
 		.expect("write encoded node");
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(room_id.as_bytes(), node.clone());
-	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	store
+		.persist_node_recursive(room_id.as_bytes(), node.clone())
+		.expect("write tree");
+	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 	for node in &nodes {
 		let node_hash = node.structural_hash;
-		let rocksdb_node = services.db["state_hamt_nodes"]
-			.get_blocking(&node_hash)
-			.expect("read RocksDB HAMT node");
-		let shadow_node = shadow
+		let stored = adapter
 			.get_nodes(room_id.as_bytes(), &[node_hash])
 			.expect("read mtxdb HAMT node");
-		assert_eq!(shadow_node[0].as_deref(), Some(&*rocksdb_node));
-		services
-			.rooms
-			.state_hamt
-			.store
-			.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &node_hash)
+		let expected = PersistedInternalNode::from(node.as_ref()).encode_v1();
+		assert_eq!(stored[0].as_deref(), Some(expected.as_slice()));
+		store
+			.read_node_verified(room_id.as_bytes(), &structural_key, &node_hash)
 			.expect("verify mtxdb HAMT node")
-			.expect("recursive shadow write must be present");
+			.expect("recursive write must be present");
 	}
 
-	// Re-emitting an already durable multi-level tree must not write nodes to
-	// mtxdb again, through either recursive or batched persistence.
-	services
-		.rooms
-		.state_hamt
-		.store
-		.persist_node_recursive(room_id.as_bytes(), node.clone());
-	let shadow_writes_after_first = services
-		.rooms
-		.state_hamt
-		.store
-		.write_stats()
-		.shadow_writes();
-	let mut batch = database::Batch::new();
-	services
-		.rooms
-		.state_hamt
-		.store
-		.put_node_batch(room_id.as_bytes(), node, &mut batch);
+	// Re-emitting an already stored multi-level tree must not write nodes again.
+	let (written_before, _) = store.write_stats().snapshot();
+	store
+		.persist_node_recursive(room_id.as_bytes(), node)
+		.expect("re-emit tree");
 	assert_eq!(
-		services
-			.rooms
-			.state_hamt
-			.store
-			.write_stats()
-			.shadow_writes(),
-		shadow_writes_after_first,
-		"encoded, batched, and recursive writes of a durable node must not rewrite mtxdb"
+		store.write_stats().snapshot().0,
+		written_before,
+		"re-emitting a stored tree must not rewrite it"
 	);
 
-	let rocksdb_bytes = services.db["state_hamt_nodes"]
-		.get_blocking(&hash)
-		.expect("read RocksDB node");
-	let mtxdb_bytes = shadow
-		.get_nodes(room_id.as_bytes(), &[hash])
-		.expect("read mtxdb node");
-	assert_eq!(mtxdb_bytes[0].as_deref(), Some(&*rocksdb_bytes));
-
-	let verified = services
-		.rooms
-		.state_hamt
-		.store
-		.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &hash)
-		.expect("verify shadow node")
-		.expect("shadow node is present");
+	let verified = store
+		.read_node_verified(room_id.as_bytes(), &structural_key, &hash)
+		.expect("verify node")
+		.expect("node is present");
 	assert_eq!(verified.structural_hash, hash);
 
 	let mut collision = hash;
 	collision[31] ^= 1;
 	assert_eq!(&collision[..16], &hash[..16]);
-	let collision_error = services
-		.rooms
-		.state_hamt
-		.store
-		.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &collision)
+	let collision_error = store
+		.read_node_verified(room_id.as_bytes(), &structural_key, &collision)
 		.expect_err("a colliding truncated node ID must fail full-hash verification");
 	assert!(collision_error.to_string().contains("structural hash"));
 
-	let (_, elided_before) = services.rooms.state_hamt.store.write_stats().snapshot();
-	services
-		.rooms
-		.state_hamt
-		.store
-		.put_node(room_id.as_bytes(), verified);
-	services.rooms.state_hamt.store.put_node(
-		room_id.as_bytes(),
-		services
-			.rooms
-			.state_hamt
-			.store
-			.get_node_blocking(&hash)
-			.expect("read durable RocksDB node"),
-	);
-	let (_, elided_after) = services.rooms.state_hamt.store.write_stats().snapshot();
+	let (written_before, elided_before) = store.write_stats().snapshot();
+	store
+		.put_node(room_id.as_bytes(), verified)
+		.expect("re-put verified node");
+	store
+		.put_node(
+			room_id.as_bytes(),
+			store
+				.get_node(room_id.as_bytes(), &structural_key, &hash)
+				.expect("read stored node"),
+		)
+		.expect("re-put cached node");
+	let (written_after, elided_after) = store.write_stats().snapshot();
 	assert_eq!(
 		elided_after
 			.checked_sub(elided_before)
 			.expect("elision counter moved backwards"),
 		2
 	);
-	assert_eq!(
-		services
-			.rooms
-			.state_hamt
-			.store
-			.write_stats()
-			.shadow_writes(),
-		shadow_writes_after_first,
-		"durable-node elision must also skip mtxdb writes"
-	);
+	assert_eq!(written_after, written_before, "stored-node elision must skip the write");
 }
 
-/// Node reclamation must remove exactly the unreachable nodes.
+/// The orphan scan must report exactly the unreachable nodes.
 ///
-/// The live-root set is derived from the recorded root handles, so a test that
-/// only exercised the store's own bookkeeping would not catch a regression in
-/// `live_root_handles` — which is where a partial root set would silently turn
-/// into live-state deletion.
+/// The roots it walks are the ones recorded for the room, so a test that only
+/// exercised the store's own bookkeeping would not catch a regression in which
+/// roots get published -- which is where a partial root set would silently turn
+/// live state into garbage.
 #[conduwuit_macros::async_test]
-async fn test_sweep_reclaims_only_unreachable_nodes() {
-	use std::time::Duration;
-
+async fn test_orphan_scan_reports_only_unreachable_nodes() {
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
 	let mutex = services.rooms.state.mutex.lock(&room_id).await;
@@ -767,7 +709,7 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		.await
 		.expect("enumerate roots");
 	assert!(!live_roots.is_empty(), "the seeded room must record roots");
-	let live: Vec<rezzy::hamt::RootHandle> = live_roots.clone();
+	assert_eq!(root.structural_hash, live_roots[0].structural_hash);
 
 	// An orphan: a real, fully-built tree that no recorded root handle points
 	// at, as if its only root had been deleted.
@@ -779,90 +721,57 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 			&format!("$orphan{index}:test.conduwuit.local"),
 		);
 	}
-	let (_, orphan) =
-		rezzy::hamt::build_hamt_root_handle(&[0xAB; 32], &orphan_lattice, [(1_u64 << 40, 7_u64)])
-			.expect("build orphan tree");
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let (_, orphan) = rezzy::hamt::build_hamt_root_handle(&structural_key, &orphan_lattice, [(
+		1_u64 << 40,
+		7_u64,
+	)])
+	.expect("build orphan tree");
 	let orphan_hash = orphan.structural_hash;
 	services
 		.rooms
 		.state_hamt
 		.store
-		.put_node(room_id.as_bytes(), orphan);
+		.put_node(room_id.as_bytes(), orphan)
+		.expect("store orphan");
 
-	// Grace window: a node written moments ago may still be in flight, so it is
-	// spared even though nothing reaches it.
-	let spared = services
-		.rooms
-		.state
-		.sweep_hamt_nodes(Duration::from_secs(60), true)
-		.await
-		.expect("grace-window dry run");
-	assert_eq!(spared.orphaned, 0, "a just-written node must be spared by the grace window");
-	assert!(
-		services
-			.rooms
-			.state_hamt
-			.store
-			.get_node(&orphan_hash)
-			.is_ok(),
-		"a just-written node must survive a grace-window dry run"
-	);
-
-	// Age it past the window and a dry run reports it without deleting it.
-	services
-		.rooms
-		.state_hamt
-		.store
-		.age_node_for_test(&orphan_hash, Duration::from_hours(1));
-	let dry = services
-		.rooms
-		.state
-		.sweep_hamt_nodes(Duration::from_secs(60), true)
-		.await
-		.expect("dry-run sweep");
-	assert!(dry.dry_run);
-	assert!(dry.orphaned >= 1, "dry run should report the orphan");
-	assert!(
-		services
-			.rooms
-			.state_hamt
-			.store
-			.get_node(&orphan_hash)
-			.is_ok(),
-		"a dry run must not delete anything"
-	);
-
-	// A live run reclaims the orphan.
 	let report = services
 		.rooms
 		.state
-		.sweep_hamt_nodes(Duration::from_secs(60), false)
+		.scan_hamt_orphans()
 		.await
-		.expect("sweep");
-	assert!(!report.dry_run);
+		.expect("orphan scan");
+	let room = report
+		.rooms
+		.iter()
+		.find(|room| room.room_id == room_id.as_bytes())
+		.expect("the seeded room must be scanned");
+	assert!(
+		room.orphans.contains(&node_prefix(&orphan_hash)),
+		"the unrooted node must be reported"
+	);
+	let live_root_prefix = node_prefix(&root.structural_hash);
+	assert!(
+		!room.orphans.contains(&live_root_prefix),
+		"a node the room's root reaches must never be reported"
+	);
+
+	// A scan never deletes: the orphan and the live state are both still there.
 	assert!(
 		services
 			.rooms
 			.state_hamt
 			.store
-			.get_node(&orphan_hash)
-			.is_err(),
-		"the unreachable node should have been reclaimed"
+			.get_node(room_id.as_bytes(), &structural_key, &orphan_hash)
+			.is_ok(),
+		"a dry run must not delete anything"
 	);
-
-	// The seeded root still resolves, so nothing live was reclaimed with it.
-	services
-		.rooms
-		.state
-		.sweep_hamt_nodes(Duration::from_secs(0), false)
-		.await
-		.expect("second sweep");
-	assert_eq!(root.structural_hash, live[0].structural_hash);
 	let state = services
 		.rooms
 		.state_accessor
-		.load_full_state_hamt(&root)
-		.expect("live root state must survive the sweep");
+		.load_full_state_hamt(&room_id, &root)
+		.expect("live root state must survive the scan");
 	assert_eq!(state.len(), 51, "live root state must remain readable");
 }
 
@@ -949,12 +858,12 @@ async fn test_stale_leave_does_not_delete_newer_invite() {
 	);
 }
 
-/// Reads that miss the cache are compared against their mtxdb shadow without
-/// ever being served from it: a missing shadow, a verified one, and one that
-/// fails full-hash verification are each counted, and the caller always gets
-/// the RocksDB node.
+/// Reads that miss the cache come from mtxdb and are verified against the full
+/// structural hash: a stored node is served, an absent one is an error, and one
+/// whose bytes do not hash to the requested value is rejected rather than
+/// served.
 #[conduwuit_macros::async_test]
-async fn test_verifying_reads_count_shadow_outcomes_and_serve_rocksdb() {
+async fn test_node_reads_verify_the_full_hash_and_missing_nodes_error() {
 	use rezzy::{hamt::PersistedInternalNode, incremental::LtHash};
 
 	let (_guard, _server, services) = setup_test_services().await;
@@ -962,7 +871,7 @@ async fn test_verifying_reads_count_shadow_outcomes_and_serve_rocksdb() {
 	let structural_key =
 		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
 	let store = &services.rooms.state_hamt.store;
-	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 
 	let build = |seed: u64| {
 		let (_, node) = rezzy::hamt::build_hamt_root_handle(
@@ -974,43 +883,33 @@ async fn test_verifying_reads_count_shadow_outcomes_and_serve_rocksdb() {
 		let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
 		(node.structural_hash, bytes)
 	};
-	// Written straight to RocksDB so the node cache never holds them.
-	let (absent, absent_bytes) = build(1000);
+	// Written straight to mtxdb so the node cache never holds them.
+	let (absent, _) = build(1000);
 	let (present, present_bytes) = build(2000);
-	let (corrupt, corrupt_bytes) = build(3000);
-	for (hash, bytes) in
-		[(absent, &absent_bytes), (present, &present_bytes), (corrupt, &corrupt_bytes)]
-	{
-		services.db["state_hamt_nodes"].insert(&hash, bytes);
-	}
-	shadow
+	let (corrupt, _) = build(3000);
+	adapter
 		.put_node(room_id.as_bytes(), &present, &present_bytes)
-		.expect("shadow-write verified node");
+		.expect("store node");
 	// Another node's bytes under `corrupt`'s id: right key, wrong content.
-	shadow
+	adapter
 		.put_node(room_id.as_bytes(), &corrupt, &present_bytes)
-		.expect("shadow-write mismatched node");
+		.expect("store mismatched node");
 
-	let before = store.shadow_read_stats().snapshot();
-	for hash in [absent, present, corrupt] {
-		let node = store
-			.get_node_verifying(room_id.as_bytes(), &structural_key, &hash)
-			.expect("RocksDB serves the read");
-		assert_eq!(node.structural_hash, hash, "the RocksDB node is what is returned");
-	}
-	let after = store.shadow_read_stats().snapshot();
-	let delta =
-		|after: u64, before: u64| after.checked_sub(before).expect("counter moved backwards");
-	assert_eq!(delta(after.0, before.0), 1, "one verified shadow");
-	assert_eq!(delta(after.1, before.1), 1, "one missing shadow");
-	assert_eq!(delta(after.2, before.2), 0, "content-addressed nodes cannot verify yet differ");
-	assert_eq!(delta(after.3, before.3), 1, "one shadow failing full-hash verification");
-
-	// A cached node is not re-verified.
+	let node = store
+		.get_node(room_id.as_bytes(), &structural_key, &present)
+		.expect("a stored node is served");
+	assert_eq!(node.structural_hash, present);
 	store
-		.get_node_verifying(room_id.as_bytes(), &structural_key, &present)
+		.get_node(room_id.as_bytes(), &structural_key, &absent)
+		.expect_err("a node mtxdb lacks is an error");
+	store
+		.get_node(room_id.as_bytes(), &structural_key, &corrupt)
+		.expect_err("bytes that do not hash to the requested node are rejected");
+
+	// A node read once is cached, so a repeat does not go back to mtxdb.
+	store
+		.get_node(room_id.as_bytes(), &structural_key, &present)
 		.expect("cached read");
-	assert_eq!(store.shadow_read_stats().snapshot(), after, "cache hits skip verification");
 }
 
 /// Every structural hash in a resolved tree.
@@ -1028,28 +927,28 @@ fn tree_hashes(root: &Arc<rezzy::hamt::HamtNode<u64, u64>>) -> Vec<[u8; 32]> {
 	hashes
 }
 
-fn shadow_prefix(hash: &[u8; 32]) -> [u8; 16] {
+fn node_prefix(hash: &[u8; 32]) -> [u8; 16] {
 	let mut prefix = [0_u8; 16];
 	prefix.copy_from_slice(&hash[..16]);
 	prefix
 }
 
-/// The shadow dry run reports the nodes no root of a room reaches, stops
+/// The orphan scan reports the nodes no root of a room reaches, stops
 /// calling a node an orphan once a root reaches it, and skips a room it cannot
 /// judge rather than reporting its nodes as garbage.
 #[conduwuit_macros::async_test]
-async fn test_shadow_sweep_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cannot_judge() {
+async fn test_orphan_scan_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cannot_judge() {
 	use rezzy::incremental::LtHash;
 
-	use crate::rooms::state_hamt::shadow_sweep::ShadowRoomInput;
+	use crate::rooms::state_hamt::orphan_scan::RoomInput;
 
 	let (_guard, _server, services) = setup_test_services().await;
 	let room_id = slipstream::OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
 	let structural_key =
 		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
-	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 	let store = &services.rooms.state_hamt.store;
-	let input = ShadowRoomInput {
+	let input = RoomInput {
 		room_id: room_id.as_bytes().to_vec(),
 		structural_key,
 	};
@@ -1064,14 +963,16 @@ async fn test_shadow_sweep_dry_run_reports_unrooted_nodes_and_skips_rooms_it_can
 	let (handle_a, node_a) = build(1000);
 	let hashes_a = tree_hashes(&node_a);
 	assert!(hashes_a.len() > 1, "fixture must be a multi-level HAMT");
-	store.persist_node_recursive(room_id.as_bytes(), node_a);
+	store
+		.persist_node_recursive(room_id.as_bytes(), node_a)
+		.unwrap();
 	let root_a = super::root_handle_to_bytes(&handle_a);
-	shadow.put_room_root(room_id.as_bytes(), &root_a).unwrap();
-	shadow
+	adapter.put_room_root(room_id.as_bytes(), &root_a).unwrap();
+	adapter
 		.put_event_root(room_id.as_bytes(), b"$a:test.conduwuit.local", &root_a)
 		.unwrap();
 
-	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	let report = store.orphan_scan_dry_run(std::slice::from_ref(&input), 0);
 	assert_eq!(report.skipped.total(), 0, "{:?}", report.skipped);
 	assert_eq!(report.rooms.len(), 1);
 	assert_eq!(report.rooms[0].nodes, hashes_a.len());
@@ -1080,74 +981,76 @@ async fn test_shadow_sweep_dry_run_reports_unrooted_nodes_and_skips_rooms_it_can
 	// Tree B is stored but no root names it: exactly its own nodes are orphans.
 	let (handle_b, node_b) = build(5000);
 	let hashes_b = tree_hashes(&node_b);
-	store.persist_node_recursive(room_id.as_bytes(), node_b);
+	store
+		.persist_node_recursive(room_id.as_bytes(), node_b)
+		.unwrap();
 	let mut expected: Vec<[u8; 16]> = hashes_b
 		.iter()
 		.filter(|hash| !hashes_a.contains(hash))
-		.map(shadow_prefix)
+		.map(node_prefix)
 		.collect();
 	expected.sort_unstable();
 	assert!(!expected.is_empty());
 
-	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	let report = store.orphan_scan_dry_run(std::slice::from_ref(&input), 0);
 	assert_eq!(report.rooms.len(), 1);
 	assert_eq!(report.rooms[0].orphans, expected);
-	assert_eq!(report.shadow_orphans(), expected.len());
+	assert_eq!(report.orphan_count(), expected.len());
 
 	// A root now names B: nothing is an orphan any more.
-	shadow
+	adapter
 		.put_event_root(
 			room_id.as_bytes(),
 			b"$b:test.conduwuit.local",
 			&super::root_handle_to_bytes(&handle_b),
 		)
 		.unwrap();
-	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	let report = store.orphan_scan_dry_run(std::slice::from_ref(&input), 0);
 	assert!(report.rooms[0].orphans.is_empty());
 
-	// A reachable node the shadow store lacks makes the walk incomplete. The
+	// A reachable node mtxdb lacks makes the walk incomplete. The
 	// room is skipped, not reported as having orphans.
 	let missing = *hashes_a.last().expect("fixture has hashes");
 	let tx = services.mtxdb.begin_transaction();
-	shadow
+	adapter
 		.remove_nodes(&tx, room_id.as_bytes(), &[conduwuit_mtxdb::keys::hamt_node_id(&missing)])
 		.unwrap();
 	tx.commit().unwrap();
-	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	let report = store.orphan_scan_dry_run(std::slice::from_ref(&input), 0);
 	assert!(report.rooms.is_empty());
 	assert_eq!(report.skipped.incomplete_walk, 1, "{:?}", report.skipped);
 }
 
 #[conduwuit_macros::async_test]
-async fn test_shadow_sweep_dry_run_skips_rooms_without_usable_roots() {
-	use crate::rooms::state_hamt::shadow_sweep::ShadowRoomInput;
+async fn test_orphan_scan_dry_run_skips_rooms_without_usable_roots() {
+	use crate::rooms::state_hamt::orphan_scan::RoomInput;
 
 	let (_guard, _server, services) = setup_test_services().await;
-	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let adapter = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 	let store = &services.rooms.state_hamt.store;
 
 	let empty = slipstream::OwnedRoomId::parse("!empty:test.conduwuit.local").unwrap();
 	let garbage = slipstream::OwnedRoomId::parse("!garbage:test.conduwuit.local").unwrap();
 	// A node stored with no roots at all must not read as "everything is garbage".
-	shadow
+	adapter
 		.put_node(empty.as_bytes(), &[1; 32], b"node")
 		.unwrap();
-	shadow
+	adapter
 		.put_event_root(garbage.as_bytes(), b"$e:test.conduwuit.local", b"not a root handle")
 		.unwrap();
 
-	let rooms = [&empty, &garbage].map(|room| ShadowRoomInput {
+	let rooms = [&empty, &garbage].map(|room| RoomInput {
 		room_id: room.as_bytes().to_vec(),
 		structural_key: crate::rooms::state_hamt::room_structural_key(
 			&services.globals.server_secret,
 			room,
 		),
 	});
-	let report = store.shadow_sweep_dry_run(&rooms, 2);
+	let report = store.orphan_scan_dry_run(&rooms, 2);
 
 	assert!(report.rooms.is_empty());
-	assert_eq!(report.skipped.no_shadow_roots, 1);
+	assert_eq!(report.skipped.no_roots, 1);
 	assert_eq!(report.skipped.undecodable_root, 1);
 	assert_eq!(report.skipped.bad_room_id, 2);
-	assert_eq!(report.shadow_orphans(), 0);
+	assert_eq!(report.orphan_count(), 0);
 }

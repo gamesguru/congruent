@@ -65,14 +65,14 @@ impl StateAdapter {
 			.get_many(self.shard, &Self::stat_collection(room_id), &node_ids)
 	}
 
-	/// Shadow-write a room's current root pointer in its roots collection.
+	/// Write a room's current root pointer in its roots collection.
 	pub fn put_room_root(&self, room_id: &[u8], root_bytes: &[u8]) -> Result<(), StorageError> {
 		let tx = self.store.begin_transaction();
 		tx.put(self.shard, Self::roots_collection(room_id), room_root_node_id(), root_bytes)?;
 		tx.commit()
 	}
 
-	/// Shadow-write an event's associated state root in its room's roots collection.
+	/// Write an event's associated state root in its room's roots collection.
 	pub fn put_event_root(
 		&self,
 		room_id: &[u8],
@@ -89,7 +89,7 @@ impl StateAdapter {
 		tx.commit()
 	}
 
-	/// Shadow-write one content-addressed HAMT node in its room's STAT collection.
+	/// Write one content-addressed HAMT node in its room's STAT collection.
 	pub fn put_node(
 		&self,
 		room_id: &[u8],

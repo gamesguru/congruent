@@ -922,7 +922,7 @@ pub async fn reconcile_membership(&self, room_id: &RoomId) {
 		let members: Vec<_> = match self
 			.services
 			.state_accessor
-			.state_full_pdus_hamt_strict(room_root.clone())
+			.state_full_pdus_hamt_strict(room_id, room_root.clone())
 			.try_collect()
 			.await
 		{

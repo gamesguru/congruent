@@ -153,7 +153,7 @@ pub(crate) async fn get_state_events_route(
 		services
 			.rooms
 			.state_accessor
-			.state_full_pdus_hamt_strict(root)
+			.state_full_pdus_hamt_strict(room_id, root)
 			.map_ok(Event::into_format)
 			.try_collect()
 			.await?

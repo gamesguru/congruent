@@ -1555,7 +1555,8 @@ async fn test_busted_dag_resolution() {
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.expect("set room state root");
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1706,7 +1707,8 @@ async fn test_unredacted_room_dag_resolution() {
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.expect("set room state root");
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)
@@ -1844,7 +1846,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let best_entries = services
 		.rooms
 		.state_accessor
-		.state_full_pdus_hamt(root_handle.clone())
+		.state_full_pdus_hamt(&room_id, root_handle.clone())
 		.count()
 		.await;
 	eprintln!("[LOUNGE] Room state root set, state entries={best_entries}");
@@ -1916,7 +1918,7 @@ async fn test_unredacted_lounge_dag_resolution() {
 	let resolved_state_pdus: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_pdus_hamt(root_handle)
+		.state_full_pdus_hamt(&room_id, root_handle)
 		.collect()
 		.await;
 
@@ -2060,7 +2062,8 @@ async fn test_nheko_dag_resolution() {
 	services
 		.rooms
 		.state
-		.set_room_state_hamt(&room_id, &root_handle, &state_lock);
+		.set_room_state_hamt(&room_id, &root_handle, &state_lock)
+		.expect("set room state root");
 	drop(state_lock);
 
 	// Run force-set-state (to trigger re-resolution on local DAG)

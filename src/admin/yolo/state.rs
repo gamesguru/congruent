@@ -406,7 +406,7 @@ pub(super) async fn compare_room_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full_hamt(local_root_handle.clone());
+			.state_full_hamt(&room_id, local_root_handle.clone());
 		pin_mut!(state_full);
 		while let Some(((event_type, state_key), pdu)) = state_full.next().await {
 			let eid = pdu.event_id().to_owned();
@@ -918,7 +918,7 @@ pub(super) async fn set_state_event(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(&current_root)
+		.state_full_ids_hamt(&room_id, &current_root)
 		.try_collect()
 		.await?;
 
@@ -981,17 +981,17 @@ pub(super) async fn set_state_event(
 	// `set_event_state` + `set_room_state` pair: the event is associated with
 	// the new snapshot, but the room's derived caches are not recomputed here
 	// (the membership cache is updated explicitly below for member events).
-	let shadow_nodes = self
+	let pending_nodes = self
 		.services
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
 
 	self.services
 		.rooms
 		.state
-		.set_event_and_room_roothandles_with_nodes(&room_id, &event_id, &new_root, &shadow_nodes)
+		.set_event_and_room_roothandles_with_nodes(&room_id, &event_id, &new_root, &pending_nodes)
 		.await?;
 
 	// Rebuild membership cache if this is a member event
@@ -1118,7 +1118,7 @@ pub(super) async fn audit_membership(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_hamt(state_root.clone());
+		.state_full_hamt(&room_id, state_root.clone());
 
 	let state_scan_started = Instant::now();
 	pin_mut!(state);

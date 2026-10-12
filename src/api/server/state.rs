@@ -40,7 +40,7 @@ pub(crate) async fn get_room_state_route(
 	let state_ids: Vec<OwnedEventId> = services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(&root_handle)
+		.state_full_ids_hamt(&body.room_id, &root_handle)
 		.try_collect::<Vec<_>>()
 		.await?
 		.into_iter()

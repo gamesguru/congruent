@@ -217,6 +217,7 @@ pub(super) async fn load_left_room(
 
 			build_state_initial(
 				services,
+				room_id,
 				syncing_user,
 				&root_handle,
 				lazily_loaded_members.as_ref(),
@@ -453,6 +454,7 @@ async fn build_left_state_and_timeline(
 		| _ =>
 			build_state_initial(
 				services,
+				room_id,
 				syncing_user,
 				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),

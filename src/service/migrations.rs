@@ -2711,7 +2711,7 @@ async fn legacy_added_events_roothandles(
 			.rooms
 			.state_hamt
 			.store
-			.persist_node_recursive(room_id.as_bytes(), root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 		let serialized = crate::rooms::state::root_handle_to_bytes(&root_handle);
 		for shorteventid in shorteventids {
@@ -2833,7 +2833,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 					.rooms
 					.state_hamt
 					.store
-					.persist_node_recursive(room_id.as_bytes(), root_node);
+					.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 				// Write the same flat-48-byte encoding used by set_room_state_hamt,
 				// so get_room_state_hamt can read the value back.
@@ -2931,7 +2931,7 @@ async fn db_lt_23(services: &Services) -> Result<()> {
 			.rooms
 			.state_hamt
 			.store
-			.persist_node_recursive(room_id.as_bytes(), empty_node);
+			.persist_node_recursive(room_id.as_bytes(), empty_node)?;
 
 		// `all_pdus` yields events oldest-first; walk forward so each non-state
 		// event inherits the root of the most recent preceding state event.

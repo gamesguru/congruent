@@ -55,7 +55,7 @@ where
 	let mut state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids_hamt(&prev_roothandle)
+		.state_full_ids_hamt(room_id, &prev_roothandle)
 		.try_collect()
 		.await?;
 
@@ -135,7 +135,10 @@ where
 			extremity_roothandles.len()
 		);
 		let (root_handle, prev_event) = unique_forks[0].1.clone();
-		let Ok(fork_state) = self.state_at_incoming_fork(root_handle, prev_event).await else {
+		let Ok(fork_state) = self
+			.state_at_incoming_fork(room_id, root_handle, prev_event)
+			.await
+		else {
 			return Ok(None);
 		};
 		return fork_state
@@ -159,7 +162,7 @@ where
 		.into_iter()
 		.try_stream()
 		.wide_and_then(|(root_handle, prev_event)| {
-			self.state_at_incoming_fork(root_handle, prev_event)
+			self.state_at_incoming_fork(room_id, root_handle, prev_event)
 		})
 		.try_collect()
 		.await?;
@@ -188,6 +191,7 @@ where
 #[implement(super::Service)]
 async fn state_at_incoming_fork<Pdu>(
 	&self,
+	room_id: &RoomId,
 	root_handle: rezzy::hamt::RootHandle,
 	prev_event: Pdu,
 ) -> Result<StateMap<OwnedEventId>>
@@ -197,7 +201,7 @@ where
 	let mut leaf_state: HashMap<_, _> = self
 		.services
 		.state_accessor
-		.state_full_ids_hamt(&root_handle)
+		.state_full_ids_hamt(room_id, &root_handle)
 		.try_collect()
 		.await?;
 
@@ -294,7 +298,7 @@ where
 		.into_iter()
 		.try_stream()
 		.wide_and_then(|(root_handle, prev_event)| {
-			self.state_at_incoming_fork(root_handle, prev_event)
+			self.state_at_incoming_fork(room_id, root_handle, prev_event)
 		})
 		.try_collect()
 		.await?;
@@ -327,12 +331,10 @@ where
 		rezzy::hamt::build_hamt_root_handle(&structural_key, &lattice, entries)
 			.map_err(|e| err!("Failed to build HAMT root: {e:?}"))?;
 
-	self.services.globals.with_cork_and_flush(|| {
-		self.services
-			.state_hamt
-			.store
-			.persist_node_recursive(room_id.as_bytes(), root_node);
-	});
+	self.services
+		.state_hamt
+		.store
+		.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 	Ok(Some(root_handle))
 }

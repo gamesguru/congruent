@@ -285,9 +285,11 @@ impl Service {
 					.await
 				{
 					let state_lock = self.services.state.mutex.lock(room_id).await;
-					self.services
-						.state
-						.set_room_state_hamt(room_id, &root_handle, &state_lock);
+					self.services.state.set_room_state_hamt(
+						room_id,
+						&root_handle,
+						&state_lock,
+					)?;
 					info!(
 						"reorder_timeline: bootstrapped room state to latest root handle from \
 						 latest event {latest_eid}"

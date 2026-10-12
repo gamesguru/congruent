@@ -11,6 +11,7 @@ use conduwuit::{
 		string_from_bytes, u64_from_u8,
 	},
 };
+use conduwuit_mtxdb::store::{CollectionId, NodeId};
 use database::{Interfix, Map};
 use futures::{Stream, StreamExt};
 use slipstream::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
@@ -140,36 +141,44 @@ impl Data {
 
 	/// Persist an authoritative mtxdb verdict change. A failure must stop
 	/// processing rather than falling back to legacy RocksDB marker maps.
-	fn update_verdict<F>(&self, event_id: &EventId, change: F)
+	pub(super) fn update_verdict<F>(&self, event_id: &EventId, change: F) -> Result<()>
 	where
 		F: FnMut(&mut conduwuit_mtxdb::verdicts::Verdict),
 	{
 		self.mtxdb_verdicts
 			.update(event_id.as_bytes(), change)
-			.unwrap_or_else(|error| {
-				panic!("Failed to persist mtxdb verdict for {event_id}: {error}")
-			});
+			.map_err(|error| {
+				err!(Database("Failed to persist mtxdb verdict for {event_id}: {error}"))
+			})
 	}
 
-	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
-		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()));
+	pub(super) fn mark_event_soft_failed(
+		&self,
+		event_id: &EventId,
+		code: SoftFailCode,
+	) -> Result<()> {
+		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()))
 	}
 
-	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
-		self.get_soft_fail_code(event_id).await.is_some()
+	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
+		Ok(self.get_soft_fail_code(event_id).await?.is_some())
 	}
 
-	pub(super) async fn get_soft_fail_reason(&self, event_id: &EventId) -> Option<String> {
-		self.get_soft_fail_code(event_id)
-			.await
-			.map(|code| code.tag().to_owned())
+	pub(super) async fn get_soft_fail_reason(
+		&self,
+		event_id: &EventId,
+	) -> Result<Option<String>> {
+		Ok(self
+			.get_soft_fail_code(event_id)
+			.await?
+			.map(|code| code.tag().to_owned()))
 	}
 
-	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
-		self.update_verdict(event_id, |v| v.soft_fail = None);
+	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) -> Result<()> {
+		self.update_verdict(event_id, |v| v.soft_fail = None)
 	}
 
-	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
+	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {
 		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
 		self.update_verdict(event_id, |verdict| {
 			if verdict.rejection.is_some_and(|old| {
@@ -178,85 +187,74 @@ impl Data {
 				return;
 			}
 			verdict.rejection = Some(new_code.to_u8());
-		});
+		})
 	}
 
-	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
-		self.get_rejection_code(event_id)
-			.await
-			.unwrap_or_else(|error| {
-				panic!("Failed to read mtxdb rejection for {event_id}: {error}")
-			})
-			.is_some()
+	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
+		Ok(self.get_rejection_code(event_id).await?.is_some())
 	}
 
 	/// Read the event's rejection marker from the authoritative mtxdb verdict.
-	pub(super) fn get_rejection_code(
-		&self,
-		event_id: &EventId,
-	) -> std::future::Ready<Result<Option<RejectionCode>>> {
-		std::future::ready(
-			self.mtxdb_verdicts
-				.get(event_id.as_bytes())
-				.map(|verdict| {
-					verdict
-						.and_then(|value| value.rejection)
-						.map(RejectionCode::from_u8)
-				})
-				.map_err(|error| {
-					err!(Database("Failed to read mtxdb rejection for {event_id}: {error}"))
-				}),
-		)
+	pub(super) fn get_rejection_code(&self, event_id: &EventId) -> Result<Option<RejectionCode>> {
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map(|verdict| {
+				verdict
+					.and_then(|value| value.rejection)
+					.map(RejectionCode::from_u8)
+			})
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb rejection for {event_id}: {error}"))
+			})
 	}
 
 	/// Read the event's soft-fail marker from the authoritative mtxdb verdict.
-	pub(super) fn get_soft_fail_code(
-		&self,
-		event_id: &EventId,
-	) -> std::future::Ready<Option<SoftFailCode>> {
-		std::future::ready(
-			self.mtxdb_verdicts
-				.get(event_id.as_bytes())
-				.unwrap_or_else(|error| {
-					panic!("Failed to read mtxdb soft-fail for {event_id}: {error}")
-				})
-				.and_then(|value| value.soft_fail)
-				.map(SoftFailCode::from_u8),
-		)
+	pub(super) fn get_soft_fail_code(&self, event_id: &EventId) -> Result<Option<SoftFailCode>> {
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map(|verdict| {
+				verdict
+					.and_then(|value| value.soft_fail)
+					.map(SoftFailCode::from_u8)
+			})
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb soft-fail for {event_id}: {error}"))
+			})
 	}
 
 	/// Returns the event IDs carrying a rejection or soft-fail marker.
 	pub(super) fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
-	) -> std::future::Ready<std::collections::HashSet<OwnedEventId>> {
+	) -> Result<std::collections::HashSet<OwnedEventId>> {
+		if event_ids.is_empty() {
+			return Ok(std::collections::HashSet::new());
+		}
+
+		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(|id| id.as_bytes()).collect();
+		let verdicts = self.mtxdb_verdicts.get_many(&event_id_refs)?;
+
 		let mut flagged = std::collections::HashSet::new();
-		for event_id in event_ids {
-			let verdict = self
-				.mtxdb_verdicts
-				.get(event_id.as_bytes())
-				.unwrap_or_else(|error| {
-					panic!("Failed to read mtxdb verdict for {event_id}: {error}")
-				});
+		for (event_id, verdict) in event_ids.iter().zip(verdicts) {
 			if verdict.is_some_and(|value| value.rejection.is_some() || value.soft_fail.is_some())
 			{
 				flagged.insert(event_id.clone());
 			}
 		}
 
-		std::future::ready(flagged)
+		Ok(flagged)
 	}
 
-	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
-		self.update_verdict(event_id, |v| v.rejection = None);
+	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) -> Result<()> {
+		self.update_verdict(event_id, |v| v.rejection = None)
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
-	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
+	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) -> Result<()> {
 		self.update_verdict(event_id, |v| {
 			v.soft_fail = None;
 			v.rejection = None;
-		});
+		})
 	}
 
 	/// MSC2836: index `child` as a relationship-child of `parent` with the

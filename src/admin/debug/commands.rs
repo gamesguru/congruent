@@ -911,7 +911,7 @@ pub(crate) async fn force_set_state(
 	info!("Rejecting conflicting local state");
 	Box::pin(self.reject_conflicting_state(&room_id, &at_event_id, &remote_eids)).await;
 
-	let (new_room_state, shadow_nodes) = if absolute {
+	let (new_room_state, pending_nodes) = if absolute {
 		info!("Resolving new room state (ABSOLUTE OVERRIDE)");
 		self.services
 			.rooms
@@ -962,8 +962,8 @@ pub(crate) async fn force_set_state(
 	self.services.rooms.state.set_room_state_hamt_with_nodes(
 		room_id.as_ref(),
 		&new_room_state,
-		&shadow_nodes,
-	);
+		&pending_nodes,
+	)?;
 
 	// Update joined count from state snapshot
 	self.services
@@ -1006,7 +1006,7 @@ pub(crate) async fn force_set_state(
 				&room_id,
 				tip_pdu.event_id(),
 				&new_room_state,
-				&shadow_nodes,
+				&pending_nodes,
 			)
 			.await?;
 		info!("Set tip {} as sole extremity", tip_pdu.event_id());
@@ -1157,7 +1157,7 @@ async fn fetch_and_load_state(
 			.services
 			.rooms
 			.state_accessor
-			.state_full_ids_hamt(&root_handle)
+			.state_full_ids_hamt(room_id, &root_handle)
 			.try_collect()
 			.await?;
 
@@ -1433,7 +1433,7 @@ async fn dry_run_comparison(
 			self.services
 				.rooms
 				.state_accessor
-				.state_full_ids_hamt(&root_handle)
+				.state_full_ids_hamt(room_id, &root_handle)
 				.try_collect()
 				.await?
 		} else {
@@ -1534,7 +1534,7 @@ async fn reject_conflicting_state(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_hamt(local_root)
+		.state_full_hamt(room_id, local_root)
 		.map(|(_, pdu)| pdu.event_id().to_owned())
 		.collect()
 		.await;
@@ -1599,7 +1599,7 @@ async fn promote_sync_anchor(
 		.services
 		.rooms
 		.state_accessor
-		.state_full_pdus_hamt(root_handle.clone())
+		.state_full_pdus_hamt(room_id, root_handle.clone())
 		.map(|pdu| {
 			let ts: u64 = pdu.origin_server_ts().0;
 			let eid = pdu.event_id().to_owned();

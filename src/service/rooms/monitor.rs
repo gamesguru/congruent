@@ -113,8 +113,7 @@ impl Service {
 						break;
 					}
 
-					Self::sweep_state_hamt_nodes(&state, delete).await;
-					Self::report_state_hamt_shadow_sweep(&state).await;
+					Self::report_state_hamt_orphans(&state, delete).await;
 				}
 			}));
 		}
@@ -141,74 +140,39 @@ impl Service {
 		}
 	}
 
-	/// Dry run of an orphan sweep over the mtxdb shadow store, logged after each
-	/// node sweep. It never deletes: standalone node writes can still land before
-	/// their roots, so the shadow store is not yet safe to sweep.
-	async fn report_state_hamt_shadow_sweep(state: &crate::rooms::state::Service) {
-		use crate::rooms::state_hamt::shadow_sweep::sample;
+	/// Dry-run orphan scan over the mtxdb HAMT store, logged each interval. It
+	/// never deletes: standalone node writes can still land before their roots,
+	/// so mtxdb is not yet safe to sweep, and `state_hamt_node_sweep_delete` is
+	/// ignored with a warning until a live sweep exists.
+	async fn report_state_hamt_orphans(state: &crate::rooms::state::Service, delete: bool) {
+		use crate::rooms::state_hamt::orphan_scan::sample;
 
-		match state.sweep_hamt_nodes_shadow_dry_run().await {
+		if delete {
+			warn!(
+				target: "state_hamt",
+				"state_hamt_node_sweep_delete is set, but HAMT nodes now live in mtxdb and \
+				 the live sweep is not implemented; only reporting"
+			);
+		}
+
+		match state.scan_hamt_orphans().await {
 			| Ok(report) => {
 				info!(
 					target: "state_hamt",
-					"HAMT shadow sweep (dry run): {} rooms scanned, {} skipped {:?}; {} of {} \
-					 shadow nodes unreachable from their room's roots; {} persisted across two runs",
+					"HAMT orphan scan (dry run): {} rooms scanned, {} skipped {:?}; {} of {} \
+					 nodes unreachable from their room's roots; {} persisted across two runs",
 					report.rooms.len(),
 					report.skipped.total(),
 					report.skipped,
-					report.shadow_orphans(),
-					report.shadow_nodes(),
+					report.orphan_count(),
+					report.stored_nodes(),
 					report.persisted_two_passes,
 				);
 				let examples = report.rooms.iter().flat_map(|room| room.orphans.iter());
-				debug!(target: "state_hamt", "shadow orphan examples: {:?}", sample(examples));
+				debug!(target: "state_hamt", "orphan examples: {:?}", sample(examples));
 			},
 			| Err(error) => {
-				warn!(target: "state_hamt", "HAMT shadow sweep (dry run) failed: {error}");
-			},
-		}
-	}
-
-	/// One HAMT node reclamation pass, reporting what it did either way.
-	///
-	/// Dry run unless `state_hamt_node_sweep_delete` is set: the sweep deletes
-	/// everything no recorded root reaches, so it is only safe to trust that the
-	/// recorded root set is complete.
-	///
-	/// The grace window is one hour, comfortably longer than the interval between
-	/// a node being persisted and being linked into a root handle, so a
-	/// concurrent state update is never mistaken for an orphan.
-	async fn sweep_state_hamt_nodes(state: &crate::rooms::state::Service, delete: bool) {
-		let dry_run = !delete;
-		let grace = Duration::from_hours(1);
-
-		match state.sweep_hamt_nodes(grace, dry_run).await {
-			| Ok(report) if dry_run => {
-				info!(
-					target: "state_hamt",
-					"HAMT node sweep (dry run): {} orphaned nodes, {} bytes reclaimable",
-					report.orphaned,
-					report.bytes,
-				);
-
-				if report.orphaned > 0 {
-					warn!(
-						target: "state_hamt",
-						"{} unreachable HAMT nodes would be reclaimed; set 						 state_hamt_node_sweep_delete to enable deletion",
-						report.orphaned,
-					);
-				}
-			},
-			| Ok(report) => {
-				info!(
-					target: "state_hamt",
-					"HAMT node sweep: reclaimed {} orphaned nodes, {} bytes",
-					report.orphaned,
-					report.bytes,
-				);
-			},
-			| Err(e) => {
-				warn!(target: "state_hamt", "HAMT node sweep failed: {e}");
+				warn!(target: "state_hamt", "HAMT orphan scan (dry run) failed: {error}");
 			},
 		}
 	}

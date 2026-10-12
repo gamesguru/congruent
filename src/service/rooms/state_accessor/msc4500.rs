@@ -314,7 +314,7 @@ pub async fn msc4500_point_digests(
 	let room_version = self.services.state.get_room_version(&room_id).await.ok()?;
 
 	let state: Vec<Pdu> = self
-		.state_full_pdus_hamt_strict(root)
+		.state_full_pdus_hamt_strict(&room_id, root)
 		.try_collect()
 		.await
 		.ok()?;
@@ -400,7 +400,8 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(room_id.as_bytes(), node);
+			.persist_node_recursive(room_id.as_bytes(), node)
+			.ok()?;
 		return Some(root);
 	};
 
@@ -438,6 +439,7 @@ pub async fn msc4500_resolution_inputs_digest(
 	pdu: &Pdu,
 	cache: &mut InputCache,
 ) -> Option<String> {
+	let room_id = pdu.room_id_or_hash()?;
 	let mut frontier: VecDeque<OwnedEventId> = VecDeque::new();
 	let mut seen: HashSet<OwnedEventId> = HashSet::new();
 
@@ -445,7 +447,7 @@ pub async fn msc4500_resolution_inputs_digest(
 		let short: ShortEventId = self.services.short.get_shorteventid(prev).await.ok()?;
 		let root = self.services.state.get_roothandle(short).await.ok()?;
 		let ids: Vec<OwnedEventId> = self
-			.state_full_ids_hamt(&root)
+			.state_full_ids_hamt(&room_id, &root)
 			.map_ok(|(_, id)| id)
 			.try_collect()
 			.await

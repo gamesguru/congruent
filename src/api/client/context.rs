@@ -199,7 +199,7 @@ pub(crate) async fn get_context_route(
 		let ids: Vec<(ShortStateKey, OwnedEventId)> = services
 			.rooms
 			.state_accessor
-			.state_full_ids_hamt(&root_handle)
+			.state_full_ids_hamt(room_id, &root_handle)
 			.try_collect()
 			.await?;
 

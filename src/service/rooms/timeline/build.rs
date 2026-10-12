@@ -93,7 +93,7 @@ pub async fn build_and_append_pdu(
 	// time with the pdu without it's state. This is okay because append_pdu can't
 	// fail. Only state events mutate the room state; a non-state event must not be
 	// routed through append_to_state, which rejects non-state PDUs.
-	let (state_root_handle, shadow_nodes) = if pdu.state_key().is_some() {
+	let (state_root_handle, pending_nodes) = if pdu.state_key().is_some() {
 		trace!("Appending {} state for room {room_id}", pdu.event_id());
 		self.services
 			.state
@@ -122,7 +122,7 @@ pub async fn build_and_append_pdu(
 				state_lock,
 				room_id: &room_id,
 				state_root_handle: Some(state_root_handle.clone()),
-				shadow_nodes,
+				pending_nodes,
 				prev_state_root_handle: previous_root_handle,
 				advance_current_state: false,
 				was_joined_before_state_install: None,
@@ -155,11 +155,9 @@ pub async fn build_and_append_pdu(
 	// events, together with the timeline write, so a flush can never expose the
 	// PDU without its state root. Only a non-state event still needs it set here.
 	if !crate::rooms::state::is_state_event(&pdu) {
-		self.services.globals.with_cork_and_flush(|| {
-			self.services
-				.state
-				.set_room_state_hamt(&room_id, &state_root_handle, state_lock);
-		});
+		self.services
+			.state
+			.set_room_state_hamt(&room_id, &state_root_handle, state_lock)?;
 	}
 
 	let mut servers: HashSet<OwnedServerName> = self

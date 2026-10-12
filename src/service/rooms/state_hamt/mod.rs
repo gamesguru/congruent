@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::Result;
 
-pub mod shadow_sweep;
+pub mod orphan_scan;
 pub mod store;
 
 pub struct Service {
@@ -11,15 +11,8 @@ pub struct Service {
 
 impl crate::Service for Service {
 	fn build(args: crate::Args<'_>) -> Result<Arc<Self>> {
-		let state_hamt_nodes = args.db["state_hamt_nodes"].clone();
-		let state_hamt_node_mtimes = args.db["state_hamt_node_mtimes"].clone();
-
 		Ok(Arc::new(Self {
-			store: store::Store::new(
-				state_hamt_nodes,
-				state_hamt_node_mtimes,
-				args.mtxdb.clone(),
-			),
+			store: store::Store::new(args.mtxdb.clone()),
 		}))
 	}
 

@@ -1725,7 +1725,7 @@ async fn collect_required_state(
 				let full_state = services
 					.rooms
 					.state_accessor
-					.state_full_hamt(current_root_handle.clone());
+					.state_full_hamt(room_id, current_root_handle.clone());
 				pin_mut!(full_state);
 				while let Some(((state_event_type, full_state_key), event)) =
 					full_state.next().await
@@ -1758,6 +1758,7 @@ async fn collect_required_state(
 						.rooms
 						.state_accessor
 						.state_keys_with_ids_hamt::<OwnedEventId>(
+							room_id,
 							current_root_handle.clone(),
 							event_type,
 						)
@@ -2109,6 +2110,7 @@ where
 					.rooms
 					.state_accessor
 					.state_keys_with_ids_hamt(
+						room_id,
 						current_root_handle.clone(),
 						&StateEventType::RoomMember,
 					)
@@ -2118,7 +2120,11 @@ where
 				let since_state_ids: HashMap<_, _> = services
 					.rooms
 					.state_accessor
-					.state_keys_with_ids_hamt(since_root_handle, &StateEventType::RoomMember)
+					.state_keys_with_ids_hamt(
+						room_id,
+						since_root_handle,
+						&StateEventType::RoomMember,
+					)
 					.collect()
 					.await;
 

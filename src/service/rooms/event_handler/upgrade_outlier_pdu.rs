@@ -253,7 +253,7 @@ where
 		false
 	};
 
-	let (previous_root_handle, new_room_state, shadow_nodes) =
+	let (previous_root_handle, new_room_state, pending_nodes) =
 		if let Some(state_key) = incoming_pdu.state_key() {
 			debug!("Event is a state-event. Deriving new room state");
 
@@ -283,19 +283,19 @@ where
 						.await?,
 			};
 			let prev_root = Some(prev_root);
-			let (new_root, shadow_nodes) = self
+			let (new_root, pending_nodes) = self
 				.resolve_state(room_id, &room_version_id, state_after)
 				.await?;
 
 			let _ = prev_nodes; // The previous root is only used for cache diffing.
-			(prev_root, Some(new_root), shadow_nodes)
+			(prev_root, Some(new_root), pending_nodes)
 		} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
 			let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
-			let (new_root, shadow_nodes) = self
+			let (new_root, pending_nodes) = self
 				.resolve_state(room_id, &room_version_id, state_at_incoming_event)
 				.await?;
 
-			(prev_root, Some(new_root), shadow_nodes)
+			(prev_root, Some(new_root), pending_nodes)
 		} else if is_timeline_event {
 			// Non-state timeline events reuse the predecessor root for historical
 			// queries, but never advance the live room state.
@@ -385,7 +385,7 @@ where
 		state_lock: &state_lock,
 		room_id,
 		state_root_handle: new_room_state.clone(),
-		shadow_nodes,
+		pending_nodes,
 		prev_state_root_handle: previous_root_handle.clone(),
 		advance_current_state: is_timeline_event
 			&& (incoming_pdu.state_key().is_some()
@@ -581,7 +581,7 @@ pub async fn state_map_to_root_handle(
 	&self,
 	room_id: &RoomId,
 	short_state: &HashMap<u64, OwnedEventId>,
-) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::ShadowNode>)> {
+) -> Result<(rezzy::hamt::RootHandle, Vec<crate::rooms::state_hamt::store::PendingNode>)> {
 	let mut lattice = rezzy::incremental::LtHash::default();
 	let mut entries = Vec::with_capacity(short_state.len());
 	let mut short_state_keys = Vec::with_capacity(short_state.len());
@@ -631,7 +631,7 @@ pub async fn state_map_to_root_handle(
 		.services
 		.state_hamt
 		.store
-		.persist_node_recursive_deferred(root_node);
+		.persist_node_recursive_deferred(room_id.as_bytes(), root_node);
 
 	Ok((root_handle, nodes))
 }

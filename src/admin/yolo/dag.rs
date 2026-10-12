@@ -1419,7 +1419,7 @@ pub(super) async fn audit_auth_chain(
 				self.services
 					.rooms
 					.state_accessor
-					.state_full_ids_hamt(&room_root)
+					.state_full_ids_hamt(&room_id, &room_root)
 					.map_ok(|(_, id)| id)
 					.try_collect()
 					.await?,

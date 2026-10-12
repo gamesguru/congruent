@@ -1,39 +1,28 @@
-//! Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
+//! HAMT node store: the mtxdb STAT collections, fronted by a content-addressed
+//! memory cache.
+//!
+//! mtxdb is the only store for HAMT nodes. They live per room, so every read and
+//! write names its room, and a node read back is verified against its full
+//! structural hash because mtxdb keys carry only the first 16 bytes of it.
 use std::{
 	collections::HashSet,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
 	},
-	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use conduwuit::{Result, err, warn};
-use database::{Batch, Map};
-use futures::TryStreamExt;
 use rezzy::{
 	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
 	incremental::LtHash,
 };
 
-use super::shadow_sweep::{
-	NodePrefix, RoomOrphans, ShadowRoomInput, ShadowSweepReport, SkipReason,
-};
+use super::orphan_scan::{NodePrefix, OrphanReport, RoomInput, RoomOrphans, SkipReason};
 
-/// A node's structural hash and encoded bytes, held back so it can be
-/// shadow-published to mtxdb together with its roots.
-pub type ShadowNode = (StructuralHash, Vec<u8>);
-
-/// Report produced by [`Store::sweep`], in either dry-run or live mode.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SweepReport {
-	/// Number of orphaned node hashes that were eligible for reclamation.
-	pub orphaned: usize,
-	/// Sum of the sizes of the orphaned node values, in bytes.
-	pub bytes: u64,
-	/// Whether [`Store::sweep`] was run without actually deleting anything.
-	pub dry_run: bool,
-}
+/// A node's structural hash and encoded bytes, held back so it is published to
+/// mtxdb in the same transaction as the roots that reference it.
+pub type PendingNode = (StructuralHash, Vec<u8>);
 
 /// Counters describing how much redundant node writing the content-addressed
 /// elision in [`Store`] avoided.
@@ -43,13 +32,11 @@ pub struct SweepReport {
 /// holds, so nothing downstream can observe it except the write volume itself.
 #[derive(Debug, Default)]
 pub struct WriteStats {
-	/// Node value writes actually issued to the backing store.
+	/// Nodes handed to mtxdb for writing.
 	pub written: AtomicU64,
-	/// Node writes skipped because the content-addressed node was already
-	/// durable.
+	/// Node writes skipped because the content-addressed node was already in
+	/// mtxdb.
 	pub elided: AtomicU64,
-	/// Successful shadow writes issued to mtxdb.
-	pub shadow_written: AtomicU64,
 }
 
 impl WriteStats {
@@ -58,54 +45,11 @@ impl WriteStats {
 	pub fn snapshot(&self) -> (u64, u64) {
 		(self.written.load(Ordering::Relaxed), self.elided.load(Ordering::Relaxed))
 	}
-
-	/// Number of successful mtxdb shadow-write operations.
-	#[must_use]
-	pub fn shadow_writes(&self) -> u64 { self.shadow_written.load(Ordering::Relaxed) }
 }
 
-/// Outcomes of comparing nodes read from RocksDB against their mtxdb shadow.
-///
-/// Verification never changes what a reader sees: RocksDB serves every read.
-/// These counters exist so a shadow that has drifted is visible before reads
-/// are ever moved to mtxdb.
-#[derive(Debug, Default)]
-pub struct ShadowReadStats {
-	/// Shadow node present, verified against its full hash, and byte-identical.
-	pub verified: AtomicU64,
-	/// No shadow node. Expected for nodes written before shadow writes began.
-	pub missing: AtomicU64,
-	/// Shadow node verified but its content differs from RocksDB.
-	pub mismatched: AtomicU64,
-	/// Shadow node failed hash verification, or mtxdb could not be read.
-	pub errors: AtomicU64,
-}
-
-impl ShadowReadStats {
-	/// `(verified, missing, mismatched, errors)`.
-	#[must_use]
-	pub fn snapshot(&self) -> (u64, u64, u64, u64) {
-		(
-			self.verified.load(Ordering::Relaxed),
-			self.missing.load(Ordering::Relaxed),
-			self.mismatched.load(Ordering::Relaxed),
-			self.errors.load(Ordering::Relaxed),
-		)
-	}
-}
-
-/// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
+/// Adapter mapping the rezzy HAMT nodes into mtxdb and a memory cache.
 pub struct Store {
 	mtxdb: conduwuit_mtxdb::state::StateAdapter,
-	shadow_reads: ShadowReadStats,
-	/// RocksDB column family containing the densely persisted nodes.
-	db: Arc<Map>,
-
-	/// RocksDB column family tracking the wall-clock persistence time of each
-	/// node, keyed by `StructuralHash`. Used by the orphan sweep's grace window
-	/// to avoid deleting a node that a concurrent writer has just persisted but
-	/// not yet linked into a durable root handle.
-	node_mtimes: Arc<Map>,
 
 	/// Content-addressed cache of parsed HamtNodes in memory.
 	/// Deduplicates subtrees across different room states automatically since
@@ -119,28 +63,21 @@ pub struct Store {
 	write_stats: WriteStats,
 
 	/// Candidate set from the previous scheduled dry-run invocation.
-	shadow_previous_candidates: std::sync::Mutex<HashSet<super::shadow_sweep::Candidate>>,
+	previous_candidates: std::sync::Mutex<HashSet<super::orphan_scan::Candidate>>,
 }
 
 impl Store {
-	/// Creates a HAMT node store backed by the node and mtime maps.
-	pub fn new(
-		db: Arc<Map>,
-		node_mtimes: Arc<Map>,
-		mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
-	) -> Self {
+	/// Creates a HAMT node store backed by mtxdb.
+	pub fn new(mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>) -> Self {
 		// Use a generic capacity for now. In a full production setup, this
 		// could be wired to a config value like other caches.
 		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
 
 		Self {
 			mtxdb: conduwuit_mtxdb::state::StateAdapter::new(mtxdb),
-			shadow_reads: ShadowReadStats::default(),
-			db,
-			node_mtimes,
 			node_cache,
 			write_stats: WriteStats::default(),
-			shadow_previous_candidates: std::sync::Mutex::new(HashSet::new()),
+			previous_candidates: std::sync::Mutex::new(HashSet::new()),
 		}
 	}
 
@@ -148,144 +85,55 @@ impl Store {
 	#[must_use]
 	pub fn write_stats(&self) -> &WriteStats { &self.write_stats }
 
-	/// Returns true when `hash` is provably already durable in the store.
+	/// Returns true when `hash` is provably already stored in `room_id`.
 	///
-	/// Proof means a committed row on disk, never a cache hit. The node cache
-	/// doubles as a read-your-writes buffer for staged-but-unapplied batches --
-	/// [`Self::put_node_batch`] publishes into it before `apply_batch` runs -- so
-	/// a cached node may have no backing row yet, and may never acquire one if
-	/// that batch is dropped. Treating a cache hit as durability would let such a
-	/// node be skipped forever instead of being rewritten on the next
-	/// materialization, turning transient in-flight state into permanent loss for
-	/// any root that ends up referencing it.
+	/// Proof means a committed mtxdb record, never a cache hit. The node cache
+	/// also holds nodes staged for a publish that has not happened yet, so a
+	/// cached node may have no stored record, and may never acquire one if that
+	/// publish fails. Treating a cache hit as durability would let such a node be
+	/// skipped forever instead of being rewritten on the next materialization,
+	/// turning transient in-flight state into permanent loss for any root that
+	/// ends up referencing it.
 	///
-	/// The probe costs a point read and saves a value write, an mtime write, and
-	/// the compaction pressure of re-storing bytes that are already there.
-	fn is_durable(&self, hash: &StructuralHash) -> bool { self.db.exists_blocking(hash).is_ok() }
-
-	/// Resolves a node while avoiding blocking a single-threaded Tokio runtime.
-	pub fn get_node(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
-		self.get_node_blocking(hash)
+	/// The probe costs a point read and saves a write of bytes already there.
+	fn is_durable(&self, room_id: &[u8], hash: &StructuralHash) -> bool {
+		self.mtxdb
+			.get_nodes(room_id, &[*hash])
+			.is_ok_and(|nodes| nodes.into_iter().next().flatten().is_some())
 	}
 
-	/// Fetches a node by its structural hash synchronously (for the resolver).
-	///
-	/// Checks the memory cache first. On miss, reads from RocksDB and
-	/// parses the dense format into an in-memory `HamtNode`.
-	pub fn get_node_blocking(&self, hash: &StructuralHash) -> Result<Arc<HamtNode<u64, u64>>> {
-		self.load_node(hash).map(|(node, _)| node)
-	}
-
-	/// Resolves a node, reporting whether it came from the memory cache.
-	fn load_node(&self, hash: &StructuralHash) -> Result<(Arc<HamtNode<u64, u64>>, bool)> {
-		if let Some(node) = self.node_cache.get(hash) {
-			return Ok((node, true));
-		}
-
-		let bytes = self.db.get_blocking(hash)?;
-		if bytes.is_empty() {
-			return Err(err!(Database(error!("State HAMT node not found in database."))));
-		}
-
-		let node = Self::decode_node(hash, &bytes)?;
-		self.node_cache.insert(*hash, node.clone());
-
-		Ok((node, false))
-	}
-
-	/// Like [`Self::get_node_blocking`], but a node read from RocksDB (not the
-	/// cache) is also compared against its mtxdb shadow. The result is always
-	/// the RocksDB node; a disagreement is counted and logged, never served.
-	pub fn get_node_verifying(
+	/// Resolves a node of `room_id`: from the memory cache, else from mtxdb,
+	/// verified against its full hash. A node mtxdb lacks is an error.
+	pub fn get_node(
 		&self,
 		room_id: &[u8],
 		structural_key: &[u8],
 		hash: &StructuralHash,
 	) -> Result<Arc<HamtNode<u64, u64>>> {
-		let (node, cached) = self.load_node(hash)?;
-		if !cached {
-			self.verify_shadow_node(room_id, structural_key, hash, &node);
+		if let Some(node) = self.node_cache.get(hash) {
+			return Ok(node);
 		}
+
+		let node = self
+			.read_node_verified(room_id, structural_key, hash)?
+			.ok_or_else(|| err!(Database(error!("State HAMT node not found in mtxdb."))))?;
+		self.node_cache.insert(*hash, node.clone());
 		Ok(node)
 	}
 
-	/// A resolver for [`rezzy::hamt`] traversals in `room_id` that verifies each
-	/// node it loads from RocksDB against mtxdb. See
-	/// [`Self::get_node_verifying`].
+	/// A resolver for [`rezzy::hamt`] traversals in `room_id`.
 	pub fn get_room_resolver<'a>(
 		&'a self,
 		room_id: &'a [u8],
 		structural_key: &'a [u8],
 	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + 'a {
-		move |hash: &StructuralHash| self.get_node_verifying(room_id, structural_key, hash)
+		move |hash: &StructuralHash| self.get_node(room_id, structural_key, hash)
 	}
 
-	/// Counters for [`Self::get_node_verifying`].
-	#[must_use]
-	pub fn shadow_read_stats(&self) -> &ShadowReadStats { &self.shadow_reads }
-
-	fn verify_shadow_node(
-		&self,
-		room_id: &[u8],
-		structural_key: &[u8],
-		hash: &StructuralHash,
-		durable: &Arc<HamtNode<u64, u64>>,
-	) {
-		let stats = &self.shadow_reads;
-		match self.get_shadow_node_verified(room_id, structural_key, hash) {
-			| Ok(None) => {
-				stats.missing.fetch_add(1, Ordering::Relaxed);
-			},
-			| Ok(Some(shadow)) => {
-				let encode = |node: &Arc<HamtNode<u64, u64>>| {
-					PersistedInternalNode::<u64, u64>::from(node.as_ref()).encode_v1()
-				};
-				if encode(&shadow) == encode(durable) {
-					stats.verified.fetch_add(1, Ordering::Relaxed);
-				} else {
-					stats.mismatched.fetch_add(1, Ordering::Relaxed);
-					conduwuit::warn!(
-						room = %String::from_utf8_lossy(room_id),
-						hash = ?hash,
-						"mtxdb shadow node differs from RocksDB"
-					);
-				}
-			},
-			| Err(error) => {
-				stats.errors.fetch_add(1, Ordering::Relaxed);
-				conduwuit::warn!(
-					room = %String::from_utf8_lossy(room_id),
-					hash = ?hash,
-					?error,
-					"mtxdb shadow node failed verification"
-				);
-			},
-		}
-	}
-
-	/// The durable encoded bytes of a node, exactly as stored, or `None` when no
-	/// row exists. Bypasses the node cache: an export must reflect what is on
-	/// disk, not what a staged batch has published into memory.
-	pub fn get_node_bytes(&self, hash: &StructuralHash) -> Result<Option<Vec<u8>>> {
-		match self.db.get_blocking(hash) {
-			| Ok(bytes) if bytes.is_empty() => Ok(None),
-			| Ok(bytes) => Ok(Some(bytes.to_vec())),
-			| Err(error) if error.is_not_found() => Ok(None),
-			| Err(error) => Err(error),
-		}
-	}
-
-	/// The child node hashes recorded in an encoded node.
-	pub fn child_hashes(bytes: &[u8]) -> Result<Vec<StructuralHash>> {
-		PersistedInternalNode::<u64, u64>::decode_v1_unverified(bytes)
-			.map(|node| node.child_hashes)
-			.map_err(|e| err!(Database(error!("{e}"))))
-	}
-
-	/// Read a shadow-written node from mtxdb and verify the full structural
-	/// hash before exposing it. mtxdb keys use only the first 16 hash bytes, so
-	/// the stored value must be checked against the caller's full hash.
-	pub fn get_shadow_node_verified(
+	/// Read a node from mtxdb and verify the full structural hash before
+	/// exposing it. mtxdb keys use only the first 16 hash bytes, so the stored
+	/// value must be checked against the caller's full hash. Bypasses the cache.
+	pub fn read_node_verified(
 		&self,
 		room_id: &[u8],
 		structural_key: &[u8],
@@ -306,7 +154,7 @@ impl Store {
 	}
 
 	/// Validates and parses an encoded node body into an in-memory `HamtNode`
-	/// whose children are left lazy for [`Self::get_blocking_resolver`] to pull.
+	/// whose children are left lazy for the room resolver to pull.
 	///
 	/// Shared by the read and write paths so a node cached right after being
 	/// written is held under exactly the same representation a later read would
@@ -349,427 +197,168 @@ impl Store {
 		Ok(node)
 	}
 
-	/// Persists a node to RocksDB and populates the cache.
+	/// Stages a node for publication: caches it and returns its encoding, or
+	/// `None` when mtxdb already holds it.
 	///
 	/// Content addressing makes this idempotent: a node reached here under an
-	/// already-durable hash is byte-identical to what the store holds, so the
-	/// write is skipped. That matters because callers legitimately re-emit
-	/// unchanged nodes whenever they re-materialize a tree.
-	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) {
-		if let Some((hash, bytes)) = self.put_node_deferred(node) {
-			self.shadow_put_node(room_id, &hash, &bytes);
-		}
-	}
-
-	/// Persist a node to RocksDB without publishing it to the shadow store.
-	/// The returned bytes must be included with a root update in
-	/// [`Self::shadow_publish_roots`].
-	pub fn put_node_deferred(&self, node: Arc<HamtNode<u64, u64>>) -> Option<ShadowNode> {
+	/// already-stored hash is byte-identical to what mtxdb holds, so the write is
+	/// skipped. That matters because callers legitimately re-emit unchanged nodes
+	/// whenever they re-materialize a tree.
+	///
+	/// The returned node is not stored until it is published, with the roots
+	/// that reference it, by [`Self::publish_roots`] or [`Self::publish_nodes`].
+	pub fn put_node_deferred(
+		&self,
+		room_id: &[u8],
+		node: Arc<HamtNode<u64, u64>>,
+	) -> Option<PendingNode> {
 		let hash = node.structural_hash;
-		if self.is_durable(&hash) {
+		if self.is_durable(room_id, &hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			// Refresh the cache entry: the caller may hold a freshly parsed node
 			// that is worth keeping resident even though it needs no write.
 			self.node_cache.insert(hash, node);
-			let persisted: PersistedInternalNode<u64, u64> =
-				self.node_cache.get(&hash)?.as_ref().into();
-			let bytes = persisted.encode_v1();
-			return Some((hash, bytes));
+			return None;
 		}
 
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
 
-		// Durable value before the cache entry, mirroring the ordering
-		// `del_node` relies on: a cache hit must never be able to expose a node
-		// that has no backing row.
-		self.db.insert(&hash, &bytes);
-		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
 		Some((hash, bytes))
 	}
 
-	/// Persists a node to RocksDB in the provided WriteBatch and populates the
-	/// cache.
-	///
-	/// The mtime for the node joins the same batch as the node value itself, so
-	/// the grace window and the node's durability are updated atomically.
-	pub fn put_node_batch<'a>(
-		&'a self,
+	/// Stores a node on its own, without a root.
+	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) -> Result<()> {
+		let pending: Vec<PendingNode> =
+			self.put_node_deferred(room_id, node).into_iter().collect();
+		self.publish_nodes(room_id, &pending)
+	}
+
+	/// Stages a node and all of its resolved children recursively.
+	pub fn persist_node_recursive_deferred(
+		&self,
 		room_id: &[u8],
 		node: Arc<HamtNode<u64, u64>>,
-		batch: &mut Batch<'a>,
-	) {
+	) -> Vec<PendingNode> {
 		let mut deferred = Vec::new();
-		self.put_node_batch_deferred(node, batch, &mut deferred);
-		for (hash, bytes) in &deferred {
-			self.shadow_put_node(room_id, hash, bytes);
-		}
-	}
-
-	/// As [`Self::put_node_batch`], but hands the encoded node back in
-	/// `deferred` instead of shadow-writing it, so the caller can publish the
-	/// nodes together with their roots via [`Self::shadow_publish`] once the
-	/// durable batch has been applied.
-	pub fn put_node_batch_deferred<'a>(
-		&'a self,
-		node: Arc<HamtNode<u64, u64>>,
-		batch: &mut Batch<'a>,
-		deferred: &mut Vec<ShadowNode>,
-	) {
-		let hash = node.structural_hash;
-		if self.is_durable(&hash) {
-			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
-			self.node_cache.insert(hash, node);
-			return;
-		}
-
-		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
-		let bytes = persisted.encode_v1();
-
-		self.node_cache.insert(hash, node);
-		self.db.batch_put(batch, hash.as_ref(), bytes.as_slice());
-		self.node_mtimes
-			.batch_put(batch, hash.as_ref(), unix_millis().to_be_bytes());
-		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		deferred.push((hash, bytes));
-	}
-
-	/// Recursive form of [`Self::put_node_batch_deferred`].
-	pub fn persist_node_recursive_batch_deferred<'a>(
-		&'a self,
-		node: Arc<HamtNode<u64, u64>>,
-		batch: &mut Batch<'a>,
-		deferred: &mut Vec<ShadowNode>,
-	) {
 		for child in &node.children {
 			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				self.persist_node_recursive_batch_deferred(child_node.clone(), batch, deferred);
+				deferred
+					.extend(self.persist_node_recursive_deferred(room_id, child_node.clone()));
 			}
 		}
-		self.put_node_batch_deferred(node, batch, deferred);
+		deferred.extend(self.put_node_deferred(room_id, node));
+		deferred
 	}
 
-	/// Shadow-publish nodes and roots to mtxdb in one transaction, so a reader
-	/// can never observe a root without the nodes it points to. Failures only
-	/// warn: RocksDB remains the source of truth during the shadow phase.
-	pub fn shadow_publish(
+	/// Stores a node and all of its resolved children recursively, in one
+	/// transaction and without a root.
+	pub fn persist_node_recursive(
 		&self,
 		room_id: &[u8],
-		event_id: &[u8],
-		nodes: &[ShadowNode],
-		root_bytes: &[u8],
-		is_state_event: bool,
-	) {
-		let event_roots = [(event_id, root_bytes)];
-		self.shadow_publish_roots(
-			room_id,
-			nodes,
-			&event_roots,
-			is_state_event.then_some(root_bytes),
-		);
+		node: Arc<HamtNode<u64, u64>>,
+	) -> Result<()> {
+		let pending = self.persist_node_recursive_deferred(room_id, node);
+		self.publish_nodes(room_id, &pending)
 	}
 
-	/// Shadow-publish nodes with one or more event roots and an optional current
-	/// room root in one mtxdb transaction.
-	pub fn shadow_publish_roots(
+	/// Stages an already-encoded node, populating the node cache like
+	/// [`Self::put_node_deferred`] so the node a caller just produced is visible
+	/// to readers before it is published.
+	pub fn put_encoded_node_deferred(
 		&self,
 		room_id: &[u8],
-		nodes: &[ShadowNode],
-		event_roots: &[(&[u8], &[u8])],
-		room_root: Option<&[u8]>,
-	) {
-		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
-			.iter()
-			.map(|(hash, bytes)| (*hash, bytes.clone()))
-			.collect();
-		match self
-			.mtxdb
-			.publish_roots(room_id, &nodes, event_roots, room_root)
-		{
-			| Ok(()) => {
-				let node_count = u64::try_from(nodes.len()).expect("node count fits in u64");
-				self.write_stats
-					.shadow_written
-					.fetch_add(node_count, Ordering::Relaxed);
-			},
-			| Err(error) => {
-				conduwuit::warn!(?error, "Failed to shadow-publish HAMT state update to mtxdb");
-			},
+		hash: StructuralHash,
+		bytes: &[u8],
+	) -> Result<Option<PendingNode>> {
+		if self.is_durable(room_id, &hash) {
+			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
+			return Ok(None);
 		}
+
+		let node = Self::decode_node(&hash, bytes)?;
+		self.node_cache.insert(hash, node);
+		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
+		Ok(Some((hash, bytes.to_vec())))
 	}
 
-	/// Stores an already-encoded node and records its persistence time.
-	///
-	/// Populates the node cache like [`Self::put_node`]: without this, the node a
-	/// caller just wrote is invisible to readers until it is evicted or the
-	/// process restarts, and it would be re-emitted on every subsequent
-	/// materialization of the same subtree.
+	/// Stores an already-encoded node on its own, without a root.
 	pub fn put_encoded_node(
 		&self,
 		room_id: &[u8],
 		hash: StructuralHash,
 		bytes: &[u8],
 	) -> Result<()> {
-		if let Some((hash, bytes)) = self.put_encoded_node_deferred(hash, bytes)? {
-			self.shadow_put_node(room_id, &hash, &bytes);
-		}
-		Ok(())
+		let pending: Vec<PendingNode> = self
+			.put_encoded_node_deferred(room_id, hash, bytes)?
+			.into_iter()
+			.collect();
+		self.publish_nodes(room_id, &pending)
 	}
 
-	/// Persist encoded node bytes to RocksDB and return them for atomic shadow
-	/// publication with their root.
-	pub fn put_encoded_node_deferred(
+	/// Publishes nodes and roots to mtxdb in one transaction, so a reader can
+	/// never observe a root without the nodes it points to. A failure is an
+	/// error: mtxdb is the only store, so there is nothing to fall back on.
+	pub fn publish(
 		&self,
-		hash: StructuralHash,
-		bytes: &[u8],
-	) -> Result<Option<ShadowNode>> {
-		if self.is_durable(&hash) {
-			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
-			return Ok(Some((hash, bytes.to_vec())));
-		}
-
-		let node = Self::decode_node(&hash, bytes)?;
-
-		self.db.insert(&hash, bytes);
-		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
-		self.node_cache.insert(hash, node);
-		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		Ok(Some((hash, bytes.to_vec())))
-	}
-
-	fn shadow_put_node(&self, room_id: &[u8], hash: &StructuralHash, bytes: &[u8]) {
-		match self.mtxdb.put_node(room_id, hash, bytes) {
-			| Ok(()) => {
-				self.write_stats
-					.shadow_written
-					.fetch_add(1, Ordering::Relaxed);
-			},
-			| Err(error) => conduwuit::warn!(?error, "Failed to shadow-write HAMT node to mtxdb"),
-		}
-	}
-
-	/// Persists a node and all of its resolved children recursively.
-	pub fn persist_node_recursive(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) {
-		for child in &node.children {
-			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				self.persist_node_recursive(room_id, child_node.clone());
-			}
-		}
-		self.put_node(room_id, node);
-	}
-
-	/// Persist a root and its resolved descendants to RocksDB while deferring
-	/// shadow writes until their root record is committed.
-	pub fn persist_node_recursive_deferred(
-		&self,
-		node: Arc<HamtNode<u64, u64>>,
-	) -> Vec<ShadowNode> {
-		let mut deferred = Vec::new();
-		for child in &node.children {
-			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				deferred.extend(self.persist_node_recursive_deferred(child_node.clone()));
-			}
-		}
-		if let Some(persisted) = self.put_node_deferred(node) {
-			deferred.push(persisted);
-		}
-		deferred
-	}
-
-	/// Persists a node and all of its resolved children recursively into a
-	/// batch.
-	pub fn persist_node_recursive_batch<'a>(
-		&'a self,
 		room_id: &[u8],
-		node: Arc<HamtNode<u64, u64>>,
-		batch: &mut Batch<'a>,
-	) {
-		for child in &node.children {
-			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				self.persist_node_recursive_batch(room_id, child_node.clone(), batch);
-			}
-		}
-		self.put_node_batch(room_id, node, batch);
+		event_id: &[u8],
+		nodes: &[PendingNode],
+		root_bytes: &[u8],
+		is_state_event: bool,
+	) -> Result<()> {
+		let event_roots = [(event_id, root_bytes)];
+		self.publish_roots(room_id, nodes, &event_roots, is_state_event.then_some(root_bytes))
 	}
 
-	/// Physically deletes a node value and its recorded mtime, and evicts it
-	/// from the memory cache.
-	///
-	/// This is the raw delete primitive: it does *not* consult reachability or
-	/// any grace window. Callers are responsible for only deleting nodes that
-	/// are confirmed unreachable (e.g. after [`Store::sweep`]).
-	pub fn del_node(&self, hash: &StructuralHash) -> Result<()> {
-		// Remove the durable value first and evict the cache last. Evicting
-		// first would let a concurrent `get_node` repopulate the cache from the
-		// not-yet-deleted row, leaving a cached node with no backing row.
-		self.db.remove_raw(hash.as_ref());
-		self.node_mtimes.remove_raw(hash.as_ref());
-		self.node_cache.invalidate(hash);
-		Ok(())
-	}
-
-	/// Backdates a node's recorded persistence time by `age`.
-	///
-	/// Test-only. Reclamation eligibility is decided by the grace window, so
-	/// exercising the deleting path needs a node that is unambiguously older than
-	/// any grace a test would pass -- a node written microseconds ago is
-	/// correctly spared as possibly-still-in-flight.
-	#[cfg(test)]
-	pub fn age_node_for_test(&self, hash: &StructuralHash, age: Duration) {
-		let millis = u64::try_from(age.as_millis()).unwrap_or(u64::MAX);
-		self.node_mtimes
-			.insert(hash, unix_millis().saturating_sub(millis).to_be_bytes());
-	}
-
-	/// Sweeps the node store for hashes unreachable from the given live roots,
-	/// optionally deleting them.
-	///
-	/// All recorded roots (`shorteventid_roothandle` per-event handles plus the
-	/// current `roomid_roothandle`) are treated as live and permanently pin
-	/// their reachable trees; sweep never reclaims anything reachable from
-	/// them. It only reclaims nodes that are absent from the union of the live
-	/// roots' reachable sets — i.e. nodes orphaned by an actual deletion.
-	///
-	/// # Correctness: the grace window
-	///
-	/// A concurrent writer can persist a node a moment before linking it into a
-	/// durable root handle. If this sweep snapshots the live roots, walks
-	/// reachability, and then deletes in that order, it would classify that
-	/// just-persisted node as unreachable and delete it out from under the
-	/// in-flight write. To close this race, only nodes whose persistence time
-	/// (see [`Self::put_node`]) predates `now - grace` are considered for
-	/// reclamation. Nodes whose mtime is missing (written before this feature
-	/// landed) are by definition old and treated as eligible.
-	///
-	/// When `dry_run` is true (the default), nothing is deleted; the report
-	/// still reflects exactly which nodes a live run would reclaim.
-	///
-	/// # Correctness: caller-supplied live roots
-	///
-	/// `live_roots` must be the *complete, exhaustive* set of currently
-	/// recorded roots — **every** `shorteventid_roothandle` entry (and the
-	/// current `roomid_roothandle`), not just the room roots a single caller
-	/// happens to hold. Anything reachable from a root you fail to pass here
-	/// is invisible to the reachability walk and will be classified as an
-	/// orphan and deleted even though it is still live. Sweep guarantees it
-	/// never reclaims anything reachable from a *supplied* root; the burden
-	/// is on the caller to supply all of them. A partial root set is a
-	/// silent, persistent data-loss bug — there is no runtime check that
-	/// catches it.
-	pub async fn sweep(
+	/// Publishes nodes with one or more event roots and an optional current room
+	/// root in one mtxdb transaction.
+	pub fn publish_roots(
 		&self,
-		live_roots: &[&RootHandle],
-		grace: Duration,
-		dry_run: bool,
-	) -> Result<SweepReport> {
-		self.sweep_blocking(live_roots, grace, dry_run).await
-	}
-
-	/// Blocking portion of [`Store::sweep`]; performs the reachability walk and
-	/// deletion on the current thread.
-	///
-	/// Enumerates every node hash in `state_hamt_nodes` and deletes the ones
-	/// not reachable from `live_roots`, subject to the grace window. Only
-	/// likely nodes (32-byte keys) are considered; anything else in the column
-	/// family is not a node this store manages.
-	async fn sweep_blocking(
-		&self,
-		live_roots: &[&RootHandle],
-		grace: Duration,
-		dry_run: bool,
-	) -> Result<SweepReport> {
-		let mut resolver = self.get_blocking_resolver();
-
-		// Shared visited set across every root: most of the tree is shared, so
-		// `walk_reachable_node_hashes` only descends into a subtree the first
-		// time its hash is seen.
-		let mut seen: std::collections::BTreeSet<StructuralHash> =
-			std::collections::BTreeSet::new();
-
-		for root in live_roots {
-			let root_node = self.get_node_blocking(&root.structural_hash)?;
-
-			rezzy::hamt::delta::walk_reachable_node_hashes(
-				&root_node,
-				&mut resolver,
-				&mut |hash| seen.insert(hash),
-			)
-			.map_err(|e| err!(Database(error!("{e}"))))?;
-		}
-
-		let cutoff =
-			unix_millis().saturating_sub(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX));
-
-		let report = SweepReport { dry_run, ..SweepReport::default() };
-
-		// Sweep the raw key stream incrementally rather than materializing
-		// every node key into memory at once, keeping only the reachability
-		// set and the running report.
-		let report = self
-			.db
-			.raw_stream()
-			.try_fold(report, async |mut report, (key, _): database::KeyVal<'_>| {
-				// Keys in `state_hamt_nodes` are 32-byte hashes; any
-				// other key is not a node we manage and is skipped
-				// defensively.
-				let Ok(hash) = StructuralHash::try_from(key) else {
-					return Ok(report);
-				};
-
-				if seen.contains(&hash) {
-					return Ok(report);
-				}
-
-				// Grace-window filter: a recent mtime means a write is
-				// possibly still in flight, so ignore this node this
-				// round. Metadata read failures are propagated so the
-				// sweep fails closed rather than deleting a node it
-				// could not verify.
-				if let Some(mtime) = self.node_mtime(&hash)? {
-					if mtime >= cutoff {
-						return Ok(report);
-					}
-				}
-
-				let bytes = u64::try_from(self.db.get_blocking(&hash)?.len()).unwrap_or(u64::MAX);
-				report.orphaned = report.orphaned.saturating_add(1);
-				report.bytes = report.bytes.saturating_add(bytes);
-
-				if !dry_run {
-					self.del_node(&hash)?;
-				}
-
-				Ok(report)
+		room_id: &[u8],
+		nodes: &[PendingNode],
+		event_roots: &[(&[u8], &[u8])],
+		room_root: Option<&[u8]>,
+	) -> Result<()> {
+		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.clone()))
+			.collect();
+		self.mtxdb
+			.publish_roots(room_id, &nodes, event_roots, room_root)
+			.map_err(|error| {
+				err!(Database(error!("Failed to publish HAMT state to mtxdb: {error}")))
 			})
-			.await?;
-
-		Ok(report)
 	}
 
-	/// Dry run: list the HAMT nodes in each room's mtxdb shadow store that none
-	/// of the room's shadow roots reach.
+	/// Publishes nodes alone. Does nothing when there are none.
+	pub fn publish_nodes(&self, room_id: &[u8], nodes: &[PendingNode]) -> Result<()> {
+		if nodes.is_empty() {
+			return Ok(());
+		}
+		self.publish_roots(room_id, nodes, &[], None)
+	}
+
+	/// Dry run: list the HAMT nodes in each room's mtxdb store that none of the
+	/// room's roots reach.
 	///
 	/// Never deletes and never writes. Reachability is rezzy's
-	/// `walk_reachable_node_hashes`, driven through the shadow store alone (no
-	/// RocksDB reads, no node cache), so a node the shadow lacks makes the room
+	/// `walk_reachable_node_hashes`, driven through mtxdb alone (no node
+	/// cache), so a node mtxdb lacks makes the room
 	/// incomplete and it is skipped rather than reported as garbage. A room
 	/// whose roots collection changed during the scan is skipped too, as a live
 	/// sweep's version pin would abort on it.
 	#[must_use]
-	pub fn shadow_sweep_dry_run(
-		&self,
-		rooms: &[ShadowRoomInput],
-		bad_room_ids: usize,
-	) -> ShadowSweepReport {
-		let mut report = ShadowSweepReport::default();
+	pub fn orphan_scan_dry_run(&self, rooms: &[RoomInput], bad_room_ids: usize) -> OrphanReport {
+		let mut report = OrphanReport::default();
 		for _ in 0..bad_room_ids {
 			report.skipped.count(SkipReason::BadRoomId);
 		}
 
 		for room in rooms {
-			match self.scan_shadow_room(room) {
+			match self.scan_room(room) {
 				| Ok(RoomScan::Skipped(reason)) => report.skipped.count(reason),
 				| Ok(RoomScan::Scanned { universe, reachable }) => {
 					let mut orphans: Vec<NodePrefix> = universe
@@ -785,13 +374,13 @@ impl Store {
 					});
 				},
 				| Err(error) => {
-					warn!(?error, "shadow sweep could not read a room's shadow store");
+					warn!(?error, "orphan scan could not read a room's HAMT store");
 					report.skipped.count(SkipReason::Io);
 				},
 			}
 		}
 
-		let candidates: HashSet<super::shadow_sweep::Candidate> = report
+		let candidates: HashSet<super::orphan_scan::Candidate> = report
 			.rooms
 			.iter()
 			.flat_map(|room| {
@@ -801,28 +390,29 @@ impl Store {
 			})
 			.collect();
 		let mut previous = self
-			.shadow_previous_candidates
+			.previous_candidates
 			.lock()
 			.unwrap_or_else(std::sync::PoisonError::into_inner);
 		report.persisted_two_passes =
-			super::shadow_sweep::persisted_candidates(&candidates, &previous);
+			super::orphan_scan::persisted_candidates(&candidates, &previous);
 		*previous = candidates;
 
 		report
 	}
 
-	/// Walk one room's shadow roots through the shadow store alone and list its
+	/// Walk one room's roots through mtxdb alone and list its
 	/// nodes and the ones its roots reach. Skips the room, with a reason, when
 	/// the answer could not be trusted.
-	fn scan_shadow_room(&self, room: &ShadowRoomInput) -> Result<RoomScan> {
-		let shadow_err = |error: conduwuit_mtxdb::StorageError| err!(Database(error!("{error}")));
+	fn scan_room(&self, room: &RoomInput) -> Result<RoomScan> {
+		let storage_err =
+			|error: conduwuit_mtxdb::StorageError| err!(Database(error!("{error}")));
 
 		// The version is read before the roots, so a publish after this point
 		// is visible as a change when it is read again below.
-		let snapshot = self.mtxdb.room_roots(&room.room_id).map_err(shadow_err)?;
+		let snapshot = self.mtxdb.room_roots(&room.room_id).map_err(storage_err)?;
 		let roots_version = snapshot.version;
 		if snapshot.roots.is_empty() {
-			return Ok(RoomScan::Skipped(SkipReason::NoShadowRoots));
+			return Ok(RoomScan::Skipped(SkipReason::NoRoots));
 		}
 
 		let mut handles = Vec::with_capacity(snapshot.roots.len());
@@ -837,7 +427,7 @@ impl Store {
 
 		let mut resolver =
 			|hash: &StructuralHash| -> std::result::Result<Arc<HamtNode<u64, u64>>, Missing> {
-				match self.get_shadow_node_verified(&room.room_id, &room.structural_key, hash) {
+				match self.read_node_verified(&room.room_id, &room.structural_key, hash) {
 					| Ok(Some(node)) => Ok(node),
 					| Ok(None) | Err(_) => Err(Missing),
 				}
@@ -846,7 +436,7 @@ impl Store {
 		let mut seen: std::collections::BTreeSet<StructuralHash> =
 			std::collections::BTreeSet::new();
 		for handle in &handles {
-			let Ok(Some(root_node)) = self.get_shadow_node_verified(
+			let Ok(Some(root_node)) = self.read_node_verified(
 				&room.room_id,
 				&room.structural_key,
 				&handle.structural_hash,
@@ -867,58 +457,19 @@ impl Store {
 		let universe = self
 			.mtxdb
 			.room_node_ids(&room.room_id)
-			.map_err(shadow_err)?;
+			.map_err(storage_err)?;
 		let reachable = seen.iter().map(prefix_of).collect();
 
 		if self
 			.mtxdb
 			.roots_version(&room.room_id)
-			.map_err(shadow_err)?
+			.map_err(storage_err)?
 			!= roots_version
 		{
 			return Ok(RoomScan::Skipped(SkipReason::RootsChanged));
 		}
 
 		Ok(RoomScan::Scanned { universe, reachable })
-	}
-
-	/// Returns the recorded persistence time (unix milliseconds) of a node, if
-	/// any.
-	///
-	/// `Ok(None)` means the node predates the mtime column (no recorded mtime
-	/// and no database error). A *missing* key and a genuine database read
-	/// failure are kept distinct so a live sweep fails closed on metadata read
-	/// failures instead of treating them as "no mtime" and deleting a
-	/// recently-persisted node it could not verify.
-	fn node_mtime(&self, hash: &StructuralHash) -> Result<Option<u64>> {
-		let bytes = match self.node_mtimes.get_blocking(hash) {
-			| Ok(bytes) => bytes,
-			| Err(e) if e.is_not_found() => return Ok(None),
-			| Err(e) => return Err(e),
-		};
-		if bytes.is_empty() {
-			return Ok(None);
-		}
-		let arr = <[u8; 8]>::try_from(&*bytes)
-			.map_err(|_| err!(Database(error!("Malformed mtime for state HAMT node."))))?;
-		Ok(Some(u64::from_be_bytes(arr)))
-	}
-
-	/// Provides a synchronous resolver closure for `isolate_delta` and the
-	/// reachability walks.
-	///
-	/// # Important Architecture Note
-	/// `isolate_delta` is synchronous and `#![no_std]` in `rezzy`. However,
-	/// it triggers lazy node resolutions which require hitting the database.
-	/// Because this closure runs in a sync context but must perform blocking
-	/// I/O, we use `tokio::task::block_in_place` if running under a
-	/// multithreaded runtime, or block the thread directly (via the blocking
-	/// RocksDB API) if we're not executing within Tokio's worker pool (e.g.
-	/// tests or synchronous spawns).
-	pub fn get_blocking_resolver(
-		&self,
-	) -> impl FnMut(&StructuralHash) -> Result<Arc<HamtNode<u64, u64>>, conduwuit::Error> + '_ {
-		move |hash: &StructuralHash| self.get_node_blocking(hash)
 	}
 
 	/// Derives the deterministic `RootHandle` (structural hash + the
@@ -935,10 +486,10 @@ impl Store {
 	}
 }
 
-/// A node the shadow store could not supply during a walk.
+/// A node mtxdb could not supply during a walk.
 struct Missing;
 
-/// Outcome of scanning one room's shadow store.
+/// Outcome of scanning one room's HAMT store.
 enum RoomScan {
 	Skipped(SkipReason),
 	Scanned {
@@ -952,13 +503,6 @@ fn prefix_of(hash: &StructuralHash) -> NodePrefix {
 	let mut prefix = [0_u8; 16];
 	prefix.copy_from_slice(&hash[..16]);
 	prefix
-}
-
-/// Current unix time in milliseconds.
-fn unix_millis() -> u64 {
-	SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]

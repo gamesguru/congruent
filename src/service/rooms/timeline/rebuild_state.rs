@@ -130,7 +130,7 @@ impl super::Service {
 		let state_lock = self.services.state.mutex.lock(room_id).await;
 		self.services
 			.state
-			.set_room_state_hamt(room_id, &current_root, &state_lock);
+			.set_room_state_hamt(room_id, &current_root, &state_lock)?;
 		self.services.state_cache.update_joined_count(room_id).await;
 
 		eprintln!("[rebuild_state] Phase 6 done: state applied");
@@ -316,7 +316,7 @@ impl super::Service {
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(room_id.as_bytes(), root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node)?;
 
 		let encoded = lattice.to_bytes();
 		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);
@@ -995,7 +995,10 @@ impl super::Service {
 		for root in &extremity_roots {
 			// Abort rather than merge a partial union: dropping an extremity's
 			// state would commit incomplete room state.
-			let full_state = self.services.state_accessor.load_full_state_hamt(root)?;
+			let full_state = self
+				.services
+				.state_accessor
+				.load_full_state_hamt(room_id, root)?;
 			for (shortstatekey, shorteventid) in full_state {
 				all_entries.insert(shortstatekey, shorteventid);
 			}
@@ -1047,7 +1050,7 @@ impl super::Service {
 			let map: HashMap<ShortStateKey, OwnedEventId> = self
 				.services
 				.state_accessor
-				.state_full_ids_hamt(root)
+				.state_full_ids_hamt(room_id, root)
 				.try_collect()
 				.await?;
 			fork_maps.push(map);

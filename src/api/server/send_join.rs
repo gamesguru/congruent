@@ -130,7 +130,7 @@ async fn create_join_event(
 	let short_event_ids: Vec<_> = services
 		.rooms
 		.state_accessor
-		.state_full_shortids_hamt(root_handle.clone())
+		.state_full_shortids_hamt(room_id, root_handle.clone())
 		.map_ok(at!(1))
 		.try_collect()
 		.await?;

@@ -321,6 +321,7 @@ fn get_space_child_events<'a>(
 			self.services
 				.state_accessor
 				.state_keys_with_ids_hamt::<OwnedEventId>(
+					room_id,
 					current_root_handle,
 					&StateEventType::SpaceChild,
 				)

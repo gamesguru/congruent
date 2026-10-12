@@ -210,9 +210,7 @@ impl Service {
 		))
 		.await?;
 
-		self.set_room_state_hamt(room_id, new_root_handle, state_lock);
-
-		Ok(())
+		self.set_room_state_hamt(room_id, new_root_handle, state_lock)
 	}
 
 	/// Computes the HAMT delta between `from_root` (default: empty state) and
@@ -235,11 +233,8 @@ impl Service {
 			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
 		let store = &self.services.state_hamt.store;
 		let old_node = match from_root {
-			| Some(root) => store.get_node_verifying(
-				room_id.as_bytes(),
-				&structural_key,
-				&root.structural_hash,
-			)?,
+			| Some(root) =>
+				store.get_node(room_id.as_bytes(), &structural_key, &root.structural_hash)?,
 			| None => Arc::new(rezzy::hamt::HamtNode {
 				datamap: 0,
 				nodemap: 0,
@@ -259,14 +254,10 @@ impl Service {
 			self.services
 				.state_hamt
 				.store
-				.put_node(room_id.as_bytes(), empty_node.clone());
+				.put_node(room_id.as_bytes(), empty_node.clone())?;
 			empty_node
 		} else {
-			store.get_node_verifying(
-				room_id.as_bytes(),
-				&structural_key,
-				&to_root.structural_hash,
-			)?
+			store.get_node(room_id.as_bytes(), &structural_key, &to_root.structural_hash)?
 		};
 
 		let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
@@ -394,7 +385,7 @@ impl Service {
 		state_lock: &RoomMutexGuard,
 		state_root_handle: Option<&rezzy::hamt::RootHandle>,
 		prev_root_handle: Option<&rezzy::hamt::RootHandle>,
-		pre_persisted_nodes: &[rooms::state_hamt::store::ShadowNode],
+		pre_persisted_nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<rezzy::hamt::RootHandle> {
 		let shorteventid = self
 			.services
@@ -419,10 +410,22 @@ impl Service {
 			(root, Vec::new())
 		};
 
-		let mut batch = conduwuit_database::Batch::new();
 		deferred_nodes.extend_from_slice(pre_persisted_nodes);
 
 		let serialized = root_handle_to_bytes(&root_handle);
+
+		// One mtxdb transaction for the new nodes and both roots, committed
+		// before the RocksDB index batch below, so a failure leaves at worst
+		// unreferenced nodes and never an index entry pointing at nothing.
+		self.services.state_hamt.store.publish(
+			room_id.as_bytes(),
+			new_pdu.event_id().as_bytes(),
+			&deferred_nodes,
+			&serialized,
+			is_state,
+		)?;
+
+		let mut batch = conduwuit_database::Batch::new();
 
 		// Atomically map the new PDU's shortevent ID to its RootHandle,
 		// and for state events, advance the room's current-state pointer.
@@ -440,15 +443,6 @@ impl Service {
 		}
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
-		// One mtxdb transaction for the new nodes and both roots, issued only
-		// after the durable batch has been applied.
-		self.services.state_hamt.store.shadow_publish(
-			room_id.as_bytes(),
-			new_pdu.event_id().as_bytes(),
-			&deferred_nodes,
-			&serialized,
-			is_state,
-		);
 
 		// Update the derived membership/participation caches for the state
 		// transition. `state_root_handle` is the *post*-event root, so the delta
@@ -483,7 +477,7 @@ impl Service {
 	) -> Result<(
 		rezzy::hamt::RootHandle,
 		Arc<rezzy::hamt::HamtNode<u64, u64>>,
-		Vec<rooms::state_hamt::store::ShadowNode>,
+		Vec<rooms::state_hamt::store::PendingNode>,
 	)> {
 		let Some(state_key) = new_pdu.state_key() else {
 			return Err(err!(Request(InvalidParam("append_to_state called on non-state event"))));
@@ -507,11 +501,8 @@ impl Service {
 					room_id,
 				);
 				let store = &self.services.state_hamt.store;
-				let old = store.get_node_verifying(
-					room_id.as_bytes(),
-					&structural_key,
-					&base.structural_hash,
-				)?;
+				let old =
+					store.get_node(room_id.as_bytes(), &structural_key, &base.structural_hash)?;
 				let mut resolver = store.get_room_resolver(room_id.as_bytes(), &structural_key);
 				let value = self
 					.services
@@ -543,12 +534,11 @@ impl Service {
 				}
 				let mut deferred_nodes = Vec::with_capacity(created.len());
 				for (hash, bytes) in created {
-					if let Some(node) = self
-						.services
-						.state_hamt
-						.store
-						.put_encoded_node_deferred(hash, &bytes)?
-					{
+					if let Some(node) = self.services.state_hamt.store.put_encoded_node_deferred(
+						room_id.as_bytes(),
+						hash,
+						&bytes,
+					)? {
 						deferred_nodes.push(node);
 					}
 				}
@@ -562,19 +552,20 @@ impl Service {
 			}
 		}
 
-		let mut current: HashMap<ShortStateKey, OwnedEventId> =
-			if let Some(root_handle) = state_root_handle {
-				self.load_state_map_from_root_handle(root_handle, new_shortstatekey)
-					.await?
-			} else {
-				match self.get_room_state_hamt(room_id).await {
-					| Ok(root_handle) =>
-						self.load_state_map_from_root_handle(&root_handle, new_shortstatekey)
-							.await?,
-					| Err(e) if e.is_not_found() => HashMap::new(),
-					| Err(e) => return Err(e),
-				}
-			};
+		let mut current: HashMap<ShortStateKey, OwnedEventId> = if let Some(root_handle) =
+			state_root_handle
+		{
+			self.load_state_map_from_root_handle(room_id, root_handle, new_shortstatekey)
+				.await?
+		} else {
+			match self.get_room_state_hamt(room_id).await {
+				| Ok(root_handle) =>
+					self.load_state_map_from_root_handle(room_id, &root_handle, new_shortstatekey)
+						.await?,
+				| Err(e) if e.is_not_found() => HashMap::new(),
+				| Err(e) => return Err(e),
+			}
+		};
 
 		current.insert(new_shortstatekey, new_pdu.event_id().to_owned());
 
@@ -618,7 +609,7 @@ impl Service {
 			.services
 			.state_hamt
 			.store
-			.persist_node_recursive_deferred(root_node.clone());
+			.persist_node_recursive_deferred(room_id.as_bytes(), root_node.clone());
 
 		Ok((root_handle, root_node, deferred_nodes))
 	}
@@ -640,13 +631,9 @@ impl Service {
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
 		lattice: &rezzy::incremental::LtHash,
-	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::ShadowNode>)> {
+	) -> Result<(rezzy::hamt::RootHandle, Vec<rooms::state_hamt::store::PendingNode>)> {
 		let store = &self.services.state_hamt.store;
-		let old = store.get_node_verifying(
-			room_id.as_bytes(),
-			structural_key,
-			&prev.structural_hash,
-		)?;
+		let old = store.get_node(room_id.as_bytes(), structural_key, &prev.structural_hash)?;
 		let mut resolver = store.get_room_resolver(room_id.as_bytes(), structural_key);
 
 		// Displaced values are unused: callers pass a lattice already computed
@@ -658,12 +645,11 @@ impl Service {
 
 		let mut deferred_nodes = Vec::with_capacity(created.len());
 		for (hash, bytes) in created {
-			if let Some(node) = self
-				.services
-				.state_hamt
-				.store
-				.put_encoded_node_deferred(hash, &bytes)?
-			{
+			if let Some(node) = self.services.state_hamt.store.put_encoded_node_deferred(
+				room_id.as_bytes(),
+				hash,
+				&bytes,
+			)? {
 				deferred_nodes.push(node);
 			}
 		}
@@ -722,18 +708,19 @@ impl Service {
 
 	async fn load_state_map_from_root_handle(
 		&self,
+		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,
 		skip_shortstatekey: ShortStateKey,
 	) -> Result<HashMap<ShortStateKey, OwnedEventId>> {
-		let node = self
-			.services
-			.state_hamt
-			.store
-			.get_node(&root_handle.structural_hash)?;
+		let structural_key =
+			rooms::state_hamt::room_structural_key(&self.services.globals.server_secret, room_id);
+		let store = &self.services.state_hamt.store;
+		let node =
+			store.get_node(room_id.as_bytes(), &structural_key, &root_handle.structural_hash)?;
 
 		let mut short_events = Vec::new();
 		node.visit_entries(
-			&mut self.services.state_hamt.store.get_blocking_resolver(),
+			&mut store.get_room_resolver(room_id.as_bytes(), &structural_key),
 			&mut |k, v| {
 				short_events.push((*k, *v));
 				Ok::<(), conduwuit::Error>(())
@@ -797,28 +784,29 @@ impl Service {
 		root_handle: &rezzy::hamt::RootHandle,
 		// Take mutex guard to make sure users get the room state mutex
 		_mutex_lock: &RoomMutexGuard,
-	) {
-		self.set_room_state_hamt_with_nodes(room_id, root_handle, &[]);
+	) -> Result<()> {
+		self.set_room_state_hamt_with_nodes(room_id, root_handle, &[])
 	}
 
-	/// Set the current room root and atomically shadow-publish any nodes created
-	/// while building it.
+	/// Set the current room root, publishing any nodes created while building it
+	/// in the same mtxdb transaction.
 	pub fn set_room_state_hamt_with_nodes(
 		&self,
 		room_id: &RoomId,
 		root_handle: &rezzy::hamt::RootHandle,
-		nodes: &[rooms::state_hamt::store::ShadowNode],
-	) {
+		nodes: &[rooms::state_hamt::store::PendingNode],
+	) -> Result<()> {
 		let data = root_handle_to_bytes(root_handle);
-		self.db
-			.roomid_roothandle
-			.insert(room_id.as_str().as_bytes(), &data);
-		self.services.state_hamt.store.shadow_publish_roots(
+		self.services.state_hamt.store.publish_roots(
 			room_id.as_bytes(),
 			nodes,
 			&[],
 			Some(&data),
-		);
+		)?;
+		self.db
+			.roomid_roothandle
+			.insert(room_id.as_str().as_bytes(), &data);
+		Ok(())
 	}
 
 	/// Returns the room's current HAMT RootHandle.
@@ -893,14 +881,14 @@ impl Service {
 			.await
 	}
 
-	/// Record an event's root and atomically shadow-publish the nodes created
-	/// while building it.
+	/// Record an event's root, publishing the nodes created while building it in
+	/// the same mtxdb transaction.
 	pub async fn set_event_roothandle_with_nodes(
 		&self,
 		room_id: &RoomId,
 		event_id: &EventId,
 		root_handle: &rezzy::hamt::RootHandle,
-		nodes: &[rooms::state_hamt::store::ShadowNode],
+		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let shorteventid = self
 			.services
@@ -908,26 +896,26 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
-		self.db
-			.shorteventid_roothandle
-			.insert(&shorteventid.to_be_bytes(), &data);
-		self.services.state_hamt.store.shadow_publish_roots(
+		self.services.state_hamt.store.publish_roots(
 			room_id.as_bytes(),
 			nodes,
 			&[(event_id.as_bytes(), data.as_slice())],
 			None,
-		);
+		)?;
+		self.db
+			.shorteventid_roothandle
+			.insert(&shorteventid.to_be_bytes(), &data);
 		Ok(())
 	}
 
 	/// Atomically publish one event root, the current room root, and their
-	/// deferred nodes to the shadow store.
+	/// deferred nodes to mtxdb.
 	pub async fn set_event_and_room_roothandles_with_nodes(
 		&self,
 		room_id: &RoomId,
 		event_id: &EventId,
 		root_handle: &rezzy::hamt::RootHandle,
-		nodes: &[rooms::state_hamt::store::ShadowNode],
+		nodes: &[rooms::state_hamt::store::PendingNode],
 	) -> Result<()> {
 		let shorteventid = self
 			.services
@@ -935,6 +923,12 @@ impl Service {
 			.get_or_create_shorteventid(event_id)
 			.await;
 		let data = root_handle_to_bytes(root_handle);
+		self.services.state_hamt.store.publish_roots(
+			room_id.as_bytes(),
+			nodes,
+			&[(event_id.as_bytes(), data.as_slice())],
+			Some(&data),
+		)?;
 		let mut batch = conduwuit_database::Batch::new();
 		self.db
 			.shorteventid_roothandle
@@ -943,22 +937,14 @@ impl Service {
 			.roomid_roothandle
 			.batch_put(&mut batch, room_id.as_bytes(), &data);
 		self.db.shorteventid_roothandle.apply_batch(batch);
-		self.services.state_hamt.store.shadow_publish_roots(
-			room_id.as_bytes(),
-			nodes,
-			&[(event_id.as_bytes(), data.as_slice())],
-			Some(&data),
-		);
 		Ok(())
 	}
 
 	/// Returns every recorded root handle in the database.
 	///
-	/// This is the *complete* live-root set [`crate::rooms::state_hamt::Store::sweep`]
-	/// requires: both the current per-room `roomid_roothandle` pointers and every
-	/// per-event `shorteventid_roothandle` snapshot. Sweep treats anything outside
-	/// this set as unreachable, so a partial enumeration here would have it delete
-	/// live state.
+	/// This is the complete set of roots recorded in the RocksDB index: both the
+	/// current per-room `roomid_roothandle` pointers and every per-event
+	/// `shorteventid_roothandle` snapshot.
 	///
 	/// Reads both maps through `raw_stream` rather than any prefix scan, because
 	/// the two maps are keyed differently (room ID bytes and a big-endian
@@ -1000,38 +986,15 @@ impl Service {
 		Ok(rooms)
 	}
 
-	/// Reclaims HAMT nodes no recorded root can reach.
+	/// Dry run of an orphan sweep over mtxdb: lists, per room, the HAMT nodes no
+	/// root of that room reaches. Reads and reports only; nothing is deleted
+	/// because standalone node writes can still land before their roots.
 	///
-	/// `live_roots` is gathered by [`Self::live_root_handles`] rather than taken
-	/// from the caller, because supplying an incomplete set silently deletes live
-	/// state -- see [`crate::rooms::state_hamt::Store::sweep`].
-	///
-	/// `grace` bounds how recently a node may have been written and still be
-	/// spared, so a node persisted moments before being linked into a root is not
-	/// mistaken for an orphan.
-	pub async fn sweep_hamt_nodes(
+	/// Rooms come from `roomid_roothandle`, whose key is the room id mtxdb is
+	/// also keyed by.
+	pub async fn scan_hamt_orphans(
 		&self,
-		grace: std::time::Duration,
-		dry_run: bool,
-	) -> Result<rooms::state_hamt::store::SweepReport> {
-		let live_roots = self.live_root_handles().await?;
-		let roots: Vec<&rezzy::hamt::RootHandle> = live_roots.iter().collect();
-
-		self.services
-			.state_hamt
-			.store
-			.sweep(&roots, grace, dry_run)
-			.await
-	}
-
-	/// Dry run of an orphan sweep over the mtxdb shadow store: lists, per room,
-	/// the shadow HAMT nodes no shadow root reaches. Reads and reports only.
-	///
-	/// Rooms come from `roomid_roothandle`, whose key is the room id the shadow
-	/// store is also keyed by.
-	pub async fn sweep_hamt_nodes_shadow_dry_run(
-		&self,
-	) -> Result<rooms::state_hamt::shadow_sweep::ShadowSweepReport> {
+	) -> Result<rooms::state_hamt::orphan_scan::OrphanReport> {
 		let mut rooms = Vec::new();
 		let mut bad_room_ids = 0_usize;
 		let mut stream = self.db.roomid_roothandle.raw_stream();
@@ -1044,7 +1007,7 @@ impl Service {
 				bad_room_ids = bad_room_ids.saturating_add(1);
 				continue;
 			};
-			rooms.push(rooms::state_hamt::shadow_sweep::ShadowRoomInput {
+			rooms.push(rooms::state_hamt::orphan_scan::RoomInput {
 				room_id: key.to_vec(),
 				structural_key: rooms::state_hamt::room_structural_key(
 					&self.services.globals.server_secret,
@@ -1057,7 +1020,7 @@ impl Service {
 			.services
 			.state_hamt
 			.store
-			.shadow_sweep_dry_run(&rooms, bad_room_ids))
+			.orphan_scan_dry_run(&rooms, bad_room_ids))
 	}
 
 	pub fn get_forward_extremities<'a>(
@@ -1235,7 +1198,7 @@ impl Service {
 		let (state_keys, event_ids): (Vec<_>, Vec<_>) = self
 			.services
 			.state_accessor
-			.state_full_shortids_hamt(root_handle)
+			.state_full_shortids_hamt(room_id, root_handle)
 			.ready_filter_map(Result::ok)
 			.ready_filter_map(|(shortstatekey, shorteventid)| {
 				sauthevents

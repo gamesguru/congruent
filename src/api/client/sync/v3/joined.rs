@@ -633,6 +633,7 @@ async fn build_state_events(
 		| _ =>
 			build_state_initial(
 				services,
+				room_id,
 				syncing_user,
 				&timeline_start_root_handle,
 				lazily_loaded_members.as_ref(),
@@ -664,6 +665,7 @@ async fn build_state_after(
 
 	build_state_initial(
 		services,
+		room_id,
 		syncing_user,
 		&current_root_handle,
 		lazily_loaded_members.as_ref(),
@@ -1026,7 +1028,7 @@ async fn build_heroes(
 			services
 				.rooms
 				.state_accessor
-				.state_full_shortids_hamt(current_root_handle)
+				.state_full_shortids_hamt(room_id, current_root_handle)
 				.ignore_err()
 				.ready_filter_map(|(key, _)| Some(key)),
 		)

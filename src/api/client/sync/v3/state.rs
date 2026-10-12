@@ -28,6 +28,7 @@ use crate::client::TimelinePdus;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn build_state_initial(
 	services: &Services,
+	room_id: &RoomId,
 	sender_user: &UserId,
 	timeline_start_root_handle: &rezzy::hamt::RootHandle,
 	lazily_loaded_members: Option<&MemberSet>,
@@ -36,7 +37,7 @@ pub(super) async fn build_state_initial(
 	let (shortstatekeys, event_ids): (Vec<_>, Vec<_>) = services
 		.rooms
 		.state_accessor
-		.state_full_ids_hamt(timeline_start_root_handle)
+		.state_full_ids_hamt(room_id, timeline_start_root_handle)
 		.try_collect::<Vec<_>>()
 		.await?
 		.into_iter()
@@ -242,7 +243,7 @@ pub(super) async fn build_state_incremental<'a>(
 			services
 				.rooms
 				.state_accessor
-				.state_added_hamt((last_sync_end_root_handle, timeline_end_root_handle))?
+				.state_added_hamt(room_id, (last_sync_end_root_handle, timeline_end_root_handle))?
 				.stream()
 				.ready_filter_map(|(_, shorteventid)| {
 					if state_events_in_timeline.contains(&shorteventid) {

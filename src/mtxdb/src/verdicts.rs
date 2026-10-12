@@ -11,7 +11,7 @@ use mtxdb::ShardType;
 use crate::{
 	StorageError,
 	keys::{event_record_id, event_verdict_collection_id},
-	store::MtxdbStore,
+	store::{CollectionId, MtxdbStore, NodeId},
 };
 
 /// Version byte of the verdict value encoding.
@@ -55,6 +55,43 @@ impl VerdictAdapter {
 				let (stored_event, verdict) = Self::decode(&bytes)?;
 				Ok((stored_event == event_id).then_some(verdict))
 			})
+	}
+
+	/// Batch-read verdicts for multiple event IDs. Groups by collection to
+	/// issue one `get_many` per bucket instead of N single-key round trips.
+	pub fn get_many(&self, event_ids: &[&[u8]]) -> Result<Vec<Option<Verdict>>, StorageError> {
+		use std::collections::HashMap;
+
+		let mut by_collection: HashMap<CollectionId, Vec<(usize, NodeId, Vec<u8>)>> =
+			HashMap::new();
+
+		for (idx, event_id) in event_ids.iter().enumerate() {
+			let node = event_record_id(event_id);
+			let collection = event_verdict_collection_id(&node);
+			by_collection
+				.entry(collection)
+				.or_default()
+				.push((idx, node, event_id.to_vec()));
+		}
+
+		let mut results = vec![None; event_ids.len()];
+
+		for (collection, entries) in by_collection {
+			let nodes: Vec<NodeId> = entries.iter().map(|(_, node, _)| *node).collect();
+			let values = self
+				.store
+				.get_many(ShardType::EventDag, &collection, &nodes)?;
+
+			for ((idx, _node, event_id), value) in entries.into_iter().zip(values) {
+				let verdict = value.and_then(|bytes| {
+					let (stored_event, verdict) = Self::decode(&bytes).ok()?;
+					(stored_event == event_id.as_slice()).then_some(verdict)
+				});
+				results[idx] = verdict;
+			}
+		}
+
+		Ok(results)
 	}
 
 	/// Read-modify-write the event's verdict atomically. The record is removed

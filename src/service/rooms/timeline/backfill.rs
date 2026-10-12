@@ -1231,7 +1231,7 @@ async fn associate_resolved_state(
 		state_at_event.insert(shortstatekey, pdu.event_id().to_owned());
 	}
 
-	let (root_handle, shadow_nodes) = self
+	let (root_handle, pending_nodes) = self
 		.services
 		.event_handler
 		.state_map_to_root_handle(room_id, &state_at_event)
@@ -1239,7 +1239,7 @@ async fn associate_resolved_state(
 
 	self.services
 		.state
-		.set_event_roothandle_with_nodes(room_id, pdu.event_id(), &root_handle, &shadow_nodes)
+		.set_event_roothandle_with_nodes(room_id, pdu.event_id(), &root_handle, &pending_nodes)
 		.await?;
 	Ok(())
 }

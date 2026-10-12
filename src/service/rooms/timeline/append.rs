@@ -32,7 +32,7 @@ pub struct AppendPduContext<'a> {
 	pub room_id: &'a slipstream::RoomId,
 	pub state_root_handle: Option<rezzy::hamt::RootHandle>,
 	/// Nodes built for `state_root_handle`, held until the root is published.
-	pub shadow_nodes: Vec<crate::rooms::state_hamt::store::ShadowNode>,
+	pub pending_nodes: Vec<crate::rooms::state_hamt::store::PendingNode>,
 	pub prev_state_root_handle: Option<rezzy::hamt::RootHandle>,
 	pub advance_current_state: bool,
 	/// Membership of the event's state key in this room, sampled *before* a
@@ -72,7 +72,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
-		shadow_nodes,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -97,7 +97,7 @@ where
 					room_id,
 					pdu.event_id(),
 					root_handle,
-					&shadow_nodes,
+					&pending_nodes,
 				)
 				.await?;
 		}
@@ -118,7 +118,7 @@ where
 			state_lock,
 			room_id,
 			state_root_handle,
-			shadow_nodes,
+			pending_nodes,
 			prev_state_root_handle,
 			advance_current_state,
 			was_joined_before_state_install,
@@ -185,7 +185,7 @@ where
 		state_lock,
 		room_id,
 		state_root_handle,
-		shadow_nodes,
+		pending_nodes,
 		prev_state_root_handle,
 		advance_current_state,
 		was_joined_before_state_install,
@@ -344,7 +344,7 @@ where
 		state_lock,
 		state_root_handle.as_ref(),
 		prev_state_root_handle.as_ref(),
-		&shadow_nodes,
+		&pending_nodes,
 	))
 	.await?;
 	// Recovered outlier timelines carry no state event of their own, so the batch
@@ -356,7 +356,7 @@ where
 	{
 		self.services
 			.state
-			.set_room_state_hamt(room_id, root_handle, state_lock);
+			.set_room_state_hamt(room_id, root_handle, state_lock)?;
 	}
 	drop(cork);
 	let receipt_content = BTreeMap::from_iter([(
