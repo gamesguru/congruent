@@ -10,7 +10,7 @@ use super::{PubKeyMap, PubKeys, extract_key};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Whether event signature verification enforces a key's `valid_until_ts`.
-pub enum ValidUntilPolicy {
+pub(super) enum ValidUntilPolicy {
 	/// Ignore `valid_until_ts`, as required by room versions 1 through 4.
 	Ignore,
 	/// Require the key's validity window to cover the event timestamp.
@@ -113,7 +113,7 @@ where
 /// expired_ts. Keys in `old_verify_keys` whose `expired_ts` <=
 /// `origin_server_ts` are excluded.
 #[implement(super::Service)]
-pub async fn get_pubkeys_for_event<'a, I>(
+pub(super) async fn get_pubkeys_for_event<'a, I>(
 	&self,
 	origin: &ServerName,
 	key_ids: I,
