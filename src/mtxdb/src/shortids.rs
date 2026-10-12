@@ -105,6 +105,28 @@ pub struct ShortIdAdapter {
 }
 
 impl ShortIdAdapter {
+	/// Whether any short-id mapping or allocation counter exists. Used during
+	/// startup to reject an interrupted import even if its counter is missing.
+	pub fn has_any_records(store: &MtxdbStore) -> Result<bool, StorageError> {
+		if store.has_records(ShardType::ServerInfo, &counter_collection())? {
+			return Ok(true);
+		}
+
+		for map in
+			[Map::EventForward, Map::EventReverse, Map::StateKeyForward, Map::StateKeyReverse]
+		{
+			for bucket in 0..EVENT_LOCATOR_BUCKETS {
+				let mut node = [0_u8; 16];
+				node[..4].copy_from_slice(&bucket.to_le_bytes());
+				if store.has_records(ShardType::ServerInfo, &map.collection(&node))? {
+					return Ok(true);
+				}
+			}
+		}
+
+		Ok(false)
+	}
+
 	/// Open the adapter, resuming the persisted counter.
 	pub fn new(store: Arc<MtxdbStore>) -> Result<Self, StorageError> {
 		let counter =
@@ -335,6 +357,25 @@ mod tests {
 		// Events and state keys draw from one counter, so no id is reused.
 		let event = adapter.allocate_events(&[b"$a:example.com"]).unwrap()[0];
 		assert!(event > member);
+		fs::remove_dir_all(&path).unwrap();
+	}
+
+	#[test]
+	fn has_any_records_detects_maps_even_without_counter() {
+		let path = test_path("has-records");
+		let _ = fs::remove_dir_all(&path);
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		assert!(!ShortIdAdapter::has_any_records(&store).unwrap());
+
+		ShortIdAdapter::new(Arc::clone(&store))
+			.unwrap()
+			.allocate_state_key("m.room.name", "")
+			.unwrap();
+		let tx = store.begin_transaction();
+		tx.remove(ShardType::ServerInfo, counter_collection(), counter_node())
+			.unwrap();
+		tx.commit().unwrap();
+		assert!(ShortIdAdapter::has_any_records(&store).unwrap());
 		fs::remove_dir_all(&path).unwrap();
 	}
 }

@@ -8,6 +8,27 @@ use slipstream::{
 
 use super::{PubKeyMap, PubKeys, extract_key};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValidUntilPolicy {
+	Ignore,
+	Enforce,
+}
+
+fn valid_until_policy(version: &RoomVersionId) -> ValidUntilPolicy {
+	if matches!(
+		version,
+		RoomVersionId::V1 | RoomVersionId::V2 | RoomVersionId::V3 | RoomVersionId::V4
+	) {
+		ValidUntilPolicy::Ignore
+	} else {
+		ValidUntilPolicy::Enforce
+	}
+}
+
+fn missing_key_record_is_allowed(error: &conduwuit::Error) -> bool {
+	error.is_not_found()
+}
+
 #[implement(super::Service)]
 pub async fn get_event_keys(
 	&self,
@@ -38,10 +59,7 @@ pub async fn get_event_keys(
 
 	// Room versions 5 and later require the signing key's valid_until_ts to
 	// cover the event's origin_server_ts; versions 1-4 ignore valid_until_ts.
-	let enforce_valid_until = !matches!(
-		version,
-		RoomVersionId::V1 | RoomVersionId::V2 | RoomVersionId::V3 | RoomVersionId::V4
-	);
+	let valid_until_policy = valid_until_policy(version);
 
 	let mut keys = PubKeyMap::new();
 	for (server, key_ids) in &required {
@@ -50,7 +68,7 @@ pub async fn get_event_keys(
 				server,
 				key_ids.iter().map(Borrow::borrow),
 				origin_server_ts,
-				enforce_valid_until,
+				valid_until_policy,
 			)
 			.await;
 		keys.insert(server.to_owned(), pubkeys);
@@ -99,7 +117,7 @@ pub async fn get_pubkeys_for_event<'a, I>(
 	origin: &ServerName,
 	key_ids: I,
 	origin_server_ts: MilliSecondsSinceUnixEpoch,
-	enforce_valid_until: bool,
+	valid_until_policy: ValidUntilPolicy,
 ) -> PubKeys
 where
 	I: Iterator<Item = &'a ServerSigningKeyId> + Send,
@@ -119,7 +137,7 @@ where
 				);
 				continue;
 			}
-			if enforce_valid_until
+			if valid_until_policy == ValidUntilPolicy::Enforce
 				&& !self
 					.is_key_valid_for_event(origin, key_id, origin_server_ts)
 					.await
@@ -150,8 +168,13 @@ async fn is_key_valid_for_event(
 	key_id: &ServerSigningKeyId,
 	event_ts: MilliSecondsSinceUnixEpoch,
 ) -> bool {
-	let Ok(cached) = self.merged_signing_keys_for(origin).await else {
-		return true;
+	let cached = match self.merged_signing_keys_for(origin).await {
+		| Ok(cached) => cached,
+		| Err(error) if missing_key_record_is_allowed(&error) => return true,
+		| Err(error) => {
+			debug_error!(%origin, "Failed to read cached signing-key validity: {error}");
+			return false;
+		},
 	};
 	if cached.old_verify_keys.contains_key(key_id) || cached.valid_until_ts >= event_ts {
 		return true;
@@ -415,4 +438,28 @@ async fn get_active_verify_key_from_origin(
 	}
 
 	Err!(Request(NotFound("Failed to fetch active signing-key from origin")))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ValidUntilPolicy, missing_key_record_is_allowed, valid_until_policy};
+	use slipstream::RoomVersionId;
+
+	#[test]
+	fn missing_key_record_is_allowed_but_storage_errors_are_not() {
+		let missing = conduwuit::err!(Request(NotFound("No signing-key record")));
+		let storage = conduwuit::err!(Database("signing-key read failed"));
+		assert!(missing_key_record_is_allowed(&missing));
+		assert!(!missing_key_record_is_allowed(&storage));
+	}
+
+	#[test]
+	fn valid_until_policy_matches_room_version_rules() {
+		for version in
+			[RoomVersionId::V1, RoomVersionId::V2, RoomVersionId::V3, RoomVersionId::V4]
+		{
+			assert_eq!(valid_until_policy(&version), ValidUntilPolicy::Ignore);
+		}
+		assert_eq!(valid_until_policy(&RoomVersionId::V5), ValidUntilPolicy::Enforce);
+	}
 }
