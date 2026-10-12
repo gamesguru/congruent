@@ -1,4 +1,5 @@
 pub(super) mod dehydrated_device;
+mod token_expiry;
 
 #[cfg(feature = "ldap")]
 use std::collections::HashMap;
@@ -866,19 +867,26 @@ impl Service {
 	/// Marks an access token as expiring `ttl` milliseconds from now.
 	/// Tokens without an entry never expire.
 	pub fn set_token_expiry(&self, token: &str, ttl: u64) -> u64 {
-		let expires_at = utils::millis_since_unix_epoch().saturating_add(ttl);
+		let expires_at = token_expiry::expires_at(utils::millis_since_unix_epoch(), ttl);
 		self.db.token_expiresat.raw_put(token, expires_at);
 		ttl
 	}
 
 	/// Whether an access token has a lifetime which has elapsed.
 	pub async fn access_token_expired(&self, token: &str) -> bool {
+		token_expiry::has_expired(
+			self.token_expires_at(token).await,
+			utils::millis_since_unix_epoch(),
+		)
+	}
+
+	async fn token_expires_at(&self, token: &str) -> Option<u64> {
 		self.db
 			.token_expiresat
 			.get(token)
 			.await
 			.deserialized::<u64>()
-			.is_ok_and(|expires_at| expires_at <= utils::millis_since_unix_epoch())
+			.ok()
 	}
 
 	/// Issues a new refresh token for a device, replacing (and thereby
@@ -944,7 +952,7 @@ impl Service {
 		// Expiring access tokens of this device are superseded; tokens which
 		// never expire (issued to clients without refresh support) are kept.
 		for old in self.active_tokens(&user_id, &device_id).await {
-			if self.db.token_expiresat.get(&old).await.is_ok() {
+			if token_expiry::superseded_on_refresh(self.token_expires_at(&old).await) {
 				self.remove_access_token(&user_id, &device_id, &old).await;
 			}
 		}

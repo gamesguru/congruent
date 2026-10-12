@@ -442,6 +442,12 @@ async fn parse_x_matrix(request: &Request) -> Result<XMatrix> {
 	XMatrix::decode(value).ok_or_else(|| err!(Request(Forbidden("Invalid X-Matrix signatures"))))
 }
 
+/// A recognised user token is `Expired` once its refresh-token lifetime lapses,
+/// so the client is soft-logged-out and can refresh instead of re-logging in.
+fn classify_user_token(user: (OwnedUserId, OwnedDeviceId), expired: bool) -> Token {
+	if expired { Token::Expired } else { Token::User(user) }
+}
+
 async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 	let Some(token) = token else {
 		return Ok(Token::None);
@@ -454,11 +460,7 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 		.users
 		.find_from_token(token)
 		.and_then(async |user| {
-			if services.users.access_token_expired(token).await {
-				Ok(Token::Expired)
-			} else {
-				Ok(Token::User(user))
-			}
+			Ok(classify_user_token(user, services.users.access_token_expired(token).await))
 		});
 
 	let appservice_token = services
@@ -479,6 +481,24 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn user() -> (OwnedUserId, OwnedDeviceId) {
+		(
+			OwnedUserId::parse("@alice:local.com").unwrap(),
+			OwnedDeviceId::parse("DEVICE").unwrap(),
+		)
+	}
+
+	#[test]
+	fn a_live_user_token_authenticates() {
+		assert!(matches!(classify_user_token(user(), false), Token::User(_)));
+	}
+
+	#[test]
+	fn a_lapsed_user_token_is_expired_not_invalid() {
+		// Expired maps to a soft logout; Invalid would be a hard one.
+		assert!(matches!(classify_user_token(user(), true), Token::Expired));
+	}
 
 	#[test]
 	fn test_auth_server_checks_impl_missing_destination() {
