@@ -956,13 +956,6 @@ async fn build_sync_events_v5(
 	Ok((response, room_extras))
 }
 
-fn response_has_timeline_events(response: &sync_events::v5::Response) -> bool {
-	response
-		.rooms
-		.values()
-		.any(|room| !room.timeline.is_empty())
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn fetch_subscriptions(
 	services: &Services,
