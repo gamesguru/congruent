@@ -12,8 +12,10 @@ use std::{
 
 pub mod events;
 pub mod keys;
+pub mod server_keys;
 pub mod state;
 pub mod store;
+pub mod verdicts;
 
 /// Database shard type.
 pub use mtxdb::ShardType;

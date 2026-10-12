@@ -26,6 +26,7 @@ use crate::{Dep, rooms, rooms::short::ShortRoomId};
 #[derive(Clone)]
 pub(super) struct Data {
 	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
+	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
@@ -52,6 +53,7 @@ impl Data {
 		let db = &args.db;
 		Self {
 			mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
+			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
 			eventid_pduid: db["eventid_pduid"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
@@ -1463,6 +1465,18 @@ impl Data {
 
 		self.record_backward_extremities_into_batch(batch, pdu_id, pdu)
 			.await;
+	}
+
+	/// Record in mtxdb that `redacted_by` redacted `event_id`. mtxdb keeps the
+	/// original body; the redacted form is derived from it. RocksDB stays
+	/// authoritative for now, so a failure is logged and otherwise ignored.
+	pub(super) fn shadow_redaction(&self, event_id: &EventId, redacted_by: &EventId) {
+		let result = self.mtxdb_verdicts.update(event_id.as_bytes(), |verdict| {
+			verdict.redacted_by = Some(redacted_by.as_bytes().to_vec());
+		});
+		if let Err(error) = result {
+			conduwuit::warn!(%event_id, %redacted_by, ?error, "Failed shadow-writing redaction in mtxdb");
+		}
 	}
 
 	/// Removes a pdu and creates a new one with the same id.

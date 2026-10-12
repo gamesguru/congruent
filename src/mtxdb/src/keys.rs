@@ -121,6 +121,34 @@ pub fn event_locator_collection_id(node: &[u8; 16]) -> [u8; 16] {
 	derive_id(b"sys", format!("event-locator:{bucket}").as_bytes())
 }
 
+/// Derive the per-event verdict collection ID (rejection, soft-fail and
+/// redaction) holding `node`.
+///
+/// Bucketed like [`event_locator_collection_id`], for the same reason, and
+/// global across rooms because the verdict setters are called with an event id
+/// alone.
+#[must_use]
+pub fn event_verdict_collection_id(node: &[u8; 16]) -> [u8; 16] {
+	let bucket = u32::from_le_bytes([node[0], node[1], node[2], node[3]]) % EVENT_LOCATOR_BUCKETS;
+	derive_id(b"sys", format!("event-verdict:{bucket}").as_bytes())
+}
+
+/// Derive the collection ID holding every origin's signing-key records.
+#[must_use]
+pub fn server_keys_collection_id() -> [u8; 16] { derive_id(b"sys", b"server-keys") }
+
+/// Derive the record ID of one signing-key record of `origin`. `kind` keeps the
+/// origin's several records (historical, provisional, ...) apart.
+#[must_use]
+pub fn server_key_record_id(kind: &[u8], origin: &[u8]) -> [u8; 16] {
+	let mut identifier =
+		Vec::with_capacity(kind.len().saturating_add(origin.len()).saturating_add(1));
+	identifier.extend_from_slice(kind);
+	identifier.push(0);
+	identifier.extend_from_slice(origin);
+	derive_id(b"server-key", &identifier)
+}
+
 /// Encode a Matrix state tuple without delimiter ambiguity.
 pub fn encode_state_key_v1(event_type: &str, state_key: &str) -> Result<Vec<u8>, &'static str> {
 	let event_type_len = u32::try_from(event_type.len()).map_err(|_| "event type is too long")?;

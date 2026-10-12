@@ -65,6 +65,8 @@ struct Services {
 
 struct Data {
 	server_signingkeys: Arc<Map>,
+	mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
+	mtxdb_keys: conduwuit_mtxdb::server_keys::ServerKeysAdapter,
 }
 
 pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
@@ -91,6 +93,10 @@ impl crate::Service for Service {
 			},
 			db: Data {
 				server_signingkeys: args.db["server_signingkeys"].clone(),
+				mtxdb: args.mtxdb.clone(),
+				mtxdb_keys: conduwuit_mtxdb::server_keys::ServerKeysAdapter::new(
+					args.mtxdb.clone(),
+				),
 			},
 		}))
 	}
@@ -724,13 +730,63 @@ pub async fn add_signing_keys(
 	// explicitly forbids a notary from doing. The remedy in both cases is the
 	// same: decline to update the served cache entry and keep serving the last
 	// known-good self-signed payload rather than a mutated one.
-	if !rejected_collision && !old_keys_filtered {
+	let write_notary = !rejected_collision && !old_keys_filtered;
+	if write_notary {
 		self.db
 			.server_signingkeys
 			.raw_put(origin, Json(raw_new_keys));
 	}
 
+	// RocksDB stays authoritative for now, so a failed mirror is only logged.
+	if let Err(error) = self.shadow_key_records(
+		origin,
+		&historical_keys,
+		provisional_changed.then_some(&provisional),
+		corroborated_changed.then_some(&corroborated),
+		write_notary.then_some(raw_new_keys),
+	) {
+		conduwuit::warn!(%origin, ?error, "Failed shadow-writing signing keys in mtxdb");
+	}
+
 	Ok(new_keys)
+}
+
+/// Mirror one `add_signing_keys` outcome into mtxdb as a single transaction.
+#[implement(Service)]
+fn shadow_key_records(
+	&self,
+	origin: &ServerName,
+	historical: &ServerSigningKeys,
+	provisional: Option<&std::collections::BTreeSet<OwnedServerSigningKeyId>>,
+	corroborated: Option<&std::collections::BTreeSet<OwnedServerSigningKeyId>>,
+	notary: Option<&Raw<ServerSigningKeys>>,
+) -> std::result::Result<(), conduwuit_mtxdb::StorageError> {
+	use conduwuit_mtxdb::server_keys::KeyRecordKind;
+
+	let origin = origin.as_bytes();
+	let tx = self.db.mtxdb.begin_transaction();
+	let keys = &self.db.mtxdb_keys;
+	keys.put(&tx, KeyRecordKind::Historical, origin, &slipstream::codec::to_vec(historical))?;
+	if let Some(provisional) = provisional {
+		keys.put(
+			&tx,
+			KeyRecordKind::Provisional,
+			origin,
+			&slipstream::codec::to_vec(provisional),
+		)?;
+	}
+	if let Some(corroborated) = corroborated {
+		keys.put(
+			&tx,
+			KeyRecordKind::Corroborated,
+			origin,
+			&slipstream::codec::to_vec(corroborated),
+		)?;
+	}
+	if let Some(notary) = notary {
+		keys.put(&tx, KeyRecordKind::Notary, origin, &slipstream::codec::to_vec(notary))?;
+	}
+	tx.commit()
 }
 
 #[implement(Service)]

@@ -31,6 +31,7 @@ pub(super) struct Data {
 	eventid_softfailed: Arc<Map>,
 	msc2836_children: Arc<Map>,
 	msc2836_reported_children: Arc<Map>,
+	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
 	services: Services,
 }
 
@@ -57,6 +58,7 @@ impl Data {
 			eventid_softfailed: db["eventid_softfailed"].clone(),
 			msc2836_children: db["msc2836_children"].clone(),
 			msc2836_reported_children: db["msc2836_reported_children"].clone(),
+			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
 			services: Services {
 				timeline: args.depend::<rooms::timeline::Service>("rooms::timeline"),
 			},
@@ -139,8 +141,21 @@ impl Data {
 		self.referencedevents.qry(&key).await.is_ok()
 	}
 
+	/// Mirror a verdict change into mtxdb. RocksDB stays authoritative for now,
+	/// so a failure here is logged and otherwise ignored.
+	fn shadow_verdict(
+		&self,
+		event_id: &EventId,
+		change: impl FnMut(&mut conduwuit_mtxdb::verdicts::Verdict),
+	) {
+		if let Err(error) = self.mtxdb_verdicts.update(event_id.as_bytes(), change) {
+			conduwuit::warn!(%event_id, ?error, "Failed shadow-writing event verdict in mtxdb");
+		}
+	}
+
 	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
 		self.eventid_softfailed.put_raw(event_id, [code.to_u8()]);
+		self.shadow_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()));
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
@@ -155,6 +170,7 @@ impl Data {
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
 		self.eventid_softfailed.remove(event_id);
+		self.shadow_verdict(event_id, |v| v.soft_fail = None);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
@@ -169,6 +185,7 @@ impl Data {
 		}
 		self.eventid_rejections
 			.put_raw(event_id, [new_code.to_u8()]);
+		self.shadow_verdict(event_id, |v| v.rejection = Some(new_code.to_u8()));
 	}
 
 	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
@@ -278,12 +295,17 @@ impl Data {
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
 		self.eventid_rejections.remove(event_id);
+		self.shadow_verdict(event_id, |v| v.rejection = None);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
 		self.eventid_softfailed.remove(event_id);
 		self.eventid_rejections.remove(event_id);
+		self.shadow_verdict(event_id, |v| {
+			v.soft_fail = None;
+			v.rejection = None;
+		});
 	}
 
 	/// MSC2836: index `child` as a relationship-child of `parent` with the
