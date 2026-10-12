@@ -113,8 +113,8 @@ mod tests {
 
 	#[test]
 	fn decode_rejects_truncated_and_unknown_versions() {
-		assert!(MarkerAdapter::decode(&[]).is_err());
-		assert!(MarkerAdapter::decode(&[MARKER_VERSION, 1, 0, 0]).is_err());
-		assert!(MarkerAdapter::decode(&[9, 1, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
+		let _error = MarkerAdapter::decode(&[]).unwrap_err();
+		let _error = MarkerAdapter::decode(&[MARKER_VERSION, 1, 0, 0]).unwrap_err();
+		let _error = MarkerAdapter::decode(&[9, 1, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap_err();
 	}
 }

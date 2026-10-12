@@ -3,6 +3,7 @@ use std::{mem::size_of, sync::Arc};
 use conduwuit::{
 	Result,
 	arrayvec::ArrayVec,
+	err,
 	matrix::{Event, PduCount},
 	utils::{
 		ReadyExt,
@@ -190,38 +191,45 @@ impl Data {
 	}
 
 	/// Read the event's rejection marker from the authoritative mtxdb verdict.
-	pub(super) async fn get_rejection_code(
+	pub(super) fn get_rejection_code(
 		&self,
 		event_id: &EventId,
-	) -> Result<Option<RejectionCode>> {
-		self.mtxdb_verdicts
-			.get(event_id.as_bytes())
-			.map(|verdict| {
-				verdict
-					.and_then(|value| value.rejection)
-					.map(RejectionCode::from_u8)
-			})
-			.map_err(|error| {
-				err!(Database("Failed to read mtxdb rejection for {event_id}: {error}"))
-			})
+	) -> std::future::Ready<Result<Option<RejectionCode>>> {
+		std::future::ready(
+			self.mtxdb_verdicts
+				.get(event_id.as_bytes())
+				.map(|verdict| {
+					verdict
+						.and_then(|value| value.rejection)
+						.map(RejectionCode::from_u8)
+				})
+				.map_err(|error| {
+					err!(Database("Failed to read mtxdb rejection for {event_id}: {error}"))
+				}),
+		)
 	}
 
 	/// Read the event's soft-fail marker from the authoritative mtxdb verdict.
-	pub(super) async fn get_soft_fail_code(&self, event_id: &EventId) -> Option<SoftFailCode> {
-		self.mtxdb_verdicts
-			.get(event_id.as_bytes())
-			.unwrap_or_else(|error| {
-				panic!("Failed to read mtxdb soft-fail for {event_id}: {error}")
-			})
-			.and_then(|value| value.soft_fail)
-			.map(SoftFailCode::from_u8)
+	pub(super) fn get_soft_fail_code(
+		&self,
+		event_id: &EventId,
+	) -> std::future::Ready<Option<SoftFailCode>> {
+		std::future::ready(
+			self.mtxdb_verdicts
+				.get(event_id.as_bytes())
+				.unwrap_or_else(|error| {
+					panic!("Failed to read mtxdb soft-fail for {event_id}: {error}")
+				})
+				.and_then(|value| value.soft_fail)
+				.map(SoftFailCode::from_u8),
+		)
 	}
 
 	/// Returns the event IDs carrying a rejection or soft-fail marker.
-	pub(super) async fn verdict_flagged_batch(
+	pub(super) fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
-	) -> std::collections::HashSet<OwnedEventId> {
+	) -> std::future::Ready<std::collections::HashSet<OwnedEventId>> {
 		let mut flagged = std::collections::HashSet::new();
 		for event_id in event_ids {
 			let verdict = self
@@ -236,7 +244,7 @@ impl Data {
 			}
 		}
 
-		flagged
+		std::future::ready(flagged)
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {

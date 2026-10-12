@@ -32,6 +32,9 @@ pub enum KeyRecordKind {
 	Notary,
 }
 
+/// A key record's kind, origin bytes, and serialized payload.
+pub type KeyRecord = (KeyRecordKind, Vec<u8>, Vec<u8>);
+
 impl KeyRecordKind {
 	const ALL: [Self; 4] =
 		[Self::Historical, Self::Provisional, Self::Corroborated, Self::Notary];
@@ -73,7 +76,7 @@ impl ServerKeysAdapter {
 
 	/// All live key records, with their original origins recovered from the
 	/// collision-checking envelope. Used by the export path after cutover.
-	pub fn scan(&self) -> Result<Vec<(KeyRecordKind, Vec<u8>, Vec<u8>)>, StorageError> {
+	pub fn scan(&self) -> Result<Vec<KeyRecord>, StorageError> {
 		let collection = server_keys_collection_id();
 		let records = self.store.scan(ShardType::ServerInfo, &collection)?;
 		let mut out = Vec::with_capacity(records.len());

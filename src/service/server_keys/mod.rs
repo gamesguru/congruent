@@ -13,6 +13,7 @@ use conduwuit::{
 	Result, Server, debug_error, debug_warn, err, implement, trace,
 	utils::{IterStream, MutexMap, timepoint_from_now},
 };
+use futures::StreamExt;
 use slipstream::{
 	CanonicalJsonObject, MilliSecondsSinceUnixEpoch, OwnedServerName, OwnedServerSigningKeyId,
 	RoomVersionId, ServerName, ServerSigningKeyId,
@@ -70,7 +71,7 @@ pub type VerifyKeys = BTreeMap<OwnedServerSigningKeyId, VerifyKey>;
 pub type PubKeyMap = PublicKeyMap;
 pub type PubKeys = PublicKeySet;
 
-fn read_key_record<T: serde::de::DeserializeOwned>(
+fn read_key_record<T: slipstream::codec::Deserialize>(
 	adapter: &conduwuit_mtxdb::server_keys::ServerKeysAdapter,
 	kind: conduwuit_mtxdb::server_keys::KeyRecordKind,
 	origin: &ServerName,
@@ -300,7 +301,16 @@ pub fn active_verify_key(&self) -> (&ServerSigningKeyId, &VerifyKey) {
 }
 
 #[implement(Service)]
-pub async fn add_signing_keys(
+pub fn add_signing_keys(
+	&self,
+	raw_new_keys: &Raw<ServerSigningKeys>,
+	source: FetchSource,
+) -> std::future::Ready<Result<ServerSigningKeys>> {
+	std::future::ready(self.add_signing_keys_sync(raw_new_keys, source))
+}
+
+#[implement(Service)]
+fn add_signing_keys_sync(
 	&self,
 	raw_new_keys: &Raw<ServerSigningKeys>,
 	source: FetchSource,
@@ -746,7 +756,15 @@ pub struct KeysExportCounts {
 /// object with `origin` and one of the four record kinds. The importer owns
 /// the on-disk format; this export just provides the raw payloads.
 #[implement(Service)]
-pub async fn export_keys_jsonl<W: std::io::Write + Send>(
+pub fn export_keys_jsonl<W: std::io::Write + Send>(
+	&self,
+	out: &mut W,
+) -> std::future::Ready<Result<KeysExportCounts>> {
+	std::future::ready(self.export_keys_jsonl_sync(out))
+}
+
+#[implement(Service)]
+fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	&self,
 	out: &mut W,
 ) -> Result<KeysExportCounts> {
@@ -872,7 +890,16 @@ pub async fn required_keys_exist(
 }
 
 #[implement(Service)]
-pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSigningKeyId) -> bool {
+pub fn verify_key_exists(
+	&self,
+	origin: &ServerName,
+	key_id: &ServerSigningKeyId,
+) -> std::future::Ready<bool> {
+	std::future::ready(self.verify_key_exists_sync(origin, key_id))
+}
+
+#[implement(Service)]
+fn verify_key_exists_sync(&self, origin: &ServerName, key_id: &ServerSigningKeyId) -> bool {
 	// Our own active signing key is held in memory, not necessarily in the DB
 	if self.services.globals.server_is_ours(origin) && self.verify_keys.contains_key(key_id) {
 		return true;
@@ -911,7 +938,12 @@ pub async fn verify_key_exists(&self, origin: &ServerName, key_id: &ServerSignin
 }
 
 #[implement(Service)]
-pub async fn verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
+pub fn verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<VerifyKeys> {
+	std::future::ready(self.verify_keys_for_sync(origin))
+}
+
+#[implement(Service)]
+fn verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
 	let mut keys = BTreeMap::new();
 	let historical_keys = read_key_record::<ServerSigningKeys>(
 		&self.db.mtxdb_keys,
@@ -950,7 +982,12 @@ pub async fn verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
 /// Returns only the active (non-retired) verify keys for the given origin.
 /// Retired keys in `old_verify_keys` are excluded.
 #[implement(Service)]
-pub async fn active_verify_keys_for(&self, origin: &ServerName) -> VerifyKeys {
+pub fn active_verify_keys_for(&self, origin: &ServerName) -> std::future::Ready<VerifyKeys> {
+	std::future::ready(self.active_verify_keys_for_sync(origin))
+}
+
+#[implement(Service)]
+fn active_verify_keys_for_sync(&self, origin: &ServerName) -> VerifyKeys {
 	let mut keys = BTreeMap::new();
 
 	let origin_keys = read_key_record::<Raw<ServerSigningKeys>>(
@@ -997,7 +1034,15 @@ pub async fn signing_keys_for(&self, origin: &ServerName) -> Result<ServerSignin
 }
 
 #[implement(Service)]
-pub async fn raw_signing_keys_for(&self, origin: &ServerName) -> Result<Raw<ServerSigningKeys>> {
+pub fn raw_signing_keys_for(
+	&self,
+	origin: &ServerName,
+) -> std::future::Ready<Result<Raw<ServerSigningKeys>>> {
+	std::future::ready(self.raw_signing_keys_for_sync(origin))
+}
+
+#[implement(Service)]
+fn raw_signing_keys_for_sync(&self, origin: &ServerName) -> Result<Raw<ServerSigningKeys>> {
 	read_key_record::<Raw<ServerSigningKeys>>(
 		&self.db.mtxdb_keys,
 		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
