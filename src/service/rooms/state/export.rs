@@ -192,10 +192,30 @@ impl Service {
 						.await,
 				),
 			);
+			let soft_fail_reason = self
+				.services
+				.pdu_metadata
+				.get_soft_fail_reason(event_id)
+				.await;
+			if let Some(reason) = soft_fail_reason {
+				let code = crate::rooms::pdu_metadata::SoftFailCode::parse(&reason)
+					.unwrap_or(crate::rooms::pdu_metadata::SoftFailCode::Unknown);
+				event.insert("soft_fail_code".to_owned(), Value::from(u64::from(code.to_u8())));
+			}
 			event.insert(
 				"rejected".to_owned(),
 				Value::Bool(self.services.pdu_metadata.is_event_rejected(event_id).await),
 			);
+			if let Some(reason) = self.services.pdu_metadata.get_rejection_reason(event_id).await {
+				let code = crate::rooms::pdu_metadata::RejectionCode::parse(&reason)
+					.unwrap_or(crate::rooms::pdu_metadata::RejectionCode::Unknown);
+				event.insert("rejection_code".to_owned(), Value::from(u64::from(code.to_u8())));
+			}
+			if let Ok(metadata) = self.services.timeline.get_event_metadata(event_id).await {
+				if let Some(redacted_by) = metadata.redacted_by {
+					event.insert("redacted_by".to_owned(), text(redacted_by.as_str()));
+				}
+			}
 			event.insert("pdu".to_owned(), Value::Object(pdu));
 			line(out, event)?;
 			counts.events = counts.events.saturating_add(1);
