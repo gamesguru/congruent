@@ -95,6 +95,27 @@ impl StateAdapter {
 		tx.commit()
 	}
 
+	/// Publish nodes and roots in one committed transaction.
+	///
+	/// Convenience over [`Self::publish_state_update`] for callers that own no
+	/// transaction of their own.
+	pub fn publish(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		new_nodes: &[([u8; 32], Vec<u8>)],
+		new_root_bytes: &[u8],
+		is_state_event: bool,
+	) -> Result<(), StorageError> {
+		let refs: Vec<([u8; 32], &[u8])> = new_nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.as_slice()))
+			.collect();
+		let tx = self.store.begin_transaction();
+		self.publish_state_update(&tx, room_id, event_id, &refs, new_root_bytes, is_state_event)?;
+		tx.commit()
+	}
+
 	/// Atomically publish new HAMT nodes and their roots in a single transaction.
 	///
 	/// Writes new nodes to STAT, and both the event-root and room-root pointers
@@ -275,6 +296,27 @@ mod tests {
 			adapter.get_nodes(room, &[hash(9)]).unwrap()[0].as_deref(),
 			Some(&b"node"[..])
 		);
+
+		drop(adapter);
+		let _ = fs::remove_dir_all(path);
+	}
+	#[test]
+	fn publish_convenience_commits_nodes_and_roots_together() {
+		let path = test_path("publish-convenience");
+		let _ = fs::remove_dir_all(&path);
+		let room = b"!room:example.com";
+		let event = b"$event:example.com";
+
+		let store = Arc::new(MtxdbStore::open(&path).unwrap());
+		let adapter = StateAdapter::new(store);
+		let nodes = vec![(hash(1), b"node-one".to_vec()), (hash(2), b"node-two".to_vec())];
+		adapter.publish(room, event, &nodes, b"root", true).unwrap();
+
+		assert_eq!(adapter.root_for_room(room).unwrap().as_deref(), Some(&b"root"[..]));
+		assert_eq!(adapter.root_for_event(room, event).unwrap().as_deref(), Some(&b"root"[..]));
+		let got = adapter.get_nodes(room, &[hash(1), hash(2)]).unwrap();
+		assert_eq!(got[0].as_deref(), Some(&b"node-one"[..]));
+		assert_eq!(got[1].as_deref(), Some(&b"node-two"[..]));
 
 		drop(adapter);
 		let _ = fs::remove_dir_all(path);

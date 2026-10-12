@@ -15,6 +15,10 @@ use rezzy::{
 	incremental::LtHash,
 };
 
+/// A node's structural hash and encoded bytes, held back so it can be
+/// shadow-published to mtxdb together with its roots.
+pub type ShadowNode = (StructuralHash, Vec<u8>);
+
 /// Report produced by [`Store::sweep`], in either dry-run or live mode.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SweepReport {
@@ -252,6 +256,23 @@ impl Store {
 		node: Arc<HamtNode<u64, u64>>,
 		batch: &mut Batch<'a>,
 	) {
+		let mut deferred = Vec::new();
+		self.put_node_batch_deferred(node, batch, &mut deferred);
+		for (hash, bytes) in &deferred {
+			self.shadow_put_node(room_id, hash, bytes);
+		}
+	}
+
+	/// As [`Self::put_node_batch`], but hands the encoded node back in
+	/// `deferred` instead of shadow-writing it, so the caller can publish the
+	/// nodes together with their roots via [`Self::shadow_publish`] once the
+	/// durable batch has been applied.
+	pub fn put_node_batch_deferred<'a>(
+		&'a self,
+		node: Arc<HamtNode<u64, u64>>,
+		batch: &mut Batch<'a>,
+		deferred: &mut Vec<ShadowNode>,
+	) {
 		let hash = node.structural_hash;
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
@@ -267,7 +288,52 @@ impl Store {
 		self.node_mtimes
 			.batch_put(batch, hash.as_ref(), unix_millis().to_be_bytes());
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
-		self.shadow_put_node(room_id, &hash, &bytes);
+		deferred.push((hash, bytes));
+	}
+
+	/// Recursive form of [`Self::put_node_batch_deferred`].
+	pub fn persist_node_recursive_batch_deferred<'a>(
+		&'a self,
+		node: Arc<HamtNode<u64, u64>>,
+		batch: &mut Batch<'a>,
+		deferred: &mut Vec<ShadowNode>,
+	) {
+		for child in &node.children {
+			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+				self.persist_node_recursive_batch_deferred(child_node.clone(), batch, deferred);
+			}
+		}
+		self.put_node_batch_deferred(node, batch, deferred);
+	}
+
+	/// Shadow-publish nodes and roots to mtxdb in one transaction, so a reader
+	/// can never observe a root without the nodes it points to. Failures only
+	/// warn: RocksDB remains the source of truth during the shadow phase.
+	pub fn shadow_publish(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+		nodes: &[ShadowNode],
+		root_bytes: &[u8],
+		is_state_event: bool,
+	) {
+		let nodes: Vec<([u8; 32], Vec<u8>)> = nodes
+			.iter()
+			.map(|(hash, bytes)| (*hash, bytes.clone()))
+			.collect();
+		match self
+			.mtxdb
+			.publish(room_id, event_id, &nodes, root_bytes, is_state_event)
+		{
+			| Ok(()) => {
+				self.write_stats
+					.shadow_written
+					.fetch_add(nodes.len() as u64, Ordering::Relaxed);
+			},
+			| Err(error) => {
+				conduwuit::warn!(?error, "Failed to shadow-publish HAMT state update to mtxdb");
+			},
+		}
 	}
 
 	/// Stores an already-encoded node and records its persistence time.

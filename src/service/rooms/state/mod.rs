@@ -415,12 +415,12 @@ impl Service {
 
 		let mut batch = conduwuit_database::Batch::new();
 
+		let mut shadow_nodes = Vec::new();
 		if let Some(node) = new_node {
-			self.services.state_hamt.store.persist_node_recursive_batch(
-				room_id.as_bytes(),
-				node,
-				&mut batch,
-			);
+			self.services
+				.state_hamt
+				.store
+				.persist_node_recursive_batch_deferred(node, &mut batch, &mut shadow_nodes);
 		}
 
 		let serialized = root_handle_to_bytes(&root_handle);
@@ -441,21 +441,15 @@ impl Service {
 		}
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
-		if let Err(error) = self.db.mtxdb_state.put_event_root(
+		// One mtxdb transaction for the new nodes and both roots, issued only
+		// after the durable batch has been applied.
+		self.services.state_hamt.store.shadow_publish(
 			room_id.as_bytes(),
 			new_pdu.event_id().as_bytes(),
+			&shadow_nodes,
 			&serialized,
-		) {
-			warn!(?error, event_id = %new_pdu.event_id(), "Failed to shadow-write event HAMT root to mtxdb");
-		}
-		if is_state
-			&& let Err(error) = self
-				.db
-				.mtxdb_state
-				.put_room_root(room_id.as_bytes(), &serialized)
-		{
-			warn!(?error, %room_id, "Failed to shadow-write room HAMT root to mtxdb");
-		}
+			is_state,
+		);
 
 		// Update the derived membership/participation caches for the state
 		// transition. `state_root_handle` is the *post*-event root, so the delta
