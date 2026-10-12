@@ -377,22 +377,6 @@ where
 		}
 	}
 
-	// 14. Check if the event passes auth based on the "current state" of the room,
-	//     if not soft fail it
-	let append_ctx = crate::rooms::timeline::AppendPduContext {
-		state_lock: &state_lock,
-		room_id,
-		state_root_handle: new_room_state.clone(),
-		pending_nodes,
-		prev_state_root_handle: previous_root_handle.clone(),
-		advance_current_state: is_timeline_event
-			&& (incoming_pdu.state_key().is_some()
-				|| was_recovered
-				|| predecessors_were_recovered)
-			&& new_room_state.is_some(),
-		was_joined_before_state_install: None,
-	};
-
 	// Now we calculate the set of extremities this room has after the incoming
 	// event has been applied, using the final soft-fail decision. Soft-failed
 	// events must not modify the DAG tip set, and an ancestor being upgraded
@@ -433,6 +417,19 @@ where
 		);
 		let extremities = extremities.iter().map(Borrow::borrow);
 		debug_assert!(extremities.clone().count() > 0, "extremities not empty");
+		let append_ctx = crate::rooms::timeline::AppendPduContext {
+			state_lock: &state_lock,
+			room_id,
+			state_root_handle: new_room_state.clone(),
+			pending_nodes,
+			prev_state_root_handle: previous_root_handle.clone(),
+			advance_current_state: is_timeline_event
+				&& (incoming_pdu.state_key().is_some()
+					|| was_recovered
+					|| predecessors_were_recovered)
+				&& new_room_state.is_some(),
+			was_joined_before_state_install: None,
+		};
 
 		Box::pin(self.services.timeline.append_incoming_pdu(
 			&incoming_pdu,
@@ -495,6 +492,19 @@ where
 	trace!("Appending pdu to timeline");
 	let extremities = extremities.iter().map(Borrow::borrow);
 	debug_assert!(extremities.clone().count() > 0, "extremities not empty");
+	let append_ctx = crate::rooms::timeline::AppendPduContext {
+		state_lock: &state_lock,
+		room_id,
+		state_root_handle: new_room_state.clone(),
+		pending_nodes,
+		prev_state_root_handle: previous_root_handle.clone(),
+		advance_current_state: is_timeline_event
+			&& (incoming_pdu.state_key().is_some()
+				|| was_recovered
+				|| predecessors_were_recovered)
+			&& new_room_state.is_some(),
+		was_joined_before_state_install: None,
+	};
 
 	let pdu_id = Box::pin(self.services.timeline.append_incoming_pdu(
 		&incoming_pdu,
