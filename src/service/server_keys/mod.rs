@@ -769,6 +769,10 @@ fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	out: &mut W,
 ) -> Result<KeysExportCounts> {
 	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use conduwuit_mtxdb::{
+		export_schema::{field, tag},
+		server_keys::KeyRecordKind,
+	};
 	use slipstream::json::{Object, Value};
 
 	fn line<W: std::io::Write>(out: &mut W, record: Object) -> Result<()> {
@@ -780,7 +784,7 @@ fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 
 	fn record(tag: &str) -> Object {
 		let mut object = Object::new();
-		object.insert("t".to_owned(), Value::String(tag.to_owned()));
+		object.insert(field::T.to_owned(), Value::String(tag.to_owned()));
 		object
 	}
 
@@ -794,63 +798,57 @@ fn export_keys_jsonl_sync<W: std::io::Write + Send>(
 	for (record_kind, origin_bytes, payload) in records {
 		let origin = std::str::from_utf8(&origin_bytes)
 			.map_err(|error| err!(Database("Invalid signing-key origin in mtxdb: {error}")))?;
-		let kind = match record_kind {
-			| conduwuit_mtxdb::server_keys::KeyRecordKind::Historical => "historical",
-			| conduwuit_mtxdb::server_keys::KeyRecordKind::Provisional => "provisional",
-			| conduwuit_mtxdb::server_keys::KeyRecordKind::Corroborated => "corroborated",
-			| conduwuit_mtxdb::server_keys::KeyRecordKind::Notary => "notary",
-		};
+		let kind = record_kind.as_str();
 
-		let mut obj = record("server_keys");
-		obj.insert("origin".to_owned(), Value::String(origin.to_owned()));
-		obj.insert("kind".to_owned(), Value::String(kind.to_owned()));
+		let mut obj = record(tag::SERVER_KEYS);
+		obj.insert(field::ORIGIN.to_owned(), Value::String(origin.to_owned()));
+		obj.insert(field::KIND.to_owned(), Value::String(kind.to_owned()));
 
-		match kind {
-			| "historical" => {
+		match record_kind {
+			| KeyRecordKind::Historical => {
 				let keys: ServerSigningKeys =
 					slipstream::codec::from_slice(&payload).map_err(|error| {
 						err!(Database("Invalid historical signing-key record: {error}"))
 					})?;
 				obj.insert(
-					"payload".to_owned(),
+					field::PAYLOAD.to_owned(),
 					Value::String(STANDARD.encode(slipstream::codec::to_vec(&keys))),
 				);
 				counts.historical = counts.historical.saturating_add(1);
 			},
-			| "provisional" => {
+			| KeyRecordKind::Provisional => {
 				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
 					slipstream::codec::from_slice(&payload).map_err(|error| {
 						err!(Database("Invalid provisional signing-key record: {error}"))
 					})?;
 				obj.insert(
-					"payload".to_owned(),
+					field::PAYLOAD.to_owned(),
 					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids))),
 				);
 				counts.provisional = counts.provisional.saturating_add(1);
 			},
-			| "corroborated" => {
+			| KeyRecordKind::Corroborated => {
 				let ids: std::collections::BTreeSet<OwnedServerSigningKeyId> =
 					slipstream::codec::from_slice(&payload).map_err(|error| {
 						err!(Database("Invalid corroborated signing-key record: {error}"))
 					})?;
 				obj.insert(
-					"payload".to_owned(),
+					field::PAYLOAD.to_owned(),
 					Value::String(STANDARD.encode(slipstream::codec::to_vec(&ids))),
 				);
 				counts.corroborated = counts.corroborated.saturating_add(1);
 			},
-			| "notary" => {
+			| KeyRecordKind::Notary => {
 				let raw: Raw<ServerSigningKeys> = slipstream::codec::from_slice(&payload)
 					.map_err(|error| {
 						err!(Database("Invalid notary signing-key record: {error}"))
 					})?;
 				obj.insert(
-					"payload".to_owned(),
+					field::PAYLOAD.to_owned(),
 					Value::String(STANDARD.encode(raw.get().as_bytes())),
 				);
 				counts.notary = counts.notary.saturating_add(1);
 			},
-			| _ => unreachable!(),
 		}
 
 		line(out, obj)?;

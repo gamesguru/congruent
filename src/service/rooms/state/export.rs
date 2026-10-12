@@ -16,6 +16,7 @@
 use std::{collections::HashSet, io::Write};
 
 use conduwuit::{Result, err, warn};
+use conduwuit_mtxdb::export_schema::{self as schema, field, tag};
 use futures::StreamExt;
 use slipstream::{
 	OwnedEventId, RoomId,
@@ -25,7 +26,7 @@ use slipstream::{
 use super::Service;
 
 /// Format tag written to the `header` line.
-pub const EXPORT_FORMAT: &str = "mtxdb-export/v1";
+pub const EXPORT_FORMAT: &str = schema::EXPORT_FORMAT;
 
 /// What an export wrote.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -42,7 +43,7 @@ fn line(out: &mut impl Write, record: Object) -> Result<()> {
 
 fn record(tag: &str) -> Object {
 	let mut object = Object::new();
-	object.insert("t".to_owned(), Value::String(tag.to_owned()));
+	object.insert(field::T.to_owned(), Value::String(tag.to_owned()));
 	object
 }
 
@@ -86,10 +87,11 @@ impl Service {
 			}
 		}
 
-		let mut header = record("header");
-		header.insert("format".to_owned(), text(EXPORT_FORMAT));
-		header.insert("server".to_owned(), text(self.services.globals.server_name().as_str()));
-		header.insert("room_id".to_owned(), text(room_id.as_str()));
+		let mut header = record(tag::HEADER);
+		header.insert(field::FORMAT.to_owned(), text(EXPORT_FORMAT));
+		header
+			.insert(field::SERVER.to_owned(), text(self.services.globals.server_name().as_str()));
+		header.insert(field::ROOM_ID.to_owned(), text(room_id.as_str()));
 		line(out, header)?;
 
 		for (event_id, outlier) in &events {
@@ -103,40 +105,46 @@ impl Service {
 					},
 				},
 			};
-			let mut event = record("event");
-			event.insert("event_id".to_owned(), text(event_id.as_str()));
-			event.insert("prev_events".to_owned(), id_list(&pdu, "prev_events"));
-			event.insert("auth_events".to_owned(), id_list(&pdu, "auth_events"));
-			event.insert("outlier".to_owned(), Value::Bool(*outlier));
+			let mut event = record(tag::EVENT);
+			event.insert(field::EVENT_ID.to_owned(), text(event_id.as_str()));
+			event.insert(field::PREV_EVENTS.to_owned(), id_list(&pdu, field::PREV_EVENTS));
+			event.insert(field::AUTH_EVENTS.to_owned(), id_list(&pdu, field::AUTH_EVENTS));
+			event.insert(field::OUTLIER.to_owned(), Value::Bool(*outlier));
 			event.insert(
-				"soft_failed".to_owned(),
+				field::SOFT_FAILED.to_owned(),
 				Value::Bool(self.services.pdu_metadata.is_event_soft_failed(event_id)?),
 			);
 			let soft_fail_reason = self.services.pdu_metadata.get_soft_fail_reason(event_id)?;
 			if let Some(reason) = soft_fail_reason {
 				let code = crate::rooms::pdu_metadata::SoftFailCode::parse(&reason)
 					.unwrap_or(crate::rooms::pdu_metadata::SoftFailCode::Unknown);
-				event.insert("soft_fail_code".to_owned(), Value::from(u64::from(code.to_u8())));
+				event.insert(
+					field::SOFT_FAIL_CODE.to_owned(),
+					Value::from(u64::from(code.to_u8())),
+				);
 			}
 			event.insert(
-				"rejected".to_owned(),
+				field::REJECTED.to_owned(),
 				Value::Bool(self.services.pdu_metadata.is_event_rejected(event_id)?),
 			);
 			if let Some(reason) = self.services.pdu_metadata.get_rejection_reason(event_id)? {
 				let code = crate::rooms::pdu_metadata::RejectionCode::parse(&reason)
 					.unwrap_or(crate::rooms::pdu_metadata::RejectionCode::Unknown);
-				event.insert("rejection_code".to_owned(), Value::from(u64::from(code.to_u8())));
+				event.insert(
+					field::REJECTION_CODE.to_owned(),
+					Value::from(u64::from(code.to_u8())),
+				);
 			}
 			if let Some(redacted_by) = self.services.pdu_metadata.get_redacted_by(event_id)? {
-				event.insert("redacted_by".to_owned(), text(redacted_by.as_str()));
+				event.insert(field::REDACTED_BY.to_owned(), text(redacted_by.as_str()));
 			}
-			event.insert("pdu".to_owned(), Value::Object(pdu));
+			event.insert(field::PDU.to_owned(), Value::Object(pdu));
 			line(out, event)?;
 			counts.events = counts.events.saturating_add(1);
 		}
 
-		let mut end = record("end");
-		end.insert("events".to_owned(), Value::from(counts.events));
+		let mut end = record(tag::END);
+		end.insert(field::EVENTS.to_owned(), Value::from(counts.events));
 		line(out, end)?;
 		out.flush().map_err(|e| err!("export flush failed: {e}"))?;
 		Ok(counts)
@@ -169,5 +177,35 @@ mod tests {
 		assert!(lines[0].contains("\"t\":\"event\""));
 		assert!(lines[1].contains("\"t\":\"end\""));
 		assert!(output.ends_with('\n'));
+	}
+
+	/// The service keeps its own code enums (they carry retry policy), but the
+	/// numbers and tags are the export format's. Every number must mean the same
+	/// thing to the shared schema the importer reads.
+	#[test]
+	fn verdict_codes_match_the_shared_schema() {
+		use crate::rooms::pdu_metadata::{RejectionCode, SoftFailCode};
+
+		for number in 0..=u8::MAX {
+			let ours = RejectionCode::from_u8(number);
+			let shared = schema::RejectionCode::from_u8(number);
+			assert_eq!(ours.to_u8(), shared.to_u8(), "rejection code {number}");
+			assert_eq!(ours.tag(), shared.tag(), "rejection code {number}");
+
+			let ours = SoftFailCode::from_u8(number);
+			let shared = schema::SoftFailCode::from_u8(number);
+			assert_eq!(ours.to_u8(), shared.to_u8(), "soft-fail code {number}");
+			assert_eq!(ours.tag(), shared.tag(), "soft-fail code {number}");
+		}
+		for code in schema::RejectionCode::ALL {
+			assert_eq!(RejectionCode::parse(code.tag()).map(RejectionCode::to_u8), {
+				schema::RejectionCode::parse(code.tag()).map(schema::RejectionCode::to_u8)
+			});
+		}
+		for code in schema::SoftFailCode::ALL {
+			assert_eq!(SoftFailCode::parse(code.tag()).map(SoftFailCode::to_u8), {
+				schema::SoftFailCode::parse(code.tag()).map(schema::SoftFailCode::to_u8)
+			});
+		}
 	}
 }

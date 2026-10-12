@@ -20,6 +20,8 @@ pub mod verdicts;
 
 /// Database shard type.
 pub use mtxdb::ShardType;
+/// Wire schema of the `mtxdb-export/v1` interchange, shared with the importer.
+pub use mtxdb::export_schema;
 /// Errors returned while opening or operating the mtxdb database.
 pub use mtxdb::storage::StorageError;
 
