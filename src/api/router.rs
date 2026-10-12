@@ -67,6 +67,7 @@ pub fn build(
 		.ruma_route(&client::login_token_route)
 		.ruma_route(&client::whoami_route)
 		.ruma_route(&client::logout_route)
+		.ruma_route(&client::refresh_token_route)
 		.ruma_route(&client::logout_all_route)
 		.ruma_route(&client::change_password_route)
 		.ruma_route(&client::request_password_change_token_via_email_route)

@@ -23,7 +23,7 @@ use slipstream::{
 				self,
 				v3::{DiscoveryInfo, HomeserverInfo},
 			},
-			logout, logout_all,
+			logout, logout_all, refresh_token,
 		},
 		uiaa::UserIdentifier,
 	},
@@ -338,6 +338,20 @@ pub(crate) async fn login_route(
 			.await?;
 	}
 
+	// MSC2918: clients which opt in get an expiring token and a refresh token
+	let (expires_in, refresh_token) = if body.refresh_token {
+		let ttl = services
+			.users
+			.set_token_expiry(&token, services.server.config.access_token_ttl);
+		let refresh = services
+			.users
+			.issue_refresh_token(&user_id, &device_id)
+			.await;
+		(Some(Duration::from_millis(ttl)), Some(refresh))
+	} else {
+		(None, None)
+	};
+
 	// send client well-known if specified so the client knows to reconfigure itself
 	let client_discovery_info: Option<DiscoveryInfo> = services
 		.server
@@ -355,9 +369,9 @@ pub(crate) async fn login_route(
 		access_token: token,
 		device_id,
 		well_known: client_discovery_info,
-		expires_in: None,
+		expires_in,
 		home_server: Some(services.config.server_name.clone()),
-		refresh_token: None,
+		refresh_token,
 	})
 }
 
@@ -472,4 +486,29 @@ pub(crate) async fn logout_all_route(
 		.await;
 
 	Ok(logout_all::v3::Response::new())
+}
+
+/// # `POST /_matrix/client/v3/refresh`
+///
+/// Exchanges a refresh token for a new access token and refresh token
+/// (MSC2918). The device is unchanged, so device-scoped state such as
+/// transaction ID deduplication carries over to the new access token.
+///
+/// <https://spec.matrix.org/v1.3/client-server-api/#post_matrixclientv3refresh>
+#[tracing::instrument(skip_all, fields(%client), name = "refresh", level = "info")]
+pub(crate) async fn refresh_token_route(
+	State(services): State<crate::State>,
+	ClientIp(client): ClientIp,
+	body: Ruma<refresh_token::v3::Request>,
+) -> Result<refresh_token::v3::Response> {
+	let (access_token, new_refresh_token, ttl) = services
+		.users
+		.refresh_access_token(&body.refresh_token)
+		.await?;
+
+	let mut response = refresh_token::v3::Response::new(access_token);
+	response.refresh_token = Some(new_refresh_token);
+	response.expires_in_ms = Some(Duration::from_millis(ttl));
+
+	Ok(response)
 }

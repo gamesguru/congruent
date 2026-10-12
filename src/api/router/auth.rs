@@ -32,6 +32,7 @@ use crate::service::appservice::RegistrationInfo;
 enum Token {
 	Appservice(Box<RegistrationInfo>),
 	User((OwnedUserId, OwnedDeviceId)),
+	Expired,
 	Invalid,
 	None,
 }
@@ -85,7 +86,7 @@ pub(super) async fn auth(
 						// we should have validated the token above
 						// already
 					},
-					| Token::None | Token::Invalid => {
+					| Token::None | Token::Invalid | Token::Expired => {
 						return Err(Error::BadRequest(
 							ErrorKind::MissingToken,
 							"Missing or invalid access token.",
@@ -103,7 +104,7 @@ pub(super) async fn auth(
 							// we should have validated the token above
 							// already
 						},
-						| Token::None | Token::Invalid => {
+						| Token::None | Token::Invalid | Token::Expired => {
 							return Err(Error::BadRequest(
 								ErrorKind::MissingToken,
 								"Missing or invalid access token.",
@@ -229,6 +230,18 @@ pub(super) async fn auth(
 				))
 			}
 		},
+		| (AuthScheme::None, Token::Expired) => Ok(Auth {
+			// Clients refreshing (or logging in) commonly still present their
+			// expired access token; these endpoints do not need it.
+			origin: None,
+			sender_user: None,
+			sender_device: None,
+			appservice_info: None,
+		}),
+		| (_, Token::Expired) => Err(Error::BadRequest(
+			ErrorKind::UnknownToken { soft_logout: true },
+			"Access token has expired.",
+		)),
 		| (_, Token::Invalid) => Err(Error::BadRequest(
 			ErrorKind::UnknownToken { soft_logout: false },
 			"Unknown access token.",
@@ -437,7 +450,16 @@ async fn find_token(services: &Services, token: Option<&str>) -> Result<Token> {
 		return Ok(Token::Invalid);
 	}
 
-	let user_token = services.users.find_from_token(token).map_ok(Token::User);
+	let user_token = services
+		.users
+		.find_from_token(token)
+		.and_then(async |user| {
+			if services.users.access_token_expired(token).await {
+				Ok(Token::Expired)
+			} else {
+				Ok(Token::User(user))
+			}
+		});
 
 	let appservice_token = services
 		.appservice

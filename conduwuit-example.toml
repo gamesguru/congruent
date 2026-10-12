@@ -939,6 +939,12 @@
 #
 #login_token_ttl = 120000
 
+# Lifetime in milliseconds of access tokens issued to clients which
+# opted into refresh tokens (MSC2918 / Matrix v1.3). Clients which do not
+# request a refresh token keep receiving non-expiring access tokens.
+#
+#access_token_ttl = 300000
+
 # Static TURN username to provide the client if not using a shared secret
 # ("turn_secret"), It is recommended to use a shared secret over static
 # credentials.

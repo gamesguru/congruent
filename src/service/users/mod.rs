@@ -152,6 +152,9 @@ struct Data {
 	logintoken_expiresatuserid: Arc<Map>,
 	todeviceid_events: Arc<Map>,
 	token_userdeviceid: Arc<Map>,
+	token_expiresat: Arc<Map>,
+	refreshtoken_userdeviceid: Arc<Map>,
+	userdeviceid_refreshtoken: Arc<Map>,
 	userdeviceid_metadata: Arc<Map>,
 	userdeviceid_token: Arc<Map>,
 	userfilterid_filter: Arc<Map>,
@@ -201,6 +204,9 @@ impl crate::Service for Service {
 				logintoken_expiresatuserid: args.db["logintoken_expiresatuserid"].clone(),
 				todeviceid_events: args.db["todeviceid_events"].clone(),
 				token_userdeviceid: args.db["token_userdeviceid"].clone(),
+				token_expiresat: args.db["token_expiresat"].clone(),
+				refreshtoken_userdeviceid: args.db["refreshtoken_userdeviceid"].clone(),
+				userdeviceid_refreshtoken: args.db["userdeviceid_refreshtoken"].clone(),
 				userdeviceid_metadata: args.db["userdeviceid_metadata"].clone(),
 				userdeviceid_token: args.db["userdeviceid_token"].clone(),
 				userfilterid_filter: args.db["userfilterid_filter"].clone(),
@@ -724,10 +730,12 @@ impl Service {
 		let tokens = self.active_tokens(user_id, device_id).await;
 		for token in &tokens {
 			self.db.token_userdeviceid.remove(token);
+			self.db.token_expiresat.remove(token);
 		}
 		if !tokens.is_empty() {
 			self.db.userdeviceid_token.del(userdeviceid);
 		}
+		self.remove_refresh_token(user_id, device_id).await;
 
 		// Remove todevice events
 		let prefix = (user_id, device_id, Interfix);
@@ -853,6 +861,111 @@ impl Service {
 		}
 
 		Ok(())
+	}
+
+	/// Marks an access token as expiring `ttl` milliseconds from now.
+	/// Tokens without an entry never expire.
+	pub fn set_token_expiry(&self, token: &str, ttl: u64) -> u64 {
+		let expires_at = utils::millis_since_unix_epoch().saturating_add(ttl);
+		self.db.token_expiresat.raw_put(token, expires_at);
+		ttl
+	}
+
+	/// Whether an access token has a lifetime which has elapsed.
+	pub async fn access_token_expired(&self, token: &str) -> bool {
+		self.db
+			.token_expiresat
+			.get(token)
+			.await
+			.deserialized::<u64>()
+			.is_ok_and(|expires_at| expires_at <= utils::millis_since_unix_epoch())
+	}
+
+	/// Issues a new refresh token for a device, replacing (and thereby
+	/// invalidating) any previous one.
+	pub async fn issue_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) -> String {
+		self.remove_refresh_token(user_id, device_id).await;
+
+		let key = (user_id, device_id);
+		let refresh_token = loop {
+			let candidate = utils::random_string(32);
+			if self
+				.db
+				.refreshtoken_userdeviceid
+				.get(&candidate)
+				.await
+				.is_err()
+			{
+				break candidate;
+			}
+		};
+
+		self.db
+			.refreshtoken_userdeviceid
+			.raw_put(&refresh_token, key);
+		self.db
+			.userdeviceid_refreshtoken
+			.put_raw(key, &refresh_token);
+
+		refresh_token
+	}
+
+	/// Revokes the refresh token of a device, if any.
+	pub async fn remove_refresh_token(&self, user_id: &UserId, device_id: &DeviceId) {
+		let key = (user_id, device_id);
+		if let Ok(old) = self
+			.db
+			.userdeviceid_refreshtoken
+			.qry(&key)
+			.await
+			.deserialized::<String>()
+		{
+			self.db.refreshtoken_userdeviceid.remove(&old);
+		}
+		self.db.userdeviceid_refreshtoken.del(key);
+	}
+
+	/// Exchanges a refresh token for a fresh access token and a rotated
+	/// refresh token. Returns `(access_token, refresh_token, expires_in_ms)`.
+	pub async fn refresh_access_token(
+		&self,
+		refresh_token: &str,
+	) -> Result<(String, String, u64)> {
+		let Ok((user_id, device_id)) = self
+			.db
+			.refreshtoken_userdeviceid
+			.get(refresh_token)
+			.await
+			.deserialized::<(OwnedUserId, OwnedDeviceId)>()
+		else {
+			return Err!(Request(Forbidden("Refresh token is unrecognized.")));
+		};
+
+		// Expiring access tokens of this device are superseded; tokens which
+		// never expire (issued to clients without refresh support) are kept.
+		for old in self.active_tokens(&user_id, &device_id).await {
+			if self.db.token_expiresat.get(&old).await.is_ok() {
+				self.remove_access_token(&user_id, &device_id, &old).await;
+			}
+		}
+
+		let access_token = self.generate_unique_token().await;
+		self.set_token(&user_id, &device_id, &access_token).await?;
+		let ttl =
+			self.set_token_expiry(&access_token, self.services.server.config.access_token_ttl);
+		let new_refresh = self.issue_refresh_token(&user_id, &device_id).await;
+
+		Ok((access_token, new_refresh, ttl))
+	}
+
+	async fn remove_access_token(&self, user_id: &UserId, device_id: &DeviceId, token: &str) {
+		let mut tokens = self.active_tokens(user_id, device_id).await;
+		tokens.retain(|t| t != token);
+		self.db.token_userdeviceid.remove(token);
+		self.db.token_expiresat.remove(token);
+		self.db
+			.userdeviceid_token
+			.put((user_id, device_id), Json(&tokens));
 	}
 
 	pub async fn add_one_time_key(

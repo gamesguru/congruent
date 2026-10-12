@@ -1186,6 +1186,14 @@ pub struct Config {
 	#[serde(default = "default_login_token_ttl")]
 	pub login_token_ttl: u64,
 
+	/// Lifetime in milliseconds of access tokens issued to clients which
+	/// opted into refresh tokens (MSC2918 / Matrix v1.3). Clients which do not
+	/// request a refresh token keep receiving non-expiring access tokens.
+	///
+	/// default: 300000
+	#[serde(default = "default_access_token_ttl")]
+	pub access_token_ttl: u64,
+
 	/// Static TURN username to provide the client if not using a shared secret
 	/// ("turn_secret"), It is recommended to use a shared secret over static
 	/// credentials.
@@ -3246,6 +3254,8 @@ fn default_notification_push_path() -> String { "/_matrix/push/v1/notify".to_own
 fn default_openid_token_ttl() -> u64 { 60 * 60 }
 
 fn default_login_token_ttl() -> u64 { 2 * 60 * 1000 }
+
+fn default_access_token_ttl() -> u64 { 5 * 60 * 1000 }
 
 fn default_turn_ttl() -> u64 { 60 * 60 * 24 }
 
