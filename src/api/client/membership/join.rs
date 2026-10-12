@@ -782,6 +782,14 @@ async fn join_room_by_id_helper_remote_process(
 		.state_hamt
 		.store
 		.persist_node_recursive_deferred(room_id.as_bytes(), root_node)?;
+	// The cache delta traverses the new root from mtxdb. Publish its nodes
+	// first, but keep the room-root pointer unchanged until the cache update
+	// succeeds. If the update fails these are harmless unrooted nodes.
+	services
+		.rooms
+		.state_hamt
+		.store
+		.publish_nodes(room_id.as_bytes(), &pending_nodes)?;
 
 	// Sample the joining user's membership *before* the `/send_join` state root is
 	// installed. That state includes the joiner's own membership, so reading the
@@ -812,7 +820,7 @@ async fn join_room_by_id_helper_remote_process(
 	services
 		.rooms
 		.state
-		.set_room_state_hamt_with_nodes(room_id, &root_handle, &pending_nodes)?;
+		.set_room_state_hamt(room_id, &root_handle, &state_lock)?;
 
 	// Promote auth chain + state outliers to the backfilled timeline.
 	// This makes the room's origin events (create, initial joins, power

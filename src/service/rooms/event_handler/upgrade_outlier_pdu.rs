@@ -252,7 +252,7 @@ where
 		false
 	};
 
-	let (previous_root_handle, new_room_state, pending_nodes) =
+	let (previous_root_handle, new_room_state, mut pending_nodes) =
 		if let Some(state_key) = incoming_pdu.state_key() {
 			debug!("Event is a state-event. Deriving new room state");
 
@@ -272,7 +272,7 @@ where
 			// root instead of rebuilding and re-persisting an identical HAMT.
 			// Fall back to a full rebuild for fork/state-resolution inputs and for
 			// predecessors whose stored root predates their own state change.
-			let (prev_root, prev_nodes) = match self
+			let (prev_root, mut prev_nodes) = match self
 				.reusable_predecessor_root_handle(room_id, &incoming_pdu)
 				.await?
 			{
@@ -286,8 +286,8 @@ where
 				.resolve_state(room_id, &room_version_id, state_after)
 				.await?;
 
-			let _ = prev_nodes; // The previous root is only used for cache diffing.
-			(prev_root, Some(new_root), pending_nodes)
+			prev_nodes.extend(pending_nodes);
+			(prev_root, Some(new_root), prev_nodes)
 		} else if is_timeline_event && (was_recovered || predecessors_were_recovered) {
 			let prev_root = self.services.state.get_room_state_hamt(room_id).await.ok();
 			let (new_root, pending_nodes) = self
@@ -471,6 +471,16 @@ where
 		&& let (Some(prev_root), Some(new_root)) =
 			(previous_root_handle.as_ref(), new_room_state.as_ref())
 	{
+		// The cache delta resolves both roots through mtxdb. Make any deferred
+		// roots traversable before diffing; append_pdu later publishes the root
+		// pointers together with the event, while these nodes may safely remain
+		// unrooted if cache reconciliation fails.
+		self.services
+			.state_hamt
+			.store
+			.publish_nodes(room_id.as_bytes(), &pending_nodes)?;
+		pending_nodes.clear();
+
 		Box::pin(self.services.state.update_caches_for_state_delta_between(
 			room_id,
 			Some(prev_root),
