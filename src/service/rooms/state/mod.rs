@@ -1095,14 +1095,12 @@ impl Service {
 					.services
 					.pdu_metadata
 					.is_event_rejected(&event_id)
-					.await
 					// An unreadable verdict is not admitted: fail closed.
 					.unwrap_or(true)
 				&& !self
 					.services
 					.pdu_metadata
 					.is_event_soft_failed(&event_id)
-					.await
 					.unwrap_or(true);
 			if admitted {
 				eligible.push(event_id);

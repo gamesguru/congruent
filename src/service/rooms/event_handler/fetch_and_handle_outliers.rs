@@ -232,7 +232,6 @@ where
 				.services
 				.pdu_metadata
 				.is_event_soft_failed(id)
-				.await
 				.unwrap_or(false)
 			{
 				info!(target: "auth_chain", "Found known soft-failed outlier locally: {id}");
@@ -247,7 +246,6 @@ where
 			.services
 			.pdu_metadata
 			.is_event_soft_failed(id)
-			.await
 			.unwrap_or(false)
 		{
 			warn!(target: "auth_chain", "Skipping unparsable soft-failed outlier: {id}");
@@ -394,7 +392,6 @@ where
 											.services
 											.pdu_metadata
 											.is_event_soft_failed(&auth_event)
-											.await
 											.unwrap_or(false)
 										{
 											info!(target: "auth_chain", "Found known soft-failed auth event locally: {auth_event}");
@@ -695,20 +692,15 @@ where
 							// only a count plus the first few IDs rather than the
 							// full list, to keep the stored reason bounded.
 							let preview: Vec<_> = missing.iter().take(5).collect();
-							if let Err(error) = self
-								.services
-								.pdu_metadata
-								.mark_event_rejected(
-									&next_id,
-									&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
-										.with_detail(format!(
-											"{} auth events still missing after /event_auth and \
-											 individual /event retries, e.g. {preview:?}",
-											missing.len()
-										)),
-								)
-								.await
-							{
+							if let Err(error) = self.services.pdu_metadata.mark_event_rejected(
+								&next_id,
+								&crate::rooms::pdu_metadata::RejectionCode::MissingAuthEvent
+									.with_detail(format!(
+										"{} auth events still missing after /event_auth and \
+										 individual /event retries, e.g. {preview:?}",
+										missing.len()
+									)),
+							) {
 								warn!(%error, %next_id, "failed to record rejection verdict");
 							}
 							self.services

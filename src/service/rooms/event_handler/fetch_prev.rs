@@ -66,13 +66,11 @@ where
 			.services
 			.pdu_metadata
 			.is_event_rejected(id)
-			.await
 			.unwrap_or(false)
 		{
 			self.services
 				.pdu_metadata
 				.get_rejection_reason(id)
-				.await
 				.ok()
 				.flatten()
 				.is_some_and(|reason| {

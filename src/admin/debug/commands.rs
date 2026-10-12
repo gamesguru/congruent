@@ -139,8 +139,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.services
 		.rooms
 		.pdu_metadata
-		.is_event_soft_failed(&event_id)
-		.await?;
+		.is_event_soft_failed(&event_id)?;
 	if soft_failed {
 		status.push_str(" [SOFT-FAIL]");
 	}
@@ -149,8 +148,7 @@ pub(super) async fn get_pdu(&self, event_id: OwnedEventId, verbose: bool) -> Res
 		.services
 		.rooms
 		.pdu_metadata
-		.is_event_rejected(&event_id)
-		.await?;
+		.is_event_rejected(&event_id)?;
 	if rejected {
 		status.push_str(" [REJECTED]");
 	}
@@ -532,17 +530,16 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 	utils::pdu_json_canonical_strip(&mut event);
 
 	// Status flags
-	let (is_rejected, is_soft_failed) = futures::join!(
-		self.services
-			.rooms
-			.pdu_metadata
-			.is_event_rejected(&event_id),
-		self.services
-			.rooms
-			.pdu_metadata
-			.is_event_soft_failed(&event_id),
-	);
-	let (is_rejected, is_soft_failed) = (is_rejected?, is_soft_failed?);
+	let is_rejected = self
+		.services
+		.rooms
+		.pdu_metadata
+		.is_event_rejected(&event_id)?;
+	let is_soft_failed = self
+		.services
+		.rooms
+		.pdu_metadata
+		.is_event_soft_failed(&event_id)?;
 	let is_outlier = self
 		.services
 		.rooms
@@ -653,8 +650,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.services
 			.rooms
 			.pdu_metadata
-			.get_rejection_reason(&event_id)
-			.await?
+			.get_rejection_reason(&event_id)?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Rejection reason: <none stored (legacy)>")?;
@@ -667,8 +663,7 @@ pub(super) async fn verify_pdu(&self, event_id: OwnedEventId) -> Result {
 			.services
 			.rooms
 			.pdu_metadata
-			.get_soft_fail_reason(&event_id)
-			.await?
+			.get_soft_fail_reason(&event_id)?
 			.unwrap_or_default();
 		if reason.is_empty() {
 			writeln!(out, "Soft-fail reason: <none stored (legacy)>")?;
@@ -1544,18 +1539,23 @@ async fn reject_conflicting_state(
 	if !extra.is_empty() {
 		let mut rejected = 0_usize;
 		for eid in &extra {
-			if !self
-				.services
-				.rooms
-				.pdu_metadata
-				.is_event_rejected(eid)
-				.await?
-			{
-				self.services
+			let already_rejected = match self.services.rooms.pdu_metadata.is_event_rejected(eid) {
+				| Ok(rejected) => rejected,
+				| Err(error) => {
+					conduwuit::warn!(%error, %eid, "failed to read rejection verdict");
+					continue;
+				},
+			};
+			if !already_rejected {
+				if let Err(error) = self
+					.services
 					.rooms
 					.pdu_metadata
 					.mark_event_rejected(eid, "conflicting state replaced by remote")
-					.await?;
+				{
+					conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+					continue;
+				}
 				rejected = rejected.saturating_add(1);
 			}
 		}

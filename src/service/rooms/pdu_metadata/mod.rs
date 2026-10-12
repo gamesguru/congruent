@@ -402,16 +402,16 @@ impl Service {
 		self.db.mark_event_soft_failed(event_id, code)
 	}
 
-	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
+	pub fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		self.db.get_soft_fail_reason(event_id)
 	}
 
 	#[inline]
-	pub async fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
+	pub fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
 		self.db.is_event_soft_failed(event_id)
 	}
 
-	pub async fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
+	pub fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
 		self.db.is_event_rejected(event_id)
 	}
 
@@ -420,14 +420,14 @@ impl Service {
 	/// events (e.g. `recalculate_extremities` during monitor sweeps) don't
 	/// issue two sequential single-key lookups per event while holding the
 	/// room lock.
-	pub async fn verdict_flagged_batch(
+	pub fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
 	) -> Result<std::collections::HashSet<OwnedEventId>> {
 		self.db.verdict_flagged_batch(event_ids)
 	}
 
-	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {
+	pub fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {
 		self.db.mark_event_rejected(event_id, reason)
 	}
 
@@ -450,7 +450,7 @@ impl Service {
 
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
-	pub async fn is_event_accepted(&self, event_id: &EventId) -> Result<bool> {
+	pub fn is_event_accepted(&self, event_id: &EventId) -> Result<bool> {
 		Ok(self.db.get_rejection_code(event_id)?.is_none())
 	}
 
@@ -461,7 +461,7 @@ impl Service {
 		self.services.timeline.get_pdu_id(event_id).await.is_ok()
 	}
 
-	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Result<Option<String>> {
+	pub fn get_rejection_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		Ok(self
 			.db
 			.get_rejection_code(event_id)?
@@ -482,7 +482,7 @@ impl Service {
 	/// [`RejectionCode::DependsOnRejectedAuthEvent`]) must use this instead
 	/// of a bare `is_event_rejected` check, or a purely transient rejection
 	/// on the dependency permanently poisons every event that depends on it.
-	pub async fn is_event_permanently_rejected(&self, event_id: &EventId) -> Result<bool> {
+	pub fn is_event_permanently_rejected(&self, event_id: &EventId) -> Result<bool> {
 		// A single read: `get_rejection_code` returns `None` for anything not
 		// rejected, and the retryability check is combined with that one read,
 		// so there's no TOCTOU window between an `is_event_rejected` check and a
@@ -513,7 +513,7 @@ impl Service {
 	/// treating it as "unresolved" would force a needless (and likely
 	/// equally unsuccessful) re-fetch of an event that was never the
 	/// problem.
-	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> Result<bool> {
+	pub fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> Result<bool> {
 		Ok(matches!(
 			self.db.get_rejection_code(event_id)?,
 			Some(RejectionCode::MissingAuthEvent)
@@ -533,7 +533,7 @@ impl Service {
 	/// gets a real chance to reach a different, correct verdict rather than
 	/// inheriting a resolution failure that was never about the event
 	/// itself being invalid.
-	pub async fn take_retry_if_rejection_retryable(&self, event_id: &EventId) -> Result<bool> {
+	pub fn take_retry_if_rejection_retryable(&self, event_id: &EventId) -> Result<bool> {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
@@ -575,7 +575,7 @@ impl Service {
 	/// Using a single fresh read (rather than a caller-held stale snapshot)
 	/// matters here specifically because the decision to clear and the
 	/// decision to queue must agree on the *same* rejection state.
-	pub async fn take_retry_if_rejection_retryable_for_promotion(
+	pub fn take_retry_if_rejection_retryable_for_promotion(
 		&self,
 		event_id: &EventId,
 	) -> Result<bool> {
@@ -617,7 +617,7 @@ impl Service {
 	/// and `finish_promote_outlier`'s (`backfill.rs`) doc comments for what's
 	/// left uncovered (sub-instruction-timing only) and why it's surfaced
 	/// loudly rather than silently patched here.
-	pub async fn finish_promotion(&self, event_id: &EventId) -> Result<bool> {
+	pub fn finish_promotion(&self, event_id: &EventId) -> Result<bool> {
 		// A read error other than NotFound means the rejection state is
 		// unknown, not "not rejected". Clearing the markers (or reporting
 		// success) on such a failed read would erase or wrongly accept a

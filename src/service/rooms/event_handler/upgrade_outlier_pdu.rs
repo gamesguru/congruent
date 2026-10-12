@@ -46,8 +46,7 @@ where
 	if self
 		.services
 		.pdu_metadata
-		.is_event_soft_failed(incoming_pdu.event_id())
-		.await?
+		.is_event_soft_failed(incoming_pdu.event_id())?
 	{
 		return Err!(Request(InvalidParam("Event has been soft failed")));
 	}
@@ -367,8 +366,7 @@ where
 			if self
 				.services
 				.pdu_metadata
-				.is_event_soft_failed(&redact_id)
-				.await?
+				.is_event_soft_failed(&redact_id)?
 			{
 				warn!(
 					redact_id = %redact_id,

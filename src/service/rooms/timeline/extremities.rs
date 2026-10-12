@@ -325,8 +325,7 @@ impl Service {
 			let flagged = self
 				.services
 				.pdu_metadata
-				.verdict_flagged_batch(&non_outlier_ids)
-				.await?;
+				.verdict_flagged_batch(&non_outlier_ids)?;
 			for (short_id, event_id) in non_outlier_pairs {
 				if flagged.contains(&event_id) {
 					bridge_event_ids.insert(short_id);

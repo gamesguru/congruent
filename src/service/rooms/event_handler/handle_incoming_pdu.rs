@@ -188,12 +188,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 ) -> Result<Option<RawPduId>> {
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
-		if self
-			.services
-			.pdu_metadata
-			.is_event_accepted(event_id)
-			.await?
-		{
+		if self.services.pdu_metadata.is_event_accepted(event_id)? {
 			return Ok(Some(pdu_id));
 		}
 	}
@@ -214,16 +209,8 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			.get_pdu_outlier(event_id)
 			.await
 			.unwrap();
-		let is_accepted = self
-			.services
-			.pdu_metadata
-			.is_event_accepted(event_id)
-			.await?;
-		let is_rejected = self
-			.services
-			.pdu_metadata
-			.is_event_rejected(event_id)
-			.await?;
+		let is_accepted = self.services.pdu_metadata.is_event_accepted(event_id)?;
+		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id)?;
 		info!(
 			"Native retry interception: event {event_id} is_accepted={is_accepted} \
 			 is_rejected={is_rejected}"
@@ -232,7 +219,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// Fast local check: are all auth events AND prev_events NOW in the timeline?
 			let mut all_deps_satisfied = true;
 			for aid in pdu.auth_events() {
-				if !self.services.pdu_metadata.is_event_accepted(aid).await? {
+				if !self.services.pdu_metadata.is_event_accepted(aid)? {
 					info!("Native retry: auth event {aid} not accepted");
 					all_deps_satisfied = false;
 					break;
@@ -457,8 +444,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				if self
 					.services
 					.pdu_metadata
-					.is_event_permanently_rejected(mid)
-					.await?
+					.is_event_permanently_rejected(mid)?
 				{
 					info!(
 						"Event {event_id} rejected: missing auth event {mid} is already marked \
@@ -468,14 +454,11 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						.outlier
 						.add_pdu_outlier(event_id, &value, Some(room_id))
 						.await;
-					self.services
-						.pdu_metadata
-						.mark_event_rejected(
-							event_id,
-							&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
-								.with_detail(mid),
-						)
-						.await?;
+					self.services.pdu_metadata.mark_event_rejected(
+						event_id,
+						&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
+							.with_detail(mid),
+					)?;
 					return Ok(None);
 				}
 			}
@@ -700,14 +683,11 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// `DependsOnRejectedAuthEvent` tag would overwrite and lose that
 			// original, more specific rejection reason.
 			if msg.contains("Event depends on rejected auth event") {
-				self.services
-					.pdu_metadata
-					.mark_event_rejected(
-						event_id,
-						&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
-							.with_detail(msg),
-					)
-					.await?;
+				self.services.pdu_metadata.mark_event_rejected(
+					event_id,
+					&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
+						.with_detail(msg),
+				)?;
 			}
 			return Ok(None);
 		},
@@ -802,14 +782,11 @@ pub async fn process_timeline_upgrade(
 			.outlier
 			.add_pdu_outlier(&event_id, &val, Some(room_id))
 			.await;
-		self.services
-			.pdu_metadata
-			.mark_event_rejected(
-				&event_id,
-				&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
-					.with_detail("prev_event contained structurally invalid data"),
-			)
-			.await?;
+		self.services.pdu_metadata.mark_event_rejected(
+			&event_id,
+			&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
+				.with_detail("prev_event contained structurally invalid data"),
+		)?;
 		return Err(err!(Request(InvalidParam(
 			"prev_event contained structurally invalid data"
 		))));

@@ -239,7 +239,6 @@ impl Service {
 			.services
 			.pdu_metadata
 			.verdict_flagged_batch(&verdict_ids)
-			.await
 			// An unreadable verdict classes every parent as flagged: fail closed.
 			.unwrap_or_else(|error| {
 				conduwuit::warn!(?error, "verdict batch unreadable; treating parents as flagged");

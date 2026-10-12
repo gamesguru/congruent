@@ -224,7 +224,7 @@ where
 				}
 
 				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
-					let rejected = match meta.is_event_rejected(&pdu.event_id).await {
+					let rejected = match meta.is_event_rejected(&pdu.event_id) {
 						| Ok(rejected) => rejected,
 						| Err(error) => {
 							warn!(

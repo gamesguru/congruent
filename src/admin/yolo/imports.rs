@@ -346,19 +346,22 @@ pub(super) async fn import_pdus(
 			}
 			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
 				if is_rejected {
-					self.services
+					if let Err(error) = self
+						.services
 						.rooms
 						.pdu_metadata
-						.mark_event_rejected_skip_visibility_check(
-							&eid,
-							"imported as rejected",
-						)?;
+						.mark_event_rejected_skip_visibility_check(&eid, "imported as rejected")
+					{
+						warn!(%error, %eid, "failed to record rejection verdict");
+					}
 				}
 				if is_soft_failed {
-					self.services.rooms.pdu_metadata.mark_event_soft_failed(
+					if let Err(error) = self.services.rooms.pdu_metadata.mark_event_soft_failed(
 						&eid,
 						conduwuit_service::rooms::pdu_metadata::SoftFailCode::Imported,
-					)?;
+					) {
+						warn!(%error, %eid, "failed to record soft-fail verdict");
+					}
 				}
 			}
 			info!(

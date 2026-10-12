@@ -1317,7 +1317,6 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 		.rooms
 		.pdu_metadata
 		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
-		.await
 		.unwrap();
 
 	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
@@ -1379,7 +1378,6 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 		.rooms
 		.pdu_metadata
 		.mark_event_rejected(&rejected_event_id, "test: never accepted into timeline")
-		.await
 		.unwrap();
 
 	// Passing only ineligible candidates must not empty or corrupt the stored

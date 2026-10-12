@@ -28,8 +28,7 @@ pub(crate) async fn get_event_route(
 	if services
 		.rooms
 		.pdu_metadata
-		.is_event_rejected(&body.event_id)
-		.await?
+		.is_event_rejected(&body.event_id)?
 	{
 		return Err!(Request(NotFound("Event not found. Rejected perhaps ;P")));
 	}

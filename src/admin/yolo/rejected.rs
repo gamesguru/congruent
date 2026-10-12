@@ -21,14 +21,12 @@ pub(super) async fn manage_rejected(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_rejected(event_id)
-			.await?;
+			.is_event_rejected(event_id)?;
 		let is_soft_failed = self
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(event_id)
-			.await?;
+			.is_event_soft_failed(event_id)?;
 
 		if unreject {
 			if is_rejected {
@@ -48,14 +46,10 @@ pub(super) async fn manage_rejected(
 			}
 		} else {
 			if !is_rejected {
-				self.services
-					.rooms
-					.pdu_metadata
-					.mark_event_rejected(
-						event_id,
-						"manually rejected via admin command manage-rejected",
-					)
-					.await?;
+				self.services.rooms.pdu_metadata.mark_event_rejected(
+					event_id,
+					"manually rejected via admin command manage-rejected",
+				)?;
 				changed = changed.saturating_add(1);
 			} else {
 				already = already.saturating_add(1);
@@ -154,8 +148,7 @@ pub(super) async fn unreject_room(
 				.services
 				.rooms
 				.pdu_metadata
-				.is_event_rejected(event_id)
-				.await?
+				.is_event_rejected(event_id)?
 			{
 				total = total.saturating_add(1);
 				if !dry_run {
@@ -171,8 +164,7 @@ pub(super) async fn unreject_room(
 					.services
 					.rooms
 					.pdu_metadata
-					.is_event_soft_failed(event_id)
-					.await?
+					.is_event_soft_failed(event_id)?
 			{
 				if !dry_run {
 					self.services
@@ -269,8 +261,7 @@ pub(super) async fn list_rejected(
 				.services
 				.rooms
 				.pdu_metadata
-				.is_event_rejected(event_id)
-				.await?
+				.is_event_rejected(event_id)?
 			{
 				show = true;
 				is_rej = true;
@@ -281,8 +272,7 @@ pub(super) async fn list_rejected(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(event_id)
-			.await?
+			.is_event_soft_failed(event_id)?
 		{
 			show = true;
 			is_soft = true;
@@ -306,16 +296,14 @@ pub(super) async fn list_rejected(
 				self.services
 					.rooms
 					.pdu_metadata
-					.get_rejection_reason(event_id)
-					.await?
+					.get_rejection_reason(event_id)?
 					.filter(|r| !r.is_empty())
 					.map_or(String::new(), |r| format!("\tReason: {r}"))
 			} else if is_soft {
 				self.services
 					.rooms
 					.pdu_metadata
-					.get_soft_fail_reason(event_id)
-					.await?
+					.get_soft_fail_reason(event_id)?
 					.filter(|r| !r.is_empty())
 					.map_or(String::new(), |r| format!("\tReason: {r}"))
 			} else {

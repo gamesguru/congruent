@@ -75,14 +75,12 @@ pub(super) async fn list_outliers(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_rejected(&event_id)
-			.await?;
+			.is_event_rejected(&event_id)?;
 		let is_soft_failed = self
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(&event_id)
-			.await?;
+			.is_event_soft_failed(&event_id)?;
 
 		let status =
 			super::outlier_utils::OutlierStatus { is_stuck, is_rejected, is_soft_failed };
@@ -118,16 +116,14 @@ pub(super) async fn list_outliers(
 			self.services
 				.rooms
 				.pdu_metadata
-				.get_rejection_reason(&event_id)
-				.await?
+				.get_rejection_reason(&event_id)?
 				.filter(|r| !r.is_empty())
 				.map_or(String::new(), |r| format!("\tReason: {r}"))
 		} else if is_soft_failed {
 			self.services
 				.rooms
 				.pdu_metadata
-				.get_soft_fail_reason(&event_id)
-				.await?
+				.get_soft_fail_reason(&event_id)?
 				.filter(|r| !r.is_empty())
 				.map_or(String::new(), |r| format!("\tReason: {r}"))
 		} else {
