@@ -1230,8 +1230,9 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		.unwrap();
 	assert_eq!(counts.events, 4);
 
+	let text = String::from_utf8(out).unwrap();
 	let mut events = std::collections::HashMap::new();
-	for line in String::from_utf8(out).unwrap().lines() {
+	for line in text.lines() {
 		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
 		else {
 			panic!("export line is not an object");
@@ -1253,6 +1254,111 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
 		Some(redaction.as_str().to_owned())
 	);
+
+	assert_matches_fixture("tests/fixtures/mtxdb-export/room-v1.jsonl", &text);
+}
+
+/// Compare an export's lines with a checked-in fixture, ignoring line order.
+/// The mtxdb CLI imports the same file in its own tests, so a drift in either
+/// repo's format shows up as a failure on that side. Regenerate with
+/// `UPDATE_EXPORT_FIXTURES=1`.
+fn assert_matches_fixture(path: &str, actual: &str) {
+	let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+		.join("../..")
+		.join(path);
+	if std::env::var_os("UPDATE_EXPORT_FIXTURES").is_some() {
+		std::fs::write(&path, actual).unwrap();
+	}
+	let fixture = std::fs::read_to_string(&path)
+		.unwrap_or_else(|e| panic!("fixture {} missing: {e}", path.display()));
+	let sorted = |text: &str| {
+		let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+		lines.sort();
+		lines
+	};
+	assert_eq!(sorted(actual), sorted(&fixture), "export drifted from {}", path.display());
+}
+
+#[conduwuit_macros::async_test]
+async fn test_keys_export_carries_every_kind_and_payload() {
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use slipstream::{
+		MilliSecondsSinceUnixEpoch,
+		api::federation::discovery::{ServerSigningKeys, VerifyKey},
+		sswire::Base64,
+	};
+
+	use crate::server_keys::FetchSource;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let origin: slipstream::OwnedServerName = "keys.example.org".try_into().unwrap();
+	let payload = |ids: &[(&str, u8)]| {
+		let mut keys = ServerSigningKeys::new(
+			origin.to_owned(),
+			MilliSecondsSinceUnixEpoch(4_102_444_800_000_u64.try_into().unwrap()),
+		);
+		for (id, byte) in ids {
+			keys.verify_keys.insert(
+				format!("ed25519:{id}").try_into().unwrap(),
+				VerifyKey::new(Base64::new(vec![*byte; 32])),
+			);
+		}
+		Raw::new(&keys).unwrap()
+	};
+
+	// A direct fetch binds key A permanently (historical + corroborated); a
+	// later notary relay introduces B, which stays provisional, and its raw
+	// body is kept as the notary record.
+	let notary_body = payload(&[("A", 0x11), ("B", 0x22)]);
+	services
+		.server_keys
+		.add_signing_keys(&payload(&[("A", 0x11)]), FetchSource::Direct)
+		.await
+		.unwrap();
+	services
+		.server_keys
+		.add_signing_keys(&notary_body, FetchSource::Notary)
+		.await
+		.unwrap();
+
+	let mut out = Vec::new();
+	let counts = services
+		.server_keys
+		.export_keys_jsonl(&mut out)
+		.await
+		.unwrap();
+	assert_eq!(
+		(counts.historical, counts.provisional, counts.corroborated, counts.notary),
+		(1, 1, 1, 1)
+	);
+	let text = String::from_utf8(out).unwrap();
+
+	let mut by_kind = std::collections::HashMap::new();
+	for line in text.lines() {
+		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
+		else {
+			panic!("export line is not an object");
+		};
+		assert_eq!(object["t"].as_str(), Some("server_keys"));
+		assert_eq!(object["origin"].as_str(), Some("keys.example.org"));
+		let bytes = STANDARD
+			.decode(object["payload"].as_str().unwrap())
+			.unwrap();
+		by_kind.insert(object["kind"].as_str().unwrap().to_owned(), bytes);
+	}
+	assert_eq!(by_kind.len(), 4, "one record per kind: {:?}", by_kind.keys());
+
+	let ids = |kind: &str| -> Vec<String> {
+		slipstream::codec::from_slice(&by_kind[kind]).expect("key id array")
+	};
+	assert_eq!(ids("provisional"), ["ed25519:B"]);
+	assert_eq!(ids("corroborated"), ["ed25519:A"]);
+	let historical: ServerSigningKeys =
+		slipstream::codec::from_slice(&by_kind["historical"]).unwrap();
+	assert_eq!(historical.verify_keys.len(), 2, "A and B are both in the cumulative record");
+	assert_eq!(by_kind["notary"], notary_body.get().as_bytes(), "notary body is verbatim");
+
+	assert_matches_fixture("tests/fixtures/mtxdb-export/server-keys-v1.jsonl", &text);
 }
 
 /// Outliers are exported with `outlier: true`, an event stored as both a
