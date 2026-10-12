@@ -1054,3 +1054,81 @@ async fn test_orphan_scan_dry_run_skips_rooms_without_usable_roots() {
 	assert_eq!(report.skipped.bad_room_id, 2);
 	assert_eq!(report.orphan_count(), 0);
 }
+
+#[conduwuit_macros::async_test]
+async fn test_room_export_carries_verdicts_and_redactions() {
+	use crate::rooms::pdu_metadata::{RejectionCode, SoftFailCode};
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = room_id!("!export:test.conduwuit.local").to_owned();
+	let ok = event_id!("$ok:test.conduwuit.local").to_owned();
+	let soft = event_id!("$soft:test.conduwuit.local").to_owned();
+	let rejected = event_id!("$rejected:test.conduwuit.local").to_owned();
+	let redacted = event_id!("$redacted:test.conduwuit.local").to_owned();
+	let redaction = event_id!("$redaction:test.conduwuit.local").to_owned();
+
+	for (id, kind) in [
+		(&ok, "m.room.topic"),
+		(&soft, "m.room.name"),
+		(&rejected, "m.room.alias"),
+		(&redacted, "m.room.avatar"),
+	] {
+		persist_dummy_pdu(&services, &room_id, &create_dummy_pdu(&room_id, id, kind, "")).await;
+	}
+
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_soft_failed(&soft, SoftFailCode::Manual)
+		.unwrap();
+	services
+		.rooms
+		.pdu_metadata
+		.mark_event_rejected(&rejected, RejectionCode::AuthCheckFailed.tag())
+		.unwrap();
+	let shortroomid = services
+		.rooms
+		.short
+		.get_or_create_shortroomid(&room_id)
+		.await;
+	let reason = create_dummy_pdu(&room_id, &redaction, "m.room.redaction", "");
+	services
+		.rooms
+		.timeline
+		.redact_pdu(&redacted, &reason, shortroomid)
+		.await
+		.expect("redaction must be recorded");
+
+	let mut out = Vec::new();
+	let counts = services
+		.rooms
+		.state
+		.export_room_jsonl(&room_id, &mut out)
+		.await
+		.unwrap();
+	assert_eq!(counts.events, 4);
+
+	let mut events = std::collections::HashMap::new();
+	for line in String::from_utf8(out).unwrap().lines() {
+		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
+		else {
+			panic!("export line is not an object");
+		};
+		if object.get("t").and_then(|t| t.as_str()) == Some("event") {
+			events.insert(object["event_id"].as_str().unwrap().to_owned(), object);
+		}
+	}
+	let field = |id: &EventId, name: &str| events[id.as_str()].get(name).cloned();
+	// The importer treats these codes as opaque bytes; pin the numbers so a
+	// renumbered enum cannot silently change what an export means.
+	assert_eq!(field(&soft, "soft_fail_code").and_then(|v| v.as_u64()), Some(2));
+	assert_eq!(field(&rejected, "rejection_code").and_then(|v| v.as_u64()), Some(7));
+	assert_eq!(field(&soft, "soft_failed"), Some(true.into()));
+	assert_eq!(field(&rejected, "rejected"), Some(true.into()));
+	assert_eq!(field(&ok, "rejected"), Some(false.into()));
+	assert!(field(&ok, "soft_fail_code").is_none() && field(&ok, "redacted_by").is_none());
+	assert_eq!(
+		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
+		Some(redaction.as_str().to_owned())
+	);
+}
