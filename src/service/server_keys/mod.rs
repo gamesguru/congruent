@@ -1048,7 +1048,7 @@ fn raw_signing_keys_for_sync(&self, origin: &ServerName) -> Result<Raw<ServerSig
 		conduwuit_mtxdb::server_keys::KeyRecordKind::Notary,
 		origin,
 	)?
-	.ok_or_else(|| err!(Database("No signing-key record for {origin}")))
+	.ok_or_else(|| err!(Request(NotFound("No signing-key record for {origin}"))))
 }
 
 #[implement(Service)]
