@@ -47,6 +47,32 @@ impl StateAdapter {
 			.get_many(self.shard, &self.nodes_collection, node_ids)
 	}
 
+	/// Shadow-write a room's current root pointer.
+	pub fn put_room_root(&self, room_id: &[u8], root_bytes: &[u8]) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(self.shard, self.room_root_collection, derive_id(b"room", room_id), root_bytes)?;
+		tx.commit()
+	}
+
+	/// Shadow-write an event's associated state root.
+	pub fn put_event_root(&self, event_id: &[u8], root_bytes: &[u8]) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(
+			self.shard,
+			self.event_root_collection,
+			derive_id(b"event", event_id),
+			root_bytes,
+		)?;
+		tx.commit()
+	}
+
+	/// Shadow-write one content-addressed HAMT node.
+	pub fn put_node(&self, node_id: NodeId, bytes: &[u8]) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		tx.put(self.shard, self.nodes_collection, node_id, bytes)?;
+		tx.commit()
+	}
+
 	pub fn publish_state_update(
 		&self,
 		tx: &MtxdbTransaction<'_>,

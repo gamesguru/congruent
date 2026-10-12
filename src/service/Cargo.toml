@@ -78,6 +78,7 @@ blurhash.workspace = true
 bytes.workspace = true
 conduwuit-core.workspace = true
 conduwuit-database.workspace = true
+conduwuit-mtxdb.workspace = true
 conduwuit-macros.workspace = true
 const-str.workspace = true
 ctor.workspace = true

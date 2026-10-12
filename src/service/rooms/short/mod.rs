@@ -737,10 +737,15 @@ mod tests {
 		}));
 
 		let db = Database::open(&server).expect("failed to open database");
+		let mtxdb_path = server.config.database_path.join("mtxdb-test");
+		let mtxdb = Arc::new(
+			conduwuit_mtxdb::store::MtxdbStore::open(mtxdb_path).expect("failed to open mtxdb"),
+		);
 		let service_map = Arc::new(conduwuit::SyncRwLock::new(BTreeMap::new()));
 
 		let globals_service = globals::Service::build(crate::Args {
 			db: &db,
+			mtxdb: &mtxdb,
 			server: &server,
 			service: &service_map,
 		})
@@ -755,6 +760,7 @@ mod tests {
 
 		let short_service = Service::build(crate::Args {
 			db: &db,
+			mtxdb: &mtxdb,
 			server: &server,
 			service: &service_map,
 		})

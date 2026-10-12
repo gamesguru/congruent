@@ -14,7 +14,11 @@ impl crate::Service for Service {
 		let state_hamt_node_mtimes = args.db["state_hamt_node_mtimes"].clone();
 
 		Ok(Arc::new(Self {
-			store: store::Store::new(state_hamt_nodes, state_hamt_node_mtimes),
+			store: store::Store::new(
+				state_hamt_nodes,
+				state_hamt_node_mtimes,
+				args.mtxdb.clone(),
+			),
 		}))
 	}
 

@@ -50,6 +50,7 @@ impl WriteStats {
 
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 pub struct Store {
+	mtxdb: conduwuit_mtxdb::state::StateAdapter,
 	/// RocksDB column family containing the densely persisted nodes.
 	db: Arc<Map>,
 
@@ -73,12 +74,17 @@ pub struct Store {
 
 impl Store {
 	/// Creates a HAMT node store backed by the node and mtime maps.
-	pub fn new(db: Arc<Map>, node_mtimes: Arc<Map>) -> Self {
+	pub fn new(
+		db: Arc<Map>,
+		node_mtimes: Arc<Map>,
+		mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
+	) -> Self {
 		// Use a generic capacity for now. In a full production setup, this
 		// could be wired to a config value like other caches.
 		let node_cache = moka::sync::Cache::builder().max_capacity(100_000).build();
 
 		Self {
+			mtxdb: conduwuit_mtxdb::state::StateAdapter::new(mtxdb),
 			db,
 			node_mtimes,
 			node_cache,
@@ -209,14 +215,14 @@ impl Store {
 	/// the grace window and the node's durability are updated atomically.
 	pub fn put_node_batch<'a>(&'a self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'a>) {
 		let hash = node.structural_hash;
+		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
+		let bytes = persisted.encode_v1();
+		self.shadow_put_node(&hash, &bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			self.node_cache.insert(hash, node);
 			return;
 		}
-
-		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
-		let bytes = persisted.encode_v1();
 
 		self.node_cache.insert(hash, node);
 		self.db.batch_put(batch, hash.as_ref(), bytes.as_slice());
@@ -232,18 +238,28 @@ impl Store {
 	/// process restarts, and it would be re-emitted on every subsequent
 	/// materialization of the same subtree.
 	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) -> Result<()> {
+		let node = Self::decode_node(&hash, bytes)?;
+		self.shadow_put_node(&hash, bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			return Ok(());
 		}
 
-		let node = Self::decode_node(&hash, bytes)?;
 		self.db.insert(&hash, bytes);
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
 
 		Ok(())
+	}
+
+	fn shadow_put_node(&self, hash: &StructuralHash, bytes: &[u8]) {
+		if let Err(error) = self
+			.mtxdb
+			.put_node(conduwuit_mtxdb::keys::derive_id(b"hamt-node", hash.as_ref()), bytes)
+		{
+			conduwuit::warn!(?error, "Failed to shadow-write HAMT node to mtxdb");
+		}
 	}
 
 	/// Persists a node and all of its resolved children recursively.

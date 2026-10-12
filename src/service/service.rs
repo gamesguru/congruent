@@ -50,6 +50,7 @@ pub(crate) trait Service: Any + Send + Sync {
 pub(crate) struct Args<'a> {
 	pub(crate) server: &'a Arc<Server>,
 	pub(crate) db: &'a Arc<Database>,
+	pub(crate) mtxdb: &'a Arc<conduwuit_mtxdb::store::MtxdbStore>,
 	pub(crate) service: &'a Arc<Map>,
 }
 

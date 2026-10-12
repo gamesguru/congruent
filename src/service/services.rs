@@ -53,17 +53,24 @@ pub struct Services {
 	pub(crate) service: Arc<Map>,
 	pub server: Arc<Server>,
 	pub db: Arc<Database>,
+	pub mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>,
 }
 
 impl Services {
 	#[allow(clippy::cognitive_complexity)]
 	pub fn build(server: Arc<Server>) -> Result<Arc<Self>> {
 		let db = Database::open(&server)?;
+		let mtxdb_path = server.config.database_path.join("mtxdb");
+		let mtxdb =
+			Arc::new(conduwuit_mtxdb::store::MtxdbStore::open(mtxdb_path).map_err(|error| {
+				conduwuit::err!(Database(error!("Opening mtxdb sidecar: {error}")))
+			})?);
 		let service: Arc<Map> = Arc::new(SyncRwLock::new(BTreeMap::new()));
 		macro_rules! build {
 			($tyname:ty) => {{
 				let built = <$tyname>::build(Args {
 					db: &db,
+					mtxdb: &mtxdb,
 					server: &server,
 					service: &service,
 				})?;
@@ -131,6 +138,7 @@ impl Services {
 			service,
 			server,
 			db,
+			mtxdb,
 		}))
 	}
 

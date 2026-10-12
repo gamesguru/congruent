@@ -134,6 +134,7 @@ struct Services {
 }
 
 struct Data {
+	mtxdb_state: conduwuit_mtxdb::state::StateAdapter,
 	roomid_pduleaves: Arc<Map>,
 	roomid_roothandle: Arc<Map>,
 	shorteventid_roothandle: Arc<Map>,
@@ -166,6 +167,7 @@ impl crate::Service for Service {
 				pdu_metadata: args.depend::<rooms::pdu_metadata::Service>("rooms::pdu_metadata"),
 			},
 			db: Data {
+				mtxdb_state: conduwuit_mtxdb::state::StateAdapter::new(args.mtxdb.clone()),
 				roomid_pduleaves: args.db["roomid_pduleaves"].clone(),
 				roomid_roothandle: args.db["roomid_roothandle"].clone(),
 				shorteventid_roothandle: args.db["shorteventid_roothandle"].clone(),
@@ -435,6 +437,21 @@ impl Service {
 		}
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
+		if let Err(error) = self
+			.db
+			.mtxdb_state
+			.put_event_root(new_pdu.event_id().as_bytes(), &serialized)
+		{
+			warn!(?error, event_id = %new_pdu.event_id(), "Failed to shadow-write event HAMT root to mtxdb");
+		}
+		if is_state
+			&& let Err(error) = self
+				.db
+				.mtxdb_state
+				.put_room_root(room_id.as_bytes(), &serialized)
+		{
+			warn!(?error, %room_id, "Failed to shadow-write room HAMT root to mtxdb");
+		}
 
 		// Update the derived membership/participation caches for the state
 		// transition. `state_root_handle` is the *post*-event root, so the delta
@@ -764,6 +781,9 @@ impl Service {
 		self.db
 			.roomid_roothandle
 			.insert(room_id.as_str().as_bytes(), &data);
+		if let Err(error) = self.db.mtxdb_state.put_room_root(room_id.as_bytes(), &data) {
+			warn!(?error, %room_id, "Failed to shadow-write room HAMT root to mtxdb");
+		}
 	}
 
 	/// Returns the room's current HAMT RootHandle.
@@ -842,6 +862,13 @@ impl Service {
 		self.db
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
+		if let Err(error) = self
+			.db
+			.mtxdb_state
+			.put_event_root(event_id.as_bytes(), &data)
+		{
+			warn!(?error, %event_id, "Failed to shadow-write event HAMT root to mtxdb");
+		}
 		Ok(())
 	}
 

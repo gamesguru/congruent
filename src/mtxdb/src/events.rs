@@ -10,6 +10,7 @@ use crate::{
 	store::{CollectionId, MtxdbStore, MtxdbTransaction},
 };
 
+#[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
 	pdu_collection: CollectionId,
@@ -75,6 +76,19 @@ impl EventAdapter {
 		tx.put(ShardType::EventDag, self.prev_edges_collection, node, &prev)?;
 		tx.put(ShardType::EventDag, self.auth_edges_collection, node, &auth)?;
 		Ok(())
+	}
+
+	/// Atomically writes an event body and its direct DAG/auth edges.
+	pub fn write_event_with_edges(
+		&self,
+		event_id: &[u8],
+		event_body: &[u8],
+		prev_events: &[&[u8]],
+		auth_events: &[&[u8]],
+	) -> Result<(), StorageError> {
+		let tx = self.store.begin_transaction();
+		self.put_event_with_edges(&tx, event_id, event_body, prev_events, auth_events)?;
+		tx.commit()
 	}
 
 	fn serialize_edges(edges: &[&[u8]]) -> Result<Vec<u8>, StorageError> {

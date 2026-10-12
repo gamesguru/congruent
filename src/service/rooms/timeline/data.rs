@@ -25,6 +25,7 @@ use crate::{Dep, rooms, rooms::short::ShortRoomId};
 
 #[derive(Clone)]
 pub(super) struct Data {
+	mtxdb_events: conduwuit_mtxdb::events::EventAdapter,
 	eventid_pduid: Arc<Map>,
 	userroomid_highlightcount: Arc<Map>,
 	userroomid_notificationcount: Arc<Map>,
@@ -50,6 +51,7 @@ impl Data {
 	pub(super) fn new(args: &crate::Args<'_>) -> Self {
 		let db = &args.db;
 		Self {
+			mtxdb_events: conduwuit_mtxdb::events::EventAdapter::new(args.mtxdb.clone()),
 			eventid_pduid: db["eventid_pduid"].clone(),
 			userroomid_highlightcount: db["userroomid_highlightcount"].clone(),
 			userroomid_notificationcount: db["userroomid_notificationcount"].clone(),
@@ -1185,6 +1187,17 @@ impl Data {
 		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
 
 		let event_id_bytes = pdu.event_id.as_bytes();
+		let event_json = slipstream::codec::to_string(json);
+		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
+		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();
+		if let Err(error) = self.mtxdb_events.write_event_with_edges(
+			event_id_bytes,
+			event_json.as_bytes(),
+			&prev_events,
+			&auth_events,
+		) {
+			conduwuit::warn!(?error, event_id = %pdu.event_id, "Failed shadow-writing event in mtxdb");
+		}
 		let existing_metadata = if let Ok(bytes) = self.eventid_metadata.get(event_id_bytes).await
 		{
 			rooms::timeline::EventMetadata::from_bincode(&bytes).ok()

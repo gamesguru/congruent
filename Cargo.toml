@@ -423,6 +423,11 @@ package = "conduwuit_database"
 path = "src/database"
 default-features = false
 
+[workspace.dependencies.conduwuit-mtxdb]
+package = "conduwuit_mtxdb"
+path = "src/mtxdb"
+default-features = false
+
 [workspace.dependencies.conduwuit-core]
 package = "conduwuit_core"
 path = "src/core"
