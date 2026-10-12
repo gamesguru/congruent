@@ -230,13 +230,12 @@ impl Services {
 				.map_err(|error| {
 					conduwuit::err!(Database(error!("Checking mtxdb signing-key data: {error}")))
 				})?;
-		let has_mtxdb_short_ids =
-			conduwuit_mtxdb::shortids::ShortIdAdapter::new(self.mtxdb.clone())
-				.map_err(|error| {
-					conduwuit::err!(Database(error!("Checking mtxdb short id data: {error}")))
-				})?
-				.last_allocated()
-				> 0;
+		let has_mtxdb_short_ids = conduwuit_mtxdb::shortids::ShortIdAdapter::has_any_records(
+			&self.mtxdb,
+		)
+		.map_err(|error| {
+			conduwuit::err!(Database(error!("Checking mtxdb short id data: {error}")))
+		})?;
 		if has_legacy_events || has_legacy_signing_keys {
 			return Err(conduwuit::err!(Database(error!(
 				"This legacy database has no mtxdb import marker and still contains event or \
@@ -372,4 +371,75 @@ fn add_service(map: &Arc<Map>, s: Arc<dyn Service>, a: Arc<dyn Any + Send + Sync
 	trace!("built service #{len}: {name:?}");
 	map.write()
 		.insert(name.to_owned(), (Arc::downgrade(&s), Arc::downgrade(&a)));
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{
+		fs,
+		sync::{
+			Arc,
+			atomic::{AtomicU64, Ordering},
+		},
+	};
+
+	use conduwuit::{
+		Server,
+		config::Config,
+		log::{Log, LogLevelReloadHandles, capture},
+	};
+
+	use super::Services;
+
+	static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+	struct TestDb(std::path::PathBuf);
+
+	impl Drop for TestDb {
+		fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+	}
+
+	#[conduwuit_macros::async_test]
+	async fn startup_refuses_short_ids_without_import_marker() {
+		let _serial = crate::DB_TEST_MUTEX.lock().await;
+		let _ = rustls::crypto::ring::default_provider().install_default();
+		let count = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
+		let db_path = std::env::temp_dir().join(format!(
+			"conduwuit_services_marker_test_{}_{}",
+			std::process::id(),
+			count
+		));
+		let _ = fs::remove_dir_all(&db_path);
+		let _guard = TestDb(db_path.clone());
+
+		let config_raw = conduwuit::config::RawConfig::from_toml(&format!(
+			r#"
+				server_name = "test.conduwuit.local"
+				database_path = "{}"
+				"#,
+			db_path.to_string_lossy().replace('\\', "/")
+		))
+		.expect("failed to parse test config");
+		let config = Config::new(&config_raw).expect("failed to validate test config");
+		let runtime_handle = ();
+		let server = Arc::new(Server::new(config, Some(&runtime_handle), Log {
+			reload: LogLevelReloadHandles,
+			capture: Arc::new(capture::State),
+		}));
+		let services = Services::build(server).expect("failed to build test services");
+		conduwuit_mtxdb::shortids::ShortIdAdapter::new(services.mtxdb.clone())
+			.expect("failed to open short-id adapter")
+			.allocate_events(&[b"$partial:example.org"])
+			.expect("failed to write short-id record");
+
+		let error = services
+			.check_import_marker()
+			.await
+			.expect_err("startup accepted short-id data without an import marker");
+		assert!(
+			error
+				.to_string()
+				.contains("mtxdb data but no valid import marker")
+		);
+	}
 }
