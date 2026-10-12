@@ -114,6 +114,7 @@ impl Service {
 					}
 
 					Self::sweep_state_hamt_nodes(&state, delete).await;
+					Self::report_state_hamt_shadow_sweep(&state).await;
 				}
 			}));
 		}
@@ -137,6 +138,34 @@ impl Service {
 
 			debug!(target: "forwardfill", "Starting periodic forward-fill sweep...");
 			self.scan_all_rooms(PERIODIC_STALE_THRESHOLD_MS).await;
+		}
+	}
+
+	/// Dry run of an orphan sweep over the mtxdb shadow store, logged after each
+	/// node sweep. It never deletes: standalone node writes can still land before
+	/// their roots, so the shadow store is not yet safe to sweep.
+	async fn report_state_hamt_shadow_sweep(state: &crate::rooms::state::Service) {
+		use crate::rooms::state_hamt::shadow_sweep::sample;
+
+		match state.sweep_hamt_nodes_shadow_dry_run().await {
+			| Ok(report) => {
+				info!(
+					target: "state_hamt",
+					"HAMT shadow sweep (dry run): {} rooms scanned, {} skipped {:?}; {} of {} \
+					 shadow nodes unreachable from their room's roots; {} persisted across two runs",
+					report.rooms.len(),
+					report.skipped.total(),
+					report.skipped,
+					report.shadow_orphans(),
+					report.shadow_nodes(),
+					report.persisted_two_passes,
+				);
+				let examples = report.rooms.iter().flat_map(|room| room.orphans.iter());
+				debug!(target: "state_hamt", "shadow orphan examples: {:?}", sample(examples));
+			},
+			| Err(error) => {
+				warn!(target: "state_hamt", "HAMT shadow sweep (dry run) failed: {error}");
+			},
 		}
 	}
 

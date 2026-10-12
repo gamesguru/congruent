@@ -1012,3 +1012,142 @@ async fn test_verifying_reads_count_shadow_outcomes_and_serve_rocksdb() {
 		.expect("cached read");
 	assert_eq!(store.shadow_read_stats().snapshot(), after, "cache hits skip verification");
 }
+
+/// Every structural hash in a resolved tree.
+fn tree_hashes(root: &Arc<rezzy::hamt::HamtNode<u64, u64>>) -> Vec<[u8; 32]> {
+	let mut hashes = Vec::new();
+	let mut pending = vec![root.clone()];
+	while let Some(current) = pending.pop() {
+		hashes.push(current.structural_hash);
+		for child in &current.children {
+			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
+				pending.push(child_node.clone());
+			}
+		}
+	}
+	hashes
+}
+
+fn shadow_prefix(hash: &[u8; 32]) -> [u8; 16] {
+	let mut prefix = [0_u8; 16];
+	prefix.copy_from_slice(&hash[..16]);
+	prefix
+}
+
+/// The shadow dry run reports the nodes no root of a room reaches, stops
+/// calling a node an orphan once a root reaches it, and skips a room it cannot
+/// judge rather than reporting its nodes as garbage.
+#[conduwuit_macros::async_test]
+async fn test_shadow_sweep_dry_run_reports_unrooted_nodes_and_skips_rooms_it_cannot_judge() {
+	use rezzy::incremental::LtHash;
+
+	use crate::rooms::state_hamt::shadow_sweep::ShadowRoomInput;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!sweep:test.conduwuit.local").unwrap();
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let store = &services.rooms.state_hamt.store;
+	let input = ShadowRoomInput {
+		room_id: room_id.as_bytes().to_vec(),
+		structural_key,
+	};
+
+	let build = |base: u64| {
+		let entries = (0_u64..128).map(move |key| (key, key.checked_add(base).unwrap()));
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
+			.expect("build HAMT")
+	};
+
+	// Tree A is rooted: its nodes are stored and the room's roots name it.
+	let (handle_a, node_a) = build(1000);
+	let hashes_a = tree_hashes(&node_a);
+	assert!(hashes_a.len() > 1, "fixture must be a multi-level HAMT");
+	store.persist_node_recursive(room_id.as_bytes(), node_a);
+	let root_a = super::root_handle_to_bytes(&handle_a);
+	shadow.put_room_root(room_id.as_bytes(), &root_a).unwrap();
+	shadow
+		.put_event_root(room_id.as_bytes(), b"$a:test.conduwuit.local", &root_a)
+		.unwrap();
+
+	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	assert_eq!(report.skipped.total(), 0, "{:?}", report.skipped);
+	assert_eq!(report.rooms.len(), 1);
+	assert_eq!(report.rooms[0].nodes, hashes_a.len());
+	assert!(report.rooms[0].orphans.is_empty(), "everything is reachable from A");
+
+	// Tree B is stored but no root names it: exactly its own nodes are orphans.
+	let (handle_b, node_b) = build(5000);
+	let hashes_b = tree_hashes(&node_b);
+	store.persist_node_recursive(room_id.as_bytes(), node_b);
+	let mut expected: Vec<[u8; 16]> = hashes_b
+		.iter()
+		.filter(|hash| !hashes_a.contains(hash))
+		.map(shadow_prefix)
+		.collect();
+	expected.sort_unstable();
+	assert!(!expected.is_empty());
+
+	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	assert_eq!(report.rooms.len(), 1);
+	assert_eq!(report.rooms[0].orphans, expected);
+	assert_eq!(report.shadow_orphans(), expected.len());
+
+	// A root now names B: nothing is an orphan any more.
+	shadow
+		.put_event_root(
+			room_id.as_bytes(),
+			b"$b:test.conduwuit.local",
+			&super::root_handle_to_bytes(&handle_b),
+		)
+		.unwrap();
+	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	assert!(report.rooms[0].orphans.is_empty());
+
+	// A reachable node the shadow store lacks makes the walk incomplete. The
+	// room is skipped, not reported as having orphans.
+	let missing = *hashes_a.last().expect("fixture has hashes");
+	let tx = services.mtxdb.begin_transaction();
+	shadow
+		.remove_nodes(&tx, room_id.as_bytes(), &[conduwuit_mtxdb::keys::hamt_node_id(&missing)])
+		.unwrap();
+	tx.commit().unwrap();
+	let report = store.shadow_sweep_dry_run(std::slice::from_ref(&input), 0);
+	assert!(report.rooms.is_empty());
+	assert_eq!(report.skipped.incomplete_walk, 1, "{:?}", report.skipped);
+}
+
+#[conduwuit_macros::async_test]
+async fn test_shadow_sweep_dry_run_skips_rooms_without_usable_roots() {
+	use crate::rooms::state_hamt::shadow_sweep::ShadowRoomInput;
+
+	let (_guard, _server, services) = setup_test_services().await;
+	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	let store = &services.rooms.state_hamt.store;
+
+	let empty = slipstream::OwnedRoomId::parse("!empty:test.conduwuit.local").unwrap();
+	let garbage = slipstream::OwnedRoomId::parse("!garbage:test.conduwuit.local").unwrap();
+	// A node stored with no roots at all must not read as "everything is garbage".
+	shadow
+		.put_node(empty.as_bytes(), &[1; 32], b"node")
+		.unwrap();
+	shadow
+		.put_event_root(garbage.as_bytes(), b"$e:test.conduwuit.local", b"not a root handle")
+		.unwrap();
+
+	let rooms = [&empty, &garbage].map(|room| ShadowRoomInput {
+		room_id: room.as_bytes().to_vec(),
+		structural_key: crate::rooms::state_hamt::room_structural_key(
+			&services.globals.server_secret,
+			room,
+		),
+	});
+	let report = store.shadow_sweep_dry_run(&rooms, 2);
+
+	assert!(report.rooms.is_empty());
+	assert_eq!(report.skipped.no_shadow_roots, 1);
+	assert_eq!(report.skipped.undecodable_root, 1);
+	assert_eq!(report.skipped.bad_room_id, 2);
+	assert_eq!(report.shadow_orphans(), 0);
+}

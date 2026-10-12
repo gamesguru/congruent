@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use conduwuit::Result;
 
+pub mod shadow_sweep;
 pub mod store;
 
 pub struct Service {

@@ -1,5 +1,6 @@
 //! Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 use std::{
+	collections::HashSet,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
@@ -7,12 +8,16 @@ use std::{
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use conduwuit::{Result, err};
+use conduwuit::{Result, err, warn};
 use database::{Batch, Map};
 use futures::TryStreamExt;
 use rezzy::{
 	hamt::{HamtNode, PersistedInternalNode, RootHandle, StructuralHash},
 	incremental::LtHash,
+};
+
+use super::shadow_sweep::{
+	NodePrefix, RoomOrphans, ShadowRoomInput, ShadowSweepReport, SkipReason,
 };
 
 /// A node's structural hash and encoded bytes, held back so it can be
@@ -112,6 +117,9 @@ pub struct Store {
 
 	/// Redundant-write counters for the content-addressed elision below.
 	write_stats: WriteStats,
+
+	/// Candidate set from the previous scheduled dry-run invocation.
+	shadow_previous_candidates: std::sync::Mutex<HashSet<super::shadow_sweep::Candidate>>,
 }
 
 impl Store {
@@ -132,6 +140,7 @@ impl Store {
 			node_mtimes,
 			node_cache,
 			write_stats: WriteStats::default(),
+			shadow_previous_candidates: std::sync::Mutex::new(HashSet::new()),
 		}
 	}
 
@@ -682,6 +691,140 @@ impl Store {
 		Ok(report)
 	}
 
+	/// Dry run: list the HAMT nodes in each room's mtxdb shadow store that none
+	/// of the room's shadow roots reach.
+	///
+	/// Never deletes and never writes. Reachability is rezzy's
+	/// `walk_reachable_node_hashes`, driven through the shadow store alone (no
+	/// RocksDB reads, no node cache), so a node the shadow lacks makes the room
+	/// incomplete and it is skipped rather than reported as garbage. A room
+	/// whose roots collection changed during the scan is skipped too, as a live
+	/// sweep's version pin would abort on it.
+	#[must_use]
+	pub fn shadow_sweep_dry_run(
+		&self,
+		rooms: &[ShadowRoomInput],
+		bad_room_ids: usize,
+	) -> ShadowSweepReport {
+		let mut report = ShadowSweepReport::default();
+		for _ in 0..bad_room_ids {
+			report.skipped.count(SkipReason::BadRoomId);
+		}
+
+		for room in rooms {
+			match self.scan_shadow_room(room) {
+				| Ok(RoomScan::Skipped(reason)) => report.skipped.count(reason),
+				| Ok(RoomScan::Scanned { universe, reachable }) => {
+					let mut orphans: Vec<NodePrefix> = universe
+						.iter()
+						.filter(|prefix| !reachable.contains(*prefix))
+						.copied()
+						.collect();
+					orphans.sort_unstable();
+					report.rooms.push(RoomOrphans {
+						room_id: room.room_id.clone(),
+						nodes: universe.len(),
+						orphans,
+					});
+				},
+				| Err(error) => {
+					warn!(?error, "shadow sweep could not read a room's shadow store");
+					report.skipped.count(SkipReason::Io);
+				},
+			}
+		}
+
+		let candidates: HashSet<super::shadow_sweep::Candidate> = report
+			.rooms
+			.iter()
+			.flat_map(|room| {
+				room.orphans.iter().map(|node| {
+					(conduwuit_mtxdb::keys::room_state_collection_id(&room.room_id), *node)
+				})
+			})
+			.collect();
+		let mut previous = self
+			.shadow_previous_candidates
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		report.persisted_two_passes =
+			super::shadow_sweep::persisted_candidates(&candidates, &previous);
+		*previous = candidates;
+
+		report
+	}
+
+	/// Walk one room's shadow roots through the shadow store alone and list its
+	/// nodes and the ones its roots reach. Skips the room, with a reason, when
+	/// the answer could not be trusted.
+	fn scan_shadow_room(&self, room: &ShadowRoomInput) -> Result<RoomScan> {
+		let shadow_err = |error: conduwuit_mtxdb::StorageError| err!(Database(error!("{error}")));
+
+		// The version is read before the roots, so a publish after this point
+		// is visible as a change when it is read again below.
+		let snapshot = self.mtxdb.room_roots(&room.room_id).map_err(shadow_err)?;
+		let roots_version = snapshot.version;
+		if snapshot.roots.is_empty() {
+			return Ok(RoomScan::Skipped(SkipReason::NoShadowRoots));
+		}
+
+		let mut handles = Vec::with_capacity(snapshot.roots.len());
+		for bytes in &snapshot.roots {
+			match crate::rooms::state::root_handle_from_bytes(bytes) {
+				| Ok(handle) => handles.push(handle),
+				| Err(_) => return Ok(RoomScan::Skipped(SkipReason::UndecodableRoot)),
+			}
+		}
+		handles.sort_unstable_by_key(|handle| handle.structural_hash);
+		handles.dedup_by_key(|handle| handle.structural_hash);
+
+		let mut resolver =
+			|hash: &StructuralHash| -> std::result::Result<Arc<HamtNode<u64, u64>>, Missing> {
+				match self.get_shadow_node_verified(&room.room_id, &room.structural_key, hash) {
+					| Ok(Some(node)) => Ok(node),
+					| Ok(None) | Err(_) => Err(Missing),
+				}
+			};
+
+		let mut seen: std::collections::BTreeSet<StructuralHash> =
+			std::collections::BTreeSet::new();
+		for handle in &handles {
+			let Ok(Some(root_node)) = self.get_shadow_node_verified(
+				&room.room_id,
+				&room.structural_key,
+				&handle.structural_hash,
+			) else {
+				return Ok(RoomScan::Skipped(SkipReason::IncompleteWalk));
+			};
+			if rezzy::hamt::delta::walk_reachable_node_hashes(
+				&root_node,
+				&mut resolver,
+				&mut |hash| seen.insert(hash),
+			)
+			.is_err()
+			{
+				return Ok(RoomScan::Skipped(SkipReason::IncompleteWalk));
+			}
+		}
+
+		let universe = self
+			.mtxdb
+			.room_node_ids(&room.room_id)
+			.map_err(shadow_err)?;
+		let reachable = seen.iter().map(prefix_of).collect();
+
+		if self
+			.mtxdb
+			.roots_version(&room.room_id)
+			.map_err(shadow_err)?
+			!= roots_version
+		{
+			return Ok(RoomScan::Skipped(SkipReason::RootsChanged));
+		}
+
+		Ok(RoomScan::Scanned { universe, reachable })
+	}
+
 	/// Returns the recorded persistence time (unix milliseconds) of a node, if
 	/// any.
 	///
@@ -733,6 +876,25 @@ impl Store {
 	pub fn root_handle(&self, structural_hash: StructuralHash, lattice: &LtHash) -> RootHandle {
 		RootHandle::from_lthash(structural_hash, lattice)
 	}
+}
+
+/// A node the shadow store could not supply during a walk.
+struct Missing;
+
+/// Outcome of scanning one room's shadow store.
+enum RoomScan {
+	Skipped(SkipReason),
+	Scanned {
+		universe: Vec<NodePrefix>,
+		reachable: HashSet<NodePrefix>,
+	},
+}
+
+/// The 16-byte key a node is stored under in mtxdb.
+fn prefix_of(hash: &StructuralHash) -> NodePrefix {
+	let mut prefix = [0_u8; 16];
+	prefix.copy_from_slice(&hash[..16]);
+	prefix
 }
 
 /// Current unix time in milliseconds.

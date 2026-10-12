@@ -939,6 +939,42 @@ impl Service {
 			.await
 	}
 
+	/// Dry run of an orphan sweep over the mtxdb shadow store: lists, per room,
+	/// the shadow HAMT nodes no shadow root reaches. Reads and reports only.
+	///
+	/// Rooms come from `roomid_roothandle`, whose key is the room id the shadow
+	/// store is also keyed by.
+	pub async fn sweep_hamt_nodes_shadow_dry_run(
+		&self,
+	) -> Result<rooms::state_hamt::shadow_sweep::ShadowSweepReport> {
+		let mut rooms = Vec::new();
+		let mut bad_room_ids = 0_usize;
+		let mut stream = self.db.roomid_roothandle.raw_stream();
+		while let Some(kv) = stream.next().await {
+			let (key, _): database::KeyVal<'_> = kv?;
+			let Some(room_id) = std::str::from_utf8(key)
+				.ok()
+				.and_then(|text| OwnedRoomId::parse(text).ok())
+			else {
+				bad_room_ids = bad_room_ids.saturating_add(1);
+				continue;
+			};
+			rooms.push(rooms::state_hamt::shadow_sweep::ShadowRoomInput {
+				room_id: key.to_vec(),
+				structural_key: rooms::state_hamt::room_structural_key(
+					&self.services.globals.server_secret,
+					&room_id,
+				),
+			});
+		}
+
+		Ok(self
+			.services
+			.state_hamt
+			.store
+			.shadow_sweep_dry_run(&rooms, bad_room_ids))
+	}
+
 	pub fn get_forward_extremities<'a>(
 		&'a self,
 		room_id: &'a RoomId,
