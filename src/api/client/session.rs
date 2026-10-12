@@ -495,7 +495,6 @@ pub(crate) async fn logout_all_route(
 /// transaction ID deduplication carries over to the new access token.
 ///
 /// <https://spec.matrix.org/v1.3/client-server-api/#post_matrixclientv3refresh>
-#[tracing::instrument(skip_all, fields(%client), name = "refresh", level = "info")]
 pub(crate) async fn refresh_token_route(
 	State(services): State<crate::State>,
 	ClientIp(client): ClientIp,
