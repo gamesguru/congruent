@@ -589,12 +589,33 @@ async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
 	let room_id = slipstream::OwnedRoomId::parse("!mtxdb-hamt:test.conduwuit.local").unwrap();
 	let structural_key =
 		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
-	let (_, node) = rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), [(
-		17_u64, 29_u64,
-	)])
-	.expect("build HAMT node");
+	let entries = (0_u64..128).map(|key| {
+		(
+			key,
+			key.checked_add(1000)
+				.expect("fixture value must fit in u64"),
+		)
+	});
+	let (_, node) =
+		rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), entries)
+			.expect("build HAMT node");
 	let hash = node.structural_hash;
 	let bytes = PersistedInternalNode::from(node.as_ref()).encode_v1();
+	let mut nodes = Vec::new();
+	let mut pending = vec![node.clone()];
+	while let Some(current) = pending.pop() {
+		let children: Vec<_> = current
+			.children
+			.iter()
+			.filter_map(|child| match child {
+				| rezzy::hamt::NodeRef::Resolved(child_node) => Some(child_node.clone()),
+				| rezzy::hamt::NodeRef::Lazy(_) => None,
+			})
+			.collect();
+		pending.extend(children);
+		nodes.push(current);
+	}
+	assert!(nodes.len() > 1, "fixture must contain a multi-level HAMT");
 
 	services
 		.rooms
@@ -611,12 +632,59 @@ async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(room_id.as_bytes(), node);
+		.persist_node_recursive(room_id.as_bytes(), node.clone());
+	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
+	for node in &nodes {
+		let node_hash = node.structural_hash;
+		let rocksdb_node = services.db["state_hamt_nodes"]
+			.get_blocking(&node_hash)
+			.expect("read RocksDB HAMT node");
+		let shadow_node = shadow
+			.get_nodes(room_id.as_bytes(), &[node_hash])
+			.expect("read mtxdb HAMT node");
+		assert_eq!(shadow_node[0].as_deref(), Some(&*rocksdb_node));
+		services
+			.rooms
+			.state_hamt
+			.store
+			.get_shadow_node_verified(room_id.as_bytes(), &structural_key, &node_hash)
+			.expect("verify mtxdb HAMT node")
+			.expect("recursive shadow write must be present");
+	}
+
+	// Re-emitting an already durable multi-level tree must not write nodes to
+	// mtxdb again, through either recursive or batched persistence.
+	services
+		.rooms
+		.state_hamt
+		.store
+		.persist_node_recursive(room_id.as_bytes(), node.clone());
+	let shadow_writes_after_first = services
+		.rooms
+		.state_hamt
+		.store
+		.write_stats()
+		.shadow_writes();
+	let mut batch = database::Batch::new();
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_node_batch(room_id.as_bytes(), node, &mut batch);
+	assert_eq!(
+		services
+			.rooms
+			.state_hamt
+			.store
+			.write_stats()
+			.shadow_writes(),
+		shadow_writes_after_first,
+		"encoded, batched, and recursive writes of a durable node must not rewrite mtxdb"
+	);
 
 	let rocksdb_bytes = services.db["state_hamt_nodes"]
 		.get_blocking(&hash)
 		.expect("read RocksDB node");
-	let shadow = conduwuit_mtxdb::state::StateAdapter::new(services.mtxdb.clone());
 	let mtxdb_bytes = shadow
 		.get_nodes(room_id.as_bytes(), &[hash])
 		.expect("read mtxdb node");
@@ -663,6 +731,16 @@ async fn test_mtxdb_shadow_node_bytes_and_full_hash_verification() {
 			.checked_sub(elided_before)
 			.expect("elision counter moved backwards"),
 		2
+	);
+	assert_eq!(
+		services
+			.rooms
+			.state_hamt
+			.store
+			.write_stats()
+			.shadow_writes(),
+		shadow_writes_after_first,
+		"durable-node elision must also skip mtxdb writes"
 	);
 }
 

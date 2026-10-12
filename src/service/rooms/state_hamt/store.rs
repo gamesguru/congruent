@@ -39,6 +39,8 @@ pub struct WriteStats {
 	/// Node writes skipped because the content-addressed node was already
 	/// durable.
 	pub elided: AtomicU64,
+	/// Successful shadow writes issued to mtxdb.
+	pub shadow_written: AtomicU64,
 }
 
 impl WriteStats {
@@ -47,6 +49,10 @@ impl WriteStats {
 	pub fn snapshot(&self) -> (u64, u64) {
 		(self.written.load(Ordering::Relaxed), self.elided.load(Ordering::Relaxed))
 	}
+
+	/// Number of successful mtxdb shadow-write operations.
+	#[must_use]
+	pub fn shadow_writes(&self) -> u64 { self.shadow_written.load(Ordering::Relaxed) }
 }
 
 /// Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
@@ -247,20 +253,21 @@ impl Store {
 		batch: &mut Batch<'a>,
 	) {
 		let hash = node.structural_hash;
-		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
-		let bytes = persisted.encode_v1();
-		self.shadow_put_node(room_id, &hash, &bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			self.node_cache.insert(hash, node);
 			return;
 		}
 
+		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
+		let bytes = persisted.encode_v1();
+
 		self.node_cache.insert(hash, node);
 		self.db.batch_put(batch, hash.as_ref(), bytes.as_slice());
 		self.node_mtimes
 			.batch_put(batch, hash.as_ref(), unix_millis().to_be_bytes());
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
+		self.shadow_put_node(room_id, &hash, &bytes);
 	}
 
 	/// Stores an already-encoded node and records its persistence time.
@@ -275,24 +282,30 @@ impl Store {
 		hash: StructuralHash,
 		bytes: &[u8],
 	) -> Result<()> {
-		let node = Self::decode_node(&hash, bytes)?;
-		self.shadow_put_node(room_id, &hash, bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			return Ok(());
 		}
 
+		let node = Self::decode_node(&hash, bytes)?;
+
 		self.db.insert(&hash, bytes);
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
+		self.shadow_put_node(room_id, &hash, bytes);
 
 		Ok(())
 	}
 
 	fn shadow_put_node(&self, room_id: &[u8], hash: &StructuralHash, bytes: &[u8]) {
-		if let Err(error) = self.mtxdb.put_node(room_id, hash, bytes) {
-			conduwuit::warn!(?error, "Failed to shadow-write HAMT node to mtxdb");
+		match self.mtxdb.put_node(room_id, hash, bytes) {
+			| Ok(()) => {
+				self.write_stats
+					.shadow_written
+					.fetch_add(1, Ordering::Relaxed);
+			},
+			| Err(error) => conduwuit::warn!(?error, "Failed to shadow-write HAMT node to mtxdb"),
 		}
 	}
 
