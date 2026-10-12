@@ -285,7 +285,7 @@ pub async fn room_state_get_hamt_legacy(
 #[implement(super::Service)]
 pub fn state_full_ids_hamt<'a>(
 	&'a self,
-	room_id: &RoomId,
+	room_id: &'a RoomId,
 	root_handle: &'a rezzy::hamt::RootHandle,
 ) -> futures::stream::BoxStream<'a, Result<(ShortStateKey, OwnedEventId)>> {
 	self.state_full_shortids_hamt(room_id, root_handle.clone())
@@ -304,11 +304,11 @@ pub fn state_full_ids_hamt<'a>(
 
 /// Returns a Stream of all the full state PDUs for a given RootHandle.
 #[implement(super::Service)]
-pub fn state_full_pdus_hamt(
-	&self,
-	room_id: &RoomId,
+pub fn state_full_pdus_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = impl Event> + Send + '_ {
+) -> impl Stream<Item = impl Event> + Send + 'a {
 	let short_ids = self
 		.state_full_shortids_hamt(room_id, root_handle)
 		.ignore_err()
@@ -329,11 +329,11 @@ pub fn state_full_pdus_hamt(
 /// PDU lookup failures are emitted as `Err` items instead of being dropped, so
 /// callers that cache or serve a snapshot can fail closed on partial state.
 #[implement(super::Service)]
-pub fn state_full_pdus_hamt_strict(
-	&self,
-	room_id: &RoomId,
+pub fn state_full_pdus_hamt_strict<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = Result<Pdu>> + Send + '_ {
+) -> impl Stream<Item = Result<Pdu>> + Send + 'a {
 	self.state_full_shortids_hamt(room_id, root_handle)
 		.map(move |result| async move {
 			let (_, short_id) = result?;
@@ -350,11 +350,11 @@ pub fn state_full_pdus_hamt_strict(
 /// Returns a Stream of all the full state (type, key, event) for a given
 /// RootHandle.
 #[implement(super::Service)]
-pub fn state_full_hamt(
-	&self,
-	room_id: &RoomId,
+pub fn state_full_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + '_ {
+) -> impl Stream<Item = ((StateEventType, StateKey), impl Event)> + Send + 'a {
 	self.state_full_pdus_hamt(room_id, root_handle)
 		.ready_filter_map(|pdu| Some(((pdu.kind().clone().into(), pdu.state_key()?.into()), pdu)))
 }
@@ -364,7 +364,7 @@ pub fn state_full_hamt(
 #[implement(super::Service)]
 pub fn state_keys_with_ids_hamt<'a, Id>(
 	&'a self,
-	room_id: &RoomId,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
 	event_type: &'a StateEventType,
 ) -> impl Stream<Item = (StateKey, Id)> + Send + 'a
@@ -443,11 +443,11 @@ pub fn state_added_hamt(
 
 #[implement(super::Service)]
 /// Streams every short state-key and short event-ID pair in a HAMT root.
-pub fn state_full_shortids_hamt(
-	&self,
-	room_id: &RoomId,
+pub fn state_full_shortids_hamt<'a>(
+	&'a self,
+	room_id: &'a RoomId,
 	root_handle: rezzy::hamt::RootHandle,
-) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + '_ {
+) -> impl Stream<Item = Result<(ShortStateKey, ShortEventId)>> + Send + 'a {
 	let room_id = room_id.to_owned();
 	let load = async move {
 		let mut entries: Vec<_> = self

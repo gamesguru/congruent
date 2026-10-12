@@ -403,16 +403,16 @@ impl Service {
 	}
 
 	pub async fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
-		self.db.get_soft_fail_reason(event_id).await
+		self.db.get_soft_fail_reason(event_id)
 	}
 
 	#[inline]
 	pub async fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
-		self.db.is_event_soft_failed(event_id).await
+		self.db.is_event_soft_failed(event_id)
 	}
 
 	pub async fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
-		self.db.is_event_rejected(event_id).await
+		self.db.is_event_rejected(event_id)
 	}
 
 	/// Returns the subset of `event_ids` carrying a rejection or soft-fail
@@ -428,7 +428,7 @@ impl Service {
 	}
 
 	pub async fn mark_event_rejected(&self, event_id: &EventId, reason: &str) -> Result<()> {
-		self.db.mark_event_rejected(event_id, reason).await
+		self.db.mark_event_rejected(event_id, reason)
 	}
 
 	/// Directly marks an event as rejected, bypassing timeline checks.
@@ -451,7 +451,7 @@ impl Service {
 	/// Returns true if the event is not rejected. Soft-failed events ARE
 	/// accepted for auth purposes (used in federation/state-res contexts).
 	pub async fn is_event_accepted(&self, event_id: &EventId) -> Result<bool> {
-		Ok(self.db.get_rejection_code(event_id).await?.is_none())
+		Ok(self.db.get_rejection_code(event_id)?.is_none())
 	}
 
 	/// Returns true if the event is in the timeline and should be visible
@@ -464,8 +464,7 @@ impl Service {
 	pub async fn get_rejection_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		Ok(self
 			.db
-			.get_rejection_code(event_id)
-			.await?
+			.get_rejection_code(event_id)?
 			.map(|code| code.tag().to_owned()))
 	}
 
@@ -492,8 +491,7 @@ impl Service {
 		// true` on a stale reason).
 		Ok(self
 			.db
-			.get_rejection_code(event_id)
-			.await?
+			.get_rejection_code(event_id)?
 			.is_some_and(|code| !code.is_retryable()))
 	}
 
@@ -517,7 +515,7 @@ impl Service {
 	/// problem.
 	pub async fn is_event_pending_auth_resolution(&self, event_id: &EventId) -> Result<bool> {
 		Ok(matches!(
-			self.db.get_rejection_code(event_id).await?,
+			self.db.get_rejection_code(event_id)?,
 			Some(RejectionCode::MissingAuthEvent)
 		))
 	}
@@ -539,7 +537,7 @@ impl Service {
 		// Single read for the same reason as `is_event_permanently_rejected`:
 		// avoid a TOCTOU window between an `is_event_rejected` check and a
 		// separate `get_rejection_reason` read.
-		let Some(code) = self.db.get_rejection_code(event_id).await? else {
+		let Some(code) = self.db.get_rejection_code(event_id)? else {
 			return Ok(false);
 		};
 		if code.is_retryable() {
@@ -581,7 +579,7 @@ impl Service {
 		&self,
 		event_id: &EventId,
 	) -> Result<bool> {
-		let Some(code) = self.db.get_rejection_code(event_id).await? else {
+		let Some(code) = self.db.get_rejection_code(event_id)? else {
 			return Ok(true);
 		};
 		Ok(match code {
@@ -624,7 +622,7 @@ impl Service {
 		// unknown, not "not rejected". Clearing the markers (or reporting
 		// success) on such a failed read would erase or wrongly accept a
 		// rejection whose state we never actually observed.
-		let code = match self.db.get_rejection_code(event_id).await {
+		let code = match self.db.get_rejection_code(event_id) {
 			| Ok(code) => code,
 			| Err(e) if e.is_not_found() => {
 				debug!(%event_id, "No rejection marker found after promotion; treating event as accepted");

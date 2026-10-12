@@ -188,7 +188,12 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 ) -> Result<Option<RawPduId>> {
 	// Skip if it's already an accepted timeline event.
 	if let Ok(pdu_id) = self.services.timeline.get_pdu_id(event_id).await {
-		if self.services.pdu_metadata.is_event_accepted(event_id).await {
+		if self
+			.services
+			.pdu_metadata
+			.is_event_accepted(event_id)
+			.await?
+		{
 			return Ok(Some(pdu_id));
 		}
 	}
@@ -209,8 +214,16 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			.get_pdu_outlier(event_id)
 			.await
 			.unwrap();
-		let is_accepted = self.services.pdu_metadata.is_event_accepted(event_id).await;
-		let is_rejected = self.services.pdu_metadata.is_event_rejected(event_id).await;
+		let is_accepted = self
+			.services
+			.pdu_metadata
+			.is_event_accepted(event_id)
+			.await?;
+		let is_rejected = self
+			.services
+			.pdu_metadata
+			.is_event_rejected(event_id)
+			.await?;
 		info!(
 			"Native retry interception: event {event_id} is_accepted={is_accepted} \
 			 is_rejected={is_rejected}"
@@ -219,7 +232,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 			// Fast local check: are all auth events AND prev_events NOW in the timeline?
 			let mut all_deps_satisfied = true;
 			for aid in pdu.auth_events() {
-				if !self.services.pdu_metadata.is_event_accepted(aid).await {
+				if !self.services.pdu_metadata.is_event_accepted(aid).await? {
 					info!("Native retry: auth event {aid} not accepted");
 					all_deps_satisfied = false;
 					break;
@@ -445,7 +458,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 					.services
 					.pdu_metadata
 					.is_event_permanently_rejected(mid)
-					.await
+					.await?
 				{
 					info!(
 						"Event {event_id} rejected: missing auth event {mid} is already marked \

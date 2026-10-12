@@ -492,7 +492,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 					.services
 					.pdu_metadata
 					.take_retry_if_rejection_retryable_for_promotion(&event_id)
-					.await
+					.await?
 				{
 					continue;
 				}
@@ -540,7 +540,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 			.services
 			.pdu_metadata
 			.take_retry_if_rejection_retryable_for_promotion(&event_id)
-			.await
+			.await?
 		{
 			outlier_state_event_ids.push(event_id);
 		}
@@ -1061,7 +1061,12 @@ pub async fn promote_outlier_batch<'a>(
 	// A concurrent retry may have rejected this event after the caller's
 	// earlier metadata check but before we acquired the insertion lock.
 	// Do not promote an event that is now explicitly rejected.
-	if self.services.pdu_metadata.is_event_rejected(event_id).await {
+	if self
+		.services
+		.pdu_metadata
+		.is_event_rejected(event_id)
+		.await?
+	{
 		warn!(
 			target: "backfill_debug",
 			%event_id,
@@ -1079,7 +1084,7 @@ pub async fn promote_outlier_batch<'a>(
 		.services
 		.pdu_metadata
 		.is_event_soft_failed(event_id)
-		.await
+		.await?
 	{
 		warn!(
 			target: "backfill_debug",
@@ -1139,7 +1144,16 @@ pub async fn promote_outlier_batch<'a>(
 pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
 	self.pending_promotions.release_promotion_claim(event_id);
 
-	if !self.services.pdu_metadata.finish_promotion(event_id).await {
+	let finished = self
+		.services
+		.pdu_metadata
+		.finish_promotion(event_id)
+		.await
+		.unwrap_or_else(|error| {
+			error!(target: "backfill_debug", %event_id, %room_id, ?error, "promote_outlier: could not read the rejection verdict");
+			true
+		});
+	if !finished {
 		error!(
 			target: "backfill_debug",
 			%event_id,

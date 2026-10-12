@@ -62,11 +62,19 @@ where
 		// simply failing) are worth retrying, since a retry can supply the
 		// missing data this time.
 		let exists = self.services.timeline.pdu_exists(id).await;
-		let retry_worthy = if self.services.pdu_metadata.is_event_rejected(id).await {
+		let retry_worthy = if self
+			.services
+			.pdu_metadata
+			.is_event_rejected(id)
+			.await
+			.unwrap_or(false)
+		{
 			self.services
 				.pdu_metadata
 				.get_rejection_reason(id)
 				.await
+				.ok()
+				.flatten()
 				.is_some_and(|reason| {
 					crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 				})

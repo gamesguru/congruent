@@ -11,7 +11,6 @@ use conduwuit::{
 		string_from_bytes, u64_from_u8,
 	},
 };
-use conduwuit_mtxdb::store::{CollectionId, NodeId};
 use database::{Interfix, Map};
 use futures::{Stream, StreamExt};
 use slipstream::{EventId, OwnedEventId, RoomId, UserId, api::Direction};
@@ -160,17 +159,13 @@ impl Data {
 		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()))
 	}
 
-	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
-		Ok(self.get_soft_fail_code(event_id).await?.is_some())
+	pub(super) fn is_event_soft_failed(&self, event_id: &EventId) -> Result<bool> {
+		Ok(self.get_soft_fail_code(event_id)?.is_some())
 	}
 
-	pub(super) async fn get_soft_fail_reason(
-		&self,
-		event_id: &EventId,
-	) -> Result<Option<String>> {
+	pub(super) fn get_soft_fail_reason(&self, event_id: &EventId) -> Result<Option<String>> {
 		Ok(self
-			.get_soft_fail_code(event_id)
-			.await?
+			.get_soft_fail_code(event_id)?
 			.map(|code| code.tag().to_owned()))
 	}
 
@@ -190,8 +185,8 @@ impl Data {
 		})
 	}
 
-	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
-		Ok(self.get_rejection_code(event_id).await?.is_some())
+	pub(super) fn is_event_rejected(&self, event_id: &EventId) -> Result<bool> {
+		Ok(self.get_rejection_code(event_id)?.is_some())
 	}
 
 	/// Read the event's rejection marker from the authoritative mtxdb verdict.
@@ -232,7 +227,10 @@ impl Data {
 		}
 
 		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(|id| id.as_bytes()).collect();
-		let verdicts = self.mtxdb_verdicts.get_many(&event_id_refs)?;
+		let verdicts = self
+			.mtxdb_verdicts
+			.get_many(&event_id_refs)
+			.map_err(|error| err!(Database("Failed to batch-read mtxdb verdicts: {error}")))?;
 
 		let mut flagged = std::collections::HashSet::new();
 		for (event_id, verdict) in event_ids.iter().zip(verdicts) {

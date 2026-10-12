@@ -72,7 +72,12 @@ where
 			if self.services.timeline.non_outlier_pdu_exists(prev_id).await {
 				return Ok(false);
 			}
-			if self.services.pdu_metadata.is_event_rejected(prev_id).await {
+			if self
+				.services
+				.pdu_metadata
+				.is_event_rejected(prev_id)
+				.await?
+			{
 				// Read-only check here: whether we go on to actually retry is
 				// still gated by the further early-returns below (outlier JSON
 				// missing, unparsable, or too old), and we must not clear the
@@ -86,7 +91,7 @@ where
 					.services
 					.pdu_metadata
 					.get_rejection_reason(prev_id)
-					.await
+					.await?
 					.is_some_and(|reason| {
 						crate::rooms::pdu_metadata::is_retryable_rejection_reason(&reason)
 					});
@@ -120,7 +125,7 @@ where
 		.services
 		.pdu_metadata
 		.get_rejection_reason(prev_id)
-		.await
+		.await?
 		.as_deref()
 		.and_then(RejectionCode::parse)
 		.is_some_and(|code| code == RejectionCode::StateResolutionFailedWithPrevsPresent)

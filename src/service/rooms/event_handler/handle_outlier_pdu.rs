@@ -59,7 +59,7 @@ where
 					.services
 					.pdu_metadata
 					.take_retry_if_rejection_retryable(event_id)
-					.await
+					.await?
 				{
 					info!(
 						target: "state_res_debug",
@@ -85,7 +85,12 @@ where
 						.pdu_metadata
 						.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
 						.await;
-				} else if self.services.pdu_metadata.is_event_rejected(event_id).await {
+				} else if self
+					.services
+					.pdu_metadata
+					.is_event_rejected(event_id)
+					.await?
+				{
 					return Err!(Request(Forbidden(
 						"Event {event_id} is already known and rejected"
 					)));
@@ -398,7 +403,7 @@ where
 			.services
 			.pdu_metadata
 			.is_event_permanently_rejected(aid)
-			.await
+			.await?
 		{
 			self.services
 				.pdu_metadata
@@ -425,7 +430,7 @@ where
 			.services
 			.pdu_metadata
 			.is_event_pending_auth_resolution(aid)
-			.await
+			.await?
 		{
 			// This auth event's *own* outlier auth check never completed
 			// (still marked `MissingAuthEvent` from a prior attempt) --
@@ -534,7 +539,7 @@ where
 			.services
 			.pdu_metadata
 			.is_event_permanently_rejected(id)
-			.await
+			.await?
 		{
 			self.services
 				.pdu_metadata
@@ -726,7 +731,7 @@ where
 			.services
 			.pdu_metadata
 			.is_event_permanently_rejected(mid)
-			.await
+			.await?
 		{
 			self.services
 				.pdu_metadata
@@ -994,7 +999,7 @@ where
 			.services
 			.pdu_metadata
 			.is_event_permanently_rejected(id)
-			.await;
+			.await?;
 		info!(
 			target: "state_res_debug",
 			%event_id,

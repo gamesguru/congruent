@@ -224,9 +224,18 @@ where
 				}
 
 				if let Ok(mut pdu) = timeline.get_pdu_in_room(Some(room_id), eid).await {
-					if meta.is_event_rejected(&pdu.event_id).await
-						&& timeline.non_outlier_pdu_exists(&pdu.event_id).await
-					{
+					let rejected = match meta.is_event_rejected(&pdu.event_id).await {
+						| Ok(rejected) => rejected,
+						| Err(error) => {
+							warn!(
+								%error,
+								event_id = %pdu.event_id,
+								"state_res: failed to read stale rejection flag"
+							);
+							false
+						},
+					};
+					if rejected && timeline.non_outlier_pdu_exists(&pdu.event_id).await {
 						warn!(
 							event_id = %pdu.event_id,
 							"state_res: clearing stale rejection flag on timeline event"

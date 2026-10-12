@@ -228,7 +228,13 @@ where
 		requested_seeds.push(id.to_owned());
 
 		if let Ok(local_pdu) = self.services.timeline.get_pdu(id).await {
-			if self.services.pdu_metadata.is_event_soft_failed(id).await {
+			if self
+				.services
+				.pdu_metadata
+				.is_event_soft_failed(id)
+				.await
+				.unwrap_or(false)
+			{
 				info!(target: "auth_chain", "Found known soft-failed outlier locally: {id}");
 			} else {
 				trace!("Found {id} in main timeline or outlier tree");
@@ -237,7 +243,13 @@ where
 			continue;
 		}
 
-		if self.services.pdu_metadata.is_event_soft_failed(id).await {
+		if self
+			.services
+			.pdu_metadata
+			.is_event_soft_failed(id)
+			.await
+			.unwrap_or(false)
+		{
 			warn!(target: "auth_chain", "Skipping unparsable soft-failed outlier: {id}");
 			continue;
 		}
@@ -383,6 +395,7 @@ where
 											.pdu_metadata
 											.is_event_soft_failed(&auth_event)
 											.await
+											.unwrap_or(false)
 										{
 											info!(target: "auth_chain", "Found known soft-failed auth event locally: {auth_event}");
 										}

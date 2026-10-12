@@ -326,7 +326,7 @@ impl Service {
 				.services
 				.pdu_metadata
 				.verdict_flagged_batch(&non_outlier_ids)
-				.await;
+				.await?;
 			for (short_id, event_id) in non_outlier_pairs {
 				if flagged.contains(&event_id) {
 					bridge_event_ids.insert(short_id);

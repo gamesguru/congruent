@@ -381,7 +381,7 @@ where
 			continue;
 		};
 		let Some(state_key) = pdu.state_key() else {
-			if self.services.pdu_metadata.is_event_rejected(&eid).await {
+			if self.services.pdu_metadata.is_event_rejected(&eid).await? {
 				continue;
 			}
 			return Err!(Database("Found non-state pdu in state events."));
@@ -391,7 +391,7 @@ where
 		// chain) must never represent resolved room state. If we have a valid
 		// local prior state event for this slot, use the local event ID;
 		// otherwise skip the slot completely.
-		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await
+		let target_eid = if self.services.pdu_metadata.is_event_rejected(&eid).await?
 			&& !self
 				.services
 				.pdu_metadata
