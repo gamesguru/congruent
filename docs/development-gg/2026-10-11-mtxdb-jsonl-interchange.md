@@ -134,6 +134,33 @@ the RocksDB short-auth edge table on a cache miss. Therefore writing mtxdb
 closures alone does not currently make the server consume them; the server-side
 cutover must precede the importer work that targets those records.
 
+#### Prerequisite: short IDs must live in mtxdb
+
+HAMT leaves are `(ShortStateKey, ShortEventId)` pairs of `u64`s allocated from
+counters in RocksDB (`eventid_shorteventid`, `shorteventid_eventid`,
+`statekey_shortstatekey`, `shortstatekey_statekey`). An mtxdb-only importer
+cannot allocate those ids, and a server that still resolves them from RocksDB
+cannot read a leaf the importer wrote. The importer must not write RocksDB, so
+this is a server change that precedes every state write:
+
+1. Back `rooms::short` with an mtxdb adapter: the four maps plus the two
+   counters. The server stays the allocator, and its caches stay in front.
+2. Allocation is atomic with the mapping write (one batch), so a crash cannot
+   leave a counter ahead of or behind its maps.
+3. The importer allocates through the same adapter and layouts (shared via
+   `mtxdb::interop`), in a deterministic order (events sorted by event ID, state
+   keys by first use in that order), so a repeated import yields identical ids
+   and therefore identical roots.
+4. The marker records the final counter values; startup refuses a store whose
+   counters are behind the highest mapped id.
+
+Hash-derived 64-bit ids are rejected: collisions become plausible at scale
+(about 2.7e-4 at 1e8 events) and a wider leaf would change the HAMT codec and
+every root hash.
+
+Order of work: short IDs, then roots and the auth-closure read path, then the
+importer writes, then round-trip validation.
+
 The root and closure rows above are derived from the complete event DAG and
 verdicts during the offline import. The marker is written only after they and
 the reachable HAMT nodes are committed. Round-trip validation must query the
