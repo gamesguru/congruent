@@ -1309,8 +1309,8 @@ async fn test_set_forward_extremities_excludes_ineligible_candidates() {
 	let (room_id, event_id) = create_test_room_with_message(&services, "eligible tip").await;
 
 	// A candidate we never appended anywhere: mark it rejected via the public
-	// pdu_metadata API. Since it has no prior metadata, this also implicitly
-	// flags it as an outlier (see `mark_event_rejected`'s doc comment).
+	// pdu_metadata API. Its verdict is flagged, so it must be skipped even
+	// though it has no event metadata row.
 	let rejected_event_id: OwnedEventId = "$fake_rejected_extremity_candidate_0000"
 		.try_into()
 		.unwrap();
@@ -1402,6 +1402,173 @@ async fn test_set_forward_extremities_all_ineligible_is_noop() {
 	assert_eq!(
 		extremities, baseline,
 		"an all-ineligible candidate set must leave existing extremities unchanged"
+	);
+}
+
+async fn forward_extremities_for_test(
+	services: &std::sync::Arc<service::Services>,
+	room_id: &slipstream::RoomId,
+) -> Vec<slipstream::OwnedEventId> {
+	use futures::StreamExt;
+
+	let mut extremities: Vec<slipstream::OwnedEventId> = services
+		.rooms
+		.state
+		.get_forward_extremities(room_id)
+		.collect()
+		.await;
+	extremities.sort();
+	extremities
+}
+
+async fn append_test_message(
+	services: &std::sync::Arc<service::Services>,
+	room_id: &slipstream::RoomId,
+	body: &str,
+) -> slipstream::OwnedEventId {
+	use conduwuit::pdu::PduBuilder;
+	use slipstream::events::room::message::RoomMessageEventContent;
+
+	let state_lock = services.rooms.state.mutex.lock(room_id).await;
+	services
+		.rooms
+		.timeline
+		.build_and_append_pdu(
+			PduBuilder::timeline(&RoomMessageEventContent::text_plain(body)),
+			services.globals.server_user.as_ref(),
+			Some(room_id),
+			&state_lock,
+		)
+		.await
+		.unwrap()
+}
+
+/// A candidate with no verdict and no event metadata row is unknown: it is
+/// skipped, and the valid tip alongside it is still persisted.
+#[conduwuit_macros::async_test]
+async fn test_set_forward_extremities_skips_unknown_metadata_tip() {
+	use slipstream::OwnedEventId;
+
+	let (_guard, services) = setup_test_services("set_forward_extremities_unknown_meta").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "valid tip").await;
+
+	let unknown: OwnedEventId = "$never_seen_extremity_candidate_0000".try_into().unwrap();
+	assert!(
+		services
+			.rooms
+			.timeline
+			.get_event_metadata(&unknown)
+			.await
+			.is_err_and(|error| error.is_not_found()),
+		"the candidate must have no metadata row"
+	);
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(
+			&room_id,
+			vec![unknown.clone(), event_id.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	assert_eq!(forward_extremities_for_test(&services, &room_id).await, vec![event_id]);
+}
+
+/// An outlier is not citable as a forward extremity, even with no verdict.
+#[conduwuit_macros::async_test]
+async fn test_set_forward_extremities_skips_outlier_tip() {
+	use slipstream::OwnedEventId;
+
+	let (_guard, services) = setup_test_services("set_forward_extremities_outlier").await;
+	let (room_id, event_id) = create_test_room_with_message(&services, "valid tip").await;
+
+	let outlier: OwnedEventId = "$outlier_extremity_candidate_0000".try_into().unwrap();
+	let mut json = services
+		.rooms
+		.timeline
+		.get_pdu_json(&event_id)
+		.await
+		.unwrap();
+	json.insert(
+		"room_id".into(),
+		slipstream::CanonicalJsonValue::String(room_id.as_str().to_owned()),
+	);
+	services
+		.rooms
+		.timeline
+		.add_pdu_outlier(&outlier, &json, Some(&room_id))
+		.await;
+	assert!(
+		services
+			.rooms
+			.timeline
+			.get_event_metadata(&outlier)
+			.await
+			.unwrap()
+			.is_outlier,
+		"the candidate must be stored as an outlier"
+	);
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(
+			&room_id,
+			vec![outlier.clone(), event_id.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	assert_eq!(forward_extremities_for_test(&services, &room_id).await, vec![event_id]);
+}
+
+/// The stored set is replaced exactly: old tips outside the new set are
+/// removed, and new tips are added, with no stale leaves left behind.
+#[conduwuit_macros::async_test]
+async fn test_set_forward_extremities_replaces_stored_set_exactly() {
+	let (_guard, services) = setup_test_services("set_forward_extremities_replace").await;
+	let (room_id, first) = create_test_room_with_message(&services, "first").await;
+	let second = append_test_message(&services, &room_id, "second").await;
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(
+			&room_id,
+			vec![first.clone(), second.clone()].into_iter(),
+			None,
+			&state_lock,
+		)
+		.await
+		.unwrap();
+
+	let mut both = vec![first.clone(), second.clone()];
+	both.sort();
+	assert_eq!(forward_extremities_for_test(&services, &room_id).await, both);
+
+	services
+		.rooms
+		.state
+		.set_forward_extremities(&room_id, vec![first.clone()].into_iter(), None, &state_lock)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	assert_eq!(
+		forward_extremities_for_test(&services, &room_id).await,
+		vec![first],
+		"the dropped tip must not linger in the stored set"
 	);
 }
 

@@ -586,6 +586,114 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 	);
 }
 
+/// Bulk mutations must handle removal, insertion, and both in one update, and
+/// leave every untouched entry intact when read back through the new root.
+#[conduwuit_macros::async_test]
+async fn test_bulk_state_update_insert_remove_and_mixed() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = slipstream::OwnedRoomId::parse("!test:test.conduwuit.local").unwrap();
+	let mutex = services.rooms.state.mutex.lock(&room_id).await;
+	let root = seed_membership_state(&services, &room_id, &mutex, 100).await;
+
+	let lattice = services
+		.rooms
+		.state
+		.get_root_lattice(&root)
+		.await
+		.expect("seeded root must have a retained lattice");
+	let structural_key =
+		crate::rooms::state_hamt::room_structural_key(&services.globals.server_secret, &room_id);
+	let initial = services
+		.rooms
+		.state_accessor
+		.load_full_state_hamt(&room_id, &root)
+		.expect("failed to load seeded state");
+	assert_eq!(initial.len(), 101);
+
+	let state_key = |user: &str| {
+		let services = &services;
+		let user = user.to_owned();
+		async move {
+			services
+				.rooms
+				.short
+				.get_or_create_shortstatekey(&StateEventType::RoomMember, &user)
+				.await
+		}
+	};
+	let event_value = |id: &str| {
+		let services = &services;
+		let id = slipstream::OwnedEventId::parse(id).unwrap();
+		async move { services.rooms.short.get_or_create_shorteventid(&id).await }
+	};
+
+	let apply = |prev: rezzy::hamt::RootHandle, mutations| {
+		let (services, room_id, structural_key, lattice) =
+			(&services, &room_id, &structural_key, &lattice);
+		async move {
+			let (handle, nodes) = services
+				.rooms
+				.state
+				.persist_state_hamt_mutations(room_id, structural_key, &prev, mutations, lattice)
+				.expect("bulk mutation failed");
+			services
+				.rooms
+				.state_hamt
+				.store
+				.publish_nodes(room_id.as_bytes(), &nodes)
+				.expect("failed to publish deferred nodes");
+			let state = services
+				.rooms
+				.state_accessor
+				.load_full_state_hamt(room_id, &handle)
+				.expect("failed to load mutated state");
+			(handle, state)
+		}
+	};
+
+	// Removal only.
+	let removed_key = state_key("@user3:test.conduwuit.local").await;
+	let (root, state) = apply(root, vec![(removed_key, None)]).await;
+	assert_eq!(state.len(), 100);
+	assert!(!state.contains_key(&removed_key), "removed key must be gone");
+	for (key, value) in initial.iter().filter(|(key, _)| **key != removed_key) {
+		assert_eq!(state.get(key), Some(value), "untouched entry changed by a removal");
+	}
+
+	// Insertion only.
+	let new_key = state_key("@newuser:test.conduwuit.local").await;
+	let new_value = event_value("$new-member:test.conduwuit.local").await;
+	let (root, state) = apply(root, vec![(new_key, Some(new_value))]).await;
+	assert_eq!(state.len(), 101);
+	assert_eq!(state.get(&new_key), Some(&new_value));
+	assert!(!state.contains_key(&removed_key));
+
+	// Remove, insert and replace in one update.
+	let other_removed = state_key("@user50:test.conduwuit.local").await;
+	let added_key = state_key("@another:test.conduwuit.local").await;
+	let added_value = event_value("$another-member:test.conduwuit.local").await;
+	let replaced_key = state_key("@user7:test.conduwuit.local").await;
+	let replaced_value = event_value("$replaced-member:test.conduwuit.local").await;
+	let (_root, state) = apply(root, vec![
+		(other_removed, None),
+		(added_key, Some(added_value)),
+		(replaced_key, Some(replaced_value)),
+	])
+	.await;
+	assert_eq!(state.len(), 101, "one removal and one insertion keep the size");
+	assert!(!state.contains_key(&other_removed));
+	assert!(!state.contains_key(&removed_key));
+	assert_eq!(state.get(&added_key), Some(&added_value));
+	assert_eq!(state.get(&new_key), Some(&new_value));
+	assert_eq!(state.get(&replaced_key), Some(&replaced_value));
+	for (key, value) in initial
+		.iter()
+		.filter(|(key, _)| ![removed_key, other_removed, replaced_key].contains(*key))
+	{
+		assert_eq!(state.get(key), Some(value), "untouched entry changed by a mixed update");
+	}
+}
+
 /// Nodes are stored in mtxdb under their canonical encoding, and reads reject
 /// bytes selected through a colliding 16-byte node ID when the full hash does
 /// not match.
@@ -1145,4 +1253,82 @@ async fn test_room_export_carries_verdicts_and_redactions() {
 		field(&redacted, "redacted_by").and_then(|v| v.as_str().map(str::to_owned)),
 		Some(redaction.as_str().to_owned())
 	);
+}
+
+/// Outliers are exported with `outlier: true`, an event stored as both a
+/// timeline PDU and an outlier appears once, and the `end` record's count
+/// equals the number of emitted `event` lines.
+#[conduwuit_macros::async_test]
+async fn test_room_export_outliers_duplicates_and_end_count() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = room_id!("!export-outlier:test.conduwuit.local").to_owned();
+	let timeline = event_id!("$timeline:test.conduwuit.local").to_owned();
+	let outlier = event_id!("$outlier:test.conduwuit.local").to_owned();
+
+	persist_dummy_pdu(
+		&services,
+		&room_id,
+		&create_dummy_pdu(&room_id, &timeline, "m.room.topic", ""),
+	)
+	.await;
+	let outlier_pdu = create_dummy_pdu(&room_id, &outlier, "m.room.name", "");
+	services
+		.rooms
+		.timeline
+		.add_pdu_outlier(&outlier, &outlier_pdu.to_canonical_object(), Some(&room_id))
+		.await;
+	// Offer the timeline event to the outlier store too. Whether the store
+	// accepts it or not, the export must list it exactly once.
+	services
+		.rooms
+		.timeline
+		.add_pdu_outlier(
+			&timeline,
+			&create_dummy_pdu(&room_id, &timeline, "m.room.topic", "").to_canonical_object(),
+			Some(&room_id),
+		)
+		.await;
+
+	let mut out = Vec::new();
+	let counts = services
+		.rooms
+		.state
+		.export_room_jsonl(&room_id, &mut out)
+		.await
+		.unwrap();
+
+	let mut event_lines = Vec::new();
+	let mut end = None;
+	for line in String::from_utf8(out).unwrap().lines() {
+		let slipstream::json::Value::Object(object) = slipstream::codec::from_str(line).unwrap()
+		else {
+			panic!("export line is not an object");
+		};
+		match object.get("t").and_then(|t| t.as_str()) {
+			| Some("event") => event_lines.push(object),
+			| Some("end") => end = Some(object),
+			| _ => {},
+		}
+	}
+
+	let ids: Vec<&str> = event_lines
+		.iter()
+		.map(|object| object["event_id"].as_str().unwrap())
+		.collect();
+	let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+	assert_eq!(ids.len(), unique.len(), "an event must be exported once: {ids:?}");
+	assert!(unique.contains(timeline.as_str()) && unique.contains(outlier.as_str()));
+
+	let flag = |id: &EventId| {
+		event_lines
+			.iter()
+			.find(|object| object["event_id"].as_str() == Some(id.as_str()))
+			.and_then(|object| object["outlier"].as_bool())
+	};
+	assert_eq!(flag(&outlier), Some(true));
+	assert_eq!(flag(&timeline), Some(false));
+
+	let end = end.expect("export must end with an end record");
+	assert_eq!(end["events"].as_u64(), Some(u64::try_from(event_lines.len()).unwrap()));
+	assert_eq!(counts.events, u64::try_from(event_lines.len()).unwrap());
 }
