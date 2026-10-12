@@ -705,7 +705,13 @@ mod room_tests {
 	/// read exactly them. The values are pinned in mtxdb's own tests too.
 	#[test]
 	fn record_ids_match_the_importer_layout() {
-		let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+		let hex = |bytes: &[u8]| {
+			use std::fmt::Write as _;
+			bytes.iter().fold(String::new(), |mut out, byte| {
+				let _ = write!(out, "{byte:02x}");
+				out
+			})
+		};
 		let room = b"!room:example.com";
 		let node = event_record_id(b"$event:example.com");
 		assert_eq!(hex(&node), "f4f315ab8b948ccb0355c85e9d609ccd");
