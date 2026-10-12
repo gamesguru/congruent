@@ -468,6 +468,10 @@ impl Service {
 			.map(|code| code.tag().to_owned()))
 	}
 
+	pub fn get_redacted_by(&self, event_id: &EventId) -> Result<Option<OwnedEventId>> {
+		self.db.get_redacted_by(event_id)
+	}
+
 	/// Returns true if the event is rejected for a reason that should
 	/// permanently cascade to dependents (`DependsOnRejectedAuthEvent`,
 	/// etc.).

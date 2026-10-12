@@ -1277,17 +1277,19 @@ async fn test_room_export_outliers_duplicates_and_end_count() {
 		.timeline
 		.add_pdu_outlier(&outlier, &outlier_pdu.to_canonical_object(), Some(&room_id))
 		.await;
-	// Offer the timeline event to the outlier store too. Whether the store
-	// accepts it or not, the export must list it exactly once.
-	services
+	// Simulate a legacy torn write where a timeline event is also marked as
+	// an outlier. This deliberately bypasses the production guard, so export's
+	// deduplication path is exercised rather than merely relying on insertion
+	// to reject the duplicate.
+	let mut metadata = services
 		.rooms
 		.timeline
-		.add_pdu_outlier(
-			&timeline,
-			&create_dummy_pdu(&room_id, &timeline, "m.room.topic", "").to_canonical_object(),
-			Some(&room_id),
-		)
-		.await;
+		.get_event_metadata(&timeline)
+		.await
+		.unwrap();
+	metadata.is_outlier = true;
+	services.db["eventid_metadata"]
+		.insert(timeline.as_bytes(), bincode::serialize(&metadata).unwrap());
 
 	let mut out = Vec::new();
 	let counts = services
@@ -1331,4 +1333,49 @@ async fn test_room_export_outliers_duplicates_and_end_count() {
 	let end = end.expect("export must end with an end record");
 	assert_eq!(end["events"].as_u64(), Some(u64::try_from(event_lines.len()).unwrap()));
 	assert_eq!(counts.events, u64::try_from(event_lines.len()).unwrap());
+}
+
+struct FailingExportWriter {
+	bytes: Vec<u8>,
+	limit: usize,
+}
+
+impl std::io::Write for FailingExportWriter {
+	fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+		if self.bytes.len() >= self.limit {
+			return Err(std::io::Error::other("injected export writer failure"));
+		}
+
+		let count = bytes.len().min(self.limit.saturating_sub(self.bytes.len()));
+		self.bytes.extend_from_slice(&bytes[..count]);
+		Ok(count)
+	}
+
+	fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+#[conduwuit_macros::async_test]
+async fn test_room_export_fails_when_writer_errors_mid_stream() {
+	let (_guard, _server, services) = setup_test_services().await;
+	let room_id = room_id!("!export-writer-failure:test.conduwuit.local").to_owned();
+	let event_id = event_id!("$export-writer-failure:test.conduwuit.local").to_owned();
+	persist_dummy_pdu(
+		&services,
+		&room_id,
+		&create_dummy_pdu(&room_id, &event_id, "m.room.topic", ""),
+	)
+	.await;
+
+	let mut writer = FailingExportWriter { bytes: Vec::new(), limit: 256 };
+	let result = services
+		.rooms
+		.state
+		.export_room_jsonl(&room_id, &mut writer)
+		.await;
+	assert!(result.is_err(), "a mid-stream write failure must fail the export");
+	assert!(writer.bytes.starts_with(b"{\"t\":\"header\""));
+	assert!(
+		!String::from_utf8_lossy(&writer.bytes).contains("\"t\":\"end\""),
+		"a failed export must not emit a valid end record"
+	);
 }

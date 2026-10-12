@@ -1,9 +1,8 @@
 //! JSONL export of a room's durable state, for the mtxdb CLI to import.
 //!
-//! The export is read-only and reads RocksDB directly; it never consults
-//! mtxdb, so it works on a database that has only ever run on RocksDB. Each
-//! line is one JSON object tagged by `"t"`, written in dependency order so an
-//! importer can apply it as it streams:
+//! The export reads PDUs and timeline metadata from RocksDB, and authoritative
+//! verdicts from mtxdb. Each line is one JSON object tagged by `"t"`, written
+//! in dependency order so an importer can apply it as it streams:
 //!
 //! 1. `header`: format, server, room.
 //! 2. `event`: `event_id`, the `pdu` as stored, `prev_events`,
@@ -128,10 +127,8 @@ impl Service {
 					.unwrap_or(crate::rooms::pdu_metadata::RejectionCode::Unknown);
 				event.insert("rejection_code".to_owned(), Value::from(u64::from(code.to_u8())));
 			}
-			if let Ok(metadata) = self.services.timeline.get_event_metadata(event_id).await {
-				if let Some(redacted_by) = metadata.redacted_by {
-					event.insert("redacted_by".to_owned(), text(redacted_by.as_str()));
-				}
+			if let Some(redacted_by) = self.services.pdu_metadata.get_redacted_by(event_id)? {
+				event.insert("redacted_by".to_owned(), text(redacted_by.as_str()));
 			}
 			event.insert("pdu".to_owned(), Value::Object(pdu));
 			line(out, event)?;

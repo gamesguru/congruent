@@ -1572,6 +1572,37 @@ async fn test_set_forward_extremities_replaces_stored_set_exactly() {
 	);
 }
 
+/// The database-level extremity cap keeps the newest candidates in iterator
+/// order and removes older stored leaves in the same replacement.
+#[conduwuit_macros::async_test]
+async fn test_set_forward_extremities_enforces_configured_cap() {
+	let (_guard, services) = setup_test_services("set_forward_extremities_cap").await;
+	let (room_id, first) = create_test_room_with_message(&services, "tip 0").await;
+	let mut candidates = vec![first];
+	for index in 1..11 {
+		candidates.push(append_test_message(&services, &room_id, &format!("tip {index}")).await);
+	}
+	let cap = services.globals.max_forward_extremities();
+	assert_eq!(cap, 10, "test relies on the default configured extremity cap");
+
+	let state_lock = services.rooms.state.mutex.lock(&room_id).await;
+	services
+		.rooms
+		.state
+		.set_forward_extremities(&room_id, candidates.clone().into_iter(), None, &state_lock)
+		.await
+		.unwrap();
+	drop(state_lock);
+
+	let mut expected = candidates[1..].to_vec();
+	expected.sort();
+	assert_eq!(
+		forward_extremities_for_test(&services, &room_id).await,
+		expected,
+		"the oldest candidate must be dropped when the configured cap is exceeded"
+	);
+}
+
 #[conduwuit_macros::async_test]
 async fn test_yolo_reindex_short_removes_stale_topo_entries() {
 	let (_guard, services) = setup_test_services("reindex_short_topo").await;

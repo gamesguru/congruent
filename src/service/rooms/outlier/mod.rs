@@ -293,8 +293,8 @@ fn add_pdu_outlier_batch_impl<'a>(
 		// `PduEvent::rejected` is `#[serde(skip)]` (bookkeeping only, never on
 		// the wire), so a freshly-parsed `parsed_pdu` always reports
 		// `rejected() == false` here. Rejection/soft-fail verdicts live in
-		// the independent `eventid_rejections` / `eventid_softfailed`
-		// stores, which this function never touches, so a rejection recorded
+		// the independent mtxdb verdict collection, which this function never
+		// touches, so a rejection recorded
 		// by `mark_event_rejected()` is preserved across the outlier write.
 		let metadata = rooms::timeline::EventMetadata {
 			short_room_id,

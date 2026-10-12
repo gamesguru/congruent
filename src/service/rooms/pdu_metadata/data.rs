@@ -169,6 +169,27 @@ impl Data {
 			.map(|code| code.tag().to_owned()))
 	}
 
+	pub(super) fn get_redacted_by(&self, event_id: &EventId) -> Result<Option<OwnedEventId>> {
+		let redacted_by = self
+			.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb redaction for {event_id}: {error}"))
+			})?
+			.and_then(|verdict| verdict.redacted_by);
+
+		redacted_by
+			.map(|bytes| {
+				OwnedEventId::parse(std::str::from_utf8(&bytes).map_err(|error| {
+					err!(Database("Invalid redaction event ID bytes for {event_id}: {error}"))
+				})?)
+				.map_err(|error| {
+					err!(Database("Invalid redaction event ID for {event_id}: {error}"))
+				})
+			})
+			.transpose()
+	}
+
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) -> Result<()> {
 		self.update_verdict(event_id, |v| v.soft_fail = None)
 	}

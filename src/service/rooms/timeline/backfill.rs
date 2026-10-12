@@ -504,7 +504,7 @@ async fn promote_room_state_outliers(&self, room_id: &RoomId) -> Result<usize> {
 		};
 
 		// Outlier-ness comes from `EventMetadata`; rejection now lives in the
-		// authoritative `eventid_rejections` store. Retryable rejections are
+		// authoritative mtxdb verdict collection. Retryable rejections are
 		// recovery markers, not permanent evidence that the event is invalid.
 		// Route the decision through
 		// `take_retry_if_rejection_retryable_for_promotion`, which does a
