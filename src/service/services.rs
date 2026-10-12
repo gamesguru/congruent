@@ -146,6 +146,7 @@ impl Services {
 		info!("Starting services...");
 
 		self.admin.set_services(Some(Arc::clone(self)).as_ref());
+		self.check_import_marker().await?;
 		warn!(
 			"Running database migrations... This may take a while depending on the database \
 			 size."
@@ -180,6 +181,55 @@ impl Services {
 		info!("Services startup complete.");
 
 		Ok(Arc::clone(self))
+	}
+
+	/// mtxdb is the only store for events, verdicts and state, so a database
+	/// whose events still live in RocksDB must be exported and imported before
+	/// it can be served; otherwise every event would read as unrejected.
+	/// A fresh install, with nothing in either store, is marked complete.
+	async fn check_import_marker(&self) -> Result {
+		use conduwuit_mtxdb::marker::{DATA_FORMAT, ImportMarker, MarkerAdapter};
+
+		let marker = MarkerAdapter::new(self.mtxdb.clone());
+		let db_error = |error: conduwuit_mtxdb::StorageError| {
+			conduwuit::err!(Database(error!("Reading the mtxdb import marker: {error}")))
+		};
+
+		if let Some(found) = marker.get().map_err(db_error)? {
+			if found.data_format != DATA_FORMAT {
+				return Err(conduwuit::err!(Database(error!(
+					"The mtxdb data format is {} but this server needs {DATA_FORMAT}. Export \
+					 the database with the server version that wrote it and import it into this \
+					 one.",
+					found.data_format
+				))));
+			}
+			return Ok(());
+		}
+
+		let has_legacy_events = self.db["eventid_pdu"].raw_keys().next().await.is_some();
+		let has_legacy_signing_keys = self.db["server_signingkeys"]
+			.raw_keys()
+			.next()
+			.await
+			.is_some();
+		if has_legacy_events || has_legacy_signing_keys {
+			return Err(conduwuit::err!(Database(error!(
+				"This database holds events in RocksDB but has not been imported into mtxdb, \
+				 which now stores events, verdicts, state and signing keys exclusively. Make a \
+				 full room export (`!admin yolo export-mtxdb --all`) and global signing-key \
+				 export (`!admin yolo export-mtxdb-keys`), import both with `mtxdb import`, and \
+				 restart. Refusing to start."
+			))));
+		}
+
+		let tx = self.mtxdb.begin_transaction();
+		marker
+			.put(&tx, ImportMarker { data_format: DATA_FORMAT, events: 0 })
+			.map_err(db_error)?;
+		tx.commit().map_err(db_error)?;
+		info!("Fresh database: marked mtxdb import complete.");
+		Ok(())
 	}
 
 	pub async fn stop(&self) {

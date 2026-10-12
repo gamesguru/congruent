@@ -47,6 +47,6 @@ pub async fn redact_pdu<Pdu: Event + Send + Sync>(
 	let obj = pdu.to_canonical_object();
 
 	self.replace_pdu(&pdu_id, &obj, event_id).await?;
-	self.db.shadow_redaction(event_id, reason_event_id);
+	self.db.persist_redaction(event_id, reason_event_id)?;
 	Ok(())
 }

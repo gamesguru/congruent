@@ -33,6 +33,9 @@ pub enum KeyRecordKind {
 }
 
 impl KeyRecordKind {
+	const ALL: [Self; 4] =
+		[Self::Historical, Self::Provisional, Self::Corroborated, Self::Notary];
+
 	const fn tag(self) -> &'static [u8] {
 		match self {
 			| Self::Historical => b"historical",
@@ -68,6 +71,27 @@ impl ServerKeysAdapter {
 			})
 	}
 
+	/// All live key records, with their original origins recovered from the
+	/// collision-checking envelope. Used by the export path after cutover.
+	pub fn scan(&self) -> Result<Vec<(KeyRecordKind, Vec<u8>, Vec<u8>)>, StorageError> {
+		let collection = server_keys_collection_id();
+		let records = self.store.scan(ShardType::ServerInfo, &collection)?;
+		let mut out = Vec::with_capacity(records.len());
+		for (node, bytes) in records {
+			let (origin, payload) = Self::decode(&bytes)?;
+			let kind = KeyRecordKind::ALL
+				.into_iter()
+				.find(|kind| server_key_record_id(kind.tag(), origin) == node);
+			let Some(kind) = kind else {
+				return Err(StorageError::Corrupt(
+					"signing-key record id does not match origin".to_owned(),
+				));
+			};
+			out.push((kind, origin.to_vec(), payload.to_vec()));
+		}
+		Ok(out)
+	}
+
 	/// Stage the record in `tx`, so key updates commit atomically with each
 	/// other. The payload must not be empty: mtxdb treats an empty value as a
 	/// removal.
@@ -89,6 +113,23 @@ impl ServerKeysAdapter {
 			}
 		}
 		tx.put(ShardType::ServerInfo, collection, node, &Self::encode(origin, payload)?)
+	}
+
+	/// Stage deletion of one optional record.
+	pub fn remove(
+		&self,
+		tx: &crate::store::MtxdbTransaction<'_>,
+		kind: KeyRecordKind,
+		origin: &[u8],
+	) -> Result<(), StorageError> {
+		let node = server_key_record_id(kind.tag(), origin);
+		let collection = server_keys_collection_id();
+		if let Some(existing) = self.store.get(ShardType::ServerInfo, &collection, node)? {
+			if Self::decode(&existing)?.0 != origin {
+				return Err(StorageError::Corrupt("signing-key record id collision".to_owned()));
+			}
+		}
+		tx.remove(ShardType::ServerInfo, collection, node)
 	}
 
 	fn encode(origin: &[u8], payload: &[u8]) -> Result<Vec<u8>, StorageError> {

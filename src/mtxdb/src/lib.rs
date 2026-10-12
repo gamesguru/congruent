@@ -12,6 +12,7 @@ use std::{
 
 pub mod events;
 pub mod keys;
+pub mod marker;
 pub mod server_keys;
 pub mod state;
 pub mod store;

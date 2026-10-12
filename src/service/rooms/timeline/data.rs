@@ -1467,16 +1467,15 @@ impl Data {
 			.await;
 	}
 
-	/// Record in mtxdb that `redacted_by` redacted `event_id`. mtxdb keeps the
-	/// original body; the redacted form is derived from it. RocksDB stays
-	/// authoritative for now, so a failure is logged and otherwise ignored.
-	pub(super) fn shadow_redaction(&self, event_id: &EventId, redacted_by: &EventId) {
-		let result = self.mtxdb_verdicts.update(event_id.as_bytes(), |verdict| {
-			verdict.redacted_by = Some(redacted_by.as_bytes().to_vec());
-		});
-		if let Err(error) = result {
-			conduwuit::warn!(%event_id, %redacted_by, ?error, "Failed shadow-writing redaction in mtxdb");
-		}
+	/// Persist the redaction edge in the authoritative mtxdb verdict.
+	pub(super) fn persist_redaction(&self, event_id: &EventId, redacted_by: &EventId) -> Result {
+		self.mtxdb_verdicts
+			.update(event_id.as_bytes(), |verdict| {
+				verdict.redacted_by = Some(redacted_by.as_bytes().to_vec());
+			})
+			.map_err(|error| {
+				err!(Database("Failed to persist mtxdb redaction for {event_id}: {error}"))
+			})
 	}
 
 	/// Removes a pdu and creates a new one with the same id.

@@ -27,8 +27,6 @@ use crate::{
 pub(super) struct Data {
 	tofrom_relation: Arc<Map>,
 	referencedevents: Arc<Map>,
-	eventid_rejections: Arc<Map>,
-	eventid_softfailed: Arc<Map>,
 	msc2836_children: Arc<Map>,
 	msc2836_reported_children: Arc<Map>,
 	mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter,
@@ -54,8 +52,6 @@ impl Data {
 		Self {
 			tofrom_relation: db["tofrom_relation"].clone(),
 			referencedevents: db["referencedevents"].clone(),
-			eventid_rejections: db["eventid_rejections"].clone(),
-			eventid_softfailed: db["eventid_softfailed"].clone(),
 			msc2836_children: db["msc2836_children"].clone(),
 			msc2836_reported_children: db["msc2836_reported_children"].clone(),
 			mtxdb_verdicts: conduwuit_mtxdb::verdicts::VerdictAdapter::new(args.mtxdb.clone()),
@@ -141,21 +137,21 @@ impl Data {
 		self.referencedevents.qry(&key).await.is_ok()
 	}
 
-	/// Mirror a verdict change into mtxdb. RocksDB stays authoritative for now,
-	/// so a failure here is logged and otherwise ignored.
-	fn shadow_verdict(
-		&self,
-		event_id: &EventId,
-		change: impl FnMut(&mut conduwuit_mtxdb::verdicts::Verdict),
-	) {
-		if let Err(error) = self.mtxdb_verdicts.update(event_id.as_bytes(), change) {
-			conduwuit::warn!(%event_id, ?error, "Failed shadow-writing event verdict in mtxdb");
-		}
+	/// Persist an authoritative mtxdb verdict change. A failure must stop
+	/// processing rather than falling back to legacy RocksDB marker maps.
+	fn update_verdict<F>(&self, event_id: &EventId, change: F)
+	where
+		F: FnMut(&mut conduwuit_mtxdb::verdicts::Verdict),
+	{
+		self.mtxdb_verdicts
+			.update(event_id.as_bytes(), change)
+			.unwrap_or_else(|error| {
+				panic!("Failed to persist mtxdb verdict for {event_id}: {error}")
+			});
 	}
 
 	pub(super) fn mark_event_soft_failed(&self, event_id: &EventId, code: SoftFailCode) {
-		self.eventid_softfailed.put_raw(event_id, [code.to_u8()]);
-		self.shadow_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()));
+		self.update_verdict(event_id, |v| v.soft_fail = Some(code.to_u8()));
 	}
 
 	pub(super) async fn is_event_soft_failed(&self, event_id: &EventId) -> bool {
@@ -169,123 +165,73 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_soft_failed(&self, event_id: &EventId) {
-		self.eventid_softfailed.remove(event_id);
-		self.shadow_verdict(event_id, |v| v.soft_fail = None);
+		self.update_verdict(event_id, |v| v.soft_fail = None);
 	}
 
 	pub(super) fn mark_event_rejected(&self, event_id: &EventId, reason: &str) {
 		let new_code = RejectionCode::parse(reason).unwrap_or(RejectionCode::Unknown);
-		if let Ok(bytes) = self.eventid_rejections.get_blocking(event_id) {
-			if let Some(&code_u8) = bytes.first() {
-				let existing_code = RejectionCode::from_u8(code_u8);
-				if !existing_code.is_retryable() && new_code.is_retryable() {
-					return;
-				}
+		self.update_verdict(event_id, |verdict| {
+			if verdict.rejection.is_some_and(|old| {
+				!RejectionCode::from_u8(old).is_retryable() && new_code.is_retryable()
+			}) {
+				return;
 			}
-		}
-		self.eventid_rejections
-			.put_raw(event_id, [new_code.to_u8()]);
-		self.shadow_verdict(event_id, |v| v.rejection = Some(new_code.to_u8()));
+			verdict.rejection = Some(new_code.to_u8());
+		});
 	}
 
 	pub(super) async fn is_event_rejected(&self, event_id: &EventId) -> bool {
 		self.get_rejection_code(event_id)
 			.await
-			.unwrap_or_default()
+			.unwrap_or_else(|error| {
+				panic!("Failed to read mtxdb rejection for {event_id}: {error}")
+			})
 			.is_some()
 	}
 
-	/// Reads the persisted rejection code for `event_id`, if any, from the
-	/// authoritative `eventid_rejections` store. The verdict lives only in
-	/// these independent per-event stores (never in `EventMetadata` anymore);
-	/// older single-slot `eventid_status` / `eventid_metadata.status` rows are
-	/// folded into them once by the v21 migration.
-	///
-	/// This is a single read so callers that must decide-and-act on the same
-	/// rejection state (e.g. `take_retry_if_rejection_retryable`,
-	/// `finish_promotion`) don't open a TOCTOU window between two reads.
-	///
-	/// Returns `Ok(None)` when the event carries no rejection marker and `Err`
-	/// when the read itself fails. Callers that decide-and-act on the result
-	/// (notably the ones that clear a rejection marker) must propagate the
-	/// error rather than treating a failed read as "not rejected", or they
-	/// could clear a marker whose state they never actually observed.
+	/// Read the event's rejection marker from the authoritative mtxdb verdict.
 	pub(super) async fn get_rejection_code(
 		&self,
 		event_id: &EventId,
 	) -> Result<Option<RejectionCode>> {
-		let bytes = self.eventid_rejections.get(event_id).await?;
-		Ok(bytes.first().map(|&code| RejectionCode::from_u8(code)))
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.map(|verdict| {
+				verdict
+					.and_then(|value| value.rejection)
+					.map(RejectionCode::from_u8)
+			})
+			.map_err(|error| {
+				err!(Database("Failed to read mtxdb rejection for {event_id}: {error}"))
+			})
 	}
 
-	/// Reads the persisted soft-fail code for `event_id`, if any, from the
-	/// authoritative `eventid_softfailed` store (mirroring
-	/// [`Self::get_rejection_code`]).
+	/// Read the event's soft-fail marker from the authoritative mtxdb verdict.
 	pub(super) async fn get_soft_fail_code(&self, event_id: &EventId) -> Option<SoftFailCode> {
-		let Ok(bytes) = self.eventid_softfailed.get(event_id).await else {
-			return None;
-		};
-		bytes.first().map(|&code| SoftFailCode::from_u8(code))
+		self.mtxdb_verdicts
+			.get(event_id.as_bytes())
+			.unwrap_or_else(|error| {
+				panic!("Failed to read mtxdb soft-fail for {event_id}: {error}")
+			})
+			.and_then(|value| value.soft_fail)
+			.map(SoftFailCode::from_u8)
 	}
 
-	/// Returns the subset of `event_ids` that carry a rejection or soft-fail
-	/// marker in the authoritative `eventid_rejections` / `eventid_softfailed`
-	/// stores.
-	///
-	/// Both verdict stores are read through `get_batch` (which amplifies each
-	/// key batch across the database pool), so a caller scanning a large set of
-	/// events (e.g. `recalculate_extremities` iterating the whole room history
-	/// while holding the room state lock) avoids two sequential single-key
-	/// lookups *per event*. (The two store scans run concurrently via
-	/// `tokio::join!`; see [`scan_verdicts`] for why each is factored into an
-	/// `Arc<Map>`-taking helper.)
+	/// Returns the event IDs carrying a rejection or soft-fail marker.
 	pub(super) async fn verdict_flagged_batch(
 		&self,
 		event_ids: &[OwnedEventId],
 	) -> std::collections::HashSet<OwnedEventId> {
-		if event_ids.is_empty() {
-			return std::collections::HashSet::new();
-		}
-
-		let n = event_ids.len();
-
-		// `get_batch` is `self: &'a Arc<Self> -> impl Stream + Send + 'a`; its
-		// `Send` holds only for that single non-'static lifetime. Joining two
-		// *inline* `get_batch` expressions (as `futures::join`/`tokio::join!`
-		// naively would) lets the borrow of `&self` escape into
-		// `verdict_flagged_batch`'s scope, so the combined future would have to
-		// be `Send` generically over `'a` to be spawnable at
-		// `monitor::Service::worker` ("implementation of `Send` is not general
-		// enough").
-		//
-		// So each scan is factored into [`scan_verdicts`], which takes an *owned*
-		// `Arc<Map>`: the `'a` borrow arises and is dropped purely inside that fn,
-		// so its future has no `'a` in its signature. Two such futures overlap
-		// cleanly under `tokio::join!` while remaining `Send`.
-		let (rejected, soft_failed) = futures::join!(
-			scan_verdicts(self.eventid_rejections.clone(), event_ids),
-			scan_verdicts(self.eventid_softfailed.clone(), event_ids),
-		);
-
-		// A `get_batch` chunk failure truncates its stream, so the collected
-		// flag vector can be shorter than `event_ids`. Zipping a shortened
-		// vector would silently misassign or drop verdicts. We can't recover
-		// the affected keys, so conservatively flag the whole batch: admitting
-		// an event whose verdict we failed to read is riskier than refusing it
-		// as a forward extremity.
-		if rejected.len() != n || soft_failed.len() != n {
-			return event_ids.iter().cloned().collect();
-		}
-
-		let mut flagged: std::collections::HashSet<OwnedEventId> =
-			std::collections::HashSet::with_capacity(n);
-		for (event_id, res) in event_ids.iter().zip(rejected) {
-			if res {
-				flagged.insert(event_id.clone());
-			}
-		}
-		for (event_id, res) in event_ids.iter().zip(soft_failed) {
-			if res {
+		let mut flagged = std::collections::HashSet::new();
+		for event_id in event_ids {
+			let verdict = self
+				.mtxdb_verdicts
+				.get(event_id.as_bytes())
+				.unwrap_or_else(|error| {
+					panic!("Failed to read mtxdb verdict for {event_id}: {error}")
+				});
+			if verdict.is_some_and(|value| value.rejection.is_some() || value.soft_fail.is_some())
+			{
 				flagged.insert(event_id.clone());
 			}
 		}
@@ -294,15 +240,12 @@ impl Data {
 	}
 
 	pub(super) fn unmark_event_rejected(&self, event_id: &EventId) {
-		self.eventid_rejections.remove(event_id);
-		self.shadow_verdict(event_id, |v| v.rejection = None);
+		self.update_verdict(event_id, |v| v.rejection = None);
 	}
 
 	/// Removes any soft-fail or rejection markers applied to the target PDU
 	pub(super) fn clear_pdu_markers(&self, event_id: &EventId) {
-		self.eventid_softfailed.remove(event_id);
-		self.eventid_rejections.remove(event_id);
-		self.shadow_verdict(event_id, |v| {
+		self.update_verdict(event_id, |v| {
 			v.soft_fail = None;
 			v.rejection = None;
 		});
@@ -377,21 +320,4 @@ impl Data {
 		let record = bincode::deserialize::<Msc2836ReportedChildren>(&bytes).ok()?;
 		Some((record.counts, record.hash))
 	}
-}
-/// Run one `get_batch` scan, returning a `Vec<bool>` that flags which of
-/// `event_ids` have a row in `tree` (ordered as in `event_ids`).
-///
-/// Takes an *owned* `Arc<Map>` rather than a `&self` borrow so that
-/// `get_batch`'s single non-`'static` `'a` lives and dies inside this
-/// function: the returned future has no lifetime in its signature, which is
-/// what lets two such scans overlap under `tokio::join!` while the combined
-/// future stays `Send` (see `verdict_flagged_batch`).
-async fn scan_verdicts(tree: Arc<Map>, event_ids: &[OwnedEventId]) -> Vec<bool> {
-	use futures::StreamExt;
-
-	let key_stream = || futures::stream::iter(event_ids.iter().map(|id| id.as_bytes().to_vec()));
-	tree.get_batch::<_, Vec<u8>>(key_stream())
-		.map(|res| res.is_ok())
-		.collect::<Vec<bool>>()
-		.await
 }
