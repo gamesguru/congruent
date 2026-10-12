@@ -87,6 +87,13 @@ jobs:
           RUSTUP_TOOLCHAIN: nightly
         run: make format
 
+      - name: Export fixtures match their manifest
+        env:
+          # Optional: raw URL of the peer repo's SHA256SUMS, set under
+          # /settings/variables/actions, to also compare the two repos.
+          EXPORT_FIXTURES_PEER: ${{ vars.EXPORT_FIXTURES_PEER_URL }}
+        run: scripts/check-export-fixtures.sh
+
       - name: Test
         run: set -o pipefail; make -j4 test 2>&1 | tee test-results.txt
 
