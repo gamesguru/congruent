@@ -183,6 +183,7 @@ mod tests {
 					rejection: Some(3),
 					soft_fail: Some(7),
 					redacted_by: Some(b"$redact:example.com".to_vec()),
+					outlier: false,
 				})
 			);
 			assert!(adapter.get(other).unwrap().is_none());
@@ -210,6 +211,7 @@ mod tests {
 			rejection: Some(1),
 			soft_fail: None,
 			redacted_by: Some(b"$r:x".to_vec()),
+			outlier: false,
 		};
 		let bytes = encode_verdict(b"$e:x", &verdict).unwrap();
 		let old_bytes: &[u8] =
@@ -236,6 +238,7 @@ mod tests {
 			rejection: Some(7),
 			soft_fail: None,
 			redacted_by: Some(b"$redact:example.com".to_vec()),
+			outlier: false,
 		};
 		let tx = store.begin_transaction();
 		adapter.stage(&tx, event, &verdict).unwrap();
@@ -250,6 +253,7 @@ mod tests {
 			rejection: None,
 			soft_fail: Some(2),
 			redacted_by: None,
+			outlier: false,
 		};
 		for _ in 0..2 {
 			let tx = store.begin_transaction();
