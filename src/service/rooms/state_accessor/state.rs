@@ -553,7 +553,7 @@ pub async fn pdu_roothandle_before_event(
 			self.services
 				.state_hamt
 				.store
-				.persist_node_recursive(empty_node);
+				.persist_node_recursive(room_id.as_bytes(), empty_node);
 
 			return Ok(empty_root);
 		}

@@ -1,3 +1,4 @@
+//! Adapter mapping the rezzy HAMT nodes into RocksDB and memory caches.
 use std::{
 	sync::{
 		Arc,
@@ -186,7 +187,7 @@ impl Store {
 	/// already-durable hash is byte-identical to what the store holds, so the
 	/// write is skipped. That matters because callers legitimately re-emit
 	/// unchanged nodes whenever they re-materialize a tree.
-	pub fn put_node(&self, node: Arc<HamtNode<u64, u64>>) {
+	pub fn put_node(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) {
 		let hash = node.structural_hash;
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
@@ -206,6 +207,9 @@ impl Store {
 		self.node_mtimes.insert(&hash, unix_millis().to_be_bytes());
 		self.node_cache.insert(hash, node);
 		self.write_stats.written.fetch_add(1, Ordering::Relaxed);
+
+		// Shadow-write to mtxdb
+		self.shadow_put_node(room_id, &hash, &bytes);
 	}
 
 	/// Persists a node to RocksDB in the provided WriteBatch and populates the
@@ -213,11 +217,16 @@ impl Store {
 	///
 	/// The mtime for the node joins the same batch as the node value itself, so
 	/// the grace window and the node's durability are updated atomically.
-	pub fn put_node_batch<'a>(&'a self, node: Arc<HamtNode<u64, u64>>, batch: &mut Batch<'a>) {
+	pub fn put_node_batch<'a>(
+		&'a self,
+		room_id: &[u8],
+		node: Arc<HamtNode<u64, u64>>,
+		batch: &mut Batch<'a>,
+	) {
 		let hash = node.structural_hash;
 		let persisted: PersistedInternalNode<u64, u64> = node.as_ref().into();
 		let bytes = persisted.encode_v1();
-		self.shadow_put_node(&hash, &bytes);
+		self.shadow_put_node(room_id, &hash, &bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			self.node_cache.insert(hash, node);
@@ -237,9 +246,14 @@ impl Store {
 	/// caller just wrote is invisible to readers until it is evicted or the
 	/// process restarts, and it would be re-emitted on every subsequent
 	/// materialization of the same subtree.
-	pub fn put_encoded_node(&self, hash: StructuralHash, bytes: &[u8]) -> Result<()> {
+	pub fn put_encoded_node(
+		&self,
+		room_id: &[u8],
+		hash: StructuralHash,
+		bytes: &[u8],
+	) -> Result<()> {
 		let node = Self::decode_node(&hash, bytes)?;
-		self.shadow_put_node(&hash, bytes);
+		self.shadow_put_node(room_id, &hash, bytes);
 		if self.is_durable(&hash) {
 			self.write_stats.elided.fetch_add(1, Ordering::Relaxed);
 			return Ok(());
@@ -253,38 +267,36 @@ impl Store {
 		Ok(())
 	}
 
-	fn shadow_put_node(&self, hash: &StructuralHash, bytes: &[u8]) {
-		if let Err(error) = self
-			.mtxdb
-			.put_node(conduwuit_mtxdb::keys::derive_id(b"hamt-node", hash.as_ref()), bytes)
-		{
+	fn shadow_put_node(&self, room_id: &[u8], hash: &StructuralHash, bytes: &[u8]) {
+		if let Err(error) = self.mtxdb.put_node(room_id, hash, bytes) {
 			conduwuit::warn!(?error, "Failed to shadow-write HAMT node to mtxdb");
 		}
 	}
 
 	/// Persists a node and all of its resolved children recursively.
-	pub fn persist_node_recursive(&self, node: Arc<HamtNode<u64, u64>>) {
+	pub fn persist_node_recursive(&self, room_id: &[u8], node: Arc<HamtNode<u64, u64>>) {
 		for child in &node.children {
 			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				self.persist_node_recursive(child_node.clone());
+				self.persist_node_recursive(room_id, child_node.clone());
 			}
 		}
-		self.put_node(node);
+		self.put_node(room_id, node);
 	}
 
 	/// Persists a node and all of its resolved children recursively into a
 	/// batch.
 	pub fn persist_node_recursive_batch<'a>(
 		&'a self,
+		room_id: &[u8],
 		node: Arc<HamtNode<u64, u64>>,
 		batch: &mut Batch<'a>,
 	) {
 		for child in &node.children {
 			if let rezzy::hamt::NodeRef::Resolved(child_node) = child {
-				self.persist_node_recursive_batch(child_node.clone(), batch);
+				self.persist_node_recursive_batch(room_id, child_node.clone(), batch);
 			}
 		}
-		self.put_node_batch(node, batch);
+		self.put_node_batch(room_id, node, batch);
 	}
 
 	/// Physically deletes a node value and its recorded mtime, and evicts it
@@ -398,8 +410,8 @@ impl Store {
 		let report = SweepReport { dry_run, ..SweepReport::default() };
 
 		// Sweep the raw key stream incrementally rather than materializing
-		// every node key into memory at once, keeping only the reachability
-		// set and the running report.
+		/// every node key into memory at once, keeping only the reachability
+		/// set and the running report.
 		let report = self
 			.db
 			.raw_stream()
@@ -416,10 +428,10 @@ impl Store {
 				}
 
 				// Grace-window filter: a recent mtime means a write is
-				// possibly still in flight, so ignore this node this
-				// round. Metadata read failures are propagated so the
-				// sweep fails closed rather than deleting a node it
-				// could not verify.
+				/// possibly still in flight, so ignore this node this
+				/// round. Metadata read failures are propagated so the
+				/// sweep fails closed rather than deleting a node it
+				/// could not verify.
 				if let Some(mtime) = self.node_mtime(&hash)? {
 					if mtime >= cutoff {
 						return Ok(report);
@@ -499,4 +511,87 @@ fn unix_millis() -> u64 {
 	SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::*;
+
+	fn test_path(name: &str) -> PathBuf {
+		std::env::temp_dir().join(format!("conduwuit-mtxdb-hamt-{name}-{}", std::process::id()))
+	}
+
+	#[test]
+	fn cross_shard_atomicity_and_sync() {
+		let directory = test_path("cross-shard");
+		let _ = fs::remove_dir_all(&directory);
+		let collection = conduwuit_mtxdb::keys::derive_id(b"sys", b"test-cross-shard");
+		let event_node = conduwuit_mtxdb::keys::derive_id(b"event", b"$event:example.com");
+		let state_node = conduwuit_mtxdb::keys::derive_id(b"state", b"root");
+
+		let () = {
+			let store = conduwuit_mtxdb::store::MtxdbStore::open(&directory).expect("open mtxdb");
+			let tx = store.begin_transaction();
+			tx.put(conduwuit_mtxdb::ShardType::EventDag, collection, event_node, b"event")
+				.expect("stage event");
+			tx.put(conduwuit_mtxdb::ShardType::State, collection, state_node, b"state")
+				.expect("stage state");
+
+			assert!(
+				store
+					.get(conduwuit_mtxdb::ShardType::EventDag, &collection, event_node)
+					.expect("read event")
+					.is_none()
+			);
+			assert!(
+				store
+					.get(conduwuit_mtxdb::ShardType::State, &collection, state_node)
+					.expect("read state")
+					.is_none()
+			);
+
+			tx.commit().expect("commit transaction");
+			assert_eq!(
+				store
+					.get(conduwuit_mtxdb::ShardType::EventDag, &collection, event_node)
+					.unwrap()
+					.as_deref(),
+				Some(&b"event"[..])
+			);
+			assert_eq!(
+				store
+					.get(conduwuit_mtxdb::ShardType::State, &collection, state_node)
+					.unwrap()
+					.as_deref(),
+				Some(&b"state"[..])
+			);
+
+			store
+				.sync(conduwuit_mtxdb::ShardType::EventDag)
+				.expect("sync event pool");
+			store
+				.sync(conduwuit_mtxdb::ShardType::State)
+				.expect("sync state pool");
+		};
+
+		let reopened =
+			conduwuit_mtxdb::store::MtxdbStore::open(&directory).expect("reopen mtxdb");
+		assert_eq!(
+			reopened
+				.get(conduwuit_mtxdb::ShardType::EventDag, &collection, event_node)
+				.unwrap()
+				.as_deref(),
+			Some(&b"event"[..])
+		);
+		assert_eq!(
+			reopened
+				.get(conduwuit_mtxdb::ShardType::State, &collection, state_node)
+				.unwrap()
+				.as_deref(),
+			Some(&b"state"[..])
+		);
+		let _ = fs::remove_dir_all(directory);
+	}
 }

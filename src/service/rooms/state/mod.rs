@@ -253,7 +253,10 @@ impl Service {
 				children: vec![],
 				structural_hash: rezzy::hamt::StructuralHash::default(),
 			});
-			self.services.state_hamt.store.put_node(empty_node.clone());
+			self.services
+				.state_hamt
+				.store
+				.put_node(room_id.as_bytes(), empty_node.clone());
 			empty_node
 		} else {
 			self.services
@@ -413,10 +416,11 @@ impl Service {
 		let mut batch = conduwuit_database::Batch::new();
 
 		if let Some(node) = new_node {
-			self.services
-				.state_hamt
-				.store
-				.persist_node_recursive_batch(node, &mut batch);
+			self.services.state_hamt.store.persist_node_recursive_batch(
+				room_id.as_bytes(),
+				node,
+				&mut batch,
+			);
 		}
 
 		let serialized = root_handle_to_bytes(&root_handle);
@@ -437,11 +441,11 @@ impl Service {
 		}
 
 		self.db.shorteventid_roothandle.apply_batch(batch);
-		if let Err(error) = self
-			.db
-			.mtxdb_state
-			.put_event_root(new_pdu.event_id().as_bytes(), &serialized)
-		{
+		if let Err(error) = self.db.mtxdb_state.put_event_root(
+			room_id.as_bytes(),
+			new_pdu.event_id().as_bytes(),
+			&serialized,
+		) {
 			warn!(?error, event_id = %new_pdu.event_id(), "Failed to shadow-write event HAMT root to mtxdb");
 		}
 		if is_state
@@ -539,10 +543,11 @@ impl Service {
 					lattice.insert(event_type.as_ref(), state_key, new_pdu.event_id().as_str());
 				}
 				for (hash, bytes) in created {
-					self.services
-						.state_hamt
-						.store
-						.put_encoded_node(hash, &bytes)?;
+					self.services.state_hamt.store.put_encoded_node(
+						room_id.as_bytes(),
+						hash,
+						&bytes,
+					)?;
 				}
 				let handle = self
 					.services
@@ -621,6 +626,7 @@ impl Service {
 	/// is not durable yet.
 	pub fn persist_state_hamt_mutations(
 		&self,
+		room_id: &RoomId,
 		structural_key: &[u8],
 		prev: &rezzy::hamt::RootHandle,
 		mutations: Vec<(ShortStateKey, Option<ShortEventId>)>,
@@ -644,7 +650,7 @@ impl Service {
 			self.services
 				.state_hamt
 				.store
-				.put_encoded_node(hash, &bytes)?;
+				.put_encoded_node(room_id.as_bytes(), hash, &bytes)?;
 		}
 
 		let handle = self
@@ -850,6 +856,7 @@ impl Service {
 	/// but the room's live current state must not be touched.
 	pub async fn set_event_roothandle(
 		&self,
+		room_id: &RoomId,
 		event_id: &EventId,
 		root_handle: &rezzy::hamt::RootHandle,
 	) -> Result<()> {
@@ -862,10 +869,10 @@ impl Service {
 		self.db
 			.shorteventid_roothandle
 			.insert(&shorteventid.to_be_bytes(), &data);
-		if let Err(error) = self
-			.db
-			.mtxdb_state
-			.put_event_root(event_id.as_bytes(), &data)
+		if let Err(error) =
+			self.db
+				.mtxdb_state
+				.put_event_root(room_id.as_bytes(), event_id.as_bytes(), &data)
 		{
 			warn!(?error, %event_id, "Failed to shadow-write event HAMT root to mtxdb");
 		}

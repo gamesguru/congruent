@@ -1239,7 +1239,7 @@ async fn associate_resolved_state(
 
 	self.services
 		.state
-		.set_event_roothandle(pdu.event_id(), &root_handle)
+		.set_event_roothandle(room_id, pdu.event_id(), &root_handle)
 		.await?;
 	Ok(())
 }
@@ -1249,7 +1249,7 @@ async fn associate_current_state(&self, room_id: &RoomId, event_id: &EventId) ->
 	let root_handle = self.services.state.get_room_state_hamt(room_id).await?;
 	self.services
 		.state
-		.set_event_roothandle(event_id, &root_handle)
+		.set_event_roothandle(room_id, event_id, &root_handle)
 		.await?;
 	Ok(())
 }

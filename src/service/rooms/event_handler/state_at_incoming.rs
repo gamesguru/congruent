@@ -331,7 +331,7 @@ where
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node);
 	});
 
 	Ok(Some(root_handle))

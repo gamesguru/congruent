@@ -633,7 +633,7 @@ pub async fn state_map_to_root_handle(
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node);
 	});
 
 	Ok(root_handle)

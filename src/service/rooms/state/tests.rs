@@ -495,6 +495,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.rooms
 		.state
 		.persist_state_hamt_mutations(
+			&room_id,
 			&structural_key,
 			&root,
 			vec![(target_key, Some(target_value))],
@@ -537,6 +538,7 @@ async fn test_bulk_state_update_writes_only_changed_spines() {
 		.rooms
 		.state
 		.persist_state_hamt_mutations(
+			&room_id,
 			&structural_key,
 			&new_root,
 			vec![(target_key, Some(target_value))],
@@ -615,7 +617,11 @@ async fn test_sweep_reclaims_only_unreachable_nodes() {
 		rezzy::hamt::build_hamt_root_handle(&[0xAB; 32], &orphan_lattice, [(1_u64 << 40, 7_u64)])
 			.expect("build orphan tree");
 	let orphan_hash = orphan.structural_hash;
-	services.rooms.state_hamt.store.put_node(orphan);
+	services
+		.rooms
+		.state_hamt
+		.store
+		.put_node(room_id.as_bytes(), orphan);
 
 	// Grace window: a node written moments ago may still be in flight, so it is
 	// spared even though nothing reaches it.

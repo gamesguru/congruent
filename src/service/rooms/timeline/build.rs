@@ -113,7 +113,7 @@ pub async fn build_and_append_pdu(
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(node.clone());
+			.persist_node_recursive(room_id.as_bytes(), node.clone());
 	}
 
 	trace!("Generating raw ID for PDU {}", pdu.event_id());

@@ -90,7 +90,7 @@ where
 		{
 			self.services
 				.state
-				.set_event_roothandle(pdu.event_id(), root_handle)
+				.set_event_roothandle(room_id, pdu.event_id(), root_handle)
 				.await?;
 		}
 

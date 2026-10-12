@@ -157,6 +157,7 @@ pub async fn resolve_state(
 	// incoming state event.
 	self.services.globals.with_cork_and_flush(|| {
 		self.services.state.persist_state_hamt_mutations(
+			room_id,
 			&structural_key,
 			&current_root_handle,
 			mutations,

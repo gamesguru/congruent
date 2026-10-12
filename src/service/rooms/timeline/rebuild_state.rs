@@ -316,7 +316,7 @@ impl super::Service {
 		self.services
 			.state_hamt
 			.store
-			.persist_node_recursive(root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node);
 
 		let encoded = lattice.to_bytes();
 		self.db.db["state_hamt_root_lattices"].insert(&root_handle.structural_hash, &encoded);

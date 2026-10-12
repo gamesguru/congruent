@@ -6,88 +6,123 @@ use mtxdb::ShardType;
 
 use crate::{
 	StorageError,
-	keys::derive_id,
-	store::{CollectionId, MtxdbStore, MtxdbTransaction},
+	keys::{
+		event_locator_collection_id, event_record_id, room_auth_collection_id,
+		room_event_collection_id, room_prev_collection_id,
+	},
+	store::{CollectionId, MtxdbStore, MtxdbTransaction, NodeId},
 };
 
 #[derive(Clone)]
 pub struct EventAdapter {
 	store: Arc<MtxdbStore>,
-	pdu_collection: CollectionId,
-	prev_edges_collection: CollectionId,
-	auth_edges_collection: CollectionId,
 }
 
 impl EventAdapter {
 	#[must_use]
-	pub fn new(store: Arc<MtxdbStore>) -> Self {
-		Self {
-			store,
-			pdu_collection: derive_id(b"sys", b"events-pdu-json"),
-			prev_edges_collection: derive_id(b"sys", b"events-prev-edges"),
-			auth_edges_collection: derive_id(b"sys", b"events-auth-edges"),
-		}
+	pub fn new(store: Arc<MtxdbStore>) -> Self { Self { store } }
+
+	fn evnt_collection(&self, room_id: &[u8]) -> CollectionId {
+		room_event_collection_id(room_id)
 	}
 
-	pub fn get_event(&self, event_id: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+	fn prev_collection(&self, room_id: &[u8]) -> CollectionId { room_prev_collection_id(room_id) }
+
+	fn auth_collection(&self, room_id: &[u8]) -> CollectionId { room_auth_collection_id(room_id) }
+
+	/// Look up an event by event_id alone using the global event locator.
+	///
+	/// Returns the room_id bytes if found, so the caller can then fetch the
+	/// event from the room's EVNT collection.
+	pub fn locate_event(&self, event_id: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
+		self.store.get(
+			ShardType::EventDag,
+			&event_locator_collection_id(),
+			event_record_id(event_id),
+		)
+	}
+
+	/// Fetch an event from its room's EVNT collection (requires room_id).
+	pub fn get_event(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Option<Vec<u8>>, StorageError> {
+		self.store.get(
+			ShardType::EventDag,
+			&self.evnt_collection(room_id),
+			event_record_id(event_id),
+		)
+	}
+
+	/// Fetch multiple events from a room's EVNT collection.
+	pub fn get_events(
+		&self,
+		room_id: &[u8],
+		event_ids: &[&[u8]],
+	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
+		let node_ids: Vec<NodeId> = event_ids.iter().map(|id| event_record_id(id)).collect();
 		self.store
-			.get(ShardType::EventDag, &self.pdu_collection, derive_id(b"event", event_id))
+			.get_many(ShardType::EventDag, &self.evnt_collection(room_id), &node_ids)
 	}
 
-	pub fn get_events(&self, event_ids: &[&[u8]]) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
-		let nodes = event_ids
-			.iter()
-			.map(|id| derive_id(b"event", id))
-			.collect::<Vec<_>>();
-		self.store
-			.get_many(ShardType::EventDag, &self.pdu_collection, &nodes)
+	pub fn get_prev_events(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Vec<Vec<u8>>, StorageError> {
+		self.get_edges(self.prev_collection(room_id), event_id)
 	}
 
-	pub fn get_prev_events(&self, event_id: &[u8]) -> Result<Vec<Vec<u8>>, StorageError> {
-		self.get_edges(&self.prev_edges_collection, event_id)
-	}
-
-	pub fn get_auth_chain(&self, event_id: &[u8]) -> Result<Vec<Vec<u8>>, StorageError> {
-		self.get_edges(&self.auth_edges_collection, event_id)
+	pub fn get_auth_chain(
+		&self,
+		room_id: &[u8],
+		event_id: &[u8],
+	) -> Result<Vec<Vec<u8>>, StorageError> {
+		self.get_edges(self.auth_collection(room_id), event_id)
 	}
 
 	fn get_edges(
 		&self,
-		collection: &CollectionId,
+		collection: CollectionId,
 		event_id: &[u8],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
 		self.store
-			.get(ShardType::EventDag, collection, derive_id(b"event", event_id))?
+			.get(ShardType::Edges, &collection, event_record_id(event_id))?
 			.map_or(Ok(Vec::new()), |bytes| Self::deserialize_edges(&bytes))
 	}
 
 	pub fn put_event_with_edges(
 		&self,
 		tx: &MtxdbTransaction<'_>,
+		room_id: &[u8],
 		event_id: &[u8],
 		event_body: &[u8],
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
-		let node = derive_id(b"event", event_id);
-		tx.put(ShardType::EventDag, self.pdu_collection, node, event_body)?;
+		let node = event_record_id(event_id);
+		tx.put(ShardType::EventDag, self.evnt_collection(room_id), node, event_body)?;
+		// Also index the event -> room mapping for lookups without room_id
+		tx.put(ShardType::EventDag, event_locator_collection_id(), node, room_id)?;
 		let prev = Self::serialize_edges(prev_events)?;
 		let auth = Self::serialize_edges(auth_events)?;
-		tx.put(ShardType::EventDag, self.prev_edges_collection, node, &prev)?;
-		tx.put(ShardType::EventDag, self.auth_edges_collection, node, &auth)?;
+		tx.put(ShardType::Edges, self.prev_collection(room_id), node, &prev)?;
+		tx.put(ShardType::Edges, self.auth_collection(room_id), node, &auth)?;
 		Ok(())
 	}
 
 	/// Atomically writes an event body and its direct DAG/auth edges.
 	pub fn write_event_with_edges(
 		&self,
+		room_id: &[u8],
 		event_id: &[u8],
 		event_body: &[u8],
 		prev_events: &[&[u8]],
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
 		let tx = self.store.begin_transaction();
-		self.put_event_with_edges(&tx, event_id, event_body, prev_events, auth_events)?;
+		self.put_event_with_edges(&tx, room_id, event_id, event_body, prev_events, auth_events)?;
 		tx.commit()
 	}
 
@@ -161,6 +196,7 @@ mod tests {
 	fn atomic_write_restart_and_empty_edge_overwrite() {
 		let path = test_path("restart");
 		let _ = fs::remove_dir_all(&path);
+		let room_id = b"!room:example.com";
 		let event_id = b"$target:example.com";
 		let prev = b"$prev:example.com";
 		let auth = b"$auth:example.com";
@@ -170,29 +206,49 @@ mod tests {
 			let adapter = EventAdapter::new(store.clone());
 			let tx = store.begin_transaction();
 			adapter
-				.put_event_with_edges(&tx, event_id, b"body", &[prev], &[auth])
+				.put_event_with_edges(&tx, room_id, event_id, b"body", &[prev], &[auth])
 				.unwrap();
-			assert!(adapter.get_event(event_id).unwrap().is_none());
+			assert!(adapter.get_event(room_id, event_id).unwrap().is_none());
 			tx.commit().unwrap();
-			assert_eq!(adapter.get_event(event_id).unwrap().as_deref(), Some(&b"body"[..]));
-			assert_eq!(adapter.get_prev_events(event_id).unwrap(), vec![prev.to_vec()]);
-			assert_eq!(adapter.get_auth_chain(event_id).unwrap(), vec![auth.to_vec()]);
+			assert_eq!(
+				adapter.get_event(room_id, event_id).unwrap().as_deref(),
+				Some(&b"body"[..])
+			);
+			assert_eq!(adapter.get_prev_events(room_id, event_id).unwrap(), vec![prev.to_vec()]);
+			assert_eq!(adapter.get_auth_chain(room_id, event_id).unwrap(), vec![auth.to_vec()]);
 			store.sync(ShardType::EventDag).unwrap();
+			store.sync(ShardType::Edges).unwrap();
 		};
 
 		let () = {
 			let store = Arc::new(MtxdbStore::open(&path).unwrap());
 			let adapter = EventAdapter::new(store.clone());
-			assert_eq!(adapter.get_event(event_id).unwrap().as_deref(), Some(&b"body"[..]));
+			assert_eq!(
+				adapter.get_event(room_id, event_id).unwrap().as_deref(),
+				Some(&b"body"[..])
+			);
 
 			let tx = store.begin_transaction();
 			adapter
-				.put_event_with_edges(&tx, event_id, b"updated", &[], &[])
+				.put_event_with_edges(&tx, room_id, event_id, b"updated", &[], &[])
 				.unwrap();
 			tx.commit().unwrap();
-			assert_eq!(adapter.get_event(event_id).unwrap().as_deref(), Some(&b"updated"[..]));
-			assert!(adapter.get_prev_events(event_id).unwrap().is_empty());
-			assert!(adapter.get_auth_chain(event_id).unwrap().is_empty());
+			assert_eq!(
+				adapter.get_event(room_id, event_id).unwrap().as_deref(),
+				Some(&b"updated"[..])
+			);
+			assert!(
+				adapter
+					.get_prev_events(room_id, event_id)
+					.unwrap()
+					.is_empty()
+			);
+			assert!(
+				adapter
+					.get_auth_chain(room_id, event_id)
+					.unwrap()
+					.is_empty()
+			);
 		};
 
 		let _ = fs::remove_dir_all(path);
@@ -202,6 +258,7 @@ mod tests {
 	fn bulk_event_lookup_preserves_order_and_misses() {
 		let path = test_path("bulk");
 		let _ = fs::remove_dir_all(&path);
+		let room_id = b"!room:example.com";
 		let first = b"$first:example.com";
 		let second = b"$second:example.com";
 		let missing = b"$missing:example.com";
@@ -210,14 +267,16 @@ mod tests {
 		let adapter = EventAdapter::new(store.clone());
 		let tx = store.begin_transaction();
 		adapter
-			.put_event_with_edges(&tx, first, b"one", &[], &[])
+			.put_event_with_edges(&tx, room_id, first, b"one", &[], &[])
 			.unwrap();
 		adapter
-			.put_event_with_edges(&tx, second, b"two", &[], &[])
+			.put_event_with_edges(&tx, room_id, second, b"two", &[], &[])
 			.unwrap();
 		tx.commit().unwrap();
 
-		let result = adapter.get_events(&[first, missing, second]).unwrap();
+		let result = adapter
+			.get_events(room_id, &[first, missing, second])
+			.unwrap();
 		assert_eq!(result[0].as_deref(), Some(&b"one"[..]));
 		assert_eq!(result[1], None);
 		assert_eq!(result[2].as_deref(), Some(&b"two"[..]));

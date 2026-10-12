@@ -397,7 +397,10 @@ pub async fn msc4500_before_root(&self, pdu: &Pdu) -> Option<rezzy::hamt::RootHa
 		let (root, node) =
 			rezzy::hamt::build_hamt_root_handle(&structural_key, &LtHash::default(), Vec::new())
 				.ok()?;
-		self.services.state_hamt.store.persist_node_recursive(node);
+		self.services
+			.state_hamt
+			.store
+			.persist_node_recursive(room_id.as_bytes(), node);
 		return Some(root);
 	};
 
