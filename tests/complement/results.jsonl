@@ -460,7 +460,7 @@
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Initial_sync_includes_requested_profile_fields_and_filters_others"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/No_updates_without_profile_fields_filter"}
 {"Action":"pass","Test":"TestMSC4429ProfileUpdates/Widening_profile_fields_filter_does_not_return_old_filtered_updates"}
-{"Action":"fail","Test":"TestMSC4499Key"}
+{"Action":"pass","Test":"TestMSC4499Key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/current_key_id_with_wrong_private_key"}
 {"Action":"pass","Test":"TestMSC4499Key/FederationRequestAuthentication/current_verify_key"}
@@ -488,15 +488,15 @@
 {"Action":"pass","Test":"TestMSC4499Key/System/\u00a79"}
 {"Action":"pass","Test":"TestMSC4499Key/System/\u00a79/CorroborationTierRetention"}
 {"Action":"pass","Test":"TestMSC4499Key/System/\u00a79/StorageQuotaResilience"}
-{"Action":"fail","Test":"TestMSC4499Key/Temporal"}
+{"Action":"pass","Test":"TestMSC4499Key/Temporal"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a75"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a75/KeyRotation"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a77"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a77/LostKeyPublicationHistoricalVerification"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a77/LostKeyPublicationHistoricalVerification/FullyLostKeyRemainsUnverifiableToColdPeers"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a77/LostKeyPublicationHistoricalVerification/PublishedLostKeyPreservesHistoricalVerification"}
-{"Action":"fail","Test":"TestMSC4499Key/Temporal/\u00a78"}
-{"Action":"fail","Test":"TestMSC4499Key/Temporal/\u00a78/ActiveKeyValidUntilEnforcement"}
+{"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a78"}
+{"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a78/ActiveKeyValidUntilEnforcement"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a78/ExpiredTsSanityCheck"}
 {"Action":"pass","Test":"TestMSC4499Key/Temporal/\u00a78/HistoricalEventVerification"}
 {"Action":"pass","Test":"TestMSC4499Key/Validation"}
