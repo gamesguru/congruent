@@ -954,7 +954,7 @@ pub async fn promote_outlier(
 		.await?;
 	if matches!(outcome, PromoteOutlierOutcome::Queued) {
 		self.db_apply_batch(batch);
-		self.finish_promote_outlier(room_id, event_id).await;
+		self.finish_promote_outlier(room_id, event_id);
 	}
 	Ok(outcome)
 }
@@ -1129,7 +1129,7 @@ pub async fn promote_outlier_batch<'a>(
 /// rather than a silent `warn!`: if it ever fires, it should page someone
 /// rather than scroll past in a debug-level log.
 #[implement(super::Service)]
-pub async fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
+pub fn finish_promote_outlier(&self, room_id: &RoomId, event_id: &EventId) {
 	self.pending_promotions.release_promotion_claim(event_id);
 
 	let finished = self

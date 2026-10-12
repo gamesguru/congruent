@@ -341,8 +341,7 @@ pub(super) async fn import_pdus(
 				self.services
 					.rooms
 					.timeline
-					.finish_promote_outlier(&room_id, eid)
-					.await;
+					.finish_promote_outlier(&room_id, eid);
 			}
 			for (eid, is_soft_failed, is_rejected) in queued_marker_updates {
 				if is_rejected {

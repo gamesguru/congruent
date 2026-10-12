@@ -74,7 +74,7 @@ pub(super) async fn decorate_pdu_for_export(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_soft_failed(pdu.event_id());
+			.is_event_soft_failed(pdu.event_id())?;
 		if is_soft_failed {
 			obj.insert("__soft_failed".to_owned(), JsonValue::Bool(true));
 			is_separated = true;
@@ -84,7 +84,7 @@ pub(super) async fn decorate_pdu_for_export(
 			.services
 			.rooms
 			.pdu_metadata
-			.is_event_rejected(pdu.event_id());
+			.is_event_rejected(pdu.event_id())?;
 		if is_rejected {
 			obj.insert("__rejected".to_owned(), JsonValue::Bool(true));
 			is_separated = true;
@@ -128,7 +128,7 @@ pub(super) async fn decorate_pdu_for_export(
 				.services
 				.rooms
 				.pdu_metadata
-				.is_event_soft_failed(pdu.event_id());
+				.is_event_soft_failed(pdu.event_id())?;
 			obj.insert("__soft_failed".to_owned(), JsonValue::from(is_soft_failed));
 			obj.insert("__rejected".to_owned(), JsonValue::from(is_rejected));
 		}

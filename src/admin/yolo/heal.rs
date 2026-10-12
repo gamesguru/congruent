@@ -109,7 +109,10 @@ pub(super) async fn rescue_room(
 
 	if force {
 		for event_id in &event_ids {
-			self.services.rooms.pdu_metadata.clear_pdu_markers(event_id);
+			self.services
+				.rooms
+				.pdu_metadata
+				.clear_pdu_markers(event_id)?;
 		}
 	}
 
@@ -237,7 +240,7 @@ pub(super) async fn rescue_pdu(&self, event_id: OwnedEventId, force: bool) -> Re
 	self.services
 		.rooms
 		.pdu_metadata
-		.clear_pdu_markers(&event_id);
+		.clear_pdu_markers(&event_id)?;
 
 	// --force fast path: bypass state resolution and auth entirely.
 	// Required for ancient events where remote servers have pruned historical
