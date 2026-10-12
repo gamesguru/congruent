@@ -254,7 +254,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 				// All auth deps are satisfied: clear the rejection flag so
 				// upgrade_outlier_pdu won't bail early with "Event has been rejected".
 				info!("Un-rejecting event {event_id}: all auth events now accepted");
-				self.services.pdu_metadata.unmark_event_rejected(event_id);
+				self.services.pdu_metadata.unmark_event_rejected(event_id)?;
 
 				// The auth chain is finally valid! Bypass handle_outlier_pdu (we already
 				// verified sigs/hashes when we first saved it) and push to timeline
@@ -475,7 +475,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 							&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
 								.with_detail(mid),
 						)
-						.await;
+						.await?;
 					return Ok(None);
 				}
 			}
@@ -707,7 +707,7 @@ pub(super) async fn handle_incoming_pdu_inner<'a>(
 						&crate::rooms::pdu_metadata::RejectionCode::DependsOnRejectedAuthEvent
 							.with_detail(msg),
 					)
-					.await;
+					.await?;
 			}
 			return Ok(None);
 		},
@@ -809,7 +809,7 @@ pub async fn process_timeline_upgrade(
 				&crate::rooms::pdu_metadata::RejectionCode::StructurallyInvalidInGetMissingEvents
 					.with_detail("prev_event contained structurally invalid data"),
 			)
-			.await;
+			.await?;
 		return Err(err!(Request(InvalidParam(
 			"prev_event contained structurally invalid data"
 		))));

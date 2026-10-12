@@ -68,6 +68,7 @@ pub struct Store {
 
 impl Store {
 	/// Creates a HAMT node store backed by mtxdb.
+	#[must_use]
 	pub fn new(mtxdb: Arc<conduwuit_mtxdb::store::MtxdbStore>) -> Self {
 		// Use a generic capacity for now. In a full production setup, this
 		// could be wired to a config value like other caches.

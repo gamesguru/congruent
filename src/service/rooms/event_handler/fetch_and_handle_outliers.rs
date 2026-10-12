@@ -695,7 +695,8 @@ where
 							// only a count plus the first few IDs rather than the
 							// full list, to keep the stored reason bounded.
 							let preview: Vec<_> = missing.iter().take(5).collect();
-							self.services
+							if let Err(error) = self
+								.services
 								.pdu_metadata
 								.mark_event_rejected(
 									&next_id,
@@ -706,7 +707,10 @@ where
 											missing.len()
 										)),
 								)
-								.await;
+								.await
+							{
+								warn!(%error, %next_id, "failed to record rejection verdict");
+							}
 							self.services
 								.outlier
 								.add_pdu_outlier(&next_id, &value, Some(room_id))

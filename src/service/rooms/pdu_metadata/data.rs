@@ -226,7 +226,7 @@ impl Data {
 			return Ok(std::collections::HashSet::new());
 		}
 
-		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(|id| id.as_bytes()).collect();
+		let event_id_refs: Vec<&[u8]> = event_ids.iter().map(OwnedEventId::as_bytes).collect();
 		let verdicts = self
 			.mtxdb_verdicts
 			.get_many(&event_id_refs)

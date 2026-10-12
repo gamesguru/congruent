@@ -259,14 +259,18 @@ where
 										None,
 									) {
 										conduwuit::warn!("Redaction failed for {eid}: {e:?}");
-										self.services
+										if let Err(error) = self
+											.services
 											.pdu_metadata
 											.mark_event_rejected(
 												&eid,
 												&crate::rooms::pdu_metadata::RejectionCode::InvalidPduFormat
 													.with_detail("redaction failed after hash mismatch"),
 											)
-											.await;
+											.await
+										{
+											conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+										}
 										val.insert(
 											"event_id".to_owned(),
 											slipstream::CanonicalJsonValue::String(
@@ -314,14 +318,18 @@ where
 							| _ => {
 								// Event sig failed; persist as rejected outlier so we don't
 								// re-fetch
-								self.services
+								if let Err(error) = self
+									.services
 									.pdu_metadata
 									.mark_event_rejected(
 										&eid,
 										crate::rooms::pdu_metadata::RejectionCode::SignatureVerificationFailed
 											.tag(),
 									)
-									.await;
+									.await
+								{
+									conduwuit::warn!(%error, %eid, "failed to record rejection verdict");
+								}
 								val.insert(
 									"event_id".to_owned(),
 									slipstream::CanonicalJsonValue::String(

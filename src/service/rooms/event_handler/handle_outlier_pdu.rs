@@ -84,7 +84,7 @@ where
 					self.services
 						.pdu_metadata
 						.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
-						.await;
+						.await?;
 				} else if self
 					.services
 					.pdu_metadata
@@ -129,7 +129,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-			.await;
+			.await?;
 		return Err!(Request(TooLarge("PDU is too large")));
 	}
 	// Strip unsigned before signature verification (unsigned is not signed,
@@ -345,7 +345,7 @@ where
 						event_id,
 						RejectionCode::SignatureVerificationFailed.tag(),
 					)
-					.await;
+					.await?;
 				return Err!(Request(InvalidParam(debug_error!(
 					"Signature verification failed for {event_id}: {e}"
 				))));
@@ -381,7 +381,7 @@ where
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-				.await;
+				.await?;
 			return Err!(Request(BadJson(debug_warn!("Event is not a valid PDU: {e}"))));
 		},
 	};
@@ -411,7 +411,7 @@ where
 					event_id,
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 				)
-				.await;
+				.await?;
 			self.services
 				.outlier
 				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -422,7 +422,7 @@ where
 					pdu_event.event_id(),
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(aid),
 				)
-				.await;
+				.await?;
 			return Err!(Request(Forbidden("Event depends on rejected auth event {aid}")));
 		}
 
@@ -469,7 +469,7 @@ where
 						pdu_event.event_id(),
 						RejectionCode::InvalidPduFormat.tag(),
 					)
-					.await;
+					.await?;
 				self.services
 					.outlier
 					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -547,7 +547,7 @@ where
 					event_id,
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 				)
-				.await;
+				.await?;
 			self.services
 				.outlier
 				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -558,7 +558,7 @@ where
 					pdu_event.event_id(),
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 				)
-				.await;
+				.await?;
 			return Err!(Request(Forbidden("Event depends on rejected auth event {id}")));
 		}
 
@@ -566,7 +566,7 @@ where
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, &RejectionCode::MissingAuthEvent.with_detail(id))
-				.await;
+				.await?;
 			self.services
 				.outlier
 				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -582,7 +582,7 @@ where
 			self.services
 				.pdu_metadata
 				.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-				.await;
+				.await?;
 			self.services
 				.outlier
 				.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -601,7 +601,7 @@ where
 				self.services
 					.pdu_metadata
 					.mark_event_rejected(event_id, RejectionCode::DuplicateAuthEventKey.tag())
-					.await;
+					.await?;
 				self.services
 					.outlier
 					.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -625,7 +625,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::MissingCreateEvent.tag())
-			.await;
+			.await?;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -648,7 +648,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::AuthCheckFailed.tag())
-			.await;
+			.await?;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), &incoming_pdu, Some(room_id))
@@ -672,7 +672,7 @@ where
 	// function was called at all). Without this, a prior rejection --
 	// retryable or not -- would keep shadowing an event that has now
 	// genuinely passed auth.
-	self.services.pdu_metadata.unmark_event_rejected(event_id);
+	self.services.pdu_metadata.unmark_event_rejected(event_id)?;
 
 	trace!("Added pdu as outlier.");
 
@@ -699,10 +699,14 @@ async fn mark_redaction_failure_rejected(
 		.outlier
 		.add_pdu_outlier(event_id, &value, Some(room_id))
 		.await;
-	self.services
+	if let Err(error) = self
+		.services
 		.pdu_metadata
 		.mark_event_rejected(event_id, RejectionCode::InvalidPduFormat.tag())
-		.await;
+		.await
+	{
+		warn!(%error, %event_id, "failed to record rejection verdict");
+	}
 }
 
 #[implement(super::Service)]
@@ -739,7 +743,7 @@ where
 					event_id,
 					&RejectionCode::DependsOnRejectedAuthEvent.with_detail(mid),
 				)
-				.await;
+				.await?;
 			self.services
 				.outlier
 				.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -765,7 +769,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
-			.await;
+			.await?;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -789,7 +793,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
-			.await;
+			.await?;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -932,7 +936,7 @@ where
 										event_id,
 										RejectionCode::InvalidPduFormat.tag(),
 									)
-									.await;
+									.await?;
 								self.services
 									.outlier
 									.add_pdu_outlier(
@@ -1017,7 +1021,7 @@ where
 						event_id,
 						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 					)
-					.await;
+					.await?;
 				self.services
 					.outlier
 					.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))
@@ -1028,7 +1032,7 @@ where
 						pdu_event.event_id(),
 						&RejectionCode::DependsOnRejectedAuthEvent.with_detail(id),
 					)
-					.await;
+					.await?;
 				return Err!(Request(Forbidden("Event depends on rejected auth event {id}")));
 			}
 			still_missing.push(id.to_owned());
@@ -1056,7 +1060,7 @@ where
 		self.services
 			.pdu_metadata
 			.mark_event_rejected(event_id, RejectionCode::MissingAuthEvent.tag())
-			.await;
+			.await?;
 		self.services
 			.outlier
 			.add_pdu_outlier(pdu_event.event_id(), incoming_pdu, Some(room_id))

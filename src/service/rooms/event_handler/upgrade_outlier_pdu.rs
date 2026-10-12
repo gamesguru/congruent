@@ -450,7 +450,7 @@ where
 		self.services.pdu_metadata.mark_event_soft_failed(
 			incoming_pdu.event_id(),
 			crate::rooms::pdu_metadata::SoftFailCode::AuthCheckFailed,
-		);
+		)?;
 
 		warn!(
 			event_id = %incoming_pdu.event_id,

@@ -104,7 +104,7 @@ where
 
 		self.services
 			.pdu_metadata
-			.unmark_event_rejected(pdu.event_id());
+			.unmark_event_rejected(pdu.event_id())?;
 
 		conduwuit::debug_warn!(
 			event_id = %pdu.event_id,
@@ -137,7 +137,7 @@ where
 	// resolution. Soft-fail flags are intentional and must persist.
 	self.services
 		.pdu_metadata
-		.unmark_event_rejected(pdu.event_id());
+		.unmark_event_rejected(pdu.event_id())?;
 
 	// Process admin commands for federation events
 	if *pdu.kind() == TimelineEventType::RoomMessage {

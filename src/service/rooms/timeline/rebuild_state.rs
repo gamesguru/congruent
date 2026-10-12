@@ -173,7 +173,7 @@ impl super::Service {
 			let depth = pdu.depth();
 
 			// Timeline events are authoritative; clear any stale rejection flags.
-			self.services.pdu_metadata.unmark_event_rejected(&eid);
+			self.services.pdu_metadata.unmark_event_rejected(&eid)?;
 
 			if *pdu.kind() == TimelineEventType::RoomCreate {
 				if let Ok(create_content) = slipstream::codec::from_str::<

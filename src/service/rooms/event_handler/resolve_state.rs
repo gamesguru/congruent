@@ -240,7 +240,9 @@ where
 							event_id = %pdu.event_id,
 							"state_res: clearing stale rejection flag on timeline event"
 						);
-						meta.unmark_event_rejected(&pdu.event_id);
+						if let Err(error) = meta.unmark_event_rejected(&pdu.event_id) {
+							warn!(%error, event_id = %pdu.event_id, "state_res: failed to clear stale rejection flag");
+						}
 						pdu.rejected = false;
 					}
 					Some(pdu)
