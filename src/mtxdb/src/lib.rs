@@ -15,6 +15,8 @@ pub mod keys;
 pub mod state;
 pub mod store;
 
+/// Database shard type.
+pub use mtxdb::ShardType;
 /// Errors returned while opening or operating the mtxdb database.
 pub use mtxdb::storage::StorageError;
 

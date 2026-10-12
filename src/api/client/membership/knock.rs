@@ -435,7 +435,7 @@ async fn knock_room_helper_local(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(state_node);
+		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	// update_membership is handled automatically by append_pdu
 	info!("Appending room knock event locally");
@@ -616,7 +616,7 @@ async fn knock_room_helper_remote(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(root_node);
+		.persist_node_recursive(room_id.as_bytes(), root_node);
 
 	services
 		.rooms
@@ -634,7 +634,7 @@ async fn knock_room_helper_remote(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(state_node);
+		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	// update_membership is handled automatically by append_pdu
 

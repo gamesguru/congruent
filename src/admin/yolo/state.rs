@@ -986,13 +986,13 @@ pub(super) async fn set_state_event(
 			.rooms
 			.state_hamt
 			.store
-			.persist_node_recursive(root_node);
+			.persist_node_recursive(room_id.as_bytes(), root_node);
 	});
 
 	self.services
 		.rooms
 		.state
-		.set_event_roothandle(&event_id, &new_root)
+		.set_event_roothandle(&room_id, &event_id, &new_root)
 		.await?;
 
 	self.services

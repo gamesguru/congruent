@@ -22,13 +22,11 @@ impl EventAdapter {
 	#[must_use]
 	pub fn new(store: Arc<MtxdbStore>) -> Self { Self { store } }
 
-	fn evnt_collection(&self, room_id: &[u8]) -> CollectionId {
-		room_event_collection_id(room_id)
-	}
+	fn evnt_collection(room_id: &[u8]) -> CollectionId { room_event_collection_id(room_id) }
 
-	fn prev_collection(&self, room_id: &[u8]) -> CollectionId { room_prev_collection_id(room_id) }
+	fn prev_collection(room_id: &[u8]) -> CollectionId { room_prev_collection_id(room_id) }
 
-	fn auth_collection(&self, room_id: &[u8]) -> CollectionId { room_auth_collection_id(room_id) }
+	fn auth_collection(room_id: &[u8]) -> CollectionId { room_auth_collection_id(room_id) }
 
 	/// Look up an event by event_id alone using the global event locator.
 	///
@@ -50,7 +48,7 @@ impl EventAdapter {
 	) -> Result<Option<Vec<u8>>, StorageError> {
 		self.store.get(
 			ShardType::EventDag,
-			&self.evnt_collection(room_id),
+			&Self::evnt_collection(room_id),
 			event_record_id(event_id),
 		)
 	}
@@ -63,7 +61,7 @@ impl EventAdapter {
 	) -> Result<Vec<Option<Vec<u8>>>, StorageError> {
 		let node_ids: Vec<NodeId> = event_ids.iter().map(|id| event_record_id(id)).collect();
 		self.store
-			.get_many(ShardType::EventDag, &self.evnt_collection(room_id), &node_ids)
+			.get_many(ShardType::EventDag, &Self::evnt_collection(room_id), &node_ids)
 	}
 
 	pub fn get_prev_events(
@@ -71,7 +69,7 @@ impl EventAdapter {
 		room_id: &[u8],
 		event_id: &[u8],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
-		self.get_edges(self.prev_collection(room_id), event_id)
+		self.get_edges(Self::prev_collection(room_id), event_id)
 	}
 
 	pub fn get_auth_chain(
@@ -79,7 +77,7 @@ impl EventAdapter {
 		room_id: &[u8],
 		event_id: &[u8],
 	) -> Result<Vec<Vec<u8>>, StorageError> {
-		self.get_edges(self.auth_collection(room_id), event_id)
+		self.get_edges(Self::auth_collection(room_id), event_id)
 	}
 
 	fn get_edges(
@@ -102,13 +100,13 @@ impl EventAdapter {
 		auth_events: &[&[u8]],
 	) -> Result<(), StorageError> {
 		let node = event_record_id(event_id);
-		tx.put(ShardType::EventDag, self.evnt_collection(room_id), node, event_body)?;
+		tx.put(ShardType::EventDag, Self::evnt_collection(room_id), node, event_body)?;
 		// Also index the event -> room mapping for lookups without room_id
 		tx.put(ShardType::EventDag, event_locator_collection_id(), node, room_id)?;
 		let prev = Self::serialize_edges(prev_events)?;
 		let auth = Self::serialize_edges(auth_events)?;
-		tx.put(ShardType::Edges, self.prev_collection(room_id), node, &prev)?;
-		tx.put(ShardType::Edges, self.auth_collection(room_id), node, &auth)?;
+		tx.put(ShardType::Edges, Self::prev_collection(room_id), node, &prev)?;
+		tx.put(ShardType::Edges, Self::auth_collection(room_id), node, &auth)?;
 		Ok(())
 	}
 

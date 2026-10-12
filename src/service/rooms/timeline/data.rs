@@ -1187,7 +1187,11 @@ impl Data {
 		debug_assert!(matches!(count, PduCount::Normal(_)), "PduCount not Normal");
 
 		let event_id_bytes = pdu.event_id.as_bytes();
-		let room_id_bytes = pdu.room_id.as_bytes();
+		let room_id_bytes = pdu
+			.room_id
+			.as_ref()
+			.map(OwnedRoomId::as_bytes)
+			.expect("room_id present on PDU");
 		let event_json = slipstream::codec::to_string(json);
 		let prev_events = pdu.prev_events().map(EventId::as_bytes).collect::<Vec<_>>();
 		let auth_events = pdu.auth_events().map(EventId::as_bytes).collect::<Vec<_>>();

@@ -778,7 +778,7 @@ async fn join_room_by_id_helper_remote_process(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(root_node);
+		.persist_node_recursive(room_id.as_bytes(), root_node);
 
 	// Sample the joining user's membership *before* the `/send_join` state root is
 	// installed. That state includes the joiner's own membership, so reading the
@@ -897,7 +897,7 @@ async fn join_room_by_id_helper_remote_process(
 		.rooms
 		.state_hamt
 		.store
-		.persist_node_recursive(state_node);
+		.persist_node_recursive(room_id.as_bytes(), state_node);
 
 	info!("Appending new room join event");
 	Box::pin(services.rooms.timeline.append_pdu(

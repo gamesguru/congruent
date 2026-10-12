@@ -74,7 +74,7 @@ pub fn room_auth_collection_id(room_id: &[u8]) -> [u8; 16] {
 #[must_use]
 pub fn room_roots_collection_id(room_id: &[u8]) -> [u8; 16] {
 	let group_full = room_group_full_id(room_id);
-	room_collection_id(*b"STGP", &group_full)
+	room_collection_id(MEMBER_NAMESPACE_STGP, &group_full)
 }
 
 /// Derive a HAMT node ID from a 32-byte structural hash.
@@ -83,7 +83,7 @@ pub fn room_roots_collection_id(room_id: &[u8]) -> [u8; 16] {
 /// for verification via `decode_v1_verified`.
 #[must_use]
 pub fn hamt_node_id(structural_hash: &[u8; 32]) -> [u8; 16] {
-	let mut id = [0u8; 16];
+	let mut id = [0_u8; 16];
 	id.copy_from_slice(&structural_hash[..16]);
 	id
 }

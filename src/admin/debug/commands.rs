@@ -1001,7 +1001,7 @@ pub(crate) async fn force_set_state(
 		self.services
 			.rooms
 			.state
-			.set_event_roothandle(tip_pdu.event_id(), &new_room_state)
+			.set_event_roothandle(&room_id, tip_pdu.event_id(), &new_room_state)
 			.await?;
 		info!("Set tip {} as sole extremity", tip_pdu.event_id());
 	} else {

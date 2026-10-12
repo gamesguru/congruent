@@ -410,8 +410,8 @@ impl Store {
 		let report = SweepReport { dry_run, ..SweepReport::default() };
 
 		// Sweep the raw key stream incrementally rather than materializing
-		/// every node key into memory at once, keeping only the reachability
-		/// set and the running report.
+		// every node key into memory at once, keeping only the reachability
+		// set and the running report.
 		let report = self
 			.db
 			.raw_stream()
@@ -428,10 +428,10 @@ impl Store {
 				}
 
 				// Grace-window filter: a recent mtime means a write is
-				/// possibly still in flight, so ignore this node this
-				/// round. Metadata read failures are propagated so the
-				/// sweep fails closed rather than deleting a node it
-				/// could not verify.
+				// possibly still in flight, so ignore this node this
+				// round. Metadata read failures are propagated so the
+				// sweep fails closed rather than deleting a node it
+				// could not verify.
 				if let Some(mtime) = self.node_mtime(&hash)? {
 					if mtime >= cutoff {
 						return Ok(report);
@@ -516,8 +516,6 @@ fn unix_millis() -> u64 {
 #[cfg(test)]
 mod tests {
 	use std::{fs, path::PathBuf};
-
-	use super::*;
 
 	fn test_path(name: &str) -> PathBuf {
 		std::env::temp_dir().join(format!("conduwuit-mtxdb-hamt-{name}-{}", std::process::id()))
